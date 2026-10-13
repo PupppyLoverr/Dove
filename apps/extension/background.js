@@ -82,7 +82,13 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
 chrome.debugger.onDetach.addListener(({ tabId }) => attached.delete(tabId));
 chrome.tabs.onRemoved.addListener((id) => { attached.delete(id); if (controlled === id) controlled = null; });
 chrome.tabs.onUpdated.addListener((id, info) => {
-  if (id === controlled && info.status === 'complete') indicator(id, true).catch(() => {});
+  if (id !== controlled || info.status !== 'complete') return;
+  // Re-show the indicator after a reload, but only where the user already allowed Dove.
+  Promise.all([chrome.tabs.get(id), local()])
+    .then(([tab, { allowed, paused }]) => {
+      if (!paused && allowed[originOf(tab.url || '')]) return indicator(id, true);
+    })
+    .catch(() => {});
 });
 
 // ---------- helpers ----------
