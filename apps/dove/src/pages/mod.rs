@@ -7,6 +7,7 @@ mod agents;
 mod archived;
 mod automations;
 mod help;
+pub mod integrations;
 mod kanban;
 mod threads;
 mod usage;

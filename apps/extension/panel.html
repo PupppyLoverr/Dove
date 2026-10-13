@@ -1,0 +1,48 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><meta name="color-scheme" content="light dark"><title>Dove</title><link rel="stylesheet" href="panel.css"></head>
+<body>
+  <div id="status" class="status">
+    <span class="dot"></span>
+    <span class="status-text"><span id="status-text">…</span><span id="status-detail" class="sub"></span></span>
+    <button id="reconnect" class="icon" title="Reconnect" aria-label="Reconnect">
+      <svg viewBox="0 0 16 16" width="14" height="14"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 2.5v3h-3" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
+  </div>
+
+  <section id="pair" class="card" hidden>
+    <div class="label">Pair with Dove</div>
+    <p class="sub">In Dove, open Settings → Integrations and copy the pairing code. It stays in this browser.</p>
+    <div class="field"><input id="code" placeholder="dove-…" spellcheck="false" autocomplete="off"><button id="pair-btn" class="primary">Pair</button></div>
+    <p id="pair-err" class="err"></p>
+  </section>
+
+  <section id="site" class="card">
+    <div class="site">
+      <div class="site-text">
+        <div id="host" class="label">—</div>
+        <div id="site-hint" class="sub"></div>
+      </div>
+      <label class="switch" title="Allow Dove on this site"><input type="checkbox" id="allow"><span></span></label>
+    </div>
+    <div id="control" class="banner" hidden>
+      <span class="pulse"></span><span class="grow">Dove is controlling this tab</span><button id="stop" class="pill">Stop</button>
+    </div>
+    <div id="paused" class="banner quiet" hidden>
+      <span class="grow">Paused. Agents can't act in this browser.</span><button id="resume" class="pill">Resume</button>
+    </div>
+  </section>
+
+  <section class="activity">
+    <div class="section-head"><span>Activity</span><button id="clear" class="link">Clear</button></div>
+    <ol id="log"></ol>
+    <div id="empty" class="empty">
+      <svg viewBox="0 0 24 24" width="20" height="20"><path d="M4 6.5h16M4 12h10M4 17.5h7" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+      <span>Nothing yet. Ask an agent in Dove to use your browser and each step shows up here.</span>
+    </div>
+  </section>
+
+  <footer><button id="unpair" class="link">Unpair this browser</button></footer>
+  <script src="panel.js" type="module"></script>
+</body>
+</html>
