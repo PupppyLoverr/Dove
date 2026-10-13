@@ -1,6 +1,6 @@
-//! PDF: pages rendered with macOS's own PDF engine (CoreGraphics, nothing
-//! bundled) and AcroForm text/checkbox fields read and filled through
-//! PDFKit. Other platforms get an honest message instead of pages.
+//! PDF: pages drawn by macOS's own PDF engine (PDFKit into a CoreGraphics
+//! bitmap, nothing bundled), and AcroForm text/checkbox fields read and
+//! filled through PDFKit. Other platforms get an honest message instead.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -52,10 +52,11 @@ mod imp {
     use std::path::Path;
     use std::sync::Arc;
 
+    use objc2::encode::{Encode, Encoding};
     use objc2::msg_send;
     use objc2::rc::{Retained, autoreleasepool};
     use objc2::runtime::{AnyClass, AnyObject};
-    use objc2_foundation::{NSString, NSURL};
+    use objc2_foundation::{NSRect, NSString, NSURL};
 
     use super::{Field, FieldKind, MAX_PAGES, Page, Pdf, RENDER_WIDTH};
 
@@ -88,36 +89,13 @@ mod imp {
         ty: f64,
     }
 
-    const CROP_BOX: i32 = 1;
+    /// kPDFDisplayBoxCropBox.
+    const CROP_BOX: isize = 1;
     // kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big: RGBA bytes.
     const RGBA: u32 = 1 | (4 << 12);
 
-    #[link(name = "CoreFoundation", kind = "framework")]
-    unsafe extern "C" {
-        fn CFURLCreateFromFileSystemRepresentation(
-            a: *const c_void,
-            buf: *const u8,
-            len: isize,
-            dir: bool,
-        ) -> *const c_void;
-        fn CFRelease(cf: *const c_void);
-    }
-
     #[link(name = "CoreGraphics", kind = "framework")]
     unsafe extern "C" {
-        fn CGPDFDocumentCreateWithURL(url: *const c_void) -> *mut c_void;
-        fn CGPDFDocumentRelease(doc: *mut c_void);
-        fn CGPDFDocumentGetNumberOfPages(doc: *mut c_void) -> usize;
-        fn CGPDFDocumentGetPage(doc: *mut c_void, n: usize) -> *mut c_void;
-        fn CGPDFPageGetBoxRect(page: *mut c_void, b: i32) -> CGRect;
-        fn CGPDFPageGetRotationAngle(page: *mut c_void) -> i32;
-        fn CGPDFPageGetDrawingTransform(
-            page: *mut c_void,
-            b: i32,
-            rect: CGRect,
-            rotate: i32,
-            keep: bool,
-        ) -> CGAffineTransform;
         fn CGColorSpaceCreateDeviceRGB() -> *mut c_void;
         fn CGColorSpaceRelease(cs: *mut c_void);
         fn CGBitmapContextCreate(
@@ -133,16 +111,30 @@ mod imp {
         fn CGContextSetRGBFillColor(ctx: *mut c_void, r: f64, g: f64, b: f64, a: f64);
         fn CGContextFillRect(ctx: *mut c_void, rect: CGRect);
         fn CGContextConcatCTM(ctx: *mut c_void, t: CGAffineTransform);
-        fn CGContextDrawPDFPage(ctx: *mut c_void, page: *mut c_void);
     }
 
     #[link(name = "PDFKit", kind = "framework")]
     unsafe extern "C" {}
 
-    fn render_page(page: *mut c_void) -> Option<Page> {
-        let rect = unsafe { CGPDFPageGetBoxRect(page, CROP_BOX) };
-        let rot = unsafe { CGPDFPageGetRotationAngle(page) }.rem_euclid(360);
-        let (pw, ph) = if rot == 90 || rot == 270 { (rect.size.h, rect.size.w) } else { (rect.size.w, rect.size.h) };
+    /// A `CGContextRef` argument for PDFKit.
+    #[repr(transparent)]
+    #[derive(Clone, Copy)]
+    struct CGContextRef(*mut c_void);
+
+    unsafe impl Encode for CGContextRef {
+        const ENCODING: Encoding = Encoding::Pointer(&Encoding::Struct("CGContext", &[]));
+    }
+
+    /// Draw one `PDFPage` into an RGBA bitmap. PDFKit draws annotations and
+    /// form widgets too, so filled-in values show on the page.
+    fn render_page(page: &AnyObject) -> Option<Page> {
+        let rect: NSRect = unsafe { msg_send![page, boundsForBox: CROP_BOX] };
+        let rot: isize = unsafe { msg_send![page, rotation] };
+        let (pw, ph) = if rot.rem_euclid(180) == 90 {
+            (rect.size.height, rect.size.width)
+        } else {
+            (rect.size.width, rect.size.height)
+        };
         if pw <= 0.0 || ph <= 0.0 {
             return None;
         }
@@ -159,12 +151,10 @@ mod imp {
             let full = CGRect { origin: CGPoint { x: 0.0, y: 0.0 }, size: CGSize { w: w as f64, h: h as f64 } };
             CGContextSetRGBFillColor(ctx, 1.0, 1.0, 1.0, 1.0);
             CGContextFillRect(ctx, full);
-            // The drawing transform only scales down; scale up ourselves.
             let s = w as f64 / pw;
             CGContextConcatCTM(ctx, CGAffineTransform { a: s, b: 0.0, c: 0.0, d: s, tx: 0.0, ty: 0.0 });
-            let box_rect = CGRect { origin: CGPoint { x: 0.0, y: 0.0 }, size: CGSize { w: pw, h: ph } };
-            CGContextConcatCTM(ctx, CGPDFPageGetDrawingTransform(page, CROP_BOX, box_rect, 0, true));
-            CGContextDrawPDFPage(ctx, page);
+            // PDFKit applies the crop box origin and the page rotation.
+            let _: () = msg_send![page, drawWithBox: CROP_BOX, toContext: CGContextRef(ctx)];
             CGContextRelease(ctx);
         }
         let img = image::RgbaImage::from_raw(w as u32, h as u32, buf)?;
@@ -237,29 +227,22 @@ mod imp {
     }
 
     pub fn load(path: &Path) -> Result<Pdf, String> {
-        let bytes = path.as_os_str().as_encoded_bytes();
-        let pages = unsafe {
-            let url =
-                CFURLCreateFromFileSystemRepresentation(std::ptr::null(), bytes.as_ptr(), bytes.len() as isize, false);
-            if url.is_null() {
-                return Err("Could not open this PDF".into());
+        let (count, pages) = autoreleasepool(|_| {
+            let doc = pdf_document(path).ok_or("Not a readable PDF (damaged or encrypted)")?;
+            let locked: bool = unsafe { msg_send![&*doc, isLocked] };
+            if locked {
+                return Err("This PDF is password protected".to_string());
             }
-            let doc = CGPDFDocumentCreateWithURL(url);
-            CFRelease(url);
-            if doc.is_null() {
-                return Err("Not a readable PDF (damaged or encrypted)".into());
-            }
-            let count = CGPDFDocumentGetNumberOfPages(doc);
+            let count: usize = unsafe { msg_send![&*doc, pageCount] };
             let mut pages = Vec::new();
-            for n in 1..=count.min(MAX_PAGES) {
-                let page = CGPDFDocumentGetPage(doc, n);
-                if let Some(p) = (!page.is_null()).then(|| render_page(page)).flatten() {
+            for i in 0..count.min(MAX_PAGES) {
+                let page: Option<Retained<AnyObject>> = unsafe { msg_send![&*doc, pageAtIndex: i] };
+                if let Some(p) = page.as_deref().and_then(render_page) {
                     pages.push(p);
                 }
             }
-            CGPDFDocumentRelease(doc);
-            (count, pages)
-        };
+            Ok::<_, String>((count, pages))
+        })?;
         let fields = autoreleasepool(|_| {
             let Some(doc) = pdf_document(path) else { return Vec::new() };
             let mut fields: Vec<Field> = Vec::new();
@@ -278,7 +261,7 @@ mod imp {
             }
             fields
         });
-        Ok(Pdf { page_count: pages.0, pages: pages.1, fields })
+        Ok(Pdf { page_count: count, pages, fields })
     }
 
     pub fn save(path: &Path, edits: &[(String, String)]) -> Result<(), String> {

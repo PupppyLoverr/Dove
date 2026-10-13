@@ -87,6 +87,7 @@ pub struct FilesPanel {
     office_input: Option<Entity<InputState>>,
     agent_input: Option<Entity<InputState>>,
     office_status: Option<String>,
+    office_width: std::rc::Rc<std::cell::Cell<f32>>,
     _office_subs: Vec<Subscription>,
     _load: Option<gpui::Task<()>>,
     _sub: Subscription,
@@ -120,6 +121,7 @@ impl FilesPanel {
             office_input: None,
             agent_input: None,
             office_status: None,
+            office_width: Default::default(),
             _office_subs: Vec::new(),
             _load: None,
             _sub,
@@ -261,7 +263,7 @@ impl FilesPanel {
                 let _ = this.update(cx, |p, cx| {
                     if let Some(preview) = p.preview.as_mut() {
                         match result {
-                            Ok(doc) => preview.office = Some(OfficeView::new(doc)),
+                            Ok(doc) => preview.office = Some(OfficeView::new(doc, p.office_width.clone())),
                             Err(e) => preview.error = Some(e),
                         }
                     }

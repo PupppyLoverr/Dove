@@ -61,14 +61,15 @@ fn ink(alpha: f32) -> gpui::Hsla {
 }
 
 impl OfficeView {
-    pub fn new(doc: Document) -> Self {
+    /// `width` is the Files panel's measured width, shared across reloads.
+    pub fn new(doc: Document, width: Rc<Cell<f32>>) -> Self {
         let mut v = Self {
             doc,
             edits: Vec::new(),
             selected: None,
             sheet: 0,
             grid: Arc::new(Grid { rows: 0, cols: 0, cells: Vec::new() }),
-            width: Rc::new(Cell::new(0.0)),
+            width,
         };
         v.rebuild_grid();
         v
@@ -234,11 +235,14 @@ fn select(target: Target, cx: &mut Context<FilesPanel>) -> impl Fn(&ClickEvent, 
 fn measure(width: Rc<Cell<f32>>, cx: &mut Context<FilesPanel>) -> impl IntoElement {
     let weak = cx.weak_entity();
     canvas(
-        move |bounds, _, cx| {
+        move |bounds, window, _| {
             let w: f32 = bounds.size.width.into();
             if (w - width.get()).abs() > 0.5 {
                 width.set(w);
-                let _ = weak.update(cx, |_, cx| cx.notify());
+                // Notifying mid-frame is dropped; re-render on the next one.
+                window.on_next_frame(move |_, cx| {
+                    let _ = weak.update(cx, |_, cx| cx.notify());
+                });
             }
         },
         |_, _, _, _| {},

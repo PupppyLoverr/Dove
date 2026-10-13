@@ -166,6 +166,16 @@ mod tests {
         assert!(names.contains(&"full_name") && names.contains(&"agree"), "{names:?}");
         pdf::save(&p, &[("full_name".into(), "Ada Lovelace".into()), ("agree".into(), "true".into())]).unwrap();
         let Document::Pdf(pdf2) = load(&p, Kind::Pdf).unwrap() else { panic!() };
+        // Page content and the filled values both draw into the page image.
+        let ink = |pdf: &pdf::Pdf| {
+            let img = ::image::load_from_memory(pdf.pages[0].image.bytes()).unwrap().to_luma8();
+            img.pixels().filter(|p| p.0[0] < 128).count()
+        };
+        assert!(ink(&pdf) > 500, "page content renders");
+        assert!(ink(&pdf2) > ink(&pdf), "filled values render");
+        if let Some(o) = out("intake-page1.png") {
+            std::fs::write(o, pdf2.pages[0].image.bytes()).unwrap();
+        }
         let get = |n: &str| pdf2.fields.iter().find(|f| f.name == n).map(|f| f.value.clone()).unwrap();
         assert_eq!(get("full_name"), "Ada Lovelace");
         assert_eq!(get("agree"), "true");
