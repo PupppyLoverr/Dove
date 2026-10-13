@@ -386,6 +386,15 @@ def light_table(table, t):
         m.set(qn("w:type"), "dxa")
         margins.append(m)
     pr.append(margins)
+    # Explicit column widths too: viewers that ignore pct widths use them.
+    table.autofit = False
+    cols = max(len(table.columns), 1)
+    col_w = Inches(6.5 / cols)
+    for col in table.columns:
+        col.width = col_w
+    for row in table.rows:
+        for cell in row.cells:
+            cell.width = col_w
     for row in table.rows:
         for cell in row.cells:
             for p in cell.paragraphs:
