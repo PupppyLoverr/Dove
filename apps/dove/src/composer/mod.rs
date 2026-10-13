@@ -868,7 +868,9 @@ impl Composer {
                                 .child("Worktree"),
                         )
                     })
-                    .child(self.folders_chip(t, cx));
+                    // Extra folders show here once added; adding lives in the
+                    // attach menu.
+                    .when(!self.add_dirs.is_empty(), |d| d.child(self.folders_chip(t, cx)));
             }
         }
         row.into_any_element()
@@ -1168,15 +1170,11 @@ impl Composer {
     }
 
     fn attach_button(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
-        let button = ui::icon_button(
-            "composer-attach",
-            icons::PLUS,
-            "Attach files, images or a folder (or paste / drop)",
-            t,
-            |_, _, _| {},
-        )
-        .rounded_full()
-        .on_click(cx.listener(|this, _, _, cx| this.toggle_menu(Menu::Attach, cx)));
+        let button =
+            ui::icon_button("composer-attach", icons::PAPERCLIP, "Attach files, images or a folder (or paste / drop)", t, |_, _, _| {})
+                .size(px(34.0))
+                .rounded_full()
+                .on_click(cx.listener(|this, _, _, cx| this.toggle_menu(Menu::Attach, cx)));
         let menu = (self.menu == Some(Menu::Attach)).then(|| {
             let supported = dove_core::supports_add_dirs(self.harness(cx));
             let rows = div()
@@ -1727,30 +1725,33 @@ impl Render for Composer {
         let focused = self.input.read(cx).focus_handle(cx).is_focused(window);
         let home = self.thread.is_none();
 
-        // One rounded surface: what you type on top, how it runs underneath
-        // (attach, permission, model, voice, send), like the best chat boxes.
+        // One quiet row: attach, the text, then model, voice and send. It
+        // grows upward as you type; the controls stay on the last line.
         let border = if bypass {
             t.danger.opacity(0.55)
         } else if self.dragging_files {
             t.accent
         } else if focused {
-            t.wash(0.22)
+            t.wash(0.20)
         } else {
-            t.wash(0.10)
+            t.wash(0.09)
         };
+        let multiline = self.input.read(cx).value().contains('\n');
         let box_ = div()
             .id("composer-pill")
             .w_full()
-            .rounded(px(20.0))
+            .min_h(px(54.0))
+            .rounded(px(if multiline || self.queue.len() + self.attachments.len() > 0 { 20.0 } else { 27.0 }))
             .border_1()
             .border_color(border)
             .bg(t.surface_raised)
-            .when(focused, |d| d.shadow_lg())
-            .pt(px(10.0))
-            .pb(px(8.0))
-            .px(px(10.0))
+            .when(focused, |d| d.shadow_md())
+            .py(px(8.0))
+            .pl(px(8.0))
+            .pr(px(9.0))
             .flex()
             .flex_col()
+            .justify_center()
             .gap(px(8.0))
             .text_size(px(15.0))
             .cursor_text()
@@ -1766,35 +1767,42 @@ impl Render for Composer {
                 div()
                     .w_full()
                     .min_w_0()
-                    .relative()
-                    .px(px(6.0))
-                    .child(Textarea::new(&self.input))
-                    .children(self.render_mention(t, cx)),
-            )
-            .child(
-                div()
-                    .w_full()
-                    .min_w_0()
-                    .h(px(32.0))
                     .flex()
-                    .items_center()
-                    .gap(px(2.0))
+                    .items_end()
+                    .gap(px(4.0))
                     .child(self.attach_button(t, cx))
-                    .child(self.mode_button(t, cx))
-                    .child(div().flex_1().min_w(px(4.0)))
-                    .child(div().min_w_0().overflow_hidden().child(self.picker.clone()))
-                    .child(self.mic_button(t, cx))
-                    .child(div().pl(px(4.0)).child(self.action_button(has_text, t, cx))),
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .relative()
+                            .px(px(4.0))
+                            .py(px(5.0))
+                            .child(Textarea::new(&self.input))
+                            .children(self.render_mention(t, cx)),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .gap(px(2.0))
+                            .child(div().min_w_0().max_w(px(220.0)).overflow_hidden().child(self.picker.clone()))
+                            .child(self.mic_button(t, cx))
+                            .child(div().pl(px(2.0)).child(self.action_button(has_text, t, cx))),
+                    ),
             );
 
-        // Under the box: where it runs (in a thread) and the meters.
+        // Under it: how it runs (permission, and the thread's branch) and
+        // the meters.
         let meta = div()
             .w_full()
-            .h(px(24.0))
-            .px(px(6.0))
+            .h(px(28.0))
+            .px(px(4.0))
             .flex()
             .items_center()
             .gap(px(4.0))
+            .child(self.mode_button(t, cx))
             .when(!home, |d| d.child(div().flex().min_w_0().overflow_hidden().child(self.render_context_row(t, cx))))
             .child(div().flex_1())
             .child(self.rings(t, cx));

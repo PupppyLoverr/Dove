@@ -1221,29 +1221,23 @@ impl Shell {
                 &t,
                 cx.listener(|this, _, _, cx| this.toggle_sidebar(cx)),
             ))
-            .child(if can_back {
-                ui::icon_button(
+            .when(can_back, |d| {
+                d.child(ui::icon_button(
                     "tb-back",
                     icons::ARROW_LEFT,
                     "Back (Alt+←)",
                     &t,
                     cx.listener(|this, _, window, cx| this.go_back(window, cx)),
-                )
-                .into_any_element()
-            } else {
-                ui::icon_disabled(icons::ARROW_LEFT, &t).into_any_element()
+                ))
             })
-            .child(if can_fwd {
-                ui::icon_button(
+            .when(can_fwd, |d| {
+                d.child(ui::icon_button(
                     "tb-fwd",
                     icons::ARROW_RIGHT,
                     "Forward (Alt+→)",
                     &t,
                     cx.listener(|this, _, window, cx| this.go_forward(window, cx)),
-                )
-                .into_any_element()
-            } else {
-                ui::icon_disabled(icons::ARROW_RIGHT, &t).into_any_element()
+                ))
             });
 
         let tabs = self.render_tabs(&t, cx);
@@ -1255,80 +1249,37 @@ impl Shell {
             .flex()
             .flex_none()
             .items_center()
-            .gap(px(4.0))
+            .gap(px(2.0))
             .when(!panel_open, |d| d.pr(px(ui::caption_reserve() + 8.0)))
+            .when(in_thread, |d| d.child(self.render_info_button(cx)))
             .when(!expanded, |d| {
                 d.when_some(mode, |d, mode| {
-                    let weak = cx.weak_entity();
-                    d.child(div().id("view-switch").occlude().tooltip(ui::tip("Chat ⇄ Terminal (Ctrl+`)")).child(
-                        kit::segmented(
-                            "view-mode",
-                            &["Chat", "Terminal"],
-                            if mode == ViewMode::Chat { 0 } else { 1 },
+                    let terminal = mode == ViewMode::Terminal;
+                    d.child(
+                        ui::icon_button(
+                            "tb-terminal",
+                            icons::TERMINAL,
+                            if terminal { "Back to chat (Ctrl+`)" } else { "Open in the agent's terminal (Ctrl+`)" },
                             &t,
-                            move |i, window, cx| {
-                                let _ = weak.update(cx, |s, cx| {
-                                    if let Some(v) = s.active_thread().cloned() {
-                                        let want = if i == 0 { ViewMode::Chat } else { ViewMode::Terminal };
-                                        v.update(cx, |v, cx| v.request(want, window, cx));
-                                    }
-                                });
-                            },
-                        ),
-                    ))
+                            cx.listener(move |this, _, window, cx| {
+                                if let Some(v) = this.active_thread().cloned() {
+                                    let want = if terminal { ViewMode::Chat } else { ViewMode::Terminal };
+                                    v.update(cx, |v, cx| v.request(want, window, cx));
+                                }
+                            }),
+                        )
+                        .when(terminal, |b| b.bg(t.wash(0.10))),
+                    )
                 })
             })
-            .when(in_thread, |d| {
-                // One quiet toolbar group: info, the panel's surfaces, and
-                // the panel toggle.
-                let group = div()
-                    .h(px(30.0))
-                    .px(px(2.0))
-                    .flex()
-                    .items_center()
-                    .gap(px(1.0))
-                    .rounded(px(10.0))
-                    .border_1()
-                    .border_color(t.wash(0.08))
-                    .bg(t.wash(0.03))
-                    .child(self.render_info_button(cx))
-                    .when(!panel_open, |g| {
-                        g.child(ui::icon_button(
-                            "tb-browser",
-                            icons::GLOBE,
-                            "Browser",
-                            &t,
-                            cx.listener(|this, _, window, cx| {
-                                this.show_panel(Tab::Browser, window, cx);
-                            }),
-                        ))
-                        .child(ui::icon_button(
-                            "tb-changes",
-                            icons::FILE_DIFF,
-                            "Changes",
-                            &t,
-                            cx.listener(|this, _, window, cx| {
-                                this.show_panel(Tab::Changes, window, cx);
-                            }),
-                        ))
-                        .child(ui::icon_button(
-                            "tb-files",
-                            icons::FOLDER_TREE,
-                            "Files",
-                            &t,
-                            cx.listener(|this, _, window, cx| {
-                                this.show_panel(Tab::Files, window, cx);
-                            }),
-                        ))
-                        .child(ui::icon_button(
-                            "tb-panel",
-                            icons::PANEL_RIGHT,
-                            "Side panel (Ctrl+\\)",
-                            &t,
-                            cx.listener(|this, _, _, cx| this.toggle_panel(cx)),
-                        ))
-                    });
-                d.child(group)
+            .when(in_thread && !panel_open, |d| {
+                d.child(ui::icon_button(
+                    "tb-panel",
+                    icons::PANEL_RIGHT,
+                    "Side panel: browser, diffs, files… (Ctrl+\\)",
+                    &t,
+                    cx.listener(|this, _, _, cx| this.toggle_panel(cx)),
+                ))
             });
         let strip = panel_open.then(|| self.panel.update(cx, |p, cx| p.render_strip(cx)));
 
@@ -1394,7 +1345,9 @@ impl Shell {
                     .cursor_pointer()
                     .when(selected, |d| d.bg(t.surface_raised).border_color(t.wash(0.09)).shadow_sm())
                     .when(!selected, |d| d.border_color(gpui::transparent_black()).hover(|s| s.bg(t.wash(0.05))))
-                    .child(kit::status_glyph(SharedString::from(format!("tab-st-{id}")), task.status, task.unread, t))
+                    .when(task.status != TaskStatus::Idle || task.unread, |d| {
+                        d.child(kit::status_glyph(SharedString::from(format!("tab-st-{id}")), task.status, task.unread, t))
+                    })
                     .child(icon(ui::harness_icon(task.harness)).size(px(13.0)).text_color(ui::harness_tint(
                         task.harness,
                         &t,

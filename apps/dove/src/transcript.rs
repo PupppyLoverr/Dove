@@ -691,6 +691,8 @@ pub struct TaskView {
     top_row: std::rc::Rc<std::cell::Cell<usize>>,
     /// Hovered rail mark.
     rail_hover: Option<usize>,
+    /// The pointer is over the conversation (shows the scroll thumb).
+    chat_hovered: bool,
     /// A user message just jumped to, briefly highlighted.
     flash: Option<usize>,
     glide: Option<gpui::Task<()>>,
@@ -762,6 +764,7 @@ impl TaskView {
             following,
             top_row,
             rail_hover: None,
+            chat_hovered: false,
             flash: None,
             glide: None,
             composer,
@@ -2673,29 +2676,39 @@ impl Render for TaskView {
             .flex_col()
             .child(
                 div()
+                    .id("chat-area")
                     .relative()
                     .flex_1()
                     .min_h_0()
                     .flex()
                     .flex_col()
+                    .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                        if this.chat_hovered != *hovered {
+                            this.chat_hovered = *hovered;
+                            cx.notify();
+                        }
+                    }))
                     .child(transcript)
                     .when(!empty && !self.loading, |d| {
                         d.child(
-                            // Always visible: a slim thumb that widens on
-                            // hover and can be dragged or clicked to jump.
+                            // Just a rounded thumb, no track: hidden at rest,
+                            // shown while scrolling or while the pointer is
+                            // over the conversation, then it fades.
                             gpui_base::Scrollbar::vertical(&self.list)
                                 .id("chat-scrollbar")
-                                .mode(gpui_base::ScrollbarMode::Always)
+                                .mode(if self.chat_hovered {
+                                    gpui_base::ScrollbarMode::Always
+                                } else {
+                                    gpui_base::ScrollbarMode::Scrolling
+                                })
                                 .styles(|s| {
-                                    s.track(|tr| {
-                                        tr.bg(gpui::transparent_black()).border_color(gpui::transparent_black())
-                                    })
-                                    .track_hover(|tr| tr.bg(t.wash(0.04)).border_color(gpui::transparent_black()))
-                                    .thumb(|th| {
-                                        th.bg(t.text.opacity(0.22)).width(px(5.0)).radius(px(3.0)).min_length(px(36.0))
-                                    })
-                                    .thumb_hover(|th| th.bg(t.text.opacity(0.40)).width(px(8.0)).radius(px(4.0)))
-                                    .thumb_active(|th| th.bg(t.text.opacity(0.55)).width(px(8.0)).radius(px(4.0)))
+                                    let clear = gpui::transparent_black();
+                                    s.track(|tr| tr.bg(clear).border_color(clear))
+                                        .track_hover(|tr| tr.bg(clear).border_color(clear))
+                                        .track_active(|tr| tr.bg(clear).border_color(clear))
+                                        .thumb(|th| th.bg(t.text.opacity(0.20)).width(px(5.0)).radius(px(3.0)).min_length(px(40.0)))
+                                        .thumb_hover(|th| th.bg(t.text.opacity(0.38)).width(px(7.0)).radius(px(4.0)).min_length(px(40.0)))
+                                        .thumb_active(|th| th.bg(t.text.opacity(0.50)).width(px(7.0)).radius(px(4.0)).min_length(px(40.0)))
                                 }),
                         )
                     })
