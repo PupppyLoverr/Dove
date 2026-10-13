@@ -10,6 +10,7 @@ pub mod catalog;
 pub mod detect;
 mod external;
 pub mod models;
+pub mod office_skills;
 pub mod process;
 mod rpc;
 pub mod tui;
@@ -72,9 +73,9 @@ pub fn tool_server(cwd: &std::path::Path) -> Option<ToolServer> {
 pub fn is_dove_tool(name: &str) -> bool {
     let n = name.trim().to_ascii_lowercase();
     let n = n.trim_start_matches("approve").trim();
-    ["mcp__dove__", "dove/", "dove.", "dove__", "dove:"]
-        .iter()
-        .any(|p| n.starts_with(p) && (n[p.len()..].starts_with("browser_") || &n[p.len()..] == "show_ui"))
+    ["mcp__dove__", "dove/", "dove.", "dove__", "dove:"].iter().any(|p| {
+        n.starts_with(p) && (n[p.len()..].starts_with("browser_") || matches!(&n[p.len()..], "show_ui" | "dove_skills"))
+    })
 }
 
 /// ACP `mcpServers` for a session in `cwd`.
@@ -137,6 +138,7 @@ pub fn is_supported(kind: HarnessKind) -> bool {
 /// Start a session on `rt`. Returns immediately; failures to launch arrive as
 /// an [`AgentEvent::Error`] followed by [`AgentEvent::Exited`].
 pub fn spawn(rt: &tokio::runtime::Handle, spec: SessionSpec) -> Result<SessionHandle> {
+    office_skills::ensure_installed();
     let (ev_tx, ev_rx) = flume::unbounded();
     let (cmd_tx, cmd_rx) = flume::unbounded();
     // Shared agents (Claude, Codex, Cursor, OpenCode, Pi, Devin, Grok,
@@ -166,6 +168,7 @@ mod tool_server_tests {
         assert!(is_dove_tool("Approve dove/browser_navigate"));
         assert!(is_dove_tool("dove.browser_type"));
         assert!(is_dove_tool("mcp__dove__show_ui"));
+        assert!(is_dove_tool("mcp__dove__dove_skills"));
         assert!(!is_dove_tool("mcp__other__browser_click"));
         assert!(!is_dove_tool("mcp__dove__something_else"));
         assert!(!is_dove_tool("Bash"));

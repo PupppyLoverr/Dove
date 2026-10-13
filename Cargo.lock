@@ -1953,6 +1953,7 @@ dependencies = [
  "wry",
  "zeron-syntax",
  "zeron-voice",
+ "zip",
 ]
 
 [[package]]

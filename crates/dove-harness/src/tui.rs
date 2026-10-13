@@ -82,6 +82,7 @@ pub fn shell_command(cwd: &Path) -> TuiCommand {
 
 /// Build the TUI command for `kind`, whose CLI lives at `program`.
 pub fn command(kind: HarnessKind, program: &Path, cwd: &Path, spec: &TuiSpec) -> TuiCommand {
+    crate::office_skills::ensure_installed();
     let mut args: Vec<String> = Vec::new();
     let mut push = |a: &str| args.push(a.to_string());
     let id = spec.native_session_id.filter(|s| !s.is_empty());
