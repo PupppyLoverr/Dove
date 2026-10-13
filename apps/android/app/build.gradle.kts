@@ -19,8 +19,8 @@ val buildCore by tasks.registering(Exec::class) {
     commandLine("bash", repoRoot.resolve("scripts/android/build-core.sh").path, coreOut.path)
     environment("ANDROID_NDK_HOME", ndk)
     onlyIf {
-        !skipCore || nativeLibraries.walkTopDown().any { it.name == "libzeron_mobile.so" } &&
-            coreOut.resolve("kotlin").walkTopDown().any { it.extension == "kt" }
+        !skipCore || !(nativeLibraries.walkTopDown().any { it.name == "libzeron_mobile.so" } &&
+            coreOut.resolve("kotlin").walkTopDown().any { it.extension == "kt" })
     }
 }
 

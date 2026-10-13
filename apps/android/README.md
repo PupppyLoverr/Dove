@@ -46,4 +46,4 @@ Dove's mobile core exposes no pairing API. Offer, list, and revoke are host IPC 
 
 ## Screenshot tests
 
-Screenshot tests are opt-in; from `apps/android`, run `./gradlew --console=plain :app:testDebugUnitTest -PdoveScreenshots=true -PdoveScreenshotsDir=/Users/devin/work/shots --tests 'sh.dove.android.screenshots.DoveJvmScreenshotTest'`.
+Screenshot tests are opt-in; from `apps/android`, run `./gradlew :app:testDebugUnitTest -PdoveScreenshots=true --tests 'sh.dove.android.screenshots.DoveJvmScreenshotTest'`. Images land in `app/build/screenshots/jvm` (override with `-PdoveScreenshotsDir=<dir>`).
