@@ -415,10 +415,31 @@ impl Chat {
             // Generative UI from Dove's `show_ui` tool: a card, not a step.
             AgentEvent::ToolCall { name, input, .. } if is_show_ui(&name) => {
                 self.close_all();
-                if crate::widget::Spec::from_value(input.clone()).is_some() {
-                    let msg = self.messages.len();
-                    self.messages.push(String::new());
-                    self.push(Row::Block { block: Arc::new(Block::Widget(input.to_string())), msg });
+                if let Some(spec) = crate::widget::Spec::from_value(input.clone()) {
+                    // Same id as an earlier card: update that card in place
+                    // (live dashboards, progress), instead of stacking copies.
+                    let existing = (!spec.id.is_empty())
+                        .then(|| {
+                            self.rows.iter().rposition(|r| match r {
+                                Row::Block { block, .. } => matches!(&**block, Block::Widget(src)
+                                    if crate::widget::Spec::parse(src).is_some_and(|s| s.id == spec.id)),
+                                _ => false,
+                            })
+                        })
+                        .flatten();
+                    match existing {
+                        Some(i) => {
+                            if let Row::Block { block, .. } = &mut self.rows[i] {
+                                *block = Arc::new(Block::Widget(input.to_string()));
+                            }
+                            self.touch(i);
+                        }
+                        None => {
+                            let msg = self.messages.len();
+                            self.messages.push(String::new());
+                            self.push(Row::Block { block: Arc::new(Block::Widget(input.to_string())), msg });
+                        }
+                    }
                 }
             }
             AgentEvent::ToolCall { call_id, name, kind, title, input } => {
@@ -1123,7 +1144,7 @@ impl TaskView {
         if rows.is_empty() {
             return;
         }
-        let top = self.top_row.get();
+        let top = self.list.logical_scroll_top().item_ix;
         let target = if dir < 0 {
             rows.iter().rev().find(|&&r| r < top).or(rows.first())
         } else {
@@ -2230,7 +2251,7 @@ impl TaskView {
         }
         let t = Theme::of(cx).clone();
         let weak = cx.weak_entity();
-        let top = self.top_row.get();
+        let top = self.list.logical_scroll_top().item_ix;
         let active = messages.iter().rposition(|(row, _)| *row <= top + 1).unwrap_or(0);
         let n = messages.len();
         let cap = n.min(MAX_MARKS);

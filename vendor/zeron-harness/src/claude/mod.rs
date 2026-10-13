@@ -103,6 +103,23 @@ fn mcp_config_arg(mcp: &zeron_proto::McpServer) -> String {
     .to_string()
 }
 
+/// Dove: prompts for pre-warmed runs. A run whose `model_options` carry
+/// `dove.deferPrompt = <token>` starts the CLI (process, MCP servers,
+/// settings) right away and writes its first user line only when the host
+/// hands the prompt over through [`defer_prompt`]'s sender.
+static DEFERRED: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Receiver<String>>>,
+> = std::sync::LazyLock::new(Default::default);
+
+/// Register a deferred prompt slot; pass `token` as `dove.deferPrompt`.
+pub fn defer_prompt(token: &str) -> tokio::sync::oneshot::Sender<String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    if let Ok(mut map) = DEFERRED.lock() {
+        map.insert(token.to_string(), rx);
+    }
+    tx
+}
+
 /// The `--model` value: the 1M context window is selected via a model-id
 /// suffix (`sonnet[1m]`), exactly how the CLI itself does it.
 fn model_arg(request: &RunRequest) -> Option<String> {
@@ -667,12 +684,34 @@ impl ClaudeHarness {
         // the old-app behavior (the agent opens the path with its Read tool).
         let images = load_image_blocks(&request.attachments).await;
         let first_command = uuid::Uuid::new_v4().to_string();
-        let first = wire::prompt_line(
-            &apply_ultrathink(request.reasoning, &request.prompt),
-            &first_command,
-            &images,
-        );
-        let _ = stdin_tx.send(StdinMsg::Line(first));
+        let deferred = request
+            .model_options
+            .get("dove.deferPrompt")
+            .and_then(Value::as_str)
+            .and_then(|token| DEFERRED.lock().ok()?.remove(token));
+        match deferred {
+            // Pre-warmed: the CLI boots now; the first line follows the
+            // user's send (or never, if the warm run is dropped).
+            Some(prompt_rx) => {
+                let stdin_tx = stdin_tx.clone();
+                let reasoning = request.reasoning;
+                let command = first_command.clone();
+                tokio::spawn(async move {
+                    if let Ok(prompt) = prompt_rx.await {
+                        let first = wire::prompt_line(&apply_ultrathink(reasoning, &prompt), &command, &images);
+                        let _ = stdin_tx.send(StdinMsg::Line(first));
+                    }
+                });
+            }
+            None => {
+                let first = wire::prompt_line(
+                    &apply_ultrathink(request.reasoning, &request.prompt),
+                    &first_command,
+                    &images,
+                );
+                let _ = stdin_tx.send(StdinMsg::Line(first));
+            }
+        }
 
         let (event_tx, event_rx) = mpsc::channel::<Result<AgentEvent, HarnessError>>(256);
         tokio::spawn(run_session(Session {

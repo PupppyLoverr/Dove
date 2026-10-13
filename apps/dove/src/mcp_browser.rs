@@ -31,11 +31,12 @@ fn show_ui_tool() -> Value {
         "inputSchema": {
             "type": "object",
             "properties": {
+                "id": {"type": "string", "description": "Optional stable id. Calling show_ui again with the same id updates that card in place (live dashboards, progress)."},
                 "title": {"type": "string"},
                 "body": {"type": "string", "description": "Short intro text."},
                 "blocks": {
                     "type": "array",
-                    "description": "Content, top to bottom. Each item has a `type`: text {text}; callout {tone: info|success|warning|danger, title?, text}; stats {items: [{label, value, delta?}]}; bars {title?, items: [{label, value}], unit?, horizontal?}; line {title?, values: [number], labels?: [string], unit?}; table {columns: [string], rows: [[any]]}; progress {label, value 0-1}; kv {items: [[key, value]]}; code {lang?, text}; image {src, alt?}; divider {}. Controls the user can change: choice {id, label, choices: [string], value?}; toggle {id, label, value: bool}; number {id, label, value, min?, max?, step?}; checklist {id, label?, items: [{label, checked?}]}.",
+                    "description": "Content, top to bottom. Each item has a `type`: text {text}; callout {tone: info|success|warning|danger, title?, text}; stats {items: [{label, value, delta?}]}; bars {title?, items: [{label, value}], unit?, horizontal?}; line {title?, values: [number], labels?: [string], unit?}; table {columns: [string], rows: [[any]]}; progress {label, value 0-1}; kv {items: [[key, value]]}; code {lang?, text}; image {src, alt?}; divider {}; timeline {title?, steps: [{title, detail?, status: done|active|todo|failed}]}; breakdown {title?, items: [{label, value}], unit?} (100% stacked bar); tabs {id, tabs: [{label, blocks: [...]}]}. Controls the user can change: cards {id, label?, items: [{id, title, body?, badge?}]} (pick one option card); choice {id, label, choices: [string], value?}; toggle {id, label, value: bool}; number {id, label, value, min?, max?, step?}; checklist {id, label?, items: [{label, checked?}]}.",
                     "items": {"type": "object", "properties": {"type": {"type": "string"}}, "required": ["type"]}
                 },
                 "actions": {
