@@ -80,12 +80,6 @@ pub struct Tool {
     pub error: bool,
     pub diff: Option<Arc<MiniDiff>>,
     pub open: bool,
-    /// The harness's tool name (`Bash`, `mcp__server__tool`, ...).
-    pub name: SharedString,
-    pub input: Arc<serde_json::Value>,
-    started: Option<Instant>,
-    /// Wall time from call to result, for live calls.
-    pub took: Option<Duration>,
 }
 
 /// A compact line diff for an edit, capped for display.
@@ -442,7 +436,7 @@ impl Chat {
                     }
                 }
             }
-            AgentEvent::ToolCall { call_id, name, kind, title, input } => {
+            AgentEvent::ToolCall { call_id, kind, title, input, .. } => {
                 let i = self.activity();
                 if let Row::Activity(a) = &mut self.rows[i] {
                     if a.thought.is_none() && !a.thinking.is_empty() {
@@ -460,10 +454,6 @@ impl Chat {
                         error: false,
                         diff: diff_from_input(&title, &input).map(Arc::new),
                         open: false,
-                        name: name.into(),
-                        input: Arc::new(input),
-                        started: live.then(Instant::now),
-                        took: None,
                     });
                 }
                 self.touch(i);
@@ -497,7 +487,6 @@ impl Chat {
                         }
                         t.output = Some(output.to_string().into());
                         t.error = is_error;
-                        t.took = t.started.map(|s| s.elapsed());
                     }
                     self.touch(i);
                 }
@@ -691,6 +680,8 @@ pub struct TaskView {
     top_row: std::rc::Rc<std::cell::Cell<usize>>,
     /// Hovered rail mark.
     rail_hover: Option<usize>,
+    /// The pointer is over the conversation (shows the scroll thumb).
+    chat_hovered: bool,
     /// A user message just jumped to, briefly highlighted.
     flash: Option<usize>,
     glide: Option<gpui::Task<()>>,
@@ -762,6 +753,7 @@ impl TaskView {
             following,
             top_row,
             rail_hover: None,
+            chat_hovered: false,
             flash: None,
             glide: None,
             composer,
@@ -888,10 +880,6 @@ impl TaskView {
     }
 
     pub(crate) fn apply_batch(&mut self, events: Vec<AgentEvent>, cx: &mut Context<Self>) {
-        if let Some(remote) = crate::remote::Remote::global(cx) {
-            let task = self.task.id;
-            remote.update(cx, |r, _| r.observe(task, &events));
-        }
         let before = self.chat.rows.len();
         let mut status = None;
         let mut runway = None;
@@ -1495,23 +1483,12 @@ impl TaskView {
         let Block::Widget(src) = block else {
             return markdown::render_block(id, block, t, window);
         };
-        // A card still streaming renders what has arrived, inert until whole.
-        let (spec, partial) = match crate::widget::Spec::parse(src) {
-            Some(spec) => (spec, false),
-            None => match crate::widget::Spec::parse_partial(src) {
-                Some(spec) => (spec, true),
-                None => return markdown::render_block(id, block, t, window),
-            },
+        let Some(spec) = crate::widget::Spec::parse(src) else {
+            return markdown::render_block(id, block, t, window);
         };
         let key = id.to_string();
-        let state = match partial {
-            true => crate::widget::State::new(spec.clone()),
-            false => self.widgets.get(&key).cloned().unwrap_or_else(|| crate::widget::State::new(spec.clone())),
-        };
+        let state = self.widgets.get(&key).cloned().unwrap_or_else(|| crate::widget::State::new(spec.clone()));
         crate::widget::render(key.clone(), &state, t, weak.clone(), move |this, ev, window, cx| {
-            if partial {
-                return;
-            }
             let entry = this.widgets.entry(key.clone()).or_insert_with(|| crate::widget::State::new(spec.clone()));
             match ev {
                 crate::widget::Event::Act { action, message } => {
@@ -1602,279 +1579,96 @@ impl TaskView {
     }
 
     fn render_tool(&self, i: usize, j: usize, tool: &Tool, weak: &WeakEntity<Self>, t: &Theme) -> AnyElement {
-        let view = ToolView::of(tool);
-        let running = tool.output.is_none();
-        let glyph = match &view {
-            ToolView::Browser { .. } => icons::MONITOR,
-            ToolView::Mcp { .. } => icons::WIDGET,
-            ToolView::Todo(_) => icons::CHECKLIST,
-            _ => match tool.kind {
-                ToolKind::Execute => icons::TERMINAL,
-                ToolKind::Edit => icons::PEN,
-                ToolKind::Read => icons::DOCUMENT,
-                ToolKind::Search => icons::MAGNIFER,
-                ToolKind::Fetch => icons::GLOBE,
-                ToolKind::Agent => icons::BOT,
-                ToolKind::Think => icons::BRAIN,
-                ToolKind::Other => icons::SETTINGS_MINIMALISTIC,
-            },
+        let glyph = match tool.kind {
+            ToolKind::Execute => icons::TERMINAL,
+            ToolKind::Edit => icons::PEN,
+            ToolKind::Read => icons::DOCUMENT,
+            ToolKind::Search => icons::MAGNIFER,
+            ToolKind::Fetch => icons::GLOBE,
+            ToolKind::Agent => icons::BOT,
+            _ => icons::SETTINGS_MINIMALISTIC,
         };
-        let status: AnyElement = if running {
-            kit::spinner(SharedString::from(format!("spin-{i}-{j}")), 13.0, t.text_muted).into_any_element()
-        } else if tool.error {
-            icon(icons::CLOSE_CIRCLE).size(px(14.0)).text_color(t.danger).into_any_element()
-        } else {
-            icon(glyph).size(px(14.0)).text_color(t.text_faint).into_any_element()
+        let (color, state): (gpui::Hsla, Option<&'static str>) = match (&tool.output, tool.error) {
+            (None, _) => (t.busy, None),
+            (Some(_), true) => (t.danger, Some(icons::CLOSE_CIRCLE)),
+            _ => (t.text_faint, Some(icons::CHECK)),
         };
-        let toggle = {
-            let weak = weak.clone();
-            move |_: &gpui::ClickEvent, _: &mut Window, cx: &mut App| {
-                let _ = weak.update(cx, |v, cx| v.toggle_tool(i, j, cx));
-            }
-        };
+        let mono = matches!(tool.kind, ToolKind::Execute | ToolKind::Edit | ToolKind::Read | ToolKind::Search);
         let path_like = matches!(tool.kind, ToolKind::Read | ToolKind::Edit) && !tool.title.is_empty();
-        let mono = matches!(view, ToolView::Shell { .. } | ToolView::Search)
-            || matches!(tool.kind, ToolKind::Read | ToolKind::Edit);
-        let subject: AnyElement = match &view {
-            ToolView::Browser { action, target } => div()
+        let title = {
+            let el = div()
+                .id(SharedString::from(format!("tool-{i}-{j}")))
                 .flex_1()
                 .min_w_0()
-                .flex()
-                .gap(px(6.0))
-                .child(div().flex_none().text_color(t.text_muted).child(action.clone()))
-                .child(div().min_w_0().truncate().text_color(t.text_faint).child(target.clone()))
-                .into_any_element(),
-            ToolView::Mcp { server, tool: name } => div()
-                .flex_1()
-                .min_w_0()
-                .flex()
-                .gap(px(6.0))
-                .child(div().flex_none().text_color(t.text_faint).child(server.clone()))
-                .child(div().flex_none().text_color(t.text_faint).child("·"))
-                .child(div().min_w_0().truncate().text_color(t.text_muted).child(name.clone()))
-                .into_any_element(),
-            ToolView::Web { query } => {
-                div().flex_1().min_w_0().truncate().text_color(t.text_muted).child(query.clone()).into_any_element()
-            }
-            _ => {
-                let el = div()
-                    .id(SharedString::from(format!("tool-{i}-{j}")))
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .text_color(t.text_muted)
-                    .when(mono, |d| d.font_family(t.font_mono.clone()).text_size(px(12.5)))
-                    .child(match &view {
-                        ToolView::Shell { cmd } => SharedString::from(first_line(cmd)),
-                        _ => tool.title.clone(),
-                    });
-                if path_like {
-                    let path = tool.title.to_string();
-                    el.cursor_pointer()
-                        .hover(|s| s.text_color(t.text).underline())
-                        .on_click(move |_, window, cx| {
-                            cx.stop_propagation();
-                            let (path, line) = markdown::split_path_line(&path);
-                            window.dispatch_action(Box::new(crate::actions::OpenPath { path, line }), cx);
-                        })
-                        .into_any_element()
-                } else {
-                    el.into_any_element()
-                }
+                .truncate()
+                .text_color(t.text_muted)
+                .when(mono, |d| d.font_family(t.font_mono.clone()).text_size(px(12.5)))
+                .child(tool.title.clone());
+            if path_like {
+                let path = tool.title.to_string();
+                el.cursor_pointer().hover(|s| s.text_color(t.text)).on_click(move |_, window, cx| {
+                    let (path, line) = markdown::split_path_line(&path);
+                    window.dispatch_action(Box::new(crate::actions::OpenPath { path, line }), cx);
+                })
+            } else {
+                let weak = weak.clone();
+                el.cursor_pointer().on_click(move |_, _, cx| {
+                    let _ = weak.update(cx, |v, cx| v.toggle_tool(i, j, cx));
+                })
             }
         };
-        let expandable = tool_expandable(tool, &view);
         let head = div()
-            .id(SharedString::from(format!("tool-head-{i}-{j}")))
             .flex()
             .items_center()
             .gap(px(8.0))
             .text_size(px(13.0))
-            .when(expandable, |d| d.cursor_pointer().on_click(toggle.clone()))
-            .child(div().flex_none().size(px(14.0)).flex().items_center().justify_center().child(status))
-            .child(subject)
+            .child(icon(glyph).size(px(14.0)).text_color(color))
+            .child(title)
             .when_some(tool.diff.as_ref(), |d, diff| {
                 d.child(
                     div()
                         .flex()
-                        .flex_none()
                         .gap(px(4.0))
                         .text_size(px(11.5))
                         .font_family(t.font_mono.clone())
-                        .child(div().text_color(t.text_muted).child(format!("+{}", diff.added)))
-                        .child(div().text_color(t.text_faint).child(format!("−{}", diff.removed))),
+                        .child(div().text_color(t.success).child(format!("+{}", diff.added)))
+                        .child(div().text_color(t.danger).child(format!("−{}", diff.removed))),
                 )
             })
-            .when(tool.error && !running, |d| {
-                d.child(div().flex_none().text_size(px(11.5)).text_color(t.danger).child("failed"))
-            })
-            .when_some(tool.took.filter(|d| d.as_millis() >= 100), |d, took| {
-                d.child(
-                    div()
-                        .flex_none()
-                        .text_size(px(11.5))
-                        .font_family(t.font_mono.clone())
-                        .text_color(t.text_faint)
-                        .child(short_duration(took)),
-                )
-            })
-            .when(expandable, |d| {
-                d.child(
-                    icon(if tool.open { icons::ALT_ARROW_DOWN } else { icons::ALT_ARROW_RIGHT })
-                        .size(px(11.0))
-                        .text_color(t.text_faint),
-                )
-            });
+            .when_some(state, |d, s| d.child(icon(s).size(px(12.0)).text_color(color)));
 
-        let body: Option<AnyElement> = match &view {
-            _ if tool.kind == ToolKind::Edit && tool.diff.is_some() => {
-                tool.diff.as_ref().map(|diff| self.render_mini_diff(i, j, diff, tool.open, weak, t))
-            }
-            ToolView::Todo(items) => Some(todo_list(items, t)),
-            ToolView::Shell { cmd } => {
-                let out = tool.output.as_deref().unwrap_or("");
-                let multi = cmd.contains('\n') || cmd.chars().count() > 72;
-                (tool.open || !out.trim().is_empty() || multi).then(|| {
-                    let mut text = String::new();
-                    if tool.open || multi {
-                        text.push_str("$ ");
-                        text.push_str(cmd.trim());
-                        if !out.trim().is_empty() {
-                            text.push('\n');
-                        }
-                    }
-                    let (shown, more) = tail(out, if tool.open { OUTPUT_OPEN } else { OUTPUT_TAIL });
-                    text.push_str(&shown);
-                    output_box(("out", i, j), text, more, tool, toggle.clone(), t)
-                })
-            }
-            ToolView::Search => tool.output.as_deref().filter(|o| !o.trim().is_empty()).map(|out| {
-                let paths = path_lines(out);
-                if paths.is_empty() || tool.error {
-                    let (shown, more) = tail(out, if tool.open { OUTPUT_OPEN } else { OUTPUT_TAIL });
-                    return output_box(("out", i, j), shown, more, tool, toggle.clone(), t);
-                }
-                let keep = if tool.open { 40 } else { 6 };
-                let more = paths.len().saturating_sub(keep);
+        let body: Option<AnyElement> = match tool.kind {
+            ToolKind::Edit => tool.diff.as_ref().map(|diff| self.render_mini_diff(i, j, diff, tool.open, weak, t)),
+            _ => tool.output.as_ref().filter(|o| !o.trim().is_empty()).map(|out| {
+                let lines: Vec<&str> = out.lines().collect();
+                let keep = if tool.open { OUTPUT_OPEN } else { OUTPUT_TAIL };
+                let more = lines.len().saturating_sub(keep);
+                let shown = lines[lines.len().saturating_sub(keep)..].join("\n");
+                let weak = weak.clone();
                 div()
+                    .id(SharedString::from(format!("out-{i}-{j}")))
                     .ml(px(22.0))
-                    .flex()
-                    .flex_wrap()
-                    .gap(px(6.0))
-                    .children(
-                        paths
-                            .into_iter()
-                            .take(keep)
-                            .enumerate()
-                            .map(|(k, p)| path_chip(("hit", i * 10_000 + j, k), p, t)),
-                    )
+                    .px(px(10.0))
+                    .py(px(6.0))
+                    .rounded(px(8.0))
+                    .bg(t.wash(0.035))
+                    .font_family(t.font_mono.clone())
+                    .text_size(px(12.0))
+                    .text_color(if tool.error { t.danger } else { t.text_muted })
+                    .cursor_pointer()
+                    .on_click(move |_, _, cx| {
+                        let _ = weak.update(cx, |v, cx| v.toggle_tool(i, j, cx));
+                    })
                     .when(more > 0, |d| {
-                        d.child(
-                            div()
-                                .id(SharedString::from(format!("hits-more-{i}-{j}")))
-                                .h(px(22.0))
-                                .px(px(6.0))
-                                .flex()
-                                .items_center()
-                                .text_size(px(12.0))
-                                .text_color(t.text_faint)
-                                .cursor_pointer()
-                                .hover(|s| s.text_color(t.text_muted))
-                                .on_click(toggle.clone())
-                                .child(format!("+{more} more")),
-                        )
+                        d.child(div().text_color(t.text_faint).child(if tool.open {
+                            format!("… {more} earlier lines")
+                        } else {
+                            format!("… {more} more lines · click to expand")
+                        }))
                     })
+                    .child(shown)
                     .into_any_element()
             }),
-            ToolView::Web { .. } => tool.output.as_deref().filter(|o| !o.trim().is_empty()).map(|out| {
-                let urls = urls_in(out);
-                if urls.is_empty() || tool.error {
-                    let (shown, more) = tail(out, if tool.open { OUTPUT_OPEN } else { OUTPUT_TAIL });
-                    return output_box(("out", i, j), shown, more, tool, toggle.clone(), t);
-                }
-                let keep = if tool.open { 20 } else { 4 };
-                let more = urls.len().saturating_sub(keep);
-                div()
-                    .ml(px(22.0))
-                    .flex()
-                    .flex_col()
-                    .gap(px(2.0))
-                    .children(
-                        urls.into_iter().take(keep).enumerate().map(|(k, u)| web_row(("web", i * 10_000 + j, k), u, t)),
-                    )
-                    .when(more > 0, |d| {
-                        d.child(
-                            div()
-                                .id(SharedString::from(format!("web-more-{i}-{j}")))
-                                .px(px(6.0))
-                                .text_size(px(12.0))
-                                .text_color(t.text_faint)
-                                .cursor_pointer()
-                                .hover(|s| s.text_color(t.text_muted))
-                                .on_click(toggle.clone())
-                                .child(format!("+{more} more results")),
-                        )
-                    })
-                    .into_any_element()
-            }),
-            ToolView::Mcp { .. } => tool.open.then(|| {
-                let args = pretty_json(&tool.input);
-                let result = tool.output.as_deref().map(|o| {
-                    serde_json::from_str::<serde_json::Value>(o)
-                        .map(|v| pretty_json(&v))
-                        .unwrap_or_else(|_| o.to_string())
-                });
-                div()
-                    .ml(px(22.0))
-                    .flex()
-                    .flex_col()
-                    .gap(px(6.0))
-                    .when(!args.is_empty(), |d| d.child(json_box("Arguments", args, false, t)))
-                    .when_some(result.filter(|r| !r.trim().is_empty()), |d, r| {
-                        d.child(json_box("Result", r, tool.error, t))
-                    })
-                    .into_any_element()
-            }),
-            ToolView::Agent { prompt } => {
-                let out = tool.output.as_deref().unwrap_or("").trim();
-                (!prompt.is_empty() || !out.is_empty()).then(|| {
-                    let keep = if tool.open { OUTPUT_OPEN } else { 2 };
-                    let (p, _) = head_lines(prompt, keep);
-                    let (o, more) = tail(out, if tool.open { OUTPUT_OPEN } else { OUTPUT_TAIL });
-                    div()
-                        .id(SharedString::from(format!("agent-{i}-{j}")))
-                        .ml(px(22.0))
-                        .flex()
-                        .flex_col()
-                        .gap(px(4.0))
-                        .text_size(px(12.5))
-                        .cursor_pointer()
-                        .on_click(toggle.clone())
-                        .when(!p.is_empty(), |d| d.child(div().italic().text_color(t.text_faint).child(p)))
-                        .when(!o.is_empty(), |d| {
-                            d.child(
-                                div()
-                                    .pl(px(10.0))
-                                    .border_l_1()
-                                    .border_color(t.border)
-                                    .text_color(if tool.error { t.danger } else { t.text_muted })
-                                    .when(more > 0 && !tool.open, |d| {
-                                        d.child(div().text_color(t.text_faint).child(format!("… {more} more lines")))
-                                    })
-                                    .child(o),
-                            )
-                        })
-                        .into_any_element()
-                })
-            }
-            ToolView::Browser { .. } | ToolView::Generic | ToolView::File => {
-                let out = tool.output.as_deref().unwrap_or("");
-                let show = tool.open || tool.error || matches!(view, ToolView::Generic) && tool.kind != ToolKind::Read;
-                (show && !out.trim().is_empty()).then(|| {
-                    let (shown, more) = tail(out, if tool.open { OUTPUT_OPEN } else { OUTPUT_TAIL });
-                    output_box(("out", i, j), shown, more, tool, toggle.clone(), t)
-                })
-            }
         };
         div()
             .flex()
@@ -2673,29 +2467,54 @@ impl Render for TaskView {
             .flex_col()
             .child(
                 div()
+                    .id("chat-area")
                     .relative()
                     .flex_1()
                     .min_h_0()
                     .flex()
                     .flex_col()
+                    .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                        if this.chat_hovered != *hovered {
+                            this.chat_hovered = *hovered;
+                            cx.notify();
+                        }
+                    }))
                     .child(transcript)
                     .when(!empty && !self.loading, |d| {
                         d.child(
-                            // Always visible: a slim thumb that widens on
-                            // hover and can be dragged or clicked to jump.
+                            // Just a rounded thumb, no track: hidden at rest,
+                            // shown while scrolling or while the pointer is
+                            // over the conversation, then it fades.
                             gpui_base::Scrollbar::vertical(&self.list)
                                 .id("chat-scrollbar")
-                                .mode(gpui_base::ScrollbarMode::Always)
+                                .mode(if self.chat_hovered {
+                                    gpui_base::ScrollbarMode::Always
+                                } else {
+                                    gpui_base::ScrollbarMode::Scrolling
+                                })
                                 .styles(|s| {
-                                    s.track(|tr| {
-                                        tr.bg(gpui::transparent_black()).border_color(gpui::transparent_black())
-                                    })
-                                    .track_hover(|tr| tr.bg(t.wash(0.04)).border_color(gpui::transparent_black()))
-                                    .thumb(|th| {
-                                        th.bg(t.text.opacity(0.22)).width(px(5.0)).radius(px(3.0)).min_length(px(36.0))
-                                    })
-                                    .thumb_hover(|th| th.bg(t.text.opacity(0.40)).width(px(8.0)).radius(px(4.0)))
-                                    .thumb_active(|th| th.bg(t.text.opacity(0.55)).width(px(8.0)).radius(px(4.0)))
+                                    let clear = gpui::transparent_black();
+                                    s.track(|tr| tr.bg(clear).border_color(clear))
+                                        .track_hover(|tr| tr.bg(clear).border_color(clear))
+                                        .track_active(|tr| tr.bg(clear).border_color(clear))
+                                        .thumb(|th| {
+                                            th.bg(t.text.opacity(0.20))
+                                                .width(px(5.0))
+                                                .radius(px(3.0))
+                                                .min_length(px(40.0))
+                                        })
+                                        .thumb_hover(|th| {
+                                            th.bg(t.text.opacity(0.38))
+                                                .width(px(7.0))
+                                                .radius(px(4.0))
+                                                .min_length(px(40.0))
+                                        })
+                                        .thumb_active(|th| {
+                                            th.bg(t.text.opacity(0.50))
+                                                .width(px(7.0))
+                                                .radius(px(4.0))
+                                                .min_length(px(40.0))
+                                        })
                                 }),
                         )
                     })
@@ -2726,10 +2545,6 @@ mod tests {
             error: false,
             diff: None,
             open: false,
-            name: "".into(),
-            input: Arc::new(serde_json::Value::Null),
-            started: None,
-            took: None,
         };
         a.tools.push(tool(ToolKind::Execute));
         a.tools.push(tool(ToolKind::Execute));
@@ -2865,372 +2680,4 @@ mod tests {
 fn is_show_ui(name: &str) -> bool {
     let n = name.to_ascii_lowercase();
     n.contains("dove") && (n.ends_with("__show_ui") || n.ends_with("/show_ui") || n.ends_with(".show_ui"))
-}
-
-// ------------------------------------------------------------ tool views
-
-/// How a tool call is drawn, recognised from its kind, name and input.
-enum ToolView {
-    Shell { cmd: String },
-    Search,
-    Web { query: String },
-    Browser { action: String, target: String },
-    Mcp { server: String, tool: String },
-    Agent { prompt: String },
-    Todo(Vec<(String, TodoStatus)>),
-    File,
-    Generic,
-}
-
-impl ToolView {
-    fn of(tool: &Tool) -> Self {
-        let input = tool.input.as_ref();
-        let (server, name) = mcp_parts(&tool.name);
-        if let Some(action) = name.strip_prefix("browser_") {
-            let target = str_field(input, &["url", "selector", "ref", "element", "text", "key", "direction", "script"])
-                .unwrap_or_default();
-            let mut action = action.replace('_', " ");
-            if let Some(c) = action.get_mut(0..1) {
-                c.make_ascii_uppercase();
-            }
-            return Self::Browser { action, target: first_line(&target) };
-        }
-        if let Some(items) = todo_items(&name, input) {
-            return Self::Todo(items);
-        }
-        if let Some(server) = server {
-            return Self::Mcp { server, tool: name };
-        }
-        match tool.kind {
-            ToolKind::Execute => {
-                let cmd = match input.get("command").or_else(|| input.get("cmd")) {
-                    Some(serde_json::Value::String(s)) => s.clone(),
-                    Some(serde_json::Value::Array(a)) => {
-                        let parts: Vec<&str> = a.iter().filter_map(|v| v.as_str()).collect();
-                        // `["bash", "-lc", "..."]` shows just the script.
-                        match parts.as_slice() {
-                            [sh, flag, script] if sh.ends_with("sh") && flag.starts_with('-') => script.to_string(),
-                            _ => parts.join(" "),
-                        }
-                    }
-                    _ => tool.title.to_string(),
-                };
-                Self::Shell { cmd: if cmd.trim().is_empty() { tool.title.to_string() } else { cmd } }
-            }
-            ToolKind::Search => Self::Search,
-            ToolKind::Fetch => Self::Web {
-                query: str_field(input, &["query", "url", "q"])
-                    .map(|q| first_line(&q))
-                    .unwrap_or_else(|| tool.title.to_string()),
-            },
-            ToolKind::Agent => {
-                Self::Agent { prompt: str_field(input, &["prompt", "description", "task"]).unwrap_or_default() }
-            }
-            ToolKind::Read | ToolKind::Edit => Self::File,
-            _ => Self::Generic,
-        }
-    }
-}
-
-/// `(server, tool)` for MCP spellings (`mcp__server__tool`, `server/tool`);
-/// the bare name otherwise.
-fn mcp_parts(name: &str) -> (Option<String>, String) {
-    let n = name.trim();
-    if let Some((server, tool)) = n.strip_prefix("mcp__").and_then(|r| r.split_once("__")) {
-        return (Some(server.to_string()), tool.to_string());
-    }
-    if let Some((server, tool)) = n.split_once('/').filter(|(s, t)| !s.is_empty() && !t.is_empty() && !t.contains('/'))
-    {
-        return (Some(server.to_string()), tool.to_string());
-    }
-    (None, n.to_string())
-}
-
-fn str_field(v: &serde_json::Value, keys: &[&str]) -> Option<String> {
-    keys.iter().find_map(|k| v.get(*k).and_then(|x| x.as_str()).filter(|s| !s.trim().is_empty()).map(str::to_string))
-}
-
-/// Checklist items from a todo/plan tool (`TodoWrite`, `update_plan`, ...).
-fn todo_items(name: &str, input: &serde_json::Value) -> Option<Vec<(String, TodoStatus)>> {
-    let n = name.to_ascii_lowercase();
-    if !(n.contains("todo") || n.contains("plan")) {
-        return None;
-    }
-    let list = ["todos", "plan", "items", "steps"].iter().find_map(|k| input.get(*k).and_then(|v| v.as_array()))?;
-    let items: Vec<(String, TodoStatus)> = list
-        .iter()
-        .filter_map(|it| {
-            let text = str_field(it, &["content", "step", "text", "title", "activeForm"])?;
-            let status = match it.get("status").and_then(|s| s.as_str()).unwrap_or("") {
-                "completed" | "done" | "complete" => TodoStatus::Completed,
-                "in_progress" | "in-progress" | "active" | "running" => TodoStatus::InProgress,
-                _ => TodoStatus::Pending,
-            };
-            Some((text, status))
-        })
-        .collect();
-    (!items.is_empty()).then_some(items)
-}
-
-fn tool_expandable(tool: &Tool, view: &ToolView) -> bool {
-    let out = tool.output.as_deref().unwrap_or("");
-    match view {
-        ToolView::Todo(_) => false,
-        ToolView::Mcp { .. } => true,
-        ToolView::File if tool.kind == ToolKind::Edit => {
-            tool.diff.as_ref().is_some_and(|d| d.lines.len() > DIFF_PREVIEW || d.truncated)
-        }
-        ToolView::File => false,
-        ToolView::Browser { .. } => !out.trim().is_empty(),
-        ToolView::Shell { cmd } => out.lines().count() > OUTPUT_TAIL || !cmd.trim().is_empty() && !out.is_empty(),
-        _ => out.lines().count() > OUTPUT_TAIL,
-    }
-}
-
-fn first_line(s: &str) -> String {
-    let line = s.trim().lines().next().unwrap_or("").trim();
-    if s.trim().lines().nth(1).is_some() { format!("{line} …") } else { line.to_string() }
-}
-
-/// `0.4s`, `12.3s`, `1m 12s`.
-fn short_duration(d: Duration) -> String {
-    if d.as_secs() < 60 { format!("{:.1}s", d.as_secs_f64()) } else { duration(d) }
-}
-
-/// The last `keep` lines and how many were dropped.
-fn tail(s: &str, keep: usize) -> (String, usize) {
-    let lines: Vec<&str> = s.trim_end().lines().collect();
-    let more = lines.len().saturating_sub(keep);
-    (lines[more..].join("\n"), more)
-}
-
-fn head_lines(s: &str, keep: usize) -> (String, usize) {
-    let lines: Vec<&str> = s.trim().lines().collect();
-    let more = lines.len().saturating_sub(keep);
-    let mut out = lines[..lines.len() - more].join("\n");
-    if more > 0 {
-        out.push_str(" …");
-    }
-    (out, more)
-}
-
-/// Lines of a search result that name a file (`path`, `path:12`, `path:12:text`).
-fn path_lines(out: &str) -> Vec<String> {
-    let mut seen = std::collections::HashSet::new();
-    out.lines()
-        .filter_map(|l| {
-            let l = l.trim();
-            let head = match l.split_once(':') {
-                Some((p, rest)) if rest.split(':').next().is_some_and(|n| n.chars().all(|c| c.is_ascii_digit())) => {
-                    let line = rest.split(':').next().unwrap_or("");
-                    if line.is_empty() { p.to_string() } else { format!("{p}:{line}") }
-                }
-                _ => l.to_string(),
-            };
-            let path = head.split(':').next().unwrap_or("");
-            let looks = !path.is_empty()
-                && !path.contains(char::is_whitespace)
-                && (path.contains('/') || path.contains('.'))
-                && !path.starts_with("http");
-            (looks && seen.insert(head.clone())).then_some(head)
-        })
-        .collect()
-}
-
-/// Every distinct `http(s)://` URL in `out`, in order.
-fn urls_in(out: &str) -> Vec<String> {
-    let mut seen = std::collections::HashSet::new();
-    let mut urls = Vec::new();
-    let mut rest = out;
-    while let Some(at) = rest.find("http") {
-        let s = &rest[at..];
-        if s.starts_with("https://") || s.starts_with("http://") {
-            let end = s
-                .find(|c: char| c.is_whitespace() || matches!(c, ')' | ']' | '>' | '"' | '\'' | '`' | ',' | '<'))
-                .unwrap_or(s.len());
-            let url = s[..end].trim_end_matches(['.', ';', ':']).to_string();
-            if url.len() > 10 && seen.insert(url.clone()) {
-                urls.push(url);
-            }
-            rest = &s[end..];
-        } else {
-            rest = &s[4..];
-        }
-    }
-    urls
-}
-
-fn path_chip(id: (&'static str, usize, usize), path: String, t: &Theme) -> AnyElement {
-    let (name, line) = markdown::split_path_line(&path);
-    let label = match line {
-        Some(n) => format!("{}:{n}", short_path(&name)),
-        None => short_path(&name),
-    };
-    div()
-        .id(SharedString::from(format!("{}-{}-{}", id.0, id.1, id.2)))
-        .h(px(22.0))
-        .px(px(8.0))
-        .flex()
-        .items_center()
-        .gap(px(5.0))
-        .rounded(px(7.0))
-        .border_1()
-        .border_color(t.wash(0.08))
-        .bg(t.wash(0.03))
-        .font_family(t.font_mono.clone())
-        .text_size(px(11.5))
-        .text_color(t.text_muted)
-        .cursor_pointer()
-        .hover(|s| s.bg(t.wash(0.07)).text_color(t.text))
-        .tooltip(ui::tip(path.clone()))
-        .child(icon(icons::FILE_CODE).size(px(11.0)).text_color(t.text_faint))
-        .child(label)
-        .on_click(move |_, window, cx| {
-            let (path, line) = markdown::split_path_line(&path);
-            window.dispatch_action(Box::new(crate::actions::OpenPath { path, line }), cx);
-        })
-        .into_any_element()
-}
-
-/// The last two components of a path.
-fn short_path(p: &str) -> String {
-    let parts: Vec<&str> = p.trim_end_matches('/').rsplitn(3, '/').collect();
-    match parts.as_slice() {
-        [file, dir, _] => format!("{dir}/{file}"),
-        _ => p.to_string(),
-    }
-}
-
-/// A result link: globe, domain, path; opens in the browser.
-fn web_row(id: (&'static str, usize, usize), url: String, t: &Theme) -> AnyElement {
-    let after = url.split_once("://").map(|(_, r)| r).unwrap_or(&url);
-    let (domain, path) = after.split_once('/').map(|(d, p)| (d, format!("/{p}"))).unwrap_or((after, String::new()));
-    let domain = domain.trim_start_matches("www.").to_string();
-    div()
-        .id(SharedString::from(format!("{}-{}-{}", id.0, id.1, id.2)))
-        .h(px(24.0))
-        .px(px(6.0))
-        .mx(px(-6.0))
-        .flex()
-        .items_center()
-        .gap(px(8.0))
-        .rounded(px(6.0))
-        .text_size(px(12.5))
-        .cursor_pointer()
-        .hover(|s| s.bg(t.wash(0.05)))
-        .child(icon(icons::GLOBE).size(px(12.0)).text_color(t.text_faint))
-        .child(div().flex_none().text_color(t.text_muted).child(domain))
-        .child(div().min_w_0().truncate().text_color(t.text_faint).child(path))
-        .on_click(move |_, _, cx| cx.open_url(&url))
-        .into_any_element()
-}
-
-fn pretty_json(v: &serde_json::Value) -> String {
-    match v {
-        serde_json::Value::Null => String::new(),
-        serde_json::Value::Object(m) if m.is_empty() => String::new(),
-        _ => serde_json::to_string_pretty(v).unwrap_or_default(),
-    }
-}
-
-fn json_box(label: &'static str, text: String, error: bool, t: &Theme) -> AnyElement {
-    let lines: Vec<&str> = text.lines().collect();
-    let more = lines.len().saturating_sub(OUTPUT_OPEN);
-    let shown = lines[..lines.len() - more].join("\n");
-    div()
-        .rounded(px(8.0))
-        .border_1()
-        .border_color(t.border)
-        .bg(t.wash(0.03))
-        .overflow_hidden()
-        .child(div().px(px(10.0)).pt(px(6.0)).text_size(px(11.0)).text_color(t.text_faint).child(label))
-        .child(
-            div()
-                .px(px(10.0))
-                .pt(px(2.0))
-                .pb(px(8.0))
-                .font_family(t.font_mono.clone())
-                .text_size(px(12.0))
-                .text_color(if error { t.danger } else { t.text_muted })
-                .child(shown)
-                .when(more > 0, |d| d.child(div().text_color(t.text_faint).child(format!("… {more} more lines")))),
-        )
-        .into_any_element()
-}
-
-fn output_box(
-    id: (&'static str, usize, usize),
-    text: String,
-    more: usize,
-    tool: &Tool,
-    toggle: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
-    t: &Theme,
-) -> AnyElement {
-    div()
-        .id(SharedString::from(format!("{}-{}-{}", id.0, id.1, id.2)))
-        .ml(px(22.0))
-        .px(px(10.0))
-        .py(px(6.0))
-        .rounded(px(8.0))
-        .bg(t.wash(0.035))
-        .font_family(t.font_mono.clone())
-        .text_size(px(12.0))
-        .text_color(if tool.error { t.danger } else { t.text_muted })
-        .cursor_pointer()
-        .on_click(toggle)
-        .when(more > 0, |d| {
-            d.child(div().text_color(t.text_faint).child(if tool.open {
-                format!("… {more} earlier lines")
-            } else {
-                format!("… {more} more lines · click to expand")
-            }))
-        })
-        .child(text)
-        .into_any_element()
-}
-
-fn todo_list(items: &[(String, TodoStatus)], t: &Theme) -> AnyElement {
-    div()
-        .ml(px(22.0))
-        .flex()
-        .flex_col()
-        .gap(px(3.0))
-        .text_size(px(13.0))
-        .children(items.iter().map(|(text, status)| {
-            let mark: AnyElement = match status {
-                TodoStatus::Completed => {
-                    icon(icons::CIRCLE_CHECK).size(px(13.0)).text_color(t.text_faint).into_any_element()
-                }
-                TodoStatus::InProgress => div()
-                    .size(px(11.0))
-                    .rounded_full()
-                    .border_1()
-                    .border_color(t.text_muted)
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(div().size(px(5.0)).rounded_full().bg(t.text_muted))
-                    .into_any_element(),
-                TodoStatus::Pending => {
-                    div().size(px(11.0)).rounded_full().border_1().border_color(t.border_strong).into_any_element()
-                }
-            };
-            div()
-                .flex()
-                .items_center()
-                .gap(px(8.0))
-                .child(div().flex_none().size(px(14.0)).flex().items_center().justify_center().child(mark))
-                .child(
-                    div()
-                        .min_w_0()
-                        .text_color(match status {
-                            TodoStatus::Completed => t.text_faint,
-                            TodoStatus::InProgress => t.text,
-                            TodoStatus::Pending => t.text_muted,
-                        })
-                        .when(*status == TodoStatus::Completed, |d| d.line_through())
-                        .child(text.clone()),
-                )
-        }))
-        .into_any_element()
 }
