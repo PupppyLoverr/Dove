@@ -462,6 +462,6 @@ mod tests {
     fn websocket_accept_matches_rfc6455() {
         // The example handshake from RFC 6455 §1.3.
         let key = "dGhlIHNhbXBsZSBub25jZQ==258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
-        assert_eq!(super::extension::base64(&super::extension::sha1(key.as_bytes())), "s3pPLMBiTxaQ9kYGzo/p+tRLgec=");
+        assert_eq!(super::extension::base64(&super::extension::sha1(key.as_bytes())), "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=");
     }
 }
