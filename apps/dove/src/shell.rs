@@ -1346,7 +1346,12 @@ impl Shell {
                     .when(selected, |d| d.bg(t.surface_raised).border_color(t.wash(0.09)).shadow_sm())
                     .when(!selected, |d| d.border_color(gpui::transparent_black()).hover(|s| s.bg(t.wash(0.05))))
                     .when(task.status != TaskStatus::Idle || task.unread, |d| {
-                        d.child(kit::status_glyph(SharedString::from(format!("tab-st-{id}")), task.status, task.unread, t))
+                        d.child(kit::status_glyph(
+                            SharedString::from(format!("tab-st-{id}")),
+                            task.status,
+                            task.unread,
+                            t,
+                        ))
                     })
                     .child(icon(ui::harness_icon(task.harness)).size(px(13.0)).text_color(ui::harness_tint(
                         task.harness,

@@ -2706,9 +2706,24 @@ impl Render for TaskView {
                                     s.track(|tr| tr.bg(clear).border_color(clear))
                                         .track_hover(|tr| tr.bg(clear).border_color(clear))
                                         .track_active(|tr| tr.bg(clear).border_color(clear))
-                                        .thumb(|th| th.bg(t.text.opacity(0.20)).width(px(5.0)).radius(px(3.0)).min_length(px(40.0)))
-                                        .thumb_hover(|th| th.bg(t.text.opacity(0.38)).width(px(7.0)).radius(px(4.0)).min_length(px(40.0)))
-                                        .thumb_active(|th| th.bg(t.text.opacity(0.50)).width(px(7.0)).radius(px(4.0)).min_length(px(40.0)))
+                                        .thumb(|th| {
+                                            th.bg(t.text.opacity(0.20))
+                                                .width(px(5.0))
+                                                .radius(px(3.0))
+                                                .min_length(px(40.0))
+                                        })
+                                        .thumb_hover(|th| {
+                                            th.bg(t.text.opacity(0.38))
+                                                .width(px(7.0))
+                                                .radius(px(4.0))
+                                                .min_length(px(40.0))
+                                        })
+                                        .thumb_active(|th| {
+                                            th.bg(t.text.opacity(0.50))
+                                                .width(px(7.0))
+                                                .radius(px(4.0))
+                                                .min_length(px(40.0))
+                                        })
                                 }),
                         )
                     })
