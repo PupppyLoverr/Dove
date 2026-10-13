@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
-members = ["crates/*", "apps/*"]
+members = ["crates/*", "apps/dove"]
+exclude = ["mesh", "apps/ios", "apps/android", "apps/landing", "apps/extension"]
 
 [workspace.package]
 version = "0.1.0"

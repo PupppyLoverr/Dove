@@ -6,3 +6,7 @@
 # Intro video pipeline scratch (see media/intro/README.md)
 media/intro/frames/
 media/intro/src/node_modules/
+
+# Mesh (mobile core) workspace + iOS build output
+/mesh/target
+apps/ios/**/xcuserdata/
