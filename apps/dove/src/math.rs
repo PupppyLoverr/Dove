@@ -9,10 +9,17 @@ use gpui::{AnyElement, Hsla, IntoElement, ParentElement as _, Styled as _, div, 
 #[derive(Debug, Clone, PartialEq)]
 enum Node {
     /// A symbol or run of characters; `italic` for single variables.
-    Sym { text: String, italic: bool },
+    Sym {
+        text: String,
+        italic: bool,
+    },
     Text(String),
     Row(Vec<Node>),
-    Scripts { base: Box<Node>, sub: Option<Box<Node>>, sup: Option<Box<Node>> },
+    Scripts {
+        base: Box<Node>,
+        sub: Option<Box<Node>>,
+        sup: Option<Box<Node>>,
+    },
     Frac(Box<Node>, Box<Node>),
     Sqrt(Box<Node>),
     /// `\\` inside a display block.
@@ -129,10 +136,13 @@ fn symbol(cmd: &str) -> Option<&'static str> {
     })
 }
 
-const FUNCTIONS: &[&str] =
-    &["sin", "cos", "tan", "log", "ln", "exp", "lim", "max", "min", "sup", "inf", "det", "arg", "deg", "sec", "csc", "cot", "sinh", "cosh", "tanh", "mod", "gcd"];
+const FUNCTIONS: &[&str] = &[
+    "sin", "cos", "tan", "log", "ln", "exp", "lim", "max", "min", "sup", "inf", "det", "arg", "deg", "sec", "csc",
+    "cot", "sinh", "cosh", "tanh", "mod", "gcd",
+];
 
-const BLACKBOARD: &[(char, &str)] = &[('R', "ℝ"), ('N', "ℕ"), ('Z', "ℤ"), ('Q', "ℚ"), ('C', "ℂ"), ('P', "ℙ"), ('E', "𝔼")];
+const BLACKBOARD: &[(char, &str)] =
+    &[('R', "ℝ"), ('N', "ℕ"), ('Z', "ℤ"), ('Q', "ℚ"), ('C', "ℂ"), ('P', "ℙ"), ('E', "𝔼")];
 
 struct Parser<'a> {
     s: &'a str,
@@ -282,7 +292,9 @@ impl<'a> Parser<'a> {
                         let g = self.raw_group();
                         let mapped: String = g
                             .chars()
-                            .map(|c| BLACKBOARD.iter().find(|(k, _)| *k == c).map_or(c.to_string(), |(_, v)| v.to_string()))
+                            .map(|c| {
+                                BLACKBOARD.iter().find(|(k, _)| *k == c).map_or(c.to_string(), |(_, v)| v.to_string())
+                            })
                             .collect();
                         Node::Sym { text: mapped, italic: false }
                     }
@@ -291,7 +303,9 @@ impl<'a> Parser<'a> {
                         match cmd.as_str() {
                             "vec" => Node::Row(vec![inner, Node::Sym { text: "\u{20D7}".into(), italic: false }]),
                             "hat" => Node::Row(vec![inner, Node::Sym { text: "\u{0302}".into(), italic: false }]),
-                            "bar" | "overline" => Node::Row(vec![inner, Node::Sym { text: "\u{0304}".into(), italic: false }]),
+                            "bar" | "overline" => {
+                                Node::Row(vec![inner, Node::Sym { text: "\u{0304}".into(), italic: false }])
+                            }
                             "tilde" => Node::Row(vec![inner, Node::Sym { text: "\u{0303}".into(), italic: false }]),
                             "dot" => Node::Row(vec![inner, Node::Sym { text: "\u{0307}".into(), italic: false }]),
                             _ => inner,
@@ -309,7 +323,9 @@ impl<'a> Parser<'a> {
                                 self.bump();
                                 Node::Sym { text: String::new(), italic: false }
                             }
-                            Some(_) => Node::Sym { text: self.bump().map(String::from).unwrap_or_default(), italic: false },
+                            Some(_) => {
+                                Node::Sym { text: self.bump().map(String::from).unwrap_or_default(), italic: false }
+                            }
                             None => return None,
                         }
                     }
@@ -317,9 +333,14 @@ impl<'a> Parser<'a> {
                         let _ = self.raw_group();
                         Node::Sym { text: String::new(), italic: false }
                     }
-                    "displaystyle" | "textstyle" | "limits" | "nolimits" => Node::Sym { text: String::new(), italic: false },
+                    "displaystyle" | "textstyle" | "limits" | "nolimits" => {
+                        Node::Sym { text: String::new(), italic: false }
+                    }
                     f if FUNCTIONS.contains(&f) => Node::Text(f.to_string()),
-                    other => Node::Sym { text: symbol(other).map_or_else(|| other.to_string(), str::to_string), italic: false },
+                    other => Node::Sym {
+                        text: symbol(other).map_or_else(|| other.to_string(), str::to_string),
+                        italic: false,
+                    },
                 }
             }
             c if c.is_ascii_alphabetic() => Node::Sym { text: c.to_string(), italic: true },
@@ -355,7 +376,12 @@ fn el(node: &Node, size: f32, color: Hsla) -> AnyElement {
             .when(is_op(node), |d| d.px(px(size * 0.22)))
             .child(text.clone())
             .into_any_element(),
-        Node::Text(t) => div().text_size(px(size)).line_height(px(size * 1.25)).px(px(size * 0.08)).child(t.clone()).into_any_element(),
+        Node::Text(t) => div()
+            .text_size(px(size))
+            .line_height(px(size * 1.25))
+            .px(px(size * 0.08))
+            .child(t.clone())
+            .into_any_element(),
         Node::Row(items) => {
             // `\\` splits a display block into lines.
             if items.iter().any(|n| *n == Node::Break) {
@@ -473,14 +499,66 @@ const MATH_FONT: &str = "STIX Two Math";
 const MATH_FONT: &str = "DejaVu Serif";
 
 const SUP: &[(char, char)] = &[
-    ('0', '⁰'), ('1', '¹'), ('2', '²'), ('3', '³'), ('4', '⁴'), ('5', '⁵'), ('6', '⁶'), ('7', '⁷'), ('8', '⁸'), ('9', '⁹'),
-    ('+', '⁺'), ('-', '⁻'), ('−', '⁻'), ('=', '⁼'), ('(', '⁽'), (')', '⁾'), ('n', 'ⁿ'), ('i', 'ⁱ'), ('k', 'ᵏ'), ('x', 'ˣ'),
-    ('T', 'ᵀ'), ('a', 'ᵃ'), ('b', 'ᵇ'), ('c', 'ᶜ'), ('d', 'ᵈ'), ('e', 'ᵉ'), ('m', 'ᵐ'), ('t', 'ᵗ'), ('y', 'ʸ'),
+    ('0', '⁰'),
+    ('1', '¹'),
+    ('2', '²'),
+    ('3', '³'),
+    ('4', '⁴'),
+    ('5', '⁵'),
+    ('6', '⁶'),
+    ('7', '⁷'),
+    ('8', '⁸'),
+    ('9', '⁹'),
+    ('+', '⁺'),
+    ('-', '⁻'),
+    ('−', '⁻'),
+    ('=', '⁼'),
+    ('(', '⁽'),
+    (')', '⁾'),
+    ('n', 'ⁿ'),
+    ('i', 'ⁱ'),
+    ('k', 'ᵏ'),
+    ('x', 'ˣ'),
+    ('T', 'ᵀ'),
+    ('a', 'ᵃ'),
+    ('b', 'ᵇ'),
+    ('c', 'ᶜ'),
+    ('d', 'ᵈ'),
+    ('e', 'ᵉ'),
+    ('m', 'ᵐ'),
+    ('t', 'ᵗ'),
+    ('y', 'ʸ'),
 ];
 const SUB: &[(char, char)] = &[
-    ('0', '₀'), ('1', '₁'), ('2', '₂'), ('3', '₃'), ('4', '₄'), ('5', '₅'), ('6', '₆'), ('7', '₇'), ('8', '₈'), ('9', '₉'),
-    ('+', '₊'), ('-', '₋'), ('−', '₋'), ('=', '₌'), ('(', '₍'), (')', '₎'), ('a', 'ₐ'), ('e', 'ₑ'), ('i', 'ᵢ'), ('j', 'ⱼ'),
-    ('k', 'ₖ'), ('m', 'ₘ'), ('n', 'ₙ'), ('o', 'ₒ'), ('p', 'ₚ'), ('r', 'ᵣ'), ('s', 'ₛ'), ('t', 'ₜ'), ('x', 'ₓ'),
+    ('0', '₀'),
+    ('1', '₁'),
+    ('2', '₂'),
+    ('3', '₃'),
+    ('4', '₄'),
+    ('5', '₅'),
+    ('6', '₆'),
+    ('7', '₇'),
+    ('8', '₈'),
+    ('9', '₉'),
+    ('+', '₊'),
+    ('-', '₋'),
+    ('−', '₋'),
+    ('=', '₌'),
+    ('(', '₍'),
+    (')', '₎'),
+    ('a', 'ₐ'),
+    ('e', 'ₑ'),
+    ('i', 'ᵢ'),
+    ('j', 'ⱼ'),
+    ('k', 'ₖ'),
+    ('m', 'ₘ'),
+    ('n', 'ₙ'),
+    ('o', 'ₒ'),
+    ('p', 'ₚ'),
+    ('r', 'ᵣ'),
+    ('s', 'ₛ'),
+    ('t', 'ₜ'),
+    ('x', 'ₓ'),
 ];
 
 fn flat(n: &Node) -> String {
@@ -493,7 +571,8 @@ fn flat(n: &Node) -> String {
             for (script, table, open) in [(sub, SUB, "_("), (sup, SUP, "^(")] {
                 if let Some(x) = script {
                     let text = flat(x);
-                    let mapped: Option<String> = text.chars().map(|c| table.iter().find(|(k, _)| *k == c).map(|(_, v)| *v)).collect();
+                    let mapped: Option<String> =
+                        text.chars().map(|c| table.iter().find(|(k, _)| *k == c).map(|(_, v)| *v)).collect();
                     match mapped {
                         Some(m) => s.push_str(&m),
                         None => {
