@@ -62,8 +62,8 @@ use tokio::io::AsyncBufReadExt;
 use tokio::sync::mpsc;
 
 use zeron_proto::{
-    AgentEvent, DoneStatus, HarnessId, Model, ModelOption, ModelOptionChoice, ReasoningLevel,
-    RunRequest, SlashCommand, SteeringMode, UserInputAnswer, UserInputQuestion,
+    AgentEvent, DoneStatus, HarnessId, Model, ModelOption, ModelOptionChoice, ReasoningLevel, RunRequest, SlashCommand,
+    SteeringMode, UserInputAnswer, UserInputQuestion,
 };
 
 use crate::jsonrpc::{Incoming, RpcClient};
@@ -114,11 +114,7 @@ fn plain_executable(path: PathBuf) -> PathBuf {
 /// to the user's `mcp_servers` table.
 fn codex_mcp_overrides(mcp: &zeron_proto::McpServer) -> Vec<(String, Value)> {
     let key = |field: &str| format!("mcp_servers.{}.{field}", mcp.name);
-    vec![
-        (key("command"), mcp.command.clone().into()),
-        (key("args"), json!(mcp.args)),
-        (key("env"), json!(mcp.env)),
-    ]
+    vec![(key("command"), mcp.command.clone().into()), (key("args"), json!(mcp.args)), (key("env"), json!(mcp.env))]
 }
 
 /// A ready-to-spawn `codex login` command for the engine's account flow.
@@ -210,10 +206,7 @@ impl CodexHarness {
             cmd.current_dir(cwd);
         }
         crate::compose_child_path(&mut cmd, &exe);
-        cmd.stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .kill_on_drop(true);
+        cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).kill_on_drop(true);
         let mut child = cmd.spawn().map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
                 HarnessError::NotInstalled(crate::executable::binary_hint(&exe))
@@ -243,9 +236,7 @@ impl CodexHarness {
                 )
                 .await?;
             client.notify("initialized", None);
-            let params = cwd
-                .map(|cwd| json!({ "cwds": [cwd], "forceReload": true }))
-                .unwrap_or_else(|| json!({}));
+            let params = cwd.map(|cwd| json!({ "cwds": [cwd], "forceReload": true })).unwrap_or_else(|| json!({}));
             let skills = client.request("skills/list", params).await?;
             Ok::<Value, HarnessError>(skills)
         };
@@ -266,10 +257,7 @@ impl CodexHarness {
         let mut cmd = Command::new(&exe);
         cmd.arg("app-server");
         crate::compose_child_path(&mut cmd, &exe);
-        cmd.stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .kill_on_drop(true);
+        cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).kill_on_drop(true);
         let mut child = cmd.spawn().map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
                 HarnessError::NotInstalled(crate::executable::binary_hint(&exe))
@@ -357,12 +345,7 @@ impl CodexHarness {
 
 /// The `serviceTier` a request runs with; "default" (Standard) is omitted.
 fn service_tier(request: &RunRequest) -> Option<String> {
-    request
-        .model_options
-        .get("serviceTier")
-        .and_then(Value::as_str)
-        .filter(|t| *t != "default")
-        .map(str::to_owned)
+    request.model_options.get("serviceTier").and_then(Value::as_str).filter(|t| *t != "default").map(str::to_owned)
 }
 
 fn reasoning_level(value: &str) -> Option<ReasoningLevel> {
@@ -400,17 +383,9 @@ fn service_tier_label(value: &str) -> String {
 }
 
 fn model_service_tier(item: &Value) -> Option<ModelOption> {
-    let mut choices = vec![ModelOptionChoice {
-        id: "default".into(),
-        label: "Standard".into(),
-    }];
+    let mut choices = vec![ModelOptionChoice { id: "default".into(), label: "Standard".into() }];
     let mut seen = HashSet::from(["default".to_owned()]);
-    for tier in item
-        .get("serviceTiers")
-        .and_then(Value::as_array)
-        .map(Vec::as_slice)
-        .unwrap_or_default()
-    {
+    for tier in item.get("serviceTiers").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default() {
         let Some(wire_id) = tier.get("id").and_then(Value::as_str) else {
             continue;
         };
@@ -426,21 +401,13 @@ fn model_service_tier(item: &Value) -> Option<ModelOption> {
             .unwrap_or_else(|| service_tier_label(wire_id));
         choices.push(ModelOptionChoice { id, label });
     }
-    for tier in item
-        .get("additionalSpeedTiers")
-        .and_then(Value::as_array)
-        .map(Vec::as_slice)
-        .unwrap_or_default()
-    {
+    for tier in item.get("additionalSpeedTiers").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default() {
         let Some(wire_id) = tier.as_str() else {
             continue;
         };
         let id = normalized_service_tier(wire_id).to_owned();
         if seen.insert(id.clone()) {
-            choices.push(ModelOptionChoice {
-                id,
-                label: service_tier_label(wire_id),
-            });
+            choices.push(ModelOptionChoice { id, label: service_tier_label(wire_id) });
         }
     }
     if choices.len() == 1 {
@@ -453,32 +420,20 @@ fn model_service_tier(item: &Value) -> Option<ModelOption> {
         .filter(|id| seen.contains(*id))
         .unwrap_or("default")
         .to_owned();
-    Some(ModelOption {
-        id: "serviceTier".into(),
-        label: "Service Tier".into(),
-        choices,
-        default_choice,
-    })
+    Some(ModelOption { id: "serviceTier".into(), label: "Service Tier".into(), choices, default_choice })
 }
 
 fn legacy_model_page(page: &Value) -> bool {
     page.get("data")
         .and_then(Value::as_array)
-        .is_some_and(|items| {
-            !items.is_empty() && items.iter().all(|item| item.get("hidden").is_none())
-        })
+        .is_some_and(|items| !items.is_empty() && items.iter().all(|item| item.get("hidden").is_none()))
 }
 
 /// Parse one `model/list` page. Unknown future reasoning levels are ignored
 /// independently instead of invalidating the complete catalog.
 fn parse_model_list_page(result: &Value) -> (Vec<(Model, bool)>, Option<String>) {
     let mut models = Vec::new();
-    for item in result
-        .get("data")
-        .and_then(Value::as_array)
-        .map(Vec::as_slice)
-        .unwrap_or_default()
-    {
+    for item in result.get("data").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default() {
         if item.get("hidden").and_then(Value::as_bool) == Some(true) {
             continue;
         }
@@ -504,15 +459,10 @@ fn parse_model_list_page(result: &Value) -> (Vec<(Model, bool)>, Option<String>)
             .map(str::trim)
             .filter(|description| !description.is_empty())
             .map(str::to_owned);
-        let description = match item
-            .get("upgrade")
-            .and_then(Value::as_str)
-            .filter(|id| !id.is_empty())
-        {
-            Some(upgrade) => Some(format!(
-                "{}(upgrade: {upgrade})",
-                description.map(|d| format!("{d} ")).unwrap_or_default()
-            )),
+        let description = match item.get("upgrade").and_then(Value::as_str).filter(|id| !id.is_empty()) {
+            Some(upgrade) => {
+                Some(format!("{}(upgrade: {upgrade})", description.map(|d| format!("{d} ")).unwrap_or_default()))
+            }
             None => description,
         };
         let reasoning_levels = item
@@ -530,20 +480,11 @@ fn parse_model_list_page(result: &Value) -> (Vec<(Model, bool)>, Option<String>)
             .collect();
         let options = model_service_tier(item).into_iter().collect();
         models.push((
-            Model {
-                id: id.to_owned(),
-                label,
-                description,
-                reasoning_levels,
-                options,
-            },
+            Model { id: id.to_owned(), label, description, reasoning_levels, options },
             item.get("isDefault").and_then(Value::as_bool) == Some(true),
         ));
     }
-    let next_cursor = result
-        .get("nextCursor")
-        .and_then(Value::as_str)
-        .map(str::to_owned);
+    let next_cursor = result.get("nextCursor").and_then(Value::as_str).map(str::to_owned);
     (models, next_cursor)
 }
 
@@ -557,13 +498,7 @@ fn parse_skills(result: &Value) -> Vec<zeron_proto::invocation::Skill> {
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .flat_map(|group| {
-            group
-                .get("skills")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-        })
+        .flat_map(|group| group.get("skills").and_then(Value::as_array).into_iter().flatten())
         .filter_map(|skill| {
             let name = skill.get("name")?.as_str()?;
             let path = skill.get("path")?.as_str()?;
@@ -583,10 +518,7 @@ fn parse_skills(result: &Value) -> Vec<zeron_proto::invocation::Skill> {
                     .or_else(|| skill.get("description").and_then(Value::as_str))
                     .unwrap_or_default()
                     .to_owned(),
-                enabled: skill
-                    .get("enabled")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(true),
+                enabled: skill.get("enabled").and_then(Value::as_bool).unwrap_or(true),
             })
         })
         .collect()
@@ -663,11 +595,7 @@ impl Harness for CodexHarness {
     async fn model_catalog(&self, force: bool) -> Result<crate::ModelCatalog, HarnessError> {
         self.model_context()?.unwrap().log();
         self.models_cache
-            .get_with(
-                force,
-                || self.model_context().map(|c| c.unwrap().key()),
-                || self.discover_models(),
-            )
+            .get_with(force, || self.model_context().map(|c| c.unwrap().key()), || self.discover_models())
             .await
     }
     async fn models(&self) -> Result<Vec<Model>, HarnessError> {
@@ -682,13 +610,8 @@ impl Harness for CodexHarness {
         }
     }
 
-    async fn skills(
-        &self,
-        cwd: &std::path::Path,
-    ) -> Result<Option<Vec<zeron_proto::invocation::Skill>>, HarnessError> {
-        self.discover_skills(Some(cwd))
-            .await
-            .map(|value| Some(parse_skills(&value)))
+    async fn skills(&self, cwd: &std::path::Path) -> Result<Option<Vec<zeron_proto::invocation::Skill>>, HarnessError> {
+        self.discover_skills(Some(cwd)).await.map(|value| Some(parse_skills(&value)))
     }
 
     async fn commands(&self) -> Result<Vec<SlashCommand>, HarnessError> {
@@ -746,14 +669,8 @@ impl CodexHarness {
         idle: bool,
     ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
         let native = command_request(&request.prompt, "")?;
-        if native
-            .as_ref()
-            .is_some_and(|(method, _)| *method == "thread/compact/start")
-            && request.resume.is_none()
-        {
-            return Err(HarnessError::Protocol(
-                "/compact needs an existing Codex conversation".into(),
-            ));
+        if native.as_ref().is_some_and(|(method, _)| *method == "thread/compact/start") && request.resume.is_none() {
+            return Err(HarnessError::Protocol("/compact needs an existing Codex conversation".into()));
         }
         if native.is_some() && !request.attachments.is_empty() {
             return Err(HarnessError::Protocol(
@@ -762,11 +679,7 @@ impl CodexHarness {
         }
         // Pin the physical release for this process and its voice helper: an
         // installer may move the current symlink while this runtime stays warm.
-        let exe = plain_executable(
-            self.resolve_executable()?
-                .canonicalize()
-                .map_err(HarnessError::Io)?,
-        );
+        let exe = plain_executable(self.resolve_executable()?.canonicalize().map_err(HarnessError::Io)?);
         // Yolo mode: danger-full-access + approvalPolicy "never" (set below) —
         // codex's --dangerously-bypass-approvals-and-sandbox equivalent.
         // Parity with the Claude adapter, which auto-approves every
@@ -774,21 +687,15 @@ impl CodexHarness {
         // sidesteps codex ≤0.144.x's workspace-write bug where a linked
         // worktree on a slash-named branch derives a malformed mount that
         // kills every command.
-        request.sandbox = if title_only {
-            zeron_proto::SandboxLevel::ReadOnly
-        } else {
-            zeron_proto::SandboxLevel::DangerFullAccess
-        };
+        request.sandbox =
+            if title_only { zeron_proto::SandboxLevel::ReadOnly } else { zeron_proto::SandboxLevel::DangerFullAccess };
         let mut cmd = Command::new(&exe);
         cmd.arg("app-server");
         crate::compose_child_path(&mut cmd, &exe);
         if !request.cwd.is_empty() {
             cmd.current_dir(&request.cwd);
         }
-        cmd.stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
+        cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
         let mut child = cmd.spawn().map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
                 HarnessError::NotInstalled(crate::executable::binary_hint(&exe))
@@ -797,14 +704,8 @@ impl CodexHarness {
             }
         })?;
 
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| HarnessError::Protocol("codex child has no stdin".into()))?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| HarnessError::Protocol("codex child has no stdout".into()))?;
+        let stdin = child.stdin.take().ok_or_else(|| HarnessError::Protocol("codex child has no stdin".into()))?;
+        let stdout = child.stdout.take().ok_or_else(|| HarnessError::Protocol("codex child has no stdout".into()))?;
         let stderr_tail = crate::StderrTail::default();
         if let Some(stderr) = child.stderr.take() {
             let tail = stderr_tail.clone();
@@ -834,10 +735,7 @@ impl CodexHarness {
             stderr_tail,
         }));
 
-        Ok(futures::stream::unfold(event_rx, |mut rx| async move {
-            rx.recv().await.map(|ev| (ev, rx))
-        })
-        .boxed())
+        Ok(futures::stream::unfold(event_rx, |mut rx| async move { rx.recv().await.map(|ev| (ev, rx)) }).boxed())
     }
 }
 
@@ -958,9 +856,7 @@ fn prompt_input(text: &str) -> Value {
     let mut seen = std::collections::HashSet::new();
     for (_, invocation) in invocation_links(text) {
         if let Invocation::Skill { name, path, .. } = invocation {
-            if !zeron_proto::invocation::native_skill_identity(&path)
-                && seen.insert((name.clone(), path.clone()))
-            {
+            if !zeron_proto::invocation::native_skill_identity(&path) && seen.insert((name.clone(), path.clone())) {
                 input.push(json!({"type": "skill", "name": name, "path": path}));
             }
         }
@@ -969,10 +865,7 @@ fn prompt_input(text: &str) -> Value {
 }
 
 /// Map supported leading commands to native app-server operations.
-fn command_request(
-    text: &str,
-    thread_id: &str,
-) -> Result<Option<(&'static str, Value)>, HarnessError> {
+fn command_request(text: &str, thread_id: &str) -> Result<Option<(&'static str, Value)>, HarnessError> {
     let decoded = zeron_proto::invocation::invocation_prompt(text);
     let Some((name, args)) = zeron_proto::invocation::leading_command(&decoded) else {
         return Ok(None);
@@ -980,25 +873,15 @@ fn command_request(
     if matches!(name, "compact" | "review")
         && zeron_proto::invocation::invocation_links(text)
             .iter()
-            .any(|(_, invocation)| {
-                matches!(
-                    invocation,
-                    zeron_proto::invocation::Invocation::Skill { .. }
-                )
-            })
+            .any(|(_, invocation)| matches!(invocation, zeron_proto::invocation::Invocation::Skill { .. }))
     {
         return Err(HarnessError::Protocol(
             "Codex commands cannot include skill selections; send them in a separate prompt".into(),
         ));
     }
     match name {
-        "compact" if args.is_empty() => Ok(Some((
-            "thread/compact/start",
-            json!({"threadId": thread_id}),
-        ))),
-        "compact" => Err(HarnessError::Protocol(
-            "/compact takes no arguments; send other text separately".into(),
-        )),
+        "compact" if args.is_empty() => Ok(Some(("thread/compact/start", json!({"threadId": thread_id})))),
+        "compact" => Err(HarnessError::Protocol("/compact takes no arguments; send other text separately".into())),
         "review" => Ok(Some((
             "review/start",
             json!({
@@ -1009,29 +892,20 @@ fn command_request(
         ))),
         // Known client commands need explicit UI mappings. Do not silently
         // send those to the model; unknown slash tokens and paths stay literal.
-        "model" | "permissions" | "approvals" | "new" | "clear" | "resume" | "fork" | "status"
-        | "diff" | "mention" | "mcp" | "skills" | "plan" | "fast" | "logout" | "quit" | "exit"
-        | "init" | "rename" | "feedback" | "ps" | "stop" | "clean" | "archive" | "delete" => {
-            Err(HarnessError::Protocol(format!(
-                "/{name} is not mapped in Zeron's Codex integration. Available commands: /compact and /review."
-            )))
-        }
+        "model" | "permissions" | "approvals" | "new" | "clear" | "resume" | "fork" | "status" | "diff" | "mention"
+        | "mcp" | "skills" | "plan" | "fast" | "logout" | "quit" | "exit" | "init" | "rename" | "feedback" | "ps"
+        | "stop" | "clean" | "archive" | "delete" => Err(HarnessError::Protocol(format!(
+            "/{name} is not mapped in Zeron's Codex integration. Available commands: /compact and /review."
+        ))),
         _ => Ok(None),
     }
 }
 
 async fn start_turn(client: &RpcClient, params: Value) -> Result<String, HarnessError> {
-    let text = params
-        .pointer("/input/0/text")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
+    let text = params.pointer("/input/0/text").and_then(Value::as_str).unwrap_or_default();
     let thread_id = params["threadId"].as_str().unwrap_or_default();
     let native = command_request(text, thread_id)?;
-    if native.is_some()
-        && params["input"]
-            .as_array()
-            .is_some_and(|input| input.len() > 1)
-    {
+    if native.is_some() && params["input"].as_array().is_some_and(|input| input.len() > 1) {
         return Err(HarnessError::Protocol(
             "Codex commands cannot include skill selections; send them in a separate prompt".into(),
         ));
@@ -1058,14 +932,8 @@ async fn run_session(session: Session) {
         kill_grace,
         stderr_tail,
     } = session;
-    let RunControls {
-        realtime,
-        execution_lease: _execution_lease,
-        request_input,
-        mut steering,
-        interrupt,
-        turn,
-    } = controls;
+    let RunControls { realtime, execution_lease: _execution_lease, request_input, mut steering, interrupt, turn } =
+        controls;
     let request_input = Arc::new(request_input);
 
     // ---- wire params ------------------------------------------------------
@@ -1083,10 +951,7 @@ async fn run_session(session: Session) {
         let mut p = serde_json::Map::new();
         if title_only {
             p.insert("baseInstructions".into(), crate::TITLE_INSTRUCTIONS.into());
-            p.insert(
-                "developerInstructions".into(),
-                crate::TITLE_INSTRUCTIONS.into(),
-            );
+            p.insert("developerInstructions".into(), crate::TITLE_INSTRUCTIONS.into());
             p.insert("ephemeral".into(), true.into());
             p.insert(
                 "config".into(),
@@ -1152,23 +1017,16 @@ async fn run_session(session: Session) {
             // via account/updated. Load it before attaching the voice router,
             // which must keep aborting media on subsequent identity updates.
             // A failed warmup must not block text; voice probes still verify auth.
-            let _ = client
-                .request("account/read", json!({"refreshToken": false}))
-                .await;
+            let _ = client.request("account/read", json!({"refreshToken": false})).await;
         }
 
         let mut start_params = start_params.clone();
         if title_only {
             // Disable each configured MCP server explicitly: an empty table
             // would merge with user configuration and leave servers enabled.
-            let config = client
-                .request("config/read", json!({"includeLayers": false}))
-                .await?;
+            let config = client.request("config/read", json!({"includeLayers": false})).await?;
             if let Some(servers) = config["config"]["mcp_servers"].as_object() {
-                let overrides = start_params
-                    .get_mut("config")
-                    .and_then(Value::as_object_mut)
-                    .unwrap();
+                let overrides = start_params.get_mut("config").and_then(Value::as_object_mut).unwrap();
                 for name in servers.keys() {
                     overrides.insert(format!("mcp_servers.{name}.enabled"), false.into());
                 }
@@ -1188,15 +1046,11 @@ async fn run_session(session: Session) {
                         target: "zeron_harness::codex",
                         "thread/resume failed (starting fresh): {e}"
                     );
-                    client
-                        .request("thread/start", Value::Object(start_params.clone()))
-                        .await?
+                    client.request("thread/start", Value::Object(start_params.clone())).await?
                 }
             }
         } else {
-            client
-                .request("thread/start", Value::Object(start_params.clone()))
-                .await?
+            client.request("thread/start", Value::Object(start_params.clone())).await?
         };
         let thread_id = thread["thread"]["id"].as_str().unwrap_or("").to_owned();
         let mut children = subagents::Subagents::new(thread_id.clone());
@@ -1283,15 +1137,8 @@ async fn run_session(session: Session) {
     }
 
     let mut router = TurnRouter::default();
-    let _voice_bridge = realtime.map(|controls| {
-        realtime::attach(
-            client.clone(),
-            thread_id.clone(),
-            executable,
-            voice_context,
-            controls,
-        )
-    });
+    let _voice_bridge = realtime
+        .map(|controls| realtime::attach(client.clone(), thread_id.clone(), executable, voice_context, controls));
     if !idle {
         match start_turn(&client, turn_params(&live, &request.prompt)).await {
             Ok(id) => router.adopt_started(id),
@@ -1349,10 +1196,7 @@ async fn run_session(session: Session) {
     let mut stopping = false;
     // A Done has been emitted for the turn currently/last in flight.
     let mut done_current = idle;
-    let mut current_native = command_request(&request.prompt, &thread_id)
-        .ok()
-        .flatten()
-        .is_some();
+    let mut current_native = command_request(&request.prompt, &thread_id).ok().flatten().is_some();
     let mut done_after_interrupt = false;
     let mut escalation: Option<tokio::task::JoinHandle<()>> = None;
     // The runtime's process tree when its teardown began (see
@@ -1950,11 +1794,7 @@ async fn run_session(session: Session) {
                 .send(Ok(AgentEvent::Done {
                     status: DoneStatus::Errored,
                     result: None,
-                    error: Some(crate::crash_message(
-                        "codex app-server",
-                        status,
-                        &stderr_tail,
-                    )),
+                    error: Some(crate::crash_message("codex app-server", status, &stderr_tail)),
                     session_id: Some(thread_id.clone()),
                 }))
                 .await;
@@ -1976,8 +1816,7 @@ fn process_alive(pid: &str) -> bool {
     #[cfg(unix)]
     {
         // SAFETY: signal 0 only probes for existence; nothing is delivered.
-        pid.parse::<i32>()
-            .is_ok_and(|pid| pid > 0 && unsafe { libc::kill(pid, 0) } == 0)
+        pid.parse::<i32>().is_ok_and(|pid| pid > 0 && unsafe { libc::kill(pid, 0) } == 0)
     }
     #[cfg(not(unix))]
     {
@@ -1993,13 +1832,7 @@ fn send_turn_interrupt(client: &RpcClient, thread_id: &str, turn: String) {
     let client = client.clone();
     let thread = thread_id.to_owned();
     tokio::spawn(async move {
-        if let Err(e) = client
-            .request(
-                "turn/interrupt",
-                json!({ "threadId": thread, "turnId": turn }),
-            )
-            .await
-        {
+        if let Err(e) = client.request("turn/interrupt", json!({ "threadId": thread, "turnId": turn })).await {
             tracing::warn!(target: "zeron_harness::codex", "turn/interrupt failed: {e}");
         }
     });
@@ -2023,21 +1856,12 @@ async fn steer_as_new_turn(
             let (prev, next) = rotate(assistant_message_id);
             send(
                 event_tx,
-                AgentEvent::Steered {
-                    assistant_message_id: Some(prev),
-                    next_assistant_message_id: Some(next),
-                },
+                AgentEvent::Steered { assistant_message_id: Some(prev), next_assistant_message_id: Some(next) },
             )
             .await
         }
         Err(e) => {
-            let _ = send(
-                event_tx,
-                AgentEvent::Error {
-                    message: format!("Steering failed: {e}"),
-                },
-            )
-            .await;
+            let _ = send(event_tx, AgentEvent::Error { message: format!("Steering failed: {e}") }).await;
             false
         }
     }
@@ -2047,11 +1871,8 @@ async fn steer_as_new_turn(
 // Approvals (approval-as-input parity with zeron's UX)
 // ---------------------------------------------------------------------------
 
-type RequestInputFn = Box<
-    dyn Fn(Vec<UserInputQuestion>) -> tokio::sync::oneshot::Receiver<Vec<UserInputAnswer>>
-        + Send
-        + Sync,
->;
+type RequestInputFn =
+    Box<dyn Fn(Vec<UserInputQuestion>) -> tokio::sync::oneshot::Receiver<Vec<UserInputAnswer>> + Send + Sync>;
 
 /// Serve one server→client request. Approval requests round-trip through
 /// `request_input` as a synthesized yes/no question (in a subtask so the
@@ -2093,10 +1914,7 @@ fn handle_server_request(
         });
         return;
     }
-    let is_approval = matches!(
-        method,
-        "item/commandExecution/requestApproval" | "item/fileChange/requestApproval"
-    );
+    let is_approval = matches!(method, "item/commandExecution/requestApproval" | "item/fileChange/requestApproval");
     if !is_approval {
         tracing::debug!(
             target: "zeron_harness::codex",
@@ -2121,16 +1939,11 @@ fn handle_server_request(
         //
         // A dropped sender (caller went away) degrades to a decline so the
         // agent is unblocked — never silently allowed.
-        let answers = (request_input)(vec![question.clone()])
-            .await
-            .unwrap_or_default();
-        let accept = answers.iter().any(|a| {
-            a.question_id == question.id && a.labels.iter().any(|l| l.eq_ignore_ascii_case("yes"))
-        });
-        client.respond(
-            &id,
-            json!({ "decision": if accept { "accept" } else { "decline" } }),
-        );
+        let answers = (request_input)(vec![question.clone()]).await.unwrap_or_default();
+        let accept = answers
+            .iter()
+            .any(|a| a.question_id == question.id && a.labels.iter().any(|l| l.eq_ignore_ascii_case("yes")));
+        client.respond(&id, json!({ "decision": if accept { "accept" } else { "decline" } }));
     });
 }
 
@@ -2145,12 +1958,8 @@ fn user_input_questions(params: &Value) -> Vec<(String, UserInputQuestion)> {
         .iter()
         .enumerate()
         .map(|(ix, q)| {
-            let field = |keys: [&str; 3]| {
-                keys.iter()
-                    .find_map(|k| q.get(*k).and_then(Value::as_str))
-                    .unwrap_or("")
-                    .to_owned()
-            };
+            let field =
+                |keys: [&str; 3]| keys.iter().find_map(|k| q.get(*k).and_then(Value::as_str)).unwrap_or("").to_owned();
             let wire_id = {
                 let id = field(["id", "questionId", "question_id"]);
                 if id.is_empty() { format!("q{ix}") } else { id }
@@ -2159,11 +1968,7 @@ fn user_input_questions(params: &Value) -> Vec<(String, UserInputQuestion)> {
                 id: new_message_id(),
                 header: {
                     let h = field(["header", "title", "label"]);
-                    if h.is_empty() {
-                        "Codex question".into()
-                    } else {
-                        h
-                    }
+                    if h.is_empty() { "Codex question".into() } else { h }
                 },
                 question: field(["question", "prompt", "text"]),
                 options: q
@@ -2199,11 +2004,7 @@ fn approval_question(method: &str, params: &Value) -> UserInputQuestion {
     let (header, question) = if method.contains("commandExecution") {
         let command = match params.get("command") {
             Some(Value::String(s)) => s.clone(),
-            Some(Value::Array(parts)) => parts
-                .iter()
-                .filter_map(Value::as_str)
-                .collect::<Vec<_>>()
-                .join(" "),
+            Some(Value::Array(parts)) => parts.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" "),
             _ => String::new(),
         };
         (
@@ -2257,10 +2058,7 @@ mod tests {
             "availabilityNux":{"message":"Available"}, "serviceTiers":["default","fast"],
             "defaultServiceTier":"default", "inputModalities":["text","image"]}], "nextCursor":"next-page"});
         let (models, next) = parse_model_list_page(&page);
-        assert_eq!(
-            models[0].0.description.as_deref(),
-            Some("Current model (upgrade: next)")
-        );
+        assert_eq!(models[0].0.description.as_deref(), Some("Current model (upgrade: next)"));
         assert!(models[0].1);
         assert_eq!(next.as_deref(), Some("next-page"));
         assert!(!legacy_model_page(&page));
@@ -2287,10 +2085,8 @@ mod tests {
         assert!(q.question.contains("/a.rs, /b.rs"));
 
         // Command as argv array joins with spaces.
-        let q = approval_question(
-            "item/commandExecution/requestApproval",
-            &json!({"command": ["git", "push", "--force"]}),
-        );
+        let q =
+            approval_question("item/commandExecution/requestApproval", &json!({"command": ["git", "push", "--force"]}));
         assert!(q.question.contains("git push --force"));
     }
 
@@ -2366,18 +2162,12 @@ mod mcp_injection_tests {
             name: "zeron".into(),
             command: "/opt/zeron/zeron".into(),
             args: vec!["mcp".into()],
-            env: [("ZERON_CHAT_ID".to_owned(), "chat-1".to_owned())]
-                .into_iter()
-                .collect(),
+            env: [("ZERON_CHAT_ID".to_owned(), "chat-1".to_owned())].into_iter().collect(),
         };
-        let overrides: serde_json::Map<String, Value> =
-            codex_mcp_overrides(&mcp).into_iter().collect();
+        let overrides: serde_json::Map<String, Value> = codex_mcp_overrides(&mcp).into_iter().collect();
         assert_eq!(overrides["mcp_servers.zeron.command"], "/opt/zeron/zeron");
         assert_eq!(overrides["mcp_servers.zeron.args"], json!(["mcp"]));
-        assert_eq!(
-            overrides["mcp_servers.zeron.env"],
-            json!({ "ZERON_CHAT_ID": "chat-1" })
-        );
+        assert_eq!(overrides["mcp_servers.zeron.env"], json!({ "ZERON_CHAT_ID": "chat-1" }));
     }
 }
 
@@ -2387,23 +2177,12 @@ mod skill_discovery_tests {
     #[test]
     fn selected_skills_use_native_identity_for_initial_and_steered_inputs() {
         use zeron_proto::invocation::Invocation;
-        let a = Invocation::Skill {
-            command: None,
-            name: "review".into(),
-            path: "/repo/a b/SKILL.md".into(),
-        };
-        let b = Invocation::Skill {
-            command: None,
-            name: "review".into(),
-            path: "/repo/other/SKILL.md".into(),
-        };
+        let a = Invocation::Skill { command: None, name: "review".into(), path: "/repo/a b/SKILL.md".into() };
+        let b = Invocation::Skill { command: None, name: "review".into(), path: "/repo/other/SKILL.md".into() };
         let raw = format!("Use {} then {} and {}", a.link(), b.link(), a.link());
         let input = prompt_input(&raw);
         assert_eq!(input.as_array().unwrap().len(), 3);
-        assert_eq!(
-            input[1],
-            json!({"type":"skill","name":"review","path":"/repo/a b/SKILL.md"})
-        );
+        assert_eq!(input[1], json!({"type":"skill","name":"review","path":"/repo/a b/SKILL.md"}));
         assert_eq!(input[2]["path"], "/repo/other/SKILL.md");
         assert!(!input[0]["text"].as_str().unwrap().contains("zeron-invoke:"));
         for raw in [
@@ -2417,35 +2196,21 @@ mod skill_discovery_tests {
             assert_eq!(input.as_array().unwrap().len(), 1);
             assert_eq!(input[0]["text"], raw);
         }
-        let command = Invocation::Command {
-            name: "review".into(),
-        };
-        assert_eq!(
-            command_request(&format!("  {} check", command.link()), "t")
-                .unwrap()
-                .unwrap()
-                .0,
-            "review/start"
-        );
+        let command = Invocation::Command { name: "review".into() };
+        assert_eq!(command_request(&format!("  {} check", command.link()), "t").unwrap().unwrap().0, "review/start");
         assert!(command_request(&format!("/review {}", a.link()), "t").is_err());
     }
 
     #[test]
     fn backtick_labels_keep_native_skill_identity_with_repeated_selections() {
         use zeron_proto::invocation::{Invocation, harness_prompt};
-        let skill = Invocation::Skill {
-            command: None,
-            name: "review`ui".into(),
-            path: "/repo/é skill/SKILL.md".into(),
-        };
+        let skill =
+            Invocation::Skill { command: None, name: "review`ui".into(), path: "/repo/é skill/SKILL.md".into() };
         let file = zeron_proto::file_mentions::local_file_link("src/a`b.rs", false);
         let raw = format!("{} on {file} and {}", skill.link(), skill.link());
         let input = prompt_input(&harness_prompt(&raw, HarnessId::Codex));
         assert_eq!(input.as_array().unwrap().len(), 2);
-        assert_eq!(
-            input[1],
-            json!({"type":"skill", "name":"review`ui", "path":"/repo/é skill/SKILL.md"})
-        );
+        assert_eq!(input[1], json!({"type":"skill", "name":"review`ui", "path":"/repo/é skill/SKILL.md"}));
         let text = input[0]["text"].as_str().unwrap();
         assert!(!text.contains("zeron-invoke:"));
         assert!(!text.contains("zeron-file:"));
@@ -2454,33 +2219,17 @@ mod skill_discovery_tests {
 
     #[test]
     fn commands_map_arguments_and_leave_inline_mentions_literal() {
-        assert!(
-            command_request("please /review this", "t")
-                .unwrap()
-                .is_none()
-        );
-        for code in [
-            "    /review",
-            "\t/review",
-            "\n    /compact",
-            "\u{a0}/review",
-            "`/review`",
-            "```\n/review\n```",
-        ] {
+        assert!(command_request("please /review this", "t").unwrap().is_none());
+        for code in ["    /review", "\t/review", "\n    /compact", "\u{a0}/review", "`/review`", "```\n/review\n```"] {
             assert!(command_request(code, "t").unwrap().is_none());
         }
         assert!(command_request("/tmp/file.rs", "t").unwrap().is_none());
         assert!(command_request("/tmp", "t").unwrap().is_none());
         assert!(command_request("/compact extra", "t").is_err());
         assert!(command_request("/model", "t").is_err());
-        let (method, params) = command_request("/review check errors", "t")
-            .unwrap()
-            .unwrap();
+        let (method, params) = command_request("/review check errors", "t").unwrap().unwrap();
         assert_eq!(method, "review/start");
-        assert_eq!(
-            params["target"],
-            json!({"type":"custom","instructions":"check errors"})
-        );
+        assert_eq!(params["target"], json!({"type":"custom","instructions":"check errors"}));
         assert_eq!(params["delivery"], "inline");
     }
 
@@ -2488,25 +2237,17 @@ mod skill_discovery_tests {
     fn catalog_rejects_invalid_identities_without_changing_valid_names() {
         use zeron_proto::invocation::{Invocation, invocation_links};
         let mut entries = vec![];
-        for name in [
-            "",
-            "two words",
-            " padded",
-            "padded ",
-            "line\nbreak",
-            "tab\tname",
-            "nul\0name",
-            "non\u{a0}breaking",
-        ] {
+        for name in
+            ["", "two words", " padded", "padded ", "line\nbreak", "tab\tname", "nul\0name", "non\u{a0}breaking"]
+        {
             entries.push(json!({"name":name,"path":"/repo/SKILL.md"}));
         }
         for path in ["", "/repo/line\nbreak/SKILL.md", "/repo/\0/SKILL.md"] {
             entries.push(json!({"name":"invalid-path","path":path}));
         }
-        for (name, path) in [
-            (r"review[ui]\draft`", "/repo/é skill/SKILL.md"),
-            ("审查-é", "harness-skill:custom:审查-é"),
-        ] {
+        for (name, path) in
+            [(r"review[ui]\draft`", "/repo/é skill/SKILL.md"), ("审查-é", "harness-skill:custom:审查-é")]
+        {
             entries.push(json!({"name":name,"path":path}));
         }
         let skills = parse_skills(&json!({"data":[{"skills":entries}]}));
@@ -2514,11 +2255,7 @@ mod skill_discovery_tests {
         assert_eq!(skills[0].name, r"review[ui]\draft`");
         assert_eq!(skills[1].path, "harness-skill:custom:审查-é");
         for skill in skills {
-            let invocation = Invocation::Skill {
-                name: skill.name,
-                path: skill.path,
-                command: skill.command,
-            };
+            let invocation = Invocation::Skill { name: skill.name, path: skill.path, command: skill.command };
             assert_eq!(invocation_links(&invocation.link())[0].1, invocation);
         }
     }

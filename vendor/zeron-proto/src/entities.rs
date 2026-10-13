@@ -13,10 +13,7 @@ use crate::{HarnessId, ReasoningLevel, SandboxLevel};
 pub const MAX_SIDEBAR_PINS: usize = 200;
 
 /// Validate an optimistic projection without truncating concurrent overflow.
-pub fn validate_sidebar_pin_update(
-    current: &[String],
-    next: &[String],
-) -> Result<(), &'static str> {
+pub fn validate_sidebar_pin_update(current: &[String], next: &[String]) -> Result<(), &'static str> {
     let mut seen = std::collections::HashSet::new();
     if next.iter().any(|id| id.is_empty() || !seen.insert(id)) {
         return Err("Sidebar pins must be non-empty and unique");
@@ -149,11 +146,7 @@ impl Space {
             return name;
         }
         let trimmed = self.path.trim_end_matches(['/', '\\']);
-        trimmed
-            .rsplit(['/', '\\'])
-            .next()
-            .filter(|s| !s.is_empty())
-            .unwrap_or(&self.path)
+        trimmed.rsplit(['/', '\\']).next().filter(|s| !s.is_empty()).unwrap_or(&self.path)
     }
 }
 
@@ -1049,12 +1042,10 @@ pub struct ChangeRequestDetail {
 
 impl ChangeRequestDetail {
     pub fn activity_comments(&self) -> impl Iterator<Item = &ChangeRequestComment> {
-        self.comments.iter().chain(&self.reviews).chain(
-            self.review_threads
-                .iter()
-                .flatten()
-                .flat_map(|thread| &thread.comments),
-        )
+        self.comments
+            .iter()
+            .chain(&self.reviews)
+            .chain(self.review_threads.iter().flatten().flat_map(|thread| &thread.comments))
     }
 }
 
@@ -1509,8 +1500,7 @@ mod tests {
         let reason = WorkspaceReadOnlyReason::OutsideWorkspace;
         assert_eq!(serde_json::to_value(reason).unwrap(), "outsideWorkspace");
         assert_eq!(
-            serde_json::from_value::<WorkspaceReadOnlyReason>(serde_json::json!("symlink"))
-                .unwrap(),
+            serde_json::from_value::<WorkspaceReadOnlyReason>(serde_json::json!("symlink")).unwrap(),
             WorkspaceReadOnlyReason::Symlink,
             "older peers keep parsing every reason they knew"
         );
@@ -1560,10 +1550,7 @@ mod tests {
             assert_eq!(value["changeRequest"]["state"], encoded_state);
             assert_eq!(value["changeRequest"]["baseRef"], "main");
             assert_eq!(value["changeRequest"]["headRef"], "feature/change");
-            assert_eq!(
-                serde_json::from_value::<CheckoutChangeRequestStatus>(value).unwrap(),
-                status
-            );
+            assert_eq!(serde_json::from_value::<CheckoutChangeRequestStatus>(value).unwrap(), status);
         }
     }
 
@@ -1607,10 +1594,7 @@ mod tests {
             assert_eq!(value["updatedAt"], "2026-08-19T12:00:00Z");
             assert!(value.get("baseRef").is_none());
             assert!(value.get("headRef").is_none());
-            assert_eq!(
-                serde_json::from_value::<ChangeRequestListItem>(value).unwrap(),
-                item
-            );
+            assert_eq!(serde_json::from_value::<ChangeRequestListItem>(value).unwrap(), item);
         }
     }
 
@@ -1623,10 +1607,7 @@ mod tests {
         ] {
             let value = serde_json::to_value(state).unwrap();
             assert_eq!(value, encoded);
-            assert_eq!(
-                serde_json::from_value::<ChangeRequestMergeability>(value).unwrap(),
-                state
-            );
+            assert_eq!(serde_json::from_value::<ChangeRequestMergeability>(value).unwrap(), state);
         }
     }
 
@@ -1634,22 +1615,13 @@ mod tests {
     fn change_request_review_decision_round_trips_and_defaults_when_absent() {
         for (decision, encoded) in [
             (ChangeRequestReviewDecision::Approved, "approved"),
-            (
-                ChangeRequestReviewDecision::ChangesRequested,
-                "changesRequested",
-            ),
-            (
-                ChangeRequestReviewDecision::ReviewRequired,
-                "reviewRequired",
-            ),
+            (ChangeRequestReviewDecision::ChangesRequested, "changesRequested"),
+            (ChangeRequestReviewDecision::ReviewRequired, "reviewRequired"),
             (ChangeRequestReviewDecision::Unknown, "unknown"),
         ] {
             let value = serde_json::to_value(decision).unwrap();
             assert_eq!(value, encoded);
-            assert_eq!(
-                serde_json::from_value::<ChangeRequestReviewDecision>(value).unwrap(),
-                decision
-            );
+            assert_eq!(serde_json::from_value::<ChangeRequestReviewDecision>(value).unwrap(), decision);
         }
 
         let mut value = serde_json::to_value(ChangeRequestListItem {
@@ -1675,9 +1647,7 @@ mod tests {
         .unwrap();
         value.as_object_mut().unwrap().remove("reviewDecision");
         assert_eq!(
-            serde_json::from_value::<ChangeRequestListItem>(value)
-                .unwrap()
-                .review_decision,
+            serde_json::from_value::<ChangeRequestListItem>(value).unwrap().review_decision,
             ChangeRequestReviewDecision::Unknown
         );
     }
@@ -1698,10 +1668,7 @@ mod tests {
         assert_eq!(value["checkoutId"], "checkout");
         assert_eq!(value["diffChecksum"], "abc");
         assert_eq!(value["commitSha"], "deadbeef");
-        assert_eq!(
-            serde_json::from_value::<GetCheckoutFileDiffTextRequest>(value).unwrap(),
-            request
-        );
+        assert_eq!(serde_json::from_value::<GetCheckoutFileDiffTextRequest>(value).unwrap(), request);
     }
 
     #[test]
@@ -1729,11 +1696,7 @@ mod tests {
     #[test]
     fn workspace_file_requests_flatten_target_and_omit_options() {
         let request = ListWorkspaceDirectoryRequest {
-            target: WorkspaceTarget {
-                chat_id: Some("chat-1".into()),
-                space_id: None,
-                checkout_path: None,
-            },
+            target: WorkspaceTarget { chat_id: Some("chat-1".into()), space_id: None, checkout_path: None },
             directory: "src/日本語".into(),
             include_ignored: false,
             cursor: None,
@@ -1747,10 +1710,7 @@ mod tests {
                 "includeIgnored": false,
             })
         );
-        assert_eq!(
-            serde_json::from_value::<ListWorkspaceDirectoryRequest>(value).unwrap(),
-            request
-        );
+        assert_eq!(serde_json::from_value::<ListWorkspaceDirectoryRequest>(value).unwrap(), request);
 
         let requests = [
             serde_json::to_value(SearchWorkspaceFilesRequest {
@@ -1765,10 +1725,7 @@ mod tests {
                 path: "src/main.rs".into(),
             })
             .unwrap(),
-            serde_json::to_value(WatchWorkspaceFilesRequest {
-                target: request.target,
-            })
-            .unwrap(),
+            serde_json::to_value(WatchWorkspaceFilesRequest { target: request.target }).unwrap(),
         ];
         assert!(requests.iter().all(|value| value["chatId"] == "chat-1"));
     }
@@ -1780,10 +1737,7 @@ mod tests {
             serde_json::from_value(serde_json::json!({ "chatId": "chat-1", "pin": true })).unwrap();
         assert_eq!(request.target.chat_id.as_deref(), Some("chat-1"));
         assert_eq!(
-            serde_json::to_value(WarmWorkspaceSearchResult {
-                state: WorkspaceSearchIndexState::Building,
-            })
-            .unwrap(),
+            serde_json::to_value(WarmWorkspaceSearchResult { state: WorkspaceSearchIndexState::Building }).unwrap(),
             serde_json::json!({ "state": "building" })
         );
     }
@@ -1810,10 +1764,7 @@ mod tests {
             })
         );
         assert_eq!(
-            serde_json::from_value::<WriteWorkspaceFileOutcome>(
-                serde_json::to_value(&written).unwrap()
-            )
-            .unwrap(),
+            serde_json::from_value::<WriteWorkspaceFileOutcome>(serde_json::to_value(&written).unwrap()).unwrap(),
             written
         );
 
@@ -1848,10 +1799,7 @@ mod tests {
         assert_eq!(value["resyncRequired"], false);
         assert_eq!(value["changes"][0]["kind"], "renamed");
         assert_eq!(value["changes"][0]["oldPath"], "src/old.rs");
-        assert_eq!(
-            serde_json::from_value::<WorkspaceFileChanges>(value).unwrap(),
-            changes
-        );
+        assert_eq!(serde_json::from_value::<WorkspaceFileChanges>(value).unwrap(), changes);
     }
 }
 
@@ -1905,11 +1853,7 @@ pub enum WorkspaceMutationOutcome {
         entry: Option<WorkspaceEntry>,
     },
     #[serde(rename_all = "camelCase")]
-    Rejected {
-        operation_id: String,
-        reason: WorkspaceMutationRejection,
-        message: String,
-    },
+    Rejected { operation_id: String, reason: WorkspaceMutationRejection, message: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1935,7 +1879,8 @@ mod mutation_contract_tests {
         let page: WorkspaceDirectoryPage = serde_json::from_value(serde_json::json!({
             "directory":"", "entries":[{"path":"a", "name":"a", "kind":"file", "ignored":false, "readOnly":false}],
             "truncated":false
-        })).unwrap();
+        }))
+        .unwrap();
         assert_eq!(page.checkout_id, None);
         assert_eq!(page.mutation_capabilities, None);
         assert_eq!(page.entries[0].mutation_revision, None);
@@ -1953,10 +1898,7 @@ mod mutation_contract_tests {
         }
         let delete: DeleteWorkspaceEntryRequest = serde_json::from_value(serde_json::json!({"chatId":"chat", "operationId":"op", "expectedCheckoutId":"checkout", "path":"a", "expectedSourceRevision":"rev", "expectedKind":"directory", "recursive":true})).unwrap();
         assert_eq!(
-            serde_json::from_value::<DeleteWorkspaceEntryRequest>(
-                serde_json::to_value(&delete).unwrap()
-            )
-            .unwrap(),
+            serde_json::from_value::<DeleteWorkspaceEntryRequest>(serde_json::to_value(&delete).unwrap()).unwrap(),
             delete
         );
         let outcome = WorkspaceMutationOutcome::Rejected {
@@ -1965,15 +1907,9 @@ mod mutation_contract_tests {
             message: "Destination exists".into(),
         };
         assert_eq!(
-            serde_json::from_value::<WorkspaceMutationOutcome>(
-                serde_json::to_value(&outcome).unwrap()
-            )
-            .unwrap(),
+            serde_json::from_value::<WorkspaceMutationOutcome>(serde_json::to_value(&outcome).unwrap()).unwrap(),
             outcome
         );
-        assert!(
-            serde_json::from_value::<WorkspaceMutationRejection>(serde_json::json!("overwrite"))
-                .is_err()
-        );
+        assert!(serde_json::from_value::<WorkspaceMutationRejection>(serde_json::json!("overwrite")).is_err());
     }
 }

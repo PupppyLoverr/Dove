@@ -52,9 +52,7 @@ impl CatalogFailure {
         {
             return CatalogFailureCode::MissingExecutable;
         }
-        let auth_status = text
-            .split(|c: char| !c.is_ascii_alphanumeric())
-            .any(|part| matches!(part, "401" | "403"));
+        let auth_status = text.split(|c: char| !c.is_ascii_alphanumeric()).any(|part| matches!(part, "401" | "403"));
         if auth_status
             || [
                 "not logged in",
@@ -70,14 +68,9 @@ impl CatalogFailure {
         {
             return CatalogFailureCode::AuthRequired;
         }
-        if [
-            "timeout",
-            "timed out",
-            "deadline has elapsed",
-            "did not complete within",
-        ]
-        .iter()
-        .any(|pattern| text.contains(pattern))
+        if ["timeout", "timed out", "deadline has elapsed", "did not complete within"]
+            .iter()
+            .any(|pattern| text.contains(pattern))
         {
             return CatalogFailureCode::Timeout;
         }
@@ -89,10 +82,7 @@ impl From<HarnessError> for CatalogFailure {
         if let HarnessError::Discovery(failure) = error {
             return failure;
         }
-        Self {
-            code: Self::classify(&error),
-            message: error.to_string(),
-        }
+        Self { code: Self::classify(&error), message: error.to_string() }
     }
 }
 
@@ -113,11 +103,7 @@ mod tests {
             ("model v401 not found", CatalogFailureCode::Failed),
             ("rate limit 429", CatalogFailureCode::Failed),
         ] {
-            assert_eq!(
-                CatalogFailure::classify(&HarnessError::Protocol(message.into())),
-                expected,
-                "{message}"
-            );
+            assert_eq!(CatalogFailure::classify(&HarnessError::Protocol(message.into())), expected, "{message}");
         }
         assert_eq!(
             CatalogFailure::classify(&HarnessError::NotInstalled("cli".into())),
@@ -127,13 +113,7 @@ mod tests {
             CatalogFailure::classify(&std::io::Error::from(std::io::ErrorKind::NotFound).into()),
             CatalogFailureCode::MissingExecutable
         );
-        let failure = CatalogFailure {
-            code: CatalogFailureCode::Timeout,
-            message: "custom deadline".into(),
-        };
-        assert_eq!(
-            CatalogFailure::from(HarnessError::from(failure)).code,
-            CatalogFailureCode::Timeout
-        );
+        let failure = CatalogFailure { code: CatalogFailureCode::Timeout, message: "custom deadline".into() };
+        assert_eq!(CatalogFailure::from(HarnessError::from(failure)).code, CatalogFailureCode::Timeout);
     }
 }

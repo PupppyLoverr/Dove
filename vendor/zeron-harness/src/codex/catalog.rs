@@ -75,20 +75,11 @@ const ULTRA_LADDER: &[ReasoningLevel] = &[
     ReasoningLevel::Ultra,
 ];
 
-const MAX_LADDER: &[ReasoningLevel] = &[
-    ReasoningLevel::Low,
-    ReasoningLevel::Medium,
-    ReasoningLevel::High,
-    ReasoningLevel::XHigh,
-    ReasoningLevel::Max,
-];
+const MAX_LADDER: &[ReasoningLevel] =
+    &[ReasoningLevel::Low, ReasoningLevel::Medium, ReasoningLevel::High, ReasoningLevel::XHigh, ReasoningLevel::Max];
 
-const XHIGH_LADDER: &[ReasoningLevel] = &[
-    ReasoningLevel::Low,
-    ReasoningLevel::Medium,
-    ReasoningLevel::High,
-    ReasoningLevel::XHigh,
-];
+const XHIGH_LADDER: &[ReasoningLevel] =
+    &[ReasoningLevel::Low, ReasoningLevel::Medium, ReasoningLevel::High, ReasoningLevel::XHigh];
 
 /// The service-tier select the app server reports per model (`serviceTiers` /
 /// `additionalSpeedTiers` in `model/list`); "default" means Standard and is
@@ -98,26 +89,14 @@ fn service_tier() -> ModelOption {
         id: "serviceTier".into(),
         label: "Service Tier".into(),
         choices: vec![
-            ModelOptionChoice {
-                id: "default".into(),
-                label: "Standard".into(),
-            },
-            ModelOptionChoice {
-                id: "fast".into(),
-                label: "Fast".into(),
-            },
+            ModelOptionChoice { id: "default".into(), label: "Standard".into() },
+            ModelOptionChoice { id: "fast".into(), label: "Fast".into() },
         ],
         default_choice: "default".into(),
     }
 }
 
-fn model(
-    id: &str,
-    label: &str,
-    description: &str,
-    ladder: &[ReasoningLevel],
-    options: Vec<ModelOption>,
-) -> Model {
+fn model(id: &str, label: &str, description: &str, ladder: &[ReasoningLevel], options: Vec<ModelOption>) -> Model {
     Model {
         id: id.into(),
         label: label.into(),
@@ -140,27 +119,9 @@ pub(crate) fn static_models() -> Vec<Model> {
             ULTRA_LADDER,
             vec![service_tier()],
         ),
-        model(
-            "gpt-5.6-sol",
-            "GPT-5.6-Sol",
-            "Frontier reasoning flagship",
-            ULTRA_LADDER,
-            vec![service_tier()],
-        ),
-        model(
-            "gpt-5.6-terra",
-            "GPT-5.6-Terra",
-            "Deep multi-step agentic work",
-            ULTRA_LADDER,
-            vec![service_tier()],
-        ),
-        model(
-            "gpt-5.6-luna",
-            "GPT-5.6-Luna",
-            "Fast frontier model",
-            MAX_LADDER,
-            vec![service_tier()],
-        ),
+        model("gpt-5.6-sol", "GPT-5.6-Sol", "Frontier reasoning flagship", ULTRA_LADDER, vec![service_tier()]),
+        model("gpt-5.6-terra", "GPT-5.6-Terra", "Deep multi-step agentic work", ULTRA_LADDER, vec![service_tier()]),
+        model("gpt-5.6-luna", "GPT-5.6-Luna", "Fast frontier model", MAX_LADDER, vec![service_tier()]),
         model(
             "gpt-daybreak-blue-latest",
             "Daybreak Blue",
@@ -168,27 +129,9 @@ pub(crate) fn static_models() -> Vec<Model> {
             ULTRA_LADDER,
             Vec::new(),
         ),
-        model(
-            "gpt-5.5",
-            "GPT-5.5",
-            "Previous generation flagship",
-            XHIGH_LADDER,
-            vec![service_tier()],
-        ),
-        model(
-            "gpt-5.4",
-            "GPT-5.4",
-            "Reliable general coding",
-            XHIGH_LADDER,
-            vec![service_tier()],
-        ),
-        model(
-            "gpt-5.4-mini",
-            "GPT-5.4-Mini",
-            "Small, fast and capable",
-            XHIGH_LADDER,
-            vec![service_tier()],
-        ),
+        model("gpt-5.5", "GPT-5.5", "Previous generation flagship", XHIGH_LADDER, vec![service_tier()]),
+        model("gpt-5.4", "GPT-5.4", "Reliable general coding", XHIGH_LADDER, vec![service_tier()]),
+        model("gpt-5.4-mini", "GPT-5.4-Mini", "Small, fast and capable", XHIGH_LADDER, vec![service_tier()]),
         model(
             "gpt-5.3-codex-spark",
             "GPT-5.3-Codex-Spark",
@@ -234,10 +177,7 @@ mod tests {
     #[test]
     fn daybreak_blue_rides_the_full_ultra_ladder() {
         let models = static_models();
-        let daybreak = models
-            .iter()
-            .find(|m| m.id == "gpt-daybreak-blue-latest")
-            .expect("daybreak blue in catalog");
+        let daybreak = models.iter().find(|m| m.id == "gpt-daybreak-blue-latest").expect("daybreak blue in catalog");
         assert_eq!(daybreak.label, "Daybreak Blue");
         assert!(daybreak.reasoning_levels.contains(&ReasoningLevel::Ultra));
         assert!(daybreak.options.is_empty());

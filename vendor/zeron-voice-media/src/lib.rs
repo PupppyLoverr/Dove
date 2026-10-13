@@ -59,20 +59,12 @@ impl NativeHost {
                 cmd.env(k, v);
             }
         }
-        for k in [
-            "GST_PLUGIN_PATH",
-            "GST_PLUGIN_PATH_1_0",
-            "GST_PLUGIN_SYSTEM_PATH",
-            "GST_PLUGIN_SYSTEM_PATH_1_0",
-        ] {
+        for k in ["GST_PLUGIN_PATH", "GST_PLUGIN_PATH_1_0", "GST_PLUGIN_SYSTEM_PATH", "GST_PLUGIN_SYSTEM_PATH_1_0"] {
             cmd.env(k, "");
         }
-        cmd.env(
-            "GST_REGISTRY",
-            if cfg!(windows) { "NUL" } else { "/dev/null" },
-        )
-        .env("GST_REGISTRY_UPDATE", "no")
-        .env("GST_REGISTRY_FORK", "no");
+        cmd.env("GST_REGISTRY", if cfg!(windows) { "NUL" } else { "/dev/null" })
+            .env("GST_REGISTRY_UPDATE", "no")
+            .env("GST_REGISTRY_FORK", "no");
         #[cfg(target_os = "linux")]
         for directory in [
             "/usr/lib/x86_64-linux-gnu/alsa-lib",
@@ -85,23 +77,15 @@ impl NativeHost {
                 break;
             }
         }
-        cmd.current_dir(path.parent().unwrap())
-            .stderr(Stdio::null())
-            .kill_on_drop(true);
+        cmd.current_dir(path.parent().unwrap()).stderr(Stdio::null()).kill_on_drop(true);
         cmd
     }
-    pub async fn open(
-        path: &Path,
-        stop: tokio_util::sync::CancellationToken,
-    ) -> Result<Self, VoiceRejection> {
+    pub async fn open(path: &Path, stop: tokio_util::sync::CancellationToken) -> Result<Self, VoiceRejection> {
         let device_selection = helper_device_selection(path)?;
-        let result = tokio::time::timeout(
-            Duration::from_secs(5),
-            Self::command(path).arg("--build-commit").output(),
-        )
-        .await
-        .map_err(|_| VoiceRejection::NativeRuntimeUnavailable)?
-        .map_err(|_| VoiceRejection::NativeRuntimeUnavailable)?;
+        let result = tokio::time::timeout(Duration::from_secs(5), Self::command(path).arg("--build-commit").output())
+            .await
+            .map_err(|_| VoiceRejection::NativeRuntimeUnavailable)?
+            .map_err(|_| VoiceRejection::NativeRuntimeUnavailable)?;
         let commit = std::str::from_utf8(&result.stdout)
             .ok()
             .map(str::trim)
@@ -122,35 +106,20 @@ impl NativeHost {
                 _=child.wait()=>{},
             }
         });
-        let mut host = Self {
-            stop: stop.clone(),
-            input,
-            output,
-            device_selection,
-        };
+        let mut host = Self { stop: stop.clone(), input, output, device_selection };
         // A helper that cannot start its runtime (e.g. a library that no longer
         // matches its runtime.json) exits here; that is the runtime, not the call.
         let unavailable = |reason| match reason {
             VoiceRejection::Protocol => VoiceRejection::NativeRuntimeUnavailable,
             reason => reason,
         };
-        host.expect(
-            json!({"type":"hello","protocol":1,"buildCommit":commit}),
-            "ready",
-            30,
-        )
-        .await
-        .map_err(unavailable)?;
-        host.expect(json!({"type":"initializeRuntime"}), "runtimeReady", 30)
+        host.expect(json!({"type":"hello","protocol":1,"buildCommit":commit}), "ready", 30)
             .await
             .map_err(unavailable)?;
+        host.expect(json!({"type":"initializeRuntime"}), "runtimeReady", 30).await.map_err(unavailable)?;
         Ok(host)
     }
-    pub async fn exchange(
-        &mut self,
-        message: Value,
-        seconds: u64,
-    ) -> Result<Value, VoiceRejection> {
+    pub async fn exchange(&mut self, message: Value, seconds: u64) -> Result<Value, VoiceRejection> {
         if self.stop.is_cancelled() {
             return Err(VoiceRejection::Protocol);
         }
@@ -170,31 +139,15 @@ impl NativeHost {
             if payload.len() > MAX_FRAME {
                 return Err(VoiceRejection::Overflow);
             }
-            self.input
-                .write_u32(payload.len() as u32)
-                .await
-                .map_err(|_| VoiceRejection::Protocol)?;
-            self.input
-                .write_all(&payload)
-                .await
-                .map_err(|_| VoiceRejection::Protocol)?;
-            self.input
-                .flush()
-                .await
-                .map_err(|_| VoiceRejection::Protocol)?;
-            let length = self
-                .output
-                .read_u32()
-                .await
-                .map_err(|_| VoiceRejection::Protocol)? as usize;
+            self.input.write_u32(payload.len() as u32).await.map_err(|_| VoiceRejection::Protocol)?;
+            self.input.write_all(&payload).await.map_err(|_| VoiceRejection::Protocol)?;
+            self.input.flush().await.map_err(|_| VoiceRejection::Protocol)?;
+            let length = self.output.read_u32().await.map_err(|_| VoiceRejection::Protocol)? as usize;
             if length == 0 || length > MAX_FRAME {
                 return Err(VoiceRejection::Overflow);
             }
             let mut payload = vec![0; length];
-            self.output
-                .read_exact(&mut payload)
-                .await
-                .map_err(|_| VoiceRejection::Protocol)?;
+            self.output.read_exact(&mut payload).await.map_err(|_| VoiceRejection::Protocol)?;
             serde_json::from_slice(&payload).map_err(|_| VoiceRejection::Protocol)
         })
         .await
@@ -204,12 +157,7 @@ impl NativeHost {
         }
         result
     }
-    pub async fn expect(
-        &mut self,
-        message: Value,
-        expected: &str,
-        seconds: u64,
-    ) -> Result<(), VoiceRejection> {
+    pub async fn expect(&mut self, message: Value, expected: &str, seconds: u64) -> Result<(), VoiceRejection> {
         if self.exchange(message, seconds).await?["type"] != expected {
             self.stop.cancel();
             return Err(VoiceRejection::Protocol);
@@ -217,7 +165,12 @@ impl NativeHost {
         Ok(())
     }
     pub async fn controls(&mut self, muted: bool) -> Result<(), VoiceRejection> {
-        self.expect(json!({"type":"setAudioControls","controls":{"microphoneMuted":muted,"speakerSuppressed":false}}),"audioControlsApplied",5).await
+        self.expect(
+            json!({"type":"setAudioControls","controls":{"microphoneMuted":muted,"speakerSuppressed":false}}),
+            "audioControlsApplied",
+            5,
+        )
+        .await
     }
     pub async fn open_devices(&mut self) -> Result<(), VoiceRejection> {
         let mut message = json!({"type":"openDevices"});
@@ -241,19 +194,14 @@ impl NativeHost {
             .as_u64()
             .and_then(|n| u16::try_from(n).ok())
             .ok_or(VoiceRejection::Protocol)?;
-        let speaker = v["state"]["speakerPeak"]
-            .as_u64()
-            .and_then(|n| u16::try_from(n).ok())
-            .ok_or(VoiceRejection::Protocol)?;
+        let speaker =
+            v["state"]["speakerPeak"].as_u64().and_then(|n| u16::try_from(n).ok()).ok_or(VoiceRejection::Protocol)?;
         Ok((mic, speaker))
     }
 }
 
 fn helper_device_selection(path: &Path) -> Result<bool, VoiceRejection> {
-    let root = path
-        .parent()
-        .and_then(Path::parent)
-        .ok_or(VoiceRejection::NativeRuntimeUnavailable)?;
+    let root = path.parent().and_then(Path::parent).ok_or(VoiceRejection::NativeRuntimeUnavailable)?;
     let bytes = match std::fs::read(root.join("manifest.json")) {
         Ok(bytes) => bytes,
         // The pinned development runtime and older fixtures may omit the
@@ -261,8 +209,7 @@ fn helper_device_selection(path: &Path) -> Result<bool, VoiceRejection> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
         Err(_) => return Err(VoiceRejection::NativeRuntimeUnavailable),
     };
-    let manifest: Value =
-        serde_json::from_slice(&bytes).map_err(|_| VoiceRejection::NativeRuntimeUnavailable)?;
+    let manifest: Value = serde_json::from_slice(&bytes).map_err(|_| VoiceRejection::NativeRuntimeUnavailable)?;
     let version = manifest["appVersion"]
         .as_str()
         .and_then(|v| semver::Version::parse(v).ok())
@@ -282,32 +229,21 @@ fn runtime_target() -> Result<&'static str, VoiceRejection> {
     }
 }
 
-const HELPER: &str = if cfg!(windows) {
-    "bin/codex-voice-host.exe"
-} else {
-    "bin/codex-voice-host"
-};
+const HELPER: &str = if cfg!(windows) { "bin/codex-voice-host.exe" } else { "bin/codex-voice-host" };
 
 /// The helper shipped inside the device's standalone Codex installation (layout
 /// 1, version 0.159 or later), resolved from its `codex` executable. Zeron never
 /// redistributes this runtime; npm installations do not contain it. The helper
 /// only initializes from a `codex-resources/voice` directory.
 pub fn installed_helper(codex_executable: &Path) -> Result<PathBuf, VoiceRejection> {
-    let binary = codex_executable
-        .canonicalize()
-        .map_err(|_| VoiceRejection::NativeRuntimeUnavailable)?;
-    let root = binary
-        .parent()
-        .and_then(Path::parent)
-        .ok_or(VoiceRejection::NativeRuntimeUnavailable)?;
+    let binary = codex_executable.canonicalize().map_err(|_| VoiceRejection::NativeRuntimeUnavailable)?;
+    let root = binary.parent().and_then(Path::parent).ok_or(VoiceRejection::NativeRuntimeUnavailable)?;
     let manifest: Value = std::fs::read(root.join("codex-package.json"))
         .ok()
         .and_then(|b| serde_json::from_slice(&b).ok())
         .ok_or(VoiceRejection::NativeRuntimeUnavailable)?;
-    let version = manifest["version"]
-        .as_str()
-        .and_then(|v| semver::Version::parse(v).ok())
-        .ok_or(VoiceRejection::Unsupported)?;
+    let version =
+        manifest["version"].as_str().and_then(|v| semver::Version::parse(v).ok()).ok_or(VoiceRejection::Unsupported)?;
     if manifest["layoutVersion"] != 1 || version < semver::Version::new(0, 159, 0) {
         return Err(VoiceRejection::Unsupported);
     }
@@ -339,29 +275,19 @@ pub fn verify_runtime(root: &Path) -> Result<std::path::PathBuf, VoiceRejection>
     {
         return Err(reject());
     }
-    let manifest: Value = serde_json::from_slice(
-        &std::fs::read(root.join("zeron-runtime.json")).map_err(|_| reject())?,
-    )
-    .map_err(|_| reject())?;
-    if manifest["buildCommit"] != BUILD_COMMIT
-        || manifest["protocol"] != 1
-        || manifest["target"] != runtime_target()?
-    {
+    let manifest: Value =
+        serde_json::from_slice(&std::fs::read(root.join("zeron-runtime.json")).map_err(|_| reject())?)
+            .map_err(|_| reject())?;
+    if manifest["buildCommit"] != BUILD_COMMIT || manifest["protocol"] != 1 || manifest["target"] != runtime_target()? {
         return Err(VoiceRejection::Unsupported);
     }
     let files = manifest["sha256"].as_object().ok_or_else(reject)?;
-    if !files.contains_key(HELPER)
-        || !files.contains_key("runtime.json")
-        || !files.contains_key("NOTICE.md")
-    {
+    if !files.contains_key(HELPER) || !files.contains_key("runtime.json") || !files.contains_key("NOTICE.md") {
         return Err(reject());
     }
     for (name, digest) in files {
         let path = Path::new(name);
-        if path
-            .components()
-            .any(|c| !matches!(c, std::path::Component::Normal(_)))
-        {
+        if path.components().any(|c| !matches!(c, std::path::Component::Normal(_))) {
             return Err(reject());
         }
         let bytes = std::fs::read(root.join(path)).map_err(|_| reject())?;
@@ -378,18 +304,11 @@ mod tests {
     use sha2::{Digest, Sha256};
 
     fn codex_package(root: &Path, version: &str, helper: bool) -> PathBuf {
-        let codex = root.join(if cfg!(windows) {
-            "bin/codex.exe"
-        } else {
-            "bin/codex"
-        });
+        let codex = root.join(if cfg!(windows) { "bin/codex.exe" } else { "bin/codex" });
         std::fs::create_dir_all(codex.parent().unwrap()).unwrap();
         std::fs::write(&codex, "").unwrap();
-        std::fs::write(
-            root.join("codex-package.json"),
-            json!({"layoutVersion":1,"version":version}).to_string(),
-        )
-        .unwrap();
+        std::fs::write(root.join("codex-package.json"), json!({"layoutVersion":1,"version":version}).to_string())
+            .unwrap();
         if helper {
             let path = root.join("codex-resources/voice").join(HELPER);
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -403,27 +322,15 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().canonicalize().unwrap().join("release");
         let codex = codex_package(&root, "0.160.0", true);
-        assert_eq!(
-            installed_helper(&codex).unwrap(),
-            root.join("codex-resources/voice").join(HELPER)
-        );
+        assert_eq!(installed_helper(&codex).unwrap(), root.join("codex-resources/voice").join(HELPER));
         // Older layouts and npm-style installs without resources are unavailable.
         codex_package(&root, "0.158.9", true);
-        assert_eq!(
-            installed_helper(&codex).unwrap_err(),
-            VoiceRejection::Unsupported
-        );
+        assert_eq!(installed_helper(&codex).unwrap_err(), VoiceRejection::Unsupported);
         let npm = temp.path().join("npm");
         let codex = codex_package(&npm, "0.160.0", false);
-        assert_eq!(
-            installed_helper(&codex).unwrap_err(),
-            VoiceRejection::NativeRuntimeUnavailable
-        );
+        assert_eq!(installed_helper(&codex).unwrap_err(), VoiceRejection::NativeRuntimeUnavailable);
         std::fs::remove_file(npm.join("codex-package.json")).unwrap();
-        assert_eq!(
-            installed_helper(&codex).unwrap_err(),
-            VoiceRejection::NativeRuntimeUnavailable
-        );
+        assert_eq!(installed_helper(&codex).unwrap_err(), VoiceRejection::NativeRuntimeUnavailable);
     }
 
     /// An opt-in runtime check: no provider connection or audio devices.
@@ -446,19 +353,11 @@ mod tests {
             let path = dir.join(name);
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(&path, name).unwrap();
-            hashes.insert(
-                name.into(),
-                json!(format!("{:x}", Sha256::digest(name.as_bytes()))),
-            );
+            hashes.insert(name.into(), json!(format!("{:x}", Sha256::digest(name.as_bytes()))));
         }
-        let mut manifest = json!({"protocol":1,"buildCommit":BUILD_COMMIT,"target":runtime_target().unwrap(),"sha256":hashes});
-        let save = |m: &Value| {
-            std::fs::write(
-                dir.join("zeron-runtime.json"),
-                serde_json::to_vec(m).unwrap(),
-            )
-            .unwrap()
-        };
+        let mut manifest =
+            json!({"protocol":1,"buildCommit":BUILD_COMMIT,"target":runtime_target().unwrap(),"sha256":hashes});
+        let save = |m: &Value| std::fs::write(dir.join("zeron-runtime.json"), serde_json::to_vec(m).unwrap()).unwrap();
         save(&manifest);
         assert_eq!(verify_runtime(&dir).unwrap(), dir.join(HELPER));
         // The helper refuses to start outside `codex-resources/voice`.
@@ -471,17 +370,11 @@ mod tests {
         std::fs::write(dir.join("runtime.json"), "runtime.json").unwrap();
         manifest["protocol"] = json!(2);
         save(&manifest);
-        assert_eq!(
-            verify_runtime(&dir).unwrap_err(),
-            VoiceRejection::Unsupported
-        );
+        assert_eq!(verify_runtime(&dir).unwrap_err(), VoiceRejection::Unsupported);
         manifest["protocol"] = json!(1);
         manifest["target"] = json!("incompatible-platform");
         save(&manifest);
-        assert_eq!(
-            verify_runtime(&dir).unwrap_err(),
-            VoiceRejection::Unsupported
-        );
+        assert_eq!(verify_runtime(&dir).unwrap_err(), VoiceRejection::Unsupported);
         manifest["target"] = json!(runtime_target().unwrap());
         manifest["sha256"].as_object_mut().unwrap().remove(HELPER);
         save(&manifest);
@@ -492,19 +385,12 @@ mod tests {
         assert!(verify_runtime(&dir).is_err());
     }
 
-
-
     #[test]
     fn malformed_helper_metadata_is_not_treated_as_a_legacy_runtime() {
         let dir = tempfile::tempdir().unwrap();
         let codex = codex_package(dir.path(), "0.161.0", true);
         let helper = installed_helper(&codex).unwrap();
-        let manifest = helper
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .join("manifest.json");
+        let manifest = helper.parent().unwrap().parent().unwrap().join("manifest.json");
         for contents in ["{", "{}", r#"{"appVersion":"invalid"}"#] {
             std::fs::write(&manifest, contents).unwrap();
             assert!(helper_device_selection(&helper).is_err());
@@ -547,11 +433,7 @@ impl DesktopMedia {
     /// See [`media_helper`]: the local standalone Codex unless a development
     /// runtime is set explicitly.
     pub fn for_codex(codex_executable: Option<&Path>) -> Result<Self, VoiceRejection> {
-        Ok(Self {
-            path: media_helper(codex_executable)?,
-            host: Default::default(),
-            stop: Default::default(),
-        })
+        Ok(Self { path: media_helper(codex_executable)?, host: Default::default(), stop: Default::default() })
     }
 }
 // Dove: the zeron-voice-session endpoint impl is omitted (cloud voice unused).

@@ -38,10 +38,7 @@ impl Fixture {
     fn new(open: Option<(Receiver<()>, SyncSender<()>)>) -> Self {
         Self::with_admission(open, None)
     }
-    fn with_admission(
-        open: Option<(Receiver<()>, SyncSender<()>)>,
-        admission: Option<BusyGuard>,
-    ) -> Self {
+    fn with_admission(open: Option<(Receiver<()>, SyncSender<()>)>, admission: Option<BusyGuard>) -> Self {
         let (events_tx, events) = mpsc::sync_channel(4);
         let stop = Arc::new(AtomicBool::new(false));
         let cancel = Arc::new(AtomicBool::new(false));
@@ -69,10 +66,7 @@ impl Fixture {
                         opening.send(()).unwrap();
                         open.recv_timeout(WAIT).unwrap();
                     }
-                    Ok(FakeCapture {
-                        closed: closed_tx,
-                        ended: end_capture,
-                    })
+                    Ok(FakeCapture { closed: closed_tx, ended: end_capture })
                 },
                 || {
                     loading.send(()).unwrap();
@@ -88,25 +82,10 @@ impl Fixture {
             result_tx.send(outcome).unwrap();
         });
         started.recv_timeout(WAIT).unwrap();
-        Self {
-            session: Session {
-                stop,
-                cancel,
-                level,
-                events,
-            },
-            load,
-            closed,
-            ended,
-            result,
-            worker,
-        }
+        Self { session: Session { stop, cancel, level, events }, load, closed, ended, result, worker }
     }
     fn listening(&self) {
-        assert!(matches!(
-            self.session.events.recv_timeout(WAIT).unwrap(),
-            Event::Listening
-        ));
+        assert!(matches!(self.session.events.recv_timeout(WAIT).unwrap(), Event::Listening));
     }
     fn release(self, result: Result<()>) -> Result<Option<String>> {
         self.load.send(result).unwrap();
@@ -124,15 +103,9 @@ fn listening_and_stop_do_not_wait_for_model_and_audio_is_retained() {
     f.session.finish();
     f.session.finish(); // Repeated Stop is idempotent.
     f.closed.recv_timeout(WAIT).unwrap();
-    assert!(matches!(
-        f.session.events.recv_timeout(WAIT).unwrap(),
-        Event::Finalizing
-    ));
+    assert!(matches!(f.session.events.recv_timeout(WAIT).unwrap(), Event::Finalizing));
     assert!(f.result.try_recv().is_err());
-    assert_eq!(
-        f.release(Ok(())).unwrap().as_deref(),
-        Some("retained speech")
-    );
+    assert_eq!(f.release(Ok(())).unwrap().as_deref(), Some("retained speech"));
 }
 
 #[test]
@@ -140,14 +113,7 @@ fn cancel_during_load_closes_microphone_without_waiting_for_model() {
     let f = Fixture::new(None);
     f.listening();
     // Exercise the real Session destructor, including after Stop.
-    let Fixture {
-        session,
-        load,
-        closed,
-        result,
-        worker,
-        ..
-    } = f;
+    let Fixture { session, load, closed, result, worker, .. } = f;
     drop(session);
     closed.recv_timeout(WAIT).unwrap();
     assert!(result.try_recv().is_err());
@@ -170,9 +136,7 @@ fn cancel_after_stop_during_load_discards_retained_audio() {
 fn load_failure_closes_live_microphone_before_returning_error() {
     let f = Fixture::new(None);
     f.listening();
-    f.load
-        .send(Err(anyhow::anyhow!("model removed or corrupt")))
-        .unwrap();
+    f.load.send(Err(anyhow::anyhow!("model removed or corrupt"))).unwrap();
     assert!(f.result.recv_timeout(WAIT).unwrap().is_err());
     // Closure is guaranteed before the caller can report Failed/release BUSY.
     f.closed.try_recv().unwrap();
@@ -189,15 +153,9 @@ fn listening_is_not_emitted_until_device_opens_and_stop_during_open_is_safe() {
     f.session.finish();
     open.send(()).unwrap();
     f.closed.recv_timeout(WAIT).unwrap();
-    assert!(matches!(
-        f.session.events.recv_timeout(WAIT).unwrap(),
-        Event::Finalizing
-    ));
+    assert!(matches!(f.session.events.recv_timeout(WAIT).unwrap(), Event::Finalizing));
     assert!(f.session.poll().is_none());
-    assert_eq!(
-        f.release(Ok(())).unwrap().as_deref(),
-        Some("retained speech")
-    );
+    assert_eq!(f.release(Ok(())).unwrap().as_deref(), Some("retained speech"));
 }
 
 #[test]
@@ -206,15 +164,9 @@ fn recording_limit_closes_capture_while_model_is_still_loading() {
     f.listening();
     f.ended.store(true, Ordering::Release);
     f.closed.recv_timeout(WAIT).unwrap();
-    assert!(matches!(
-        f.session.events.recv_timeout(WAIT).unwrap(),
-        Event::Finalizing
-    ));
+    assert!(matches!(f.session.events.recv_timeout(WAIT).unwrap(), Event::Finalizing));
     assert!(f.result.try_recv().is_err());
-    assert_eq!(
-        f.release(Ok(())).unwrap().as_deref(),
-        Some("retained speech")
-    );
+    assert_eq!(f.release(Ok(())).unwrap().as_deref(), Some("retained speech"));
 }
 
 #[test]
@@ -275,10 +227,7 @@ fn ready_model_waits_for_stop_and_transcribes_only_once() {
     assert!(f.result.try_recv().is_err());
     f.session.finish();
     f.session.finish();
-    assert_eq!(
-        f.result.recv_timeout(WAIT).unwrap().unwrap().as_deref(),
-        Some("retained speech")
-    );
+    assert_eq!(f.result.recv_timeout(WAIT).unwrap().unwrap().as_deref(), Some("retained speech"));
     f.closed.try_recv().unwrap();
     f.worker.join().unwrap();
 }
@@ -287,12 +236,7 @@ fn ready_model_waits_for_stop_and_transcribes_only_once() {
 fn audio_buffer_still_caps_recording_at_sixty_seconds() {
     let audio = Audio::with_capacity(0);
     let rate = 8_000;
-    append(
-        &vec![0.25_f32; rate as usize * MAX_SECONDS + 1],
-        1,
-        rate,
-        &audio,
-    );
+    append(&vec![0.25_f32; rate as usize * MAX_SECONDS + 1], 1, rate, &audio);
     assert_eq!(audio.samples.lock().unwrap().len(), rate as usize * 60);
     assert!(audio.full.load(Ordering::Acquire));
 }

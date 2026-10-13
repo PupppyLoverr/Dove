@@ -41,12 +41,7 @@ impl TurnWire {
         Self::start_policy(queued, v2, true, None).await
     }
 
-    async fn start_policy(
-        queued: bool,
-        v2: bool,
-        auto_approve: bool,
-        answer: Option<bool>,
-    ) -> Self {
+    async fn start_policy(queued: bool, v2: bool, auto_approve: bool, answer: Option<bool>) -> Self {
         Self::start_config(queued, v2, auto_approve, answer, "2.0.3", json!({}), false).await
     }
 
@@ -59,31 +54,11 @@ impl TurnWire {
         overrides: Value,
         command_failure: bool,
     ) -> Self {
-        Self::start_fixture(
-            queued,
-            v2,
-            auto_approve,
-            answer,
-            version,
-            overrides,
-            command_failure,
-            None,
-        )
-        .await
+        Self::start_fixture(queued, v2, auto_approve, answer, version, overrides, command_failure, None).await
     }
 
     async fn start_native_command(queued: bool, reply: NativeCommandReply) -> Self {
-        Self::start_fixture(
-            queued,
-            false,
-            true,
-            None,
-            "2.0.3",
-            json!({}),
-            false,
-            Some(reply),
-        )
-        .await
+        Self::start_fixture(queued, false, true, None, "2.0.3", json!({}), false, Some(reply)).await
     }
 
     async fn start_fixture(
@@ -243,16 +218,10 @@ impl TurnWire {
                 .await
                 .unwrap();
         }
-        let retained_steering = overrides["keepSteering"]
-            .as_bool()
-            .unwrap_or(false)
-            .then_some(steer_tx);
+        let retained_steering = overrides["keepSteering"].as_bool().unwrap_or(false).then_some(steer_tx);
         let interrupt = tokio_util::sync::CancellationToken::new();
         let mut request = json!({"prompt": if native_command_reply.is_some() { "/project-review" } else { "first" }, "cwd":"", "sandbox":"workspace-write", "autoApprove": auto_approve, "model": if v2 { Some("opencode/muse") } else { None }, "reasoning": "low"});
-        request
-            .as_object_mut()
-            .unwrap()
-            .extend(overrides.as_object().unwrap().clone());
+        request.as_object_mut().unwrap().extend(overrides.as_object().unwrap().clone());
         let run = tokio::spawn(run_session(Session {
             server: Server::attached(base),
             event_tx,
@@ -281,12 +250,7 @@ impl TurnWire {
             interrupt_grace: Duration::from_secs(2),
             kill_grace: Duration::from_millis(50),
             known_commands: Some(vec![SlashCommand {
-                name: if native_command_reply.is_some() {
-                    "project-review"
-                } else {
-                    "test"
-                }
-                .into(),
+                name: if native_command_reply.is_some() { "project-review" } else { "test" }.into(),
                 description: String::new(),
                 input_hint: None,
             }]),
@@ -300,11 +264,8 @@ impl TurnWire {
             interrupt,
             steering: retained_steering,
             polls,
-            command_failure_release: matches!(
-                native_command_reply,
-                Some(NativeCommandReply::DelayedHttp404)
-            )
-            .then_some(command_failure_release),
+            command_failure_release: matches!(native_command_reply, Some(NativeCommandReply::DelayedHttp404))
+                .then_some(command_failure_release),
             server,
             run,
         }
@@ -315,39 +276,22 @@ impl TurnWire {
     async fn requests_any_order(&mut self, suffixes: &[&str]) {
         let mut seen = Vec::new();
         for _ in suffixes {
-            seen.push(
-                tokio::time::timeout(Duration::from_secs(5), self.requests.recv())
-                    .await
-                    .unwrap()
-                    .unwrap(),
-            );
+            seen.push(tokio::time::timeout(Duration::from_secs(5), self.requests.recv()).await.unwrap().unwrap());
         }
         for suffix in suffixes {
-            assert!(
-                seen.iter().any(|path| path.ends_with(suffix)),
-                "missing {suffix}: {seen:?}"
-            );
+            assert!(seen.iter().any(|path| path.ends_with(suffix)), "missing {suffix}: {seen:?}");
         }
     }
 
     async fn request(&mut self, suffix: &str) {
-        let path = tokio::time::timeout(Duration::from_secs(5), self.requests.recv())
-            .await
-            .unwrap()
-            .unwrap();
+        let path = tokio::time::timeout(Duration::from_secs(5), self.requests.recv()).await.unwrap().unwrap();
         assert!(path.ends_with(suffix), "unexpected request: {path}");
     }
 
     async fn posted(&self, suffix: &str) -> Value {
         tokio::time::timeout(Duration::from_secs(2), async {
             loop {
-                if let Some((_, body)) = self
-                    .posts
-                    .lock()
-                    .unwrap()
-                    .iter()
-                    .find(|(path, _)| path.ends_with(suffix))
-                {
+                if let Some((_, body)) = self.posts.lock().unwrap().iter().find(|(path, _)| path.ends_with(suffix)) {
                     return body.clone();
                 }
                 tokio::time::sleep(Duration::from_millis(10)).await;
@@ -358,21 +302,19 @@ impl TurnWire {
     }
 
     fn status(&self, status: &str) {
-        self.bus.send(json!({"type":"session.status", "properties":{"sessionID":"fixture", "status":{"type":status}}})).unwrap();
+        self.bus
+            .send(json!({"type":"session.status", "properties":{"sessionID":"fixture", "status":{"type":status}}}))
+            .unwrap();
     }
 
     fn idle(&self) {
-        self.bus
-            .send(json!({"type":"session.idle", "properties":{"sessionID":"fixture"}}))
-            .unwrap();
+        self.bus.send(json!({"type":"session.idle", "properties":{"sessionID":"fixture"}})).unwrap();
     }
 
     /// Push one raw 2.x `/api/event` frame (normalized in the real
     /// stream_bus, not here).
     fn v2(&self, kind: &str, data: Value) {
-        self.bus
-            .send(json!({"id": format!("evt_{kind}"), "type": kind, "data": data}))
-            .unwrap();
+        self.bus.send(json!({"id": format!("evt_{kind}"), "type": kind, "data": data})).unwrap();
     }
 
     async fn done(&mut self) -> (DoneStatus, String) {
@@ -393,16 +335,8 @@ impl TurnWire {
 
 #[tokio::test]
 async fn completed_turn_keeps_mailbox_alive_for_the_next_queued_request() {
-    let mut wire = TurnWire::start_config(
-        false,
-        false,
-        true,
-        None,
-        "1.18.21",
-        json!({ "keepSteering": true }),
-        false,
-    )
-    .await;
+    let mut wire =
+        TurnWire::start_config(false, false, true, None, "1.18.21", json!({ "keepSteering": true }), false).await;
     wire.request("/prompt_async").await;
     wire.status("busy");
     wire.status("idle");
@@ -427,10 +361,7 @@ async fn completed_turn_keeps_mailbox_alive_for_the_next_queued_request() {
     assert_eq!(wire.done().await.0, DoneStatus::Completed);
     assert!(!wire.run.is_finished());
     drop(wire.steering.take());
-    tokio::time::timeout(Duration::from_secs(5), &mut wire.run)
-        .await
-        .unwrap()
-        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), &mut wire.run).await.unwrap().unwrap();
 }
 
 #[tokio::test]
@@ -456,19 +387,15 @@ async fn queued_turn_ignores_previous_turn_duplicate_idle() {
         wire.status("idle");
         let (status, text) = wire.done().await;
         assert_eq!(status, DoneStatus::Completed);
-        assert_eq!(
-            text, "SECOND_OK",
-            "queued turn was completed before its response"
-        );
+        assert_eq!(text, "SECOND_OK", "queued turn was completed before its response");
     }
 }
 
 #[tokio::test]
 async fn native_command_http_failures_settle_the_current_turn() {
-    for (reply, expected_status) in [
-        (NativeCommandReply::Http404, Some("404 Not Found")),
-        (NativeCommandReply::Disconnect, None),
-    ] {
+    for (reply, expected_status) in
+        [(NativeCommandReply::Http404, Some("404 Not Found")), (NativeCommandReply::Disconnect, None)]
+    {
         let mut wire = TurnWire::start_native_command(false, reply).await;
         wire.request("/command").await;
         let (status, error) = tokio::time::timeout(Duration::from_secs(5), async {
@@ -494,12 +421,7 @@ async fn native_command_http_failures_settle_the_current_turn() {
             assert!(!error.contains("404 Not Found"), "{error}");
         }
         assert!(
-            !wire
-                .posts
-                .lock()
-                .unwrap()
-                .iter()
-                .any(|(path, _)| path.ends_with("/prompt_async")),
+            !wire.posts.lock().unwrap().iter().any(|(path, _)| path.ends_with("/prompt_async")),
             "failed native command must not fall back to an ordinary prompt"
         );
     }
@@ -516,11 +438,7 @@ async fn late_native_command_failure_does_not_poison_the_queued_turn() {
 
     // The synchronous command endpoint returns only after the event bus has
     // settled its turn and the queued ordinary prompt owns a new generation.
-    wire.command_failure_release
-        .take()
-        .unwrap()
-        .send(())
-        .unwrap();
+    wire.command_failure_release.take().unwrap().send(()).unwrap();
     tokio::task::yield_now().await;
 
     wire.status("busy");
@@ -584,10 +502,7 @@ async fn v2_wire_streams_text_and_settles_on_execution_success() {
                 "finish": "stop", "cost": 0, "tokens": tokens,
             }),
         );
-        wire.v2(
-            "session.usage.updated",
-            json!({"sessionID": "fixture", "cost": 0, "tokens": cumulative}),
-        );
+        wire.v2("session.usage.updated", json!({"sessionID": "fixture", "cost": 0, "tokens": cumulative}));
     };
     wire.v2(
         "session.step.ended",
@@ -630,48 +545,34 @@ async fn v2_wire_streams_text_and_settles_on_execution_success() {
         json!({"input": 4, "output": 1, "reasoning": 0, "cache": {"read": 0, "write": 0}}),
         json!({"input": 34, "output": 6, "reasoning": 0, "cache": {"read": 5, "write": 0}}),
     );
-    wire.v2(
-        "session.execution.succeeded",
-        json!({"sessionID": "fixture"}),
-    );
+    wire.v2("session.execution.succeeded", json!({"sessionID": "fixture"}));
 
-    let (status, text, usage, context_usage) =
-        tokio::time::timeout(Duration::from_secs(5), async {
-            let mut text = String::new();
-            let mut usage = None;
-            let mut context_usage = Vec::new();
-            loop {
-                match wire.events.recv().await.unwrap().unwrap() {
-                    AgentEvent::TextDelta { text: delta } => text.push_str(&delta),
-                    AgentEvent::Usage {
-                        input_tokens,
-                        output_tokens,
-                    } => {
-                        usage = Some((input_tokens, output_tokens));
-                    }
-                    AgentEvent::ContextUsage { tokens, window } => {
-                        context_usage.push((tokens, window));
-                    }
-                    AgentEvent::Done { status, .. } => {
-                        return (status, text, usage, context_usage);
-                    }
-                    _ => {}
+    let (status, text, usage, context_usage) = tokio::time::timeout(Duration::from_secs(5), async {
+        let mut text = String::new();
+        let mut usage = None;
+        let mut context_usage = Vec::new();
+        loop {
+            match wire.events.recv().await.unwrap().unwrap() {
+                AgentEvent::TextDelta { text: delta } => text.push_str(&delta),
+                AgentEvent::Usage { input_tokens, output_tokens } => {
+                    usage = Some((input_tokens, output_tokens));
                 }
+                AgentEvent::ContextUsage { tokens, window } => {
+                    context_usage.push((tokens, window));
+                }
+                AgentEvent::Done { status, .. } => {
+                    return (status, text, usage, context_usage);
+                }
+                _ => {}
             }
-        })
-        .await
-        .unwrap();
+        }
+    })
+    .await
+    .unwrap();
     assert_eq!(status, DoneStatus::Completed);
     assert_eq!(text, "PONG");
     assert_eq!(usage, Some((4, 1)));
-    assert_eq!(
-        context_usage,
-        vec![
-            (Some(12), Some(1000)),
-            (Some(28), Some(2000)),
-            (Some(5), Some(2000)),
-        ]
-    );
+    assert_eq!(context_usage, vec![(Some(12), Some(1000)), (Some(28), Some(2000)), (Some(5), Some(2000)),]);
 }
 
 #[tokio::test]
@@ -708,10 +609,7 @@ async fn v2_wire_tool_frames_open_and_resolve_chips() {
             "content": [{"type": "text", "text": "1: The secret word is BANANA42"}]
         }),
     );
-    wire.v2(
-        "session.execution.succeeded",
-        json!({"sessionID": "fixture"}),
-    );
+    wire.v2("session.execution.succeeded", json!({"sessionID": "fixture"}));
 
     let (status, calls, results) = tokio::time::timeout(Duration::from_secs(5), async {
         let mut calls = Vec::new();
@@ -730,20 +628,9 @@ async fn v2_wire_tool_frames_open_and_resolve_chips() {
     assert_eq!(status, DoneStatus::Completed);
     assert_eq!(
         calls,
-        vec![(
-            "fixture:msg_a:call_1".to_owned(),
-            ToolCall::ReadFile {
-                path: "/tmp/oc2x-probe/note.txt".to_owned()
-            }
-        )]
+        vec![("fixture:msg_a:call_1".to_owned(), ToolCall::ReadFile { path: "/tmp/oc2x-probe/note.txt".to_owned() })]
     );
-    assert_eq!(
-        results,
-        vec![(
-            "fixture:msg_a:call_1".to_owned(),
-            Some("1: The secret word is BANANA42".to_owned())
-        )]
-    );
+    assert_eq!(results, vec![("fixture:msg_a:call_1".to_owned(), Some("1: The secret word is BANANA42".to_owned()))]);
 }
 
 #[tokio::test]
@@ -761,9 +648,7 @@ async fn v2_execution_failure_and_interrupt_settle_the_turn() {
         loop {
             match wire.events.recv().await.unwrap().unwrap() {
                 AgentEvent::Error { message } => error = Some(message),
-                AgentEvent::Done {
-                    status, error: e, ..
-                } => return (status, e.or(error)),
+                AgentEvent::Done { status, error: e, .. } => return (status, e.or(error)),
                 _ => {}
             }
         }
@@ -779,10 +664,7 @@ async fn v2_execution_failure_and_interrupt_settle_the_turn() {
     wire.v2("session.execution.started", json!({"sessionID": "fixture"}));
     wire.interrupt.cancel();
     wire.request("/interrupt").await;
-    wire.v2(
-        "session.execution.interrupted",
-        json!({"sessionID": "fixture", "reason": "user"}),
-    );
+    wire.v2("session.execution.interrupted", json!({"sessionID": "fixture", "reason": "user"}));
     assert_eq!(wire.done().await.0, DoneStatus::Interrupted);
 }
 
@@ -822,10 +704,7 @@ fn http_client_never_proxies_the_loopback_server() {
         );
         return;
     }
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
     runtime.block_on(async {
         use tokio::io::AsyncWriteExt;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -833,19 +712,12 @@ fn http_client_never_proxies_the_loopback_server() {
         tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
             read_http_request_headers(&mut socket).await;
-            socket
-                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
-                .await
-                .unwrap();
+            socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n").await.unwrap();
         });
         // Control: a default client does route loopback through the dead
         // proxy, so this test cannot pass vacuously.
         assert!(reqwest::Client::new().get(&url).send().await.is_err());
-        let response = http_client()
-            .get(&url)
-            .send()
-            .await
-            .expect("opencode client must reach loopback directly");
+        let response = http_client().get(&url).send().await.expect("opencode client must reach loopback directly");
         assert!(response.status().is_success());
     });
 }
@@ -864,9 +736,7 @@ async fn catalog_decodes_fragmented_http_without_retaining_unused_fields() {
         let (mut socket, _) = listener.accept().await.unwrap();
         read_http_request_headers(&mut socket).await;
         socket
-            .write_all(
-                format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len()).as_bytes(),
-            )
+            .write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len()).as_bytes())
             .await
             .unwrap();
         for chunk in body.as_bytes().chunks(257) {
@@ -876,10 +746,7 @@ async fn catalog_decodes_fragmented_http_without_retaining_unused_fields() {
     });
     let response = reqwest::get(format!("http://{address}")).await.unwrap();
     let catalog: ProviderCatalog = decode_json_response(response).await.unwrap();
-    assert_eq!(
-        models_from_providers(&catalog),
-        models_from_providers(&expected)
-    );
+    assert_eq!(models_from_providers(&catalog), models_from_providers(&expected));
     server.await.unwrap();
 }
 
@@ -892,10 +759,7 @@ async fn cancelled_catalog_decode_releases_a_stalled_http_body() {
     let server = tokio::spawn(async move {
         let (mut socket, _) = listener.accept().await.unwrap();
         read_http_request_headers(&mut socket).await;
-        socket
-            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100000\r\n\r\n{")
-            .await
-            .unwrap();
+        socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100000\r\n\r\n{").await.unwrap();
         let result = socket.read(&mut [0; 1]).await;
         let _ = closed_tx.send(result);
     });
@@ -904,14 +768,8 @@ async fn cancelled_catalog_decode_releases_a_stalled_http_body() {
     tokio::time::sleep(Duration::from_millis(20)).await;
     decode.abort();
     assert!(decode.await.unwrap_err().is_cancelled());
-    let result = tokio::time::timeout(Duration::from_secs(2), closed_rx)
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(
-        matches!(result, Ok(0) | Err(_)),
-        "cancel must close the body reader"
-    );
+    let result = tokio::time::timeout(Duration::from_secs(2), closed_rx).await.unwrap().unwrap();
+    assert!(matches!(result, Ok(0) | Err(_)), "cancel must close the body reader");
     server.await.unwrap();
 }
 use serde_json::json;
@@ -943,10 +801,7 @@ fn provider_discovery_ignores_metadata_and_accepts_null_optional_fields() {
     assert_eq!(models[0].description.as_deref(), Some("local"));
     assert!(models[0].reasoning_levels.is_empty());
     assert_eq!(models[1].reasoning_levels, vec![ReasoningLevel::High]);
-    assert_eq!(
-        pick_variant(&catalog, "local", "thinking", Some(ReasoningLevel::High)).as_deref(),
-        Some("high")
-    );
+    assert_eq!(pick_variant(&catalog, "local", "thinking", Some(ReasoningLevel::High)).as_deref(), Some("high"));
 }
 
 #[test]
@@ -978,30 +833,16 @@ fn models_map_provider_catalog_with_variant_ladders() {
     // `connected` filters: the full catalog is 194 providers / 7k models of
     // which the user can run almost none (v0.2.21 field report).
     assert_eq!(models.len(), 2);
-    let opus = models
-        .iter()
-        .find(|m| m.id == "anthropic/claude-opus-5")
-        .expect("opus");
+    let opus = models.iter().find(|m| m.id == "anthropic/claude-opus-5").expect("opus");
     assert_eq!(opus.label, "Claude Opus 5");
     assert_eq!(opus.description.as_deref(), Some("Anthropic"));
     assert_eq!(
         opus.reasoning_levels,
-        vec![
-            ReasoningLevel::Low,
-            ReasoningLevel::Medium,
-            ReasoningLevel::High,
-            ReasoningLevel::Max
-        ]
+        vec![ReasoningLevel::Low, ReasoningLevel::Medium, ReasoningLevel::High, ReasoningLevel::Max]
     );
-    let haiku = models
-        .iter()
-        .find(|m| m.id == "anthropic/claude-haiku-4-5")
-        .expect("haiku");
+    let haiku = models.iter().find(|m| m.id == "anthropic/claude-haiku-4-5").expect("haiku");
     assert!(haiku.reasoning_levels.is_empty());
-    assert!(
-        !models.iter().any(|m| m.id == "opencode/big-pickle"),
-        "unconnected providers stay out of the picker"
-    );
+    assert!(!models.iter().any(|m| m.id == "opencode/big-pickle"), "unconnected providers stay out of the picker");
 }
 
 #[test]
@@ -1037,34 +878,17 @@ fn variants_only_ride_models_that_advertise_them() {
         }]
     }))
     .unwrap();
-    assert_eq!(
-        pick_variant(&providers, "anthropic", "opus", Some(ReasoningLevel::High)).as_deref(),
-        Some("high")
-    );
+    assert_eq!(pick_variant(&providers, "anthropic", "opus", Some(ReasoningLevel::High)).as_deref(), Some("high"));
     // XHigh clamps down the candidate ladder to an advertised id.
-    assert_eq!(
-        pick_variant(&providers, "anthropic", "opus", Some(ReasoningLevel::XHigh)).as_deref(),
-        Some("high")
-    );
-    assert_eq!(
-        pick_variant(&providers, "anthropic", "haiku", Some(ReasoningLevel::High)),
-        None
-    );
+    assert_eq!(pick_variant(&providers, "anthropic", "opus", Some(ReasoningLevel::XHigh)).as_deref(), Some("high"));
+    assert_eq!(pick_variant(&providers, "anthropic", "haiku", Some(ReasoningLevel::High)), None);
     assert_eq!(pick_variant(&providers, "anthropic", "opus", None), None);
-    assert_eq!(
-        pick_variant(&providers, "missing", "opus", Some(ReasoningLevel::Low)),
-        None
-    );
+    assert_eq!(pick_variant(&providers, "missing", "opus", Some(ReasoningLevel::Low)), None);
 }
 
 #[test]
 fn prompt_body_carries_model_variant_and_attachments() {
-    let body = prompt_body(
-        "hello",
-        Some(("anthropic", "claude-opus-5")),
-        Some("high"),
-        &["/tmp/shot.png".to_owned()],
-    );
+    let body = prompt_body("hello", Some(("anthropic", "claude-opus-5")), Some("high"), &["/tmp/shot.png".to_owned()]);
     assert_eq!(body["model"]["providerID"], "anthropic");
     assert_eq!(body["model"]["modelID"], "claude-opus-5");
     assert_eq!(body["variant"], "high");
@@ -1201,10 +1025,7 @@ fn a_running_tool_without_arguments_opens_before_it_completes() {
         "state": {"status": "running", "input": {}},
     });
     let events = part_snapshot_events(&mut feed, &running, true, None);
-    assert!(
-        matches!(events.as_slice(), [AgentEvent::ToolCall { id, .. }] if id == "call-w"),
-        "{events:?}"
-    );
+    assert!(matches!(events.as_slice(), [AgentEvent::ToolCall { id, .. }] if id == "call-w"), "{events:?}");
 }
 
 #[test]
@@ -1223,12 +1044,7 @@ fn task_spawn_registers_child_by_metadata_and_completion_settles() {
                 "metadata": {"sessionId": "ses_child", "parentSessionId": "ses_parent"},
             },
         });
-        let events = part_snapshot_events(
-            &mut feed,
-            &running,
-            true,
-            Some((&mut children, &mut pending, &mut unbound)),
-        );
+        let events = part_snapshot_events(&mut feed, &running, true, Some((&mut children, &mut pending, &mut unbound)));
         // Genus-gated spawn naming, keyed by the PART id.
         assert!(matches!(
             events.as_slice(),
@@ -1248,10 +1064,7 @@ fn task_spawn_registers_child_by_metadata_and_completion_settles() {
                 "metadata": {"sessionId": "ses_child"},
             },
         });
-        assert_eq!(
-            task_completion(&completed),
-            Some(("ses_child".to_owned(), false))
-        );
+        assert_eq!(task_completion(&completed), Some(("ses_child".to_owned(), false)));
     }
 }
 
@@ -1259,32 +1072,16 @@ fn task_spawn_registers_child_by_metadata_and_completion_settles() {
 fn child_binding_falls_back_to_title_match() {
     let mut children = HashMap::new();
     let mut pending = VecDeque::new();
-    pending.push_back(PendingSpawn {
-        tool_part_id: "prt_1".into(),
-        description: "Scan crates".into(),
-    });
-    pending.push_back(PendingSpawn {
-        tool_part_id: "prt_2".into(),
-        description: "Write docs".into(),
-    });
-    assert!(bind_child(
-        &mut children,
-        &mut pending,
-        "ses_b",
-        "Write docs (@general subagent)"
-    ));
+    pending.push_back(PendingSpawn { tool_part_id: "prt_1".into(), description: "Scan crates".into() });
+    pending.push_back(PendingSpawn { tool_part_id: "prt_2".into(), description: "Write docs".into() });
+    assert!(bind_child(&mut children, &mut pending, "ses_b", "Write docs (@general subagent)"));
     assert_eq!(children.get("ses_b").unwrap().parent_tool_use_id, "prt_2");
     assert_eq!(pending.len(), 1);
     // Unmatched title binds FIFO.
     assert!(bind_child(&mut children, &mut pending, "ses_a", "mystery"));
     assert_eq!(children.get("ses_a").unwrap().parent_tool_use_id, "prt_1");
     // Nothing pending: no bind.
-    assert!(!bind_child(
-        &mut children,
-        &mut pending,
-        "ses_c",
-        "anything"
-    ));
+    assert!(!bind_child(&mut children, &mut pending, "ses_c", "anything"));
 }
 
 #[test]
@@ -1314,23 +1111,11 @@ fn questions_map_to_input_panel_shape() {
 #[test]
 fn tool_names_type_the_common_calls() {
     let call = oc_tool_call("bash", &json!({"command": "ls -la"}));
+    assert_eq!(call, ToolCall::Exec { command: "ls -la".into() });
+    let call = oc_tool_call("edit", &json!({"filePath": "/w/a.rs", "oldString": "a", "newString": "b"}));
     assert_eq!(
         call,
-        ToolCall::Exec {
-            command: "ls -la".into()
-        }
-    );
-    let call = oc_tool_call(
-        "edit",
-        &json!({"filePath": "/w/a.rs", "oldString": "a", "newString": "b"}),
-    );
-    assert_eq!(
-        call,
-        ToolCall::EditFile {
-            path: "/w/a.rs".into(),
-            old_string: Some("a".into()),
-            new_string: Some("b".into()),
-        }
+        ToolCall::EditFile { path: "/w/a.rs".into(), old_string: Some("a".into()), new_string: Some("b".into()) }
     );
     let call = oc_tool_call("task", &json!({"description": "Scan crates"}));
     assert!(matches!(&call, ToolCall::Unknown { name, .. } if name == "Agent: Scan crates"));
@@ -1382,10 +1167,7 @@ fn canonical_command_removed_after_discovery_is_not_downgraded_to_prompt_text() 
         "name": "project-review",
         "description": "Review this project"
     }]));
-    let canonical = Invocation::Command {
-        name: discovered[0].name.clone(),
-    }
-    .link();
+    let canonical = Invocation::Command { name: discovered[0].name.clone() }.link();
     assert!(selected_native_command(&canonical, HarnessId::Opencode));
     let delivered = harness_prompt(&canonical, HarnessId::Opencode);
 
@@ -1400,11 +1182,7 @@ fn canonical_command_removed_after_discovery_is_not_downgraded_to_prompt_text() 
 
     // Identical raw slash text was never a composer selection, so it keeps
     // the historical ordinary-prompt fallback.
-    assert!(
-        native_command_request(&delivered, &live, false)
-            .unwrap()
-            .is_none()
-    );
+    assert!(native_command_request(&delivered, &live, false).unwrap().is_none());
 }
 
 #[test]
@@ -1416,10 +1194,7 @@ fn stall_env_and_startup_env_parse() {
 
 #[test]
 fn directory_header_percent_encodes() {
-    assert_eq!(
-        encode_directory("/home/u/my project"),
-        "/home/u/my%20project"
-    );
+    assert_eq!(encode_directory("/home/u/my project"), "/home/u/my%20project");
     assert_eq!(encode_directory("/plain/path"), "/plain/path");
 }
 
@@ -1436,14 +1211,8 @@ fn v2_frames_normalize_to_v1_payloads() {
         vec![json!({"type":"session.status","properties":{
             "sessionID":"ses_1","status":{"type":"busy"}}})]
     );
-    for kind in [
-        "session.execution.succeeded",
-        "session.execution.interrupted",
-    ] {
-        let out = normalize_v2_frame(
-            json!({"id":"evt_2","type":kind,"data":{"sessionID":"ses_1"}}),
-            &mut tools,
-        );
+    for kind in ["session.execution.succeeded", "session.execution.interrupted"] {
+        let out = normalize_v2_frame(json!({"id":"evt_2","type":kind,"data":{"sessionID":"ses_1"}}), &mut tools);
         assert_eq!(
             out,
             vec![
@@ -1568,11 +1337,7 @@ fn v2_frames_normalize_to_v1_payloads() {
                     "providerID":"opencode","modelID":"long-context"}}})]
     );
     // A malformed model leaves the cached one in place.
-    for model in [
-        json!(null),
-        json!("opencode/muse"),
-        json!({"id":"", "providerID":"opencode"}),
-    ] {
+    for model in [json!(null), json!("opencode/muse"), json!({"id":"", "providerID":"opencode"})] {
         normalize_v2_frame_with_session_models(
             json!({"id":"evt_14","type":"session.step.started","data":{
                 "sessionID":"ses_2","assistantMessageID":"msg_c","model":model}}),
@@ -1580,10 +1345,7 @@ fn v2_frames_normalize_to_v1_payloads() {
             &mut session_models,
         );
     }
-    assert_eq!(
-        session_models.get("ses_2").map(|m| m.model_id.as_str()),
-        Some("long-context")
-    );
+    assert_eq!(session_models.get("ses_2").map(|m| m.model_id.as_str()), Some("long-context"));
     // The permission ask keeps its 1.x name on 2.x (observed live when a
     // tool reaches outside the workspace); the auto-approver replies.
     let out = normalize_v2_frame(
@@ -1598,13 +1360,7 @@ fn v2_frames_normalize_to_v1_payloads() {
             "id":"per_1","sessionID":"ses_1","action":"external_directory","resources":["/tmp/*"]}})]
     );
     // Boilerplate frames (catalog sync etc.) drop.
-    assert!(
-        normalize_v2_frame(
-            json!({"id":"evt_10","type":"catalog.updated","data":{}}),
-            &mut tools,
-        )
-        .is_empty()
-    );
+    assert!(normalize_v2_frame(json!({"id":"evt_10","type":"catalog.updated","data":{}}), &mut tools,).is_empty());
 }
 
 #[test]
@@ -1625,26 +1381,11 @@ fn v2_model_list_folds_into_provider_catalog() {
     let catalog = catalog_from_v2_models(list.data);
     let models = models_from_providers(&catalog);
     assert_eq!(models.len(), 2);
-    let muse = models
-        .iter()
-        .find(|m| m.id == "opencode/muse-spark")
-        .unwrap();
+    let muse = models.iter().find(|m| m.id == "opencode/muse-spark").unwrap();
     assert_eq!(muse.label, "Muse Spark");
-    assert_eq!(
-        muse.reasoning_levels,
-        vec![ReasoningLevel::Low, ReasoningLevel::High]
-    );
+    assert_eq!(muse.reasoning_levels, vec![ReasoningLevel::Low, ReasoningLevel::High]);
     // The folded catalog feeds variant picking exactly like 1.x's.
-    assert_eq!(
-        pick_variant(
-            &catalog,
-            "opencode",
-            "muse-spark",
-            Some(ReasoningLevel::High)
-        )
-        .as_deref(),
-        Some("high")
-    );
+    assert_eq!(pick_variant(&catalog, "opencode", "muse-spark", Some(ReasoningLevel::High)).as_deref(), Some("high"));
     assert!(models.iter().all(|m| m.id != "dead/off"));
 }
 
@@ -1654,10 +1395,7 @@ fn prompt_body_v2_carries_text_and_files_only() {
     assert_eq!(body["text"], "hello");
     assert_eq!(body["files"][0]["uri"], "file:///tmp/shot.png");
     assert_eq!(body["files"][0]["name"], "shot.png");
-    assert!(
-        body.get("model").is_none(),
-        "model rides the session on 2.x"
-    );
+    assert!(body.get("model").is_none(), "model rides the session on 2.x");
     assert!(body.get("parts").is_none());
 }
 
@@ -1668,11 +1406,9 @@ async fn permissions_stay_session_scoped_and_never_persist_grants() {
         if v2 {
             wire.request("/api/model").await;
         }
-        wire.request(if v2 { "/prompt" } else { "/prompt_async" })
-            .await;
+        wire.request(if v2 { "/prompt" } else { "/prompt_async" }).await;
         let ask = |owner: Option<&str>, id: &str| {
-            let mut data =
-                json!({"id":id, "action":"external_directory", "resources":["/private/*"]});
+            let mut data = json!({"id":id, "action":"external_directory", "resources":["/private/*"]});
             if let Some(owner) = owner {
                 data["sessionID"] = json!(owner);
             }
@@ -1685,24 +1421,18 @@ async fn permissions_stay_session_scoped_and_never_persist_grants() {
         wire.bus.send(ask(Some("foreign"), "foreign")).unwrap();
         wire.bus.send(ask(None, "missing")).unwrap();
         // Establish an owned child before its first permission request.
-        wire.bus.send(if v2 {
-            json!({"type":"session.created","data":{"sessionID":"child","parentID":"fixture"}})
-        } else {
-            json!({"type":"session.created","properties":{"info":{"id":"child","parentID":"fixture"}}})
-        }).unwrap();
+        wire.bus
+            .send(if v2 {
+                json!({"type":"session.created","data":{"sessionID":"child","parentID":"fixture"}})
+            } else {
+                json!({"type":"session.created","properties":{"info":{"id":"child","parentID":"fixture"}}})
+            })
+            .unwrap();
         wire.bus.send(ask(Some("child"), "child")).unwrap();
         wire.bus.send(ask(Some("fixture"), "own")).unwrap();
         tokio::time::timeout(Duration::from_secs(2), async {
             loop {
-                if wire
-                    .posts
-                    .lock()
-                    .unwrap()
-                    .iter()
-                    .filter(|(p, _)| p.contains("permission"))
-                    .count()
-                    >= 2
-                {
+                if wire.posts.lock().unwrap().iter().filter(|(p, _)| p.contains("permission")).count() >= 2 {
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(10)).await;
@@ -1712,15 +1442,8 @@ async fn permissions_stay_session_scoped_and_never_persist_grants() {
         .unwrap();
         tokio::time::sleep(Duration::from_millis(50)).await;
         let posts = wire.posts.lock().unwrap();
-        let approvals: Vec<_> = posts
-            .iter()
-            .filter(|(p, _)| p.contains("permission"))
-            .collect();
-        assert_eq!(
-            approvals.len(),
-            2,
-            "foreign or ownerless permission was answered"
-        );
+        let approvals: Vec<_> = posts.iter().filter(|(p, _)| p.contains("permission")).collect();
+        assert_eq!(approvals.len(), 2, "foreign or ownerless permission was answered");
         for (path, body) in approvals {
             assert_eq!(body["reply"], "once");
             assert!(!path.contains("foreign") && !path.contains("missing"));
@@ -1733,16 +1456,10 @@ async fn permissions_always_approve_without_user_input() {
     for version in ["2.0.0", "2.0.3", "2.0.4", "2.0.11"] {
         for auto_approve in [false, true] {
             // No input callback is available: any permission prompt fails the fixture.
-            let mut wire =
-                TurnWire::start_config(false, true, auto_approve, None, version, json!({}), false)
-                    .await;
+            let mut wire = TurnWire::start_config(false, true, auto_approve, None, version, json!({}), false).await;
             wire.request("/api/model").await;
             wire.request("/prompt").await;
-            let key = if version == "2.0.0" || version == "2.0.3" {
-                "reply"
-            } else {
-                "decision"
-            };
+            let key = if version == "2.0.0" || version == "2.0.3" { "reply" } else { "decision" };
             for id in ["first", "second", "third"] {
                 wire.v2("permission.asked", json!({"id":id, "sessionID":"fixture"}));
                 let body = wire.posted(&format!("/permission/{id}/reply")).await;
@@ -1756,11 +1473,13 @@ async fn permissions_always_approve_without_user_input() {
 async fn permissions_do_not_auto_answer_agent_questions() {
     let mut wire = TurnWire::start_policy(false, false, false, Some(false)).await;
     wire.request("/prompt_async").await;
-    wire.bus.send(json!({"type": "question.asked", "properties": {
-        "id": "question", "sessionID": "fixture", "questions": [{
-            "header": "Choice", "question": "Continue?", "options": [{"label": "No"}, {"label": "Yes"}]
-        }]
-    }})).unwrap();
+    wire.bus
+        .send(json!({"type": "question.asked", "properties": {
+            "id": "question", "sessionID": "fixture", "questions": [{
+                "header": "Choice", "question": "Continue?", "options": [{"label": "No"}, {"label": "Yes"}]
+            }]
+        }}))
+        .unwrap();
     let body = wire.posted("/question/question/reply").await;
     assert_eq!(body, json!({"answers": [["No"]]}));
 }
@@ -1774,44 +1493,18 @@ fn v2_tools_are_scoped_and_retired_and_real_failures_are_visible() {
             "error":{"type":"permission.denied","message":"Denied"}
         }})
     };
-    for (session, message, name) in [
-        ("a", "m1", "read"),
-        ("b", "m1", "bash"),
-        ("a", "m2", "write"),
-    ] {
-        normalize_v2_frame(
-            event("session.tool.input.started", session, message, name),
-            &mut tools,
-        );
+    for (session, message, name) in [("a", "m1", "read"), ("b", "m1", "bash"), ("a", "m2", "write")] {
+        normalize_v2_frame(event("session.tool.input.started", session, message, name), &mut tools);
     }
-    for (session, message, name) in [
-        ("a", "m1", "read"),
-        ("b", "m1", "bash"),
-        ("a", "m2", "write"),
-    ] {
-        let out = normalize_v2_frame(
-            event("session.tool.failed", session, message, ""),
-            &mut tools,
-        );
+    for (session, message, name) in [("a", "m1", "read"), ("b", "m1", "bash"), ("a", "m2", "write")] {
+        let out = normalize_v2_frame(event("session.tool.failed", session, message, ""), &mut tools);
         assert_eq!(out[0].pointer("/properties/part/tool").unwrap(), name);
-        assert_eq!(
-            out[0].pointer("/properties/part/state/status").unwrap(),
-            "error"
-        );
-        assert_eq!(
-            out[0].pointer("/properties/part/callID").unwrap(),
-            &json!(format!("{session}:{message}:same"))
-        );
+        assert_eq!(out[0].pointer("/properties/part/state/status").unwrap(), "error");
+        assert_eq!(out[0].pointer("/properties/part/callID").unwrap(), &json!(format!("{session}:{message}:same")));
     }
     assert!(tools.is_empty());
-    normalize_v2_frame(
-        event("session.tool.input.started", "a", "m1", "read"),
-        &mut tools,
-    );
-    normalize_v2_frame(
-        event("session.execution.interrupted", "a", "m1", ""),
-        &mut tools,
-    );
+    normalize_v2_frame(event("session.tool.input.started", "a", "m1", "read"), &mut tools);
+    normalize_v2_frame(event("session.execution.interrupted", "a", "m1", ""), &mut tools);
     assert!(tools.is_empty());
 }
 
@@ -1821,14 +1514,8 @@ async fn v2_reasoning_deltas_and_failed_tools_reach_the_feed() {
     wire.request("/api/model").await;
     wire.request("/prompt").await;
     wire.v2("session.execution.started", json!({"sessionID":"fixture"}));
-    wire.v2(
-        "session.step.started",
-        json!({"sessionID":"fixture","assistantMessageID":"m"}),
-    );
-    wire.v2(
-        "session.reasoning.started",
-        json!({"sessionID":"fixture","assistantMessageID":"m","ordinal":0}),
-    );
+    wire.v2("session.step.started", json!({"sessionID":"fixture","assistantMessageID":"m"}));
+    wire.v2("session.reasoning.started", json!({"sessionID":"fixture","assistantMessageID":"m","ordinal":0}));
     wire.v2(
         "session.reasoning.delta",
         json!({"sessionID":"fixture","assistantMessageID":"m","ordinal":0,"delta":"Thinking"}),
@@ -1837,20 +1524,15 @@ async fn v2_reasoning_deltas_and_failed_tools_reach_the_feed() {
         "session.tool.input.started",
         json!({"sessionID":"fixture","assistantMessageID":"m","id":"c","name":"read"}),
     );
-    wire.v2("session.tool.failed",json!({"sessionID":"fixture","assistantMessageID":"m","id":"c","error":{"message":"Denied"}}));
     wire.v2(
-        "session.execution.succeeded",
-        json!({"sessionID":"fixture"}),
+        "session.tool.failed",
+        json!({"sessionID":"fixture","assistantMessageID":"m","id":"c","error":{"message":"Denied"}}),
     );
+    wire.v2("session.execution.succeeded", json!({"sessionID":"fixture"}));
     let mut reasoning = String::new();
     let mut failed = false;
     loop {
-        match tokio::time::timeout(Duration::from_secs(3), wire.events.recv())
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap()
-        {
+        match tokio::time::timeout(Duration::from_secs(3), wire.events.recv()).await.unwrap().unwrap().unwrap() {
             AgentEvent::ReasoningDelta { text } => reasoning.push_str(&text),
             AgentEvent::ToolResult { is_error, .. } => failed |= is_error,
             AgentEvent::Done { .. } => break,
@@ -1884,19 +1566,11 @@ async fn v2_model_selection_and_prompt_use_the_documented_bodies() {
     wire.request("/prompt").await;
     let posts = wire.posts.lock().unwrap();
     assert_eq!(
-        posts
-            .iter()
-            .find(|(p, _)| p == "/api/session/fixture/model")
-            .unwrap()
-            .1,
+        posts.iter().find(|(p, _)| p == "/api/session/fixture/model").unwrap().1,
         json!({"model":{"providerID":"opencode","id":"muse","variant":"low"}})
     );
     assert_eq!(
-        posts
-            .iter()
-            .find(|(p, _)| p == "/api/session/fixture/prompt")
-            .unwrap()
-            .1,
+        posts.iter().find(|(p, _)| p == "/api/session/fixture/prompt").unwrap().1,
         json!({"text":"first","files":[]})
     );
 }
@@ -1907,7 +1581,10 @@ async fn v2_pending_tool_overflow_fails_the_run_instead_of_growing_forever() {
     wire.request("/api/model").await;
     wire.request("/prompt").await;
     for i in 0..=MAX_PENDING_V2_TOOLS {
-        wire.v2("session.tool.input.started",json!({"sessionID":"other","assistantMessageID":"m","id":format!("c{i}"),"name":"read"}));
+        wire.v2(
+            "session.tool.input.started",
+            json!({"sessionID":"other","assistantMessageID":"m","id":format!("c{i}"),"name":"read"}),
+        );
     }
     assert_eq!(wire.done().await.0, DoneStatus::Errored);
 }
@@ -1928,10 +1605,7 @@ async fn v2_session_model_overflow_drops_the_cache_instead_of_failing_the_run() 
             }),
         );
     }
-    wire.v2(
-        "session.execution.succeeded",
-        json!({"sessionID": "fixture"}),
-    );
+    wire.v2("session.execution.succeeded", json!({"sessionID": "fixture"}));
     assert_eq!(wire.done().await.0, DoneStatus::Completed);
 }
 
@@ -1940,10 +1614,7 @@ async fn v2_external_interrupt_is_not_reported_as_success() {
     let mut wire = TurnWire::start_proto(false, true).await;
     wire.request("/api/model").await;
     wire.request("/prompt").await;
-    wire.v2(
-        "session.execution.interrupted",
-        json!({"sessionID":"fixture","reason":"shutdown"}),
-    );
+    wire.v2("session.execution.interrupted", json!({"sessionID":"fixture","reason":"shutdown"}));
     assert_eq!(wire.done().await.0, DoneStatus::Interrupted);
 }
 
@@ -1957,15 +1628,12 @@ async fn v2_recovered_step_failure_does_not_poison_successful_execution() {
         "session.step.failed",
         json!({"sessionID":"fixture","error":{"type":"provider.rate_limit","message":"Retrying"}}),
     );
+    wire.v2("session.step.started", json!({"sessionID":"fixture","assistantMessageID":"recovered"}));
     wire.v2(
-        "session.step.started",
-        json!({"sessionID":"fixture","assistantMessageID":"recovered"}),
+        "session.text.ended",
+        json!({"sessionID":"fixture","assistantMessageID":"recovered","ordinal":0,"text":"Recovered"}),
     );
-    wire.v2("session.text.ended",json!({"sessionID":"fixture","assistantMessageID":"recovered","ordinal":0,"text":"Recovered"}));
-    wire.v2(
-        "session.execution.succeeded",
-        json!({"sessionID":"fixture"}),
-    );
+    wire.v2("session.execution.succeeded", json!({"sessionID":"fixture"}));
     let (status, text) = wire.done().await;
     assert_eq!(status, DoneStatus::Completed);
     assert_eq!(text, "Recovered");
@@ -1993,30 +1661,10 @@ fn server_version_parsing() {
 async fn detection_routes_and_authentication() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     for (route, body, status, expected) in [
-        (
-            "/api/info",
-            r#"{"version":"2.0.11"}"#,
-            200,
-            Some(Protocol::V2),
-        ),
-        (
-            "/api/status",
-            r#"{"data":{"version":"2.0.4"}}"#,
-            201,
-            Some(Protocol::V2),
-        ),
-        (
-            "/api/health",
-            r#"{"healthy":true,"version":"2.0.3"}"#,
-            200,
-            Some(Protocol::V2),
-        ),
-        (
-            "/global/health",
-            r#"{"version":"1.18.21"}"#,
-            200,
-            Some(Protocol::V1),
-        ),
+        ("/api/info", r#"{"version":"2.0.11"}"#, 200, Some(Protocol::V2)),
+        ("/api/status", r#"{"data":{"version":"2.0.4"}}"#, 201, Some(Protocol::V2)),
+        ("/api/health", r#"{"healthy":true,"version":"2.0.3"}"#, 200, Some(Protocol::V2)),
+        ("/global/health", r#"{"version":"1.18.21"}"#, 200, Some(Protocol::V1)),
         ("/api/info", r#"{"version":" "}"#, 200, None),
         ("/api/info", r#"{"healthy":true}"#, 200, None),
         ("/api/info", "<html>web UI</html>", 200, None),
@@ -2035,23 +1683,23 @@ async fn detection_routes_and_authentication() {
                 let header = String::from_utf8_lossy(&bytes[..n]);
                 let path = header.split_whitespace().nth(1).unwrap();
                 recorded.lock().unwrap().push(path.to_owned());
-                let (code, text) = if path == route {
-                    (status, body)
-                } else {
-                    (404, "{}")
-                };
-                socket.write_all(format!("HTTP/1.1 {code} Response\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{text}", text.len()).as_bytes()).await.unwrap();
+                let (code, text) = if path == route { (status, body) } else { (404, "{}") };
+                socket
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 {code} Response\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{text}",
+                            text.len()
+                        )
+                        .as_bytes(),
+                    )
+                    .await
+                    .unwrap();
             }
         });
         let result = Protocol::detect(&server).await;
         task.abort();
         if status == 401 || status == 403 {
-            assert!(
-                result
-                    .unwrap_err()
-                    .to_string()
-                    .contains("authentication rejected")
-            );
+            assert!(result.unwrap_err().to_string().contains("authentication rejected"));
         } else {
             assert_eq!(result.unwrap(), expected);
             assert_eq!(server.version.get().is_some(), expected.is_some());
@@ -2072,10 +1720,7 @@ fn v2_command_bodies_follow_server_version() {
     }
     for version in ["2.0.4", "v2.0.11", "3.0.0"] {
         let version = ServerVersion::parse(version);
-        assert_eq!(
-            command_body_v2(Some(&version), "test", "args", &[]),
-            json!({"name":"test","text":"args"})
-        );
+        assert_eq!(command_body_v2(Some(&version), "test", "args", &[]), json!({"name":"test","text":"args"}));
         let attachments = vec!["/workspace/image.png".into()];
         assert_eq!(
             command_body_v2(Some(&version), "test", "args", &attachments)["files"],
@@ -2086,21 +1731,9 @@ fn v2_command_bodies_follow_server_version() {
 
 #[tokio::test]
 async fn command_http_failure_errors_turn_without_watchdog() {
-    for (v2, version, key) in [
-        (false, "1.18.21", "command"),
-        (true, "2.0.3", "command"),
-        (true, "2.0.11", "name"),
-    ] {
-        let mut wire = TurnWire::start_config(
-            false,
-            v2,
-            true,
-            None,
-            version,
-            json!({"prompt":"/test args"}),
-            true,
-        )
-        .await;
+    for (v2, version, key) in [(false, "1.18.21", "command"), (true, "2.0.3", "command"), (true, "2.0.11", "name")] {
+        let mut wire =
+            TurnWire::start_config(false, v2, true, None, version, json!({"prompt":"/test args"}), true).await;
         let error = tokio::time::timeout(Duration::from_secs(5), async {
             while let Some(event) = wire.events.recv().await {
                 if let AgentEvent::Done { status, error, .. } = event.unwrap() {
@@ -2133,16 +1766,8 @@ fn agent_model_option_filters_and_preserves_ids() {
     assert_eq!(option.label, "Agent");
     assert_eq!(option.default_choice, "");
     assert_eq!(
-        option
-            .choices
-            .iter()
-            .map(|c| (c.id.as_str(), c.label.as_str()))
-            .collect::<Vec<_>>(),
-        vec![
-            ("", "Server default"),
-            ("build-id", "Build"),
-            ("all-id", "All")
-        ]
+        option.choices.iter().map(|c| (c.id.as_str(), c.label.as_str())).collect::<Vec<_>>(),
+        vec![("", "Server default"), ("build-id", "Build"), ("all-id", "All")]
     );
 }
 
@@ -2155,40 +1780,18 @@ async fn agent_selection_on_create_and_resume() {
                 if resume {
                     overrides["resume"] = json!("fixture");
                 }
-                let mut wire =
-                    TurnWire::start_config(false, v2, true, None, "2.0.11", overrides, false).await;
+                let mut wire = TurnWire::start_config(false, v2, true, None, "2.0.11", overrides, false).await;
                 if v2 {
                     wire.request("/api/model").await;
                 }
-                wire.request(if v2 { "/prompt" } else { "/prompt_async" })
-                    .await;
+                wire.request(if v2 { "/prompt" } else { "/prompt_async" }).await;
                 let posts = wire.posts.lock().unwrap();
-                let selection = posts.iter().find(|(p, _)| {
-                    if resume {
-                        p.ends_with("/agent")
-                    } else {
-                        p.ends_with("/session")
-                    }
-                });
-                let expected = if v2 && agent == "build-id" {
-                    json!("build-id")
-                } else {
-                    Value::Null
-                };
-                assert_eq!(
-                    selection
-                        .map(|(_, b)| b["agent"].clone())
-                        .unwrap_or(Value::Null),
-                    expected
-                );
+                let selection =
+                    posts.iter().find(|(p, _)| if resume { p.ends_with("/agent") } else { p.ends_with("/session") });
+                let expected = if v2 && agent == "build-id" { json!("build-id") } else { Value::Null };
+                assert_eq!(selection.map(|(_, b)| b["agent"].clone()).unwrap_or(Value::Null), expected);
                 if resume && v2 && agent == "build-id" {
-                    assert_eq!(
-                        posts[0],
-                        (
-                            "/api/session/fixture/agent".into(),
-                            json!({"agent":"build-id"})
-                        )
-                    );
+                    assert_eq!(posts[0], ("/api/session/fixture/agent".into(), json!({"agent":"build-id"})));
                 }
             }
         }
@@ -2230,21 +1833,14 @@ fn v2_status_retry_and_progress_vocabulary() {
         json!({"status":"running","metadata":{"sessionId":"child"}})
     );
     assert_eq!(progress[0]["properties"]["part"]["tool"], "task");
-    assert!(
-        normalize_v2_frame(
-            json!({"type":"session.future.event","data":{"sessionID":"s"}}),
-            &mut names
-        )
-        .is_empty()
-    );
+    assert!(normalize_v2_frame(json!({"type":"session.future.event","data":{"sessionID":"s"}}), &mut names).is_empty());
 }
 
 #[tokio::test]
 async fn v2_discovery_settles_and_caches_agents_with_overlapping_models() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let harness =
-        OpencodeHarness::new().with_base_url(format!("http://{}", listener.local_addr().unwrap()));
+    let harness = OpencodeHarness::new().with_base_url(format!("http://{}", listener.local_addr().unwrap()));
     let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
     let recorded = calls.clone();
     let task = tokio::spawn(async move {
@@ -2267,14 +1863,12 @@ async fn v2_discovery_settles_and_caches_agents_with_overlapping_models() {
                     "/api/agent" => json!({"data":[{"id":"agent-id","name":"Agent name","mode":"all","hidden":false}]}),
                     _ => json!({"data":[]}),
                 }
-            }.to_string();
+            }
+            .to_string();
             socket
                 .write_all(
-                    format!(
-                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                        body.len()
-                    )
-                    .as_bytes(),
+                    format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len())
+                        .as_bytes(),
                 )
                 .await
                 .unwrap();
@@ -2283,43 +1877,21 @@ async fn v2_discovery_settles_and_caches_agents_with_overlapping_models() {
     let (first, overlapping) = tokio::join!(harness.models(), harness.models());
     let first = first.unwrap();
     assert_eq!(first.len(), 2);
-    assert_eq!(
-        serde_json::to_value(&first).unwrap(),
-        serde_json::to_value(overlapping.unwrap()).unwrap()
-    );
+    assert_eq!(serde_json::to_value(&first).unwrap(), serde_json::to_value(overlapping.unwrap()).unwrap());
     for model in &first {
         assert_eq!(model.options.len(), 1);
         assert_eq!(model.options[0].id, "agent");
         assert_eq!(model.options[0].choices[1].id, "agent-id");
     }
+    assert_eq!(calls.lock().unwrap().iter().filter(|p| *p == "/api/model").count(), 2, "empty catalog must settle");
     assert_eq!(
-        calls
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|p| *p == "/api/model")
-            .count(),
-        2,
-        "empty catalog must settle"
-    );
-    assert_eq!(
-        calls
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|p| *p == "/api/agent")
-            .count(),
+        calls.lock().unwrap().iter().filter(|p| *p == "/api/agent").count(),
         1,
         "overlapping callers share agents with models"
     );
     harness.models().await.unwrap();
     assert_eq!(
-        calls
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|p| *p == "/api/agent")
-            .count(),
+        calls.lock().unwrap().iter().filter(|p| *p == "/api/agent").count(),
         2,
         "later discovery refreshes agents too"
     );
@@ -2327,10 +1899,7 @@ async fn v2_discovery_settles_and_caches_agents_with_overlapping_models() {
     let _ = task.await;
     let retained = harness.model_catalog(true).await.unwrap();
     assert_eq!(retained.source, "cache");
-    assert_eq!(
-        retained.models, first,
-        "offline refresh retains models and agent options"
-    );
+    assert_eq!(retained.models, first, "offline refresh retains models and agent options");
 }
 
 #[tokio::test]
@@ -2340,25 +1909,14 @@ async fn v2_scheduled_retries_reach_existing_retry_abort() {
     wire.request("/prompt").await;
     wire.v2("session.retry.scheduled", json!({"sessionID":"fixture","assistantMessageID":"m","attempt":RETRY_ABORT_ATTEMPT,"at":123,"error":{"type":"provider.api","message":"overloaded"}}));
     wire.request("/interrupt").await;
-    wire.v2(
-        "session.execution.succeeded",
-        json!({"sessionID":"fixture"}),
-    );
+    wire.v2("session.execution.succeeded", json!({"sessionID":"fixture"}));
     assert_eq!(wire.done().await.0, DoneStatus::Errored);
 }
 
 #[tokio::test]
 async fn stalled_prompt_post_does_not_block_bus_completion() {
-    let mut wire = TurnWire::start_config(
-        false,
-        false,
-        true,
-        None,
-        "1.18.31",
-        json!({"holdPrompt": true}),
-        false,
-    )
-    .await;
+    let mut wire =
+        TurnWire::start_config(false, false, true, None, "1.18.31", json!({"holdPrompt": true}), false).await;
     wire.request("/prompt_async").await;
     wire.status("busy");
     wire.status("idle");
@@ -2369,16 +1927,8 @@ async fn stalled_prompt_post_does_not_block_bus_completion() {
 
 #[tokio::test]
 async fn stalled_prompt_post_has_a_bounded_timeout() {
-    let mut wire = TurnWire::start_config(
-        false,
-        false,
-        true,
-        None,
-        "1.18.31",
-        json!({"holdPrompt": true}),
-        false,
-    )
-    .await;
+    let mut wire =
+        TurnWire::start_config(false, false, true, None, "1.18.31", json!({"holdPrompt": true}), false).await;
     wire.request("/prompt_async").await;
     wire.status("busy");
     tokio::task::yield_now().await;
@@ -2389,16 +1939,7 @@ async fn stalled_prompt_post_has_a_bounded_timeout() {
 
 #[tokio::test]
 async fn ambiguous_idle_polls_status_with_backoff_until_idle() {
-    let mut wire = TurnWire::start_config(
-        false,
-        false,
-        true,
-        None,
-        "1.18.31",
-        json!({"busyPolls": 2}),
-        false,
-    )
-    .await;
+    let mut wire = TurnWire::start_config(false, false, true, None, "1.18.31", json!({"busyPolls": 2}), false).await;
     wire.request("/prompt_async").await;
     wire.status("busy");
     wire.idle();
@@ -2450,37 +1991,33 @@ async fn v2_spawn_names_bind_child_traffic_to_the_parent_chip() {
         wire.request("/api/model").await;
         wire.request("/prompt").await;
         wire.v2("session.execution.started", json!({"sessionID":"fixture"}));
+        wire.v2("session.step.started", json!({"sessionID":"fixture","assistantMessageID":"parent-message"}));
         wire.v2(
-            "session.step.started",
-            json!({"sessionID":"fixture","assistantMessageID":"parent-message"}),
+            "session.tool.input.started",
+            json!({"sessionID":"fixture","assistantMessageID":"parent-message","id":"spawn","name":name}),
         );
-        wire.v2("session.tool.input.started", json!({"sessionID":"fixture","assistantMessageID":"parent-message","id":"spawn","name":name}));
         wire.v2("session.tool.called", json!({"sessionID":"fixture","assistantMessageID":"parent-message","id":"spawn","input":{"description":"Inspect project","prompt":"inspect"}}));
+        wire.v2("session.created", json!({"sessionID":"child","parentID":"fixture","title":"Inspect project"}));
+        wire.v2("session.step.started", json!({"sessionID":"child","assistantMessageID":"child-message"}));
         wire.v2(
-            "session.created",
-            json!({"sessionID":"child","parentID":"fixture","title":"Inspect project"}),
+            "session.text.delta",
+            json!({"sessionID":"child","assistantMessageID":"child-message","ordinal":0,"delta":"child answer"}),
         );
-        wire.v2(
-            "session.step.started",
-            json!({"sessionID":"child","assistantMessageID":"child-message"}),
-        );
-        wire.v2("session.text.delta", json!({"sessionID":"child","assistantMessageID":"child-message","ordinal":0,"delta":"child answer"}));
         wire.v2("session.execution.succeeded", json!({"sessionID":"child"}));
-        wire.v2("session.tool.success", json!({"sessionID":"fixture","assistantMessageID":"parent-message","id":"spawn","content":[]}));
         wire.v2(
-            "session.execution.succeeded",
-            json!({"sessionID":"fixture"}),
+            "session.tool.success",
+            json!({"sessionID":"fixture","assistantMessageID":"parent-message","id":"spawn","content":[]}),
         );
+        wire.v2("session.execution.succeeded", json!({"sessionID":"fixture"}));
         let mut calls = Vec::new();
         let mut child_events = Vec::new();
         tokio::time::timeout(Duration::from_secs(5), async {
             while let Some(event) = wire.events.recv().await {
                 match event.unwrap() {
                     AgentEvent::ToolCall { id, call } => calls.push((id, call)),
-                    AgentEvent::Subagent {
-                        parent_tool_use_id,
-                        event,
-                    } => child_events.push((parent_tool_use_id, event)),
+                    AgentEvent::Subagent { parent_tool_use_id, event } => {
+                        child_events.push((parent_tool_use_id, event))
+                    }
                     AgentEvent::Done { status, .. } => {
                         assert_eq!(status, DoneStatus::Completed);
                         break;
@@ -2491,10 +2028,12 @@ async fn v2_spawn_names_bind_child_traffic_to_the_parent_chip() {
         })
         .await
         .unwrap();
+        assert!(matches!(&calls[0].1, ToolCall::Unknown { name, .. } if name == "Agent: Inspect project"));
         assert!(
-            matches!(&calls[0].1, ToolCall::Unknown { name, .. } if name == "Agent: Inspect project")
+            child_events.iter().any(|(id, event)| id == &calls[0].0
+                && matches!(event.as_ref(), AgentEvent::TextDelta { text } if text == "child answer")),
+            "{name}: {child_events:?}"
         );
-        assert!(child_events.iter().any(|(id, event)| id == &calls[0].0 && matches!(event.as_ref(), AgentEvent::TextDelta { text } if text == "child answer")), "{name}: {child_events:?}");
     }
 }
 
@@ -2528,17 +2067,10 @@ fn native_skill_catalog_rejects_unrepresentable_commands() {
     }
     merge_skill_commands(&mut skills, &json!(commands));
     assert_eq!(skills.len(), 3);
-    assert!(
-        skills[0].command.is_none(),
-        "an invalid command must not poison a valid file skill"
-    );
+    assert!(skills[0].command.is_none(), "an invalid command must not poison a valid file skill");
     assert_eq!(skills[2].path, "opencode-skill:审查-é:ui.v2_test");
     for skill in skills {
-        let invocation = Invocation::Skill {
-            name: skill.name,
-            path: skill.path,
-            command: skill.command,
-        };
+        let invocation = Invocation::Skill { name: skill.name, path: skill.path, command: skill.command };
         assert_eq!(invocation_links(&invocation.link())[0].1, invocation);
     }
 }

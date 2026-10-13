@@ -27,8 +27,8 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::{
     Anchor, AnyElement, AppContext as _, Bounds, Context, Entity, EventEmitter, FocusHandle, InteractiveElement as _,
     IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, ParentElement as _, Pixels, Render,
-    ScrollStrategy, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task, UniformListScrollHandle, Window, anchored,
-    canvas, deferred, div, px, uniform_list,
+    ScrollStrategy, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task,
+    UniformListScrollHandle, Window, anchored, canvas, deferred, div, px, uniform_list,
 };
 use gpui_base::input::{Input, InputEvent, InputState};
 

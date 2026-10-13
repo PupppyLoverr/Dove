@@ -40,20 +40,12 @@ fn percent_decode_path(encoded: &str) -> Option<String> {
 }
 
 pub(crate) fn escape_mention_label(label: &str) -> String {
-    label
-        .replace('\\', "\\\\")
-        .replace('[', "\\[")
-        .replace(']', "\\]")
-        .replace('`', "\\`")
+    label.replace('\\', "\\\\").replace('[', "\\[").replace(']', "\\]").replace('`', "\\`")
 }
 
 pub fn local_file_link(path: &str, is_dir: bool) -> String {
     let path = path.trim_end_matches('/');
-    let basename = path
-        .rsplit('/')
-        .next()
-        .filter(|part| !part.is_empty())
-        .unwrap_or(path);
+    let basename = path.rsplit('/').next().filter(|part| !part.is_empty()).unwrap_or(path);
     format!(
         "[{}]({}{})",
         escape_mention_label(basename),
@@ -67,9 +59,7 @@ pub fn local_path_is_safe(path: &str) -> bool {
         && !path.starts_with('/')
         && !path.contains('\\')
         && !path.chars().any(char::is_control)
-        && !path
-            .split('/')
-            .any(|part| part.is_empty() || part == "." || part == "..")
+        && !path.split('/').any(|part| part.is_empty() || part == "." || part == "..")
 }
 
 /// Only decode canonical chip links, never escaped text or code examples.
@@ -93,8 +83,7 @@ pub fn file_mention_links(text: &str) -> Vec<FileMentionLink> {
             if image_depth > 0 {
                 return None;
             }
-            let pulldown_cmark::Event::Start(pulldown_cmark::Tag::Link { dest_url, .. }) = event
-            else {
+            let pulldown_cmark::Event::Start(pulldown_cmark::Tag::Link { dest_url, .. }) = event else {
                 return None;
             };
             let target = percent_decode_path(dest_url.strip_prefix(FILE_MENTION_SCHEME)?)?;
@@ -109,12 +98,7 @@ pub fn file_mention_links(text: &str) -> Vec<FileMentionLink> {
             if canonical != source && canonical.replace("\\`", "`") != source {
                 return None;
             }
-            Some(FileMentionLink {
-                range,
-                basename: path.rsplit('/').next()?.into(),
-                path: path.into(),
-                is_dir,
-            })
+            Some(FileMentionLink { range, basename: path.rsplit('/').next()?.into(), path: path.into(), is_dir })
         })
         .collect()
 }

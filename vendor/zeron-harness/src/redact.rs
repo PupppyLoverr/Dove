@@ -212,10 +212,7 @@ impl Redactor {
                 if !inner.is_empty() {
                     self.emit(REDACTED);
                 }
-                self.state = State::Hidden {
-                    quote: Some(quote),
-                    masked: !inner.is_empty(),
-                };
+                self.state = State::Hidden { quote: Some(quote), masked: !inner.is_empty() };
             }
         }
     }
@@ -284,15 +281,10 @@ struct LabelParts<'a> {
 }
 
 fn parse_label(word: &str) -> Option<LabelParts<'_>> {
-    let body = word
-        .trim_start_matches(|c: char| matches!(c, '"' | '\'' | '`' | '{' | '[' | '(' | ',' | '-'));
-    let quote = word[..word.len() - body.len()]
-        .chars()
-        .last()
-        .filter(|c| is_quote(*c));
-    let key_len = body
-        .find(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.')))
-        .unwrap_or(body.len());
+    let body = word.trim_start_matches(|c: char| matches!(c, '"' | '\'' | '`' | '{' | '[' | '(' | ',' | '-'));
+    let quote = word[..word.len() - body.len()].chars().last().filter(|c| is_quote(*c));
+    let key_len =
+        body.find(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))).unwrap_or(body.len());
     let key = &body[..key_len];
     // A token-shaped "key" is a secret, never a label to print.
     if !key.starts_with(|c: char| c.is_ascii_alphabetic())
@@ -316,10 +308,7 @@ fn parse_label(word: &str) -> Option<LabelParts<'_>> {
     if rest.starts_with("//") {
         return None;
     }
-    Some(LabelParts {
-        key,
-        rest: Some(rest),
-    })
+    Some(LabelParts { key, rest: Some(rest) })
 }
 
 /// What `key` labels. `access` / `refresh` (OpenCode's and Pi's OAuth
@@ -332,23 +321,15 @@ fn label_kind(key: &str, previous: &str) -> Option<Label> {
     }
     // `status code: 503` is a response code, not a secret.
     let previous = previous.trim_matches(|c: char| !c.is_ascii_alphanumeric());
-    if key == "code"
-        && matches!(
-            previous,
-            "status" | "http" | "exit" | "error" | "response" | "return"
-        )
-    {
+    if key == "code" && matches!(previous, "status" | "http" | "exit" | "error" | "response" | "return") {
         return None;
     }
-    (EXACT_SECRET_KEYS.contains(&key.as_str()) || SECRET_KEYS.iter().any(|k| key.contains(k)))
-        .then_some(Label::Secret)
+    (EXACT_SECRET_KEYS.contains(&key.as_str()) || SECRET_KEYS.iter().any(|k| key.contains(k))).then_some(Label::Secret)
 }
 
 /// `part` after a leading `=>`, `:` or `=`.
 fn strip_separator(part: &str) -> Option<&str> {
-    part.strip_prefix("=>")
-        .or_else(|| part.strip_prefix(':'))
-        .or_else(|| part.strip_prefix('='))
+    part.strip_prefix("=>").or_else(|| part.strip_prefix(':')).or_else(|| part.strip_prefix('='))
 }
 
 fn is_quote(c: char) -> bool {
@@ -392,11 +373,7 @@ fn is_auth_scheme(word: &str) -> bool {
 /// A hidden value's marker: a device code keeps its own, so a sign-in hint
 /// still reads right.
 fn mask(value: &str) -> &'static str {
-    if looks_like_device_code(value) {
-        "[code]"
-    } else {
-        REDACTED
-    }
+    if looks_like_device_code(value) { "[code]" } else { REDACTED }
 }
 
 /// An unquoted value after a secret label, with its trailing punctuation
@@ -459,9 +436,7 @@ const SECRET_PREFIXES: &[&str] = &[
 
 fn redact_word(word: &str, previous: &str) -> String {
     const LEAD: &[char] = &['"', '\'', '(', '[', '<', '{', '`'];
-    const TRAIL: &[char] = &[
-        '"', '\'', '.', ',', ';', ':', ')', ']', '}', '>', '`', '!', '?',
-    ];
+    const TRAIL: &[char] = &['"', '\'', '.', ',', ';', ':', ')', ']', '}', '>', '`', '!', '?'];
     let core_start = word.len() - word.trim_start_matches(LEAD).len();
     let trimmed = &word[core_start..];
     let core = trimmed.trim_end_matches(TRAIL);
@@ -470,11 +445,7 @@ fn redact_word(word: &str, previous: &str) -> String {
         return word.to_string();
     }
     let prev = previous.trim_matches(|c: char| !c.is_ascii_alphanumeric());
-    let redacted = if prev == "bearer" || prev == "basic" {
-        REDACTED.to_string()
-    } else {
-        redact_core(core)
-    };
+    let redacted = if prev == "bearer" || prev == "basic" { REDACTED.to_string() } else { redact_core(core) };
     format!("{lead}{redacted}{trail}")
 }
 
@@ -516,13 +487,7 @@ fn redact_url(url: &str, scheme_end: usize) -> String {
     };
     let path = path
         .split('/')
-        .map(|segment| {
-            if looks_like_secret(segment) || looks_like_device_code(segment) {
-                REDACTED
-            } else {
-                segment
-            }
-        })
+        .map(|segment| if looks_like_secret(segment) || looks_like_device_code(segment) { REDACTED } else { segment })
         .collect::<Vec<_>>()
         .join("/");
     let tail = if tail.is_empty() { "" } else { "?…" };
@@ -533,10 +498,7 @@ fn looks_like_secret(token: &str) -> bool {
     if token.starts_with("eyJ") && token.contains('.') && token.len() > 20 {
         return true;
     }
-    if SECRET_PREFIXES
-        .iter()
-        .any(|p| token.starts_with(p) && token.len() >= p.len() + 8)
-    {
+    if SECRET_PREFIXES.iter().any(|p| token.starts_with(p) && token.len() >= p.len() + 8) {
         return true;
     }
     // A file path is not a secret (and is what makes an error actionable).
@@ -546,9 +508,7 @@ fn looks_like_secret(token: &str) -> bool {
     // Long opaque runs: base64/base64url/hex of 32+ chars with letters AND
     // digits (a long english word doesn't qualify).
     token.len() >= 32
-        && token
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '=' | '_' | '-' | '.'))
+        && token.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '=' | '_' | '-' | '.'))
         && token.chars().any(|c| c.is_ascii_digit())
         && token.chars().any(|c| c.is_ascii_alphabetic())
         && !token.contains("..")
@@ -559,11 +519,7 @@ fn looks_like_secret(token: &str) -> bool {
 fn looks_like_device_code(token: &str) -> bool {
     let groups: Vec<&str> = token.split('-').collect();
     groups.len() >= 2
-        && groups.iter().all(|g| {
-            g.len() >= 4
-                && g.chars()
-                    .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
-        })
+        && groups.iter().all(|g| g.len() >= 4 && g.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit()))
         && token.chars().any(|c| c.is_ascii_digit())
 }
 
@@ -614,10 +570,7 @@ mod tests {
             ("token: abc123def", "token: [redacted]"),
             ("state = secret-value", "state = [redacted]"),
             ("password: hunter2", "password: [redacted]"),
-            (
-                r#""access_token": "abc123""#,
-                r#""access_token": "[redacted]""#,
-            ),
+            (r#""access_token": "abc123""#, r#""access_token": "[redacted]""#),
             (
                 "{\n  \"refresh_token\": \"r-1\",\n  \"expires\": 3600\n}",
                 "{\n  \"refresh_token\": \"[redacted]\",\n  \"expires\": 3600\n}",
@@ -633,22 +586,10 @@ mod tests {
     fn short_labelled_secrets_and_other_auth_schemes_are_redacted() {
         assert_eq!(redact_output("otp: 1234"), "otp: [redacted]");
         assert_eq!(redact_output("state: 7"), "state: [redacted]");
-        assert_eq!(
-            redact_output("Authorization: token abc123def"),
-            "Authorization: token [redacted]"
-        );
-        assert_eq!(
-            redact_output("Authorization: Bearer abc123def"),
-            "Authorization: Bearer [redacted]"
-        );
-        assert_eq!(
-            redact_output("authorization: Negotiate YIIabc"),
-            "authorization: Negotiate [redacted]"
-        );
-        assert_eq!(
-            redact_output("Authorization: abc123def"),
-            "Authorization: [redacted]"
-        );
+        assert_eq!(redact_output("Authorization: token abc123def"), "Authorization: token [redacted]");
+        assert_eq!(redact_output("Authorization: Bearer abc123def"), "Authorization: Bearer [redacted]");
+        assert_eq!(redact_output("authorization: Negotiate YIIabc"), "authorization: Negotiate [redacted]");
+        assert_eq!(redact_output("Authorization: abc123def"), "Authorization: [redacted]");
     }
 
     /// Every case of the consolidated security review (the seven leaks and
@@ -661,61 +602,31 @@ mod tests {
             (" token: token", " token: [redacted]"),
             ("secret = Basic", "secret = [redacted]"),
             // Compact `Authorization:Bearer` still hides the credential.
-            (
-                "Authorization:Bearer abc123def",
-                "Authorization:Bearer [redacted]",
-            ),
+            ("Authorization:Bearer abc123def", "Authorization:Bearer [redacted]"),
             // Parameterised schemes: every parameter, through end-of-line.
-            (
-                "Authorization: Digest username=alice response=abc123 nonce=xyz",
-                "Authorization: Digest [redacted]",
-            ),
+            ("Authorization: Digest username=alice response=abc123 nonce=xyz", "Authorization: Digest [redacted]"),
             (
                 r#"Authorization: Hawk id="dh37", ts="1353832234", nonce="j4h3g2", mac="6R4rV5iE+NPoym+WwjeHzjAGXUtLNIxmo1vpMofpLAE=""#,
                 "Authorization: Hawk [redacted]",
             ),
-            (
-                "Proxy-Authorization: Basic dXNlcjpwYXNz",
-                "Proxy-Authorization: Basic [redacted]",
-            ),
+            ("Proxy-Authorization: Basic dXNlcjpwYXNz", "Proxy-Authorization: Basic [redacted]"),
             (
                 "authorization = Bearer abc, retry=1\nnext line stays",
                 "authorization = Bearer [redacted]\nnext line stays",
             ),
-            (
-                r#"{"Authorization": "Bearer abc def", "x": 1}"#,
-                r#"{"Authorization": "Bearer [redacted]", "x": 1}"#,
-            ),
-            (
-                r#"-H "Authorization: token ghx""#,
-                r#"-H "Authorization: token [redacted]"#,
-            ),
+            (r#"{"Authorization": "Bearer abc def", "x": 1}"#, r#"{"Authorization": "Bearer [redacted]", "x": 1}"#),
+            (r#"-H "Authorization: token ghx""#, r#"-H "Authorization: token [redacted]"#),
             // Quoted values through their closing quote, JSON escapes too.
-            (
-                r#""password": "correct horse battery staple""#,
-                r#""password": "[redacted]""#,
-            ),
+            (r#""password": "correct horse battery staple""#, r#""password": "[redacted]""#),
             (
                 r#""password": "a \"quoted\" pass phrase", "user": "wing""#,
                 r#""password": "[redacted]", "user": "wing""#,
             ),
-            (
-                "password='two words' then text",
-                "password='[redacted]' then text",
-            ),
-            (
-                "password: \"unterminated secret\nvisible line",
-                "password: \"[redacted]\nvisible line",
-            ),
+            ("password='two words' then text", "password='[redacted]' then text"),
+            ("password: \"unterminated secret\nvisible line", "password: \"[redacted]\nvisible line"),
             // OpenCode / Pi OAuth fields, exact keys only.
-            (
-                r#""access": "short-access-secret""#,
-                r#""access": "[redacted]""#,
-            ),
-            (
-                r#""refresh": "short-refresh-secret""#,
-                r#""refresh": "[redacted]""#,
-            ),
+            (r#""access": "short-access-secret""#, r#""access": "[redacted]""#),
+            (r#""refresh": "short-refresh-secret""#, r#""refresh": "[redacted]""#),
             (
                 r#"{"type":"oauth","access":"a1","refresh":"r1","expires":3}"#,
                 r#"{"type":"oauth","access":"[redacted]","refresh":"[redacted]","expires":3}"#,
@@ -734,24 +645,15 @@ mod tests {
             ("exit code: 1", "exit code: 1"),
             // Earlier rounds.
             ("otp: 1234", "otp: [redacted]"),
-            (
-                "Authorization: token abc123def",
-                "Authorization: token [redacted]",
-            ),
+            ("Authorization: token abc123def", "Authorization: token [redacted]"),
             ("Code: WXYZ-9876", "Code: [code]"),
             (r#""code": "ABCD-1234""#, r#""code": "[code]""#),
             ("--token=abc tail", "--token=[redacted] tail"),
             // An unquoted value keeps the rest of its word (a comma may be
             // part of the secret).
             ("a=1,token=2,b=3", "a=1,token=[redacted]"),
-            (
-                "https://auth.example/cb?code=abc&state=xyz",
-                "https://auth.example/cb?…",
-            ),
-            (
-                "redirect=https://auth.example/cb?code=abc",
-                "redirect=https://auth.example/cb?…",
-            ),
+            ("https://auth.example/cb?code=abc&state=xyz", "https://auth.example/cb?…"),
+            ("redirect=https://auth.example/cb?code=abc", "redirect=https://auth.example/cb?…"),
             ("with ghp_abcOTPdefKEYghi0123456789", "with [redacted]"),
         ];
         for (input, want) in cases {
@@ -765,10 +667,7 @@ mod tests {
         assert_eq!(redact_output("HTTP code: 429"), "HTTP code: 429");
         assert_eq!(redact_output("exit code: 1"), "exit code: 1");
         assert_eq!(redact_output("retry after: 30s"), "retry after: 30s");
-        assert_eq!(
-            redact_output("Sign-in failed: network"),
-            "Sign-in failed: network"
-        );
+        assert_eq!(redact_output("Sign-in failed: network"), "Sign-in failed: network");
     }
 
     use super::*;
@@ -788,56 +687,30 @@ mod tests {
     #[test]
     fn urls_keep_their_page_but_lose_parameters_and_userinfo() {
         assert_eq!(
-            redact_output(
-                "Open https://auth.openai.com/oauth/authorize?client_id=x&state=abc&code_challenge=y now"
-            ),
+            redact_output("Open https://auth.openai.com/oauth/authorize?client_id=x&state=abc&code_challenge=y now"),
             "Open https://auth.openai.com/oauth/authorize?… now"
         );
         assert_eq!(
             redact_output("(see https://user:pass@example.com/cb#access_token=zzz)."),
             "(see https://[redacted]@example.com/cb?…)."
         );
-        assert_eq!(
-            redact_output("https://github.com/login/device"),
-            "https://github.com/login/device"
-        );
+        assert_eq!(redact_output("https://github.com/login/device"), "https://github.com/login/device");
     }
 
     #[test]
     fn codes_and_tokens_are_replaced() {
         assert_eq!(redact_output("Code: WXYZ-9876"), "Code: [code]");
-        assert_eq!(
-            redact_output("enter code: ABCD-1234 at the page"),
-            "enter code: [code] at the page"
-        );
-        assert_eq!(
-            redact_output("got eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig back"),
-            "got [redacted] back"
-        );
-        assert_eq!(
-            redact_output("Authorization: Bearer abc.def-123"),
-            "Authorization: Bearer [redacted]"
-        );
-        assert_eq!(
-            redact_output("token gho_16C7e42F292c6912E7710c838347Ae178B4a"),
-            "token [redacted]"
-        );
-        assert_eq!(
-            redact_output("key sk-ant-api03-abcdefghijklmnop"),
-            "key [redacted]"
-        );
-        assert_eq!(
-            redact_output("refresh_token=r1 state=s2 ok"),
-            "refresh_token=[redacted] state=[redacted] ok"
-        );
+        assert_eq!(redact_output("enter code: ABCD-1234 at the page"), "enter code: [code] at the page");
+        assert_eq!(redact_output("got eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig back"), "got [redacted] back");
+        assert_eq!(redact_output("Authorization: Bearer abc.def-123"), "Authorization: Bearer [redacted]");
+        assert_eq!(redact_output("token gho_16C7e42F292c6912E7710c838347Ae178B4a"), "token [redacted]");
+        assert_eq!(redact_output("key sk-ant-api03-abcdefghijklmnop"), "key [redacted]");
+        assert_eq!(redact_output("refresh_token=r1 state=s2 ok"), "refresh_token=[redacted] state=[redacted] ok");
         assert_eq!(
             redact_output(r#"{"access_token":"abc","expires_in":3600}"#),
             r#"{"access_token":"[redacted]","expires_in":3600}"#
         );
-        assert_eq!(
-            redact_output("digest 3f786850e387550fdab836ed7e6dc881de23001b"),
-            "digest [redacted]"
-        );
+        assert_eq!(redact_output("digest 3f786850e387550fdab836ed7e6dc881de23001b"), "digest [redacted]");
         // Paths stay readable.
         let path = "/tmp/zeron/data/agent-accounts/.login-0123456789abcdef/auth.json";
         assert_eq!(redact_output(path), path);
@@ -846,9 +719,6 @@ mod tests {
     #[test]
     fn escapes_are_stripped_first() {
         assert_eq!(redact_output("\u{1b}[94mQRST-5678\u{1b}[0m"), "[code]");
-        assert_eq!(
-            strip_ansi("\u{1b}]8;;https://a\u{7}link\u{1b}]8;;\u{7} \u{1b}[1mbold\u{1b}[0m"),
-            "link bold"
-        );
+        assert_eq!(strip_ansi("\u{1b}]8;;https://a\u{7}link\u{1b}]8;;\u{7} \u{1b}[1mbold\u{1b}[0m"), "link bold");
     }
 }

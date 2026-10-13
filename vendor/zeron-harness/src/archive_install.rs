@@ -88,12 +88,7 @@ fn install_dir(name: &str, version: &str) -> Option<PathBuf> {
 }
 
 /// the entry of a completed install whose marker matches, `None` when absent.
-pub fn installed_entry_with_marker(
-    name: &str,
-    version: &str,
-    entry: &str,
-    marker: &str,
-) -> Option<PathBuf> {
+pub fn installed_entry_with_marker(name: &str, version: &str, entry: &str, marker: &str) -> Option<PathBuf> {
     let dir = install_dir(name, version)?;
     if std::fs::read_to_string(dir.join(OK_MARKER)).ok()?.trim() != marker {
         return None;
@@ -126,10 +121,7 @@ pub(crate) fn installed_versions(name: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-pub async fn ensure_installed(
-    pin: ArchivePin,
-    display_name: &str,
-) -> Result<PathBuf, HarnessError> {
+pub async fn ensure_installed(pin: ArchivePin, display_name: &str) -> Result<PathBuf, HarnessError> {
     install(Source::from(&pin), display_name, |_| async { Ok(()) }).await
 }
 
@@ -147,17 +139,12 @@ where
     install(Source::from(release), display_name, verify).await
 }
 
-async fn install<F, Fut>(
-    source: Source<'_>,
-    display_name: &str,
-    verify: F,
-) -> Result<PathBuf, HarnessError>
+async fn install<F, Fut>(source: Source<'_>, display_name: &str, verify: F) -> Result<PathBuf, HarnessError>
 where
     F: FnOnce(PathBuf) -> Fut,
     Fut: std::future::Future<Output = Result<(), HarnessError>>,
 {
-    let installed =
-        || installed_entry_with_marker(source.name, source.version, source.entry, source.marker);
+    let installed = || installed_entry_with_marker(source.name, source.version, source.entry, source.marker);
     if let Some(entry) = installed() {
         return Ok(entry);
     }
@@ -166,16 +153,10 @@ where
         return Ok(entry);
     }
 
-    let root = adapters_root().ok_or_else(|| {
-        HarnessError::Install("cannot locate an adapters directory (HOME is unset)".into())
-    })?;
+    let root = adapters_root()
+        .ok_or_else(|| HarnessError::Install("cannot locate an adapters directory (HOME is unset)".into()))?;
     let final_dir = install_dir(source.name, source.version).expect("root resolved");
-    let tmp_dir = root.join(format!(
-        ".tmp-{}-{}-{}",
-        source.name,
-        source.version,
-        std::process::id()
-    ));
+    let tmp_dir = root.join(format!(".tmp-{}-{}-{}", source.name, source.version, std::process::id()));
     let _ = std::fs::remove_dir_all(&tmp_dir);
     std::fs::create_dir_all(&tmp_dir)?;
     tracing::info!(
@@ -212,11 +193,7 @@ where
     })
 }
 
-async fn download_and_extract(
-    source: &Source<'_>,
-    dir: &Path,
-    display_name: &str,
-) -> Result<(), HarnessError> {
+async fn download_and_extract(source: &Source<'_>, dir: &Path, display_name: &str) -> Result<(), HarnessError> {
     let archive = dir.join("download.zip");
     download(source, &archive, display_name).await?;
     extract_zip(&archive, dir).await?;
@@ -232,16 +209,10 @@ async fn download_and_extract(
     Ok(())
 }
 
-async fn download(
-    source: &Source<'_>,
-    dest: &Path,
-    display_name: &str,
-) -> Result<(), HarnessError> {
+async fn download(source: &Source<'_>, dest: &Path, display_name: &str) -> Result<(), HarnessError> {
     let url = source.url;
     let failed = |detail: String| {
-        HarnessError::Install(format!(
-            "download of the {display_name} ACP server ({url}) failed: {detail}"
-        ))
+        HarnessError::Install(format!("download of the {display_name} ACP server ({url}) failed: {detail}"))
     };
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(30))
@@ -253,10 +224,7 @@ async fn download(
         .await
         .and_then(reqwest::Response::error_for_status)
         .map_err(|e| failed(e.to_string()))?;
-    if response
-        .content_length()
-        .is_some_and(|length| length > MAX_ARCHIVE_BYTES)
-    {
+    if response.content_length().is_some_and(|length| length > MAX_ARCHIVE_BYTES) {
         return Err(failed(format!(
             "server reported an archive larger than the {} MiB limit",
             MAX_ARCHIVE_BYTES / (1024 * 1024)
@@ -269,12 +237,7 @@ async fn download(
     loop {
         let chunk = tokio::time::timeout(STALL_TIMEOUT, body.next())
             .await
-            .map_err(|_| {
-                failed(format!(
-                    "no data for {}s — check your network",
-                    STALL_TIMEOUT.as_secs()
-                ))
-            })?;
+            .map_err(|_| failed(format!("no data for {}s — check your network", STALL_TIMEOUT.as_secs())))?;
         match chunk {
             Some(Ok(bytes)) => {
                 received = received.saturating_add(bytes.len() as u64);
@@ -296,9 +259,7 @@ async fn download(
     if let Some(expected) = source.sha512
         && actual != expected
     {
-        return Err(failed(format!(
-            "SHA-512 mismatch (expected {expected}, got {actual})"
-        )));
+        return Err(failed(format!("SHA-512 mismatch (expected {expected}, got {actual})")));
     }
     Ok(())
 }
@@ -308,9 +269,7 @@ pub(crate) async fn extract_zip(archive: &Path, dest: &Path) -> Result<(), Harne
     let dest = dest.to_owned();
     tokio::task::spawn_blocking(move || extract_zip_blocking(&archive, &dest))
         .await
-        .map_err(|error| {
-            HarnessError::Install(format!("archive extraction task failed: {error}"))
-        })?
+        .map_err(|error| HarnessError::Install(format!("archive extraction task failed: {error}")))?
 }
 
 fn archive_entry_path(
@@ -318,15 +277,11 @@ fn archive_entry_path(
     enclosed_name: Option<&Path>,
     unix_mode: Option<u32>,
 ) -> Result<PathBuf, HarnessError> {
-    let name = enclosed_name
-        .ok_or_else(|| HarnessError::Install("archive contains an unsafe entry path".into()))?;
+    let name = enclosed_name.ok_or_else(|| HarnessError::Install("archive contains an unsafe entry path".into()))?;
     if let Some(mode) = unix_mode {
         let kind = mode & 0o170000;
         if !matches!(kind, 0 | 0o040000 | 0o100000) {
-            return Err(HarnessError::Install(format!(
-                "archive entry {} is a link or special file",
-                name.display()
-            )));
+            return Err(HarnessError::Install(format!("archive entry {} is a link or special file", name.display())));
         }
     }
     Ok(dest.join(name))
@@ -334,8 +289,8 @@ fn archive_entry_path(
 
 fn extract_zip_blocking(archive_path: &Path, dest: &Path) -> Result<(), HarnessError> {
     let file = std::fs::File::open(archive_path)?;
-    let mut archive = zip::ZipArchive::new(file)
-        .map_err(|error| HarnessError::Install(format!("invalid zip archive: {error}")))?;
+    let mut archive =
+        zip::ZipArchive::new(file).map_err(|error| HarnessError::Install(format!("invalid zip archive: {error}")))?;
     if archive.len() > MAX_ARCHIVE_ENTRIES {
         return Err(HarnessError::Install(format!(
             "archive has {} entries, exceeding the {MAX_ARCHIVE_ENTRIES} entry limit",
@@ -344,12 +299,12 @@ fn extract_zip_blocking(archive_path: &Path, dest: &Path) -> Result<(), HarnessE
     }
     let mut extracted = 0_u64;
     for index in 0..archive.len() {
-        let mut entry = archive.by_index(index).map_err(|error| {
-            HarnessError::Install(format!("could not read archive entry {index}: {error}"))
-        })?;
-        extracted = extracted.checked_add(entry.size()).ok_or_else(|| {
-            HarnessError::Install("archive's extracted size overflows its limit".into())
-        })?;
+        let mut entry = archive
+            .by_index(index)
+            .map_err(|error| HarnessError::Install(format!("could not read archive entry {index}: {error}")))?;
+        extracted = extracted
+            .checked_add(entry.size())
+            .ok_or_else(|| HarnessError::Install("archive's extracted size overflows its limit".into()))?;
         if extracted > MAX_EXTRACTED_BYTES {
             return Err(HarnessError::Install(format!(
                 "archive expands beyond the {} MiB limit",
@@ -359,9 +314,7 @@ fn extract_zip_blocking(archive_path: &Path, dest: &Path) -> Result<(), HarnessE
         let enclosed_name = entry.enclosed_name();
         let output = archive_entry_path(dest, enclosed_name.as_deref(), entry.unix_mode())?;
         if output == archive_path {
-            return Err(HarnessError::Install(
-                "archive attempts to overwrite its download file".into(),
-            ));
+            return Err(HarnessError::Install("archive attempts to overwrite its download file".into()));
         }
         if entry.is_dir() {
             std::fs::create_dir_all(&output)?;
@@ -431,10 +384,7 @@ mod tests {
         extract_zip(&archive, dest.path()).await.unwrap();
         mark_executables(dest.path()).unwrap();
         for name in ["server.par", "helper"] {
-            let mode = std::fs::metadata(dest.path().join(name))
-                .unwrap()
-                .permissions()
-                .mode();
+            let mode = std::fs::metadata(dest.path().join(name)).unwrap().permissions().mode();
             assert_eq!(mode & 0o111, 0o111, "{name} is executable");
         }
     }
@@ -445,10 +395,7 @@ mod tests {
         let archive = dir.path().join("broken.zip");
         std::fs::write(&archive, "not a zip").unwrap();
         let error = extract_zip(&archive, dir.path()).await.unwrap_err();
-        assert!(
-            matches!(error, HarnessError::Install(ref m) if m.contains("invalid zip archive")),
-            "{error}"
-        );
+        assert!(matches!(error, HarnessError::Install(ref m) if m.contains("invalid zip archive")), "{error}");
     }
 
     #[test]
@@ -487,55 +434,42 @@ mod tests {
             );
             return;
         }
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap()
-            .block_on(async {
-                let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
-                zip.start_file("server", zip::write::SimpleFileOptions::default())
-                    .unwrap();
-                zip.write_all(b"#!/bin/sh\n").unwrap();
-                let bytes = zip.finish().unwrap().into_inner();
-                let url = serve(bytes).await;
-                let release = VerifiedRelease {
-                    name: "verified-acp",
-                    version: "2.0.0",
-                    url: &url,
-                    entry: "server",
-                    marker: "vendor-signature",
-                };
+        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+            let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+            zip.start_file("server", zip::write::SimpleFileOptions::default()).unwrap();
+            zip.write_all(b"#!/bin/sh\n").unwrap();
+            let bytes = zip.finish().unwrap().into_inner();
+            let url = serve(bytes).await;
+            let release = VerifiedRelease {
+                name: "verified-acp",
+                version: "2.0.0",
+                url: &url,
+                entry: "server",
+                marker: "vendor-signature",
+            };
 
-                let rejected = install_verified(&release, "Test", |dir| async move {
-                    assert!(dir.join("server").is_file());
-                    Err(HarnessError::Install("not signed".into()))
-                })
-                .await
-                .unwrap_err();
-                assert!(rejected.to_string().contains("not signed"), "{rejected}");
-                let root = adapters_root().unwrap();
-                assert!(!root.join("verified-acp").exists());
-                assert!(
-                    std::fs::read_dir(&root)
-                        .unwrap()
-                        .flatten()
-                        .all(|entry| !entry.file_name().to_string_lossy().starts_with(".tmp-")),
-                    "the rejected download is discarded"
-                );
+            let rejected = install_verified(&release, "Test", |dir| async move {
+                assert!(dir.join("server").is_file());
+                Err(HarnessError::Install("not signed".into()))
+            })
+            .await
+            .unwrap_err();
+            assert!(rejected.to_string().contains("not signed"), "{rejected}");
+            let root = adapters_root().unwrap();
+            assert!(!root.join("verified-acp").exists());
+            assert!(
+                std::fs::read_dir(&root)
+                    .unwrap()
+                    .flatten()
+                    .all(|entry| !entry.file_name().to_string_lossy().starts_with(".tmp-")),
+                "the rejected download is discarded"
+            );
 
-                let entry = install_verified(&release, "Test", |_| async { Ok(()) })
-                    .await
-                    .unwrap();
-                assert_eq!(entry, root.join("verified-acp/2.0.0/server"));
-                assert_eq!(
-                    installed_versions("verified-acp"),
-                    vec![("2.0.0".to_owned(), "vendor-signature".to_owned())]
-                );
-                assert_eq!(
-                    installed_entry_with_marker("verified-acp", "2.0.0", "server", "other"),
-                    None
-                );
-            });
+            let entry = install_verified(&release, "Test", |_| async { Ok(()) }).await.unwrap();
+            assert_eq!(entry, root.join("verified-acp/2.0.0/server"));
+            assert_eq!(installed_versions("verified-acp"), vec![("2.0.0".to_owned(), "vendor-signature".to_owned())]);
+            assert_eq!(installed_entry_with_marker("verified-acp", "2.0.0", "server", "other"), None);
+        });
     }
 
     /// answer every request with `body`, returning the url to fetch it.
@@ -556,10 +490,8 @@ mod tests {
                             Ok(read) => headers.extend_from_slice(&buf[..read]),
                         }
                     }
-                    let head = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                        body.len()
-                    );
+                    let head =
+                        format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
                     let _ = socket.write_all(head.as_bytes()).await;
                     let _ = socket.write_all(&body).await;
                     let _ = socket.shutdown().await;

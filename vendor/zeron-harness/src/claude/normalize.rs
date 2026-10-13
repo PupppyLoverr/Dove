@@ -70,35 +70,20 @@ fn opt_str_field(input: &Value, key: &str) -> Option<String> {
 /// Decode a Claude `tool_use` block (name + input) into a typed [`ToolCall`].
 pub(crate) fn decode_tool_use(name: &str, input: &Value) -> ToolCall {
     match name {
-        "Bash" => ToolCall::Exec {
-            command: str_field(input, "command"),
-        },
-        "Read" => ToolCall::ReadFile {
-            path: str_field(input, "file_path"),
-        },
-        "Write" => ToolCall::WriteFile {
-            path: str_field(input, "file_path"),
-            content: opt_str_field(input, "content"),
-        },
+        "Bash" => ToolCall::Exec { command: str_field(input, "command") },
+        "Read" => ToolCall::ReadFile { path: str_field(input, "file_path") },
+        "Write" => {
+            ToolCall::WriteFile { path: str_field(input, "file_path"), content: opt_str_field(input, "content") }
+        }
         "Edit" => ToolCall::EditFile {
             path: str_field(input, "file_path"),
             old_string: opt_str_field(input, "old_string"),
             new_string: opt_str_field(input, "new_string"),
         },
-        "Grep" => ToolCall::Search {
-            pattern: str_field(input, "pattern"),
-            path: opt_str_field(input, "path"),
-        },
-        "Glob" => ToolCall::Glob {
-            pattern: str_field(input, "pattern"),
-        },
-        "WebFetch" => ToolCall::WebFetch {
-            url: str_field(input, "url"),
-            prompt: opt_str_field(input, "prompt"),
-        },
-        "WebSearch" => ToolCall::WebSearch {
-            query: str_field(input, "query"),
-        },
+        "Grep" => ToolCall::Search { pattern: str_field(input, "pattern"), path: opt_str_field(input, "path") },
+        "Glob" => ToolCall::Glob { pattern: str_field(input, "pattern") },
+        "WebFetch" => ToolCall::WebFetch { url: str_field(input, "url"), prompt: opt_str_field(input, "prompt") },
+        "WebSearch" => ToolCall::WebSearch { query: str_field(input, "query") },
         "TodoWrite" => ToolCall::Todo {
             items: input
                 .get("todos")
@@ -120,11 +105,7 @@ pub(crate) fn decode_tool_use(name: &str, input: &Value) -> ToolCall {
         "Agent" | "Task" => {
             let description = str_field(input, "description");
             ToolCall::Unknown {
-                name: if description.is_empty() {
-                    "Agent".into()
-                } else {
-                    format!("Agent: {description}")
-                },
+                name: if description.is_empty() { "Agent".into() } else { format!("Agent: {description}") },
                 input: (!input.is_null()).then(|| input.clone()),
             }
         }
@@ -135,10 +116,7 @@ pub(crate) fn decode_tool_use(name: &str, input: &Value) -> ToolCall {
                 tool: tool.into(),
                 input: (!input.is_null()).then(|| input.clone()),
             },
-            None => ToolCall::Unknown {
-                name: name.into(),
-                input: (!input.is_null()).then(|| input.clone()),
-            },
+            None => ToolCall::Unknown { name: name.into(), input: (!input.is_null()).then(|| input.clone()) },
         },
     }
 }
@@ -149,10 +127,7 @@ fn new_message_id() -> String {
 
 /// Wrap an event as subagent-attributed traffic.
 fn tag(parent: &str, event: AgentEvent) -> AgentEvent {
-    AgentEvent::Subagent {
-        parent_tool_use_id: parent.to_owned(),
-        event: Box::new(event),
-    }
+    AgentEvent::Subagent { parent_tool_use_id: parent.to_owned(), event: Box::new(event) }
 }
 
 /// CLI-synthesized text that rides a user frame but is NOT conversation:
@@ -240,19 +215,16 @@ impl Normalizer {
     fn restore_spawns(config_root: &std::path::Path, session_id: &str) -> Self {
         use std::io::BufRead as _;
         let mut norm = Self::new();
-        if session_id.is_empty()
-            || !session_id
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '-')
-        {
+        if session_id.is_empty() || !session_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
             return norm;
         }
         let Ok(projects) = std::fs::read_dir(config_root.join("projects")) else {
             return norm;
         };
-        let Some(file) = projects.flatten().find_map(|project| {
-            std::fs::File::open(project.path().join(format!("{session_id}.jsonl"))).ok()
-        }) else {
+        let Some(file) = projects
+            .flatten()
+            .find_map(|project| std::fs::File::open(project.path().join(format!("{session_id}.jsonl"))).ok())
+        else {
             return norm;
         };
         let mut reader = std::io::BufReader::with_capacity(1 << 16, file);
@@ -267,10 +239,7 @@ impl Normalizer {
             let Ok(text) = std::str::from_utf8(&line) else {
                 continue;
             };
-            if !(text.contains("\"Agent\"")
-                || text.contains("\"Task\"")
-                || text.contains("agentId"))
-            {
+            if !(text.contains("\"Agent\"") || text.contains("\"Task\"") || text.contains("agentId")) {
                 continue;
             }
             let Ok(record) = serde_json::from_str::<Value>(text) else {
@@ -289,35 +258,23 @@ impl Normalizer {
                 Some("assistant") => {
                     for block in blocks {
                         if block.get("type").and_then(Value::as_str) == Some("tool_use")
-                            && matches!(
-                                block.get("name").and_then(Value::as_str),
-                                Some("Agent" | "Task")
-                            )
-                            && let Some(id) = block
-                                .get("id")
-                                .and_then(Value::as_str)
-                                .filter(|id| !id.is_empty())
+                            && matches!(block.get("name").and_then(Value::as_str), Some("Agent" | "Task"))
+                            && let Some(id) = block.get("id").and_then(Value::as_str).filter(|id| !id.is_empty())
                         {
                             norm.agent_spawn_tools.insert(id.to_owned());
                         }
                     }
                 }
                 Some("user") => {
-                    if let Some(agent) = record
-                        .pointer("/toolUseResult/agentId")
-                        .and_then(Value::as_str)
-                        .filter(|id| !id.is_empty())
+                    if let Some(agent) =
+                        record.pointer("/toolUseResult/agentId").and_then(Value::as_str).filter(|id| !id.is_empty())
                         && let Some(spawn) = blocks
                             .iter()
-                            .filter(|b| {
-                                b.get("type").and_then(Value::as_str) == Some("tool_result")
-                            })
+                            .filter(|b| b.get("type").and_then(Value::as_str) == Some("tool_result"))
                             .filter_map(|b| b.get("tool_use_id").and_then(Value::as_str))
                             .find(|id| norm.agent_spawn_tools.contains(*id))
                     {
-                        norm.agent_tasks
-                            .entry(agent.to_owned())
-                            .or_insert_with(|| spawn.to_owned());
+                        norm.agent_tasks.entry(agent.to_owned()).or_insert_with(|| spawn.to_owned());
                     }
                 }
                 _ => {}
@@ -367,21 +324,11 @@ impl Normalizer {
                     let status = match f.status.as_deref().unwrap_or("") {
                         "completed" | "complete" | "succeeded" | "success" => DoneStatus::Completed,
                         "failed" | "errored" | "error" => DoneStatus::Errored,
-                        "killed" | "cancelled" | "canceled" | "stopped" | "interrupted" => {
-                            DoneStatus::Interrupted
-                        }
+                        "killed" | "cancelled" | "canceled" | "stopped" | "interrupted" => DoneStatus::Interrupted,
                         // Non-terminal notification shapes: nothing to close.
                         _ => return Vec::new(),
                     };
-                    return vec![tag(
-                        parent,
-                        AgentEvent::Done {
-                            status,
-                            result: None,
-                            error: None,
-                            session_id: None,
-                        },
-                    )];
+                    return vec![tag(parent, AgentEvent::Done { status, result: None, error: None, session_id: None })];
                 }
                 // An AGENT task starting (subagent_type present — subagent-
                 // owned shell tasks carry the same subtype without it):
@@ -393,13 +340,9 @@ impl Normalizer {
                         f.tool_use_id.as_deref().filter(|t| !t.is_empty()),
                     )
                 {
-                    let spawn = self
-                        .agent_tasks
-                        .entry(task.to_owned())
-                        .or_insert_with(|| tool.to_owned());
+                    let spawn = self.agent_tasks.entry(task.to_owned()).or_insert_with(|| tool.to_owned());
                     self.agent_spawn_tools.insert(spawn.clone());
-                    self.agent_tool_spawns
-                        .insert(tool.to_owned(), spawn.clone());
+                    self.agent_tool_spawns.insert(tool.to_owned(), spawn.clone());
                     return Vec::new();
                 }
                 if f.subtype != "init" || self.saw_init {
@@ -432,38 +375,24 @@ impl Normalizer {
                 if let Some(parent) = &f.parent_tool_use_id {
                     let parent = self.agent_tool_spawns.get(parent).unwrap_or(parent);
                     return match f.event.delta.kind.as_str() {
-                        "text_delta" => vec![tag(
-                            parent,
-                            AgentEvent::TextDelta {
-                                text: f.event.delta.text,
-                            },
-                        )],
-                        "thinking_delta" if !f.event.delta.thinking.is_empty() => vec![tag(
-                            parent,
-                            AgentEvent::ReasoningDelta {
-                                text: f.event.delta.thinking,
-                            },
-                        )],
+                        "text_delta" => vec![tag(parent, AgentEvent::TextDelta { text: f.event.delta.text })],
+                        "thinking_delta" if !f.event.delta.thinking.is_empty() => {
+                            vec![tag(parent, AgentEvent::ReasoningDelta { text: f.event.delta.thinking })]
+                        }
                         // Subagent liveness heartbeats have no consumer; the
                         // parent turn is already done (eager-done policy).
                         _ => Vec::new(),
                     };
                 }
                 match f.event.delta.kind.as_str() {
-                    "text_delta" => vec![AgentEvent::TextDelta {
-                        text: f.event.delta.text,
-                    }],
-                    "thinking_delta" => vec![AgentEvent::ReasoningDelta {
-                        text: f.event.delta.thinking,
-                    }],
+                    "text_delta" => vec![AgentEvent::TextDelta { text: f.event.delta.text }],
+                    "thinking_delta" => vec![AgentEvent::ReasoningDelta { text: f.event.delta.thinking }],
                     // A big tool input (a 90-line Write) streams as a long run
                     // of input_json_delta frames with nothing else — minutes of
                     // apparent silence that reads as a stalled run. Surface
                     // them as empty reasoning deltas: the engine treats those
                     // as pure liveness heartbeats (never journaled/rendered).
-                    "input_json_delta" => vec![AgentEvent::ReasoningDelta {
-                        text: String::new(),
-                    }],
+                    "input_json_delta" => vec![AgentEvent::ReasoningDelta { text: String::new() }],
                     _ => Vec::new(),
                 }
             }
@@ -480,29 +409,18 @@ impl Normalizer {
                         .message
                         .blocks()
                         .filter_map(|b: ContentBlock| match b.kind.as_str() {
-                            "text" if !b.text.is_empty() => Some(tag(
-                                parent,
-                                AgentEvent::TextDelta {
-                                    text: format!("{}\n\n", b.text.trim_end()),
-                                },
-                            )),
+                            "text" if !b.text.is_empty() => {
+                                Some(tag(parent, AgentEvent::TextDelta { text: format!("{}\n\n", b.text.trim_end()) }))
+                            }
                             "tool_use" => Some(tag(
                                 parent,
-                                AgentEvent::ToolCall {
-                                    id: b.id.clone(),
-                                    call: decode_tool_use(&b.name, &b.input),
-                                },
+                                AgentEvent::ToolCall { id: b.id.clone(), call: decode_tool_use(&b.name, &b.input) },
                             )),
                             _ => None,
                         })
                         .collect();
                     if let Some(code) = &f.error {
-                        out.push(tag(
-                            parent,
-                            AgentEvent::Error {
-                                message: assistant_error_text(code),
-                            },
-                        ));
+                        out.push(tag(parent, AgentEvent::Error { message: assistant_error_text(code) }));
                     }
                     return out;
                 }
@@ -518,10 +436,7 @@ impl Normalizer {
                     .blocks()
                     .filter(|b: &ContentBlock| b.kind == "tool_use")
                     .flat_map(|b| {
-                        let call = AgentEvent::ToolCall {
-                            id: b.id.clone(),
-                            call: decode_tool_use(&b.name, &b.input),
-                        };
+                        let call = AgentEvent::ToolCall { id: b.id.clone(), call: decode_tool_use(&b.name, &b.input) };
                         // A spawn's `prompt` is the subagent's opening user
                         // message — the wire never echoes it on the child
                         // feed (child user frames carry tool results and
@@ -532,35 +447,21 @@ impl Normalizer {
                             .flatten()
                             .and_then(Value::as_str)
                             .filter(|p| !p.trim().is_empty())
-                            .map(|prompt| {
-                                tag(
-                                    &b.id,
-                                    AgentEvent::UserMessage {
-                                        text: prompt.to_owned(),
-                                    },
-                                )
-                            });
+                            .map(|prompt| tag(&b.id, AgentEvent::UserMessage { text: prompt.to_owned() }));
                         // A SendMessage steer never echoes on the child feed
                         // (live-verified) — surface it from the parent's own
                         // call, re-keyed onto the spawn it addresses.
                         let steer = (b.name == "SendMessage")
                             .then(|| {
-                                let to = ["to", "recipient"]
-                                    .iter()
-                                    .find_map(|k| b.input.get(*k))
-                                    .and_then(Value::as_str)?;
+                                let to =
+                                    ["to", "recipient"].iter().find_map(|k| b.input.get(*k)).and_then(Value::as_str)?;
                                 let spawn = self.agent_tasks.get(to)?;
                                 let text = ["message", "content"]
                                     .iter()
                                     .find_map(|k| b.input.get(*k))
                                     .and_then(Value::as_str)
                                     .filter(|m| !m.trim().is_empty())?;
-                                Some(tag(
-                                    spawn,
-                                    AgentEvent::UserMessage {
-                                        text: text.to_owned(),
-                                    },
-                                ))
+                                Some(tag(spawn, AgentEvent::UserMessage { text: text.to_owned() }))
                             })
                             .flatten();
                         std::iter::once(call).chain(opening).chain(steer)
@@ -568,39 +469,25 @@ impl Normalizer {
                     .collect();
                 self.last_model = f.message.model.clone().or(self.last_model.take());
                 if let Some(usage) = &f.message.usage {
-                    let fields = [
-                        "input_tokens",
-                        "cache_read_input_tokens",
-                        "cache_creation_input_tokens",
-                    ];
-                    if fields
-                        .iter()
-                        .any(|key| usage.get(*key).and_then(Value::as_u64).is_some())
-                    {
+                    let fields = ["input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"];
+                    if fields.iter().any(|key| usage.get(*key).and_then(Value::as_u64).is_some()) {
                         let tokens = fields
                             .iter()
                             .filter_map(|key| usage.get(*key).and_then(Value::as_u64))
                             .fold(0u64, u64::saturating_add);
-                        out.push(AgentEvent::ContextUsage {
-                            tokens: Some(tokens),
-                            window: None,
-                        });
+                        out.push(AgentEvent::ContextUsage { tokens: Some(tokens), window: None });
                     }
                 }
                 // A failed turn (usage limit, billing, auth, overloaded, …)
                 // carries a terse `error` code here — often with empty content
                 // and no `result` error — so surface it visibly.
                 if let Some(code) = &f.error {
-                    out.push(AgentEvent::Error {
-                        message: assistant_error_text(code),
-                    });
+                    out.push(AgentEvent::Error { message: assistant_error_text(code) });
                 }
                 // The enclosing assistant frame closes the streamed message
                 // item; rotate so post-boundary deltas get a fresh id.
                 let (prev, _next) = self.rotate_for_steer();
-                out.push(AgentEvent::AssistantMessageCompleted {
-                    assistant_message_id: prev,
-                });
+                out.push(AgentEvent::AssistantMessageCompleted { assistant_message_id: prev });
                 out
             }
 
@@ -634,9 +521,7 @@ impl Normalizer {
                         f.message
                             .blocks()
                             .filter(|b: &ContentBlock| {
-                                b.kind == "text"
-                                    && !b.text.trim().is_empty()
-                                    && !is_synthetic_user_text(&b.text)
+                                b.kind == "text" && !b.text.trim().is_empty() && !is_synthetic_user_text(&b.text)
                             })
                             .map(|b| tag(parent, AgentEvent::UserMessage { text: b.text })),
                     );
@@ -696,34 +581,21 @@ impl Normalizer {
                     .and_then(|model| {
                         f.model_usage.get(model).or_else(|| {
                             f.model_usage.values().find(|entry| {
-                                entry.get("canonicalModel").and_then(Value::as_str)
-                                    == Some(model.as_str())
+                                entry.get("canonicalModel").and_then(Value::as_str) == Some(model.as_str())
                             })
                         })
                     })
-                    .or_else(|| {
-                        (f.model_usage.len() == 1)
-                            .then(|| f.model_usage.values().next())
-                            .flatten()
-                    });
-                let window = model_usage
-                    .and_then(|entry| entry.get("contextWindow"))
-                    .and_then(Value::as_u64)
-                    .filter(|n| *n > 0);
+                    .or_else(|| (f.model_usage.len() == 1).then(|| f.model_usage.values().next()).flatten());
+                let window =
+                    model_usage.and_then(|entry| entry.get("contextWindow")).and_then(Value::as_u64).filter(|n| *n > 0);
                 if let Some(id) = &f.session_id {
                     self.session_id = Some(id.clone());
                 }
-                let usage = AgentEvent::Usage {
-                    input_tokens: f.usage.input_tokens,
-                    output_tokens: f.usage.output_tokens,
-                };
+                let usage =
+                    AgentEvent::Usage { input_tokens: f.usage.input_tokens, output_tokens: f.usage.output_tokens };
                 let done = if f.subtype == "success" {
                     AgentEvent::Done {
-                        status: if interrupted {
-                            DoneStatus::Interrupted
-                        } else {
-                            DoneStatus::Completed
-                        },
+                        status: if interrupted { DoneStatus::Interrupted } else { DoneStatus::Completed },
                         result: f.result,
                         error: None,
                         session_id: f.session_id,
@@ -755,9 +627,7 @@ impl Normalizer {
                             // their mapped human wording (never blank — a
                             // blank error folds to no part and the failed
                             // turn reads as a silent non-reply).
-                            "error_max_turns"
-                            | "error_max_budget_usd"
-                            | "error_max_structured_output_retries" => {
+                            "error_max_turns" | "error_max_budget_usd" | "error_max_structured_output_retries" => {
                                 Some(result_error_text(&f.subtype).to_owned())
                             }
                             // Diagnostic-only ends (the CLI's turn-accounting
@@ -768,11 +638,7 @@ impl Normalizer {
                         }
                     };
                     AgentEvent::Done {
-                        status: if interrupted {
-                            DoneStatus::Interrupted
-                        } else {
-                            DoneStatus::Errored
-                        },
+                        status: if interrupted { DoneStatus::Interrupted } else { DoneStatus::Errored },
                         result: None,
                         error,
                         session_id: f.session_id,
@@ -780,20 +646,16 @@ impl Normalizer {
                 };
                 let mut out = Vec::new();
                 if let Some(window) = window {
-                    out.push(AgentEvent::ContextUsage {
-                        tokens: None,
-                        window: Some(window),
-                    });
+                    out.push(AgentEvent::ContextUsage { tokens: None, window: Some(window) });
                 }
                 out.extend([usage, done]);
                 out
             }
 
             // Control frames are handled by the run loop, not normalized.
-            Frame::ControlRequest(_)
-            | Frame::ControlResponse(_)
-            | Frame::CommandLifecycle(_)
-            | Frame::Other => Vec::new(),
+            Frame::ControlRequest(_) | Frame::ControlResponse(_) | Frame::CommandLifecycle(_) | Frame::Other => {
+                Vec::new()
+            }
         }
     }
 }
@@ -805,31 +667,14 @@ mod tests {
 
     #[test]
     fn decodes_typed_tools() {
+        assert_eq!(decode_tool_use("Bash", &json!({"command": "ls -la"})), ToolCall::Exec { command: "ls -la".into() });
         assert_eq!(
-            decode_tool_use("Bash", &json!({"command": "ls -la"})),
-            ToolCall::Exec {
-                command: "ls -la".into()
-            }
+            decode_tool_use("Edit", &json!({"file_path": "/a", "old_string": "x", "new_string": "y"})),
+            ToolCall::EditFile { path: "/a".into(), old_string: Some("x".into()), new_string: Some("y".into()) }
         );
         assert_eq!(
-            decode_tool_use(
-                "Edit",
-                &json!({"file_path": "/a", "old_string": "x", "new_string": "y"})
-            ),
-            ToolCall::EditFile {
-                path: "/a".into(),
-                old_string: Some("x".into()),
-                new_string: Some("y".into())
-            }
-        );
-        assert_eq!(
-            decode_tool_use(
-                "TodoWrite",
-                &json!({"todos": [{"content": "t", "status": "completed"}]})
-            ),
-            ToolCall::Todo {
-                items: vec![TodoItem::new("t", TodoStatus::Completed)]
-            }
+            decode_tool_use("TodoWrite", &json!({"todos": [{"content": "t", "status": "completed"}]})),
+            ToolCall::Todo { items: vec![TodoItem::new("t", TodoStatus::Completed)] }
         );
         // Claude's in-progress state survives; unknown/missing reads as pending.
         assert_eq!(
@@ -853,16 +698,9 @@ mod tests {
         );
         assert_eq!(
             decode_tool_use("mcp__linear__search", &json!({"q": "bug"})),
-            ToolCall::Mcp {
-                server: "linear".into(),
-                tool: "search".into(),
-                input: Some(json!({"q": "bug"}))
-            }
+            ToolCall::Mcp { server: "linear".into(), tool: "search".into(), input: Some(json!({"q": "bug"})) }
         );
-        assert!(matches!(
-            decode_tool_use("Mystery", &json!({})),
-            ToolCall::Unknown { .. }
-        ));
+        assert!(matches!(decode_tool_use("Mystery", &json!({})), ToolCall::Unknown { .. }));
     }
 
     fn normalize_one(raw: &str) -> Vec<AgentEvent> {
@@ -875,22 +713,14 @@ mod tests {
         let blocked = normalize_one(
             r#"{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","rateLimitType":"five_hour","overageStatus":"rejected"}}"#,
         );
-        assert!(matches!(
-            blocked.as_slice(),
-            [AgentEvent::RateLimits { .. }, AgentEvent::Error { .. }]
-        ));
-        for overage in [
-            r#""overageStatus":"allowed""#,
-            r#""overageStatus":"allowed_warning""#,
-            r#""isUsingOverage":true"#,
-        ] {
+        assert!(matches!(blocked.as_slice(), [AgentEvent::RateLimits { .. }, AgentEvent::Error { .. }]));
+        for overage in
+            [r#""overageStatus":"allowed""#, r#""overageStatus":"allowed_warning""#, r#""isUsingOverage":true"#]
+        {
             let raw = format!(
                 r#"{{"type":"rate_limit_event","rate_limit_info":{{"status":"rejected","rateLimitType":"five_hour",{overage}}}}}"#
             );
-            assert!(
-                matches!(normalize_one(&raw).as_slice(), [AgentEvent::RateLimits { .. }]),
-                "{overage}"
-            );
+            assert!(matches!(normalize_one(&raw).as_slice(), [AgentEvent::RateLimits { .. }]), "{overage}");
         }
     }
 
@@ -912,24 +742,14 @@ mod tests {
         let ev = normalize_one(
             r#"{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"","estimated_tokens":50}}}"#,
         );
-        assert_eq!(
-            ev,
-            vec![AgentEvent::ReasoningDelta {
-                text: String::new()
-            }]
-        );
+        assert_eq!(ev, vec![AgentEvent::ReasoningDelta { text: String::new() }]);
         // A tool input being generated (input_json_delta) is a liveness
         // heartbeat, not silence — minutes of a big Write must not read as
         // a stalled run.
         let ev = normalize_one(
             r#"{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"input_json_delta","partial_json":"{\"file_"}}}"#,
         );
-        assert_eq!(
-            ev,
-            vec![AgentEvent::ReasoningDelta {
-                text: String::new()
-            }]
-        );
+        assert_eq!(ev, vec![AgentEvent::ReasoningDelta { text: String::new() }]);
         // Signature deltas stay dropped.
         let ev = normalize_one(
             r#"{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"signature_delta","signature":"abc"}}}"#,
@@ -946,9 +766,7 @@ mod tests {
             ev,
             vec![AgentEvent::Subagent {
                 parent_tool_use_id: "toolu_sub".into(),
-                event: Box::new(AgentEvent::TextDelta {
-                    text: "sub text".into()
-                }),
+                event: Box::new(AgentEvent::TextDelta { text: "sub text".into() }),
             }]
         );
         // Subagent input_json heartbeats are dropped — the parent turn is
@@ -974,9 +792,7 @@ mod tests {
                 parent_tool_use_id: "toolu_sub".into(),
                 event: Box::new(AgentEvent::ToolCall {
                     id: "t1".into(),
-                    call: ToolCall::Exec {
-                        command: "ls".into()
-                    },
+                    call: ToolCall::Exec { command: "ls".into() },
                 }),
             }]
         );
@@ -993,12 +809,7 @@ mod tests {
             ev,
             vec![AgentEvent::Subagent {
                 parent_tool_use_id: "toolu_sub".into(),
-                event: Box::new(AgentEvent::ToolResult {
-                    id: "t1".into(),
-                    is_error: false,
-                    output: None,
-                    diff: None,
-                }),
+                event: Box::new(AgentEvent::ToolResult { id: "t1".into(), is_error: false, output: None, diff: None }),
             }]
         );
     }
@@ -1026,10 +837,7 @@ mod tests {
             r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"ls","prompt":"red herring"}}]}}"#,
         ] {
             let ev = normalize_one(frame);
-            assert!(
-                !ev.iter().any(|e| matches!(e, AgentEvent::Subagent { .. })),
-                "{frame}: {ev:?}"
-            );
+            assert!(!ev.iter().any(|e| matches!(e, AgentEvent::Subagent { .. })), "{frame}: {ev:?}");
         }
     }
 
@@ -1041,17 +849,12 @@ mod tests {
     /// same frame shape still gets through.
     #[test]
     fn the_interruption_marker_is_not_a_steer() {
-        for marker in [
-            "[Request interrupted by user]",
-            "[Request interrupted by user for tool use]",
-        ] {
+        for marker in ["[Request interrupted by user]", "[Request interrupted by user for tool use]"] {
             let frame = format!(
                 r#"{{"type":"user","parent_tool_use_id":"toolu_spawn","message":{{"content":[{{"type":"text","text":"{marker}"}}]}}}}"#
             );
             assert!(
-                !normalize_one(&frame)
-                    .iter()
-                    .any(|e| matches!(e, AgentEvent::Subagent { .. })),
+                !normalize_one(&frame).iter().any(|e| matches!(e, AgentEvent::Subagent { .. })),
                 "{marker} leaked as a steer"
             );
         }
@@ -1105,12 +908,7 @@ mod tests {
             r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t2","name":"SendMessage","input":{"to":"bg1","message":"x"}}]}}"#,
         )
         .expect("parses");
-        assert!(
-            !norm
-                .normalize(send, false)
-                .iter()
-                .any(|e| matches!(e, AgentEvent::Subagent { .. }))
-        );
+        assert!(!norm.normalize(send, false).iter().any(|e| matches!(e, AgentEvent::Subagent { .. })));
     }
 
     #[test]
@@ -1125,9 +923,7 @@ mod tests {
             ev,
             vec![AgentEvent::Subagent {
                 parent_tool_use_id: "toolu_sub".into(),
-                event: Box::new(AgentEvent::UserMessage {
-                    text: "Also check the rebuild path.".into(),
-                }),
+                event: Box::new(AgentEvent::UserMessage { text: "Also check the rebuild path.".into() }),
             }]
         );
         // Synthetic harness injections are not conversation, and blank text
@@ -1198,17 +994,14 @@ mod tests {
         // Non-terminal or id-less notifications close nothing.
         let mut norm = Normalizer::new();
         spawn(&mut norm);
-        assert!(notify(
-            &mut norm,
-            r#"{"type":"system","subtype":"task_notification","tool_use_id":"toolu_agent","status":"running"}"#,
-        )
-        .is_empty());
         assert!(
-            normalize_one(
-                r#"{"type":"system","subtype":"task_notification","status":"completed"}"#,
+            notify(
+                &mut norm,
+                r#"{"type":"system","subtype":"task_notification","tool_use_id":"toolu_agent","status":"running"}"#,
             )
             .is_empty()
         );
+        assert!(normalize_one(r#"{"type":"system","subtype":"task_notification","status":"completed"}"#,).is_empty());
     }
 
     #[test]
@@ -1225,25 +1018,14 @@ mod tests {
             ] {
                 norm.normalize(crate::claude::wire::parse_frame(raw).unwrap(), false);
             }
-            let events = norm.normalize(
-                crate::claude::wire::parse_frame(notification).unwrap(),
-                false,
-            );
-            let expected = if notification.contains("completed") {
-                DoneStatus::Completed
-            } else {
-                DoneStatus::Interrupted
-            };
+            let events = norm.normalize(crate::claude::wire::parse_frame(notification).unwrap(), false);
+            let expected =
+                if notification.contains("completed") { DoneStatus::Completed } else { DoneStatus::Interrupted };
             assert_eq!(
                 events,
                 vec![tag(
                     "toolu_spawn",
-                    AgentEvent::Done {
-                        status: expected,
-                        result: None,
-                        error: None,
-                        session_id: None,
-                    }
+                    AgentEvent::Done { status: expected, result: None, error: None, session_id: None }
                 )]
             );
             // The next steer must still use the original transcript too.
@@ -1277,9 +1059,12 @@ mod tests {
         ] {
             let events = norm.normalize(crate::claude::wire::parse_frame(raw).unwrap(), false);
             assert!(!events.is_empty());
-            assert!(events.iter().all(|e| matches!(e,
-                AgentEvent::Subagent { parent_tool_use_id, .. } if parent_tool_use_id == "toolu_spawn"
-            )), "{events:?}");
+            assert!(
+                events.iter().all(|e| matches!(e,
+                    AgentEvent::Subagent { parent_tool_use_id, .. } if parent_tool_use_id == "toolu_spawn"
+                )),
+                "{events:?}"
+            );
         }
     }
 
@@ -1318,21 +1103,11 @@ mod tests {
             events,
             vec![tag(
                 "toolu_spawn",
-                AgentEvent::Done {
-                    status: DoneStatus::Completed,
-                    result: None,
-                    error: None,
-                    session_id: None,
-                }
+                AgentEvent::Done { status: DoneStatus::Completed, result: None, error: None, session_id: None }
             )]
         );
         assert!(!norm.saw_init, "history must not consume the live init");
-        assert!(
-            Normalizer::for_resume(root.path(), "missing")
-                .await
-                .agent_tasks
-                .is_empty()
-        );
+        assert!(Normalizer::for_resume(root.path(), "missing").await.agent_tasks.is_empty());
     }
 
     #[test]
@@ -1371,9 +1146,7 @@ mod tests {
             ev[0],
             AgentEvent::Subagent {
                 parent_tool_use_id: "toolu_sub".into(),
-                event: Box::new(AgentEvent::TextDelta {
-                    text: "working on it\n\n".into()
-                }),
+                event: Box::new(AgentEvent::TextDelta { text: "working on it\n\n".into() }),
             }
         );
         assert!(matches!(&ev[1], AgentEvent::Subagent { event, .. }
@@ -1397,13 +1170,7 @@ mod tests {
         let frame = crate::claude::wire::parse_frame(result).unwrap();
         let events = norm.normalize(frame, false);
         assert!(
-            matches!(
-                events.last(),
-                Some(AgentEvent::Done {
-                    status: DoneStatus::Completed,
-                    ..
-                })
-            ),
+            matches!(events.last(), Some(AgentEvent::Done { status: DoneStatus::Completed, .. })),
             "wake turn settles with its own Done"
         );
     }
@@ -1446,20 +1213,14 @@ mod tests {
         );
         match done {
             AgentEvent::Done { error, .. } => {
-                assert_eq!(
-                    error.as_deref(),
-                    Some("The run hit the maximum number of turns.")
-                );
+                assert_eq!(error.as_deref(), Some("The run hit the maximum number of turns."));
             }
             other => panic!("unexpected event: {other:?}"),
         }
         let done = result_done(r#"{"type":"result","subtype":"error_max_turns","errors":[]}"#);
         match done {
             AgentEvent::Done { error, .. } => {
-                assert_eq!(
-                    error.as_deref(),
-                    Some("The run hit the maximum number of turns.")
-                );
+                assert_eq!(error.as_deref(), Some("The run hit the maximum number of turns."));
             }
             other => panic!("unexpected event: {other:?}"),
         }
@@ -1473,27 +1234,11 @@ mod context_tests {
     fn context_counts_cached_prompt_and_matches_primary_model() {
         let mut normalizer = Normalizer::new();
         let events = normalizer.normalize(super::super::wire::parse_frame(r#"{"type":"assistant","message":{"model":"primary","content":[],"usage":{"input_tokens":200,"cache_read_input_tokens":40000,"cache_creation_input_tokens":1800,"output_tokens":100}}}"#).unwrap(), false);
-        assert!(events.contains(&AgentEvent::ContextUsage {
-            tokens: Some(42000),
-            window: None
-        }));
+        assert!(events.contains(&AgentEvent::ContextUsage { tokens: Some(42000), window: None }));
         let events = normalizer.normalize(super::super::wire::parse_frame(r#"{"type":"assistant","parent_tool_use_id":"child","message":{"model":"child","content":[],"usage":{"input_tokens":999999}}}"#).unwrap(), false);
-        assert!(
-            !events
-                .iter()
-                .any(|e| matches!(e, AgentEvent::ContextUsage { .. }))
-        );
+        assert!(!events.iter().any(|e| matches!(e, AgentEvent::ContextUsage { .. })));
         let events = normalizer.normalize(super::super::wire::parse_frame(r#"{"type":"result","subtype":"success","usage":{"input_tokens":999999},"modelUsage":{"primary":{"contextWindow":200000},"child":{"contextWindow":1000000}}}"#).unwrap(), false);
-        assert!(events.contains(&AgentEvent::ContextUsage {
-            tokens: None,
-            window: Some(200000)
-        }));
-        assert!(!events.iter().any(|e| matches!(
-            e,
-            AgentEvent::ContextUsage {
-                tokens: Some(_),
-                ..
-            }
-        )));
+        assert!(events.contains(&AgentEvent::ContextUsage { tokens: None, window: Some(200000) }));
+        assert!(!events.iter().any(|e| matches!(e, AgentEvent::ContextUsage { tokens: Some(_), .. })));
     }
 }

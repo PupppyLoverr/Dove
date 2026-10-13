@@ -19,19 +19,13 @@ fn field<'a>(v: &'a Value, keys: &[&str]) -> Option<&'a Value> {
 }
 
 fn str_field(v: &Value, keys: &[&str]) -> String {
-    field(v, keys)
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .to_owned()
+    field(v, keys).and_then(Value::as_str).unwrap_or("").to_owned()
 }
 
 /// Delta text under either spelling the app server has used
 /// (`delta` on agentMessage, `textDelta` on some reasoning builds).
 pub(crate) fn delta_text(params: &Value) -> Option<String> {
-    field(params, &["delta", "textDelta"])
-        .and_then(Value::as_str)
-        .filter(|s| !s.is_empty())
-        .map(str::to_owned)
+    field(params, &["delta", "textDelta"]).and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_owned)
 }
 
 /// Codex streams independent reasoning items and indexed parts without text
@@ -52,19 +46,10 @@ impl ReasoningStream {
         let summary = method != "item/reasoning/textDelta";
         let index = field(
             params,
-            if summary {
-                &["summaryIndex", "summary_index"]
-            } else {
-                &["contentIndex", "content_index"]
-            },
+            if summary { &["summaryIndex", "summary_index"] } else { &["contentIndex", "content_index"] },
         )
         .and_then(Value::as_u64)
-        .or_else(|| {
-            self.announced_summary
-                .as_ref()
-                .filter(|(item, _)| summary && item == &id)
-                .map(|(_, index)| *index)
-        })
+        .or_else(|| self.announced_summary.as_ref().filter(|(item, _)| summary && item == &id).map(|(_, index)| *index))
         .unwrap_or(0);
         if method == "item/reasoning/summaryPartAdded" {
             self.announced_summary = Some((id, index));
@@ -79,18 +64,12 @@ impl ReasoningStream {
             let leading_newlines = text.chars().take_while(|&c| c == '\n').count();
             let missing = 2usize.saturating_sub(self.trailing_newlines + leading_newlines);
             if missing > 0 {
-                events.push(AgentEvent::ReasoningDelta {
-                    text: "\n".repeat(missing),
-                });
+                events.push(AgentEvent::ReasoningDelta { text: "\n".repeat(missing) });
                 self.trailing_newlines += missing;
             }
         }
         let trailing = text.chars().rev().take_while(|&c| c == '\n').count();
-        self.trailing_newlines = if trailing == text.len() {
-            self.trailing_newlines + trailing
-        } else {
-            trailing
-        };
+        self.trailing_newlines = if trailing == text.len() { self.trailing_newlines + trailing } else { trailing };
         self.last_part = Some(part);
         events.push(AgentEvent::ReasoningDelta { text });
         events
@@ -103,34 +82,23 @@ pub(crate) fn item_id(params: &Value) -> String {
 
 /// `params.turn.id` on the turn/* lifecycle notifications.
 pub(crate) fn turn_id(params: &Value) -> String {
-    params
-        .get("turn")
-        .map(|t| str_field(t, &["id"]))
-        .unwrap_or_default()
+    params.get("turn").map(|t| str_field(t, &["id"])).unwrap_or_default()
 }
 
 /// `params.turn.error.message` (turn/completed carries an optional error;
 /// turn/failed always should).
 pub(crate) fn turn_error_message(params: &Value) -> Option<String> {
-    params
-        .get("turn")
-        .and_then(|t| t.get("error"))
-        .filter(|e| !e.is_null())
-        .map(|e| {
-            let msg = str_field(e, &["message"]);
-            if msg.is_empty() { e.to_string() } else { msg }
-        })
+    params.get("turn").and_then(|t| t.get("error")).filter(|e| !e.is_null()).map(|e| {
+        let msg = str_field(e, &["message"]);
+        if msg.is_empty() { e.to_string() } else { msg }
+    })
 }
 
 /// `thread/tokenUsage/updated` → a [`AgentEvent::Usage`] snapshot of the LAST
 /// turn's tokens (held by the session loop, emitted before `Done`).
 pub(crate) fn usage_event(params: &Value) -> Option<AgentEvent> {
     let last = field(params, &["tokenUsage", "token_usage"])?.get("last")?;
-    let count = |keys: &[&str]| {
-        field(last, keys)
-            .and_then(Value::as_u64)
-            .unwrap_or_default()
-    };
+    let count = |keys: &[&str]| field(last, keys).and_then(Value::as_u64).unwrap_or_default();
     Some(AgentEvent::Usage {
         input_tokens: count(&["inputTokens", "input_tokens"]),
         output_tokens: count(&["outputTokens", "output_tokens"]),
@@ -151,32 +119,26 @@ pub(crate) fn rate_limits_event(params: &Value) -> Option<AgentEvent> {
             blocked: used.is_some_and(|u| u >= 100.0),
         })
     };
-    let windows: Vec<_> = [window("primary", "primary"), window("secondary", "secondary")]
-        .into_iter()
-        .flatten()
-        .collect();
+    let windows: Vec<_> =
+        [window("primary", "primary"), window("secondary", "secondary")].into_iter().flatten().collect();
     (!windows.is_empty()).then_some(AgentEvent::RateLimits { windows })
 }
 
 pub(crate) fn context_usage_event(params: &Value) -> Option<AgentEvent> {
     let usage = field(params, &["tokenUsage", "token_usage"])?;
     let last = usage.get("last");
-    let tokens = last
-        .and_then(|last| field(last, &["totalTokens", "total_tokens"]).and_then(Value::as_u64))
-        .or_else(|| {
+    let tokens =
+        last.and_then(|last| field(last, &["totalTokens", "total_tokens"]).and_then(Value::as_u64)).or_else(|| {
             let last = last?;
             let input = field(last, &["inputTokens", "input_tokens"])?.as_u64()?;
             Some(
                 input.saturating_add(
-                    field(last, &["outputTokens", "output_tokens"])
-                        .and_then(Value::as_u64)
-                        .unwrap_or(0),
+                    field(last, &["outputTokens", "output_tokens"]).and_then(Value::as_u64).unwrap_or(0),
                 ),
             )
         });
-    let window = field(usage, &["modelContextWindow", "model_context_window"])
-        .and_then(Value::as_u64)
-        .filter(|n| *n > 0);
+    let window =
+        field(usage, &["modelContextWindow", "model_context_window"]).and_then(Value::as_u64).filter(|n| *n > 0);
     (tokens.is_some() || window.is_some()).then_some(AgentEvent::ContextUsage { tokens, window })
 }
 
@@ -187,16 +149,8 @@ fn tool_lifecycle(phase: Phase, id: String, call: ToolCall, is_error: bool) -> V
     match phase {
         Phase::Started => vec![AgentEvent::ToolCall { id, call }],
         Phase::Completed => vec![
-            AgentEvent::ToolCall {
-                id: id.clone(),
-                call,
-            },
-            AgentEvent::ToolResult {
-                id,
-                is_error,
-                output: None,
-                diff: None,
-            },
+            AgentEvent::ToolCall { id: id.clone(), call },
+            AgentEvent::ToolResult { id, is_error, output: None, diff: None },
         ],
     }
 }
@@ -206,18 +160,11 @@ fn tool_lifecycle(phase: Phase, id: String, call: ToolCall, is_error: bool) -> V
 /// else (deletes, multi-file changes) a patch.
 fn file_change_call(changes: &[(String, String)]) -> ToolCall {
     match changes {
-        [(path, kind)] if kind == "add" => ToolCall::WriteFile {
-            path: path.clone(),
-            content: None,
-        },
-        [(path, kind)] if kind == "update" => ToolCall::EditFile {
-            path: path.clone(),
-            old_string: None,
-            new_string: None,
-        },
-        [(path, _)] => ToolCall::ApplyPatch {
-            path: Some(path.clone()),
-        },
+        [(path, kind)] if kind == "add" => ToolCall::WriteFile { path: path.clone(), content: None },
+        [(path, kind)] if kind == "update" => {
+            ToolCall::EditFile { path: path.clone(), old_string: None, new_string: None }
+        }
+        [(path, _)] => ToolCall::ApplyPatch { path: Some(path.clone()) },
         _ => ToolCall::ApplyPatch { path: None },
     }
 }
@@ -231,19 +178,9 @@ pub(crate) fn plan_update_events(params: &Value) -> Vec<AgentEvent> {
     };
     let items = plan
         .iter()
-        .map(|step| {
-            TodoItem::new(
-                str_field(step, &["step"]),
-                TodoStatus::parse(&str_field(step, &["status"])),
-            )
-        })
+        .map(|step| TodoItem::new(str_field(step, &["step"]), TodoStatus::parse(&str_field(step, &["status"]))))
         .collect();
-    tool_lifecycle(
-        Phase::Completed,
-        zeron_proto::LIVE_PLAN_TOOL_ID.into(),
-        ToolCall::Todo { items },
-        false,
-    )
+    tool_lifecycle(Phase::Completed, zeron_proto::LIVE_PLAN_TOOL_ID.into(), ToolCall::Todo { items }, false)
 }
 
 pub(crate) fn item_type(item: &Value) -> &str {
@@ -251,24 +188,14 @@ pub(crate) fn item_type(item: &Value) -> &str {
 }
 
 pub(super) fn is_collab_spawn(item: &Value) -> bool {
-    matches!(
-        item_type(item),
-        "collabAgentToolCall" | "collab_agent_tool_call"
-    ) && matches!(
-        item.get("tool").and_then(Value::as_str),
-        Some("spawnAgent" | "spawn_agent")
-    )
+    matches!(item_type(item), "collabAgentToolCall" | "collab_agent_tool_call")
+        && matches!(item.get("tool").and_then(Value::as_str), Some("spawnAgent" | "spawn_agent"))
 }
 
 /// A v1 spawn names its child in the completed result. Other collaboration
 /// tools can address several receivers, but only a spawn owns a transcript.
 pub(super) fn collab_spawn_child(item: &Value) -> Option<&str> {
-    if !is_collab_spawn(item)
-        || matches!(
-            item.get("status").and_then(Value::as_str),
-            Some("failed" | "errored")
-        )
-    {
+    if !is_collab_spawn(item) || matches!(item.get("status").and_then(Value::as_str), Some("failed" | "errored")) {
         return None;
     }
     let receivers = field(item, &["receiverThreadIds", "receiver_thread_ids"])?.as_array()?;
@@ -286,10 +213,7 @@ pub(crate) fn map_item(phase: Phase, item: &Value) -> Vec<AgentEvent> {
     let status = str_field(item, &["status"]);
     match item_type(item) {
         "imageGeneration" | "image_generation" => {
-            let call = ToolCall::Unknown {
-                name: "Generate image".into(),
-                input: None,
-            };
+            let call = ToolCall::Unknown { name: "Generate image".into(), input: None };
             if phase == Phase::Started {
                 return vec![AgentEvent::ToolCall { id, call }];
             }
@@ -316,21 +240,11 @@ pub(crate) fn map_item(phase: Phase, item: &Value) -> Vec<AgentEvent> {
                 None
             };
             let mut events = vec![
-                AgentEvent::ToolCall {
-                    id: id.clone(),
-                    call,
-                },
-                AgentEvent::ToolResult {
-                    id: id.clone(),
-                    is_error: error.is_some(),
-                    output: None,
-                    diff: None,
-                },
+                AgentEvent::ToolCall { id: id.clone(), call },
+                AgentEvent::ToolResult { id: id.clone(), is_error: error.is_some(), output: None, diff: None },
             ];
             if let Some(message) = error {
-                events.push(AgentEvent::Error {
-                    message: message.into(),
-                });
+                events.push(AgentEvent::Error { message: message.into() });
             } else {
                 let name = std::path::Path::new(&path)
                     .file_name()
@@ -347,16 +261,11 @@ pub(crate) fn map_item(phase: Phase, item: &Value) -> Vec<AgentEvent> {
             events
         }
         "commandExecution" | "command_execution" => match phase {
-            Phase::Started => vec![AgentEvent::ToolCall {
-                id,
-                call: ToolCall::Exec {
-                    command: str_field(item, &["command"]),
-                },
-            }],
+            Phase::Started => {
+                vec![AgentEvent::ToolCall { id, call: ToolCall::Exec { command: str_field(item, &["command"]) } }]
+            }
             Phase::Completed => {
-                let exit_code = field(item, &["exitCode", "exit_code"])
-                    .and_then(Value::as_i64)
-                    .unwrap_or(0);
+                let exit_code = field(item, &["exitCode", "exit_code"]).and_then(Value::as_i64).unwrap_or(0);
                 vec![AgentEvent::ToolResult {
                     id,
                     is_error: status == "failed" || exit_code != 0,
@@ -382,12 +291,7 @@ pub(crate) fn map_item(phase: Phase, item: &Value) -> Vec<AgentEvent> {
                     (str_field(c, &["path"]), kind.to_owned())
                 })
                 .collect();
-            tool_lifecycle(
-                phase,
-                id,
-                file_change_call(&changes),
-                status == "failed" || status == "declined",
-            )
+            tool_lifecycle(phase, id, file_change_call(&changes), status == "failed" || status == "declined")
         }
         "mcpToolCall" | "mcp_tool_call" => match phase {
             Phase::Started => {
@@ -401,21 +305,13 @@ pub(crate) fn map_item(phase: Phase, item: &Value) -> Vec<AgentEvent> {
                     },
                 }]
             }
-            Phase::Completed => vec![AgentEvent::ToolResult {
-                id,
-                is_error: status == "failed",
-                output: None,
-                diff: None,
-            }],
+            Phase::Completed => {
+                vec![AgentEvent::ToolResult { id, is_error: status == "failed", output: None, diff: None }]
+            }
         },
-        "webSearch" | "web_search" => tool_lifecycle(
-            phase,
-            id,
-            ToolCall::WebSearch {
-                query: str_field(item, &["query"]),
-            },
-            false,
-        ),
+        "webSearch" | "web_search" => {
+            tool_lifecycle(phase, id, ToolCall::WebSearch { query: str_field(item, &["query"]) }, false)
+        }
         "todoList" | "todo_list" => {
             let items = item
                 .get("items")
@@ -424,23 +320,16 @@ pub(crate) fn map_item(phase: Phase, item: &Value) -> Vec<AgentEvent> {
                 .unwrap_or_default()
                 .iter()
                 .map(|t| {
-                    let done =
-                        field(t, &["completed", "done"]).and_then(Value::as_bool) == Some(true);
+                    let done = field(t, &["completed", "done"]).and_then(Value::as_bool) == Some(true);
                     TodoItem::new(
                         str_field(t, &["text"]),
-                        if done {
-                            TodoStatus::Completed
-                        } else {
-                            TodoStatus::Pending
-                        },
+                        if done { TodoStatus::Completed } else { TodoStatus::Pending },
                     )
                 })
                 .collect();
             tool_lifecycle(phase, id, ToolCall::Todo { items }, false)
         }
-        "error" => vec![AgentEvent::Error {
-            message: str_field(item, &["message"]),
-        }],
+        "error" => vec![AgentEvent::Error { message: str_field(item, &["message"]) }],
         "collabAgentToolCall" | "collab_agent_tool_call" => {
             let tool = str_field(item, &["tool"]);
             let name = if is_collab_spawn(item) {
@@ -457,10 +346,7 @@ pub(crate) fn map_item(phase: Phase, item: &Value) -> Vec<AgentEvent> {
             tool_lifecycle(
                 phase,
                 id,
-                ToolCall::Unknown {
-                    name,
-                    input: Some(item.clone()),
-                },
+                ToolCall::Unknown { name, input: Some(item.clone()) },
                 matches!(status.as_str(), "failed" | "errored"),
             )
         }
@@ -471,10 +357,7 @@ pub(crate) fn map_item(phase: Phase, item: &Value) -> Vec<AgentEvent> {
         "subAgentActivity" | "sub_agent_activity" => {
             // A lifecycle marker has its own item id. It is not another
             // spawn; the child's turn notifications carry its terminal state.
-            if !matches!(
-                item.get("kind").and_then(Value::as_str),
-                Some("started" | "spawned")
-            ) {
+            if !matches!(item.get("kind").and_then(Value::as_str), Some("started" | "spawned")) {
                 return Vec::new();
             }
             let name = str_field(item, &["agentPath"])
@@ -485,10 +368,7 @@ pub(crate) fn map_item(phase: Phase, item: &Value) -> Vec<AgentEvent> {
             tool_lifecycle(
                 phase,
                 id,
-                ToolCall::Unknown {
-                    name,
-                    input: Some(item.clone()),
-                },
+                ToolCall::Unknown { name, input: Some(item.clone()) },
                 matches!(str_field(item, &["kind"]).as_str(), "failed" | "errored"),
             )
         }
@@ -558,23 +438,14 @@ impl ChildStream {
                 // v2 followup_task starts a new child turn without echoing a
                 // userMessage. Reopen the existing document without inventing
                 // a user prompt or attributing an activity id as a new spawn.
-                return vec![AgentEvent::Steered {
-                    assistant_message_id: None,
-                    next_assistant_message_id: None,
-                }];
+                return vec![AgentEvent::Steered { assistant_message_id: None, next_assistant_message_id: None }];
             }
             return Vec::new();
         }
         if matches!(method, "item/started" | "item/completed") {
             let item = params.get("item").unwrap_or(&Value::Null);
-            let phase = if method == "item/started" {
-                Phase::Started
-            } else {
-                Phase::Completed
-            };
-            if phase == Phase::Completed
-                && !remember(&mut self.completed_items, str_field(item, &["id"]))
-            {
+            let phase = if method == "item/started" { Phase::Started } else { Phase::Completed };
+            if phase == Phase::Completed && !remember(&mut self.completed_items, str_field(item, &["id"])) {
                 return Vec::new();
             }
             if matches!(item_type(item), "userMessage" | "user_message") {
@@ -604,9 +475,7 @@ impl ChildStream {
                         events.push(AgentEvent::TextDelta { text });
                     }
                 }
-                events.push(AgentEvent::TextDelta {
-                    text: "\n\n".into(),
-                });
+                events.push(AgentEvent::TextDelta { text: "\n\n".into() });
                 return events;
             }
             return map_item(phase, item);
@@ -621,18 +490,13 @@ impl ChildStream {
                     return Vec::new();
                 }
                 self.streamed_text.insert(id);
-                delta_text(params)
-                    .map(|text| AgentEvent::TextDelta { text })
-                    .into_iter()
-                    .collect()
+                delta_text(params).map(|text| AgentEvent::TextDelta { text }).into_iter().collect()
             }
-            "item/reasoning/textDelta"
-            | "item/reasoning/summaryTextDelta"
-            | "item/reasoning/summaryPartAdded" => self.reasoning.map(method, params),
+            "item/reasoning/textDelta" | "item/reasoning/summaryTextDelta" | "item/reasoning/summaryPartAdded" => {
+                self.reasoning.map(method, params)
+            }
             "turn/completed" | "turn/failed" | "turn/aborted" | "thread/closed" => {
-                if method != "thread/closed"
-                    && !remember(&mut self.completed_turns, turn_id(params))
-                {
+                if method != "thread/closed" && !remember(&mut self.completed_turns, turn_id(params)) {
                     return Vec::new();
                 }
                 self.settled = true;
@@ -650,12 +514,7 @@ impl ChildStream {
                 } else {
                     DoneStatus::Completed
                 };
-                vec![AgentEvent::Done {
-                    status,
-                    result: None,
-                    error,
-                    session_id: Some(child.to_owned()),
-                }]
+                vec![AgentEvent::Done { status, result: None, error, session_id: Some(child.to_owned()) }]
             }
             "error" => vec![AgentEvent::Error {
                 message: params
@@ -675,15 +534,9 @@ impl ChildStream {
 /// thread-less methods (old builds, account noise).
 pub(crate) fn notification_thread_id(method: &str, params: &Value) -> Option<String> {
     if method == "thread/started" {
-        return params
-            .get("thread")
-            .and_then(|t| t.get("id"))
-            .and_then(Value::as_str)
-            .map(str::to_owned);
+        return params.get("thread").and_then(|t| t.get("id")).and_then(Value::as_str).map(str::to_owned);
     }
-    field(params, &["threadId", "thread_id"])
-        .and_then(Value::as_str)
-        .map(str::to_owned)
+    field(params, &["threadId", "thread_id"]).and_then(Value::as_str).map(str::to_owned)
 }
 
 /// How a notification addressed to a REGISTERED child thread is handled.
@@ -779,18 +632,12 @@ mod tests {
                 }
             }
         }
-        assert_eq!(
-            text,
-            "**First heading**\n\nSecond paragraph.\n\nThird paragraph."
-        );
+        assert_eq!(text, "**First heading**\n\nSecond paragraph.\n\nThird paragraph.");
     }
 
     #[test]
     fn user_message_text_accepts_both_shapes() {
-        assert_eq!(
-            user_message_text(&json!({"text": "steer"})),
-            Some("steer".into())
-        );
+        assert_eq!(user_message_text(&json!({"text": "steer"})), Some("steer".into()));
         assert_eq!(
             user_message_text(&json!({"content": [
                 {"type": "text", "text": "a"},
@@ -812,18 +659,10 @@ mod tests {
 
     #[test]
     fn command_execution_maps_exit_code_to_error() {
-        let started = map_item(
-            Phase::Started,
-            &json!({"type": "commandExecution", "id": "c1", "command": "ls"}),
-        );
+        let started = map_item(Phase::Started, &json!({"type": "commandExecution", "id": "c1", "command": "ls"}));
         assert_eq!(
             started,
-            vec![AgentEvent::ToolCall {
-                id: "c1".into(),
-                call: ToolCall::Exec {
-                    command: "ls".into()
-                },
-            }]
+            vec![AgentEvent::ToolCall { id: "c1".into(), call: ToolCall::Exec { command: "ls".into() } }]
         );
         let completed = map_item(
             Phase::Completed,
@@ -831,12 +670,7 @@ mod tests {
         );
         assert_eq!(
             completed,
-            vec![AgentEvent::ToolResult {
-                id: "c1".into(),
-                is_error: true,
-                output: None,
-                diff: None,
-            }]
+            vec![AgentEvent::ToolResult { id: "c1".into(), is_error: true, output: None, diff: None }]
         );
     }
 
@@ -850,10 +684,7 @@ mod tests {
             add,
             vec![AgentEvent::ToolCall {
                 id: "f1".into(),
-                call: ToolCall::WriteFile {
-                    path: "/a.rs".into(),
-                    content: None
-                },
+                call: ToolCall::WriteFile { path: "/a.rs".into(), content: None },
             }]
         );
         let update = map_item(
@@ -866,18 +697,9 @@ mod tests {
             vec![
                 AgentEvent::ToolCall {
                     id: "f2".into(),
-                    call: ToolCall::EditFile {
-                        path: "/b.rs".into(),
-                        old_string: None,
-                        new_string: None
-                    },
+                    call: ToolCall::EditFile { path: "/b.rs".into(), old_string: None, new_string: None },
                 },
-                AgentEvent::ToolResult {
-                    id: "f2".into(),
-                    is_error: true,
-                    output: None,
-                    diff: None,
-                },
+                AgentEvent::ToolResult { id: "f2".into(), is_error: true, output: None, diff: None },
             ]
         );
         let multi = map_item(
@@ -885,13 +707,7 @@ mod tests {
             &json!({"type": "fileChange", "id": "f3",
                     "changes": [{"path": "/a"}, {"path": "/b", "kind": "delete"}]}),
         );
-        assert_eq!(
-            multi,
-            vec![AgentEvent::ToolCall {
-                id: "f3".into(),
-                call: ToolCall::ApplyPatch { path: None },
-            }]
-        );
+        assert_eq!(multi, vec![AgentEvent::ToolCall { id: "f3".into(), call: ToolCall::ApplyPatch { path: None } }]);
     }
 
     #[test]
@@ -932,17 +748,11 @@ mod tests {
     fn usage_reads_last_snapshot_under_both_spellings() {
         assert_eq!(
             usage_event(&json!({"tokenUsage": {"last": {"inputTokens": 42, "outputTokens": 7}}})),
-            Some(AgentEvent::Usage {
-                input_tokens: 42,
-                output_tokens: 7
-            })
+            Some(AgentEvent::Usage { input_tokens: 42, output_tokens: 7 })
         );
         assert_eq!(
             usage_event(&json!({"token_usage": {"last": {"input_tokens": 1, "output_tokens": 2}}})),
-            Some(AgentEvent::Usage {
-                input_tokens: 1,
-                output_tokens: 2
-            })
+            Some(AgentEvent::Usage { input_tokens: 1, output_tokens: 2 })
         );
         assert_eq!(usage_event(&json!({})), None);
     }
@@ -956,13 +766,7 @@ mod tests {
             let events = map_item(Phase::Completed, &item);
             assert!(matches!(&events[0], AgentEvent::ToolCall { call, .. }
                 if call.is_subagent_spawn() && call.subagent_model() == Some("child-model")));
-            assert!(matches!(
-                &events[1],
-                AgentEvent::ToolResult {
-                    is_error: false,
-                    ..
-                }
-            ));
+            assert!(matches!(&events[1], AgentEvent::ToolResult { is_error: false, .. }));
             item["status"] = "failed".into();
             assert_eq!(collab_spawn_child(&item), None);
             assert!(matches!(
@@ -970,14 +774,7 @@ mod tests {
                 Some(AgentEvent::ToolResult { is_error: true, .. })
             ));
         }
-        for tool in [
-            "sendInput",
-            "send_input",
-            "wait",
-            "closeAgent",
-            "resumeAgent",
-            "futureControl",
-        ] {
+        for tool in ["sendInput", "send_input", "wait", "closeAgent", "resumeAgent", "futureControl"] {
             let item = json!({"type":"collabAgentToolCall", "id":"control", "tool":tool,
                 "receiverThreadIds":["child"]});
             assert_eq!(collab_spawn_child(&item), None);
@@ -997,13 +794,7 @@ mod tests {
 
     #[test]
     fn activity_updates_are_not_spawns_in_either_item_phase() {
-        for kind in [
-            "interacted",
-            "completed",
-            "failed",
-            "errored",
-            "futureActivity",
-        ] {
+        for kind in ["interacted", "completed", "failed", "errored", "futureActivity"] {
             let item = json!({"type":"subAgentActivity", "id":"activity", "kind":kind,
                 "agentThreadId":"child", "agentPath":"/root/alpha"});
             assert!(map_item(Phase::Started, &item).is_empty());
@@ -1055,42 +846,26 @@ mod tests {
         }
         // A child turn start can reopen a completed assignment. It must never
         // reach the parent turn router.
-        assert_eq!(
-            route_child_notification("turn/started"),
-            ChildRoute::Subagent
-        );
+        assert_eq!(route_child_notification("turn/started"), ChildRoute::Subagent);
         // Child-owned thread lifecycle would rewrite parent state — consumed.
         for m in ["thread/archived", "thread/compacted", "thread/started"] {
             assert_eq!(route_child_notification(m), ChildRoute::Consumed, "{m}");
         }
         // Unknown methods degrade to "parent sees it", never silent loss
         // (the two-shipped-bugs rule).
-        for m in [
-            "serverRequest/resolved",
-            "thread/somethingBrandNew",
-            "account/rateLimits/updated",
-        ] {
+        for m in ["serverRequest/resolved", "thread/somethingBrandNew", "account/rateLimits/updated"] {
             assert_eq!(route_child_notification(m), ChildRoute::Parent, "{m}");
         }
     }
 
     #[test]
     fn notification_thread_ids_read_both_shapes() {
+        assert_eq!(notification_thread_id("thread/started", &json!({"thread": {"id": "th-c"}})), Some("th-c".into()));
         assert_eq!(
-            notification_thread_id("thread/started", &json!({"thread": {"id": "th-c"}})),
-            Some("th-c".into())
-        );
-        assert_eq!(
-            notification_thread_id(
-                "turn/completed",
-                &json!({"threadId": "th-1", "turn": {"id": "t"}})
-            ),
+            notification_thread_id("turn/completed", &json!({"threadId": "th-1", "turn": {"id": "t"}})),
             Some("th-1".into())
         );
-        assert_eq!(
-            notification_thread_id("error", &json!({"message": "x"})),
-            None
-        );
+        assert_eq!(notification_thread_id("error", &json!({"message": "x"})), None);
     }
 
     #[test]
@@ -1126,24 +901,15 @@ mod context_tests {
             context_usage_event(&json!({"tokenUsage": {
                 "last": {"totalTokens": 42000}, "total": {"totalTokens": 900000}, "modelContextWindow": 200000
             }})),
-            Some(AgentEvent::ContextUsage {
-                tokens: Some(42000),
-                window: Some(200000)
-            })
+            Some(AgentEvent::ContextUsage { tokens: Some(42000), window: Some(200000) })
         );
         assert_eq!(
             context_usage_event(&json!({"token_usage": {
                 "last": {"input_tokens": 0, "output_tokens": 0}, "model_context_window": 0
             }})),
-            Some(AgentEvent::ContextUsage {
-                tokens: Some(0),
-                window: None
-            })
+            Some(AgentEvent::ContextUsage { tokens: Some(0), window: None })
         );
-        assert_eq!(
-            context_usage_event(&json!({"tokenUsage": {"total": {"totalTokens": 100}}})),
-            None
-        );
+        assert_eq!(context_usage_event(&json!({"tokenUsage": {"total": {"totalTokens": 100}}})), None);
     }
 }
 
@@ -1154,10 +920,7 @@ mod generated_image_tests {
 
     #[test]
     fn image_generation_lifecycle_ignores_inline_result_and_preserves_ids() {
-        for (kind, path_key) in [
-            ("imageGeneration", "savedPath"),
-            ("image_generation", "saved_path"),
-        ] {
+        for (kind, path_key) in [("imageGeneration", "savedPath"), ("image_generation", "saved_path")] {
             let mut item = json!({"id":"img-1", "type":kind, "status":"completed", "result":"INLINE_IMAGE_SENTINEL".repeat(200_000), "revisedPrompt":"private prompt", "failure":null});
             item[path_key] = json!("/codex/generated_images/picture.png");
             let started = map_item(Phase::Started, &item);
@@ -1165,10 +928,7 @@ mod generated_image_tests {
                 started,
                 vec![AgentEvent::ToolCall {
                     id: "img-1".into(),
-                    call: ToolCall::Unknown {
-                        name: "Generate image".into(),
-                        input: None
-                    }
+                    call: ToolCall::Unknown { name: "Generate image".into(), input: None }
                 }]
             );
             let completed = map_item(Phase::Completed, &item);
@@ -1195,41 +955,20 @@ mod generated_image_tests {
                 json!({"failure":{"type":"usageLimitExceeded"}, "savedPath":"/must/not/use.png"}),
                 "Image generation usage limit exceeded",
             ),
-            (
-                json!({"failure":{"type":"futureFailure","message":"untrusted payload"}}),
-                "Image generation failed",
-            ),
-            (
-                json!({"status":"failed", "savedPath":"/must/not/use.png"}),
-                "Image generation failed",
-            ),
-            (
-                json!({"savedPath":null}),
-                "Image generation completed without a saved file",
-            ),
-            (
-                json!({"savedPath":"  "}),
-                "Image generation completed without a saved file",
-            ),
+            (json!({"failure":{"type":"futureFailure","message":"untrusted payload"}}), "Image generation failed"),
+            (json!({"status":"failed", "savedPath":"/must/not/use.png"}), "Image generation failed"),
+            (json!({"savedPath":null}), "Image generation completed without a saved file"),
+            (json!({"savedPath":"  "}), "Image generation completed without a saved file"),
             (json!({}), "Image generation completed without a saved file"),
         ] {
-            let mut item = json!({"type":"imageGeneration", "id":"i", "status":"completed", "result":"INLINE_SENTINEL"});
-            item.as_object_mut()
-                .unwrap()
-                .extend(extra.as_object().unwrap().clone());
+            let mut item =
+                json!({"type":"imageGeneration", "id":"i", "status":"completed", "result":"INLINE_SENTINEL"});
+            item.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
             let events = map_item(Phase::Completed, &item);
             assert_eq!(events.len(), 3);
             assert!(matches!(events[0], AgentEvent::ToolCall { .. }));
-            assert!(matches!(
-                events[1],
-                AgentEvent::ToolResult { is_error: true, .. }
-            ));
-            assert_eq!(
-                events[2],
-                AgentEvent::Error {
-                    message: expected.into()
-                }
-            );
+            assert!(matches!(events[1], AgentEvent::ToolResult { is_error: true, .. }));
+            assert_eq!(events[2], AgentEvent::Error { message: expected.into() });
         }
     }
 }

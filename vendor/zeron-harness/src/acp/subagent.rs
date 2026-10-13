@@ -38,17 +38,12 @@ const DRAIN_POLL: Duration = Duration::from_millis(200);
 
 /// The default grok sessions root (`~/.grok/sessions`).
 fn default_sessions_root() -> PathBuf {
-    crate::executable::home_or_current_dir()
-        .join(".grok")
-        .join("sessions")
+    crate::executable::home_or_current_dir().join(".grok").join("sessions")
 }
 
 /// Wrap an event as subagent-attributed traffic.
 fn tag(parent: &str, event: AgentEvent) -> AgentEvent {
-    AgentEvent::Subagent {
-        parent_tool_use_id: parent.to_owned(),
-        event: Box::new(event),
-    }
+    AgentEvent::Subagent { parent_tool_use_id: parent.to_owned(), event: Box::new(event) }
 }
 
 fn done_status(status: &str) -> DoneStatus {
@@ -125,26 +120,19 @@ impl SubagentTracker {
     }
 
     fn observe_tool_call(&mut self, update: &Value) {
-        let id = update
-            .get("toolCallId")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
+        let id = update.get("toolCallId").and_then(Value::as_str).unwrap_or_default();
         if id.is_empty() {
             return;
         }
         if xai_tool_name(update) == Some("spawn_subagent") {
-            let description = update
-                .get("rawInput")
-                .and_then(|r| r.get("description"))
-                .and_then(Value::as_str)
-                .unwrap_or_default();
+            let description =
+                update.get("rawInput").and_then(|r| r.get("description")).and_then(Value::as_str).unwrap_or_default();
             match self.pending.iter_mut().find(|p| p.tool_call_id == id) {
                 Some(p) if p.description.is_empty() => p.description = description.to_owned(),
                 Some(_) => {}
-                None => self.pending.push_back(PendingSpawn {
-                    tool_call_id: id.to_owned(),
-                    description: description.to_owned(),
-                }),
+                None => self
+                    .pending
+                    .push_back(PendingSpawn { tool_call_id: id.to_owned(), description: description.to_owned() }),
             }
         }
         // The spawn's completion echoes the minted id in its output text
@@ -171,11 +159,7 @@ impl SubagentTracker {
         {
             return;
         }
-        let Some(sub_id) = update
-            .get("subagent_id")
-            .and_then(Value::as_str)
-            .filter(|s| !s.is_empty())
-        else {
+        let Some(sub_id) = update.get("subagent_id").and_then(Value::as_str).filter(|s| !s.is_empty()) else {
             return;
         };
         let child_session_id = update
@@ -188,19 +172,12 @@ impl SubagentTracker {
             // Sync spawns: the chip hasn't completed yet — bind by
             // description (FIFO across identical descriptions, matching
             // grok's spawn order), else the oldest pending spawn.
-            let description = update
-                .get("description")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
+            let description = update.get("description").and_then(Value::as_str).unwrap_or_default();
             let ix = self
                 .pending
                 .iter()
                 .position(|p| !description.is_empty() && p.description == description)
-                .or(if self.pending.is_empty() {
-                    None
-                } else {
-                    Some(0)
-                });
+                .or(if self.pending.is_empty() { None } else { Some(0) });
             match ix.and_then(|i| self.pending.remove(i)) {
                 Some(p) => {
                     self.bound.insert(sub_id.to_owned(), p.tool_call_id);
@@ -208,8 +185,7 @@ impl SubagentTracker {
                 None => {
                     // No chip candidate on the wire (yet): stash — the
                     // spawn completion's id echo binds it later.
-                    self.spawned_unbound
-                        .insert(sub_id.to_owned(), SpawnedUnbound { child_session_id });
+                    self.spawned_unbound.insert(sub_id.to_owned(), SpawnedUnbound { child_session_id });
                     return;
                 }
             }
@@ -222,17 +198,8 @@ impl SubagentTracker {
             return;
         };
         let finish = TailFinish {
-            status: done_status(
-                update
-                    .get("status")
-                    .and_then(Value::as_str)
-                    .unwrap_or("completed"),
-            ),
-            output: update
-                .get("output")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_owned(),
+            status: done_status(update.get("status").and_then(Value::as_str).unwrap_or("completed")),
+            output: update.get("output").and_then(Value::as_str).unwrap_or_default().to_owned(),
         };
         self.spawned_unbound.remove(sub_id);
         if let Some(tx) = self.tails.remove(sub_id) {
@@ -244,24 +211,12 @@ impl SubagentTracker {
             let event_tx = self.event_tx.clone();
             tokio::spawn(async move {
                 if !finish.output.is_empty() {
-                    let _ = event_tx
-                        .send(Ok(tag(
-                            &parent,
-                            AgentEvent::TextDelta {
-                                text: finish.output,
-                            },
-                        )))
-                        .await;
+                    let _ = event_tx.send(Ok(tag(&parent, AgentEvent::TextDelta { text: finish.output }))).await;
                 }
                 let _ = event_tx
                     .send(Ok(tag(
                         &parent,
-                        AgentEvent::Done {
-                            status: finish.status,
-                            result: None,
-                            error: None,
-                            session_id: None,
-                        },
+                        AgentEvent::Done { status: finish.status, result: None, error: None, session_id: None },
                     )))
                     .await;
             });
@@ -289,16 +244,9 @@ impl SubagentTracker {
 
 /// `subagent_id: <id>` from the spawn tool call's completion output.
 fn spawn_output_subagent_id(update: &Value) -> Option<String> {
-    let text = update
-        .get("rawOutput")
-        .and_then(|r| r.get("text"))
-        .and_then(Value::as_str)
-        .or_else(|| {
-            update
-                .get("content")?
-                .as_array()?
-                .iter()
-                .find_map(|c| c.get("content")?.get("text")?.as_str())
+    let text =
+        update.get("rawOutput").and_then(|r| r.get("text")).and_then(Value::as_str).or_else(|| {
+            update.get("content")?.as_array()?.iter().find_map(|c| c.get("content")?.get("text")?.as_str())
         })?;
     text.lines().find_map(|line| {
         let id = line.trim().strip_prefix("subagent_id:")?.trim();
@@ -317,10 +265,7 @@ fn spawn_output_subagent_id(update: &Value) -> Option<String> {
 fn locate_history(root: &Path, child_session_id: &str) -> Option<PathBuf> {
     let entries = std::fs::read_dir(root).ok()?;
     for entry in entries.flatten() {
-        let candidate = entry
-            .path()
-            .join(child_session_id)
-            .join("chat_history.jsonl");
+        let candidate = entry.path().join(child_session_id).join("chat_history.jsonl");
         if candidate.is_file() {
             return Some(candidate);
         }
@@ -338,11 +283,7 @@ struct TailReader {
 
 impl TailReader {
     fn new(path: PathBuf) -> Self {
-        Self {
-            path,
-            offset: 0,
-            carry: Vec::new(),
-        }
+        Self { path, offset: 0, carry: Vec::new() }
     }
 
     /// New complete entries since the last poll; io/parse failures read as
@@ -391,27 +332,14 @@ fn entry_events(entry: &Value) -> Vec<AgentEvent> {
                 .filter(|t| !t.is_empty())
                 .collect();
             if !text.is_empty() {
-                events.push(AgentEvent::ReasoningDelta {
-                    text: format!("{}\n\n", text.join("\n")),
-                });
+                events.push(AgentEvent::ReasoningDelta { text: format!("{}\n\n", text.join("\n")) });
             }
         }
         Some("assistant") => {
-            if let Some(text) = entry
-                .get("content")
-                .and_then(Value::as_str)
-                .filter(|t| !t.is_empty())
-            {
-                events.push(AgentEvent::TextDelta {
-                    text: format!("{text}\n\n"),
-                });
+            if let Some(text) = entry.get("content").and_then(Value::as_str).filter(|t| !t.is_empty()) {
+                events.push(AgentEvent::TextDelta { text: format!("{text}\n\n") });
             }
-            for tc in entry
-                .get("tool_calls")
-                .and_then(Value::as_array)
-                .map(|a| a.as_slice())
-                .unwrap_or_default()
-            {
+            for tc in entry.get("tool_calls").and_then(Value::as_array).map(|a| a.as_slice()).unwrap_or_default() {
                 let id = tc.get("id").and_then(Value::as_str).unwrap_or_default();
                 let name = tc.get("name").and_then(Value::as_str).unwrap_or_default();
                 if id.is_empty() || name.is_empty() {
@@ -423,29 +351,17 @@ fn entry_events(entry: &Value) -> Vec<AgentEvent> {
                     .and_then(Value::as_str)
                     .and_then(|a| serde_json::from_str::<Value>(a).ok())
                     .unwrap_or(Value::Null);
-                events.push(AgentEvent::ToolCall {
-                    id: id.to_owned(),
-                    call: grok_tool_call(name, &args),
-                });
+                events.push(AgentEvent::ToolCall { id: id.to_owned(), call: grok_tool_call(name, &args) });
             }
         }
         Some("tool_result") => {
-            if let Some(id) = entry
-                .get("tool_call_id")
-                .and_then(Value::as_str)
-                .filter(|i| !i.is_empty())
-            {
+            if let Some(id) = entry.get("tool_call_id").and_then(Value::as_str).filter(|i| !i.is_empty()) {
                 let output = entry
                     .get("content")
                     .and_then(Value::as_str)
                     .filter(|t| !t.is_empty())
                     .map(|t| cap_text(t, OUTPUT_CAP));
-                events.push(AgentEvent::ToolResult {
-                    id: id.to_owned(),
-                    is_error: false,
-                    output,
-                    diff: None,
-                });
+                events.push(AgentEvent::ToolResult { id: id.to_owned(), is_error: false, output, diff: None });
             }
         }
         Some("user") => {
@@ -459,9 +375,7 @@ fn entry_events(entry: &Value) -> Vec<AgentEvent> {
                 .map(str::trim)
                 .filter(|t| !t.is_empty() && !t.starts_with('<'))
             {
-                events.push(AgentEvent::UserMessage {
-                    text: text.to_owned(),
-                });
+                events.push(AgentEvent::UserMessage { text: text.to_owned() });
             }
         }
         // system prompt / synthetic reminders: not transcript.
@@ -473,19 +387,11 @@ fn entry_events(entry: &Value) -> Vec<AgentEvent> {
 /// Type a grok-native tool invocation (disk names, not ACP kinds).
 fn grok_tool_call(name: &str, args: &Value) -> ToolCall {
     let s = |keys: &[&str]| {
-        keys.iter()
-            .find_map(|k| args.get(*k))
-            .and_then(Value::as_str)
-            .filter(|v| !v.is_empty())
-            .map(str::to_owned)
+        keys.iter().find_map(|k| args.get(*k)).and_then(Value::as_str).filter(|v| !v.is_empty()).map(str::to_owned)
     };
     match name {
-        "run_terminal_command" => ToolCall::Exec {
-            command: s(&["command"]).unwrap_or_default(),
-        },
-        "read_file" => ToolCall::ReadFile {
-            path: s(&["target_file", "file_path", "path"]).unwrap_or_default(),
-        },
+        "run_terminal_command" => ToolCall::Exec { command: s(&["command"]).unwrap_or_default() },
+        "read_file" => ToolCall::ReadFile { path: s(&["target_file", "file_path", "path"]).unwrap_or_default() },
         "write_file" => ToolCall::WriteFile {
             path: s(&["target_file", "file_path", "path"]).unwrap_or_default(),
             content: s(&["contents", "content"]),
@@ -495,28 +401,16 @@ fn grok_tool_call(name: &str, args: &Value) -> ToolCall {
             old_string: s(&["old_string"]),
             new_string: s(&["new_string"]),
         },
-        "grep" => ToolCall::Search {
-            pattern: s(&["pattern"]).unwrap_or_default(),
-            path: s(&["path"]),
-        },
-        "glob" => ToolCall::Glob {
-            pattern: s(&["pattern", "glob_pattern"]).unwrap_or_default(),
-        },
-        "web_search" => ToolCall::WebSearch {
-            query: s(&["query", "search_term"]).unwrap_or_default(),
-        },
+        "grep" => ToolCall::Search { pattern: s(&["pattern"]).unwrap_or_default(), path: s(&["path"]) },
+        "glob" => ToolCall::Glob { pattern: s(&["pattern", "glob_pattern"]).unwrap_or_default() },
+        "web_search" => ToolCall::WebSearch { query: s(&["query", "search_term"]).unwrap_or_default() },
         // A nested spawn inside the subagent: same naming as the parent chip
         // (no recursive tail — it renders as a plain chip in the child doc).
         "spawn_subagent" => ToolCall::Unknown {
-            name: s(&["description"])
-                .map(|d| format!("Agent: {d}"))
-                .unwrap_or_else(|| "Agent".into()),
+            name: s(&["description"]).map(|d| format!("Agent: {d}")).unwrap_or_else(|| "Agent".into()),
             input: (!args.is_null()).then(|| args.clone()),
         },
-        _ => ToolCall::Unknown {
-            name: name.to_owned(),
-            input: (!args.is_null()).then(|| args.clone()),
-        },
+        _ => ToolCall::Unknown { name: name.to_owned(), input: (!args.is_null()).then(|| args.clone()) },
     }
 }
 
@@ -538,23 +432,13 @@ async fn tail_task(
         if reader.is_none() {
             *reader = locate_history(&root, &child_session_id).map(TailReader::new);
         }
-        reader
-            .as_mut()
-            .map(|r| r.read_new())
-            .unwrap_or_default()
-            .iter()
-            .flat_map(entry_events)
-            .collect()
+        reader.as_mut().map(|r| r.read_new()).unwrap_or_default().iter().flat_map(entry_events).collect()
     };
 
     let finish = loop {
         for ev in pump(&mut reader) {
             emitted = true;
-            if event_tx
-                .send(Ok(tag(&parent_tool_use_id, ev)))
-                .await
-                .is_err()
-            {
+            if event_tx.send(Ok(tag(&parent_tool_use_id, ev))).await.is_err() {
                 return;
             }
         }
@@ -581,11 +465,7 @@ async fn tail_task(
         let events = pump(&mut reader);
         for ev in events.iter().cloned() {
             emitted = true;
-            if event_tx
-                .send(Ok(tag(&parent_tool_use_id, ev)))
-                .await
-                .is_err()
-            {
+            if event_tx.send(Ok(tag(&parent_tool_use_id, ev))).await.is_err() {
                 return;
             }
         }
@@ -597,28 +477,14 @@ async fn tail_task(
     if !emitted && !finish.output.is_empty() {
         // The tail never found (or never parsed) the transcript: the wire's
         // final output alone still makes a useful doc.
-        if event_tx
-            .send(Ok(tag(
-                &parent_tool_use_id,
-                AgentEvent::TextDelta {
-                    text: finish.output,
-                },
-            )))
-            .await
-            .is_err()
-        {
+        if event_tx.send(Ok(tag(&parent_tool_use_id, AgentEvent::TextDelta { text: finish.output }))).await.is_err() {
             return;
         }
     }
     let _ = event_tx
         .send(Ok(tag(
             &parent_tool_use_id,
-            AgentEvent::Done {
-                status: finish.status,
-                result: None,
-                error: None,
-                session_id: None,
-            },
+            AgentEvent::Done { status: finish.status, result: None, error: None, session_id: None },
         )))
         .await;
 }
@@ -636,10 +502,7 @@ mod tests {
             "status": "completed",
             "rawOutput": {"type": "Text", "text": "Subagent started in background.\nsubagent_id: 01a0-abc\ntype: explore"},
         });
-        assert_eq!(
-            spawn_output_subagent_id(&update).as_deref(),
-            Some("01a0-abc")
-        );
+        assert_eq!(spawn_output_subagent_id(&update).as_deref(), Some("01a0-abc"));
         // content-block fallback when rawOutput is absent.
         let update = json!({
             "sessionUpdate": "tool_call_update",
@@ -704,47 +567,25 @@ mod tests {
         ));
         assert!(entry_events(&json!({"type": "system", "content": "x"})).is_empty());
         assert!(
-            entry_events(
-                &json!({"type": "user", "content": "<system-reminder>tick</system-reminder>"})
-            )
-            .is_empty()
+            entry_events(&json!({"type": "user", "content": "<system-reminder>tick</system-reminder>"})).is_empty()
         );
     }
 
     #[test]
     fn grok_tool_names_type_the_common_calls() {
         let call = grok_tool_call("run_terminal_command", &json!({"command": "ls -la"}));
-        assert_eq!(
-            call,
-            ToolCall::Exec {
-                command: "ls -la".into()
-            }
-        );
+        assert_eq!(call, ToolCall::Exec { command: "ls -la".into() });
         let call = grok_tool_call("grep", &json!({"pattern": "0\\.1", "glob": "*.rs"}));
+        assert_eq!(call, ToolCall::Search { pattern: "0\\.1".into(), path: None });
+        let call =
+            grok_tool_call("search_replace", &json!({"file_path": "/w/a.rs", "old_string": "a", "new_string": "b"}));
         assert_eq!(
             call,
-            ToolCall::Search {
-                pattern: "0\\.1".into(),
-                path: None
-            }
-        );
-        let call = grok_tool_call(
-            "search_replace",
-            &json!({"file_path": "/w/a.rs", "old_string": "a", "new_string": "b"}),
-        );
-        assert_eq!(
-            call,
-            ToolCall::EditFile {
-                path: "/w/a.rs".into(),
-                old_string: Some("a".into()),
-                new_string: Some("b".into()),
-            }
+            ToolCall::EditFile { path: "/w/a.rs".into(), old_string: Some("a".into()), new_string: Some("b".into()) }
         );
         let call = grok_tool_call("spawn_subagent", &json!({"description": "Scan crates"}));
         assert!(matches!(call, ToolCall::Unknown { name, .. } if name == "Agent: Scan crates"));
         let call = grok_tool_call("mystery_tool", &json!({"x": 1}));
-        assert!(
-            matches!(call, ToolCall::Unknown { name, input: Some(_) } if name == "mystery_tool")
-        );
+        assert!(matches!(call, ToolCall::Unknown { name, input: Some(_) } if name == "mystery_tool"));
     }
 }

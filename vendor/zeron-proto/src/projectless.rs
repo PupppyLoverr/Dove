@@ -15,18 +15,10 @@ pub const SCRATCH_ROOT: &str = "~/.zeron/scratch";
 /// The scratch cwd for a new projectless chat: `<date>-<id>`, the id cut to
 /// its last 8 letters and digits (the random end of a UUID or ULID).
 pub fn scratch_cwd(chat_id: &str, created_at: DateTime<Utc>) -> String {
-    let id: Vec<char> = chat_id
-        .chars()
-        .filter(char::is_ascii_alphanumeric)
-        .map(|c| c.to_ascii_lowercase())
-        .collect();
+    let id: Vec<char> = chat_id.chars().filter(char::is_ascii_alphanumeric).map(|c| c.to_ascii_lowercase()).collect();
     let id: String = id[id.len().saturating_sub(8)..].iter().collect();
     let date = created_at.format("%Y-%m-%d");
-    if id.is_empty() {
-        format!("{SCRATCH_ROOT}/{date}")
-    } else {
-        format!("{SCRATCH_ROOT}/{date}-{id}")
-    }
+    if id.is_empty() { format!("{SCRATCH_ROOT}/{date}") } else { format!("{SCRATCH_ROOT}/{date}-{id}") }
 }
 
 /// The legacy projectless cwd: the host's home.
@@ -62,14 +54,8 @@ mod tests {
             scratch_cwd("9f1c2a3b-4d5e-4f60-8a7b-1c2d3e4f5a6b", at("2026-10-11")),
             "~/.zeron/scratch/2026-10-11-3e4f5a6b"
         );
-        assert_eq!(
-            scratch_cwd("Ab-1", at("2026-01-02")),
-            "~/.zeron/scratch/2026-01-02-ab1"
-        );
-        assert_eq!(
-            scratch_cwd("--", at("2026-01-02")),
-            "~/.zeron/scratch/2026-01-02"
-        );
+        assert_eq!(scratch_cwd("Ab-1", at("2026-01-02")), "~/.zeron/scratch/2026-01-02-ab1");
+        assert_eq!(scratch_cwd("--", at("2026-01-02")), "~/.zeron/scratch/2026-01-02");
     }
 
     #[test]

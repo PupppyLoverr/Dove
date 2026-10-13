@@ -4,34 +4,17 @@ use serde_json::{Value, json};
 use zeron_proto::{Model, ModelOption, ModelOptionChoice, ReasoningLevel, SlashCommand};
 
 pub(super) fn levels(data: &Value) -> Vec<ReasoningLevel> {
-    data["levels"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|v| serde_json::from_value(v.clone()).ok())
-        .collect()
+    data["levels"].as_array().into_iter().flatten().filter_map(|v| serde_json::from_value(v.clone()).ok()).collect()
 }
 pub(super) async fn models(process: &mut Process) -> Result<Vec<Model>, HarnessError> {
     let mut backlog = vec![];
-    let data = process
-        .query(json!({"type":"get_available_models"}), &mut backlog)
-        .await?;
+    let data = process.query(json!({"type":"get_available_models"}), &mut backlog).await?;
     let mut result = vec![];
     for model in data["models"].as_array().into_iter().flatten() {
         let provider = string(model, "provider");
         let id = string(model, "id");
-        process
-            .query(
-                json!({"type":"set_model","provider":provider,"modelId":id}),
-                &mut backlog,
-            )
-            .await?;
-        let supported = process
-            .query(
-                json!({"type":"get_available_thinking_levels"}),
-                &mut backlog,
-            )
-            .await?;
+        process.query(json!({"type":"set_model","provider":provider,"modelId":id}), &mut backlog).await?;
+        let supported = process.query(json!({"type":"get_available_thinking_levels"}), &mut backlog).await?;
         result.push(Model {
             id: format!("{provider}/{id}"),
             label: model["name"].as_str().unwrap_or(id).into(),
@@ -44,10 +27,7 @@ pub(super) async fn models(process: &mut Process) -> Result<Vec<Model>, HarnessE
     Ok(result)
 }
 fn thinking_option(data: &Value) -> Vec<ModelOption> {
-    if !data["levels"]
-        .as_array()
-        .is_some_and(|v| v.iter().any(|s| s == "off"))
-    {
+    if !data["levels"].as_array().is_some_and(|v| v.iter().any(|s| s == "off")) {
         return vec![];
     }
     vec![ModelOption {
@@ -55,14 +35,8 @@ fn thinking_option(data: &Value) -> Vec<ModelOption> {
         label: "Thinking".into(),
         default_choice: "auto".into(),
         choices: vec![
-            ModelOptionChoice {
-                id: "auto".into(),
-                label: "Use reasoning level".into(),
-            },
-            ModelOptionChoice {
-                id: "off".into(),
-                label: "Off".into(),
-            },
+            ModelOptionChoice { id: "auto".into(), label: "Use reasoning level".into() },
+            ModelOptionChoice { id: "off".into(), label: "Off".into() },
         ],
     }]
 }
@@ -73,11 +47,7 @@ pub(super) fn commands(data: &Value) -> Vec<SlashCommand> {
         .flatten()
         .filter_map(|v| {
             let name = v["name"].as_str()?;
-            Some(SlashCommand {
-                name: name.into(),
-                description: string(v, "description").into(),
-                input_hint: None,
-            })
+            Some(SlashCommand { name: name.into(), description: string(v, "description").into(), input_hint: None })
         })
         .collect();
     for (name, description) in [
@@ -90,11 +60,7 @@ pub(super) fn commands(data: &Value) -> Vec<SlashCommand> {
         ("follow-up", "Follow-up queue mode"),
     ] {
         if !commands.iter().any(|c| c.name == name) {
-            commands.push(SlashCommand {
-                name: name.into(),
-                description: description.into(),
-                input_hint: None,
-            });
+            commands.push(SlashCommand { name: name.into(), description: description.into(), input_hint: None });
         }
     }
     commands

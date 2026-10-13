@@ -49,12 +49,7 @@ impl Subagents {
             .and_then(Value::as_array)
             .into_iter()
             .flatten()
-            .flat_map(|turn| {
-                turn.get("items")
-                    .and_then(Value::as_array)
-                    .into_iter()
-                    .flatten()
-            })
+            .flat_map(|turn| turn.get("items").and_then(Value::as_array).into_iter().flatten())
         {
             if super::normalize::is_collab_spawn(item)
                 || matches!(item_type(item), "subAgentActivity" | "sub_agent_activity")
@@ -64,17 +59,8 @@ impl Subagents {
         }
     }
 
-    pub(super) fn notification(
-        &mut self,
-        child: &str,
-        method: &str,
-        params: &Value,
-    ) -> Vec<AgentEvent> {
-        let events = self
-            .streams
-            .entry(child.to_owned())
-            .or_default()
-            .map(child, method, params);
+    pub(super) fn notification(&mut self, child: &str, method: &str, params: &Value) -> Vec<AgentEvent> {
+        let events = self.streams.entry(child.to_owned()).or_default().map(child, method, params);
         self.route(child, events)
     }
 
@@ -85,10 +71,7 @@ impl Subagents {
             if matches!(path, "/" | "/root") {
                 return Vec::new();
             }
-            if !matches!(
-                item.get("kind").and_then(Value::as_str),
-                Some("started" | "spawned")
-            ) {
+            if !matches!(item.get("kind").and_then(Value::as_str), Some("started" | "spawned")) {
                 return Vec::new();
             }
             item.get("agentThreadId").and_then(Value::as_str)
@@ -101,11 +84,7 @@ impl Subagents {
         let mut item = std::borrow::Cow::Borrowed(item);
         let mut buffered = Vec::new();
         if let Some(child) = child {
-            let call = item
-                .get("id")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_owned();
+            let call = item.get("id").and_then(Value::as_str).unwrap_or("").to_owned();
             buffered = self.bind(child, &call);
             if let Some(owner) = self.spawns.get(child) {
                 item.to_mut()["id"] = owner.clone().into();
@@ -116,9 +95,7 @@ impl Subagents {
             .filter(|event| match event {
                 // Completed items refresh tool metadata, but a spawn chip must
                 // appear once even when its parent text segment has already ended.
-                AgentEvent::ToolCall { id, call } if call.is_subagent_spawn() => {
-                    self.emitted_spawns.insert(id.clone())
-                }
+                AgentEvent::ToolCall { id, call } if call.is_subagent_spawn() => self.emitted_spawns.insert(id.clone()),
                 AgentEvent::ToolResult { id, .. } if self.emitted_spawns.contains(id) => {
                     self.resolved_spawns.insert(id.clone())
                 }
@@ -135,10 +112,7 @@ impl Subagents {
         if child.is_empty() || child == self.root || spawn.is_empty() {
             return Vec::new();
         }
-        let owner = self
-            .spawns
-            .entry(child.to_owned())
-            .or_insert_with(|| spawn.to_owned());
+        let owner = self.spawns.entry(child.to_owned()).or_insert_with(|| spawn.to_owned());
         let Some(pending) = self.pending.remove(child) else {
             return Vec::new();
         };
@@ -174,10 +148,7 @@ impl Subagents {
 }
 
 fn tag(spawn: &str, event: AgentEvent) -> AgentEvent {
-    AgentEvent::Subagent {
-        parent_tool_use_id: spawn.to_owned(),
-        event: Box::new(event),
-    }
+    AgentEvent::Subagent { parent_tool_use_id: spawn.to_owned(), event: Box::new(event) }
 }
 
 #[cfg(test)]
@@ -194,28 +165,15 @@ mod tests {
         children.bind("alpha", "spawn-alpha");
         children.bind("beta", "spawn-beta");
         children.bind("alpha", "later-activity");
-        assert_eq!(
-            children.route("alpha", vec![text("a")]),
-            vec![tag("spawn-alpha", text("a"))]
-        );
-        assert_eq!(
-            children.route("beta", vec![text("b")]),
-            vec![tag("spawn-beta", text("b"))]
-        );
+        assert_eq!(children.route("alpha", vec![text("a")]), vec![tag("spawn-alpha", text("a"))]);
+        assert_eq!(children.route("beta", vec![text("b")]), vec![tag("spawn-beta", text("b"))]);
     }
 
     #[test]
     fn early_content_waits_for_the_spawn_and_drains_once_in_order() {
         let mut children = Subagents::new("root".into());
-        assert!(
-            children
-                .route("alpha", vec![text("first"), text("second")])
-                .is_empty()
-        );
-        assert_eq!(
-            children.bind("alpha", "spawn"),
-            vec![tag("spawn", text("first")), tag("spawn", text("second"))]
-        );
+        assert!(children.route("alpha", vec![text("first"), text("second")]).is_empty());
+        assert_eq!(children.bind("alpha", "spawn"), vec![tag("spawn", text("first")), tag("spawn", text("second"))]);
         assert!(children.bind("alpha", "spawn").is_empty());
         assert_eq!(children.pending_bytes, 0);
     }
@@ -238,9 +196,6 @@ mod tests {
         children.route("unknown", vec![text(&"x".repeat(MAX_PENDING_BYTES))]);
         assert!(children.pending.is_empty());
         children.bind("alpha", "spawn");
-        assert_eq!(
-            children.route("alpha", vec![text("ok")]),
-            vec![tag("spawn", text("ok"))]
-        );
+        assert_eq!(children.route("alpha", vec![text("ok")]), vec![tag("spawn", text("ok"))]);
     }
 }

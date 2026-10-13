@@ -50,17 +50,15 @@ use tokio::io::AsyncBufReadExt;
 use tokio::sync::mpsc;
 
 use zeron_proto::{
-    AgentEvent, DoneStatus, HarnessId, Model, ModelOption, ModelOptionChoice, ReasoningLevel,
-    RunRequest, SlashCommand, SteeringMode, UserInputAnswer, UserInputQuestion,
+    AgentEvent, DoneStatus, HarnessId, Model, ModelOption, ModelOptionChoice, ReasoningLevel, RunRequest, SlashCommand,
+    SteeringMode, UserInputAnswer, UserInputQuestion,
 };
 
 use crate::jsonrpc::{Incoming, RpcClient};
 pub(crate) use crate::process::owned as child;
 use crate::process::{Command, Stdio};
 use crate::scratch::ScratchDir;
-use crate::{
-    CancellationToken, Harness, HarnessError, RunControls, Signal, send_signal, shutdown_child,
-};
+use crate::{CancellationToken, Harness, HarnessError, RunControls, Signal, send_signal, shutdown_child};
 use child::Child;
 use normalize::{map_update, parse_commands, preferred_allow_option};
 use subagent::SubagentTracker;
@@ -160,10 +158,7 @@ pub(crate) fn find_on_paths(exe: &str, extra: Vec<PathBuf>) -> Option<PathBuf> {
 }
 
 /// Generic effort ladder for agents without their own clamping rules.
-fn default_effort_values(
-    reasoning: Option<ReasoningLevel>,
-    _model: Option<&str>,
-) -> Vec<&'static str> {
+fn default_effort_values(reasoning: Option<ReasoningLevel>, _model: Option<&str>) -> Vec<&'static str> {
     let Some(level) = reasoning else {
         return Vec::new();
     };
@@ -182,10 +177,7 @@ fn default_effort_values(
 
 /// Devin's `thought_level` also offers `none` ("No Thinking"), which the
 /// catalog maps to Zeron's lowest level.
-fn devin_effort_values(
-    reasoning: Option<ReasoningLevel>,
-    model: Option<&str>,
-) -> Vec<&'static str> {
+fn devin_effort_values(reasoning: Option<ReasoningLevel>, model: Option<&str>) -> Vec<&'static str> {
     match reasoning {
         Some(ReasoningLevel::Minimal) => vec!["none", "minimal", "low"],
         _ => default_effort_values(reasoning, model),
@@ -233,11 +225,7 @@ fn grok_spec() -> AcpAgentSpec {
                 id: "grok-4.5".into(),
                 label: "Grok 4.5".into(),
                 description: Some("xAI's coding model — 500k context".into()),
-                reasoning_levels: vec![
-                    ReasoningLevel::Low,
-                    ReasoningLevel::Medium,
-                    ReasoningLevel::High,
-                ],
+                reasoning_levels: vec![ReasoningLevel::Low, ReasoningLevel::Medium, ReasoningLevel::High],
                 options: Vec::new(),
             }]
         },
@@ -246,11 +234,7 @@ fn grok_spec() -> AcpAgentSpec {
         steering_mode: SteeringMode::StepBoundary,
         // Grok Build's advertised efforts (default high); applied through the
         // session's `thought_level` config option.
-        reasoning_levels: &[
-            ReasoningLevel::Low,
-            ReasoningLevel::Medium,
-            ReasoningLevel::High,
-        ],
+        reasoning_levels: &[ReasoningLevel::Low, ReasoningLevel::Medium, ReasoningLevel::High],
         prompt_transform: identity_transform,
         effort_values: default_effort_values,
         ladder_extras: &[],
@@ -459,13 +443,7 @@ fn antigravity_archive() -> Option<crate::archive_install::ArchivePin> {
     } else {
         return None;
     };
-    Some(crate::archive_install::ArchivePin {
-        name: "antigravity-acp",
-        version: "1.2.1",
-        url,
-        entry,
-        sha512,
-    })
+    Some(crate::archive_install::ArchivePin { name: "antigravity-acp", version: "1.2.1", url, entry, sha512 })
 }
 
 fn antigravity_legacy_archive() -> Option<crate::archive_install::ArchivePin> {
@@ -502,31 +480,22 @@ fn antigravity_legacy_archive() -> Option<crate::archive_install::ArchivePin> {
     } else {
         return None;
     };
-    Some(crate::archive_install::ArchivePin {
-        name: "antigravity-acp",
-        version: "1.1.1",
-        url,
-        entry,
-        sha512,
-    })
+    Some(crate::archive_install::ArchivePin { name: "antigravity-acp", version: "1.1.1", url, entry, sha512 })
 }
 
 const ANTIGRAVITY_ARCHIVE_NAME: &str = "antigravity-acp";
 
 /// the acp registry's manifest for google's server, the source of releases
 /// newer than the pin compiled into this build.
-pub const ANTIGRAVITY_REGISTRY_URL: &str = "https://raw.githubusercontent.com/agentclientprotocol/registry/main/antigravity-acp/agent.json";
+pub const ANTIGRAVITY_REGISTRY_URL: &str =
+    "https://raw.githubusercontent.com/agentclientprotocol/registry/main/antigravity-acp/agent.json";
 
 /// install marker for a release proven by google's code signature, which has
 /// no digest in zeron's source to record instead.
 const ANTIGRAVITY_SIGNED_MARKER: &str = "google-code-signature";
 
 fn antigravity_entry() -> &'static str {
-    if cfg!(windows) {
-        "agy_acp_server.exe"
-    } else {
-        "agy_acp_server.par"
-    }
+    if cfg!(windows) { "agy_acp_server.exe" } else { "agy_acp_server.par" }
 }
 
 fn antigravity_registry_platform() -> Option<&'static str> {
@@ -550,17 +519,12 @@ fn antigravity_registry_platform() -> Option<&'static str> {
 /// completed installs whose marker proves their origin: a digest pinned by
 /// this or an earlier build, or google's verified code signature.
 fn trusted_antigravity_installs() -> Vec<(semver::Version, PathBuf)> {
-    let pins: Vec<_> = [antigravity_archive(), antigravity_legacy_archive()]
-        .into_iter()
-        .flatten()
-        .collect();
+    let pins: Vec<_> = [antigravity_archive(), antigravity_legacy_archive()].into_iter().flatten().collect();
     crate::archive_install::installed_versions(ANTIGRAVITY_ARCHIVE_NAME)
         .into_iter()
         .filter_map(|(version, marker)| {
             let parsed = semver::Version::parse(&version).ok()?;
-            let trusted = pins
-                .iter()
-                .any(|pin| pin.version == version && pin.sha512 == marker)
+            let trusted = pins.iter().any(|pin| pin.version == version && pin.sha512 == marker)
                 || (crate::code_signature::SUPPORTED && marker == ANTIGRAVITY_SIGNED_MARKER);
             if !trusted {
                 return None;
@@ -577,9 +541,7 @@ fn trusted_antigravity_installs() -> Vec<(semver::Version, PathBuf)> {
 }
 
 fn newest_antigravity_install() -> Option<(semver::Version, PathBuf)> {
-    trusted_antigravity_installs()
-        .into_iter()
-        .max_by(|(left, _), (right, _)| left.cmp(right))
+    trusted_antigravity_installs().into_iter().max_by(|(left, _), (right, _)| left.cmp(right))
 }
 
 /// whether `executable` is the server zeron installed and may replace.
@@ -620,10 +582,7 @@ pub fn antigravity_release(manifest: &Value) -> Option<AntigravityRelease> {
         .and_then(|binary| binary.get("archive")?.as_str())
         .filter(|url| is_google_release_url(url))
         .map(str::to_owned);
-    Some(AntigravityRelease {
-        version: version.to_owned(),
-        archive_url,
-    })
+    Some(AntigravityRelease { version: version.to_owned(), archive_url })
 }
 
 fn is_google_release_url(url: &str) -> bool {
@@ -638,9 +597,7 @@ fn is_google_release_url(url: &str) -> bool {
 }
 
 /// install `release` beside earlier ones; launches switch to it once complete.
-pub async fn install_antigravity_release(
-    release: &AntigravityRelease,
-) -> Result<PathBuf, HarnessError> {
+pub async fn install_antigravity_release(release: &AntigravityRelease) -> Result<PathBuf, HarnessError> {
     if let Some(pin) = antigravity_archive().filter(|pin| pin.version == release.version) {
         return crate::archive_install::ensure_installed(pin, "Antigravity").await;
     }
@@ -678,33 +635,22 @@ const VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(60);
 
 async fn confirm_reported_version(server: &Path, expected: &str) -> Result<(), HarnessError> {
     let mut command = Command::new(server);
-    command
-        .arg("--version")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
-    let output = tokio::time::timeout(VERSION_PROBE_TIMEOUT, command.output())
-        .await
-        .map_err(|_| {
-            HarnessError::Install(format!(
-                "the downloaded Antigravity server did not report its version within {}s",
-                VERSION_PROBE_TIMEOUT.as_secs()
-            ))
-        })??;
-    let text = format!(
-        "{}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
+    command.arg("--version").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
+    let output = tokio::time::timeout(VERSION_PROBE_TIMEOUT, command.output()).await.map_err(|_| {
+        HarnessError::Install(format!(
+            "the downloaded Antigravity server did not report its version within {}s",
+            VERSION_PROBE_TIMEOUT.as_secs()
+        ))
+    })??;
+    let text = format!("{}\n{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
     match antigravity_build_version(&text) {
         Some(reported) if reported == expected => Ok(()),
         Some(reported) => Err(HarnessError::Install(format!(
             "the ACP registry lists Antigravity {expected}, but its archive contains {reported}"
         ))),
-        None => Err(HarnessError::Install(format!(
-            "the downloaded Antigravity {expected} server reported no build label"
-        ))),
+        None => {
+            Err(HarnessError::Install(format!("the downloaded Antigravity {expected} server reported no build label")))
+        }
     }
 }
 
@@ -746,10 +692,7 @@ pub fn prune_superseded_antigravity_installs() {
         }
         // windows also refuses to rename a directory holding a running
         // image, which covers processes the scan could not open.
-        let trash = adapters.join(format!(
-            ".trash-{ANTIGRAVITY_ARCHIVE_NAME}-{version}-{}",
-            std::process::id()
-        ));
+        let trash = adapters.join(format!(".trash-{ANTIGRAVITY_ARCHIVE_NAME}-{version}-{}", std::process::id()));
         if std::fs::rename(dir, &trash).is_ok()
             && let Err(error) = std::fs::remove_dir_all(&trash)
         {
@@ -767,12 +710,7 @@ fn running_command_lines() -> Option<Vec<String>> {
         .output()
         .ok()
         .filter(|output| output.status.success())?;
-    Some(
-        String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .map(str::to_owned)
-            .collect(),
-    )
+    Some(String::from_utf8_lossy(&output.stdout).lines().map(str::to_owned).collect())
 }
 
 /// the image path of every process this user can inspect.
@@ -780,12 +718,10 @@ fn running_command_lines() -> Option<Vec<String>> {
 fn running_command_lines() -> Option<Vec<String>> {
     use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
-        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
-        TH32CS_SNAPPROCESS,
+        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
     };
     use windows_sys::Win32::System::Threading::{
-        OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
-        QueryFullProcessImageNameW,
+        OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
     };
 
     // SAFETY: the snapshot and every process handle are closed below.
@@ -794,10 +730,7 @@ fn running_command_lines() -> Option<Vec<String>> {
         if snapshot == INVALID_HANDLE_VALUE {
             return None;
         }
-        let mut entry = PROCESSENTRY32W {
-            dwSize: size_of::<PROCESSENTRY32W>() as u32,
-            ..Default::default()
-        };
+        let mut entry = PROCESSENTRY32W { dwSize: size_of::<PROCESSENTRY32W>() as u32, ..Default::default() };
         let mut images = Vec::new();
         let mut more = Process32FirstW(snapshot, &mut entry) != 0;
         while more {
@@ -805,13 +738,7 @@ fn running_command_lines() -> Option<Vec<String>> {
             if !process.is_null() {
                 let mut path = [0u16; 32_768];
                 let mut length = path.len() as u32;
-                if QueryFullProcessImageNameW(
-                    process,
-                    PROCESS_NAME_WIN32,
-                    path.as_mut_ptr(),
-                    &mut length,
-                ) != 0
-                {
+                if QueryFullProcessImageNameW(process, PROCESS_NAME_WIN32, path.as_mut_ptr(), &mut length) != 0 {
                     images.push(String::from_utf16_lossy(&path[..length as usize]));
                 }
                 CloseHandle(process);
@@ -847,11 +774,7 @@ fn install_path_prefixes(dir: &Path) -> Vec<String> {
 
 /// windows paths compare case-insensitively.
 fn comparable_path(path: &str) -> String {
-    if cfg!(windows) {
-        path.to_lowercase()
-    } else {
-        path.to_owned()
-    }
+    if cfg!(windows) { path.to_lowercase() } else { path.to_owned() }
 }
 
 /// Whether the listing device has a pinned, explicitly installable archive.
@@ -861,14 +784,9 @@ pub fn can_install(harness: HarnessId) -> bool {
 
 /// Only an explicit Settings action may call this installer.
 pub async fn install_harness(harness: HarnessId) -> Result<(), HarnessError> {
-    let pin = (harness == HarnessId::Antigravity)
-        .then(antigravity_archive)
-        .flatten()
-        .ok_or_else(|| {
-            HarnessError::NotInstalled(
-                "Set ANTIGRAVITY_ACP_EXECUTABLE to an installed ACP server".into(),
-            )
-        })?;
+    let pin = (harness == HarnessId::Antigravity).then(antigravity_archive).flatten().ok_or_else(|| {
+        HarnessError::NotInstalled("Set ANTIGRAVITY_ACP_EXECUTABLE to an installed ACP server".into())
+    })?;
     crate::archive_install::ensure_installed(pin, "Antigravity").await?;
     Ok(())
 }
@@ -878,12 +796,7 @@ pub async fn install_harness(harness: HarnessId) -> Result<(), HarnessError> {
 /// the selected session's cwd.
 pub(crate) fn antigravity_skill_dirs() -> Vec<PathBuf> {
     antigravity_paths::home()
-        .map(|home| {
-            vec![
-                home.join("config").join("skills"),
-                home.join("antigravity-cli").join("skills"),
-            ]
-        })
+        .map(|home| vec![home.join("config").join("skills"), home.join("antigravity-cli").join("skills")])
         .unwrap_or_default()
 }
 
@@ -906,10 +819,7 @@ impl ConfiguredAuthMethod {
             .find(|(alias, _)| *alias == configured)
             .map_or(configured.as_str(), |(_, canonical)| canonical)
             .to_owned();
-        Self {
-            configured,
-            canonical,
-        }
+        Self { configured, canonical }
     }
 }
 
@@ -937,16 +847,9 @@ fn configured_auth_method_in(path: &Path) -> Result<Option<ConfiguredAuthMethod>
         }
     };
     let settings: AntigravitySettings = deser_hjson::from_str(&settings).map_err(|error| {
-        HarnessError::Protocol(format!(
-            "could not parse Antigravity auth settings at {}: {error}",
-            path.display()
-        ))
+        HarnessError::Protocol(format!("could not parse Antigravity auth settings at {}: {error}", path.display()))
     })?;
-    Ok(settings
-        .auth
-        .and_then(|auth| auth.method)
-        .filter(|method| !method.is_empty())
-        .map(ConfiguredAuthMethod::new))
+    Ok(settings.auth.and_then(|auth| auth.method).filter(|method| !method.is_empty()).map(ConfiguredAuthMethod::new))
 }
 
 /// Antigravity's `GEMINI_HOME`, resolved exactly as a launch resolves it —
@@ -1007,20 +910,15 @@ fn skill_commands(dirs: &[PathBuf]) -> Vec<SlashCommand> {
             .collect();
         skill_files.sort();
         for file in skill_files {
-            let Some((name, description)) = std::fs::read_to_string(&file)
-                .ok()
-                .and_then(|text| skill_frontmatter(&text))
+            let Some((name, description)) =
+                std::fs::read_to_string(&file).ok().and_then(|text| skill_frontmatter(&text))
             else {
                 continue;
             };
             if commands.iter().any(|command| command.name == name) {
                 continue;
             }
-            commands.push(SlashCommand {
-                name,
-                description: first_sentence(&description),
-                input_hint: None,
-            });
+            commands.push(SlashCommand { name, description: first_sentence(&description), input_hint: None });
         }
     }
     commands
@@ -1033,10 +931,7 @@ fn skill_frontmatter(text: &str) -> Option<(String, String)> {
     let end = body.find("\n---")?;
     let lines: Vec<&str> = body[..end].lines().collect();
     let field = |key: &str| -> Option<String> {
-        let index = lines.iter().position(|line| {
-            line.strip_prefix(key)
-                .is_some_and(|rest| rest.starts_with(':'))
-        })?;
+        let index = lines.iter().position(|line| line.strip_prefix(key).is_some_and(|rest| rest.starts_with(':')))?;
         let value = lines[index][key.len() + 1..].trim();
         let value = if matches!(value, "" | ">" | "|" | ">-" | "|-") {
             lines[index + 1..]
@@ -1074,11 +969,7 @@ fn antigravity_spec() -> AcpAgentSpec {
         display_name: "Antigravity",
         executable: "agy_acp_server",
         env_override: "ANTIGRAVITY_ACP_EXECUTABLE",
-        args: if cfg!(target_os = "linux") {
-            ANTIGRAVITY_LINUX_ARGS
-        } else {
-            &[]
-        },
+        args: if cfg!(target_os = "linux") { ANTIGRAVITY_LINUX_ARGS } else { &[] },
         npm_package: None,
         archive: antigravity_archive(),
         extra_paths: Vec::new,
@@ -1160,14 +1051,8 @@ pub enum SignInProgress {
 }
 
 fn sign_in_url(line: &str) -> Option<String> {
-    let start = [line.find("https://"), line.find("http://")]
-        .into_iter()
-        .flatten()
-        .min()?;
-    let url = line[start..]
-        .split_whitespace()
-        .next()?
-        .trim_end_matches(['.', ',', ';', ')', ']', '}']);
+    let start = [line.find("https://"), line.find("http://")].into_iter().flatten().min()?;
+    let url = line[start..].split_whitespace().next()?.trim_end_matches(['.', ',', ';', ')', ']', '}']);
     reqwest::Url::parse(url).ok().map(|url| url.to_string())
 }
 
@@ -1213,15 +1098,8 @@ pub fn prewarm_managed_adapters() {
 /// still need installing (see [`AcpHarness::resolve_program`]).
 enum Launch {
     Program(PathBuf, Vec<String>),
-    Managed {
-        pin: crate::adapter_install::NpmPin,
-        bin_name: &'static str,
-        args: Vec<String>,
-    },
-    Archive {
-        entry: PathBuf,
-        args: Vec<String>,
-    },
+    Managed { pin: crate::adapter_install::NpmPin, bin_name: &'static str, args: Vec<String> },
+    Archive { entry: PathBuf, args: Vec<String> },
 }
 
 /// The ACP harness. Construct with [`AcpHarness::grok`]; tests point it at a
@@ -1288,8 +1166,7 @@ impl AcpHarness {
 
     /// google antigravity over its acp server (`agy_acp_server`).
     pub fn antigravity() -> Self {
-        Self::with_spec(antigravity_spec())
-            .with_model_discovery_timeout(ANTIGRAVITY_DISCOVERY_TIMEOUT)
+        Self::with_spec(antigravity_spec()).with_model_discovery_timeout(ANTIGRAVITY_DISCOVERY_TIMEOUT)
     }
 
     /// sign the agent out with acp `logout`, clearing the credentials its
@@ -1299,18 +1176,14 @@ impl AcpHarness {
         let (_scratch, mut child, _stderr, sign_in_prompted) =
             self.spawn_agent(home.as_deref(), false, &[], None).await?;
         let (client, mut incoming) = match (child.stdin.take(), child.stdout.take()) {
-            (Some(stdin), Some(stdout)) => {
-                client_with_sign_in_prompt(stdin, stdout, self.spec.id, &sign_in_prompted)
-            }
+            (Some(stdin), Some(stdout)) => client_with_sign_in_prompt(stdin, stdout, self.spec.id, &sign_in_prompted),
             _ => {
                 child.shutdown(self.kill_grace).await;
                 return Err(HarnessError::Protocol("agent child has no stdio".into()));
             }
         };
         let flow = async {
-            client
-                .request("initialize", initialize_params(self.spec.id))
-                .await?;
+            client.request("initialize", initialize_params(self.spec.id)).await?;
             request_draining(&client, &mut incoming, "logout", json!({})).await
         };
         let result = tokio::time::timeout(SIGN_OUT_TIMEOUT, flow).await;
@@ -1334,14 +1207,7 @@ impl AcpHarness {
         browser: Option<PathBuf>,
         on_progress: impl Fn(SignInProgress) + Send + Sync + 'static,
     ) -> Result<(), HarnessError> {
-        self.sign_in_with(
-            SignInOptions {
-                browser,
-                ..Default::default()
-            },
-            on_progress,
-        )
-        .await
+        self.sign_in_with(SignInOptions { browser, ..Default::default() }, on_progress).await
     }
 
     /// [`Self::sign_in`] with an explicit method, extra environment and url
@@ -1351,28 +1217,17 @@ impl AcpHarness {
         options: SignInOptions,
         on_progress: impl Fn(SignInProgress) + Send + Sync + 'static,
     ) -> Result<(), HarnessError> {
-        let SignInOptions {
-            browser,
-            method,
-            env,
-            url_filter,
-        } = options;
+        let SignInOptions { browser, method, env, url_filter } = options;
         let display_name = self.spec.display_name;
         let Some(default_method) = method.as_deref().or(self.spec.auth_method) else {
-            return Err(HarnessError::Protocol(format!(
-                "{display_name} has no sign-in flow"
-            )));
+            return Err(HarnessError::Protocol(format!("{display_name} has no sign-in flow")));
         };
         let accept_url = move |url: &str| url_filter.is_none_or(|accept| accept(url));
         let (exe, args) = self.resolve_program(false).await?;
-        let gemini_home = (self.spec.id == HarnessId::Antigravity)
-            .then(antigravity_paths::home)
-            .transpose()?;
+        let gemini_home = (self.spec.id == HarnessId::Antigravity).then(antigravity_paths::home).transpose()?;
         let configured_method = gemini_home
             .as_ref()
-            .map(|home| {
-                configured_auth_method_in(&home.join("antigravity-acp").join("settings.json"))
-            })
+            .map(|home| configured_auth_method_in(&home.join("antigravity-acp").join("settings.json")))
             .transpose()?
             .flatten();
         let mut cmd = Command::new(&exe);
@@ -1395,10 +1250,7 @@ impl AcpHarness {
         if let Some(dir) = &scratch {
             dir.apply(&mut cmd);
         }
-        cmd.stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
+        cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
         let mut child = cmd.spawn().map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
                 HarnessError::NotInstalled(crate::executable::binary_hint(&exe))
@@ -1446,18 +1298,9 @@ impl AcpHarness {
             }
         };
         let flow = async {
-            let initialized = client
-                .request("initialize", initialize_params(self.spec.id))
-                .await?;
-            let method =
-                sign_in_auth_method(&initialized, default_method, configured_method.as_ref())?;
-            request_draining(
-                &client,
-                &mut incoming,
-                "authenticate",
-                json!({ "methodId": method }),
-            )
-            .await
+            let initialized = client.request("initialize", initialize_params(self.spec.id)).await?;
+            let method = sign_in_auth_method(&initialized, default_method, configured_method.as_ref())?;
+            request_draining(&client, &mut incoming, "authenticate", json!({ "methodId": method })).await
         };
         let result = tokio::time::timeout(SIGN_IN_TIMEOUT, flow).await;
         shutdown_child(&mut child, self.kill_grace).await;
@@ -1512,13 +1355,11 @@ impl AcpHarness {
     pub fn launch_program(&self) -> Result<PathBuf, HarnessError> {
         match self.resolve_launch()? {
             Launch::Program(program, _) => Ok(program),
-            Launch::Managed { pin, bin_name, .. } => {
-                match crate::adapter_install::installed_entry(&pin, bin_name) {
-                    Some(entry) => Ok(entry),
-                    None => crate::adapter_install::find_npm()
-                        .ok_or_else(|| HarnessError::NotInstalled(self.spec.install_hint.into())),
-                }
-            }
+            Launch::Managed { pin, bin_name, .. } => match crate::adapter_install::installed_entry(&pin, bin_name) {
+                Some(entry) => Ok(entry),
+                None => crate::adapter_install::find_npm()
+                    .ok_or_else(|| HarnessError::NotInstalled(self.spec.install_hint.into())),
+            },
             Launch::Archive { entry, .. } => Ok(entry),
         }
     }
@@ -1548,8 +1389,7 @@ impl AcpHarness {
     fn resolve_launch(&self) -> Result<Launch, HarnessError> {
         let spec_args: Vec<String> = self.spec.args.iter().map(|a| a.to_string()).collect();
         if let Some(p) = &self.executable {
-            return crate::executable::validate_native_override(p)
-                .map(|program| Launch::Program(program, spec_args));
+            return crate::executable::validate_native_override(p).map(|program| Launch::Program(program, spec_args));
         }
         if let Some(p) = std::env::var_os(self.spec.env_override)
             && !p.is_empty()
@@ -1565,21 +1405,14 @@ impl AcpHarness {
             if crate::adapter_install::installed_entry(&pin, self.spec.executable).is_some()
                 || crate::adapter_install::find_npm().is_some()
             {
-                return Ok(Launch::Managed {
-                    pin,
-                    bin_name: self.spec.executable,
-                    args: spec_args,
-                });
+                return Ok(Launch::Managed { pin, bin_name: self.spec.executable, args: spec_args });
             }
         }
         if self.spec.archive.is_some() {
             let entry = self
                 .installed_archive_entry()
                 .ok_or_else(|| HarnessError::NotInstalled(self.spec.install_hint.into()))?;
-            return Ok(Launch::Archive {
-                entry,
-                args: spec_args,
-            });
+            return Ok(Launch::Archive { entry, args: spec_args });
         }
         Err(HarnessError::NotInstalled(self.spec.install_hint.into()))
     }
@@ -1591,36 +1424,19 @@ impl AcpHarness {
     /// stalling for however long a 500MB dependency tree takes to land.
     /// Resolve the server, optionally waiting for its managed installation.
     #[doc(hidden)]
-    pub async fn resolve_program(
-        &self,
-        block_on_install: bool,
-    ) -> Result<(PathBuf, Vec<String>), HarnessError> {
+    pub async fn resolve_program(&self, block_on_install: bool) -> Result<(PathBuf, Vec<String>), HarnessError> {
         match self.resolve_launch()? {
             Launch::Program(program, args) => Ok((program, args)),
-            Launch::Managed {
-                pin,
-                bin_name,
-                args,
-            } => {
+            Launch::Managed { pin, bin_name, args } => {
                 let entry = match crate::adapter_install::installed_entry(&pin, bin_name) {
                     Some(entry) => entry,
                     None if block_on_install => {
-                        crate::adapter_install::ensure_installed(
-                            pin,
-                            bin_name,
-                            self.spec.display_name,
-                        )
-                        .await?
+                        crate::adapter_install::ensure_installed(pin, bin_name, self.spec.display_name).await?
                     }
                     None => {
                         let display_name = self.spec.display_name;
                         tokio::spawn(async move {
-                            if let Err(e) = crate::adapter_install::ensure_installed(
-                                pin,
-                                bin_name,
-                                display_name,
-                            )
-                            .await
+                            if let Err(e) = crate::adapter_install::ensure_installed(pin, bin_name, display_name).await
                             {
                                 tracing::warn!(
                                     target: "zeron_harness::adapter_install",
@@ -1681,15 +1497,7 @@ impl AcpHarness {
         block_on_install: bool,
         extra_args: &[String],
         _mcp: Option<&zeron_proto::McpServer>,
-    ) -> Result<
-        (
-            Option<ScratchDir>,
-            Child,
-            crate::StderrTail,
-            CancellationToken,
-        ),
-        HarnessError,
-    > {
+    ) -> Result<(Option<ScratchDir>, Child, crate::StderrTail, CancellationToken), HarnessError> {
         let (exe, args) = self.resolve_program(block_on_install).await?;
         let mut cmd = Command::new(&exe);
         cmd.args(args);
@@ -1717,10 +1525,7 @@ impl AcpHarness {
         if let Some(dir) = &scratch {
             dir.apply(&mut cmd);
         }
-        cmd.stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
+        cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
         let child = cmd.spawn().map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
                 HarnessError::NotInstalled(crate::executable::binary_hint(&exe))
@@ -1755,34 +1560,22 @@ impl AcpHarness {
     /// briefly for `available_commands_update`. Best-effort — an agent that
     /// refuses sessions before login still surfaces whatever the handshake
     /// advertised.
-    async fn discover_commands(
-        &self,
-        cwd: Option<&std::path::Path>,
-    ) -> Result<Vec<SlashCommand>, HarnessError> {
-        let (_scratch, mut child, _stderr, sign_in_prompted) = self
-            .spawn_agent(cwd.and_then(|p| p.to_str()), false, &[], None)
-            .await?;
+    async fn discover_commands(&self, cwd: Option<&std::path::Path>) -> Result<Vec<SlashCommand>, HarnessError> {
+        let (_scratch, mut child, _stderr, sign_in_prompted) =
+            self.spawn_agent(cwd.and_then(|p| p.to_str()), false, &[], None).await?;
         let (client, mut incoming) = match (child.stdin.take(), child.stdout.take()) {
-            (Some(stdin), Some(stdout)) => {
-                client_with_sign_in_prompt(stdin, stdout, self.spec.id, &sign_in_prompted)
-            }
+            (Some(stdin), Some(stdout)) => client_with_sign_in_prompt(stdin, stdout, self.spec.id, &sign_in_prompted),
             _ => {
                 child.shutdown(self.kill_grace).await;
                 return Err(HarnessError::Protocol("agent child has no stdio".into()));
             }
         };
         let discovery = async {
-            let init = client
-                .request("initialize", initialize_params(self.spec.id))
-                .await?;
+            let init = client.request("initialize", initialize_params(self.spec.id)).await?;
             let mut commands = scan_available_commands(&init);
             {
-                let cwd = cwd
-                    .map(std::path::Path::to_path_buf)
-                    .unwrap_or_else(crate::executable::home_or_current_dir);
-                let session = client
-                    .request("session/new", json!({ "cwd": cwd, "mcpServers": [] }))
-                    .await;
+                let cwd = cwd.map(std::path::Path::to_path_buf).unwrap_or_else(crate::executable::home_or_current_dir);
+                let session = client.request("session/new", json!({ "cwd": cwd, "mcpServers": [] })).await;
                 if session.is_ok() {
                     // The update usually arrives within milliseconds of the
                     // session response; 2s bounds a quiet agent.
@@ -1815,8 +1608,7 @@ impl AcpHarness {
             }
             Ok::<Vec<SlashCommand>, HarnessError>(commands)
         };
-        let discovery =
-            unless_sign_in_prompted(discovery, &sign_in_prompted, self.spec.display_name);
+        let discovery = unless_sign_in_prompted(discovery, &sign_in_prompted, self.spec.display_name);
         let result = tokio::time::timeout(self.model_discovery_timeout, discovery).await;
         child.shutdown(self.kill_grace).await;
         match result {
@@ -1831,25 +1623,18 @@ impl AcpHarness {
     /// wire is the source of truth — the spec's static catalog only enriches
     /// matching entries and names the pick when the agent advertises nothing.
     async fn discover_models(&self) -> Result<Vec<Model>, HarnessError> {
-        let (_scratch, mut child, stderr_tail, sign_in_prompted) =
-            self.spawn_agent(None, false, &[], None).await?;
+        let (_scratch, mut child, stderr_tail, sign_in_prompted) = self.spawn_agent(None, false, &[], None).await?;
         let (client, _incoming) = match (child.stdin.take(), child.stdout.take()) {
-            (Some(stdin), Some(stdout)) => {
-                client_with_sign_in_prompt(stdin, stdout, self.spec.id, &sign_in_prompted)
-            }
+            (Some(stdin), Some(stdout)) => client_with_sign_in_prompt(stdin, stdout, self.spec.id, &sign_in_prompted),
             _ => {
                 child.shutdown(self.kill_grace).await;
                 return Err(HarnessError::Protocol("agent child has no stdio".into()));
             }
         };
         let discovery = async {
-            client
-                .request("initialize", initialize_params(self.spec.id))
-                .await?;
+            client.request("initialize", initialize_params(self.spec.id)).await?;
             let cwd = crate::executable::home_or_current_dir();
-            let session = client
-                .request("session/new", json!({ "cwd": cwd, "mcpServers": [] }))
-                .await?;
+            let session = client.request("session/new", json!({ "cwd": cwd, "mcpServers": [] })).await?;
             let mut models = models_from_session(&session, &(self.spec.models)());
             // Prompt-convention modes (Claude Ultrathink) extend any real
             // ladder — never an effort-less model's empty one.
@@ -1867,8 +1652,7 @@ impl AcpHarness {
             }
             Ok::<Vec<Model>, HarnessError>(models)
         };
-        let discovery =
-            unless_sign_in_prompted(discovery, &sign_in_prompted, self.spec.display_name);
+        let discovery = unless_sign_in_prompted(discovery, &sign_in_prompted, self.spec.display_name);
         let result = tokio::time::timeout(self.model_discovery_timeout, discovery).await;
         child.shutdown(self.kill_grace).await;
         match result {
@@ -1917,11 +1701,8 @@ fn reasoning_from_value(value: &str) -> Option<ReasoningLevel> {
 /// unmatched models keep fast mode etc.; the catalog only enriches matched
 /// ids with label/description/per-model ladders.
 fn models_from_session(session_response: &Value, catalog: &[Model]) -> Vec<Model> {
-    let config_options = session_response
-        .get("configOptions")
-        .and_then(Value::as_array)
-        .map(|a| a.as_slice())
-        .unwrap_or_default();
+    let config_options =
+        session_response.get("configOptions").and_then(Value::as_array).map(|a| a.as_slice()).unwrap_or_default();
 
     let ladder: Vec<ReasoningLevel> = config_options
         .iter()
@@ -1934,10 +1715,7 @@ fn models_from_session(session_response: &Value, catalog: &[Model]) -> Vec<Model
                 .collect()
         })
         .unwrap_or_default();
-    let wire_options: Vec<ModelOption> = config_options
-        .iter()
-        .filter_map(trait_from_config_option)
-        .collect();
+    let wire_options: Vec<ModelOption> = config_options.iter().filter_map(trait_from_config_option).collect();
 
     let exact = |id: &str| catalog.iter().find(|m| norm_id(&m.id) == norm_id(id));
     // Family-alias catalog row: the claude adapter advertises bare aliases
@@ -1952,11 +1730,7 @@ fn models_from_session(session_response: &Value, catalog: &[Model]) -> Vec<Model
             .then(|| catalog.iter().find(|m| norm_id(&m.id).contains(&norm)))
             .flatten()
     };
-    let build = |id: &str,
-                 name: Option<&str>,
-                 description: Option<&str>,
-                 options: Vec<ModelOption>|
-     -> Model {
+    let build = |id: &str, name: Option<&str>, description: Option<&str>, options: Vec<ModelOption>| -> Model {
         let exact = exact(id);
         let aliased = if exact.is_none() { alias(id) } else { None };
         let known = exact.or(aliased);
@@ -1988,10 +1762,7 @@ fn models_from_session(session_response: &Value, catalog: &[Model]) -> Vec<Model
         .map(|opts| opts.iter().collect())
         .unwrap_or_default();
     if !model_select.is_empty() {
-        let raw_ids: Vec<&str> = model_select
-            .iter()
-            .filter_map(|o| o.get("value").and_then(Value::as_str))
-            .collect();
+        let raw_ids: Vec<&str> = model_select.iter().filter_map(|o| o.get("value").and_then(Value::as_str)).collect();
         // `default` is an ALIAS row (Claude Code's "Default (recommended)"),
         // duplicating whichever real model the CLI resolves it to — dropped
         // whenever a real row exists (it read as clutter in the picker, user
@@ -2025,16 +1796,12 @@ fn models_from_session(session_response: &Value, catalog: &[Model]) -> Vec<Model
                     options.push(window);
                     return Some(build(
                         base,
-                        name.map(strip_trailing_parenthetical)
-                            .filter(|n| !n.is_empty()),
+                        name.map(strip_trailing_parenthetical).filter(|n| !n.is_empty()),
                         description,
                         options,
                     ));
                 }
-                if raw_ids
-                    .iter()
-                    .any(|raw| strip_context_hint(raw) == Some(id))
-                {
+                if raw_ids.iter().any(|raw| strip_context_hint(raw) == Some(id)) {
                     options.push(crate::claude::catalog::context_window());
                 }
                 Some(build(id, name, description, options))
@@ -2072,10 +1839,7 @@ fn models_from_session(session_response: &Value, catalog: &[Model]) -> Vec<Model
 /// catalogs (zeron never declares the boolean config capability, so adapters
 /// send selects, but handle the shape defensively).
 fn trait_from_config_option(option: &Value) -> Option<ModelOption> {
-    if matches!(
-        option.get("category").and_then(Value::as_str),
-        Some("mode" | "model" | "thought_level")
-    ) {
+    if matches!(option.get("category").and_then(Value::as_str), Some("mode" | "model" | "thought_level")) {
         return None;
     }
     let id = option.get("id").and_then(Value::as_str)?;
@@ -2090,11 +1854,7 @@ fn trait_from_config_option(option: &Value) -> Option<ModelOption> {
                     let id = c.get("value").and_then(Value::as_str)?;
                     Some(ModelOptionChoice {
                         id: id.to_owned(),
-                        label: c
-                            .get("name")
-                            .and_then(Value::as_str)
-                            .unwrap_or(id)
-                            .to_owned(),
+                        label: c.get("name").and_then(Value::as_str).unwrap_or(id).to_owned(),
                     })
                 })
                 .collect();
@@ -2114,14 +1874,8 @@ fn trait_from_config_option(option: &Value) -> Option<ModelOption> {
             id: id.to_owned(),
             label: label.to_owned(),
             choices: vec![
-                ModelOptionChoice {
-                    id: "off".into(),
-                    label: "Off".into(),
-                },
-                ModelOptionChoice {
-                    id: "on".into(),
-                    label: "On".into(),
-                },
+                ModelOptionChoice { id: "off".into(), label: "Off".into() },
+                ModelOptionChoice { id: "on".into(), label: "On".into() },
             ],
             default_choice: if option.get("currentValue") == Some(&Value::Bool(true)) {
                 "on".into()
@@ -2159,10 +1913,7 @@ impl Harness for AcpHarness {
         live.cwd == next.cwd
             && (next.model.is_some() || live.model.is_none())
             && (next.reasoning.is_some() || live.reasoning.is_none())
-            && live
-                .model_options
-                .keys()
-                .all(|key| next.model_options.contains_key(key))
+            && live.model_options.keys().all(|key| next.model_options.contains_key(key))
     }
 
     fn supports_steering(&self) -> bool {
@@ -2227,10 +1978,8 @@ impl Harness for AcpHarness {
     fn model_context(&self) -> Result<Option<crate::ModelContext>, HarnessError> {
         let binary = match self.resolve_launch()? {
             Launch::Program(path, _) => path,
-            Launch::Managed { pin, bin_name, .. } => {
-                crate::adapter_install::installed_entry(&pin, bin_name)
-                    .unwrap_or_else(|| PathBuf::from(format!("{}@{}", pin.name, pin.version)))
-            }
+            Launch::Managed { pin, bin_name, .. } => crate::adapter_install::installed_entry(&pin, bin_name)
+                .unwrap_or_else(|| PathBuf::from(format!("{}@{}", pin.name, pin.version))),
             Launch::Archive { entry, .. } => entry,
         };
         let extra = if self.id() == HarnessId::Antigravity {
@@ -2260,9 +2009,7 @@ impl Harness for AcpHarness {
                 || async {
                     if self.id() == HarnessId::Devin {
                         let (exe, _) = self.resolve_program(false).await?;
-                        self.devin_models
-                            .refresh(&exe, self.model_discovery_timeout)
-                            .await
+                        self.devin_models.refresh(&exe, self.model_discovery_timeout).await
                     } else {
                         self.discover_models().await
                     }
@@ -2274,10 +2021,7 @@ impl Harness for AcpHarness {
         self.resolve_launch()?;
         match self.model_catalog(true).await {
             Ok(catalog) => Ok(catalog.models),
-            Err(error)
-                if self.id() == HarnessId::Devin
-                    || !crate::CatalogFailure::classify(&error).allows_stale() =>
-            {
+            Err(error) if self.id() == HarnessId::Devin || !crate::CatalogFailure::classify(&error).allows_stale() => {
                 Err(error)
             }
             Err(error) => {
@@ -2287,25 +2031,17 @@ impl Harness for AcpHarness {
         }
     }
 
-    async fn skills(
-        &self,
-        cwd: &std::path::Path,
-    ) -> Result<Option<Vec<zeron_proto::invocation::Skill>>, HarnessError> {
+    async fn skills(&self, cwd: &std::path::Path) -> Result<Option<Vec<zeron_proto::invocation::Skill>>, HarnessError> {
         let (mut skills, commands) = tokio::try_join!(
             crate::skills::discover(self.id(), cwd),
-            self.workspace_commands
-                .get(cwd, self.discover_commands(Some(cwd))),
+            self.workspace_commands.get(cwd, self.discover_commands(Some(cwd))),
         )?;
         crate::skills::attach_advertised_commands(self.id(), &mut skills, &commands);
         Ok(Some(skills))
     }
 
     async fn commands(&self) -> Result<Vec<SlashCommand>, HarnessError> {
-        let discovered = self
-            .commands
-            .get_or_try_init(|| self.discover_commands(None))
-            .await
-            .cloned();
+        let discovered = self.commands.get_or_try_init(|| self.discover_commands(None)).await.cloned();
         let skills = skill_commands(&(self.spec.skill_dirs)());
         let mut commands = match discovered {
             Ok(commands) => commands,
@@ -2322,10 +2058,7 @@ impl Harness for AcpHarness {
     }
 
     async fn commands_for(&self, cwd: &std::path::Path) -> Result<Vec<SlashCommand>, HarnessError> {
-        let discovered = self
-            .workspace_commands
-            .get(cwd, self.discover_commands(Some(cwd)))
-            .await;
+        let discovered = self.workspace_commands.get(cwd, self.discover_commands(Some(cwd))).await;
         let skills = skill_commands(&(self.spec.skill_dirs)());
         let mut commands = match discovered {
             Ok(commands) => commands,
@@ -2346,27 +2079,15 @@ impl Harness for AcpHarness {
         request: RunRequest,
         controls: RunControls,
     ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
-        let (scratch, mut child, stderr_tail, sign_in_prompted) = self
-            .spawn_agent(Some(&request.cwd), true, &[], request.mcp.as_ref())
-            .await?;
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| HarnessError::Protocol("agent child has no stdin".into()))?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| HarnessError::Protocol("agent child has no stdout".into()))?;
-        let (client, incoming) =
-            client_with_sign_in_prompt(stdin, stdout, self.spec.id, &sign_in_prompted);
+        let (scratch, mut child, stderr_tail, sign_in_prompted) =
+            self.spawn_agent(Some(&request.cwd), true, &[], request.mcp.as_ref()).await?;
+        let stdin = child.stdin.take().ok_or_else(|| HarnessError::Protocol("agent child has no stdin".into()))?;
+        let stdout = child.stdout.take().ok_or_else(|| HarnessError::Protocol("agent child has no stdout".into()))?;
+        let (client, incoming) = client_with_sign_in_prompt(stdin, stdout, self.spec.id, &sign_in_prompted);
         let (event_tx, event_rx) = mpsc::channel::<Result<AgentEvent, HarnessError>>(256);
         let devin_catalog = if self.spec.id == HarnessId::Devin {
             let (exe, _) = self.resolve_program(false).await?;
-            Some(DevinCatalog {
-                catalog: self.devin_models.clone(),
-                exe,
-                timeout: self.model_discovery_timeout,
-            })
+            Some(DevinCatalog { catalog: self.devin_models.clone(), exe, timeout: self.model_discovery_timeout })
         } else {
             None
         };
@@ -2375,12 +2096,7 @@ impl Harness for AcpHarness {
                 let selection = devin.selection(model, &request.model_options).await;
                 if selection.is_none() && model == devin_models::FUSION {
                     let chosen = |key: &str| {
-                        request
-                            .model_options
-                            .get(key)
-                            .and_then(Value::as_str)
-                            .unwrap_or("default")
-                            .to_owned()
+                        request.model_options.get(key).and_then(Value::as_str).unwrap_or("default").to_owned()
                     };
                     return Err(HarnessError::Protocol(format!(
                         "Devin Fusion does not offer lead {} with sidekick {}; pick another sidekick",
@@ -2421,10 +2137,8 @@ impl Harness for AcpHarness {
             sign_in_prompted,
         }));
 
-        let events = futures::stream::unfold(event_rx, |mut rx| async move {
-            rx.recv().await.map(|ev| (ev, rx))
-        })
-        .boxed();
+        let events =
+            futures::stream::unfold(event_rx, |mut rx| async move { rx.recv().await.map(|ev| (ev, rx)) }).boxed();
         Ok(if self.spec.id == HarnessId::Antigravity {
             system_message::strip_system_message_echoes(events)
         } else {
@@ -2484,9 +2198,7 @@ impl DevinCatalog {
         model: &str,
         options: &serde_json::Map<String, Value>,
     ) -> Option<devin_models::Selection> {
-        self.catalog
-            .selection(&self.exe, self.timeout, model, options)
-            .await
+        self.catalog.selection(&self.exe, self.timeout, model, options).await
     }
 }
 
@@ -2589,10 +2301,7 @@ async fn send(tx: &mpsc::Sender<Result<AgentEvent, HarnessError>>, ev: AgentEven
 /// Normalize an option/model-option id for matching across naming styles
 /// (`fastMode` == `fast_mode` == `fast-mode`).
 fn norm_id(id: &str) -> String {
-    id.chars()
-        .filter(|c| c.is_ascii_alphanumeric())
-        .collect::<String>()
-        .to_ascii_lowercase()
+    id.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>().to_ascii_lowercase()
 }
 
 /// Whether a model id carries the 1M-context hint, in either spelling: the
@@ -2635,13 +2344,8 @@ fn pick_model_value(requested: &str, available: &[&str], context_1m: bool) -> Op
         return Some(requested.to_owned());
     }
     // Family fallback: "claude-opus-5" → "opus" matches "opus[1m]".
-    let family = ["fable", "opus", "sonnet", "haiku", "gpt"]
-        .into_iter()
-        .find(|f| norm_id(requested).contains(f))?;
-    let candidates: Vec<&&str> = available
-        .iter()
-        .filter(|v| norm_id(v).contains(family))
-        .collect();
+    let family = ["fable", "opus", "sonnet", "haiku", "gpt"].into_iter().find(|f| norm_id(requested).contains(f))?;
+    let candidates: Vec<&&str> = available.iter().filter(|v| norm_id(v).contains(family)).collect();
     candidates
         .iter()
         .find(|v| context_hint_1m(v) == context_1m)
@@ -2657,22 +2361,16 @@ fn pick_model_value(requested: &str, available: &[&str], context_1m: bool) -> Op
 ///
 /// Config options remain preferred when present: org adapters can expose a
 /// legacy `models` matrix alongside the canonical base-model config option.
-fn first_class_model_change(
-    session_response: &Value,
-    requested: Option<&str>,
-) -> Result<Option<String>, HarnessError> {
+fn first_class_model_change(session_response: &Value, requested: Option<&str>) -> Result<Option<String>, HarnessError> {
     let Some(requested) = requested else {
         return Ok(None);
     };
-    let has_model_config = session_response
-        .get("configOptions")
-        .and_then(Value::as_array)
-        .is_some_and(|options| {
-            options.iter().any(|option| {
-                option.get("type").and_then(Value::as_str) == Some("select")
-                    && option.get("category").and_then(Value::as_str) == Some("model")
-            })
-        });
+    let has_model_config = session_response.get("configOptions").and_then(Value::as_array).is_some_and(|options| {
+        options.iter().any(|option| {
+            option.get("type").and_then(Value::as_str) == Some("select")
+                && option.get("category").and_then(Value::as_str) == Some("model")
+        })
+    });
     if has_model_config {
         return Ok(None);
     }
@@ -2711,16 +2409,12 @@ fn validate_config_model_selection(
     let Some(requested) = requested else {
         return Ok(());
     };
-    let Some(option) = session_response
-        .get("configOptions")
-        .and_then(Value::as_array)
-        .and_then(|options| {
-            options.iter().find(|option| {
-                option.get("type").and_then(Value::as_str) == Some("select")
-                    && option.get("category").and_then(Value::as_str) == Some("model")
-            })
+    let Some(option) = session_response.get("configOptions").and_then(Value::as_array).and_then(|options| {
+        options.iter().find(|option| {
+            option.get("type").and_then(Value::as_str) == Some("select")
+                && option.get("category").and_then(Value::as_str) == Some("model")
         })
-    else {
+    }) else {
         return Ok(());
     };
     let available: Vec<&str> = option
@@ -2745,15 +2439,12 @@ fn validate_config_model_selection(
 }
 
 fn is_model_config_option(session_response: &Value, config_id: &str) -> bool {
-    session_response
-        .get("configOptions")
-        .and_then(Value::as_array)
-        .is_some_and(|options| {
-            options.iter().any(|option| {
-                option.get("id").and_then(Value::as_str) == Some(config_id)
-                    && option.get("category").and_then(Value::as_str) == Some("model")
-            })
+    session_response.get("configOptions").and_then(Value::as_array).is_some_and(|options| {
+        options.iter().any(|option| {
+            option.get("id").and_then(Value::as_str) == Some(config_id)
+                && option.get("category").and_then(Value::as_str) == Some("model")
         })
+    })
 }
 
 /// The `session/set_config_option` calls a session response's `configOptions`
@@ -2774,16 +2465,11 @@ fn config_option_sets(
     efforts: &[&'static str],
     model_options: &serde_json::Map<String, Value>,
 ) -> Vec<(String, Value)> {
-    let Some(options) = session_response
-        .get("configOptions")
-        .and_then(Value::as_array)
-    else {
+    let Some(options) = session_response.get("configOptions").and_then(Value::as_array) else {
         return Vec::new();
     };
-    let context_1m = model_options
-        .get("contextWindow")
-        .and_then(Value::as_str)
-        .is_some_and(|w| w.eq_ignore_ascii_case("1m"));
+    let context_1m =
+        model_options.get("contextWindow").and_then(Value::as_str).is_some_and(|w| w.eq_ignore_ascii_case("1m"));
     let mut sets = Vec::new();
     for option in options {
         let Some(config_id) = option.get("id").and_then(Value::as_str) else {
@@ -2802,9 +2488,9 @@ fn config_option_sets(
             .collect();
 
         let wanted: Option<Value> = match (kind, category) {
-            ("select", Some("model")) => model
-                .and_then(|m| pick_model_value(m, &available, context_1m))
-                .map(Value::String),
+            ("select", Some("model")) => {
+                model.and_then(|m| pick_model_value(m, &available, context_1m)).map(Value::String)
+            }
             // Unattended parity with the retired custom adapters (claude
             // bypassPermissions / codex approvalPolicy never): pick the
             // no-prompts mode when the agent offers one. claude-agent-acp
@@ -2831,10 +2517,9 @@ fn config_option_sets(
                     .find(|v| available.contains(v))
                     .map(|v| Value::String(v.to_owned()))
                 }),
-            ("select", Some("thought_level")) => efforts
-                .iter()
-                .find(|c| available.contains(*c))
-                .map(|c| Value::String((*c).to_owned())),
+            ("select", Some("thought_level")) => {
+                efforts.iter().find(|c| available.contains(*c)).map(|c| Value::String((*c).to_owned()))
+            }
             // Everything else: best-effort match against the run's
             // model-option selections by normalized id.
             _ => model_options.iter().find_map(|(opt_id, choice)| {
@@ -2842,15 +2527,10 @@ fn config_option_sets(
                     return None;
                 }
                 match kind {
-                    "select" => choice
-                        .as_str()
-                        .filter(|c| available.contains(c))
-                        .map(|c| Value::String(c.to_owned())),
+                    "select" => choice.as_str().filter(|c| available.contains(c)).map(|c| Value::String(c.to_owned())),
                     "boolean" => {
                         let on = choice == &Value::Bool(true)
-                            || choice
-                                .as_str()
-                                .is_some_and(|c| c.eq_ignore_ascii_case("on"));
+                            || choice.as_str().is_some_and(|c| c.eq_ignore_ascii_case("on"));
                         Some(Value::Bool(on))
                     }
                     _ => None,
@@ -2935,38 +2615,23 @@ fn usage_from_response(res: &Result<Value, HarnessError>) -> Option<AgentEvent> 
     // Grok settles usage on the response `_meta` (inputTokens/outputTokens —
     // verified live, 1.0.4); adapters used a first-class `usage` object.
     let usage = resp.get("usage").or_else(|| resp.get("_meta"))?;
-    let count = |keys: &[&str]| {
-        keys.iter()
-            .find_map(|k| usage.get(*k))
-            .and_then(Value::as_u64)
-    };
+    let count = |keys: &[&str]| keys.iter().find_map(|k| usage.get(*k)).and_then(Value::as_u64);
     let input = count(&["inputTokens", "input_tokens"]);
     let output = count(&["outputTokens", "output_tokens"]);
-    (input.is_some() || output.is_some()).then(|| AgentEvent::Usage {
-        input_tokens: input.unwrap_or(0),
-        output_tokens: output.unwrap_or(0),
-    })
+    (input.is_some() || output.is_some())
+        .then(|| AgentEvent::Usage { input_tokens: input.unwrap_or(0), output_tokens: output.unwrap_or(0) })
 }
 
 /// Map a finished `session/prompt` result to the run's terminal status.
-fn stop_outcome(
-    res: &Result<Value, HarnessError>,
-    interrupted: bool,
-) -> (DoneStatus, Option<String>) {
+fn stop_outcome(res: &Result<Value, HarnessError>, interrupted: bool) -> (DoneStatus, Option<String>) {
     if interrupted {
         return (DoneStatus::Interrupted, None);
     }
     match res {
         Ok(resp) => match resp.get("stopReason").and_then(Value::as_str) {
             Some("cancelled") => (DoneStatus::Interrupted, None),
-            Some("error") => (
-                DoneStatus::Errored,
-                Some("The agent failed to complete the turn.".to_owned()),
-            ),
-            Some("refusal") => (
-                DoneStatus::Errored,
-                Some("The agent refused to continue.".to_owned()),
-            ),
+            Some("error") => (DoneStatus::Errored, Some("The agent failed to complete the turn.".to_owned())),
+            Some("refusal") => (DoneStatus::Errored, Some("The agent refused to continue.".to_owned())),
             // end_turn / max_tokens / max_turn_requests: the turn ended;
             // partial output is already in the doc.
             _ => (DoneStatus::Completed, None),
@@ -3003,24 +2668,14 @@ fn prompt_turn(
 /// sessions run unattended). Everything else (fs, terminal, elicitation) was
 /// declined at initialize, so a stray request gets method-not-found rather
 /// than wedging the agent.
-fn handle_server_request(
-    client: &RpcClient,
-    id: Value,
-    method: &str,
-    params: &Value,
-) -> Vec<AgentEvent> {
+fn handle_server_request(client: &RpcClient, id: Value, method: &str, params: &Value) -> Vec<AgentEvent> {
     match method {
         "session/request_permission" => {
-            let options: Vec<Value> = params
-                .get("options")
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default();
+            let options: Vec<Value> = params.get("options").and_then(Value::as_array).cloned().unwrap_or_default();
             match preferred_allow_option(&options) {
-                Some(option_id) => client.respond(
-                    &id,
-                    json!({ "outcome": { "outcome": "selected", "optionId": option_id } }),
-                ),
+                Some(option_id) => {
+                    client.respond(&id, json!({ "outcome": { "outcome": "selected", "optionId": option_id } }))
+                }
                 None => client.respond(&id, json!({ "outcome": { "outcome": "cancelled" } })),
             }
             Vec::new()
@@ -3033,11 +2688,8 @@ fn handle_server_request(
     }
 }
 
-type RequestInputFn = Box<
-    dyn Fn(Vec<UserInputQuestion>) -> tokio::sync::oneshot::Receiver<Vec<UserInputAnswer>>
-        + Send
-        + Sync,
->;
+type RequestInputFn =
+    Box<dyn Fn(Vec<UserInputQuestion>) -> tokio::sync::oneshot::Receiver<Vec<UserInputAnswer>> + Send + Sync>;
 
 /// A permission request is a QUESTION (not a tool permission) when any of
 /// its options lacks an allow/reject kind — that's how the agent relays
@@ -3068,34 +2720,19 @@ fn handle_server_request_live(
     request_input: &std::sync::Arc<RequestInputFn>,
     session_id: &str,
 ) -> Vec<AgentEvent> {
-    if params
-        .get("sessionId")
-        .and_then(Value::as_str)
-        .is_some_and(|id| id != session_id)
-    {
+    if params.get("sessionId").and_then(Value::as_str).is_some_and(|id| id != session_id) {
         client.respond(&id, json!({"outcome": {"outcome": "cancelled"}}));
         return Vec::new();
     }
     if method != "session/request_permission" {
         return handle_server_request(client, id, method, params);
     }
-    let options: Vec<Value> = params
-        .get("options")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
+    let options: Vec<Value> = params.get("options").and_then(Value::as_array).cloned().unwrap_or_default();
     // Dove: real tool permissions go to the host too; Dove answers them
     // itself in bypass mode.
     let approval = !is_user_question(&options);
-    let names: Vec<String> = options
-        .iter()
-        .map(|o| {
-            o.get("name")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_owned()
-        })
-        .collect();
+    let names: Vec<String> =
+        options.iter().map(|o| o.get("name").and_then(Value::as_str).unwrap_or_default().to_owned()).collect();
     let question = UserInputQuestion {
         id: new_message_id(),
         header: if approval {
@@ -3118,24 +2755,17 @@ fn handle_server_request_live(
     let client = client.clone();
     let request_input = std::sync::Arc::clone(request_input);
     tokio::spawn(async move {
-        let answers = (request_input)(vec![question.clone()])
-            .await
-            .unwrap_or_default();
+        let answers = (request_input)(vec![question.clone()]).await.unwrap_or_default();
         let picked = answers
             .iter()
             .find(|a| a.question_id == question.id)
             .and_then(|a| a.labels.first())
-            .and_then(|label| {
-                options
-                    .iter()
-                    .find(|o| o.get("name").and_then(Value::as_str) == Some(label.as_str()))
-            })
+            .and_then(|label| options.iter().find(|o| o.get("name").and_then(Value::as_str) == Some(label.as_str())))
             .and_then(|o| o.get("optionId").and_then(Value::as_str));
         match picked {
-            Some(option_id) => client.respond(
-                &id,
-                json!({ "outcome": { "outcome": "selected", "optionId": option_id } }),
-            ),
+            Some(option_id) => {
+                client.respond(&id, json!({ "outcome": { "outcome": "selected", "optionId": option_id } }))
+            }
             None => client.respond(&id, json!({ "outcome": { "outcome": "cancelled" } })),
         }
     });
@@ -3145,14 +2775,11 @@ fn handle_server_request_live(
 /// Where an agent that signs in from settings sends a signed-out run: the
 /// provider's Accounts section, whose connect flow is the same for every agent.
 fn not_signed_in(agent_name: &str) -> String {
-    format!(
-        "{agent_name} isn't signed in. Open Settings → Providers → {agent_name} and connect an account."
-    )
+    format!("{agent_name} isn't signed in. Open Settings → Providers → {agent_name} and connect an account.")
 }
 
 fn is_sign_in_prompt(harness: HarnessId, line: &str) -> bool {
-    harness == HarnessId::Antigravity
-        && line.contains("Open the following link to authenticate the ACP server")
+    harness == HarnessId::Antigravity && line.contains("Open the following link to authenticate the ACP server")
 }
 
 fn client_with_sign_in_prompt(
@@ -3181,20 +2808,14 @@ async fn unless_sign_in_prompted<T>(
 
 #[cfg(not(windows))]
 fn noop_browser() -> Result<String, HarnessError> {
-    unix_noop_browser(
-        &[Path::new("/usr/bin/true"), Path::new("/bin/true")],
-        std::env::current_exe().ok().as_deref(),
-    )
+    unix_noop_browser(&[Path::new("/usr/bin/true"), Path::new("/bin/true")], std::env::current_exe().ok().as_deref())
 }
 
 /// python's `webbrowser` splits `BROWSER` on `:` and then shell-splits each
 /// entry. hosts without `true` (nixos, minimal containers) fall back to
 /// zeron's own `--noop-browser` mode.
 #[cfg(any(not(windows), test))]
-fn unix_noop_browser(
-    candidates: &[&Path],
-    executable: Option<&Path>,
-) -> Result<String, HarnessError> {
+fn unix_noop_browser(candidates: &[&Path], executable: Option<&Path>) -> Result<String, HarnessError> {
     if let Some(noop) = candidates.iter().find(|path| path.is_file()) {
         return Ok(format!("{} %s", noop.display()));
     }
@@ -3202,9 +2823,7 @@ fn unix_noop_browser(
         .and_then(Path::to_str)
         .ok_or_else(|| HarnessError::Protocol("No executable can suppress the browser".into()))?;
     if executable.contains([':', '\'', '%']) {
-        return Err(HarnessError::Protocol(
-            "The executable path cannot be used for browser suppression".into(),
-        ));
+        return Err(HarnessError::Protocol("The executable path cannot be used for browser suppression".into()));
     }
     Ok(format!("'{executable}' --noop-browser %s"))
 }
@@ -3216,13 +2835,11 @@ fn noop_browser() -> Result<String, HarnessError> {
 
 #[cfg(any(windows, test))]
 fn windows_noop_browser(executable: &Path) -> Result<String, HarnessError> {
-    let executable = executable.to_str().ok_or_else(|| {
-        HarnessError::Protocol("Browser suppression requires a Unicode executable path".into())
-    })?;
+    let executable = executable
+        .to_str()
+        .ok_or_else(|| HarnessError::Protocol("Browser suppression requires a Unicode executable path".into()))?;
     if executable.contains([';', '"', '%']) {
-        return Err(HarnessError::Protocol(
-            "The executable path cannot be used for browser suppression".into(),
-        ));
+        return Err(HarnessError::Protocol("The executable path cannot be used for browser suppression".into()));
     }
     let executable = executable.replace('\\', "\\\\");
     Ok(format!("\"{executable}\" --noop-browser %s"))
@@ -3271,43 +2888,26 @@ struct EffortGroup<'a> {
 /// group's id is a variant id minus its level suffix, falling back to the
 /// first variant's id; ids come from the wire alone, so discovery and run
 /// time derive the same one.
-fn effort_groups<'a>(
-    choices: impl IntoIterator<Item = (&'a str, &'a str)>,
-) -> Vec<EffortGroup<'a>> {
+fn effort_groups<'a>(choices: impl IntoIterator<Item = (&'a str, &'a str)>) -> Vec<EffortGroup<'a>> {
     let mut groups: Vec<EffortGroup<'a>> = Vec::new();
     for (id, name) in choices {
-        let variant = EFFORT_SUFFIXES.iter().find_map(|(_, label_suffix, level)| {
-            name.strip_suffix(label_suffix).map(|base| (base, *level))
-        });
+        let variant = EFFORT_SUFFIXES
+            .iter()
+            .find_map(|(_, label_suffix, level)| name.strip_suffix(label_suffix).map(|base| (base, *level)));
         let Some((base, level)) = variant else {
-            groups.push(EffortGroup {
-                id: id.to_owned(),
-                label: name,
-                variants: Vec::new(),
-            });
+            groups.push(EffortGroup { id: id.to_owned(), label: name, variants: Vec::new() });
             continue;
         };
-        match groups
-            .iter_mut()
-            .find(|group| !group.variants.is_empty() && group.label == base)
-        {
+        match groups.iter_mut().find(|group| !group.variants.is_empty() && group.label == base) {
             Some(group) => group.variants.push((level, id)),
-            None => groups.push(EffortGroup {
-                id: String::new(),
-                label: base,
-                variants: vec![(level, id)],
-            }),
+            None => groups.push(EffortGroup { id: String::new(), label: base, variants: vec![(level, id)] }),
         }
     }
     for group in groups.iter_mut().filter(|group| !group.variants.is_empty()) {
         group.id = group
             .variants
             .iter()
-            .find_map(|(_, id)| {
-                EFFORT_SUFFIXES
-                    .iter()
-                    .find_map(|(id_suffix, _, _)| id.strip_suffix(id_suffix))
-            })
+            .find_map(|(_, id)| EFFORT_SUFFIXES.iter().find_map(|(id_suffix, _, _)| id.strip_suffix(id_suffix)))
             .unwrap_or(group.variants[0].1)
             .to_owned();
         group.variants.sort_by_key(|(level, _)| *level);
@@ -3341,19 +2941,11 @@ fn group_effort_variants(models: Vec<Model>) -> Vec<Model> {
 /// the advertised variant id for a grouped model: the picked level when the
 /// model offers it, else its strongest level. Ids the agent already
 /// advertises (chats saved with a full variant id) pass through untouched.
-fn effort_variant_id(
-    session_response: &Value,
-    model: &str,
-    reasoning: Option<ReasoningLevel>,
-) -> String {
+fn effort_variant_id(session_response: &Value, model: &str, reasoning: Option<ReasoningLevel>) -> String {
     let choices: Vec<(&str, &str)> = session_response
         .get("configOptions")
         .and_then(Value::as_array)
-        .and_then(|options| {
-            options
-                .iter()
-                .find(|o| o.get("category").and_then(Value::as_str) == Some("model"))
-        })
+        .and_then(|options| options.iter().find(|o| o.get("category").and_then(Value::as_str) == Some("model")))
         .and_then(|o| o.get("options").and_then(Value::as_array))
         .map(|choices| {
             choices
@@ -3373,23 +2965,11 @@ fn effort_variant_id(
         return model.to_owned();
     };
     let offered = |level: ReasoningLevel| {
-        group
-            .variants
-            .iter()
-            .find(|(variant_level, _)| *variant_level == level)
-            .map(|(_, id)| (*id).to_owned())
+        group.variants.iter().find(|(variant_level, _)| *variant_level == level).map(|(_, id)| (*id).to_owned())
     };
     reasoning
         .and_then(offered)
-        .or_else(|| {
-            [
-                ReasoningLevel::High,
-                ReasoningLevel::Medium,
-                ReasoningLevel::Low,
-            ]
-            .into_iter()
-            .find_map(offered)
-        })
+        .or_else(|| [ReasoningLevel::High, ReasoningLevel::Medium, ReasoningLevel::Low].into_iter().find_map(offered))
         .unwrap_or_else(|| model.to_owned())
 }
 
@@ -3404,10 +2984,7 @@ async fn request_draining(
     params: Value,
 ) -> Result<Value, HarnessError> {
     let loading_session = matches!(method, "session/new" | "session/load");
-    let requested_session = params
-        .get("sessionId")
-        .and_then(Value::as_str)
-        .map(str::to_owned);
+    let requested_session = params.get("sessionId").and_then(Value::as_str).map(str::to_owned);
     let mut metadata = VecDeque::new();
     let mut handle_incoming = |inc| match inc {
         Incoming::Request { id, method, params } => {
@@ -3424,11 +3001,7 @@ async fn request_draining(
                 && method == "session/update"
                 && matches!(
                     params["update"]["sessionUpdate"].as_str(),
-                    Some(
-                        "config_option_update"
-                            | "available_commands_update"
-                            | "current_mode_update"
-                    )
+                    Some("config_option_update" | "available_commands_update" | "current_mode_update")
                 ) =>
         {
             if metadata.len() == 32 {
@@ -3462,10 +3035,7 @@ async fn request_draining(
     // are session state, not replayed transcript, and dropping them can lose
     // the only notification advertising a newly released Devin model.
     res.map(|mut response| {
-        let id = response
-            .get("sessionId")
-            .and_then(Value::as_str)
-            .or(requested_session.as_deref());
+        let id = response.get("sessionId").and_then(Value::as_str).or(requested_session.as_deref());
         let id = id.map(str::to_owned);
         for params in metadata {
             if params["sessionId"].as_str() != id.as_deref() {
@@ -3566,9 +3136,7 @@ async fn select_session_config(
             request.reasoning = selection.effort;
         }
         if selection.fast && !request.model_options.contains_key("speed") {
-            request
-                .model_options
-                .insert("speed".into(), Value::String("fast".into()));
+            request.model_options.insert("speed".into(), Value::String("fast".into()));
         }
     }
     // ACP has had two model-selection surfaces. Newer config-option agents
@@ -3578,19 +3146,11 @@ async fn select_session_config(
     // an explicit model switch is strict: prompting with a different
     // model than the picker shows is worse than surfacing the RPC error.
     let requested_model: Option<String> = match request.model.as_deref() {
-        Some(model) if rules.effort_in_model_id => Some(effort_variant_id(
-            &session_response,
-            model,
-            request.reasoning,
-        )),
+        Some(model) if rules.effort_in_model_id => Some(effort_variant_id(&session_response, model, request.reasoning)),
         model => model.map(str::to_owned),
     };
     if rules.harness == HarnessId::Antigravity {
-        validate_config_model_selection(
-            &session_response,
-            requested_model.as_deref(),
-            &request.model_options,
-        )?;
+        validate_config_model_selection(&session_response, requested_model.as_deref(), &request.model_options)?;
     }
     if let Some(model) = first_class_model_change(&session_response, requested_model.as_deref())? {
         request_draining(
@@ -3603,9 +3163,7 @@ async fn select_session_config(
             }),
         )
         .await
-        .map_err(|error| {
-            HarnessError::Protocol(format!("agent rejected model switch to {model}: {error}"))
-        })?;
+        .map_err(|error| HarnessError::Protocol(format!("agent rejected model switch to {model}: {error}")))?;
         // The next switch compares against the model now current.
         if let Some(models) = session_response.get_mut("models") {
             models["currentModelId"] = Value::String(model);
@@ -3617,18 +3175,11 @@ async fn select_session_config(
     // runs.
     let efforts = (rules.effort_values)(request.reasoning, request.model.as_deref());
     let mut options_snapshot = session_response;
-    let mut sets = config_option_sets(
-        &options_snapshot,
-        requested_model.as_deref(),
-        &efforts,
-        &request.model_options,
-    );
+    let mut sets = config_option_sets(&options_snapshot, requested_model.as_deref(), &efforts, &request.model_options);
     // Devin's effort and speed choices depend on the selected model:
     // switch the model first, then choose them from what it offers.
-    let deferred = rules.harness == HarnessId::Devin
-        && sets
-            .iter()
-            .any(|(id, _)| is_model_config_option(&options_snapshot, id));
+    let deferred =
+        rules.harness == HarnessId::Devin && sets.iter().any(|(id, _)| is_model_config_option(&options_snapshot, id));
     if deferred {
         sets.retain(|(id, _)| is_model_config_option(&options_snapshot, id));
     }
@@ -3643,23 +3194,14 @@ async fn select_session_config(
                     params.insert(k.clone(), v.clone());
                 }
             }
-            match request_draining(
-                client,
-                incoming,
-                "session/set_config_option",
-                Value::Object(params),
-            )
-            .await
-            {
+            match request_draining(client, incoming, "session/set_config_option", Value::Object(params)).await {
                 Ok(response) => {
                     if let Some(options) = response.get("configOptions") {
                         options_snapshot["configOptions"] = options.clone();
                     } else if let Some(value) = payload.get("value")
                         && let Some(option) = options_snapshot["configOptions"]
                             .as_array_mut()
-                            .and_then(|options| {
-                                options.iter_mut().find(|o| o["id"] == config_id.as_str())
-                            })
+                            .and_then(|options| options.iter_mut().find(|o| o["id"] == config_id.as_str()))
                     {
                         // The next switch compares against the value now set.
                         option["currentValue"] = value.clone();
@@ -3686,12 +3228,7 @@ async fn select_session_config(
         if !deferred || pass > 1 {
             break;
         }
-        sets = config_option_sets(
-            &options_snapshot,
-            requested_model.as_deref(),
-            &efforts,
-            &request.model_options,
-        );
+        sets = config_option_sets(&options_snapshot, requested_model.as_deref(), &efforts, &request.model_options);
         sets.retain(|(id, _)| !is_model_config_option(&options_snapshot, id));
     }
     Ok(options_snapshot)
@@ -3736,17 +3273,11 @@ async fn run_session(session: Session) {
         turn: turn_control,
     } = controls;
     let request_input = std::sync::Arc::new(request_input);
-    let rules = ConfigRules {
-        harness,
-        effort_in_model_id,
-        effort_values,
-    };
+    let rules = ConfigRules { harness, effort_in_model_id, effort_values };
 
     // ---- handshake + session (interruptible) ------------------------------
     let setup = async {
-        let init = client
-            .request("initialize", initialize_params(harness))
-            .await?;
+        let init = client.request("initialize", initialize_params(harness)).await?;
         let steer_ext = steering_supported(&init);
         let init_commands = scan_available_commands(&init);
 
@@ -3771,51 +3302,21 @@ async fn run_session(session: Session) {
                     let _ = send(&event_tx, AgentEvent::Error {
                         message: format!("{agent_name} could not restore session {resume}; starting a new session without the previous context: {e}"),
                     }).await;
-                    let new = new_session(
-                        &client,
-                        &mut incoming,
-                        session_params.clone(),
-                        agent_name,
-                        auth_method.is_some(),
-                    )
-                    .await?;
-                    (
-                        new.get("sessionId")
-                            .and_then(Value::as_str)
-                            .unwrap_or_default()
-                            .to_owned(),
-                        new,
-                    )
+                    let new =
+                        new_session(&client, &mut incoming, session_params.clone(), agent_name, auth_method.is_some())
+                            .await?;
+                    (new.get("sessionId").and_then(Value::as_str).unwrap_or_default().to_owned(), new)
                 }
             }
         } else {
-            let new = new_session(
-                &client,
-                &mut incoming,
-                session_params,
-                agent_name,
-                auth_method.is_some(),
-            )
-            .await?;
-            (
-                new.get("sessionId")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_owned(),
-                new,
-            )
+            let new = new_session(&client, &mut incoming, session_params, agent_name, auth_method.is_some()).await?;
+            (new.get("sessionId").and_then(Value::as_str).unwrap_or_default().to_owned(), new)
         };
         if session_id.is_empty() {
-            return Err(HarnessError::Protocol(
-                "session/new returned no sessionId".into(),
-            ));
+            return Err(HarnessError::Protocol("session/new returned no sessionId".into()));
         }
         let session_commands = scan_available_commands(&session_response);
-        let init_commands = if session_commands.is_empty() {
-            init_commands
-        } else {
-            session_commands
-        };
+        let init_commands = if session_commands.is_empty() { init_commands } else { session_commands };
         let session_options = select_session_config(
             &client,
             &mut incoming,
@@ -3917,15 +3418,7 @@ async fn run_session(session: Session) {
         child.shutdown(kill_grace).await;
         return;
     }
-    if !init_commands.is_empty()
-        && !send(
-            &event_tx,
-            AgentEvent::AvailableCommands {
-                commands: init_commands,
-            },
-        )
-        .await
-    {
+    if !init_commands.is_empty() && !send(&event_tx, AgentEvent::AvailableCommands { commands: init_commands }).await {
         child.shutdown(kill_grace).await;
         return;
     }
@@ -3936,11 +3429,7 @@ async fn run_session(session: Session) {
     let mut subagents = if harness == HarnessId::Devin {
         SubagentObserver::Devin(DevinTracker::default())
     } else {
-        SubagentObserver::Grok(SubagentTracker::new(
-            session_id.clone(),
-            event_tx.clone(),
-            sessions_root,
-        ))
+        SubagentObserver::Grok(SubagentTracker::new(session_id.clone(), event_tx.clone(), sessions_root))
     };
 
     // ---- main loop --------------------------------------------------------
@@ -3952,26 +3441,18 @@ async fn run_session(session: Session) {
     let mut current_prompt_id = prompt_complete_extension.then(|| format!("zeron-p{prompt_seq}"));
     let mut completed_prompts: VecDeque<String> = VecDeque::new();
     // `ZERON_ACP_PROMPT_STALL_MS` overrides the spec's bound; 0 disables.
-    let prompt_stall: Option<Duration> = match std::env::var("ZERON_ACP_PROMPT_STALL_MS")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-    {
-        Some(0) => None,
-        Some(ms) => Some(Duration::from_millis(ms)),
-        None => prompt_stall,
-    };
-    let mut prompt_stall_deadline: Option<tokio::time::Instant> =
-        prompt_stall.map(|d| tokio::time::Instant::now() + d);
+    let prompt_stall: Option<Duration> =
+        match std::env::var("ZERON_ACP_PROMPT_STALL_MS").ok().and_then(|v| v.parse::<u64>().ok()) {
+            Some(0) => None,
+            Some(ms) => Some(Duration::from_millis(ms)),
+            None => prompt_stall,
+        };
+    let mut prompt_stall_deadline: Option<tokio::time::Instant> = prompt_stall.map(|d| tokio::time::Instant::now() + d);
     // The text of the prompt in flight (re-sent by a preempt when the agent
     // drops an unstarted cancelled prompt).
     let mut current_prompt_text = prompt_transform(request.reasoning, &request.prompt);
     let mut turn: Option<BoxFuture<'static, Result<Value, HarnessError>>> = Some({
-        prompt_turn(
-            client.clone(),
-            session_id.clone(),
-            current_prompt_text.clone(),
-            current_prompt_id.clone(),
-        )
+        prompt_turn(client.clone(), session_id.clone(), current_prompt_text.clone(), current_prompt_id.clone())
     });
     // Steers waiting for the turn boundary (agents without the extension, or
     // extension steers that lost the turn-end race).
@@ -5007,11 +4488,7 @@ async fn run_session(session: Session) {
 
     // A vanished Devin process cannot send subagent_completed. Settle every
     // open nested transcript before the parent's terminal Done.
-    let subagent_status = if interrupted {
-        DoneStatus::Interrupted
-    } else {
-        DoneStatus::Errored
-    };
+    let subagent_status = if interrupted { DoneStatus::Interrupted } else { DoneStatus::Errored };
     for event in subagents.finish_open(subagent_status) {
         if !send(&event_tx, event).await {
             break;
@@ -5034,10 +4511,7 @@ async fn run_session(session: Session) {
             // A child killed mid-turn must not read as a silent success.
             let status = match child_exit {
                 Some(status) => status,
-                None => tokio::time::timeout(Duration::from_millis(200), child.wait())
-                    .await
-                    .ok()
-                    .and_then(Result::ok),
+                None => tokio::time::timeout(Duration::from_millis(200), child.wait()).await.ok().and_then(Result::ok),
             };
             child.request_group_shutdown();
             stderr_tail.wait_closed().await;
@@ -5066,19 +4540,13 @@ mod tests {
             unix_noop_browser(&[Path::new("/missing/true"), &present], None).unwrap(),
             format!("{} %s", present.display())
         );
-        let missing = [
-            Path::new("/missing/usr/bin/true"),
-            Path::new("/missing/bin/true"),
-        ];
+        let missing = [Path::new("/missing/usr/bin/true"), Path::new("/missing/bin/true")];
         assert_eq!(
             unix_noop_browser(&missing, Some(Path::new("/opt/My Apps/zeron"))).unwrap(),
             "'/opt/My Apps/zeron' --noop-browser %s"
         );
         for path in ["/opt/a:b/zeron", "/opt/it's/zeron", "/opt/100%s/zeron"] {
-            assert!(
-                unix_noop_browser(&missing, Some(Path::new(path))).is_err(),
-                "{path}"
-            );
+            assert!(unix_noop_browser(&missing, Some(Path::new(path))).is_err(), "{path}");
         }
         assert!(unix_noop_browser(&missing, None).is_err());
     }
@@ -5097,15 +4565,11 @@ mod tests {
         .unwrap();
         std::fs::set_permissions(&server, std::fs::Permissions::from_mode(0o755)).unwrap();
         confirm_reported_version(&server, "1.2.0").await.unwrap();
-        let error = confirm_reported_version(&server, "9.9.9")
-            .await
-            .unwrap_err();
+        let error = confirm_reported_version(&server, "9.9.9").await.unwrap_err();
         assert!(error.to_string().contains("contains 1.2.0"), "{error}");
 
         std::fs::write(&server, "#!/bin/sh\necho 'agy 9.9.9'\n").unwrap();
-        let error = confirm_reported_version(&server, "9.9.9")
-            .await
-            .unwrap_err();
+        let error = confirm_reported_version(&server, "9.9.9").await.unwrap_err();
         assert!(error.to_string().contains("no build label"), "{error}");
     }
 
@@ -5114,8 +4578,7 @@ mod tests {
         let legacy = "Built from changelist 975248206 based on //depot/branches/agy_acp_server_release_branch/973763860.1/google3\nBuild label: agy_acp_server_1.1.1";
         assert_eq!(antigravity_build_version(legacy).as_deref(), Some("1.1.1"));
         assert_eq!(
-            antigravity_build_version("Build label: 1.2.1\nBuild platform: darwin_arm64")
-                .as_deref(),
+            antigravity_build_version("Build label: 1.2.1\nBuild platform: darwin_arm64").as_deref(),
             Some("1.2.1")
         );
         assert_eq!(antigravity_build_version("Build label: nightly"), None);
@@ -5124,12 +4587,8 @@ mod tests {
 
     #[test]
     fn windows_browser_suppression_quotes_the_executable_path() {
-        let command = windows_noop_browser(Path::new(r"C:\Program Files\Zeron\zeron.exe"))
-            .expect("browser command");
-        assert_eq!(
-            command,
-            r#""C:\\Program Files\\Zeron\\zeron.exe" --noop-browser %s"#
-        );
+        let command = windows_noop_browser(Path::new(r"C:\Program Files\Zeron\zeron.exe")).expect("browser command");
+        assert_eq!(command, r#""C:\\Program Files\\Zeron\\zeron.exe" --noop-browser %s"#);
         for path in [r"C:\semi;colon\zeron.exe", r"C:\percent%s\zeron.exe"] {
             assert!(windows_noop_browser(Path::new(path)).is_err());
         }
@@ -5140,10 +4599,7 @@ mod tests {
         let harness = AcpHarness::antigravity();
         assert_eq!(harness.model_discovery_timeout, Duration::from_secs(90));
         assert_eq!(harness.handshake_timeout, Duration::from_secs(120));
-        assert_eq!(
-            AcpHarness::grok().model_discovery_timeout,
-            Duration::from_secs(10)
-        );
+        assert_eq!(AcpHarness::grok().model_discovery_timeout, Duration::from_secs(10));
     }
 
     fn all_antigravity_auth_methods() -> Value {
@@ -5178,10 +4634,7 @@ mod tests {
             .unwrap(),
             "oauth-business"
         );
-        assert_eq!(
-            sign_in_auth_method(&initialized, "oauth-personal", None).unwrap(),
-            "oauth-personal"
-        );
+        assert_eq!(sign_in_auth_method(&initialized, "oauth-personal", None).unwrap(), "oauth-personal");
     }
 
     #[test]
@@ -5195,11 +4648,7 @@ mod tests {
             Some(&ConfiguredAuthMethod::new("oauth-business".into())),
         )
         .unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("configured auth method oauth-business")
-        );
+        assert!(error.to_string().contains("configured auth method oauth-business"));
     }
 
     #[test]
@@ -5223,23 +4672,13 @@ mod tests {
             Some(&ConfiguredAuthMethod::new("totally-made-up".into())),
         )
         .unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("configured auth method totally-made-up")
-        );
+        assert!(error.to_string().contains("configured auth method totally-made-up"));
     }
 
     #[test]
     fn antigravity_settings_reader_accepts_plain_json() {
         let (_home, path) = settings_holding(r#"{"auth": {"type": "oauth-business"}}"#);
-        assert_eq!(
-            configured_auth_method_in(&path)
-                .unwrap()
-                .unwrap()
-                .configured,
-            "oauth-business"
-        );
+        assert_eq!(configured_auth_method_in(&path).unwrap().unwrap().configured, "oauth-business");
     }
 
     #[test]
@@ -5276,17 +4715,12 @@ mod tests {
     #[test]
     fn antigravity_home_expands_a_home_relative_gemini_home() {
         let home = tempfile::tempdir().unwrap();
-        let expanded =
-            antigravity_paths::expand_user(Path::new("~/gemini-home"), Some(home.path())).unwrap();
+        let expanded = antigravity_paths::expand_user(Path::new("~/gemini-home"), Some(home.path())).unwrap();
         assert_eq!(expanded, home.path().join("gemini-home"));
 
+        assert_eq!(antigravity_paths::expand_user(Path::new("~"), Some(home.path())).unwrap(), home.path());
         assert_eq!(
-            antigravity_paths::expand_user(Path::new("~"), Some(home.path())).unwrap(),
-            home.path()
-        );
-        assert_eq!(
-            antigravity_paths::expand_user(Path::new("/absolute/gemini"), Some(home.path()))
-                .unwrap(),
+            antigravity_paths::expand_user(Path::new("/absolute/gemini"), Some(home.path())).unwrap(),
             Path::new("/absolute/gemini")
         );
         assert!(antigravity_paths::expand_user(Path::new("~/gemini"), None).is_err());
@@ -5295,42 +4729,24 @@ mod tests {
     #[test]
     fn antigravity_home_relative_settings_still_resolve_the_configured_method() {
         let home = tempfile::tempdir().unwrap();
-        let gemini_home =
-            antigravity_paths::expand_user(Path::new("~/.gemini"), Some(home.path())).unwrap();
+        let gemini_home = antigravity_paths::expand_user(Path::new("~/.gemini"), Some(home.path())).unwrap();
         let dir = gemini_home.join("antigravity-acp");
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(
-            dir.join("settings.json"),
-            r#"{"auth": {"type": "oauth-business"}}"#,
-        )
-        .unwrap();
+        std::fs::write(dir.join("settings.json"), r#"{"auth": {"type": "oauth-business"}}"#).unwrap();
 
-        let method = configured_auth_method_in(&dir.join("settings.json"))
-            .unwrap()
-            .unwrap();
+        let method = configured_auth_method_in(&dir.join("settings.json")).unwrap().unwrap();
         assert_eq!(method.canonical, "oauth-business");
     }
 
     fn selected_auth_in_home(gemini_home: &Path) -> String {
-        let configured =
-            configured_auth_method_in(&gemini_home.join("antigravity-acp").join("settings.json"))
-                .unwrap();
-        sign_in_auth_method(
-            &all_antigravity_auth_methods(),
-            "oauth-personal",
-            configured.as_ref(),
-        )
-        .unwrap()
+        let configured = configured_auth_method_in(&gemini_home.join("antigravity-acp").join("settings.json")).unwrap();
+        sign_in_auth_method(&all_antigravity_auth_methods(), "oauth-personal", configured.as_ref()).unwrap()
     }
 
     fn write_business_auth(gemini_home: &Path) {
         let settings = gemini_home.join("antigravity-acp");
         std::fs::create_dir_all(&settings).unwrap();
-        std::fs::write(
-            settings.join("settings.json"),
-            r#"{"auth":{"type":"oauth-business"}}"#,
-        )
-        .unwrap();
+        std::fs::write(settings.join("settings.json"), r#"{"auth":{"type":"oauth-business"}}"#).unwrap();
     }
 
     #[cfg(unix)]
@@ -5339,15 +4755,10 @@ mod tests {
         let (username, real_home) = antigravity_paths::passwd_entry(None).unwrap();
         let directory = tempfile::tempdir_in(&real_home).unwrap();
         write_business_auth(directory.path());
-        let path =
-            PathBuf::from(format!("~{username}")).join(directory.path().file_name().unwrap());
+        let path = PathBuf::from(format!("~{username}")).join(directory.path().file_name().unwrap());
         let unrelated_home = tempfile::tempdir().unwrap();
-        let resolved = antigravity_paths::resolve_home(
-            Some(&path),
-            Some(unrelated_home.path()),
-            unrelated_home.path(),
-        )
-        .unwrap();
+        let resolved =
+            antigravity_paths::resolve_home(Some(&path), Some(unrelated_home.path()), unrelated_home.path()).unwrap();
         assert_eq!(resolved, directory.path());
         assert_eq!(selected_auth_in_home(&resolved), "oauth-business");
     }
@@ -5359,12 +4770,8 @@ mod tests {
         let relative = Path::new("relative-gemini-home");
         write_business_auth(&child_cwd.path().join(relative));
         assert!(!parent_cwd.path().join(relative).exists());
-        let resolved = antigravity_paths::resolve_home(
-            Some(relative),
-            Some(child_cwd.path()),
-            child_cwd.path(),
-        )
-        .unwrap();
+        let resolved =
+            antigravity_paths::resolve_home(Some(relative), Some(child_cwd.path()), child_cwd.path()).unwrap();
         assert_eq!(resolved, child_cwd.path().join(relative));
         assert_eq!(selected_auth_in_home(&resolved), "oauth-business");
         let command_home = parent_cwd.path().join(&resolved);
@@ -5375,12 +4782,7 @@ mod tests {
     fn antigravity_empty_home_fails_before_auth_selection() {
         let child_cwd = tempfile::tempdir().unwrap();
         assert!(
-            antigravity_paths::resolve_home(
-                Some(Path::new("")),
-                Some(child_cwd.path()),
-                child_cwd.path(),
-            )
-            .is_err()
+            antigravity_paths::resolve_home(Some(Path::new("")), Some(child_cwd.path()), child_cwd.path(),).is_err()
         );
     }
 
@@ -5389,9 +4791,7 @@ mod tests {
     fn antigravity_unknown_named_home_fails_before_auth_selection() {
         let cwd = tempfile::tempdir().unwrap();
         let path = PathBuf::from(format!("~zeron-missing-{}", uuid::Uuid::new_v4()));
-        assert!(
-            antigravity_paths::resolve_home(Some(&path), Some(cwd.path()), cwd.path()).is_err()
-        );
+        assert!(antigravity_paths::resolve_home(Some(&path), Some(cwd.path()), cwd.path()).is_err());
     }
 
     #[test]
@@ -5400,10 +4800,7 @@ mod tests {
             sign_in_url("Continue at https://business.example.test/login?id=7."),
             Some("https://business.example.test/login?id=7".into())
         );
-        assert_eq!(
-            sign_in_url("Open http://127.0.0.1:8080/callback"),
-            Some("http://127.0.0.1:8080/callback".into())
-        );
+        assert_eq!(sign_in_url("Open http://127.0.0.1:8080/callback"), Some("http://127.0.0.1:8080/callback".into()));
     }
 
     /// runs in a child process, since installs resolve through the
@@ -5434,8 +4831,7 @@ mod tests {
             );
             return;
         };
-        let (Some(current), Some(legacy)) = (antigravity_archive(), antigravity_legacy_archive())
-        else {
+        let (Some(current), Some(legacy)) = (antigravity_archive(), antigravity_legacy_archive()) else {
             return;
         };
         let root = PathBuf::from(adapters).join(ANTIGRAVITY_ARCHIVE_NAME);
@@ -5462,47 +4858,31 @@ mod tests {
         assert!(!is_managed_antigravity_server(&legacy_server));
 
         let signed_server = install("99.0.0", ANTIGRAVITY_SIGNED_MARKER);
-        let newest = if crate::code_signature::SUPPORTED {
-            signed_server
-        } else {
-            current_server.clone()
-        };
+        let newest = if crate::code_signature::SUPPORTED { signed_server } else { current_server.clone() };
         assert_eq!(harness.executable_path(), Some(newest.clone()));
         assert!(is_managed_antigravity_server(&newest));
 
         #[cfg(unix)]
         let mut running = {
             let mut command = std::process::Command::new("/bin/sh");
-            command
-                .args(["-c", "while :; do /bin/sleep 0.1; done"])
-                .arg(&legacy_server);
+            command.args(["-c", "while :; do /bin/sleep 0.1; done"]).arg(&legacy_server);
             command
         };
         #[cfg(windows)]
         let mut running = {
             let system = std::env::var_os("SystemRoot").unwrap();
-            std::fs::copy(
-                Path::new(&system).join("System32").join("PING.EXE"),
-                &legacy_server,
-            )
-            .unwrap();
+            std::fs::copy(Path::new(&system).join("System32").join("PING.EXE"), &legacy_server).unwrap();
             let mut command = std::process::Command::new(&legacy_server);
             command.args(["-n", "60", "127.0.0.1"]);
             command
         };
-        let mut running = running
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .unwrap();
+        let mut running =
+            running.stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().unwrap();
         prune_superseded_antigravity_installs();
         assert!(legacy_server.is_file(), "a running server is kept");
         assert_eq!(current_server.is_file(), newest == current_server);
         assert!(newest.is_file());
-        assert!(
-            root.join("9.0.0").is_dir(),
-            "untrusted installs are left alone"
-        );
+        assert!(root.join("9.0.0").is_dir(), "untrusted installs are left alone");
         assert!(root.join("not-a-version").is_dir());
 
         running.kill().unwrap();
@@ -5534,26 +4914,13 @@ mod tests {
         }
         let pin = antigravity_archive().unwrap();
         // google's signed archive, listed under a version it does not contain
-        let release = AntigravityRelease {
-            version: "9.9.9".into(),
-            archive_url: Some(pin.url.to_owned()),
-        };
+        let release = AntigravityRelease { version: "9.9.9".into(), archive_url: Some(pin.url.to_owned()) };
         assert!(release.installable());
         let error = install_antigravity_release(&release).await.unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains(&format!("contains {}", pin.version)),
-            "{error}"
-        );
+        assert!(error.to_string().contains(&format!("contains {}", pin.version)), "{error}");
         assert!(trusted_antigravity_installs().is_empty());
         let adapters = crate::adapter_install::adapters_root().unwrap();
-        assert!(
-            !adapters
-                .join(ANTIGRAVITY_ARCHIVE_NAME)
-                .join("9.9.9")
-                .exists()
-        );
+        assert!(!adapters.join(ANTIGRAVITY_ARCHIVE_NAME).join("9.9.9").exists());
     }
 
     #[test]
@@ -5595,13 +4962,8 @@ mod tests {
         assert!(antigravity_release(&json!({"id": "other", "version": "1.3.0"})).is_none());
 
         if let Some(pin) = antigravity_archive() {
-            let pinned =
-                antigravity_release(&json!({"id": "antigravity-acp", "version": pin.version}))
-                    .unwrap();
-            assert!(
-                pinned.installable(),
-                "the pinned digest needs no registry archive"
-            );
+            let pinned = antigravity_release(&json!({"id": "antigravity-acp", "version": pin.version})).unwrap();
+            assert!(pinned.installable(), "the pinned digest needs no registry archive");
         }
     }
 
@@ -5691,26 +5053,14 @@ mod tests {
             config_option_sets(&response, Some("claude-opus-5"), &["high"], &opts),
             vec![
                 ("model".to_owned(), json!({ "value": "claude-opus-5[1m]" })),
-                (
-                    "fast_mode".to_owned(),
-                    json!({ "type": "boolean", "value": true })
-                ),
+                ("fast_mode".to_owned(), json!({ "type": "boolean", "value": true })),
             ]
         );
         // Already-current values and unadvertised models set nothing.
-        assert_eq!(
-            config_option_sets(&response, Some("claude-sonnet-5"), &["high"], &no_opts),
-            Vec::new()
-        );
-        assert_eq!(
-            config_option_sets(&response, Some("gpt-5.6-sol"), &[], &no_opts),
-            Vec::new()
-        );
+        assert_eq!(config_option_sets(&response, Some("claude-sonnet-5"), &["high"], &no_opts), Vec::new());
+        assert_eq!(config_option_sets(&response, Some("gpt-5.6-sol"), &[], &no_opts), Vec::new());
         // No configOptions advertised → nothing to set.
-        assert_eq!(
-            config_option_sets(&json!({"sessionId": "s"}), Some("x"), &["high"], &no_opts),
-            Vec::new()
-        );
+        assert_eq!(config_option_sets(&json!({"sessionId": "s"}), Some("x"), &["high"], &no_opts), Vec::new());
     }
 
     #[test]
@@ -5724,14 +5074,8 @@ mod tests {
                 ],
             },
         });
-        assert_eq!(
-            first_class_model_change(&response, Some("grok-4.5")).unwrap(),
-            Some("grok-4.5".into())
-        );
-        assert_eq!(
-            first_class_model_change(&response, Some("grok-4.6")).unwrap(),
-            None
-        );
+        assert_eq!(first_class_model_change(&response, Some("grok-4.5")).unwrap(), Some("grok-4.5".into()));
+        assert_eq!(first_class_model_change(&response, Some("grok-4.6")).unwrap(), None);
         assert!(first_class_model_change(&response, Some("unknown")).is_err());
     }
 
@@ -5755,10 +5099,7 @@ mod tests {
                 ],
             }],
         });
-        assert_eq!(
-            first_class_model_change(&response, Some("gpt-5.6-terra")).unwrap(),
-            None
-        );
+        assert_eq!(first_class_model_change(&response, Some("gpt-5.6-terra")).unwrap(), None);
     }
 
     #[test]
@@ -5826,24 +5167,14 @@ mod tests {
         });
         let models = models_from_session(&response, &crate::codex::catalog::static_models());
         // Two base models — never one row per effort variant.
-        assert_eq!(
-            models.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
-            vec!["gpt-5.6-sol", "gpt-5.6-terra"]
-        );
+        assert_eq!(models.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), vec!["gpt-5.6-sol", "gpt-5.6-terra"]);
         // Catalog match keeps the curated per-model ladder; wire wins on
         // label/description.
         assert_eq!(models[0].label, "GPT-5.6-Sol");
         assert_eq!(models[0].description.as_deref(), Some("Frontier"));
         assert!(models[0].reasoning_levels.contains(&ReasoningLevel::Ultra));
         // Wire config options become traits; mode/model/thought_level do not.
-        assert_eq!(
-            models[0]
-                .options
-                .iter()
-                .map(|o| o.id.as_str())
-                .collect::<Vec<_>>(),
-            vec!["fast-mode"]
-        );
+        assert_eq!(models[0].options.iter().map(|o| o.id.as_str()).collect::<Vec<_>>(), vec!["fast-mode"]);
         assert_eq!(models[0].options[0].default_choice, "off");
     }
 
@@ -5912,12 +5243,7 @@ mod tests {
         assert_eq!(models[0].label, "Opus");
         let window = models[0].options.iter().find(|o| o.id == "contextWindow");
         assert_eq!(window.map(|o| o.default_choice.as_str()), Some("1m"));
-        assert!(
-            models[1]
-                .options
-                .iter()
-                .any(|o| o.id == "contextWindow" && o.default_choice == "1m")
-        );
+        assert!(models[1].options.iter().any(|o| o.id == "contextWindow" && o.default_choice == "1m"));
         // The bare aliases stay untouched.
         assert!(models[2].options.is_empty());
         assert!(models[3].options.is_empty());
@@ -5950,11 +5276,7 @@ mod tests {
             vec!["Opus 5.5", "Fable 5.1", "Sonnet 5", "Haiku 4.5"]
         );
         // The alias rows carry the catalog's per-model ladders.
-        assert!(
-            models[1]
-                .reasoning_levels
-                .contains(&ReasoningLevel::Ultracode)
-        );
+        assert!(models[1].reasoning_levels.contains(&ReasoningLevel::Ultracode));
         assert!(models[3].reasoning_levels.is_empty());
         // Versioned ids never fuzzy-match: a foreign id passes through.
         let foreign = json!({
@@ -5999,10 +5321,7 @@ mod tests {
         ];
         assert!(!is_user_question(&options));
         // AskUserQuestion relays choices without allow/reject kinds.
-        let question = vec![
-            json!({ "optionId": "a", "name": "Blue" }),
-            json!({ "optionId": "b", "name": "Green" }),
-        ];
+        let question = vec![json!({ "optionId": "a", "name": "Blue" }), json!({ "optionId": "b", "name": "Green" })];
         assert!(is_user_question(&question));
         let mixed = vec![
             json!({ "optionId": "a", "name": "Proceed", "kind": "allow_once" }),
@@ -6055,27 +5374,17 @@ mod tests {
     #[test]
     fn effort_variants_group_by_name_even_when_ids_disagree() {
         let models = models_from_session(&antigravity_signed_in_catalog(), &[]);
-        let rows: Vec<(String, String, Vec<ReasoningLevel>)> = group_effort_variants(models)
-            .into_iter()
-            .map(|m| (m.id, m.label, m.reasoning_levels))
-            .collect();
+        let rows: Vec<(String, String, Vec<ReasoningLevel>)> =
+            group_effort_variants(models).into_iter().map(|m| (m.id, m.label, m.reasoning_levels)).collect();
         assert_eq!(
             rows,
             vec![
                 (
                     "gemini-3.7-flash".into(),
                     "Gemini 3.7 Flash".into(),
-                    vec![
-                        ReasoningLevel::Low,
-                        ReasoningLevel::Medium,
-                        ReasoningLevel::High
-                    ]
+                    vec![ReasoningLevel::Low, ReasoningLevel::Medium, ReasoningLevel::High]
                 ),
-                (
-                    "gemini-3.1-pro".into(),
-                    "Gemini 3.1 Pro".into(),
-                    vec![ReasoningLevel::Low, ReasoningLevel::High]
-                ),
+                ("gemini-3.1-pro".into(), "Gemini 3.1 Pro".into(), vec![ReasoningLevel::Low, ReasoningLevel::High]),
                 ("gemini-legacy".into(), "Gemini Legacy".into(), vec![]),
             ]
         );
@@ -6105,36 +5414,22 @@ mod tests {
             }]
         });
         let models = models_from_session(&live, &(antigravity_spec().models)());
-        let rows: Vec<(String, String, Vec<ReasoningLevel>)> = group_effort_variants(models)
-            .into_iter()
-            .map(|m| (m.id, m.label, m.reasoning_levels))
-            .collect();
+        let rows: Vec<(String, String, Vec<ReasoningLevel>)> =
+            group_effort_variants(models).into_iter().map(|m| (m.id, m.label, m.reasoning_levels)).collect();
         assert_eq!(
             rows,
             vec![
                 (
                     "gemini-3.8-flash".into(),
                     "Gemini 3.8 Flash".into(),
-                    vec![
-                        ReasoningLevel::Low,
-                        ReasoningLevel::Medium,
-                        ReasoningLevel::High
-                    ]
+                    vec![ReasoningLevel::Low, ReasoningLevel::Medium, ReasoningLevel::High]
                 ),
                 (
                     "gemini-3.7-flash".into(),
                     "Gemini 3.7 Flash".into(),
-                    vec![
-                        ReasoningLevel::Low,
-                        ReasoningLevel::Medium,
-                        ReasoningLevel::High
-                    ]
+                    vec![ReasoningLevel::Low, ReasoningLevel::Medium, ReasoningLevel::High]
                 ),
-                (
-                    "gemini-3.1-pro".into(),
-                    "Gemini 3.1 Pro".into(),
-                    vec![ReasoningLevel::Low, ReasoningLevel::High]
-                ),
+                ("gemini-3.1-pro".into(), "Gemini 3.1 Pro".into(), vec![ReasoningLevel::Low, ReasoningLevel::High]),
             ]
         );
         assert_eq!(
@@ -6148,25 +5443,13 @@ mod tests {
     /// flash belongs here only once that pin advertises it.
     #[test]
     fn antigravity_static_fallback_stays_on_the_pinned_servers_models() {
-        let fallback: Vec<(String, Vec<ReasoningLevel>)> = (antigravity_spec().models)()
-            .into_iter()
-            .map(|m| (m.id, m.reasoning_levels))
-            .collect();
+        let fallback: Vec<(String, Vec<ReasoningLevel>)> =
+            (antigravity_spec().models)().into_iter().map(|m| (m.id, m.reasoning_levels)).collect();
         assert_eq!(
             fallback,
             vec![
-                (
-                    "gemini-3.7-flash".into(),
-                    vec![
-                        ReasoningLevel::Low,
-                        ReasoningLevel::Medium,
-                        ReasoningLevel::High
-                    ]
-                ),
-                (
-                    "gemini-3.1-pro".into(),
-                    vec![ReasoningLevel::Low, ReasoningLevel::High]
-                ),
+                ("gemini-3.7-flash".into(), vec![ReasoningLevel::Low, ReasoningLevel::Medium, ReasoningLevel::High]),
+                ("gemini-3.1-pro".into(), vec![ReasoningLevel::Low, ReasoningLevel::High]),
             ]
         );
     }
@@ -6175,31 +5458,13 @@ mod tests {
     fn effort_variant_id_resolves_the_advertised_id_for_each_level() {
         let catalog = antigravity_signed_in_catalog();
         let id = |model, reasoning| effort_variant_id(&catalog, model, reasoning);
-        assert_eq!(
-            id("gemini-3.1-pro", Some(ReasoningLevel::High)),
-            "gemini-pro-agent"
-        );
-        assert_eq!(
-            id("gemini-3.1-pro", Some(ReasoningLevel::Low)),
-            "gemini-3.1-pro-low"
-        );
-        assert_eq!(
-            id("gemini-3.1-pro", Some(ReasoningLevel::Medium)),
-            "gemini-pro-agent"
-        );
+        assert_eq!(id("gemini-3.1-pro", Some(ReasoningLevel::High)), "gemini-pro-agent");
+        assert_eq!(id("gemini-3.1-pro", Some(ReasoningLevel::Low)), "gemini-3.1-pro-low");
+        assert_eq!(id("gemini-3.1-pro", Some(ReasoningLevel::Medium)), "gemini-pro-agent");
         assert_eq!(id("gemini-3.1-pro", None), "gemini-pro-agent");
-        assert_eq!(
-            id("gemini-3.7-flash", Some(ReasoningLevel::Medium)),
-            "gemini-3.7-flash-medium"
-        );
-        assert_eq!(
-            id("gemini-pro-agent", Some(ReasoningLevel::Low)),
-            "gemini-pro-agent"
-        );
-        assert_eq!(
-            id("gemini-legacy", Some(ReasoningLevel::High)),
-            "gemini-legacy"
-        );
+        assert_eq!(id("gemini-3.7-flash", Some(ReasoningLevel::Medium)), "gemini-3.7-flash-medium");
+        assert_eq!(id("gemini-pro-agent", Some(ReasoningLevel::Low)), "gemini-pro-agent");
+        assert_eq!(id("gemini-legacy", Some(ReasoningLevel::High)), "gemini-legacy");
         assert_eq!(id("unknown-model", None), "unknown-model");
     }
 
@@ -6221,32 +5486,17 @@ mod tests {
             "brandkit",
             "---\nname: \"brandkit\"\ndescription: >\n  Brand boards and\n  logo systems\n---\n",
         );
-        skill(
-            first.path(),
-            "no-name",
-            "---\ndescription: missing name\n---\n",
-        );
+        skill(first.path(), "no-name", "---\ndescription: missing name\n---\n");
         std::fs::create_dir_all(first.path().join("empty-folder")).unwrap();
-        skill(
-            second.path(),
-            "animate",
-            "---\nname: animate\ndescription: shadowed duplicate\n---\n",
-        );
-        skill(
-            second.path(),
-            "zeta",
-            "---\nname: zeta\ndescription: Last one\n---\n",
-        );
+        skill(second.path(), "animate", "---\nname: animate\ndescription: shadowed duplicate\n---\n");
+        skill(second.path(), "zeta", "---\nname: zeta\ndescription: Last one\n---\n");
 
         let commands = skill_commands(&[
             first.path().to_path_buf(),
             PathBuf::from("/nonexistent/skills"),
             second.path().to_path_buf(),
         ]);
-        let listed: Vec<(&str, &str)> = commands
-            .iter()
-            .map(|c| (c.name.as_str(), c.description.as_str()))
-            .collect();
+        let listed: Vec<(&str, &str)> = commands.iter().map(|c| (c.name.as_str(), c.description.as_str())).collect();
         assert_eq!(
             listed,
             vec![
@@ -6279,16 +5529,13 @@ mod tests {
 #[cfg(all(test, unix))]
 #[tokio::test]
 async fn setup_retains_bounded_session_metadata_before_response() {
-    let mut child = Command::new(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake-robust-acp.py"),
-    )
-    .stdin(Stdio::piped())
-    .stdout(Stdio::piped())
-    .kill_on_drop(true)
-    .spawn()
-    .unwrap();
-    let (client, mut incoming) =
-        RpcClient::new(child.stdin.take().unwrap(), child.stdout.take().unwrap());
+    let mut child = Command::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake-robust-acp.py"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let (client, mut incoming) = RpcClient::new(child.stdin.take().unwrap(), child.stdout.take().unwrap());
     let result = tokio::time::timeout(
         Duration::from_secs(5),
         request_draining(&client, &mut incoming, "session/new", json!({})),
@@ -6305,9 +5552,8 @@ async fn setup_retains_bounded_session_metadata_before_response() {
 #[cfg(all(test, unix))]
 #[test]
 fn explicit_program_launches_do_not_get_archive_scratch_roots() {
-    let harness = AcpHarness::antigravity().with_executable(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake-antigravity-acp.sh"),
-    );
+    let harness = AcpHarness::antigravity()
+        .with_executable(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake-antigravity-acp.sh"));
     assert!(harness.adapter_scratch().unwrap().is_none());
 }
 
@@ -6322,9 +5568,7 @@ mod mcp_injection_tests {
             name: "zeron".into(),
             command: "/opt/zeron/zeron".into(),
             args: vec!["mcp".into()],
-            env: [("ZERON_IPC_PORT".to_owned(), "27654".to_owned())]
-                .into_iter()
-                .collect(),
+            env: [("ZERON_IPC_PORT".to_owned(), "27654".to_owned())].into_iter().collect(),
         };
         let servers = acp_mcp_servers(Some(&mcp));
         assert_eq!(

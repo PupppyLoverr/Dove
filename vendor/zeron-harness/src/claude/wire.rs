@@ -197,10 +197,7 @@ impl RateLimitInfo {
     /// provisioned overage keeps running despite the reject.
     pub fn blocks(&self) -> bool {
         self.status == "rejected"
-            && !matches!(
-                self.overage_status.as_deref(),
-                Some("allowed" | "allowed_warning")
-            )
+            && !matches!(self.overage_status.as_deref(), Some("allowed" | "allowed_warning"))
             && !self.is_using_overage
             && !self.overage_in_use
     }
@@ -294,17 +291,9 @@ pub(crate) fn steer_message_line(text: &str, id: &str, immediate: bool) -> Strin
 
 /// [`steer_message_line`] carrying inline images ahead of the text, in the
 /// same block shape as [`user_message_line_with_images`].
-pub(crate) fn steer_message_line_with_images(
-    text: &str,
-    id: &str,
-    immediate: bool,
-    images: &[ImageBlock],
-) -> String {
-    let content = if images.is_empty() {
-        Value::String(text.to_owned())
-    } else {
-        Value::Array(content_blocks(text, images))
-    };
+pub(crate) fn steer_message_line_with_images(text: &str, id: &str, immediate: bool, images: &[ImageBlock]) -> String {
+    let content =
+        if images.is_empty() { Value::String(text.to_owned()) } else { Value::Array(content_blocks(text, images)) };
     serde_json::json!({"type":"user", "uuid":id, "priority": if immediate { "now" } else { "next" },
         "message":{"role":"user","content":content}, "parent_tool_use_id":null})
     .to_string()
@@ -326,11 +315,8 @@ pub(crate) struct ImageBlock {
 /// frames can be told apart from a steer's. Images precede the text, as in
 /// [`user_message_line_with_images`].
 pub(crate) fn prompt_line(text: &str, id: &str, images: &[ImageBlock]) -> String {
-    let content = if images.is_empty() {
-        Value::String(text.to_owned())
-    } else {
-        Value::Array(content_blocks(text, images))
-    };
+    let content =
+        if images.is_empty() { Value::String(text.to_owned()) } else { Value::Array(content_blocks(text, images)) };
     json!({
         "type": "user",
         "uuid": id,
@@ -450,10 +436,8 @@ mod tests {
 
     #[test]
     fn steer_priority_follows_tool_state() {
-        let now: serde_json::Value =
-            serde_json::from_str(&steer_message_line("hi", "u1", true)).unwrap();
-        let next: serde_json::Value =
-            serde_json::from_str(&steer_message_line("hi", "u2", false)).unwrap();
+        let now: serde_json::Value = serde_json::from_str(&steer_message_line("hi", "u1", true)).unwrap();
+        let next: serde_json::Value = serde_json::from_str(&steer_message_line("hi", "u2", false)).unwrap();
         assert_eq!(now["priority"], "now");
         assert_eq!(next["priority"], "next");
         assert_eq!(next["uuid"], "u2");
@@ -469,10 +453,7 @@ mod tests {
             }
             other => panic!("unexpected frame: {other:?}"),
         }
-        assert!(matches!(
-            parse_frame(r#"{"type":"mystery_frame"}"#).expect("parses"),
-            Frame::Other
-        ));
+        assert!(matches!(parse_frame(r#"{"type":"mystery_frame"}"#).expect("parses"), Frame::Other));
         assert!(parse_frame("not json").is_err());
     }
 
@@ -489,10 +470,7 @@ mod tests {
     fn user_line_with_images_is_blocks_then_text() {
         let line = user_message_line_with_images(
             "what is this?",
-            &[ImageBlock {
-                media_type: "image/png".into(),
-                data: "QUJD".into(),
-            }],
+            &[ImageBlock { media_type: "image/png".into(), data: "QUJD".into() }],
         );
         let v: Value = serde_json::from_str(&line).expect("json");
         assert_eq!(v["type"], "user");
@@ -505,9 +483,6 @@ mod tests {
         assert_eq!(content[1]["type"], "text");
         assert_eq!(content[1]["text"], "what is this?");
         // No images ⇒ identical to the plain string line.
-        assert_eq!(
-            user_message_line_with_images("hi", &[]),
-            user_message_line("hi")
-        );
+        assert_eq!(user_message_line_with_images("hi", &[]), user_message_line("hi"));
     }
 }

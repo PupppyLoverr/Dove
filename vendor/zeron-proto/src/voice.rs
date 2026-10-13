@@ -13,9 +13,7 @@ pub const ORCHESTRATOR_CHAT_PREFIX: &str = "voice-orchestrator-";
 /// Title of every orchestrator chat; transcripts never trigger a titler.
 pub const ORCHESTRATOR_CHAT_TITLE: &str = "Voice session";
 /// Codex voice styles offered before a host reports its own list.
-pub const DEFAULT_VOICES: &[&str] = &[
-    "juniper", "maple", "spruce", "ember", "vale", "breeze", "arbor", "sol", "cove",
-];
+pub const DEFAULT_VOICES: &[&str] = &["juniper", "maple", "spruce", "ember", "vale", "breeze", "arbor", "sol", "cove"];
 
 pub fn is_orchestrator_chat(chat_id: &str) -> bool {
     chat_id.starts_with(ORCHESTRATOR_CHAT_PREFIX)
@@ -218,18 +216,10 @@ mod tests {
         let old = r#"{"available":false,"creditsExcluded":false}"#;
         let eligibility: VoiceEligibility = serde_json::from_str(old).unwrap();
         assert_eq!(eligibility.ordinary_usage_allowed, None);
-        let lease = VoiceLease {
-            session_id: "id".into(),
-            generation: 1,
-            token: "SECRET".into(),
-        };
+        let lease = VoiceLease { session_id: "id".into(), generation: 1, token: "SECRET".into() };
         assert!(!format!("{lease:?}").contains("SECRET"));
         assert!(serde_json::from_str::<VoiceEncoding>("\"unknown\"").is_err());
-        for phase in [
-            VoicePhase::Starting,
-            VoicePhase::Active,
-            VoicePhase::Stopping,
-        ] {
+        for phase in [VoicePhase::Starting, VoicePhase::Active, VoicePhase::Stopping] {
             assert!(phase.replaces_composer());
         }
         assert!(!VoicePhase::Checking.replaces_composer());

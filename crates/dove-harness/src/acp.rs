@@ -492,10 +492,10 @@ fn auto_allowed(mode: PermissionMode, req: &PermissionRequest) -> bool {
         && (crate::is_dove_tool(&req.tool)
             || crate::is_dove_tool(&req.summary)
             || match mode {
-            PermissionMode::Bypass => true,
-            PermissionMode::AcceptEdits => req.tool == "edit",
-            PermissionMode::Default | PermissionMode::Plan => false,
-        })
+                PermissionMode::Bypass => true,
+                PermissionMode::AcceptEdits => req.tool == "edit",
+                PermissionMode::Default | PermissionMode::Plan => false,
+            })
 }
 
 /// Pick the option matching `decision`, falling back to the nearest kind.

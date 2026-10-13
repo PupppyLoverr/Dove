@@ -12,9 +12,9 @@ use std::{
 };
 use webview2_com::{
     AcceleratorKeyPressedEventHandler, CallDevToolsProtocolMethodCompletedHandler,
-    CreateCoreWebView2CompositionControllerCompletedHandler,
-    CreateCoreWebView2EnvironmentCompletedHandler, CursorChangedEventHandler, DocumentTitleChangedEventHandler,
-    DownloadStartingEventHandler, ExecuteScriptCompletedHandler, FaviconChangedEventHandler, HistoryChangedEventHandler,
+    CreateCoreWebView2CompositionControllerCompletedHandler, CreateCoreWebView2EnvironmentCompletedHandler,
+    CursorChangedEventHandler, DocumentTitleChangedEventHandler, DownloadStartingEventHandler,
+    ExecuteScriptCompletedHandler, FaviconChangedEventHandler, HistoryChangedEventHandler,
     LaunchingExternalUriSchemeEventHandler, Microsoft::Web::WebView2::Win32::*, NavigationCompletedEventHandler,
     NavigationStartingEventHandler, NewWindowRequestedEventHandler, PermissionRequestedEventHandler,
     ProcessFailedEventHandler, SourceChangedEventHandler, take_pwstr,

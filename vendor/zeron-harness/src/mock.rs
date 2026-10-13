@@ -5,8 +5,7 @@ use futures::StreamExt;
 use futures::stream::BoxStream;
 
 use zeron_proto::{
-    AgentEvent, DoneStatus, HarnessId, Model, ReasoningLevel, RunRequest, SteeringMode,
-    UserInputQuestion,
+    AgentEvent, DoneStatus, HarnessId, Model, ReasoningLevel, RunRequest, SteeringMode, UserInputQuestion,
 };
 
 use crate::{Harness, HarnessError, RunControls};
@@ -36,11 +35,7 @@ fn question_script() -> Vec<UserInputQuestion> {
             id: "q-gates".into(),
             header: "Question".into(),
             question: "Which suites should gate the merge?".into(),
-            options: vec![
-                "Unit tests".into(),
-                "End-to-end (two-device)".into(),
-                "Golden screenshots".into(),
-            ],
+            options: vec!["Unit tests".into(), "End-to-end (two-device)".into(), "Golden screenshots".into()],
             prefill: None,
             multiline: false,
             multi_select: true,
@@ -107,10 +102,7 @@ impl Harness for MockHarness {
         // spaces the scripted events out so live-run UI states (working
         // indicator, streaming fade, trailing tool-group auto-open) are
         // observable. Unset (the default, and in tests) streams instantly.
-        let delay_ms = std::env::var("ZERON_MOCK_DELAY_MS")
-            .ok()
-            .and_then(|v| v.parse::<u64>().ok())
-            .unwrap_or(0);
+        let delay_ms = std::env::var("ZERON_MOCK_DELAY_MS").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
         let delay = std::time::Duration::from_millis(delay_ms);
 
         // Dev/testing knob: `ZERON_MOCK_QUESTION=1` swaps in a run that asks
@@ -118,39 +110,24 @@ impl Harness for MockHarness {
         // engine mints the request id, emits `InputRequested`, and resolves it
         // from the `RespondInput` doc command) — the only data-side way to put
         // the QuestionPanel on screen.
-        let question_mode = std::env::var("ZERON_MOCK_QUESTION")
-            .ok()
-            .is_some_and(|v| !v.is_empty() && v != "0");
+        let question_mode = std::env::var("ZERON_MOCK_QUESTION").ok().is_some_and(|v| !v.is_empty() && v != "0");
         if question_mode {
             let request_input = controls.request_input;
             let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<AgentEvent>();
             tokio::spawn(async move {
-                let pause = if delay_ms == 0 {
-                    std::time::Duration::from_millis(50)
-                } else {
-                    delay
-                };
+                let pause = if delay_ms == 0 { std::time::Duration::from_millis(50) } else { delay };
                 tokio::time::sleep(pause).await;
                 let _ = tx.send(AgentEvent::TextDelta {
-                    text:
-                        "Before I wire the reconciliation path I need two decisions from you.\n\n"
-                            .into(),
+                    text: "Before I wire the reconciliation path I need two decisions from you.\n\n".into(),
                 });
                 tokio::time::sleep(pause).await;
                 let answers = request_input(question_script()).await.unwrap_or_default();
-                let picked: Vec<String> = answers
-                    .iter()
-                    .flat_map(|a| a.labels.iter().cloned())
-                    .collect();
+                let picked: Vec<String> = answers.iter().flat_map(|a| a.labels.iter().cloned()).collect();
                 tokio::time::sleep(pause).await;
                 let _ = tx.send(AgentEvent::TextDelta {
                     text: format!(
                         "Locked in: **{}**. Proceeding with the plan.",
-                        if picked.is_empty() {
-                            "your defaults".to_string()
-                        } else {
-                            picked.join("**, **")
-                        }
+                        if picked.is_empty() { "your defaults".to_string() } else { picked.join("**, **") }
                     ),
                 });
                 let _ = tx.send(AgentEvent::Done {
@@ -160,9 +137,8 @@ impl Harness for MockHarness {
                     session_id: None,
                 });
             });
-            let stream = futures::stream::unfold(rx, |mut rx| async move {
-                rx.recv().await.map(|event| (Ok(event), rx))
-            });
+            let stream =
+                futures::stream::unfold(rx, |mut rx| async move { rx.recv().await.map(|event| (Ok(event), rx)) });
             return Ok(stream.boxed());
         }
 
@@ -170,29 +146,18 @@ impl Harness for MockHarness {
         // before the final Done — long single-reply streams for frame-cost /
         // smoothness measurement (the terminal `Done` is emitted exactly once,
         // at the very end).
-        let repeat = std::env::var("ZERON_MOCK_REPEAT")
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok())
-            .unwrap_or(1)
-            .max(1);
+        let repeat = std::env::var("ZERON_MOCK_REPEAT").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(1).max(1);
         // Dev/testing knob: `ZERON_MOCK_ERROR=1` appends a scripted error
         // before the terminal Done — the only data-side way to put the
         // transcript ErrorChip on screen with the mock harness.
-        let mock_error = std::env::var("ZERON_MOCK_ERROR")
-            .ok()
-            .is_some_and(|v| !v.is_empty() && v != "0");
+        let mock_error = std::env::var("ZERON_MOCK_ERROR").ok().is_some_and(|v| !v.is_empty() && v != "0");
         // Dev/testing knob: `ZERON_MOCK_TABLE=1` appends scripted GFM tables
         // before the terminal Done — a plain 3-column grid plus a wide/uneven
         // one (long prose cell beside short cells, mixed alignment) for
         // table-styling checks against the reference app.
-        let mock_table = std::env::var("ZERON_MOCK_TABLE")
-            .ok()
-            .is_some_and(|v| !v.is_empty() && v != "0");
-        let done_ix = self
-            .script
-            .iter()
-            .position(|e| matches!(e, AgentEvent::Done { .. }))
-            .unwrap_or(self.script.len());
+        let mock_table = std::env::var("ZERON_MOCK_TABLE").ok().is_some_and(|v| !v.is_empty() && v != "0");
+        let done_ix =
+            self.script.iter().position(|e| matches!(e, AgentEvent::Done { .. })).unwrap_or(self.script.len());
         let (body, tail) = self.script.split_at(done_ix);
         let error_event = mock_error.then(|| AgentEvent::Error {
             message: "Claude usage limit reached — try again after the limit resets.".into(),
@@ -200,9 +165,7 @@ impl Harness for MockHarness {
         // Dev/testing knob: `ZERON_MOCK_CODE=1` appends rust + ts code blocks
         // (keywords, strings, numbers, comments) plus inline code — for
         // syntax-palette and inline-code styling checks against the reference.
-        let mock_code = std::env::var("ZERON_MOCK_CODE")
-            .ok()
-            .is_some_and(|v| !v.is_empty() && v != "0");
+        let mock_code = std::env::var("ZERON_MOCK_CODE").ok().is_some_and(|v| !v.is_empty() && v != "0");
         let code_event = mock_code.then(|| AgentEvent::TextDelta {
             text: concat!(
                 "\n### Code check\n\n",
@@ -244,9 +207,7 @@ impl Harness for MockHarness {
         // passage — bold-led list items, inline links, emphasis, strikethrough
         // — the shapes whose half-streamed markers the display mend
         // (crates/ui markdown/mend.rs) must hold steady while streaming.
-        let mock_mend = std::env::var("ZERON_MOCK_MEND")
-            .ok()
-            .is_some_and(|v| !v.is_empty() && v != "0");
+        let mock_mend = std::env::var("ZERON_MOCK_MEND").ok().is_some_and(|v| !v.is_empty() && v != "0");
         let mend_event = mock_mend.then(|| AgentEvent::TextDelta {
             text: concat!(
                 "\n### Streaming mend check\n\n",
@@ -263,9 +224,7 @@ impl Harness for MockHarness {
         // reasoning stream plus a command — the thought-process chip inside a
         // tool-group accordion, for checking that thinking renders styled
         // (bold/lists/inline code) instead of literal `**` markers.
-        let mock_thinking = std::env::var("ZERON_MOCK_THINKING")
-            .ok()
-            .is_some_and(|v| !v.is_empty() && v != "0");
+        let mock_thinking = std::env::var("ZERON_MOCK_THINKING").ok().is_some_and(|v| !v.is_empty() && v != "0");
         let thinking_events = mock_thinking
             .then(|| {
                 [
@@ -292,12 +251,7 @@ impl Harness for MockHarness {
                             command: "rg -n walletInsufficient apps/word/src | wc -l".into(),
                         },
                     },
-                    AgentEvent::ToolResult {
-                        id: "mock-think-tool".into(),
-                        is_error: false,
-                        output: None,
-                        diff: None,
-                    },
+                    AgentEvent::ToolResult { id: "mock-think-tool".into(), is_error: false, output: None, diff: None },
                 ]
             })
             .into_iter()
@@ -309,9 +263,7 @@ impl Harness for MockHarness {
         // The second subagent finishes after a beat of nested activity, so a
         // paced run (`ZERON_MOCK_DELAY_MS`) holds a Running chip long enough
         // to observe.
-        let mock_subagent = std::env::var("ZERON_MOCK_SUBAGENT")
-            .ok()
-            .is_some_and(|v| !v.is_empty() && v != "0");
+        let mock_subagent = std::env::var("ZERON_MOCK_SUBAGENT").ok().is_some_and(|v| !v.is_empty() && v != "0");
         let subagent_events = mock_subagent
             .then(|| {
                 let tag = |parent: &str, event: AgentEvent| AgentEvent::Subagent {
@@ -495,12 +447,7 @@ impl Harness for MockHarness {
                             command: "set -e\nfixture_in_original=0\ngrep -rn \"veil\" crates/ui/src | wc -l".into(),
                         },
                     },
-                    AgentEvent::ToolResult {
-                        id: "mock-code-tool".into(),
-                        is_error: false,
-                        output: None,
-                        diff: None,
-                    },
+                    AgentEvent::ToolResult { id: "mock-code-tool".into(), is_error: false, output: None, diff: None },
                 ]
             })
             .into_iter()
@@ -509,9 +456,7 @@ impl Harness for MockHarness {
         // works through — one `Todo` call rewritten in place per step, the way
         // TodoWrite does — so the todo panel's open / fold / finished states
         // can be watched live (pace it with `ZERON_MOCK_DELAY_MS`).
-        let mock_todo = std::env::var("ZERON_MOCK_TODO")
-            .ok()
-            .is_some_and(|v| !v.is_empty() && v != "0");
+        let mock_todo = std::env::var("ZERON_MOCK_TODO").ok().is_some_and(|v| !v.is_empty() && v != "0");
         let todo_events = mock_todo
             .then(|| {
                 const STEPS: [&str; 8] = [
@@ -533,9 +478,7 @@ impl Harness for MockHarness {
                                 *text,
                                 match ix.cmp(&active) {
                                     std::cmp::Ordering::Less => zeron_proto::TodoStatus::Completed,
-                                    std::cmp::Ordering::Equal => {
-                                        zeron_proto::TodoStatus::InProgress
-                                    }
+                                    std::cmp::Ordering::Equal => zeron_proto::TodoStatus::InProgress,
                                     std::cmp::Ordering::Greater => zeron_proto::TodoStatus::Pending,
                                 },
                             )
@@ -547,19 +490,14 @@ impl Harness for MockHarness {
                 }];
                 // Steps 0..=8: the last write has every item completed.
                 for active in 0..=STEPS.len() {
-                    events.push(AgentEvent::ToolCall {
-                        id: "mock-todo".into(),
-                        call: list(active),
-                    });
+                    events.push(AgentEvent::ToolCall { id: "mock-todo".into(), call: list(active) });
                     events.push(AgentEvent::ToolResult {
                         id: "mock-todo".into(),
                         is_error: false,
                         output: None,
                         diff: None,
                     });
-                    events.push(AgentEvent::TextDelta {
-                        text: format!("Update {} written.\n\n", active + 1),
-                    });
+                    events.push(AgentEvent::TextDelta { text: format!("Update {} written.\n\n", active + 1) });
                 }
                 events
             })
@@ -586,10 +524,8 @@ impl Harness for MockHarness {
         // instead of whole scripted blocks — delta boundaries then land inside
         // inline markers and links, which is the streaming shape real
         // harnesses produce and the display mend exists for.
-        let chunk_chars = std::env::var("ZERON_MOCK_CHARS")
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok())
-            .filter(|&n| n > 0);
+        let chunk_chars =
+            std::env::var("ZERON_MOCK_CHARS").ok().and_then(|v| v.parse::<usize>().ok()).filter(|&n| n > 0);
         let events: Vec<Result<AgentEvent, HarnessError>> = match chunk_chars {
             None => events,
             Some(n) => events
@@ -599,11 +535,7 @@ impl Harness for MockHarness {
                         let chars: Vec<char> = text.chars().collect();
                         chars
                             .chunks(n)
-                            .map(|c| {
-                                Ok(AgentEvent::TextDelta {
-                                    text: c.iter().collect(),
-                                })
-                            })
+                            .map(|c| Ok(AgentEvent::TextDelta { text: c.iter().collect() }))
                             .collect::<Vec<_>>()
                     }
                     // Reasoning streams the same char-paced way — thought
@@ -613,11 +545,7 @@ impl Harness for MockHarness {
                         let chars: Vec<char> = text.chars().collect();
                         chars
                             .chunks(n)
-                            .map(|c| {
-                                Ok(AgentEvent::ReasoningDelta {
-                                    text: c.iter().collect(),
-                                })
-                            })
+                            .map(|c| Ok(AgentEvent::ReasoningDelta { text: c.iter().collect() }))
                             .collect::<Vec<_>>()
                     }
                     other => vec![other],
@@ -630,18 +558,14 @@ impl Harness for MockHarness {
         // on slowly, which is exactly the eager-done shape live tabs are
         // observed under (and the only way a rig click can reliably land
         // inside a subagent's streaming window).
-        let sub_delay_ms = std::env::var("ZERON_MOCK_SUBAGENT_DELAY_MS")
-            .ok()
-            .and_then(|v| v.parse::<u64>().ok());
+        let sub_delay_ms = std::env::var("ZERON_MOCK_SUBAGENT_DELAY_MS").ok().and_then(|v| v.parse::<u64>().ok());
         if delay_ms == 0 && sub_delay_ms.is_none() {
             return Ok(futures::stream::iter(events).boxed());
         }
         Ok(futures::stream::iter(events)
             .then(move |event| async move {
                 let pause = match (&event, sub_delay_ms) {
-                    (Ok(AgentEvent::Subagent { .. }), Some(ms)) => {
-                        std::time::Duration::from_millis(ms)
-                    }
+                    (Ok(AgentEvent::Subagent { .. }), Some(ms)) => std::time::Duration::from_millis(ms),
                     _ => delay,
                 };
                 tokio::time::sleep(pause).await;

@@ -47,11 +47,9 @@ pub fn login_shell_path() -> Option<&'static OsStr> {
 pub fn prewarm() {
     #[cfg(unix)]
     {
-        let _ = std::thread::Builder::new()
-            .name("zeron-shell-env".into())
-            .spawn(|| {
-                let _ = login_shell_path();
-            });
+        let _ = std::thread::Builder::new().name("zeron-shell-env".into()).spawn(|| {
+            let _ = login_shell_path();
+        });
     }
 }
 
@@ -111,8 +109,7 @@ mod unix {
                 return None;
             }
             let shell = std::ffi::CStr::from_ptr((*pw).pw_shell);
-            (!shell.to_bytes().is_empty())
-                .then(|| PathBuf::from(std::ffi::OsStr::from_bytes(shell.to_bytes())))
+            (!shell.to_bytes().is_empty()).then(|| PathBuf::from(std::ffi::OsStr::from_bytes(shell.to_bytes())))
         }
     }
 
@@ -125,10 +122,7 @@ mod unix {
     /// `-c`; fish runs config.fish for every invocation, so `-l` alone loads
     /// everything without interactive-mode side effects.
     fn attempt_flag_sets(shell: &Path) -> Vec<Vec<&'static str>> {
-        let name = shell
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default();
+        let name = shell.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
         match name.as_str() {
             "csh" | "tcsh" => vec![vec!["-c"]],
             "fish" => vec![vec!["-l", "-c"], vec!["-c"]],
@@ -171,34 +165,28 @@ mod unix {
         let buf = Arc::new(Mutex::new(Vec::<u8>::new()));
         if let Some(mut stdout) = child.stdout.take() {
             let buf = Arc::clone(&buf);
-            let _ = std::thread::Builder::new()
-                .name("zeron-shell-env-read".into())
-                .spawn(move || {
-                    let mut chunk = [0u8; 8192];
-                    loop {
-                        match stdout.read(&mut chunk) {
-                            Ok(0) | Err(_) => break,
-                            Ok(n) => {
-                                let mut b = buf
-                                    .lock()
-                                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                                if b.len() >= MAX_OUTPUT {
-                                    break;
-                                }
-                                b.extend_from_slice(&chunk[..n]);
+            let _ = std::thread::Builder::new().name("zeron-shell-env-read".into()).spawn(move || {
+                let mut chunk = [0u8; 8192];
+                loop {
+                    match stdout.read(&mut chunk) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            let mut b = buf.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                            if b.len() >= MAX_OUTPUT {
+                                break;
                             }
+                            b.extend_from_slice(&chunk[..n]);
                         }
                     }
-                });
+                }
+            });
         }
         let deadline = Instant::now() + timeout;
         let mut exited_at: Option<Instant> = None;
         let mut scanned = 0usize;
         loop {
             {
-                let b = buf
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let b = buf.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 // Only scan the unscanned tail (minus marker-length overlap).
                 let from = scanned.saturating_sub(END_MARKER.len());
                 if find_subslice(&b[from..], END_MARKER.as_bytes()).is_some() {
@@ -226,9 +214,7 @@ mod unix {
             let _ = child.kill();
             let _ = child.wait();
         }
-        let b = buf
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let b = buf.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         b.clone()
     }
 
@@ -251,15 +237,11 @@ mod unix {
     }
 
     fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-        haystack
-            .windows(needle.len())
-            .position(|window| window == needle)
+        haystack.windows(needle.len()).position(|window| window == needle)
     }
 
     fn rfind_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-        haystack
-            .windows(needle.len())
-            .rposition(|window| window == needle)
+        haystack.windows(needle.len()).rposition(|window| window == needle)
     }
 
     #[cfg(test)]
@@ -296,8 +278,7 @@ exit 1
         fn ignores_marker_echoed_by_init() {
             // rc noise that happens to contain the begin marker but no PATH
             // after it must not shadow the real snapshot.
-            let output =
-                format!("{BEGIN_MARKER}\ngarbage\n{BEGIN_MARKER}\nPATH=/real/bin\n{END_MARKER}\n");
+            let output = format!("{BEGIN_MARKER}\ngarbage\n{BEGIN_MARKER}\nPATH=/real/bin\n{END_MARKER}\n");
             let path = parse_snapshot_path(output.as_bytes()).unwrap();
             assert_eq!(path, OsString::from("/real/bin"));
         }
@@ -307,9 +288,7 @@ exit 1
             let dir = tempfile::tempdir().unwrap();
             let shell = fake_shell(
                 dir.path(),
-                &format!(
-                    "#!/bin/sh\nPATH=\"/zeron-test/custom/bin:/usr/bin:/bin\"; export PATH\n{RUN_PAYLOAD}"
-                ),
+                &format!("#!/bin/sh\nPATH=\"/zeron-test/custom/bin:/usr/bin:/bin\"; export PATH\n{RUN_PAYLOAD}"),
             );
             let path = snapshot_path(&shell, Duration::from_secs(10)).unwrap();
             let path = path.to_string_lossy();
@@ -329,12 +308,7 @@ exit 1
             );
             let start = Instant::now();
             let path = snapshot_path(&shell, Duration::from_millis(400)).unwrap();
-            assert!(
-                path.to_string_lossy()
-                    .starts_with("/zeron-test/fallback/bin"),
-                "got: {}",
-                path.to_string_lossy()
-            );
+            assert!(path.to_string_lossy().starts_with("/zeron-test/fallback/bin"), "got: {}", path.to_string_lossy());
             // First attempt burned ~400ms then was killed; the whole resolve
             // must not have waited out the sleep.
             assert!(start.elapsed() < Duration::from_secs(5));

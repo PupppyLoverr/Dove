@@ -21,9 +21,7 @@ pub(super) struct Client {
 }
 impl Client {
     pub fn send(&self, frame: Value) -> Result<(), HarnessError> {
-        self.writer
-            .send(frame)
-            .map_err(|_| HarnessError::Protocol("Pi stdin closed".into()))
+        self.writer.send(frame).map_err(|_| HarnessError::Protocol("Pi stdin closed".into()))
     }
     pub fn request(&self, mut frame: Value) -> Result<String, HarnessError> {
         let id = format!("zeron-{}", self.next_id.fetch_add(1, Ordering::Relaxed));
@@ -76,9 +74,7 @@ impl Transport {
                 // fill_buf bounds allocation before a hostile/noisy peer sends LF.
                 let chunk = match reader.fill_buf().await {
                     Ok([]) => {
-                        let _ = tx
-                            .send(Err(HarnessError::Protocol("Pi stdout closed".into())))
-                            .await;
+                        let _ = tx.send(Err(HarnessError::Protocol("Pi stdout closed".into()))).await;
                         break;
                     }
                     Ok(chunk) => chunk,
@@ -87,16 +83,9 @@ impl Transport {
                         break;
                     }
                 };
-                let count = chunk
-                    .iter()
-                    .position(|b| *b == b'\n')
-                    .map_or(chunk.len(), |i| i + 1);
+                let count = chunk.iter().position(|b| *b == b'\n').map_or(chunk.len(), |i| i + 1);
                 if bytes.len() + count > MAX_FRAME {
-                    let _ = tx
-                        .send(Err(HarnessError::Protocol(
-                            "Pi RPC frame exceeds 32 MiB".into(),
-                        )))
-                        .await;
+                    let _ = tx.send(Err(HarnessError::Protocol("Pi RPC frame exceeds 32 MiB".into()))).await;
                     break;
                 }
                 bytes.extend_from_slice(&chunk[..count]);
@@ -115,15 +104,7 @@ impl Transport {
                 bytes.clear();
             }
         });
-        Self {
-            client: Client {
-                writer: writer_tx,
-                next_id: Arc::new(AtomicU64::new(1)),
-            },
-            incoming,
-            reader,
-            writer,
-        }
+        Self { client: Client { writer: writer_tx, next_id: Arc::new(AtomicU64::new(1)) }, incoming, reader, writer }
     }
 }
 
@@ -137,13 +118,9 @@ mod tests {
         let (read, write) = tokio::io::split(host);
         let (peer_read, mut peer_write) = tokio::io::split(peer);
         let mut transport = Transport::new(write, read);
-        let id = transport
-            .client
-            .request(json!({"type":"get_state"}))
-            .unwrap();
+        let id = transport.client.request(json!({"type":"get_state"})).unwrap();
         let mut lines = BufReader::new(peer_read).lines();
-        let request: Value =
-            serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+        let request: Value = serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
         assert_eq!(request["id"], id);
         assert!(request.get("jsonrpc").is_none());
         let frames = [
@@ -169,15 +146,6 @@ mod tests {
         let (read, write) = tokio::io::split(host);
         let mut transport = Transport::new(write, read);
         peer.write_all(b"not json\n").await.unwrap();
-        assert!(
-            transport
-                .incoming
-                .recv()
-                .await
-                .unwrap()
-                .unwrap_err()
-                .to_string()
-                .contains("Invalid Pi")
-        );
+        assert!(transport.incoming.recv().await.unwrap().unwrap_err().to_string().contains("Invalid Pi"));
     }
 }

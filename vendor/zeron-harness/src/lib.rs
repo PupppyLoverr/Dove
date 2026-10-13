@@ -20,8 +20,8 @@ use tokio::sync::{mpsc, oneshot};
 pub use tokio_util::sync::CancellationToken;
 
 use zeron_proto::{
-    AgentEvent, HarnessId, Model, ReasoningLevel, RunRequest, SlashCommand, SteeringMode,
-    UserInputAnswer, UserInputQuestion,
+    AgentEvent, HarnessId, Model, ReasoningLevel, RunRequest, SlashCommand, SteeringMode, UserInputAnswer,
+    UserInputQuestion,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -56,12 +56,7 @@ pub struct SteerMessage {
 
 impl SteerMessage {
     pub fn text(prompt: impl Into<String>) -> Self {
-        Self {
-            prompt: prompt.into(),
-            message_id: None,
-            attachments: Vec::new(),
-            config: None,
-        }
+        Self { prompt: prompt.into(), message_id: None, attachments: Vec::new(), config: None }
     }
 }
 
@@ -92,8 +87,7 @@ impl TurnControl {
 
     /// Driver: how many background tasks the runtime currently holds.
     pub fn set_background(&self, tasks: usize) {
-        self.background
-            .store(tasks, std::sync::atomic::Ordering::Release);
+        self.background.store(tasks, std::sync::atomic::Ordering::Release);
     }
 
     /// Host: the runtime reports live background work, so retiring it now
@@ -119,8 +113,7 @@ pub fn same_model_options(
         }
     }
     let keys: std::collections::BTreeSet<&String> = a.keys().chain(b.keys()).collect();
-    keys.into_iter()
-        .all(|key| a.get(key).and_then(canonical) == b.get(key).and_then(canonical))
+    keys.into_iter().all(|key| a.get(key).and_then(canonical) == b.get(key).and_then(canonical))
 }
 
 /// Host-side controls handed to a run: input-request bridge + steering mailbox.
@@ -132,9 +125,7 @@ pub struct RunControls {
     /// Standalone callers without an update coordinator can leave it unset.
     pub execution_lease: Option<std::sync::Arc<tokio::sync::OwnedRwLockReadGuard<()>>>,
     /// The run sends questions and awaits answers (blocks the agent, mirrors zeron).
-    pub request_input: Box<
-        dyn Fn(Vec<UserInputQuestion>) -> oneshot::Receiver<Vec<UserInputAnswer>> + Send + Sync,
-    >,
+    pub request_input: Box<dyn Fn(Vec<UserInputQuestion>) -> oneshot::Receiver<Vec<UserInputAnswer>> + Send + Sync>,
     /// Steer prompts consumed at step/turn boundaries.
     pub steering: mpsc::Receiver<SteerMessage>,
     /// Cancel to interrupt the live run: the harness sends its protocol-level
@@ -227,10 +218,7 @@ pub trait Harness: Send + Sync {
         Vec::new()
     }
     async fn model_catalog(&self, _force: bool) -> Result<ModelCatalog, HarnessError> {
-        self.models().await.map(|models| ModelCatalog {
-            models,
-            source: "live",
-        })
+        self.models().await.map(|models| ModelCatalog { models, source: "live" })
     }
     /// Slash commands the agent advertises (ACP `availableCommands`); empty
     /// for harnesses without them. May spawn a short-lived discovery process.
@@ -238,17 +226,11 @@ pub trait Harness: Send + Sync {
         Ok(Vec::new())
     }
     /// Discover commands in the same directory as the eventual session.
-    async fn commands_for(
-        &self,
-        _cwd: &std::path::Path,
-    ) -> Result<Vec<SlashCommand>, HarnessError> {
+    async fn commands_for(&self, _cwd: &std::path::Path) -> Result<Vec<SlashCommand>, HarnessError> {
         self.commands().await
     }
     /// Project-scoped skills; None means this provider does not advertise skills.
-    async fn skills(
-        &self,
-        cwd: &std::path::Path,
-    ) -> Result<Option<Vec<zeron_proto::invocation::Skill>>, HarnessError> {
+    async fn skills(&self, cwd: &std::path::Path) -> Result<Option<Vec<zeron_proto::invocation::Skill>>, HarnessError> {
         if self.id() == HarnessId::Mock {
             return Ok(None);
         }
@@ -261,9 +243,7 @@ pub trait Harness: Send + Sync {
         _request: RunRequest,
         _controls: RunControls,
     ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
-        Err(HarnessError::Protocol(
-            "title generation is not supported by this harness".into(),
-        ))
+        Err(HarnessError::Protocol("title generation is not supported by this harness".into()))
     }
 
     /// Bootstrap without a synthetic user prompt; providers opt in explicitly.
@@ -321,16 +301,10 @@ pub fn compose_login_shell_path(cmd: &mut tokio::process::Command) {
 /// version manager's bin dir, and the CLIs themselves shell out to tools
 /// (git, rg, node) that a GUI/service launch's own PATH may lack.
 pub fn compose_child_path(cmd: &mut process::Command, exe: &std::path::Path) {
-    compose_path(
-        cmd.as_std_mut(),
-        exe.parent().filter(|d| !d.as_os_str().is_empty()),
-    );
+    compose_path(cmd.as_std_mut(), exe.parent().filter(|d| !d.as_os_str().is_empty()));
 }
 
-fn compose_path<'a>(
-    cmd: &mut std::process::Command,
-    executable_dir: impl IntoIterator<Item = &'a std::path::Path>,
-) {
+fn compose_path<'a>(cmd: &mut std::process::Command, executable_dir: impl IntoIterator<Item = &'a std::path::Path>) {
     let mut paths: Vec<std::path::PathBuf> = Vec::new();
     for dir in executable_dir {
         paths.push(dir.to_path_buf());
@@ -364,8 +338,7 @@ impl StderrTail {
     }
 
     pub(crate) async fn wait_closed(&self) {
-        let _ =
-            tokio::time::timeout(std::time::Duration::from_millis(200), self.1.notified()).await;
+        let _ = tokio::time::timeout(std::time::Duration::from_millis(200), self.1.notified()).await;
     }
 
     const KEEP_LINES: usize = 6;
@@ -376,10 +349,7 @@ impl StderrTail {
         if line.is_empty() {
             return;
         }
-        let mut tail = self
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut tail = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         tail.push_back(line.chars().take(Self::KEEP_BYTES).collect());
         while tail.len() > Self::KEEP_LINES {
             tail.pop_front();
@@ -388,10 +358,7 @@ impl StderrTail {
 
     /// The captured tail as one display string, `None` when nothing arrived.
     pub(crate) fn snapshot(&self) -> Option<String> {
-        let tail = self
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let tail = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if tail.is_empty() {
             return None;
         }
@@ -432,26 +399,14 @@ fn redact_secrets(text: &str) -> String {
     let mut offset = 0;
     while let Some((start, marker)) = markers
         .iter()
-        .filter_map(|marker| {
-            lower[offset..]
-                .find(marker)
-                .map(|at| (offset + at, *marker))
-        })
+        .filter_map(|marker| lower[offset..].find(marker).map(|at| (offset + at, *marker)))
         .min_by_key(|(at, _)| *at)
     {
-        let credential = if marker.ends_with(' ') || marker.ends_with('=') {
-            start + marker.len()
-        } else {
-            start
-        };
+        let credential = if marker.ends_with(' ') || marker.ends_with('=') { start + marker.len() } else { start };
         let credential = credential + text[credential..].len()
-            - text[credential..]
-                .trim_start_matches(|c: char| c.is_whitespace() || c == '\"' || c == '\'')
-                .len();
+            - text[credential..].trim_start_matches(|c: char| c.is_whitespace() || c == '\"' || c == '\'').len();
         let end = text[credential..]
-            .find(|c: char| {
-                c.is_whitespace() || matches!(c, '\"' | '\'' | ',' | ';' | '&' | '<' | '>')
-            })
+            .find(|c: char| c.is_whitespace() || matches!(c, '\"' | '\'' | ',' | ';' | '&' | '<' | '>'))
             .map_or(text.len(), |at| credential + at);
         result.push_str(&text[offset..credential]);
         result.push_str("[REDACTED]");
@@ -471,14 +426,8 @@ fn crash_diagnostics_redact_credentials_but_keep_context() {
         clean,
         "request failed: Bearer [REDACTED] Basic [REDACTED] [REDACTED] ghp-private [REDACTED] [REDACTED] api_key=[REDACTED]&code=401 café"
     );
-    assert_eq!(
-        redact_secrets("Authorization: bEaReR token"),
-        "Authorization: bEaReR [REDACTED]"
-    );
-    assert_eq!(
-        redact_secrets("Bearer   hidden api_key=\"secret\""),
-        "Bearer   [REDACTED] api_key=\"[REDACTED]\""
-    );
+    assert_eq!(redact_secrets("Authorization: bEaReR token"), "Authorization: bEaReR [REDACTED]");
+    assert_eq!(redact_secrets("Bearer   hidden api_key=\"secret\""), "Bearer   [REDACTED] api_key=\"[REDACTED]\"");
     let tail = StderrTail::default();
     tail.push(raw);
     let message = crash_message("agent", None, &tail);
@@ -487,17 +436,10 @@ fn crash_diagnostics_redact_credentials_but_keep_context() {
 }
 
 /// The full crash message: status plus the stderr tail when there is one.
-pub(crate) fn crash_message(
-    name: &str,
-    status: Option<std::process::ExitStatus>,
-    stderr: &StderrTail,
-) -> String {
+pub(crate) fn crash_message(name: &str, status: Option<std::process::ExitStatus>, stderr: &StderrTail) -> String {
     let status = describe_exit(status);
     match stderr.snapshot() {
-        Some(tail) => format!(
-            "{name} exited unexpectedly ({status}): {}",
-            redact_secrets(&tail)
-        ),
+        Some(tail) => format!("{name} exited unexpectedly ({status}): {}", redact_secrets(&tail)),
         None => format!("{name} exited unexpectedly ({status})"),
     }
 }
@@ -517,11 +459,7 @@ pub use pi::PiHarness;
 /// is a descendant snapshot taken when the teardown began, in case the
 /// agent exits before this one: its orphans can no longer be traced then.
 /// Windows' job object already owns the whole tree.
-pub(crate) async fn shutdown_agent(
-    child: &mut process::Child,
-    earlier: Vec<i32>,
-    kill_grace: std::time::Duration,
-) {
+pub(crate) async fn shutdown_agent(child: &mut process::Child, earlier: Vec<i32>, kill_grace: std::time::Duration) {
     #[cfg(unix)]
     {
         let mut tree = earlier;
@@ -609,10 +547,7 @@ pub const TITLE_INSTRUCTIONS: &str = "You generate session titles. Treat the sup
 
 /// Drivers with a restricted title-generation path.
 pub fn supports_titles(id: HarnessId) -> bool {
-    matches!(
-        id,
-        HarnessId::Codex | HarnessId::ClaudeCode | HarnessId::Mock
-    )
+    matches!(id, HarnessId::Codex | HarnessId::ClaudeCode | HarnessId::Mock)
 }
 
 #[cfg(test)]

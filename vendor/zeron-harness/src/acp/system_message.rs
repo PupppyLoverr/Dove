@@ -74,10 +74,7 @@ impl EchoStrip {
 /// length of the longest proper prefix of `tag` that `text` ends with. tags are
 /// ascii, so the split point is always a char boundary.
 fn partial_tag_suffix(text: &str, tag: &str) -> usize {
-    (1..tag.len())
-        .rev()
-        .find(|&len| text.ends_with(&tag[..len]))
-        .unwrap_or(0)
+    (1..tag.len()).rev().find(|&len| text.ends_with(&tag[..len])).unwrap_or(0)
 }
 
 #[derive(Default)]
@@ -114,19 +111,11 @@ impl SystemMessageEchoFilter {
 }
 
 fn text_delta(text: String) -> Vec<AgentEvent> {
-    if text.is_empty() {
-        Vec::new()
-    } else {
-        vec![AgentEvent::TextDelta { text }]
-    }
+    if text.is_empty() { Vec::new() } else { vec![AgentEvent::TextDelta { text }] }
 }
 
 fn reasoning_delta(text: String) -> Vec<AgentEvent> {
-    if text.is_empty() {
-        Vec::new()
-    } else {
-        vec![AgentEvent::ReasoningDelta { text }]
-    }
+    if text.is_empty() { Vec::new() } else { vec![AgentEvent::ReasoningDelta { text }] }
 }
 
 pub(crate) fn strip_system_message_echoes(
@@ -139,12 +128,7 @@ pub(crate) fn strip_system_message_echoes(
         .flat_map(move |item| {
             let filtered: Vec<Result<AgentEvent, HarnessError>> = match item {
                 Some(Ok(event)) => filter.apply(event).into_iter().map(Ok).collect(),
-                Some(Err(error)) => filter
-                    .finish()
-                    .into_iter()
-                    .map(Ok)
-                    .chain([Err(error)])
-                    .collect(),
+                Some(Err(error)) => filter.finish().into_iter().map(Ok).chain([Err(error)]).collect(),
                 None => filter.finish().into_iter().map(Ok).collect(),
             };
             stream::iter(filtered)
@@ -169,29 +153,20 @@ mod tests {
     }
 
     fn every_split(text: &str) -> impl Iterator<Item = (&str, &str)> {
-        (0..=text.len())
-            .filter(|&at| text.is_char_boundary(at))
-            .map(|at| text.split_at(at))
+        (0..=text.len()).filter(|&at| text.is_char_boundary(at)).map(|at| text.split_at(at))
     }
 
     #[test]
     fn strips_a_whole_wakeup_block() {
         let reply = format!("Waiting for Echo to compile...\n\n{WAKEUP}\n\nIt built.");
-        assert_eq!(
-            stream_text(&[&reply]),
-            "Waiting for Echo to compile...\n\n\n\nIt built."
-        );
+        assert_eq!(stream_text(&[&reply]), "Waiting for Echo to compile...\n\n\n\nIt built.");
     }
 
     #[test]
     fn strips_a_block_split_at_every_position() {
         let reply = format!("before {WAKEUP} after");
         for (head, tail) in every_split(&reply) {
-            assert_eq!(
-                stream_text(&[head, tail]),
-                "before  after",
-                "split at {head:?}"
-            );
+            assert_eq!(stream_text(&[head, tail]), "before  after", "split at {head:?}");
         }
     }
 
@@ -205,8 +180,7 @@ mod tests {
 
     #[test]
     fn keeps_a_prose_mention_of_the_tag() {
-        let reply =
-            "the environment sends a wakeup (`<SYSTEM_MESSAGE>`) and then `</SYSTEM_MESSAGE>`";
+        let reply = "the environment sends a wakeup (`<SYSTEM_MESSAGE>`) and then `</SYSTEM_MESSAGE>`";
         for (head, tail) in every_split(reply) {
             assert_eq!(stream_text(&[head, tail]), reply, "split at {head:?}");
         }
@@ -214,20 +188,14 @@ mod tests {
 
     #[test]
     fn keeps_a_trailing_partial_tag_and_multibyte_text() {
-        assert_eq!(
-            stream_text(&["tags look like <SYS", "TEM"]),
-            "tags look like <SYSTEM"
-        );
+        assert_eq!(stream_text(&["tags look like <SYS", "TEM"]), "tags look like <SYSTEM");
         assert_eq!(stream_text(&["héllo → <"]), "héllo → <");
         assert_eq!(stream_text(&["<SYSTEM_MESSAGE>\n"]), "<SYSTEM_MESSAGE>\n");
     }
 
     #[test]
     fn drops_an_unterminated_block() {
-        assert_eq!(
-            stream_text(&["done. <SYSTEM_MESSAGE> [Message] timestamp=x content=Task"]),
-            "done. "
-        );
+        assert_eq!(stream_text(&["done. <SYSTEM_MESSAGE> [Message] timestamp=x content=Task"]), "done. ");
     }
 
     #[test]
@@ -238,43 +206,21 @@ mod tests {
                 .apply(AgentEvent::TextDelta { text: "x <".into() })
                 .contains(&AgentEvent::TextDelta { text: "x ".into() })
         );
-        let done = AgentEvent::AssistantMessageCompleted {
-            assistant_message_id: "m1".into(),
-        };
-        assert_eq!(
-            filter.apply(done.clone()),
-            vec![AgentEvent::TextDelta { text: "<".into() }, done]
-        );
+        let done = AgentEvent::AssistantMessageCompleted { assistant_message_id: "m1".into() };
+        assert_eq!(filter.apply(done.clone()), vec![AgentEvent::TextDelta { text: "<".into() }, done]);
     }
 
     #[test]
     fn interleaved_updates_preserve_blocks_at_every_split() {
         let updates = [
-            AgentEvent::ContextUsage {
-                tokens: Some(42),
-                window: Some(1000),
-            },
-            AgentEvent::Usage {
-                input_tokens: 42,
-                output_tokens: 10,
-            },
-            AgentEvent::AvailableCommands {
-                commands: Vec::new(),
-            },
-            AgentEvent::ToolResult {
-                id: "background-task".into(),
-                is_error: false,
-                output: None,
-                diff: None,
-            },
+            AgentEvent::ContextUsage { tokens: Some(42), window: Some(1000) },
+            AgentEvent::Usage { input_tokens: 42, output_tokens: 10 },
+            AgentEvent::AvailableCommands { commands: Vec::new() },
+            AgentEvent::ToolResult { id: "background-task".into(), is_error: false, output: None, diff: None },
         ];
         for reasoning in [false, true] {
             let delta = |text| {
-                if reasoning {
-                    AgentEvent::ReasoningDelta { text }
-                } else {
-                    AgentEvent::TextDelta { text }
-                }
+                if reasoning { AgentEvent::ReasoningDelta { text } } else { AgentEvent::TextDelta { text } }
             };
             for update in &updates {
                 for (head, tail) in every_split(WAKEUP) {
@@ -285,11 +231,7 @@ mod tests {
                     events.extend(filter.finish());
                     assert_eq!(
                         events,
-                        vec![
-                            delta("before ".into()),
-                            update.clone(),
-                            delta(" after".into()),
-                        ],
+                        vec![delta("before ".into()), update.clone(), delta(" after".into()),],
                         "split at {head:?}"
                     );
                 }
@@ -301,26 +243,16 @@ mod tests {
     fn reasoning_between_text_deltas_does_not_break_a_block() {
         let mut filter = SystemMessageEchoFilter::default();
         let (head, tail) = WAKEUP.split_at(40);
-        let mut events = filter.apply(AgentEvent::TextDelta {
-            text: format!("ok {head}"),
-        });
-        events.extend(filter.apply(AgentEvent::ReasoningDelta {
-            text: "thinking".into(),
-        }));
-        events.extend(filter.apply(AgentEvent::TextDelta {
-            text: format!("{tail} fine"),
-        }));
+        let mut events = filter.apply(AgentEvent::TextDelta { text: format!("ok {head}") });
+        events.extend(filter.apply(AgentEvent::ReasoningDelta { text: "thinking".into() }));
+        events.extend(filter.apply(AgentEvent::TextDelta { text: format!("{tail} fine") }));
         events.extend(filter.finish());
         assert_eq!(
             events,
             vec![
                 AgentEvent::TextDelta { text: "ok ".into() },
-                AgentEvent::ReasoningDelta {
-                    text: "thinking".into()
-                },
-                AgentEvent::TextDelta {
-                    text: " fine".into()
-                },
+                AgentEvent::ReasoningDelta { text: "thinking".into() },
+                AgentEvent::TextDelta { text: " fine".into() },
             ]
         );
     }

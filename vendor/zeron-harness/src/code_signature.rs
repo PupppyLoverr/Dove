@@ -44,10 +44,7 @@ fn regular_files(dir: &Path) -> Result<Vec<PathBuf>, HarnessError> {
             } else if kind.is_file() {
                 files.push(entry.path());
             } else {
-                return Err(unsigned(&format!(
-                    "{} is not a regular file",
-                    entry.path().display()
-                )));
+                return Err(unsigned(&format!("{} is not a regular file", entry.path().display())));
             }
         }
     }
@@ -68,10 +65,7 @@ async fn verify_file(file: &Path) -> Result<(), HarnessError> {
          and certificate leaf[subject.OU] = \"{GOOGLE_APPLE_TEAM}\""
     );
     let mut command = crate::process::Command::new("/usr/bin/codesign");
-    command
-        .args(["--verify", "--strict", "-R"])
-        .arg(requirement)
-        .arg(file);
+    command.args(["--verify", "--strict", "-R"]).arg(requirement).arg(file);
     let output = run(command, file).await?;
     if output.status.success() {
         return Ok(());
@@ -86,25 +80,16 @@ async fn verify_file(file: &Path) -> Result<(), HarnessError> {
 #[cfg(windows)]
 async fn verify_file(file: &Path) -> Result<(), HarnessError> {
     let owned = file.to_path_buf();
-    let signer = tokio::time::timeout(
-        VERIFY_TIMEOUT,
-        tokio::task::spawn_blocking(move || authenticode::signer(&owned)),
-    )
-    .await
-    .map_err(|_| {
-        unsigned(&format!(
-            "checking {} took longer than {}s",
-            file_name(file),
-            VERIFY_TIMEOUT.as_secs()
-        ))
-    })?
-    .map_err(|error| unsigned(&format!("the verifier failed: {error}")))?;
+    let signer =
+        tokio::time::timeout(VERIFY_TIMEOUT, tokio::task::spawn_blocking(move || authenticode::signer(&owned)))
+            .await
+            .map_err(|_| {
+                unsigned(&format!("checking {} took longer than {}s", file_name(file), VERIFY_TIMEOUT.as_secs()))
+            })?
+            .map_err(|error| unsigned(&format!("the verifier failed: {error}")))?;
     match signer {
         Ok(signer) if signer.is_google() => Ok(()),
-        Ok(signer) => Err(unsigned(&format!(
-            "{} is signed by {signer}, not Google",
-            file_name(file)
-        ))),
+        Ok(signer) => Err(unsigned(&format!("{} is signed by {signer}, not Google", file_name(file)))),
         Err(detail) => Err(unsigned(&format!("{}: {detail}", file_name(file)))),
     }
 }
@@ -137,14 +122,12 @@ mod authenticode {
 
     use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
     use windows_sys::Win32::Security::Cryptography::{
-        CERT_CONTEXT, CERT_NAME_ATTR_TYPE, CertGetNameStringW, szOID_COMMON_NAME,
-        szOID_ORGANIZATION_NAME,
+        CERT_CONTEXT, CERT_NAME_ATTR_TYPE, CertGetNameStringW, szOID_COMMON_NAME, szOID_ORGANIZATION_NAME,
     };
     use windows_sys::Win32::Security::WinTrust::{
         WINTRUST_ACTION_GENERIC_VERIFY_V2, WINTRUST_DATA, WINTRUST_DATA_0, WINTRUST_FILE_INFO,
-        WTD_CACHE_ONLY_URL_RETRIEVAL, WTD_CHOICE_FILE, WTD_REVOKE_NONE, WTD_STATEACTION_CLOSE,
-        WTD_STATEACTION_VERIFY, WTD_UI_NONE, WTHelperGetProvSignerFromChain,
-        WTHelperProvDataFromStateData, WinVerifyTrust,
+        WTD_CACHE_ONLY_URL_RETRIEVAL, WTD_CHOICE_FILE, WTD_REVOKE_NONE, WTD_STATEACTION_CLOSE, WTD_STATEACTION_VERIFY,
+        WTD_UI_NONE, WTHelperGetProvSignerFromChain, WTHelperProvDataFromStateData, WinVerifyTrust,
     };
 
     use super::Signer;
@@ -166,9 +149,7 @@ mod authenticode {
             dwUIChoice: WTD_UI_NONE,
             fdwRevocationChecks: WTD_REVOKE_NONE,
             dwUnionChoice: WTD_CHOICE_FILE,
-            Anonymous: WINTRUST_DATA_0 {
-                pFile: &mut file_info,
-            },
+            Anonymous: WINTRUST_DATA_0 { pFile: &mut file_info },
             dwStateAction: WTD_STATEACTION_VERIFY,
             dwProvFlags: WTD_CACHE_ONLY_URL_RETRIEVAL,
             ..Default::default()
@@ -176,16 +157,13 @@ mod authenticode {
         let mut action = WINTRUST_ACTION_GENERIC_VERIFY_V2;
         // SAFETY: `data` and `file_info` outlive both calls; the state is
         // released by the close action below whatever the verdict.
-        let status =
-            unsafe { WinVerifyTrust(INVALID_HANDLE_VALUE, &mut action, (&raw mut data).cast()) };
+        let status = unsafe { WinVerifyTrust(INVALID_HANDLE_VALUE, &mut action, (&raw mut data).cast()) };
         let signer = if status == 0 {
             // SAFETY: a successful verify leaves provider state describing
             // the primary signer, whose chain starts with its leaf.
             unsafe { leaf_signer(&data) }
         } else {
-            Err(format!(
-                "the signature is invalid (WinVerifyTrust 0x{status:08x})"
-            ))
+            Err(format!("the signature is invalid (WinVerifyTrust 0x{status:08x})"))
         };
         data.dwStateAction = WTD_STATEACTION_CLOSE;
         // SAFETY: closes the state opened by the verify call above.
@@ -216,14 +194,7 @@ mod authenticode {
     unsafe fn subject_attribute(cert: *const CERT_CONTEXT, oid: *const u8) -> String {
         let mut name = [0u16; 512];
         let written = unsafe {
-            CertGetNameStringW(
-                cert,
-                CERT_NAME_ATTR_TYPE,
-                0,
-                oid.cast(),
-                name.as_mut_ptr(),
-                name.len() as u32,
-            )
+            CertGetNameStringW(cert, CERT_NAME_ATTR_TYPE, 0, oid.cast(), name.as_mut_ptr(), name.len() as u32)
         } as usize;
         String::from_utf16_lossy(&name[..written.saturating_sub(1).min(name.len())])
     }
@@ -231,17 +202,11 @@ mod authenticode {
 
 #[cfg(not(any(target_os = "macos", windows)))]
 async fn verify_file(file: &Path) -> Result<(), HarnessError> {
-    Err(unsigned(&format!(
-        "{} cannot be verified on this platform",
-        file_name(file)
-    )))
+    Err(unsigned(&format!("{} cannot be verified on this platform", file_name(file))))
 }
 
 #[cfg(target_os = "macos")]
-async fn run(
-    mut command: crate::process::Command,
-    file: &Path,
-) -> Result<std::process::Output, HarnessError> {
+async fn run(mut command: crate::process::Command, file: &Path) -> Result<std::process::Output, HarnessError> {
     command
         .stdin(crate::process::Stdio::null())
         .stdout(crate::process::Stdio::piped())
@@ -249,20 +214,12 @@ async fn run(
         .kill_on_drop(true);
     tokio::time::timeout(VERIFY_TIMEOUT, command.output())
         .await
-        .map_err(|_| {
-            unsigned(&format!(
-                "checking {} took longer than {}s",
-                file_name(file),
-                VERIFY_TIMEOUT.as_secs()
-            ))
-        })?
+        .map_err(|_| unsigned(&format!("checking {} took longer than {}s", file_name(file), VERIFY_TIMEOUT.as_secs())))?
         .map_err(|error| unsigned(&format!("could not run the verifier: {error}")))
 }
 
 fn file_name(file: &Path) -> String {
-    file.file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| file.display().to_string())
+    file.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_else(|| file.display().to_string())
 }
 
 #[cfg(test)]
@@ -303,10 +260,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::copy("/bin/ls", dir.path().join("ls")).unwrap();
         let error = verify_google_signed(dir.path()).await.unwrap_err();
-        assert!(
-            error.to_string().contains("not signed by Google"),
-            "{error}"
-        );
+        assert!(error.to_string().contains("not signed by Google"), "{error}");
     }
 
     /// windows ships its own binaries signed by microsoft, not google.
@@ -316,11 +270,8 @@ mod tests {
         let system = std::env::var_os("SystemRoot").unwrap();
         let dir = tempfile::tempdir().unwrap();
         // embedded-signed, unlike catalog-signed tools such as notepad
-        std::fs::copy(
-            Path::new(&system).join("System32").join("ntoskrnl.exe"),
-            dir.path().join("ntoskrnl.exe"),
-        )
-        .unwrap();
+        std::fs::copy(Path::new(&system).join("System32").join("ntoskrnl.exe"), dir.path().join("ntoskrnl.exe"))
+            .unwrap();
         let error = verify_google_signed(dir.path()).await.unwrap_err();
         assert!(error.to_string().contains("code signature"), "{error}");
     }

@@ -386,8 +386,9 @@ impl ToolKind {
             | "command_execution" | "execute" => Self::Execute,
             "grep" | "glob" | "search" | "ls" | "find" | "list_dir" => Self::Search,
             "webfetch" | "websearch" | "fetch" | "web_search" | "web_fetch" | "browser" | "browser_navigate"
-            | "browser_click" | "browser_type" | "browser_press" | "browser_scroll" | "open_browser"
-            | "navigate" => Self::Fetch,
+            | "browser_click" | "browser_type" | "browser_press" | "browser_scroll" | "open_browser" | "navigate" => {
+                Self::Fetch
+            }
             "task" | "agent" => Self::Agent,
             "think" => Self::Think,
             _ => Self::Other,

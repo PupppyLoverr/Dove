@@ -28,10 +28,7 @@ impl InitializeCache {
         let mut state = self.state.lock().await;
         let key = context()?;
         if state.context != Some(key) {
-            *state = State {
-                context: Some(key),
-                ..Default::default()
-            };
+            *state = State { context: Some(key), ..Default::default() };
         }
         if let (Some(at), Some(response)) = (state.completed_at, &state.response)
             && (at >= requested_at || (response.is_ok() && at.elapsed() < Duration::from_secs(120)))
@@ -41,9 +38,7 @@ impl InitializeCache {
         let response = probe().await.map_err(|error| error.to_string());
         if context()? != key {
             *state = State::default();
-            return Err(HarnessError::Protocol(
-                "Claude credentials changed during initialize; retry".into(),
-            ));
+            return Err(HarnessError::Protocol("Claude credentials changed during initialize; retry".into()));
         }
         state.completed_at = Some(Instant::now());
         state.response = Some(response.clone());
@@ -64,8 +59,7 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(1)).await;
             Ok(serde_json::json!({"models":[],"commands":[]}))
         };
-        let results =
-            futures::future::join_all((0..10).map(|_| cache.get(|| Ok([1; 32]), probe))).await;
+        let results = futures::future::join_all((0..10).map(|_| cache.get(|| Ok([1; 32]), probe))).await;
         assert!(results.iter().all(Result::is_ok));
         assert_eq!(calls.load(Relaxed), 1);
         tokio::time::advance(Duration::from_secs(119)).await;
@@ -80,21 +74,8 @@ mod tests {
     #[tokio::test]
     async fn failed_initialize_retries_and_raced_login_is_not_cached() {
         let cache = InitializeCache::default();
-        assert!(
-            cache
-                .get(
-                    || Ok([1; 32]),
-                    || async { Err(HarnessError::Protocol("offline".into())) }
-                )
-                .await
-                .is_err()
-        );
-        assert!(
-            cache
-                .get(|| Ok([1; 32]), || async { Ok(Value::Null) })
-                .await
-                .is_ok()
-        );
+        assert!(cache.get(|| Ok([1; 32]), || async { Err(HarnessError::Protocol("offline".into())) }).await.is_err());
+        assert!(cache.get(|| Ok([1; 32]), || async { Ok(Value::Null) }).await.is_ok());
         let key = AtomicUsize::new(2);
         assert!(
             cache

@@ -12,24 +12,24 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use dove_core::Engine;
 use dove_core::proto::{TaskId, TodoItem, TodoStatus};
 use dove_core::store::{Project, Task};
-use dove_core::Engine;
-use std::sync::Arc;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable as _, InteractiveElement as _,
     IntoElement, MouseButton, ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _,
     Subscription, Window, anchored, deferred, div, px,
 };
+use std::sync::Arc;
 
 use crate::assets::{icon, icons};
 use crate::browser::{BrowserContext, BrowserEvent, BrowserSurface};
 use crate::changes::{Changes, ChangesEvent};
 use crate::files_panel::{FilesEvent, FilesPanel};
 use crate::history::{GitHistory, HistoryEvent};
-use crate::side_chat::{SideChat, SideChatEvent};
 use crate::kit;
+use crate::side_chat::{SideChat, SideChatEvent};
 use crate::surface_chrome;
 use crate::terminal::TerminalView;
 use crate::theme::{Theme, ink};
@@ -62,7 +62,8 @@ pub enum Tab {
 }
 
 impl Tab {
-    pub const ALL: [Tab; 7] = [Tab::Browser, Tab::Terminal, Tab::Changes, Tab::History, Tab::Files, Tab::Plan, Tab::SideChat];
+    pub const ALL: [Tab; 7] =
+        [Tab::Browser, Tab::Terminal, Tab::Changes, Tab::History, Tab::Files, Tab::Plan, Tab::SideChat];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -472,7 +473,12 @@ impl SidePanel {
         browser
     }
 
-    fn new_browser(&mut self, thread: TaskId, window: &mut Window, cx: &mut Context<Self>) -> (u64, Entity<BrowserSurface>) {
+    fn new_browser(
+        &mut self,
+        thread: TaskId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> (u64, Entity<BrowserSurface>) {
         let id = self.next_id;
         self.next_id += 1;
         let ctx = self.browser_context.clone();
@@ -514,13 +520,21 @@ impl SidePanel {
                     b.page.url.clone().unwrap_or_else(|| "(blank)".into())
                 ));
             }
-            if out.is_empty() { "No browser tabs.".into() } else { out.join("
-") }
+            if out.is_empty() {
+                "No browser tabs.".into()
+            } else {
+                out.join(
+                    "
+",
+                )
+            }
         };
         let browser_ids: Vec<u64> = self
             .panels
             .get(&thread)
-            .map(|p| p.tabs.iter().filter_map(|s| if let Surface::Browser(id) = s { Some(*id) } else { None }).collect())
+            .map(|p| {
+                p.tabs.iter().filter_map(|s| if let Surface::Browser(id) = s { Some(*id) } else { None }).collect()
+            })
             .unwrap_or_default();
         match action {
             "list" => Ok(list(self, cx)),
@@ -556,10 +570,12 @@ impl SidePanel {
     pub fn drive_browser(&mut self, action: crate::browser::Drive, window: &mut Window, cx: &mut Context<Self>) {
         let current = match self.active() {
             Some(Surface::Browser(id)) => self.panel_ref().and_then(|p| p.browsers.get(&id)).map(|(b, _)| b.clone()),
-            _ => self.panel_ref().and_then(|p| p.tabs.iter().rev().find_map(|s| match s {
-                Surface::Browser(id) => p.browsers.get(id).map(|(b, _)| b.clone()),
-                _ => None,
-            })),
+            _ => self.panel_ref().and_then(|p| {
+                p.tabs.iter().rev().find_map(|s| match s {
+                    Surface::Browser(id) => p.browsers.get(id).map(|(b, _)| b.clone()),
+                    _ => None,
+                })
+            }),
         };
         if current.is_none() {
             self.open(Tab::Browser, None, window, cx);

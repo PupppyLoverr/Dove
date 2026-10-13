@@ -53,10 +53,7 @@ pub fn check_status(check: &ChangeRequestCheck) -> String {
 }
 
 pub fn check_failed(status: &str) -> bool {
-    matches!(
-        status,
-        "FAILURE" | "ERROR" | "TIMED_OUT" | "ACTION_REQUIRED" | "CANCELLED" | "STARTUP_FAILURE"
-    )
+    matches!(status, "FAILURE" | "ERROR" | "TIMED_OUT" | "ACTION_REQUIRED" | "CANCELLED" | "STARTUP_FAILURE")
 }
 
 impl ChangeRequestCi {
@@ -66,23 +63,14 @@ impl ChangeRequestCi {
             CiState::NoChecks
         } else if statuses.iter().any(|value| check_failed(value)) {
             CiState::Failed
-        } else if statuses
-            .iter()
-            .any(|value| !matches!(value.as_str(), "SUCCESS" | "NEUTRAL" | "SKIPPED"))
-        {
+        } else if statuses.iter().any(|value| !matches!(value.as_str(), "SUCCESS" | "NEUTRAL" | "SKIPPED")) {
             CiState::Pending
-        } else if statuses
-            .iter()
-            .all(|value| matches!(value.as_str(), "NEUTRAL" | "SKIPPED"))
-        {
+        } else if statuses.iter().all(|value| matches!(value.as_str(), "NEUTRAL" | "SKIPPED")) {
             CiState::Skipped
         } else {
             CiState::Passed
         };
-        Self {
-            state,
-            total_count: checks.len() as u64,
-        }
+        Self { state, total_count: checks.len() as u64 }
     }
 }
 
@@ -209,10 +197,7 @@ impl<'a> Facts<'a> {
             } else {
                 detail.ci
             },
-            open: !matches!(
-                detail.state.to_ascii_uppercase().as_str(),
-                "CLOSED" | "MERGED"
-            ),
+            open: !matches!(detail.state.to_ascii_uppercase().as_str(), "CLOSED" | "MERGED"),
             draft: detail.is_draft,
             mergeability: match detail.mergeable.to_ascii_uppercase().as_str() {
                 "MERGEABLE" => ChangeRequestMergeability::Mergeable,
@@ -229,10 +214,7 @@ impl<'a> Facts<'a> {
             requested: detail.viewer_review_requested,
             check_details_missing: detail.ci.total_count > detail.status_check_rollup.len() as u64
                 || (detail.ci.state == CiState::Failed
-                    && !detail
-                        .status_check_rollup
-                        .iter()
-                        .any(|check| check_failed(&check_status(check)))),
+                    && !detail.status_check_rollup.iter().any(|check| check_failed(&check_status(check)))),
         }
     }
 
@@ -304,10 +286,7 @@ mod tests {
         let head = "a".repeat(40);
         let facts = |ci, review, authored, requested| Facts {
             head: &head,
-            ci: ChangeRequestCi {
-                state: ci,
-                total_count: 3,
-            },
+            ci: ChangeRequestCi { state: ci, total_count: 3 },
             open: true,
             draft: false,
             mergeability: ChangeRequestMergeability::Mergeable,
@@ -316,79 +295,31 @@ mod tests {
             requested,
             check_details_missing: false,
         };
-        let unknown = facts(
-            CiState::Unknown,
-            ChangeRequestReviewDecision::Unknown,
-            None,
-            None,
-        )
-        .assess();
+        let unknown = facts(CiState::Unknown, ChangeRequestReviewDecision::Unknown, None, None).assess();
         assert!(unknown.blockers.is_empty());
         assert!(unknown.attention.is_empty());
         assert!(unknown.missing.contains(&MissingInformation::Ci));
-        assert!(
-            unknown
-                .missing
-                .contains(&MissingInformation::ViewerRelationship)
-        );
+        assert!(unknown.missing.contains(&MissingInformation::ViewerRelationship));
         assert!(unknown.actions.contains(&SuggestedAction::RefreshMetadata));
-        let mine = facts(
-            CiState::Failed,
-            ChangeRequestReviewDecision::ChangesRequested,
-            Some(true),
-            Some(false),
-        )
-        .assess();
-        assert_eq!(
-            mine.blockers,
-            [Blocker::FailingCi, Blocker::ChangesRequested]
-        );
-        assert_eq!(
-            mine.attention,
-            [
-                AttentionReason::FailingCi,
-                AttentionReason::FeedbackOnAuthored
-            ]
-        );
+        let mine =
+            facts(CiState::Failed, ChangeRequestReviewDecision::ChangesRequested, Some(true), Some(false)).assess();
+        assert_eq!(mine.blockers, [Blocker::FailingCi, Blocker::ChangesRequested]);
+        assert_eq!(mine.attention, [AttentionReason::FailingCi, AttentionReason::FeedbackOnAuthored]);
         assert_eq!(
             mine.actions,
-            [
-                SuggestedAction::FixChecks,
-                SuggestedAction::AddressFeedback,
-                SuggestedAction::Review
-            ]
+            [SuggestedAction::FixChecks, SuggestedAction::AddressFeedback, SuggestedAction::Review]
         );
-        let theirs = facts(
-            CiState::Failed,
-            ChangeRequestReviewDecision::ChangesRequested,
-            Some(false),
-            Some(false),
-        )
-        .assess();
+        let theirs =
+            facts(CiState::Failed, ChangeRequestReviewDecision::ChangesRequested, Some(false), Some(false)).assess();
         assert_eq!(theirs.blockers, mine.blockers);
         assert!(theirs.attention.is_empty());
-        let requested = facts(
-            CiState::Passed,
-            ChangeRequestReviewDecision::ReviewRequired,
-            Some(false),
-            Some(true),
-        )
-        .assess();
+        let requested =
+            facts(CiState::Passed, ChangeRequestReviewDecision::ReviewRequired, Some(false), Some(true)).assess();
         assert_eq!(requested.attention, [AttentionReason::ReviewRequested]);
-        let mut closed = facts(
-            CiState::Failed,
-            ChangeRequestReviewDecision::ChangesRequested,
-            Some(true),
-            Some(true),
-        );
+        let mut closed = facts(CiState::Failed, ChangeRequestReviewDecision::ChangesRequested, Some(true), Some(true));
         closed.open = false;
         assert!(closed.assess().actions.is_empty());
-        let mut draft = facts(
-            CiState::NoChecks,
-            ChangeRequestReviewDecision::ReviewRequired,
-            Some(false),
-            Some(true),
-        );
+        let mut draft = facts(CiState::NoChecks, ChangeRequestReviewDecision::ReviewRequired, Some(false), Some(true));
         draft.draft = true;
         assert!(draft.assess().attention.is_empty());
         // A detail and row with the same known facts produce the same rules.
@@ -414,22 +345,13 @@ mod tests {
         assert_eq!(inspected.actions, mine.actions);
         assert_eq!(inspected.attention, mine.attention);
         let mut old = serde_json::to_value(&detail).unwrap();
-        for field in [
-            "headRefOid",
-            "ci",
-            "viewerDidAuthor",
-            "viewerReviewRequested",
-            "statusCheckRollup",
-        ] {
+        for field in ["headRefOid", "ci", "viewerDidAuthor", "viewerReviewRequested", "statusCheckRollup"] {
             old.as_object_mut().unwrap().remove(field);
         }
         let old: ChangeRequestDetail = serde_json::from_value(old).unwrap();
         let assessment = Facts::from_detail(&old).assess();
         assert!(assessment.missing.contains(&MissingInformation::HeadCommit));
         assert_eq!(assessment.ci.state, CiState::Unknown);
-        assert_eq!(
-            serde_json::from_str::<CiState>("\"futureState\"").unwrap(),
-            CiState::Unknown
-        );
+        assert_eq!(serde_json::from_str::<CiState>("\"futureState\"").unwrap(), CiState::Unknown);
     }
 }

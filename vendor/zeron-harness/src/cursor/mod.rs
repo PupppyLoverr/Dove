@@ -48,8 +48,8 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc;
 
 use zeron_proto::{
-    AgentEvent, DoneStatus, HarnessId, Model, ModelOption, ModelOptionChoice, ReasoningLevel,
-    RunRequest, SteeringMode, TodoItem, TodoStatus, ToolCall,
+    AgentEvent, DoneStatus, HarnessId, Model, ModelOption, ModelOptionChoice, ReasoningLevel, RunRequest, SteeringMode,
+    TodoItem, TodoStatus, ToolCall,
 };
 
 use crate::process::{Child, ChildStdin, Command, Stdio};
@@ -70,10 +70,8 @@ fn cursor_cli_paths() -> Vec<PathBuf> {
         dirs.push(home.join(".cursor").join("bin").join("cursor-agent"));
     }
     if cfg!(windows)
-        && let Some(local) = std::env::var_os("LOCALAPPDATA")
-            .filter(|value| !value.is_empty())
-            .map(PathBuf::from)
-            .or_else(|| {
+        && let Some(local) =
+            std::env::var_os("LOCALAPPDATA").filter(|value| !value.is_empty()).map(PathBuf::from).or_else(|| {
                 std::env::var_os("USERPROFILE")
                     .filter(|value| !value.is_empty())
                     .map(|home| PathBuf::from(home).join("AppData").join("Local"))
@@ -139,16 +137,9 @@ impl CursorHarness {
         let mut cmd = Command::new(&exe);
         cmd.args(&args);
         crate::compose_child_path(&mut cmd, &exe);
-        cmd.arg("models")
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .kill_on_drop(true);
+        cmd.arg("models").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).kill_on_drop(true);
         let run = async {
-            let output = cmd
-                .output()
-                .await
-                .map_err(|e| HarnessError::Protocol(format!("cursor models probe: {e}")))?;
+            let output = cmd.output().await.map_err(|e| HarnessError::Protocol(format!("cursor models probe: {e}")))?;
             for line in String::from_utf8_lossy(&output.stdout).lines() {
                 if let Ok(frame) = serde_json::from_str::<Value>(line)
                     && frame.get("ev").and_then(Value::as_str) == Some("fatal")
@@ -163,10 +154,7 @@ impl CursorHarness {
                 }
             }
             if !output.status.success() {
-                return Err(HarnessError::Protocol(format!(
-                    "cursor models probe exited with {}",
-                    output.status
-                )));
+                return Err(HarnessError::Protocol(format!("cursor models probe exited with {}", output.status)));
             }
             let stdout = String::from_utf8_lossy(&output.stdout);
             let items = stdout
@@ -174,9 +162,7 @@ impl CursorHarness {
                 .filter_map(|line| serde_json::from_str::<Value>(line.trim()).ok())
                 .find(|v| v.get("ev").and_then(Value::as_str) == Some("models"))
                 .and_then(|v| v.get("items").cloned())
-                .ok_or_else(|| {
-                    HarnessError::Protocol("cursor models probe returned no catalog".into())
-                })?;
+                .ok_or_else(|| HarnessError::Protocol("cursor models probe returned no catalog".into()))?;
             Ok::<_, HarnessError>(map_model_items(&items))
         };
         tokio::time::timeout(Duration::from_secs(15), run)
@@ -197,9 +183,7 @@ impl CursorHarness {
             return Ok((PathBuf::from(p), Vec::new()));
         }
         let pin = crate::adapter_install::NpmPin::parse(CURSOR_SDK_PIN);
-        let shim =
-            crate::adapter_install::ensure_installed_shim(pin, "Cursor", SHIM_NAME, SHIM_SOURCE)
-                .await?;
+        let shim = crate::adapter_install::ensure_installed_shim(pin, "Cursor", SHIM_NAME, SHIM_SOURCE).await?;
         crate::adapter_install::launch_for_entry(&shim)
     }
 }
@@ -240,13 +224,10 @@ impl Harness for CursorHarness {
     /// user-visible signal they use Cursor (the SDK itself is a managed
     /// install zeron performs on demand).
     fn installed(&self) -> bool {
-        self.executable.is_some()
-            || crate::acp::find_on_paths("cursor-agent", cursor_cli_paths()).is_some()
+        self.executable.is_some() || crate::acp::find_on_paths("cursor-agent", cursor_cli_paths()).is_some()
     }
     fn executable_path(&self) -> Option<PathBuf> {
-        self.executable
-            .clone()
-            .or_else(|| crate::acp::find_on_paths("cursor-agent", cursor_cli_paths()))
+        self.executable.clone().or_else(|| crate::acp::find_on_paths("cursor-agent", cursor_cli_paths()))
     }
     /// Done is the SDK run's terminal result, for every turn shape.
     fn deterministic_turn_end(&self) -> bool {
@@ -289,11 +270,7 @@ impl Harness for CursorHarness {
     async fn model_catalog(&self, force: bool) -> Result<crate::ModelCatalog, HarnessError> {
         self.model_context()?.unwrap().log();
         self.models_cache
-            .get_with(
-                force,
-                || self.model_context().map(|c| c.unwrap().key()),
-                || self.discover_models(),
-            )
+            .get_with(force, || self.model_context().map(|c| c.unwrap().key()), || self.discover_models())
             .await
     }
     async fn models(&self) -> Result<Vec<Model>, HarnessError> {
@@ -324,10 +301,7 @@ impl Harness for CursorHarness {
         if !request.cwd.is_empty() {
             cmd.current_dir(&request.cwd);
         }
-        cmd.stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
+        cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
         let mut child = cmd.spawn().map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
                 HarnessError::NotInstalled(exe.display().to_string())
@@ -336,14 +310,8 @@ impl Harness for CursorHarness {
             }
         })?;
 
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| HarnessError::Protocol("cursor shim has no stdin".into()))?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| HarnessError::Protocol("cursor shim has no stdout".into()))?;
+        let stdin = child.stdin.take().ok_or_else(|| HarnessError::Protocol("cursor shim has no stdin".into()))?;
+        let stdout = child.stdout.take().ok_or_else(|| HarnessError::Protocol("cursor shim has no stdout".into()))?;
         let stderr_tail = crate::StderrTail::default();
         if let Some(stderr) = child.stderr.take() {
             let tail = stderr_tail.clone();
@@ -387,10 +355,7 @@ impl Harness for CursorHarness {
             stderr_tail,
         }));
 
-        Ok(futures::stream::unfold(event_rx, |mut rx| async move {
-            rx.recv().await.map(|ev| (ev, rx))
-        })
-        .boxed())
+        Ok(futures::stream::unfold(event_rx, |mut rx| async move { rx.recv().await.map(|ev| (ev, rx)) }).boxed())
     }
 }
 
@@ -400,10 +365,7 @@ impl Harness for CursorHarness {
 /// displayName?}]}], variants?: [{params: [{id, value}], isDefault?}]}`.
 fn map_model_items(items: &Value) -> Vec<Model> {
     let str_of = |v: &Value, key: &str| -> Option<String> {
-        v.get(key)
-            .and_then(Value::as_str)
-            .filter(|s| !s.is_empty())
-            .map(str::to_owned)
+        v.get(key).and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_owned)
     };
     items
         .as_array()
@@ -467,13 +429,7 @@ fn map_model_items(items: &Value) -> Vec<Model> {
                     })
                 })
                 .collect();
-            Some(Model {
-                id,
-                label,
-                description: str_of(item, "description"),
-                reasoning_levels: Vec::new(),
-                options,
-            })
+            Some(Model { id, label, description: str_of(item, "description"), reasoning_levels: Vec::new(), options })
         })
         .collect()
 }
@@ -722,10 +678,7 @@ async fn run_session(session: Session) {
             // Give the just-died child a beat to be reaped and its stderr
             // reader to drain, so the crash message carries the real exit
             // status and tail instead of "still running".
-            let status = tokio::time::timeout(Duration::from_millis(500), child.wait())
-                .await
-                .ok()
-                .and_then(Result::ok);
+            let status = tokio::time::timeout(Duration::from_millis(500), child.wait()).await.ok().and_then(Result::ok);
             tokio::task::yield_now().await;
             let _ = event_tx
                 .send(Ok(AgentEvent::Done {
@@ -748,10 +701,7 @@ async fn run_session(session: Session) {
     drop(stdin_tx);
     // EOF asks the shim to cancel/close the SDK and settle its durable state.
     // Signals remain the bounded fallback when the SDK cannot shut down.
-    if !matches!(
-        tokio::time::timeout(interrupt_grace, child.wait()).await,
-        Ok(Ok(_))
-    ) {
+    if !matches!(tokio::time::timeout(interrupt_grace, child.wait()).await, Ok(Ok(_))) {
         shutdown_child(&mut child, kill_grace).await;
     }
     #[cfg(unix)]
@@ -764,51 +714,23 @@ async fn run_session(session: Session) {
 /// Decode one cursor SDK tool (public vocabulary name + args) into a typed
 /// [`ToolCall`], tolerant of arg spellings.
 fn decode_tool(name: &str, args: &Value) -> ToolCall {
-    let s = |keys: &[&str]| {
-        keys.iter()
-            .find_map(|k| args.get(*k).and_then(Value::as_str))
-            .unwrap_or("")
-            .to_owned()
-    };
-    let opt = |keys: &[&str]| {
-        keys.iter()
-            .find_map(|k| args.get(*k).and_then(Value::as_str))
-            .map(str::to_owned)
-    };
+    let s = |keys: &[&str]| keys.iter().find_map(|k| args.get(*k).and_then(Value::as_str)).unwrap_or("").to_owned();
+    let opt = |keys: &[&str]| keys.iter().find_map(|k| args.get(*k).and_then(Value::as_str)).map(str::to_owned);
     match name {
-        "shell" => ToolCall::Exec {
-            command: s(&["command"]),
-        },
-        "read" => ToolCall::ReadFile {
-            path: s(&["path", "filePath", "file_path"]),
-        },
-        "write" => ToolCall::WriteFile {
-            path: s(&["path", "filePath", "file_path"]),
-            content: None,
-        },
-        "edit" => ToolCall::EditFile {
-            path: s(&["path", "filePath", "file_path"]),
-            old_string: None,
-            new_string: None,
-        },
+        "shell" => ToolCall::Exec { command: s(&["command"]) },
+        "read" => ToolCall::ReadFile { path: s(&["path", "filePath", "file_path"]) },
+        "write" => ToolCall::WriteFile { path: s(&["path", "filePath", "file_path"]), content: None },
+        "edit" => {
+            ToolCall::EditFile { path: s(&["path", "filePath", "file_path"]), old_string: None, new_string: None }
+        }
         "delete" => ToolCall::Unknown {
             name: format!("Delete: {}", s(&["path", "filePath", "file_path"])),
             input: (!args.is_null()).then(|| args.clone()),
         },
-        "grep" => ToolCall::Search {
-            pattern: s(&["pattern", "query"]),
-            path: opt(&["path", "directory"]),
-        },
-        "glob" => ToolCall::Glob {
-            pattern: s(&["pattern", "globPattern"]),
-        },
-        "webSearch" => ToolCall::WebSearch {
-            query: s(&["query", "search"]),
-        },
-        "webFetch" => ToolCall::WebFetch {
-            url: s(&["url"]),
-            prompt: None,
-        },
+        "grep" => ToolCall::Search { pattern: s(&["pattern", "query"]), path: opt(&["path", "directory"]) },
+        "glob" => ToolCall::Glob { pattern: s(&["pattern", "globPattern"]) },
+        "webSearch" => ToolCall::WebSearch { query: s(&["query", "search"]) },
+        "webFetch" => ToolCall::WebFetch { url: s(&["url"]), prompt: None },
         "updateTodos" => ToolCall::Todo {
             items: args
                 .get("todos")
@@ -824,10 +746,7 @@ fn decode_tool(name: &str, args: &Value) -> ToolCall {
                         TodoStatus::parse(t.get("status").and_then(Value::as_str).unwrap_or(""))
                     };
                     TodoItem::new(
-                        t.get("content")
-                            .or_else(|| t.get("text"))
-                            .and_then(Value::as_str)
-                            .unwrap_or(""),
+                        t.get("content").or_else(|| t.get("text")).and_then(Value::as_str).unwrap_or(""),
                         status,
                     )
                 })
@@ -843,40 +762,21 @@ fn decode_tool(name: &str, args: &Value) -> ToolCall {
         "task" => ToolCall::Unknown {
             name: {
                 let description = s(&["description", "prompt"]);
-                if description.is_empty() {
-                    "Agent".to_owned()
-                } else {
-                    format!("Agent: {description}")
-                }
+                if description.is_empty() { "Agent".to_owned() } else { format!("Agent: {description}") }
             },
             input: (!args.is_null()).then(|| args.clone()),
         },
-        other => ToolCall::Unknown {
-            name: other.to_owned(),
-            input: (!args.is_null()).then(|| args.clone()),
-        },
+        other => ToolCall::Unknown { name: other.to_owned(), input: (!args.is_null()).then(|| args.clone()) },
     }
 }
 
 /// Map one shim frame to events. `Done` session ids are stamped by the loop.
 fn map_shim_frame(frame: &Value, interrupted: bool) -> Vec<AgentEvent> {
-    let text = || {
-        frame
-            .get("text")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_owned()
-    };
-    let parent = frame
-        .get("parent")
-        .and_then(Value::as_str)
-        .map(str::to_owned);
+    let text = || frame.get("text").and_then(Value::as_str).unwrap_or("").to_owned();
+    let parent = frame.get("parent").and_then(Value::as_str).map(str::to_owned);
     let tag = |ev: AgentEvent| -> AgentEvent {
         match &parent {
-            Some(parent) => AgentEvent::Subagent {
-                parent_tool_use_id: parent.clone(),
-                event: Box::new(ev),
-            },
+            Some(parent) => AgentEvent::Subagent { parent_tool_use_id: parent.clone(), event: Box::new(ev) },
             None => ev,
         }
     };
@@ -884,19 +784,12 @@ fn map_shim_frame(frame: &Value, interrupted: bool) -> Vec<AgentEvent> {
         "text" => vec![tag(AgentEvent::TextDelta { text: text() })],
         "thinking" => vec![tag(AgentEvent::ReasoningDelta { text: text() })],
         "tool" => {
-            let id = frame
-                .get("id")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_owned();
+            let id = frame.get("id").and_then(Value::as_str).unwrap_or_default().to_owned();
             let name = frame.get("name").and_then(Value::as_str).unwrap_or("tool");
             let args = frame.get("args").cloned().unwrap_or(Value::Null);
             match frame.get("phase").and_then(Value::as_str) {
                 Some("start") => {
-                    let mut events = vec![tag(AgentEvent::ToolCall {
-                        id: id.clone(),
-                        call: decode_tool(name, &args),
-                    })];
+                    let mut events = vec![tag(AgentEvent::ToolCall { id: id.clone(), call: decode_tool(name, &args) })];
                     // A spawn's prompt is the subagent's opening user
                     // message — the SDK's nested stream never carries it
                     // (only the child's own updates), so seed it at the
@@ -912,9 +805,7 @@ fn map_shim_frame(frame: &Value, interrupted: bool) -> Vec<AgentEvent> {
                         {
                             events.push(AgentEvent::Subagent {
                                 parent_tool_use_id: id,
-                                event: Box::new(AgentEvent::UserMessage {
-                                    text: prompt.to_owned(),
-                                }),
+                                event: Box::new(AgentEvent::UserMessage { text: prompt.to_owned() }),
                             });
                         }
                     }
@@ -923,16 +814,8 @@ fn map_shim_frame(frame: &Value, interrupted: bool) -> Vec<AgentEvent> {
                 Some("end") => {
                     let is_error = frame.get("error").and_then(Value::as_bool) == Some(true);
                     let mut events = vec![
-                        tag(AgentEvent::ToolCall {
-                            id: id.clone(),
-                            call: decode_tool(name, &args),
-                        }),
-                        tag(AgentEvent::ToolResult {
-                            id: id.clone(),
-                            is_error,
-                            output: None,
-                            diff: None,
-                        }),
+                        tag(AgentEvent::ToolCall { id: id.clone(), call: decode_tool(name, &args) }),
+                        tag(AgentEvent::ToolResult { id: id.clone(), is_error, output: None, diff: None }),
                     ];
                     // A finished task IS the subagent finishing: the SDK has
                     // no separate terminal frame for the nested transcript,
@@ -942,11 +825,7 @@ fn map_shim_frame(frame: &Value, interrupted: bool) -> Vec<AgentEvent> {
                         events.push(AgentEvent::Subagent {
                             parent_tool_use_id: id,
                             event: Box::new(AgentEvent::Done {
-                                status: if is_error {
-                                    DoneStatus::Errored
-                                } else {
-                                    DoneStatus::Completed
-                                },
+                                status: if is_error { DoneStatus::Errored } else { DoneStatus::Completed },
                                 result: None,
                                 error: None,
                                 session_id: None,
@@ -964,10 +843,7 @@ fn map_shim_frame(frame: &Value, interrupted: bool) -> Vec<AgentEvent> {
         }],
         "turn" => {
             let status = frame.get("status").and_then(Value::as_str).unwrap_or("");
-            let error = frame
-                .get("error")
-                .and_then(Value::as_str)
-                .map(str::to_owned);
+            let error = frame.get("error").and_then(Value::as_str).map(str::to_owned);
             let status = if interrupted || status == "cancelled" {
                 DoneStatus::Interrupted
             } else if status == "error" {
@@ -975,27 +851,12 @@ fn map_shim_frame(frame: &Value, interrupted: bool) -> Vec<AgentEvent> {
             } else {
                 DoneStatus::Completed
             };
-            vec![AgentEvent::Done {
-                status,
-                result: None,
-                error,
-                session_id: None,
-            }]
+            vec![AgentEvent::Done { status, result: None, error, session_id: None }]
         }
         "fatal" => vec![AgentEvent::Done {
-            status: if interrupted {
-                DoneStatus::Interrupted
-            } else {
-                DoneStatus::Errored
-            },
+            status: if interrupted { DoneStatus::Interrupted } else { DoneStatus::Errored },
             result: None,
-            error: Some(
-                frame
-                    .get("message")
-                    .and_then(Value::as_str)
-                    .unwrap_or("cursor shim failed")
-                    .to_owned(),
-            ),
+            error: Some(frame.get("message").and_then(Value::as_str).unwrap_or("cursor shim failed").to_owned()),
             session_id: None,
         }],
         other => {
@@ -1011,27 +872,16 @@ mod tests {
 
     #[test]
     fn decodes_cursor_tool_vocabulary() {
-        assert_eq!(
-            decode_tool("shell", &json!({"command": "ls"})),
-            ToolCall::Exec {
-                command: "ls".into()
-            }
-        );
+        assert_eq!(decode_tool("shell", &json!({"command": "ls"})), ToolCall::Exec { command: "ls".into() });
         assert_eq!(
             decode_tool("grep", &json!({"pattern": "foo", "path": "/src"})),
-            ToolCall::Search {
-                pattern: "foo".into(),
-                path: Some("/src".into())
-            }
+            ToolCall::Search { pattern: "foo".into(), path: Some("/src".into()) }
         );
         assert!(matches!(
             decode_tool("task", &json!({"description": "map the repo"})),
             ToolCall::Unknown { name, .. } if name == "Agent: map the repo"
         ));
-        assert!(matches!(
-            decode_tool("somethingNew", &json!({})),
-            ToolCall::Unknown { .. }
-        ));
+        assert!(matches!(decode_tool("somethingNew", &json!({})), ToolCall::Unknown { .. }));
     }
 
     #[test]
@@ -1060,16 +910,12 @@ mod tests {
 
     #[test]
     fn nested_frames_arrive_tagged() {
-        let frame: Value =
-            serde_json::from_str(r#"{"ev":"text","text":"sub says","parent":"call_task_1"}"#)
-                .unwrap();
+        let frame: Value = serde_json::from_str(r#"{"ev":"text","text":"sub says","parent":"call_task_1"}"#).unwrap();
         assert_eq!(
             map_shim_frame(&frame, false),
             vec![AgentEvent::Subagent {
                 parent_tool_use_id: "call_task_1".into(),
-                event: Box::new(AgentEvent::TextDelta {
-                    text: "sub says".into()
-                }),
+                event: Box::new(AgentEvent::TextDelta { text: "sub says".into() }),
             }]
         );
     }

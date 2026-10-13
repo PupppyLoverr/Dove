@@ -407,13 +407,7 @@ pub const SUBAGENT_MODEL_KEYS: [&str; 4] = ["model", "modelId", "model_id", "sub
 /// The spawn-input keys [`sanitize_tool_call`](crate::) must preserve so the
 /// chip can name the child's model. Deliberately tiny: everything else on a
 /// spawn's input (the whole prompt, most of all) stays host-local.
-pub const SUBAGENT_INPUT_KEEP: [&str; 5] = [
-    "model",
-    "modelId",
-    "model_id",
-    "subagent_model",
-    "subagent_type",
-];
+pub const SUBAGENT_INPUT_KEEP: [&str; 5] = ["model", "modelId", "model_id", "subagent_model", "subagent_type"];
 
 /// Where one checklist item stands. Claude's TodoWrite, OpenCode and ACP plans
 /// distinguish the item being worked on from those still waiting; Codex and
@@ -451,11 +445,7 @@ impl TodoStatus {
 pub struct TodoItem {
     pub text: String,
     pub done: bool,
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        deserialize_with = "lenient_todo_status"
-    )]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "lenient_todo_status")]
     pub status: Option<TodoStatus>,
 }
 
@@ -470,11 +460,7 @@ impl TodoItem {
 
     /// Effective status: `done` wins, then the explicit status, else pending.
     pub fn status(&self) -> TodoStatus {
-        if self.done {
-            TodoStatus::Completed
-        } else {
-            self.status.unwrap_or_default()
-        }
+        if self.done { TodoStatus::Completed } else { self.status.unwrap_or_default() }
     }
 }
 
@@ -679,12 +665,7 @@ mod tests {
 
     #[test]
     fn agent_event_round_trips() {
-        let ev = AgentEvent::ToolCall {
-            id: "t1".into(),
-            call: ToolCall::Exec {
-                command: "cargo test".into(),
-            },
-        };
+        let ev = AgentEvent::ToolCall { id: "t1".into(), call: ToolCall::Exec { command: "cargo test".into() } };
         let json = serde_json::to_string(&ev).unwrap();
         assert_eq!(serde_json::from_str::<AgentEvent>(&json).unwrap(), ev);
     }
@@ -693,10 +674,7 @@ mod tests {
     /// spawned the child. Non-spawns never answer, whatever they carry.
     #[test]
     fn subagent_model_reads_every_spelling_and_only_off_a_spawn() {
-        let spawn = |input: serde_json::Value| ToolCall::Unknown {
-            name: "Agent: scan".into(),
-            input: Some(input),
-        };
+        let spawn = |input: serde_json::Value| ToolCall::Unknown { name: "Agent: scan".into(), input: Some(input) };
         for key in SUBAGENT_MODEL_KEYS {
             let call = spawn(serde_json::json!({ key: "haiku" }));
             assert_eq!(call.subagent_model(), Some("haiku"), "key {key}");
@@ -713,35 +691,16 @@ mod tests {
         );
         // Not a spawn: the name gate wins over the key.
         assert_eq!(
-            ToolCall::Unknown {
-                name: "Bash".into(),
-                input: Some(serde_json::json!({ "model": "haiku" })),
-            }
-            .subagent_model(),
+            ToolCall::Unknown { name: "Bash".into(), input: Some(serde_json::json!({ "model": "haiku" })) }
+                .subagent_model(),
             None
         );
         // A spawn that named nothing usable inherits — nothing to render.
-        assert_eq!(
-            spawn(serde_json::json!({ "model": " " })).subagent_model(),
-            None
-        );
-        assert_eq!(
-            spawn(serde_json::json!({ "prompt": "x" })).subagent_model(),
-            None
-        );
-        assert_eq!(
-            ToolCall::Unknown {
-                name: "Agent".into(),
-                input: None
-            }
-            .subagent_model(),
-            None
-        );
+        assert_eq!(spawn(serde_json::json!({ "model": " " })).subagent_model(), None);
+        assert_eq!(spawn(serde_json::json!({ "prompt": "x" })).subagent_model(), None);
+        assert_eq!(ToolCall::Unknown { name: "Agent".into(), input: None }.subagent_model(), None);
         // Non-string values are not names.
-        assert_eq!(
-            spawn(serde_json::json!({ "model": 5 })).subagent_model(),
-            None
-        );
+        assert_eq!(spawn(serde_json::json!({ "model": 5 })).subagent_model(), None);
     }
 
     #[test]
@@ -754,12 +713,8 @@ mod tests {
         let json = serde_json::to_value(&req).unwrap();
         assert!(json.get("attachments").is_none());
         // Populated lists round-trip.
-        let req = RunRequest {
-            attachments: vec!["/tmp/a.png".into()],
-            ..req
-        };
-        let round: RunRequest =
-            serde_json::from_value(serde_json::to_value(&req).unwrap()).unwrap();
+        let req = RunRequest { attachments: vec!["/tmp/a.png".into()], ..req };
+        let round: RunRequest = serde_json::from_value(serde_json::to_value(&req).unwrap()).unwrap();
         assert_eq!(round.attachments, vec!["/tmp/a.png".to_string()]);
     }
 
@@ -790,10 +745,7 @@ mod tests {
 
     #[test]
     fn harness_id_uses_kebab_case() {
-        assert_eq!(
-            serde_json::to_string(&HarnessId::ClaudeCode).unwrap(),
-            "\"claude-code\""
-        );
+        assert_eq!(serde_json::to_string(&HarnessId::ClaudeCode).unwrap(), "\"claude-code\"");
     }
 
     #[test]
@@ -818,17 +770,10 @@ mod tests {
         assert_eq!(json["policy"], "auto-when-idle");
         assert_eq!(json["phase"], "waiting-for-idle");
         assert_eq!(json["canApply"], true);
-        assert_eq!(
-            serde_json::from_value::<HarnessUpdateStatus>(json.clone()).unwrap(),
-            status
-        );
+        assert_eq!(serde_json::from_value::<HarnessUpdateStatus>(json.clone()).unwrap(), status);
         let mut legacy = json;
         legacy.as_object_mut().unwrap().remove("canApply");
-        assert!(
-            !serde_json::from_value::<HarnessUpdateStatus>(legacy)
-                .unwrap()
-                .can_apply
-        );
+        assert!(!serde_json::from_value::<HarnessUpdateStatus>(legacy).unwrap().can_apply);
     }
 
     #[test]
@@ -843,10 +788,7 @@ mod tests {
         status.phase = HarnessUpdatePhase::Available;
         status.latest_version = Some("2.0.0".into());
         status.can_apply = false;
-        assert!(
-            status.show_update_notice(),
-            "known manual releases still need attention"
-        );
+        assert!(status.show_update_notice(), "known manual releases still need attention");
         status.phase = HarnessUpdatePhase::Installing;
         assert!(status.show_update_notice());
     }
@@ -921,10 +863,7 @@ mod todo_item_tests {
         let active = serde_json::to_value(TodoItem::new("c", TodoStatus::InProgress)).unwrap();
         assert_eq!(pending, json!({ "text": "a", "done": false }));
         assert_eq!(done, json!({ "text": "b", "done": true }));
-        assert_eq!(
-            active,
-            json!({ "text": "c", "done": false, "status": "inProgress" })
-        );
+        assert_eq!(active, json!({ "text": "c", "done": false, "status": "inProgress" }));
     }
 
     #[test]
@@ -946,11 +885,7 @@ mod todo_item_tests {
 
     #[test]
     fn done_outranks_a_stale_status() {
-        let item = TodoItem {
-            text: "a".into(),
-            done: true,
-            status: Some(TodoStatus::InProgress),
-        };
+        let item = TodoItem { text: "a".into(), done: true, status: Some(TodoStatus::InProgress) };
         assert_eq!(item.status(), TodoStatus::Completed);
     }
 

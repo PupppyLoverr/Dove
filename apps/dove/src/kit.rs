@@ -155,8 +155,7 @@ pub fn segmented(
         .border_1()
         .border_color(t.wash(0.08))
         .bg(t.wash(0.04))
-        .children(options.iter().enumerate().map(
-        |(i, label)| {
+        .children(options.iter().enumerate().map(|(i, label)| {
             let on = i == selected;
             let pick = on_pick.clone();
             div()
@@ -176,8 +175,7 @@ pub fn segmented(
                 .when(!on, |d| d.text_color(t.text_muted).hover(|s| s.text_color(t.text)))
                 .child(label.to_string())
                 .on_click(move |_, window, cx| pick(i, window, cx))
-        },
-    ))
+        }))
 }
 
 /// A thread's status: spinner (working), amber dot (needs you), check,

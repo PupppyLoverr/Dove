@@ -38,14 +38,8 @@ impl NpmPin {
     /// leading one).
     pub(crate) fn parse(pin: &'static str) -> Self {
         match pin.rfind('@') {
-            Some(at) if at > 0 => Self {
-                name: &pin[..at],
-                version: &pin[at + 1..],
-            },
-            _ => Self {
-                name: pin,
-                version: "latest",
-            },
+            Some(at) if at > 0 => Self { name: &pin[..at], version: &pin[at + 1..] },
+            _ => Self { name: pin, version: "latest" },
         }
     }
 
@@ -67,21 +61,14 @@ const INSTALL_TIMEOUT: Duration = Duration::from_secs(600);
 /// `%LOCALAPPDATA%/Zeron/adapters` (or `%USERPROFILE%/AppData/Local/...`);
 /// Unix keeps `~/.zeron/adapters`.
 pub(crate) fn adapters_root() -> Option<PathBuf> {
-    adapters_root_with(
-        &|key| std::env::var_os(key),
-        crate::executable::Platform::current(),
-    )
+    adapters_root_with(&|key| std::env::var_os(key), crate::executable::Platform::current())
 }
 
 fn adapters_root_with(
     env: &impl Fn(&str) -> Option<OsString>,
     platform: crate::executable::Platform,
 ) -> Option<PathBuf> {
-    let value = |key| {
-        env(key)
-            .filter(|value| !value.is_empty())
-            .map(PathBuf::from)
-    };
+    let value = |key| env(key).filter(|value| !value.is_empty()).map(PathBuf::from);
     if let Some(dir) = value("ZERON_ADAPTERS_DIR") {
         return Some(dir);
     }
@@ -89,16 +76,9 @@ fn adapters_root_with(
         return Some(dir.join("adapters"));
     }
     if platform == crate::executable::Platform::Windows {
-        value("LOCALAPPDATA")
-            .map(|dir| dir.join("Zeron").join("adapters"))
-            .or_else(|| {
-                value("USERPROFILE").map(|home| {
-                    home.join("AppData")
-                        .join("Local")
-                        .join("Zeron")
-                        .join("adapters")
-                })
-            })
+        value("LOCALAPPDATA").map(|dir| dir.join("Zeron").join("adapters")).or_else(|| {
+            value("USERPROFILE").map(|home| home.join("AppData").join("Local").join("Zeron").join("adapters"))
+        })
     } else {
         value("HOME").map(|home| home.join(".zeron").join("adapters"))
     }
@@ -120,11 +100,9 @@ fn bin_entry(dir: &Path, pin: &NpmPin, bin_name: &str) -> Option<PathBuf> {
         serde_json::from_str(&std::fs::read_to_string(pkg_dir.join("package.json")).ok()?).ok()?;
     let rel = match manifest.get("bin")? {
         serde_json::Value::String(entry) => entry.clone(),
-        serde_json::Value::Object(map) => map
-            .get(bin_name)
-            .or_else(|| map.values().next())
-            .and_then(|v| v.as_str())
-            .map(str::to_owned)?,
+        serde_json::Value::Object(map) => {
+            map.get(bin_name).or_else(|| map.values().next()).and_then(|v| v.as_str()).map(str::to_owned)?
+        }
         _ => return None,
     };
     let entry = pkg_dir.join(rel);
@@ -146,12 +124,7 @@ fn installed_entry_in(root: &Path, pin: &NpmPin, bin_name: &str) -> Option<PathB
 }
 
 fn npm_cli_for_node(node: &Path) -> Option<PathBuf> {
-    let cli = node
-        .parent()?
-        .join("node_modules")
-        .join("npm")
-        .join("bin")
-        .join("npm-cli.js");
+    let cli = node.parent()?.join("node_modules").join("npm").join("bin").join("npm-cli.js");
     cli.is_file().then_some(cli)
 }
 
@@ -186,16 +159,9 @@ pub(crate) fn find_npm() -> Option<PathBuf> {
 fn node_sibling_for_npm(npm: &Path, platform: crate::executable::Platform) -> Option<PathBuf> {
     if platform == crate::executable::Platform::Windows {
         // <node-root>/node_modules/npm/bin/npm-cli.js -> <node-root>/node.exe
-        npm.parent()?
-            .parent()?
-            .parent()?
-            .parent()
-            .map(|root| root.join("node.exe"))
-            .filter(|node| node.is_file())
+        npm.parent()?.parent()?.parent()?.parent().map(|root| root.join("node.exe")).filter(|node| node.is_file())
     } else {
-        npm.parent()
-            .map(|dir| dir.join("node"))
-            .filter(|node| node.is_file())
+        npm.parent().map(|dir| dir.join("node")).filter(|node| node.is_file())
     }
 }
 
@@ -252,9 +218,7 @@ fn launch_for_entry_with_node(
     if entry
         .extension()
         .and_then(OsStr::to_str)
-        .is_some_and(|extension| {
-            extension.eq_ignore_ascii_case("cmd") || extension.eq_ignore_ascii_case("bat")
-        })
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("cmd") || extension.eq_ignore_ascii_case("bat"))
     {
         return Err(HarnessError::Install(format!(
             "managed adapter entry {} is a Windows batch wrapper; install a package exposing a JavaScript entry or native .exe instead",
@@ -267,17 +231,16 @@ fn launch_for_entry_with_node(
 
     let platform = crate::executable::Platform::current();
     let sibling = find_npm().and_then(|npm| node_sibling_for_npm(&npm, platform));
-    let node = supplied_node
-        .or(sibling)
-        .or_else(|| crate::executable::find_on_paths("node", Vec::new()))
-        .ok_or_else(|| {
+    let node = supplied_node.or(sibling).or_else(|| crate::executable::find_on_paths("node", Vec::new())).ok_or_else(
+        || {
             HarnessError::NotInstalled(
                 "node (required to run the agent's npm-distributed ACP adapter; \
                  searched PATH, the login shell's PATH, and fnm/nvm/volta/pnpm/bun \
                  install dirs)"
                     .into(),
             )
-        })?;
+        },
+    )?;
     Ok((node, vec![entry.display().to_string()]))
 }
 
@@ -307,11 +270,7 @@ pub(crate) fn install_lock() -> &'static tokio::sync::Mutex<()> {
 /// Ensure the pinned package is installed; returns its bin entry. Failures
 /// carry npm's own output — the whole point is that a dying npm stops being
 /// an undiagnosable one-liner.
-pub(crate) async fn ensure_installed(
-    pin: NpmPin,
-    bin_name: &str,
-    display_name: &str,
-) -> Result<PathBuf, HarnessError> {
+pub(crate) async fn ensure_installed(pin: NpmPin, bin_name: &str, display_name: &str) -> Result<PathBuf, HarnessError> {
     if let Some(entry) = installed_entry(&pin, bin_name) {
         return Ok(entry);
     }
@@ -327,16 +286,10 @@ pub(crate) async fn ensure_installed(
             pin.spec()
         )));
     };
-    let root = adapters_root().ok_or_else(|| {
-        HarnessError::Install("cannot locate a platform data directory for managed adapters".into())
-    })?;
+    let root = adapters_root()
+        .ok_or_else(|| HarnessError::Install("cannot locate a platform data directory for managed adapters".into()))?;
     let final_dir = install_dir_in(&root, &pin);
-    let tmp_dir = root.join(format!(
-        ".tmp-{}-{}-{}",
-        pin.dir_name(),
-        pin.version,
-        std::process::id()
-    ));
+    let tmp_dir = root.join(format!(".tmp-{}-{}-{}", pin.dir_name(), pin.version, std::process::id()));
     let cache_dir = root.join(".npm-cache");
     let install = install_into(&npm, &pin, &tmp_dir, &cache_dir, display_name).await;
     if let Err(e) = install {
@@ -365,10 +318,7 @@ pub(crate) async fn ensure_installed(
         }
     }
     installed_entry(&pin, bin_name).ok_or_else(|| {
-        HarnessError::Install(format!(
-            "install of {} finished but its bin entry did not resolve",
-            pin.spec()
-        ))
+        HarnessError::Install(format!("install of {} finished but its bin entry did not resolve", pin.spec()))
     })
 }
 
@@ -434,16 +384,10 @@ pub(crate) async fn ensure_installed_shim(
             pin.spec()
         )));
     };
-    let root = adapters_root().ok_or_else(|| {
-        HarnessError::Install("cannot locate a platform data directory for managed adapters".into())
-    })?;
+    let root = adapters_root()
+        .ok_or_else(|| HarnessError::Install("cannot locate a platform data directory for managed adapters".into()))?;
     let final_dir = install_dir_in(&root, &pin);
-    let tmp_dir = root.join(format!(
-        ".tmp-{}-{}-{}",
-        pin.dir_name(),
-        pin.version,
-        std::process::id()
-    ));
+    let tmp_dir = root.join(format!(".tmp-{}-{}-{}", pin.dir_name(), pin.version, std::process::id()));
     let cache_dir = root.join(".npm-cache");
     let install = install_into(&npm, &pin, &tmp_dir, &cache_dir, display_name).await;
     if let Err(e) = install {
@@ -466,10 +410,7 @@ pub(crate) async fn ensure_installed_shim(
         }
     }
     installed_shim(&pin, shim_name, contents).ok_or_else(|| {
-        HarnessError::Install(format!(
-            "install of {} finished but its shim did not resolve",
-            pin.spec()
-        ))
+        HarnessError::Install(format!("install of {} finished but its shim did not resolve", pin.spec()))
     })
 }
 
@@ -481,10 +422,7 @@ fn npm_install_plan(
 ) -> Result<(PathBuf, Vec<OsString>), HarnessError> {
     let (program, mut args) = if platform == crate::executable::Platform::Windows {
         let node = node_sibling_for_npm(npm, platform).ok_or_else(|| {
-            HarnessError::NotInstalled(format!(
-                "node.exe beside the discovered npm CLI {}",
-                npm.display()
-            ))
+            HarnessError::NotInstalled(format!("node.exe beside the discovered npm CLI {}", npm.display()))
         })?;
         (node, vec![npm.as_os_str().to_owned()])
     } else {
@@ -528,8 +466,7 @@ async fn install_into(
         dir = %tmp_dir.display(),
         "installing ACP adapter"
     );
-    let (program, args) =
-        npm_install_plan(npm, pin, cache_dir, crate::executable::Platform::current())?;
+    let (program, args) = npm_install_plan(npm, pin, cache_dir, crate::executable::Platform::current())?;
     let mut cmd = crate::process::Command::new(&program);
     cmd.args(args)
         .current_dir(tmp_dir)
@@ -554,9 +491,7 @@ async fn install_into(
         (out, err)
     };
     let ((out, err), status) =
-        match tokio::time::timeout(INSTALL_TIMEOUT, async { tokio::join!(drain, child.wait()) })
-            .await
-        {
+        match tokio::time::timeout(INSTALL_TIMEOUT, async { tokio::join!(drain, child.wait()) }).await {
             Ok((streams, status)) => (streams, status),
             Err(_) => {
                 let _ = child.start_kill();
@@ -592,10 +527,7 @@ async fn install_into(
             pin.spec()
         )
     } else {
-        format!(
-            "npm install of the {display_name} adapter ({}) failed ({exit}): {tail}",
-            pin.spec()
-        )
+        format!("npm install of the {display_name} adapter ({}) failed ({exit}): {tail}", pin.spec())
     }))
 }
 
@@ -606,10 +538,8 @@ mod tests {
     use std::collections::HashMap;
 
     fn env(values: &[(&str, OsString)]) -> impl Fn(&str) -> Option<OsString> + use<> {
-        let values: HashMap<String, OsString> = values
-            .iter()
-            .map(|(key, value)| ((*key).to_owned(), value.clone()))
-            .collect();
+        let values: HashMap<String, OsString> =
+            values.iter().map(|(key, value)| ((*key).to_owned(), value.clone())).collect();
         move |key| values.get(key).cloned()
     }
 
@@ -652,25 +582,15 @@ mod tests {
         std::fs::create_dir_all(&pkg).unwrap();
         std::fs::write(pkg.join("dist.js"), "x").unwrap();
 
-        std::fs::write(
-            pkg.join("package.json"),
-            r#"{"name":"@scope/tool","bin":"dist.js"}"#,
-        )
-        .unwrap();
-        assert_eq!(
-            bin_entry(dir.path(), &pin, "tool"),
-            Some(pkg.join("dist.js"))
-        );
+        std::fs::write(pkg.join("package.json"), r#"{"name":"@scope/tool","bin":"dist.js"}"#).unwrap();
+        assert_eq!(bin_entry(dir.path(), &pin, "tool"), Some(pkg.join("dist.js")));
 
         std::fs::write(
             pkg.join("package.json"),
             r#"{"name":"@scope/tool","bin":{"tool":"dist.js","other":"missing.js"}}"#,
         )
         .unwrap();
-        assert_eq!(
-            bin_entry(dir.path(), &pin, "tool"),
-            Some(pkg.join("dist.js"))
-        );
+        assert_eq!(bin_entry(dir.path(), &pin, "tool"), Some(pkg.join("dist.js")));
 
         // Marker gating uses an isolated managed root, never the process HOME.
         let root = dir.path().join("isolated-adapters");
@@ -678,17 +598,10 @@ mod tests {
         let installed_pkg = installed.join("node_modules").join("@scope").join("tool");
         std::fs::create_dir_all(&installed_pkg).unwrap();
         std::fs::write(installed_pkg.join("dist.js"), "x").unwrap();
-        std::fs::write(
-            installed_pkg.join("package.json"),
-            r#"{"name":"@scope/tool","bin":"dist.js"}"#,
-        )
-        .unwrap();
+        std::fs::write(installed_pkg.join("package.json"), r#"{"name":"@scope/tool","bin":"dist.js"}"#).unwrap();
         assert_eq!(installed_entry_in(&root, &pin, "tool"), None);
         std::fs::write(installed.join(OK_MARKER), pin.version).unwrap();
-        assert_eq!(
-            installed_entry_in(&root, &pin, "tool"),
-            Some(installed_pkg.join("dist.js"))
-        );
+        assert_eq!(installed_entry_in(&root, &pin, "tool"), Some(installed_pkg.join("dist.js")));
     }
 
     #[test]
@@ -727,13 +640,7 @@ mod tests {
                 &env(&[("USERPROFILE", profile.clone().into_os_string())]),
                 crate::executable::Platform::Windows,
             ),
-            Some(
-                profile
-                    .join("AppData")
-                    .join("Local")
-                    .join("Zeron")
-                    .join("adapters")
-            )
+            Some(profile.join("AppData").join("Local").join("Zeron").join("adapters"))
         );
     }
 
@@ -749,16 +656,10 @@ mod tests {
         std::fs::create_dir_all(npm.parent().unwrap()).unwrap();
         std::fs::write(root.join("node.exe"), b"MZ").unwrap();
         std::fs::write(&npm, b"// fixture").unwrap();
-        let lookup = env(&[
-            ("APPDATA", roaming.into_os_string()),
-            ("FNM_MULTISHELL_PATH", active.into_os_string()),
-        ]);
+        let lookup = env(&[("APPDATA", roaming.into_os_string()), ("FNM_MULTISHELL_PATH", active.into_os_string())]);
         let platform = crate::executable::Platform::Windows;
         assert_eq!(find_npm_with(&lookup, None, platform), Some(npm.clone()));
-        assert_eq!(
-            node_sibling_for_npm(&npm, platform),
-            Some(root.join("node.exe"))
-        );
+        assert_eq!(node_sibling_for_npm(&npm, platform), Some(root.join("node.exe")));
         std::fs::remove_file(root.join("node.exe")).unwrap();
         assert_eq!(find_npm_with(&lookup, None, platform), None);
     }
@@ -768,28 +669,19 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let node_root = temp.path().join("Node's Ω & ^ % !");
         let node = node_root.join("node.exe");
-        let npm = node_root
-            .join("node_modules")
-            .join("npm")
-            .join("bin")
-            .join("npm-cli.js");
+        let npm = node_root.join("node_modules").join("npm").join("bin").join("npm-cli.js");
         std::fs::create_dir_all(npm.parent().unwrap()).unwrap();
         std::fs::write(&node, b"MZ").unwrap();
         std::fs::write(&npm, b"console.log('npm')").unwrap();
         // A batch shim exists but is deliberately never selected.
         std::fs::write(node_root.join("npm.cmd"), b"@echo off").unwrap();
         let path = std::env::join_paths([&node_root]).unwrap();
-        let discovered = find_npm_with(
-            &env(&[("PATH", path)]),
-            None,
-            crate::executable::Platform::Windows,
-        );
+        let discovered = find_npm_with(&env(&[("PATH", path)]), None, crate::executable::Platform::Windows);
         assert_eq!(discovered, Some(npm.clone()));
 
         let cache = temp.path().join("cache's Ω & $(echo nope); ^ % !");
         let pin = NpmPin::parse("@scope/tool@1.2.3");
-        let (program, args) =
-            npm_install_plan(&npm, &pin, &cache, crate::executable::Platform::Windows).unwrap();
+        let (program, args) = npm_install_plan(&npm, &pin, &cache, crate::executable::Platform::Windows).unwrap();
         assert_eq!(program, node);
         assert_eq!(args.first(), Some(&npm.into_os_string()));
         assert_eq!(args[1], OsString::from("install"));
@@ -807,10 +699,7 @@ mod tests {
         bytes[0x3c..0x40].copy_from_slice(&(0x80_u32).to_le_bytes());
         bytes[0x80..0x84].copy_from_slice(b"PE\0\0");
         std::fs::write(&pe, bytes).unwrap();
-        assert_eq!(
-            launch_for_entry_with_node(&pe, None).unwrap(),
-            (pe, Vec::new())
-        );
+        assert_eq!(launch_for_entry_with_node(&pe, None).unwrap(), (pe, Vec::new()));
 
         let js = temp.path().join("adapter's Ω & $(nope); ^ % !.js");
         let node = temp.path().join("node.exe");
@@ -840,9 +729,8 @@ mod shim_stress_tests {
     #[test]
     fn concurrent_builds_publish_immutable_complete_shims() {
         let dir = tempfile::tempdir().unwrap();
-        let sources: Vec<String> = (0..8)
-            .map(|build| format!("// build {build}\n{}", "x".repeat(256 * 1024)))
-            .collect();
+        let sources: Vec<String> =
+            (0..8).map(|build| format!("// build {build}\n{}", "x".repeat(256 * 1024))).collect();
         std::thread::scope(|scope| {
             for source in &sources {
                 let dir = dir.path();
@@ -856,8 +744,6 @@ mod shim_stress_tests {
                 });
             }
         });
-        println!(
-            "stress: 800 publications across 8 concurrent build versions, zero corrupt or replaced shims"
-        );
+        println!("stress: 800 publications across 8 concurrent build versions, zero corrupt or replaced shims");
     }
 }

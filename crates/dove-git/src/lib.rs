@@ -208,7 +208,16 @@ pub fn history(repo: &Path, query: &str, limit: usize) -> Result<Vec<HistoryComm
     let out = if query.trim().is_empty() {
         run(repo, &["log", &format!("-n{n}"), &format!("--pretty=format:{pretty}")])?
     } else {
-        run(repo, &["log", &format!("-n{n}"), "--regexp-ignore-case", &format!("--grep={query}"), &format!("--pretty=format:{pretty}")])?
+        run(
+            repo,
+            &[
+                "log",
+                &format!("-n{n}"),
+                "--regexp-ignore-case",
+                &format!("--grep={query}"),
+                &format!("--pretty=format:{pretty}"),
+            ],
+        )?
     };
     let mut commits: Vec<HistoryCommit> = out
         .lines()
@@ -330,13 +339,8 @@ pub fn default_branch(repo: &Path) -> Option<String> {
 
 /// Clone `url` into a new folder under `parent`; returns the folder.
 pub fn clone(url: &str, parent: &Path) -> Result<PathBuf> {
-    let name = url
-        .trim_end_matches('/')
-        .rsplit(['/', ':'])
-        .next()
-        .unwrap_or("repo")
-        .trim_end_matches(".git")
-        .to_string();
+    let name =
+        url.trim_end_matches('/').rsplit(['/', ':']).next().unwrap_or("repo").trim_end_matches(".git").to_string();
     if name.is_empty() || name.contains("..") {
         bail!("cannot tell the repository name from {url}");
     }

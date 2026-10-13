@@ -142,17 +142,9 @@ mod tests {
     #[test]
     fn stagger_offsets_each_cell_and_wraps() {
         close(staggered_phase(0.0, 0, PULSE_STAGGER), 0.0, "cell 0");
-        close(
-            staggered_phase(0.0, 1, PULSE_STAGGER),
-            1.0 - PULSE_STAGGER,
-            "cell 1 trails into the previous cycle",
-        );
+        close(staggered_phase(0.0, 1, PULSE_STAGGER), 1.0 - PULSE_STAGGER, "cell 1 trails into the previous cycle");
         // Phase is periodic: a whole extra turn changes nothing.
-        close(
-            staggered_phase(0.3, 2, PULSE_STAGGER),
-            staggered_phase(1.3, 2, PULSE_STAGGER),
-            "wraps",
-        );
+        close(staggered_phase(0.3, 2, PULSE_STAGGER), staggered_phase(1.3, 2, PULSE_STAGGER), "wraps");
         // Always inside the unit interval, for any input.
         for raw in [-4.2f32, -0.1, 0.0, 0.5, 7.9] {
             for index in 0..ZERON_CELLS {
@@ -194,11 +186,7 @@ mod tests {
         let head = mark_cell_stagger(0.0, 840.0);
         assert!(tail > head, "tail {tail} should lead head {head}");
         close(head, 0.0, "the head anchors the sweep");
-        close(
-            tail,
-            MARK_SPREAD * (1.0 - 100.0 / 1660.0),
-            "tail leads by the spread",
-        );
+        close(tail, MARK_SPREAD * (1.0 - 100.0 / 1660.0), "tail leads by the spread");
         // Every cell stays inside the unit interval once phased.
         for (x, y) in MARK_CELLS {
             let phase = mark_phase(0.3, x, y);
@@ -207,10 +195,7 @@ mod tests {
         // Every cell's stagger stays inside the sweep window.
         for (x, y) in MARK_CELLS {
             let stagger = mark_cell_stagger(x, y);
-            assert!(
-                (0.0..=MARK_SPREAD).contains(&stagger),
-                "({x},{y}) -> {stagger}"
-            );
+            assert!((0.0..=MARK_SPREAD).contains(&stagger), "({x},{y}) -> {stagger}");
         }
     }
 

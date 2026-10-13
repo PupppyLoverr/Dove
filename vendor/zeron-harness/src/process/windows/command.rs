@@ -17,11 +17,7 @@ pub struct Command {
 }
 impl Command {
     pub fn new(program: impl AsRef<OsStr>) -> Self {
-        Self {
-            metadata: std::process::Command::new(program),
-            clear_env: false,
-            stdio: [Stdio::inherit(); 3],
-        }
+        Self { metadata: std::process::Command::new(program), clear_env: false, stdio: [Stdio::inherit(); 3] }
     }
     pub fn arg(&mut self, arg: impl AsRef<OsStr>) -> &mut Self {
         self.metadata.arg(arg);
@@ -79,11 +75,8 @@ impl Command {
         if program_wide.len() == 1 || program_wide.contains(&(b'"' as u16)) {
             return Err(invalid("empty or quoted executable name"));
         }
-        let mut environment: Vec<(OsString, OsString)> = if self.clear_env {
-            Vec::new()
-        } else {
-            std::env::vars_os().collect()
-        };
+        let mut environment: Vec<(OsString, OsString)> =
+            if self.clear_env { Vec::new() } else { std::env::vars_os().collect() };
         let mut child_path = None;
         let mut child_pathext = None;
         for (key, value) in self.metadata.get_envs() {
@@ -142,18 +135,13 @@ impl Command {
             executable: application,
             line,
             environment: block,
-            cwd: self
-                .metadata
-                .get_current_dir()
-                .map(|dir| wide(dir.as_os_str()))
-                .transpose()?,
+            cwd: self.metadata.get_current_dir().map(|dir| wide(dir.as_os_str())).transpose()?,
         })
     }
 }
 
 fn is_batch_script(path: &Path) -> bool {
-    path.extension()
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("cmd") || ext.eq_ignore_ascii_case("bat"))
+    path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("cmd") || ext.eq_ignore_ascii_case("bat"))
 }
 
 /// Extensions tried when a bare program name is searched on PATH, in PATHEXT
@@ -170,25 +158,13 @@ fn launchable_extensions(child_pathext: Option<&OsStr>) -> Vec<&'static str> {
         .split(';')
         .map(|entry| entry.trim().trim_start_matches('.'))
         .filter(|entry| !entry.is_empty())
-        .filter_map(|entry| {
-            DEFAULT
-                .iter()
-                .find(|ok| entry.eq_ignore_ascii_case(ok))
-                .copied()
-        })
+        .filter_map(|entry| DEFAULT.iter().find(|ok| entry.eq_ignore_ascii_case(ok)).copied())
         .collect();
-    if launchable.is_empty() {
-        DEFAULT.to_vec()
-    } else {
-        launchable
-    }
+    if launchable.is_empty() { DEFAULT.to_vec() } else { launchable }
 }
 
 /// Build a batch command with command extensions on and delayed expansion off.
-fn batch_command<'a>(
-    batch: &Path,
-    args: impl IntoIterator<Item = &'a OsStr>,
-) -> io::Result<(Vec<u16>, Vec<u16>)> {
+fn batch_command<'a>(batch: &Path, args: impl IntoIterator<Item = &'a OsStr>) -> io::Result<(Vec<u16>, Vec<u16>)> {
     let interpreter = system_directory()?.join("cmd.exe");
     let mut line = Vec::new();
     quote(interpreter.as_os_str(), &mut line)?;
@@ -201,13 +177,8 @@ fn batch_command<'a>(
     // A script path is interpreted before batch arguments. Reject expansion
     // syntax rather than silently launching a different path.
     let script = wide(batch.as_os_str())?;
-    if script
-        .iter()
-        .any(|u| matches!(*u, 0x22 | 0x25 | 0x0a | 0x0d))
-    {
-        return Err(invalid(
-            "batch executable path contains shell expansion syntax",
-        ));
+    if script.iter().any(|u| matches!(*u, 0x22 | 0x25 | 0x0a | 0x0d)) {
+        return Err(invalid("batch executable path contains shell expansion syntax"));
     }
     quote(batch.as_os_str(), &mut line)?;
     for arg in args {
@@ -284,8 +255,7 @@ fn wide(value: &OsStr) -> io::Result<Vec<u16>> {
 fn compare(a: &OsStr, b: &OsStr) -> std::cmp::Ordering {
     let a: Vec<_> = a.encode_wide().collect();
     let b: Vec<_> = b.encode_wide().collect();
-    let result =
-        unsafe { CompareStringOrdinal(a.as_ptr(), a.len() as i32, b.as_ptr(), b.len() as i32, 1) };
+    let result = unsafe { CompareStringOrdinal(a.as_ptr(), a.len() as i32, b.as_ptr(), b.len() as i32, 1) };
     match result {
         1 => std::cmp::Ordering::Less,
         2 => std::cmp::Ordering::Equal,
@@ -293,11 +263,7 @@ fn compare(a: &OsStr, b: &OsStr) -> std::cmp::Ordering {
         _ => unreachable!("valid environment keys"),
     }
 }
-fn resolve(
-    program: &OsStr,
-    child_path: Option<&OsStr>,
-    child_pathext: Option<&OsStr>,
-) -> io::Result<PathBuf> {
+fn resolve(program: &OsStr, child_path: Option<&OsStr>, child_pathext: Option<&OsStr>) -> io::Result<PathBuf> {
     let parent_pathext = std::env::var_os("PATHEXT");
     let pathext = launchable_extensions(child_pathext.or(parent_pathext.as_deref()));
     let path = Path::new(program);
@@ -368,10 +334,7 @@ fn quote(arg: &OsStr, line: &mut Vec<u16>) -> io::Result<()> {
             continue;
         }
         let escaped = unit == b'"' as u16;
-        line.extend(std::iter::repeat_n(
-            b'\\' as u16,
-            if escaped { slashes * 2 + 1 } else { slashes },
-        ));
+        line.extend(std::iter::repeat_n(b'\\' as u16, if escaped { slashes * 2 + 1 } else { slashes }));
         slashes = 0;
         line.push(unit);
     }

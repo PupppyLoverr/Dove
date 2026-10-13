@@ -49,9 +49,7 @@ pub fn effective_indicator(session: Option<&Session>, now: DateTime<Utc>) -> Ind
         SessionStatus::Idle => Indicator::None,
         SessionStatus::Errored => Indicator::Errored,
         SessionStatus::Working | SessionStatus::AwaitingInput => {
-            let age_ms = now
-                .signed_duration_since(session.updated_at)
-                .num_milliseconds();
+            let age_ms = now.signed_duration_since(session.updated_at).num_milliseconds();
             if age_ms > SESSION_STALE_MS {
                 Indicator::None
             } else if session.status == SessionStatus::Working {
@@ -114,21 +112,13 @@ pub fn sort_active(rows: &mut Vec<(ChatIndicator, &Chat)>) {
 /// Session-tab order for a space: creation order (activity never reorders
 /// tabs), id tiebreak. Pure.
 pub fn sort_tabs(chats: &mut [&Chat]) {
-    chats.sort_by(|a, b| {
-        a.created_at
-            .cmp(&b.created_at)
-            .then_with(|| a.id.cmp(&b.id))
-    });
+    chats.sort_by(|a, b| a.created_at.cmp(&b.created_at).then_with(|| a.id.cmp(&b.id)));
 }
 
 /// Spaces list order: creation order, id tiebreak — total and stable across
 /// devices. Pure.
 pub fn sort_spaces(spaces: &mut [Space]) {
-    spaces.sort_by(|a, b| {
-        a.created_at
-            .cmp(&b.created_at)
-            .then_with(|| a.id.cmp(&b.id))
-    });
+    spaces.sort_by(|a, b| a.created_at.cmp(&b.created_at).then_with(|| a.id.cmp(&b.id)));
 }
 
 /// The project a space belongs to: spaces sharing a repository identity —
@@ -162,9 +152,7 @@ pub fn sort_chats(chats: &mut [Chat]) {
     chats.sort_by(|a, b| {
         let ka = a.last_message_at.unwrap_or(a.created_at);
         let kb = b.last_message_at.unwrap_or(b.created_at);
-        kb.cmp(&ka)
-            .then_with(|| b.created_at.cmp(&a.created_at))
-            .then_with(|| a.id.cmp(&b.id))
+        kb.cmp(&ka).then_with(|| b.created_at.cmp(&a.created_at)).then_with(|| a.id.cmp(&b.id))
     });
 }
 
@@ -249,11 +237,7 @@ mod gate_tests {
     use crate::UserProfile;
 
     fn user() -> UserProfile {
-        UserProfile {
-            id: "user-1".into(),
-            email: "user@example.com".into(),
-            name: None,
-        }
+        UserProfile { id: "user-1".into(), email: "user@example.com".into(), name: None }
     }
 
     fn running_session(running: u32, updated_at: DateTime<Utc>) -> Session {
@@ -274,10 +258,7 @@ mod gate_tests {
         let fresh = running_session(3, now - chrono::Duration::seconds(10));
         assert_eq!(running_subagents(Some(&fresh), now), 3);
         // A crashed engine's row must not badge a chat forever.
-        let stale = running_session(
-            3,
-            now - chrono::Duration::milliseconds(SESSION_STALE_MS + 1),
-        );
+        let stale = running_session(3, now - chrono::Duration::milliseconds(SESSION_STALE_MS + 1));
         assert_eq!(running_subagents(Some(&stale), now), 0);
         assert_eq!(running_subagents(None, now), 0);
     }
@@ -285,19 +266,11 @@ mod gate_tests {
     #[test]
     fn workspace_scope_controls_the_auth_gate() {
         assert_eq!(
-            gate_phase(
-                &ConnectionStatus::Ready,
-                Some(WorkspaceScope::Local),
-                Some(&AuthState::SignedOut),
-            ),
+            gate_phase(&ConnectionStatus::Ready, Some(WorkspaceScope::Local), Some(&AuthState::SignedOut),),
             GatePhase::Ready
         );
         assert_eq!(
-            gate_phase(
-                &ConnectionStatus::Ready,
-                Some(WorkspaceScope::Synced),
-                Some(&AuthState::SignedOut),
-            ),
+            gate_phase(&ConnectionStatus::Ready, Some(WorkspaceScope::Synced), Some(&AuthState::SignedOut),),
             GatePhase::SignIn
         );
         assert_eq!(
@@ -316,25 +289,16 @@ mod gate_tests {
             for auth in [
                 AuthState::SignedOut,
                 AuthState::NeedsOrganization { user: user() },
-                AuthState::SignedIn {
-                    user: user(),
-                    org_id: Some("org-1".into()),
-                },
+                AuthState::SignedIn { user: user(), org_id: Some("org-1".into()) },
             ] {
-                assert_eq!(
-                    gate_phase(&ConnectionStatus::Ready, Some(scope), Some(&auth)),
-                    GatePhase::Ready
-                );
+                assert_eq!(gate_phase(&ConnectionStatus::Ready, Some(scope), Some(&auth)), GatePhase::Ready);
             }
         }
     }
 
     #[test]
     fn missing_scope_falls_back_to_a_synced_gate() {
-        assert_eq!(
-            gate_phase(&ConnectionStatus::Ready, None, None),
-            GatePhase::SignIn
-        );
+        assert_eq!(gate_phase(&ConnectionStatus::Ready, None, None), GatePhase::SignIn);
     }
 }
 
@@ -360,10 +324,7 @@ pub fn parse_auth_state(value: &serde_json::Value) -> Option<AuthState> {
         "NeedsOrganization" => Some(AuthState::NeedsOrganization { user: user()? }),
         "SignedIn" => Some(AuthState::SignedIn {
             user: user()?,
-            org_id: value
-                .get("orgId")
-                .and_then(|v| v.as_str())
-                .map(str::to_string),
+            org_id: value.get("orgId").and_then(|v| v.as_str()).map(str::to_string),
         }),
         _ => None,
     }
@@ -403,10 +364,7 @@ pub fn group_chats<'a>(chats: impl IntoIterator<Item = &'a Chat>) -> Vec<ChatGro
         let label = project_label(chat.cwd.as_deref());
         match groups.iter_mut().find(|g| g.label == label) {
             Some(group) => group.chats.push(chat),
-            None => groups.push(ChatGroup {
-                label,
-                chats: vec![chat],
-            }),
+            None => groups.push(ChatGroup { label, chats: vec![chat] }),
         }
     }
     groups
@@ -453,11 +411,7 @@ pub fn chat_location(chat: &Chat) -> Option<String> {
         .map(str::trim)
         .filter(|c| !crate::projectless::is_projectless_cwd(Some(c)))
         .map(|c| project_label(Some(c)));
-    let reference = chat
-        .branch
-        .as_deref()
-        .map(str::trim)
-        .filter(|b| !b.is_empty());
+    let reference = chat.branch.as_deref().map(str::trim).filter(|b| !b.is_empty());
     match (project, reference) {
         (Some(p), Some(r)) => Some(format!("{p} · {r}")),
         (Some(p), None) => Some(p),
@@ -482,11 +436,7 @@ pub fn single_line(text: &str) -> String {
 }
 
 fn plural(n: usize, one: &str, many: &str) -> String {
-    if n == 1 {
-        format!("{n} {one}")
-    } else {
-        format!("{n} {many}")
-    }
+    if n == 1 { format!("{n} {one}") } else { format!("{n} {many}") }
 }
 
 /// Per-kind chip label + one-line detail. Labels match zeron's `describeTool`
@@ -503,9 +453,7 @@ fn tool_chip_content_raw(call: &crate::ToolCall) -> (&'static str, String) {
         ToolCall::ReadFile { path } => ("Read", path.clone()),
         ToolCall::WriteFile { path, .. } => ("Write", path.clone()),
         ToolCall::EditFile { path, .. } => ("Edit", path.clone()),
-        ToolCall::ApplyPatch { path } => {
-            ("Patch", path.clone().unwrap_or_else(|| "workspace".into()))
-        }
+        ToolCall::ApplyPatch { path } => ("Patch", path.clone().unwrap_or_else(|| "workspace".into())),
         ToolCall::Search { pattern, path } => (
             "Search",
             match path {
@@ -565,9 +513,7 @@ pub fn tool_group_summary(tools: &[(crate::ToolCall, bool)]) -> String {
                 }
             }
             ToolCall::ReadFile { .. } => reads += 1,
-            ToolCall::Search { .. } | ToolCall::Glob { .. } | ToolCall::WebSearch { .. } => {
-                searches += 1
-            }
+            ToolCall::Search { .. } | ToolCall::Glob { .. } | ToolCall::WebSearch { .. } => searches += 1,
             ToolCall::WebFetch { .. } => fetches += 1,
             ToolCall::Todo { .. } => todos += 1,
             ToolCall::Mcp { .. } | ToolCall::Unknown { .. } => other += 1,
@@ -667,10 +613,7 @@ pub fn checkout_plan(kind: CheckoutKind, picked: Option<&crate::RepoRef>) -> Che
     match kind {
         CheckoutKind::NewWorktree => CheckoutPlan::NewWorktree { base: name },
         CheckoutKind::Local => match picked.and_then(|r| r.worktree_path.clone()) {
-            Some(path) => CheckoutPlan::ReuseWorktree {
-                path,
-                branch: name.unwrap_or_default(),
-            },
+            Some(path) => CheckoutPlan::ReuseWorktree { path, branch: name.unwrap_or_default() },
             None => CheckoutPlan::CurrentCheckout { branch: name },
         },
     }
@@ -696,19 +639,11 @@ mod checkout_tests {
     use crate::RepoRef;
 
     fn plain(name: &str) -> RepoRef {
-        RepoRef {
-            name: name.into(),
-            current: false,
-            worktree_path: None,
-        }
+        RepoRef { name: name.into(), current: false, worktree_path: None }
     }
 
     fn materialized(name: &str, path: &str) -> RepoRef {
-        RepoRef {
-            name: name.into(),
-            current: false,
-            worktree_path: Some(path.into()),
-        }
+        RepoRef { name: name.into(), current: false, worktree_path: Some(path.into()) }
     }
 
     #[test]
@@ -717,54 +652,32 @@ mod checkout_tests {
         // is exactly why "current worktree" is not its own state.
         assert_eq!(
             checkout_plan(CheckoutKind::Local, Some(&plain("main"))),
-            CheckoutPlan::CurrentCheckout {
-                branch: Some("main".into())
-            }
+            CheckoutPlan::CurrentCheckout { branch: Some("main".into()) }
         );
         assert_eq!(
             checkout_plan(CheckoutKind::Local, Some(&materialized("feat", "/wt/feat"))),
-            CheckoutPlan::ReuseWorktree {
-                path: "/wt/feat".into(),
-                branch: "feat".into()
-            }
+            CheckoutPlan::ReuseWorktree { path: "/wt/feat".into(), branch: "feat".into() }
         );
         // No ref picked at all is still the space folder — with no branch to
         // stamp until refs load.
-        assert_eq!(
-            checkout_plan(CheckoutKind::Local, None),
-            CheckoutPlan::CurrentCheckout { branch: None }
-        );
+        assert_eq!(checkout_plan(CheckoutKind::Local, None), CheckoutPlan::CurrentCheckout { branch: None });
     }
 
     #[test]
     fn new_worktree_carries_its_base_and_tolerates_none() {
         assert_eq!(
             checkout_plan(CheckoutKind::NewWorktree, Some(&plain("main"))),
-            CheckoutPlan::NewWorktree {
-                base: Some("main".into())
-            }
+            CheckoutPlan::NewWorktree { base: Some("main".into()) }
         );
         // Refs never loaded: send falls back to the space folder rather than
         // failing, so the base is allowed to be absent.
-        assert_eq!(
-            checkout_plan(CheckoutKind::NewWorktree, None),
-            CheckoutPlan::NewWorktree { base: None }
-        );
+        assert_eq!(checkout_plan(CheckoutKind::NewWorktree, None), CheckoutPlan::NewWorktree { base: None });
     }
 
     #[test]
     fn labels_say_which_of_the_three_outcomes_you_will_get() {
-        assert_eq!(
-            checkout_label(CheckoutKind::Local, Some(&plain("main"))),
-            "Current checkout"
-        );
-        assert_eq!(
-            checkout_label(CheckoutKind::Local, Some(&materialized("f", "/wt/f"))),
-            "Current worktree"
-        );
-        assert_eq!(
-            checkout_label(CheckoutKind::NewWorktree, Some(&plain("main"))),
-            "New worktree"
-        );
+        assert_eq!(checkout_label(CheckoutKind::Local, Some(&plain("main"))), "Current checkout");
+        assert_eq!(checkout_label(CheckoutKind::Local, Some(&materialized("f", "/wt/f"))), "Current worktree");
+        assert_eq!(checkout_label(CheckoutKind::NewWorktree, Some(&plain("main"))), "New worktree");
     }
 }

@@ -18,11 +18,7 @@ pub(super) fn state_root() -> PathBuf {
         .filter(|v| !v.is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| crate::executable::home_or_current_dir().join(".zeron/cursor-state"));
-    if root.is_absolute() {
-        root
-    } else {
-        std::env::current_dir().unwrap_or_default().join(root)
-    }
+    if root.is_absolute() { root } else { std::env::current_dir().unwrap_or_default().join(root) }
 }
 
 impl Lease {
@@ -36,7 +32,10 @@ impl Lease {
                 Ok(path) => {
                     let dir = PathBuf::from(path.trim());
                     if path.trim().is_empty() || !dir.is_dir() {
-                        return Err(HarnessError::Protocol("Cursor conversation storage is missing; restore its state directory before resuming".into()));
+                        return Err(HarnessError::Protocol(
+                            "Cursor conversation storage is missing; restore its state directory before resuming"
+                                .into(),
+                        ));
                     }
                     Some(dir)
                 }
@@ -46,9 +45,7 @@ impl Lease {
         } else {
             Some(root.join("agents").join(uuid::Uuid::new_v4().to_string()))
         };
-        let lock_dir = store_dir
-            .clone()
-            .unwrap_or_else(|| root.join("legacy-locks"));
+        let lock_dir = store_dir.clone().unwrap_or_else(|| root.join("legacy-locks"));
         std::fs::create_dir_all(&lock_dir)?;
         #[cfg(unix)]
         {
@@ -58,10 +55,7 @@ impl Lease {
         let name = if store_dir.is_some() {
             ".zeron-owner.lock".into()
         } else {
-            format!(
-                "{:x}.lock",
-                Sha256::digest(resume.unwrap_or_default().as_bytes())
-            )
+            format!("{:x}.lock", Sha256::digest(resume.unwrap_or_default().as_bytes()))
         };
         let mut options = OpenOptions::new();
         options.create(true).truncate(false).read(true).write(true);
@@ -75,19 +69,17 @@ impl Lease {
             loop {
                 match file.try_lock() {
                     Ok(()) => return Ok(()),
-                    Err(std::fs::TryLockError::WouldBlock) => {
-                        tokio::time::sleep(Duration::from_millis(25)).await
-                    }
+                    Err(std::fs::TryLockError::WouldBlock) => tokio::time::sleep(Duration::from_millis(25)).await,
                     Err(std::fs::TryLockError::Error(e)) => return Err(HarnessError::Io(e)),
                 }
             }
         };
-        tokio::time::timeout(Duration::from_secs(5), lock).await
-            .map_err(|_| HarnessError::Protocol("This Cursor conversation is still running. Stop the current run before retrying.".into()))??;
-        Ok(Self {
-            _file: file,
-            store_dir,
-        })
+        tokio::time::timeout(Duration::from_secs(5), lock).await.map_err(|_| {
+            HarnessError::Protocol(
+                "This Cursor conversation is still running. Stop the current run before retrying.".into(),
+            )
+        })??;
+        Ok(Self { _file: file, store_dir })
     }
 }
 
@@ -99,24 +91,12 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let first = Lease::acquire(root.path(), None).await.unwrap();
         std::fs::create_dir_all(root.path().join("by-agent")).unwrap();
-        std::fs::write(
-            root.path().join("by-agent/agent-test"),
-            first.store_dir.as_ref().unwrap().to_str().unwrap(),
-        )
-        .unwrap();
+        std::fs::write(root.path().join("by-agent/agent-test"), first.store_dir.as_ref().unwrap().to_str().unwrap())
+            .unwrap();
         let second = Lease::acquire(root.path(), Some("agent-test"));
         tokio::pin!(second);
-        assert!(
-            tokio::time::timeout(Duration::from_millis(100), &mut second)
-                .await
-                .is_err()
-        );
+        assert!(tokio::time::timeout(Duration::from_millis(100), &mut second).await.is_err());
         drop(first);
-        assert!(
-            tokio::time::timeout(Duration::from_secs(1), second)
-                .await
-                .unwrap()
-                .is_ok()
-        );
+        assert!(tokio::time::timeout(Duration::from_secs(1), second).await.unwrap().is_ok());
     }
 }

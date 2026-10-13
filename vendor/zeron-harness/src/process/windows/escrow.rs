@@ -12,12 +12,10 @@ use crate::windows_process::{Attributes, Job};
 use std::io;
 use std::os::windows::ffi::OsStrExt;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
-use windows_sys::Win32::Foundation::{
-    DUPLICATE_CLOSE_SOURCE, DUPLICATE_SAME_ACCESS, DuplicateHandle,
-};
+use windows_sys::Win32::Foundation::{DUPLICATE_CLOSE_SOURCE, DUPLICATE_SAME_ACCESS, DuplicateHandle};
 use windows_sys::Win32::System::Threading::{
-    CREATE_NO_WINDOW, CREATE_SUSPENDED, CreateProcessW, EXTENDED_STARTUPINFO_PRESENT,
-    GetCurrentProcess, PROCESS_INFORMATION, STARTUPINFOEXW, TerminateProcess,
+    CREATE_NO_WINDOW, CREATE_SUSPENDED, CreateProcessW, EXTENDED_STARTUPINFO_PRESENT, GetCurrentProcess,
+    PROCESS_INFORMATION, STARTUPINFOEXW, TerminateProcess,
 };
 
 #[derive(Debug)]
@@ -35,11 +33,7 @@ impl Drop for Escrow {
 }
 impl Escrow {
     pub(super) fn new(job: &Job) -> io::Result<Self> {
-        let image: Vec<u16> = std::env::current_exe()?
-            .as_os_str()
-            .encode_wide()
-            .chain(Some(0))
-            .collect();
+        let image: Vec<u16> = std::env::current_exe()?.as_os_str().encode_wide().chain(Some(0)).collect();
         let jobs = [job.as_handle().as_raw_handle()];
         let mut attrs = Attributes::for_job(&jobs)?;
         let mut startup = STARTUPINFOEXW::default();
