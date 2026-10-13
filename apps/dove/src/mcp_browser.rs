@@ -74,7 +74,11 @@ pub fn run() {
             continue;
         }
         let Ok(msg) = serde_json::from_str::<Value>(&line) else {
-            let _ = writeln!(out, "{}", json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32700, "message": "Parse error"}}));
+            let _ = writeln!(
+                out,
+                "{}",
+                json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32700, "message": "Parse error"}})
+            );
             let _ = out.flush();
             continue;
         };
@@ -129,7 +133,8 @@ pub fn run() {
 fn call(tool: &str, args: Value) -> Value {
     match forward(tool, args) {
         Ok(v) => {
-            let mut content = vec![json!({"type": "text", "text": v.get("text").and_then(Value::as_str).unwrap_or("")})];
+            let mut content =
+                vec![json!({"type": "text", "text": v.get("text").and_then(Value::as_str).unwrap_or("")})];
             if let Some(image) = v.get("image").and_then(Value::as_str) {
                 content.push(json!({"type": "image", "data": image, "mimeType": "image/png"}));
             }

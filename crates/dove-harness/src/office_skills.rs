@@ -28,10 +28,7 @@ macro_rules! skill {
             description: $description,
             files: &[
                 ("SKILL.md", include_str!(concat!("../../../skills/", $name, "/SKILL.md"))),
-                (
-                    concat!("scripts/", $script),
-                    include_str!(concat!("../../../skills/", $name, "/scripts/", $script)),
-                ),
+                (concat!("scripts/", $script), include_str!(concat!("../../../skills/", $name, "/scripts/", $script))),
             ],
         }
     };
@@ -152,7 +149,9 @@ pub fn ensure_installed() -> Option<PathBuf> {
                                 skill.name,
                                 dir.display()
                             ),
-                            Err(e) => tracing::warn!("could not install the {} skill in {}: {e}", skill.name, dir.display()),
+                            Err(e) => {
+                                tracing::warn!("could not install the {} skill in {}: {e}", skill.name, dir.display())
+                            }
                         }
                     }
                 }
@@ -177,7 +176,10 @@ pub fn describe(name: Option<&str>) -> Result<String, String> {
         }
         Some(n) => {
             let skill = find(n).ok_or_else(|| {
-                format!("No skill named {n:?}. Available: {}", SKILLS.iter().map(|s| s.name).collect::<Vec<_>>().join(", "))
+                format!(
+                    "No skill named {n:?}. Available: {}",
+                    SKILLS.iter().map(|s| s.name).collect::<Vec<_>>().join(", ")
+                )
             })?;
             let dir = root.join(skill.name);
             let body = skill.files.iter().find(|(p, _)| *p == "SKILL.md").map(|(_, t)| *t).unwrap_or_default();

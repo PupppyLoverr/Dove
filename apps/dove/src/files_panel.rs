@@ -8,9 +8,9 @@ use std::sync::Arc;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, AppContext as _, Context, Entity, EventEmitter, InteractiveElement as _, IntoElement, ParentElement as _,
-    Render, ScrollStrategy, SharedString, StatefulInteractiveElement as _, Styled as _, StyledImage as _, StyledText,
-    Subscription, TextRun, UniformListScrollHandle, Window, div, px, uniform_list,
+    AnyElement, AppContext as _, Context, Entity, EventEmitter, InteractiveElement as _, IntoElement,
+    ParentElement as _, Render, ScrollStrategy, SharedString, StatefulInteractiveElement as _, Styled as _,
+    StyledImage as _, StyledText, Subscription, TextRun, UniformListScrollHandle, Window, div, px, uniform_list,
 };
 use gpui_base::input::{Input, InputEvent, InputState};
 use zeron_syntax::{HighlightRequest, HighlightedDocument};
@@ -474,7 +474,11 @@ impl FilesPanel {
             msg.push_str(&format!("\n\nSelected in Dove: {} — \"{}\"", view.label(sel), view.text_of(sel)));
         }
         msg.push_str("\n\n");
-        msg.push_str(if instruction.trim().is_empty() { "Propose a precise improvement and make it." } else { instruction.trim() });
+        msg.push_str(if instruction.trim().is_empty() {
+            "Propose a precise improvement and make it."
+        } else {
+            instruction.trim()
+        });
         cx.emit(FilesEvent::AskAgent(msg));
     }
 
@@ -519,7 +523,15 @@ impl FilesPanel {
                         .flex()
                         .items_center()
                         .gap(px(8.0))
-                        .child(div().flex_none().max_w(px(140.0)).truncate().text_size(px(12.0)).text_color(t.text_faint).child(label))
+                        .child(
+                            div()
+                                .flex_none()
+                                .max_w(px(140.0))
+                                .truncate()
+                                .text_size(px(12.0))
+                                .text_color(t.text_faint)
+                                .child(label),
+                        )
                         .child(field(input))
                         .child(ui::button_ghost("office-apply", "Apply", t).on_click(on(Self::office_apply))),
                 )
@@ -540,15 +552,13 @@ impl FilesPanel {
                         .flex()
                         .items_center()
                         .gap(px(8.0))
-                        .child(
-                            div().flex_1().min_w_0().truncate().text_size(px(12.0)).text_color(t.text_muted).child(
-                                if dirty > 0 {
-                                    format!("{dirty} unsaved {}", if dirty == 1 { "change" } else { "changes" })
-                                } else {
-                                    self.office_status.clone().unwrap_or_default()
-                                },
-                            ),
-                        )
+                        .child(div().flex_1().min_w_0().truncate().text_size(px(12.0)).text_color(t.text_muted).child(
+                            if dirty > 0 {
+                                format!("{dirty} unsaved {}", if dirty == 1 { "change" } else { "changes" })
+                            } else {
+                                self.office_status.clone().unwrap_or_default()
+                            },
+                        ))
                         .when(dirty > 0, |d| {
                             d.child(ui::button_ghost("office-revert", "Revert", t).on_click(on(Self::office_revert)))
                                 .child(ui::button_primary("office-save", "Save", t).on_click(on(Self::office_save)))
@@ -659,7 +669,9 @@ impl FilesPanel {
         } else if matches!(p.kind, PreviewKind::Image) {
             let src = full.as_ref().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
             let picture = markdown_extra::preview_image(&src)
-                .map(|img| gpui::img(img).max_w_full().max_h_full().object_fit(gpui::ObjectFit::Contain).into_any_element())
+                .map(|img| {
+                    gpui::img(img).max_w_full().max_h_full().object_fit(gpui::ObjectFit::Contain).into_any_element()
+                })
                 .unwrap_or_else(|| {
                     gpui::img(SharedString::from(src))
                         .max_w_full()
