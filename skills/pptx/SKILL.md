@@ -6,6 +6,8 @@ description: Create PowerPoint decks (.pptx) from an outline on the deck's real 
 # PowerPoint decks (.pptx)
 
 Script: `scripts/pptx_tool.py` (python-pptx). Run it with `uv run scripts/pptx_tool.py ...`
+
+Input files (specs, outlines) can be `-` to read from standard input, e.g. `... create - out.pptx <<'EOF'`.
 (uv installs the dependency on first use) or `python3 scripts/pptx_tool.py ...` after
 `python3 -m pip install --user python-pptx`. Paths below are relative to this skill folder.
 

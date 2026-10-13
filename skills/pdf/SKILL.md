@@ -9,6 +9,7 @@ Script: `scripts/pdf_tool.py` (reportlab to write, pypdf to read and edit). Run 
 `uv run scripts/pdf_tool.py ...` (uv installs the dependencies on first use) or
 `python3 scripts/pdf_tool.py ...` after `python3 -m pip install --user reportlab pypdf`.
 Paths below are relative to this skill folder.
+Input files (specs, outlines) can be `-` to read from standard input, e.g. `... create - out.pdf <<'EOF'`.
 
 ## Create
 

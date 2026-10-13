@@ -193,10 +193,21 @@ class NumberedCanvas(canvas.Canvas):
         super().save()
 
 
+def read_input(path):
+    """The input file's text; `-` reads standard input."""
+    if path == "-":
+        return sys.stdin.read()
+    with open(path, encoding="utf-8") as f:
+        return f.read()
+
+
+def is_json(path, src):
+    return path.lower().endswith(".json") or (path == "-" and src.lstrip().startswith("{"))
+
+
 def cmd_create(a):
-    with open(a.input, encoding="utf-8") as f:
-        src = f.read()
-    spec = json.loads(src) if a.input.lower().endswith(".json") else {"blocks": markdown_blocks(src)}
+    src = read_input(a.input)
+    spec = json.loads(src) if is_json(a.input, src) else {"blocks": markdown_blocks(src)}
     if a.title:
         spec["title"] = a.title
     size = page_size(spec)
@@ -222,8 +233,7 @@ def cmd_create(a):
 
 
 def cmd_form(a):
-    with open(a.input, encoding="utf-8") as f:
-        spec = json.load(f)
+    spec = json.loads(read_input(a.input))
     size = page_size(spec)
     c = canvas.Canvas(a.output, pagesize=size)
     c.setTitle(spec.get("title", "Form"))

@@ -6,6 +6,8 @@ description: Create and edit Excel workbooks (.xlsx) with live formulas, number 
 # Excel workbooks (.xlsx)
 
 Script: `scripts/xlsx_tool.py` (openpyxl). Run it with `uv run scripts/xlsx_tool.py ...`
+
+Input files (specs, outlines) can be `-` to read from standard input, e.g. `... create - out.xlsx <<'EOF'`.
 (uv installs the dependency on first use) or `python3 scripts/xlsx_tool.py ...` after
 `python3 -m pip install --user openpyxl`. Paths below are relative to this skill folder.
 

@@ -243,10 +243,21 @@ def mark_header_row(row):
     tr_pr.append(el)
 
 
-def load_spec(path):
+def read_input(path):
+    """The input file's text; `-` reads standard input."""
+    if path == "-":
+        return sys.stdin.read()
     with open(path, encoding="utf-8") as f:
-        src = f.read()
-    if path.lower().endswith(".json"):
+        return f.read()
+
+
+def is_json(path, src):
+    return path.lower().endswith(".json") or (path == "-" and src.lstrip().startswith("{"))
+
+
+def load_spec(path):
+    src = read_input(path)
+    if is_json(path, src):
         spec = json.loads(src)
     else:
         spec = {"blocks": markdown_blocks(src)}

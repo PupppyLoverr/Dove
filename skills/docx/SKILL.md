@@ -6,6 +6,8 @@ description: Create and edit Word documents (.docx) with real styles, headings, 
 # Word documents (.docx)
 
 Script: `scripts/docx_tool.py` (python-docx). Run it with `uv run scripts/docx_tool.py ...`
+
+Input files (specs, outlines) can be `-` to read from standard input, e.g. `... create - out.docx <<'EOF'`.
 (uv installs the dependency on first use) or `python3 scripts/docx_tool.py ...` after
 `python3 -m pip install --user python-docx`. Paths below are relative to this skill folder.
 

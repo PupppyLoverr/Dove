@@ -16,16 +16,16 @@ pub struct Dialect {
     pub preserve: bool,
 }
 
-pub const WORD: Dialect = Dialect {
-    p: "w:p",
-    t: "w:t",
-    run: "<w:r><w:t xml:space=\"preserve\">{}</w:t></w:r>",
-    tail: None,
-    preserve: true,
-};
+pub const WORD: Dialect =
+    Dialect { p: "w:p", t: "w:t", run: "<w:r><w:t xml:space=\"preserve\">{}</w:t></w:r>", tail: None, preserve: true };
 
-pub const DRAWING: Dialect =
-    Dialect { p: "a:p", t: "a:t", run: "<a:r><a:rPr lang=\"en-US\" dirty=\"0\"/><a:t>{}</a:t></a:r>", tail: Some("a:endParaRPr"), preserve: false };
+pub const DRAWING: Dialect = Dialect {
+    p: "a:p",
+    t: "a:t",
+    run: "<a:r><a:rPr lang=\"en-US\" dirty=\"0\"/><a:t>{}</a:t></a:r>",
+    tail: Some("a:endParaRPr"),
+    preserve: false,
+};
 
 struct TSpan {
     open: (usize, usize),
@@ -94,7 +94,11 @@ pub fn set_paragraphs(src: &str, d: Dialect, edits: &[(usize, String)]) -> Resul
         let esc = xml::escape(&text.replace(['\r', '\n'], " "));
         let open_tag = |t: &TSpan| {
             let tag = &src[t.open.0..t.open.1];
-            let tag = if t.close.is_none() { format!("{}>", tag.trim_end_matches('>').trim_end_matches('/')) } else { tag.to_string() };
+            let tag = if t.close.is_none() {
+                format!("{}>", tag.trim_end_matches('>').trim_end_matches('/'))
+            } else {
+                tag.to_string()
+            };
             if d.preserve { xml::set_attr(&tag, "xml:space", "preserve") } else { tag }
         };
         if let Some(first) = p.texts.first() {

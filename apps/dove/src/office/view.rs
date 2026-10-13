@@ -11,8 +11,8 @@ use std::sync::Arc;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, ClickEvent, Context, FontStyle, FontWeight, HighlightStyle, InteractiveElement as _, IntoElement,
-    ObjectFit, ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled as _, StyledImage as _, StyledText,
-    Window, canvas, div, hsla, px, relative, uniform_list,
+    ObjectFit, ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled as _, StyledImage as _,
+    StyledText, Window, canvas, div, hsla, px, relative, uniform_list,
 };
 
 use super::{Document, docx, pdf, pptx, xlsx};
@@ -115,7 +115,9 @@ impl OfficeView {
     pub fn text_of(&self, t: &Target) -> String {
         match (t, &self.doc) {
             (Target::Para(i), Document::Docx(d)) => d.paras.get(*i).map(docx::Para::text).unwrap_or_default(),
-            (Target::Slide { slide, para }, _) => self.slide_para(*slide, *para).map(|p| p.text.clone()).unwrap_or_default(),
+            (Target::Slide { slide, para }, _) => {
+                self.slide_para(*slide, *para).map(|p| p.text.clone()).unwrap_or_default()
+            }
             (Target::Cell { sheet, at }, Document::Xlsx(b)) => b.input(*sheet, *at),
             (Target::Field(i), Document::Pdf(p)) => p.fields.get(*i).map(|f| f.value.clone()).unwrap_or_default(),
             _ => String::new(),
@@ -186,7 +188,9 @@ impl OfficeView {
         match &self.doc {
             Document::Docx(_) => docx::save(
                 path,
-                &e.iter().filter_map(|(t, s)| if let Target::Para(i) = t { Some((*i, s.clone())) } else { None }).collect::<Vec<_>>(),
+                &e.iter()
+                    .filter_map(|(t, s)| if let Target::Para(i) = t { Some((*i, s.clone())) } else { None })
+                    .collect::<Vec<_>>(),
             ),
             Document::Pptx(d) => pptx::save(
                 path,
@@ -408,14 +412,16 @@ fn docx_para(
                     div()
                         .flex_1()
                         .min_w_0()
-                        .when(quote, |d| d.border_l_2().border_color(t.border_strong).pl(px(10.0)).italic().text_color(t.text_muted))
+                        .when(quote, |d| {
+                            d.border_l_2().border_color(t.border_strong).pl(px(10.0)).italic().text_color(t.text_muted)
+                        })
                         .child(body),
                 ),
         )
         .children(
-            p.images
-                .iter()
-                .map(|img| gpui::img(img.clone()).w_full().h(px(220.0)).object_fit(ObjectFit::Contain).into_any_element()),
+            p.images.iter().map(|img| {
+                gpui::img(img.clone()).w_full().h(px(220.0)).object_fit(ObjectFit::Contain).into_any_element()
+            }),
         )
         .on_click(select(target, cx))
         .into_any_element()
@@ -460,7 +466,8 @@ fn pptx_view(view: &OfficeView, d: &pptx::Deck, t: &Theme, cx: &mut Context<File
         );
     }
     if slides.is_empty() {
-        return crate::kit::empty_state(crate::assets::icons::DOCUMENT, "No slides", "This deck is empty.", t).into_any_element();
+        return crate::kit::empty_state(crate::assets::icons::DOCUMENT, "No slides", "This deck is empty.", t)
+            .into_any_element();
     }
     div()
         .id("office-pptx")
@@ -478,13 +485,17 @@ fn pptx_shape(view: &OfficeView, sc: &SlideCtx, sh: &pptx::Shape, cx: &mut Conte
     use pptx::Role;
     let d = sc.deck;
     let f = sh.frame.filter(|f| f.w > 0.0 && f.h > 0.0).unwrap_or(match sh.role {
-        Role::Title | Role::CenterTitle => pptx::Frame { x: d.width * 0.06, y: d.height * 0.05, w: d.width * 0.88, h: d.height * 0.16 },
+        Role::Title | Role::CenterTitle => {
+            pptx::Frame { x: d.width * 0.06, y: d.height * 0.05, w: d.width * 0.88, h: d.height * 0.16 }
+        }
         _ => pptx::Frame { x: d.width * 0.06, y: d.height * 0.25, w: d.width * 0.88, h: d.height * 0.68 },
     });
     let s = sc.scale;
     let frame = div().absolute().left(px(f.x * s)).top(px(f.y * s)).w(px(f.w * s)).h(px(f.h * s)).overflow_hidden();
     match &sh.kind {
-        pptx::ShapeKind::Picture(img) => frame.child(gpui::img(img.clone()).size_full().object_fit(ObjectFit::Fill)).into_any_element(),
+        pptx::ShapeKind::Picture(img) => {
+            frame.child(gpui::img(img.clone()).size_full().object_fit(ObjectFit::Fill)).into_any_element()
+        }
         pptx::ShapeKind::Text(paras) => {
             let pad = 91440.0 * s;
             frame
@@ -691,7 +702,8 @@ fn xlsx_view(view: &OfficeView, b: &xlsx::Book, t: &Theme, cx: &mut Context<File
                             .cursor_pointer()
                             .child(text)
                             .on_click(move |_, window, cx| {
-                                let _ = weak.update(cx, |p, cx| p.office_select(Target::Cell { sheet, at }, window, cx));
+                                let _ =
+                                    weak.update(cx, |p, cx| p.office_select(Target::Cell { sheet, at }, window, cx));
                             })
                             .into_any_element()
                     }))
@@ -746,7 +758,15 @@ fn pdf_view(view: &OfficeView, p: &pdf::Pdf, t: &Theme, cx: &mut Context<FilesPa
                     .hover(move |s| s.bg(hover))
                     .when(selected, |d| d.bg(t.wash(0.10)))
                     .when(view.edited(&target) && !selected, |d| d.bg(t.wash(0.05)))
-                    .child(div().w(relative(0.4)).flex_none().truncate().text_size(px(12.0)).text_color(t.text_muted).child(f.name.clone()));
+                    .child(
+                        div()
+                            .w(relative(0.4))
+                            .flex_none()
+                            .truncate()
+                            .text_size(px(12.0))
+                            .text_color(t.text_muted)
+                            .child(f.name.clone()),
+                    );
                 if f.kind == pdf::FieldKind::Check {
                     let weak = cx.weak_entity();
                     row.child(

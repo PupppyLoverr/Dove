@@ -52,9 +52,9 @@ mod imp {
     use std::path::Path;
     use std::sync::Arc;
 
+    use objc2::msg_send;
     use objc2::rc::{Retained, autoreleasepool};
     use objc2::runtime::{AnyClass, AnyObject};
-    use objc2::msg_send;
     use objc2_foundation::{NSString, NSURL};
 
     use super::{Field, FieldKind, MAX_PAGES, Page, Pdf, RENDER_WIDTH};
@@ -94,7 +94,12 @@ mod imp {
 
     #[link(name = "CoreFoundation", kind = "framework")]
     unsafe extern "C" {
-        fn CFURLCreateFromFileSystemRepresentation(a: *const c_void, buf: *const u8, len: isize, dir: bool) -> *const c_void;
+        fn CFURLCreateFromFileSystemRepresentation(
+            a: *const c_void,
+            buf: *const u8,
+            len: isize,
+            dir: bool,
+        ) -> *const c_void;
         fn CFRelease(cf: *const c_void);
     }
 
@@ -106,10 +111,24 @@ mod imp {
         fn CGPDFDocumentGetPage(doc: *mut c_void, n: usize) -> *mut c_void;
         fn CGPDFPageGetBoxRect(page: *mut c_void, b: i32) -> CGRect;
         fn CGPDFPageGetRotationAngle(page: *mut c_void) -> i32;
-        fn CGPDFPageGetDrawingTransform(page: *mut c_void, b: i32, rect: CGRect, rotate: i32, keep: bool) -> CGAffineTransform;
+        fn CGPDFPageGetDrawingTransform(
+            page: *mut c_void,
+            b: i32,
+            rect: CGRect,
+            rotate: i32,
+            keep: bool,
+        ) -> CGAffineTransform;
         fn CGColorSpaceCreateDeviceRGB() -> *mut c_void;
         fn CGColorSpaceRelease(cs: *mut c_void);
-        fn CGBitmapContextCreate(data: *mut c_void, w: usize, h: usize, bpc: usize, bpr: usize, cs: *mut c_void, info: u32) -> *mut c_void;
+        fn CGBitmapContextCreate(
+            data: *mut c_void,
+            w: usize,
+            h: usize,
+            bpc: usize,
+            bpr: usize,
+            cs: *mut c_void,
+            info: u32,
+        ) -> *mut c_void;
         fn CGContextRelease(ctx: *mut c_void);
         fn CGContextSetRGBFillColor(ctx: *mut c_void, r: f64, g: f64, b: f64, a: f64);
         fn CGContextFillRect(ctx: *mut c_void, rect: CGRect);
@@ -201,9 +220,9 @@ mod imp {
                 let kind = match string(&ann, "widgetFieldType").as_deref() {
                     Some("/Tx") => FieldKind::Text,
                     Some("/Btn") => {
-                        // Only checkboxes (control type 1) are fillable here.
+                        // kPDFWidgetCheckBoxControl; push and radio buttons are skipped.
                         let control: isize = unsafe { msg_send![&*ann, widgetControlType] };
-                        if control != 1 {
+                        if control != 2 {
                             continue;
                         }
                         FieldKind::Check
@@ -220,7 +239,8 @@ mod imp {
     pub fn load(path: &Path) -> Result<Pdf, String> {
         let bytes = path.as_os_str().as_encoded_bytes();
         let pages = unsafe {
-            let url = CFURLCreateFromFileSystemRepresentation(std::ptr::null(), bytes.as_ptr(), bytes.len() as isize, false);
+            let url =
+                CFURLCreateFromFileSystemRepresentation(std::ptr::null(), bytes.as_ptr(), bytes.len() as isize, false);
             if url.is_null() {
                 return Err("Could not open this PDF".into());
             }
@@ -297,7 +317,8 @@ mod imp {
     use super::Pdf;
 
     pub fn load(_: &Path) -> Result<Pdf, String> {
-        Err("PDF pages render with macOS's built-in PDF engine. On this platform, open the file in your PDF viewer.".into())
+        Err("PDF pages render with macOS's built-in PDF engine. On this platform, open the file in your PDF viewer."
+            .into())
     }
 
     pub fn save(_: &Path, _: &[(String, String)]) -> Result<(), String> {

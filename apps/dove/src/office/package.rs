@@ -26,7 +26,8 @@ impl Package {
     }
 
     pub fn from_bytes(bytes: Vec<u8>) -> Result<Self, String> {
-        let zip = zip::ZipArchive::new(Cursor::new(&bytes)).map_err(|_| "Not an Office document (bad ZIP)".to_string())?;
+        let zip =
+            zip::ZipArchive::new(Cursor::new(&bytes)).map_err(|_| "Not an Office document (bad ZIP)".to_string())?;
         let names = zip.file_names().map(str::to_string).collect();
         Ok(Self { bytes: Arc::new(bytes), names })
     }
@@ -68,7 +69,12 @@ impl Package {
     /// Write the package to `dest`: `replace` parts get new contents,
     /// `remove` parts are dropped, the rest is copied byte for byte. The file
     /// is replaced atomically.
-    pub fn save(&self, dest: &Path, replace: &HashMap<String, Vec<u8>>, remove: &HashSet<String>) -> Result<(), String> {
+    pub fn save(
+        &self,
+        dest: &Path,
+        replace: &HashMap<String, Vec<u8>>,
+        remove: &HashSet<String>,
+    ) -> Result<(), String> {
         let mut zip = zip::ZipArchive::new(Cursor::new(self.bytes.as_slice())).map_err(|e| e.to_string())?;
         let mut out = zip::ZipWriter::new(Cursor::new(Vec::with_capacity(self.bytes.len() + 4096)));
         let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
@@ -88,10 +94,8 @@ impl Package {
             }
         }
         let bytes = out.finish().map_err(|e| e.to_string())?.into_inner();
-        let tmp = dest.with_extension(format!(
-            "{}.dove-save",
-            dest.extension().and_then(|e| e.to_str()).unwrap_or("tmp")
-        ));
+        let tmp =
+            dest.with_extension(format!("{}.dove-save", dest.extension().and_then(|e| e.to_str()).unwrap_or("tmp")));
         std::fs::write(&tmp, &bytes).map_err(|e| e.to_string())?;
         std::fs::rename(&tmp, dest).map_err(|e| {
             let _ = std::fs::remove_file(&tmp);

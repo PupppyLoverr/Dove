@@ -149,9 +149,20 @@ def add_chart(ws, ch):
     ws.add_chart(chart, ch.get("anchor", "H2"))
 
 
+def read_input(path):
+    """The input file's text; `-` reads standard input."""
+    if path == "-":
+        return sys.stdin.read()
+    with open(path, encoding="utf-8") as f:
+        return f.read()
+
+
+def is_json(path, src):
+    return path.lower().endswith(".json") or (path == "-" and src.lstrip().startswith("{"))
+
+
 def cmd_create(a):
-    with open(a.input, encoding="utf-8") as f:
-        spec = json.load(f)
+    spec = json.loads(read_input(a.input))
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
     for s in spec.get("sheets", []):
@@ -164,8 +175,7 @@ def cmd_create(a):
 
 
 def cmd_add_sheet(a):
-    with open(a.input, encoding="utf-8") as f:
-        spec = json.load(f)
+    spec = json.loads(read_input(a.input))
     wb = openpyxl.load_workbook(a.file)
     for s in spec.get("sheets", []):
         build_sheet(wb.create_sheet(s.get("name", f"Sheet{len(wb.sheetnames) + 1}")[:31]), s)

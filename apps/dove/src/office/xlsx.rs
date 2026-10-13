@@ -108,7 +108,8 @@ fn parse_sheet(src: &str, shared: &[String]) -> (BTreeMap<(u32, u32), Cell>, u32
                 col_at = 0;
             }
             Tok::Open { name, attrs, empty, .. } if xml::local(name) == "c" => {
-                let at = xml::attr(attrs, "r").and_then(|r| parse_ref(&r)).unwrap_or((row_at.saturating_sub(1), col_at));
+                let at =
+                    xml::attr(attrs, "r").and_then(|r| parse_ref(&r)).unwrap_or((row_at.saturating_sub(1), col_at));
                 col_at = at.1 + 1;
                 let ty = xml::attr(attrs, "t").unwrap_or_default();
                 if empty {
@@ -119,7 +120,16 @@ fn parse_sheet(src: &str, shared: &[String]) -> (BTreeMap<(u32, u32), Cell>, u32
             Tok::Close { name, .. } if xml::local(name) == "c" => {
                 if let Some((at, ty, mut cell)) = cur.take() {
                     match ty.as_str() {
-                        "s" => cell.value = cell.value.trim().parse::<usize>().ok().and_then(|i| shared.get(i)).cloned().unwrap_or_default(),
+                        "s" => {
+                            cell.value = cell
+                                .value
+                                .trim()
+                                .parse::<usize>()
+                                .ok()
+                                .and_then(|i| shared.get(i))
+                                .cloned()
+                                .unwrap_or_default()
+                        }
                         "b" => cell.value = if cell.value.trim() == "1" { "TRUE".into() } else { "FALSE".into() },
                         "str" | "inlineStr" | "e" => {}
                         _ => cell.number = !cell.value.is_empty(),
@@ -169,7 +179,13 @@ pub fn load(path: &Path) -> Result<Book, String> {
         let Some(rel) = xml::attr(attrs, "r:id").and_then(|id| rels.get(&id)) else { continue };
         let Some(xml_src) = pkg.text(&rel.target) else { continue };
         let (cells, rows, cols) = parse_sheet(&xml_src, &shared);
-        sheets.push(Sheet { name: xml::attr(attrs, "name").unwrap_or_default(), part: rel.target.clone(), cells, rows, cols });
+        sheets.push(Sheet {
+            name: xml::attr(attrs, "name").unwrap_or_default(),
+            part: rel.target.clone(),
+            cells,
+            rows,
+            cols,
+        });
     }
     if sheets.is_empty() {
         return Err("This workbook has no worksheets".into());
@@ -370,10 +386,16 @@ pub fn save(path: &Path, edits: &[(String, (u32, u32), String)]) -> Result<(), S
     if pkg.has(chain) {
         remove.insert(chain.to_string());
         if let Some(src) = pkg.text("xl/_rels/workbook.xml.rels") {
-            replace.insert("xl/_rels/workbook.xml.rels".into(), without(&src, "Relationship", "Target", "calcChain.xml").into_bytes());
+            replace.insert(
+                "xl/_rels/workbook.xml.rels".into(),
+                without(&src, "Relationship", "Target", "calcChain.xml").into_bytes(),
+            );
         }
         if let Some(src) = pkg.text("[Content_Types].xml") {
-            replace.insert("[Content_Types].xml".into(), without(&src, "Override", "PartName", "/calcChain.xml").into_bytes());
+            replace.insert(
+                "[Content_Types].xml".into(),
+                without(&src, "Override", "PartName", "/calcChain.xml").into_bytes(),
+            );
         }
     }
     pkg.save(path, &replace, &remove)
@@ -437,7 +459,13 @@ impl Book {
             if let Some(v) = ev.formula(sheet, f) {
                 return match v {
                     Val::Num(n) => fmt_num(n),
-                    Val::Bool(b) => if b { "TRUE".into() } else { "FALSE".into() },
+                    Val::Bool(b) => {
+                        if b {
+                            "TRUE".into()
+                        } else {
+                            "FALSE".into()
+                        }
+                    }
                     Val::Text(t) => t,
                     Val::List(l) => l.first().map(|v| format!("{v:?}")).unwrap_or_default(),
                 };
@@ -623,7 +651,9 @@ fn lex(f: &str) -> Option<Vec<T>> {
             }
             d if d.is_ascii_digit() || d == '.' => {
                 let s = i;
-                while i < c.len() && (c[i].is_ascii_digit() || c[i] == '.' || ((c[i] == 'e' || c[i] == 'E') && i + 1 < c.len())) {
+                while i < c.len()
+                    && (c[i].is_ascii_digit() || c[i] == '.' || ((c[i] == 'e' || c[i] == 'E') && i + 1 < c.len()))
+                {
                     if c[i] == 'e' || c[i] == 'E' {
                         i += 1;
                         if c[i] == '+' || c[i] == '-' {
@@ -805,7 +835,13 @@ fn text_of(v: &Val) -> String {
     match v {
         Val::Num(n) => fmt_num(*n),
         Val::Text(t) => t.clone(),
-        Val::Bool(b) => if *b { "TRUE".into() } else { "FALSE".into() },
+        Val::Bool(b) => {
+            if *b {
+                "TRUE".into()
+            } else {
+                "FALSE".into()
+            }
+        }
         Val::List(l) => l.first().map(text_of).unwrap_or_default(),
     }
 }
@@ -826,8 +862,14 @@ fn call(name: &str, args: Vec<Val>) -> Option<Val> {
             }
             nums.iter().sum::<f64>() / nums.len() as f64
         }
-        "MIN" => nums.iter().copied().fold(f64::INFINITY, f64::min).min(if nums.is_empty() { 0.0 } else { f64::INFINITY }),
-        "MAX" => nums.iter().copied().fold(f64::NEG_INFINITY, f64::max).max(if nums.is_empty() { 0.0 } else { f64::NEG_INFINITY }),
+        "MIN" => {
+            nums.iter().copied().fold(f64::INFINITY, f64::min).min(if nums.is_empty() { 0.0 } else { f64::INFINITY })
+        }
+        "MAX" => nums.iter().copied().fold(f64::NEG_INFINITY, f64::max).max(if nums.is_empty() {
+            0.0
+        } else {
+            f64::NEG_INFINITY
+        }),
         "COUNT" => nums.len() as f64,
         "COUNTA" => flat.iter().filter(|v| !matches!(v, Val::Text(t) if t.is_empty())).count() as f64,
         "PRODUCT" => nums.iter().product(),
@@ -876,7 +918,8 @@ mod tests {
         cells.insert((1, 3), Cell { formula: Some("SUM(B2:C2)".into()), ..Default::default() });
         cells.insert((2, 3), Cell { formula: Some("D2*2+ROUND(C2,0)/Notes!A1".into()), ..Default::default() });
         cells.insert((3, 3), Cell { formula: Some("D4+1".into()), ..Default::default() });
-        cells.insert((4, 3), Cell { formula: Some("IF(B2>1000,\"big\",\"small\")&\"!\"".into()), ..Default::default() });
+        cells
+            .insert((4, 3), Cell { formula: Some("IF(B2>1000,\"big\",\"small\")&\"!\"".into()), ..Default::default() });
         let mut notes = BTreeMap::new();
         notes.insert((0, 0), n("2"));
         Book {

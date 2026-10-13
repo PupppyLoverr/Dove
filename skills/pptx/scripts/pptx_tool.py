@@ -264,10 +264,21 @@ def add_slide(prs, s, base_dir):
     return slide
 
 
-def load_spec(path):
+def read_input(path):
+    """The input file's text; `-` reads standard input."""
+    if path == "-":
+        return sys.stdin.read()
     with open(path, encoding="utf-8") as f:
-        src = f.read()
-    return json.loads(src) if path.lower().endswith(".json") else parse_outline(src)
+        return f.read()
+
+
+def is_json(path, src):
+    return path.lower().endswith(".json") or (path == "-" and src.lstrip().startswith("{"))
+
+
+def load_spec(path):
+    src = read_input(path)
+    return json.loads(src) if is_json(path, src) else parse_outline(src)
 
 
 def open_deck(template):

@@ -220,7 +220,10 @@ mod tests {
 
     #[test]
     fn sets_attributes() {
-        assert_eq!(set_attr(r#"<calcPr calcId="1"/>"#, "fullCalcOnLoad", "1"), r#"<calcPr calcId="1" fullCalcOnLoad="1"/>"#);
+        assert_eq!(
+            set_attr(r#"<calcPr calcId="1"/>"#, "fullCalcOnLoad", "1"),
+            r#"<calcPr calcId="1" fullCalcOnLoad="1"/>"#
+        );
         assert_eq!(set_attr(r#"<c r="A1" s="2">"#, "s", "3"), r#"<c r="A1" s="3">"#);
         assert_eq!(unescape("a&#x41;&#66;&lt;&bogus"), "aAB<&bogus");
     }

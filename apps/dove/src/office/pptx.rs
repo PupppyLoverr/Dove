@@ -200,7 +200,14 @@ fn parse_slide(pkg: &Package, part: &str, cache: &mut HashMap<String, Placeholde
     for t in xml::tokens(&src) {
         match t {
             Tok::Open { name: name @ ("p:sp" | "p:pic" | "p:graphicFrame" | "p:cxnSp"), empty: false, .. } => {
-                cur = Some(Cur { pic: name == "p:pic", frame: None, ph: None, paras: Vec::new(), image: None, table: Vec::new() });
+                cur = Some(Cur {
+                    pic: name == "p:pic",
+                    frame: None,
+                    ph: None,
+                    paras: Vec::new(),
+                    image: None,
+                    table: Vec::new(),
+                });
             }
             Tok::Close { name: "p:sp" | "p:pic" | "p:graphicFrame" | "p:cxnSp", .. } => {
                 let Some(c) = cur.take() else { continue };
@@ -209,10 +216,16 @@ fn parse_slide(pkg: &Package, part: &str, cache: &mut HashMap<String, Placeholde
                 let kind = match (c.pic, c.image) {
                     (true, Some(img)) => ShapeKind::Picture(img),
                     _ if !c.table.is_empty() => ShapeKind::Table(c.table),
-                    _ if c.paras.iter().any(|p| !p.text.trim().is_empty()) || c.ph.is_some() => ShapeKind::Text(c.paras),
+                    _ if c.paras.iter().any(|p| !p.text.trim().is_empty()) || c.ph.is_some() => {
+                        ShapeKind::Text(c.paras)
+                    }
                     _ => continue,
                 };
-                shapes.push(Shape { frame, role: if c.ph.is_some() { role(ty.as_deref()) } else { Role::Other }, kind });
+                shapes.push(Shape {
+                    frame,
+                    role: if c.ph.is_some() { role(ty.as_deref()) } else { Role::Other },
+                    kind,
+                });
             }
             Tok::Open { name: "p:ph", attrs, .. } => {
                 if let Some(c) = cur.as_mut() {
@@ -231,7 +244,8 @@ fn parse_slide(pkg: &Package, part: &str, cache: &mut HashMap<String, Placeholde
                 }
             }
             Tok::Open { name: "a:blip", attrs, .. } => {
-                let img = xml::attr(attrs, "r:embed").and_then(|id| rels.get(&id)).and_then(|r| super::image(pkg, &r.target));
+                let img =
+                    xml::attr(attrs, "r:embed").and_then(|id| rels.get(&id)).and_then(|r| super::image(pkg, &r.target));
                 if let Some(c) = cur.as_mut() {
                     c.image = c.image.take().or(img);
                 }
@@ -247,7 +261,14 @@ fn parse_slide(pkg: &Package, part: &str, cache: &mut HashMap<String, Placeholde
                 }
             }
             Tok::Open { name: "a:p", empty, .. } => {
-                let p = TextPara { index: para_count, text: String::new(), level: 0, size: None, bold: false, center: false };
+                let p = TextPara {
+                    index: para_count,
+                    text: String::new(),
+                    level: 0,
+                    size: None,
+                    bold: false,
+                    center: false,
+                };
                 para_count += 1;
                 if empty {
                     if let Some(c) = cur.as_mut() {
@@ -325,7 +346,8 @@ pub fn load(path: &Path) -> Result<Deck, String> {
     let mut cache = HashMap::new();
     let slides: Vec<Slide> = order.iter().map(|part| parse_slide(&pkg, part, &mut cache)).collect::<Result<_, _>>()?;
     let master = rels.values().find(|r| r.kind.ends_with("/slideMaster")).and_then(|r| pkg.text(&r.target));
-    let (title_size, body_sizes) = master.as_deref().map(master_sizes).unwrap_or((44.0, [32.0, 28.0, 24.0, 20.0, 20.0]));
+    let (title_size, body_sizes) =
+        master.as_deref().map(master_sizes).unwrap_or((44.0, [32.0, 28.0, 24.0, 20.0, 20.0]));
     Ok(Deck { width, height, slides, title_size, body_sizes })
 }
 
