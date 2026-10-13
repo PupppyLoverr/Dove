@@ -92,18 +92,16 @@ impl Drive {
             }
         };
         match n.as_str() {
-            "browser_navigate" | "navigate" | "open_browser" | "browser_open" | "open" if input.get("url").is_some() || input.get("href").is_some() => {
+            "browser_navigate" | "navigate" | "open_browser" | "browser_open" | "open"
+                if input.get("url").is_some() || input.get("href").is_some() =>
+            {
                 let url = s("url");
                 let url = if url.is_empty() { s("href") } else { url };
                 (!url.is_empty()).then_some(Self::Navigate(url))
             }
             "browser" => {
                 let url = s("url");
-                if !url.is_empty() {
-                    Some(Self::Navigate(url))
-                } else {
-                    None
-                }
+                if !url.is_empty() { Some(Self::Navigate(url)) } else { None }
             }
             "browser_click" | "click" | "browser_tap" => (!selector.is_empty()).then(|| Self::Click { selector }),
             "browser_type" | "type" | "fill" | "browser_fill" => {
@@ -117,7 +115,8 @@ impl Drive {
                 (!key.is_empty()).then(|| Self::Press { key })
             }
             "browser_scroll" | "scroll" => {
-                let dy = input.get("dy").or_else(|| input.get("delta")).and_then(|v| v.as_f64()).unwrap_or(400.0) as f32;
+                let dy =
+                    input.get("dy").or_else(|| input.get("delta")).and_then(|v| v.as_f64()).unwrap_or(400.0) as f32;
                 Some(Self::Scroll { dy, selector: (!selector.is_empty()).then_some(selector) })
             }
             "browser_snapshot" | "snapshot" | "browser_screenshot" => Some(Self::Snapshot),

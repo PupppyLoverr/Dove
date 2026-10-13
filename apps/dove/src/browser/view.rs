@@ -515,13 +515,11 @@ impl Render for BrowserSurface {
                 .role(gpui::Role::Status)
                 .aria_label(text.clone())
                 .tooltip(crate::ui::tip("An agent is using this browser"))
-                .child(
-                    div().size(px(6.0)).flex_none().rounded_full().bg(theme.accent).with_animation(
-                        "agent-pulse",
-                        gpui::Animation::new(std::time::Duration::from_millis(1100)).repeat(),
-                        |d, t| d.opacity(0.35 + 0.65 * (1.0 - (t * 2.0 - 1.0).abs())),
-                    ),
-                )
+                .child(div().size(px(6.0)).flex_none().rounded_full().bg(theme.accent).with_animation(
+                    "agent-pulse",
+                    gpui::Animation::new(std::time::Duration::from_millis(1100)).repeat(),
+                    |d, t| d.opacity(0.35 + 0.65 * (1.0 - (t * 2.0 - 1.0).abs())),
+                ))
                 .child(div().min_w_0().truncate().text_size(px(11.5)).text_color(theme.text).child(text))
         });
         let toolbar = surface_chrome::toolbar(&theme)

@@ -37,7 +37,13 @@ pub struct SideChat {
 impl EventEmitter<SideChatEvent> for SideChat {}
 
 impl SideChat {
-    pub fn new(engine: Arc<Engine>, parent: Task, project: Project, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        engine: Arc<Engine>,
+        parent: Task,
+        project: Project,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let composer = cx.new(|cx| {
             let mut c = Composer::home(engine.clone(), window, cx);
             c.use_harness(parent.harness, parent.model.clone(), cx);
@@ -73,7 +79,8 @@ impl SideChat {
         match self.engine.start_task(&self.project, new) {
             Ok((task, live)) => {
                 let id = task.id;
-                let chat = cx.new(|cx| TaskView::new(self.engine.clone(), task, self.project.clone(), Some(live), window, cx));
+                let chat =
+                    cx.new(|cx| TaskView::new(self.engine.clone(), task, self.project.clone(), Some(live), window, cx));
                 self._subs.push(cx.subscribe(&chat, |_, _, ev: &TaskViewEvent, cx| match ev {
                     TaskViewEvent::Changed | TaskViewEvent::Status(_) | TaskViewEvent::Title(_) => {
                         cx.emit(SideChatEvent::Changed);
@@ -103,30 +110,27 @@ impl Render for SideChat {
             .size_full()
             .flex()
             .flex_col()
-            .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .p(px(20.0))
-                    .child(
-                        kit::empty_state(
-                            icons::CHAT_ROUND_LINE,
-                            "Side chat",
-                            "A second conversation in this worktree. The parent thread stays put.",
-                            &t,
-                        ),
-                    ),
-            )
+            .child(div().flex_1().min_h_0().flex().items_center().justify_center().p(px(20.0)).child(kit::empty_state(
+                icons::CHAT_ROUND_LINE,
+                "Side chat",
+                "A second conversation in this worktree. The parent thread stays put.",
+                &t,
+            )))
             .child(
                 div()
                     .px(px(12.0))
                     .pb(px(12.0))
-                    .child(div().flex().items_center().gap(px(6.0)).pb(px(8.0)).text_size(px(12.0)).text_color(t.text_faint)
-                        .child(icon(icons::CHAT_ROUND_LINE).size(px(12.0)))
-                        .child(format!("Beside {}", self.parent.title)))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.0))
+                            .pb(px(8.0))
+                            .text_size(px(12.0))
+                            .text_color(t.text_faint)
+                            .child(icon(icons::CHAT_ROUND_LINE).size(px(12.0)))
+                            .child(format!("Beside {}", self.parent.title)),
+                    )
                     .child(self.composer.clone()),
             )
     }

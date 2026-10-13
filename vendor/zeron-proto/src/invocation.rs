@@ -6,11 +6,7 @@ use std::ops::Range;
 pub const INVOCATION_SCHEME: &str = "zeron-invoke:";
 
 fn escape_label(label: &str) -> String {
-    label
-        .replace('\\', "\\\\")
-        .replace('[', "\\[")
-        .replace(']', "\\]")
-        .replace('`', "\\`")
+    label.replace('\\', "\\\\").replace('[', "\\[").replace(']', "\\]").replace('`', "\\`")
 }
 
 /// Native catalog entries may have no local skill file (for example plugin-provided commands).
@@ -30,10 +26,7 @@ pub fn valid_skill_path(path: &str) -> bool {
 
 /// Advertised native commands use the same grammar as selected skill commands.
 pub fn valid_skill_command_name(name: &str) -> bool {
-    !name.is_empty()
-        && name
-            .chars()
-            .all(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | ':' | '.'))
+    !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | ':' | '.'))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -148,12 +141,9 @@ pub fn invocation_links(text: &str) -> Vec<(Range<usize>, Invocation)> {
         if hex.len() % 2 != 0 || !hex.is_ascii() {
             continue;
         }
-        let bytes: Option<Vec<u8>> = (0..hex.len())
-            .step_by(2)
-            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).ok())
-            .collect();
-        let Some(invocation) = bytes.and_then(|b| serde_json::from_slice::<Invocation>(&b).ok())
-        else {
+        let bytes: Option<Vec<u8>> =
+            (0..hex.len()).step_by(2).map(|i| u8::from_str_radix(&hex[i..i + 2], 16).ok()).collect();
+        let Some(invocation) = bytes.and_then(|b| serde_json::from_slice::<Invocation>(&b).ok()) else {
             continue;
         };
         if !valid_invocation_name(invocation.name()) {
@@ -161,9 +151,7 @@ pub fn invocation_links(text: &str) -> Vec<(Range<usize>, Invocation)> {
         }
         if let Invocation::Skill { path, command, .. } = &invocation
             && (!valid_skill_path(path)
-                || command
-                    .as_ref()
-                    .is_some_and(|command| !valid_skill_command_name(&command.name)))
+                || command.as_ref().is_some_and(|command| !valid_skill_command_name(&command.name)))
         {
             continue;
         }
@@ -172,9 +160,7 @@ pub fn invocation_links(text: &str) -> Vec<(Range<usize>, Invocation)> {
         // token only when Markdown still identifies the complete link.
         let source = &text[start..end];
         if (canonical == source || canonical.replace("\\`", "`") == source)
-            && links
-                .last()
-                .is_none_or(|(r, _): &(Range<usize>, Invocation)| r.end <= start)
+            && links.last().is_none_or(|(r, _): &(Range<usize>, Invocation)| r.end <= start)
         {
             links.push((start..end, invocation));
         }
@@ -187,11 +173,7 @@ pub fn invocation_links(text: &str) -> Vec<(Range<usize>, Invocation)> {
 /// another harness; native-only catalog entries cannot be represented there.
 pub fn validate_harness_invocations(text: &str, harness: crate::HarnessId) -> Result<(), String> {
     for (_, invocation) in invocation_links(text) {
-        if let Invocation::Skill {
-            name,
-            path,
-            command: Some(command),
-        } = invocation
+        if let Invocation::Skill { name, path, command: Some(command) } = invocation
             && native_skill_identity(&path)
             && command.harness != harness
         {
@@ -207,11 +189,9 @@ pub fn validate_harness_invocations(text: &str, harness: crate::HarnessId) -> Re
 /// Keep selected skill identity intact until Codex builds native input blocks.
 /// Other providers receive readable Markdown and their advertised command text.
 pub fn harness_prompt(text: &str, harness: crate::HarnessId) -> String {
-    let text = crate::file_mentions::file_mention_prompt(
-        &crate::attachment_mentions::attachment_mention_prompt(
-            &crate::chat_mentions::chat_mention_prompt(text),
-        ),
-    );
+    let text = crate::file_mentions::file_mention_prompt(&crate::attachment_mentions::attachment_mention_prompt(
+        &crate::chat_mentions::chat_mention_prompt(text),
+    ));
     if harness == crate::HarnessId::Codex {
         return text;
     }
@@ -220,23 +200,17 @@ pub fn harness_prompt(text: &str, harness: crate::HarnessId) -> String {
     for (range, invocation) in invocation_links(&text) {
         result.push_str(&text[at..range.start]);
         match &invocation {
-            Invocation::Skill {
-                command: Some(command),
-                ..
-            } if command.harness == harness
-                && text[..range.start]
-                    .trim_matches([' ', '\t', '\r', '\n'])
-                    .is_empty() =>
+            Invocation::Skill { command: Some(command), .. }
+                if command.harness == harness
+                    && text[..range.start].trim_matches([' ', '\t', '\r', '\n']).is_empty() =>
             {
                 // The catalog supplies the provider's canonical command, regardless
                 // of whether the user selected the skill through $ or /.
                 result.push_str(&format!("/{}", command.name));
             }
-            Invocation::Skill {
-                path,
-                command: Some(command),
-                ..
-            } if native_skill_identity(path) && command.harness == harness => {
+            Invocation::Skill { path, command: Some(command), .. }
+                if native_skill_identity(path) && command.harness == harness =>
+            {
                 result.push_str(&format!("Use the skill /{}", command.name));
             }
             Invocation::Skill { .. } => {
@@ -270,10 +244,7 @@ pub fn invocation_prompt(text: &str) -> String {
 /// indented code and non-ASCII whitespace remain ordinary prompt text.
 pub fn leading_command(text: &str) -> Option<(&str, &str)> {
     let trimmed = text.trim_start_matches([' ', '\t', '\r', '\n']);
-    let indent = text[..text.len() - trimmed.len()]
-        .rsplit(['\n', '\r'])
-        .next()
-        .unwrap_or_default();
+    let indent = text[..text.len() - trimmed.len()].rsplit(['\n', '\r']).next().unwrap_or_default();
     if indent.contains('\t') || indent.len() >= 4 {
         return None;
     }
@@ -288,11 +259,7 @@ mod tests {
     use super::*;
 
     fn skill(name: &str, path: &str) -> Invocation {
-        Invocation::Skill {
-            name: name.into(),
-            path: path.into(),
-            command: None,
-        }
+        Invocation::Skill { name: name.into(), path: path.into(), command: None }
     }
 
     const HARNESSES: [crate::HarnessId; 9] = [
@@ -316,22 +283,13 @@ mod tests {
         );
         assert_eq!(invocation_prompt(&raw), "compare Image 1 with Image 3");
         for harness in HARNESSES {
-            assert_eq!(
-                harness_prompt(&raw, harness),
-                "compare Image 1 with Image 3",
-                "{harness:?}"
-            );
+            assert_eq!(harness_prompt(&raw, harness), "compare Image 1 with Image 3", "{harness:?}");
         }
     }
 
     #[test]
     fn leading_commands_respect_markdown_indentation() {
-        for text in [
-            "/review tests",
-            "  /review tests",
-            "\n   /review tests",
-            " \t\n/review tests",
-        ] {
+        for text in ["/review tests", "  /review tests", "\n   /review tests", " \t\n/review tests"] {
             assert_eq!(leading_command(text), Some(("review", "tests")), "{text:?}");
         }
         for text in [
@@ -359,24 +317,15 @@ mod tests {
             let mut destinations = Vec::new();
             for event in pulldown_cmark::Parser::new(&delivered) {
                 match event {
-                    pulldown_cmark::Event::Start(pulldown_cmark::Tag::Link {
-                        dest_url, ..
-                    }) => {
+                    pulldown_cmark::Event::Start(pulldown_cmark::Tag::Link { dest_url, .. }) => {
                         destinations.push(dest_url.to_string());
                     }
                     pulldown_cmark::Event::Text(text) => labels.push_str(&text),
                     _ => {}
                 }
             }
-            assert_eq!(
-                destinations,
-                ["/repo/%C3%A9%20%5Bdraft%5D%281%29/SKILL.md"],
-                "{harness:?}"
-            );
-            assert!(
-                labels.contains(&format!("${}", skill.name())),
-                "{harness:?}: {labels}"
-            );
+            assert_eq!(destinations, ["/repo/%C3%A9%20%5Bdraft%5D%281%29/SKILL.md"], "{harness:?}");
+            assert!(labels.contains(&format!("${}", skill.name())), "{harness:?}: {labels}");
         }
     }
 
@@ -406,21 +355,12 @@ mod tests {
             let skill = Invocation::Skill {
                 name: "plugin:review".into(),
                 path: "/repo/SKILL.md".into(),
-                command: Some(SkillCommand {
-                    name: "plugin:review".into(),
-                    harness,
-                }),
+                command: Some(SkillCommand { name: "plugin:review".into(), harness }),
             };
             let raw = format!("{} inspect tests", skill.link());
-            assert_eq!(
-                harness_prompt(&raw, harness),
-                "/plugin:review inspect tests"
-            );
+            assert_eq!(harness_prompt(&raw, harness), "/plugin:review inspect tests");
             assert!(harness_prompt(&raw, crate::HarnessId::Cursor).starts_with("Use the skill "));
-            assert!(
-                harness_prompt(&format!("Please {}", skill.link()), harness)
-                    .contains("Use the skill ")
-            );
+            assert!(harness_prompt(&format!("Please {}", skill.link()), harness).contains("Use the skill "));
             assert_eq!(invocation_links(&raw)[0].1, skill);
         }
         for harness in [
@@ -431,10 +371,7 @@ mod tests {
             crate::HarnessId::Pi,
         ] {
             let skill = skill("review", "/repo/SKILL.md");
-            assert_eq!(
-                harness_prompt(&skill.link(), harness),
-                "Use the skill [$review](/repo/SKILL.md)"
-            );
+            assert_eq!(harness_prompt(&skill.link(), harness), "Use the skill [$review](/repo/SKILL.md)");
         }
     }
 
@@ -443,10 +380,7 @@ mod tests {
         let skill = Invocation::Skill {
             name: "plugin:review".into(),
             path: "opencode-skill:plugin:review".into(),
-            command: Some(SkillCommand {
-                name: "plugin:review".into(),
-                harness: crate::HarnessId::Opencode,
-            }),
+            command: Some(SkillCommand { name: "plugin:review".into(), harness: crate::HarnessId::Opencode }),
         };
         let raw = format!("{} inspect tests", skill.link());
         for harness in HARNESSES {
@@ -465,10 +399,7 @@ mod tests {
         let skill = Invocation::Skill {
             name: "review".into(),
             path: "/repo/with space/SKILL.md".into(),
-            command: Some(SkillCommand {
-                name: "plugin:review".into(),
-                harness: crate::HarnessId::Opencode,
-            }),
+            command: Some(SkillCommand { name: "plugin:review".into(), harness: crate::HarnessId::Opencode }),
         };
         let raw = format!("{} inspect tests", skill.link());
         for harness in HARNESSES {
@@ -489,17 +420,11 @@ mod tests {
 
     #[test]
     fn native_skill_prefixes_follow_the_same_whitespace_rules_as_commands() {
-        for harness in HARNESSES
-            .into_iter()
-            .filter(|harness| *harness != crate::HarnessId::Codex)
-        {
+        for harness in HARNESSES.into_iter().filter(|harness| *harness != crate::HarnessId::Codex) {
             let skill = Invocation::Skill {
                 name: "review".into(),
                 path: "/repo/SKILL.md".into(),
-                command: Some(SkillCommand {
-                    name: "review".into(),
-                    harness,
-                }),
+                command: Some(SkillCommand { name: "review".into(), harness }),
             };
             for prefix in ["\u{a0}", "\u{2003}"] {
                 let raw = format!("{prefix}{} tests", skill.link());
@@ -512,11 +437,7 @@ mod tests {
             for prefix in ["", "  ", "\n   "] {
                 let raw = format!("{prefix}{} tests", skill.link());
                 let prompt = harness_prompt(&raw, harness);
-                assert_eq!(
-                    leading_command(&prompt),
-                    Some(("review", "tests")),
-                    "{harness:?}"
-                );
+                assert_eq!(leading_command(&prompt), Some(("review", "tests")), "{harness:?}");
             }
         }
     }
@@ -524,20 +445,13 @@ mod tests {
     #[test]
     fn delivery_preserves_native_skill_identity_only_for_codex() {
         let skill = skill("review", "/repo/with space/SKILL.md");
-        let raw = format!(
-            "Use {} on {}",
-            skill.link(),
-            crate::file_mentions::local_file_link("src/lib.rs", false)
-        );
+        let raw = format!("Use {} on {}", skill.link(), crate::file_mentions::local_file_link("src/lib.rs", false));
         let codex = harness_prompt(&raw, crate::HarnessId::Codex);
         assert_eq!(invocation_links(&codex)[0].1, skill);
         assert!(codex.ends_with("[lib.rs](src/lib.rs)"));
         for harness in [crate::HarnessId::ClaudeCode, crate::HarnessId::Opencode] {
             let prompt = harness_prompt(&raw, harness);
-            assert_eq!(
-                prompt,
-                "Use Use the skill [$review](/repo/with%20space/SKILL.md) on [lib.rs](src/lib.rs)"
-            );
+            assert_eq!(prompt, "Use Use the skill [$review](/repo/with%20space/SKILL.md) on [lib.rs](src/lib.rs)");
         }
     }
 
@@ -548,10 +462,7 @@ mod tests {
         assert_eq!(invocation_links(&legacy)[0].1, skill);
         let file = crate::file_mentions::local_file_link("src/a`b.rs", false);
         let legacy_file = file.replace("\\`", "`");
-        assert_eq!(
-            crate::file_mentions::file_mention_links(&legacy_file)[0].path,
-            "src/a`b.rs"
-        );
+        assert_eq!(crate::file_mentions::file_mention_links(&legacy_file)[0].path, "src/a`b.rs");
     }
 
     #[test]
@@ -566,10 +477,7 @@ mod tests {
             if harness == crate::HarnessId::Codex {
                 assert_eq!(invocation_links(&delivered).len(), 2);
             } else {
-                assert!(
-                    !delivered.contains(INVOCATION_SCHEME),
-                    "{harness:?}: {delivered}"
-                );
+                assert!(!delivered.contains(INVOCATION_SCHEME), "{harness:?}: {delivered}");
             }
             assert!(!delivered.contains(crate::file_mentions::FILE_MENTION_SCHEME));
         }
@@ -595,23 +503,16 @@ mod tests {
 
     #[test]
     fn durable_references_round_trip_without_reordering() {
-        let command = Invocation::Command {
-            name: "compact".into(),
-        };
+        let command = Invocation::Command { name: "compact".into() };
         let skill = skill("review", "/repo/a b/SKILL.md");
         let raw = format!("first {} then {} finally", command.link(), skill.link());
         assert_eq!(invocation_links(&raw).len(), 2);
-        assert_eq!(
-            invocation_prompt(&raw),
-            "first /compact then [$review](/repo/a%20b/SKILL.md) finally"
-        );
+        assert_eq!(invocation_prompt(&raw), "first /compact then [$review](/repo/a%20b/SKILL.md) finally");
         assert_eq!(invocation_prompt("/$not-a-chip"), "/$not-a-chip");
         assert!(invocation_links("[x](zeron-invoke:bad)").is_empty());
-        for code in [
-            format!("`{}`", command.link()),
-            format!("```\n{}\n```", command.link()),
-            format!("\\{}", command.link()),
-        ] {
+        for code in
+            [format!("`{}`", command.link()), format!("```\n{}\n```", command.link()), format!("\\{}", command.link())]
+        {
             assert!(invocation_links(&code).is_empty());
             assert_eq!(invocation_prompt(&code), code);
         }

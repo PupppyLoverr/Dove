@@ -3,8 +3,7 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 use tokio::{sync::oneshot, task::JoinSet};
 use zeron_proto::{UserInputAnswer, UserInputQuestion};
-pub(super) type Input =
-    dyn Fn(Vec<UserInputQuestion>) -> oneshot::Receiver<Vec<UserInputAnswer>> + Send + Sync;
+pub(super) type Input = dyn Fn(Vec<UserInputQuestion>) -> oneshot::Receiver<Vec<UserInputAnswer>> + Send + Sync;
 #[derive(Default)]
 pub(super) struct Dialogs {
     pub input: Option<Arc<Input>>,
@@ -25,23 +24,14 @@ impl Dialogs {
         let options = if method == "confirm" {
             vec!["Yes".into(), "No".into()]
         } else {
-            frame["options"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|v| v.as_str().map(str::to_owned))
-                .collect()
+            frame["options"].as_array().into_iter().flatten().filter_map(|v| v.as_str().map(str::to_owned)).collect()
         };
         let title = string(frame, "title");
         let message = string(frame, "message");
         let question = UserInputQuestion {
             id: uuid::Uuid::new_v4().to_string(),
             header: "Pi".into(),
-            question: if message.is_empty() {
-                title.into()
-            } else {
-                format!("{title}\n{message}")
-            },
+            question: if message.is_empty() { title.into() } else { format!("{title}\n{message}") },
             options: options.clone(),
             multi_select: false,
             prefill: frame["prefill"].as_str().map(str::to_owned),
@@ -57,20 +47,12 @@ impl Dialogs {
                     None => std::future::pending().await,
                 }
             };
-            let answers =
-                tokio::select! { result=answer=>result.unwrap_or_default(),_=deadline=>vec![] };
-            let value = answers
-                .iter()
-                .find(|a| a.question_id == question_id)
-                .and_then(|a| a.labels.first());
+            let answers = tokio::select! { result=answer=>result.unwrap_or_default(),_=deadline=>vec![] };
+            let value = answers.iter().find(|a| a.question_id == question_id).and_then(|a| a.labels.first());
             let mut response = json!({"type":"extension_ui_response","id":id});
             match (method.as_str(), value) {
-                ("confirm", Some(value)) if options.contains(value) => {
-                    response["confirmed"] = json!(value == "Yes")
-                }
-                ("select", Some(value)) if options.contains(value) => {
-                    response["value"] = json!(value)
-                }
+                ("confirm", Some(value)) if options.contains(value) => response["confirmed"] = json!(value == "Yes"),
+                ("select", Some(value)) if options.contains(value) => response["value"] = json!(value),
                 ("input" | "editor", Some(value)) => response["value"] = json!(value),
                 _ => response["cancelled"] = json!(true),
             }
@@ -107,11 +89,8 @@ mod tests {
         );
         let mut sender = requests.recv().await.unwrap();
         let mut lines = BufReader::new(peer).lines();
-        let reply = tokio::time::timeout(std::time::Duration::from_secs(1), lines.next_line())
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
+        let reply =
+            tokio::time::timeout(std::time::Duration::from_secs(1), lines.next_line()).await.unwrap().unwrap().unwrap();
         assert_eq!(
             serde_json::from_str::<Value>(&reply).unwrap(),
             json!({
@@ -119,14 +98,9 @@ mod tests {
             })
         );
         sender.closed().await;
-        dialogs.request(
-            transport.client.clone(),
-            &json!({"id":"stopped", "method":"input"}),
-        );
+        dialogs.request(transport.client.clone(), &json!({"id":"stopped", "method":"input"}));
         let mut sender = requests.recv().await.unwrap();
         dialogs.cancel();
-        tokio::time::timeout(std::time::Duration::from_secs(1), sender.closed())
-            .await
-            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(1), sender.closed()).await.unwrap();
     }
 }

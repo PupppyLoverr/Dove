@@ -15,9 +15,7 @@ use zeron_proto::{Model, ModelOption, ModelOptionChoice, ReasoningLevel};
 pub(crate) const ULTRATHINK_PREFIX: &str = "Ultrathink:\n";
 
 pub(crate) fn apply_ultrathink(reasoning: Option<ReasoningLevel>, text: &str) -> String {
-    if reasoning == Some(ReasoningLevel::Ultrathink)
-        && zeron_proto::invocation::leading_command(text).is_none()
-    {
+    if reasoning == Some(ReasoningLevel::Ultrathink) && zeron_proto::invocation::leading_command(text).is_none() {
         format!("{ULTRATHINK_PREFIX}{text}")
     } else {
         text.to_owned()
@@ -35,8 +33,8 @@ pub(crate) fn supports_xhigh(model: &str) -> bool {
     contains_any(
         model,
         &[
-            "fable-5", "opus-4-7", "opus-4-8", "opus-4-9", "opus-5", "opus-6", "opus-7", "opus-8",
-            "opus-9", "sonnet-5", "sonnet-6", "sonnet-7", "sonnet-8", "sonnet-9",
+            "fable-5", "opus-4-7", "opus-4-8", "opus-4-9", "opus-5", "opus-6", "opus-7", "opus-8", "opus-9",
+            "sonnet-5", "sonnet-6", "sonnet-7", "sonnet-8", "sonnet-9",
         ],
     )
 }
@@ -45,10 +43,7 @@ pub(crate) fn supports_xhigh(model: &str) -> bool {
 /// model. The special modes don't translate directly: `ultrathink` is a prompt
 /// prefix (no flag), `ultracode` runs as `xhigh` plus the ultracode setting,
 /// and `ultra` is a Codex-only tier (Claude tops out at `max`).
-pub(crate) fn to_effort(
-    reasoning: Option<ReasoningLevel>,
-    model: Option<&str>,
-) -> Option<&'static str> {
+pub(crate) fn to_effort(reasoning: Option<ReasoningLevel>, model: Option<&str>) -> Option<&'static str> {
     let base = match reasoning? {
         ReasoningLevel::Ultrathink => return None,
         ReasoningLevel::Minimal | ReasoningLevel::Low => "low",
@@ -70,14 +65,8 @@ fn toggle(id: &str, label: &str) -> ModelOption {
         id: id.into(),
         label: label.into(),
         choices: vec![
-            ModelOptionChoice {
-                id: "off".into(),
-                label: "Off".into(),
-            },
-            ModelOptionChoice {
-                id: "on".into(),
-                label: "On".into(),
-            },
+            ModelOptionChoice { id: "off".into(), label: "Off".into() },
+            ModelOptionChoice { id: "on".into(), label: "On".into() },
         ],
         default_choice: "off".into(),
     }
@@ -91,14 +80,8 @@ pub(crate) fn context_window() -> ModelOption {
         id: "contextWindow".into(),
         label: "Context Window".into(),
         choices: vec![
-            ModelOptionChoice {
-                id: "200k".into(),
-                label: "200K".into(),
-            },
-            ModelOptionChoice {
-                id: "1m".into(),
-                label: "1M".into(),
-            },
+            ModelOptionChoice { id: "200k".into(), label: "200K".into() },
+            ModelOptionChoice { id: "1m".into(), label: "1M".into() },
         ],
         default_choice: "200k".into(),
     }
@@ -125,13 +108,7 @@ const XHIGH_LADDER: &[ReasoningLevel] = &[
     ReasoningLevel::Ultrathink,
 ];
 
-fn model(
-    id: &str,
-    label: &str,
-    description: &str,
-    ladder: &[ReasoningLevel],
-    options: Vec<ModelOption>,
-) -> Model {
+fn model(id: &str, label: &str, description: &str, ladder: &[ReasoningLevel], options: Vec<ModelOption>) -> Model {
     Model {
         id: id.into(),
         label: label.into(),
@@ -175,12 +152,7 @@ fn models_with_settings(path: &std::path::Path) -> Vec<Model> {
         .into_iter()
         .map(|key| settings.get("env").and_then(|env| env.get(key))),
     );
-    for id in ids
-        .flatten()
-        .filter_map(|v| v.as_str())
-        .map(str::trim)
-        .filter(|id| !id.is_empty())
-    {
+    for id in ids.flatten().filter_map(|v| v.as_str()).map(str::trim).filter(|id| !id.is_empty()) {
         if !models.iter().any(|m| m.id == id) {
             models.push(Model {
                 id: id.into(),
@@ -230,35 +202,23 @@ pub(super) fn with_discovered_models(
         .and_then(|v| v.get("models"))
         .and_then(serde_json::Value::as_array)
         .filter(|entries| !entries.is_empty())
-        .ok_or_else(|| {
-            crate::HarnessError::Protocol("Claude returned an empty model catalog".into())
-        })?;
+        .ok_or_else(|| crate::HarnessError::Protocol("Claude returned an empty model catalog".into()))?;
     let mut default = None;
     let mut valid = false;
     for entry in entries {
-        let text = |key: &str| {
-            entry
-                .get(key)
-                .and_then(serde_json::Value::as_str)
-                .map(str::trim)
-                .filter(|v| !v.is_empty())
-        };
+        let text =
+            |key: &str| entry.get(key).and_then(serde_json::Value::as_str).map(str::trim).filter(|v| !v.is_empty());
         let Some(id) = text("resolvedModel").or_else(|| text("value")) else {
             continue;
         };
         // Bare aliases cannot become persisted selections. Prefer resolvedModel.
-        if matches!(
-            id.strip_suffix("[1m]").unwrap_or(id),
-            "default" | "opus" | "sonnet" | "haiku" | "fable"
-        ) {
+        if matches!(id.strip_suffix("[1m]").unwrap_or(id), "default" | "opus" | "sonnet" | "haiku" | "fable") {
             continue;
         }
         valid = true;
         // The CLI lists some models by dated snapshot ("claude-haiku-4-5-20251001");
         // fold those into the curated undated row instead of duplicating it.
-        let id = snapshot_base(id)
-            .filter(|base| models.iter().any(|model| model.id == *base))
-            .unwrap_or(id);
+        let id = snapshot_base(id).filter(|base| models.iter().any(|model| model.id == *base)).unwrap_or(id);
         if text("value") == Some("default") {
             default = Some(id.to_owned());
         }
@@ -297,9 +257,7 @@ pub(super) fn with_discovered_models(
         });
     }
     if !valid {
-        return Err(crate::HarnessError::Protocol(
-            "Claude returned an empty model catalog".into(),
-        ));
+        return Err(crate::HarnessError::Protocol("Claude returned an empty model catalog".into()));
     }
     if let Some(default) = default {
         // The picker folds long-context duplicates into their curated base.
@@ -334,13 +292,7 @@ pub fn static_models() -> Vec<Model> {
             FULL_LADDER,
             vec![context_window()],
         ),
-        model(
-            "claude-fable-5",
-            "Fable 5",
-            "Previous generation Fable",
-            FULL_LADDER,
-            vec![context_window()],
-        ),
+        model("claude-fable-5", "Fable 5", "Previous generation Fable", FULL_LADDER, vec![context_window()]),
         model(
             "claude-opus-5-5",
             "Opus 5.5",
@@ -362,13 +314,7 @@ pub fn static_models() -> Vec<Model> {
             XHIGH_LADDER,
             vec![toggle("fastMode", "Fast Mode")],
         ),
-        model(
-            "claude-sonnet-5",
-            "Sonnet 5",
-            "Balanced speed and intelligence",
-            XHIGH_LADDER,
-            vec![context_window()],
-        ),
+        model("claude-sonnet-5", "Sonnet 5", "Balanced speed and intelligence", XHIGH_LADDER, vec![context_window()]),
         model(
             "claude-haiku-4-5",
             "Haiku 4.5",
@@ -387,24 +333,12 @@ mod tests {
     fn effort_maps_special_modes() {
         assert_eq!(to_effort(None, None), None);
         assert_eq!(to_effort(Some(ReasoningLevel::Ultrathink), None), None);
-        assert_eq!(
-            to_effort(Some(ReasoningLevel::Minimal), Some("claude-fable-5")),
-            Some("low")
-        );
-        assert_eq!(
-            to_effort(Some(ReasoningLevel::Ultra), Some("claude-fable-5")),
-            Some("max")
-        );
+        assert_eq!(to_effort(Some(ReasoningLevel::Minimal), Some("claude-fable-5")), Some("low"));
+        assert_eq!(to_effort(Some(ReasoningLevel::Ultra), Some("claude-fable-5")), Some("max"));
         // ultracode -> xhigh where supported…
-        assert_eq!(
-            to_effort(Some(ReasoningLevel::Ultracode), Some("claude-fable-5")),
-            Some("xhigh")
-        );
+        assert_eq!(to_effort(Some(ReasoningLevel::Ultracode), Some("claude-fable-5")), Some("xhigh"));
         // …and xhigh clamps to max elsewhere.
-        assert_eq!(
-            to_effort(Some(ReasoningLevel::XHigh), Some("claude-opus-4-5")),
-            Some("max")
-        );
+        assert_eq!(to_effort(Some(ReasoningLevel::XHigh), Some("claude-opus-4-5")), Some("max"));
         assert_eq!(to_effort(Some(ReasoningLevel::XHigh), None), Some("max"));
     }
 
@@ -438,18 +372,10 @@ mod tests {
         for command in ["/compact", "/review focus on tests"] {
             for prefix in ["", " ", "   ", "\n", "\r\n  "] {
                 let text = format!("{prefix}{command}");
-                assert_eq!(
-                    apply_ultrathink(Some(ReasoningLevel::Ultrathink), &text),
-                    text
-                );
+                assert_eq!(apply_ultrathink(Some(ReasoningLevel::Ultrathink), &text), text);
             }
         }
-        for literal in [
-            "    /compact",
-            "\t/compact",
-            "\n    /compact",
-            "\u{a0}/compact",
-        ] {
+        for literal in ["    /compact", "\t/compact", "\n    /compact", "\u{a0}/compact"] {
             assert_eq!(
                 apply_ultrathink(Some(ReasoningLevel::Ultrathink), literal),
                 format!("{ULTRATHINK_PREFIX}{literal}")
@@ -459,13 +385,7 @@ mod tests {
 
     #[test]
     fn ultrathink_prefixes_prompt() {
-        assert_eq!(
-            apply_ultrathink(Some(ReasoningLevel::Ultrathink), "do it"),
-            "Ultrathink:\ndo it"
-        );
-        assert_eq!(
-            apply_ultrathink(Some(ReasoningLevel::Max), "do it"),
-            "do it"
-        );
+        assert_eq!(apply_ultrathink(Some(ReasoningLevel::Ultrathink), "do it"), "Ultrathink:\ndo it");
+        assert_eq!(apply_ultrathink(Some(ReasoningLevel::Max), "do it"), "do it");
     }
 }

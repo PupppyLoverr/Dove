@@ -6,8 +6,9 @@ use std::sync::Arc;
 
 use dove_core::git::{self, HistoryCommit};
 use gpui::{
-    AnyElement, AppContext as _, Context, Entity, EventEmitter, InteractiveElement as _, IntoElement, ParentElement as _,
-    Render, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, px, uniform_list,
+    AnyElement, AppContext as _, Context, Entity, EventEmitter, InteractiveElement as _, IntoElement,
+    ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window, div,
+    px, uniform_list,
 };
 use gpui_base::input::{Input, InputEvent, InputState};
 
@@ -133,12 +134,11 @@ impl Render for GitHistory {
                         let mut dots = div().w(px(rail)).flex_none().flex().items_center().gap(px(4.0));
                         for lane in 0..lanes {
                             let on = c.lane == lane;
-                            dots = dots.child(
-                                div()
-                                    .size(px(if on { 8.0 } else { 5.0 }))
-                                    .rounded_full()
-                                    .bg(if on { t.accent } else { t.wash(0.18) }),
-                            );
+                            dots = dots.child(div().size(px(if on { 8.0 } else { 5.0 })).rounded_full().bg(if on {
+                                t.accent
+                            } else {
+                                t.wash(0.18)
+                            }));
                         }
                         div()
                             .id(("hist-row", i))

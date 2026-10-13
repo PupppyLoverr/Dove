@@ -18,29 +18,19 @@ pub struct ChatMentionLink {
 fn valid_chat_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 128
-        && id
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        && id.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
 }
 
 /// One line, so the chip and the agent's text read as a single phrase.
 fn clean_title(title: &str) -> String {
     let title = title.split_whitespace().collect::<Vec<_>>().join(" ");
-    if title.is_empty() {
-        "Untitled chat".into()
-    } else {
-        title
-    }
+    if title.is_empty() { "Untitled chat".into() } else { title }
 }
 
 /// `[title](zeron-chat:<id>)`, or `None` for an id that isn't a plain chat id.
 pub fn chat_mention_link(chat_id: &str, title: &str) -> Option<String> {
-    valid_chat_id(chat_id).then(|| {
-        format!(
-            "[{}]({CHAT_MENTION_SCHEME}{chat_id})",
-            escape_mention_label(&clean_title(title))
-        )
-    })
+    valid_chat_id(chat_id)
+        .then(|| format!("[{}]({CHAT_MENTION_SCHEME}{chat_id})", escape_mention_label(&clean_title(title))))
 }
 
 /// Only decode canonical chip links, never escaped text or code examples.
@@ -70,20 +60,14 @@ pub fn chat_mention_links(text: &str) -> Vec<ChatMentionLink> {
                     title.clear();
                 }
             }
-            pulldown_cmark::Event::Text(text) | pulldown_cmark::Event::Code(text)
-                if open.is_some() =>
-            {
+            pulldown_cmark::Event::Text(text) | pulldown_cmark::Event::Code(text) if open.is_some() => {
                 title.push_str(&text);
             }
             pulldown_cmark::Event::End(pulldown_cmark::TagEnd::Link) => {
                 if let Some((range, chat_id)) = open.take()
                     && chat_mention_link(&chat_id, &title).as_deref() == Some(&text[range.clone()])
                 {
-                    links.push(ChatMentionLink {
-                        range,
-                        title: clean_title(&title),
-                        chat_id,
-                    });
+                    links.push(ChatMentionLink { range, title: clean_title(&title), chat_id });
                 }
             }
             _ => {}

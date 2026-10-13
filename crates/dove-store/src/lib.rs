@@ -190,8 +190,7 @@ pub fn default_root() -> PathBuf {
 
 impl Store {
     pub fn open(root: &Path) -> Result<Self> {
-        std::fs::create_dir_all(root.join("sessions"))
-            .with_context(|| format!("creating {}", root.display()))?;
+        std::fs::create_dir_all(root.join("sessions")).with_context(|| format!("creating {}", root.display()))?;
         let conn = Connection::open(root.join("dove.db"))?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
@@ -212,9 +211,8 @@ impl Store {
         let path = strip_verbatim(&path);
         let key = path.to_string_lossy().to_string();
         let conn = self.conn.lock();
-        if let Some(p) = conn
-            .query_row("SELECT id, name, path FROM projects WHERE path = ?1", [&key], row_project)
-            .optional()?
+        if let Some(p) =
+            conn.query_row("SELECT id, name, path FROM projects WHERE path = ?1", [&key], row_project).optional()?
         {
             return Ok(p);
         }
@@ -303,7 +301,10 @@ impl Store {
     }
 
     pub fn tasks(&self, project: ProjectId) -> Result<Vec<Task>> {
-        self.query_tasks("WHERE project_id = ?1 AND status != 'archived' ORDER BY pinned DESC, updated_at DESC", [project.0.to_string()])
+        self.query_tasks(
+            "WHERE project_id = ?1 AND status != 'archived' ORDER BY pinned DESC, updated_at DESC",
+            [project.0.to_string()],
+        )
     }
 
     /// Every live task across projects, pinned first, most recent next.
@@ -357,10 +358,9 @@ impl Store {
     }
 
     pub fn set_native_session(&self, id: TaskId, native: &str) -> Result<()> {
-        self.conn.lock().execute(
-            "UPDATE tasks SET native_session_id = ?2 WHERE id = ?1",
-            params![id.0.to_string(), native],
-        )?;
+        self.conn
+            .lock()
+            .execute("UPDATE tasks SET native_session_id = ?2 WHERE id = ?1", params![id.0.to_string(), native])?;
         Ok(())
     }
 
@@ -557,11 +557,7 @@ impl Store {
     /// write, a format from a newer build) are skipped, not fatal.
     pub fn read_transcript(&self, task: TaskId) -> Vec<AgentEvent> {
         let Ok(f) = File::open(self.transcript_path(task)) else { return Vec::new() };
-        BufReader::new(f)
-            .lines()
-            .map_while(Result::ok)
-            .filter_map(|l| serde_json::from_str(&l).ok())
-            .collect()
+        BufReader::new(f).lines().map_while(Result::ok).filter_map(|l| serde_json::from_str(&l).ok()).collect()
     }
 }
 
@@ -603,11 +599,7 @@ fn parse_uuid(s: String) -> Uuid {
 }
 
 fn row_project(r: &rusqlite::Row) -> rusqlite::Result<Project> {
-    Ok(Project {
-        id: ProjectId(parse_uuid(r.get(0)?)),
-        name: r.get(1)?,
-        path: PathBuf::from(r.get::<_, String>(2)?),
-    })
+    Ok(Project { id: ProjectId(parse_uuid(r.get(0)?)), name: r.get(1)?, path: PathBuf::from(r.get::<_, String>(2)?) })
 }
 
 fn row_task(r: &rusqlite::Row) -> rusqlite::Result<Option<Task>> {

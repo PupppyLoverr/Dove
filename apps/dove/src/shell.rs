@@ -29,6 +29,7 @@ use crate::kit::{self, Toasts, Tone};
 use crate::pages::PageState;
 use crate::palette::{Palette, PaletteEvent, PaletteItem};
 use crate::pull_requests::{PrEvent, PullRequestsPage};
+use crate::remote::{Remote, RemoteCommand, RemoteEvent};
 use crate::side_panel::{SidePanel, SidePanelEvent, Tab};
 use crate::theme::Theme;
 use crate::thread::{TaskViewEventKind, ThreadEvent, ThreadView, ViewMode};
@@ -178,6 +179,11 @@ impl Shell {
                 cx.notify();
             }
         }));
+        if let Some(remote) = crate::remote::Remote::global(cx) {
+            subs.push(cx.subscribe_in(&remote, window, |this, remote, ev: &RemoteEvent, window, cx| {
+                this.on_remote(remote.clone(), ev, window, cx)
+            }));
+        }
         subs.push(cx.observe_window_activation(window, |this, window, cx| {
             this.window_active = window.is_window_active();
             if this.window_active {
@@ -558,6 +564,37 @@ impl Shell {
                 crate::composer::focus(&composer, window, cx);
             }
         }
+    }
+
+    /// A command queued from the Dove phone app for one of this desktop's sessions.
+    fn on_remote(&mut self, remote: Entity<Remote>, ev: &RemoteEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let RemoteEvent::Command { task, id, command } = ev else { return };
+        let chat = task.to_string();
+        let Some(t) = self.task(*task).cloned() else {
+            remote.read(cx).command_done(&chat, id, false, Some("Session not found on this desktop"));
+            return;
+        };
+        if !self.threads.contains_key(task) {
+            let Some(project) = self.project(t.project_id).cloned() else {
+                remote.read(cx).command_done(&chat, id, false, Some("Project not found on this desktop"));
+                return;
+            };
+            self.make_thread(t, project, None, window, cx);
+        }
+        let Some(view) = self.threads.get(task).map(|v| v.read(cx).chat.clone()) else { return };
+        match command {
+            RemoteCommand::Run(prompt) if !prompt.trim().is_empty() => {
+                let prompt = prompt.clone();
+                view.update(cx, |v, cx| v.submit(prompt, window, cx));
+            }
+            RemoteCommand::Run(_) => {
+                remote.read(cx).command_done(&chat, id, false, Some("Empty prompt"));
+                return;
+            }
+            RemoteCommand::Interrupt => view.update(cx, |v, cx| v.interrupt(cx)),
+        }
+        remote.read(cx).command_done(&chat, id, true, None);
+        cx.notify();
     }
 
     fn make_thread(

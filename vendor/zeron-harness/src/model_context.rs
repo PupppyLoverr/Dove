@@ -5,17 +5,10 @@ use std::path::{Path, PathBuf};
 use zeron_proto::HarnessId;
 
 pub(crate) fn root(variable: &str, fallback: PathBuf) -> PathBuf {
-    std::env::var_os(variable)
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or(fallback)
+    std::env::var_os(variable).filter(|v| !v.is_empty()).map(PathBuf::from).unwrap_or(fallback)
 }
 
-pub(crate) fn context(
-    id: HarnessId,
-    binary: &Path,
-    extra: &[PathBuf],
-) -> Result<ModelContext, HarnessError> {
+pub(crate) fn context(id: HarnessId, binary: &Path, extra: &[PathBuf]) -> Result<ModelContext, HarnessError> {
     let home = crate::executable::home_or_current_dir();
     let files = match id {
         HarnessId::Codex => vec![root("CODEX_HOME", home.join(".codex")).join("auth.json")],
@@ -34,12 +27,7 @@ pub(crate) fn context(
                 config.join("opencode/opencode.jsonc"),
             ];
             for dir in cwd.ancestors() {
-                for name in [
-                    "opencode.json",
-                    "opencode.jsonc",
-                    ".opencode/opencode.json",
-                    ".opencode/opencode.jsonc",
-                ] {
+                for name in ["opencode.json", "opencode.jsonc", ".opencode/opencode.json", ".opencode/opencode.jsonc"] {
                     files.push(dir.join(name));
                 }
             }
@@ -54,11 +42,7 @@ pub(crate) fn context(
         }
         HarnessId::Hermes => {
             let root = root("HERMES_HOME", home.join(".hermes"));
-            vec![
-                root.join("auth.json"),
-                root.join(".env"),
-                root.join("config.yaml"),
-            ]
+            vec![root.join("auth.json"), root.join(".env"), root.join("config.yaml")]
         }
         HarnessId::Pi => {
             vec![root("PI_CODING_AGENT_DIR", home.join(".pi/agent")).join("auth.json")]
@@ -70,30 +54,20 @@ pub(crate) fn context(
                 files.push(home.join("Library/Application Support/devin/credentials.toml"));
             }
             if cfg!(windows) {
-                files.push(
-                    root("APPDATA", home.join("AppData/Roaming")).join("devin/credentials.toml"),
-                );
+                files.push(root("APPDATA", home.join("AppData/Roaming")).join("devin/credentials.toml"));
             }
             files
         }
         _ => vec![],
     };
-    let binary = binary
-        .canonicalize()
-        .unwrap_or_else(|_| binary.to_path_buf());
+    let binary = binary.canonicalize().unwrap_or_else(|_| binary.to_path_buf());
     let version = crate::executable::binary_version(&binary).map(|v| v.to_string());
     let mut hash = Sha256::new();
     field(&mut hash, binary.as_os_str().as_encoded_bytes());
-    field(
-        &mut hash,
-        version.as_deref().unwrap_or("unknown").as_bytes(),
-    );
+    field(&mut hash, version.as_deref().unwrap_or("unknown").as_bytes());
     // Unknown-version executables must still invalidate on replacement.
     if let Ok(metadata) = binary.metadata() {
-        field(
-            &mut hash,
-            format!("{:?}:{}", metadata.modified().ok(), metadata.len()).as_bytes(),
-        );
+        field(&mut hash, format!("{:?}:{}", metadata.modified().ok(), metadata.len()).as_bytes());
     }
     hash_files(&mut hash, files.iter().chain(extra))?;
     let prefixes: &[&str] = match id {
@@ -109,32 +83,21 @@ pub(crate) fn context(
         _ => &[],
     };
     let mut env: Vec<_> = std::env::vars_os()
-        .filter(|(key, _)| {
-            prefixes
-                .iter()
-                .any(|prefix| key.to_string_lossy().starts_with(prefix))
-        })
+        .filter(|(key, _)| prefixes.iter().any(|prefix| key.to_string_lossy().starts_with(prefix)))
         .collect();
     env.sort();
     for (key, value) in env {
         field(&mut hash, key.as_encoded_bytes());
         field(&mut hash, value.as_encoded_bytes());
     }
-    Ok(ModelContext {
-        hash: format!("{:x}", hash.finalize()),
-        binary_path: binary,
-        binary_version: version,
-    })
+    Ok(ModelContext { hash: format!("{:x}", hash.finalize()), binary_path: binary, binary_version: version })
 }
 
 fn field(hash: &mut Sha256, bytes: &[u8]) {
     hash.update((bytes.len() as u64).to_le_bytes());
     hash.update(bytes);
 }
-fn hash_files<'a>(
-    hash: &mut Sha256,
-    files: impl Iterator<Item = &'a PathBuf>,
-) -> Result<(), HarnessError> {
+fn hash_files<'a>(hash: &mut Sha256, files: impl Iterator<Item = &'a PathBuf>) -> Result<(), HarnessError> {
     for path in files {
         field(hash, path.as_os_str().as_encoded_bytes());
         match std::fs::read(path) {

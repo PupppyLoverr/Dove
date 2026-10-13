@@ -20,9 +20,9 @@ use std::sync::Arc;
 use tokio::io::AsyncReadExt;
 use windows_sys::Win32::Foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows_sys::Win32::System::Threading::{
-    CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessW,
-    EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess, INFINITE, PROCESS_INFORMATION, ResumeThread,
-    STARTF_USESTDHANDLES, STARTUPINFOEXW, WaitForSingleObject,
+    CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessW, EXTENDED_STARTUPINFO_PRESENT,
+    GetExitCodeProcess, INFINITE, PROCESS_INFORMATION, ResumeThread, STARTF_USESTDHANDLES, STARTUPINFOEXW,
+    WaitForSingleObject,
 };
 
 #[derive(Debug)]
@@ -73,11 +73,8 @@ impl Child {
         if let Some(status) = self.try_wait()? {
             return Ok(status);
         }
-        (&mut self.exited)
-            .await
-            .map_err(|_| io::Error::other("agent exit monitor stopped"))?;
-        self.try_wait()?
-            .ok_or_else(|| io::Error::other("agent exit wait failed"))
+        (&mut self.exited).await.map_err(|_| io::Error::other("agent exit monitor stopped"))?;
+        self.try_wait()?.ok_or_else(|| io::Error::other("agent exit wait failed"))
     }
     pub async fn wait_with_output(mut self) -> io::Result<Output> {
         drop(self.stdin.take());
@@ -98,11 +95,7 @@ impl Child {
                 Ok::<_, io::Error>(())
             }
         )?;
-        Ok(Output {
-            status,
-            stdout: out,
-            stderr: err,
-        })
+        Ok(Output { status, stdout: out, stderr: err })
     }
 }
 
@@ -119,10 +112,7 @@ impl Command {
 
 // A private hook makes the critical interval testable: the process exists but
 // is still suspended, and no monitor has been started. Production uses a no-op.
-fn spawn_prepared(
-    command: &Command,
-    after_create: impl FnOnce(&Child) -> io::Result<()>,
-) -> io::Result<Child> {
+fn spawn_prepared(command: &Command, after_create: impl FnOnce(&Child) -> io::Result<()>) -> io::Result<Child> {
     let mut prepared = command.prepare()?;
     let job = Arc::new(Job::new()?);
     let escrow = escrow::Escrow::new(&job)?;
@@ -149,15 +139,9 @@ fn spawn_prepared(
             std::ptr::null(),
             std::ptr::null(),
             1,
-            CREATE_NO_WINDOW
-                | CREATE_SUSPENDED
-                | CREATE_UNICODE_ENVIRONMENT
-                | EXTENDED_STARTUPINFO_PRESENT,
+            CREATE_NO_WINDOW | CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT,
             prepared.environment.as_ptr().cast(),
-            prepared
-                .cwd
-                .as_ref()
-                .map_or(std::ptr::null(), |cwd| cwd.as_ptr()),
+            prepared.cwd.as_ref().map_or(std::ptr::null(), |cwd| cwd.as_ptr()),
             &startup.StartupInfo,
             &mut info,
         )
@@ -170,29 +154,17 @@ fn spawn_prepared(
     let process = unsafe { OwnedHandle::from_raw_handle(info.hProcess) };
     let thread = unsafe { OwnedHandle::from_raw_handle(info.hThread) };
     let (done, exited) = tokio::sync::oneshot::channel();
-    let child = Child {
-        process,
-        pid: info.dwProcessId,
-        status: None,
-        exited,
-        job,
-        escrow,
-        stdin,
-        stdout,
-        stderr,
-    };
+    let child = Child { process, pid: info.dwProcessId, status: None, exited, job, escrow, stdin, stdout, stderr };
     child.escrow.release(&handles)?;
     after_create(&child)?;
     let process = child.process.try_clone()?;
     let cleanup_job = child.job.clone();
     // Do not consume Tokio blocking capacity needed by the child's own pipes.
-    std::thread::Builder::new()
-        .name("agent-exit".into())
-        .spawn(move || {
-            unsafe { WaitForSingleObject(process.as_raw_handle(), INFINITE) };
-            let _ = cleanup_job.terminate();
-            let _ = done.send(());
-        })?;
+    std::thread::Builder::new().name("agent-exit".into()).spawn(move || {
+        unsafe { WaitForSingleObject(process.as_raw_handle(), INFINITE) };
+        let _ = cleanup_job.terminate();
+        let _ = done.send(());
+    })?;
     if unsafe { ResumeThread(thread.as_raw_handle()) } == u32::MAX {
         return Err(io::Error::last_os_error());
     }

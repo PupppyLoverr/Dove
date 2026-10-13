@@ -322,7 +322,8 @@ async fn mouse(
 
 /// `(key, code, windows virtual key, text)` for a key name.
 fn key_info(name: &str) -> Option<(String, String, u32, Option<String>)> {
-    let named = |key: &str, vk: u32, text: Option<&str>| Some((key.to_string(), key.to_string(), vk, text.map(str::to_string)));
+    let named =
+        |key: &str, vk: u32, text: Option<&str>| Some((key.to_string(), key.to_string(), vk, text.map(str::to_string)));
     match name.to_ascii_lowercase().as_str() {
         "enter" | "return" => named("Enter", 13, Some("\r")),
         "tab" => named("Tab", 9, None),
@@ -559,8 +560,13 @@ async fn run_inner(b: &Browser, tool: &str, args: &Value, cx: &mut AsyncWindowCo
                 let p = point(b, cx, &target).await?;
                 (p.x, p.y)
             };
-            match cdp(b, cx, "Input.dispatchMouseEvent", json!({"type": "mouseWheel", "x": x, "y": y, "deltaX": dx, "deltaY": dy}))
-                .await
+            match cdp(
+                b,
+                cx,
+                "Input.dispatchMouseEvent",
+                json!({"type": "mouseWheel", "x": x, "y": y, "deltaX": dx, "deltaY": dy}),
+            )
+            .await
             {
                 Ok(_) => {}
                 Err(e) if unsupported(&e) => {
@@ -617,7 +623,8 @@ async fn run_inner(b: &Browser, tool: &str, args: &Value, cx: &mut AsyncWindowCo
             let mut params = json!({"format": "png"});
             if flag("full_page") {
                 let metrics = cdp(b, cx, "Page.getLayoutMetrics", json!({})).await?;
-                let size = metrics.get("cssContentSize").or_else(|| metrics.get("contentSize")).cloned().unwrap_or_default();
+                let size =
+                    metrics.get("cssContentSize").or_else(|| metrics.get("contentSize")).cloned().unwrap_or_default();
                 let w = size.get("width").and_then(Value::as_f64).unwrap_or(1280.0);
                 let h = size.get("height").and_then(Value::as_f64).unwrap_or(800.0).min(16_000.0);
                 params = json!({"format": "png", "captureBeyondViewport": true, "clip": {"x": 0, "y": 0, "width": w, "height": h, "scale": 1}});
@@ -653,7 +660,10 @@ async fn run_inner(b: &Browser, tool: &str, args: &Value, cx: &mut AsyncWindowCo
             }
         }
         "browser_eval" => {
-            let id = format!("r{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos()));
+            let id = format!(
+                "r{}",
+                std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos())
+            );
             let body = s("script");
             let start = format!(
                 "(() => {{ window.__doveOut = window.__doveOut || {{}}; const id = {id}; (async () => {{ {body}\n }})().then(v => window.__doveOut[id] = {{ok: v === undefined ? null : v}}, e => window.__doveOut[id] = {{err: String(e && e.stack || e)}}); return true; }})()",
@@ -675,7 +685,11 @@ async fn run_inner(b: &Browser, tool: &str, args: &Value, cx: &mut AsyncWindowCo
                         Value::String(s) => s.clone(),
                         other => serde_json::to_string_pretty(other).unwrap_or_default(),
                     };
-                    break Outcome::ok(if text.len() > 60_000 { format!("{}… (truncated)", text.chars().take(60_000).collect::<String>()) } else { text });
+                    break Outcome::ok(if text.len() > 60_000 {
+                        format!("{}… (truncated)", text.chars().take(60_000).collect::<String>())
+                    } else {
+                        text
+                    });
                 }
                 if waited > 30_000 {
                     return Err("The script did not finish within 30s".into());
@@ -692,7 +706,10 @@ async fn run_inner(b: &Browser, tool: &str, args: &Value, cx: &mut AsyncWindowCo
             let probe = if !text.is_empty() {
                 format!("__dove.find({})", lit(&text))
             } else if !target.is_empty() {
-                format!("(() => {{ try {{ return !!__dove.resolve({}); }} catch (e) {{ return false; }} }})()", lit(&target))
+                format!(
+                    "(() => {{ try {{ return !!__dove.resolve({}); }} catch (e) {{ return false; }} }})()",
+                    lit(&target)
+                )
             } else {
                 sleep(cx, (secs * 1000.0) as u64).await;
                 return Ok(Outcome::ok(format!("Waited {secs}s")));
@@ -727,7 +744,11 @@ async fn run_inner(b: &Browser, tool: &str, args: &Value, cx: &mut AsyncWindowCo
                         .collect()
                 })
                 .unwrap_or_default();
-            Outcome::ok(if lines.is_empty() { "No console messages since the last check.".into() } else { lines.join("\n") })
+            Outcome::ok(if lines.is_empty() {
+                "No console messages since the last check.".into()
+            } else {
+                lines.join("\n")
+            })
         }
         "browser_back" | "browser_forward" => {
             let forward = tool == "browser_forward";

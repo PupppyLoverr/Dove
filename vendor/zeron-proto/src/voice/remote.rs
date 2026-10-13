@@ -35,12 +35,9 @@ impl fmt::Debug for AttemptKey {
 impl<'de> Deserialize<'de> for AttemptKey {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let s = String::deserialize(d)?;
-        let id = uuid::Uuid::parse_str(&s)
-            .map_err(|_| serde::de::Error::custom("invalid attempt key"))?;
+        let id = uuid::Uuid::parse_str(&s).map_err(|_| serde::de::Error::custom("invalid attempt key"))?;
         if id.get_version_num() != 4 {
-            return Err(serde::de::Error::custom(
-                "attempt key must be random UUID v4",
-            ));
+            return Err(serde::de::Error::custom("attempt key must be random UUID v4"));
         }
         Ok(Self(id.to_string()))
     }
@@ -67,8 +64,7 @@ impl fmt::Debug for Sdp {
 }
 impl<'de> Deserialize<'de> for Sdp {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        Self::new(String::deserialize(d)?)
-            .map_err(|_| serde::de::Error::custom("invalid SDP length"))
+        Self::new(String::deserialize(d)?).map_err(|_| serde::de::Error::custom("invalid SDP length"))
     }
 }
 
@@ -165,23 +161,13 @@ mod tests {
         assert!(!format!("{s:?}").contains("SECRET"));
         let key = AttemptKey::new();
         assert!(!format!("{key:?}").contains(key.expose()));
-        assert_eq!(
-            serde_json::from_str::<AttemptKey>(&serde_json::to_string(&key).unwrap()).unwrap(),
-            key
-        );
+        assert_eq!(serde_json::from_str::<AttemptKey>(&serde_json::to_string(&key).unwrap()).unwrap(), key);
         assert!(serde_json::from_str::<AttemptKey>("\"predictable\"").is_err());
-        assert!(
-            serde_json::from_str::<Cancel>(&format!(
-                r#"{{"attemptKey":"{}","extra":1}}"#,
-                key.expose()
-            ))
-            .is_err()
-        );
+        assert!(serde_json::from_str::<Cancel>(&format!(r#"{{"attemptKey":"{}","extra":1}}"#, key.expose())).is_err());
     }
     #[test]
     fn routed_payload_stays_strict() {
-        let value =
-            serde_json::json!({"targetDeviceId":"host","payload":{"attemptKey":AttemptKey::new()}});
+        let value = serde_json::json!({"targetDeviceId":"host","payload":{"attemptKey":AttemptKey::new()}});
         assert!(serde_json::from_value::<Envelope<Cancel>>(value.clone()).is_ok());
         assert!(serde_json::from_value::<Cancel>(value).is_err());
     }

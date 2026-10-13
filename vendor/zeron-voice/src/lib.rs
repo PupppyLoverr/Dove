@@ -34,10 +34,7 @@ pub fn download_size() -> u64 {
     manifest().files.iter().map(|f| f.size).sum()
 }
 pub fn installed(dir: &Path) -> bool {
-    manifest()
-        .files
-        .iter()
-        .all(|f| std::fs::metadata(dir.join(&f.name)).is_ok_and(|m| m.len() == f.size))
+    manifest().files.iter().all(|f| std::fs::metadata(dir.join(&f.name)).is_ok_and(|m| m.len() == f.size))
         && std::fs::read_to_string(dir.join("verified")).is_ok_and(|r| r == manifest().revision)
 }
 
@@ -92,9 +89,7 @@ impl Recognizer {
                 bail!("Model is damaged. Remove it in Settings and download again.")
             }
         }
-        Ok(Self(ParakeetTDT::from_pretrained(dir, None).map_err(
-            |_| anyhow::anyhow!("Could not load Parakeet v3"),
-        )?))
+        Ok(Self(ParakeetTDT::from_pretrained(dir, None).map_err(|_| anyhow::anyhow!("Could not load Parakeet v3"))?))
     }
     pub fn transcribe(&mut self, samples: Vec<f32>, rate: u32) -> Result<String> {
         if !(8_000..=192_000).contains(&rate) {
@@ -182,10 +177,7 @@ pub fn input_devices() -> Vec<InputDevice> {
     };
     let mut devices: Vec<_> = devices
         .filter_map(|device| {
-            Some(InputDevice {
-                id: device.id().ok()?.to_string(),
-                name: device.description().ok()?.name().to_owned(),
-            })
+            Some(InputDevice { id: device.id().ok()?.to_string(), name: device.description().ok()?.name().to_owned() })
         })
         .collect();
     devices.dedup_by(|a, b| a.id == b.id);
@@ -194,13 +186,7 @@ pub fn input_devices() -> Vec<InputDevice> {
 
 /// The id of the device the system currently records from by default.
 pub fn default_input_device() -> Option<String> {
-    Some(
-        cpal::default_host()
-            .default_input_device()?
-            .id()
-            .ok()?
-            .to_string(),
-    )
+    Some(cpal::default_host().default_input_device()?.id().ok()?.to_string())
 }
 
 /// The chosen device when it is connected, the system default otherwise.
@@ -257,11 +243,7 @@ impl Capture {
             _ => bail!("Unsupported microphone format"),
         };
         stream.play()?;
-        Ok(Self {
-            stream: Some(stream),
-            audio,
-            rate,
-        })
+        Ok(Self { stream: Some(stream), audio, rate })
     }
     pub fn ended(&self) -> bool {
         self.audio.full.load(Ordering::Acquire) || self.audio.failed.load(Ordering::Acquire)
@@ -306,10 +288,7 @@ impl Recording for Capture {
     }
 }
 
-fn record<C: Recording>(
-    job: &Job,
-    start: impl FnOnce() -> Result<C>,
-) -> Result<Option<(Vec<f32>, u32)>> {
+fn record<C: Recording>(job: &Job, start: impl FnOnce() -> Result<C>) -> Result<Option<(Vec<f32>, u32)>> {
     if job.cancel.load(Ordering::Acquire) || job.stop.load(Ordering::Acquire) {
         return Ok(None);
     }
@@ -350,9 +329,8 @@ where
         return Ok(None);
     }
     std::thread::scope(|scope| {
-        let capture = std::thread::Builder::new()
-            .name("dictation-capture".into())
-            .spawn_scoped(scope, || record(job, start))?;
+        let capture =
+            std::thread::Builder::new().name("dictation-capture".into()).spawn_scoped(scope, || record(job, start))?;
         // If native loading unwinds, scope teardown still has to close capture
         // before joining it. Normal cancellation uses the same signal.
         struct CancelOnDrop<'a>(&'a AtomicBool);
@@ -368,9 +346,7 @@ where
         if model.is_err() {
             job.cancel.store(true, Ordering::Release);
         }
-        let audio = capture
-            .join()
-            .map_err(|_| anyhow::anyhow!("Microphone worker failed"))?;
+        let audio = capture.join().map_err(|_| anyhow::anyhow!("Microphone worker failed"))?;
         let transcribe = model?;
         if job.cancel.load(Ordering::Acquire) {
             return Ok(None);
@@ -389,10 +365,7 @@ static BUSY: AtomicBool = AtomicBool::new(false);
 struct BusyGuard;
 impl BusyGuard {
     fn acquire() -> Result<Self> {
-        if BUSY
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
-            .is_err()
-        {
+        if BUSY.compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed).is_err() {
             bail!("Dictation is still active or finishing. Wait a moment, then try again.")
         }
         Ok(Self)
@@ -407,8 +380,7 @@ enum Command {
     Transcribe(Job, BusyGuard),
     Unload,
 }
-static WORKER: std::sync::OnceLock<std::sync::mpsc::SyncSender<Command>> =
-    std::sync::OnceLock::new();
+static WORKER: std::sync::OnceLock<std::sync::mpsc::SyncSender<Command>> = std::sync::OnceLock::new();
 pub struct Session {
     stop: Arc<AtomicBool>,
     cancel: Arc<AtomicBool>,
@@ -438,21 +410,23 @@ impl Session {
                         Err(_) => break,
                     };
                     // A native panic must not take down the worker, and with
-                        // it every later session, until the app restarts.
-                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_job(
-                        &job,
-                        || Capture::start(job.device.as_deref(), job.level.clone()),
-                        || {
-                            if cached.as_ref().is_none_or(|(path, _)| *path != job.dir) {
-                                let model = Recognizer::load(&job.dir).context(
-                                    "Could not load the model. Remove it in Settings and download again.",
-                                )?;
-                                cached = Some((job.dir.clone(), model));
-                            }
-                            let model = &mut cached.as_mut().unwrap().1;
-                            Ok(move |samples, rate| model.transcribe(samples, rate))
-                        },
-                    )))
+                    // it every later session, until the app restarts.
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        run_job(
+                            &job,
+                            || Capture::start(job.device.as_deref(), job.level.clone()),
+                            || {
+                                if cached.as_ref().is_none_or(|(path, _)| *path != job.dir) {
+                                    let model = Recognizer::load(&job.dir).context(
+                                        "Could not load the model. Remove it in Settings and download again.",
+                                    )?;
+                                    cached = Some((job.dir.clone(), model));
+                                }
+                                let model = &mut cached.as_mut().unwrap().1;
+                                Ok(move |samples, rate| model.transcribe(samples, rate))
+                            },
+                        )
+                    }))
                     .unwrap_or_else(|_| {
                         cached = None;
                         Err(anyhow::anyhow!("Dictation stopped unexpectedly. Your draft is safe."))
@@ -478,26 +452,14 @@ impl Session {
         let (tx, events) = std::sync::mpsc::sync_channel(4);
         if sender
             .try_send(Command::Transcribe(
-                Job {
-                    dir,
-                    stop: stop.clone(),
-                    cancel: cancel.clone(),
-                    level: level.clone(),
-                    device,
-                    events: tx,
-                },
+                Job { dir, stop: stop.clone(), cancel: cancel.clone(), level: level.clone(), device, events: tx },
                 admission,
             ))
             .is_err()
         {
             bail!("Dictation worker unavailable")
         }
-        Ok(Self {
-            stop,
-            cancel,
-            level,
-            events,
-        })
+        Ok(Self { stop, cancel, level, events })
     }
     pub fn poll(&mut self) -> Option<Event> {
         self.events.try_recv().ok()
@@ -538,10 +500,7 @@ mod tests {
             f32: cpal::FromSample<T>,
         {
             let audio = Audio::with_capacity(0);
-            let input: Vec<T> = [-0.5_f32, 0.5, 0.25, 0.75, 0.0, 0.0]
-                .into_iter()
-                .map(|s| s.to_sample::<T>())
-                .collect();
+            let input: Vec<T> = [-0.5_f32, 0.5, 0.25, 0.75, 0.0, 0.0].into_iter().map(|s| s.to_sample::<T>()).collect();
             append(&input, 2, 16_000, &audio);
             assert_eq!(*audio.samples.lock().unwrap(), vec![0.0, 0.5, 0.0]);
             let level = AtomicU32::new(0);
@@ -570,21 +529,12 @@ mod tests {
         assert_eq!(m.revision.len(), 40);
         assert_eq!(m.files.len(), 3);
         assert_eq!(download_size(), 670479942);
-        assert!(
-            m.files
-                .iter()
-                .all(|f| f.sha256.len() == 64 && !f.name.contains('/'))
-        );
+        assert!(m.files.iter().all(|f| f.sha256.len() == 64 && !f.name.contains('/')));
     }
     #[test]
     fn cancelled_download_never_establishes_readiness() {
         let dir = tempfile::tempdir().unwrap();
-        assert!(
-            download(dir.path(), &AtomicBool::new(true), |_| panic!(
-                "no progress after cancellation"
-            ))
-            .is_err()
-        );
+        assert!(download(dir.path(), &AtomicBool::new(true), |_| panic!("no progress after cancellation")).is_err());
         assert!(!installed(dir.path()));
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
     }

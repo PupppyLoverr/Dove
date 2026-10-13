@@ -367,9 +367,11 @@ pub(crate) async fn live_models(
         driver_for(kind, program).ok_or_else(|| anyhow::anyhow!("{} has no shared driver", kind.label()))?;
     if kind == HarnessKind::Hermes {
         // Hermes checks its tool registry before answering; 10s is not enough.
-        harness = Arc::new(AcpHarness::hermes().with_executable(program).with_model_discovery_timeout(
-            std::time::Duration::from_secs(45),
-        ));
+        harness = Arc::new(
+            AcpHarness::hermes()
+                .with_executable(program)
+                .with_model_discovery_timeout(std::time::Duration::from_secs(45)),
+        );
     }
     let mut attempt = 0;
     let catalog = loop {

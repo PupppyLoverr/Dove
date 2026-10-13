@@ -877,6 +877,10 @@ impl TaskView {
     }
 
     pub(crate) fn apply_batch(&mut self, events: Vec<AgentEvent>, cx: &mut Context<Self>) {
+        if let Some(remote) = crate::remote::Remote::global(cx) {
+            let task = self.task.id;
+            remote.update(cx, |r, _| r.observe(task, &events));
+        }
         let before = self.chat.rows.len();
         let mut status = None;
         let mut runway = None;
@@ -1080,9 +1084,8 @@ impl TaskView {
         self.following.set(false);
         self.flash = Some(target);
         const INSET: f32 = 12.0;
-        let measured = self.list.bounds_for_item(target).map(|b| {
-            f32::from(b.top() - self.list.viewport_bounds().top()) - INSET
-        });
+        let measured =
+            self.list.bounds_for_item(target).map(|b| f32::from(b.top() - self.list.viewport_bounds().top()) - INSET);
         let Some(total) = measured.filter(|d| d.abs() < 4000.0) else {
             self.list.scroll_to(ListOffset { item_ix: target, offset_in_item: px(0.0) });
             self.list.scroll_by(px(-INSET));
@@ -1100,10 +1103,13 @@ impl TaskView {
                 let eased = 1.0 - (1.0 - p).powi(3);
                 let step = total * eased - done;
                 done += step;
-                if this.update(cx, |v, cx| {
-                    v.list.scroll_by(px(step));
-                    cx.notify();
-                }).is_err() {
+                if this
+                    .update(cx, |v, cx| {
+                        v.list.scroll_by(px(step));
+                        cx.notify();
+                    })
+                    .is_err()
+                {
                     return;
                 }
             }
@@ -1474,14 +1480,7 @@ impl TaskView {
             .into_any_element()
     }
 
-    fn render_md(
-        &self,
-        id: &str,
-        block: &Block,
-        weak: &WeakEntity<Self>,
-        t: &Theme,
-        window: &Window,
-    ) -> AnyElement {
+    fn render_md(&self, id: &str, block: &Block, weak: &WeakEntity<Self>, t: &Theme, window: &Window) -> AnyElement {
         let Block::Widget(src) = block else {
             return markdown::render_block(id, block, t, window);
         };
@@ -2033,13 +2032,10 @@ impl TaskView {
 
     /// The reply that followed the user message at `row`, for previews.
     fn reply_after(&self, row: usize) -> Option<String> {
-        self.chat.rows[row + 1..]
-            .iter()
-            .take_while(|r| !matches!(r, Row::User { .. }))
-            .find_map(|r| match r {
-                Row::Block { block, .. } => Some(block.plain()).filter(|t| !t.trim().is_empty()),
-                _ => None,
-            })
+        self.chat.rows[row + 1..].iter().take_while(|r| !matches!(r, Row::User { .. })).find_map(|r| match r {
+            Row::Block { block, .. } => Some(block.plain()).filter(|t| !t.trim().is_empty()),
+            _ => None,
+        })
     }
 
     /// The message rail: a compact minimap of your prompts along the left
@@ -2087,7 +2083,13 @@ impl TaskView {
                 .cursor_pointer()
                 .on_hover(move |on, _, cx| {
                     let _ = w_hover.update(cx, |v, cx| {
-                        let next = if *on { Some(ix) } else if v.rail_hover == Some(ix) { None } else { v.rail_hover };
+                        let next = if *on {
+                            Some(ix)
+                        } else if v.rail_hover == Some(ix) {
+                            None
+                        } else {
+                            v.rail_hover
+                        };
                         if v.rail_hover != next {
                             v.rail_hover = next;
                             cx.notify();
@@ -2100,7 +2102,13 @@ impl TaskView {
                 .child(
                     div()
                         .h(px(if is_active { 3.0 } else { 2.0 }))
-                        .w(px(if hovered { 22.0 } else if is_active { 16.0 } else { 11.0 }))
+                        .w(px(if hovered {
+                            22.0
+                        } else if is_active {
+                            16.0
+                        } else {
+                            11.0
+                        }))
                         .rounded_full()
                         .bg(if is_active || hovered { t.text.opacity(0.85) } else { t.text.opacity(0.18) }),
                 )
@@ -2113,7 +2121,11 @@ impl TaskView {
                     };
                     let reply = reply.map(|r| {
                         let r = r.split_whitespace().collect::<Vec<_>>().join(" ");
-                        if r.chars().count() > 200 { format!("{}…", r.chars().take(199).collect::<String>()) } else { r }
+                        if r.chars().count() > 200 {
+                            format!("{}…", r.chars().take(199).collect::<String>())
+                        } else {
+                            r
+                        }
                     });
                     let span = end - start;
                     d.child(
@@ -2140,7 +2152,13 @@ impl TaskView {
                                             .child(format!("Prompt {} of {n}", rep + 1))
                                             .when(span > 1, |d| d.child(format!("· {span} here"))),
                                     )
-                                    .child(div().text_size(px(13.0)).line_height(px(18.0)).text_color(t.text).child(prompt))
+                                    .child(
+                                        div()
+                                            .text_size(px(13.0))
+                                            .line_height(px(18.0))
+                                            .text_color(t.text)
+                                            .child(prompt),
+                                    )
                                     .when_some(reply, |d, r| {
                                         d.child(
                                             div()

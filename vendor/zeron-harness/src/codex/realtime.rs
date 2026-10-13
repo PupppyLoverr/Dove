@@ -87,10 +87,7 @@ impl RealtimeHandle {
     async fn probe_mode(&self, external: bool) -> Result<VoiceEligibility, VoiceRejection> {
         let (reply, rx) = oneshot::channel();
         tokio::time::timeout(Duration::from_secs(15), async {
-            self.commands
-                .send(VoiceCommand::Probe { external, reply })
-                .await
-                .map_err(|_| VoiceRejection::Protocol)?;
+            self.commands.send(VoiceCommand::Probe { external, reply }).await.map_err(|_| VoiceRejection::Protocol)?;
             rx.await.map_err(|_| VoiceRejection::Protocol)?
         })
         .await
@@ -100,10 +97,7 @@ impl RealtimeHandle {
     pub async fn stop(&self) -> Result<(), VoiceRejection> {
         let (reply, rx) = oneshot::channel();
         tokio::time::timeout(Duration::from_secs(8), async {
-            self.commands
-                .send(VoiceCommand::Stop { reply })
-                .await
-                .map_err(|_| VoiceRejection::Protocol)?;
+            self.commands.send(VoiceCommand::Stop { reply }).await.map_err(|_| VoiceRejection::Protocol)?;
             rx.await.map_err(|_| VoiceRejection::Protocol)?
         })
         .await
@@ -112,21 +106,14 @@ impl RealtimeHandle {
     pub async fn mute(&self, muted: bool) -> Result<(), VoiceRejection> {
         let (reply, rx) = oneshot::channel();
         tokio::time::timeout(Duration::from_secs(8), async {
-            self.commands
-                .send(VoiceCommand::Mute { muted, reply })
-                .await
-                .map_err(|_| VoiceRejection::Protocol)?;
+            self.commands.send(VoiceCommand::Mute { muted, reply }).await.map_err(|_| VoiceRejection::Protocol)?;
             rx.await.map_err(|_| VoiceRejection::Protocol)?
         })
         .await
         .map_err(|_| VoiceRejection::Protocol)?
     }
 }
-pub fn channel() -> (
-    RealtimeHandle,
-    RealtimeControls,
-    broadcast::Receiver<VoiceEvent>,
-) {
+pub fn channel() -> (RealtimeHandle, RealtimeControls, broadcast::Receiver<VoiceEvent>) {
     let audio_abort = Arc::default();
     let invalidated = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let (commands, rx) = mpsc::channel(8);
@@ -138,12 +125,7 @@ pub fn channel() -> (
             commands,
             events: events.clone(),
         },
-        RealtimeControls {
-            audio_abort,
-            invalidated,
-            commands: rx,
-            events,
-        },
+        RealtimeControls { audio_abort, invalidated, commands: rx, events },
         receiver,
     )
 }
@@ -182,24 +164,14 @@ pub(super) fn attach(
         }
     });
     // Moved into the task so it unsubscribes even when aborted before polling.
-    let subscription = VoiceSubscription {
-        client: client.clone(),
-        overflow: overflow.clone(),
-    };
+    let subscription = VoiceSubscription { client: client.clone(), overflow: overflow.clone() };
     BridgeTask(tokio::spawn(async move {
         let _subscription = subscription;
-        let RealtimeControls {
-            audio_abort,
-            invalidated,
-            mut commands,
-            events,
-        } = controls;
+        let RealtimeControls { audio_abort, invalidated, mut commands, events } = controls;
         let mut native: Option<host::NativeHost> = None;
         let mut external_active = false;
         let mut external_reply: Option<oneshot::Sender<Result<remote::Sdp, VoiceRejection>>> = None;
-        let mut starting: Option<
-            futures::future::BoxFuture<'static, Result<Started, VoiceRejection>>,
-        > = None;
+        let mut starting: Option<futures::future::BoxFuture<'static, Result<Started, VoiceRejection>>> = None;
         let mut start_reply: Option<oneshot::Sender<Result<(), VoiceRejection>>> = None;
         let mut answer_tx: Option<oneshot::Sender<String>> = None;
         let mut accepted_tx: Option<oneshot::Sender<()>> = None;
@@ -320,18 +292,13 @@ pub(super) fn attach(
                 }
             }
         }
-        let had_session = starting.take().is_some()
-            || native.is_some()
-            || external_active
-            || server_live.load(Ordering::Acquire);
+        let had_session =
+            starting.take().is_some() || native.is_some() || external_active || server_live.load(Ordering::Acquire);
         drop(native);
         if had_session {
             let _ = stop(&client, &thread).await;
         }
-        let _ = events.send(VoiceEvent::Closed {
-            generation,
-            reason: Some(VoiceRejection::Protocol),
-        });
+        let _ = events.send(VoiceEvent::Closed { generation, reason: Some(VoiceRejection::Protocol) });
     }))
 }
 enum Started {
@@ -359,33 +326,21 @@ async fn probe_mode(
         .await
         .map_err(|_| VoiceRejection::Protocol)?
 }
-async fn probe_details(
-    client: &RpcClient,
-    context: &ThreadContext,
-) -> Result<VoiceEligibility, VoiceRejection> {
-    if context.model_provider.as_deref() != Some("openai")
-        || !std::path::Path::new(&context.cwd).is_absolute()
-    {
+async fn probe_details(client: &RpcClient, context: &ThreadContext) -> Result<VoiceEligibility, VoiceRejection> {
+    if context.model_provider.as_deref() != Some("openai") || !std::path::Path::new(&context.cwd).is_absolute() {
         return Err(VoiceRejection::ChatgptRequired);
     }
-    let account = client
-        .request("account/read", json!({"refreshToken":false}))
-        .await
-        .map_err(|_| VoiceRejection::Protocol)?;
+    let account =
+        client.request("account/read", json!({"refreshToken":false})).await.map_err(|_| VoiceRejection::Protocol)?;
     if account["account"]["type"] != "chatgpt" {
         return Err(VoiceRejection::ChatgptRequired);
     }
     let config = client
-        .request(
-            "config/read",
-            json!({"includeLayers":false,"cwd":context.cwd}),
-        )
+        .request("config/read", json!({"includeLayers":false,"cwd":context.cwd}))
         .await
         .map_err(|_| VoiceRejection::Protocol)?;
     let config = &config["config"];
-    if config["model_provider"]
-        .as_str()
-        .is_some_and(|p| p != "openai")
+    if config["model_provider"].as_str().is_some_and(|p| p != "openai")
         || config["model_providers"]["openai"].is_object()
         || [
             "experimental_realtime_ws_base_url",
@@ -400,10 +355,7 @@ async fn probe_details(
     // No account/rateLimits/read: it is a ~1 s backend round trip, and ordinary
     // quota may be exhausted while permitted credits remain. The native backend
     // applies spend controls and the final usage decision.
-    let v = client
-        .request("thread/realtime/listVoices", json!({}))
-        .await
-        .map_err(|_| VoiceRejection::Unsupported)?;
+    let v = client.request("thread/realtime/listVoices", json!({})).await.map_err(|_| VoiceRejection::Unsupported)?;
     let voices = v["voices"]["v1"]
         .as_array()
         .ok_or(VoiceRejection::Unsupported)?
@@ -439,10 +391,8 @@ async fn start(
     }
     let mut host = host::NativeHost::open(&host::helper_path(&executable)?, abort).await?;
     let offer = host.exchange(json!({"type":"startTransport"}), 20).await?;
-    let sdp = offer["sdp"]
-        .as_str()
-        .filter(|s| !s.is_empty() && s.len() <= 64 * 1024)
-        .ok_or(VoiceRejection::Protocol)?;
+    let sdp =
+        offer["sdp"].as_str().filter(|s| !s.is_empty() && s.len() <= 64 * 1024).ok_or(VoiceRejection::Protocol)?;
     if offer["type"] != "offer" {
         return Err(VoiceRejection::Protocol);
     }
@@ -453,13 +403,10 @@ async fn start(
         params["voice"] = json!(voice);
     }
     server_live.store(true, Ordering::Release);
-    tokio::time::timeout(
-        Duration::from_secs(30),
-        client.request("thread/realtime/start", params),
-    )
-    .await
-    .map_err(|_| VoiceRejection::Protocol)?
-    .map_err(|_| VoiceRejection::Protocol)?;
+    tokio::time::timeout(Duration::from_secs(30), client.request("thread/realtime/start", params))
+        .await
+        .map_err(|_| VoiceRejection::Protocol)?
+        .map_err(|_| VoiceRejection::Protocol)?;
     tokio::time::timeout(Duration::from_secs(30), accepted)
         .await
         .map_err(|_| VoiceRejection::Protocol)?
@@ -468,15 +415,8 @@ async fn start(
         .await
         .map_err(|_| VoiceRejection::Protocol)?
         .map_err(|_| VoiceRejection::Protocol)?;
-    host.expect(
-        json!({"type":"applyAnswer","sdp":answer}),
-        "transportReady",
-        20,
-    )
-    .await?;
-    host.open_devices()
-        .await
-        .map_err(|_| VoiceRejection::DeviceUnavailable)?;
+    host.expect(json!({"type":"applyAnswer","sdp":answer}), "transportReady", 20).await?;
+    host.open_devices().await.map_err(|_| VoiceRejection::DeviceUnavailable)?;
     // Keep devices muted/suppressed until the engine confirms the owner stream.
     Ok(host)
 }
@@ -504,10 +444,7 @@ async fn start_external(
     }
     server_live.store(true, Ordering::Release);
     tokio::time::timeout(Duration::from_secs(90), async {
-        client
-            .request("thread/realtime/start", params)
-            .await
-            .map_err(|_| VoiceRejection::Protocol)?;
+        client.request("thread/realtime/start", params).await.map_err(|_| VoiceRejection::Protocol)?;
         accepted.await.map_err(|_| VoiceRejection::Protocol)?;
         remote::Sdp::new(answer.await.map_err(|_| VoiceRejection::Protocol)?)
     })
@@ -516,13 +453,10 @@ async fn start_external(
 }
 
 async fn stop(client: &RpcClient, thread: &str) -> Result<(), VoiceRejection> {
-    tokio::time::timeout(
-        Duration::from_secs(2),
-        client.request("thread/realtime/stop", json!({"threadId":thread})),
-    )
-    .await
-    .map_err(|_| VoiceRejection::Protocol)?
-    .map_err(|_| VoiceRejection::Protocol)?;
+    tokio::time::timeout(Duration::from_secs(2), client.request("thread/realtime/stop", json!({"threadId":thread})))
+        .await
+        .map_err(|_| VoiceRejection::Protocol)?
+        .map_err(|_| VoiceRejection::Protocol)?;
     Ok(())
 }
 

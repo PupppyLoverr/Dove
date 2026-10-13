@@ -124,9 +124,8 @@ pub fn parse(patch: &str) -> Vec<FileDiff> {
 /// `@@ -12,7 +12,8 @@ fn x` → (12, 12)
 fn hunk_starts(header: &str) -> (u32, u32) {
     let mut parts = header.split_whitespace().skip(1);
-    let num = |s: Option<&str>| -> u32 {
-        s.and_then(|s| s[1..].split(',').next()).and_then(|n| n.parse().ok()).unwrap_or(1)
-    };
+    let num =
+        |s: Option<&str>| -> u32 { s.and_then(|s| s[1..].split(',').next()).and_then(|n| n.parse().ok()).unwrap_or(1) };
     let o = num(parts.next());
     let n = num(parts.next());
     (o, n)
@@ -208,7 +207,10 @@ Binary files /dev/null and b/img.png differ
 
         assert_eq!(f[1].status, FileStatus::Deleted);
         assert_eq!(f[1].deletions, 1);
-        assert_eq!((f[2].status, f[2].path.as_str(), f[2].old_path.as_deref()), (FileStatus::Renamed, "new name.md", Some("old name.md")));
+        assert_eq!(
+            (f[2].status, f[2].path.as_str(), f[2].old_path.as_deref()),
+            (FileStatus::Renamed, "new name.md", Some("old name.md"))
+        );
         assert!(f[3].binary && f[3].status == FileStatus::Added);
     }
 }

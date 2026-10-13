@@ -141,7 +141,14 @@ impl Changes {
         self.refresh(cx);
     }
 
-    pub fn show_commit(&mut self, dir: PathBuf, sha: String, subject: &str, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn show_commit(
+        &mut self,
+        dir: PathBuf,
+        sha: String,
+        subject: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.target = Some((dir, sha.clone()));
         self.commit = Some(sha);
         self.title = subject.to_string();

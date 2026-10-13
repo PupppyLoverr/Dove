@@ -14,11 +14,7 @@ pub(crate) fn signal_target(child: &Child) -> Option<i32> {
     let pid = child.id()? as i32;
     // ACP children lead a private group; other harnesses retain pid signaling.
     // SAFETY: getpgid only inspects the owned, unreaped child.
-    Some(if unsafe { libc::getpgid(pid) } == pid {
-        -pid
-    } else {
-        pid
-    })
+    Some(if unsafe { libc::getpgid(pid) } == pid { -pid } else { pid })
 }
 #[cfg(windows)]
 pub(crate) fn signal_target(child: &Child) -> Option<std::sync::Arc<crate::windows_process::Job>> {
@@ -73,11 +69,7 @@ pub(crate) async fn terminate_tree(pids: &[i32], grace: std::time::Duration) {
         .iter()
         .map(|&pid| {
             // SAFETY: getpgid only inspects; a vanished pid returns -1.
-            if unsafe { libc::getpgid(pid) } == pid {
-                -pid
-            } else {
-                pid
-            }
+            if unsafe { libc::getpgid(pid) } == pid { -pid } else { pid }
         })
         .collect();
     let alive = |target: i32| unsafe { libc::kill(target, 0) } == 0;
@@ -120,18 +112,11 @@ mod tests {
             "python3 -c 'import os, time; os.setpgid(0, 0); open(\"{}\", \"w\").write(str(os.getpid())); time.sleep(60)' & sleep 60",
             ready.display()
         );
-        let mut parent = tokio::process::Command::new("sh")
-            .args(["-c", &script])
-            .kill_on_drop(true)
-            .spawn()
-            .unwrap();
+        let mut parent = tokio::process::Command::new("sh").args(["-c", &script]).kill_on_drop(true).spawn().unwrap();
         let root = parent.id().unwrap();
         let mut shell = None;
         for _ in 0..250 {
-            if let Some(pid) = std::fs::read_to_string(&ready)
-                .ok()
-                .and_then(|s| s.trim().parse::<i32>().ok())
-            {
+            if let Some(pid) = std::fs::read_to_string(&ready).ok().and_then(|s| s.trim().parse::<i32>().ok()) {
                 shell = Some(pid);
                 break;
             }
@@ -154,18 +139,11 @@ mod tests {
     #[tokio::test]
     async fn unix_launch_retains_tokio_types_and_output() {
         let mut command: tokio::process::Command = Command::new(std::env::current_exe().unwrap());
-        command
-            .arg("--list")
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .kill_on_drop(true);
+        command.arg("--list").stdin(Stdio::null()).stdout(Stdio::piped()).kill_on_drop(true);
         let child: tokio::process::Child = command.spawn().unwrap();
         let result = child.wait_with_output().await.unwrap();
         assert!(result.status.success());
-        assert!(
-            String::from_utf8_lossy(&result.stdout)
-                .contains("unix_launch_retains_tokio_types_and_output")
-        );
+        assert!(String::from_utf8_lossy(&result.stdout).contains("unix_launch_retains_tokio_types_and_output"));
         let result = command.output().await.unwrap();
         assert!(result.status.success());
         assert!(!result.stdout.is_empty());

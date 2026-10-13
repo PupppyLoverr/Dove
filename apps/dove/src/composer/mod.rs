@@ -1168,10 +1168,15 @@ impl Composer {
     }
 
     fn attach_button(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
-        let button =
-            ui::icon_button("composer-attach", icons::PLUS, "Attach files, images or a folder (or paste / drop)", t, |_, _, _| {})
-                .rounded_full()
-                .on_click(cx.listener(|this, _, _, cx| this.toggle_menu(Menu::Attach, cx)));
+        let button = ui::icon_button(
+            "composer-attach",
+            icons::PLUS,
+            "Attach files, images or a folder (or paste / drop)",
+            t,
+            |_, _, _| {},
+        )
+        .rounded_full()
+        .on_click(cx.listener(|this, _, _, cx| this.toggle_menu(Menu::Attach, cx)));
         let menu = (self.menu == Some(Menu::Attach)).then(|| {
             let supported = dove_core::supports_add_dirs(self.harness(cx));
             let rows = div()

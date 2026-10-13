@@ -311,7 +311,8 @@ impl Shell {
             .border_color(t.border)
             .child({
                 let host = ui::host_name();
-                let initial: String = host.chars().find(|c| c.is_alphanumeric()).map_or('D', |c| c.to_ascii_uppercase()).to_string();
+                let initial: String =
+                    host.chars().find(|c| c.is_alphanumeric()).map_or('D', |c| c.to_ascii_uppercase()).to_string();
                 div()
                     .size(px(26.0))
                     .flex_none()

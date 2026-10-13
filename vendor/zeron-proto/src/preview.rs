@@ -43,13 +43,7 @@ pub struct PreviewSnapshot {
 
 impl Default for PreviewSnapshot {
     fn default() -> Self {
-        Self {
-            services: Vec::new(),
-            proxy_port: PREVIEW_PROXY_PORT,
-            error: None,
-            project_name: None,
-            remote: false,
-        }
+        Self { services: Vec::new(), proxy_port: PREVIEW_PROXY_PORT, error: None, project_name: None, remote: false }
     }
 }
 

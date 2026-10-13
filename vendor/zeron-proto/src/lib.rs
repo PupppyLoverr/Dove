@@ -5,8 +5,8 @@
 
 pub mod agent;
 pub mod attachment_mentions;
-pub mod chat_mentions;
 pub mod change_request_assessment;
+pub mod chat_mentions;
 pub mod entities;
 pub mod file_mentions;
 pub mod invocation;
@@ -33,11 +33,6 @@ pub fn version_triple(version: &str) -> Option<(u64, u64, u64)> {
     let major: u64 = parts.next()?.parse().ok()?;
     let minor: u64 = parts.next()?.parse().ok()?;
     let patch = parts.next()?;
-    let patch: u64 = patch
-        .split(['-', '+'])
-        .next()
-        .unwrap_or(patch)
-        .parse()
-        .ok()?;
+    let patch: u64 = patch.split(['-', '+']).next().unwrap_or(patch).parse().ok()?;
     Some((major, minor, patch))
 }

@@ -11,8 +11,7 @@ pub mod capabilities {
     pub const MESSAGE_QUEUE_V1: &str = "message-queue-v1";
     pub const MESSAGE_QUEUE_ACTIONS_V1: &str = "message-queue-actions-v1";
     pub const MESSAGE_QUEUE_ATTACHMENTS_V1: &str = "message-queue-attachments-v1";
-    pub const MESSAGE_QUEUE_CLEAN_ATTACHMENT_TEXT_V1: &str =
-        "message-queue-clean-attachment-text-v1";
+    pub const MESSAGE_QUEUE_CLEAN_ATTACHMENT_TEXT_V1: &str = "message-queue-clean-attachment-text-v1";
     pub const MESSAGE_QUEUE_EDIT_LEASE_V1: &str = "message-queue-edit-lease-v1";
     pub const HARNESS_UPDATES_V1: &str = "harness-updates-v1";
     /// The host creates a projectless chat's scratch folder
@@ -80,10 +79,7 @@ mod tests {
             (WorkspaceScope::Development, "\"development\""),
         ] {
             assert_eq!(serde_json::to_string(&scope).unwrap(), encoded);
-            assert_eq!(
-                serde_json::from_str::<WorkspaceScope>(encoded).unwrap(),
-                scope
-            );
+            assert_eq!(serde_json::from_str::<WorkspaceScope>(encoded).unwrap(), scope);
         }
     }
 

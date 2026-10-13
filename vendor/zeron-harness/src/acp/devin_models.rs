@@ -47,8 +47,7 @@ pub(super) async fn wait_for_model(
             match incoming.recv().await {
                 Some(Incoming::Notification { method, params })
                     if method == "session/update"
-                        && params.get("sessionId").and_then(serde_json::Value::as_str)
-                            == Some(session_id)
+                        && params.get("sessionId").and_then(serde_json::Value::as_str) == Some(session_id)
                         && params["update"]["sessionUpdate"] == "config_option_update" =>
                 {
                     if params["update"]["configOptions"].is_array() {
@@ -60,20 +59,14 @@ pub(super) async fn wait_for_model(
                 }
                 Some(_) => {}
                 None => {
-                    return Err(HarnessError::Protocol(
-                        "Devin exited while refreshing models".into(),
-                    ));
+                    return Err(HarnessError::Protocol("Devin exited while refreshing models".into()));
                 }
             }
         }
     };
-    tokio::time::timeout(super::DEFAULT_MODEL_DISCOVERY_TIMEOUT, wait)
-        .await
-        .map_err(|_| {
-            HarnessError::Protocol(format!(
-                "Devin did not advertise requested model {model} after refreshing"
-            ))
-        })?
+    tokio::time::timeout(super::DEFAULT_MODEL_DISCOVERY_TIMEOUT, wait).await.map_err(|_| {
+        HarnessError::Protocol(format!("Devin did not advertise requested model {model} after refreshing"))
+    })?
 }
 
 /// The requested model resolved against the catalog.
@@ -115,11 +108,7 @@ pub(super) struct Catalog {
 }
 
 impl Catalog {
-    pub(super) async fn refresh(
-        &self,
-        exe: &Path,
-        timeout: Duration,
-    ) -> Result<Vec<Model>, HarnessError> {
+    pub(super) async fn refresh(&self, exe: &Path, timeout: Duration) -> Result<Vec<Model>, HarnessError> {
         let requested_at = Instant::now();
         let mut latest = self.latest.lock().await;
         if let Some((completed_at, models, _)) = &*latest
@@ -130,29 +119,22 @@ impl Catalog {
         let mut cmd = Command::new(exe);
         cmd.args(["models", "list", "--format", "json"]);
         crate::compose_child_path(&mut cmd, exe);
-        cmd.stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
+        cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
         let mut child = cmd.spawn()?;
         let mut stdout = child.stdout.take().expect("piped stdout");
         let mut stderr = child.stderr.take().expect("piped stderr");
         let mut out = Vec::new();
         let mut err = Vec::new();
         let result = tokio::time::timeout(timeout, async {
-            let (status, _, _) = tokio::try_join!(
-                child.wait(),
-                stdout.read_to_end(&mut out),
-                stderr.read_to_end(&mut err)
-            )?;
+            let (status, _, _) =
+                tokio::try_join!(child.wait(), stdout.read_to_end(&mut out), stderr.read_to_end(&mut err))?;
             Ok::<_, std::io::Error>(status)
         })
         .await;
         // In particular, timeout must reap the probe before its registry
         // execution lease can be released to an installer.
         crate::shutdown_child(&mut child, Duration::from_millis(250)).await;
-        let status = result
-            .map_err(|_| HarnessError::Protocol("Devin model discovery timed out".into()))??;
+        let status = result.map_err(|_| HarnessError::Protocol("Devin model discovery timed out".into()))??;
         if !status.success() {
             return Err(HarnessError::Protocol(format!(
                 "Devin models list failed ({}): {}",
@@ -185,16 +167,9 @@ impl Catalog {
         if model == FUSION {
             let (default_lead, default_sidekick) = groups.iter().find_map(|g| g.pair.clone())?;
             let pick = |key: &str, default: String| {
-                options
-                    .get(key)
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_owned)
-                    .unwrap_or(default)
+                options.get(key).and_then(serde_json::Value::as_str).map(str::to_owned).unwrap_or(default)
             };
-            let wanted = (
-                pick("lead", default_lead),
-                pick("sidekick", default_sidekick),
-            );
+            let wanted = (pick("lead", default_lead), pick("sidekick", default_sidekick));
             let group = groups.iter().find(|g| g.pair.as_ref() == Some(&wanted))?;
             return Some(Selection {
                 members: group.members.iter().map(|m| m.id.clone()).collect(),
@@ -239,23 +214,13 @@ struct Variant {
 /// Medium)", High, true): the ACP session selects one id per primary model
 /// and sidekick, and the effort it exposes is the primary's.
 fn parse_variant(family: &str, label: &str) -> (String, Option<ReasoningLevel>, bool) {
-    let rest = label
-        .strip_prefix(family)
-        .filter(|r| r.is_empty() || r.starts_with(' '))
-        .unwrap_or(label)
-        .trim();
-    if let Some((primary, sidekick)) = rest
-        .strip_prefix('(')
-        .and_then(|r| r.strip_suffix(')'))
-        .and_then(|r| r.split_once(" + "))
+    let rest = label.strip_prefix(family).filter(|r| r.is_empty() || r.starts_with(' ')).unwrap_or(label).trim();
+    if let Some((primary, sidekick)) =
+        rest.strip_prefix('(').and_then(|r| r.strip_suffix(')')).and_then(|r| r.split_once(" + "))
     {
         let (base, effort, fast) = split_effort(primary);
         let (sidekick, _, sidekick_fast) = split_effort_keep_level(sidekick);
-        return (
-            format!("({base} + {sidekick})"),
-            effort,
-            fast || sidekick_fast,
-        );
+        return (format!("({base} + {sidekick})"), effort, fast || sidekick_fast);
     }
     if rest.starts_with('(') || rest.contains('+') {
         return (rest.to_owned(), None, false);
@@ -304,11 +269,7 @@ fn split_effort(text: &str) -> (String, Option<ReasoningLevel>, bool) {
 fn split_effort_keep_level(text: &str) -> (String, Option<ReasoningLevel>, bool) {
     let words: Vec<&str> = text.split_whitespace().collect();
     let fast = words.last() == Some(&"Fast");
-    let kept = if fast {
-        &words[..words.len() - 1]
-    } else {
-        &words[..]
-    };
+    let kept = if fast { &words[..words.len() - 1] } else { &words[..] };
     (kept.join(" "), None, fast)
 }
 
@@ -326,14 +287,8 @@ fn speed_option(label: &str) -> ModelOption {
         id: "speed".into(),
         label: label.into(),
         choices: vec![
-            ModelOptionChoice {
-                id: "standard".into(),
-                label: "Standard".into(),
-            },
-            ModelOptionChoice {
-                id: "fast".into(),
-                label: "Fast".into(),
-            },
+            ModelOptionChoice { id: "standard".into(), label: "Standard".into() },
+            ModelOptionChoice { id: "fast".into(), label: "Fast".into() },
         ],
         default_choice: "standard".into(),
     }
@@ -343,13 +298,7 @@ fn choice_option(id: &str, label: &str, choices: &[(String, String)]) -> ModelOp
     ModelOption {
         id: id.into(),
         label: label.into(),
-        choices: choices
-            .iter()
-            .map(|(id, label)| ModelOptionChoice {
-                id: id.clone(),
-                label: label.clone(),
-            })
-            .collect(),
+        choices: choices.iter().map(|(id, label)| ModelOptionChoice { id: id.clone(), label: label.clone() }).collect(),
         default_choice: choices[0].0.clone(),
     }
 }
@@ -371,9 +320,7 @@ fn parse_catalog(bytes: &[u8]) -> Result<(Vec<Model>, Vec<Group>), HarnessError>
         let mut family_groups: Vec<(String, String, Option<String>, Vec<Member>)> = Vec::new();
         for variant in family.variants {
             if variant.model_uid.trim().is_empty() || variant.label.trim().is_empty() {
-                return Err(HarnessError::Protocol(
-                    "invalid empty Devin model id or label".into(),
-                ));
+                return Err(HarnessError::Protocol("invalid empty Devin model id or label".into()));
             }
             if groups
                 .iter()
@@ -385,11 +332,7 @@ fn parse_catalog(bytes: &[u8]) -> Result<(Vec<Model>, Vec<Group>), HarnessError>
                 continue;
             }
             let (qualifier, effort, fast) = parse_variant(&family.family_label, &variant.label);
-            let member = Member {
-                id: variant.model_uid.clone(),
-                effort,
-                fast,
-            };
+            let member = Member { id: variant.model_uid.clone(), effort, fast };
             // A variant with neither effort nor speed is a model of its own;
             // so is one whose effort/speed pair its group already has.
             // A Fusion pair is one model whatever its variants' speeds (the
@@ -408,11 +351,7 @@ fn parse_catalog(bytes: &[u8]) -> Result<(Vec<Model>, Vec<Group>), HarnessError>
                     let label = if effort.is_none() && !fast {
                         variant.label.clone()
                     } else if qualifier.is_empty() || family.family_label.is_empty() {
-                        if family.family_label.is_empty() {
-                            variant.label.clone()
-                        } else {
-                            family.family_label.clone()
-                        }
+                        if family.family_label.is_empty() { variant.label.clone() } else { family.family_label.clone() }
                     } else {
                         format!("{} {qualifier}", family.family_label)
                     };
@@ -421,21 +360,14 @@ fn parse_catalog(bytes: &[u8]) -> Result<(Vec<Model>, Vec<Group>), HarnessError>
             }
         }
         for (qualifier, label, description, members) in family_groups {
-            let mut reasoning_levels: Vec<ReasoningLevel> =
-                members.iter().filter_map(|m| m.effort).collect();
+            let mut reasoning_levels: Vec<ReasoningLevel> = members.iter().filter_map(|m| m.effort).collect();
             reasoning_levels.sort();
             reasoning_levels.dedup();
-            if let Some((lead, sidekick)) = qualifier
-                .strip_prefix('(')
-                .and_then(|q| q.strip_suffix(')'))
-                .and_then(|q| q.split_once(" + "))
+            if let Some((lead, sidekick)) =
+                qualifier.strip_prefix('(').and_then(|q| q.strip_suffix(')')).and_then(|q| q.split_once(" + "))
             {
                 // Devin shows the sidekick without "Thinking".
-                let sidekick = sidekick
-                    .split_whitespace()
-                    .filter(|w| *w != "Thinking")
-                    .collect::<Vec<_>>()
-                    .join(" ");
+                let sidekick = sidekick.split_whitespace().filter(|w| *w != "Thinking").collect::<Vec<_>>().join(" ");
                 let pair = (slug(lead), slug(&sidekick));
                 if !leads.iter().any(|(id, _)| *id == pair.0) {
                     leads.push((pair.0.clone(), lead.to_owned()));
@@ -449,42 +381,25 @@ fn parse_catalog(bytes: &[u8]) -> Result<(Vec<Model>, Vec<Group>), HarnessError>
                 if fusion_description.is_none() {
                     fusion_description = description;
                 }
-                groups.push(Group {
-                    members,
-                    pair: Some(pair),
-                });
+                groups.push(Group { members, pair: Some(pair) });
                 continue;
             }
-            let options = if members.iter().any(|m| m.fast) {
-                vec![speed_option("Speed")]
-            } else {
-                Vec::new()
-            };
+            let options = if members.iter().any(|m| m.fast) { vec![speed_option("Speed")] } else { Vec::new() };
             models.push(Model {
-                id: members
-                    .iter()
-                    .find(|m| !m.fast)
-                    .unwrap_or(&members[0])
-                    .id
-                    .clone(),
+                id: members.iter().find(|m| !m.fast).unwrap_or(&members[0]).id.clone(),
                 label,
                 description,
                 reasoning_levels,
                 options,
             });
-            groups.push(Group {
-                members,
-                pair: None,
-            });
+            groups.push(Group { members, pair: None });
         }
     }
     if !leads.is_empty() {
         fusion_levels.sort();
         fusion_levels.dedup();
-        let mut options = vec![
-            choice_option("lead", "Lead", &leads),
-            choice_option("sidekick", "Sidekick", &sidekicks),
-        ];
+        let mut options =
+            vec![choice_option("lead", "Lead", &leads), choice_option("sidekick", "Sidekick", &sidekicks)];
         // Offered where the lead has fast variants; the session exposes
         // `speed` for those leads and the run ignores it for the rest.
         if fusion_fast {
@@ -498,16 +413,11 @@ fn parse_catalog(bytes: &[u8]) -> Result<(Vec<Model>, Vec<Group>), HarnessError>
             options,
         };
         // Directly under Adaptive, as Devin lists it.
-        let at = models
-            .iter()
-            .position(|m| m.id == "adaptive")
-            .map_or(0, |i| i + 1);
+        let at = models.iter().position(|m| m.id == "adaptive").map_or(0, |i| i + 1);
         models.insert(at, fusion);
     }
     if models.is_empty() {
-        return Err(HarnessError::Protocol(
-            "Devin returned an empty model catalog".into(),
-        ));
+        return Err(HarnessError::Protocol("Devin returned an empty model catalog".into()));
     }
     Ok((models, groups))
 }
@@ -550,35 +460,18 @@ mod tests {
         let (models, groups) = parse_catalog(LIVE_SHAPES.as_bytes()).unwrap();
         let summary: Vec<_> = models
             .iter()
-            .map(|m| {
-                (
-                    m.id.as_str(),
-                    m.label.as_str(),
-                    m.reasoning_levels.clone(),
-                    m.options.len(),
-                )
-            })
+            .map(|m| (m.id.as_str(), m.label.as_str(), m.reasoning_levels.clone(), m.options.len()))
             .collect();
         use ReasoningLevel::*;
         assert_eq!(
             summary,
             vec![
                 ("swe-2-high", "SWE-2", vec![Medium, High, Max], 0),
-                (
-                    "gpt-6-sol-medium",
-                    "GPT-6 Sol",
-                    vec![Minimal, Medium, High],
-                    1
-                ),
+                ("gpt-6-sol-medium", "GPT-6 Sol", vec![Minimal, Medium, High], 1),
                 ("glm-5-2", "GLM-5.2", vec![High, Max], 0),
                 ("glm-5-2-1m", "GLM-5.2 1M", vec![High, Max], 0),
                 ("claude-opus-4-6", "Claude Opus 4.6", vec![], 0),
-                (
-                    "claude-opus-4-6-thinking",
-                    "Claude Opus 4.6 Thinking",
-                    vec![],
-                    0
-                ),
+                ("claude-opus-4-6-thinking", "Claude Opus 4.6 Thinking", vec![], 0),
                 ("adaptive", "Adaptive", vec![], 0),
                 // Every Fusion pair folds into one entry right under Adaptive.
                 ("fusion", "Fusion", vec![Low, High, Max], 3),
@@ -588,9 +481,7 @@ mod tests {
         assert_eq!(models[1].description.as_deref(), Some("$2 / 1M"));
         let sol = &groups[1].members;
         assert_eq!(
-            sol.iter()
-                .map(|m| (m.id.as_str(), m.effort, m.fast))
-                .collect::<Vec<_>>(),
+            sol.iter().map(|m| (m.id.as_str(), m.effort, m.fast)).collect::<Vec<_>>(),
             vec![
                 ("gpt-6-sol-medium", Some(Medium), false),
                 ("gpt-6-sol-none", Some(Minimal), false),
@@ -607,11 +498,7 @@ mod tests {
             let option = fusion.options.iter().find(|o| o.id == id).unwrap();
             (
                 option.label.clone(),
-                option
-                    .choices
-                    .iter()
-                    .map(|c| (c.id.clone(), c.label.clone()))
-                    .collect::<Vec<_>>(),
+                option.choices.iter().map(|c| (c.id.clone(), c.label.clone())).collect::<Vec<_>>(),
                 option.default_choice.clone(),
             )
         };
@@ -620,10 +507,7 @@ mod tests {
             choices("lead"),
             (
                 "Lead".into(),
-                vec![
-                    pair("claude-opus-5-5", "Claude Opus 5.5"),
-                    pair("gpt-6-sol", "GPT-6 Sol")
-                ],
+                vec![pair("claude-opus-5-5", "Claude Opus 5.5"), pair("gpt-6-sol", "GPT-6 Sol")],
                 "claude-opus-5-5".into()
             )
         );
@@ -656,25 +540,12 @@ mod tests {
         };
         let pick = |opts| {
             let catalog = &catalog;
-            async move {
-                catalog
-                    .selection(exe, Duration::from_secs(1), FUSION, &opts)
-                    .await
-            }
+            async move { catalog.selection(exe, Duration::from_secs(1), FUSION, &opts).await }
         };
-        let high = pick(options("claude-opus-5-5", "swe-2-high"))
-            .await
-            .unwrap();
-        assert_eq!(
-            high.members,
-            ["fusion-claude-opus-5-5-high-sidekick-swe-2-high"]
-        );
+        let high = pick(options("claude-opus-5-5", "swe-2-high")).await.unwrap();
+        assert_eq!(high.members, ["fusion-claude-opus-5-5-high-sidekick-swe-2-high"]);
         let default = pick(serde_json::Map::new()).await.unwrap();
-        assert!(
-            default
-                .members
-                .contains(&"fusion-claude-opus-5-5-high-sidekick-swe-2-medium".to_owned())
-        );
+        assert!(default.members.contains(&"fusion-claude-opus-5-5-high-sidekick-swe-2-medium".to_owned()));
         assert!(pick(options("gpt-6-sol", "swe-2-high")).await.is_none());
     }
 
@@ -684,36 +555,15 @@ mod tests {
         let (models, groups) = parse_catalog(LIVE_SHAPES.as_bytes()).unwrap();
         *catalog.latest.lock().await = Some((Instant::now(), models, groups));
         let exe = Path::new("/nonexistent/devin");
-        let swe = catalog
-            .selection(
-                exe,
-                Duration::from_secs(1),
-                "swe-2-medium",
-                &Default::default(),
-            )
-            .await
-            .unwrap();
+        let swe = catalog.selection(exe, Duration::from_secs(1), "swe-2-medium", &Default::default()).await.unwrap();
         assert_eq!(swe.members, ["swe-2-high", "swe-2-medium", "swe-2-max"]);
-        assert_eq!(
-            (swe.effort, swe.fast),
-            (Some(ReasoningLevel::Medium), false)
-        );
+        assert_eq!((swe.effort, swe.fast), (Some(ReasoningLevel::Medium), false));
         let fast = catalog
-            .selection(
-                exe,
-                Duration::from_secs(1),
-                "gpt-6-sol-high-priority",
-                &Default::default(),
-            )
+            .selection(exe, Duration::from_secs(1), "gpt-6-sol-high-priority", &Default::default())
             .await
             .unwrap();
         assert_eq!((fast.effort, fast.fast), (Some(ReasoningLevel::High), true));
-        assert!(
-            catalog
-                .selection(exe, Duration::from_secs(1), "unknown", &Default::default())
-                .await
-                .is_none()
-        );
+        assert!(catalog.selection(exe, Duration::from_secs(1), "unknown", &Default::default()).await.is_none());
     }
 
     #[test]
@@ -741,23 +591,10 @@ mod tests {
         )
         .unwrap();
         std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let result = super::Catalog::default()
-            .refresh(&executable, std::time::Duration::from_millis(500))
-            .await;
+        let result = super::Catalog::default().refresh(&executable, std::time::Duration::from_millis(500)).await;
         assert!(result.unwrap_err().to_string().contains("timed out"));
-        let pid: i32 = std::fs::read_to_string(temp.path().join("pid"))
-            .unwrap()
-            .trim()
-            .parse()
-            .unwrap();
-        assert_eq!(
-            unsafe { libc::kill(pid, 0) },
-            -1,
-            "probe still alive after timeout returned"
-        );
-        assert_eq!(
-            std::io::Error::last_os_error().raw_os_error(),
-            Some(libc::ESRCH)
-        );
+        let pid: i32 = std::fs::read_to_string(temp.path().join("pid")).unwrap().trim().parse().unwrap();
+        assert_eq!(unsafe { libc::kill(pid, 0) }, -1, "probe still alive after timeout returned");
+        assert_eq!(std::io::Error::last_os_error().raw_os_error(), Some(libc::ESRCH));
     }
 }

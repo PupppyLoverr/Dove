@@ -69,25 +69,16 @@ fn tool_output(update: &Value) -> Option<String> {
 
 /// First `{type: "diff"}` entry of a tool call's `content` array.
 fn tool_diff(update: &Value) -> Option<ToolDiff> {
-    let diff = update
-        .get("content")?
-        .as_array()?
-        .iter()
-        .find(|c| c.get("type").and_then(Value::as_str) == Some("diff"))?;
+    let diff =
+        update.get("content")?.as_array()?.iter().find(|c| c.get("type").and_then(Value::as_str) == Some("diff"))?;
     let path = str_field(diff, "path");
     if path.is_empty() {
         return None;
     }
     Some(ToolDiff {
         path,
-        old_text: diff
-            .get("oldText")
-            .and_then(Value::as_str)
-            .map(|t| cap_text(t, DIFF_TEXT_CAP)),
-        new_text: cap_text(
-            diff.get("newText").and_then(Value::as_str).unwrap_or(""),
-            DIFF_TEXT_CAP,
-        ),
+        old_text: diff.get("oldText").and_then(Value::as_str).map(|t| cap_text(t, DIFF_TEXT_CAP)),
+        new_text: cap_text(diff.get("newText").and_then(Value::as_str).unwrap_or(""), DIFF_TEXT_CAP),
     })
 }
 
@@ -144,20 +135,12 @@ fn unwrap_command_title(title: &str) -> Option<String> {
         }
     }
     let out = out.trim();
-    if out.is_empty() || is_placeholder_title(out) {
-        None
-    } else {
-        Some(out.to_owned())
-    }
+    if out.is_empty() || is_placeholder_title(out) { None } else { Some(out.to_owned()) }
 }
 
 fn arg_from_title(title: &str) -> Option<String> {
     let t = title.trim();
-    if t.is_empty() || is_placeholder_title(t) {
-        None
-    } else {
-        Some(t.to_owned())
-    }
+    if t.is_empty() || is_placeholder_title(t) { None } else { Some(t.to_owned()) }
 }
 
 /// Reduce an ACP tool call (kind + title + rawInput + locations + diff
@@ -166,17 +149,11 @@ fn arg_from_title(title: &str) -> Option<String> {
 /// Title is only used when it looks like a real arg — never a placeholder
 /// label or markdown-escaped summary.
 fn typed_call(update: &Value) -> ToolCall {
-    let kind = update
-        .get("kind")
-        .and_then(Value::as_str)
-        .unwrap_or("other");
+    let kind = update.get("kind").and_then(Value::as_str).unwrap_or("other");
     let title = str_field(update, "title");
     let raw = update.get("rawInput").filter(|v| !v.is_null());
     let raw_str = |key: &str| -> Option<String> {
-        raw.and_then(|r| r.get(key))
-            .and_then(Value::as_str)
-            .filter(|s| !s.is_empty())
-            .map(str::to_owned)
+        raw.and_then(|r| r.get(key)).and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_owned)
     };
     match kind {
         "execute" => ToolCall::Exec {
@@ -198,16 +175,9 @@ fn typed_call(update: &Value) -> ToolCall {
             // location/rawInput path with unknown content.
             if let Some(diff) = tool_diff(update) {
                 if diff.old_text.is_none() {
-                    ToolCall::WriteFile {
-                        path: diff.path,
-                        content: None,
-                    }
+                    ToolCall::WriteFile { path: diff.path, content: None }
                 } else {
-                    ToolCall::EditFile {
-                        path: diff.path,
-                        old_string: None,
-                        new_string: None,
-                    }
+                    ToolCall::EditFile { path: diff.path, old_string: None, new_string: None }
                 }
             } else {
                 match raw_str("path")
@@ -215,11 +185,7 @@ fn typed_call(update: &Value) -> ToolCall {
                     .or_else(|| raw_str("filePath"))
                     .or_else(|| first_location(update))
                 {
-                    Some(path) if kind == "edit" => ToolCall::EditFile {
-                        path,
-                        old_string: None,
-                        new_string: None,
-                    },
+                    Some(path) if kind == "edit" => ToolCall::EditFile { path, old_string: None, new_string: None },
                     path => ToolCall::ApplyPatch { path },
                 }
             }
@@ -255,53 +221,35 @@ fn typed_call(update: &Value) -> ToolCall {
         _ if tool_diff(update).is_some() => {
             let diff = tool_diff(update).expect("guarded");
             if diff.old_text.is_none() {
-                ToolCall::WriteFile {
-                    path: diff.path,
-                    content: None,
-                }
+                ToolCall::WriteFile { path: diff.path, content: None }
             } else {
-                ToolCall::EditFile {
-                    path: diff.path,
-                    old_string: None,
-                    new_string: None,
-                }
+                ToolCall::EditFile { path: diff.path, old_string: None, new_string: None }
             }
         }
         // Grok's subagent spawn: name the chip — and the subagent tab it
         // opens — after the task, matching the claude driver's "Agent: {d}"
         // (the bare tool name says nothing in a tab strip).
         _ if xai_tool_name(update) == Some("spawn_subagent") => ToolCall::Unknown {
-            name: raw_str("description")
-                .map(|d| format!("Agent: {d}"))
-                .unwrap_or_else(|| "Agent".into()),
+            name: raw_str("description").map(|d| format!("Agent: {d}")).unwrap_or_else(|| "Agent".into()),
             input: raw.cloned(),
         },
         // Devin's run_subagent tool uses a coarse ACP kind; its private meta
         // field is the stable identity across pending/in-progress frames.
-        _ if update
-            .get("_meta")
-            .and_then(|m| m.get("cognition.ai/inferenceToolName"))
-            .and_then(Value::as_str)
+        _ if update.get("_meta").and_then(|m| m.get("cognition.ai/inferenceToolName")).and_then(Value::as_str)
             == Some("run_subagent") =>
         {
             ToolCall::Unknown {
-                name: raw_str("title")
-                    .map(|d| format!("Agent: {d}"))
-                    .unwrap_or_else(|| "Agent".into()),
+                name: raw_str("title").map(|d| format!("Agent: {d}")).unwrap_or_else(|| "Agent".into()),
                 input: raw.cloned(),
             }
         }
         // opencode's subagent spawn (`task` tool — rawInput carries
         // description/prompt/subagent_type): same naming as grok's, so the
         // chip and its subagent tab say what the agent is doing.
-        _ if raw.is_some_and(|r| r.get("subagent_type").is_some() && r.get("prompt").is_some()) => {
-            ToolCall::Unknown {
-                name: raw_str("description")
-                    .map(|d| format!("Agent: {d}"))
-                    .unwrap_or_else(|| "Agent".into()),
-                input: raw.cloned(),
-            }
-        }
+        _ if raw.is_some_and(|r| r.get("subagent_type").is_some() && r.get("prompt").is_some()) => ToolCall::Unknown {
+            name: raw_str("description").map(|d| format!("Agent: {d}")).unwrap_or_else(|| "Agent".into()),
+            input: raw.cloned(),
+        },
         // Its completion drops rawInput but keeps a title (the description),
         // which would re-type the chip to a bare Unknown and cost it the
         // Agent icon/label. The rawOutput metadata (child + parent session
@@ -309,16 +257,10 @@ fn typed_call(update: &Value) -> ToolCall {
         _ if update
             .get("rawOutput")
             .and_then(|r| r.get("metadata"))
-            .is_some_and(|m| {
-                m.get("sessionId").is_some() && m.get("parentSessionId").is_some()
-            }) =>
+            .is_some_and(|m| m.get("sessionId").is_some() && m.get("parentSessionId").is_some()) =>
         {
             ToolCall::Unknown {
-                name: if title.is_empty() {
-                    "Agent".into()
-                } else {
-                    format!("Agent: {title}")
-                },
+                name: if title.is_empty() { "Agent".into() } else { format!("Agent: {title}") },
                 input: raw.cloned(),
             }
         }
@@ -327,19 +269,10 @@ fn typed_call(update: &Value) -> ToolCall {
                 .filter(|d| d != "Subagent task")
                 .map(|d| format!("Task: {d}"))
                 .or_else(|| arg_from_title(&title))
-                .unwrap_or_else(|| {
-                    if title.is_empty() {
-                        "Task".into()
-                    } else {
-                        title
-                    }
-                }),
+                .unwrap_or_else(|| if title.is_empty() { "Task".into() } else { title }),
             input: raw.cloned(),
         },
-        _ => ToolCall::Unknown {
-            name: if title.is_empty() { kind.into() } else { title },
-            input: raw.cloned(),
-        },
+        _ => ToolCall::Unknown { name: if title.is_empty() { kind.into() } else { title }, input: raw.cloned() },
     }
 }
 
@@ -347,26 +280,20 @@ fn typed_call(update: &Value) -> ToolCall {
 /// Message/thought chunks are handled here too (unlike codex, ACP has no
 /// separate delta channel).
 pub(crate) fn map_update(update: &Value) -> Vec<AgentEvent> {
-    let kind = update
-        .get("sessionUpdate")
-        .and_then(Value::as_str)
-        .unwrap_or("");
+    let kind = update.get("sessionUpdate").and_then(Value::as_str).unwrap_or("");
     match kind {
-        "agent_message_chunk" => chunk_text(update)
-            .map(|text| vec![AgentEvent::TextDelta { text }])
-            .unwrap_or_default(),
-        "agent_thought_chunk" => chunk_text(update)
-            .map(|text| vec![AgentEvent::ReasoningDelta { text }])
-            .unwrap_or_default(),
+        "agent_message_chunk" => {
+            chunk_text(update).map(|text| vec![AgentEvent::TextDelta { text }]).unwrap_or_default()
+        }
+        "agent_thought_chunk" => {
+            chunk_text(update).map(|text| vec![AgentEvent::ReasoningDelta { text }]).unwrap_or_default()
+        }
         // Replayed history on session/load is filtered by the session loop
         // before this map; a live user chunk is our own prompt echoed back.
         "user_message_chunk" => Vec::new(),
         "tool_call" => {
             let id = str_field(update, "toolCallId");
-            let mut events = vec![AgentEvent::ToolCall {
-                id: id.clone(),
-                call: typed_call(update),
-            }];
+            let mut events = vec![AgentEvent::ToolCall { id: id.clone(), call: typed_call(update) }];
             // Some agents send a single terminal-status `tool_call` with the
             // result inline instead of a follow-up update.
             if let Some(resolved) = resolved_result(update, id) {
@@ -386,10 +313,7 @@ pub(crate) fn map_update(update: &Value) -> Vec<AgentEvent> {
                 || update.get("rawInput").is_some()
                 || tool_diff(update).is_some()
             {
-                events.push(AgentEvent::ToolCall {
-                    id: id.clone(),
-                    call: typed_call(update),
-                });
+                events.push(AgentEvent::ToolCall { id: id.clone(), call: typed_call(update) });
             }
             if let Some(resolved) = resolved_result(update, id) {
                 events.push(resolved);
@@ -413,10 +337,7 @@ pub(crate) fn map_update(update: &Value) -> Vec<AgentEvent> {
             // The plan has no wire id; a stable synthetic id makes every
             // update refresh the same chip (fold refreshes in place by id).
             vec![
-                AgentEvent::ToolCall {
-                    id: zeron_proto::LIVE_PLAN_TOOL_ID.into(),
-                    call: ToolCall::Todo { items },
-                },
+                AgentEvent::ToolCall { id: zeron_proto::LIVE_PLAN_TOOL_ID.into(), call: ToolCall::Todo { items } },
                 AgentEvent::ToolResult {
                     id: zeron_proto::LIVE_PLAN_TOOL_ID.into(),
                     is_error: false,
@@ -455,12 +376,7 @@ fn resolved_result(update: &Value, id: String) -> Option<AgentEvent> {
         "failed" => true,
         _ => return None,
     };
-    Some(AgentEvent::ToolResult {
-        id,
-        is_error,
-        output: tool_output(update),
-        diff: tool_diff(update),
-    })
+    Some(AgentEvent::ToolResult { id, is_error, output: tool_output(update), diff: tool_diff(update) })
 }
 
 /// Decode an `availableCommands` array (`{name, description, input: {hint}}`).
@@ -475,11 +391,7 @@ pub(crate) fn parse_commands(value: Option<&Value>) -> Vec<SlashCommand> {
             (!name.is_empty()).then(|| SlashCommand {
                 name,
                 description: str_field(c, "description"),
-                input_hint: c
-                    .get("input")
-                    .and_then(|i| i.get("hint"))
-                    .and_then(Value::as_str)
-                    .map(str::to_owned),
+                input_hint: c.get("input").and_then(|i| i.get("hint")).and_then(Value::as_str).map(str::to_owned),
             })
         })
         .collect()
@@ -488,11 +400,7 @@ pub(crate) fn parse_commands(value: Option<&Value>) -> Vec<SlashCommand> {
 /// `session/request_permission` options (`{optionId, name, kind}`) → the
 /// preferred auto-approve choice: `allow_always` > `allow_once` > first.
 pub(crate) fn preferred_allow_option(options: &[Value]) -> Option<String> {
-    let by_kind = |kind: &str| {
-        options
-            .iter()
-            .find(|o| o.get("kind").and_then(Value::as_str) == Some(kind))
-    };
+    let by_kind = |kind: &str| options.iter().find(|o| o.get("kind").and_then(Value::as_str) == Some(kind));
     by_kind("allow_always")
         .or_else(|| by_kind("allow_once"))
         .or_else(|| options.first())
@@ -511,20 +419,12 @@ mod tests {
             "sessionUpdate": "agent_message_chunk",
             "content": { "type": "text", "text": "hello" },
         });
-        assert_eq!(
-            map_update(&update),
-            vec![AgentEvent::TextDelta {
-                text: "hello".into()
-            }]
-        );
+        assert_eq!(map_update(&update), vec![AgentEvent::TextDelta { text: "hello".into() }]);
         let thought = json!({
             "sessionUpdate": "agent_thought_chunk",
             "content": { "type": "text", "text": "hmm" },
         });
-        assert_eq!(
-            map_update(&thought),
-            vec![AgentEvent::ReasoningDelta { text: "hmm".into() }]
-        );
+        assert_eq!(map_update(&thought), vec![AgentEvent::ReasoningDelta { text: "hmm".into() }]);
         // Non-text blocks render as nothing.
         let image = json!({
             "sessionUpdate": "agent_message_chunk",
@@ -549,18 +449,8 @@ mod tests {
         assert_eq!(
             map_update(&update),
             vec![
-                AgentEvent::ToolCall {
-                    id: "t1".into(),
-                    call: ToolCall::Exec {
-                        command: "ls -la".into()
-                    },
-                },
-                AgentEvent::ToolResult {
-                    id: "t1".into(),
-                    is_error: false,
-                    output: Some("total 0".into()),
-                    diff: None,
-                },
+                AgentEvent::ToolCall { id: "t1".into(), call: ToolCall::Exec { command: "ls -la".into() } },
+                AgentEvent::ToolResult { id: "t1".into(), is_error: false, output: Some("total 0".into()), diff: None },
             ]
         );
     }
@@ -585,11 +475,7 @@ mod tests {
             events[0],
             AgentEvent::ToolCall {
                 id: "t2".into(),
-                call: ToolCall::EditFile {
-                    path: "/w/src/main.rs".into(),
-                    old_string: None,
-                    new_string: None,
-                },
+                call: ToolCall::EditFile { path: "/w/src/main.rs".into(), old_string: None, new_string: None },
             }
         );
         assert_eq!(
@@ -619,10 +505,7 @@ mod tests {
             map_update(&update),
             vec![AgentEvent::ToolCall {
                 id: "t3".into(),
-                call: ToolCall::WriteFile {
-                    path: "/w/new.rs".into(),
-                    content: None
-                },
+                call: ToolCall::WriteFile { path: "/w/new.rs".into(), content: None },
             }]
         );
     }
@@ -636,12 +519,7 @@ mod tests {
         });
         assert_eq!(
             map_update(&update),
-            vec![AgentEvent::ToolResult {
-                id: "t4".into(),
-                is_error: true,
-                output: None,
-                diff: None,
-            }]
+            vec![AgentEvent::ToolResult { id: "t4".into(), is_error: true, output: None, diff: None }]
         );
     }
 
@@ -711,11 +589,7 @@ mod tests {
         });
         let events = map_update(&update);
         // The content-bearing update refreshes the call, then resolves it.
-        let Some(AgentEvent::ToolResult {
-            output: Some(output),
-            ..
-        }) = events.last()
-        else {
+        let Some(AgentEvent::ToolResult { output: Some(output), .. }) = events.last() else {
             panic!("expected resolved result, got {events:?}");
         };
         assert!(output.len() < OUTPUT_CAP + 32);
@@ -751,10 +625,7 @@ mod tests {
             map_update(&grep),
             vec![AgentEvent::ToolCall {
                 id: "t1".into(),
-                call: ToolCall::Search {
-                    pattern: String::new(),
-                    path: None,
-                },
+                call: ToolCall::Search { pattern: String::new(), path: None },
             }]
         );
 
@@ -767,12 +638,7 @@ mod tests {
         });
         assert_eq!(
             map_update(&read),
-            vec![AgentEvent::ToolCall {
-                id: "t2".into(),
-                call: ToolCall::ReadFile {
-                    path: String::new(),
-                },
-            }]
+            vec![AgentEvent::ToolCall { id: "t2".into(), call: ToolCall::ReadFile { path: String::new() } }]
         );
 
         let fetch = json!({
@@ -784,12 +650,7 @@ mod tests {
         });
         assert_eq!(
             map_update(&fetch),
-            vec![AgentEvent::ToolCall {
-                id: "t3".into(),
-                call: ToolCall::WebSearch {
-                    query: String::new(),
-                },
-            }]
+            vec![AgentEvent::ToolCall { id: "t3".into(), call: ToolCall::WebSearch { query: String::new() } }]
         );
 
         let web = json!({
@@ -803,10 +664,7 @@ mod tests {
             map_update(&web),
             vec![AgentEvent::ToolCall {
                 id: "t4".into(),
-                call: ToolCall::Search {
-                    pattern: String::new(),
-                    path: None,
-                },
+                call: ToolCall::Search { pattern: String::new(), path: None },
             }]
         );
     }
@@ -822,12 +680,7 @@ mod tests {
         });
         assert_eq!(
             map_update(&update),
-            vec![AgentEvent::ToolCall {
-                id: "t1".into(),
-                call: ToolCall::WebSearch {
-                    query: "multitask cli".into(),
-                },
-            }]
+            vec![AgentEvent::ToolCall { id: "t1".into(), call: ToolCall::WebSearch { query: "multitask cli".into() } }]
         );
     }
 
@@ -842,12 +695,7 @@ mod tests {
         });
         assert_eq!(
             map_update(&update),
-            vec![AgentEvent::ToolCall {
-                id: "t1".into(),
-                call: ToolCall::Exec {
-                    command: "echo `hi`".into(),
-                },
-            }]
+            vec![AgentEvent::ToolCall { id: "t1".into(), call: ToolCall::Exec { command: "echo `hi`".into() } }]
         );
     }
 

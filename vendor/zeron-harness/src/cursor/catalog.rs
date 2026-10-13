@@ -16,18 +16,12 @@ pub(crate) fn credential_context() -> Result<[u8; 32], HarnessError> {
         .ok()
         .and_then(|v| v.get("apiKeyExpiresAtMs").and_then(|v| v.as_u64()));
     let expired = expiry.is_some_and(|at| {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis()
-            >= u128::from(at)
+        SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() >= u128::from(at)
     });
     let mut hash = Sha256::new();
     hash.update(bytes);
     hash.update([u8::from(expired)]);
-    let mut env: Vec<_> = std::env::vars_os()
-        .filter(|(key, _)| key.to_string_lossy().starts_with("CURSOR_"))
-        .collect();
+    let mut env: Vec<_> = std::env::vars_os().filter(|(key, _)| key.to_string_lossy().starts_with("CURSOR_")).collect();
     env.sort();
     for (key, value) in env {
         hash.update(key.as_encoded_bytes());

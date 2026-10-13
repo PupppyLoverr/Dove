@@ -432,7 +432,8 @@ impl NativePage {
         let host = self.0.borrow();
         let js = NSString::from_str(script);
         unsafe {
-            let _: () = msg_send![&*host.view, evaluateJavaScript: &*js, completionHandler: std::ptr::null::<AnyObject>()];
+            let _: () =
+                msg_send![&*host.view, evaluateJavaScript: &*js, completionHandler: std::ptr::null::<AnyObject>()];
         }
     }
     /// Run a script and hand its result to `done`. Strings come back as

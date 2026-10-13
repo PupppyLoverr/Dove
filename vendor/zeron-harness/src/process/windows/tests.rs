@@ -5,9 +5,7 @@ use std::os::windows::io::AsHandle;
 use std::os::windows::process::CommandExt;
 use std::time::{Duration, Instant};
 use windows_sys::Win32::System::JobObjects::IsProcessInJob;
-use windows_sys::Win32::System::Threading::{
-    OpenProcess, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, TerminateProcess,
-};
+use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, TerminateProcess};
 
 // Safety net for failed assertions: kill only the fixture process whose owned
 // handle we acquired while it was alive, never by a recycled PID.
@@ -19,10 +17,7 @@ impl Drop for FixtureProcess {
 }
 impl FixtureProcess {
     fn assert_exited(&self) {
-        assert_eq!(
-            unsafe { WaitForSingleObject(self.0.as_raw_handle(), 5000) },
-            WAIT_OBJECT_0
-        );
+        assert_eq!(unsafe { WaitForSingleObject(self.0.as_raw_handle(), 5000) }, WAIT_OBJECT_0);
     }
 }
 fn parked_command() -> Command {
@@ -40,9 +35,7 @@ fn parked_child_helper() {
     if let Ok(handle) = std::env::var("ZERON_TEST_INHERITED_EVENT") {
         // Signal only if the parent's sentinel handle accidentally survived the
         // launch allow-list. Handle reuse in this child cannot signal that event.
-        unsafe {
-            windows_sys::Win32::System::Threading::SetEvent(handle.parse::<usize>().unwrap() as _)
-        };
+        unsafe { windows_sys::Win32::System::Threading::SetEvent(handle.parse::<usize>().unwrap() as _) };
     }
     if std::env::var_os("ZERON_TEST_PARKED_CHILD").is_some() {
         std::thread::sleep(Duration::from_secs(15));
@@ -62,16 +55,10 @@ async fn unrelated_inheritable_handles_are_not_passed_to_agents() {
     assert!(!event.is_null());
     let event = unsafe { OwnedHandle::from_raw_handle(event) };
     let mut command = parked_command();
-    command.env(
-        "ZERON_TEST_INHERITED_EVENT",
-        (event.as_raw_handle() as usize).to_string(),
-    );
+    command.env("ZERON_TEST_INHERITED_EVENT", (event.as_raw_handle() as usize).to_string());
     let mut child = command.spawn().unwrap();
     assert!(child.wait().await.unwrap().success());
-    assert_eq!(
-        unsafe { WaitForSingleObject(event.as_raw_handle(), 0) },
-        WAIT_TIMEOUT
-    );
+    assert_eq!(unsafe { WaitForSingleObject(event.as_raw_handle(), 0) }, WAIT_TIMEOUT);
 }
 
 #[test]
@@ -83,23 +70,14 @@ fn creation_is_already_in_job_and_setup_failure_rolls_back() {
         let mut member = 0;
         assert_ne!(
             unsafe {
-                IsProcessInJob(
-                    child.process.as_raw_handle(),
-                    child.job.as_handle().as_raw_handle(),
-                    &mut member,
-                )
+                IsProcessInJob(child.process.as_raw_handle(), child.job.as_handle().as_raw_handle(), &mut member)
             },
             0
         );
         assert_ne!(member, 0, "child was created outside its job");
         Err(io::Error::other("injected setup failure before resume"))
     });
-    assert!(
-        result
-            .unwrap_err()
-            .to_string()
-            .contains("injected setup failure")
-    );
+    assert!(result.unwrap_err().to_string().contains("injected setup failure"));
     for process in processes {
         process.assert_exited();
     }
@@ -125,8 +103,7 @@ fn ordinary_subprocess_cannot_keep_agent_pipes_open() {
         outsider = Some(foreign);
         let raw = child.stdout.as_ref().unwrap().as_raw_handle();
         reader = Some(std::fs::File::from(
-            unsafe { std::os::windows::io::BorrowedHandle::borrow_raw(raw) }
-                .try_clone_to_owned()?,
+            unsafe { std::os::windows::io::BorrowedHandle::borrow_raw(raw) }.try_clone_to_owned()?,
         ));
         Err(io::Error::other("injected setup failure"))
     });
@@ -143,14 +120,8 @@ fn ordinary_subprocess_cannot_keep_agent_pipes_open() {
     outsider.wait().unwrap();
     read.join().unwrap();
     drop(guard);
-    assert!(
-        still_running,
-        "the unrelated fixture exited before checking isolation"
-    );
-    assert!(
-        eof.is_ok(),
-        "an unrelated subprocess inherited an agent pipe"
-    );
+    assert!(still_running, "the unrelated fixture exited before checking isolation");
+    assert!(eof.is_ok(), "an unrelated subprocess inherited an agent pipe");
     assert_eq!(eof.unwrap().unwrap(), 0);
 }
 
@@ -177,10 +148,7 @@ fn owner_death_immediately_after_creation_kills_suspended_child() {
     let temp = tempfile::tempdir().unwrap();
     let pid_file = temp.path().join("pid");
     let mut owner = std::process::Command::new(std::env::current_exe().unwrap())
-        .args([
-            "--exact",
-            "process::windows::tests::crash_interval_owner_helper",
-        ])
+        .args(["--exact", "process::windows::tests::crash_interval_owner_helper"])
         .env("ZERON_TEST_CRASH_PID_FILE", &pid_file)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())
@@ -192,24 +160,14 @@ fn owner_death_immediately_after_creation_kills_suspended_child() {
     let deadline = Instant::now() + Duration::from_secs(10);
     let pids = loop {
         if let Ok(text) = std::fs::read_to_string(&pid_file) {
-            if let Ok(pids) = text
-                .split(',')
-                .map(str::parse::<u32>)
-                .collect::<Result<Vec<_>, _>>()
-            {
+            if let Ok(pids) = text.split(',').map(str::parse::<u32>).collect::<Result<Vec<_>, _>>() {
                 if pids.len() == 2 {
                     break pids;
                 }
             }
         }
-        assert!(
-            Instant::now() < deadline,
-            "owner never reached creation interval"
-        );
-        assert!(
-            owner.try_wait().unwrap().is_none(),
-            "owner exited before creation"
-        );
+        assert!(Instant::now() < deadline, "owner never reached creation interval");
+        assert!(owner.try_wait().unwrap().is_none(), "owner exited before creation");
         std::thread::sleep(Duration::from_millis(10));
     };
     let children: Vec<_> = pids
@@ -261,13 +219,7 @@ async fn batch_scripts_spawn_through_cmd_with_literal_arguments() {
         ),
     )
     .unwrap();
-    let arguments = [
-        "plain",
-        "a b",
-        "trailing \\",
-        "日本語 😀",
-        "meta & | > < ^ ( ) !",
-    ];
+    let arguments = ["plain", "a b", "trailing \\", "日本語 😀", "meta & | > < ^ ( ) !"];
     let mut command = Command::new(&script);
     command
         .args(arguments)
@@ -276,10 +228,7 @@ async fn batch_scripts_spawn_through_cmd_with_literal_arguments() {
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     let mut child = command.spawn().expect("batch spawn");
-    let status = tokio::time::timeout(Duration::from_secs(10), child.wait())
-        .await
-        .expect("batch deadline")
-        .unwrap();
+    let status = tokio::time::timeout(Duration::from_secs(10), child.wait()).await.expect("batch deadline").unwrap();
     assert!(status.success(), "batch exit: {status}");
     let output = std::fs::read_to_string(&received).expect("arguments were recorded");
     assert_eq!(
@@ -296,36 +245,20 @@ async fn batch_scripts_report_shim_exit_codes_and_kill_their_tree() {
     let failing = dir.path().join("fail.bat");
     std::fs::write(&failing, "@exit /b 7\r\n").unwrap();
     let mut command = Command::new(&failing);
-    command
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    let status = tokio::time::timeout(Duration::from_secs(10), command.output())
-        .await
-        .expect("batch deadline")
-        .unwrap()
-        .status;
+    command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    let status =
+        tokio::time::timeout(Duration::from_secs(10), command.output()).await.expect("batch deadline").unwrap().status;
     assert_eq!(status.code(), Some(7), "the .bat exit code must propagate");
 
     // A shim that parks itself behind a long-running grandchild: killing the
     // owned cmd.exe must take the whole job down with it.
     let parked = dir.path().join("parked-tree.cmd");
-    std::fs::write(
-        &parked,
-        "@echo off\r\nstart /b \"\" ping -n 30 127.0.0.1 >nul\r\npause >nul\r\n",
-    )
-    .unwrap();
+    std::fs::write(&parked, "@echo off\r\nstart /b \"\" ping -n 30 127.0.0.1 >nul\r\npause >nul\r\n").unwrap();
     let mut command = Command::new(&parked);
-    command
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+    command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
     let mut child = command.spawn().expect("batch spawn");
     child.start_kill().expect("job terminate");
-    let status = tokio::time::timeout(Duration::from_secs(10), child.wait())
-        .await
-        .expect("kill deadline")
-        .unwrap();
+    let status = tokio::time::timeout(Duration::from_secs(10), child.wait()).await.expect("kill deadline").unwrap();
     assert!(!status.success());
 }
 
@@ -337,15 +270,8 @@ async fn bare_batch_program_resolves_from_child_path() {
     // No extension in the program name: resolution must find the shim on the
     // child's PATH through the PATHEXT variants and spawn it through cmd.exe.
     let mut command = Command::new("only-a-shim");
-    command
-        .env("PATH", dir.path())
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+    command.env("PATH", dir.path()).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
     let mut child = command.spawn().expect("shim resolves from child PATH");
-    let status = tokio::time::timeout(Duration::from_secs(10), child.wait())
-        .await
-        .expect("shim deadline")
-        .unwrap();
+    let status = tokio::time::timeout(Duration::from_secs(10), child.wait()).await.expect("shim deadline").unwrap();
     assert!(status.success(), "shim exit: {status}");
 }

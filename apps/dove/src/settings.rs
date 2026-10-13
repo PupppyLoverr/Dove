@@ -28,18 +28,20 @@ enum Section {
     Voice,
     Keyboard,
     Notifications,
+    Remote,
     Data,
     About,
 }
 
 impl Section {
-    const ALL: [Section; 8] = [
+    const ALL: [Section; 9] = [
         Section::General,
         Section::Appearance,
         Section::Composer,
         Section::Voice,
         Section::Keyboard,
         Section::Notifications,
+        Section::Remote,
         Section::Data,
         Section::About,
     ];
@@ -52,6 +54,7 @@ impl Section {
             Section::Voice => "Voice",
             Section::Keyboard => "Keyboard",
             Section::Notifications => "Notifications",
+            Section::Remote => "Remote control",
             Section::Data => "Data",
             Section::About => "About",
         }
@@ -65,6 +68,7 @@ impl Section {
             Section::Voice => icons::MICROPHONE,
             Section::Keyboard => icons::KEYBOARD,
             Section::Notifications => icons::BELL,
+            Section::Remote => icons::SMARTPHONE,
             Section::Data => icons::HARD_DRIVE,
             Section::About => icons::INFO_CIRCLE,
         }
@@ -78,6 +82,7 @@ impl Section {
             Section::Voice => "voice",
             Section::Keyboard => "keyboard",
             Section::Notifications => "notifications",
+            Section::Remote => "remote",
             Section::Data => "data",
             Section::About => "about",
         }
@@ -141,6 +146,9 @@ impl SettingsPage {
         let mut subs = vec![s1, s2];
         if let Some(model) = VoiceModel::global(cx) {
             subs.push(cx.observe(&model, |_, _, cx| cx.notify()));
+        }
+        if let Some(remote) = crate::remote::Remote::global(cx) {
+            subs.push(cx.observe(&remote, |_, _, cx| cx.notify()));
         }
         Self {
             engine,
@@ -617,6 +625,74 @@ impl SettingsPage {
             .into_any_element()
     }
 
+    fn remote(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let Some(remote) = crate::remote::Remote::global(cx) else {
+            return div().into_any_element();
+        };
+        let (status, enabled) = {
+            let r = remote.read(cx);
+            (r.status.clone(), r.enabled())
+        };
+        let account: SharedString = if status.signed_in {
+            status.email.clone().unwrap_or_else(|| "Signed in".into()).into()
+        } else if status.signing_in {
+            "Finish signing in in your browser".into()
+        } else {
+            "Not signed in".into()
+        };
+        let state = if !enabled {
+            "Off"
+        } else if status.connected {
+            "Connected, phone can see this computer"
+        } else if status.signed_in {
+            "Connecting"
+        } else if status.running {
+            "Sign in to connect"
+        } else {
+            "Starting"
+        };
+        let account_button = if status.signed_in {
+            ui::button_ghost("remote-sign-out", "Sign out", t).on_click({
+                let remote = remote.clone();
+                move |_, _, cx| remote.update(cx, |r, cx| r.sign_out(cx))
+            })
+        } else {
+            ui::button_primary("remote-sign-in", "Sign in with Woozlit", t).on_click({
+                let remote = remote.clone();
+                move |_, _, cx| remote.update(cx, |r, cx| r.sign_in(cx))
+            })
+        };
+        div()
+            .child(row(
+                "Remote control",
+                "Watch and drive this computer's sessions from the Dove phone app. While off, nothing leaves this machine.",
+                kit::switch("set-remote", enabled, t).on_click({
+                    let remote = remote.clone();
+                    move |_, _, cx| remote.update(cx, |r, cx| r.set_enabled(!enabled, cx))
+                }),
+                t,
+            ))
+            .child(row(
+                "Account",
+                "Sign in on the phone with the same Woozlit account",
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(10.0))
+                    .child(div().text_color(t.text_muted).child(account))
+                    .child(account_button),
+                t,
+            ))
+            .child(row("Status", "", div().text_color(t.text_muted).child(state), t))
+            .when_some(status.device_id.clone(), |d, id| {
+                d.child(row("Device", "", div().text_color(t.text_muted).text_size(px(12.0)).child(id), t))
+            })
+            .when_some(status.error.clone(), |d, e| {
+                d.child(row("Last error", "", div().text_color(t.text_muted).child(e), t))
+            })
+            .into_any_element()
+    }
+
     fn about(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         div()
             .child(row("Version", "", div().text_color(t.text_muted).child(env!("CARGO_PKG_VERSION")), t))
@@ -734,6 +810,7 @@ impl Render for SettingsPage {
             Section::Voice => self.voice(&t, cx),
             Section::Keyboard => self.keyboard(&t, cx),
             Section::Notifications => self.notifications(&t, cx),
+            Section::Remote => self.remote(&t, cx),
             Section::Data => self.data(&t, cx),
             Section::About => self.about(&t, cx),
         };

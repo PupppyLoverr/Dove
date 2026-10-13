@@ -14,17 +14,14 @@ const MAX_DISCOVERY_ENTRIES: usize = 4096;
 /// plugin and workspace changes are not hidden behind a persistent host cache.
 #[derive(Default)]
 pub(crate) struct CommandDiscovery {
-    latest:
-        tokio::sync::Mutex<Option<(PathBuf, std::time::Instant, Vec<zeron_proto::SlashCommand>)>>,
+    latest: tokio::sync::Mutex<Option<(PathBuf, std::time::Instant, Vec<zeron_proto::SlashCommand>)>>,
 }
 
 impl CommandDiscovery {
     pub(crate) async fn get(
         &self,
         cwd: &Path,
-        discover: impl std::future::Future<
-            Output = Result<Vec<zeron_proto::SlashCommand>, HarnessError>,
-        >,
+        discover: impl std::future::Future<Output = Result<Vec<zeron_proto::SlashCommand>, HarnessError>>,
     ) -> Result<Vec<zeron_proto::SlashCommand>, HarnessError> {
         let requested = std::time::Instant::now();
         let mut latest = self.latest.lock().await;
@@ -52,10 +49,7 @@ pub(crate) async fn discover(harness: HarnessId, cwd: &Path) -> Result<Vec<Skill
 pub(crate) fn is_shared_skill(path: &str) -> bool {
     Path::new(path).ancestors().any(|dir| {
         dir.file_name().is_some_and(|name| name == "skills")
-            && dir
-                .parent()
-                .and_then(Path::file_name)
-                .is_some_and(|name| name == ".agents")
+            && dir.parent().and_then(Path::file_name).is_some_and(|name| name == ".agents")
     })
 }
 
@@ -86,20 +80,14 @@ pub(crate) fn attach_advertised_commands(
             if harness != HarnessId::Pi && is_shared_skill(&skill.path) {
                 continue;
             }
-            skill.command = Some(SkillCommand {
-                name: command.name.clone(),
-                harness,
-            });
+            skill.command = Some(SkillCommand { name: command.name.clone(), harness });
         } else if harness == HarnessId::Pi && !name.is_empty() {
             skills.push(Skill {
                 name: name.into(),
                 path: format!("harness-skill:pi:{name}"),
                 description: command.description.clone(),
                 enabled: true,
-                command: Some(SkillCommand {
-                    name: command.name.clone(),
-                    harness,
-                }),
+                command: Some(SkillCommand { name: command.name.clone(), harness }),
             });
         }
     }
@@ -108,12 +96,7 @@ pub(crate) fn attach_advertised_commands(
 fn project_dirs(harness: HarnessId) -> &'static [&'static str] {
     match harness {
         HarnessId::ClaudeCode => &[".agents/skills", ".claude/commands", ".claude/skills"],
-        HarnessId::Cursor => &[
-            ".claude/skills",
-            ".codex/skills",
-            ".agents/skills",
-            ".cursor/skills",
-        ],
+        HarnessId::Cursor => &[".claude/skills", ".codex/skills", ".agents/skills", ".cursor/skills"],
         HarnessId::Opencode => &[".claude/skills", ".agents/skills", ".opencode/skills"],
         HarnessId::Grok => &[".agents/skills", ".claude/skills", ".grok/skills"],
         HarnessId::Hermes => &[".agents/skills"],
@@ -126,17 +109,11 @@ fn project_dirs(harness: HarnessId) -> &'static [&'static str] {
 }
 
 fn discover_at(harness: HarnessId, cwd: &Path, home: &Path) -> Result<Vec<Skill>, HarnessError> {
-    let mut roots: Vec<(PathBuf, String)> = project_dirs(harness)
-        .iter()
-        .map(|dir| (home.join(dir), String::new()))
-        .collect();
+    let mut roots: Vec<(PathBuf, String)> =
+        project_dirs(harness).iter().map(|dir| (home.join(dir), String::new())).collect();
     match harness {
         HarnessId::Antigravity => {
-            roots.extend(
-                crate::acp::antigravity_skill_dirs()
-                    .into_iter()
-                    .map(|path| (path, String::new())),
-            );
+            roots.extend(crate::acp::antigravity_skill_dirs().into_iter().map(|path| (path, String::new())));
         }
         HarnessId::Pi => roots.push((
             std::env::var_os("PI_CODING_AGENT_DIR")
@@ -146,10 +123,7 @@ fn discover_at(harness: HarnessId, cwd: &Path, home: &Path) -> Result<Vec<Skill>
             String::new(),
         )),
         HarnessId::Hermes => roots.push((
-            std::env::var_os("HERMES_HOME")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| home.join(".hermes"))
-                .join("skills"),
+            std::env::var_os("HERMES_HOME").map(PathBuf::from).unwrap_or_else(|| home.join(".hermes")).join("skills"),
             String::new(),
         )),
         HarnessId::Opencode => roots.push((
@@ -160,9 +134,8 @@ fn discover_at(harness: HarnessId, cwd: &Path, home: &Path) -> Result<Vec<Skill>
             String::new(),
         )),
         HarnessId::ClaudeCode => {
-            let config = std::env::var_os("CLAUDE_CONFIG_DIR")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| home.join(".claude"));
+            let config =
+                std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from).unwrap_or_else(|| home.join(".claude"));
             roots.push((config.join("commands"), String::new()));
             roots.push((config.join("skills"), String::new()));
             // Only installed plugin locations; never crawl caches or marketplaces.
@@ -172,24 +145,14 @@ fn discover_at(harness: HarnessId, cwd: &Path, home: &Path) -> Result<Vec<Skill>
                         for (id, installs) in plugins {
                             let namespace = id.split('@').next().unwrap_or(id);
                             for install in installs.as_array().into_iter().flatten() {
-                                if let Some(project) =
-                                    install.get("projectPath").and_then(|v| v.as_str())
-                                {
+                                if let Some(project) = install.get("projectPath").and_then(|v| v.as_str()) {
                                     if !cwd.starts_with(project) {
                                         continue;
                                     }
                                 }
-                                if let Some(path) =
-                                    install.get("installPath").and_then(|v| v.as_str())
-                                {
-                                    roots.push((
-                                        Path::new(path).join("skills"),
-                                        format!("{namespace}:"),
-                                    ));
-                                    roots.push((
-                                        Path::new(path).join("commands"),
-                                        format!("{namespace}:"),
-                                    ));
+                                if let Some(path) = install.get("installPath").and_then(|v| v.as_str()) {
+                                    roots.push((Path::new(path).join("skills"), format!("{namespace}:")));
+                                    roots.push((Path::new(path).join("commands"), format!("{namespace}:")));
                                 }
                             }
                         }
@@ -279,11 +242,8 @@ fn scan_root(
                 continue;
             }
             let legacy_commands = root.file_name().is_some_and(|name| name == "commands");
-            let flat = legacy_commands
-                || (matches!(harness, HarnessId::Opencode | HarnessId::Pi) && depth == 0);
-            if entry.file_name() != "SKILL.md"
-                && !(flat && path.extension().is_some_and(|ext| ext == "md"))
-            {
+            let flat = legacy_commands || (matches!(harness, HarnessId::Opencode | HarnessId::Pi) && depth == 0);
+            if entry.file_name() != "SKILL.md" && !(flat && path.extension().is_some_and(|ext| ext == "md")) {
                 continue;
             }
             // One stale symlink or unreadable file must not discard the rest
@@ -368,29 +328,16 @@ fn read_skill(path: &Path) -> Result<Option<Skill>, HarnessError> {
     }
     .and_then(|name| name.to_str())
     .unwrap_or_default();
-    let name = metadata
-        .get("name")
-        .and_then(|v| v.as_str())
-        .unwrap_or(fallback);
+    let name = metadata.get("name").and_then(|v| v.as_str()).unwrap_or(fallback);
     let path = path.to_string_lossy();
-    if !zeron_proto::invocation::valid_invocation_name(name)
-        || !zeron_proto::invocation::valid_skill_path(&path)
-    {
+    if !zeron_proto::invocation::valid_invocation_name(name) || !zeron_proto::invocation::valid_skill_path(&path) {
         return Ok(None);
     }
     Ok(Some(Skill {
         name: name.into(),
         path: path.into_owned(),
-        description: metadata
-            .get("description")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .trim()
-            .into(),
-        enabled: metadata
-            .get("user-invocable")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(true),
+        description: metadata.get("description").and_then(|v| v.as_str()).unwrap_or_default().trim().into(),
+        enabled: metadata.get("user-invocable").and_then(|v| v.as_bool()).unwrap_or(true),
         command: None,
     }))
 }
@@ -413,34 +360,15 @@ mod tests {
             }])
         };
         let root = Path::new("/workspace");
-        let (commands, skills) =
-            tokio::join!(discovery.get(root, probe()), discovery.get(root, probe()),);
+        let (commands, skills) = tokio::join!(discovery.get(root, probe()), discovery.get(root, probe()),);
         assert_eq!(commands.unwrap()[0].name, skills.unwrap()[0].name);
-        assert_eq!(
-            probes.get(),
-            1,
-            "overlapping callers share one provider process"
-        );
-        assert_eq!(
-            discovery.get(root, probe()).await.unwrap()[0].name,
-            "probe-2"
-        );
-        let (a, b) = tokio::join!(
-            discovery.get(root, probe()),
-            discovery.get(Path::new("/other-workspace"), probe()),
-        );
+        assert_eq!(probes.get(), 1, "overlapping callers share one provider process");
+        assert_eq!(discovery.get(root, probe()).await.unwrap()[0].name, "probe-2");
+        let (a, b) = tokio::join!(discovery.get(root, probe()), discovery.get(Path::new("/other-workspace"), probe()),);
         assert_ne!(a.unwrap()[0].name, b.unwrap()[0].name);
         assert_eq!(probes.get(), 4);
-        assert!(
-            discovery
-                .get(root, async { Err(HarnessError::Protocol("retry".into())) })
-                .await
-                .is_err()
-        );
-        assert_eq!(
-            discovery.get(root, probe()).await.unwrap()[0].name,
-            "probe-5"
-        );
+        assert!(discovery.get(root, async { Err(HarnessError::Protocol("retry".into())) }).await.is_err());
+        assert_eq!(discovery.get(root, probe()).await.unwrap()[0].name, "probe-5");
     }
 
     fn write(root: &Path, relative: &str, body: &str) -> PathBuf {
@@ -479,11 +407,7 @@ mod tests {
         if std::env::var_os(CHILD).is_none() {
             // Isolate the probe so a regression cannot strand the test runner.
             let mut child = std::process::Command::new(std::env::current_exe().unwrap())
-                .args([
-                    "--exact",
-                    "skills::tests::discovery_skips_special_files_without_blocking",
-                    "--nocapture",
-                ])
+                .args(["--exact", "skills::tests::discovery_skips_special_files_without_blocking", "--nocapture"])
                 .env(CHILD, "1")
                 .spawn()
                 .unwrap();
@@ -515,25 +439,14 @@ mod tests {
         let mut found = BTreeMap::new();
         let mut remaining = MAX_DISCOVERY_ENTRIES;
         scan_root(root, "", HarnessId::Pi, &mut found, &mut remaining).unwrap();
-        assert_eq!(
-            found.keys().map(String::as_str).collect::<Vec<_>>(),
-            ["linked", "valid"]
-        );
+        assert_eq!(found.keys().map(String::as_str).collect::<Vec<_>>(), ["linked", "valid"]);
     }
 
     #[test]
     fn acp_native_skill_commands_remain_distinct_from_builtin_commands() {
         let commands = vec![
-            zeron_proto::SlashCommand {
-                name: "skill:review".into(),
-                description: "Review".into(),
-                input_hint: None,
-            },
-            zeron_proto::SlashCommand {
-                name: "compact".into(),
-                description: String::new(),
-                input_hint: None,
-            },
+            zeron_proto::SlashCommand { name: "skill:review".into(), description: "Review".into(), input_hint: None },
+            zeron_proto::SlashCommand { name: "compact".into(), description: String::new(), input_hint: None },
         ];
         let mut skills = vec![];
         attach_advertised_commands(HarnessId::Pi, &mut skills, &commands);
@@ -545,10 +458,7 @@ mod tests {
             command: skill.command.clone(),
         };
         assert_eq!(
-            zeron_proto::invocation::harness_prompt(
-                &format!("{} arguments", invocation.link()),
-                HarnessId::Pi
-            ),
+            zeron_proto::invocation::harness_prompt(&format!("{} arguments", invocation.link()), HarnessId::Pi),
             "/skill:review arguments"
         );
         for harness in [HarnessId::Devin, HarnessId::Grok, HarnessId::Hermes] {
@@ -559,11 +469,8 @@ mod tests {
                 enabled: true,
                 command: None,
             }];
-            let command = zeron_proto::SlashCommand {
-                name: "review".into(),
-                description: String::new(),
-                input_hint: None,
-            };
+            let command =
+                zeron_proto::SlashCommand { name: "review".into(), description: String::new(), input_hint: None };
             attach_advertised_commands(harness, &mut skills, &[command]);
             assert_eq!(skills[0].command.as_ref().unwrap().harness, harness);
         }
@@ -571,13 +478,7 @@ mod tests {
 
     #[test]
     fn shared_acp_skills_do_not_alias_builtin_commands() {
-        for harness in [
-            HarnessId::Devin,
-            HarnessId::Grok,
-            HarnessId::Hermes,
-            HarnessId::Antigravity,
-            HarnessId::Pi,
-        ] {
+        for harness in [HarnessId::Devin, HarnessId::Grok, HarnessId::Hermes, HarnessId::Antigravity, HarnessId::Pi] {
             let mut skills = vec![Skill {
                 name: "compact".into(),
                 path: "/repo/.agents/skills/compact/SKILL.md".into(),
@@ -611,59 +512,34 @@ mod tests {
             "skill:审查-é:ui.v2_test",
         ]
         .into_iter()
-        .map(|name| zeron_proto::SlashCommand {
-            name: name.into(),
-            description: String::new(),
-            input_hint: None,
-        })
+        .map(|name| zeron_proto::SlashCommand { name: name.into(), description: String::new(), input_hint: None })
         .collect::<Vec<_>>();
         let mut skills = vec![];
         attach_advertised_commands(HarnessId::Pi, &mut skills, &commands);
         assert_eq!(skills.len(), 1);
         assert_eq!(skills[0].name, "审查-é:ui.v2_test");
         let skill = skills.pop().unwrap();
-        let invocation = Invocation::Skill {
-            name: skill.name,
-            path: skill.path,
-            command: skill.command,
-        };
+        let invocation = Invocation::Skill { name: skill.name, path: skill.path, command: skill.command };
         assert_eq!(invocation_links(&invocation.link())[0].1, invocation);
     }
 
     #[test]
     fn discovery_rejects_invalid_names_and_control_paths() {
         let temp = tempfile::tempdir().unwrap();
-        for name in [
-            "two words",
-            " padded",
-            "padded ",
-            "tab\tname",
-            "non\u{a0}breaking",
-        ] {
+        for name in ["two words", " padded", "padded ", "tab\tname", "non\u{a0}breaking"] {
             let path = write(
                 temp.path(),
                 "invalid/SKILL.md",
-                &format!(
-                    "---\nname: {}\n---\nBody",
-                    serde_json::to_string(name).unwrap()
-                ),
+                &format!("---\nname: {}\n---\nBody", serde_json::to_string(name).unwrap()),
             );
             assert!(read_skill(&path).unwrap().is_none(), "{name:?}");
         }
         #[cfg(unix)]
         {
-            let path = write(
-                temp.path(),
-                "bad\npath/SKILL.md",
-                "---\nname: valid\n---\nBody",
-            );
+            let path = write(temp.path(), "bad\npath/SKILL.md", "---\nname: valid\n---\nBody");
             assert!(read_skill(&path).unwrap().is_none());
         }
-        let path = write(
-            temp.path(),
-            "é skill/SKILL.md",
-            "---\nname: '审查[ui]`'\n---\nBody",
-        );
+        let path = write(temp.path(), "é skill/SKILL.md", "---\nname: '审查[ui]`'\n---\nBody");
         let skill = read_skill(&path).unwrap().unwrap();
         assert_eq!(skill.name, "审查[ui]`");
         assert_eq!(skill.path, path.to_str().unwrap());
@@ -678,32 +554,12 @@ mod tests {
         let mut found = BTreeMap::new();
         let mut remaining = MAX_DISCOVERY_ENTRIES;
         scan_root(&root, "", HarnessId::ClaudeCode, &mut found, &mut remaining).unwrap();
-        assert_eq!(
-            found.keys().map(String::as_str).collect::<Vec<_>>(),
-            ["good:review"]
-        );
+        assert_eq!(found.keys().map(String::as_str).collect::<Vec<_>>(), ["good:review"]);
         found.clear();
-        scan_root(
-            &root,
-            "bad namespace:",
-            HarnessId::ClaudeCode,
-            &mut found,
-            &mut remaining,
-        )
-        .unwrap();
+        scan_root(&root, "bad namespace:", HarnessId::ClaudeCode, &mut found, &mut remaining).unwrap();
         assert!(found.is_empty());
-        scan_root(
-            &root,
-            "é-plugin:",
-            HarnessId::ClaudeCode,
-            &mut found,
-            &mut remaining,
-        )
-        .unwrap();
-        assert_eq!(
-            found.keys().map(String::as_str).collect::<Vec<_>>(),
-            ["é-plugin:good:review"]
-        );
+        scan_root(&root, "é-plugin:", HarnessId::ClaudeCode, &mut found, &mut remaining).unwrap();
+        assert_eq!(found.keys().map(String::as_str).collect::<Vec<_>>(), ["é-plugin:good:review"]);
     }
 
     #[test]
@@ -712,11 +568,7 @@ mod tests {
         let home = temp.path().join("home");
         let repo = temp.path().join("repo");
         std::fs::create_dir_all(repo.join(".git")).unwrap();
-        write(
-            &repo,
-            ".agents/skills/portable/SKILL.md",
-            "---\nname: portable\ndescription: Shared skill\n---\nBody",
-        );
+        write(&repo, ".agents/skills/portable/SKILL.md", "---\nname: portable\ndescription: Shared skill\n---\nBody");
         for harness in [
             HarnessId::ClaudeCode,
             HarnessId::Codex,
@@ -729,10 +581,7 @@ mod tests {
             HarnessId::Opencode,
         ] {
             let skills = discover_at(harness, &repo, &home).unwrap();
-            assert!(
-                skills.iter().any(|skill| skill.name == "portable"),
-                "{harness:?}"
-            );
+            assert!(skills.iter().any(|skill| skill.name == "portable"), "{harness:?}");
         }
     }
 
@@ -760,11 +609,7 @@ mod tests {
             let mut found = BTreeMap::new();
             let mut remaining = MAX_DISCOVERY_ENTRIES;
             scan_root(&root, "", harness, &mut found, &mut remaining).unwrap();
-            assert_eq!(
-                found.keys().map(String::as_str).collect::<Vec<_>>(),
-                ["valid"],
-                "{harness:?}"
-            );
+            assert_eq!(found.keys().map(String::as_str).collect::<Vec<_>>(), ["valid"], "{harness:?}");
         }
     }
 
@@ -774,16 +619,8 @@ mod tests {
         let home = temp.path().join("home");
         let repo = temp.path().join("repo");
         std::fs::create_dir_all(repo.join(".git")).unwrap();
-        write(
-            &home,
-            ".agents/skills/review/SKILL.md",
-            "---\nname: review\ndescription: Global\n---\nBody",
-        );
-        write(
-            &repo,
-            ".agents/skills/review/SKILL.md",
-            "---\nname: review\ndescription: Project\n---\nBody",
-        );
+        write(&home, ".agents/skills/review/SKILL.md", "---\nname: review\ndescription: Global\n---\nBody");
+        write(&repo, ".agents/skills/review/SKILL.md", "---\nname: review\ndescription: Project\n---\nBody");
         for (harness, native) in [
             (HarnessId::ClaudeCode, ".claude"),
             (HarnessId::Cursor, ".cursor"),
@@ -804,33 +641,12 @@ mod tests {
             assert_eq!(skill.description, "Native multiline description");
             assert!(skill.enabled, "model invocation is not user invocation");
         }
-        write(
-            &repo,
-            ".agents/skills/hidden/SKILL.md",
-            "---\nname: hidden\nuser-invocable: false\n---\nBody",
-        );
-        write(
-            &repo,
-            ".agents/skills/broken/SKILL.md",
-            "---\nname: [broken\n---\nBody",
-        );
+        write(&repo, ".agents/skills/hidden/SKILL.md", "---\nname: hidden\nuser-invocable: false\n---\nBody");
+        write(&repo, ".agents/skills/broken/SKILL.md", "---\nname: [broken\n---\nBody");
         let skills = discover_at(HarnessId::Devin, &repo, &home).unwrap();
         assert_eq!(skills.len(), 2);
-        assert!(
-            !skills
-                .iter()
-                .find(|skill| skill.name == "hidden")
-                .unwrap()
-                .enabled
-        );
-        assert_eq!(
-            skills
-                .iter()
-                .find(|skill| skill.name == "review")
-                .unwrap()
-                .description,
-            "Project"
-        );
+        assert!(!skills.iter().find(|skill| skill.name == "hidden").unwrap().enabled);
+        assert_eq!(skills.iter().find(|skill| skill.name == "review").unwrap().description, "Project");
     }
 
     #[test]
@@ -842,13 +658,8 @@ mod tests {
         std::fs::create_dir_all(&nested).unwrap();
         write(temp.path(), ".agents/skills/outside/SKILL.md", "Body");
         write(&repo, ".agents/skills/root/SKILL.md", "Body");
-        write(
-            &nested,
-            ".claude/commands/team/review.md",
-            "---\ndescription: Legacy\n---\nBody",
-        );
-        let skills =
-            discover_at(HarnessId::ClaudeCode, &nested, &temp.path().join("home")).unwrap();
+        write(&nested, ".claude/commands/team/review.md", "---\ndescription: Legacy\n---\nBody");
+        let skills = discover_at(HarnessId::ClaudeCode, &nested, &temp.path().join("home")).unwrap();
         assert!(skills.iter().any(|skill| skill.name == "root"));
         assert!(skills.iter().any(|skill| skill.name == "team:review"));
         assert!(!skills.iter().any(|skill| skill.name == "outside"));
@@ -866,10 +677,7 @@ mod tests {
         write(&repo, ".agents/skills/project/SKILL.md", "Project");
         // Exercise both an inaccessible root and a nested directory; the
         // provider's other roots must survive.
-        for denied in [
-            home.join(".cursor/skills"),
-            home.join(".agents/skills/private"),
-        ] {
+        for denied in [home.join(".cursor/skills"), home.join(".agents/skills/private")] {
             std::fs::create_dir_all(&denied).unwrap();
             std::fs::set_permissions(&denied, std::fs::Permissions::from_mode(0)).unwrap();
             let result = discover_at(HarnessId::Cursor, &repo, &home);
@@ -889,16 +697,8 @@ mod tests {
         let home = temp.path().join("home");
         let repo = temp.path().join("repo");
         std::fs::create_dir_all(repo.join(".git")).unwrap();
-        write(
-            &home,
-            ".agents/skills/global/SKILL.md",
-            "Global instructions",
-        );
-        write(
-            &repo,
-            ".agents/skills/project/SKILL.md",
-            "Project instructions",
-        );
+        write(&home, ".agents/skills/global/SKILL.md", "Global instructions");
+        write(&repo, ".agents/skills/project/SKILL.md", "Project instructions");
 
         let missing = home.join(".agents/skills/missing");
         std::fs::create_dir_all(&missing).unwrap();
@@ -927,25 +727,14 @@ mod tests {
     #[test]
     fn symlinked_skill_directories_are_supported_without_following_cycles() {
         let temp = tempfile::tempdir().unwrap();
-        let path = write(
-            temp.path(),
-            "source/review/SKILL.md",
-            "---\nname: review\n---\nBody",
-        );
+        let path = write(temp.path(), "source/review/SKILL.md", "---\nname: review\n---\nBody");
         let root = temp.path().join("skills");
         std::fs::create_dir(&root).unwrap();
         std::os::unix::fs::symlink(path.parent().unwrap(), root.join("review")).unwrap();
         std::os::unix::fs::symlink(&root, root.join("cycle")).unwrap();
         let mut found = BTreeMap::new();
         let mut remaining = MAX_DISCOVERY_ENTRIES;
-        scan_root(
-            &root,
-            "plugin:",
-            HarnessId::ClaudeCode,
-            &mut found,
-            &mut remaining,
-        )
-        .unwrap();
+        scan_root(&root, "plugin:", HarnessId::ClaudeCode, &mut found, &mut remaining).unwrap();
         assert_eq!(found.len(), 1);
         assert!(found.contains_key("plugin:review"));
     }

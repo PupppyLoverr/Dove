@@ -30,13 +30,7 @@ impl AttachmentMention {
         }
         let sanitized = |name: &str| -> String {
             name.chars()
-                .map(|c| {
-                    if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
-                        c
-                    } else {
-                        '_'
-                    }
-                })
+                .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') { c } else { '_' })
                 .collect()
         };
         let name = attachment_display_name(path.rsplit(['/', '\\']).next().unwrap_or(path));
@@ -53,10 +47,9 @@ pub fn image_label(index: u32) -> String {
 pub fn attachment_mention_link(index: u32, file_name: Option<&str>) -> String {
     match file_name {
         None => format!("[{}]({IMAGE_MENTION_SCHEME}{index})", image_label(index)),
-        Some(name) => format!(
-            "[{}]({ATTACHMENT_MENTION_SCHEME}{index})",
-            crate::file_mentions::escape_mention_label(name)
-        ),
+        Some(name) => {
+            format!("[{}]({ATTACHMENT_MENTION_SCHEME}{index})", crate::file_mentions::escape_mention_label(name))
+        }
     }
 }
 
@@ -135,8 +128,7 @@ pub fn attachment_mentions(text: &str) -> Vec<AttachmentMention> {
             if image_depth > 0 {
                 return None;
             }
-            let pulldown_cmark::Event::Start(pulldown_cmark::Tag::Link { dest_url, .. }) = event
-            else {
+            let pulldown_cmark::Event::Start(pulldown_cmark::Tag::Link { dest_url, .. }) = event else {
                 return None;
             };
             let (scheme, is_image) = if dest_url.starts_with(IMAGE_MENTION_SCHEME) {
@@ -156,12 +148,7 @@ pub fn attachment_mentions(text: &str) -> Vec<AttachmentMention> {
                 let tail = format!("]({scheme}{index})");
                 unescape_label(source.strip_prefix('[')?.strip_suffix(&tail)?)?
             };
-            Some(AttachmentMention {
-                range,
-                index,
-                label,
-                is_image,
-            })
+            Some(AttachmentMention { range, index, label, is_image })
         })
         .collect()
 }
@@ -221,25 +208,12 @@ mod tests {
         let text = format!("compare {} with {notes} and {}", image(2), image(10));
         let mentions = attachment_mentions(&text);
         assert_eq!(
-            mentions
-                .iter()
-                .map(|m| (m.index, m.label.as_str(), m.is_image))
-                .collect::<Vec<_>>(),
-            vec![
-                (2, "Image 2", true),
-                (3, "my [notes].md", false),
-                (10, "Image 10", true)
-            ]
+            mentions.iter().map(|m| (m.index, m.label.as_str(), m.is_image)).collect::<Vec<_>>(),
+            vec![(2, "Image 2", true), (3, "my [notes].md", false), (10, "Image 10", true)]
         );
         assert_eq!(&text[mentions[1].range.clone()], notes);
-        assert_eq!(
-            attachment_mention_prompt(&text),
-            "compare Image 2 with my [notes].md and Image 10"
-        );
-        assert_eq!(
-            attachment_mention_indices(&format!("{}{}", image(2), image(2))),
-            vec![2]
-        );
+        assert_eq!(attachment_mention_prompt(&text), "compare Image 2 with my [notes].md and Image 10");
+        assert_eq!(attachment_mention_indices(&format!("{}{}", image(2), image(2))), vec![2]);
     }
 
     #[test]
@@ -276,11 +250,7 @@ mod tests {
 
     #[test]
     fn unattached_mentions_demote_to_labels_only() {
-        let text = format!(
-            "{} and {}",
-            image(1),
-            attachment_mention_link(2, Some("a.md"))
-        );
+        let text = format!("{} and {}", image(1), attachment_mention_link(2, Some("a.md")));
         assert_eq!(
             demote_unattached_mentions(&text, &[2]),
             format!("Image 1 and {}", attachment_mention_link(2, Some("a.md")))

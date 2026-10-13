@@ -5,10 +5,7 @@ use rubato::{FftFixedInOut, Resampler};
 pub(crate) const MODEL_RATE: u32 = 16_000;
 
 pub(crate) fn for_model(samples: Vec<f32>, rate: u32) -> Result<Vec<f32>> {
-    ensure!(
-        (8_000..=192_000).contains(&rate),
-        "Unsupported microphone sample rate"
-    );
+    ensure!((8_000..=192_000).contains(&rate), "Unsupported microphone sample rate");
     if rate == MODEL_RATE || samples.is_empty() {
         return Ok(samples);
     }
@@ -41,9 +38,7 @@ pub(crate) fn for_model(samples: Vec<f32>, rate: u32) -> Result<Vec<f32>> {
 mod tests {
     use super::*;
     fn tone(rate: u32, hz: f32) -> Vec<f32> {
-        (0..rate)
-            .map(|i| (std::f32::consts::TAU * hz * i as f32 / rate as f32).sin())
-            .collect()
+        (0..rate).map(|i| (std::f32::consts::TAU * hz * i as f32 / rate as f32).sin()).collect()
     }
     fn rms(samples: &[f32]) -> f32 {
         (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt()
@@ -56,15 +51,9 @@ mod tests {
             // FFT filtering can leave a fractional-sample phase offset at
             // noninteger ratios. Assert frequency and amplitude, not phase.
             let steady = &converted[1000..15000];
-            let cycles = steady
-                .windows(2)
-                .filter(|w| w[0] <= 0.0 && w[1] > 0.0)
-                .count();
+            let cycles = steady.windows(2).filter(|w| w[0] <= 0.0 && w[1] > 0.0).count();
             assert!((874..=876).contains(&cycles), "{rate}: {cycles}");
-            assert!(
-                (rms(steady) - std::f32::consts::FRAC_1_SQRT_2).abs() < 0.01,
-                "{rate}"
-            );
+            assert!((rms(steady) - std::f32::consts::FRAC_1_SQRT_2).abs() < 0.01, "{rate}");
         }
     }
     #[test]

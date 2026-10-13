@@ -6,12 +6,7 @@ use crate::process::{Child as ProcessChild, Command};
 pub(crate) fn configure(command: &mut Command) {
     #[cfg(unix)]
     command.process_group(0);
-    for key in [
-        "CLAUDECODE",
-        "CLAUDE_CODE_ENTRYPOINT",
-        "CLAUDE_CODE_SSE_PORT",
-        "CLAUDE_AGENT_SDK_VERSION",
-    ] {
+    for key in ["CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SSE_PORT", "CLAUDE_AGENT_SDK_VERSION"] {
         command.env_remove(key);
     }
 }
@@ -116,12 +111,7 @@ mod tests {
             .collect();
         assert_eq!(
             removed,
-            vec![
-                "CLAUDECODE",
-                "CLAUDE_AGENT_SDK_VERSION",
-                "CLAUDE_CODE_ENTRYPOINT",
-                "CLAUDE_CODE_SSE_PORT"
-            ]
+            vec!["CLAUDECODE", "CLAUDE_AGENT_SDK_VERSION", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SSE_PORT"]
         );
     }
 }

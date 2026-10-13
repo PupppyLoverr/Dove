@@ -65,36 +65,19 @@ impl DevinTracker {
             if !self.settled.insert(agent_id.to_owned()) {
                 return Vec::new();
             }
-            let parent = self
-                .bound
-                .get(agent_id)
-                .cloned()
-                .unwrap_or_else(|| agent_id.to_owned());
+            let parent = self.bound.get(agent_id).cloned().unwrap_or_else(|| agent_id.to_owned());
             let mut events = Vec::new();
             if !self.saw_text.remove(agent_id)
                 && let Some(summary) = nonempty(completed, "summary")
             {
-                events.push(tag(
-                    &parent,
-                    AgentEvent::TextDelta {
-                        text: summary.to_owned(),
-                    },
-                ));
+                events.push(tag(&parent, AgentEvent::TextDelta { text: summary.to_owned() }));
             }
             let status = if completed.get("success").and_then(Value::as_bool) == Some(false) {
                 DoneStatus::Errored
             } else {
                 DoneStatus::Completed
             };
-            events.push(tag(
-                &parent,
-                AgentEvent::Done {
-                    status,
-                    result: None,
-                    error: None,
-                    session_id: None,
-                },
-            ));
+            events.push(tag(&parent, AgentEvent::Done { status, result: None, error: None, session_id: None }));
             return events;
         }
 
@@ -102,30 +85,19 @@ impl DevinTracker {
             self.remember_spawn(update);
         }
 
-        let child_id = meta(update, "cognition.ai/subagent_context")
-            .and_then(|ctx| nonempty(ctx, "parentAgentId"));
+        let child_id = meta(update, "cognition.ai/subagent_context").and_then(|ctx| nonempty(ctx, "parentAgentId"));
         let Some(child_id) = child_id else {
             return map_update(update);
         };
         if self.settled.contains(child_id) {
             return Vec::new();
         }
-        let parent = self
-            .bound
-            .get(child_id)
-            .cloned()
-            .unwrap_or_else(|| child_id.to_owned());
+        let parent = self.bound.get(child_id).cloned().unwrap_or_else(|| child_id.to_owned());
         let events = map_update(update);
-        if events
-            .iter()
-            .any(|event| matches!(event, AgentEvent::TextDelta { .. }))
-        {
+        if events.iter().any(|event| matches!(event, AgentEvent::TextDelta { .. })) {
             self.saw_text.insert(child_id.to_owned());
         }
-        events
-            .into_iter()
-            .map(|event| tag(&parent, event))
-            .collect()
+        events.into_iter().map(|event| tag(&parent, event)).collect()
     }
 
     /// Settle children when their owning ACP process/run goes away before a
@@ -140,15 +112,7 @@ impl DevinTracker {
         open.into_iter()
             .map(|(agent_id, parent)| {
                 self.settled.insert(agent_id);
-                tag(
-                    &parent,
-                    AgentEvent::Done {
-                        status,
-                        result: None,
-                        error: None,
-                        session_id: None,
-                    },
-                )
+                tag(&parent, AgentEvent::Done { status, result: None, error: None, session_id: None })
             })
             .collect()
     }
@@ -158,33 +122,21 @@ impl DevinTracker {
         if id.is_empty() {
             return;
         }
-        if matches!(
-            update.get("status").and_then(Value::as_str),
-            Some("failed" | "cancelled")
-        ) {
+        if matches!(update.get("status").and_then(Value::as_str), Some("failed" | "cancelled")) {
             self.pending.retain(|p| p.tool_call_id != id);
             return;
         }
-        let title = update
-            .get("rawInput")
-            .and_then(|raw| nonempty(raw, "title"))
-            .unwrap_or_default();
+        let title = update.get("rawInput").and_then(|raw| nonempty(raw, "title")).unwrap_or_default();
         match self.pending.iter_mut().find(|p| p.tool_call_id == id) {
             Some(p) if p.title.is_empty() => p.title = title.to_owned(),
             Some(_) => {}
-            None => self.pending.push_back(PendingSpawn {
-                tool_call_id: id.to_owned(),
-                title: title.to_owned(),
-            }),
+            None => self.pending.push_back(PendingSpawn { tool_call_id: id.to_owned(), title: title.to_owned() }),
         }
     }
 }
 
 fn is_spawn(update: &Value) -> bool {
-    update
-        .get("_meta")
-        .and_then(|m| m.get("cognition.ai/inferenceToolName"))
-        .and_then(Value::as_str)
+    update.get("_meta").and_then(|m| m.get("cognition.ai/inferenceToolName")).and_then(Value::as_str)
         == Some("run_subagent")
 }
 
@@ -197,10 +149,7 @@ fn nonempty<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
 }
 
 fn tag(parent: &str, event: AgentEvent) -> AgentEvent {
-    AgentEvent::Subagent {
-        parent_tool_use_id: parent.to_owned(),
-        event: Box::new(event),
-    }
+    AgentEvent::Subagent { parent_tool_use_id: parent.to_owned(), event: Box::new(event) }
 }
 
 #[cfg(test)]
@@ -248,9 +197,7 @@ mod tests {
             child,
             vec![AgentEvent::Subagent {
                 parent_tool_use_id: "spawn-1".into(),
-                event: Box::new(AgentEvent::TextDelta {
-                    text: "Found the issue".into()
-                }),
+                event: Box::new(AgentEvent::TextDelta { text: "Found the issue".into() }),
             }]
         );
 

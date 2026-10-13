@@ -11,11 +11,7 @@ pub(crate) enum Platform {
 
 impl Platform {
     pub(crate) fn current() -> Self {
-        if cfg!(windows) {
-            Self::Windows
-        } else {
-            Self::Unix
-        }
+        if cfg!(windows) { Self::Windows } else { Self::Unix }
     }
 }
 
@@ -25,11 +21,7 @@ pub(crate) fn home_dir() -> Option<PathBuf> {
 
 /// Resolve a portable user base directory without assuming Unix's `/` exists.
 pub(crate) fn home_or_current_dir() -> PathBuf {
-    home_or_current_dir_with(
-        &|key| std::env::var_os(key),
-        &std::env::current_dir,
-        Platform::current(),
-    )
+    home_or_current_dir_with(&|key| std::env::var_os(key), &std::env::current_dir, Platform::current())
 }
 
 fn home_or_current_dir_with(
@@ -37,9 +29,7 @@ fn home_or_current_dir_with(
     current_dir: &impl Fn() -> std::io::Result<PathBuf>,
     platform: Platform,
 ) -> PathBuf {
-    home_dir_with(env, platform)
-        .or_else(|| current_dir().ok())
-        .unwrap_or_else(|| PathBuf::from("."))
+    home_dir_with(env, platform).or_else(|| current_dir().ok()).unwrap_or_else(|| PathBuf::from("."))
 }
 
 /// Accept a launchable executable override: native images anywhere, plus the
@@ -50,19 +40,11 @@ pub(crate) fn validate_native_override(path: &Path) -> Result<PathBuf, crate::Ha
     validate_native_override_with(path, Platform::current())
 }
 
-fn validate_native_override_with(
-    path: &Path,
-    platform: Platform,
-) -> Result<PathBuf, crate::HarnessError> {
+fn validate_native_override_with(path: &Path, platform: Platform) -> Result<PathBuf, crate::HarnessError> {
     if platform == Platform::Windows
-        && !path
-            .extension()
-            .and_then(OsStr::to_str)
-            .is_some_and(|extension| {
-                LAUNCHABLE_WINDOWS_EXTENSIONS
-                    .iter()
-                    .any(|candidate| extension.eq_ignore_ascii_case(candidate))
-            })
+        && !path.extension().and_then(OsStr::to_str).is_some_and(|extension| {
+            LAUNCHABLE_WINDOWS_EXTENSIONS.iter().any(|candidate| extension.eq_ignore_ascii_case(candidate))
+        })
     {
         return Err(crate::HarnessError::NotInstalled(format!(
             "{} is not a launchable Windows executable (use .exe, .cmd, .bat, or .com)",
@@ -70,10 +52,7 @@ fn validate_native_override_with(
         )));
     }
     if !path.is_file() {
-        return Err(crate::HarnessError::NotInstalled(format!(
-            "{} does not exist",
-            path.display()
-        )));
+        return Err(crate::HarnessError::NotInstalled(format!("{} does not exist", path.display())));
     }
     Ok(path.to_path_buf())
 }
@@ -100,9 +79,7 @@ pub(crate) fn binary_hint(path: &Path) -> String {
     format!(
         "{} (version {})",
         path.display(),
-        binary_version(path)
-            .map(|v| v.to_string())
-            .unwrap_or_else(|| "unknown".into())
+        binary_version(path).map(|v| v.to_string()).unwrap_or_else(|| "unknown".into())
     )
 }
 
@@ -110,8 +87,7 @@ fn runnable(path: &Path) -> bool {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        path.metadata()
-            .is_ok_and(|m| m.permissions().mode() & 0o111 != 0)
+        path.metadata().is_ok_and(|m| m.permissions().mode() & 0o111 != 0)
     }
     #[cfg(not(unix))]
     {
@@ -121,20 +97,17 @@ fn runnable(path: &Path) -> bool {
 
 fn newest_candidate(candidates: Vec<PathBuf>) -> Option<PathBuf> {
     let mut seen = std::collections::HashSet::new();
-    let candidates: Vec<_> = candidates
-        .into_iter()
-        .filter(|p| seen.insert(p.canonicalize().unwrap_or_else(|_| p.clone())))
-        .collect();
+    let candidates: Vec<_> =
+        candidates.into_iter().filter(|p| seen.insert(p.canonicalize().unwrap_or_else(|_| p.clone()))).collect();
     let mut best = candidates.first()?.clone();
     if candidates.len() > 1 {
         let mut version = binary_version(&best);
         for path in candidates.iter().skip(1) {
             let next = binary_version(path);
-            if next.as_ref().is_some_and(|next| {
-                version
-                    .as_ref()
-                    .is_none_or(|current| next.cmp_precedence(current).is_gt())
-            }) {
+            if next
+                .as_ref()
+                .is_some_and(|next| version.as_ref().is_none_or(|current| next.cmp_precedence(current).is_gt()))
+            {
                 best = path.clone();
                 version = next;
             }
@@ -145,9 +118,8 @@ fn newest_candidate(candidates: Vec<PathBuf>) -> Option<PathBuf> {
 
 type VersionKey = (PathBuf, Option<std::time::SystemTime>, u64);
 type VersionEntry = (Option<semver::Version>, std::collections::HashSet<String>);
-static VERSION_CACHE: std::sync::OnceLock<
-    std::sync::Mutex<std::collections::HashMap<VersionKey, VersionEntry>>,
-> = std::sync::OnceLock::new();
+static VERSION_CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<VersionKey, VersionEntry>>> =
+    std::sync::OnceLock::new();
 
 /// An explicit install may replace wrappers without changing their metadata.
 /// Clear all candidates, including canonical paths behind vendor symlinks.
@@ -167,15 +139,8 @@ pub fn binary_version(path: &Path) -> Option<semver::Version> {
     let canonical = path.canonicalize().ok()?;
     let metadata = canonical.metadata().ok()?;
     let key = (canonical, metadata.modified().ok(), metadata.len());
-    let mut cache = VERSION_CACHE
-        .get_or_init(Default::default)
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    let alias = path
-        .file_stem()
-        .unwrap_or_default()
-        .to_string_lossy()
-        .into_owned();
+    let mut cache = VERSION_CACHE.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
+    let alias = path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
     if let Some((version, aliases)) = cache.get_mut(&key) {
         aliases.insert(alias);
         return version.clone();
@@ -185,11 +150,7 @@ pub fn binary_version(path: &Path) -> Option<semver::Version> {
         use std::io::Read;
         use std::process::{Command, Stdio};
         let mut command = Command::new(path);
-        command
-            .arg("--version")
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+        command.arg("--version").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
         #[cfg(unix)]
         {
             use std::os::unix::process::CommandExt;
@@ -208,9 +169,7 @@ pub fn binary_version(path: &Path) -> Option<semver::Version> {
         let success = loop {
             match child.try_wait() {
                 Ok(Some(status)) => break status.success(),
-                Ok(None) if start.elapsed() < Duration::from_secs(2) => {
-                    std::thread::sleep(Duration::from_millis(10))
-                }
+                Ok(None) if start.elapsed() < Duration::from_secs(2) => std::thread::sleep(Duration::from_millis(10)),
                 _ => {
                     let _ = child.kill();
                     let _ = child.wait();
@@ -244,27 +203,20 @@ pub fn binary_version(path: &Path) -> Option<semver::Version> {
         // Use the native launcher for npm .cmd/.bat shims and job-tree cleanup.
         // A separate runtime is safe even when descriptors run inside Tokio.
         std::thread::spawn(move || {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .ok()?
-                .block_on(async {
-                    let mut command = crate::process::Command::new(&path);
-                    command
-                        .arg("--version")
-                        .stdin(crate::process::Stdio::null())
-                        .stdout(crate::process::Stdio::piped())
-                        .stderr(crate::process::Stdio::piped())
-                        .kill_on_drop(true);
-                    let output = tokio::time::timeout(Duration::from_secs(2), command.output())
-                        .await
-                        .ok()?
-                        .ok()?;
-                    if !output.status.success() {
-                        return None;
-                    }
-                    parse_version(&output.stdout).or_else(|| parse_version(&output.stderr))
-                })
+            tokio::runtime::Builder::new_current_thread().enable_all().build().ok()?.block_on(async {
+                let mut command = crate::process::Command::new(&path);
+                command
+                    .arg("--version")
+                    .stdin(crate::process::Stdio::null())
+                    .stdout(crate::process::Stdio::piped())
+                    .stderr(crate::process::Stdio::piped())
+                    .kill_on_drop(true);
+                let output = tokio::time::timeout(Duration::from_secs(2), command.output()).await.ok()?.ok()?;
+                if !output.status.success() {
+                    return None;
+                }
+                parse_version(&output.stdout).or_else(|| parse_version(&output.stderr))
+            })
         })
         .join()
         .ok()
@@ -277,32 +229,21 @@ pub fn binary_version(path: &Path) -> Option<semver::Version> {
 }
 
 pub(crate) fn parse_version(bytes: &[u8]) -> Option<semver::Version> {
-    String::from_utf8_lossy(bytes)
-        .split_whitespace()
-        .find_map(|word| {
-            semver::Version::parse(
-                word.trim_matches(|c: char| matches!(c, '(' | ')' | ','))
-                    .trim_start_matches('v'),
-            )
-            .ok()
-        })
+    String::from_utf8_lossy(bytes).split_whitespace().find_map(|word| {
+        semver::Version::parse(word.trim_matches(|c: char| matches!(c, '(' | ')' | ',')).trim_start_matches('v')).ok()
+    })
 }
 
 fn home_dir_with(env: &impl Fn(&str) -> Option<OsString>, platform: Platform) -> Option<PathBuf> {
     env("HOME")
         .filter(|value| !value.is_empty())
         .or_else(|| {
-            (platform == Platform::Windows)
-                .then(|| env("USERPROFILE").filter(|value| !value.is_empty()))
-                .flatten()
+            (platform == Platform::Windows).then(|| env("USERPROFILE").filter(|value| !value.is_empty())).flatten()
         })
         .map(PathBuf::from)
 }
 
-fn node_version_manager_bins_with(
-    env: &impl Fn(&str) -> Option<OsString>,
-    platform: Platform,
-) -> Vec<PathBuf> {
+fn node_version_manager_bins_with(env: &impl Fn(&str) -> Option<OsString>, platform: Platform) -> Vec<PathBuf> {
     let home = home_dir_with(env, platform);
     let mut dirs = Vec::new();
 
@@ -312,15 +253,12 @@ fn node_version_manager_bins_with(
         }
     }
 
-    let mut fnm_roots: Vec<PathBuf> = env("FNM_DIR")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .into_iter()
-        .collect();
+    let mut fnm_roots: Vec<PathBuf> =
+        env("FNM_DIR").filter(|value| !value.is_empty()).map(PathBuf::from).into_iter().collect();
     if platform == Platform::Windows {
-        if let Some(roaming) = env_path(env, "APPDATA").or_else(|| {
-            env_path(env, "USERPROFILE").map(|profile| profile.join("AppData").join("Roaming"))
-        }) {
+        if let Some(roaming) = env_path(env, "APPDATA")
+            .or_else(|| env_path(env, "USERPROFILE").map(|profile| profile.join("AppData").join("Roaming")))
+        {
             fnm_roots.push(roaming.join("fnm"));
         }
     }
@@ -331,11 +269,7 @@ fn node_version_manager_bins_with(
     }
     for root in fnm_roots {
         let default = root.join("aliases").join("default");
-        dirs.push(if platform == Platform::Windows {
-            default
-        } else {
-            default.join("bin")
-        });
+        dirs.push(if platform == Platform::Windows { default } else { default.join("bin") });
     }
 
     if platform == Platform::Windows {
@@ -344,10 +278,7 @@ fn node_version_manager_bins_with(
         }
         if let Some(root) = env_path(env, "VOLTA_HOME").or_else(|| {
             env_path(env, "LOCALAPPDATA")
-                .or_else(|| {
-                    env_path(env, "USERPROFILE")
-                        .map(|profile| profile.join("AppData").join("Local"))
-                })
+                .or_else(|| env_path(env, "USERPROFILE").map(|profile| profile.join("AppData").join("Local")))
                 .map(|local| local.join("Volta"))
         }) {
             dirs.push(root.join("bin"));
@@ -359,12 +290,11 @@ fn node_version_manager_bins_with(
         // default global install locations of the common Node ecosystems
         // (npm's global bin, pnpm's default home, scoop, and the per-user
         // ~/.local/bin and ~/.bun/bin used by native installers).
-        let local = env_path(env, "LOCALAPPDATA").or_else(|| {
-            env_path(env, "USERPROFILE").map(|profile| profile.join("AppData").join("Local"))
-        });
-        if let Some(npm) = env_path(env, "APPDATA").or_else(|| {
-            env_path(env, "USERPROFILE").map(|profile| profile.join("AppData").join("Roaming"))
-        }) {
+        let local = env_path(env, "LOCALAPPDATA")
+            .or_else(|| env_path(env, "USERPROFILE").map(|profile| profile.join("AppData").join("Local")));
+        if let Some(npm) = env_path(env, "APPDATA")
+            .or_else(|| env_path(env, "USERPROFILE").map(|profile| profile.join("AppData").join("Roaming")))
+        {
             dirs.push(npm.join("npm"));
         }
         if let Some(local) = &local {
@@ -384,10 +314,7 @@ fn node_version_manager_bins_with(
 
         let nvm = home.join(".nvm").join("versions").join("node");
         if let Ok(entries) = std::fs::read_dir(&nvm) {
-            let mut versions: Vec<PathBuf> = entries
-                .flatten()
-                .map(|entry| entry.path().join("bin"))
-                .collect();
+            let mut versions: Vec<PathBuf> = entries.flatten().map(|entry| entry.path().join("bin")).collect();
             versions.sort();
             versions.reverse();
             dirs.append(&mut versions);
@@ -397,9 +324,7 @@ fn node_version_manager_bins_with(
 }
 
 fn env_path(env: &impl Fn(&str) -> Option<OsString>, key: &str) -> Option<PathBuf> {
-    env(key)
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
+    env(key).filter(|value| !value.is_empty()).map(PathBuf::from)
 }
 
 /// Extensions the spawner can launch on Windows: the PATHEXT subset that maps
@@ -411,11 +336,7 @@ const LAUNCHABLE_WINDOWS_EXTENSIONS: [&str; 4] = ["com", "exe", "bat", "cmd"];
 /// The name variants to probe for `exe` on `platform`, in search order. On
 /// Windows the PATHEXT order (defaulting to `.COM;.EXE;.BAT;.CMD`) decides,
 /// so a directory's `foo.exe` beats its `foo.cmd` exactly like `cmd.exe`.
-fn candidate_names(
-    exe: &str,
-    env: &impl Fn(&str) -> Option<OsString>,
-    platform: Platform,
-) -> Vec<OsString> {
+fn candidate_names(exe: &str, env: &impl Fn(&str) -> Option<OsString>, platform: Platform) -> Vec<OsString> {
     if platform != Platform::Windows || Path::new(exe).extension().is_some() {
         return vec![OsString::from(exe)];
     }
@@ -431,17 +352,12 @@ fn candidate_names(
         })
         .unwrap_or_default();
     let launchable = |extension: &str| {
-        LAUNCHABLE_WINDOWS_EXTENSIONS.iter().any(|candidate| {
-            extension
-                .trim_start_matches('.')
-                .eq_ignore_ascii_case(candidate)
-        })
-    };
-    let ordered = if configured.is_empty() {
         LAUNCHABLE_WINDOWS_EXTENSIONS
             .iter()
-            .map(|extension| format!(".{extension}"))
-            .collect::<Vec<_>>()
+            .any(|candidate| extension.trim_start_matches('.').eq_ignore_ascii_case(candidate))
+    };
+    let ordered = if configured.is_empty() {
+        LAUNCHABLE_WINDOWS_EXTENSIONS.iter().map(|extension| format!(".{extension}")).collect::<Vec<_>>()
     } else {
         configured.into_iter().filter(|e| launchable(e)).collect()
     };
@@ -469,14 +385,9 @@ fn extra_variants(path: PathBuf, names: &[OsString], platform: Platform) -> Vec<
 
 fn is_runnable_candidate(path: &Path, platform: Platform) -> bool {
     if platform == Platform::Windows
-        && !path
-            .extension()
-            .and_then(OsStr::to_str)
-            .is_some_and(|extension| {
-                LAUNCHABLE_WINDOWS_EXTENSIONS
-                    .iter()
-                    .any(|candidate| extension.eq_ignore_ascii_case(candidate))
-            })
+        && !path.extension().and_then(OsStr::to_str).is_some_and(|extension| {
+            LAUNCHABLE_WINDOWS_EXTENSIONS.iter().any(|candidate| extension.eq_ignore_ascii_case(candidate))
+        })
     {
         return false;
     }
@@ -502,35 +413,21 @@ pub(crate) fn find_on_paths_matching_with(
     mut predicate: impl FnMut(&Path) -> bool,
 ) -> Option<PathBuf> {
     let names = candidate_names(exe, env, platform);
-    let variants =
-        |dir: PathBuf| -> Vec<PathBuf> { names.iter().map(|name| dir.join(name)).collect() };
+    let variants = |dir: PathBuf| -> Vec<PathBuf> { names.iter().map(|name| dir.join(name)).collect() };
     let from_path = |path: OsString| {
-        std::env::split_paths(&path)
-            .filter(|dir| !dir.as_os_str().is_empty())
-            .flat_map(variants)
-            .collect::<Vec<_>>()
+        std::env::split_paths(&path).filter(|dir| !dir.as_os_str().is_empty()).flat_map(variants).collect::<Vec<_>>()
     };
     let mut candidates = env("PATH").map(from_path).unwrap_or_default();
     if let Some(shell_path) = login_shell_path {
         candidates.extend(from_path(shell_path));
     }
-    candidates.extend(
-        extra
-            .into_iter()
-            .flat_map(|path| extra_variants(path, &names, platform)),
-    );
-    candidates.extend(
-        node_version_manager_bins_with(env, platform)
-            .into_iter()
-            .flat_map(variants),
-    );
+    candidates.extend(extra.into_iter().flat_map(|path| extra_variants(path, &names, platform)));
+    candidates.extend(node_version_manager_bins_with(env, platform).into_iter().flat_map(variants));
     // npm exposes CLIs as `name.cmd` shims on Windows; those are discoverable
     // and launchable through the PATHEXT variants above, so no per-agent
     // node_modules payload special-casing belongs here.
 
-    candidates
-        .into_iter()
-        .find(|path| is_runnable_candidate(path, platform) && predicate(path))
+    candidates.into_iter().find(|path| is_runnable_candidate(path, platform) && predicate(path))
 }
 
 #[cfg(test)]
@@ -540,13 +437,8 @@ mod tests {
 
     #[test]
     fn semantic_versions_support_cli_labels_and_prereleases() {
-        assert_eq!(
-            parse_version(b"Claude Code v2.1.3 (native)"),
-            Some(semver::Version::new(2, 1, 3))
-        );
-        assert!(
-            parse_version(b"codex-cli 0.100.0-beta.2").unwrap() < semver::Version::new(0, 100, 0)
-        );
+        assert_eq!(parse_version(b"Claude Code v2.1.3 (native)"), Some(semver::Version::new(2, 1, 3)));
+        assert!(parse_version(b"codex-cli 0.100.0-beta.2").unwrap() < semver::Version::new(0, 100, 0));
         assert!(parse_version(b"unknown").is_none());
     }
     #[cfg(windows)]
@@ -568,11 +460,7 @@ mod tests {
         let version = dir.path().join("version");
         let entry = dir.path().join("entry.js");
         let cli = dir.path().join("install-cache-test");
-        std::fs::write(
-            &entry,
-            format!("#!/bin/sh\n/bin/cat '{}'\n", version.display()),
-        )
-        .unwrap();
+        std::fs::write(&entry, format!("#!/bin/sh\n/bin/cat '{}'\n", version.display())).unwrap();
         std::fs::set_permissions(&entry, std::fs::Permissions::from_mode(0o755)).unwrap();
         symlink(&entry, &cli).unwrap();
         std::fs::write(&version, "1.0.0").unwrap();
@@ -594,10 +482,7 @@ mod tests {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(
                 path,
-                format!(
-                    "#!/bin/sh\necho codex-cli {version}\necho x >> '{}.calls'\n",
-                    path.display()
-                ),
+                format!("#!/bin/sh\necho codex-cli {version}\necho x >> '{}.calls'\n", path.display()),
             )
             .unwrap();
             std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -607,20 +492,11 @@ mod tests {
         let alias = dir.path().join("alias");
         symlink(&second, &alias).unwrap();
         for _ in 0..3 {
-            assert_eq!(
-                newest_candidate(vec![first.clone(), second.clone(), alias.clone()]),
-                Some(second.clone())
-            );
+            assert_eq!(newest_candidate(vec![first.clone(), second.clone(), alias.clone()]), Some(second.clone()));
         }
-        assert_eq!(
-            std::fs::read_to_string(second.with_file_name("codex.calls")).unwrap(),
-            "x\n"
-        );
+        assert_eq!(std::fs::read_to_string(second.with_file_name("codex.calls")).unwrap(), "x\n");
         script(&first, "1.200.0");
-        assert_eq!(
-            newest_candidate(vec![first.clone(), second.clone()]),
-            Some(first.clone())
-        );
+        assert_eq!(newest_candidate(vec![first.clone(), second.clone()]), Some(first.clone()));
         script(&second, "1.200.0");
         assert_eq!(newest_candidate(vec![first.clone(), second]), Some(first));
     }
@@ -657,10 +533,8 @@ mod tests {
     }
 
     fn env(values: &[(&str, OsString)]) -> impl Fn(&str) -> Option<OsString> + use<> {
-        let values: HashMap<String, OsString> = values
-            .iter()
-            .map(|(key, value)| ((*key).to_owned(), value.clone()))
-            .collect();
+        let values: HashMap<String, OsString> =
+            values.iter().map(|(key, value)| ((*key).to_owned(), value.clone())).collect();
         move |key| values.get(key).cloned()
     }
 
@@ -690,34 +564,15 @@ mod tests {
         std::fs::write(both.join("agent.exe"), b"MZ").unwrap();
         std::fs::write(later.join("agent.exe"), b"MZ").unwrap();
 
-        let path = joined(&[
-            Path::new(""),
-            &extensionless,
-            &shim,
-            &both,
-            &directory,
-            &later,
-        ]);
+        let path = joined(&[Path::new(""), &extensionless, &shim, &both, &directory, &later]);
         // Directory order wins across directories: the bare .cmd shim in an
         // earlier directory beats the .exe in a later one, like cmd.exe.
-        let found = find_on_paths_with(
-            "agent",
-            Vec::new(),
-            &env(&[("PATH", path.clone())]),
-            None,
-            Platform::Windows,
-        );
+        let found = find_on_paths_with("agent", Vec::new(), &env(&[("PATH", path.clone())]), None, Platform::Windows);
         assert_eq!(found, Some(shim.join("agent.cmd")));
         // Once the shim directory is gone, the mixed directory resolves its
         // .exe first, and a directory-shaped candidate is never a match.
         std::fs::remove_dir_all(&shim).unwrap();
-        let found = find_on_paths_with(
-            "agent",
-            Vec::new(),
-            &env(&[("PATH", path)]),
-            None,
-            Platform::Windows,
-        );
+        let found = find_on_paths_with("agent", Vec::new(), &env(&[("PATH", path)]), None, Platform::Windows);
         assert_eq!(found, Some(both.join("agent.exe")));
     }
 
@@ -732,30 +587,18 @@ mod tests {
 
         // Default order: .exe before .cmd.
         assert_eq!(
-            find_on_paths_with(
-                "agent",
-                Vec::new(),
-                &env(&[("PATH", path.clone())]),
-                None,
-                Platform::Windows
-            ),
+            find_on_paths_with("agent", Vec::new(), &env(&[("PATH", path.clone())]), None, Platform::Windows),
             Some(dir.join("agent.exe"))
         );
         // A reordered PATHEXT is honored, but non-launchable entries are ignored.
         // The on-disk name matches PATHEXT's casing: Windows would also match
         // `.CMD`, but this test runs on case-sensitive filesystems too.
-        let reordered = env(&[
-            ("PATH", path),
-            ("PATHEXT", OsString::from(".cmd;.VBS;.EXE")),
-        ]);
+        let reordered = env(&[("PATH", path), ("PATHEXT", OsString::from(".cmd;.VBS;.EXE"))]);
         let found = find_on_paths_with("agent", Vec::new(), &reordered, None, Platform::Windows)
             .expect("shim variant resolves");
         assert_eq!(found.parent(), Some(dir.as_path()));
         assert!(
-            found
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.eq_ignore_ascii_case("agent.cmd"))
+            found.file_name().and_then(|name| name.to_str()).is_some_and(|name| name.eq_ignore_ascii_case("agent.cmd"))
         );
     }
 
@@ -770,13 +613,7 @@ mod tests {
         std::fs::write(bin.join("tool.CmD"), b"@echo off").unwrap();
         // Extras are file candidates: an explicit extension is taken as given.
         assert_eq!(
-            find_on_paths_with(
-                "tool",
-                vec![bin.join("tool.CmD")],
-                &env(&[]),
-                None,
-                Platform::Windows,
-            ),
+            find_on_paths_with("tool", vec![bin.join("tool.CmD")], &env(&[]), None, Platform::Windows,),
             Some(bin.join("tool.CmD")),
         );
         // Extensionless extras (e.g. `~/.local/bin/grok`) resolve through the
@@ -797,13 +634,7 @@ mod tests {
         std::fs::create_dir_all(&grok_bin).unwrap();
         std::fs::write(grok_bin.join("grok.cmd"), b"@echo off").unwrap();
         assert_eq!(
-            find_on_paths_with(
-                "grok",
-                vec![grok_bin.join("grok")],
-                &env(&[]),
-                None,
-                Platform::Windows,
-            ),
+            find_on_paths_with("grok", vec![grok_bin.join("grok")], &env(&[]), None, Platform::Windows,),
             Some(grok_bin.join("grok.cmd")),
             "an extensionless extra resolves its .cmd shim"
         );
@@ -873,10 +704,7 @@ mod tests {
             );
             std::fs::remove_file(dir.join("node.exe")).unwrap();
         }
-        assert_eq!(
-            find_on_paths_with("node", vec![], &lookup, None, Platform::Windows),
-            None
-        );
+        assert_eq!(find_on_paths_with("node", vec![], &lookup, None, Platform::Windows), None);
     }
 
     #[test]
@@ -952,19 +780,10 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         // Batch shims are valid overrides (launched through cmd.exe), and the
         // extension check is case-insensitive.
-        for name in [
-            "agent.cmd",
-            "agent.CmD",
-            "agent.BAT",
-            "agent.exe",
-            "agent.EXE",
-        ] {
+        for name in ["agent.cmd", "agent.CmD", "agent.BAT", "agent.exe", "agent.EXE"] {
             let path = temp.path().join(name);
             std::fs::write(&path, b"MZ").unwrap();
-            assert_eq!(
-                validate_native_override_with(&path, Platform::Windows).unwrap(),
-                path
-            );
+            assert_eq!(validate_native_override_with(&path, Platform::Windows).unwrap(), path);
         }
         // Extensions the spawner cannot launch are rejected…
         let script = temp.path().join("agent.ps1");
@@ -978,19 +797,13 @@ mod tests {
         // Unix keeps extension-free judgment and still checks existence.
         let unix_script = temp.path().join("agent.sh");
         std::fs::write(&unix_script, b"#!/bin/sh\n").unwrap();
-        assert_eq!(
-            validate_native_override_with(&unix_script, Platform::Unix).unwrap(),
-            unix_script
-        );
+        assert_eq!(validate_native_override_with(&unix_script, Platform::Unix).unwrap(), unix_script);
         assert!(validate_native_override_with(&temp.path().join("agent"), Platform::Unix).is_err());
     }
 
     #[test]
     fn portable_base_dir_uses_current_dir_when_home_is_unset() {
         let current = PathBuf::from(r"D:\work\comet");
-        assert_eq!(
-            home_or_current_dir_with(&env(&[]), &|| Ok(current.clone()), Platform::Windows,),
-            current
-        );
+        assert_eq!(home_or_current_dir_with(&env(&[]), &|| Ok(current.clone()), Platform::Windows,), current);
     }
 }

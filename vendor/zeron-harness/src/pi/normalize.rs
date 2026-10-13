@@ -52,12 +52,8 @@ impl Normalizer {
             }
             "message_end" if frame["message"]["role"] == "assistant" => {
                 let message = &frame["message"];
-                self.error = (message["stopReason"] == "error").then(|| {
-                    message["errorMessage"]
-                        .as_str()
-                        .unwrap_or("Pi provider failed")
-                        .to_owned()
-                });
+                self.error = (message["stopReason"] == "error")
+                    .then(|| message["errorMessage"].as_str().unwrap_or("Pi provider failed").to_owned());
                 self.aborted = message["stopReason"] == "aborted";
                 if let Some(content) = message["content"].as_array() {
                     for (index, part) in content.iter().enumerate() {
@@ -67,18 +63,11 @@ impl Normalizer {
                             _ => continue,
                         };
                         let previous = cache.entry(index).or_default();
-                        if let Some(suffix) = value
-                            .strip_prefix(previous.as_str())
-                            .filter(|s| !s.is_empty())
-                        {
+                        if let Some(suffix) = value.strip_prefix(previous.as_str()).filter(|s| !s.is_empty()) {
                             events.push(if reasoning {
-                                AgentEvent::ReasoningDelta {
-                                    text: suffix.into(),
-                                }
+                                AgentEvent::ReasoningDelta { text: suffix.into() }
                             } else {
-                                AgentEvent::TextDelta {
-                                    text: suffix.into(),
-                                }
+                                AgentEvent::TextDelta { text: suffix.into() }
                             });
                         }
                         *previous = value.into();
@@ -88,14 +77,8 @@ impl Normalizer {
                 if usage.is_object() {
                     let n = |key| usage[key].as_u64().unwrap_or(0);
                     let input = n("input") + n("cacheRead") + n("cacheWrite");
-                    events.push(AgentEvent::Usage {
-                        input_tokens: input,
-                        output_tokens: n("output"),
-                    });
-                    events.push(AgentEvent::ContextUsage {
-                        tokens: Some(input + n("output")),
-                        window: self.window,
-                    });
+                    events.push(AgentEvent::Usage { input_tokens: input, output_tokens: n("output") });
+                    events.push(AgentEvent::ContextUsage { tokens: Some(input + n("output")), window: self.window });
                 }
             }
             "tool_execution_start" => {
@@ -103,10 +86,7 @@ impl Normalizer {
                 let name = string(frame, "toolName");
                 if !self.tools.contains_key(&id) {
                     let args = frame["args"].clone();
-                    events.push(AgentEvent::ToolCall {
-                        id: id.clone(),
-                        call: tool(name, &args),
-                    });
+                    events.push(AgentEvent::ToolCall { id: id.clone(), call: tool(name, &args) });
                     self.tools.insert(id, (name.into(), args));
                 }
             }
@@ -114,13 +94,9 @@ impl Normalizer {
                 let id = string(frame, "toolCallId").to_owned();
                 let info = self.tools.remove(&id);
                 let result = &frame["result"];
-                let output = result["content"].as_array().map(|items| {
-                    items
-                        .iter()
-                        .filter_map(|v| v["text"].as_str())
-                        .collect::<Vec<_>>()
-                        .join("\n")
-                });
+                let output = result["content"]
+                    .as_array()
+                    .map(|items| items.iter().filter_map(|v| v["text"].as_str()).collect::<Vec<_>>().join("\n"));
                 let diff = info.as_ref().and_then(|(name, args)| {
                     if frame["isError"] == true {
                         return None;
@@ -148,17 +124,12 @@ impl Normalizer {
             }
             "compaction_end" => {
                 if let Some(tokens) = frame["result"]["estimatedTokensAfter"].as_u64() {
-                    events.push(AgentEvent::ContextUsage {
-                        tokens: Some(tokens),
-                        window: self.window,
-                    });
+                    events.push(AgentEvent::ContextUsage { tokens: Some(tokens), window: self.window });
                 }
             }
             "extension_error" => {
                 self.error = Some(string(frame, "error").into());
-                events.push(AgentEvent::Error {
-                    message: format!("Pi extension: {}", string(frame, "error")),
-                });
+                events.push(AgentEvent::Error { message: format!("Pi extension: {}", string(frame, "error")) });
             }
             _ => {}
         }
@@ -180,12 +151,8 @@ fn cap(text: &str, limit: usize) -> String {
 }
 fn tool(name: &str, args: &Value) -> ToolCall {
     match name {
-        "bash" => ToolCall::Exec {
-            command: string(args, "command").into(),
-        },
-        "read" => ToolCall::ReadFile {
-            path: string(args, "path").into(),
-        },
+        "bash" => ToolCall::Exec { command: string(args, "command").into() },
+        "read" => ToolCall::ReadFile { path: string(args, "path").into() },
         "write" => ToolCall::WriteFile {
             path: string(args, "path").into(),
             content: args["content"].as_str().map(str::to_owned),
@@ -195,22 +162,14 @@ fn tool(name: &str, args: &Value) -> ToolCall {
             old_string: args["oldText"].as_str().map(str::to_owned),
             new_string: args["newText"].as_str().map(str::to_owned),
         },
-        "grep" => ToolCall::Search {
-            pattern: string(args, "pattern").into(),
-            path: args["path"].as_str().map(str::to_owned),
-        },
-        "find" => ToolCall::Glob {
-            pattern: string(args, "pattern").into(),
-        },
-        name if name.starts_with("zeron_") => ToolCall::Mcp {
-            server: "zeron".into(),
-            tool: name[6..].into(),
-            input: Some(args.clone()),
-        },
-        _ => ToolCall::Unknown {
-            name: name.into(),
-            input: Some(args.clone()),
-        },
+        "grep" => {
+            ToolCall::Search { pattern: string(args, "pattern").into(), path: args["path"].as_str().map(str::to_owned) }
+        }
+        "find" => ToolCall::Glob { pattern: string(args, "pattern").into() },
+        name if name.starts_with("zeron_") => {
+            ToolCall::Mcp { server: "zeron".into(), tool: name[6..].into(), input: Some(args.clone()) }
+        }
+        _ => ToolCall::Unknown { name: name.into(), input: Some(args.clone()) },
     }
 }
 #[cfg(test)]
@@ -234,8 +193,6 @@ mod tests {
         assert_eq!(n.map(&start).len(), 1);
         assert!(n.map(&start).is_empty());
         let events=n.map(&json!({"type":"tool_execution_end","toolCallId":"t","isError":false,"result":{"content":[{"type":"text","text":"ok"}]}}));
-        assert!(
-            matches!(&events[0],AgentEvent::ToolResult{id,diff:Some(diff),..} if id=="t" && diff.new_text=="new")
-        );
+        assert!(matches!(&events[0],AgentEvent::ToolResult{id,diff:Some(diff),..} if id=="t" && diff.new_text=="new"));
     }
 }

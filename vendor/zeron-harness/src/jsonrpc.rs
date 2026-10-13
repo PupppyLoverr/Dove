@@ -86,16 +86,7 @@ impl RpcClient {
             observer,
             Arc::clone(&voice_router),
         ));
-        (
-            Self {
-                next_id: Arc::new(AtomicI64::new(0)),
-                pending,
-                writer: writer_tx,
-                closed,
-                voice_router,
-            },
-            incoming_rx,
-        )
+        (Self { next_id: Arc::new(AtomicI64::new(0)), pending, writer: writer_tx, closed, voice_router }, incoming_rx)
     }
 
     /// Route `thread/realtime/*` notifications (and `account/updated`) to a
@@ -107,11 +98,8 @@ impl RpcClient {
     ) -> (mpsc::Receiver<Incoming>, Arc<AtomicBool>) {
         let (tx, rx) = mpsc::channel(32);
         let overflow = Arc::new(AtomicBool::new(false));
-        *self.voice_router.lock().expect("voice router") = Some(VoiceRouter {
-            sender: tx,
-            overflow: overflow.clone(),
-            abort_media: Box::new(abort_media),
-        });
+        *self.voice_router.lock().expect("voice router") =
+            Some(VoiceRouter { sender: tx, overflow: overflow.clone(), abort_media: Box::new(abort_media) });
         (rx, overflow)
     }
 
@@ -119,10 +107,7 @@ impl RpcClient {
     /// left in place.
     pub fn unsubscribe_voice(&self, overflow: &Arc<AtomicBool>) {
         let mut router = self.voice_router.lock().expect("voice router");
-        if router
-            .as_ref()
-            .is_some_and(|r| Arc::ptr_eq(&r.overflow, overflow))
-        {
+        if router.as_ref().is_some_and(|r| Arc::ptr_eq(&r.overflow, overflow)) {
             *router = None;
         }
     }
@@ -153,9 +138,7 @@ impl RpcClient {
             // reader exit must either be rejected here or cleared by it.
             if self.is_closed() {
                 return Box::pin(async move {
-                    Err(HarnessError::Protocol(format!(
-                        "{method}: app-server exited before responding"
-                    )))
+                    Err(HarnessError::Protocol(format!("{method}: app-server exited before responding")))
                 });
             }
             pending.insert(id, tx);
@@ -163,20 +146,14 @@ impl RpcClient {
         let line = json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
         if self.writer.send(line.to_string()).is_err() {
             self.pending.lock().expect("pending lock").remove(&id);
-            return Box::pin(async move {
-                Err(HarnessError::Protocol(format!(
-                    "{method}: app-server stdin closed"
-                )))
-            });
+            return Box::pin(async move { Err(HarnessError::Protocol(format!("{method}: app-server stdin closed"))) });
         }
         Box::pin(async move {
             match rx.await {
                 Ok(Ok(result)) => Ok(result),
                 Ok(Err(message)) => Err(HarnessError::Protocol(format!("{method}: {message}"))),
                 // Sender dropped: the reader hit EOF and failed all pending.
-                Err(_) => Err(HarnessError::Protocol(format!(
-                    "{method}: app-server exited before responding"
-                ))),
+                Err(_) => Err(HarnessError::Protocol(format!("{method}: app-server exited before responding"))),
             }
         })
     }
@@ -247,10 +224,7 @@ fn response_error(error: &Value) -> String {
         rendered.push_str(&format!(" (code {code})"));
     }
     if let Some(data) = error.get("data").filter(|v| !v.is_null()) {
-        let detail = data
-            .as_str()
-            .map(str::to_owned)
-            .unwrap_or_else(|| data.to_string());
+        let detail = data.as_str().map(str::to_owned).unwrap_or_else(|| data.to_string());
         if !detail.is_empty() {
             rendered.push_str(": ");
             rendered.push_str(&detail);
@@ -275,9 +249,7 @@ async fn read_loop(
     // unusable, pending requests must fail, and the session loop must know.
     while let Ok(Some(line)) = lines.next_line().await {
         let line = line.trim();
-        if let Some(url) =
-            line.strip_prefix("Open the following link to authenticate the ACP server: ")
-        {
+        if let Some(url) = line.strip_prefix("Open the following link to authenticate the ACP server: ") {
             if let Some(observer) = &observer {
                 observer(url);
             }
@@ -307,10 +279,7 @@ async fn read_loop(
                 };
                 let outcome = match msg.get("error") {
                     Some(err) => Err(response_error(err)),
-                    None => Ok(msg
-                        .get_mut("result")
-                        .map(Value::take)
-                        .unwrap_or(Value::Null)),
+                    None => Ok(msg.get_mut("result").map(Value::take).unwrap_or(Value::Null)),
                 };
                 let _ = sender.send(outcome);
             }
@@ -319,10 +288,7 @@ async fn read_loop(
                 let incoming = Incoming::Request {
                     id: id.clone(),
                     method: method.to_owned(),
-                    params: msg
-                        .get_mut("params")
-                        .map(Value::take)
-                        .unwrap_or(Value::Null),
+                    params: msg.get_mut("params").map(Value::take).unwrap_or(Value::Null),
                 };
                 if tx.send(incoming).await.is_err() {
                     return;
@@ -334,20 +300,14 @@ async fn read_loop(
                 let account_updated = method == "account/updated";
                 let incoming = Incoming::Notification {
                     method: method.to_owned(),
-                    params: msg
-                        .get_mut("params")
-                        .map(Value::take)
-                        .unwrap_or(Value::Null),
+                    params: msg.get_mut("params").map(Value::take).unwrap_or(Value::Null),
                 };
                 if let Some(router) = voice_router.lock().expect("voice router").as_ref() {
                     if account_updated {
                         // An account change ends any call; the session still sees it below.
                         (router.abort_media)();
                         if let Incoming::Notification { method, params } = &incoming {
-                            let copy = Incoming::Notification {
-                                method: method.clone(),
-                                params: params.clone(),
-                            };
+                            let copy = Incoming::Notification { method: method.clone(), params: params.clone() };
                             if router.sender.try_send(copy).is_err() {
                                 router.overflow.store(true, Ordering::Release);
                             }
@@ -392,10 +352,7 @@ mod tests {
         };
         client.notify("session/cancel", Some(json!({"sessionId": "parent"})));
         let frame: Value = serde_json::from_str(&receiver.try_recv().unwrap()).unwrap();
-        assert_eq!(
-            frame,
-            json!({"jsonrpc": "2.0", "method": "session/cancel", "params": {"sessionId": "parent"}})
-        );
+        assert_eq!(frame, json!({"jsonrpc": "2.0", "method": "session/cancel", "params": {"sessionId": "parent"}}));
         assert!(frame.get("id").is_none());
         assert!(client.pending.lock().unwrap().is_empty());
     }
@@ -427,12 +384,10 @@ mod tests {
             closed: Arc::new(AtomicBool::new(true)),
             voice_router: Arc::default(),
         };
-        let result = tokio::time::timeout(
-            std::time::Duration::from_millis(100),
-            client.request("session/prompt", json!({})),
-        )
-        .await
-        .expect("a request after EOF cannot wait for another EOF");
+        let result =
+            tokio::time::timeout(std::time::Duration::from_millis(100), client.request("session/prompt", json!({})))
+                .await
+                .expect("a request after EOF cannot wait for another EOF");
         assert!(result.unwrap_err().to_string().contains("exited"));
         assert!(client.pending.lock().unwrap().is_empty());
         assert!(receiver.try_recv().is_err());
@@ -440,14 +395,10 @@ mod tests {
 
     #[test]
     fn rpc_error_preserves_string_and_structured_details() {
-        for data in [
-            json!("A prompt is already running"),
-            json!({"reason": "A prompt is already running"}),
-            json!(["busy", 7]),
-        ] {
-            let rendered = response_error(
-                &json!({"code": -32600, "message": "Invalid request", "data": data}),
-            );
+        for data in
+            [json!("A prompt is already running"), json!({"reason": "A prompt is already running"}), json!(["busy", 7])]
+        {
+            let rendered = response_error(&json!({"code": -32600, "message": "Invalid request", "data": data}));
             assert!(rendered.starts_with("Invalid request (code -32600): "));
             assert!(rendered.ends_with(data.as_str().unwrap_or(&data.to_string())));
         }
@@ -462,10 +413,7 @@ mod tests {
         ] {
             assert_eq!(response_error(&error), "busy");
         }
-        for error in [
-            json!({"code": -32600, "data": {"reason": "busy"}}),
-            json!("unstructured error"),
-        ] {
+        for error in [json!({"code": -32600, "data": {"reason": "busy"}}), json!("unstructured error")] {
             assert_eq!(response_error(&error), error.to_string());
         }
     }

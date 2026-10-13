@@ -23,19 +23,13 @@ pub(crate) struct State {
 
 impl Catalog {
     #[cfg(test)]
-    pub(crate) async fn get<F, Fut, K>(
-        &self,
-        context: K,
-        discover: F,
-    ) -> Result<Vec<Model>, HarnessError>
+    pub(crate) async fn get<F, Fut, K>(&self, context: K, discover: F) -> Result<Vec<Model>, HarnessError>
     where
         F: FnMut() -> Fut,
         Fut: Future<Output = Result<Vec<Model>, HarnessError>>,
         K: Fn() -> Result<[u8; 32], HarnessError>,
     {
-        self.get_with(false, context, discover)
-            .await
-            .map(|r| r.models)
+        self.get_with(false, context, discover).await.map(|r| r.models)
     }
 
     pub(crate) async fn get_with<F, Fut, K>(
@@ -49,8 +43,7 @@ impl Catalog {
         Fut: Future<Output = Result<Vec<Model>, HarnessError>>,
         K: Fn() -> Result<[u8; 32], HarnessError>,
     {
-        self.get_with_timeout(force, Duration::from_secs(20), context, discover)
-            .await
+        self.get_with_timeout(force, Duration::from_secs(20), context, discover).await
     }
 
     pub(crate) async fn get_with_timeout<F, Fut, K>(
@@ -69,24 +62,16 @@ impl Catalog {
         let mut state = self.state.lock().await;
         let key = context()?;
         if state.context != Some(key) {
-            *state = State {
-                context: Some(key),
-                ..State::default()
-            };
+            *state = State { context: Some(key), ..State::default() };
         }
         if state.completed_at.is_some_and(|at| at >= requested_at)
             || (!force && state.retry_at.is_some_and(|at| Instant::now() < at))
         {
-            return cached(&state).map(|models| ModelCatalog {
-                models,
-                source: "cache",
-            });
+            return cached(&state).map(|models| ModelCatalog { models, source: "cache" });
         }
         let refresh = async {
-            let mut error = CatalogFailure {
-                code: CatalogFailureCode::Failed,
-                message: "model catalog unavailable".into(),
-            };
+            let mut error =
+                CatalogFailure { code: CatalogFailureCode::Failed, message: "model catalog unavailable".into() };
             for attempt in 0..3 {
                 if attempt > 0 {
                     tokio::time::sleep(Duration::from_millis(250 * attempt)).await;
@@ -109,20 +94,16 @@ impl Catalog {
             }
             Err(error)
         };
-        let result = tokio::time::timeout(timeout, refresh)
-            .await
-            .unwrap_or_else(|_| {
-                Err(CatalogFailure {
-                    code: CatalogFailureCode::Timeout,
-                    message: "Harness model discovery timed out".into(),
-                })
-            });
+        let result = tokio::time::timeout(timeout, refresh).await.unwrap_or_else(|_| {
+            Err(CatalogFailure {
+                code: CatalogFailureCode::Timeout,
+                message: "Harness model discovery timed out".into(),
+            })
+        });
         // Never publish a response from a login that changed during the request.
         if context()? != key {
             *state = State::default();
-            return Err(HarnessError::Protocol(
-                "Harness credentials changed during model discovery; retry".into(),
-            ));
+            return Err(HarnessError::Protocol("Harness credentials changed during model discovery; retry".into()));
         }
         let source = if result.is_ok() { "live" } else { "cache" };
         state.completed_at = Some(Instant::now());
@@ -137,11 +118,7 @@ impl Catalog {
                     state.models = None;
                 }
                 tracing::warn!(code = %error.code, %error, retaining_catalog = state.models.is_some(), "Harness model refresh failed");
-                let cooldown = if !error.code.allows_stale() || needs_cooldown(&error.message) {
-                    60
-                } else {
-                    10
-                };
+                let cooldown = if !error.code.allows_stale() || needs_cooldown(&error.message) { 60 } else { 10 };
                 state.error = Some(error);
                 state.retry_at = Some(Instant::now() + Duration::from_secs(cooldown));
             }
@@ -189,13 +166,7 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
     };
     fn models(id: &str) -> Vec<Model> {
-        vec![Model {
-            id: id.into(),
-            label: id.into(),
-            description: None,
-            reasoning_levels: vec![],
-            options: vec![],
-        }]
+        vec![Model { id: id.into(), label: id.into(), description: None, reasoning_levels: vec![], options: vec![] }]
     }
     async fn expire(catalog: &Catalog) {
         catalog.state.lock().await.retry_at = None;
@@ -204,25 +175,13 @@ mod tests {
     #[tokio::test]
     async fn empty_catalogs_are_failed_and_cannot_replace_last_good() {
         let cache = Catalog::default();
-        let cold = cache
-            .get(|| Ok([1; 32]), || async { Ok(vec![]) })
-            .await
-            .unwrap_err();
+        let cold = cache.get(|| Ok([1; 32]), || async { Ok(vec![]) }).await.unwrap_err();
         assert_eq!(CatalogFailure::classify(&cold), CatalogFailureCode::Failed);
-        cache
-            .get_with(true, || Ok([1; 32]), || async { Ok(models("good")) })
-            .await
-            .unwrap();
-        let stale = cache
-            .get_with(true, || Ok([1; 32]), || async { Ok(vec![]) })
-            .await
-            .unwrap();
+        cache.get_with(true, || Ok([1; 32]), || async { Ok(models("good")) }).await.unwrap();
+        let stale = cache.get_with(true, || Ok([1; 32]), || async { Ok(vec![]) }).await.unwrap();
         assert_eq!(stale.source, "cache");
         assert_eq!(stale.models, models("good"));
-        assert_eq!(
-            cache.state.lock().await.error.as_ref().unwrap().code,
-            CatalogFailureCode::Failed
-        );
+        assert_eq!(cache.state.lock().await.error.as_ref().unwrap().code, CatalogFailureCode::Failed);
     }
 
     #[tokio::test]
@@ -234,24 +193,14 @@ mod tests {
             ("spawn ENOENT", CatalogFailureCode::MissingExecutable),
         ] {
             let cache = Catalog::default();
-            cache
-                .get(|| Ok([1; 32]), || async { Ok(models("good")) })
-                .await
-                .unwrap();
-            let result = cache
-                .get_with(
-                    true,
-                    || Ok([1; 32]),
-                    || async { Err(HarnessError::Protocol(message.into())) },
-                )
-                .await;
+            cache.get(|| Ok([1; 32]), || async { Ok(models("good")) }).await.unwrap();
+            let result =
+                cache.get_with(true, || Ok([1; 32]), || async { Err(HarnessError::Protocol(message.into())) }).await;
             if code.allows_stale() {
                 assert_eq!(result.unwrap().models, models("good"));
             } else {
                 assert_eq!(CatalogFailure::classify(&result.unwrap_err()), code);
-                let cached = cache
-                    .get(|| Ok([1; 32]), || async { panic!("cooldown") })
-                    .await;
+                let cached = cache.get(|| Ok([1; 32]), || async { panic!("cooldown") }).await;
                 assert_eq!(CatalogFailure::classify(&cached.unwrap_err()), code);
             }
         }
@@ -265,31 +214,11 @@ mod tests {
             calls.fetch_add(1, Ordering::Relaxed);
             Err(HarnessError::Protocol("401 unauthorized".into()))
         };
-        assert!(
-            cache
-                .get_with(false, || Ok([1; 32]), discover)
-                .await
-                .is_err()
-        );
-        assert!(
-            cache
-                .get_with(false, || Ok([1; 32]), discover)
-                .await
-                .is_err()
-        );
+        assert!(cache.get_with(false, || Ok([1; 32]), discover).await.is_err());
+        assert!(cache.get_with(false, || Ok([1; 32]), discover).await.is_err());
         assert_eq!(calls.load(Ordering::Relaxed), 1);
-        assert!(
-            cache
-                .get_with(true, || Ok([1; 32]), discover)
-                .await
-                .is_err()
-        );
-        assert!(
-            cache
-                .get_with(false, || Ok([2; 32]), discover)
-                .await
-                .is_err()
-        );
+        assert!(cache.get_with(true, || Ok([1; 32]), discover).await.is_err());
+        assert!(cache.get_with(false, || Ok([2; 32]), discover).await.is_err());
         assert_eq!(calls.load(Ordering::Relaxed), 3);
     }
 
@@ -302,26 +231,9 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(5)).await;
             Ok(models("good"))
         };
-        assert_eq!(
-            cache
-                .get_with(false, || Ok([1; 32]), probe)
-                .await
-                .unwrap()
-                .source,
-            "live"
-        );
-        assert_eq!(
-            cache
-                .get_with(false, || Ok([1; 32]), probe)
-                .await
-                .unwrap()
-                .source,
-            "cache"
-        );
-        let results = futures::future::join_all(
-            (0..100).map(|_| cache.get_with(true, || Ok([1; 32]), probe)),
-        )
-        .await;
+        assert_eq!(cache.get_with(false, || Ok([1; 32]), probe).await.unwrap().source, "live");
+        assert_eq!(cache.get_with(false, || Ok([1; 32]), probe).await.unwrap().source, "cache");
+        let results = futures::future::join_all((0..100).map(|_| cache.get_with(true, || Ok([1; 32]), probe))).await;
         assert!(results.iter().all(Result::is_ok));
         assert_eq!(calls.load(Ordering::Relaxed), 2);
     }
@@ -362,14 +274,8 @@ mod tests {
                 assert_eq!(result.unwrap(), expected);
             }
         }
-        assert_eq!(
-            calls.load(Ordering::Relaxed),
-            200,
-            "one success and one failed refresh per wave"
-        );
-        println!(
-            "stress: 10000 callers, 100 injected rate-limit outages, 200 probes, zero catalog collapses"
-        );
+        assert_eq!(calls.load(Ordering::Relaxed), 200, "one success and one failed refresh per wave");
+        println!("stress: 10000 callers, 100 injected rate-limit outages, 200 probes, zero catalog collapses");
     }
 
     #[tokio::test]
@@ -389,28 +295,16 @@ mod tests {
         assert!(results.iter().all(Result::is_err));
         assert_eq!(calls.load(Ordering::Relaxed), 1);
         expire(&cache).await;
-        assert_eq!(
-            cache
-                .get(|| Ok([1; 32]), || async { Ok(models("recovered")) })
-                .await
-                .unwrap(),
-            models("recovered")
-        );
+        assert_eq!(cache.get(|| Ok([1; 32]), || async { Ok(models("recovered")) }).await.unwrap(), models("recovered"));
     }
 
     #[tokio::test]
     async fn account_change_and_in_flight_login_never_leak_the_old_catalog() {
         let cache = Catalog::default();
-        cache
-            .get(|| Ok([1; 32]), || async { Ok(models("old-account")) })
-            .await
-            .unwrap();
+        cache.get(|| Ok([1; 32]), || async { Ok(models("old-account")) }).await.unwrap();
         assert!(
             cache
-                .get(
-                    || Ok([2; 32]),
-                    || async { Err(HarnessError::Protocol("invalid API key".into())) }
-                )
+                .get(|| Ok([2; 32]), || async { Err(HarnessError::Protocol("invalid API key".into())) })
                 .await
                 .is_err()
         );
@@ -428,10 +322,7 @@ mod tests {
                 .is_err()
         );
         assert_eq!(
-            cache
-                .get(|| Ok([4; 32]), || async { Ok(models("new-account")) })
-                .await
-                .unwrap(),
+            cache.get(|| Ok([4; 32]), || async { Ok(models("new-account")) }).await.unwrap(),
             models("new-account")
         );
     }
@@ -494,13 +385,7 @@ mod tests {
             std::fs::write(&status, "0").unwrap();
             assert_eq!(harness.models().await.unwrap(), baseline);
         }
-        assert_eq!(
-            std::fs::read_to_string(dir.path().join("calls"))
-                .unwrap()
-                .lines()
-                .count(),
-            41
-        );
+        assert_eq!(std::fs::read_to_string(dir.path().join("calls")).unwrap().lines().count(), 41);
         println!(
             "stress: 41 real subprocess probes, 10 malformed/empty/nonzero outages, full 256-model catalog preserved"
         );
@@ -518,10 +403,7 @@ mod tests {
     #[tokio::test]
     async fn cancelling_a_refresh_releases_the_lock_without_losing_good_data() {
         let cache = Arc::new(Catalog::default());
-        cache
-            .get(|| Ok([1; 32]), || async { Ok(models("good")) })
-            .await
-            .unwrap();
+        cache.get(|| Ok([1; 32]), || async { Ok(models("good")) }).await.unwrap();
         expire(&cache).await;
         let (tx, rx) = tokio::sync::oneshot::channel();
         let task = tokio::spawn({
@@ -543,13 +425,7 @@ mod tests {
         task.abort();
         let _ = task.await;
         assert_eq!(
-            cache
-                .get(
-                    || Ok([1; 32]),
-                    || async { Err(HarnessError::Protocol("rate limit".into())) }
-                )
-                .await
-                .unwrap(),
+            cache.get(|| Ok([1; 32]), || async { Err(HarnessError::Protocol("rate limit".into())) }).await.unwrap(),
             models("good")
         );
     }

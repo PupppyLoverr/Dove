@@ -6,16 +6,10 @@ pub(super) fn home() -> Result<PathBuf, HarnessError> {
     let cwd = std::env::current_dir()?;
     // sign-in starts in home; anchor every launch there so project cwd changes
     // cannot switch the settings and credentials used after authentication.
-    let child_cwd = std::env::var_os("HOME")
-        .map(|home| cwd.join(home))
-        .unwrap_or(cwd);
+    let child_cwd = std::env::var_os("HOME").map(|home| cwd.join(home)).unwrap_or(cwd);
     let gemini_home = std::env::var_os("GEMINI_HOME");
     let home = user_home()?;
-    resolve_home(
-        gemini_home.as_deref().map(Path::new),
-        home.as_deref(),
-        &child_cwd,
-    )
+    resolve_home(gemini_home.as_deref().map(Path::new), home.as_deref(), &child_cwd)
 }
 
 pub(super) fn resolve_home(
@@ -70,17 +64,13 @@ pub(super) fn expand_user(path: &Path, home: Option<&Path>) -> Result<PathBuf, H
     if !first.as_encoded_bytes().starts_with(b"~") {
         return Ok(path.to_path_buf());
     }
-    let name = first.to_str().ok_or_else(|| {
-        HarnessError::Protocol("cannot resolve a non-Unicode home name in GEMINI_HOME".into())
-    })?;
+    let name = first
+        .to_str()
+        .ok_or_else(|| HarnessError::Protocol("cannot resolve a non-Unicode home name in GEMINI_HOME".into()))?;
     let expanded = if name == "~" {
         home.filter(|home| !home.as_os_str().is_empty())
             .map(Path::to_path_buf)
-            .ok_or_else(|| {
-                HarnessError::Protocol(
-                    "cannot resolve ~ in GEMINI_HOME; set an absolute path".into(),
-                )
-            })?
+            .ok_or_else(|| HarnessError::Protocol("cannot resolve ~ in GEMINI_HOME; set an absolute path".into()))?
     } else {
         named_home(&name[1..])?
     };
@@ -95,9 +85,7 @@ fn named_home(name: &str) -> Result<PathBuf, HarnessError> {
 #[cfg(windows)]
 fn named_home(name: &str) -> Result<PathBuf, HarnessError> {
     let home = user_home()?.ok_or_else(|| {
-        HarnessError::Protocol(
-            "cannot resolve a named home in GEMINI_HOME; set an absolute path".into(),
-        )
+        HarnessError::Protocol("cannot resolve a named home in GEMINI_HOME; set an absolute path".into())
     })?;
     let username = std::env::var_os("USERNAME");
     if username.as_deref() == Some(std::ffi::OsStr::new(name)) {
@@ -108,9 +96,7 @@ fn named_home(name: &str) -> Result<PathBuf, HarnessError> {
             return Ok(parent.join(name));
         }
     }
-    Err(HarnessError::Protocol(
-        "cannot resolve a named home in GEMINI_HOME; set an absolute path".into(),
-    ))
+    Err(HarnessError::Protocol("cannot resolve a named home in GEMINI_HOME; set an absolute path".into()))
 }
 
 #[cfg(unix)]
@@ -158,9 +144,7 @@ pub(super) fn passwd_entry(name: Option<&str>) -> Result<(String, PathBuf), Harn
         let (username, home) = unsafe {
             let entry = entry.assume_init();
             if entry.pw_name.is_null() || entry.pw_dir.is_null() {
-                return Err(HarnessError::Protocol(
-                    "user database returned an incomplete home entry".into(),
-                ));
+                return Err(HarnessError::Protocol("user database returned an incomplete home entry".into()));
             }
             (
                 CStr::from_ptr(entry.pw_name).to_string_lossy().into_owned(),
@@ -168,9 +152,7 @@ pub(super) fn passwd_entry(name: Option<&str>) -> Result<(String, PathBuf), Harn
             )
         };
         if !home.is_absolute() {
-            return Err(HarnessError::Protocol(
-                "user database returned a non-absolute home directory".into(),
-            ));
+            return Err(HarnessError::Protocol("user database returned a non-absolute home directory".into()));
         }
         return Ok((username, home));
     }
