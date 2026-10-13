@@ -505,7 +505,7 @@ impl FilesPanel {
         let on = move |f: fn(&mut FilesPanel, &mut Context<FilesPanel>)| {
             let weak = weak.clone();
             move |_: &gpui::ClickEvent, _: &mut Window, cx: &mut gpui::App| {
-                let _ = weak.update(cx, |v, cx| f(v, cx));
+                let _ = weak.update(cx, f);
             }
         };
         div()

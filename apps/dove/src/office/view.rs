@@ -77,8 +77,8 @@ impl OfficeView {
     pub fn rebuild_grid(&mut self) {
         let Document::Xlsx(book) = &self.doc else { return };
         let Some(sheet) = book.sheets.get(self.sheet) else { return };
-        let rows = (sheet.rows as usize + 20).max(50).min(GRID_MAX_ROWS);
-        let cols = (sheet.cols as usize + 3).max(10).min(GRID_MAX_COLS);
+        let rows = (sheet.rows as usize + 20).clamp(50, GRID_MAX_ROWS);
+        let cols = (sheet.cols as usize + 3).clamp(10, GRID_MAX_COLS);
         let filled = (sheet.rows as usize).min(rows);
         let cells = (0..filled)
             .map(|r| {

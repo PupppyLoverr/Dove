@@ -104,7 +104,7 @@ fn parse_sheet(src: &str, shared: &[String]) -> (BTreeMap<(u32, u32), Cell>, u32
     for t in xml::tokens(src) {
         match t {
             Tok::Open { name, attrs, .. } if xml::local(name) == "row" => {
-                row_at = xml::attr(attrs, "r").and_then(|r| r.parse::<u32>().ok()).map_or(row_at + 1, |r| r);
+                row_at = xml::attr(attrs, "r").and_then(|r| r.parse::<u32>().ok()).unwrap_or(row_at + 1);
                 col_at = 0;
             }
             Tok::Open { name, attrs, empty, .. } if xml::local(name) == "c" => {
@@ -210,12 +210,18 @@ fn cell_xml(r: &str, style: Option<&str>, input: &str) -> String {
     }
 }
 
+/// A `<c>` element: start, end, style.
+type CellSpan = (usize, usize, Option<String>);
+/// A `<row>`: open start, open end, close start, and its cells' (col, start).
+type RowSpan = (usize, usize, Option<usize>, Vec<(u32, usize)>);
+type CellEdits = Vec<((u32, u32), String)>;
+
 /// Apply `(row, col) → input` to one worksheet's XML.
 fn edit_sheet(src: &str, edits: &[((u32, u32), String)]) -> Result<String, String> {
     let toks = xml::tokens(src);
     // Existing cells and rows with their spans.
-    let mut cells: HashMap<(u32, u32), (usize, usize, Option<String>)> = HashMap::new();
-    let mut rows: BTreeMap<u32, (usize, usize, Option<usize>, Vec<(u32, usize)>)> = BTreeMap::new();
+    let mut cells: HashMap<(u32, u32), CellSpan> = HashMap::new();
+    let mut rows: BTreeMap<u32, RowSpan> = BTreeMap::new();
     let mut sheet_data: Option<(usize, usize, Option<usize>)> = None;
     let mut open_cell: Option<((u32, u32), usize, Option<String>)> = None;
     let mut open_row: Option<u32> = None;
@@ -241,10 +247,10 @@ fn edit_sheet(src: &str, edits: &[((u32, u32), String)]) -> Result<String, Strin
                 }
             }
             Tok::Close { name, start, .. } if xml::local(name) == "row" => {
-                if let Some(r) = open_row.take() {
-                    if let Some(row) = rows.get_mut(&r) {
-                        row.2 = Some(start);
-                    }
+                if let Some(r) = open_row.take()
+                    && let Some(row) = rows.get_mut(&r)
+                {
+                    row.2 = Some(start);
                 }
             }
             Tok::Open { name, attrs, start, end, empty } if xml::local(name) == "c" => {
@@ -272,7 +278,7 @@ fn edit_sheet(src: &str, edits: &[((u32, u32), String)]) -> Result<String, Strin
     let (sd_start, sd_end, sd_close) = sheet_data.ok_or("worksheet has no sheetData")?;
     let mut splices: Vec<(usize, usize, String)> = Vec::new();
     // New rows, gathered per insertion point.
-    let mut new_rows: BTreeMap<u32, Vec<((u32, u32), String)>> = BTreeMap::new();
+    let mut new_rows: BTreeMap<u32, CellEdits> = BTreeMap::new();
     // Cells to add to existing rows: (insert position) → xml.
     let mut row_inserts: BTreeMap<(usize, u32), String> = BTreeMap::new();
     let mut expand_rows: HashMap<u32, Vec<(u32, String)>> = HashMap::new();
@@ -334,11 +340,11 @@ fn edit_sheet(src: &str, edits: &[((u32, u32), String)]) -> Result<String, Strin
 /// Make Excel recalculate formulas when the file opens.
 fn full_calc(src: &str) -> String {
     for t in xml::tokens(src) {
-        if let Tok::Open { name, start, end, .. } = t {
-            if xml::local(name) == "calcPr" {
-                let tag = xml::set_attr(&src[start..end], "fullCalcOnLoad", "1");
-                return format!("{}{tag}{}", &src[..start], &src[end..]);
-            }
+        if let Tok::Open { name, start, end, .. } = t
+            && xml::local(name) == "calcPr"
+        {
+            let tag = xml::set_attr(&src[start..end], "fullCalcOnLoad", "1");
+            return format!("{}{tag}{}", &src[..start], &src[end..]);
         }
     }
     for anchor in ["</definedNames>", "</sheets>"] {
@@ -354,10 +360,11 @@ fn full_calc(src: &str) -> String {
 fn without(src: &str, element: &str, attr: &str, needle: &str) -> String {
     let mut splices = Vec::new();
     for t in xml::tokens(src) {
-        if let Tok::Open { name, attrs, start, end, .. } = t {
-            if xml::local(name) == element && xml::attr(attrs, attr).is_some_and(|v| v.ends_with(needle)) {
-                splices.push((start, end, String::new()));
-            }
+        if let Tok::Open { name, attrs, start, end, .. } = t
+            && xml::local(name) == element
+            && xml::attr(attrs, attr).is_some_and(|v| v.ends_with(needle))
+        {
+            splices.push((start, end, String::new()));
         }
     }
     xml::splice(src, splices).unwrap_or_else(|_| src.to_string())
@@ -367,7 +374,7 @@ fn without(src: &str, element: &str, attr: &str, needle: &str) -> String {
 /// the user typed (`=…` for a formula).
 pub fn save(path: &Path, edits: &[(String, (u32, u32), String)]) -> Result<(), String> {
     let pkg = Package::open(path)?;
-    let mut by_part: HashMap<&str, Vec<((u32, u32), String)>> = HashMap::new();
+    let mut by_part: HashMap<&str, CellEdits> = HashMap::new();
     for (part, at, input) in edits {
         by_part.entry(part.as_str()).or_default().push((*at, input.clone()));
     }
@@ -474,10 +481,10 @@ impl Book {
                 return format!("={f}");
             }
         }
-        if cell.number {
-            if let Ok(n) = cell.value.parse::<f64>() {
-                return fmt_num(n);
-            }
+        if cell.number
+            && let Ok(n) = cell.value.parse::<f64>()
+        {
+            return fmt_num(n);
         }
         cell.value.clone()
     }

@@ -143,10 +143,10 @@ pub fn load(path: &Path) -> Result<Docx, String> {
                 }
             }
             Tok::Open { name: "w:numId", attrs, .. } => {
-                if let Some(top) = stack.last_mut() {
-                    if xml::attr(attrs, "w:val").as_deref() != Some("0") {
-                        top.2.get_or_insert(0);
-                    }
+                if let Some(top) = stack.last_mut()
+                    && xml::attr(attrs, "w:val").as_deref() != Some("0")
+                {
+                    top.2.get_or_insert(0);
                 }
             }
             Tok::Open { name: "w:jc", attrs, .. } if !in_rpr => {
@@ -160,10 +160,10 @@ pub fn load(path: &Path) -> Result<Docx, String> {
             }
             Tok::Close { name: "w:r", .. } => {
                 in_run = false;
-                if let Some(top) = stack.last() {
-                    if !run.text.is_empty() {
-                        paras[top.0].runs.push(std::mem::take(&mut run));
-                    }
+                if let Some(top) = stack.last()
+                    && !run.text.is_empty()
+                {
+                    paras[top.0].runs.push(std::mem::take(&mut run));
                 }
             }
             Tok::Open { name: "w:rPr", empty: false, .. } => in_rpr = true,
