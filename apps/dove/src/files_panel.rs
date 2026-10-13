@@ -8,9 +8,9 @@ use std::sync::Arc;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, AppContext as _, Context, Entity, EventEmitter, InteractiveElement as _, IntoElement, ParentElement as _,
-    Render, ScrollStrategy, SharedString, StatefulInteractiveElement as _, Styled as _, StyledImage as _, StyledText,
-    Subscription, TextRun, UniformListScrollHandle, Window, div, px, uniform_list,
+    AnyElement, AppContext as _, Context, Entity, EventEmitter, InteractiveElement as _, IntoElement,
+    ParentElement as _, Render, ScrollStrategy, SharedString, StatefulInteractiveElement as _, Styled as _,
+    StyledImage as _, StyledText, Subscription, TextRun, UniformListScrollHandle, Window, div, px, uniform_list,
 };
 use gpui_base::input::{Input, InputEvent, InputState};
 use zeron_syntax::{HighlightRequest, HighlightedDocument};
@@ -19,6 +19,7 @@ use crate::assets::{icon, icons};
 use crate::kit;
 use crate::markdown;
 use crate::markdown_extra;
+use crate::office::{self, view::OfficeView, view::Target};
 use crate::theme::Theme;
 use crate::ui;
 
@@ -40,6 +41,7 @@ fn is_markdown(path: &str) -> bool {
 /// Files bigger than this preview as plain text.
 const HIGHLIGHT_MAX: usize = 512 * 1024;
 const PREVIEW_MAX: usize = 4 * 1024 * 1024;
+const OFFICE_MAX: u64 = 96 * 1024 * 1024;
 
 #[derive(Clone)]
 struct Entry {
@@ -53,6 +55,7 @@ enum PreviewKind {
     Text,
     Markdown,
     Image,
+    Office(office::Kind),
 }
 
 struct Preview {
@@ -64,6 +67,7 @@ struct Preview {
     error: Option<String>,
     kind: PreviewKind,
     editing: bool,
+    office: Option<OfficeView>,
 }
 
 impl EventEmitter<FilesEvent> for FilesPanel {}
@@ -78,6 +82,13 @@ pub struct FilesPanel {
     preview: Option<Preview>,
     preview_scroll: UniformListScrollHandle,
     editor: Option<Entity<InputState>>,
+    /// Office documents: the selected element's text, and an instruction
+    /// for the agent.
+    office_input: Option<Entity<InputState>>,
+    agent_input: Option<Entity<InputState>>,
+    office_status: Option<String>,
+    office_width: std::rc::Rc<std::cell::Cell<f32>>,
+    _office_subs: Vec<Subscription>,
     _load: Option<gpui::Task<()>>,
     _sub: Subscription,
 }
@@ -107,6 +118,11 @@ impl FilesPanel {
             preview: None,
             preview_scroll: UniformListScrollHandle::new(),
             editor: None,
+            office_input: None,
+            agent_input: None,
+            office_status: None,
+            office_width: Default::default(),
+            _office_subs: Vec::new(),
             _load: None,
             _sub,
         }
@@ -211,7 +227,10 @@ impl FilesPanel {
             .strip_prefix(&root)
             .map(|p| p.to_string_lossy().replace('\\', "/"))
             .unwrap_or_else(|_| path.to_string());
-        let kind = if is_image(&rel) {
+        let office_kind = office::Kind::of(&rel);
+        let kind = if let Some(k) = office_kind {
+            PreviewKind::Office(k)
+        } else if is_image(&rel) {
             PreviewKind::Image
         } else if is_markdown(&rel) {
             PreviewKind::Markdown
@@ -227,8 +246,33 @@ impl FilesPanel {
             error: None,
             kind,
             editing: false,
+            office: None,
         });
         self.editor = None;
+        self.office_status = None;
+        if let Some(k) = office_kind {
+            let work = cx.background_spawn(async move {
+                let size = std::fs::metadata(&full).map_err(|e| e.to_string())?.len();
+                if size > OFFICE_MAX {
+                    return Err("This document is too large to preview".to_string());
+                }
+                office::load(&full, k)
+            });
+            self._load = Some(cx.spawn(async move |this, cx| {
+                let result = work.await;
+                let _ = this.update(cx, |p, cx| {
+                    if let Some(preview) = p.preview.as_mut() {
+                        match result {
+                            Ok(doc) => preview.office = Some(OfficeView::new(doc, p.office_width.clone())),
+                            Err(e) => preview.error = Some(e),
+                        }
+                    }
+                    cx.notify();
+                });
+            }));
+            cx.notify();
+            return;
+        }
         let work = cx.background_spawn(async move {
             let bytes = std::fs::read(&full).map_err(|e| e.to_string())?;
             if bytes.len() > PREVIEW_MAX {
@@ -307,6 +351,9 @@ impl FilesPanel {
 
     fn ask_agent(&mut self, cx: &mut Context<Self>) {
         let Some(p) = self.preview.as_ref() else { return };
+        if matches!(p.kind, PreviewKind::Office(_)) {
+            return self.office_ask(cx);
+        }
         let instruction = self.editor.as_ref().map(|e| e.read(cx).value().to_string()).unwrap_or_default();
         let msg = if instruction.trim().is_empty() {
             format!("Edit `{}`. Propose a precise patch.", p.path)
@@ -316,7 +363,217 @@ impl FilesPanel {
         cx.emit(FilesEvent::AskAgent(msg));
     }
 
-    fn render_preview(&self, t: &Theme, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+    fn office_view(&mut self) -> Option<&mut OfficeView> {
+        self.preview.as_mut().and_then(|p| p.office.as_mut())
+    }
+
+    fn ensure_office_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.office_input.is_some() {
+            return;
+        }
+        let style = ui::input_style(Theme::of(cx));
+        let make = |placeholder: &'static str, window: &mut Window, cx: &mut Context<Self>| {
+            let style = style.clone();
+            cx.new(|cx| {
+                let mut s = InputState::new(window, cx).placeholder(placeholder);
+                s.set_editor_style(style);
+                s
+            })
+        };
+        let edit = make("Select text, a cell or a field to edit it", window, cx);
+        let ask = make("Ask the agent to change this document", window, cx);
+        self._office_subs = vec![
+            cx.subscribe(&edit, |this, _, ev: &InputEvent, cx| {
+                if matches!(ev, InputEvent::PressEnter { .. }) {
+                    this.office_apply(cx);
+                }
+            }),
+            cx.subscribe(&ask, |this, _, ev: &InputEvent, cx| {
+                if matches!(ev, InputEvent::PressEnter { .. }) {
+                    this.office_ask(cx);
+                }
+            }),
+        ];
+        self.office_input = Some(edit);
+        self.agent_input = Some(ask);
+    }
+
+    /// Select a paragraph, slide text, cell or form field for editing.
+    pub(crate) fn office_select(&mut self, target: Target, window: &mut Window, cx: &mut Context<Self>) {
+        let input = self.office_input.clone();
+        let Some(view) = self.office_view() else { return };
+        let text = view.text_of(&target);
+        view.selected = Some(target);
+        if let Some(input) = input {
+            input.update(cx, |s, cx| {
+                s.set_value(text, window, cx);
+                s.focus(window, cx);
+            });
+        }
+        cx.notify();
+    }
+
+    /// Commit the edit field into the selected element (in memory).
+    fn office_apply(&mut self, cx: &mut Context<Self>) {
+        let Some(text) = self.office_input.as_ref().map(|i| i.read(cx).value().to_string()) else { return };
+        let Some(view) = self.office_view() else { return };
+        let Some(target) = view.selected.clone() else { return };
+        view.apply(target, text);
+        self.office_status = None;
+        cx.notify();
+    }
+
+    pub(crate) fn office_toggle(&mut self, field: usize, cx: &mut Context<Self>) {
+        if let Some(view) = self.office_view() {
+            view.toggle_field(field);
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn office_sheet(&mut self, sheet: usize, cx: &mut Context<Self>) {
+        if let Some(view) = self.office_view() {
+            view.sheet = sheet;
+            view.selected = None;
+            view.rebuild_grid();
+            cx.notify();
+        }
+    }
+
+    fn office_save(&mut self, cx: &mut Context<Self>) {
+        // Typed but not yet applied: apply it first.
+        self.office_apply(cx);
+        let Some(root) = self.root.clone() else { return };
+        let Some(p) = self.preview.as_ref() else { return };
+        let Some(view) = p.office.as_ref() else { return };
+        let rel = p.path.clone();
+        match view.save(&root.join(&rel)) {
+            Ok(()) => {
+                self.open_path(&rel, None, cx);
+                self.office_status = Some("Saved".into());
+            }
+            Err(e) => self.office_status = Some(format!("Could not save: {e}")),
+        }
+        cx.notify();
+    }
+
+    fn office_revert(&mut self, cx: &mut Context<Self>) {
+        if let Some(rel) = self.preview.as_ref().map(|p| p.path.clone()) {
+            self.open_path(&rel, None, cx);
+        }
+    }
+
+    /// Hand the document (and the selection, if any) to the thread's agent.
+    fn office_ask(&mut self, cx: &mut Context<Self>) {
+        let Some(p) = self.preview.as_ref() else { return };
+        let PreviewKind::Office(kind) = p.kind else { return };
+        let instruction = self.agent_input.as_ref().map(|i| i.read(cx).value().to_string()).unwrap_or_default();
+        let skill = kind.skill();
+        let mut msg = format!(
+            "Edit `{}` using Dove's {skill} skill (call the dove_skills tool with name \"{skill}\" for its instructions and script).",
+            p.path
+        );
+        if let Some((view, sel)) = p.office.as_ref().and_then(|v| v.selected.as_ref().map(|s| (v, s))) {
+            msg.push_str(&format!("\n\nSelected in Dove: {} — \"{}\"", view.label(sel), view.text_of(sel)));
+        }
+        msg.push_str("\n\n");
+        msg.push_str(if instruction.trim().is_empty() {
+            "Propose a precise improvement and make it."
+        } else {
+            instruction.trim()
+        });
+        cx.emit(FilesEvent::AskAgent(msg));
+    }
+
+    fn office_bar(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let view = self.preview.as_ref().and_then(|p| p.office.as_ref());
+        let label = view.and_then(|v| v.selected.as_ref().map(|s| v.label(s)));
+        let dirty = view.map_or(0, OfficeView::dirty);
+        let field = |input: &Entity<InputState>| {
+            div()
+                .flex_1()
+                .min_w_0()
+                .h(px(28.0))
+                .px(px(8.0))
+                .flex()
+                .items_center()
+                .rounded(px(7.0))
+                .bg(t.wash(0.05))
+                .border_1()
+                .border_color(t.border)
+                .text_size(px(13.0))
+                .child(Input::new(input))
+        };
+        let weak = cx.weak_entity();
+        let on = move |f: fn(&mut FilesPanel, &mut Context<FilesPanel>)| {
+            let weak = weak.clone();
+            move |_: &gpui::ClickEvent, _: &mut Window, cx: &mut gpui::App| {
+                let _ = weak.update(cx, f);
+            }
+        };
+        div()
+            .flex_none()
+            .px(px(10.0))
+            .py(px(8.0))
+            .flex()
+            .flex_col()
+            .gap(px(6.0))
+            .border_t_1()
+            .border_color(t.border)
+            .when_some(label.zip(self.office_input.as_ref()), |d, (label, input)| {
+                d.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.0))
+                        .child(
+                            div()
+                                .flex_none()
+                                .max_w(px(140.0))
+                                .truncate()
+                                .text_size(px(12.0))
+                                .text_color(t.text_faint)
+                                .child(label),
+                        )
+                        .child(field(input))
+                        .child(ui::button_ghost("office-apply", "Apply", t).on_click(on(Self::office_apply))),
+                )
+            })
+            .when_some(self.agent_input.as_ref(), |d, input| {
+                d.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.0))
+                        .child(field(input))
+                        .child(ui::button_ghost("office-ask", "Ask agent", t).on_click(on(Self::office_ask))),
+                )
+            })
+            .when(dirty > 0 || self.office_status.is_some(), |d| {
+                d.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.0))
+                        .child(div().flex_1().min_w_0().truncate().text_size(px(12.0)).text_color(t.text_muted).child(
+                            if dirty > 0 {
+                                format!("{dirty} unsaved {}", if dirty == 1 { "change" } else { "changes" })
+                            } else {
+                                self.office_status.clone().unwrap_or_default()
+                            },
+                        ))
+                        .when(dirty > 0, |d| {
+                            d.child(ui::button_ghost("office-revert", "Revert", t).on_click(on(Self::office_revert)))
+                                .child(ui::button_primary("office-save", "Save", t).on_click(on(Self::office_save)))
+                        }),
+                )
+            })
+            .into_any_element()
+    }
+
+    fn render_preview(&mut self, t: &Theme, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        if matches!(self.preview.as_ref().map(|p| &p.kind), Some(PreviewKind::Office(_))) {
+            self.ensure_office_inputs(window, cx);
+        }
         let p = self.preview.as_ref().expect("preview open");
         let full = self.root.as_ref().map(|r| r.join(&p.path));
         let header = div()
@@ -342,14 +599,16 @@ impl FilesPanel {
                     .font_family(t.font_mono.clone())
                     .child(p.path.clone()),
             )
-            .when(!matches!(p.kind, PreviewKind::Image), |d| {
+            .when(!matches!(p.kind, PreviewKind::Image | PreviewKind::Office(_)), |d| {
                 d.child(ui::icon_button("prev-edit", icons::PEN, "Edit this file", t, {
                     let weak = cx.weak_entity();
                     move |_, window, cx| {
                         let _ = weak.update(cx, |v, cx| v.begin_edit(window, cx));
                     }
                 }))
-                .child(ui::icon_button("prev-ask", icons::BOT, "Ask the agent to edit", t, {
+            })
+            .when(!matches!(p.kind, PreviewKind::Image), |d| {
+                d.child(ui::icon_button("prev-ask", icons::BOT, "Ask the agent to edit", t, {
                     let weak = cx.weak_entity();
                     move |_, _, cx| {
                         let _ = weak.update(cx, |v, cx| v.ask_agent(cx));
@@ -393,12 +652,28 @@ impl FilesPanel {
                 )
                 .into_any_element();
         }
+        let office_kind = matches!(p.kind, PreviewKind::Office(_));
         let body: AnyElement = if let Some(e) = &p.error {
             kit::empty_state(icons::DOCUMENT, "No preview", e, t).into_any_element()
+        } else if office_kind {
+            match p.office.as_ref() {
+                Some(view) => office::view::render(view, t, cx),
+                None => div()
+                    .size_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_size(px(12.5))
+                    .text_color(t.text_faint)
+                    .child("Opening…")
+                    .into_any_element(),
+            }
         } else if matches!(p.kind, PreviewKind::Image) {
             let src = full.as_ref().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
             let picture = markdown_extra::preview_image(&src)
-                .map(|img| gpui::img(img).max_w_full().max_h_full().object_fit(gpui::ObjectFit::Contain).into_any_element())
+                .map(|img| {
+                    gpui::img(img).max_w_full().max_h_full().object_fit(gpui::ObjectFit::Contain).into_any_element()
+                })
                 .unwrap_or_else(|| {
                     gpui::img(SharedString::from(src))
                         .max_w_full()
@@ -500,6 +775,7 @@ impl FilesPanel {
             .flex_col()
             .child(header)
             .child(div().flex_1().min_h_0().flex().flex_col().child(body))
+            .when(office_kind && p.error.is_none(), |d| d.child(self.office_bar(t, cx)))
             .into_any_element()
     }
 }
