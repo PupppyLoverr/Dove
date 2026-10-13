@@ -17,7 +17,7 @@
   --bg-2: #111111;
   --ink: #f4f4f4;
   --dim: #a3a3a3;
-  --faint: #6b6b6b;
+  --faint: #8c8c8c;
   --line: rgba(255, 255, 255, .09);
   --line-2: rgba(255, 255, 255, .16);
   --glass: rgba(255, 255, 255, .045);
@@ -34,7 +34,7 @@
   --bg-2: #ffffff;
   --ink: #0b0b0b;
   --dim: #555555;
-  --faint: #8a8a8a;
+  --faint: #6e6e6e;
   --line: rgba(0, 0, 0, .08);
   --line-2: rgba(0, 0, 0, .14);
   --glass: rgba(255, 255, 255, .6);
@@ -228,7 +228,7 @@ details a { text-decoration: underline; text-underline-offset: 3px; }
 .footer-brand { display: flex; flex-direction: column; gap: 10px; }
 .footer-links { display: flex; gap: 64px; }
 .footer-links div { display: flex; flex-direction: column; gap: 10px; font-size: 14px; color: var(--dim); }
-.footer-links h4 { font-size: 13px; font-weight: 520; color: var(--ink); margin-bottom: 4px; }
+.footer-links h3 { font-size: 13px; font-weight: 520; color: var(--ink); margin-bottom: 4px; }
 .footer-links a:hover { color: var(--ink); }
 .footer-base { margin-top: 48px; }
 
@@ -268,3 +268,7 @@ details a { text-decoration: underline; text-underline-offset: 3px; }
   .nav .btn-sm { display: none; }
   .phone { width: 270px; }
 }
+
+.rise { animation: rise .9s var(--ease) .1s both; }
+@keyframes rise { from { opacity: 0; transform: translateY(18px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .rise { animation: none; } }
