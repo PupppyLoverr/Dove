@@ -44,6 +44,8 @@ jobs:
             libfontconfig-dev \
             libssl-dev \
             libasound2-dev \
+            libwebkit2gtk-4.1-dev \
+            libjson-glib-dev \
             pkg-config
 
       - name: Configure git identity for tests
