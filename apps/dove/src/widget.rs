@@ -305,11 +305,8 @@ pub struct State {
 
 impl State {
     pub fn new(spec: Spec) -> Self {
-        let mut values: Vec<(String, String)> = spec
-            .fields
-            .iter()
-            .filter_map(|f| f.choices.first().cloned().map(|c| (f.id.clone(), c)))
-            .collect();
+        let mut values: Vec<(String, String)> =
+            spec.fields.iter().filter_map(|f| f.choices.first().cloned().map(|c| (f.id.clone(), c))).collect();
         collect_values(&spec.blocks, &mut values);
         Self { spec, values, sent: None }
     }
@@ -1122,7 +1119,9 @@ fn render_item<V: 'static>(
                                         .border_color(color)
                                         .when(glyph.is_some(), |d| d.bg(color))
                                         .when(active, |d| d.child(div().size(px(8.0)).rounded_full().bg(color)))
-                                        .when_some(glyph, |d, g| d.child(icon(g).size(px(11.0)).text_color(gpui::white()))),
+                                        .when_some(glyph, |d, g| {
+                                            d.child(icon(g).size(px(11.0)).text_color(gpui::white()))
+                                        }),
                                 )
                                 .when(i < last, |d| d.child(div().w(px(1.5)).flex_1().min_h(px(14.0)).bg(t.border))),
                         )
@@ -1137,12 +1136,22 @@ fn render_item<V: 'static>(
                                 .child(
                                     div()
                                         .text_size(px(13.0))
-                                        .font_weight(if active { gpui::FontWeight::SEMIBOLD } else { gpui::FontWeight::NORMAL })
-                                        .text_color(if step.status == "todo" || step.status.is_empty() { t.text_muted } else { t.text })
+                                        .font_weight(if active {
+                                            gpui::FontWeight::SEMIBOLD
+                                        } else {
+                                            gpui::FontWeight::NORMAL
+                                        })
+                                        .text_color(if step.status == "todo" || step.status.is_empty() {
+                                            t.text_muted
+                                        } else {
+                                            t.text
+                                        })
                                         .child(step.title.clone()),
                                 )
                                 .when(!step.detail.is_empty(), |d| {
-                                    d.child(div().text_size(px(12.0)).text_color(t.text_faint).child(step.detail.clone()))
+                                    d.child(
+                                        div().text_size(px(12.0)).text_color(t.text_faint).child(step.detail.clone()),
+                                    )
                                 }),
                         ),
                 );
@@ -1178,13 +1187,23 @@ fn render_item<V: 'static>(
                         .aria_selected(on)
                         .aria_label(SharedString::from(c.title.clone()))
                         .when(on, |d| d.border_color(t.accent).bg(t.accent.opacity(0.08)))
-                        .when(!on, |d| d.border_color(t.border).hover(|s| s.bg(t.wash(0.04)).border_color(t.border_strong)))
+                        .when(!on, |d| {
+                            d.border_color(t.border).hover(|s| s.bg(t.wash(0.04)).border_color(t.border_strong))
+                        })
                         .child(
                             div()
                                 .flex()
                                 .items_center()
                                 .gap(px(6.0))
-                                .child(div().flex_1().min_w_0().text_size(px(13.5)).font_weight(gpui::FontWeight::SEMIBOLD).text_color(t.text).child(c.title.clone()))
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .text_size(px(13.5))
+                                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                                        .text_color(t.text)
+                                        .child(c.title.clone()),
+                                )
                                 .when(!c.badge.is_empty(), |d| {
                                     d.child(
                                         div()
@@ -1202,9 +1221,17 @@ fn render_item<V: 'static>(
                                 .when(on, |d| d.child(icon(icons::CIRCLE_CHECK).size(px(15.0)).text_color(t.accent))),
                         )
                         .when(!c.body.is_empty(), |d| {
-                            d.child(div().text_size(px(12.0)).line_height(px(17.0)).text_color(t.text_muted).child(c.body.clone()))
+                            d.child(
+                                div()
+                                    .text_size(px(12.0))
+                                    .line_height(px(17.0))
+                                    .text_color(t.text_muted)
+                                    .child(c.body.clone()),
+                            )
                         })
-                        .on_click(move |_, window, cx| emit(&w, &h, Event::Set { id: fid.clone(), value: val.clone() }, window, cx)),
+                        .on_click(move |_, window, cx| {
+                            emit(&w, &h, Event::Set { id: fid.clone(), value: val.clone() }, window, cx)
+                        }),
                 );
             }
             div()
@@ -1271,7 +1298,9 @@ fn render_item<V: 'static>(
                         .when(on, |d| d.bg(t.surface_raised).text_color(t.text).shadow_sm())
                         .when(!on, |d| d.text_color(t.text_muted).hover(|s| s.text_color(t.text)))
                         .child(pane.label.clone())
-                        .on_click(move |_, window, cx| emit(&w, &h, Event::Set { id: fid.clone(), value: val.clone() }, window, cx)),
+                        .on_click(move |_, window, cx| {
+                            emit(&w, &h, Event::Set { id: fid.clone(), value: val.clone() }, window, cx)
+                        }),
                 );
             }
             let mut body = div().flex().flex_col().gap(px(12.0));
