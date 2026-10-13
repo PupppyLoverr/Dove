@@ -41,6 +41,49 @@ pub struct Engine {
     drivers: Arc<parking_lot::Mutex<HashMap<TaskId, Driver>>>,
     /// Live model catalogs; see [`Engine::models`].
     live_models: Arc<LiveModels>,
+    /// One pre-started session, adopted by the next matching start.
+    warm: Arc<parking_lot::Mutex<Option<Warm>>>,
+}
+
+/// How long a pre-started session waits for its first message.
+const WARM_TTL: std::time::Duration = std::time::Duration::from_secs(240);
+
+/// What a pre-started session must match to be adopted.
+#[derive(Debug, Clone, PartialEq)]
+struct WarmKey {
+    kind: HarnessKind,
+    cwd: PathBuf,
+    model: Option<String>,
+    reasoning: Option<ReasoningLevel>,
+    options: Vec<(String, String)>,
+    mode: PermissionMode,
+    resume: Option<String>,
+}
+
+impl WarmKey {
+    fn of(spec: &SessionSpec) -> Self {
+        Self {
+            kind: spec.kind,
+            cwd: spec.cwd.clone(),
+            model: spec.model.clone(),
+            reasoning: spec.reasoning,
+            options: spec.model_options.clone(),
+            mode: spec.permission_mode,
+            resume: spec.resume.clone(),
+        }
+    }
+}
+
+struct Warm {
+    key: WarmKey,
+    handle: SessionHandle,
+    at: std::time::Instant,
+}
+
+/// Whether a harness boots before the first message (its driver can hold
+/// the prompt back while the CLI starts).
+pub fn prewarms(kind: HarnessKind) -> bool {
+    kind == HarnessKind::ClaudeCode
 }
 
 /// Who runs a session: Dove's structured (chat) driver or the agent's own
@@ -177,6 +220,7 @@ impl Engine {
             shared: Default::default(),
             drivers: Default::default(),
             live_models: Default::default(),
+            warm: Default::default(),
         }))
     }
 
@@ -302,8 +346,87 @@ impl Engine {
             prompt: Some(new.prompt),
             fork: false,
         };
+        // A matching pre-started session takes the prompt straight away.
+        if let Some(handle) = self.take_warm(&spec) {
+            if let Some(prompt) = spec.prompt.clone() {
+                if handle.send(Command::Send(prompt)) {
+                    let live = self.attach(&task, handle)?;
+                    return Ok((task, live));
+                }
+            }
+        }
         let live = self.launch(&task, spec)?;
         Ok((task, live))
+    }
+
+    /// Start the harness for a thread the user is about to send in `cwd`,
+    /// so the first reply does not wait on the agent's cold start (process,
+    /// settings, MCP servers). Cheap to call repeatedly: a warm session with
+    /// the same settings is kept; a different one replaces it.
+    pub fn prewarm(&self, kind: HarnessKind, cwd: &std::path::Path, run: &RunSettings) {
+        let Ok(program) = self.program(kind) else { return };
+        self.warm_up(SessionSpec {
+            kind,
+            program,
+            cwd: cwd.to_path_buf(),
+            model: run.model.clone(),
+            reasoning: run.reasoning,
+            model_options: run.options(),
+            permission_mode: run.mode,
+            resume: None,
+            prompt: None,
+            fork: false,
+        });
+    }
+
+    /// Pre-start a reopened thread's agent (resuming its session) while a
+    /// follow-up is typed. No-op while the thread is already live.
+    pub fn prewarm_resume(&self, task: &Task, project: &Project, run: &RunSettings) {
+        if task.native_session_id.is_none() || self.drivers.lock().contains_key(&task.id) {
+            return;
+        }
+        if let Ok(spec) = self.resume_spec(task, project, None, run) {
+            self.warm_up(spec);
+        }
+    }
+
+    fn warm_up(&self, spec: SessionSpec) {
+        if !prewarms(spec.kind) || self.store.setting("prewarm").as_deref() == Some("false") {
+            return;
+        }
+        let key = WarmKey::of(&spec);
+        let mut warm = self.warm.lock();
+        if warm.as_ref().is_some_and(|w| w.key == key && w.at.elapsed() < WARM_TTL && w.handle.is_alive()) {
+            return;
+        }
+        // Dropping the old handle kills its process.
+        *warm = None;
+        let Ok(handle) = dove_harness::spawn(self.rt.handle(), spec) else { return };
+        let at = std::time::Instant::now();
+        *warm = Some(Warm { key, handle, at });
+        drop(warm);
+        // Expire it if nobody sends.
+        let slot = self.warm.clone();
+        self.rt.spawn(async move {
+            tokio::time::sleep(WARM_TTL).await;
+            let mut w = slot.lock();
+            if w.as_ref().is_some_and(|w| w.at == at) {
+                *w = None;
+            }
+        });
+    }
+
+    /// Stop any pre-started session (settings changed, app quitting).
+    pub fn cool(&self) {
+        *self.warm.lock() = None;
+    }
+
+    fn take_warm(&self, spec: &SessionSpec) -> Option<SessionHandle> {
+        let mut warm = self.warm.lock();
+        let ok = warm.as_ref().is_some_and(|w| {
+            w.key == WarmKey::of(spec) && w.at.elapsed() < WARM_TTL && w.handle.is_alive() && w.handle.events.is_empty()
+        });
+        if ok { warm.take().map(|w| w.handle) } else { None }
     }
 
     /// Re-attach to a task's harness session, optionally with a new message.
@@ -314,7 +437,19 @@ impl Engine {
         prompt: Option<String>,
         run: RunSettings,
     ) -> Result<LiveSession> {
-        let spec = SessionSpec {
+        let spec = self.resume_spec(task, project, prompt, &run)?;
+        if let Some(handle) = self.take_warm(&spec) {
+            if let Some(prompt) = spec.prompt.clone() {
+                if handle.send(Command::Send(prompt)) {
+                    return self.attach(task, handle);
+                }
+            }
+        }
+        self.launch(task, spec)
+    }
+
+    fn resume_spec(&self, task: &Task, project: &Project, prompt: Option<String>, run: &RunSettings) -> Result<SessionSpec> {
+        Ok(SessionSpec {
             kind: task.harness,
             program: self.program(task.harness)?,
             cwd: task.worktree.clone().unwrap_or_else(|| project.path.clone()),
@@ -325,8 +460,7 @@ impl Engine {
             resume: task.native_session_id.clone(),
             prompt,
             fork: false,
-        };
-        self.launch(task, spec)
+        })
     }
 
     /// A Kanban draft: a thread with a prompt that has not started.
@@ -641,6 +775,22 @@ impl Engine {
                 return Err(e);
             }
         };
+        Ok(self.record(task, handle))
+    }
+
+    /// Adopt an already running (pre-started) session for `task`.
+    fn attach(&self, task: &Task, handle: SessionHandle) -> Result<LiveSession> {
+        {
+            let mut d = self.drivers.lock();
+            if d.get(&task.id) == Some(&Driver::Terminal) {
+                anyhow::bail!("this thread is open in the terminal; switch back to chat first");
+            }
+            d.insert(task.id, Driver::Chat);
+        }
+        Ok(self.record(task, handle))
+    }
+
+    fn record(&self, task: &Task, handle: SessionHandle) -> LiveSession {
         let capabilities = handle.capabilities;
         let (tx, rx) = flume::unbounded();
         let (cmd_tx, cmd_rx) = flume::unbounded::<Command>();
@@ -655,7 +805,7 @@ impl Engine {
             drivers: self.drivers.clone(),
         };
         self.rt.spawn(recorder.run(handle, tx, cmd_rx));
-        Ok(LiveSession { task: task.id, events: rx, commands: cmd_tx, capabilities })
+        LiveSession { task: task.id, events: rx, commands: cmd_tx, capabilities }
     }
 }
 

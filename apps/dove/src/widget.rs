@@ -24,6 +24,9 @@ use crate::ui;
 
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Spec {
+    /// Stable id: showing a card with the same id again updates it in place.
+    #[serde(default)]
+    pub id: String,
     #[serde(default)]
     pub title: String,
     #[serde(default)]
@@ -66,6 +69,33 @@ pub struct Stat {
 pub struct Datum {
     pub label: String,
     pub value: f64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct Step {
+    pub title: String,
+    #[serde(default)]
+    pub detail: String,
+    /// done | active | todo | failed
+    #[serde(default)]
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct OptionCard {
+    pub id: String,
+    pub title: String,
+    #[serde(default)]
+    pub body: String,
+    #[serde(default)]
+    pub badge: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct Pane {
+    pub label: String,
+    #[serde(default)]
+    pub blocks: Vec<Item>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -161,6 +191,32 @@ pub enum Item {
         value: Option<String>,
     },
     Divider,
+    Timeline {
+        #[serde(default)]
+        title: String,
+        steps: Vec<Step>,
+    },
+    /// Selectable option cards (pick one).
+    Cards {
+        id: String,
+        #[serde(default)]
+        label: String,
+        items: Vec<OptionCard>,
+        value: Option<String>,
+    },
+    /// A 100% stacked bar with a legend.
+    Breakdown {
+        #[serde(default)]
+        title: String,
+        items: Vec<Datum>,
+        #[serde(default)]
+        unit: String,
+    },
+    /// Switchable sections; the selected tab is the control's value.
+    Tabs {
+        id: String,
+        tabs: Vec<Pane>,
+    },
     #[serde(other)]
     Unknown,
 }
@@ -211,6 +267,7 @@ impl Spec {
                 | Item::Toggle { id: i, label, .. }
                 | Item::Number { id: i, label, .. }
                 | Item::Choice { id: i, label, .. }
+                | Item::Cards { id: i, label, .. }
                     if i == id && !label.is_empty() =>
                 {
                     return label.clone();
@@ -250,20 +307,7 @@ impl State {
             .iter()
             .filter_map(|f| f.choices.first().cloned().map(|c| (f.id.clone(), c)))
             .collect();
-        for b in &spec.blocks {
-            match b {
-                Item::Checklist { id, items, .. } => values.push((
-                    id.clone(),
-                    items.iter().filter(|c| c.checked).map(|c| c.label.clone()).collect::<Vec<_>>().join(", "),
-                )),
-                Item::Toggle { id, value, .. } => values.push((id.clone(), if *value { "on" } else { "off" }.into())),
-                Item::Number { id, value, .. } => values.push((id.clone(), number(*value))),
-                Item::Choice { id, choices, value, .. } => {
-                    values.push((id.clone(), value.clone().or_else(|| choices.first().cloned()).unwrap_or_default()))
-                }
-                _ => {}
-            }
-        }
+        collect_values(&spec.blocks, &mut values);
         Self { spec, values, sent: None }
     }
 
@@ -281,6 +325,33 @@ impl State {
 
     fn checked(&self, id: &str) -> Vec<String> {
         self.get(id).split(", ").filter(|s| !s.is_empty()).map(str::to_string).collect()
+    }
+}
+
+fn collect_values(blocks: &[Item], values: &mut Vec<(String, String)>) {
+    for b in blocks {
+        match b {
+            Item::Checklist { id, items, .. } => values.push((
+                id.clone(),
+                items.iter().filter(|c| c.checked).map(|c| c.label.clone()).collect::<Vec<_>>().join(", "),
+            )),
+            Item::Toggle { id, value, .. } => values.push((id.clone(), if *value { "on" } else { "off" }.into())),
+            Item::Number { id, value, .. } => values.push((id.clone(), number(*value))),
+            Item::Choice { id, choices, value, .. } => {
+                values.push((id.clone(), value.clone().or_else(|| choices.first().cloned()).unwrap_or_default()))
+            }
+            Item::Cards { id, items, value, .. } => values.push((
+                id.clone(),
+                value.clone().or_else(|| items.first().map(|c| c.title.clone())).unwrap_or_default(),
+            )),
+            Item::Tabs { id, tabs } => {
+                values.push((id.clone(), tabs.first().map(|p| p.label.clone()).unwrap_or_default()));
+                for pane in tabs {
+                    collect_values(&pane.blocks, values);
+                }
+            }
+            _ => {}
+        }
     }
 }
 
@@ -977,6 +1048,199 @@ fn render_item<V: 'static>(
         }
         Item::Choice { id, label, choices, .. } => choice_row(key, id, label, choices, state, t, weak, handler),
         Item::Divider => div().h(px(1.0)).bg(t.border).into_any_element(),
+        Item::Timeline { title, steps } => {
+            let mut col = div().flex().flex_col();
+            let last = steps.len().saturating_sub(1);
+            for (i, step) in steps.iter().enumerate() {
+                let (color, glyph) = match step.status.as_str() {
+                    "done" | "complete" | "completed" => (t.success, Some(icons::CHECK)),
+                    "active" | "running" | "current" => (t.accent, None),
+                    "failed" | "error" => (t.danger, Some(icons::CLOSE)),
+                    _ => (t.text_faint, None),
+                };
+                let active = matches!(step.status.as_str(), "active" | "running" | "current");
+                col = col.child(
+                    div()
+                        .flex()
+                        .gap(px(12.0))
+                        .child(
+                            div()
+                                .w(px(18.0))
+                                .flex_none()
+                                .flex()
+                                .flex_col()
+                                .items_center()
+                                .child(
+                                    div()
+                                        .size(px(18.0))
+                                        .rounded_full()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .border_1()
+                                        .border_color(color)
+                                        .when(glyph.is_some(), |d| d.bg(color))
+                                        .when(active, |d| d.child(div().size(px(8.0)).rounded_full().bg(color)))
+                                        .when_some(glyph, |d, g| d.child(icon(g).size(px(11.0)).text_color(gpui::white()))),
+                                )
+                                .when(i < last, |d| d.child(div().w(px(1.5)).flex_1().min_h(px(14.0)).bg(t.border))),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .pb(px(if i < last { 12.0 } else { 0.0 }))
+                                .flex()
+                                .flex_col()
+                                .gap(px(2.0))
+                                .child(
+                                    div()
+                                        .text_size(px(13.0))
+                                        .font_weight(if active { gpui::FontWeight::SEMIBOLD } else { gpui::FontWeight::NORMAL })
+                                        .text_color(if step.status == "todo" || step.status.is_empty() { t.text_muted } else { t.text })
+                                        .child(step.title.clone()),
+                                )
+                                .when(!step.detail.is_empty(), |d| {
+                                    d.child(div().text_size(px(12.0)).text_color(t.text_faint).child(step.detail.clone()))
+                                }),
+                        ),
+                );
+            }
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(8.0))
+                .when(!title.is_empty(), |d| d.child(section_title(title, t)))
+                .child(col)
+                .into_any_element()
+        }
+        Item::Cards { id, label, items, .. } => {
+            let current = state.get(id).to_string();
+            let mut grid = div().flex().flex_wrap().gap(px(8.0));
+            for (i, c) in items.iter().enumerate() {
+                let on = c.title == current || c.id == current;
+                let (w, h) = (weak.clone(), handler.clone());
+                let (fid, val) = (id.clone(), c.title.clone());
+                grid = grid.child(
+                    div()
+                        .id(SharedString::from(format!("{key}-{i}")))
+                        .flex_1()
+                        .min_w(px(150.0))
+                        .p(px(12.0))
+                        .flex()
+                        .flex_col()
+                        .gap(px(4.0))
+                        .rounded(px(12.0))
+                        .border_1()
+                        .cursor_pointer()
+                        .role(gpui::Role::RadioButton)
+                        .aria_selected(on)
+                        .aria_label(SharedString::from(c.title.clone()))
+                        .when(on, |d| d.border_color(t.accent).bg(t.accent.opacity(0.08)))
+                        .when(!on, |d| d.border_color(t.border).hover(|s| s.bg(t.wash(0.04)).border_color(t.border_strong)))
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(6.0))
+                                .child(div().flex_1().min_w_0().text_size(px(13.5)).font_weight(gpui::FontWeight::SEMIBOLD).text_color(t.text).child(c.title.clone()))
+                                .when(!c.badge.is_empty(), |d| {
+                                    d.child(
+                                        div()
+                                            .px(px(6.0))
+                                            .h(px(18.0))
+                                            .flex()
+                                            .items_center()
+                                            .rounded(px(5.0))
+                                            .bg(t.accent.opacity(0.14))
+                                            .text_size(px(10.5))
+                                            .text_color(t.accent)
+                                            .child(c.badge.clone()),
+                                    )
+                                })
+                                .when(on, |d| d.child(icon(icons::CIRCLE_CHECK).size(px(15.0)).text_color(t.accent))),
+                        )
+                        .when(!c.body.is_empty(), |d| {
+                            d.child(div().text_size(px(12.0)).line_height(px(17.0)).text_color(t.text_muted).child(c.body.clone()))
+                        })
+                        .on_click(move |_, window, cx| emit(&w, &h, Event::Set { id: fid.clone(), value: val.clone() }, window, cx)),
+                );
+            }
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(7.0))
+                .when(!label.is_empty(), |d| d.child(section_title(label, t)))
+                .child(grid)
+                .into_any_element()
+        }
+        Item::Breakdown { title, items, unit } => {
+            let total: f64 = items.iter().map(|d| d.value.max(0.0)).sum::<f64>().max(1e-9);
+            let palette = [t.accent, t.success, t.warning, t.danger, t.busy, t.text_muted];
+            let mut bar = div().h(px(12.0)).w_full().flex().rounded(px(6.0)).overflow_hidden().gap(px(2.0));
+            let mut legend = div().flex().flex_wrap().gap_x(px(14.0)).gap_y(px(6.0));
+            for (i, d) in items.iter().enumerate() {
+                let c = palette[i % palette.len()];
+                let f = (d.value.max(0.0) / total) as f32;
+                bar = bar.child(div().h_full().w(gpui::relative(f)).bg(c));
+                legend = legend.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.0))
+                        .text_size(px(12.0))
+                        .child(div().size(px(8.0)).rounded(px(2.0)).bg(c))
+                        .child(div().text_color(t.text_muted).child(d.label.clone()))
+                        .child(div().text_color(t.text).child(if unit.trim() == "%" {
+                            format!("{:.0}%", f * 100.0)
+                        } else {
+                            format!("{}{} · {:.0}%", number(d.value), unit, f * 100.0)
+                        })),
+                );
+            }
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(8.0))
+                .when(!title.is_empty(), |d| d.child(section_title(title, t)))
+                .child(bar)
+                .child(legend)
+                .into_any_element()
+        }
+        Item::Tabs { id, tabs } => {
+            let current = state.get(id).to_string();
+            let sel = tabs.iter().position(|p| p.label == current).unwrap_or(0);
+            let mut strip = div().flex().gap(px(2.0)).p(px(2.0)).rounded(px(10.0)).bg(t.wash(0.05));
+            for (i, pane) in tabs.iter().enumerate() {
+                let on = i == sel;
+                let (w, h) = (weak.clone(), handler.clone());
+                let (fid, val) = (id.clone(), pane.label.clone());
+                strip = strip.child(
+                    div()
+                        .id(SharedString::from(format!("{key}-t{i}")))
+                        .h(px(26.0))
+                        .px(px(12.0))
+                        .flex()
+                        .items_center()
+                        .rounded(px(8.0))
+                        .text_size(px(12.5))
+                        .cursor_pointer()
+                        .role(gpui::Role::Tab)
+                        .aria_selected(on)
+                        .when(on, |d| d.bg(t.surface_raised).text_color(t.text).shadow_sm())
+                        .when(!on, |d| d.text_color(t.text_muted).hover(|s| s.text_color(t.text)))
+                        .child(pane.label.clone())
+                        .on_click(move |_, window, cx| emit(&w, &h, Event::Set { id: fid.clone(), value: val.clone() }, window, cx)),
+                );
+            }
+            let mut body = div().flex().flex_col().gap(px(12.0));
+            if let Some(pane) = tabs.get(sel) {
+                for (n, b) in pane.blocks.iter().enumerate() {
+                    body = body.child(render_item(&format!("{key}-p{sel}-{n}"), b, state, t, weak, handler));
+                }
+            }
+            div().flex().flex_col().gap(px(12.0)).child(div().flex().child(strip)).child(body).into_any_element()
+        }
         Item::Unknown => div().into_any_element(),
     }
 }
@@ -1009,6 +1273,24 @@ mod tests {
         assert!(reply.contains("Ship it"));
         assert!(reply.contains("Replicas: 4"));
         assert!(reply.contains("Dry run: on"));
+    }
+
+    #[test]
+    fn new_blocks_parse_and_nest() {
+        let spec = Spec::parse(
+            r#"{"id":"plan","title":"Pick","blocks":[
+                {"type":"timeline","steps":[{"title":"a","status":"done"},{"title":"b","status":"active"}]},
+                {"type":"breakdown","items":[{"label":"x","value":2},{"label":"y","value":3}]},
+                {"type":"cards","id":"opt","items":[{"id":"fast","title":"Fast"},{"id":"safe","title":"Safe","badge":"recommended"}]},
+                {"type":"tabs","id":"view","tabs":[{"label":"One","blocks":[{"type":"toggle","id":"t","label":"T","value":true}]},{"label":"Two"}]}
+            ]}"#,
+        )
+        .unwrap();
+        assert_eq!(spec.id, "plan");
+        let st = State::new(spec);
+        assert_eq!(st.get("opt"), "Fast");
+        assert_eq!(st.get("view"), "One");
+        assert_eq!(st.get("t"), "on");
     }
 
     #[test]

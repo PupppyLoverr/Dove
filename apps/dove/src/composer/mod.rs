@@ -181,6 +181,7 @@ impl Composer {
             InputEvent::Change => {
                 this.update_mention(cx);
                 this.save_draft(cx);
+                this.prewarm(cx);
                 cx.notify();
             }
             _ => {}
@@ -355,6 +356,30 @@ impl Composer {
 
     pub fn harness(&self, cx: &App) -> HarnessKind {
         self.picker.read(cx).harness
+    }
+
+    /// While a new thread is being typed, start its agent so the first
+    /// reply skips the cold start. Worktree threads get their folder only
+    /// at send time, so they start cold.
+    fn prewarm(&self, cx: &App) {
+        if self.input.read(cx).value().trim().is_empty() || self.running {
+            return;
+        }
+        if let Some((task, project)) = &self.thread {
+            if dove_core::prewarms(task.harness) {
+                self.engine.prewarm_resume(task, project, &self.run_settings(cx));
+            }
+            return;
+        }
+        if self.worktree {
+            return;
+        }
+        let Some(project) = self.project.as_ref() else { return };
+        let harness = self.harness(cx);
+        if !dove_core::prewarms(harness) {
+            return;
+        }
+        self.engine.prewarm(harness, &project.path, &self.run_settings(cx));
     }
 
     /// How the next turn runs.
@@ -1097,26 +1122,31 @@ impl Composer {
                 .child(kit::ring(f, 14.0, color, t.wash(0.12)))
                 .child(label)
         };
+        // Meters appear once the agent has reported something to show.
         div()
             .flex()
             .items_center()
             .gap(px(2.0))
-            .child(ring(
-                "ring-context",
-                ctx_frac,
-                ctx_frac.map(|f| format!("{:.0}%", f * 100.0)).unwrap_or_default(),
-                ctx_tip,
-            ))
-            .child(
-                ring(
-                    "ring-plan",
-                    used.map(|u| (u / 100.0) as f32),
-                    used.map(|u| format!("{u:.0}%")).unwrap_or_default(),
-                    plan_tip,
+            .when(ctx_frac.is_some(), |d| {
+                d.child(ring(
+                    "ring-context",
+                    ctx_frac,
+                    ctx_frac.map(|f| format!("{:.0}%", f * 100.0)).unwrap_or_default(),
+                    ctx_tip,
+                ))
+            })
+            .when(used.is_some(), |d| {
+                d.child(
+                    ring(
+                        "ring-plan",
+                        used.map(|u| (u / 100.0) as f32),
+                        used.map(|u| format!("{u:.0}%")).unwrap_or_default(),
+                        plan_tip,
+                    )
+                    .cursor_pointer()
+                    .on_click(cx.listener(|_, _, _, cx| cx.emit(ComposerEvent::OpenUsage))),
                 )
-                .cursor_pointer()
-                .on_click(cx.listener(|_, _, _, cx| cx.emit(ComposerEvent::OpenUsage))),
-            )
+            })
             .into_any_element()
     }
 
