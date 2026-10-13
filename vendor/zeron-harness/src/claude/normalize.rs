@@ -875,7 +875,10 @@ mod tests {
         let blocked = normalize_one(
             r#"{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","rateLimitType":"five_hour","overageStatus":"rejected"}}"#,
         );
-        assert!(matches!(blocked.as_slice(), [AgentEvent::Error { .. }]));
+        assert!(matches!(
+            blocked.as_slice(),
+            [AgentEvent::RateLimits { .. }, AgentEvent::Error { .. }]
+        ));
         for overage in [
             r#""overageStatus":"allowed""#,
             r#""overageStatus":"allowed_warning""#,
@@ -884,7 +887,10 @@ mod tests {
             let raw = format!(
                 r#"{{"type":"rate_limit_event","rate_limit_info":{{"status":"rejected","rateLimitType":"five_hour",{overage}}}}}"#
             );
-            assert!(normalize_one(&raw).is_empty(), "{overage}");
+            assert!(
+                matches!(normalize_one(&raw).as_slice(), [AgentEvent::RateLimits { .. }]),
+                "{overage}"
+            );
         }
     }
 
