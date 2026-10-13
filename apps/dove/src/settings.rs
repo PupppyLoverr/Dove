@@ -1,5 +1,5 @@
 //! Settings, with left navigation: General · Appearance · Composer · Voice ·
-//! Keyboard · Notifications · Data · About. Everything persists in the
+//! Keyboard · Notifications · Integrations · Data · About. Everything persists in the
 //! store's settings table and applies live.
 
 use std::sync::Arc;
@@ -28,18 +28,20 @@ enum Section {
     Voice,
     Keyboard,
     Notifications,
+    Integrations,
     Data,
     About,
 }
 
 impl Section {
-    const ALL: [Section; 8] = [
+    const ALL: [Section; 9] = [
         Section::General,
         Section::Appearance,
         Section::Composer,
         Section::Voice,
         Section::Keyboard,
         Section::Notifications,
+        Section::Integrations,
         Section::Data,
         Section::About,
     ];
@@ -52,6 +54,7 @@ impl Section {
             Section::Voice => "Voice",
             Section::Keyboard => "Keyboard",
             Section::Notifications => "Notifications",
+            Section::Integrations => "Integrations",
             Section::Data => "Data",
             Section::About => "About",
         }
@@ -65,6 +68,7 @@ impl Section {
             Section::Voice => icons::MICROPHONE,
             Section::Keyboard => icons::KEYBOARD,
             Section::Notifications => icons::BELL,
+            Section::Integrations => icons::WIDGET,
             Section::Data => icons::HARD_DRIVE,
             Section::About => icons::INFO_CIRCLE,
         }
@@ -78,6 +82,7 @@ impl Section {
             Section::Voice => "voice",
             Section::Keyboard => "keyboard",
             Section::Notifications => "notifications",
+            Section::Integrations => "integrations",
             Section::Data => "data",
             Section::About => "about",
         }
@@ -93,6 +98,7 @@ pub struct SettingsPage {
     recording: Option<&'static str>,
     devices: Vec<(String, String)>,
     data_size: Option<u64>,
+    integrations: Entity<crate::pages::integrations::IntegrationsView>,
     focus: FocusHandle,
     _subs: Vec<Subscription>,
 }
@@ -150,6 +156,7 @@ impl SettingsPage {
             recording: None,
             devices: Vec::new(),
             data_size: None,
+            integrations: cx.new(|cx| crate::pages::integrations::IntegrationsView::new(window, cx)),
             focus: cx.focus_handle(),
             _subs: subs,
         }
@@ -734,6 +741,7 @@ impl Render for SettingsPage {
             Section::Voice => self.voice(&t, cx),
             Section::Keyboard => self.keyboard(&t, cx),
             Section::Notifications => self.notifications(&t, cx),
+            Section::Integrations => self.integrations.clone().into_any_element(),
             Section::Data => self.data(&t, cx),
             Section::About => self.about(&t, cx),
         };
