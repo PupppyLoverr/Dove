@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dove — the agentic development environment</title>
+<meta name="description" content="Dove is a native, local-first desktop app that runs Claude Code, Codex, Cursor, Gemini, OpenCode, Devin and more side by side — each in its own git worktree, with diffs, a browser and files in one window.">
+<meta name="theme-color" content="#0a0a0a" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#fafafa" media="(prefers-color-scheme: light)">
+<meta property="og:title" content="Dove — the agentic development environment">
+<meta property="og:description" content="Many coding agents, one native window. Worktrees, diffs, browser control and your phone as a remote. Local-first and free with your own keys.">
+<meta property="og:type" content="website">
+<meta property="og:image" content="assets/shots/og.jpg">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+<link rel="preload" href="assets/fonts/geist-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="styles.css">
+<script>
+  (function () {
+    var saved = (location.search.match(/[?&]theme=(dark|light)/) || [])[1] || null;
+    if (!saved) { try { saved = localStorage.getItem("dove-theme"); } catch (e) {} }
+    var light = window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches;
+    document.documentElement.classList.add("js");
+    document.documentElement.dataset.theme = saved || (light ? "light" : "dark");
+  })();
+</script>
+<script defer src="main.js"></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="nav" id="top">
+  <div class="wrap nav-row">
+    <a class="brand" href="#top" aria-label="Dove home">
+      <span class="mark" aria-hidden="true"></span>
+      <span class="brand-name">Dove</span>
+    </a>
+    <nav class="nav-links" aria-label="Primary">
+      <a href="#features">Features</a>
+      <a href="#agents">Agents</a>
+      <a href="#mobile">Mobile</a>
+      <a href="#pricing">Pricing</a>
+      <a href="#faq">FAQ</a>
+    </nav>
+    <div class="nav-actions">
+      <a class="icon-btn gh" href="https://github.com/PupppyLoverr/Dove" aria-label="Dove on GitHub">
+        <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+      </a>
+      <button class="icon-btn" id="theme-toggle" type="button" aria-label="Switch colour theme">
+        <span class="i i-sun" aria-hidden="true"></span><span class="i i-moon" aria-hidden="true"></span>
+      </button>
+      <a class="btn btn-primary btn-sm" href="#download">Download</a>
+    </div>
+  </div>
+</header>
+
+<main id="main">
+  <section class="hero">
+    <div class="wrap hero-copy">
+      <p class="eyebrow">Open source · Native Rust · Local-first</p>
+      <h1>The agentic<br><em>development</em> environment.</h1>
+      <p class="lede">Dove runs every coding agent you use in one native window. Each task gets its own worktree, a live transcript, a diff to review and a browser the agent can drive. Your phone becomes the remote.</p>
+      <div class="cta-row">
+        <a class="btn btn-primary" id="hero-download" href="#download"><span class="i i-os" aria-hidden="true"></span><span data-os-label>Download Dove</span></a>
+        <a class="btn btn-ghost" href="https://github.com/PupppyLoverr/Dove">Star on GitHub <span class="i i-arrow" aria-hidden="true"></span></a>
+      </div>
+      <p class="fine">Free with your own keys and subscriptions. macOS, Windows and Linux.</p>
+    </div>
+    <div class="wrap">
+      <figure class="window rise">
+        <div class="window-bar" aria-hidden="true"><span></span><span></span><span></span></div>
+        <img src="assets/shots/hero.jpg" width="1360" height="860" alt="Dove's main window: the thread sidebar, an agent transcript with an interactive card, and the diff side panel." fetchpriority="high">
+      </figure>
+    </div>
+  </section>
+
+  <section class="agents" id="agents" aria-labelledby="agents-title">
+    <div class="wrap">
+      <h2 class="kicker" id="agents-title">Bring the agents you already pay for</h2>
+      <ul class="logo-row" role="list">
+        <li><img src="assets/logos/claude-mark.svg" alt="" width="28" height="28"><span>Claude Code</span></li>
+        <li><img class="mono" src="assets/logos/openai-mark.svg" alt="" width="28" height="28"><span>Codex</span></li>
+        <li><img class="mono" src="assets/logos/cursor-mark.svg" alt="" width="28" height="28"><span>Cursor</span></li>
+        <li><img src="assets/logos/gemini-mark.svg" alt="" width="28" height="28"><span>Gemini CLI</span></li>
+        <li><img class="mono" src="assets/logos/opencode-mark.svg" alt="" width="28" height="28"><span>OpenCode</span></li>
+        <li><img class="mono" src="assets/logos/devin-mark.svg" alt="" width="28" height="28"><span>Devin</span></li>
+        <li><img class="mono" src="assets/logos/grok-mark.svg" alt="" width="28" height="28"><span>Grok Build</span></li>
+        <li><img class="mono" src="assets/logos/copilot-mark.svg" alt="" width="28" height="28"><span>Copilot</span></li>
+        <li><img src="assets/logos/qwen-mark.svg" alt="" width="28" height="28"><span>Qwen Code</span></li>
+        <li><img src="assets/logos/antigravity-mark.svg" alt="" width="28" height="28"><span>Antigravity</span></li>
+        <li><img src="assets/logos/pi-mark.svg" alt="" width="28" height="28"><span>Pi</span></li>
+      </ul>
+      <p class="fine center">Plus goose, Factory Droid, Amp, Kilo, Cline, Hermes and Kimi through the Agent Client Protocol. Dove launches the CLIs you have installed and signs in with the accounts they already use.</p>
+    </div>
+  </section>
+
+  <section class="features" id="features" aria-labelledby="features-title">
+    <div class="wrap">
+      <header class="sect-head reveal">
+        <p class="eyebrow">Features</p>
+        <h2 id="features-title">Everything an agent touches, in one place.</h2>
+        <p class="lede">Dove is the workspace around the agent, not another agent. Chat, terminal, diff, browser and files share one thread, whichever CLI is doing the work.</p>
+      </header>
+
+      <div class="bento">
+        <article class="card span-2 reveal">
+          <div class="card-copy">
+            <span class="i i-layers" aria-hidden="true"></span>
+            <h3>Many agents, one window</h3>
+            <p>Run Claude Code on one task and Codex on the next. Threads sort by what needs you: approvals first, then work in progress, then finished.</p>
+          </div>
+          <img class="card-shot" src="assets/shots/threads.jpg" width="1360" height="860" alt="Dove's threads page: tasks from Gemini, Codex, Claude Code and OpenCode sorted by attention." loading="lazy">
+        </article>
+        <article class="card reveal">
+          <div class="card-copy">
+            <span class="i i-worktree" aria-hidden="true"></span>
+            <h3>Worktrees by default</h3>
+            <p>Every task can run on its own branch in its own git worktree, so two agents edit the same repo without colliding. Merge, push or open a PR from the thread.</p>
+          </div>
+        </article>
+        <article class="card reveal">
+          <div class="card-copy">
+            <span class="i i-terminal" aria-hidden="true"></span>
+            <h3>Chat ⇄ terminal</h3>
+            <p>Chat is the rich view with approvals, steering and usage. Flip to the agent's own TUI on the same session, then flip back. One process owns it at a time.</p>
+          </div>
+        </article>
+        <article class="card span-2 reveal">
+          <div class="card-copy">
+            <span class="i i-panel-right" aria-hidden="true"></span>
+            <h3>A side panel that is part of the work</h3>
+            <p>Diffs, git history, a file viewer, an in-app browser and a terminal stay attached to each thread. Open a <code>path:line</code> link and you are there.</p>
+          </div>
+          <img class="card-shot" src="assets/shots/panel.jpg" width="468" height="360" alt="Dove's side panel showing a worktree diff with commit, push and open PR actions." loading="lazy">
+        </article>
+        <article class="card reveal">
+          <div class="card-copy">
+            <span class="i i-global" aria-hidden="true"></span>
+            <h3>Browser control</h3>
+            <p>Every agent gets Dove's browser tools over MCP: navigate, snapshot, click, type, scroll, screenshot. Drive the in-app browser or your own Chrome through the extension.</p>
+          </div>
+        </article>
+        <article class="card reveal">
+          <div class="card-copy">
+            <span class="i i-widget" aria-hidden="true"></span>
+            <h3>Generative UI</h3>
+            <p>Agents answer with interactive cards: stats, charts, tables, checklists, toggles and choices. Your pick goes back as a normal message, so any harness can continue.</p>
+          </div>
+        </article>
+        <article class="card reveal">
+          <div class="card-copy">
+            <span class="i i-document" aria-hidden="true"></span>
+            <h3>Office documents</h3>
+            <p>Create, preview and edit PDF, PowerPoint, Excel and Word files in the side panel, then ask the agent to change the one you are looking at.</p>
+          </div>
+        </article>
+        <article class="card reveal">
+          <div class="card-copy">
+            <span class="i i-pen" aria-hidden="true"></span>
+            <h3>Paper design</h3>
+            <p>Connect Paper so agents read your canvases and turn designs into code, with the live result one tab away in the browser.</p>
+          </div>
+        </article>
+        <article class="card reveal">
+          <div class="card-copy">
+            <span class="i i-workflow" aria-hidden="true"></span>
+            <h3>Composio tools</h3>
+            <p>Give agents GitHub, Linear, Slack, Notion and hundreds more apps through Composio, using your own key. Tools are injected into every harness.</p>
+          </div>
+        </article>
+        <article class="card reveal">
+          <div class="card-copy">
+            <span class="i i-monitor" aria-hidden="true"></span>
+            <h3>Computer use</h3>
+            <p>Let an agent see and operate desktop apps through the open-source cua-driver, with every action visible and stoppable.</p>
+          </div>
+        </article>
+        <article class="card span-3 row reveal">
+          <div class="card-copy">
+            <span class="i i-chat-round-line" aria-hidden="true"></span>
+            <h3>A transcript that reads like a document</h3>
+            <p>Markdown, tables, Mermaid diagrams, math and images render as they stream. Tool calls fold away. One ledger tracks cost across every agent.</p>
+          </div>
+          <img class="card-shot" src="assets/shots/transcript.jpg" width="790" height="740" alt="An agent answer in Dove with a table, code and an interactive card." loading="lazy">
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section class="split" id="mobile" aria-labelledby="mobile-title">
+    <div class="wrap split-row">
+      <div class="split-copy reveal">
+        <p class="eyebrow">iOS and Android</p>
+        <h2 id="mobile-title">Your agents, from your pocket.</h2>
+        <p class="lede">Sign in with your Woozlit account on the desktop and on your phone. Watch transcripts live, answer approvals, steer a run or start a new one. The work still happens on your machine.</p>
+        <ul class="ticks" role="list">
+          <li>Live session sync over a Cloudflare edge relay, built on Loro CRDTs</li>
+          <li>Approve, deny, steer and queue from a notification</li>
+          <li>No code leaves your desktop unless an agent sends it</li>
+        </ul>
+      </div>
+      <div class="split-visual reveal" aria-hidden="true">
+        <div class="phone">
+          <div class="phone-screen">
+            <div class="ph-row"><span class="dot live"></span><b>Fix login redirect</b><small>Claude Code</small></div>
+            <div class="ph-msg">Updated <code>auth/callback.rs</code> to keep the original path. Running tests now.</div>
+            <div class="ph-approve"><span>Run <code>cargo test -p auth</code>?</span><span class="ph-btns"><i>Deny</i><i class="on">Allow</i></span></div>
+            <div class="ph-row"><span class="dot"></span><b>Add usage export</b><small>Codex</small></div>
+            <div class="ph-row"><span class="dot done"></span><b>Bump GPUI rev</b><small>OpenCode</small></div>
+            <div class="ph-composer">Steer this run…</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="split" aria-labelledby="local-title">
+    <div class="wrap split-row reverse">
+      <div class="split-copy reveal">
+        <p class="eyebrow">Local-first</p>
+        <h2 id="local-title">Native, fast and yours.</h2>
+        <p class="lede">Dove is written in Rust on GPUI. There is no Electron shell and no web app pretending to be one. Projects, transcripts, settings and usage live in SQLite under <code>~/.dove</code>.</p>
+        <ul class="ticks" role="list">
+          <li>GPU-rendered, idle at zero frames per second</li>
+          <li>Bring your own keys and subscriptions. No model bill from us</li>
+          <li>Apache-2.0. Read it, build it, fork it</li>
+        </ul>
+      </div>
+      <div class="split-visual reveal">
+        <figure class="window small">
+          <div class="window-bar" aria-hidden="true"><span></span><span></span><span></span></div>
+          <img src="assets/shots/settings.jpg" width="1360" height="860" alt="Dove's settings: worktrees on by default, branch prefix and clone folder, all stored locally." loading="lazy">
+        </figure>
+      </div>
+    </div>
+  </section>
+
+  <section class="pricing" id="pricing" aria-labelledby="pricing-title">
+    <div class="wrap">
+      <header class="sect-head center reveal">
+        <p class="eyebrow">Pricing</p>
+        <h2 id="pricing-title">Free on your machine. Pay for the cloud parts.</h2>
+        <p class="lede">The desktop app is free and open source with every agent and every local feature. Paid plans cover what costs us money to run: sync, devices and teams.</p>
+      </header>
+      <div class="billing reveal" role="group" aria-label="Billing period">
+        <button type="button" class="seg on" data-period="monthly" aria-pressed="true">Monthly</button>
+        <button type="button" class="seg" data-period="yearly" aria-pressed="false">Yearly <small>−20%</small></button>
+      </div>
+      <div class="plans">
+        <article class="plan reveal">
+          <h3>Free</h3>
+          <p class="price"><b>$0</b><span>forever</span></p>
+          <p class="plan-sub">Everything local, with your own keys.</p>
+          <a class="btn btn-ghost full" href="#download">Download</a>
+          <ul class="ticks" role="list">
+            <li>Every supported agent, unlimited threads</li>
+            <li>Worktrees, diffs, history, files, terminal</li>
+            <li>In-app browser and Chrome extension control</li>
+            <li>Generative UI, office docs, MCP, computer use</li>
+            <li>One phone paired, 7 days of synced history</li>
+          </ul>
+        </article>
+        <article class="plan featured reveal">
+          <h3>Pro</h3>
+          <p class="price"><b data-monthly="$12" data-yearly="$10">$12</b><span>per month</span></p>
+          <p class="plan-sub">For one developer on many devices.</p>
+          <a class="btn btn-primary full" href="https://github.com/PupppyLoverr/Dove/discussions">Join the waitlist</a>
+          <ul class="ticks" role="list">
+            <li>Everything in Free</li>
+            <li>Unlimited phones, tablets and desktops</li>
+            <li>Unlimited synced history and search</li>
+            <li>Push notifications for approvals</li>
+            <li>Encrypted settings and template sync</li>
+          </ul>
+        </article>
+        <article class="plan reveal">
+          <h3>Team</h3>
+          <p class="price"><b data-monthly="$24" data-yearly="$20">$24</b><span>per user / month</span></p>
+          <p class="plan-sub">Shared threads for small teams.</p>
+          <a class="btn btn-ghost full" href="https://github.com/PupppyLoverr/Dove/discussions">Join the waitlist</a>
+          <ul class="ticks" role="list">
+            <li>Everything in Pro</li>
+            <li>Shared threads, live multiplayer steering</li>
+            <li>Shared templates, automations and MCP config</li>
+            <li>Team usage ledger across every agent</li>
+            <li>Central billing and roles</li>
+          </ul>
+        </article>
+        <article class="plan reveal">
+          <h3>Enterprise</h3>
+          <p class="price"><b>Custom</b><span>annual</span></p>
+          <p class="plan-sub">For security reviews and scale.</p>
+          <a class="btn btn-ghost full" href="mailto:buildwithai.dev@gmail.com?subject=Dove%20Enterprise">Contact us</a>
+          <ul class="ticks" role="list">
+            <li>Everything in Team</li>
+            <li>SAML SSO and SCIM</li>
+            <li>Self-hosted edge relay in your own account</li>
+            <li>Audit log export and data residency</li>
+            <li>Support SLA</li>
+          </ul>
+        </article>
+      </div>
+      <p class="fine center">Model usage is never resold. Agents run on your own subscriptions and API keys on every plan.</p>
+    </div>
+  </section>
+
+  <section class="download" id="download" aria-labelledby="download-title">
+    <div class="wrap">
+      <div class="download-card reveal">
+        <span class="mark big" aria-hidden="true"></span>
+        <h2 id="download-title">Get Dove.</h2>
+        <p class="lede">Builds are published on GitHub Releases. Until the first signed release, build from source in one command.</p>
+        <div class="dl-row">
+          <a class="dl" href="https://github.com/PupppyLoverr/Dove/releases/latest"><span class="i i-apple" aria-hidden="true"></span><span><b>macOS</b><small>Apple silicon and Intel</small></span></a>
+          <a class="dl" href="https://github.com/PupppyLoverr/Dove/releases/latest"><span class="i i-windows" aria-hidden="true"></span><span><b>Windows</b><small>x64 and Arm64</small></span></a>
+          <a class="dl" href="https://github.com/PupppyLoverr/Dove/releases/latest"><span class="i i-linux" aria-hidden="true"></span><span><b>Linux</b><small>x86_64, Wayland and X11</small></span></a>
+        </div>
+        <div class="code-line">
+          <code id="build-cmd">git clone https://github.com/PupppyLoverr/Dove &amp;&amp; cd Dove &amp;&amp; cargo run -p dove</code>
+          <button type="button" class="copy" data-copy="#build-cmd" aria-label="Copy build command">Copy</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="faq" id="faq" aria-labelledby="faq-title">
+    <div class="wrap narrow">
+      <h2 id="faq-title" class="reveal">Questions</h2>
+      <details class="reveal"><summary>Is Dove an AI model or an agent?</summary><p>Neither. Dove is the development environment around the agents. It launches the CLIs you already use (Claude Code, Codex, Cursor, Gemini CLI and others), normalises their output into one event stream and gives each task a worktree, diff, browser and terminal.</p></details>
+      <details class="reveal"><summary>Do I need to pay Dove to use my agents?</summary><p>No. Agents run on your own subscriptions and API keys. The desktop app is free and open source. Paid plans only cover hosted sync, extra devices and team features.</p></details>
+      <details class="reveal"><summary>Where does my code go?</summary><p>Nowhere new. Dove runs on your machine and stores data in <code>~/.dove</code>. Agents talk to their own providers as they would in a terminal. Remote control relays session events, not your repository.</p></details>
+      <details class="reveal"><summary>How is this different from Cursor, Conductor or Warp?</summary><p>Dove does not ship its own model or bind you to one vendor. It runs many different agents side by side in isolated worktrees, in a native Rust app, and adds the shared pieces they lack: diff review, browser control, generative UI, office documents and a mobile remote.</p></details>
+      <details class="reveal"><summary>How does remote control work?</summary><p>Turn it on in Settings › Remote control and sign in with Woozlit. Then sign in on your phone with the same account. The desktop publishes each session as a Loro CRDT document to the Cosmos edge, which runs on Cloudflare Workers and Durable Objects. The phone shows the transcript live and sends commands back. The agent keeps running on your desktop. When remote control is off, nothing leaves the machine.</p></details>
+      <details class="reveal"><summary>Which platforms are supported?</summary><p>macOS, Windows and Linux for the desktop app. The in-app browser uses each OS's native web view: WKWebView, WebView2 and WebKitGTK. Mobile: iOS, with Android in progress. The macOS app is 91 MB.</p></details>
+      <details class="reveal"><summary>Can I contribute?</summary><p>Yes. Dove is Apache-2.0. Read <a href="https://github.com/PupppyLoverr/Dove/blob/main/CONTRIBUTING.md">CONTRIBUTING.md</a>, pick an issue and open a pull request.</p></details>
+    </div>
+  </section>
+</main>
+
+<footer class="footer">
+  <div class="wrap footer-row">
+    <div class="footer-brand">
+      <a class="brand" href="#top"><span class="mark" aria-hidden="true"></span><span class="brand-name">Dove</span></a>
+      <p class="fine">The agentic development environment.</p>
+    </div>
+    <nav class="footer-links" aria-label="Footer">
+      <div><h3>Product</h3><a href="#features">Features</a><a href="#pricing">Pricing</a><a href="#download">Download</a></div>
+      <div><h3>Project</h3><a href="https://github.com/PupppyLoverr/Dove">GitHub</a><a href="https://github.com/PupppyLoverr/Dove/blob/main/ARCHITECTURE.md">Architecture</a><a href="https://github.com/PupppyLoverr/Dove/blob/main/CONTRIBUTING.md">Contributing</a></div>
+      <div><h3>Legal</h3><a href="https://github.com/PupppyLoverr/Dove/blob/main/LICENSE">License</a><a href="https://github.com/PupppyLoverr/Dove/blob/main/THIRD_PARTY_NOTICES.md">Notices</a></div>
+    </nav>
+  </div>
+  <div class="wrap footer-base fine">© 2026 Dove contributors. Apache-2.0. Agent names and logos belong to their owners.</div>
+</footer>
+</body>
+</html>

@@ -1,0 +1,145 @@
+# Dove architecture
+
+Dove is a native desktop Agentic Development Environment written in Rust. It does not ship a model or an agent of its own. It launches the coding-agent CLIs a developer already has (Claude Code, Codex, Cursor, Gemini CLI, OpenCode, Devin and others), turns their output into one event stream, and wraps each task with a git worktree, a transcript, a diff, a browser, files and a terminal.
+
+This document describes how the pieces fit. Paths are relative to the repository root.
+
+## Workspace layout
+
+```text
+apps/dove              GPUI desktop app (the `dove` binary)
+apps/landing           Static marketing site (no build step)
+crates/dove-core       Engine: runtime, live sessions, task lifecycle, automations, TUI mirror
+crates/dove-harness    Agent adapters: Claude/Codex/… via Zeron's drivers, everything else via ACP
+crates/dove-proto      Shared types: AgentEvent, HarnessKind, permissions, usage, models
+crates/dove-store      SQLite + JSONL: projects, tasks, transcripts, usage, settings, automations
+crates/dove-git        Worktrees, status, diffs, history, GitHub PRs through `gh`
+crates/dove-term       Terminal emulator and PTY sessions
+vendor/                gpui-base, zeron-proto, zeron-harness, zeron-syntax, zeron-voice(-media)
+```
+
+The UI toolkit is GPUI from [zeronsh/zui](https://github.com/zeronsh/zui) (Zed's GPUI with backdrop blur, edge fades and rounded clipping), paired with `gpui-base` from zeronsh/gpui-component. Both are pinned to one revision in the workspace `Cargo.toml`. `vendor/README.md` lists every change made to vendored code.
+
+## The app (`apps/dove`)
+
+| Module | Role |
+| --- | --- |
+| `main.rs` | Process entry. `dove --mcp-browser` runs the stdio MCP bridge instead of the window. |
+| `shell.rs` | Root window entity: routes (chat, terminal, pages), top bar, panel layout, wiring to the engine. |
+| `sidebar.rs` | Projects and threads, attention-sorted (needs you, working, unread, failed, recent). |
+| `composer/` | Input pill, model/agent/effort picker, permission mode, attachments, queue/steer. |
+| `transcript.rs`, `markdown*.rs`, `math.rs` | Incremental transcript rendering: markdown, tables, Mermaid, math, images, folded tool calls. |
+| `widget.rs` | Generative UI cards (` ```ui ` fences and the `show_ui` tool). |
+| `side_panel.rs`, `changes.rs`, `history.rs`, `files_panel.rs` | Per-thread side panel: diff review, git history, file viewer/editor. |
+| `browser/` | Native web view per thread (WKWebView, WebView2, WebKitGTK) with GPUI chrome and the agent driver. |
+| `terminal/` | Terminal view over `dove-term`, also the host for an agent's own TUI. |
+| `side_chat.rs` | A second agent in the same worktree as the parent thread. |
+| `pages/` | Threads, kanban, automations, usage, agents, archived, help. |
+| `settings.rs`, `theme.rs`, `kit.rs`, `ui.rs` | Settings, light/dark theme tokens, shared glass/frost primitives. |
+| `mcp_browser.rs` | The `dove` MCP server injected into every harness. |
+
+## Data flow: engine → `LiveSession` → UI
+
+```text
+ composer ──Command──▶ LiveSession.commands ──▶ dove-harness adapter ──stdin/JSON-RPC──▶ agent CLI
+                                                                                      │
+ transcript ◀──AgentEvent── LiveSession.events ◀── engine recorder ◀──AgentEvent───────┘
+                                                     │
+                                                     ├─▶ sessions/<task>.jsonl (append)
+                                                     └─▶ SQLite: task status, usage rows
+```
+
+1. `Engine::start_task` (in `crates/dove-core/src/lib.rs`) resolves the harness binary, optionally creates a worktree with `dove_git::create_worktree_from`, inserts the task row and calls `dove_harness::spawn` with a `SessionSpec` (program, cwd, model, reasoning, permission mode, resume id, first prompt).
+2. The adapter runs on the engine's tokio runtime and emits `AgentEvent`s on a `flume` channel. Flume is executor-agnostic, so GPUI's foreground executor drains it without touching tokio.
+3. The engine sits between the adapter and the UI. For every event it appends to the task's JSONL transcript, updates status (`next_status`) and usage in SQLite, then forwards the event to `LiveSession::events`.
+4. The UI drains ready events once per frame and only sends `Command`s back (`Send`, `Interrupt`, `Permission`, `Answer`, `Kill`). It never writes session activity to the store itself, so a crash cannot leave the transcript and the UI disagreeing.
+5. On restart, `Store::read_transcript` replays the JSONL file; a torn final line is skipped rather than fatal.
+
+### Chat and terminal are one session
+
+A session has exactly one driver at a time (`Driver::Chat` or `Driver::Terminal`), because two processes writing one agent session interleave its transcript. Switching to the terminal calls `Engine::claim_terminal`, builds the agent's own TUI command with `--resume <native id>` (`dove_harness::tui`), passes the MCP config again, and starts a `mirror::MirrorSession` that tails the agent's own transcript file (Claude's `~/.claude/projects/…/<id>.jsonl`, Codex's rollout file). Mirrored lines are recorded like live events, so the chat view never goes stale. Switching back releases the terminal and resumes the structured driver.
+
+## Harness boundary (`crates/dove-harness`)
+
+Everything an agent does crosses one boundary: `spawn(rt, SessionSpec) -> SessionHandle`. Each adapter maps its CLI's wire format onto the same `AgentEvent`s (text deltas, reasoning, tool calls and results, plan/todos, permission requests, questions, usage, rate-limit windows, exit).
+
+| Path | Agents | Wire |
+| --- | --- | --- |
+| `external.rs` → `vendor/zeron-harness` | Claude Code, Codex, Cursor, OpenCode, Pi, Devin, Grok, Hermes, Antigravity (Kilo rides the OpenCode driver) | Claude stream-json, Codex app-server JSON-RPC, Zeron's per-agent drivers |
+| `acp.rs` | Gemini CLI, Copilot, goose, Qwen Code, Factory Droid, Cline, Kimi, Amp | Agent Client Protocol v1 over newline-delimited JSON-RPC |
+
+`detect.rs` finds installed CLIs on `PATH` (plus well-known install locations), `catalog.rs` refreshes each agent's live model list, and `models.rs` maps Dove's model/effort choices onto each CLI's flags. Dropping a `SessionHandle` kills its child.
+
+## MCP injection
+
+Dove gives every agent the same extra tools by registering one MCP server, named `dove`, with every session it starts:
+
+- `main.rs` calls `dove_harness::set_tool_server` with `{command: <dove exe>, args: ["--mcp-browser"], env: [port, token]}`.
+- Claude Code receives it through a generated `--mcp-config` file and `--allowedTools mcp__dove` when it runs in its TUI (`tui.rs`); the Zeron drivers (Claude, Codex and the rest) through `zeron_proto::McpServer` (`external.rs`); ACP agents through `mcpServers` on `session/new` and `session/load` (`acp_mcp_servers`).
+- `is_dove_tool` recognises the tool names however a harness spells them (`mcp__dove__browser_click`, `dove/browser_click`, …) so the transcript can render Dove's own tool calls natively.
+
+Tools exposed today: the browser set (`browser_navigate`, `browser_snapshot`, `browser_click`, `browser_type`, `browser_hover`, `browser_press`, `browser_scroll`, `browser_screenshot`, …) and `show_ui` for generative cards. New integrations (Composio, Paper, office documents, computer use) register through this same server so they work in every harness without per-agent code.
+
+## Browser control path
+
+```text
+agent ─tools/call─▶ dove --mcp-browser (stdio) ─JSON line over 127.0.0.1─▶ browser::control
+      ◀─result + PNG─                           ◀─────────────────────────  (token-checked)
+                                                                               │
+                                                     thread whose cwd matches ─┘
+                                                     browser::agent → page_api.js / CDP
+```
+
+1. The bridge (`mcp_browser.rs`) is a blocking stdio MCP server; it forwards each call as one JSON line `{token, cwd, tool, args}` to a loopback port opened by the running app.
+2. `browser/control.rs` checks the random per-launch token (which only reaches agents through the MCP server's environment) and routes the request to the browser of the thread whose working directory matches the agent's `cwd`.
+3. `browser/agent.rs` snapshots the page into an outline with stable refs (`[ref=e12]`), moves a visible cursor and performs the action. On Windows input goes through the DevTools protocol so pages receive trusted events; elsewhere it falls back to `page_api.js`. Screenshots return as base64 PNG the model can see.
+
+The Chrome-extension path reuses this protocol: the extension connects to the same loopback control endpoint and executes actions in the user's own Chrome tab instead of the in-app web view.
+
+## Store (`crates/dove-store`)
+
+Everything lives under `~/.dove` (override with `DOVE_HOME`):
+
+```text
+~/.dove/
+  dove.db                SQLite: projects, tasks, usage, settings, automations, automation_runs
+  sessions/<task>.jsonl  append-only AgentEvent transcript per task
+```
+
+- `tasks` holds title, harness, model, status, worktree, branch and the agent's native session id (used for `--resume` and forks).
+- `usage` keeps one row per turn with input/output/cache tokens and cost (exact when the agent reports it, `estimated` otherwise), which powers the cross-agent usage ledger.
+- `rusqlite` is built `bundled` and pinned to Zeron's version so both dependency graphs link one SQLite.
+
+## Remote control: desktop ⇄ Cloudflare edge ⇄ iOS / Android
+
+Status: lands with [PR #2](https://github.com/PupppyLoverr/Dove/pull/2): **Settings › Remote control** on the desktop, the `dove-mesh-host` sidecar (`mesh/crates/host`), the Rust mobile core (`mesh/`) and the iOS app (`apps/ios`). Android comes next. The edge is the Cosmos edge, which Dove reuses as-is; set `DOVE_EDGE_URL` to point at your own deployment.
+
+On the desktop, `apps/dove/src/remote.rs` spawns `dove-mesh-host` and talks to it in JSON lines over stdin/stdout. The sidecar owns the Woozlit session and the edge connections. When it is switched off or signed out, nothing leaves the machine. When it is on, it publishes every project and session to the account's registry room and each session's transcript to its own room. It forwards the commands a phone queues back to `remote.rs`, which runs them on the same session the desktop shows.
+
+```text
+ Dove desktop                    Cloudflare (Workers + Durable Objects)              iOS / Android
+ ────────────                    ──────────────────────────────────────              ─────────────
+ engine events ─▶ SessionDoc ─ws─▶ SessionRoom DO (one per session)  ◀─ws─ SessionDoc ─▶ transcript UI
+ (Loro CRDT)                       RegistryRoom DO (per account: rows) ◀─ws─ thread list
+ presence      ─────────────ws─▶  DeviceRoom DO (per device: liveness, nudges)
+ commands      ◀────────────────── command frames (send/steer/approve) ◀── composer, approvals
+                                   R2: attachments / blobs (optional)
+```
+
+- **Identity.** Desktop and phone sign in with the same Woozlit account. On the desktop, "Sign in with Woozlit" opens the browser and gets the token back through a one-time `127.0.0.1` callback that is checked with a `state` value. No client secret ships in any binary. The edge verifies the access token on every WebSocket upgrade and scopes all rooms to that account.
+- **Session documents.** Each live session is mirrored into a Loro CRDT document (transcript entries, status, pending permission requests, usage). The desktop is the writer for agent output; phones write only command intents. CRDT merge means a phone that was offline converges without a custom sync protocol.
+- **Registry rows.** A per-account `RegistryRoom` holds one row per thread (title, agent, status, updated_at, device), so a phone can list threads without loading every document.
+- **Commands.** The phone sends `send`, `steer`, `interrupt`, `permission` and `answer` frames. The desktop applies them through the same `LiveSession::send` path the composer uses; the agent always runs on the desktop.
+- **What leaves the machine.** Session events and command frames only. Repositories, worktrees and files stay local unless an agent puts their content into its own output.
+- **Cost.** The edge runs on Cloudflare's free tier for individual use. Enterprises can deploy the same Worker into their own Cloudflare account.
+
+## Principles
+
+- **The engine records, the UI renders.** Session activity is written in one place.
+- **One boundary per concern.** Harnesses enter through `spawn`; extra tools enter through the `dove` MCP server; the browser is driven through one control endpoint.
+- **Zero idle cost.** No animation loops when nothing changes; the vendored `gpui-base` stops the caret blinking when idle so an idle window renders zero frames.
+- **Honest UI.** No fake buttons; disabled actions explain why.
+
+## Credits
+
+Dove adapts code from [Zeron](https://github.com/zeronsh/zeron) (MIT) and uses [zui](https://github.com/zeronsh/zui) and gpui-component. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
