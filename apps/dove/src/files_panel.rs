@@ -1,0 +1,614 @@
+//! The side panel's Files tab: the worktree as a tree with search, and an
+//! inline syntax-highlighted preview (`path:line` links in the chat land
+//! here) with "Open in editor".
+
+use std::collections::{BTreeMap, HashSet};
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use gpui::prelude::FluentBuilder as _;
+use gpui::{
+    AnyElement, AppContext as _, Context, Entity, EventEmitter, InteractiveElement as _, IntoElement, ParentElement as _,
+    Render, ScrollStrategy, SharedString, StatefulInteractiveElement as _, Styled as _, StyledImage as _, StyledText,
+    Subscription, TextRun, UniformListScrollHandle, Window, div, px, uniform_list,
+};
+use gpui_base::input::{Input, InputEvent, InputState};
+use zeron_syntax::{HighlightRequest, HighlightedDocument};
+
+use crate::assets::{icon, icons};
+use crate::kit;
+use crate::markdown;
+use crate::markdown_extra;
+use crate::theme::Theme;
+use crate::ui;
+
+pub enum FilesEvent {
+    AskAgent(String),
+}
+
+fn is_image(path: &str) -> bool {
+    matches!(
+        path.rsplit('.').next().unwrap_or("").to_ascii_lowercase().as_str(),
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "ico" | "svg" | "tif" | "tiff"
+    )
+}
+
+fn is_markdown(path: &str) -> bool {
+    matches!(path.rsplit('.').next().unwrap_or("").to_ascii_lowercase().as_str(), "md" | "markdown" | "mdx")
+}
+
+/// Files bigger than this preview as plain text.
+const HIGHLIGHT_MAX: usize = 512 * 1024;
+const PREVIEW_MAX: usize = 4 * 1024 * 1024;
+
+#[derive(Clone)]
+struct Entry {
+    depth: usize,
+    name: SharedString,
+    path: String,
+    dir: bool,
+}
+
+enum PreviewKind {
+    Text,
+    Markdown,
+    Image,
+}
+
+struct Preview {
+    path: String,
+    lines: Arc<Vec<String>>,
+    highlight: Option<Arc<HighlightedDocument>>,
+    markdown: Option<Arc<Vec<crate::markdown::Block>>>,
+    line: Option<u32>,
+    error: Option<String>,
+    kind: PreviewKind,
+    editing: bool,
+}
+
+impl EventEmitter<FilesEvent> for FilesPanel {}
+
+pub struct FilesPanel {
+    root: Option<PathBuf>,
+    files: Arc<Vec<String>>,
+    collapsed: HashSet<String>,
+    search: Entity<InputState>,
+    query: String,
+    visible: Arc<Vec<Entry>>,
+    preview: Option<Preview>,
+    preview_scroll: UniformListScrollHandle,
+    editor: Option<Entity<InputState>>,
+    _load: Option<gpui::Task<()>>,
+    _sub: Subscription,
+}
+
+impl FilesPanel {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let style = ui::input_style(Theme::of(cx));
+        let search = cx.new(|cx| {
+            let mut s = InputState::new(window, cx).placeholder("Search files");
+            s.set_editor_style(style);
+            s
+        });
+        let _sub = cx.subscribe(&search, |this, s, ev: &InputEvent, cx| {
+            if matches!(ev, InputEvent::Change) {
+                this.query = s.read(cx).value().to_string();
+                this.rebuild();
+                cx.notify();
+            }
+        });
+        Self {
+            root: None,
+            files: Arc::default(),
+            collapsed: HashSet::new(),
+            search,
+            query: String::new(),
+            visible: Arc::default(),
+            preview: None,
+            preview_scroll: UniformListScrollHandle::new(),
+            editor: None,
+            _load: None,
+            _sub,
+        }
+    }
+
+    pub fn set_root(&mut self, root: Option<PathBuf>, cx: &mut Context<Self>) {
+        if root == self.root {
+            return;
+        }
+        self.root = root;
+        self.collapsed.clear();
+        self.preview = None;
+        self.refresh(cx);
+    }
+
+    pub fn refresh(&mut self, cx: &mut Context<Self>) {
+        let Some(root) = self.root.clone() else {
+            self.files = Arc::default();
+            self.rebuild();
+            cx.notify();
+            return;
+        };
+        let work = cx.background_spawn(async move { dove_core::git::list_files(&root).unwrap_or_default() });
+        self._load = Some(cx.spawn(async move |this, cx| {
+            let files = work.await;
+            let _ = this.update(cx, |p, cx| {
+                // Directories start collapsed below the top level.
+                let mut dirs = HashSet::new();
+                for f in &files {
+                    let parts: Vec<&str> = f.split('/').collect();
+                    for k in 1..parts.len() {
+                        dirs.insert(parts[..k].join("/"));
+                    }
+                }
+                p.collapsed = dirs;
+                p.files = Arc::new(files);
+                p.rebuild();
+                cx.notify();
+            });
+        }));
+    }
+
+    fn rebuild(&mut self) {
+        let q = self.query.trim().to_lowercase();
+        let mut out = Vec::new();
+        if !q.is_empty() {
+            for f in self.files.iter().filter(|f| f.to_lowercase().contains(&q)).take(500) {
+                out.push(Entry { depth: 0, name: f.clone().into(), path: f.clone(), dir: false });
+            }
+        } else {
+            #[derive(Default)]
+            struct Node {
+                dirs: BTreeMap<String, Node>,
+                files: Vec<String>,
+            }
+            let mut root = Node::default();
+            for f in self.files.iter() {
+                let mut node = &mut root;
+                let mut parts = f.split('/').peekable();
+                while let Some(p) = parts.next() {
+                    if parts.peek().is_some() {
+                        node = node.dirs.entry(p.to_string()).or_default();
+                    } else {
+                        node.files.push(p.to_string());
+                    }
+                }
+            }
+            fn walk(n: &Node, prefix: &str, depth: usize, collapsed: &HashSet<String>, out: &mut Vec<Entry>) {
+                for (name, child) in &n.dirs {
+                    let path = if prefix.is_empty() { name.clone() } else { format!("{prefix}/{name}") };
+                    out.push(Entry { depth, name: name.clone().into(), path: path.clone(), dir: true });
+                    if !collapsed.contains(&path) {
+                        walk(child, &path, depth + 1, collapsed, out);
+                    }
+                }
+                for name in &n.files {
+                    let path = if prefix.is_empty() { name.clone() } else { format!("{prefix}/{name}") };
+                    out.push(Entry { depth, name: name.clone().into(), path, dir: false });
+                }
+            }
+            walk(&root, "", 0, &self.collapsed, &mut out);
+        }
+        self.visible = Arc::new(out);
+    }
+
+    fn toggle_dir(&mut self, path: &str, cx: &mut Context<Self>) {
+        if !self.collapsed.remove(path) {
+            self.collapsed.insert(path.to_string());
+        }
+        self.rebuild();
+        cx.notify();
+    }
+
+    /// Preview `path` (relative to the root, or absolute), scrolled to `line`.
+    pub fn open_path(&mut self, path: &str, line: Option<u32>, cx: &mut Context<Self>) {
+        let Some(root) = self.root.clone() else { return };
+        let full = {
+            let p = PathBuf::from(path);
+            if p.is_absolute() { p } else { root.join(path.trim_start_matches("./")) }
+        };
+        let rel = full
+            .strip_prefix(&root)
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_else(|_| path.to_string());
+        let kind = if is_image(&rel) {
+            PreviewKind::Image
+        } else if is_markdown(&rel) {
+            PreviewKind::Markdown
+        } else {
+            PreviewKind::Text
+        };
+        self.preview = Some(Preview {
+            path: rel.clone(),
+            lines: Arc::default(),
+            highlight: None,
+            markdown: None,
+            line,
+            error: None,
+            kind,
+            editing: false,
+        });
+        self.editor = None;
+        let work = cx.background_spawn(async move {
+            let bytes = std::fs::read(&full).map_err(|e| e.to_string())?;
+            if bytes.len() > PREVIEW_MAX {
+                return Err("This file is too large to preview".to_string());
+            }
+            if is_image(&rel) {
+                return Ok((Vec::new(), None, None));
+            }
+            if bytes.iter().take(8000).any(|b| *b == 0) {
+                return Err("Binary file".to_string());
+            }
+            let text = String::from_utf8_lossy(&bytes).into_owned();
+            let md = is_markdown(&rel).then(|| markdown::parse(&text));
+            let highlight = (text.len() <= HIGHLIGHT_MAX && md.is_none())
+                .then(|| {
+                    zeron_syntax::highlight(HighlightRequest { source: &text, path: Some(&rel), fence_tag: None }).ok()
+                })
+                .flatten()
+                .map(Arc::new);
+            let lines: Vec<String> = text.lines().map(|l| l.replace('\t', "    ")).collect();
+            Ok((lines, highlight, md))
+        });
+        self._load = Some(cx.spawn(async move |this, cx| {
+            let result = work.await;
+            let _ = this.update(cx, |p, cx| {
+                if let Some(preview) = p.preview.as_mut() {
+                    match result {
+                        Ok((lines, hl, md)) => {
+                            preview.lines = Arc::new(lines);
+                            preview.highlight = hl;
+                            preview.markdown = md;
+                        }
+                        Err(e) => preview.error = Some(e),
+                    }
+                    if let Some(l) = preview.line {
+                        p.preview_scroll.scroll_to_item(l.saturating_sub(4) as usize, ScrollStrategy::Top);
+                    }
+                }
+                cx.notify();
+            });
+        }));
+        cx.notify();
+    }
+
+    fn close_preview(&mut self, cx: &mut Context<Self>) {
+        self.preview = None;
+        self.editor = None;
+        cx.notify();
+    }
+
+    fn begin_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(p) = self.preview.as_mut() else { return };
+        p.editing = true;
+        let text = p.lines.join("\n");
+        let style = ui::input_style(Theme::of(cx));
+        let editor = cx.new(|cx| {
+            let mut s = InputState::new(window, cx);
+            s.set_editor_style(style);
+            s.set_value(text, window, cx);
+            s
+        });
+        self.editor = Some(editor);
+        cx.notify();
+    }
+
+    fn save_edit(&mut self, cx: &mut Context<Self>) {
+        let Some(p) = self.preview.as_ref() else { return };
+        let Some(root) = &self.root else { return };
+        let Some(editor) = &self.editor else { return };
+        let text = editor.read(cx).value().to_string();
+        let path = root.join(&p.path);
+        if std::fs::write(&path, &text).is_ok() {
+            self.open_path(&p.path.clone(), None, cx);
+        }
+    }
+
+    fn ask_agent(&mut self, cx: &mut Context<Self>) {
+        let Some(p) = self.preview.as_ref() else { return };
+        let instruction = self.editor.as_ref().map(|e| e.read(cx).value().to_string()).unwrap_or_default();
+        let msg = if instruction.trim().is_empty() {
+            format!("Edit `{}`. Propose a precise patch.", p.path)
+        } else {
+            format!("Edit `{}`:\n\n{}", p.path, instruction)
+        };
+        cx.emit(FilesEvent::AskAgent(msg));
+    }
+
+    fn render_preview(&self, t: &Theme, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        let p = self.preview.as_ref().expect("preview open");
+        let full = self.root.as_ref().map(|r| r.join(&p.path));
+        let header = div()
+            .h(px(36.0))
+            .px(px(8.0))
+            .flex()
+            .items_center()
+            .gap(px(6.0))
+            .border_b_1()
+            .border_color(t.border)
+            .child(ui::icon_button("prev-back", icons::ARROW_LEFT, "Back to files", t, {
+                let weak = cx.weak_entity();
+                move |_, _, cx| {
+                    let _ = weak.update(cx, |v, cx| v.close_preview(cx));
+                }
+            }))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(px(12.5))
+                    .font_family(t.font_mono.clone())
+                    .child(p.path.clone()),
+            )
+            .when(!matches!(p.kind, PreviewKind::Image), |d| {
+                d.child(ui::icon_button("prev-edit", icons::PEN, "Edit this file", t, {
+                    let weak = cx.weak_entity();
+                    move |_, window, cx| {
+                        let _ = weak.update(cx, |v, cx| v.begin_edit(window, cx));
+                    }
+                }))
+                .child(ui::icon_button("prev-ask", icons::BOT, "Ask the agent to edit", t, {
+                    let weak = cx.weak_entity();
+                    move |_, _, cx| {
+                        let _ = weak.update(cx, |v, cx| v.ask_agent(cx));
+                    }
+                }))
+            })
+            .when_some(full.clone(), |d, full| {
+                d.child(ui::icon_button("prev-open", icons::ARROW_UP_RIGHT, "Open in editor", t, move |_, _, cx| {
+                    cx.open_with_system(&full);
+                }))
+            });
+        if p.editing {
+            let editor = self.editor.clone();
+            return div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .child(header)
+                .child(div().flex_1().min_h_0().p(px(8.0)).children(editor.as_ref().map(Input::new)))
+                .child(
+                    div()
+                        .h(px(40.0))
+                        .px(px(10.0))
+                        .flex()
+                        .items_center()
+                        .gap(px(8.0))
+                        .border_t_1()
+                        .border_color(t.border)
+                        .child(ui::button_primary("file-save", "Save", t).on_click({
+                            let weak = cx.weak_entity();
+                            move |_, _, cx| {
+                                let _ = weak.update(cx, |v, cx| v.save_edit(cx));
+                            }
+                        }))
+                        .child(ui::button_ghost("file-ask", "Ask agent instead", t).on_click({
+                            let weak = cx.weak_entity();
+                            move |_, _, cx| {
+                                let _ = weak.update(cx, |v, cx| v.ask_agent(cx));
+                            }
+                        })),
+                )
+                .into_any_element();
+        }
+        let body: AnyElement = if let Some(e) = &p.error {
+            kit::empty_state(icons::DOCUMENT, "No preview", e, t).into_any_element()
+        } else if matches!(p.kind, PreviewKind::Image) {
+            let src = full.as_ref().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+            let picture = markdown_extra::preview_image(&src)
+                .map(|img| gpui::img(img).max_w_full().max_h_full().object_fit(gpui::ObjectFit::Contain).into_any_element())
+                .unwrap_or_else(|| {
+                    gpui::img(SharedString::from(src))
+                        .max_w_full()
+                        .max_h_full()
+                        .object_fit(gpui::ObjectFit::Contain)
+                        .into_any_element()
+                });
+            div()
+                .id("file-image")
+                .size_full()
+                .p(px(16.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(picture)
+                .into_any_element()
+        } else if matches!(p.kind, PreviewKind::Markdown) {
+            let blocks = p.markdown.clone().unwrap_or_default();
+            div()
+                .id("file-md")
+                .size_full()
+                .overflow_y_scroll()
+                .p(px(16.0))
+                .child(markdown::render("file-md", &blocks, t, window))
+                .into_any_element()
+        } else {
+            let lines = p.lines.clone();
+            let hl = p.highlight.clone();
+            let target = p.line;
+            let gutter = (lines.len().max(1).ilog10() + 1) as f32 * 8.0 + 16.0;
+            uniform_list("file-preview", lines.len(), move |range, window, cx| {
+                let t = Theme::of(cx);
+                let mut font = window.text_style().font();
+                font.family = t.font_mono.clone();
+                range
+                    .map(|i| {
+                        let line = &lines[i];
+                        let spans = hl.as_ref().and_then(|h| h.lines.get(i));
+                        let text: AnyElement = match spans.filter(|s| !s.is_empty() && !line.is_empty()) {
+                            Some(spans) => {
+                                let run = |len: usize, color| gpui::TextRun {
+                                    len,
+                                    font: font.clone(),
+                                    color,
+                                    background_color: None,
+                                    underline: None,
+                                    strikethrough: None,
+                                };
+                                let mut runs: Vec<TextRun> = Vec::new();
+                                let mut at = 0usize;
+                                for s in spans {
+                                    let (a, b) = (s.range.start.min(line.len()), s.range.end.min(line.len()));
+                                    if a < at || a >= b {
+                                        continue;
+                                    }
+                                    if a > at {
+                                        runs.push(run(a - at, t.text));
+                                    }
+                                    runs.push(run(b - a, t.syntax(s.kind)));
+                                    at = b;
+                                }
+                                if at < line.len() {
+                                    runs.push(run(line.len() - at, t.text));
+                                }
+                                StyledText::new(SharedString::from(line.clone())).with_runs(runs).into_any_element()
+                            }
+                            None => div()
+                                .child(if line.is_empty() { " ".to_string() } else { line.clone() })
+                                .into_any_element(),
+                        };
+                        let current = target == Some(i as u32 + 1);
+                        div()
+                            .h(px(19.0))
+                            .flex()
+                            .when(current, |d| d.bg(t.accent.opacity(0.12)))
+                            .font_family(t.font_mono.clone())
+                            .text_size(px(12.0))
+                            .child(
+                                div()
+                                    .w(px(gutter))
+                                    .flex_none()
+                                    .pr(px(8.0))
+                                    .text_right()
+                                    .text_color(t.text_faint)
+                                    .child((i + 1).to_string()),
+                            )
+                            .child(div().flex_1().whitespace_nowrap().overflow_hidden().child(text))
+                            .into_any_element()
+                    })
+                    .collect()
+            })
+            .track_scroll(&self.preview_scroll)
+            .flex_1()
+            .into_any_element()
+        };
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .child(header)
+            .child(div().flex_1().min_h_0().flex().flex_col().child(body))
+            .into_any_element()
+    }
+}
+
+fn file_icon(name: &str) -> &'static str {
+    let ext = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    match ext.as_str() {
+        "md" | "mdx" => icons::FILE_MARKDOWN,
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "ico" => icons::FILE_IMAGE,
+        "json" | "toml" | "yaml" | "yml" | "lock" | "csv" => icons::FILE_DATA,
+        "css" | "scss" | "less" => icons::FILE_STYLE,
+        "rs" | "ts" | "tsx" | "js" | "jsx" | "py" | "go" | "c" | "cpp" | "h" | "java" | "kt" | "swift" | "rb"
+        | "php" | "sh" | "html" => icons::FILE_CODE,
+        _ => icons::DOCUMENT,
+    }
+}
+
+impl Render for FilesPanel {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = Theme::of(cx).clone();
+        if self.preview.is_some() {
+            return self.render_preview(&t, window, cx);
+        }
+        let search = div()
+            .m(px(8.0))
+            .h(px(30.0))
+            .px(px(8.0))
+            .flex()
+            .items_center()
+            .gap(px(6.0))
+            .rounded(px(8.0))
+            .bg(t.wash(0.05))
+            .border_1()
+            .border_color(t.border)
+            .text_size(px(13.0))
+            .child(icon(icons::MAGNIFER).size(px(14.0)).text_color(t.text_faint))
+            .child(div().flex_1().child(Input::new(&self.search)));
+
+        let entries = self.visible.clone();
+        let weak = cx.weak_entity();
+        let tree: AnyElement = if self.root.is_none() {
+            kit::empty_state(icons::FOLDER, "No workspace", "Open a thread to browse its files.", &t).into_any_element()
+        } else if entries.is_empty() {
+            div()
+                .px(px(14.0))
+                .py(px(6.0))
+                .text_size(px(13.0))
+                .text_color(t.text_faint)
+                .child(if self.query.is_empty() { "Empty folder" } else { "No matches" })
+                .into_any_element()
+        } else {
+            let collapsed = self.collapsed.clone();
+            uniform_list("files-tree", entries.len(), move |range, _, cx| {
+                let t = Theme::of(cx);
+                range
+                    .map(|i| {
+                        let e = &entries[i];
+                        let weak = weak.clone();
+                        let path = e.path.clone();
+                        let dir = e.dir;
+                        let open = dir && !collapsed.contains(&e.path);
+                        div()
+                            .id(("file-row", i))
+                            .h(px(26.0))
+                            .pl(px(10.0 + e.depth as f32 * 12.0))
+                            .pr(px(8.0))
+                            .mx(px(4.0))
+                            .flex()
+                            .items_center()
+                            .gap(px(6.0))
+                            .rounded(px(6.0))
+                            .text_size(px(13.0))
+                            .text_color(t.text_muted)
+                            .cursor_pointer()
+                            .hover(|s| s.bg(t.wash(0.07)))
+                            .child(if dir {
+                                icon(if open { icons::ALT_ARROW_DOWN } else { icons::ALT_ARROW_RIGHT })
+                                    .size(px(12.0))
+                                    .text_color(t.text_faint)
+                                    .into_any_element()
+                            } else {
+                                div().w(px(12.0)).into_any_element()
+                            })
+                            .child(
+                                icon(if dir { icons::FOLDER } else { file_icon(&e.name) })
+                                    .size(px(14.0))
+                                    .text_color(t.text_faint),
+                            )
+                            .child(div().flex_1().min_w_0().truncate().child(e.name.clone()))
+                            .on_click(move |_, _, cx| {
+                                let _ = weak.update(cx, |p, cx| {
+                                    if dir { p.toggle_dir(&path, cx) } else { p.open_path(&path, None, cx) }
+                                });
+                            })
+                            .into_any_element()
+                    })
+                    .collect()
+            })
+            .flex_1()
+            .into_any_element()
+        };
+
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .text_color(t.text)
+            .child(search)
+            .child(div().flex_1().min_h_0().flex().flex_col().child(tree))
+            .into_any_element()
+    }
+}

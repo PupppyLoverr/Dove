@@ -1,0 +1,70 @@
+[package]
+name = "dove"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Dove — a fast, native Agentic Development Environment"
+
+[[bin]]
+name = "dove"
+path = "src/main.rs"
+
+[dependencies]
+dove-core = { workspace = true }
+gpui = { workspace = true }
+gpui_platform = { workspace = true }
+gpui-base = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+mimalloc = { workspace = true }
+flume = "0.11"
+serde_json = { workspace = true }
+pulldown-cmark = { version = "0.13", default-features = false }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "ico", "gif", "bmp", "tiff"] }
+mermaid-rs-renderer = "0.3.1"
+dove-term = { workspace = true }
+dove-store.workspace = true
+zeron-syntax = { path = "../../vendor/zeron-syntax" }
+zeron-voice = { path = "../../vendor/zeron-voice" }
+similar = "2"
+notify-rust = "4.18"
+# Embedded browser (ported from Zeron).
+url = "2"
+serde = { workspace = true }
+tokio = { workspace = true, features = ["net"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+sha2 = "0.10"
+
+[target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
+tray-icon = "0.24"
+
+# Browser: WebView2 in visual-hosting mode, composited by zui's overlay
+# plane. Same windows 0.61 as gpui_windows, so COM types interoperate.
+[target.'cfg(windows)'.dependencies]
+webview2-com = "0.38"
+windows = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Direct2D_Common", "Win32_Graphics_DirectComposition", "Win32_System_Com", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
+windows-core = "0.61"
+raw-window-handle = "0.6"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
+objc = "0.2"
+wry = { version = "0.56", default-features = false, features = ["os-webview"] }
+raw-window-handle = "0.6"
+objc2 = "0.6"
+block2 = "0.6"
+objc2-app-kit = { version = "0.3.2", features = ["NSApplication", "NSHapticFeedback", "NSBitmapImageRep", "NSImage", "NSEvent", "NSResponder", "NSView", "NSWindow"] }
+objc2-foundation = "0.3.2"
+objc2-web-kit = { version = "0.3.2", features = ["WKWebView", "WKNavigationDelegate", "WKNavigationAction", "WKSnapshotConfiguration"] }
+core-foundation = "0.10"
+core-graphics = { version = "0.24", features = ["elcapitan", "highsierra", "link"] }
+foreign-types = "0.5"
+block = "0.1"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
+[features]
+browser-fixture = []

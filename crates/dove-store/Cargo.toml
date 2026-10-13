@@ -1,0 +1,18 @@
+[package]
+name = "dove-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Dove's local persistence: SQLite metadata and JSONL transcripts"
+
+[dependencies]
+dove-proto = { workspace = true }
+anyhow = { workspace = true }
+serde_json = { workspace = true }
+rusqlite = { workspace = true }
+parking_lot = { workspace = true }
+uuid = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

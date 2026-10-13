@@ -1,0 +1,8 @@
+/target
+**/*.rs.bk
+.dove/
+.DS_Store
+
+# Intro video pipeline scratch (see media/intro/README.md)
+media/intro/frames/
+media/intro/src/node_modules/

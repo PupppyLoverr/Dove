@@ -1,0 +1,19 @@
+# .worktreeinclude
+#
+# Copy this file to .worktreeinclude to use it. Each task Dove creates gets its
+# own git worktree, and git does not copy gitignored files into a new worktree.
+# Any path listed here is copied from the project root into each task's
+# worktree when it is created, so local secrets and settings are available there.
+#
+# Format:
+#   - One path per line, relative to the project root.
+#   - Lines starting with # are comments. Blank lines are ignored.
+#   - Only list files that are gitignored. Tracked files are already in the worktree.
+
+# Local environment variables (often contain secrets; never commit them)
+.env
+.env.local
+
+# Local tool settings
+# .npmrc
+# config/local.toml

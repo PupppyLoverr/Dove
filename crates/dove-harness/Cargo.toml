@@ -1,0 +1,20 @@
+[package]
+name = "dove-harness"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Adapters that drive coding-agent CLIs and normalize their output"
+
+[dependencies]
+dove-proto = { workspace = true }
+zeron-harness = { path = "../../vendor/zeron-harness" }
+zeron-proto = { path = "../../vendor/zeron-proto" }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["net"] }
+tracing = { workspace = true }
+which = { workspace = true }
+uuid = { workspace = true }
+flume = "0.11"
+futures = "0.3"

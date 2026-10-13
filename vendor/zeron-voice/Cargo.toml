@@ -1,0 +1,24 @@
+[package]
+name = "zeron-voice"
+version = "0.2.112"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[dependencies]
+anyhow = "1"
+parakeet-rs = "=0.3.8"
+cpal = "=0.17.3"
+rubato = "=0.16.2"
+# parakeet-rs 0.3.8 is built against this ort release (as in Zeron's lockfile).
+ort = "=2.0.0-rc.13"
+ort-sys = "=2.0.0-rc.13"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream", "system-proxy"] }
+tokio = { version = "1", features = ["full"] }
+sha2 = "0.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+hound = "3.5"
+tempfile = "3"

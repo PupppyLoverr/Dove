@@ -1,0 +1,56 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "apps/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/PupppyLoverr/Dove"
+rust-version = "1.90"
+
+[workspace.dependencies]
+dove-proto = { path = "crates/dove-proto" }
+dove-store = { path = "crates/dove-store" }
+dove-harness = { path = "crates/dove-harness" }
+dove-git = { path = "crates/dove-git" }
+dove-core = { path = "crates/dove-core" }
+dove-term = { path = "crates/dove-term" }
+
+anyhow = "1"
+serde = { version = "1", features = ["derive", "rc"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "process", "io-util", "sync", "macros", "time", "fs"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+uuid = { version = "1", features = ["v7", "serde"] }
+# 0.32 matches Zeron's rusqlite, so both graphs link one sqlite.
+rusqlite = { version = "0.32.1", features = ["bundled"] }
+which = "8"
+parking_lot = "0.12"
+tempfile = "3"
+# GPUI: zeronsh/zui (Zed's GPUI plus backdrop blur, edge fades and rounded
+# clipping), with gpui-base from zeronsh/gpui-component pinned to the same rev.
+# This is the exact pair Zeron ships on Windows, macOS and Linux.
+gpui = { git = "https://github.com/zeronsh/zui", rev = "361ff20b919fdfb80199ee6d9aed725300cb7d54" }
+gpui_platform = { git = "https://github.com/zeronsh/zui", rev = "361ff20b919fdfb80199ee6d9aed725300cb7d54", features = ["wayland", "x11", "font-kit", "runtime_shaders"] }
+gpui-base = { git = "https://github.com/zeronsh/gpui-component", rev = "701ca97af7983bf85343d2d1d404ab528b18ec96" }
+mimalloc = { version = "0.1", default-features = false }
+
+[profile.dev]
+# Keep debug builds usable: GPUI is painfully slow unoptimized.
+opt-level = 1
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = true
+panic = "abort"
+opt-level = 3
+
+# A vendored copy of gpui-base with one behavior change (caret stops blinking
+# when idle, so an idle window renders zero frames). See vendor/README.md.
+[patch."https://github.com/zeronsh/gpui-component"]
+gpui-base = { path = "vendor/gpui-base" }

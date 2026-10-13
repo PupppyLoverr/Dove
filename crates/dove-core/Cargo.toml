@@ -1,0 +1,23 @@
+[package]
+name = "dove-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Dove's engine: projects, tasks and live agent sessions, independent of any UI"
+
+[dependencies]
+dove-proto = { workspace = true }
+dove-store = { workspace = true }
+dove-harness = { workspace = true }
+dove-git = { workspace = true }
+anyhow = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+parking_lot = { workspace = true }
+serde_json = { workspace = true }
+serde = { workspace = true }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+flume = "0.11"
+
+[dev-dependencies]
+tempfile = { workspace = true }

@@ -1,0 +1,12 @@
+{
+  "_doc": "Single source of truth for the first-launch intro. Times in seconds; positions normalized to the window (0..1). build-assets.mjs bakes this into apps/dove/src/intro/data.rs and data.js.",
+  "duration": 3.6,
+  "fade_out": [3.5, 3.85],
+  "border_in": [0.0, 0.5],
+  "border_alpha": 0.10,
+  "shimmers": [
+    { "span": [0.3, 1.45], "alpha": 1.0, "start": 0.0 }
+  ],
+  "pen": { "appear": [1.1, 1.35] },
+  "write": { "span": [1.35, 2.95], "lift": 0.07, "width_frac": 0.40, "max_height_frac": 0.42 }
+}

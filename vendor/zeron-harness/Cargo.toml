@@ -1,0 +1,37 @@
+[package]
+name = "zeron-harness"
+version = "0.2.112"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[features]
+native-fixture = []
+installer-fixture = []
+
+[dependencies]
+zeron-voice-media = { path = "../zeron-voice-media" }
+zeron-proto = { path = "../zeron-proto" }
+base64 = "0.22"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream", "system-proxy"] }
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["codec", "io-util"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+futures = { version = "0.3" }
+async-trait = { version = "0.1" }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1" }
+deser-hjson = { version = "2.2" }
+serde_yaml_ng = "0.10"
+anyhow = { version = "1" }
+thiserror = { version = "2" }
+tracing = { version = "0.1" }
+sha2 = { version = "0.10" }
+semver = "1"
+zip = { version = "7.2", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = { version = "0.2" }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Security", "Win32_Security_Cryptography", "Win32_Security_Cryptography_Catalog", "Win32_Security_Cryptography_Sip", "Win32_Security_WinTrust", "Win32_System_Console", "Win32_System_Diagnostics_ToolHelp", "Win32_System_JobObjects", "Win32_System_Pipes", "Win32_System_SystemInformation", "Win32_System_Threading"] }

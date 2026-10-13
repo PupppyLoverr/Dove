@@ -1,0 +1,20 @@
+[package]
+name = "dove-term"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Terminal emulation (alacritty_terminal) and PTY sessions for Dove"
+
+[dependencies]
+alacritty_terminal = "0.26"
+portable-pty = "0.9"
+anyhow = { workspace = true }
+flume = "0.11"
+tracing = { workspace = true }
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_Console",
+    "Win32_System_JobObjects",
+    "Win32_System_Pipes",
+    "Win32_System_Threading",
+] }

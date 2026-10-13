@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dove Intro</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; background: #000; overflow: hidden; }
+  canvas { display: block; }
+  #debug { position: fixed; left: 16px; right: 16px; bottom: 12px; display: none; gap: 12px; align-items: center; font: 12px/1 ui-monospace, monospace; color: #888; }
+  #debug input { flex: 1; }
+  body.debug #debug { display: flex; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="debug"><button id="play">play</button><input id="t" type="range" min="0" max="3.9" step="0.0333" value="0"><span id="tv">0.00s</span></div>
+<script src="data.js"></script>
+<script>
+// Reference renderer for the Dove first-launch intro. apps/dove/src/intro/mod.rs
+// mirrors this drawing code; keep the two in step. All motion is a pure
+// function of t so frames capture deterministically.
+const { timeline: T, wordmark: WM } = window.INTRO;
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+let W = 1280, H = 800;
+
+const clamp01 = (x) => Math.min(1, Math.max(0, x));
+const lerp = (a, b, k) => a + (b - a) * k;
+const smooth = (x) => { x = clamp01(x); return x * x * (3 - 2 * x); };
+const easeInOutSine = (x) => -(Math.cos(Math.PI * clamp01(x)) - 1) / 2;
+const easeInOutCubic = (x) => { x = clamp01(x); return x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2; };
+const span = (t, s) => (t - s[0]) / (s[1] - s[0]);
+
+// ---------- glow (concentric discs so GPUI can draw the same thing) ----------
+function glow(x, y, radius, alpha, rings = 6) {
+  ctx.fillStyle = `rgba(255,255,255,${alpha / rings})`;
+  for (let k = 1; k <= rings; k++) {
+    ctx.beginPath();
+    ctx.arc(x, y, radius * (k / rings), 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+// ---------- border + shimmer ----------
+const RADIUS = 10, INSET = 0.75;
+function perimeter() {
+  const w = W - 2 * INSET, h = H - 2 * INSET, r = RADIUS;
+  return 2 * (w - 2 * r) + 2 * (h - 2 * r) + 2 * Math.PI * r;
+}
+// Point at arc length s, clockwise from the top edge just right of the top-left corner.
+function perimeterPoint(s) {
+  const x0 = INSET, y0 = INSET, w = W - 2 * INSET, h = H - 2 * INSET, r = RADIUS;
+  const L = perimeter();
+  s = ((s % L) + L) % L;
+  const top = w - 2 * r, side = h - 2 * r, arc = (Math.PI * r) / 2;
+  const segs = [
+    [top, (d) => [x0 + r + d, y0]],
+    [arc, (d) => { const a = -Math.PI / 2 + d / r; return [x0 + w - r + r * Math.cos(a), y0 + r + r * Math.sin(a)]; }],
+    [side, (d) => [x0 + w, y0 + r + d]],
+    [arc, (d) => { const a = d / r; return [x0 + w - r + r * Math.cos(a), y0 + h - r + r * Math.sin(a)]; }],
+    [top, (d) => [x0 + w - r - d, y0 + h]],
+    [arc, (d) => { const a = Math.PI / 2 + d / r; return [x0 + r + r * Math.cos(a), y0 + h - r + r * Math.sin(a)]; }],
+    [side, (d) => [x0, y0 + h - r - d]],
+    [arc, (d) => { const a = Math.PI + d / r; return [x0 + r + r * Math.cos(a), y0 + r + r * Math.sin(a)]; }],
+  ];
+  for (const [len, f] of segs) { if (s <= len) return f(s); s -= len; }
+  return [x0 + r, y0];
+}
+function roundedRect() {
+  const x = INSET, y = INSET, w = W - 2 * INSET, h = H - 2 * INSET, r = RADIUS;
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+const SHIMMER_SEGMENTS = 40;
+function drawShimmer(t, sh) {
+  const p = span(t, sh.span);
+  if (p <= 0 || p >= 1) return;
+  const L = perimeter();
+  const head = easeInOutSine(p) * L * 1.0;
+  const env = Math.pow(Math.sin(Math.PI * p), 0.5) * sh.alpha;
+  const trail = L * 0.26;
+  ctx.lineCap = 'butt';
+  for (let pass = 0; pass < 2; pass++) {
+    const width = pass ? 2 : 9, passAlpha = pass ? 1 : 0.22;
+    for (let k = 0; k < SHIMMER_SEGMENTS; k++) {
+      const a = head - trail * (1 - k / SHIMMER_SEGMENTS), b = head - trail * (1 - (k + 1) / SHIMMER_SEGMENTS);
+      const f = (k + 1) / SHIMMER_SEGMENTS;
+      const c = [lerp(150, 255, f * f), lerp(156, 255, f * f), lerp(168, 255, f * f)].map(Math.round);
+      ctx.strokeStyle = `rgba(${c[0]},${c[1]},${c[2]},${env * passAlpha * Math.pow(f, 1.8)})`;
+      ctx.lineWidth = width;
+      ctx.beginPath();
+      const steps = 3;
+      for (let j = 0; j <= steps; j++) {
+        const q = perimeterPoint(lerp(a, b, j / steps));
+        j ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]);
+      }
+      ctx.stroke();
+    }
+  }
+  const [hx, hy] = perimeterPoint(head);
+  glow(hx, hy, 14, 0.35 * env);
+  ctx.fillStyle = `rgba(255,255,255,${env})`;
+  ctx.beginPath(); ctx.arc(hx, hy, 1.8, 0, Math.PI * 2); ctx.fill();
+}
+
+// ---------- wordmark ----------
+function wordBox() {
+  const w = Math.min(W * T.write.width_frac, (H * T.write.max_height_frac) / WM.aspect);
+  return { w, cx: W / 2, cy: H / 2 };
+}
+function fillRings(rings, box, alpha) {
+  if (alpha <= 0) return;
+  ctx.fillStyle = `rgba(255,255,255,${alpha})`;
+  ctx.beginPath();
+  for (const r of rings) {
+    r.forEach(([x, y], i) => (i ? ctx.lineTo : ctx.moveTo).call(ctx, box.cx + x * box.w, box.cy + y * box.w));
+    ctx.closePath();
+  }
+  ctx.fill('evenodd');
+}
+function drawWordmark(t) {
+  const box = wordBox();
+  for (const l of WM.letters) {
+    if (t < l.t0) continue;
+    if (t >= l.t1) { fillRings(l.glyph, box, 1); continue; }
+    const done = [];
+    for (const s of l.slices) {
+      if (t >= s.t1) done.push(...s.rings);
+      else if (t >= s.t0) fillRings(s.rings, box, (t - s.t0) / (s.t1 - s.t0));
+    }
+    fillRings(done, box, 1);
+  }
+}
+function penAt(t) {
+  const L = WM.letters;
+  const at = (p) => [p[1], p[2]];
+  for (let i = 0; i < L.length; i++) {
+    const l = L[i];
+    if (t < l.t0) {
+      if (i === 0) return at(l.pen[0]);
+      const prev = L[i - 1], a = at(prev.pen[prev.pen.length - 1]), b = at(l.pen[0]);
+      const k = easeInOutSine((t - prev.t1) / (l.t0 - prev.t1));
+      return [lerp(a[0], b[0], k), lerp(a[1], b[1], k) - 0.02 * Math.sin(Math.PI * k)];
+    }
+    if (t <= l.t1) {
+      const p = l.pen;
+      let j = 1;
+      while (j < p.length - 1 && p[j][0] < t) j++;
+      const k = clamp01((t - p[j - 1][0]) / (p[j][0] - p[j - 1][0] || 1));
+      return [lerp(p[j - 1][1], p[j][1], k), lerp(p[j - 1][2], p[j][2], k)];
+    }
+  }
+  const last = L[L.length - 1];
+  return at(last.pen[last.pen.length - 1]);
+}
+// The point of light that writes the word: it blooms at the pen's start,
+// follows the pen, and fades once the word is done.
+function drawLight(t) {
+  const box = wordBox();
+  const [a0] = T.pen.appear, [, w1] = T.write.span;
+  if (t < a0 || t > w1 + 0.5) return;
+  const [px, py] = penAt(Math.max(t, T.write.span[0]));
+  const x = box.cx + px * box.w, y = box.cy + py * box.w;
+  const a = t < w1 ? smooth(span(t, T.pen.appear)) : 1 - smooth((t - w1) / 0.5);
+  glow(x, y, 22, 0.32 * a);
+  ctx.fillStyle = `rgba(255,255,255,${a})`;
+  ctx.beginPath(); ctx.arc(x, y, 2.4, 0, Math.PI * 2); ctx.fill();
+}
+
+// ---------- frame ----------
+function render(t) {
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, W, H);
+
+  roundedRect();
+  ctx.strokeStyle = `rgba(255,255,255,${T.border_alpha * smooth(span(t, T.border_in))})`;
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  for (const sh of T.shimmers) drawShimmer(t, sh);
+
+  drawWordmark(t);
+  drawLight(t);
+}
+
+function resize(w, h) {
+  W = w; H = h;
+  canvas.width = w; canvas.height = h;
+  canvas.style.width = w + 'px'; canvas.style.height = h + 'px';
+}
+window.render = render;
+window.resize = resize;
+
+const params = new URLSearchParams(location.search);
+resize(+params.get('w') || 1280, +params.get('h') || 800);
+render(+params.get('t') || 0);
+if (params.has('debug')) {
+  document.body.classList.add('debug');
+  const slider = document.getElementById('t'), tv = document.getElementById('tv');
+  const show = (t) => { render(t); slider.value = t; tv.textContent = t.toFixed(2) + 's'; };
+  slider.addEventListener('input', () => show(+slider.value));
+  let raf = 0;
+  document.getElementById('play').onclick = () => {
+    cancelAnimationFrame(raf);
+    const start = performance.now();
+    const tick = (now) => { const t = (now - start) / 1000; show(Math.min(t, 3.9)); if (t < 3.9) raf = requestAnimationFrame(tick); };
+    raf = requestAnimationFrame(tick);
+  };
+}
+</script>
+</body>
+</html>

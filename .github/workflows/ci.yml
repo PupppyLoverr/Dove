@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install GPUI system dependencies (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            libwayland-dev \
+            libvulkan-dev \
+            libx11-xcb-dev \
+            libxcb1-dev \
+            libfontconfig-dev \
+            libssl-dev \
+            pkg-config
+
+      - name: Configure git identity for tests
+        run: |
+          git config --global user.name ci
+          git config --global user.email ci@example.com
+          git config --global init.defaultBranch main
+
+      - name: Check formatting
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        continue-on-error: true
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace --exclude dove
+
+      - name: Build release binary
+        run: cargo build -p dove --release
+
+      - name: Size gate
+        run: |
+          LIMIT=104857600
+          if [ -f target/release/dove.exe ]; then
+            BIN=target/release/dove.exe
+          else
+            BIN=target/release/dove
+          fi
+          BYTES=$(wc -c < "$BIN" | tr -d ' ')
+          MB=$(awk -v b="$BYTES" 'BEGIN { printf "%.2f", b / 1048576 }')
+          echo "Release binary: $BIN"
+          echo "Size: ${BYTES} bytes (${MB} MB)"
+          if [ "$BYTES" -gt "$LIMIT" ]; then
+            echo "::error::Release binary is ${MB} MB, exceeding the 100 MB limit"
+            exit 1
+          fi
+
+      - name: Upload release binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: dove-${{ matrix.os }}
+          path: |
+            target/release/dove
+            target/release/dove.exe
+          if-no-files-found: error

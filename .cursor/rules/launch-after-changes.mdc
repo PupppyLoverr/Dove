@@ -1,0 +1,6 @@
+---
+description: Launch the Dove app as soon as code changes are done
+alwaysApply: true
+---
+
+After finishing code changes in this repo, launch the new build before ending the turn. Use `cargo run -p dove` (dev profile). Leave it running in the background. If a previous Dove window from this repo is still open, close that process first so the window the user sees is the new build.
