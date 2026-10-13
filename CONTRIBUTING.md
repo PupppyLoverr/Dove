@@ -35,7 +35,7 @@ cargo test --workspace --exclude dove
 CARGO_INCREMENTAL=0 cargo build -p dove --release
 ```
 
-The release binary has a size gate of 100 MB. If your change adds a dependency, say why in the PR and check the size.
+The release binary has a size gate of 100 MB. Today `Dove.app` is 91 MB: `dove` is 80 MB and `dove-mesh-host` is 9.3 MB. If your change adds a dependency, say why in the PR and check the size.
 
 For UI changes, launch the build and look at it in both light and dark themes. Attach a screenshot or short recording to the PR.
 

@@ -112,7 +112,9 @@ Everything lives under `~/.dove` (override with `DOVE_HOME`):
 
 ## Remote control: desktop ⇄ Cloudflare edge ⇄ iOS / Android
 
-Status: the edge, the Rust mobile core (`mesh/`) and the iOS app (`apps/ios`) are being built on parallel branches; Android follows. This section is the contract those pieces implement. The design is ported from Cosmos/Zeron's edge.
+Status: lands with [PR #2](https://github.com/PupppyLoverr/Dove/pull/2): **Settings › Remote control** on the desktop, the `dove-mesh-host` sidecar (`mesh/crates/host`), the Rust mobile core (`mesh/`) and the iOS app (`apps/ios`). Android comes next. The edge is the Cosmos edge, which Dove reuses as-is; set `DOVE_EDGE_URL` to point at your own deployment.
+
+On the desktop, `apps/dove/src/remote.rs` spawns `dove-mesh-host` and talks to it in JSON lines over stdin/stdout. The sidecar owns the Woozlit session and the edge connections. When it is switched off or signed out, nothing leaves the machine. When it is on, it publishes every project and session to the account's registry room and each session's transcript to its own room. It forwards the commands a phone queues back to `remote.rs`, which runs them on the same session the desktop shows.
 
 ```text
  Dove desktop                    Cloudflare (Workers + Durable Objects)              iOS / Android
@@ -124,7 +126,7 @@ Status: the edge, the Rust mobile core (`mesh/`) and the iOS app (`apps/ios`) ar
                                    R2: attachments / blobs (optional)
 ```
 
-- **Identity.** Desktop and phone sign in with a Woozlit account. Desktop uses an OAuth Device Flow and mobile uses a public client with PKCE, so no client secret ships in any binary. The edge verifies the access token on every WebSocket upgrade and scopes all rooms to that account.
+- **Identity.** Desktop and phone sign in with the same Woozlit account. On the desktop, "Sign in with Woozlit" opens the browser and gets the token back through a one-time `127.0.0.1` callback that is checked with a `state` value. No client secret ships in any binary. The edge verifies the access token on every WebSocket upgrade and scopes all rooms to that account.
 - **Session documents.** Each live session is mirrored into a Loro CRDT document (transcript entries, status, pending permission requests, usage). The desktop is the writer for agent output; phones write only command intents. CRDT merge means a phone that was offline converges without a custom sync protocol.
 - **Registry rows.** A per-account `RegistryRoom` holds one row per thread (title, agent, status, updated_at, device), so a phone can list threads without loading every document.
 - **Commands.** The phone sends `send`, `steer`, `interrupt`, `permission` and `answer` frames. The desktop applies them through the same `LiveSession::send` path the composer uses; the agent always runs on the desktop.

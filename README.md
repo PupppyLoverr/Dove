@@ -56,6 +56,8 @@ cargo run -p dove                 # or: cargo run -p dove -- path/to/repo
 CARGO_INCREMENTAL=0 cargo build -p dove --release
 ```
 
+The release `Dove.app` is 91 MB: `dove` is 80 MB and the `dove-mesh-host` remote-control sidecar is 9.3 MB. Both are built with LTO and stripped.
+
 Linux system dependencies:
 
 ```sh
@@ -106,7 +108,7 @@ Model lists refresh from each CLI's live catalog when it answers.
 
 ## Mobile apps
 
-The iOS app (`apps/ios`) and Android app are remote controls for the desktop. Sign in with the same Woozlit account on both. The desktop publishes each session as a Loro CRDT document to a Cloudflare Durable Object; the phone renders it live and sends commands back (send, steer, interrupt, approve, answer). Code and files stay on your machine.
+The iOS app (`apps/ios`) is a remote control for the desktop, and an Android app is coming. To turn it on, open **Settings › Remote control** on the desktop, click **Sign in with Woozlit**, and sign in on the phone with the same account. The desktop publishes each session as a Loro CRDT document to the Cosmos edge (Cloudflare Workers + Durable Objects). The phone shows it live and sends commands back: send, steer, interrupt, approve and answer. When remote control is off, nothing leaves the machine. Code and files always stay on your machine.
 
 ## Keyboard shortcuts
 
