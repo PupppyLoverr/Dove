@@ -60,8 +60,8 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc;
 
 use zeron_proto::{
-    AgentEvent, DoneStatus, HarnessId, Model, ReasoningLevel, RunRequest, SlashCommand,
-    SteeringMode, UserInputAnswer, UserInputQuestion,
+    AgentEvent, DoneStatus, HarnessId, Model, ReasoningLevel, RunRequest, SlashCommand, SteeringMode, UserInputAnswer,
+    UserInputQuestion,
 };
 
 use crate::process::{Child, ChildStdin, Command, Stdio};
@@ -124,16 +124,8 @@ pub fn defer_prompt(token: &str) -> tokio::sync::oneshot::Sender<String> {
 /// suffix (`sonnet[1m]`), exactly how the CLI itself does it.
 fn model_arg(request: &RunRequest) -> Option<String> {
     let model = request.model.as_ref()?;
-    let one_m = request
-        .model_options
-        .get("contextWindow")
-        .and_then(Value::as_str)
-        == Some("1m");
-    Some(if one_m {
-        format!("{model}[1m]")
-    } else {
-        model.clone()
-    })
+    let one_m = request.model_options.get("contextWindow").and_then(Value::as_str) == Some("1m");
+    Some(if one_m { format!("{model}[1m]") } else { model.clone() })
 }
 
 /// Every flag-layer setting a request launches with, for
@@ -258,12 +250,7 @@ impl ClaudeHarness {
         }
         if request.auto_approve {
             args.extend(
-                [
-                    "--permission-mode",
-                    "bypassPermissions",
-                    "--dangerously-skip-permissions",
-                ]
-                .map(str::to_owned),
+                ["--permission-mode", "bypassPermissions", "--dangerously-skip-permissions"].map(str::to_owned),
             );
         } else {
             // Dove: the composer's permission level (default, acceptEdits, plan).
@@ -306,28 +293,17 @@ impl ClaudeHarness {
         if !request.cwd.is_empty() {
             cmd.current_dir(&request.cwd);
         }
-        cmd.stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
+        cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
         cmd
     }
 
     /// Share the complete initialize response between model and command discovery.
     /// No user message is written; the short-lived child is retired after initialize.
     async fn initialize(&self) -> Result<Value, HarnessError> {
-        self.initialize
-            .get(
-                || self.model_context().map(|c| c.unwrap().key()),
-                || self.probe_initialize(None),
-            )
-            .await
+        self.initialize.get(|| self.model_context().map(|c| c.unwrap().key()), || self.probe_initialize(None)).await
     }
 
-    async fn discover_commands(
-        &self,
-        cwd: Option<&std::path::Path>,
-    ) -> Result<Vec<SlashCommand>, HarnessError> {
+    async fn discover_commands(&self, cwd: Option<&std::path::Path>) -> Result<Vec<SlashCommand>, HarnessError> {
         let response = match cwd {
             Some(cwd) => self.probe_initialize(Some(cwd)).await?,
             None => self.initialize().await?,
@@ -352,10 +328,7 @@ impl ClaudeHarness {
             // CLI exits immediately with a usage error.
             "--verbose",
         ]);
-        cmd.stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .kill_on_drop(true);
+        cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).kill_on_drop(true);
         let mut child = cmd.spawn().map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
                 HarnessError::NotInstalled(crate::executable::binary_hint(&exe))
@@ -374,10 +347,7 @@ impl ClaudeHarness {
                 "request_id": PROBE_ID,
                 "request": { "subtype": "initialize" },
             });
-            stdin
-                .write_all(format!("{request}\n").as_bytes())
-                .await
-                .map_err(HarnessError::Io)?;
+            stdin.write_all(format!("{request}\n").as_bytes()).await.map_err(HarnessError::Io)?;
             stdin.flush().await.map_err(HarnessError::Io)?;
             let mut lines = BufReader::new(stdout).lines();
             while let Some(line) = lines.next_line().await.map_err(HarnessError::Io)? {
@@ -392,17 +362,13 @@ impl ClaudeHarness {
                     continue;
                 }
                 if response.get("subtype").and_then(Value::as_str) == Some("error") {
-                    let msg = response
-                        .get("error")
-                        .and_then(Value::as_str)
-                        .unwrap_or("initialize control request failed");
+                    let msg =
+                        response.get("error").and_then(Value::as_str).unwrap_or("initialize control request failed");
                     return Err(HarnessError::Protocol(msg.into()));
                 }
                 return Ok(response);
             }
-            Err(HarnessError::Protocol(
-                "claude exited before answering the initialize control request".into(),
-            ))
+            Err(HarnessError::Protocol("claude exited before answering the initialize control request".into()))
         };
         let result = tokio::time::timeout(Duration::from_secs(10), discovery).await;
         shutdown_child(&mut child, self.kill_grace).await;
@@ -430,11 +396,7 @@ fn parse_initialize_commands(response: &Value) -> Vec<SlashCommand> {
             }
             Some(SlashCommand {
                 name: name.to_owned(),
-                description: c
-                    .get("description")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_owned(),
+                description: c.get("description").and_then(Value::as_str).unwrap_or_default().to_owned(),
                 input_hint: c
                     .get("argumentHint")
                     .and_then(Value::as_str)
@@ -461,13 +423,7 @@ impl Harness for ClaudeHarness {
         SteeringMode::StepBoundary
     }
     fn reasoning_levels(&self) -> &[ReasoningLevel] {
-        &[
-            ReasoningLevel::Low,
-            ReasoningLevel::Medium,
-            ReasoningLevel::High,
-            ReasoningLevel::XHigh,
-            ReasoningLevel::Max,
-        ]
+        &[ReasoningLevel::Low, ReasoningLevel::Medium, ReasoningLevel::High, ReasoningLevel::XHigh, ReasoningLevel::Max]
     }
     fn installed(&self) -> bool {
         // The launch resolver, not bare discovery: a valid CLAUDE_CODE_EXECUTABLE
@@ -536,14 +492,10 @@ impl Harness for ClaudeHarness {
     /// carries every command with description + argument hint and involves no
     /// model turn (verified live, 2.1.228: the control_response is the first
     /// stdout line, well before any API traffic). Cached on success.
-    async fn skills(
-        &self,
-        cwd: &std::path::Path,
-    ) -> Result<Option<Vec<zeron_proto::invocation::Skill>>, HarnessError> {
+    async fn skills(&self, cwd: &std::path::Path) -> Result<Option<Vec<zeron_proto::invocation::Skill>>, HarnessError> {
         let (skills, commands) = tokio::try_join!(
             crate::skills::discover(self.id(), cwd),
-            self.workspace_commands
-                .get(cwd, self.discover_commands(Some(cwd)))
+            self.workspace_commands.get(cwd, self.discover_commands(Some(cwd)))
         )?;
         // The native advertised catalog controls availability (including plugin
         // enablement and skillOverrides). Shared Agent Skills can use file delivery.
@@ -576,9 +528,7 @@ impl Harness for ClaudeHarness {
     }
 
     async fn commands_for(&self, cwd: &std::path::Path) -> Result<Vec<SlashCommand>, HarnessError> {
-        self.workspace_commands
-            .get(cwd, self.discover_commands(Some(cwd)))
-            .await
+        self.workspace_commands.get(cwd, self.discover_commands(Some(cwd))).await
     }
 
     async fn run(
@@ -648,14 +598,8 @@ impl ClaudeHarness {
             }
         })?;
 
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| HarnessError::Protocol("claude child has no stdin".into()))?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| HarnessError::Protocol("claude child has no stdout".into()))?;
+        let stdin = child.stdin.take().ok_or_else(|| HarnessError::Protocol("claude child has no stdin".into()))?;
+        let stdout = child.stdout.take().ok_or_else(|| HarnessError::Protocol("claude child has no stdout".into()))?;
         let stderr_tail = crate::StderrTail::default();
         if let Some(stderr) = child.stderr.take() {
             let tail = stderr_tail.clone();
@@ -671,9 +615,7 @@ impl ClaudeHarness {
         let (stdin_tx, stdin_rx) = mpsc::unbounded_channel::<StdinMsg>();
         tokio::spawn(stdin_writer(stdin, stdin_rx));
         if !title_only {
-            let _ = stdin_tx.send(StdinMsg::Line(wire::initialize_request_line(
-                "zeron_initialize",
-            )));
+            let _ = stdin_tx.send(StdinMsg::Line(wire::initialize_request_line("zeron_initialize")));
         }
 
         // The initial prompt as the first stdin user line (streaming-input
@@ -704,11 +646,8 @@ impl ClaudeHarness {
                 });
             }
             None => {
-                let first = wire::prompt_line(
-                    &apply_ultrathink(request.reasoning, &request.prompt),
-                    &first_command,
-                    &images,
-                );
+                let first =
+                    wire::prompt_line(&apply_ultrathink(request.reasoning, &request.prompt), &first_command, &images);
                 let _ = stdin_tx.send(StdinMsg::Line(first));
             }
         }
@@ -729,10 +668,7 @@ impl ClaudeHarness {
             stderr_tail,
         }));
 
-        Ok(futures::stream::unfold(event_rx, |mut rx| async move {
-            rx.recv().await.map(|ev| (ev, rx))
-        })
-        .boxed())
+        Ok(futures::stream::unfold(event_rx, |mut rx| async move { rx.recv().await.map(|ev| (ev, rx)) }).boxed())
     }
 }
 
@@ -751,12 +687,7 @@ const MAX_INLINE_IMAGE_BYTES: u64 = 5 * 1024 * 1024;
 /// fallback (pasted screenshots may carry odd names). Only the API-supported
 /// inline types map; anything else (svg/bmp/tiff/…) returns `None`.
 fn image_media_type(path: &std::path::Path, bytes: &[u8]) -> Option<&'static str> {
-    let by_ext = match path
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|e| e.to_ascii_lowercase())
-        .as_deref()
-    {
+    let by_ext = match path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref() {
         Some("png") => Some("image/png"),
         Some("jpg" | "jpeg") => Some("image/jpeg"),
         Some("gif") => Some("image/gif"),
@@ -767,21 +698,7 @@ fn image_media_type(path: &std::path::Path, bytes: &[u8]) -> Option<&'static str
         [0x89, b'P', b'N', b'G', ..] => Some("image/png"),
         [0xFF, 0xD8, 0xFF, ..] => Some("image/jpeg"),
         [b'G', b'I', b'F', b'8', ..] => Some("image/gif"),
-        [
-            b'R',
-            b'I',
-            b'F',
-            b'F',
-            _,
-            _,
-            _,
-            _,
-            b'W',
-            b'E',
-            b'B',
-            b'P',
-            ..,
-        ] => Some("image/webp"),
+        [b'R', b'I', b'F', b'F', _, _, _, _, b'W', b'E', b'B', b'P', ..] => Some("image/webp"),
         _ => None,
     })
 }
@@ -876,14 +793,8 @@ async fn run_session(session: Session) {
         kill_grace,
         stderr_tail,
     } = session;
-    let RunControls {
-        realtime: _,
-        execution_lease: _execution_lease,
-        request_input,
-        mut steering,
-        interrupt,
-        turn,
-    } = controls;
+    let RunControls { realtime: _, execution_lease: _execution_lease, request_input, mut steering, interrupt, turn } =
+        controls;
     let request_input = Arc::new(request_input);
     // Dove: tools the user chose "Always allow" for, this session.
     let always_allowed: Arc<std::sync::Mutex<std::collections::HashSet<String>>> = Arc::default();
@@ -1369,11 +1280,8 @@ impl Commands {
     }
 }
 
-type RequestInputFn = Box<
-    dyn Fn(Vec<UserInputQuestion>) -> tokio::sync::oneshot::Receiver<Vec<UserInputAnswer>>
-        + Send
-        + Sync,
->;
+type RequestInputFn =
+    Box<dyn Fn(Vec<UserInputQuestion>) -> tokio::sync::oneshot::Receiver<Vec<UserInputAnswer>> + Send + Sync>;
 
 /// Serve one `can_use_tool` control request. Every tool is auto-approved
 /// (unattended parity — the CLI still blocks until SOME response arrives, so
@@ -1489,8 +1397,7 @@ fn parse_questions(input: &Value) -> Vec<UserInputQuestion> {
         .unwrap_or_default()
         .iter()
         .map(|q| {
-            let field =
-                |keys: [&str; 2]| keys.iter().find_map(|k| q.get(*k).and_then(Value::as_str));
+            let field = |keys: [&str; 2]| keys.iter().find_map(|k| q.get(*k).and_then(Value::as_str));
             UserInputQuestion {
                 id: uuid::Uuid::new_v4().to_string(),
                 header: field(["header", "title"]).unwrap_or("Question").into(),
@@ -1524,22 +1431,15 @@ fn parse_questions(input: &Value) -> Vec<UserInputQuestion> {
 
 /// Merge the user's answers back into the tool input, keyed by question text
 /// (single-select ⇒ a string, multi-select ⇒ an array), as the tool expects.
-fn updated_input_with_answers(
-    input: &Value,
-    questions: &[UserInputQuestion],
-    answers: &[UserInputAnswer],
-) -> Value {
+fn updated_input_with_answers(input: &Value, questions: &[UserInputQuestion], answers: &[UserInputAnswer]) -> Value {
     let mut updated = match input {
         Value::Object(map) => map.clone(),
         _ => serde_json::Map::new(),
     };
     let mut by_question = serde_json::Map::new();
     for q in questions {
-        let labels: Vec<String> = answers
-            .iter()
-            .find(|a| a.question_id == q.id)
-            .map(|a| a.labels.clone())
-            .unwrap_or_default();
+        let labels: Vec<String> =
+            answers.iter().find(|a| a.question_id == q.id).map(|a| a.labels.clone()).unwrap_or_default();
         let value = if q.multi_select {
             Value::Array(labels.into_iter().map(Value::String).collect())
         } else {
@@ -1581,13 +1481,9 @@ mod tests {
 
     #[test]
     fn answers_key_by_question_text() {
-        let input =
-            json!({"questions": [{"header": "H", "question": "Pick one", "options": ["A", "B"]}]});
+        let input = json!({"questions": [{"header": "H", "question": "Pick one", "options": ["A", "B"]}]});
         let qs = parse_questions(&input);
-        let answers = vec![UserInputAnswer {
-            question_id: qs[0].id.clone(),
-            labels: vec!["B".into()],
-        }];
+        let answers = vec![UserInputAnswer { question_id: qs[0].id.clone(), labels: vec!["B".into()] }];
         let updated = updated_input_with_answers(&input, &qs, &answers);
         assert_eq!(updated["answers"]["Pick one"], json!("B"));
         // Original input is preserved alongside the answers.
@@ -1605,19 +1501,11 @@ mod mcp_injection_tests {
             name: "zeron".into(),
             command: "/opt/zeron/zeron".into(),
             args: vec!["mcp".into()],
-            env: [("ZERON_CHAT_ID".to_owned(), "chat-1".to_owned())]
-                .into_iter()
-                .collect(),
+            env: [("ZERON_CHAT_ID".to_owned(), "chat-1".to_owned())].into_iter().collect(),
         };
         let parsed: Value = serde_json::from_str(&mcp_config_arg(&mcp)).unwrap();
         assert_eq!(parsed["mcpServers"]["zeron"]["command"], "/opt/zeron/zeron");
-        assert_eq!(
-            parsed["mcpServers"]["zeron"]["args"],
-            serde_json::json!(["mcp"])
-        );
-        assert_eq!(
-            parsed["mcpServers"]["zeron"]["env"]["ZERON_CHAT_ID"],
-            "chat-1"
-        );
+        assert_eq!(parsed["mcpServers"]["zeron"]["args"], serde_json::json!(["mcp"]));
+        assert_eq!(parsed["mcpServers"]["zeron"]["env"]["ZERON_CHAT_ID"], "chat-1");
     }
 }

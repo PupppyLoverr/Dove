@@ -43,6 +43,7 @@ jobs:
             libxcb1-dev \
             libfontconfig-dev \
             libssl-dev \
+            libasound2-dev \
             pkg-config
 
       - name: Configure git identity for tests

@@ -38,10 +38,7 @@ impl ScratchDir {
     /// only aids debugging; the pid and a process-local counter keep concurrent
     /// runs of the same adapter apart.
     pub(crate) fn new(label: &str) -> std::io::Result<Self> {
-        let label: String = label
-            .chars()
-            .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-            .collect();
+        let label: String = label.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
         loop {
             let path = std::env::temp_dir().join(format!(
                 "zeron-{label}-{}-{}",
@@ -135,23 +132,11 @@ mod tests {
         let envs: Vec<(String, Option<std::ffi::OsString>)> = command
             .as_std_mut()
             .get_envs()
-            .map(|(key, value)| {
-                (
-                    key.to_string_lossy().to_ascii_uppercase(),
-                    value.map(|v| v.to_os_string()),
-                )
-            })
+            .map(|(key, value)| (key.to_string_lossy().to_ascii_uppercase(), value.map(|v| v.to_os_string())))
             .collect();
         for key in TEMP_VARS {
-            let found = envs
-                .iter()
-                .find(|(name, _)| name == key)
-                .and_then(|(_, value)| value.as_deref());
-            assert_eq!(
-                found,
-                Some(dir.path().as_os_str()),
-                "{key} should point at the scratch dir"
-            );
+            let found = envs.iter().find(|(name, _)| name == key).and_then(|(_, value)| value.as_deref());
+            assert_eq!(found, Some(dir.path().as_os_str()), "{key} should point at the scratch dir");
         }
     }
 }
@@ -161,8 +146,5 @@ mod tests {
 fn scratch_is_private_to_its_owner() {
     use std::os::unix::fs::PermissionsExt;
     let dir = ScratchDir::new("private").unwrap();
-    assert_eq!(
-        std::fs::metadata(dir.path()).unwrap().permissions().mode() & 0o777,
-        0o700
-    );
+    assert_eq!(std::fs::metadata(dir.path()).unwrap().permissions().mode() & 0o777, 0o700);
 }

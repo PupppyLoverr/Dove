@@ -298,6 +298,29 @@ pub fn verify_runtime(root: &Path) -> Result<std::path::PathBuf, VoiceRejection>
     Ok(root.join(HELPER))
 }
 
+/// Desktop implementation shared by UIs; permission belongs to the viewport.
+/// Instantiate one per call. Closing cannot wait behind a locked helper pipe.
+#[allow(dead_code)] // Dove: the fields feed the omitted voice-session endpoint.
+pub struct DesktopMedia {
+    path: std::path::PathBuf,
+    host: tokio::sync::Mutex<Option<NativeHost>>,
+    stop: tokio_util::sync::CancellationToken,
+}
+impl DesktopMedia {
+    /// See [`media_helper`]: the local standalone Codex unless a development
+    /// runtime is set explicitly.
+    pub fn for_codex(codex_executable: Option<&Path>) -> Result<Self, VoiceRejection> {
+        Ok(Self { path: media_helper(codex_executable)?, host: Default::default(), stop: Default::default() })
+    }
+}
+// Dove: the zeron-voice-session endpoint impl is omitted (cloud voice unused).
+
+impl Drop for DesktopMedia {
+    fn drop(&mut self) {
+        self.stop.cancel();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -418,28 +441,5 @@ mod tests {
         std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755)).unwrap();
         let result = NativeHost::open(&helper, Default::default()).await;
         assert_eq!(result.err(), Some(VoiceRejection::NativeRuntimeUnavailable));
-    }
-}
-
-/// Desktop implementation shared by UIs; permission belongs to the viewport.
-/// Instantiate one per call. Closing cannot wait behind a locked helper pipe.
-#[allow(dead_code)] // Dove: the fields feed the omitted voice-session endpoint.
-pub struct DesktopMedia {
-    path: std::path::PathBuf,
-    host: tokio::sync::Mutex<Option<NativeHost>>,
-    stop: tokio_util::sync::CancellationToken,
-}
-impl DesktopMedia {
-    /// See [`media_helper`]: the local standalone Codex unless a development
-    /// runtime is set explicitly.
-    pub fn for_codex(codex_executable: Option<&Path>) -> Result<Self, VoiceRejection> {
-        Ok(Self { path: media_helper(codex_executable)?, host: Default::default(), stop: Default::default() })
-    }
-}
-// Dove: the zeron-voice-session endpoint impl is omitted (cloud voice unused).
-
-impl Drop for DesktopMedia {
-    fn drop(&mut self) {
-        self.stop.cancel();
     }
 }

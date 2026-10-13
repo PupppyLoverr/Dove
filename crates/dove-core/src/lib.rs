@@ -449,7 +449,13 @@ impl Engine {
         self.launch(task, spec)
     }
 
-    fn resume_spec(&self, task: &Task, project: &Project, prompt: Option<String>, run: &RunSettings) -> Result<SessionSpec> {
+    fn resume_spec(
+        &self,
+        task: &Task,
+        project: &Project,
+        prompt: Option<String>,
+        run: &RunSettings,
+    ) -> Result<SessionSpec> {
         Ok(SessionSpec {
             kind: task.harness,
             program: self.program(task.harness)?,
