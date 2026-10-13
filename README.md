@@ -1,71 +1,59 @@
-# Dove
+<p align="center"><img src="apps/landing/assets/favicon.svg" width="56" height="56" alt="Dove"></p>
 
-Dove is a native desktop Agentic Development Environment. One window runs many coding agents at once. Each task gets its own git worktree, a live transcript, a diff review, and a cost ledger that stays in one place no matter which agent did the work.
+<h1 align="center">Dove</h1>
 
-The UI is GPU-rendered with [GPUI](https://github.com/zeronsh/zui). There is no Electron shell and no embedded web app for the product itself.
+<p align="center"><b>The agentic development environment.</b><br>Many coding agents, one native window. Worktrees, diffs, browser control and your phone as a remote.</p>
 
-## Why it's different
+<p align="center"><a href="#install">Install</a> · <a href="#features">Features</a> · <a href="ARCHITECTURE.md">Architecture</a> · <a href="#supported-agents">Agents</a> · <a href="CONTRIBUTING.md">Contributing</a></p>
 
-- **One window, many agents.** Claude Code, Codex, Cursor, OpenCode, Devin, Gemini, Copilot, and the other harnesses below share the same projects, threads, and review tools. You do not switch apps to switch agents.
-- **Worktrees by default.** A task can run on its own branch so two agents can edit the same repo without overwriting each other.
-- **Chat and the agent's own terminal are the same session.** Chat is the rich view (permissions, steering, usage). Terminal hands that session to the agent's TUI and mirrors it back, then chat resumes it.
-- **The side panel is part of the work.** Diffs, git history, a file viewer, an in-app browser, a terminal, and a side chat stay attached to the thread.
-- **Any harness can drive the in-app browser.** Tool calls such as `browser_navigate`, `browser_click`, `browser_type`, `browser_press`, `browser_scroll`, and `browser_snapshot` open the page and act on it the way a person would.
-- **The transcript is a document, not a log dump.** Answers render markdown, tables, Mermaid diagrams, math, and images (including TIFF). Tool calls fold. An agent can also emit an interactive card (` ```ui ` / ` ```widget `) that the user can change; the choice goes back as a normal message so every harness can continue.
+![Dove's main window](apps/landing/assets/shots/hero.jpg)
 
-## Use cases
+## What Dove is
 
-- Start a feature in chat, watch the diff appear in the side panel, and open a file from a `path:line` link without leaving the thread.
-- Run a second agent on the same branch as a side chat while the parent thread keeps going.
-- Hand a session to the agent's terminal UI when you want its native controls, then come back to chat on the same session.
-- Let an agent open a local dev server in the in-app browser and click through the page.
-- Preview images, markdown, and commits inside the panel, then ask the agent to edit the file you are looking at.
-- Keep a day's usage in one ledger instead of reconstructing it from each agent's own UI.
+Dove is a native desktop app for working with coding agents. It runs Claude Code, Codex, Cursor, Gemini CLI, OpenCode, Devin and more side by side. Each task gets its own git worktree, a live transcript, a diff to review, an in-app browser the agent can drive, and a usage ledger that stays in one place whichever agent did the work.
 
-## Architecture
+Dove is written in Rust on [GPUI](https://github.com/zeronsh/zui). There is no Electron shell and no embedded web app for the product itself. It is local-first: your data lives in `~/.dove`, and agents run on your own subscriptions and API keys.
 
-```text
-apps/dove            GPUI window: sidebar, threads, composer, transcript, side panel
-crates/dove-core     Engine. Owns the runtime, live sessions, and the task lifecycle
-crates/dove-harness  Agent adapters. Normalizes each CLI into one event stream
-crates/dove-proto    Shared types: events, tools, permissions, usage
-crates/dove-store    SQLite: projects, tasks, transcripts, settings, usage
-crates/dove-git      Worktrees, status, diffs, history
-crates/dove-term     Terminal emulator and PTY sessions
+## Features
+
+- **Many agents, one window.** Threads from every agent share the same projects, review tools and attention-sorted sidebar (needs you, working, unread, failed).
+- **Worktrees by default.** A task can run on its own branch so two agents can edit the same repo without overwriting each other. Commit, push, open and merge PRs from the thread.
+- **Chat ⇄ terminal.** Chat is the rich view: approvals, steering, queued messages, usage. Terminal hands the same session to the agent's own TUI and mirrors it back.
+- **Side panel.** Diffs, git history, a file viewer and editor, an in-app browser, a terminal and a side chat stay attached to each thread. `path:line` links open in place.
+- **Browser control.** Every agent gets Dove's browser tools over MCP (`browser_navigate`, `browser_snapshot`, `browser_click`, `browser_type`, `browser_press`, `browser_scroll`, `browser_screenshot`). Drive the in-app browser or your own Chrome through the extension.
+- **Generative UI.** Agents can answer with interactive cards (` ```ui ` fences or the `show_ui` tool): stats, charts, tables, checklists, toggles, choices. The user's pick returns as a normal message, so every harness can continue.
+- **Office documents.** Create, preview and edit PDF, PPTX, XLSX and DOCX files in the side panel.
+- **Integrations.** Paper design canvases, Composio apps (GitHub, Linear, Slack, Notion and more, with your own key) and desktop computer use through the open-source cua-driver, all injected through the same MCP server.
+- **Mobile remote.** iOS and Android apps signed in with your Woozlit account show live transcripts and let you approve, steer and start runs. The agent keeps running on your desktop.
+- **A transcript that reads like a document.** Markdown, tables, Mermaid, math and images render incrementally while tokens stream. Tool calls fold.
+
+| Threads | Side panel |
+| --- | --- |
+| ![Threads](apps/landing/assets/shots/threads.jpg) | ![Side panel](apps/landing/assets/shots/panel.jpg) |
+
+## Install
+
+Release builds for macOS, Windows and Linux are published on [GitHub Releases](https://github.com/PupppyLoverr/Dove/releases). Until the first signed release, build from source.
+
+Dove drives agent CLIs you install yourself. Install at least one, for example:
+
+```sh
+npm i -g @anthropic-ai/claude-code   # Claude Code
+npm i -g @openai/codex               # Codex
+npm i -g @google/gemini-cli          # Gemini CLI
 ```
 
-The UI never writes session activity itself. It watches `LiveSession` events and sends commands. The engine appends each event to the transcript, updates task status and usage, then forwards it.
+Sign in to each CLI once in a terminal the way you normally would. Dove picks up its credentials.
 
-Harnesses enter through one boundary. Claude Code uses its stream-json protocol. Codex uses app-server JSON-RPC. Most other agents speak ACP, with Zeron's adapters bridged in where they already know that agent's catalog and session format. Every adapter emits the same `AgentEvent`s, so the transcript, the plan, the diff, and the browser driver do not care which CLI produced them.
-
-The side panel is per thread. Browsers and terminals stay alive when you switch surfaces. History is local git. The file viewer highlights source, renders markdown and images, and can save an edit or hand the instruction to the agent. The browser is a native page (WebView2 on Windows, WKWebView on macOS, WebKitGTK on Linux) with GPUI chrome. Agent control goes through the page, not through a separate browser product.
-
-Chat rendering is incremental: finished markdown blocks become their own rows, and only the open tail is re-parsed while tokens arrive. Diagrams, math, and generative cards are blocks in that same stream.
-
-## Supported agents
-
-| Agent | Integration |
-| --- | --- |
-| Claude Code | stream-json |
-| Codex | app-server JSON-RPC |
-| OpenCode | ACP |
-| Devin | ACP |
-| Cursor | ACP |
-| Grok Build | ACP |
-| Gemini CLI | ACP |
-| Qwen Code | ACP |
-| Copilot | ACP |
-| goose | ACP |
-| Factory Droid | ACP |
-
-Antigravity, Pi, Hermes, Amp, Kilo, and Cline are wired through the same adapter path where their CLIs are installed. Model lists refresh from the live catalog when the CLI answers.
-
-## Building from source
+## Build from source
 
 Requires Rust stable 1.90 or newer.
 
 ```sh
-cargo run -p dove            # or: cargo run -p dove -- path/to/repo
+git clone https://github.com/PupppyLoverr/Dove
+cd Dove
+cargo run -p dove                 # or: cargo run -p dove -- path/to/repo
+CARGO_INCREMENTAL=0 cargo build -p dove --release
 ```
 
 Linux system dependencies:
@@ -74,11 +62,51 @@ Linux system dependencies:
 sudo apt-get install -y libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan-dev libx11-xcb-dev libxcb1-dev libfontconfig-dev libssl-dev pkg-config
 ```
 
-## Data and logging
+Data and logging:
 
-- Data lives in `~/.dove`. Override the location with the `DOVE_HOME` environment variable.
-- Verbose logs: set `DOVE_LOG=debug`.
-- The first launch on a device plays a short intro (click or press Esc to skip). `DOVE_SKIP_INTRO=1` turns it off; `DOVE_SHOW_INTRO=1` replays it. Its assets and the shareable video are built in [`media/intro`](media/intro/README.md).
+- Data lives in `~/.dove`. Override it with `DOVE_HOME`.
+- Verbose logs: `DOVE_LOG=debug`.
+- The first launch plays a short intro (click or Esc to skip). `DOVE_SKIP_INTRO=1` turns it off; `DOVE_SHOW_INTRO=1` replays it. Its assets are in [`media/intro`](media/intro/README.md).
+
+## Architecture
+
+```text
+apps/dove            GPUI window: sidebar, threads, composer, transcript, side panel, browser
+apps/landing         Static website
+crates/dove-core     Engine: runtime, live sessions, task lifecycle, automations
+crates/dove-harness  Agent adapters: one AgentEvent stream from every CLI
+crates/dove-proto    Shared types: events, tools, permissions, usage
+crates/dove-store    SQLite + JSONL transcripts
+crates/dove-git      Worktrees, status, diffs, history, PRs
+crates/dove-term     Terminal emulator and PTY sessions
+```
+
+The UI never writes session activity itself. It watches `LiveSession` events and sends commands; the engine appends each event to the transcript, updates status and usage, then forwards it. Agents enter through one harness boundary, and Dove's extra tools reach every agent through one injected MCP server. [ARCHITECTURE.md](ARCHITECTURE.md) covers the data flow, the browser control path, the store and the desktop ⇄ edge ⇄ mobile sync.
+
+## Supported agents
+
+| Agent | Integration |
+| --- | --- |
+| Claude Code | stream-json |
+| Codex | app-server JSON-RPC |
+| Cursor | Zeron driver |
+| OpenCode | Zeron driver |
+| Devin | Zeron driver |
+| Grok Build | Zeron driver |
+| Pi, Hermes, Antigravity | Zeron driver |
+| Gemini CLI | ACP |
+| Copilot | ACP |
+| Qwen Code | ACP |
+| goose | ACP |
+| Factory Droid | ACP |
+| Amp, Cline, Kimi | ACP |
+| Kilo | OpenCode driver |
+
+Model lists refresh from each CLI's live catalog when it answers.
+
+## Mobile apps
+
+The iOS app (`apps/ios`) and Android app are remote controls for the desktop. Sign in with the same Woozlit account on both. The desktop publishes each session as a Loro CRDT document to a Cloudflare Durable Object; the phone renders it live and sends commands back (send, steer, interrupt, approve, answer). Code and files stay on your machine.
 
 ## Keyboard shortcuts
 
@@ -95,8 +123,14 @@ sudo apt-get install -y libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev lib
 | Insert newline | Shift+Enter |
 | Terminal copy / paste | Ctrl+Shift+C / Ctrl+Shift+V |
 
-Third-party notices (Zeron, zui, Solar Icons, Geist) are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+## Website
+
+The landing page lives in [`apps/landing`](apps/landing/README.md): plain HTML, CSS and JS with no build step, deployable for free to Cloudflare Pages or GitHub Pages.
+
+## Contributing
+
+Issues and pull requests are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
-Apache-2.0. See [LICENSE](LICENSE).
+Apache-2.0. See [LICENSE](LICENSE). Third-party notices (Zeron, zui, gpui-component, Solar Icons, Geist) are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
