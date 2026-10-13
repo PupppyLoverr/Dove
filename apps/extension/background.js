@@ -92,7 +92,13 @@ chrome.tabs.onUpdated.addListener((id, info) => {
 });
 
 // ---------- helpers ----------
-const summarize = (a) => { try { const s = JSON.stringify(a || {}); return s.length > 160 ? s.slice(0, 160) + '…' : s; } catch (_) { return ''; } };
+// Keep only the fields the activity log shows; never the full payload.
+const summarize = (a = {}) => {
+  const out = {};
+  for (const k of ['url', 'ref', 'key', 'direction', 'value', 'selector', 'double', 'submit']) if (a[k] != null) out[k] = typeof a[k] === 'string' ? a[k].slice(0, 200) : a[k];
+  if (typeof a.text === 'string') out.text = a.text.length > 80 ? a.text.slice(0, 79) + '…' : a.text;
+  return out;
+};
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const originOf = (url) => { try { const u = new URL(url); return /^https?:$/.test(u.protocol) ? u.origin : null; } catch (_) { return null; } };
 

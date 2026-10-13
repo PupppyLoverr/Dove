@@ -18,6 +18,7 @@ use gpui::{
 use gpui_base::input::{Input, InputEvent, InputState};
 use serde::{Deserialize, Serialize};
 
+use crate::assets::{icon, icons};
 use crate::kit;
 use crate::theme::Theme;
 use crate::ui;
@@ -284,24 +285,47 @@ impl IntegrationsView {
     }
 }
 
-fn heading(title: &'static str, t: &Theme) -> gpui::Div {
-    div()
-        .pt(px(22.0))
-        .pb(px(2.0))
-        .text_size(px(12.0))
-        .font_weight(gpui::FontWeight::MEDIUM)
-        .text_color(t.text_faint)
-        .child(title)
+/// One integration: a rounded plate whose first line is the switch row.
+fn plate(t: &Theme) -> gpui::Div {
+    ui::card(div().flex().flex_col().rounded(px(12.0)).px(px(16.0)), t)
 }
 
-fn row(label: &'static str, hint: impl Into<SharedString>, control: impl IntoElement, t: &Theme) -> gpui::Div {
-    let hint: SharedString = hint.into();
+fn head(
+    glyph: &'static str,
+    title: &'static str,
+    hint: impl Into<SharedString>,
+    right: impl IntoElement,
+    t: &Theme,
+) -> gpui::Div {
     div()
         .py(px(14.0))
         .flex()
         .items_center()
+        .gap(px(12.0))
+        .child(icon(glyph).size(px(16.0)).text_color(t.text_muted))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap(px(2.0))
+                .child(div().text_size(px(14.0)).font_weight(gpui::FontWeight::MEDIUM).child(title))
+                .child(div().text_size(px(12.0)).text_color(t.text_faint).child(hint.into())),
+        )
+        .child(right)
+}
+
+/// A detail line inside a plate, aligned with the title text.
+fn line(label: &'static str, hint: impl Into<SharedString>, control: impl IntoElement, t: &Theme) -> gpui::Div {
+    let hint: SharedString = hint.into();
+    div()
+        .ml(px(28.0))
+        .py(px(12.0))
+        .flex()
+        .items_center()
         .gap(px(16.0))
-        .border_b_1()
+        .border_t_1()
         .border_color(t.border)
         .child(
             div()
@@ -310,7 +334,7 @@ fn row(label: &'static str, hint: impl Into<SharedString>, control: impl IntoEle
                 .flex()
                 .flex_col()
                 .gap(px(2.0))
-                .child(div().text_size(px(14.0)).child(label))
+                .child(div().text_size(px(13.0)).child(label))
                 .when(!hint.is_empty(), |d| d.child(div().text_size(px(12.0)).text_color(t.text_faint).child(hint))),
         )
         .child(control)
@@ -319,23 +343,82 @@ fn row(label: &'static str, hint: impl Into<SharedString>, control: impl IntoEle
 fn status(on: bool, label: impl Into<SharedString>, t: &Theme) -> gpui::Div {
     div()
         .flex()
+        .flex_none()
         .items_center()
         .gap(px(6.0))
-        .text_size(px(12.5))
-        .text_color(if on { t.text } else { t.text_faint })
-        .child(div().size(px(6.0)).rounded_full().bg(if on { t.text } else { t.wash(0.25) }))
+        .text_size(px(12.0))
+        .text_color(if on { t.text_muted } else { t.text_faint })
+        .child(div().size(px(6.0)).rounded_full().bg(if on { t.text } else { t.wash(0.22) }))
         .child(label.into())
+}
+
+/// Status text and a switch, the right side of every plate head.
+fn toggle(
+    on: bool,
+    state: Option<(bool, &'static str)>,
+    id: &'static str,
+    t: &Theme,
+) -> (gpui::Div, gpui::Stateful<gpui::Div>) {
+    let left =
+        div().flex().items_center().gap(px(14.0)).when_some(state, |d, (ok, label)| d.child(status(ok, label, t)));
+    (left, kit::switch(id, on, t))
+}
+
+/// A toolkit pick: hairline pill, filled with the foreground when chosen.
+fn pick(id: SharedString, label: &'static str, on: bool, t: &Theme) -> gpui::Stateful<gpui::Div> {
+    let hover = t.wash(0.07);
+    div()
+        .id(gpui::ElementId::Name(id))
+        .role(gpui::Role::CheckBox)
+        .aria_toggled(if on { gpui::Toggled::True } else { gpui::Toggled::False })
+        .aria_label(label)
+        .h(px(26.0))
+        .px(px(10.0))
+        .flex()
+        .items_center()
+        .gap(px(5.0))
+        .rounded_full()
+        .border_1()
+        .text_size(px(12.5))
+        .cursor_pointer()
+        .map(|d| {
+            if on {
+                d.bg(t.text).border_color(t.text).text_color(t.bg)
+            } else {
+                d.border_color(t.border_strong).text_color(t.text_muted).hover(move |s| s.bg(hover))
+            }
+        })
+        .when(on, |d| d.child(icon(icons::CHECK).size(px(11.0)).text_color(t.bg)))
+        .child(label)
+}
+
+fn small_icon(id: &'static str, glyph: &'static str, label: &'static str, t: &Theme) -> gpui::Stateful<gpui::Div> {
+    let hover = t.wash(0.07);
+    div()
+        .id(id)
+        .role(gpui::Role::Button)
+        .aria_label(label)
+        .size(px(28.0))
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .rounded(px(7.0))
+        .cursor_pointer()
+        .hover(move |s| s.bg(hover))
+        .tooltip(ui::tip(label))
+        .child(icon(glyph).size(px(14.0)).text_color(t.text_muted))
 }
 
 fn field(input: &Entity<InputState>, w: f32, t: &Theme) -> impl IntoElement {
     div()
         .w(px(w))
         .h(px(30.0))
-        .px(px(8.0))
+        .px(px(10.0))
         .flex()
         .items_center()
         .rounded(px(8.0))
-        .bg(t.wash(0.05))
+        .bg(t.wash(0.04))
         .border_1()
         .border_color(t.border)
         .text_size(px(13.0))
@@ -347,190 +430,261 @@ impl Render for IntegrationsView {
         let t = Theme::of(cx).clone();
         let browser = crate::browser::control::connected_browser();
         let code = crate::browser::control::pairing_code();
-        let browser_label = browser
-            .as_deref()
-            .map(|ua| {
-                if ua.contains("Edg/") {
-                    "Edge"
-                } else if ua.contains("Brave") {
-                    "Brave"
-                } else {
-                    "Chrome"
-                }
-            })
-            .map(|b| format!("Connected to {b}"))
-            .unwrap_or_else(|| "Not connected".into());
+        let browser_name = browser.as_deref().map(|ua| {
+            if ua.contains("Edg/") {
+                "Edge"
+            } else if ua.contains("Brave") {
+                "Brave"
+            } else {
+                "Chrome"
+            }
+        });
 
         let c = self.config.composio.clone();
         let key_kind = ComposioKey::of(&c.api_key);
         let scoped = !c.api_key.is_empty() && key_kind != ComposioKey::Consumer;
-        let picks =
-            div().flex().flex_wrap().gap(px(14.0)).py(px(12.0)).children(TOOLKITS.iter().map(|(slug, name)| {
-                let on = c.toolkits.iter().any(|k| k == slug);
-                let slug = slug.to_string();
-                kit::checkbox(SharedString::from(format!("int-tk-{slug}")), on, *name, &t).on_click(cx.listener(
-                    move |this, _, _, cx| {
-                        let list = &mut this.config.composio.toolkits;
-                        if let Some(i) = list.iter().position(|k| *k == slug) {
-                            list.remove(i);
-                        } else {
-                            list.push(slug.clone());
-                        }
-                        this.persist(cx);
-                    },
-                ))
-            }));
-
-        let cua_hint = match (&self.probe.cua, &self.probe.cua_version) {
-            (Some(p), v) => format!("{} · {}", v.clone().unwrap_or_else(|| "cua-driver".into()), p.display()),
-            (None, _) => format!("Install cua-driver {CUA_VERSION}+ from github.com/trycua/cua, then reopen this page"),
-        };
         let paper_on = self.config.paper.enabled;
         let cua_on = self.config.computer.enabled;
         let composio_on = c.enabled;
+        let cua_installed = self.probe.cua.is_some();
 
-        div()
-            .flex()
-            .flex_col()
-            .child(heading("Dove for Chrome", &t))
-            .child(row(
-                "Browser extension",
-                "Agents get chrome_* tools that act in your own browser, only on sites you allow there",
-                status(browser.is_some(), browser_label, &t),
+        // Dove for Chrome
+        let chrome = plate(&t)
+            .child(head(
+                icons::GLOBE,
+                "Dove for Chrome",
+                "Agents work in your own browser with your logins, only on sites you allow",
+                status(
+                    browser.is_some(),
+                    browser_name.map(|b| format!("Connected to {b}")).unwrap_or_else(|| "Not connected".into()),
+                    &t,
+                ),
                 &t,
             ))
-            .child(row(
+            .child(line(
                 "Pairing code",
-                "Paste into the extension's side panel once. It stays on this machine",
+                if browser.is_some() {
+                    "Paired. Copy it again only to pair another browser"
+                } else {
+                    "Open the Dove side panel in Chrome and paste this once"
+                },
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(8.0))
+                    .gap(px(4.0))
                     .child(
                         div()
-                            .max_w(px(220.0))
-                            .truncate()
+                            .h(px(28.0))
+                            .px(px(10.0))
+                            .flex()
+                            .items_center()
+                            .max_w(px(240.0))
+                            .rounded(px(7.0))
+                            .bg(t.wash(0.04))
+                            .border_1()
+                            .border_color(t.border)
                             .text_size(px(12.0))
                             .font_family(t.font_mono.clone())
-                            .text_color(t.text_faint)
+                            .text_color(t.text_muted)
                             .child(
-                                code.as_deref()
-                                    .map(|c| format!("{}…", &c[..c.len().min(18)]))
-                                    .unwrap_or_else(|| "Turn on the agent browser to pair".into()),
+                                div()
+                                    .truncate()
+                                    .child(code.clone().unwrap_or_else(|| "Turn on the agent browser to pair".into())),
                             ),
                     )
                     .when_some(code, |d, code| {
-                        d.child(ui::button_ghost("int-copy", if self.copied { "Copied" } else { "Copy" }, &t).on_click(
-                            cx.listener(move |this, _, _, cx| {
+                        d.child(
+                            small_icon(
+                                "int-copy",
+                                if self.copied { icons::CHECK } else { icons::COPY },
+                                if self.copied { "Copied" } else { "Copy pairing code" },
+                                &t,
+                            )
+                            .on_click(cx.listener(move |this, _, _, cx| {
                                 cx.write_to_clipboard(ClipboardItem::new_string(code.clone()));
                                 this.copied = true;
+                                cx.spawn(async move |this, cx| {
+                                    cx.background_executor().timer(Duration::from_millis(1600)).await;
+                                    let _ = this.update(cx, |v, cx| {
+                                        v.copied = false;
+                                        cx.notify();
+                                    });
+                                })
+                                .detach();
                                 cx.notify();
-                            }),
-                        ))
-                    }),
-                &t,
-            ))
-            .child(heading("Composio", &t))
-            .child(row(
-                "Composio tools",
-                "Gmail, GitHub, Slack, Notion and 1000+ apps through your own Composio account",
-                kit::switch("int-composio", composio_on, &t).on_click(cx.listener(move |this, _, _, cx| {
-                    this.config.composio.enabled = !composio_on;
-                    this.persist(cx);
-                })),
-                &t,
-            ))
-            .child(row(
-                "API key",
-                match (c.api_key.is_empty(), key_kind) {
-                    (true, _) => "From composio.dev → Settings. Stored only in Dove's data folder",
-                    (false, ComposioKey::Consumer) => "Composio Connect key: agents pick apps on demand",
-                    (false, ComposioKey::Project) => "Project key: Dove opens a session limited to the toolkits below",
-                    (false, ComposioKey::User) => "User key: Dove opens a session limited to the toolkits below",
-                },
-                field(&self.api_key, 260.0, &t),
-                &t,
-            ))
-            .child(
-                div()
-                    .py(px(14.0))
-                    .border_b_1()
-                    .border_color(t.border)
-                    .child(div().text_size(px(14.0)).child("Toolkits"))
-                    .child(div().text_size(px(12.0)).text_color(t.text_faint).child(if scoped {
-                        "None picked means every toolkit"
-                    } else {
-                        "Toolkit limits apply with a project (ak_) or user (uak_) key; Connect keys choose per request"
-                    }))
-                    .child(picks)
-                    .child(field(&self.toolkits, 360.0, &t)),
-            )
-            .child(heading("Paper", &t))
-            .child(row(
-                "Paper design files",
-                if self.probe.paper {
-                    "Paper Desktop is open; agents can read and edit the open file"
-                } else {
-                    "Open Paper Desktop (paper.design) so its local MCP server is running"
-                },
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(14.0))
-                    .child(status(self.probe.paper, if self.probe.paper { "Running" } else { "Not running" }, &t))
-                    .child(kit::switch("int-paper", paper_on, &t).on_click(cx.listener(move |this, _, _, cx| {
-                        this.config.paper.enabled = !paper_on;
-                        this.persist(cx);
-                        this.refresh(cx);
-                    }))),
-                &t,
-            ))
-            .child(heading("Computer use", &t))
-            .child(row(
-                "Cua Driver",
-                cua_hint,
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(14.0))
-                    .child(status(
-                        self.probe.cua.is_some(),
-                        if self.probe.cua.is_some() { "Installed" } else { "Not installed" },
-                        &t,
-                    ))
-                    .child(kit::switch("int-cua", cua_on, &t).on_click(cx.listener(move |this, _, _, cx| {
-                        this.config.computer.enabled = !cua_on;
-                        this.persist(cx);
-                    }))),
-                &t,
-            ))
-            .child(row(
-                "Permissions",
-                self.probe.cua_health.clone().unwrap_or_else(|| {
-                    if cfg!(target_os = "macos") {
-                        "macOS needs Accessibility and Screen Recording for CuaDriver".into()
-                    } else {
-                        "Reported by the driver's own health check".into()
-                    }
-                }),
-                div()
-                    .flex()
-                    .gap(px(6.0))
-                    .child(
-                        ui::button_ghost("int-refresh", "Refresh", &t)
-                            .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
-                    )
-                    .when(self.probe.cua.is_some(), |d| {
-                        d.child(
-                            ui::button_ghost("int-cua-check", if self.checking { "Checking…" } else { "Check" }, &t)
-                                .on_click(cx.listener(|this, _, _, cx| this.check_cua(cx))),
+                            })),
                         )
                     }),
                 &t,
+            ));
+
+        // Composio
+        let (left, switch) = toggle(composio_on, None, "int-composio", &t);
+        let composio = plate(&t)
+            .child(head(
+                icons::WIDGET,
+                "Composio",
+                "Gmail, GitHub, Slack, Notion and 1000+ apps through your own Composio account",
+                left.child(switch.on_click(cx.listener(move |this, _, _, cx| {
+                    this.config.composio.enabled = !composio_on;
+                    this.persist(cx);
+                }))),
+                &t,
             ))
+            .when(composio_on, |d| {
+                d.child(line(
+                    "API key",
+                    match (c.api_key.is_empty(), key_kind) {
+                        (true, _) => "From composio.dev → Settings. Kept only in Dove's data folder",
+                        (false, ComposioKey::Consumer) => "Connect key. Agents pick apps as they need them",
+                        (false, ComposioKey::Project) => "Project key. Limited to the toolkits below",
+                        (false, ComposioKey::User) => "User key. Limited to the toolkits below",
+                    },
+                    field(&self.api_key, 260.0, &t),
+                    &t,
+                ))
+                .child(
+                    div()
+                        .ml(px(28.0))
+                        .py(px(12.0))
+                        .flex()
+                        .flex_col()
+                        .gap(px(10.0))
+                        .border_t_1()
+                        .border_color(t.border)
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap(px(2.0))
+                                .child(div().text_size(px(13.0)).child("Toolkits"))
+                                .child(div().text_size(px(12.0)).text_color(t.text_faint).child(if scoped {
+                                    "Pick none to allow every toolkit"
+                                } else {
+                                    "Applies to project (ak_) and user (uak_) keys"
+                                })),
+                        )
+                        .child(div().flex().flex_wrap().gap(px(6.0)).children(TOOLKITS.iter().map(|(slug, name)| {
+                            let on = c.toolkits.iter().any(|k| k == slug);
+                            let slug = slug.to_string();
+                            pick(SharedString::from(format!("int-tk-{slug}")), name, on, &t).on_click(cx.listener(
+                                move |this, _, _, cx| {
+                                    let list = &mut this.config.composio.toolkits;
+                                    if let Some(i) = list.iter().position(|k| *k == slug) {
+                                        list.remove(i);
+                                    } else {
+                                        list.push(slug.clone());
+                                    }
+                                    this.persist(cx);
+                                },
+                            ))
+                        })))
+                        .child(field(&self.toolkits, 320.0, &t)),
+                )
+            });
+
+        // Paper
+        let (left, switch) = toggle(
+            paper_on,
+            Some((self.probe.paper, if self.probe.paper { "Running" } else { "Not running" })),
+            "int-paper",
+            &t,
+        );
+        let paper = plate(&t).child(head(
+            icons::PEN,
+            "Paper",
+            if self.probe.paper {
+                "Agents can read and edit the design open in Paper Desktop"
+            } else {
+                "Open Paper Desktop (paper.design) so agents can read and edit designs"
+            },
+            left.child(switch.on_click(cx.listener(move |this, _, _, cx| {
+                this.config.paper.enabled = !paper_on;
+                this.persist(cx);
+                this.refresh(cx);
+            }))),
+            &t,
+        ));
+
+        // Computer use
+        let (left, switch) = toggle(
+            cua_on,
+            Some((cua_installed, if cua_installed { "Installed" } else { "Not installed" })),
+            "int-cua",
+            &t,
+        );
+        let computer = plate(&t)
+            .child(head(
+                icons::MONITOR,
+                "Computer use",
+                match (&self.probe.cua, &self.probe.cua_version) {
+                    (Some(_), Some(v)) => format!("Agents see and use your desktop apps through {v}"),
+                    (Some(_), None) => "Agents see and use your desktop apps through cua-driver".to_string(),
+                    (None, _) => format!("Uses the open-source cua-driver {CUA_VERSION} or later, running locally"),
+                },
+                left.child(switch.on_click(cx.listener(move |this, _, _, cx| {
+                    this.config.computer.enabled = !cua_on;
+                    this.persist(cx);
+                }))),
+                &t,
+            ))
+            .child(if let Some(path) = self.probe.cua.clone() {
+                line(
+                    "Permissions",
+                    self.probe.cua_health.clone().unwrap_or_else(|| {
+                        if cfg!(target_os = "macos") {
+                            "Needs Accessibility and Screen Recording in System Settings".into()
+                        } else {
+                            format!("{}", path.display())
+                        }
+                    }),
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(4.0))
+                        .child(
+                            ui::button_ghost("int-cua-check", if self.checking { "Checking…" } else { "Check" }, &t)
+                                .on_click(cx.listener(|this, _, _, cx| this.check_cua(cx))),
+                        )
+                        .child(
+                            small_icon("int-refresh", icons::REFRESH, "Detect again", &t)
+                                .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
+                        ),
+                    &t,
+                )
+            } else {
+                line(
+                    "Install",
+                    "Install cua-driver from github.com/trycua/cua, then detect again",
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(4.0))
+                        .child(
+                            small_icon("int-cua-docs", icons::EXTERNAL_LINK, "Open install guide", &t)
+                                .on_click(cx.listener(|_, _, _, cx| cx.open_url("https://github.com/trycua/cua"))),
+                        )
+                        .child(
+                            small_icon("int-refresh", icons::REFRESH, "Detect again", &t)
+                                .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
+                        ),
+                    &t,
+                )
+            });
+
+        div()
+            .pt(px(8.0))
+            .flex()
+            .flex_col()
+            .gap(px(12.0))
+            .child(chrome)
+            .child(composio)
+            .child(paper)
+            .child(computer)
             .child(
                 div()
-                    .pt(px(14.0))
+                    .px(px(4.0))
+                    .pt(px(2.0))
                     .text_size(px(12.0))
                     .text_color(t.text_faint)
                     .child("Changes apply to agents started from now on."),
