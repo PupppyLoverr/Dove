@@ -240,6 +240,7 @@ fn main() {
                 env: vec![
                     ("DOVE_BROWSER_PORT".into(), endpoint.port.to_string()),
                     ("DOVE_BROWSER_TOKEN".into(), endpoint.token),
+                    ("DOVE_DATA".into(), engine.store.root().display().to_string()),
                 ],
             }));
         }
