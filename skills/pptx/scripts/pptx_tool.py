@@ -13,11 +13,151 @@ import sys
 
 try:
     from pptx import Presentation
+    from pptx.dml.color import RGBColor
+    from pptx.enum.shapes import MSO_SHAPE
+    from pptx.enum.text import PP_ALIGN
     from pptx.util import Emu, Inches, Pt
 except ImportError:
     sys.exit("python-pptx is missing: run with `uv run` or `python3 -m pip install --user python-pptx`")
 
 WIDE = (Inches(13.333), Inches(7.5))
+
+# Restrained, office-grade looks. One accent, near-black ink, generous
+# whitespace; every font is a theme font so the deck stays editable.
+THEMES = {
+    "modern": {"heading": "Calibri Light", "body": "Calibri", "ink": "1F2328", "muted": "5B6470", "accent": "2F5597", "light": "F2F4F7", "rule": "D0D5DD"},
+    "classic": {"heading": "Georgia", "body": "Calibri", "ink": "1A1A1A", "muted": "5F6368", "accent": "7A2E3A", "light": "F5F2EE", "rule": "D9D3CC"},
+    "mono": {"heading": "Arial", "body": "Arial", "ink": "111111", "muted": "666666", "accent": "111111", "light": "F2F2F2", "rule": "CCCCCC"},
+}
+
+A = "http://schemas.openxmlformats.org/drawingml/2006/main"
+P = "http://schemas.openxmlformats.org/presentationml/2006/main"
+
+
+CURRENT = THEMES["modern"]
+
+
+def _q(ns, tag):
+    return f"{{{ns}}}{tag}"
+
+
+def _solid(parent, hexv):
+    for c in list(parent):
+        parent.remove(c)
+    el = parent.makeelement(_q(A, "srgbClr"), {"val": hexv})
+    parent.append(el)
+
+
+def _lvl_style(lvl, size, color, bold=False, space_before=None, align=None):
+    """Set a master text level's default run size/colour and spacing."""
+    if align:
+        lvl.set("algn", align)
+    if space_before is not None:
+        for old in lvl.findall(_q(A, "spcBef")):
+            lvl.remove(old)
+        spc = lvl.makeelement(_q(A, "spcBef"), {})
+        spc.append(spc.makeelement(_q(A, "spcPts"), {"val": str(int(space_before * 100))}))
+        lvl.insert(0, spc)
+    rpr = lvl.find(_q(A, "defRPr"))
+    if rpr is None:
+        rpr = lvl.makeelement(_q(A, "defRPr"), {})
+        lvl.append(rpr)
+    rpr.set("sz", str(int(size * 100)))
+    rpr.set("b", "1" if bold else "0")
+    fill = rpr.find(_q(A, "solidFill"))
+    if fill is None:
+        fill = rpr.makeelement(_q(A, "solidFill"), {})
+        rpr.insert(0, fill)
+    _solid(fill, color)
+
+
+def apply_theme(prs, name):
+    """Restyle the master: theme fonts and colours, title/body sizes, spacing."""
+    from lxml import etree
+    from pptx.opc.constants import RELATIONSHIP_TYPE as RT
+
+    t = THEMES.get(name) or THEMES["modern"]
+    master = prs.slide_master
+    part = master.part.part_related_by(RT.THEME)
+    root = etree.fromstring(part.blob)
+    for tag, face in (("majorFont", t["heading"]), ("minorFont", t["body"])):
+        latin = root.find(f".//{_q(A, 'fontScheme')}/{_q(A, tag)}/{_q(A, 'latin')}")
+        if latin is not None:
+            latin.set("typeface", face)
+    scheme = root.find(f".//{_q(A, 'clrScheme')}")
+    if scheme is not None:
+        for slot, key in (("dk1", "ink"), ("dk2", "muted"), ("lt2", "light"), ("accent1", "accent"), ("accent2", "muted"), ("hlink", "accent")):
+            node = scheme.find(_q(A, slot))
+            if node is not None:
+                _solid(node, t[key])
+    part._blob = etree.tostring(root, xml_declaration=True, encoding="UTF-8", standalone=True)
+
+    styles = master._element.find(_q(P, "txStyles"))
+    if styles is not None:
+        title = styles.find(_q(P, "titleStyle"))
+        if title is not None and title.find(_q(A, "lvl1pPr")) is not None:
+            _lvl_style(title.find(_q(A, "lvl1pPr")), 34, t["ink"], bold=False, align="l")
+        body = styles.find(_q(P, "bodyStyle"))
+        if body is not None:
+            for i, size in enumerate((20, 18, 16, 14, 14), start=1):
+                lvl = body.find(_q(A, f"lvl{i}pPr"))
+                if lvl is not None:
+                    _lvl_style(lvl, size, t["ink"] if i == 1 else t["muted"], space_before=10 if i == 1 else 4)
+    return t
+
+
+def style_title_slide(slide, size):
+    """Left-aligned title with the subtitle right below it, muted."""
+    t = CURRENT
+    title = slide.shapes.title
+    subs = [ph for ph in body_placeholders(slide) if ph.text_frame.text.strip()]
+    if title is not None:
+        for para in title.text_frame.paragraphs:
+            para.alignment = PP_ALIGN.LEFT
+            for run in para.runs:
+                run.font.size = Pt(size)
+                run.font.color.rgb = RGBColor.from_string(t["ink"])
+    for sub in subs[:1]:
+        if title is not None and title.top is not None:
+            sub.left, sub.width = title.left, title.width
+            sub.top = title.top + title.height + Inches(0.05)
+        for para in sub.text_frame.paragraphs:
+            para.alignment = PP_ALIGN.LEFT
+            for run in para.runs:
+                run.font.size = Pt(20)
+                run.font.color.rgb = RGBColor.from_string(t["muted"])
+
+
+def style_table(table, t):
+    """Light header band, hairline rules, no zebra stripes."""
+    tbl = table._tbl
+    pr = tbl.tblPr
+    pr.set("bandRow", "0")
+    pr.set("firstRow", "1")
+    for r, row in enumerate(table.rows):
+        for cell in row.cells:
+            cell.fill.solid()
+            cell.fill.fore_color.rgb = RGBColor.from_string(t["light"] if r == 0 else "FFFFFF")
+            cell.margin_left = cell.margin_right = Inches(0.12)
+            for p in cell.text_frame.paragraphs:
+                for run in p.runs:
+                    run.font.size = Pt(14)
+                    run.font.bold = r == 0
+                    run.font.color.rgb = RGBColor.from_string(t["ink"])
+            tcpr = cell._tc.get_or_add_tcPr()
+            for edge in ("lnL", "lnR", "lnT", "lnB"):
+                for old in tcpr.findall(_q(A, edge)):
+                    tcpr.remove(old)
+                visible = edge == "lnB"
+                ln = tcpr.makeelement(_q(A, edge), {"w": str(12700 if visible else 0)})
+                if visible:
+                    fill = ln.makeelement(_q(A, "solidFill"), {})
+                    ln.append(fill)
+                    _solid(fill, t["rule"])
+                else:
+                    ln.append(ln.makeelement(_q(A, "noFill"), {}))
+                tcpr.insert(0, ln) if edge == "lnL" else tcpr.append(ln)
+
 
 
 def parse_outline(src):
@@ -121,9 +261,16 @@ def widen(prs):
     for master in prs.slide_masters:
         for shapes in [master.shapes] + [layout.shapes for layout in master.slide_layouts]:
             for sh in shapes:
-                if sh.left is not None and sh.width is not None:
-                    sh.left = Emu(int(sh.left * ratio))
-                    sh.width = Emu(int(sh.width * ratio))
+                # Only shapes with their own frame: the rest inherit the
+                # (already widened) master. Set all four values, or
+                # python-pptx writes a zero top/height.
+                if getattr(sh._element, "xfrm", None) is None:
+                    continue
+                frame = (sh.left, sh.top, sh.width, sh.height)
+                if None in frame:
+                    continue
+                left, top, width, height = frame
+                sh.left, sh.top, sh.width, sh.height = Emu(int(left * ratio)), top, Emu(int(width * ratio)), height
 
 
 def layout_by_name(prs, *names):
@@ -183,12 +330,21 @@ def add_slide(prs, s, base_dir):
         sub = body_placeholders(slide)
         if sub and s.get("subtitle"):
             sub[0].text = s["subtitle"]
+        title = slide.shapes.title
+        if title is not None and title.top is not None:
+            bar = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, title.left + Inches(0.1), title.top - Inches(0.25), Inches(0.9), Pt(4))
+            bar.fill.solid()
+            bar.fill.fore_color.rgb = RGBColor.from_string(CURRENT["accent"])
+            bar.line.fill.background()
+            bar.shadow.inherit = False
+        style_title_slide(slide, 44)
     elif kind == "section":
         slide = prs.slides.add_slide(layout_by_name(prs, "Section Header", "Title Only"))
         set_title(slide, s.get("title"))
         sub = body_placeholders(slide)
         if sub and s.get("subtitle"):
             sub[0].text = s["subtitle"]
+        style_title_slide(slide, 36)
     elif kind == "two_column":
         slide = prs.slides.add_slide(layout_by_name(prs, "Two Content", "Comparison"))
         set_title(slide, s.get("title"))
@@ -216,6 +372,7 @@ def add_slide(prs, s, base_dir):
             p = box.text_frame.paragraphs[0]
             p.text = s["caption"]
             p.runs[0].font.size = Pt(14)
+            p.runs[0].font.color.rgb = RGBColor.from_string(CURRENT["muted"])
             p.alignment = 2
     elif kind == "table":
         slide = prs.slides.add_slide(layout_by_name(prs, "Title Only"))
@@ -235,11 +392,7 @@ def add_slide(prs, s, base_dir):
         for i, row in enumerate(rows):
             for j in range(cols):
                 table.cell(r0 + i, j).text = str(row[j]) if j < len(row) else ""
-        for row in table.rows:
-            for cell in row.cells:
-                for p in cell.text_frame.paragraphs:
-                    for r in p.runs:
-                        r.font.size = Pt(16)
+        style_table(table, CURRENT)
     elif kind == "quote":
         slide = prs.slides.add_slide(layout_by_name(prs, "Title Only", "Blank"))
         set_title(slide, s.get("title", ""))
@@ -247,11 +400,14 @@ def add_slide(prs, s, base_dir):
         tf = box.text_frame
         tf.word_wrap = True
         tf.paragraphs[0].text = f"\u201c{s.get('text', '')}\u201d"
-        tf.paragraphs[0].runs[0].font.size = Pt(36)
+        tf.paragraphs[0].runs[0].font.size = Pt(34)
+        tf.paragraphs[0].runs[0].font.name = CURRENT["heading"]
+        tf.paragraphs[0].runs[0].font.color.rgb = RGBColor.from_string(CURRENT["ink"])
         if s.get("by"):
             p = tf.add_paragraph()
             p.text = f"\u2014 {s['by']}"
-            p.runs[0].font.size = Pt(20)
+            p.runs[0].font.size = Pt(18)
+            p.runs[0].font.color.rgb = RGBColor.from_string(CURRENT["muted"])
     else:
         slide = prs.slides.add_slide(layout_by_name(prs, "Title and Content"))
         set_title(slide, s.get("title"))
@@ -261,7 +417,18 @@ def add_slide(prs, s, base_dir):
     if s.get("notes"):
         slide.notes_slide.notes_text_frame.text = s["notes"]
     remove_empty_placeholders(slide)
+    pin_placeholders(slide)
     return slide
+
+
+def pin_placeholders(slide):
+    """Write inherited placeholder frames onto the slide, so viewers that do
+    not resolve layout inheritance (previewers, some web apps) lay it out
+    the same way PowerPoint does."""
+    for ph in slide.placeholders:
+        frame = (ph.left, ph.top, ph.width, ph.height)
+        if None not in frame:
+            ph.left, ph.top, ph.width, ph.height = frame
 
 
 def read_input(path):
@@ -297,6 +464,10 @@ def cmd_create(a):
     prs = open_deck(a.template)
     if spec.get("widescreen", True) and not a.template:
         widen(prs)
+    global CURRENT
+    theme = spec.get("theme") or a.theme
+    if not a.template or a.theme:
+        CURRENT = apply_theme(prs, theme or "modern")
     base_dir = os.path.dirname(os.path.abspath(a.input))
     if spec.get("title") and not spec.get("no_title_slide"):
         add_slide(prs, {"layout": "title", "title": spec["title"], "subtitle": spec.get("subtitle")}, base_dir)
@@ -466,6 +637,7 @@ def main():
 
     c = cmd("create", cmd_create, ("input", str), ("output", str), out=False, help="outline (.md/.json) → .pptx")
     c.add_argument("--template")
+    c.add_argument("--theme", choices=sorted(THEMES), help="look of the deck (default: modern; templates keep their own unless set)")
     d = cmd("dump", cmd_dump, ("file", str), out=False, help="print every slide's text")
     d.add_argument("--json", action="store_true")
     cmd("set-title", cmd_set_title, ("file", str), ("slide", int), ("text", str))

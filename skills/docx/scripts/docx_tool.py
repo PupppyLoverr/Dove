@@ -200,7 +200,10 @@ def add_block(doc, b, base_dir):
         rows = b.get("rows") or []
         cols = max([len(header)] + [len(r) for r in rows] + [1])
         table = doc.add_table(rows=0, cols=cols)
-        table.style = b.get("style", "Table Grid")
+        if b.get("style"):
+            table.style = b["style"]
+        else:
+            light_table(table, CURRENT)
         table.alignment = WD_TABLE_ALIGNMENT.CENTER
         if header:
             cells = table.add_row().cells
@@ -208,7 +211,7 @@ def add_block(doc, b, base_dir):
                 cells[j].text = ""
                 run = cells[j].paragraphs[0].add_run(str(header[j]) if j < len(header) else "")
                 run.bold = True
-                set_cell_background(cells[j], b.get("header_fill", "F2F2F2"))
+                set_cell_background(cells[j], b.get("header_fill", CURRENT["light"]))
             mark_header_row(table.rows[0])
         for r in rows:
             cells = table.add_row().cells
@@ -264,6 +267,141 @@ def load_spec(path):
     return spec
 
 
+# Restrained, office-grade looks: near-black ink, one accent used sparingly,
+# real paragraph spacing. Applied to the styles, so the document stays
+# editable in Word with consistent formatting.
+THEMES = {
+    "modern": {"heading": "Calibri Light", "body": "Calibri", "ink": "1F2328", "muted": "5B6470", "accent": "2F5597", "light": "F2F4F7", "rule": "D0D5DD"},
+    "classic": {"heading": "Georgia", "body": "Georgia", "ink": "1A1A1A", "muted": "5F6368", "accent": "7A2E3A", "light": "F5F2EE", "rule": "D9D3CC"},
+    "mono": {"heading": "Arial", "body": "Arial", "ink": "111111", "muted": "666666", "accent": "111111", "light": "F2F2F2", "rule": "CCCCCC"},
+}
+CURRENT = THEMES["modern"]
+
+
+def _style(doc, name):
+    try:
+        return doc.styles[name]
+    except KeyError:
+        return None
+
+
+def _font(style, face, size, color, bold=None, italic=None):
+    f = style.font
+    f.name = face
+    rpr = style.element.get_or_add_rPr()
+    fonts = rpr.find(qn("w:rFonts"))
+    if fonts is not None:
+        for attr in ("w:ascii", "w:hAnsi", "w:cs", "w:eastAsia"):
+            fonts.set(qn(attr), face)
+        for attr in ("w:asciiTheme", "w:hAnsiTheme", "w:eastAsiaTheme", "w:cstheme"):
+            fonts.attrib.pop(qn(attr), None)
+    f.size = Pt(size)
+    f.color.rgb = RGBColor.from_string(color)
+    if bold is not None:
+        f.bold = bold
+    if italic is not None:
+        f.italic = italic
+
+
+def _spacing(style, before, after, line=None, keep=False):
+    pf = style.paragraph_format
+    pf.space_before, pf.space_after = Pt(before), Pt(after)
+    if line:
+        pf.line_spacing = line
+    if keep:
+        pf.keep_with_next = True
+
+
+def apply_theme(doc, name, body_size=11):
+    global CURRENT
+    t = CURRENT = THEMES.get(name) or THEMES["modern"]
+    normal = doc.styles["Normal"]
+    _font(normal, t["body"], body_size, t["ink"])
+    _spacing(normal, 0, 6, 1.15)
+    title = _style(doc, "Title")
+    if title is not None:
+        _font(title, t["heading"], 28, t["ink"], bold=False)
+        _spacing(title, 0, 4, 1.0)
+        ppr = title.element.get_or_add_pPr()
+        for b in ppr.findall(qn("w:pBdr")):
+            ppr.remove(b)
+    sub = _style(doc, "Subtitle")
+    if sub is not None:
+        _font(sub, t["body"], 13, t["muted"], italic=False)
+        _spacing(sub, 0, 18)
+    for level, (size, before, after) in enumerate([(18, 18, 6), (14, 14, 4), (12, 12, 3), (11, 10, 2)], start=1):
+        h = _style(doc, f"Heading {level}")
+        if h is not None:
+            _font(h, t["heading"], size, t["ink"] if level < 3 else t["muted"], bold=level >= 3, italic=False)
+            _spacing(h, before, after, 1.0, keep=True)
+    for qname in ("Quote", "Intense Quote"):
+        q = _style(doc, qname)
+        if q is not None:
+            _font(q, t["body"], body_size, t["muted"], italic=True)
+            q.paragraph_format.left_indent = Inches(0.3)
+            ppr = q.element.get_or_add_pPr()
+            for b in ppr.findall(qn("w:pBdr")):
+                ppr.remove(b)
+    cap = _style(doc, "Caption")
+    if cap is not None:
+        _font(cap, t["body"], 9, t["muted"], bold=False, italic=False)
+    for lname in ("List Bullet", "List Number", "List Bullet 2", "List Number 2"):
+        ls = _style(doc, lname)
+        if ls is not None:
+            _spacing(ls, 0, 3, 1.15)
+    for sec in doc.sections:
+        sec.left_margin = sec.right_margin = Inches(1)
+        sec.top_margin = sec.bottom_margin = Inches(1)
+    return t
+
+
+def light_table(table, t):
+    """Hairline horizontal rules and a light header band; no grid."""
+    tbl = table._tbl
+    pr = tbl.tblPr
+    for old in pr.findall(qn("w:tblBorders")):
+        pr.remove(old)
+    borders = OxmlElement("w:tblBorders")
+    for edge in ("top", "left", "bottom", "right", "insideH", "insideV"):
+        el = OxmlElement(f"w:{edge}")
+        if edge in ("left", "right", "insideV"):
+            el.set(qn("w:val"), "nil")
+        else:
+            el.set(qn("w:val"), "single")
+            el.set(qn("w:sz"), "4")
+            el.set(qn("w:color"), t["rule"])
+        borders.append(el)
+    pr.append(borders)
+    # Full text width, with comfortable cell padding.
+    for old in pr.findall(qn("w:tblW")):
+        pr.remove(old)
+    width = OxmlElement("w:tblW")
+    width.set(qn("w:w"), "5000")
+    width.set(qn("w:type"), "pct")
+    pr.append(width)
+    margins = OxmlElement("w:tblCellMar")
+    for edge in ("left", "right"):
+        m = OxmlElement(f"w:{edge}")
+        m.set(qn("w:w"), "120")
+        m.set(qn("w:type"), "dxa")
+        margins.append(m)
+    pr.append(margins)
+    # Explicit column widths too: viewers that ignore pct widths use them.
+    table.autofit = False
+    cols = max(len(table.columns), 1)
+    col_w = Inches(6.5 / cols)
+    for col in table.columns:
+        col.width = col_w
+    for row in table.rows:
+        for cell in row.cells:
+            cell.width = col_w
+    for row in table.rows:
+        for cell in row.cells:
+            for p in cell.paragraphs:
+                p.paragraph_format.space_before = Pt(3)
+                p.paragraph_format.space_after = Pt(3)
+
+
 def new_document(template=None):
     if template:
         doc = docx.Document(template)
@@ -280,9 +418,10 @@ def cmd_create(a):
     if a.title:
         spec["title"] = a.title
     doc = new_document(a.template)
-    normal = doc.styles["Normal"]
-    normal.font.name = spec.get("font", "Calibri")
-    normal.font.size = Pt(spec.get("size", 11))
+    if not a.template or a.theme or spec.get("theme"):
+        apply_theme(doc, spec.get("theme") or a.theme or "modern", spec.get("size", 11))
+    if spec.get("font"):
+        doc.styles["Normal"].font.name = spec["font"]
     if spec.get("landscape"):
         sec = doc.sections[0]
         sec.orientation = WD_ORIENT.LANDSCAPE
@@ -413,6 +552,7 @@ def main():
     c.add_argument("output")
     c.add_argument("--title")
     c.add_argument("--template")
+    c.add_argument("--theme", choices=sorted(THEMES), help="look of the document (default: modern; templates keep their own unless set)")
     c.set_defaults(fn=cmd_create)
     d = sub.add_parser("dump", help="print paragraphs and tables")
     d.add_argument("file")
