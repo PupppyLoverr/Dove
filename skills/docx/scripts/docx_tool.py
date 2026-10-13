@@ -372,6 +372,20 @@ def light_table(table, t):
             el.set(qn("w:color"), t["rule"])
         borders.append(el)
     pr.append(borders)
+    # Full text width, with comfortable cell padding.
+    for old in pr.findall(qn("w:tblW")):
+        pr.remove(old)
+    width = OxmlElement("w:tblW")
+    width.set(qn("w:w"), "5000")
+    width.set(qn("w:type"), "pct")
+    pr.append(width)
+    margins = OxmlElement("w:tblCellMar")
+    for edge in ("left", "right"):
+        m = OxmlElement(f"w:{edge}")
+        m.set(qn("w:w"), "120")
+        m.set(qn("w:type"), "dxa")
+        margins.append(m)
+    pr.append(margins)
     for row in table.rows:
         for cell in row.cells:
             for p in cell.paragraphs:
