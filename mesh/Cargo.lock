@@ -621,6 +621,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "dove-mesh-host"
+version = "0.2.91"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "futures",
+ "loro",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "uuid",
+ "zeron-client",
+ "zeron-doc",
+ "zeron-proto",
+ "zeron-sync",
+]
+
+[[package]]
 name = "either"
 version = "1.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

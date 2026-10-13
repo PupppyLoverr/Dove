@@ -1,0 +1,25 @@
+[package]
+name = "dove-mesh-host"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Publishes Dove desktop sessions to the Cosmos edge so the Dove phone apps can watch and drive them."
+
+[[bin]]
+name = "dove-mesh-host"
+path = "src/main.rs"
+
+[dependencies]
+zeron-proto.workspace = true
+zeron-doc.workspace = true
+zeron-sync.workspace = true
+zeron-client.workspace = true
+loro.workspace = true
+tokio.workspace = true
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+reqwest.workspace = true
+anyhow.workspace = true

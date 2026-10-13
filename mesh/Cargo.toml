@@ -4,7 +4,7 @@
 # desktop app's dependency graph stays lean.
 [workspace]
 resolver = "2"
-members = ["crates/client", "crates/doc", "crates/markdown", "crates/mobile", "crates/proto", "crates/rpc", "crates/sync", "crates/syntax", "crates/text"]
+members = ["crates/client", "crates/doc", "crates/host", "crates/markdown", "crates/mobile", "crates/proto", "crates/rpc", "crates/sync", "crates/syntax", "crates/text"]
 
 [workspace.package]
 version = "0.2.91"
