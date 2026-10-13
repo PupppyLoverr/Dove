@@ -12972,7 +12972,7 @@ public func coreVersion() -> String  {
 })
 }
 /**
- * OAuth callback scheme (`cosmos`).
+ * OAuth callback scheme (`dove`).
  */
 public func authCallbackScheme() -> String  {
     return try!  FfiConverterString.lift(try! rustCall() {
@@ -13293,7 +13293,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_zeron_mobile_checksum_func_core_version() != 46096) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_zeron_mobile_checksum_func_auth_callback_scheme() != 28823) {
+    if (uniffi_zeron_mobile_checksum_func_auth_callback_scheme() != 40705) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_zeron_mobile_checksum_func_auth_exchange_code() != 47073) {
