@@ -1608,7 +1608,7 @@ impl TaskView {
             }
         };
         let path_like = matches!(tool.kind, ToolKind::Read | ToolKind::Edit) && !tool.title.is_empty();
-        let mono = matches!(view, ToolView::Shell { .. } | ToolView::Search { .. })
+        let mono = matches!(view, ToolView::Shell { .. } | ToolView::Search)
             || matches!(tool.kind, ToolKind::Read | ToolKind::Edit);
         let subject: AnyElement = match &view {
             ToolView::Browser { action, target } => div()
@@ -1723,7 +1723,7 @@ impl TaskView {
                     output_box(("out", i, j), text, more, tool, toggle.clone(), t)
                 })
             }
-            ToolView::Search { .. } => tool.output.as_deref().filter(|o| !o.trim().is_empty()).map(|out| {
+            ToolView::Search => tool.output.as_deref().filter(|o| !o.trim().is_empty()).map(|out| {
                 let paths = path_lines(out);
                 if paths.is_empty() || tool.error {
                     let (shown, more) = tail(out, if tool.open { OUTPUT_OPEN } else { OUTPUT_TAIL });
