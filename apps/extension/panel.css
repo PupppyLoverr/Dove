@@ -41,3 +41,7 @@ li .a { grid-column:2; color:var(--muted); font:11px ui-monospace,Menlo,monospac
 li.fail .n::after { content:" — failed"; color:var(--muted); font-weight:400; }
 @keyframes in { from { opacity:0; transform:translateY(-2px); } }
 footer { border-top:1px solid var(--line); padding-top:8px; }
+
+[hidden] {
+  display: none !important;
+}
