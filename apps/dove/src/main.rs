@@ -15,6 +15,7 @@ mod markdown_extra;
 mod math;
 mod mcp_browser;
 mod notify;
+mod office;
 mod pages;
 mod palette;
 mod picker_memory;
@@ -226,6 +227,9 @@ fn main() {
     };
 
     // Every agent Dove starts gets the in-app browser as MCP tools.
+    // Office skills for every harness (and Dove's own terminal sessions).
+    dove_core::office_skills::set_enabled(engine.store.setting("agent_office_skills").as_deref() != Some("false"));
+    std::thread::spawn(dove_core::office_skills::ensure_installed);
     if engine.store.setting("agent_browser").as_deref() != Some("false") {
         if let (Some(endpoint), Ok(exe)) = (browser::control::start(&engine.runtime()), std::env::current_exe()) {
             // For tests and external tooling: where to reach this instance.

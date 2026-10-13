@@ -21,7 +21,23 @@ snapshot; browser_screenshot shows you the pixels.\n\
 Visual answers: call show_ui to put an interactive card in the chat (stats, bar/line charts, tables, \
 progress, checklists, toggles, steppers, choices and action buttons) whenever something is clearer \
 shown than told, or when you want the user to pick or tune values. Their choice comes back as their \
-next message. Dove's chat also renders ```mermaid diagrams and $$ LaTeX $$ math.";
+next message. Dove's chat also renders ```mermaid diagrams and $$ LaTeX $$ math.\n\
+Office documents: for .pdf, .pptx, .xlsx or .docx work, call dove_skills with {\"name\": \"pdf\"|\"pptx\"|\"xlsx\"|\"docx\"} \
+first. Each skill ships a ready script (python-docx, python-pptx, openpyxl, reportlab, pypdf) you run with \
+`uv run <script>`; it gives real layouts, styles, formulas and charts. The user previews and edits the result \
+in Dove's file panel.";
+
+/// `dove_skills`: Dove's bundled office skills (`skills/` in the repo).
+fn skills_tool() -> Value {
+    json!({
+        "name": "dove_skills",
+        "description": "Dove's office skills: pdf (create, merge, split, fill forms, extract), pptx (decks from outlines on real layouts, edit slides), xlsx (workbooks with formulas, formatting, charts), docx (Word documents with styles, tables, images). Without a name it lists them; with a name it returns that skill's full instructions and the folder holding its script.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"name": {"type": "string", "enum": ["pdf", "pptx", "xlsx", "docx"]}}
+        }
+    })
+}
 
 /// `show_ui`: rendered by Dove's chat straight from the tool call.
 fn show_ui_tool() -> Value {
@@ -77,6 +93,7 @@ pub fn run() {
                 let mut tools = crate::browser::agent::tools();
                 if let Some(list) = tools.as_array_mut() {
                     list.push(show_ui_tool());
+                    list.push(skills_tool());
                 }
                 Ok(json!({"tools": tools}))
             }
@@ -84,6 +101,13 @@ pub fn run() {
                 "content": [{"type": "text", "text": "Shown to the user inline in the chat. If it has actions, their choice arrives as their next message."}],
                 "isError": false
             })),
+            "tools/call" if params.get("name").and_then(Value::as_str) == Some("dove_skills") => {
+                let name = params.pointer("/arguments/name").and_then(Value::as_str);
+                Ok(match dove_core::office_skills::describe(name) {
+                    Ok(text) => json!({"content": [{"type": "text", "text": text}], "isError": false}),
+                    Err(text) => json!({"content": [{"type": "text", "text": text}], "isError": true}),
+                })
+            }
             "tools/call" => Ok(call(
                 params.get("name").and_then(Value::as_str).unwrap_or_default(),
                 params.get("arguments").cloned().unwrap_or(json!({})),

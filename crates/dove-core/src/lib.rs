@@ -27,6 +27,7 @@ pub use dove_harness::Command;
 pub use dove_harness::detect as harness_detect;
 pub use dove_harness::is_supported as harness_supported;
 pub use dove_harness::models;
+pub use dove_harness::office_skills;
 pub use dove_harness::tui;
 pub use dove_harness::{ToolServer, is_dove_tool, set_tool_server};
 pub use dove_proto as proto;
