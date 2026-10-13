@@ -109,7 +109,7 @@ impl ThreadView {
                     // An armed switch fires when the turn ends.
                     if this.armed == Some(Pending::ToTerminal) && *s != TaskStatus::Running {
                         this.armed = None;
-                        this.to_terminal_now(window, cx);
+                        this.switch_to_terminal_now(window, cx);
                     }
                     TaskViewEventKind::Status(*s)
                 }
@@ -184,7 +184,7 @@ impl ThreadView {
                 if self.chat.read(cx).is_working() {
                     self.sheet = Some(Pending::ToTerminal);
                 } else {
-                    self.to_terminal_now(window, cx);
+                    self.switch_to_terminal_now(window, cx);
                 }
             }
             ViewMode::Chat if self.driver == ViewMode::Chat => {
@@ -196,7 +196,7 @@ impl ThreadView {
                 let quiet =
                     self.terminal.as_ref().is_none_or(|t| t.read(cx).is_quiet(QUIET) || !t.read(cx).is_running());
                 if quiet {
-                    self.to_chat_now(false, window, cx);
+                    self.switch_to_chat_now(false, window, cx);
                 } else {
                     self.sheet = Some(Pending::ToChat);
                 }
@@ -218,7 +218,7 @@ impl ThreadView {
                 self.armed = Some(Pending::ToTerminal);
                 self.note = Some("Switches to the terminal when this turn ends".into());
             }
-            (Pending::ToChat, true) => self.to_chat_now(true, window, cx),
+            (Pending::ToChat, true) => self.switch_to_chat_now(true, window, cx),
             (Pending::ToChat, false) => {
                 self.armed = Some(Pending::ToChat);
                 self.note = Some("Switches back to chat when the terminal goes quiet".into());
@@ -265,7 +265,7 @@ impl ThreadView {
         (task, project)
     }
 
-    fn to_terminal_now(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn switch_to_terminal_now(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (task, project) = self.session_task(cx);
         let run = self.chat.read(cx).composer.read(cx).run_settings(cx);
         let cmd = match self.engine.tui_command(&task, &project, &run) {
@@ -375,7 +375,7 @@ impl ThreadView {
         }));
     }
 
-    fn to_chat_now(&mut self, interrupt: bool, window: &mut Window, cx: &mut Context<Self>) {
+    fn switch_to_chat_now(&mut self, interrupt: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.finish_to_chat(interrupt, window, cx);
     }
 
@@ -409,7 +409,7 @@ impl ThreadView {
                 cx.background_executor().timer(Duration::from_millis(20)).await;
             }
             if let Some(t) = &term {
-                let _ = t.update(cx, |t, cx| t.kill(cx));
+                t.update(cx, |t, cx| t.kill(cx));
             }
             engine.release_terminal(task.id);
             let _ = this.update_in(cx, |v, window, cx| v.land_on_chat(window, cx));

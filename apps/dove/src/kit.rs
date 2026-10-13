@@ -302,11 +302,14 @@ pub enum Tone {
     Danger,
 }
 
+/// Opens the thread a toast is about.
+pub type OpenTask = std::rc::Rc<dyn Fn(dove_core::proto::TaskId, &mut Window, &mut App)>;
+
 /// The app's toast stack, a global entity the shell renders.
 pub struct Toasts {
     items: Vec<Toast>,
     next: u64,
-    pub on_open: Option<std::rc::Rc<dyn Fn(dove_core::proto::TaskId, &mut Window, &mut App)>>,
+    pub on_open: Option<OpenTask>,
 }
 
 struct ToastsGlobal(Entity<Toasts>);

@@ -240,18 +240,6 @@ pub fn icon_button(
     window_button(id, icon(path).text_color(theme.text_muted), label, theme, on_click)
 }
 
-/// A disabled-looking icon slot that still blocks the drag strip.
-pub fn icon_disabled(path: &'static str, theme: &Theme) -> Div {
-    div()
-        .size(px(24.0))
-        .flex_none()
-        .flex()
-        .items_center()
-        .justify_center()
-        .occlude()
-        .child(icon(path).text_color(theme.text_muted.opacity(0.35)))
-}
-
 const CAPTION_W: f32 = 46.0;
 
 /// Native Windows caption buttons (min/max/close) drawn with the system

@@ -154,10 +154,10 @@ impl Remote {
         let (tx, rx) = flume::unbounded::<Value>();
         std::thread::spawn(move || {
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-                if let Ok(v) = serde_json::from_str::<Value>(&line) {
-                    if tx.send(v).is_err() {
-                        break;
-                    }
+                if let Ok(v) = serde_json::from_str::<Value>(&line)
+                    && tx.send(v).is_err()
+                {
+                    break;
                 }
             }
         });
@@ -278,7 +278,7 @@ impl Remote {
                     write_line(&stdin, chat_row(&t, p));
                 }
             }
-            recent.sort_by(|a, b| b.0.cmp(&a.0));
+            recent.sort_by_key(|e| std::cmp::Reverse(e.0));
             for (_, id) in recent.into_iter().take(HISTORY_SESSIONS) {
                 publish_transcript(&engine, &stdin, id, false);
             }

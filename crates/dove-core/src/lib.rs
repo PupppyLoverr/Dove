@@ -304,10 +304,10 @@ impl Engine {
             )?;
             (wt.path.clone(), Some(wt.path), Some(wt.branch), Some(wt.base))
         } else {
-            if let Some(b) = new.from_branch.as_deref() {
-                if dove_git::current_branch(&project.path).ok().as_deref() != Some(b) {
-                    dove_git::checkout(&project.path, b)?;
-                }
+            if let Some(b) = new.from_branch.as_deref()
+                && dove_git::current_branch(&project.path).ok().as_deref() != Some(b)
+            {
+                dove_git::checkout(&project.path, b)?;
             }
             let base = dove_git::head_sha(&project.path).ok();
             (project.path.clone(), None, dove_git::current_branch(&project.path).ok(), base)
@@ -348,13 +348,12 @@ impl Engine {
             fork: false,
         };
         // A matching pre-started session takes the prompt straight away.
-        if let Some(handle) = self.take_warm(&spec) {
-            if let Some(prompt) = spec.prompt.clone() {
-                if handle.send(Command::Send(prompt)) {
-                    let live = self.attach(&task, handle)?;
-                    return Ok((task, live));
-                }
-            }
+        if let Some(handle) = self.take_warm(&spec)
+            && let Some(prompt) = spec.prompt.clone()
+            && handle.send(Command::Send(prompt))
+        {
+            let live = self.attach(&task, handle)?;
+            return Ok((task, live));
         }
         let live = self.launch(&task, spec)?;
         Ok((task, live))
@@ -439,12 +438,11 @@ impl Engine {
         run: RunSettings,
     ) -> Result<LiveSession> {
         let spec = self.resume_spec(task, project, prompt, &run)?;
-        if let Some(handle) = self.take_warm(&spec) {
-            if let Some(prompt) = spec.prompt.clone() {
-                if handle.send(Command::Send(prompt)) {
-                    return self.attach(task, handle);
-                }
-            }
+        if let Some(handle) = self.take_warm(&spec)
+            && let Some(prompt) = spec.prompt.clone()
+            && handle.send(Command::Send(prompt))
+        {
+            return self.attach(task, handle);
         }
         self.launch(task, spec)
     }
@@ -677,10 +675,10 @@ impl Engine {
     /// Delete a task for good: its record, transcript, usage, and (for
     /// worktree tasks) the worktree and its branch.
     pub fn delete_task(&self, task: &Task, project: &Project) -> Result<()> {
-        if let Some(wt) = &task.worktree {
-            if let Err(e) = dove_git::remove_worktree(&project.path, wt, task.branch.as_deref()) {
-                tracing::warn!("removing worktree {}: {e:#}", wt.display());
-            }
+        if let Some(wt) = &task.worktree
+            && let Err(e) = dove_git::remove_worktree(&project.path, wt, task.branch.as_deref())
+        {
+            tracing::warn!("removing worktree {}: {e:#}", wt.display());
         }
         self.store.delete_task(task.id)
     }

@@ -86,11 +86,11 @@ impl PullRequestsPage {
     /// Point at `preferred` (the active project) unless the user chose one.
     pub fn set_projects(&mut self, projects: Vec<Project>, preferred: Option<&Project>, cx: &mut Context<Self>) {
         self.projects = projects;
-        if self.repo.is_none() {
-            if let Some(p) = preferred.cloned().or_else(|| self.projects.first().cloned()) {
-                self.repo = Some(p);
-                self.load(cx);
-            }
+        if self.repo.is_none()
+            && let Some(p) = preferred.cloned().or_else(|| self.projects.first().cloned())
+        {
+            self.repo = Some(p);
+            self.load(cx);
         }
     }
 

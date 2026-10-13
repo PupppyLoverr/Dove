@@ -2,6 +2,8 @@
 //!
 //! Ported from zeron's `packages/control/src/wire.ts` + `packages/harness/src/types.ts`.
 //! Context occupancy is replicated per chat; billing `Usage` remains a harness passthrough.
+// Vendored upstream code: Dove's CI lints its own crates, not this one.
+#![allow(clippy::all)]
 
 pub mod agent;
 pub mod attachment_mentions;

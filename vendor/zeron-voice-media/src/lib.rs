@@ -1,6 +1,8 @@
 //! Codex's packaged WebRTC helper protocol (Apache-2.0, OpenAI rust-v0.159.0).
 //! Audio, AEC, interruption and encrypted media stay inside that native process.
 //! Only bounded SDP signaling, controls and level meters cross this pipe.
+// Vendored upstream code: Dove's CI lints its own crates, not this one.
+#![allow(clippy::all)]
 use serde_json::{Value, json};
 use std::{
     path::{Path, PathBuf},

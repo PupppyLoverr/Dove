@@ -248,12 +248,11 @@ async fn settle(b: &Browser, cx: &mut AsyncWindowContext, max_ms: u64) {
     let mut waited = 250;
     while waited < max_ms {
         let loading = b.update(cx, |b, _| b.page.loading).unwrap_or(false);
-        if !loading {
-            if let Ok(Value::String(state)) = js(b, cx, "document.readyState").await {
-                if state == "complete" || (state == "interactive" && waited > 3000) {
-                    return;
-                }
-            }
+        if !loading
+            && let Ok(Value::String(state)) = js(b, cx, "document.readyState").await
+            && (state == "complete" || (state == "interactive" && waited > 3000))
+        {
+            return;
         }
         sleep(cx, 200).await;
         waited += 200;

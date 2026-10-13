@@ -5,6 +5,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))] // read by the macOS PDFKit backend
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FieldKind {
     Text,
@@ -33,8 +34,10 @@ pub struct Pdf {
 }
 
 /// Pages rendered up front; the rest are counted and left to "Open in editor".
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))] // read by the macOS PDFKit backend
 pub const MAX_PAGES: usize = 40;
 /// Rendered page width in pixels (2x the panel width, for Retina).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))] // read by the macOS PDFKit backend
 const RENDER_WIDTH: f64 = 1200.0;
 
 pub fn load(path: &Path) -> Result<Pdf, String> {

@@ -324,10 +324,12 @@ pub fn wash(alpha: f32) -> Hsla {
 
 impl Theme {
     /// Popups share the window's theme in Dove.
+    #[allow(dead_code)] // Zeron parity
     pub fn for_popup(&self) -> Theme {
         self.clone()
     }
 
+    #[allow(dead_code)] // Zeron parity
     pub fn is_glass(&self) -> bool {
         self.is_frost()
     }

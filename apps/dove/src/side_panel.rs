@@ -211,7 +211,7 @@ impl SidePanel {
 
     fn panel(&mut self) -> Option<&mut ThreadPanel> {
         let id = self.thread?;
-        Some(self.panels.entry(id).or_insert_with(ThreadPanel::default))
+        Some(self.panels.entry(id).or_default())
     }
 
     fn panel_ref(&self) -> Option<&ThreadPanel> {
@@ -325,10 +325,10 @@ impl SidePanel {
                 Surface::SideChat(id)
             }
         };
-        if let Some(p) = self.panel() {
-            if !p.tabs.contains(&surface) {
-                p.tabs.push(surface);
-            }
+        if let Some(p) = self.panel()
+            && !p.tabs.contains(&surface)
+        {
+            p.tabs.push(surface);
         }
         self.activate(surface, window, cx);
     }
@@ -378,11 +378,13 @@ impl SidePanel {
     }
 
     fn reorder(&mut self, from: usize, to: usize, cx: &mut Context<Self>) {
-        if let Some(p) = self.panel() {
-            if from < p.tabs.len() && to < p.tabs.len() && from != to {
-                let s = p.tabs.remove(from);
-                p.tabs.insert(to, s);
-            }
+        if let Some(p) = self.panel()
+            && from < p.tabs.len()
+            && to < p.tabs.len()
+            && from != to
+        {
+            let s = p.tabs.remove(from);
+            p.tabs.insert(to, s);
         }
         cx.notify();
     }

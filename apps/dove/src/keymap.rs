@@ -142,6 +142,6 @@ mod tests {
         ids.dedup();
         assert_eq!(ids.len(), all.len());
         assert!(pretty("secondary-shift-k").ends_with("Shift K"));
-        assert_eq!(pretty("alt-left").split(' ').last(), Some("←"));
+        assert_eq!(pretty("alt-left").split(' ').next_back(), Some("←"));
     }
 }

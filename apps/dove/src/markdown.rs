@@ -59,11 +59,12 @@ impl Inline {
     fn push(&mut self, s: &str, style: Style) {
         let start = self.text.len();
         self.text.push_str(s);
-        if let Some((r, last)) = self.spans.last_mut() {
-            if *last == style && r.end == start {
-                r.end = self.text.len();
-                return;
-            }
+        if let Some((r, last)) = self.spans.last_mut()
+            && *last == style
+            && r.end == start
+        {
+            r.end = self.text.len();
+            return;
         }
         self.spans.push((start..self.text.len(), style));
     }
@@ -525,7 +526,7 @@ fn parse_inline(p: &mut P, end: TagEnd) -> Inline {
             Event::Start(Tag::Image { dest_url, .. }) => {
                 let start = out.text.len();
                 let mut alt = String::new();
-                while let Some(ev) = p.next() {
+                for ev in p.by_ref() {
                     match ev {
                         Event::Text(t) | Event::Code(t) => alt.push_str(&t),
                         Event::End(TagEnd::Image) => break,
@@ -770,9 +771,6 @@ fn mermaid_block(id: &str, src: &str, theme: &Theme) -> AnyElement {
                     .child(src.to_string()),
             )
             .into_any_element(),
-        Diagram::Pending => {
-            div().text_size(px(12.0)).text_color(theme.text_faint).child("Rendering diagram…").into_any_element()
-        }
     };
     div()
         .id(SharedString::from(format!("{id}-mermaid")))
@@ -906,10 +904,10 @@ fn image_block(id: &str, alt: &str, url: &str, theme: &Theme) -> AnyElement {
             )
         })
         .on_click(move |_, window, _| {
-            if let Ok(mut z) = ZOOMED.lock() {
-                if !z.remove(&key) {
-                    z.insert(key.clone());
-                }
+            if let Ok(mut z) = ZOOMED.lock()
+                && !z.remove(&key)
+            {
+                z.insert(key.clone());
             }
             window.refresh();
         })

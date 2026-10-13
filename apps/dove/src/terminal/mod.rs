@@ -109,10 +109,10 @@ impl TerminalView {
                         let alive = this.update(cx, |v, cx| {
                             v.last_output = Instant::now();
                             let replies = v.emu.feed(&bytes);
-                            if !replies.is_empty() {
-                                if let Some(p) = v.pty.as_mut() {
-                                    p.write(&replies);
-                                }
+                            if !replies.is_empty()
+                                && let Some(p) = v.pty.as_mut()
+                            {
+                                p.write(&replies);
                             }
                             cx.notify();
                         });

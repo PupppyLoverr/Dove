@@ -1245,16 +1245,10 @@ impl Composer {
             .child(if busy {
                 kit::spinner("mic-busy", 14.0, t.text_muted).into_any_element()
             } else {
-                icon(if recording {
-                    icons::MICROPHONE
-                } else if ready {
-                    icons::MICROPHONE
-                } else {
-                    icons::MICROPHONE_OFF
-                })
-                .size(px(16.0))
-                .text_color(if recording { t.danger } else { t.text_muted })
-                .into_any_element()
+                icon(if recording || ready { icons::MICROPHONE } else { icons::MICROPHONE_OFF })
+                    .size(px(16.0))
+                    .text_color(if recording { t.danger } else { t.text_muted })
+                    .into_any_element()
             })
             .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                 hold.update(cx, |v, cx| v.press(cx));

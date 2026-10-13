@@ -21,7 +21,7 @@ use crate::transcript::{TaskView, TaskViewEvent};
 use crate::ui;
 
 pub enum SideChatEvent {
-    Started(TaskId),
+    Started(#[allow(dead_code)] TaskId),
     Changed,
 }
 

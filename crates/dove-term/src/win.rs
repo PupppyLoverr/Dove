@@ -270,7 +270,7 @@ fn resolve_program(program: &OsStr, path: Option<&OsStr>) -> io::Result<PathBuf>
     };
     let candidate = candidate
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, format!("executable not found: {}", named.display())))?;
-    std::path::absolute(candidate).map_err(Into::into)
+    std::path::absolute(candidate)
 }
 
 fn existing_program(candidate: &Path) -> Option<PathBuf> {

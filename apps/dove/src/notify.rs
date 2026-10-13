@@ -164,7 +164,7 @@ mod tray {
                     }
                 }
                 if quit {
-                    let _ = cx.update(|cx| cx.quit());
+                    cx.update(|cx| cx.quit());
                     break;
                 }
                 if open {

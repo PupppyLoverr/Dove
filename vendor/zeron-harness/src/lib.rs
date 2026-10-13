@@ -13,6 +13,8 @@
 //! work the CLIs themselves settle eagerly (and opencode's settles on the
 //! first uncorrelated idle), manufacturing done-status bugs the native
 //! wires don't have (decision record: docs/research/acp.md).
+// Vendored upstream code: Dove's CI lints its own crates, not this one.
+#![allow(clippy::all)]
 
 use async_trait::async_trait;
 use futures::stream::BoxStream;

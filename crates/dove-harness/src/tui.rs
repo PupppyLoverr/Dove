@@ -333,6 +333,25 @@ fn find_codex_rollout(sessions: &Path, id: &str) -> Option<PathBuf> {
     best.map(|(_, p)| p)
 }
 
+/// Write a Claude `--mcp-config` file for `server` (one per launch config,
+/// reused while unchanged).
+fn write_claude_mcp_config(server: &crate::ToolServer) -> Option<std::path::PathBuf> {
+    let env: serde_json::Map<String, serde_json::Value> =
+        server.env.iter().map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone()))).collect();
+    let body = serde_json::json!({
+        "mcpServers": { &server.name: { "command": server.command, "args": server.args, "env": env } }
+    })
+    .to_string();
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    body.hash(&mut h);
+    let path = std::env::temp_dir().join(format!("dove-mcp-{:016x}.json", h.finish()));
+    if std::fs::read_to_string(&path).ok().as_deref() != Some(body.as_str()) {
+        std::fs::write(&path, body).ok()?;
+    }
+    Some(path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -448,23 +467,4 @@ mod tests {
         assert_eq!(claude_project_slug(Path::new("C:\\Users\\me\\repo.x")), "C--Users-me-repo-x");
         assert_eq!(claude_project_slug(Path::new("/home/me/repo")), "-home-me-repo");
     }
-}
-
-/// Write a Claude `--mcp-config` file for `server` (one per launch config,
-/// reused while unchanged).
-fn write_claude_mcp_config(server: &crate::ToolServer) -> Option<std::path::PathBuf> {
-    let env: serde_json::Map<String, serde_json::Value> =
-        server.env.iter().map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone()))).collect();
-    let body = serde_json::json!({
-        "mcpServers": { &server.name: { "command": server.command, "args": server.args, "env": env } }
-    })
-    .to_string();
-    use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    body.hash(&mut h);
-    let path = std::env::temp_dir().join(format!("dove-mcp-{:016x}.json", h.finish()));
-    if std::fs::read_to_string(&path).ok().as_deref() != Some(body.as_str()) {
-        std::fs::write(&path, body).ok()?;
-    }
-    Some(path)
 }

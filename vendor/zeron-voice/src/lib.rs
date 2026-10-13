@@ -1,4 +1,6 @@
 //! Desktop-local Parakeet v3. No engine, document, RPC or audio persistence.
+// Vendored upstream code: Dove's CI lints its own crates, not this one.
+#![allow(clippy::all)]
 use anyhow::{Context, Result, bail};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use parakeet_rs::{ParakeetTDT, Transcriber};

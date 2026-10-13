@@ -687,8 +687,6 @@ pub struct TaskView {
     loading: bool,
     list: ListState,
     following: std::rc::Rc<std::cell::Cell<bool>>,
-    /// First visible row, kept by the scroll handler (drives the rail).
-    top_row: std::rc::Rc<std::cell::Cell<usize>>,
     /// Hovered rail mark.
     rail_hover: Option<usize>,
     /// The pointer is over the conversation (shows the scroll thumb).
@@ -739,7 +737,7 @@ impl TaskView {
         let weak = cx.weak_entity();
         let flag = following.clone();
         let top_row = std::rc::Rc::new(std::cell::Cell::new(0usize));
-        let top = top_row.clone();
+        let top = top_row;
         list.set_scroll_handler(move |ev, _, cx| {
             let follow_changed = flag.get() != ev.is_following_tail;
             let top_changed = top.get() != ev.visible_range.start;
@@ -749,9 +747,11 @@ impl TaskView {
                 let _ = weak.update(cx, |_, cx| cx.notify());
             }
         });
-        let mut chat = Chat::default();
-        chat.usage = engine.store.task_usage(task.id).unwrap_or_default();
-        chat.rate_limits = engine.rate_limits(task.harness);
+        let chat = Chat {
+            usage: engine.store.task_usage(task.id).unwrap_or_default(),
+            rate_limits: engine.rate_limits(task.harness),
+            ..Default::default()
+        };
         let mut this = Self {
             engine,
             status: task.status,
@@ -762,7 +762,6 @@ impl TaskView {
             loading: true,
             list,
             following,
-            top_row,
             rail_hover: None,
             chat_hovered: false,
             flash: None,
@@ -928,10 +927,10 @@ impl TaskView {
             if fx.runway.is_some() {
                 runway = fx.runway;
             }
-            if fx.first_answer {
-                if let Some(t) = self.auto_title() {
-                    cx.emit(TaskViewEvent::Title(t));
-                }
+            if fx.first_answer
+                && let Some(t) = self.auto_title()
+            {
+                cx.emit(TaskViewEvent::Title(t));
             }
         }
         let after = self.chat.rows.len();
@@ -945,21 +944,20 @@ impl TaskView {
             self.list.scroll_to(ListOffset { item_ix: row, offset_in_item: px(0.0) });
         }
         self.highlight_pending(cx);
-        if let Some(s) = status {
-            if s != self.status {
-                self.status = s;
-                let running = s == TaskStatus::Running;
-                self.composer.update(cx, |c, cx| c.set_running(running && self.live.is_some(), cx));
-                cx.emit(TaskViewEvent::Status(s));
-            }
+        if let Some(s) = status
+            && s != self.status
+        {
+            self.status = s;
+            let running = s == TaskStatus::Running;
+            self.composer.update(cx, |c, cx| c.set_running(running && self.live.is_some(), cx));
+            cx.emit(TaskViewEvent::Status(s));
         }
         // A queued message goes out as soon as the turn ends.
-        if matches!(status, Some(TaskStatus::Done | TaskStatus::Failed)) {
-            if let Some(next) = self.composer.update(cx, |c, cx| c.take_queued(cx)) {
-                if let Some(l) = &self.live {
-                    l.send(Command::Send(next));
-                }
-            }
+        if matches!(status, Some(TaskStatus::Done | TaskStatus::Failed))
+            && let Some(next) = self.composer.update(cx, |c, cx| c.take_queued(cx))
+            && let Some(l) = &self.live
+        {
+            l.send(Command::Send(next));
         }
         self.sync_questions(cx);
         self.sync_composer(cx);
@@ -1012,10 +1010,10 @@ impl TaskView {
             let _ = this.update(cx, |v, cx| {
                 for (i, old, new) in done {
                     // Only if the row still holds the block we highlighted.
-                    if let Some(Row::Block { block, .. }) = v.chat.rows.get_mut(i) {
-                        if Arc::ptr_eq(block, &old) {
-                            *block = new;
-                        }
+                    if let Some(Row::Block { block, .. }) = v.chat.rows.get_mut(i)
+                        && Arc::ptr_eq(block, &old)
+                    {
+                        *block = new;
                     }
                 }
                 cx.notify();
@@ -1081,12 +1079,6 @@ impl TaskView {
             self.list.remeasure_items(i..i + 1);
             cx.notify();
         }
-    }
-
-    pub fn scroll_to_row(&mut self, i: usize, cx: &mut Context<Self>) {
-        self.list.set_tail_reservation(None);
-        self.list.scroll_to_reveal_item(i);
-        cx.notify();
     }
 
     /// Glide so row `target` sits near the top (a short eased scroll when
@@ -1321,11 +1313,11 @@ impl TaskView {
             if q.other.read(cx).focus_handle(cx).is_focused(window) {
                 return;
             }
-            if let Some(n) = k.key.parse::<usize>().ok().filter(|n| (1..=9).contains(n)) {
-                if let Some(label) = req.questions.get(q.page).and_then(|qq| qq.options.get(n - 1)).cloned() {
-                    self.pick_option(label, window, cx);
-                    cx.stop_propagation();
-                }
+            if let Some(n) = k.key.parse::<usize>().ok().filter(|n| (1..=9).contains(n))
+                && let Some(label) = req.questions.get(q.page).and_then(|qq| qq.options.get(n - 1)).cloned()
+            {
+                self.pick_option(label, window, cx);
+                cx.stop_propagation();
             }
             return;
         }
@@ -2552,11 +2544,11 @@ fn copy_button(id: SharedString, text: String, t: &Theme) -> impl IntoElement {
 impl Render for TaskView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // The question panel needs a window to build its input.
-        if self.questions.is_none() {
-            if let Some((_, req)) = self.chat.pending().filter(|(_, r)| r.is_question() && self.live.is_some()) {
-                let req = req.clone();
-                self.open_questions(&req, window, cx);
-            }
+        if self.questions.is_none()
+            && let Some((_, req)) = self.chat.pending().filter(|(_, r)| r.is_question() && self.live.is_some())
+        {
+            let req = req.clone();
+            self.open_questions(&req, window, cx);
         }
         let t = Theme::of(cx).clone();
         let weak = cx.weak_entity();
@@ -2731,161 +2723,6 @@ impl Render for TaskView {
                     .children(jump),
             )
             .child(bottom)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use dove_core::proto::Question;
-
-    fn text(s: &str) -> AgentEvent {
-        AgentEvent::TextDelta { text: s.into() }
-    }
-
-    #[test]
-    fn activity_summaries_read_naturally() {
-        let mut a = Activity { thinking: "hmm".into(), ..Default::default() };
-        let tool = |kind| Tool {
-            id: String::new(),
-            title: "".into(),
-            kind,
-            output: None,
-            error: false,
-            diff: None,
-            open: false,
-            name: "".into(),
-            input: Arc::new(serde_json::Value::Null),
-            started: None,
-            took: None,
-        };
-        a.tools.push(tool(ToolKind::Execute));
-        a.tools.push(tool(ToolKind::Execute));
-        a.tools.push(tool(ToolKind::Execute));
-        a.tools.push(tool(ToolKind::Other));
-        assert_eq!(a.summary(), "Thought process · Ran 3 commands · called 1 tool");
-        let b = Activity { tools: vec![tool(ToolKind::Edit)], ..Default::default() };
-        assert_eq!(b.summary(), "Edited 1 file");
-        a.thought = Some(Duration::from_secs(12));
-        assert!(a.summary().starts_with("Thought for 12s"));
-    }
-
-    #[test]
-    fn streamed_answer_becomes_one_row_per_block() {
-        let mut chat = Chat::default();
-        chat.apply(AgentEvent::UserMessage { text: "hi".into() }, true);
-        for chunk in ["# Title\n\nFirst para", "graph.\n\n- a\n- b\n\n", "Last"] {
-            chat.apply(text(chunk), true);
-        }
-        // Heading + paragraph finished; the list is the open tail's
-        // predecessor once "Last" started a new block.
-        let finished = chat.rows.iter().filter(|r| matches!(r, Row::Block { .. })).count();
-        assert_eq!(finished, 3);
-        assert!(matches!(chat.rows.last(), Some(Row::Live { .. })));
-        chat.apply(AgentEvent::TurnEnded { usage: None, is_error: false }, true);
-        let blocks = chat.rows.iter().filter(|r| matches!(r, Row::Block { .. })).count();
-        assert_eq!(blocks, 4);
-        assert!(!chat.rows.iter().any(|r| matches!(r, Row::Live { .. })));
-        assert!(matches!(chat.rows.last(), Some(Row::TurnEnd { msgs, .. }) if *msgs == (0..1)));
-        assert_eq!(chat.messages[0], "# Title\n\nFirst paragraph.\n\n- a\n- b\n\nLast");
-    }
-
-    #[test]
-    fn replay_matches_live_rows_and_highlights() {
-        let events = vec![
-            AgentEvent::UserMessage { text: "q".into() },
-            text("Here:\n\n```rust\nfn main() {}\n```\n\nDone."),
-            AgentEvent::ToolCall {
-                call_id: "c1".into(),
-                name: "edit".into(),
-                kind: ToolKind::Edit,
-                title: "src/a.rs".into(),
-                input: serde_json::json!({"path": "src/a.rs", "old_string": "a\nb\n", "new_string": "a\nc\n"}),
-            },
-            AgentEvent::ToolResult { call_id: "c1".into(), output: "ok".into(), is_error: false },
-            AgentEvent::TurnEnded { usage: None, is_error: false },
-        ];
-        let chat = Chat::replay(events);
-        let code = chat.rows.iter().find_map(|r| match r {
-            Row::Block { block, .. } => match &**block {
-                Block::Code { highlight, .. } => Some(highlight.is_some()),
-                _ => None,
-            },
-            _ => None,
-        });
-        assert_eq!(code, Some(true));
-        let Some(Row::Activity(a)) = chat.rows.iter().find(|r| matches!(r, Row::Activity(_))) else {
-            panic!("activity")
-        };
-        let diff = a.tools[0].diff.as_ref().expect("diff");
-        assert_eq!((diff.added, diff.removed), (1, 1));
-        assert!(chat.dirty.is_none());
-    }
-
-    #[test]
-    fn dirty_tracks_the_lowest_changed_row() {
-        let mut chat = Chat::default();
-        chat.apply(AgentEvent::UserMessage { text: "q".into() }, true);
-        chat.apply(text("a"), true);
-        chat.dirty = None;
-        chat.apply(text("b"), true);
-        assert_eq!(chat.dirty, Some(1));
-    }
-
-    #[test]
-    fn context_usage_keeps_previous_fields() {
-        let mut chat = Chat::default();
-        chat.apply(AgentEvent::ContextUsage { tokens: Some(10), window: Some(200) }, true);
-        chat.apply(AgentEvent::ContextUsage { tokens: Some(50), window: None }, true);
-        assert_eq!(chat.context, (Some(50), Some(200)));
-    }
-
-    #[test]
-    fn pending_question_is_found_until_resolved() {
-        let mut chat = Chat::default();
-        let req = PermissionRequest {
-            request_id: "r".into(),
-            tool: "Question".into(),
-            summary: "Pick".into(),
-            input: serde_json::Value::Null,
-            questions: vec![Question {
-                id: "q".into(),
-                header: "Approach".into(),
-                question: "Which?".into(),
-                options: vec!["A".into(), "B".into()],
-                multi_select: false,
-            }],
-        };
-        chat.apply(AgentEvent::PermissionRequested(req), true);
-        assert!(chat.pending().is_some_and(|(_, r)| r.is_question()));
-        chat.apply(
-            AgentEvent::PermissionResolved { request_id: "r".into(), decision: PermissionDecision::AllowOnce },
-            true,
-        );
-        assert!(chat.pending().is_none());
-    }
-
-    #[test]
-    fn risky_commands_are_flagged() {
-        let req = |s: &str| PermissionRequest {
-            request_id: String::new(),
-            tool: "Bash".into(),
-            summary: s.into(),
-            input: serde_json::Value::Null,
-            questions: Vec::new(),
-        };
-        let root = std::path::Path::new("C:/work/repo");
-        assert_eq!(risk_hints(&req("rm -rf build"), Some(root)), vec!["Deletes files"]);
-        assert_eq!(risk_hints(&req("curl https://x.dev"), Some(root)), vec!["Network"]);
-        assert_eq!(risk_hints(&req("cat C:/other/file.txt"), Some(root)), vec!["Outside the worktree"]);
-        assert!(risk_hints(&req("cat C:/work/repo/src/a.rs"), Some(root)).is_empty());
-    }
-
-    #[test]
-    fn durations_are_short() {
-        assert_eq!(duration(Duration::from_secs(5)), "5s");
-        assert_eq!(duration(Duration::from_secs(72)), "1m 12s");
-        assert_eq!(duration(Duration::from_secs(3720)), "1h 2m");
     }
 }
 
@@ -3261,4 +3098,159 @@ fn todo_list(items: &[(String, TodoStatus)], t: &Theme) -> AnyElement {
                 )
         }))
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dove_core::proto::Question;
+
+    fn text(s: &str) -> AgentEvent {
+        AgentEvent::TextDelta { text: s.into() }
+    }
+
+    #[test]
+    fn activity_summaries_read_naturally() {
+        let mut a = Activity { thinking: "hmm".into(), ..Default::default() };
+        let tool = |kind| Tool {
+            id: String::new(),
+            title: "".into(),
+            kind,
+            output: None,
+            error: false,
+            diff: None,
+            open: false,
+            name: "".into(),
+            input: Arc::new(serde_json::Value::Null),
+            started: None,
+            took: None,
+        };
+        a.tools.push(tool(ToolKind::Execute));
+        a.tools.push(tool(ToolKind::Execute));
+        a.tools.push(tool(ToolKind::Execute));
+        a.tools.push(tool(ToolKind::Other));
+        assert_eq!(a.summary(), "Thought process · Ran 3 commands · called 1 tool");
+        let b = Activity { tools: vec![tool(ToolKind::Edit)], ..Default::default() };
+        assert_eq!(b.summary(), "Edited 1 file");
+        a.thought = Some(Duration::from_secs(12));
+        assert!(a.summary().starts_with("Thought for 12s"));
+    }
+
+    #[test]
+    fn streamed_answer_becomes_one_row_per_block() {
+        let mut chat = Chat::default();
+        chat.apply(AgentEvent::UserMessage { text: "hi".into() }, true);
+        for chunk in ["# Title\n\nFirst para", "graph.\n\n- a\n- b\n\n", "Last"] {
+            chat.apply(text(chunk), true);
+        }
+        // Heading + paragraph finished; the list is the open tail's
+        // predecessor once "Last" started a new block.
+        let finished = chat.rows.iter().filter(|r| matches!(r, Row::Block { .. })).count();
+        assert_eq!(finished, 3);
+        assert!(matches!(chat.rows.last(), Some(Row::Live { .. })));
+        chat.apply(AgentEvent::TurnEnded { usage: None, is_error: false }, true);
+        let blocks = chat.rows.iter().filter(|r| matches!(r, Row::Block { .. })).count();
+        assert_eq!(blocks, 4);
+        assert!(!chat.rows.iter().any(|r| matches!(r, Row::Live { .. })));
+        assert!(matches!(chat.rows.last(), Some(Row::TurnEnd { msgs, .. }) if *msgs == (0..1)));
+        assert_eq!(chat.messages[0], "# Title\n\nFirst paragraph.\n\n- a\n- b\n\nLast");
+    }
+
+    #[test]
+    fn replay_matches_live_rows_and_highlights() {
+        let events = vec![
+            AgentEvent::UserMessage { text: "q".into() },
+            text("Here:\n\n```rust\nfn main() {}\n```\n\nDone."),
+            AgentEvent::ToolCall {
+                call_id: "c1".into(),
+                name: "edit".into(),
+                kind: ToolKind::Edit,
+                title: "src/a.rs".into(),
+                input: serde_json::json!({"path": "src/a.rs", "old_string": "a\nb\n", "new_string": "a\nc\n"}),
+            },
+            AgentEvent::ToolResult { call_id: "c1".into(), output: "ok".into(), is_error: false },
+            AgentEvent::TurnEnded { usage: None, is_error: false },
+        ];
+        let chat = Chat::replay(events);
+        let code = chat.rows.iter().find_map(|r| match r {
+            Row::Block { block, .. } => match &**block {
+                Block::Code { highlight, .. } => Some(highlight.is_some()),
+                _ => None,
+            },
+            _ => None,
+        });
+        assert_eq!(code, Some(true));
+        let Some(Row::Activity(a)) = chat.rows.iter().find(|r| matches!(r, Row::Activity(_))) else {
+            panic!("activity")
+        };
+        let diff = a.tools[0].diff.as_ref().expect("diff");
+        assert_eq!((diff.added, diff.removed), (1, 1));
+        assert!(chat.dirty.is_none());
+    }
+
+    #[test]
+    fn dirty_tracks_the_lowest_changed_row() {
+        let mut chat = Chat::default();
+        chat.apply(AgentEvent::UserMessage { text: "q".into() }, true);
+        chat.apply(text("a"), true);
+        chat.dirty = None;
+        chat.apply(text("b"), true);
+        assert_eq!(chat.dirty, Some(1));
+    }
+
+    #[test]
+    fn context_usage_keeps_previous_fields() {
+        let mut chat = Chat::default();
+        chat.apply(AgentEvent::ContextUsage { tokens: Some(10), window: Some(200) }, true);
+        chat.apply(AgentEvent::ContextUsage { tokens: Some(50), window: None }, true);
+        assert_eq!(chat.context, (Some(50), Some(200)));
+    }
+
+    #[test]
+    fn pending_question_is_found_until_resolved() {
+        let mut chat = Chat::default();
+        let req = PermissionRequest {
+            request_id: "r".into(),
+            tool: "Question".into(),
+            summary: "Pick".into(),
+            input: serde_json::Value::Null,
+            questions: vec![Question {
+                id: "q".into(),
+                header: "Approach".into(),
+                question: "Which?".into(),
+                options: vec!["A".into(), "B".into()],
+                multi_select: false,
+            }],
+        };
+        chat.apply(AgentEvent::PermissionRequested(req), true);
+        assert!(chat.pending().is_some_and(|(_, r)| r.is_question()));
+        chat.apply(
+            AgentEvent::PermissionResolved { request_id: "r".into(), decision: PermissionDecision::AllowOnce },
+            true,
+        );
+        assert!(chat.pending().is_none());
+    }
+
+    #[test]
+    fn risky_commands_are_flagged() {
+        let req = |s: &str| PermissionRequest {
+            request_id: String::new(),
+            tool: "Bash".into(),
+            summary: s.into(),
+            input: serde_json::Value::Null,
+            questions: Vec::new(),
+        };
+        let root = std::path::Path::new("C:/work/repo");
+        assert_eq!(risk_hints(&req("rm -rf build"), Some(root)), vec!["Deletes files"]);
+        assert_eq!(risk_hints(&req("curl https://x.dev"), Some(root)), vec!["Network"]);
+        assert_eq!(risk_hints(&req("cat C:/other/file.txt"), Some(root)), vec!["Outside the worktree"]);
+        assert!(risk_hints(&req("cat C:/work/repo/src/a.rs"), Some(root)).is_empty());
+    }
+
+    #[test]
+    fn durations_are_short() {
+        assert_eq!(duration(Duration::from_secs(5)), "5s");
+        assert_eq!(duration(Duration::from_secs(72)), "1m 12s");
+        assert_eq!(duration(Duration::from_secs(3720)), "1h 2m");
+    }
 }

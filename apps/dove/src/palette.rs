@@ -154,7 +154,7 @@ impl Palette {
         }
         let mut scored: Vec<(i32, &PaletteItem)> =
             self.items.iter().filter_map(|i| score(&i.label(), q).map(|s| (s, i))).collect();
-        scored.sort_by(|a, b| b.0.cmp(&a.0));
+        scored.sort_by_key(|e| std::cmp::Reverse(e.0));
         self.shown = scored.into_iter().take(MAX_ROWS).map(|(_, i)| i.clone()).collect();
     }
 

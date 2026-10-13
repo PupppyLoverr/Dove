@@ -2,6 +2,8 @@
 //!
 //! This crate intentionally has no UI, RPC, or engine dependencies. Public
 //! ranges are byte offsets relative to one UTF-8 source line.
+// Vendored upstream code: Dove's CI lints its own crates, not this one.
+#![allow(clippy::all)]
 
 use std::{collections::BTreeSet, ops::Range, path::Path, sync::atomic::AtomicUsize};
 

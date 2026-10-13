@@ -103,16 +103,16 @@ impl Drive {
                 let url = s("url");
                 if !url.is_empty() { Some(Self::Navigate(url)) } else { None }
             }
-            "browser_click" | "click" | "browser_tap" => (!selector.is_empty()).then(|| Self::Click { selector }),
+            "browser_click" | "click" | "browser_tap" => (!selector.is_empty()).then_some(Self::Click { selector }),
             "browser_type" | "type" | "fill" | "browser_fill" => {
                 let text = s("text");
                 let text = if text.is_empty() { s("value") } else { text };
-                (!selector.is_empty()).then(|| Self::Type { selector, text })
+                (!selector.is_empty()).then_some(Self::Type { selector, text })
             }
             "browser_press" | "press" | "browser_key" => {
                 let key = s("key");
                 let key = if key.is_empty() { s("keys") } else { key };
-                (!key.is_empty()).then(|| Self::Press { key })
+                (!key.is_empty()).then_some(Self::Press { key })
             }
             "browser_scroll" | "scroll" => {
                 let dy =
@@ -202,6 +202,7 @@ pub struct BrowserSurface {
     /// Dev-server discovery is on (the thread's shells feed it).
     previews_enabled: bool,
     previews_loading: bool,
+    #[allow(dead_code)] // held so the preview poll lives as long as the tab
     previews_task: Option<gpui::Task<()>>,
     #[cfg(feature = "browser-fixture")]
     fixture_preview_open: std::rc::Rc<std::cell::Cell<Option<gpui::Point<gpui::Pixels>>>>,
@@ -324,6 +325,7 @@ impl BrowserSurface {
     pub fn title(&self) -> gpui::SharedString {
         self.page.label().into()
     }
+    #[allow(dead_code)] // Zeron parity: remote (mesh) browsing
     pub fn set_remote(&mut self, remote: bool) {
         self.remote = remote;
     }
@@ -357,6 +359,7 @@ impl BrowserSurface {
 
     /// Crop a GPUI overlay out of both native painting and native hit testing.
     #[cfg(any(target_os = "macos", windows))]
+    #[allow(dead_code)] // Zeron parity: overlays covering the page
     pub fn set_right_occlusion(&mut self, width: gpui::Pixels, cx: &mut Context<Self>) {
         if self.right_occlusion != width {
             self.right_occlusion = width;
@@ -614,10 +617,10 @@ impl BrowserSurface {
                     self.favicon_task = None;
                 }
                 if !self.address.focus_handle(cx).is_focused(window) {
-                    if let Some(url) = &page.url {
-                        if self.address.read(cx).text(cx) != *url {
-                            self.address.update(cx, |input, cx| input.set_text(url.clone(), cx));
-                        }
+                    if let Some(url) = &page.url
+                        && self.address.read(cx).text(cx) != *url
+                    {
+                        self.address.update(cx, |input, cx| input.set_text(url.clone(), cx));
                     }
                     self.address_edited = false;
                 }

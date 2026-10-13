@@ -592,11 +592,11 @@ pub fn intraline(old: &str, new: &str) -> (Vec<std::ops::Range<usize>>, Vec<std:
 }
 
 fn push_range(v: &mut Vec<std::ops::Range<usize>>, r: std::ops::Range<usize>) {
-    if let Some(last) = v.last_mut() {
-        if last.end == r.start {
-            last.end = r.end;
-            return;
-        }
+    if let Some(last) = v.last_mut()
+        && last.end == r.start
+    {
+        last.end = r.end;
+        return;
     }
     v.push(r);
 }

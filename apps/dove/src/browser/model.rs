@@ -142,6 +142,7 @@ pub fn normalize_address(input: &str) -> Result<String, &'static str> {
 
 /// Chat links require an explicit web authority; never infer a scheme or
 /// silently strip controls, credentials, malformed escapes or backslashes.
+#[allow(dead_code)] // Zeron parity
 pub fn transcript_address(input: &str) -> Result<String, &'static str> {
     let lower = input.to_ascii_lowercase();
     let authority = lower

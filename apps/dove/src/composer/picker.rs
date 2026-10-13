@@ -220,10 +220,11 @@ impl Picker {
     }
 
     pub fn set_installed(&mut self, installed: Vec<Installed>, cx: &mut Context<Self>) {
-        if !self.locked && !installed.iter().any(|i| i.kind == self.harness) {
-            if let Some(first) = installed.iter().find(|i| dove_core::harness_supported(i.kind)) {
-                self.restore(first.kind);
-            }
+        if !self.locked
+            && !installed.iter().any(|i| i.kind == self.harness)
+            && let Some(first) = installed.iter().find(|i| dove_core::harness_supported(i.kind))
+        {
+            self.restore(first.kind);
         }
         self.installed = installed;
         self.ensure_model();

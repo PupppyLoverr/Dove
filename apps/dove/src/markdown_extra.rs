@@ -11,7 +11,6 @@ const MERMAID_MAX: usize = 16 * 1024;
 
 #[derive(Clone)]
 pub enum Diagram {
-    Pending,
     /// The rendered SVG and its natural size.
     Ready(Arc<Image>, (f32, f32)),
     Failed(String),
@@ -53,10 +52,10 @@ fn render_mermaid(source: &str, dark: bool) -> Result<String, String> {
         return Err("Diagram is too large to preview".into());
     }
     std::panic::catch_unwind(|| {
-        let mut options = mermaid_rs_renderer::RenderOptions::default();
-        options.theme = if dark { mermaid_rs_renderer::Theme::dark() } else { mermaid_rs_renderer::Theme::modern() };
+        let mut theme = if dark { mermaid_rs_renderer::Theme::dark() } else { mermaid_rs_renderer::Theme::modern() };
         // Sit on the chat's card, not a grey slab.
-        options.theme.background = "transparent".to_string();
+        theme.background = "transparent".to_string();
+        let mut options = mermaid_rs_renderer::RenderOptions { theme, ..Default::default() };
         options.layout.node_spacing = 36.0;
         options.layout.rank_spacing = 40.0;
         mermaid_rs_renderer::render_with_options(source, options).map_err(|e| e.to_string())
@@ -75,116 +74,6 @@ pub fn preview_image(path: &str) -> Option<std::sync::Arc<Image>> {
     let mut png = Vec::new();
     img.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).ok()?;
     Some(Arc::new(Image::from_bytes(ImageFormat::Png, png)))
-}
-
-/// A readable line of math from a small LaTeX subset (fractions, scripts, Greek).
-pub fn math_line(src: &str) -> String {
-    let mut s = src.trim().trim_matches('$').trim().to_string();
-    for (pat, repl) in [
-        ("\\cdot", "·"),
-        ("\\times", "×"),
-        ("\\div", "÷"),
-        ("\\pm", "±"),
-        ("\\infty", "∞"),
-        ("\\rightarrow", "→"),
-        ("\\leftarrow", "←"),
-        ("\\Rightarrow", "⇒"),
-        ("\\leq", "≤"),
-        ("\\geq", "≥"),
-        ("\\neq", "≠"),
-        ("\\approx", "≈"),
-        ("\\sum", "∑"),
-        ("\\prod", "∏"),
-        ("\\int", "∫"),
-        ("\\partial", "∂"),
-        ("\\sqrt", "√"),
-        ("\\alpha", "α"),
-        ("\\beta", "β"),
-        ("\\gamma", "γ"),
-        ("\\delta", "δ"),
-        ("\\epsilon", "ε"),
-        ("\\theta", "θ"),
-        ("\\lambda", "λ"),
-        ("\\mu", "μ"),
-        ("\\pi", "π"),
-        ("\\sigma", "σ"),
-        ("\\phi", "φ"),
-        ("\\omega", "ω"),
-        ("\\Gamma", "Γ"),
-        ("\\Delta", "Δ"),
-        ("\\Theta", "Θ"),
-        ("\\Lambda", "Λ"),
-        ("\\Pi", "Π"),
-        ("\\Sigma", "Σ"),
-        ("\\Omega", "Ω"),
-        ("\\mathbb{R}", "ℝ"),
-        ("\\mathbb{N}", "ℕ"),
-        ("\\mathbb{Z}", "ℤ"),
-        ("\\ldots", "…"),
-        ("\\dots", "…"),
-    ] {
-        s = s.replace(pat, repl);
-    }
-    s = fold_frac(&s);
-    s = s.replace('{', "").replace('}', "");
-    s.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-fn fold_frac(src: &str) -> String {
-    let mut out = String::with_capacity(src.len());
-    let bytes = src.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if src[i..].starts_with("\\frac") {
-            i += 5;
-            let (a, n) = braced(&src[i..]);
-            i += n;
-            let (b, m) = braced(&src[i..]);
-            i += m;
-            out.push('(');
-            out.push_str(a);
-            out.push('/');
-            out.push_str(b);
-            out.push(')');
-        } else {
-            out.push(src[i..].chars().next().unwrap());
-            i += src[i..].chars().next().unwrap().len_utf8();
-        }
-    }
-    out
-}
-
-fn braced(src: &str) -> (&str, usize) {
-    let src = src.trim_start();
-    let skipped = src.len().saturating_sub(src.trim_start().len());
-    if !src.starts_with('{') {
-        let end = src.find(|c: char| c.is_whitespace() || c == '\\').unwrap_or(src.len().min(1));
-        return (&src[..end], skipped + end);
-    }
-    let mut depth = 0i32;
-    for (i, c) in src.char_indices() {
-        match c {
-            '{' => depth += 1,
-            '}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return (&src[1..i], skipped + i + 1);
-                }
-            }
-            _ => {}
-        }
-    }
-    (src, src.len())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn fractions_and_greek() {
-        assert_eq!(math_line(r"\frac{a}{b} + \pi"), "(a/b) + π");
-    }
 }
 
 /// An SVG's natural size from its `viewBox` (or width/height).

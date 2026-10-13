@@ -328,7 +328,7 @@ fn option_values(option: &Value) -> Vec<&str> {
 fn antigravity_model(session: &Value, model: &str, reasoning: Option<ReasoningLevel>) -> String {
     let values: Vec<&str> =
         config_options(session).iter().find(|o| o["category"] == "model").map(option_values).unwrap_or_default();
-    if values.is_empty() || values.iter().any(|v| *v == model) {
+    if values.is_empty() || values.contains(&model) {
         return model.to_string();
     }
     if let Some(level) = reasoning {
@@ -720,12 +720,12 @@ pub(crate) async fn run(spec: SessionSpec, events: flume::Sender<AgentEvent>, co
 
     let _ = can_load;
     let code = child.wait().await.ok().and_then(|s| s.code());
-    if code.is_some_and(|c| c != 0) {
-        if let Ok(err) = stderr_task.await {
-            let tail: Vec<&str> = err.lines().rev().take(6).collect::<Vec<_>>().into_iter().rev().collect();
-            if !tail.is_empty() {
-                let _ = events.send(AgentEvent::Error { message: tail.join("\n").into() });
-            }
+    if code.is_some_and(|c| c != 0)
+        && let Ok(err) = stderr_task.await
+    {
+        let tail: Vec<&str> = err.lines().rev().take(6).collect::<Vec<_>>().into_iter().rev().collect();
+        if !tail.is_empty() {
+            let _ = events.send(AgentEvent::Error { message: tail.join("\n").into() });
         }
     }
     let _ = events.send(AgentEvent::Exited { code });

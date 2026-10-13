@@ -384,7 +384,7 @@ fn el(node: &Node, size: f32, color: Hsla) -> AnyElement {
             .into_any_element(),
         Node::Row(items) => {
             // `\\` splits a display block into lines.
-            if items.iter().any(|n| *n == Node::Break) {
+            if items.contains(&Node::Break) {
                 let mut lines = vec![Vec::new()];
                 for n in items {
                     if *n == Node::Break {

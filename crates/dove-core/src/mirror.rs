@@ -54,10 +54,10 @@ impl LineParser {
 
     pub fn parse(&mut self, line: &str) -> Vec<AgentEvent> {
         let Ok(v) = serde_json::from_str::<Value>(line) else { return Vec::new() };
-        if let (Some(min), Some(ts)) = (&self.min_timestamp, v["timestamp"].as_str()) {
-            if ts < min.as_str() {
-                return Vec::new();
-            }
+        if let (Some(min), Some(ts)) = (&self.min_timestamp, v["timestamp"].as_str())
+            && ts < min.as_str()
+        {
+            return Vec::new();
         }
         match self.kind {
             Some(HarnessKind::Codex) => self.codex(&v),
@@ -367,14 +367,14 @@ pub(crate) fn spawn_tail_resolving<R: Fn() -> Option<PathBuf> + Send + 'static>(
         let mut buf = Vec::new();
         let mut last_resolve = std::time::Instant::now();
         while !flag.load(Ordering::Relaxed) && !tx.is_disconnected() {
-            if let Some(resolve) = &resolve {
-                if last_resolve.elapsed() >= Duration::from_secs(2) {
-                    last_resolve = std::time::Instant::now();
-                    if let Some(p) = resolve().filter(|p| *p != path) {
-                        path = p;
-                        offset = 0;
-                        partial.clear();
-                    }
+            if let Some(resolve) = &resolve
+                && last_resolve.elapsed() >= Duration::from_secs(2)
+            {
+                last_resolve = std::time::Instant::now();
+                if let Some(p) = resolve().filter(|p| *p != path) {
+                    path = p;
+                    offset = 0;
+                    partial.clear();
                 }
             }
             let grew = std::fs::File::open(&path).ok().and_then(|mut f| {

@@ -522,15 +522,15 @@ mod upstream {
                     Some(Spec::Ready(Box::new(|| Server::http("paper", cfg::PAPER_MCP_URL.into(), Vec::new())))),
                 ));
             }
-            if config.computer.enabled {
-                if let Some(bin) = cfg::cua_driver() {
-                    specs.push((
-                        "computer",
-                        Some(Spec::Ready(Box::new(move || {
-                            Server::stdio("computer", &bin.display().to_string(), &["mcp".into()])
-                        }))),
-                    ));
-                }
+            if config.computer.enabled
+                && let Some(bin) = cfg::cua_driver()
+            {
+                specs.push((
+                    "computer",
+                    Some(Spec::Ready(Box::new(move || {
+                        Server::stdio("computer", &bin.display().to_string(), &["mcp".into()])
+                    }))),
+                ));
             }
             Self { specs, live: Vec::new(), started: false }
         }

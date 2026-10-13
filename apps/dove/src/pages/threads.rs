@@ -47,9 +47,9 @@ impl Shell {
             .cloned()
             .collect();
         match p.threads_sort {
-            ThreadSort::Recent => v.sort_by(|a, b| b.updated_at.cmp(&a.updated_at)),
+            ThreadSort::Recent => v.sort_by_key(|t| std::cmp::Reverse(t.updated_at)),
             ThreadSort::Attention => attention_sort(&mut v),
-            ThreadSort::Title => v.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase())),
+            ThreadSort::Title => v.sort_by_key(|a| a.title.to_lowercase()),
         }
         v
     }

@@ -3,6 +3,8 @@
 //! Primitives deliberately avoid presentation styles. Layout, positioning,
 //! colors, sizing, and motion belong to applications or the
 //! `gpui-component` façade.
+// Vendored upstream code: Dove's CI lints its own crates, not this one.
+#![allow(clippy::all)]
 
 mod accessibility;
 mod accordion;

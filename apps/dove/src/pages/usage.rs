@@ -161,7 +161,7 @@ impl Shell {
 
         let table = |title: &str, data: &BTreeMap<String, Usage>| {
             let mut v: Vec<_> = data.iter().collect();
-            v.sort_by(|a, b| b.1.total_tokens().cmp(&a.1.total_tokens()));
+            v.sort_by_key(|e| std::cmp::Reverse(e.1.total_tokens()));
             div()
                 .flex_1()
                 .flex()

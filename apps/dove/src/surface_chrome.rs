@@ -94,6 +94,7 @@ pub fn tab(id: impl Into<gpui::ElementId>, selected: bool, theme: &Theme) -> gpu
 
 // ------------------------------------------------------------------ popovers
 
+#[allow(dead_code)] // Zeron parity
 pub fn popover_card(theme: &Theme) -> Div {
     div()
         .border_1()
@@ -108,6 +109,7 @@ pub fn popover_card(theme: &Theme) -> Div {
         .text_color(theme.text)
 }
 
+#[allow(dead_code)] // Zeron parity
 pub fn menu_row(theme: &Theme, active: bool, _key: impl Into<SharedString>) -> Div {
     let row = div()
         .flex()
@@ -126,6 +128,7 @@ pub fn menu_row(theme: &Theme, active: bool, _key: impl Into<SharedString>) -> D
     }
 }
 
+#[allow(dead_code)] // Zeron parity
 pub fn menu_at(
     id: impl Into<SharedString>,
     position: Point<Pixels>,

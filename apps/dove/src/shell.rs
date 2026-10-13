@@ -186,12 +186,11 @@ impl Shell {
         }
         subs.push(cx.observe_window_activation(window, |this, window, cx| {
             this.window_active = window.is_window_active();
-            if this.window_active {
-                if let Some((id, at)) = this.pending_focus.take() {
-                    if at.elapsed() < Duration::from_secs(60) {
-                        this.open_task(id, window, cx);
-                    }
-                }
+            if this.window_active
+                && let Some((id, at)) = this.pending_focus.take()
+                && at.elapsed() < Duration::from_secs(60)
+            {
+                this.open_task(id, window, cx);
             }
         }));
         let store = &engine.store;
@@ -222,7 +221,7 @@ impl Shell {
             tabs: store
                 .setting("open_tabs")
                 .filter(|_| store.setting("restore_tabs").as_deref() != Some("false"))
-                .map(|s| s.split(',').filter_map(|id| uuid_task(id)).collect())
+                .map(|s| s.split(',').filter_map(uuid_task).collect())
                 .unwrap_or_default(),
             panel,
             composer,
@@ -338,7 +337,7 @@ impl Shell {
                     }
                     Ok(Ok(BrowserCall::Run(browser))) => {
                         let label = crate::browser::agent::activity(&req.tool, &req.args);
-                        let _ = browser.update(cx, |b, cx| b.set_agent_activity(Some(label), cx));
+                        browser.update(cx, |b, cx| b.set_agent_activity(Some(label), cx));
                         let weak = browser.downgrade();
                         cx.spawn(async move |cx| {
                             let outcome = crate::browser::agent::run(weak.clone(), &req.tool, req.args, cx).await;
@@ -419,7 +418,7 @@ impl Shell {
                 cx.background_executor().timer(Duration::from_secs(60)).await;
                 tick += 1;
                 let Ok(engine) = this.update(cx, |s, _| s.engine.clone()) else { break };
-                let check_events = tick % 5 == 0;
+                let check_events = tick.is_multiple_of(5);
                 let due = cx
                     .background_spawn(async move {
                         let mut due: Vec<(dove_core::store::Automation, Option<String>)> =
@@ -558,11 +557,11 @@ impl Shell {
             p.set_parent(task.clone(), project.clone());
         });
         self.sync_panel(cx);
-        if let Some(v) = self.threads.get(&id) {
-            if v.read(cx).view == ViewMode::Chat {
-                let composer = v.read(cx).chat.read(cx).composer.clone();
-                crate::composer::focus(&composer, window, cx);
-            }
+        if let Some(v) = self.threads.get(&id)
+            && v.read(cx).view == ViewMode::Chat
+        {
+            let composer = v.read(cx).chat.read(cx).composer.clone();
+            crate::composer::focus(&composer, window, cx);
         }
     }
 
@@ -1355,7 +1354,7 @@ impl Shell {
                     })
                     .child(icon(ui::harness_icon(task.harness)).size(px(13.0)).text_color(ui::harness_tint(
                         task.harness,
-                        &t,
+                        t,
                         t.text_muted,
                     )))
                     .child(
@@ -1430,20 +1429,18 @@ impl Shell {
             )
             .when(open, |d| d.bg(t.glass_hover())),
         );
-        if open {
-            if let Some(task) = self.active_task().cloned() {
-                root = root.child(deferred(
-                    anchored().anchor(Anchor::TopRight).snap_to_window_with_margin(px(8.0)).child(
-                        div()
-                            .mt(px(30.0))
-                            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                                this.info_open = false;
-                                cx.notify();
-                            }))
-                            .child(self.render_info_card(&task, &t, cx)),
-                    ),
-                ));
-            }
+        if open && let Some(task) = self.active_task().cloned() {
+            root = root.child(deferred(
+                anchored().anchor(Anchor::TopRight).snap_to_window_with_margin(px(8.0)).child(
+                    div()
+                        .mt(px(30.0))
+                        .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                            this.info_open = false;
+                            cx.notify();
+                        }))
+                        .child(self.render_info_card(&task, &t, cx)),
+                ),
+            ));
         }
         root.into_any_element()
     }

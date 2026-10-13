@@ -105,10 +105,12 @@ pub fn apply_theme(engine: &Arc<Engine>, cx: &mut App) {
     // Re-applying an unchanged theme is not free: on Windows, setting the
     // window backdrop can itself raise an appearance notification, which
     // would call back here and repaint forever.
-    if let Some(current) = cx.try_global::<Theme>() {
-        if current.appearance == appearance && current.accent_choice == accent && current.frosted == frosted {
-            return;
-        }
+    if let Some(current) = cx.try_global::<Theme>()
+        && current.appearance == appearance
+        && current.accent_choice == accent
+        && current.frosted == frosted
+    {
+        return;
     }
     let theme = Theme::new(appearance, accent, frosted);
     assets::set_icon_color(theme.text_muted);
@@ -231,23 +233,23 @@ fn main() {
     // Office skills for every harness (and Dove's own terminal sessions).
     dove_core::office_skills::set_enabled(engine.store.setting("agent_office_skills").as_deref() != Some("false"));
     std::thread::spawn(dove_core::office_skills::ensure_installed);
-    if engine.store.setting("agent_browser").as_deref() != Some("false") {
-        if let (Some(endpoint), Ok(exe)) = (browser::control::start(&engine.runtime()), std::env::current_exe()) {
-            // For tests and external tooling: where to reach this instance.
-            if let Some(path) = std::env::var_os("DOVE_BROWSER_ENDPOINT_FILE") {
-                let _ = std::fs::write(path, format!("{} {}", endpoint.port, endpoint.token));
-            }
-            dove_core::set_tool_server(Some(dove_core::ToolServer {
-                name: "dove".into(),
-                command: exe.display().to_string(),
-                args: vec!["--mcp-browser".into()],
-                env: vec![
-                    ("DOVE_BROWSER_PORT".into(), endpoint.port.to_string()),
-                    ("DOVE_BROWSER_TOKEN".into(), endpoint.token),
-                    ("DOVE_DATA".into(), engine.store.root().display().to_string()),
-                ],
-            }));
+    if engine.store.setting("agent_browser").as_deref() != Some("false")
+        && let (Some(endpoint), Ok(exe)) = (browser::control::start(&engine.runtime()), std::env::current_exe())
+    {
+        // For tests and external tooling: where to reach this instance.
+        if let Some(path) = std::env::var_os("DOVE_BROWSER_ENDPOINT_FILE") {
+            let _ = std::fs::write(path, format!("{} {}", endpoint.port, endpoint.token));
         }
+        dove_core::set_tool_server(Some(dove_core::ToolServer {
+            name: "dove".into(),
+            command: exe.display().to_string(),
+            args: vec!["--mcp-browser".into()],
+            env: vec![
+                ("DOVE_BROWSER_PORT".into(), endpoint.port.to_string()),
+                ("DOVE_BROWSER_TOKEN".into(), endpoint.token),
+                ("DOVE_DATA".into(), engine.store.root().display().to_string()),
+            ],
+        }));
     }
 
     // `dove <folder>` opens (adding if needed) that project.
