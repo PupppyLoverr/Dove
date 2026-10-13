@@ -2687,11 +2687,15 @@ impl Render for TaskView {
                                 .id("chat-scrollbar")
                                 .mode(gpui_base::ScrollbarMode::Always)
                                 .styles(|s| {
-                                    s.track(|tr| tr.bg(gpui::transparent_black()).border_color(gpui::transparent_black()))
-                                        .track_hover(|tr| tr.bg(t.wash(0.04)).border_color(gpui::transparent_black()))
-                                        .thumb(|th| th.bg(t.text.opacity(0.22)).width(px(5.0)).radius(px(3.0)).min_length(px(36.0)))
-                                        .thumb_hover(|th| th.bg(t.text.opacity(0.40)).width(px(8.0)).radius(px(4.0)))
-                                        .thumb_active(|th| th.bg(t.text.opacity(0.55)).width(px(8.0)).radius(px(4.0)))
+                                    s.track(|tr| {
+                                        tr.bg(gpui::transparent_black()).border_color(gpui::transparent_black())
+                                    })
+                                    .track_hover(|tr| tr.bg(t.wash(0.04)).border_color(gpui::transparent_black()))
+                                    .thumb(|th| {
+                                        th.bg(t.text.opacity(0.22)).width(px(5.0)).radius(px(3.0)).min_length(px(36.0))
+                                    })
+                                    .thumb_hover(|th| th.bg(t.text.opacity(0.40)).width(px(8.0)).radius(px(4.0)))
+                                    .thumb_active(|th| th.bg(t.text.opacity(0.55)).width(px(8.0)).radius(px(4.0)))
                                 }),
                         )
                     })
