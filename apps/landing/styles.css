@@ -99,7 +99,7 @@ section { position: relative; }
 .btn-ghost:hover { background: var(--glass-2); }
 .btn-sm { height: 34px; padding: 0 14px; font-size: 14px; }
 .btn.full { width: 100%; justify-content: center; }
-.btn-primary .i-os { display: inline-block; width: 16px; height: 16px; }
+.btn-primary .i-os:is(.i-apple, .i-windows, .i-linux) { display: inline-block; width: 16px; height: 16px; }
 .icon-btn { display: inline-grid; place-items: center; width: 34px; height: 34px; border-radius: 999px; border: 1px solid var(--line); background: transparent; color: var(--dim); cursor: pointer; transition: color .2s, background-color .2s; }
 .icon-btn:hover { color: var(--ink); background: var(--glass-2); }
 .icon-btn .i { width: 16px; height: 16px; grid-area: 1 / 1; transition: opacity .25s var(--ease), transform .35s var(--ease); }
