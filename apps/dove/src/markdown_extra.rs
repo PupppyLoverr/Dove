@@ -17,7 +17,8 @@ pub enum Diagram {
     Failed(String),
 }
 
-static MERMAID: std::sync::LazyLock<Mutex<HashMap<u64, Diagram>>> = std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+static MERMAID: std::sync::LazyLock<Mutex<HashMap<u64, Diagram>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
 fn key(source: &str, dark: bool) -> u64 {
     use std::hash::{Hash, Hasher};

@@ -16,15 +16,19 @@ use std::sync::Arc;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, ClipboardItem, FontStyle, FontWeight, InteractiveElement as _, InteractiveText, IntoElement,
-    ParentElement as _, SharedString, StatefulInteractiveElement as _, StrikethroughStyle, Styled as _, StyledImage as _,
-    StyledText, TextRun, UnderlineStyle, Window, div, px,
+    ParentElement as _, SharedString, StatefulInteractiveElement as _, StrikethroughStyle, Styled as _,
+    StyledImage as _, StyledText, TextRun, UnderlineStyle, Window, div, px,
 };
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use zeron_syntax::{HighlightRequest, HighlightedDocument};
 
+#[path = "markdown_mend.rs"]
+mod mend;
+
 use crate::assets::{icon, icons};
 use crate::markdown_extra::{self, Diagram};
 use crate::theme::Theme;
+use crate::ui;
 use crate::widget;
 
 const OPTS: Options = Options::ENABLE_TABLES
@@ -103,8 +107,20 @@ impl Block {
         match self {
             Block::Paragraph(i) | Block::Heading(_, i) => i.text.clone(),
             Block::Code { text, .. } | Block::Mermaid(text) | Block::Math(text) | Block::Widget(text) => text.clone(),
-            Block::Check(done) => if *done { "[x]".into() } else { "[ ]".into() },
-            Block::Image { alt, url } => if alt.is_empty() { url.clone() } else { alt.clone() },
+            Block::Check(done) => {
+                if *done {
+                    "[x]".into()
+                } else {
+                    "[ ]".into()
+                }
+            }
+            Block::Image { alt, url } => {
+                if alt.is_empty() {
+                    url.clone()
+                } else {
+                    alt.clone()
+                }
+            }
             Block::List { items, .. } => items
                 .iter()
                 .map(|item| item.iter().map(Block::plain).collect::<Vec<_>>().join("\n"))
@@ -199,28 +215,57 @@ fn stable_cut(tail: &str) -> Option<usize> {
     })
 }
 
-/// Close dangling inline markers in an open tail so it renders stably.
-fn mend(tail: &str) -> std::borrow::Cow<'_, str> {
-    // Inside an open fence everything is code; nothing to mend.
-    if tail.matches("```").count() % 2 == 1 {
-        return tail.into();
+/// Close dangling inline markers in an open tail so it renders stably
+/// (Zeron's `close_hanging`, see [`mend`]).
+fn mend_tail(tail: &str) -> std::borrow::Cow<'_, str> {
+    match mend::close_hanging(tail) {
+        Some(fixed) => fixed.into(),
+        None => tail.into(),
     }
-    let mut extra = String::new();
-    if tail.matches('`').count() % 2 == 1 {
-        extra.push('`');
+}
+
+/// A fence opener line at column 0: ```` ```lang ```` or `~~~lang`.
+fn fence_opener(line: &str) -> Option<(u8, usize)> {
+    let b = line.as_bytes();
+    let ch = *b.first()?;
+    if ch != b'`' && ch != b'~' {
+        return None;
     }
-    if tail.matches("**").count() % 2 == 1 {
-        extra.push_str("**");
+    let len = b.iter().take_while(|&&c| c == ch).count();
+    // A backtick fence's info string may not contain backticks.
+    (len >= 3 && !(ch == b'`' && line[len..].contains('`'))).then_some((ch, len))
+}
+
+/// Whether `line` closes a fence opened with `len` × `ch`.
+fn fence_closer(line: &str, ch: u8, len: usize) -> bool {
+    let t = line.trim_start_matches(' ');
+    if line.len() - t.len() > 3 {
+        return false;
     }
-    if extra.is_empty() { tail.into() } else { format!("{tail}{extra}").into() }
+    let run = t.bytes().take_while(|&c| c == ch).count();
+    run >= len && t[run..].trim().is_empty()
 }
 
 /// An assistant message arriving token by token.
+///
+/// Per delta the work is O(open tail), never O(message): finished blocks are
+/// cut off and parsed once, and the cut search itself only runs when a blank
+/// line followed by new content arrived (a top-level block can only start
+/// there). An open fenced code block at the tail skips the markdown parser
+/// entirely, so a 30 KB code listing streams as cheaply as a sentence.
 #[derive(Default)]
 pub struct Stream {
     source: String,
     /// Start of the open (last) top-level block.
     stable_end: usize,
+    /// Complete lines of the tail up to here have been scanned.
+    scanned: usize,
+    /// The fence the scan is inside: (marker, run length, opener offset).
+    fence: Option<(u8, usize, usize)>,
+    /// A blank line was seen and no content has followed it yet.
+    saw_blank: bool,
+    /// Content followed a blank line: a cut may now exist.
+    check: bool,
 }
 
 pub struct StreamUpdate {
@@ -233,17 +278,85 @@ pub struct StreamUpdate {
 impl Stream {
     pub fn push(&mut self, delta: &str) -> StreamUpdate {
         self.source.push_str(delta);
-        let tail = &self.source[self.stable_end..];
+        self.scan();
         let mut finished = Vec::new();
-        if let Some(cut) = stable_cut(tail) {
-            finished = parse_final_plain(&tail[..cut]);
-            self.stable_end += cut;
+        if std::mem::take(&mut self.check) {
+            let tail = &self.source[self.stable_end..];
+            if let Some(cut) = stable_cut(tail) {
+                finished = parse_final_plain(&tail[..cut]);
+                self.stable_end += cut;
+            }
+        }
+        let live = match self.open_code() {
+            Some(b) => vec![Arc::new(b)],
+            None => {
+                let mended = mend_tail(&self.source[self.stable_end..]);
+                let mut parser = Parser::new_ext(&mended, OPTS).peekable();
+                parse_blocks(&mut parser, None).into_iter().map(Arc::new).collect()
+            }
+        };
+        StreamUpdate { finished, live }
+    }
+
+    /// Track fences and blank lines over the newly completed lines.
+    fn scan(&mut self) {
+        let from = self.scanned.max(self.stable_end);
+        let Some(nl) = self.source[from..].rfind('\n') else {
+            self.note_partial(from);
+            return;
+        };
+        let upto = from + nl + 1;
+        let mut at = from;
+        for line in self.source[from..upto].split_inclusive('\n') {
+            let text = line.trim_end_matches(['\n', '\r']);
+            match self.fence {
+                Some((ch, len, _)) => {
+                    if fence_closer(text, ch, len) {
+                        self.fence = None;
+                    }
+                }
+                None if text.trim().is_empty() => self.saw_blank = true,
+                None => {
+                    if std::mem::take(&mut self.saw_blank) {
+                        self.check = true;
+                    }
+                    if let Some((ch, len)) = fence_opener(text) {
+                        self.fence = Some((ch, len, at));
+                    }
+                }
+            }
+            at += line.len();
+        }
+        self.scanned = upto;
+        self.note_partial(upto);
+    }
+
+    /// New content on an unfinished line after a blank line.
+    fn note_partial(&mut self, from: usize) {
+        if self.fence.is_none() && self.saw_blank && !self.source[from..].trim().is_empty() {
+            self.saw_blank = false;
+            self.check = true;
+        }
+    }
+
+    /// The tail is exactly one open fenced code block: build it directly.
+    fn open_code(&self) -> Option<Block> {
+        let (_, _, opener) = self.fence?;
+        if opener != self.stable_end {
+            return None;
         }
         let tail = &self.source[self.stable_end..];
-        let mended = mend(tail);
-        let mut parser = Parser::new_ext(&mended, OPTS).peekable();
-        let live = parse_blocks(&mut parser, None).into_iter().map(Arc::new).collect();
-        StreamUpdate { finished, live }
+        let (head, body) = tail.split_once('\n')?;
+        let head = head.trim_end_matches('\r');
+        let info = head.trim_start_matches(['`', '~']).trim();
+        let lang = info.split_whitespace().next().filter(|l| !l.is_empty()).map(str::to_string);
+        let text = body.strip_suffix('\n').unwrap_or(body).replace("\r\n", "\n");
+        Some(match lang.as_deref().map(str::to_ascii_lowercase).as_deref() {
+            // A diagram renders once whole; while it streams it is source.
+            Some("math" | "latex" | "tex") => Block::Math(text),
+            Some("ui" | "widget") => Block::Widget(text),
+            _ => Block::Code { lang, text, highlight: None },
+        })
     }
 
     /// The message ended: everything left is final.
@@ -543,18 +656,21 @@ pub fn render_block(id: &str, b: &Block, theme: &Theme, window: &Window) -> AnyE
                     (None, None) => div().text_color(theme.text_muted).child("•").into_any_element(),
                 };
                 let done = check == Some(true);
-                div()
-                    .flex()
-                    .gap(px(8.0))
-                    .child(div().flex_none().min_w(px(14.0)).child(marker))
-                    .child(
-                        div().flex_1().min_w_0().flex().flex_col().gap(px(6.0)).when(done, |d| d.text_color(theme.text_muted)).children(
+                div().flex().gap(px(8.0)).child(div().flex_none().min_w(px(14.0)).child(marker)).child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap(px(6.0))
+                        .when(done, |d| d.text_color(theme.text_muted))
+                        .children(
                             item.iter()
                                 .enumerate()
                                 .filter(|(_, b)| !matches!(b, Block::Check(_)))
                                 .map(|(j, b)| render_block(&format!("{id}-{i}-{j}"), b, theme, window)),
                         ),
-                    )
+                )
             }))
             .into_any_element(),
         Block::Quote(inner) => div()
@@ -646,9 +762,17 @@ fn mermaid_block(id: &str, src: &str, theme: &Theme) -> AnyElement {
             .flex_col()
             .gap(px(6.0))
             .child(div().text_size(px(12.0)).text_color(theme.danger).child(err))
-            .child(div().font_family(theme.font_mono.clone()).text_size(px(12.0)).text_color(theme.text_muted).child(src.to_string()))
+            .child(
+                div()
+                    .font_family(theme.font_mono.clone())
+                    .text_size(px(12.0))
+                    .text_color(theme.text_muted)
+                    .child(src.to_string()),
+            )
             .into_any_element(),
-        Diagram::Pending => div().text_size(px(12.0)).text_color(theme.text_faint).child("Rendering diagram…").into_any_element(),
+        Diagram::Pending => {
+            div().text_size(px(12.0)).text_color(theme.text_faint).child("Rendering diagram…").into_any_element()
+        }
     };
     div()
         .id(SharedString::from(format!("{id}-mermaid")))
@@ -692,56 +816,102 @@ fn checkbox(done: bool, theme: &Theme) -> AnyElement {
 }
 
 fn widget_preview(src: &str, theme: &Theme) -> AnyElement {
-    let spec = widget::Spec::parse(src);
+    let spec = widget::Spec::parse(src).or_else(|| widget::Spec::parse_partial(src));
+    let title = spec.as_ref().map(|s| s.title.clone()).filter(|s| !s.is_empty());
+    let body = spec.map(|s| s.body).filter(|s| !s.is_empty());
     div()
-        .p(px(12.0))
-        .rounded(px(12.0))
+        .p(px(14.0))
+        .rounded(px(14.0))
         .border_1()
-        .border_color(theme.accent.opacity(0.3))
-        .bg(theme.accent.opacity(0.05))
+        .border_color(theme.border)
+        .bg(theme.wash(0.03))
         .flex()
         .flex_col()
-        .gap(px(6.0))
+        .gap(px(8.0))
         .child(
             div()
                 .flex()
                 .items_center()
-                .gap(px(6.0))
-                .text_size(px(12.0))
-                .text_color(theme.accent)
-                .child(icon(icons::WIDGET).size(px(13.0)))
-                .child(spec.as_ref().map(|s| s.title.clone()).filter(|s| !s.is_empty()).unwrap_or_else(|| "Interactive card".into())),
+                .gap(px(8.0))
+                .text_size(px(13.0))
+                .text_color(theme.text_muted)
+                .child(icon(icons::WIDGET).size(px(13.0)).text_color(theme.text_faint))
+                .child(title.unwrap_or_else(|| "Building card…".into())),
         )
-        .child(div().text_size(px(13.0)).text_color(theme.text).child(spec.map(|s| s.body).unwrap_or_default()))
+        .when_some(body, |d, body| d.child(div().text_size(px(13.0)).text_color(theme.text).child(body)))
         .into_any_element()
 }
 
+/// Images the user clicked to see at full size.
+static ZOOMED: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+    std::sync::LazyLock::new(Default::default);
+
+const IMAGE_FOLDED: f32 = 360.0;
+
 fn image_block(id: &str, alt: &str, url: &str, theme: &Theme) -> AnyElement {
-    let href = url.to_string();
+    let key = format!("{id}\u{0}{url}");
+    let zoomed = ZOOMED.lock().map(|z| z.contains(&key)).unwrap_or(false);
+    let fit = |el: gpui::Img| {
+        el.w_full().when(!zoomed, |d| d.max_h(px(IMAGE_FOLDED))).object_fit(gpui::ObjectFit::Contain).into_any_element()
+    };
     let picture = markdown_extra::preview_image(url)
-        .map(|img| gpui::img(img).w_full().object_fit(gpui::ObjectFit::Contain).into_any_element())
-        .unwrap_or_else(|| {
-            gpui::img(SharedString::from(url.to_string()))
-                .w_full()
-                .object_fit(gpui::ObjectFit::Contain)
-                .into_any_element()
-        });
+        .map(|img| fit(gpui::img(img)))
+        .unwrap_or_else(|| fit(gpui::img(SharedString::from(url.to_string()))));
+    let href = url.to_string();
+    let hover = theme.glass_hover();
     div()
         .id(SharedString::from(format!("{id}-img")))
+        .group(SharedString::from(format!("{id}-img")))
+        .relative()
         .rounded(px(14.0))
         .border_1()
         .border_color(theme.border)
+        .bg(theme.wash(0.02))
         .overflow_hidden()
         .flex()
         .flex_col()
+        .cursor_pointer()
+        .tooltip(ui::tip(if zoomed { "Click to fit" } else { "Click to zoom" }))
         .child(picture)
         .when(!alt.is_empty(), |d| {
-            d.child(div().px(px(10.0)).py(px(6.0)).text_size(px(12.0)).text_color(theme.text_faint).child(alt.to_string()))
+            d.child(
+                div().px(px(10.0)).py(px(6.0)).text_size(px(12.0)).text_color(theme.text_faint).child(alt.to_string()),
+            )
         })
-        .on_click(move |_, _, cx| {
-            if href.starts_with("http") {
-                cx.open_url(&href);
+        .when(href.starts_with("http"), |d| {
+            let href = href.clone();
+            d.child(
+                div()
+                    .id(SharedString::from(format!("{id}-img-open")))
+                    .absolute()
+                    .top(px(8.0))
+                    .right(px(8.0))
+                    .size(px(26.0))
+                    .rounded(px(8.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .bg(theme.surface_overlay)
+                    .border_1()
+                    .border_color(theme.border)
+                    .invisible()
+                    .group_hover(SharedString::from(format!("{id}-img")), |s| s.visible())
+                    .hover(move |s| s.bg(hover))
+                    .tooltip(ui::tip("Open image"))
+                    .child(icon(icons::EXTERNAL_LINK).size(px(13.0)).text_color(theme.text_muted))
+                    .on_click(move |_, _, cx| {
+                        cx.stop_propagation();
+                        cx.open_url(&href);
+                    }),
+            )
+        })
+        .on_click(move |_, window, _| {
+            if let Ok(mut z) = ZOOMED.lock() {
+                if !z.remove(&key) {
+                    z.insert(key.clone());
+                }
             }
+            window.refresh();
         })
         .into_any_element()
 }
@@ -884,6 +1054,78 @@ pub fn plain(src: &str) -> String {
 mod tests {
     use super::*;
 
+    /// A ~50 KB agent reply: prose, lists, a table, a long code block.
+    pub(crate) fn sample_reply() -> String {
+        let mut s = String::from("# Refactor plan\n\n");
+        for i in 0..60 {
+            s.push_str(&format!(
+                "Step {i}: the **parser** keeps a `stable_end` offset and only re-reads the open *tail* block, \
+                 so a long answer costs a few cheap rows. See [the docs](https://example.com/{i}) for more.\n\n"
+            ));
+            if i % 15 == 0 {
+                for j in 0..8 {
+                    s.push_str(&format!("- item {j} with `code` and **bold** text\n"));
+                }
+                s.push_str("\n| a | b | c |\n|---|---|---|\n| 1 | 2 | 3 |\n| 4 | 5 | 6 |\n\n");
+            }
+        }
+        s.push_str("```rust\n");
+        for i in 0..700 {
+            s.push_str(&format!("fn step_{i}(x: u32) -> u32 {{ x.wrapping_mul({i}) + 1 }}\n"));
+        }
+        s.push_str("```\n\nDone.\n");
+        s
+    }
+
+    fn bench_one(label: &str, doc: &str, step: usize, naive: bool) {
+        let mut s = Stream::default();
+        let (mut total, mut worst) = (std::time::Duration::ZERO, std::time::Duration::ZERO);
+        let (mut pushes, mut i) = (0, 0);
+        while i < doc.len() {
+            let mut j = (i + step).min(doc.len());
+            while !doc.is_char_boundary(j) {
+                j += 1;
+            }
+            let t = std::time::Instant::now();
+            if naive {
+                std::hint::black_box(parse(&doc[..j]));
+            } else {
+                std::hint::black_box(s.push(&doc[i..j]).live);
+            }
+            let d = t.elapsed();
+            total += d;
+            worst = worst.max(d);
+            pushes += 1;
+            i = j;
+        }
+        println!(
+            "stream_bench {label:<28} {:>6} B, {step:>2}-byte deltas: {pushes:>5} pushes, total {:>8.1} ms, mean {:>7.1} us, worst {:>6.2} ms",
+            doc.len(),
+            total.as_secs_f64() * 1e3,
+            total.as_secs_f64() * 1e6 / pushes as f64,
+            worst.as_secs_f64() * 1e3
+        );
+    }
+
+    /// Streaming cost of 50 KB replies (run with
+    /// `cargo test -p dove stream_bench -- --ignored --nocapture`).
+    #[test]
+    #[ignore]
+    fn stream_bench() {
+        let mixed = sample_reply();
+        let mut code = String::from("Here is the file:\n\n```rust\n");
+        while code.len() < 50_000 {
+            code.push_str(&format!("fn step_{}(x: u32) -> u32 {{ x.wrapping_mul(3) + 1 }}\n", code.len()));
+        }
+        code.push_str("```\n");
+        for step in [4usize, 16, 64] {
+            bench_one("mixed / incremental", &mixed, step, false);
+            bench_one("50KB code block / incremental", &code, step, false);
+        }
+        bench_one("mixed / full re-parse", &mixed, 16, true);
+        bench_one("50KB code block / full re-parse", &code, 16, true);
+    }
+
     #[test]
     fn paragraphs_headings_and_inline_styles() {
         let b = parse("# Title\n\nSome **bold** and `code` with [a link](https://x.dev).");
@@ -991,8 +1233,7 @@ mod tests {
 
     #[test]
     fn mend_closes_dangling_markers() {
-        assert_eq!(mend("a **b"), "a **b**");
-        assert_eq!(mend("run `ls"), "run `ls`");
-        assert_eq!(mend("```\nx **"), "```\nx **");
+        assert_eq!(mend_tail("a **b"), "a **b**");
+        assert_eq!(mend_tail("run `ls"), "run `ls`");
     }
 }

@@ -62,26 +62,63 @@ pub async fn run(spec: SessionSpec, ev_tx: flume::Sender<AgentEvent>, cmd_rx: fl
         return;
     };
 
-    let prompt = if let Some(text) = spec.prompt.as_ref().filter(|p| !p.trim().is_empty()) {
-        text.clone()
-    } else {
-        loop {
-            match cmd_rx.recv_async().await {
-                Ok(Command::Send(text)) => break text,
-                Ok(Command::Kill) | Err(_) => {
-                    let _ = ev_tx.send(AgentEvent::Exited { code: None });
-                    return;
-                }
-                Ok(_) => {}
-            }
-        }
-    };
-
+    let given = spec.prompt.clone().filter(|p| !p.trim().is_empty());
     let pending: Arc<Mutex<HashMap<String, Pending>>> = Arc::new(Mutex::new(HashMap::new()));
     let (steer_tx, steer_rx) = mpsc::channel(32);
     let interrupt = zeron_harness::CancellationToken::new();
     let turn = TurnControl::default();
     let stops_in_place = harness.stops_turn_in_place();
+
+    let controls = RunControls {
+        realtime: None,
+        execution_lease: None,
+        request_input: permission_bridge(pending.clone(), ev_tx.clone(), spec.permission_mode),
+        steering: steer_rx,
+        interrupt: interrupt.clone(),
+        turn: turn.clone(),
+    };
+
+    // A pre-warmed Claude run (no prompt yet): boot the CLI now, so its
+    // process, settings and MCP servers are up by the time the user sends;
+    // the first line is released on the first Send.
+    let started;
+    let prompt;
+    if given.is_none() && spec.kind == HarnessKind::ClaudeCode {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let token = format!("{}-{}", std::process::id(), NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+        let release = zeron_harness::claude::defer_prompt(&token);
+        let mut request = run_request(&spec, String::new());
+        request.model_options.insert("dove.deferPrompt".into(), Value::String(token));
+        started = harness.run(request, controls).await;
+        prompt = loop {
+            match cmd_rx.recv_async().await {
+                Ok(Command::Send(text)) if !text.trim().is_empty() => break text,
+                Ok(Command::Kill) | Err(_) => {
+                    interrupt.cancel();
+                    drop(started);
+                    let _ = ev_tx.send(AgentEvent::Exited { code: None });
+                    return;
+                }
+                Ok(_) => {}
+            }
+        };
+        let _ = release.send(prompt.clone());
+    } else {
+        prompt = match given {
+            Some(text) => text,
+            None => loop {
+                match cmd_rx.recv_async().await {
+                    Ok(Command::Send(text)) => break text,
+                    Ok(Command::Kill) | Err(_) => {
+                        let _ = ev_tx.send(AgentEvent::Exited { code: None });
+                        return;
+                    }
+                    Ok(_) => {}
+                }
+            },
+        };
+        started = harness.run(run_request(&spec, prompt.clone()), controls).await;
+    }
 
     {
         let steer_tx = steer_tx.clone();
@@ -137,17 +174,8 @@ pub async fn run(spec: SessionSpec, ev_tx: flume::Sender<AgentEvent>, cmd_rx: fl
         });
     }
 
-    let _ = ev_tx.send(AgentEvent::UserMessage { text: prompt.clone().into() });
-    let controls = RunControls {
-        realtime: None,
-        execution_lease: None,
-        request_input: permission_bridge(pending, ev_tx.clone(), spec.permission_mode),
-        steering: steer_rx,
-        interrupt,
-        turn,
-    };
-
-    match harness.run(run_request(&spec, prompt), controls).await {
+    let _ = ev_tx.send(AgentEvent::UserMessage { text: prompt.into() });
+    match started {
         Ok(mut stream) => {
             let mut usage = Usage::default();
             while let Some(item) = stream.next().await {

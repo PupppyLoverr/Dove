@@ -10,7 +10,8 @@ Copyright (c) 2026 Wing. https://github.com/zeronsh/zeron
 Dove vendors Zeron's `proto`, `harness` and `voice-media` crates under `vendor/`
 (see `vendor/README.md`). Portions of Dove's user interface are adapted from Zeron: the glass and frost
 surface helpers, rounded clipping, window controls, the new-thread wallpaper
-effects (dither / halftone / scanlines) and the theme tokens.
+effects (dither / halftone / scanlines), the theme tokens, and the streaming
+markdown "mend" pass (`apps/dove/src/markdown_mend.rs`, from `crates/markdown`).
 
 > Permission is hereby granted, free of charge, to any person obtaining a copy
 > of this software and associated documentation files (the "Software"), to deal
