@@ -27,8 +27,8 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc;
 use zeron_client::auth as woozlit;
 use zeron_doc::{
-    MessagePart, MessageRole, MessageStatus, RegistryDoc, SegmentWriter, SessionCommandPayload,
-    SessionCommandStatus, SessionDoc, SessionMessageEntry,
+    MessagePart, MessageRole, MessageStatus, RegistryDoc, SegmentWriter, SessionCommandPayload, SessionCommandStatus,
+    SessionDoc, SessionMessageEntry,
 };
 use zeron_sync::chat_client::{ChatClient, ChatDocSink, ChatEvent, CheckpointFetcher, RowImportOutcome};
 use zeron_sync::registry::RegistryClient;
@@ -45,7 +45,11 @@ enum Op {
     Status,
     SignIn,
     SignOut,
-    Space { id: String, path: String, name: Option<String> },
+    Space {
+        id: String,
+        path: String,
+        name: Option<String>,
+    },
     Chat {
         id: String,
         space_id: Option<String>,
@@ -330,11 +334,7 @@ impl Host {
         let state = uuid::Uuid::new_v4().to_string();
         self.pending_sign_in = Some(state.clone());
         let callback = format!("http://127.0.0.1:{port}/callback?state={state}");
-        let url = format!(
-            "{}/login?desktop=1&callback={}",
-            woozlit::WOOZLIT_ORIGIN,
-            enc(&callback)
-        );
+        let url = format!("{}/login?desktop=1&callback={}", woozlit::WOOZLIT_ORIGIN, enc(&callback));
         let tx = self.sign_in_tx.clone();
         tokio::spawn(async move {
             // One-shot loopback: the browser lands here with ?state=…&token=….
@@ -568,10 +568,8 @@ impl Host {
             .filter(|c| c.status != SessionCommandStatus::Pending)
             .map(|c| c.id)
             .collect();
-        self.rooms.insert(
-            chat.to_owned(),
-            Room { doc, client: client_slot, _sub: sub, writers: HashMap::new(), forwarded },
-        );
+        self.rooms
+            .insert(chat.to_owned(), Room { doc, client: client_slot, _sub: sub, writers: HashMap::new(), forwarded });
         self.forward_commands(chat);
         Ok(())
     }
@@ -597,6 +595,12 @@ impl Host {
                     duration_ms: None,
                 })?;
             }
+            return Ok(());
+        }
+        if !streaming
+            && !room.writers.contains_key(&id)
+            && room.doc.find_entry(&id).is_some_and(|(_, written)| written == parts)
+        {
             return Ok(());
         }
         let mut writer = match room.writers.remove(&id) {
@@ -699,10 +703,7 @@ fn hostname() -> String {
 #[tokio::main]
 async fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
-    let mut data_dir = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_default()
-        .join(".dove/mesh");
+    let mut data_dir = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default().join(".dove/mesh");
     let mut edge = std::env::var("DOVE_EDGE_URL").unwrap_or_else(|_| DEFAULT_EDGE.into());
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -712,9 +713,7 @@ async fn main() -> Result<()> {
         }
     }
     let paths = Paths::new(&data_dir);
-    let account: Option<Account> = std::fs::read(&paths.account)
-        .ok()
-        .and_then(|raw| serde_json::from_slice(&raw).ok());
+    let account: Option<Account> = std::fs::read(&paths.account).ok().and_then(|raw| serde_json::from_slice(&raw).ok());
     let device_id = device_id(&paths)?;
     let (applied_tx, mut applied_rx) = mpsc::unbounded_channel();
     let (sign_in_tx, mut sign_in_rx) = mpsc::unbounded_channel();

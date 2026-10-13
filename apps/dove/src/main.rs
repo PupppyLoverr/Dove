@@ -19,6 +19,7 @@ mod pages;
 mod palette;
 mod picker_memory;
 mod pull_requests;
+mod remote;
 mod settings;
 mod shell;
 mod side_chat;
@@ -276,6 +277,7 @@ fn main() {
         browser::bind_keys(cx);
         browser::set_runtime(engine.runtime());
         voice::VoiceModel::init(engine.clone(), cx);
+        remote::Remote::init(engine.clone(), cx);
         cx.on_action(|_: &actions::Quit, cx| cx.quit());
 
         let options = WindowOptions {
