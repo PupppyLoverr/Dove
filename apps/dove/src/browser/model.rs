@@ -177,6 +177,7 @@ pub fn allowed_navigation(address: &str) -> bool {
 /// Subframe navigations: web content, including a frame's own documents
 /// (`about:blank`, `about:srcdoc`, `data:`, `blob:`) — never a scheme that
 /// leaves the page (`file:`, `javascript:`, app links).
+#[cfg_attr(target_os = "linux", allow(dead_code))] // Windows and macOS hosts only
 pub fn allowed_frame_navigation(address: &str) -> bool {
     allowed_navigation(address)
         || url::Url::parse(address).is_ok_and(|u| matches!(u.scheme(), "about" | "data" | "blob"))

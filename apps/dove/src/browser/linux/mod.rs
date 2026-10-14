@@ -83,10 +83,10 @@ fn helper_path() -> Result<std::path::PathBuf, String> {
 impl BrowserData {
     fn worker(&self) -> Result<Arc<Worker>, String> {
         let mut current = self.0.lock().unwrap();
-        if let Some(worker) = current.upgrade() {
-            if worker.child.lock().unwrap().try_wait().map_err(|e| e.to_string())?.is_none() {
-                return Ok(worker);
-            }
+        if let Some(worker) = current.upgrade()
+            && worker.child.lock().unwrap().try_wait().map_err(|e| e.to_string())?.is_none()
+        {
+            return Ok(worker);
         }
         let mut child = Command::new(helper_path()?)
             .stdin(Stdio::piped())
@@ -383,10 +383,10 @@ impl super::BrowserSurface {
                     page.loading = false;
                 }
                 if !self.address.focus_handle(cx).is_focused(window) {
-                    if let Some(url) = &page.url {
-                        if self.address.read(cx).text() != url {
-                            self.address.update(cx, |input, cx| input.set_text(url.clone(), cx));
-                        }
+                    if let Some(url) = &page.url
+                        && self.address.read(cx).text(cx) != *url
+                    {
+                        self.address.update(cx, |input, cx| input.set_text(url.clone(), cx));
                     }
                     self.address_edited = false;
                 }
@@ -588,21 +588,20 @@ impl super::BrowserSurface {
         cx.notify();
     }
     pub(super) fn linux_choose_menu(&mut self, index: usize, cx: &mut gpui::Context<Self>) {
-        if let Some(native) = &mut self.native {
-            if let Some(item) = native
+        if let Some(native) = &mut self.native
+            && let Some(item) = native
                 .menu
                 .as_ref()
                 .and_then(|m| m["items"].get(index))
                 .filter(|i| i["enabled"].as_bool().unwrap_or(false))
-            {
-                let action = item["action"].as_str().unwrap_or("");
-                if action == "text" {
-                    if let Some(text) = cx.read_from_clipboard().and_then(|i| i.text()) {
-                        native.command(json!({"cmd":"text","text":text}));
-                    }
-                } else {
-                    native.command(json!({"cmd":action}));
+        {
+            let action = item["action"].as_str().unwrap_or("");
+            if action == "text" {
+                if let Some(text) = cx.read_from_clipboard().and_then(|i| i.text()) {
+                    native.command(json!({"cmd":"text","text":text}));
                 }
+            } else {
+                native.command(json!({"cmd":action}));
             }
         }
         self.linux_dismiss_menu(cx);
@@ -643,26 +642,50 @@ impl super::BrowserSurface {
         cx: &mut gpui::Context<Self>,
     ) -> Option<gpui::AnyElement> {
         let theme = &theme.for_popup();
-        use gpui::{IntoElement, div, prelude::*, px};
+        use gpui::{IntoElement, anchored, deferred, div, prelude::*, px};
         let native = self.native.as_ref()?;
         let menu = native.menu.as_ref()?;
         let items = menu["items"].as_array()?;
         let pos = native.bounds.origin
             + gpui::point(px(menu["x"].as_f64().unwrap_or(0.) as f32), px(menu["y"].as_f64().unwrap_or(0.) as f32));
-        let mut content = crate::popover::popover_card(theme)
-            .w(px(240.))
-            .on_mouse_down_out(cx.listener(|this, _, _, cx| this.linux_dismiss_menu(cx)));
-        let mut rows = div().id("browser-menu-options").flex().flex_col().max_h(px(320.)).overflow_y_scroll();
+        // A page's <select> popup: the helper reports the options, Dove draws
+        // them as one of its own menus at the element's position.
+        let hover = theme.wash(0.10);
+        let mut rows =
+            div().id("browser-menu-options").w(px(240.)).flex().flex_col().max_h(px(320.)).overflow_y_scroll();
         for (index, item) in items.iter().enumerate() {
             let enabled = item["enabled"].as_bool().unwrap_or(false);
-            let row = crate::popover::menu_row(theme, index == native.menu_active, format!("browser-option-{index}"))
+            let row = div()
                 .id(("browser-option", index))
+                .role(gpui::Role::MenuItem)
+                .h(px(30.))
+                .px(px(10.))
+                .mx(px(4.))
+                .flex()
+                .items_center()
+                .rounded(px(7.))
+                .text_size(px(13.5))
+                .text_color(theme.text)
+                .when(index == native.menu_active, |el| el.bg(hover))
                 .child(gpui::SharedString::from(item["label"].as_str().unwrap_or("").to_owned()))
                 .when(!enabled, |el| el.opacity(0.4))
-                .when(enabled, |el| el.on_click(cx.listener(move |this, _, _, cx| this.linux_choose_menu(index, cx))));
+                .when(enabled, |el| {
+                    el.cursor_pointer()
+                        .hover(move |s| s.bg(hover))
+                        .on_click(cx.listener(move |this, _, _, cx| this.linux_choose_menu(index, cx)))
+                });
             rows = rows.child(row);
         }
-        content = content.child(rows);
-        Some(crate::popover::menu_at("browser-page-menu", pos, content.into_any_element(), None))
+        Some(
+            deferred(
+                anchored().position(pos).snap_to_window_with_margin(px(8.)).child(
+                    div()
+                        .on_mouse_down_out(cx.listener(|this, _, _, cx| this.linux_dismiss_menu(cx)))
+                        .child(crate::ui::menu_card(theme, rows)),
+                ),
+            )
+            .with_priority(2)
+            .into_any_element(),
+        )
     }
 }
