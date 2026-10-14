@@ -24,6 +24,9 @@ Dove is written in Rust on [GPUI](https://github.com/zeronsh/zui). There is no E
 - **Generative UI.** Agents can answer with interactive cards (` ```ui ` fences or the `show_ui` tool): stats, charts, tables, checklists, toggles, choices. The user's pick returns as a normal message, so every harness can continue.
 - **Office documents.** Create, preview and edit PDF, PPTX, XLSX and DOCX files in the side panel.
 - **Integrations.** Paper design canvases, Composio apps (GitHub, Linear, Slack, Notion and more, with your own key) and desktop computer use through the open-source cua-driver, all injected through the same MCP server.
+- **Voice mode.** The waveform button in the composer starts a hands-free conversation: speak, Dove sends it when you pause and reads the answer aloud when the turn ends, then listens again. Speech-to-text runs locally (Parakeet, or NEXI-STT Whisper); replies use NEXI-TTS (local), Fish Audio (your key) or the system voice.
+- **NEXI local models.** Dove's own drivers from [NEXI-Models-Drivers](https://github.com/PupppyLoverr/NEXI-Models-Drivers): NEXI-STT (dictation), NEXI-TTS (speech) and NEXI-CUA (computer use: accessibility tree and DOM first, a 6.3 MB action ranker, verified steps, $0). Each installs on demand into `~/.dove/nexi` from Settings › Voice or Integrations, so the app stays small. Agents get `computer_observe`, `computer_step` and `computer_run`; every call asks first.
+- **Faster first reply.** Dove starts Claude Code while you type (process, settings and MCP servers) and hands it your message on send: 11.35 s → 2.87 s to first text in a local measurement.
 - **Mobile remote.** iOS and Android apps signed in with your Woozlit account show live transcripts and let you approve, steer and start runs. The agent keeps running on your desktop.
 - **A transcript that reads like a document.** Markdown, tables, Mermaid, math and images render incrementally while tokens stream. Tool calls fold.
 

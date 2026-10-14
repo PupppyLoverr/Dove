@@ -66,6 +66,99 @@ native desktop apps. Prefer files, CLIs and browser tools; use computer use only
 observe the window before acting, and confirm destructive actions with the user.";
 
 /// `show_ui`: rendered by Dove's chat straight from the tool call.
+const NEXI_INSTRUCTIONS: &str = "\nNEXI computer use: computer_observe reads the screen as a normalized \
+accessibility/DOM outline; computer_step takes ONE action toward a short concrete goal (e.g. 'click Save', \
+'type hello into the search box') and verifies it; computer_run repeats steps until the goal is met or the \
+model abstains. Goals should be specific and small. Every call controls the user's real computer and asks \
+for approval.";
+
+/// NEXI-CUA tools (Dove's own local computer-use model), backed by the
+/// `nexi-cua serve` API on 127.0.0.1:8090.
+fn nexi_tools() -> Vec<Value> {
+    let goal = json!({"type": "string", "description": "What to do or look for, short and concrete."});
+    vec![
+        json!({
+            "name": "computer_observe",
+            "description": "Read what is on screen now (focused app or browser) as a normalized list of controls and text, ranked for an optional goal.",
+            "inputSchema": {"type": "object", "properties": {"goal": goal}}
+        }),
+        json!({
+            "name": "computer_step",
+            "description": "Take one verified action on the user's computer toward a concrete goal (click, type, scroll, key, navigate). Returns what was done and whether the screen changed as expected; abstains when unsure.",
+            "inputSchema": {"type": "object", "properties": {"goal": goal}, "required": ["goal"]}
+        }),
+        json!({
+            "name": "computer_run",
+            "description": "Repeat computer_step until the goal is reached, the model abstains, or max_steps (default 6, at most 15) is hit. Returns the step log.",
+            "inputSchema": {"type": "object", "properties": {"goal": goal, "max_steps": {"type": "number"}}, "required": ["goal"]}
+        }),
+    ]
+}
+
+fn nexi_call(tool: &str, args: &Value) -> Value {
+    use crate::nexi::{self, Component};
+    let goal = args.get("goal").and_then(Value::as_str).unwrap_or_default().to_string();
+    let text = |s: String, err: bool| json!({"content": [{"type": "text", "text": s}], "isError": err});
+    let root = nexi::root(&crate::pages::integrations::data_root());
+    if let Err(e) = nexi::ensure_running(&root, Component::Cua, Duration::from_secs(60)) {
+        return text(format!("{e:#}. Install it in Dove › Integrations › NEXI computer use."), true);
+    }
+    let fmt_step = |v: &Value| -> String {
+        if v["abstain"].as_bool() == Some(true) {
+            return format!("abstained: {}", v["reason"].as_str().unwrap_or("not confident"));
+        }
+        format!(
+            "{} -> executed={} verify={} {}",
+            v["decision"],
+            v["executed"],
+            v["verify"].as_str().unwrap_or("?"),
+            v["details"].as_str().unwrap_or("")
+        )
+    };
+    match tool {
+        "computer_observe" => match nexi::cua("/observe", &goal) {
+            Ok(v) => {
+                let s = serde_json::to_string_pretty(&v).unwrap_or_default();
+                let s = if s.len() > 40_000 {
+                    format!("{}… (truncated)", s.chars().take(40_000).collect::<String>())
+                } else {
+                    s
+                };
+                text(s, false)
+            }
+            Err(e) => text(format!("{e:#}"), true),
+        },
+        "computer_step" => match nexi::cua("/act", &goal) {
+            Ok(v) => text(fmt_step(&v), v["executed"].as_bool() == Some(false) && v["abstain"].as_bool() != Some(true)),
+            Err(e) => text(format!("{e:#}"), true),
+        },
+        "computer_run" => {
+            let max = args.get("max_steps").and_then(Value::as_u64).unwrap_or(6).clamp(1, 15);
+            let mut log = Vec::new();
+            for i in 1..=max {
+                match nexi::cua("/act", &goal) {
+                    Ok(v) => {
+                        let line = fmt_step(&v);
+                        let stop = v["abstain"].as_bool() == Some(true)
+                            || v["executed"].as_bool() == Some(false)
+                            || v["verify"].as_str() == Some("unchanged");
+                        log.push(format!("{i}. {line}"));
+                        if stop {
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        log.push(format!("{i}. error: {e:#}"));
+                        break;
+                    }
+                }
+            }
+            text(log.join("\n"), false)
+        }
+        other => text(format!("unknown tool {other}"), true),
+    }
+}
+
 fn show_ui_tool() -> Value {
     json!({
         "name": "show_ui",
@@ -100,6 +193,7 @@ pub fn run() {
         (upstream.has("composio"), COMPOSIO_INSTRUCTIONS),
         (upstream.has("paper"), PAPER_INSTRUCTIONS),
         (upstream.has("computer"), COMPUTER_INSTRUCTIONS),
+        (config.nexi.enabled, NEXI_INSTRUCTIONS),
     ] {
         if on {
             instructions.push_str(text);
@@ -138,6 +232,9 @@ pub fn run() {
                     list.push(show_ui_tool());
                     list.extend(chrome_tools());
                     list.extend(upstream.tools());
+                    if config.nexi.enabled {
+                        list.extend(nexi_tools());
+                    }
                     list.push(skills_tool());
                 }
                 Ok(json!({"tools": tools}))
@@ -150,6 +247,15 @@ pub fn run() {
                 Ok(upstream.call(
                     params.get("name").and_then(Value::as_str).unwrap_or_default(),
                     params.get("arguments").cloned().unwrap_or(json!({})),
+                ))
+            }
+            "tools/call"
+                if config.nexi.enabled
+                    && params.get("name").and_then(Value::as_str).is_some_and(|n| n.starts_with("computer_")) =>
+            {
+                Ok(nexi_call(
+                    params.get("name").and_then(Value::as_str).unwrap_or_default(),
+                    &params.get("arguments").cloned().unwrap_or(json!({})),
                 ))
             }
             "tools/call" if params.get("name").and_then(Value::as_str) == Some("dove_skills") => {
@@ -175,6 +281,9 @@ pub fn run() {
             break;
         }
     }
+    // The agent closed the session: stop the NEXI-CUA server this bridge
+    // started rather than leave it running.
+    crate::nexi::stop_all();
 }
 
 fn call(tool: &str, args: Value) -> Value {

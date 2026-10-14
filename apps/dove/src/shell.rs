@@ -257,6 +257,14 @@ impl Shell {
         this.scan_harnesses(cx);
         this.start_scheduler(cx);
         this.start_browser_control(window, cx);
+        if let Some(vm) = crate::speech::VoiceMode::global(cx) {
+            let sub = cx.subscribe_in(&vm, window, |this, _, ev: &crate::speech::VoiceModeEvent, window, cx| {
+                if let crate::speech::VoiceModeEvent::Heard(text) = ev {
+                    this.voice_submit(text.clone(), window, cx);
+                }
+            });
+            this._subs.push(sub);
+        }
         crate::composer::focus(&this.composer, window, cx);
         // `DOVE_OPEN_THREAD=<id>`: start on a thread (QA and scripting).
         if let Some(id) = std::env::var("DOVE_OPEN_THREAD").ok().and_then(|s| uuid_task(&s)) {
@@ -666,7 +674,46 @@ impl Shell {
     }
 
     /// A thread's status moved: update the lists, the badge, notifications.
+    /// Voice mode heard something: send it from the composer in view.
+    fn voice_submit(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
+        let composer = match self.route {
+            Route::Thread(id) => self.threads.get(&id).map(|v| v.read(cx).chat.read(cx).composer.clone()),
+            _ => None,
+        };
+        let composer = match composer {
+            Some(c) => c,
+            None => {
+                if self.route != Route::Home {
+                    self.navigate(Route::Home, window, cx);
+                }
+                self.composer.clone()
+            }
+        };
+        crate::composer::set_text(&composer, &text, window, cx);
+        composer.update(cx, |c, cx| c.submit(window, cx));
+    }
+
+    /// Voice mode: when the thread you are talking to finishes a turn, say
+    /// the answer; on a question or failure, say so, then listen again.
+    fn voice_turn_ended(&mut self, id: TaskId, s: TaskStatus, cx: &mut Context<Self>) {
+        let Some(vm) = crate::speech::VoiceMode::global(cx) else { return };
+        if vm.read(cx).phase != crate::speech::Phase::Thinking || self.route != Route::Thread(id) {
+            return;
+        }
+        let answer = self.threads.get(&id).and_then(|v| v.read(cx).chat.read(cx).last_answer());
+        let say = match s {
+            TaskStatus::Running | TaskStatus::Draft => return,
+            TaskStatus::NeedsInput => "I need your approval in Dove before I continue.".to_string(),
+            TaskStatus::Failed => {
+                format!("That did not work. {}", answer.unwrap_or_default().lines().last().unwrap_or_default())
+            }
+            _ => answer.unwrap_or_else(|| "Done.".into()),
+        };
+        vm.update(cx, |v, cx| v.speak_reply(&say, cx));
+    }
+
     fn on_status(&mut self, id: TaskId, s: TaskStatus, window: &mut Window, cx: &mut Context<Self>) {
+        self.voice_turn_ended(id, s, cx);
         let visible = self.route == Route::Thread(id) && self.window_active;
         for t in self.tasks.iter_mut().filter(|t| t.id == id) {
             t.status = s;

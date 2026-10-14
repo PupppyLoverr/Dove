@@ -67,6 +67,8 @@ pub struct Config {
     pub composio: Composio,
     pub paper: Toggle,
     pub computer: Toggle,
+    /// NEXI-CUA, Dove's own local computer-use model and drivers.
+    pub nexi: Toggle,
 }
 
 /// Which credential the user pasted, by Composio's documented prefixes.
@@ -230,6 +232,10 @@ impl IntegrationsView {
                 }
             }),
         ];
+        let mut subs = subs;
+        if let Some(n) = crate::speech::NexiInstaller::global(cx) {
+            subs.push(cx.observe(&n, |_, _, cx| cx.notify()));
+        }
         let mut view =
             Self { config, api_key, toolkits, probe: Probe::default(), checking: false, copied: false, _subs: subs };
         view.refresh(cx);
@@ -672,6 +678,66 @@ impl Render for IntegrationsView {
                 )
             });
 
+        // NEXI computer use: Dove's own local model and drivers.
+        let nexi_on = self.config.nexi.enabled;
+        let nexi_status = crate::speech::NexiInstaller::global(cx)
+            .map(|n| n.read(cx).status(crate::nexi::Component::Cua))
+            .unwrap_or(crate::speech::InstallStatus::Missing);
+        let nexi_installed = nexi_status == crate::speech::InstallStatus::Installed;
+        let (left, switch) = toggle(
+            nexi_on,
+            Some((nexi_installed, if nexi_installed { "Installed" } else { "Not installed" })),
+            "int-nexi",
+            &t,
+        );
+        let install: gpui::AnyElement =
+            {
+                use crate::speech::InstallStatus;
+                let inst = crate::speech::NexiInstaller::global(cx);
+                match (nexi_status, inst) {
+                    (InstallStatus::Working(m), _) => div()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.0))
+                        .child(crate::kit::spinner("int-nexi-spin", 13.0, t.text_muted))
+                        .child(div().max_w(px(260.0)).text_size(px(12.0)).text_color(t.text_muted).child(m))
+                        .into_any_element(),
+                    (InstallStatus::Installed, Some(inst)) => ui::button_ghost("int-nexi-remove", "Remove", &t)
+                        .on_click(move |_, _, cx| inst.update(cx, |i, cx| i.remove(crate::nexi::Component::Cua, cx)))
+                        .into_any_element(),
+                    (InstallStatus::Failed(e), Some(inst)) => div()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.0))
+                        .child(div().max_w(px(260.0)).text_size(px(12.0)).text_color(t.danger).child(e))
+                        .child(ui::button_ghost("int-nexi-retry", "Try again", &t).on_click(move |_, _, cx| {
+                            inst.update(cx, |i, cx| i.install(crate::nexi::Component::Cua, cx))
+                        }))
+                        .into_any_element(),
+                    (_, Some(inst)) => ui::button_primary("int-nexi-install", "Install", &t)
+                        .on_click(move |_, _, cx| inst.update(cx, |i, cx| i.install(crate::nexi::Component::Cua, cx)))
+                        .into_any_element(),
+                    _ => div().into_any_element(),
+                }
+            };
+        let nexi = plate(&t)
+            .child(head(
+                icons::CPU,
+                "NEXI computer use",
+                "Dove's own local computer-use system: accessibility tree and DOM first, a 6.3 MB action ranker, verified steps. $0, no cloud.".to_string(),
+                left.child(switch.on_click(cx.listener(move |this, _, _, cx| {
+                    this.config.nexi.enabled = !nexi_on;
+                    this.persist(cx);
+                }))),
+                &t,
+            ))
+            .child(line(
+                "Runtime",
+                "Installed on demand into ~/.dove/nexi (Python 3.10+, CPU PyTorch). Agents get computer_observe, computer_step and computer_run; every call asks you first.",
+                install,
+                &t,
+            ));
+
         div()
             .pt(px(8.0))
             .flex()
@@ -681,6 +747,7 @@ impl Render for IntegrationsView {
             .child(composio)
             .child(paper)
             .child(computer)
+            .child(nexi)
             .child(
                 div()
                     .px(px(4.0))

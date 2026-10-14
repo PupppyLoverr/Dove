@@ -80,6 +80,33 @@ Dove gives every agent the same extra tools by registering one MCP server, named
 
 Tools exposed today: the browser set (`browser_navigate`, `browser_snapshot`, `browser_click`, `browser_type`, `browser_hover`, `browser_press`, `browser_scroll`, `browser_screenshot`, …) and `show_ui` for generative cards. New integrations (Composio, Paper, office documents, computer use) register through this same server so they work in every harness without per-agent code.
 
+### NEXI computer use
+
+When Integrations › NEXI computer use is on, the same server also lists `computer_observe`, `computer_step` and `computer_run`. They call the NEXI-CUA loopback API (`nexi-cua serve`: `POST /observe`, `/act` on 127.0.0.1:8090), which observes the accessibility tree or DOM, ranks typed actions with the NEXI-CUA-1 model, executes one and verifies the result. These tools are not auto-approved: each call controls the user's real computer.
+
+## NEXI local models (`apps/dove/src/nexi.rs`, `speech.rs`)
+
+The NEXI drivers are Python packages with small loopback HTTP servers. Dove manages them without bundling Python:
+
+| Component | Port | Endpoints | Used for |
+|---|---|---|---|
+| NEXI-STT (Whisper tiny.en, CTranslate2 int8) | 8767 | `POST /transcribe` (WAV in, JSON out) | dictation and voice mode |
+| NEXI-TTS (Kitten TTS Nano) | 8765 | `POST /synthesize` (JSON in, WAV out) | spoken replies |
+| NEXI-CUA (NEXI-CUA-1 ranker + AX/UIA/AT-SPI/CDP drivers) | 8090 | `POST /observe`, `/decide`, `/act` | agent computer use |
+
+- **Install** (`nexi::install`): clone the NEXI repository into `~/.dove/nexi/src`, create a virtualenv per component, install its packages (the pinned, hashed lock first, then the direct requirements where the lock is Linux-only) and run the driver's own checksummed model download. Progress streams to `install.log`; the UI reads it through `speech::NexiInstaller`.
+- **Run** (`nexi::ensure_running`): start the component's `serve` command on first use (no console window on Windows) and wait for `GET /health`. Servers Dove started stop when it quits.
+- **Talk** (`nexi::http`): a minimal HTTP/1.1 client for 127.0.0.1 (chunked responses decoded); WAV encode/decode and linear resampling live in the same module.
+- **CLI**: `dove --nexi install <stt|tts|cua> | status | say <text> [--play] | roundtrip [text] | cua <goal>`.
+
+### Voice mode
+
+`speech::VoiceMode` is one app-wide loop: `record_utterance` captures the microphone (`zeron_voice::Capture`) and ends after ~0.9 s of quiet below an adaptive noise-floor threshold; `speech::transcribe` uses Parakeet or NEXI-STT; the shell submits the text from the composer in view (`Shell::voice_submit`). When that thread's turn ends (`Shell::voice_turn_ended`), the reply is cleaned for speech (`speech::speakable`: no code, tables or links, capped on a sentence) and spoken by NEXI-TTS (sentence by sentence, synthesizing the next while one plays), Fish Audio (`POST https://api.fish.audio/v1/tts`) or the system voice (SAPI, `say`, `spd-say`), played through `cpal`. Then it listens again; Interrupt barges in.
+
+### Pre-warmed sessions
+
+`Engine::prewarm` starts the Claude Code harness with no prompt while the user types in the composer (and `prewarm_resume` for a reopened thread). The Claude driver spawns the CLI immediately but holds its first stdin line on a one-shot slot keyed by `dove.deferPrompt`, so process start, settings and MCP servers overlap with typing. `start_task` / `resume_task` adopt the warm session when harness, folder, model, effort, options, mode and resume id match; otherwise it expires after four minutes.
+
 ## Browser control path
 
 ```text

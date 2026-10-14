@@ -195,6 +195,10 @@ impl Composer {
                 cx.notify();
             }
         }));
+        // Voice mode is app-wide; repaint the toggle when it changes.
+        if let Some(vm) = crate::speech::VoiceMode::global(cx) {
+            subs.push(cx.observe(&vm, |_, _, cx| cx.notify()));
+        }
         subs.push(cx.subscribe_in(&voice, window, |this, _, ev: &DictationEvent, window, cx| match ev {
             DictationEvent::Text(text) => {
                 let text = text.clone();
@@ -430,7 +434,7 @@ impl Composer {
 
     // ------------------------------------------------------------ actions
 
-    fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let mut text = self.input.read(cx).value().trim().to_string();
         if text.is_empty() && self.attachments.is_empty() {
             return;
@@ -1217,6 +1221,103 @@ impl Composer {
         div().relative().child(button).children(menu).into_any_element()
     }
 
+    /// Hands-free voice conversation ("Jarvis" mode): a waveform toggle that
+    /// becomes a pill with the phase and a live level while active.
+    fn voice_mode_button(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        use crate::speech::{Phase, VoiceMode};
+        let Some(vm) = VoiceMode::global(cx) else { return div().into_any_element() };
+        let (phase, level, error) = {
+            let v = vm.read(cx);
+            (v.phase, v.shown_level, v.error.clone())
+        };
+        let on = phase != Phase::Off;
+        let toggle = {
+            let vm = vm.clone();
+            move |_: &gpui::ClickEvent, _: &mut Window, cx: &mut App| vm.update(cx, |v, cx| v.toggle(cx))
+        };
+        if !on {
+            return div()
+                .id("composer-voice-mode")
+                .size(px(30.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_full()
+                .cursor_pointer()
+                .hover(|s| s.bg(t.glass_hover()))
+                .role(gpui::Role::Button)
+                .aria_label("Voice mode")
+                .tooltip(ui::tip(match error {
+                    Some(e) => format!("Voice mode stopped: {e}"),
+                    None => "Voice mode: talk with the agent hands-free (it answers out loud)".into(),
+                }))
+                .child(icon(icons::AUDIO_LINES).size(px(16.0)).text_color(t.text_muted))
+                .on_click(toggle)
+                .into_any_element();
+        }
+        // Five bars: live mic level while listening, a gentle wave otherwise.
+        let bars = (0..5).map(|i| {
+            let shape = [0.55, 0.85, 1.0, 0.8, 0.5][i];
+            let h = match phase {
+                Phase::Listening => 4.0 + 12.0 * (level * shape).min(1.0),
+                Phase::Speaking => 6.0 + 8.0 * shape,
+                _ => 4.0 + 3.0 * shape,
+            };
+            div().w(px(2.5)).h(px(h)).rounded_full().bg(if phase == Phase::Speaking { t.accent } else { t.text })
+        });
+        let speaking = phase == Phase::Speaking;
+        let vm2 = vm.clone();
+        div()
+            .id("composer-voice-mode")
+            .h(px(30.0))
+            .pl(px(10.0))
+            .pr(px(4.0))
+            .flex()
+            .items_center()
+            .gap(px(8.0))
+            .rounded_full()
+            .bg(t.accent.opacity(0.14))
+            .border_1()
+            .border_color(t.accent.opacity(0.35))
+            .role(gpui::Role::Button)
+            .aria_label(phase.label())
+            .child(div().h(px(16.0)).flex().items_center().gap(px(2.0)).children(bars))
+            .child(div().text_size(px(12.0)).text_color(t.text).child(phase.label()))
+            .when(speaking, |d| {
+                d.child(
+                    div()
+                        .id("voice-mode-interrupt")
+                        .px(px(6.0))
+                        .h(px(22.0))
+                        .flex()
+                        .items_center()
+                        .rounded_full()
+                        .text_size(px(11.5))
+                        .text_color(t.text_muted)
+                        .cursor_pointer()
+                        .hover(|s| s.bg(t.wash(0.10)).text_color(t.text))
+                        .tooltip(ui::tip("Stop talking and listen"))
+                        .child("Interrupt")
+                        .on_click(move |_, _, cx| vm2.update(cx, |v, cx| v.interrupt(cx))),
+                )
+            })
+            .child(
+                div()
+                    .id("voice-mode-off")
+                    .size(px(22.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded_full()
+                    .cursor_pointer()
+                    .hover(|s| s.bg(t.wash(0.12)))
+                    .tooltip(ui::tip("End voice mode"))
+                    .child(icon(icons::CLOSE).size(px(11.0)).text_color(t.text_muted))
+                    .on_click(toggle),
+            )
+            .into_any_element()
+    }
+
     fn mic_button(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let voice = self.voice.read(cx);
         let recording = voice.is_recording();
@@ -1787,6 +1888,7 @@ impl Render for Composer {
                             .items_center()
                             .gap(px(2.0))
                             .child(div().min_w_0().max_w(px(220.0)).overflow_hidden().child(self.picker.clone()))
+                            .child(self.voice_mode_button(t, cx))
                             .child(self.mic_button(t, cx))
                             .child(div().pl(px(2.0)).child(self.action_button(has_text, t, cx))),
                     ),

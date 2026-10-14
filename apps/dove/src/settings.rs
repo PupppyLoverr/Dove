@@ -104,6 +104,8 @@ pub struct SettingsPage {
     devices: Vec<(String, String)>,
     data_size: Option<u64>,
     integrations: Entity<crate::pages::integrations::IntegrationsView>,
+    fish_key: Entity<InputState>,
+    fish_voice: Entity<InputState>,
     focus: FocusHandle,
     _subs: Vec<Subscription>,
 }
@@ -149,9 +151,16 @@ impl SettingsPage {
             window,
             cx,
         );
-        let mut subs = vec![s1, s2];
+        let (fish_key, s3) = text_setting(&engine, "fish_api_key", String::new(), "Fish Audio API key", window, cx);
+        fish_key.update(cx, |s, cx| s.set_masked(true, window, cx));
+        let (fish_voice, s4) =
+            text_setting(&engine, "fish_voice", String::new(), "Voice model id (optional)", window, cx);
+        let mut subs = vec![s1, s2, s3, s4];
         if let Some(model) = VoiceModel::global(cx) {
             subs.push(cx.observe(&model, |_, _, cx| cx.notify()));
+        }
+        if let Some(n) = crate::speech::NexiInstaller::global(cx) {
+            subs.push(cx.observe(&n, |_, _, cx| cx.notify()));
         }
         if let Some(remote) = crate::remote::Remote::global(cx) {
             subs.push(cx.observe(&remote, |_, _, cx| cx.notify()));
@@ -165,6 +174,8 @@ impl SettingsPage {
             devices: Vec::new(),
             data_size: None,
             integrations: cx.new(|cx| crate::pages::integrations::IntegrationsView::new(window, cx)),
+            fish_key,
+            fish_voice,
             focus: cx.focus_handle(),
             _subs: subs,
         }
@@ -504,7 +515,169 @@ impl SettingsPage {
             ))
             .child(row("Microphone", "", devices, t))
             .child(row("How to dictate", "Hold the mic in the composer (or the terminal) to talk; click it to toggle. Text is inserted, never sent.", div(), t))
+            .child(self.voice_engines(t, cx))
             .into_any_element()
+    }
+
+    /// Speech engines: NEXI-STT/TTS (local, installed on demand), Fish
+    /// Audio, the system voice, and voice mode tuning.
+    fn voice_engines(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        use crate::nexi::Component;
+        use crate::speech::{InstallStatus, NexiInstaller, SttEngine, TtsEngine};
+        let stt = SttEngine::of(&self.engine);
+        let tts = TtsEngine::of(&self.engine);
+        let installer = NexiInstaller::global(cx);
+        let install_control = |c: Component, this: &Self, cx: &mut Context<Self>| -> AnyElement {
+            let Some(inst) = installer.clone() else { return div().into_any_element() };
+            let status = inst.read(cx).status(c);
+            let _ = this;
+            match status {
+                InstallStatus::Missing => {
+                    ui::button_ghost(SharedString::from(format!("nexi-install-{}", c.id())), "Install", t)
+                        .on_click({
+                            let inst = inst.clone();
+                            move |_, _, cx| inst.update(cx, |i, cx| i.install(c, cx))
+                        })
+                        .into_any_element()
+                }
+                InstallStatus::Working(m) => div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .child(kit::spinner(SharedString::from(format!("nexi-spin-{}", c.id())), 13.0, t.text_muted))
+                    .child(div().max_w(px(240.0)).text_size(px(12.0)).text_color(t.text_muted).child(m))
+                    .into_any_element(),
+                InstallStatus::Installed => div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .child(kit::badge("Installed", t.success))
+                    .child(
+                        ui::button_ghost(SharedString::from(format!("nexi-remove-{}", c.id())), "Remove", t).on_click(
+                            {
+                                let inst = inst.clone();
+                                move |_, _, cx| inst.update(cx, |i, cx| i.remove(c, cx))
+                            },
+                        ),
+                    )
+                    .into_any_element(),
+                InstallStatus::Failed(e) => div()
+                    .flex()
+                    .flex_col()
+                    .items_end()
+                    .gap(px(4.0))
+                    .child(div().max_w(px(300.0)).text_size(px(12.0)).text_color(t.danger).child(e))
+                    .child(
+                        ui::button_ghost(SharedString::from(format!("nexi-retry-{}", c.id())), "Try again", t)
+                            .on_click({
+                                let inst = inst.clone();
+                                move |_, _, cx| inst.update(cx, |i, cx| i.install(c, cx))
+                            }),
+                    )
+                    .into_any_element(),
+            }
+        };
+        let stt_pick = kit::segmented(
+            "set-stt",
+            &["Parakeet (built in)", "NEXI-STT"],
+            if stt == SttEngine::Nexi { 1 } else { 0 },
+            t,
+            {
+                let engine = self.engine.clone();
+                move |i, _, cx| {
+                    let _ = engine.store.set_setting("stt_engine", if i == 1 { "nexi" } else { "parakeet" });
+                    cx.refresh_windows();
+                }
+            },
+        );
+        let tts_ix = match tts {
+            TtsEngine::System => 0,
+            TtsEngine::Nexi => 1,
+            TtsEngine::Fish => 2,
+        };
+        let tts_pick = kit::segmented("set-tts", &["System", "NEXI-TTS", "Fish Audio"], tts_ix, t, {
+            let engine = self.engine.clone();
+            move |i, _, cx| {
+                let id = ["system", "nexi", "fish"][i.min(2)];
+                let _ = engine.store.set_setting("tts_engine", id);
+                cx.refresh_windows();
+            }
+        });
+        let voice = self.get("tts_voice").unwrap_or_else(|| "Jasper".into());
+        let voices = crate::nexi::TTS_VOICES;
+        let voice_ix = voices.iter().position(|v| *v == voice).unwrap_or(0);
+        let voice_pick = kit::segmented("set-tts-voice", voices, voice_ix, t, {
+            let engine = self.engine.clone();
+            move |i, _, cx| {
+                let _ = engine.store.set_setting("tts_voice", voices[i.min(voices.len() - 1)]);
+                cx.refresh_windows();
+            }
+        });
+        let test = ui::button_ghost("tts-test", "Test voice", t).on_click({
+            let engine = self.engine.clone();
+            move |_, _, cx| {
+                let engine = engine.clone();
+                cx.background_spawn(async move {
+                    let stop = std::sync::atomic::AtomicBool::new(false);
+                    if let Err(e) =
+                        crate::speech::speak(&engine, "Hi, I'm Dove. Voice mode is ready when you are.", &stop)
+                    {
+                        tracing::warn!("voice test failed: {e:#}");
+                    }
+                })
+                .detach();
+            }
+        });
+        let mut col = div()
+            .pt(px(18.0))
+            .child(div().pb(px(4.0)).text_size(px(12.0)).font_weight(gpui::FontWeight::MEDIUM).text_color(t.text_faint).child("SPEECH ENGINES"))
+            .child(row("Speech-to-text", "Parakeet v3 (above) or NEXI-STT: Whisper tiny.en through faster-whisper, local, about 0.5 s per 11 s clip.", stt_pick, t))
+            .child(row("NEXI-STT", "Installed on demand into ~/.dove/nexi (Python 3.10+, pinned and checksummed model).", install_control(Component::Stt, self, cx), t))
+            .child(row("Voice replies", "How voice mode reads answers aloud. System needs no install; NEXI-TTS is local; Fish Audio uses your API key.", tts_pick, t))
+            .child(row("NEXI-TTS", "Kitten TTS Nano (27 MB, 24 kHz), local, installed on demand.", install_control(Component::Tts, self, cx), t));
+        if tts == TtsEngine::Nexi {
+            col = col.child(row("NEXI voice", "", voice_pick, t));
+        }
+        if tts == TtsEngine::Fish {
+            col = col
+                .child(row(
+                    "Fish Audio key",
+                    "fish.audio › API keys. Stored on this device only.",
+                    div()
+                        .w(px(260.0))
+                        .h(px(30.0))
+                        .px(px(10.0))
+                        .flex()
+                        .items_center()
+                        .rounded(px(8.0))
+                        .border_1()
+                        .border_color(t.border_strong)
+                        .child(gpui_base::input::Input::new(&self.fish_key)),
+                    t,
+                ))
+                .child(row(
+                    "Fish voice",
+                    "A voice model id from fish.audio (leave empty for the default voice).",
+                    div()
+                        .w(px(260.0))
+                        .h(px(30.0))
+                        .px(px(10.0))
+                        .flex()
+                        .items_center()
+                        .rounded(px(8.0))
+                        .border_1()
+                        .border_color(t.border_strong)
+                        .child(gpui_base::input::Input::new(&self.fish_voice)),
+                    t,
+                ));
+        }
+        col.child(row(
+            "Voice mode",
+            "The waveform button in the composer starts a hands-free conversation: speak, Dove sends it when you pause, and reads the answer back. Click it again (or ✕) to stop.",
+            test,
+            t,
+        ))
+        .into_any_element()
     }
 
     fn keyboard(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {

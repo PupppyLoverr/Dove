@@ -1169,6 +1169,11 @@ impl TaskView {
         cx.notify();
     }
 
+    /// The most recent assistant message (markdown), if any.
+    pub fn last_answer(&self) -> Option<String> {
+        self.chat.messages.iter().rev().find(|m| !m.trim().is_empty()).cloned()
+    }
+
     pub fn jump_to_latest(&mut self, cx: &mut Context<Self>) {
         self.list.set_tail_reservation(None);
         self.list.set_follow_mode(FollowMode::Tail);

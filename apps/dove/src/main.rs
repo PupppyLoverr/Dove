@@ -14,6 +14,7 @@ mod markdown;
 mod markdown_extra;
 mod math;
 mod mcp_browser;
+mod nexi;
 mod notify;
 mod office;
 mod pages;
@@ -26,6 +27,7 @@ mod shell;
 mod side_chat;
 mod side_panel;
 mod sidebar;
+mod speech;
 mod surface_chrome;
 mod terminal;
 mod theme;
@@ -201,9 +203,87 @@ fn restore_if_minimized(window: &Window) {
 #[cfg(not(windows))]
 fn restore_if_minimized(_: &Window) {}
 
+fn nexi_cli(args: Vec<String>) -> anyhow::Result<()> {
+    let result = nexi_command(args);
+    nexi::stop_all();
+    result
+}
+
+fn nexi_command(args: Vec<String>) -> anyhow::Result<()> {
+    use nexi::Component;
+    let root = nexi::root(&dove_core::store::default_root());
+    let comp = |s: Option<&String>| -> anyhow::Result<Component> {
+        Component::ALL
+            .into_iter()
+            .find(|c| Some(c.id()) == s.map(|s| s.as_str()))
+            .ok_or_else(|| anyhow::anyhow!("component: stt | tts | cua"))
+    };
+    match args.first().map(String::as_str) {
+        Some("install") => {
+            let c = comp(args.get(1))?;
+            nexi::install(&root, c, &|m| eprintln!("{}: {m}", c.label()))?;
+            println!("{} installed in {}", c.label(), root.display());
+        }
+        Some("status") => {
+            for c in Component::ALL {
+                println!("{:9} installed={} healthy={}", c.label(), nexi::installed(&root, c), nexi::healthy(c));
+            }
+        }
+        Some("say") => {
+            let text = args.get(1).cloned().unwrap_or_else(|| "Hello from Dove.".into());
+            nexi::ensure_running(&root, Component::Tts, std::time::Duration::from_secs(60))?;
+            let started = std::time::Instant::now();
+            let (samples, rate) = nexi::synthesize(&text, "Jasper", 1.0)?;
+            println!(
+                "synthesized {:.2} s of audio at {rate} Hz in {:?}",
+                samples.len() as f32 / rate as f32,
+                started.elapsed()
+            );
+            if args.get(2).is_some_and(|a| a == "--play") {
+                speech::play(&samples, rate, &std::sync::atomic::AtomicBool::new(false))?;
+            }
+        }
+        Some("roundtrip") => {
+            // Speak a sentence with NEXI-TTS and transcribe it with NEXI-STT.
+            let text = args.get(1).cloned().unwrap_or_else(|| "Open the settings and run the tests.".into());
+            nexi::ensure_running(&root, Component::Tts, std::time::Duration::from_secs(60))?;
+            nexi::ensure_running(&root, Component::Stt, std::time::Duration::from_secs(60))?;
+            let (samples, rate) = nexi::synthesize(&text, "Jasper", 1.0)?;
+            let started = std::time::Instant::now();
+            let heard = nexi::transcribe(&samples, rate)?;
+            println!(
+                "said:  {text}
+heard: {heard}
+(stt {:?})",
+                started.elapsed()
+            );
+        }
+        Some("cua") => {
+            nexi::ensure_running(&root, Component::Cua, std::time::Duration::from_secs(90))?;
+            let goal = args.get(1).cloned().unwrap_or_default();
+            println!("{}", serde_json::to_string_pretty(&nexi::cua("/decide", &goal)?)?);
+        }
+        _ => anyhow::bail!(
+            "usage: dove --nexi install <stt|tts|cua> | status | say <text> [--play] | roundtrip [text] | cua <goal>"
+        ),
+    }
+    Ok(())
+}
+
 fn main() {
     // `dove --mcp-browser`: the stdio MCP bridge agents spawn to drive the
     // in-app browser. No window, no store.
+    // `dove --nexi install|status|say|roundtrip …`: NEXI model management
+    // without the window (setup scripts, CI, support).
+    if std::env::args_os().nth(1).is_some_and(|a| a == "--nexi") {
+        std::process::exit(match nexi_cli(std::env::args().skip(2).collect()) {
+            Ok(()) => 0,
+            Err(e) => {
+                eprintln!("{e:#}");
+                1
+            }
+        });
+    }
     if std::env::args_os().nth(1).is_some_and(|a| a == "--mcp-browser") {
         mcp_browser::run();
         return;
@@ -284,8 +364,15 @@ fn main() {
         browser::bind_keys(cx);
         browser::set_runtime(engine.runtime());
         voice::VoiceModel::init(engine.clone(), cx);
+        speech::VoiceMode::init(engine.clone(), cx);
+        speech::NexiInstaller::init(engine.clone(), cx);
         remote::Remote::init(engine.clone(), cx);
-        cx.on_action(|_: &actions::Quit, cx| cx.quit());
+        cx.on_action(|_: &actions::Quit, cx| {
+            nexi::stop_all();
+            cx.quit()
+        });
+        // Local model servers Dove started stop with it.
+        cx.on_app_quit(|_| async { nexi::stop_all() }).detach();
 
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::centered(default_window_size(cx), cx)),

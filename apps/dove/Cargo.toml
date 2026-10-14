@@ -27,6 +27,8 @@ dove-term = { workspace = true }
 dove-store.workspace = true
 zeron-syntax = { path = "../../vendor/zeron-syntax" }
 zeron-voice = { path = "../../vendor/zeron-voice" }
+# Speaker output for voice replies (same version zeron-voice already builds).
+cpal = "=0.17.3"
 similar = "2"
 notify-rust = "4.18"
 # Embedded browser (ported from Zeron).
