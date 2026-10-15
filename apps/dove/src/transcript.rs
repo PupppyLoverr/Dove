@@ -36,6 +36,8 @@ use crate::composer::{self, Composer, ComposerEvent};
 use crate::design::rem;
 use crate::design::ty;
 use crate::kit;
+use crate::kit::controls::{self as ctl, Tone};
+use crate::kit::{page, popover};
 use crate::markdown::{self, Block, Stream};
 use crate::theme::Theme;
 use crate::ui;
@@ -1563,7 +1565,8 @@ impl TaskView {
         const INSET: f32 = 12.0;
         let measured =
             self.list.bounds_for_item(target).map(|b| f32::from(b.top() - self.list.viewport_bounds().top()) - INSET);
-        let Some(total) = measured.filter(|d| d.abs() < 4000.0) else {
+        let reduced = crate::motion::reduced_now() || cx.reduce_motion();
+        let Some(total) = measured.filter(|d| d.abs() < 4000.0 && !reduced) else {
             self.list.scroll_to(ListOffset { item_ix: target, offset_in_item: px(0.0) });
             self.list.scroll_by(px(-INSET));
             cx.notify();
@@ -1571,14 +1574,14 @@ impl TaskView {
             return;
         };
         self.glide = Some(cx.spawn(async move |this, cx| {
-            let frames = 18;
+            // Zeron's scroll glide: 500 ms, ease-in-out, ~60 steps a second.
+            let spec = crate::motion::SCROLL_GLIDE;
+            let started = Instant::now();
             let mut done = 0.0f32;
-            for n in 1..=frames {
-                cx.background_executor().timer(Duration::from_millis(14)).await;
-                let p = n as f32 / frames as f32;
-                // Ease-out cubic.
-                let eased = 1.0 - (1.0 - p).powi(3);
-                let step = total * eased - done;
+            loop {
+                cx.background_executor().timer(Duration::from_millis(16)).await;
+                let p = spec.since(started, Instant::now());
+                let step = total * p - done;
                 done += step;
                 if this
                     .update(cx, |v, cx| {
@@ -1588,6 +1591,9 @@ impl TaskView {
                     .is_err()
                 {
                     return;
+                }
+                if p >= 1.0 {
+                    break;
                 }
             }
             cx.background_executor().timer(Duration::from_millis(900)).await;
@@ -1821,6 +1827,8 @@ impl TaskView {
                 div()
                     .group(group.clone())
                     .relative()
+                    .text_size(ty::MD)
+                    .line_height(ty::lh::MD)
                     .when(!first, |d| d.pt(px(2.0)))
                     .child(self.render_md(&format!("b{i}"), block, weak, t, window))
                     .when(copyable, |d| {
@@ -1840,6 +1848,8 @@ impl TaskView {
                 .flex()
                 .flex_col()
                 .gap(px(12.0))
+                .text_size(ty::MD)
+                .line_height(ty::lh::MD)
                 .children(
                     blocks.iter().enumerate().map(|(j, b)| self.render_md(&format!("l{i}-{j}"), b, weak, t, window)),
                 )
@@ -1865,7 +1875,12 @@ impl TaskView {
                         .child(icon(icons::CHECKLIST).size(px(14.0)))
                         .child("Plan"),
                 )
-                .child(markdown::render(SharedString::from(format!("plan-{i}")), blocks, t, window))
+                .child(div().text_size(ty::MD).line_height(ty::lh::MD).child(markdown::render(
+                    SharedString::from(format!("plan-{i}")),
+                    blocks,
+                    t,
+                    window,
+                )))
                 .into_any_element(),
             Row::Notice(text) => div()
                 .flex()
@@ -1876,20 +1891,7 @@ impl TaskView {
                 .child(icon(icons::INFO_CIRCLE).size(px(13.0)))
                 .child(text.clone())
                 .into_any_element(),
-            Row::Error(text) => div()
-                .flex()
-                .items_start()
-                .gap(px(8.0))
-                .p(px(10.0))
-                .rounded(px(10.0))
-                .bg(t.danger.opacity(0.08))
-                .border_1()
-                .border_color(t.danger.opacity(0.25))
-                .text_color(t.danger)
-                .text_size(ty::BODY)
-                .child(icon(icons::DANGER_TRIANGLE).size(px(15.0)).mt(px(1.0)))
-                .child(div().flex_1().min_w_0().child(text.clone()))
-                .into_any_element(),
+            Row::Error(text) => self.error_strip(i, text.clone(), self.error_retry(i), weak, t),
             Row::TurnEnd { msgs, prompt, elapsed, failed } => {
                 self.render_turn_end(i, msgs.clone(), prompt.clone(), *elapsed, *failed, weak, t)
             }
@@ -2033,10 +2035,12 @@ impl TaskView {
             })
             .child(
                 div()
-                    .max_w(px(580.0))
+                    .max_w(px((crate::design::conversation_width() * 0.78).round()))
                     .px(px(14.0))
                     .py(px(9.0))
                     .rounded(px(Theme::BUBBLE_RADIUS))
+                    .text_size(ty::MD)
+                    .line_height(ty::lh::MD)
                     .bg(t.surface_raised)
                     .border_1()
                     .border_color(if self.flash == Some(i) { t.accent.opacity(0.7) } else { gpui::transparent_black() })
@@ -2780,15 +2784,11 @@ impl TaskView {
         }
         let root = self.task.worktree.clone().unwrap_or_else(|| self.project.path.clone());
         let hints = risk_hints(req, Some(&root));
-        let mut card = div()
-            .flex()
-            .flex_col()
+        let mut card = page::card(t)
             .gap(px(10.0))
             .p(px(14.0))
-            .rounded(px(12.0))
             .border_1()
-            .border_color(if decided.is_none() { t.warning.opacity(0.55) } else { t.border })
-            .bg(t.wash(0.03))
+            .border_color(if decided.is_none() { t.warning.opacity(0.45) } else { gpui::transparent_black() })
             .child(
                 div()
                     .flex()
@@ -2824,25 +2824,23 @@ impl TaskView {
         match decided {
             None => {
                 let b =
-                    |id: &'static str, label: &'static str, key: &'static str, d: PermissionDecision, primary: bool| {
+                    |id: &'static str, label: &'static str, key: &'static str, d: PermissionDecision, tone: Tone| {
                         let weak = weak.clone();
                         let rid = req.request_id.clone();
-                        let el = if primary {
-                            ui::button_primary(SharedString::from(format!("{id}-{i}")), label, t)
-                        } else {
-                            ui::button_ghost(SharedString::from(format!("{id}-{i}")), label, t)
-                        };
-                        el.child(kit::kbd(key, t)).on_click(move |_, _, cx| {
-                            let _ = weak.update(cx, |v, cx| v.decide(rid.clone(), d, cx));
-                        })
+                        ctl::button(t, format!("{id}-{i}"), label, tone).child(kit::kbd(key, t)).on_click(
+                            move |_, _, cx| {
+                                let _ = weak.update(cx, |v, cx| v.decide(rid.clone(), d, cx));
+                            },
+                        )
                     };
                 card = card.child(
                     div()
                         .flex()
+                        .flex_wrap()
                         .gap(px(6.0))
-                        .child(b("allow", "Allow", "A", PermissionDecision::AllowOnce, true))
-                        .child(b("always", "Allow for session", "S", PermissionDecision::AllowAlways, false))
-                        .child(b("deny", "Deny", "D", PermissionDecision::Deny, false)),
+                        .child(b("allow", "Allow", "A", PermissionDecision::AllowOnce, Tone::Solid))
+                        .child(b("always", "Allow for session", "S", PermissionDecision::AllowAlways, Tone::Outlined))
+                        .child(b("deny", "Deny", "D", PermissionDecision::Deny, Tone::Quiet)),
                 );
             }
             Some(d) => {
@@ -2877,7 +2875,16 @@ impl TaskView {
         let last = !self.chat.rows[i + 1..].iter().any(|r| matches!(r, Row::TurnEnd { .. }));
         let can_fork = last && self.mirror.is_none() && Engine::can_fork(&self.task);
         let idle = !self.is_working() && self.mirror.is_none();
-        div()
+        // A failed turn says so in an error strip that carries the retry.
+        let failure = failed.then(|| {
+            let what: SharedString = match elapsed {
+                Some(e) => format!("Failed after {}", duration(e)).into(),
+                None => "Turn failed".into(),
+            };
+            self.error_strip(i, what, prompt.clone().filter(|_| idle), weak, t)
+        });
+        let prompt = prompt.filter(|_| !failed);
+        let row = div()
             .group("turn-end")
             .h(px(28.0))
             .flex()
@@ -2902,14 +2909,54 @@ impl TaskView {
                     },
                 ))
             })
-            .when_some(elapsed, |d, e| {
-                d.child(div().ml(px(6.0)).child(if failed {
-                    format!("Failed after {}", duration(e))
-                } else {
-                    format!("Worked for {}", duration(e))
-                }))
+            .when_some(elapsed.filter(|_| !failed), |d, e| {
+                d.child(div().ml(px(6.0)).child(format!("Worked for {}", duration(e))))
+            });
+        match failure {
+            Some(strip) => div().flex().flex_col().gap(px(4.0)).pt(px(4.0)).child(strip).child(row).into_any_element(),
+            None => row.into_any_element(),
+        }
+    }
+
+    /// The prompt an error row's Retry resends: the turn's prompt, unless a
+    /// failed turn end below already offers it.
+    fn error_retry(&self, i: usize) -> Option<SharedString> {
+        if self.is_working() || self.mirror.is_some() {
+            return None;
+        }
+        let rest = &self.chat.rows[i + 1..];
+        let mut turn = rest.iter().take_while(|r| !matches!(r, Row::User { .. }));
+        if turn.any(|r| matches!(r, Row::TurnEnd { failed: true, prompt: Some(_), .. })) {
+            return None;
+        }
+        self.chat.rows[..i].iter().rev().find_map(|r| match r {
+            Row::User { text, .. } => Some(text.clone()),
+            _ => None,
+        })
+    }
+
+    /// Zeron's error strip: the message wraps inside it, and Retry resends
+    /// the turn's prompt when there is one.
+    fn error_strip(
+        &self,
+        i: usize,
+        text: SharedString,
+        retry: Option<SharedString>,
+        weak: &WeakEntity<Self>,
+        t: &Theme,
+    ) -> AnyElement {
+        page::error_strip(t, text)
+            .when_some(retry, |d, prompt| {
+                let weak = weak.clone();
+                d.child(
+                    ctl::button_sm(t, format!("retry-strip-{i}"), "Retry", Tone::Filled)
+                        .flex_none()
+                        .child(icon(icons::RESTART).size(px(12.0)))
+                        .on_click(move |_, window, cx| {
+                            let _ = weak.update(cx, |v, cx| v.retry(prompt.clone(), window, cx));
+                        }),
+                )
             })
-            .when(failed && elapsed.is_none(), |d| d.child(div().ml(px(6.0)).text_color(t.danger).child("Turn failed")))
             .into_any_element()
     }
 
@@ -3031,9 +3078,11 @@ impl TaskView {
     /// The message rail: a compact minimap of your prompts along the left
     /// edge. The prompt you are reading lights up; hover shows the prompt
     /// and the start of its reply; click glides there. Long threads fold
-    /// into evenly sized buckets so the rail never grows past 14 marks.
+    /// into evenly sized buckets so the rail never grows past 12 ticks
+    /// (Zeron's minimap: 10 px ticks that lengthen for the prompt in view).
     fn render_rail(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        const MAX_MARKS: usize = 14;
+        const MAX_MARKS: usize = 12;
+        const TICK: f32 = 10.0;
         let messages = self.chat.user_messages();
         if messages.len() < 2 {
             return None;
@@ -3054,7 +3103,7 @@ impl TaskView {
             .flex()
             .flex_col()
             .justify_center()
-            .gap(px(2.0));
+            .gap(px(4.0));
         for (ix, (start, end)) in buckets.into_iter().enumerate() {
             let is_active = active >= start && active < end;
             let rep = if is_active { active } else { start };
@@ -3066,7 +3115,7 @@ impl TaskView {
             let mark = div()
                 .id(SharedString::from(format!("rail-{ix}")))
                 .relative()
-                .h(px(12.0))
+                .h(px(TICK))
                 .w_full()
                 .flex()
                 .items_center()
@@ -3091,16 +3140,22 @@ impl TaskView {
                 })
                 .child(
                     div()
-                        .h(px(if is_active { 3.0 } else { 2.0 }))
+                        .h(px(2.0))
                         .w(px(if hovered {
-                            22.0
+                            TICK * 2.0
                         } else if is_active {
-                            16.0
+                            TICK * 1.6
                         } else {
-                            11.0
+                            TICK
                         }))
                         .rounded_full()
-                        .bg(if is_active || hovered { t.text.opacity(0.85) } else { t.text.opacity(0.18) }),
+                        .bg(if hovered {
+                            t.text.opacity(0.85)
+                        } else if is_active {
+                            t.text.opacity(0.7)
+                        } else {
+                            t.text.opacity(0.2)
+                        }),
                 )
                 .when(hovered, |d| {
                     let prompt: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -3121,46 +3176,43 @@ impl TaskView {
                     d.child(
                         deferred(
                             anchored().anchor(Anchor::LeftCenter).offset(gpui::point(px(34.0), px(0.0))).child(
-                                div()
-                                    .w(px(300.0))
-                                    .p(px(12.0))
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(6.0))
-                                    .rounded(px(12.0))
-                                    .border_1()
-                                    .border_color(t.border)
-                                    .bg(t.surface_overlay)
-                                    .shadow_lg()
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .items_center()
-                                            .gap(px(6.0))
-                                            .text_size(ty::MICRO)
-                                            .text_color(t.text_faint)
-                                            .child(format!("Prompt {} of {n}", rep + 1))
-                                            .when(span > 1, |d| d.child(format!("· {span} here"))),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_size(ty::BODY)
-                                            .line_height(rem(18.0))
-                                            .text_color(t.text)
-                                            .child(prompt),
-                                    )
-                                    .when_some(reply, |d, r| {
-                                        d.child(
+                                crate::motion::menu_in_from(
+                                    SharedString::from(format!("rail-card-{ix}")),
+                                    0.0,
+                                    popover::card(&t)
+                                        .w(px(300.0))
+                                        .p(px(12.0))
+                                        .gap(px(6.0))
+                                        .child(
                                             div()
-                                                .pt(px(6.0))
-                                                .border_t_1()
-                                                .border_color(t.border)
-                                                .text_size(ty::META)
-                                                .line_height(rem(17.0))
-                                                .text_color(t.text_muted)
-                                                .child(r),
+                                                .flex()
+                                                .items_center()
+                                                .gap(px(6.0))
+                                                .text_size(ty::MICRO)
+                                                .text_color(t.text_faint)
+                                                .child(format!("Prompt {} of {n}", rep + 1))
+                                                .when(span > 1, |d| d.child(format!("· {span} here"))),
                                         )
-                                    }),
+                                        .child(
+                                            div()
+                                                .text_size(ty::BODY)
+                                                .line_height(rem(18.0))
+                                                .text_color(t.text)
+                                                .child(prompt),
+                                        )
+                                        .when_some(reply, |d, r| {
+                                            d.child(
+                                                div()
+                                                    .pt(px(6.0))
+                                                    .border_t_1()
+                                                    .border_color(t.border)
+                                                    .text_size(ty::META)
+                                                    .line_height(rem(17.0))
+                                                    .text_color(t.text_muted)
+                                                    .child(r),
+                                            )
+                                        }),
+                                ),
                             ),
                         )
                         .with_priority(3),
@@ -3217,74 +3269,82 @@ impl TaskView {
         let total = req.questions.len();
         let chosen = &q.answers[q.page];
         let _ = window;
-        Some(
+        let body = div()
+            .w_full()
+            .flex()
+            .flex_col()
+            .gap(px(10.0))
+            .p(px(10.0))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .text_size(ty::META)
+                    .text_color(t.text_faint)
+                    .child(icon(icons::CHAT_ROUND_LINE).size(px(14.0)).text_color(t.accent))
+                    .child(question.header.clone())
+                    .child(div().flex_1())
+                    .when(total > 1, |d| d.child(format!("{}/{}", q.page + 1, total)))
+                    .child(
+                        ctl::button_sm(&t, "q-skip", "Skip", Tone::Quiet)
+                            .on_click(cx.listener(|this, _, _, cx| this.skip_questions(cx))),
+                    ),
+            )
+            .child(div().text_size(ty::MD).text_color(t.text).child(question.question.clone()))
+            .child(div().flex().flex_col().gap(px(4.0)).children(question.options.iter().enumerate().map(
+                |(n, label)| {
+                    let selected = chosen.contains(label);
+                    let label2 = label.clone();
+                    popover::menu_row_instant(&t, format!("q-opt-{n}"), selected)
+                        .min_h(px(34.0))
+                        .px(px(10.0))
+                        .border_1()
+                        .border_color(if selected { t.accent.opacity(0.6) } else { t.border })
+                        .when(selected, |d| d.bg(t.accent.opacity(0.08)))
+                        .on_click(cx.listener(move |this, _, window, cx| this.pick_option(label2.clone(), window, cx)))
+                        .when(n < 9, |d| d.child(kit::kbd(&(n + 1).to_string(), &t)))
+                        .child(div().flex_1().child(label.clone()))
+                        .when(selected, |d| d.child(icon(icons::CHECK).size(px(14.0)).text_color(t.accent)))
+                },
+            )))
+            .child(div().flex().items_center().gap(px(8.0)).child(div().flex_1().child(Input::new(&q.other))).when(
+                question.multi_select,
+                |d| {
+                    d.child(
+                        ctl::button(&t, "q-next", if q.page + 1 < total { "Next" } else { "Send" }, Tone::Solid)
+                            .on_click(cx.listener(|this, _, window, cx| this.next_question(window, cx))),
+                    )
+                },
+            ));
+        Some(div().w_full().child(popover::frosted_card(&t, body)).into_any_element())
+    }
+}
+
+impl TaskView {
+    /// A stand-in while the transcript loads off the UI thread: a prompt
+    /// bubble and a reply's lines, pulsing on the shared clock.
+    fn render_skeleton(&self, t: &Theme) -> gpui::Div {
+        let column = |child: gpui::Div| {
             div()
                 .w_full()
                 .flex()
-                .flex_col()
-                .gap(px(10.0))
-                .p(px(14.0))
-                .rounded(px(16.0))
-                .border_1()
-                .border_color(t.border_strong)
-                .bg(t.surface_raised)
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(8.0))
-                        .text_size(ty::META)
-                        .text_color(t.text_faint)
-                        .child(icon(icons::CHAT_ROUND_LINE).size(px(14.0)).text_color(t.accent))
-                        .child(question.header.clone())
-                        .child(div().flex_1())
-                        .when(total > 1, |d| d.child(format!("{}/{}", q.page + 1, total)))
-                        .child(
-                            div()
-                                .id("q-skip")
-                                .cursor_pointer()
-                                .hover(|s| s.text_color(t.text))
-                                .child("Skip")
-                                .on_click(cx.listener(|this, _, _, cx| this.skip_questions(cx))),
-                        ),
-                )
-                .child(div().text_size(ty::MD).text_color(t.text).child(question.question.clone()))
-                .child(div().flex().flex_col().gap(px(4.0)).children(question.options.iter().enumerate().map(
-                    |(n, label)| {
-                        let selected = chosen.contains(label);
-                        let label2 = label.clone();
-                        div()
-                            .id(SharedString::from(format!("q-opt-{n}")))
-                            .h(px(34.0))
-                            .px(px(10.0))
-                            .flex()
-                            .items_center()
-                            .gap(px(10.0))
-                            .rounded(px(8.0))
-                            .border_1()
-                            .border_color(if selected { t.accent.opacity(0.6) } else { t.border })
-                            .when(selected, |d| d.bg(t.accent.opacity(0.08)))
-                            .cursor_pointer()
-                            .hover(|s| s.bg(t.glass_hover()))
-                            .on_click(
-                                cx.listener(move |this, _, window, cx| this.pick_option(label2.clone(), window, cx)),
-                            )
-                            .when(n < 9, |d| d.child(kit::kbd(&(n + 1).to_string(), &t)))
-                            .child(div().flex_1().child(label.clone()))
-                            .when(selected, |d| d.child(icon(icons::CHECK).size(px(14.0)).text_color(t.accent)))
-                    },
-                )))
-                .child(div().flex().items_center().gap(px(8.0)).child(div().flex_1().child(Input::new(&q.other))).when(
-                    question.multi_select,
-                    |d| {
-                        d.child(
-                            ui::button_primary("q-next", if q.page + 1 < total { "Next" } else { "Send" }, &t)
-                                .on_click(cx.listener(|this, _, window, cx| this.next_question(window, cx))),
-                        )
-                    },
-                ))
-                .into_any_element(),
-        )
+                .justify_center()
+                .px(px(28.0))
+                .child(div().w_full().max_w(px(crate::design::conversation_width())).child(child))
+        };
+        div()
+            .flex_1()
+            .min_h_0()
+            .overflow_hidden()
+            .pt(px(30.0))
+            .flex()
+            .flex_col()
+            .gap(px(22.0))
+            .child(column(div().w_full().flex().justify_end().child(page::skeleton(t, px(240.0).into(), 36.0))))
+            .child(column(page::skeleton_lines(t, 4)))
+            .child(column(div().w_full().flex().justify_end().child(page::skeleton(t, px(180.0).into(), 36.0))))
+            .child(column(page::skeleton_lines(t, 3)))
     }
 }
 
@@ -3318,7 +3378,7 @@ impl Render for TaskView {
         let under_meta = if self.terminal_banner || self.questions.is_some() { 0.0 } else { COMPOSER_META };
 
         let transcript: AnyElement = if self.loading {
-            div().flex_1().into_any_element()
+            self.render_skeleton(&t).into_any_element()
         } else if empty {
             div()
                 .flex_1()
@@ -3387,7 +3447,7 @@ impl Render for TaskView {
                 .flex()
                 .items_center()
                 .gap(px(10.0))
-                .rounded(px(Theme::COMPOSER_RADIUS))
+                .rounded(px(crate::design::radius::COMPOSER))
                 .border_1()
                 .border_color(t.border_strong)
                 .bg(t.wash(0.04))
@@ -3429,7 +3489,7 @@ impl Render for TaskView {
             div()
                 .relative()
                 .w_full()
-                .max_w(px(crate::design::conversation_width() + 8.0))
+                .max_w(px(composer::plate_width()))
                 .flex()
                 .flex_col()
                 .gap(px(6.0))
@@ -3453,9 +3513,14 @@ impl Render for TaskView {
                     .inset_0(),
                 ),
         );
-        let bottom = div().w_full().flex().justify_center().px(px(24.0)).pt(px(4.0)).pb(px(6.0)).child(
-            div().w_full().max_w(px(crate::design::conversation_width() + 8.0)).child(self.render_status_strip(&t)),
-        );
+        let bottom = div()
+            .w_full()
+            .flex()
+            .justify_center()
+            .px(px(24.0))
+            .pt(px(4.0))
+            .pb(px(6.0))
+            .child(div().w_full().max_w(px(composer::plate_width())).child(self.render_status_strip(&t)));
 
         div()
             .id("task-view")

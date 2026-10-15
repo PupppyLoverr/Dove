@@ -923,6 +923,16 @@ fn image_block(id: &str, alt: &str, url: &str, theme: &Theme) -> AnyElement {
         .into_any_element()
 }
 
+/// Fenced code in the conversation: Zeron's 12.5 / 18 at the default code
+/// size, tracking Settings › Appearance › Code & diff font size.
+fn code_block_size() -> f32 {
+    crate::design::code() + 0.5
+}
+
+fn code_block_line() -> f32 {
+    (code_block_size() * 18.0 / 12.5).round()
+}
+
 fn code_block(id: &str, lang: Option<&str>, text: &str, hl: Option<&HighlightedDocument>, theme: &Theme) -> AnyElement {
     let copy = text.to_string();
     let theme2 = theme.clone();
@@ -956,8 +966,8 @@ fn code_block(id: &str, lang: Option<&str>, text: &str, hl: Option<&HighlightedD
                 .py(px(10.0))
                 .overflow_x_scroll()
                 .font_family(theme.font_mono.clone())
-                .text_size(px(crate::design::code() + 1.0))
-                .line_height(px(((crate::design::code() + 1.0) * 20.0 / 13.0).round()))
+                .text_size(px(code_block_size()))
+                .line_height(px(code_block_line()))
                 .whitespace_nowrap()
                 .flex()
                 .flex_col()
@@ -1050,6 +1060,14 @@ pub fn plain(src: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn code_blocks_use_zerons_metrics_at_the_default_size() {
+        if (crate::design::code() - crate::design::CODE_DEFAULT).abs() < f32::EPSILON {
+            assert!((code_block_size() - 12.5).abs() < f32::EPSILON);
+            assert!((code_block_line() - 18.0).abs() < f32::EPSILON);
+        }
+    }
 
     /// A ~50 KB agent reply: prose, lists, a table, a long code block.
     pub(crate) fn sample_reply() -> String {
