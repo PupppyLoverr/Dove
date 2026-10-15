@@ -1,0 +1,17 @@
+[package]
+name = "dove-fake-agent"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+description = "Stand-in agent CLI for Dove's perf harness: streams synthetic turns over Claude stream-json or ACP, no model, no tokens."
+
+# Not a member of the Dove workspace: built on its own by scripts/perf.
+[workspace]
+
+[dependencies]
+serde_json = "1"
+
+[profile.release]
+opt-level = 3
+strip = true
