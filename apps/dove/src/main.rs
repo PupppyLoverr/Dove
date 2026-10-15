@@ -39,6 +39,7 @@ mod surface_chrome;
 mod team;
 mod terminal;
 mod theme;
+mod themes;
 mod thread;
 mod tool_calls;
 mod transcript;
@@ -120,9 +121,14 @@ pub fn apply_theme(engine: &Arc<Engine>, cx: &mut App) {
         Some("light") => theme::Appearance::Light,
         _ => appearance_from_window(cx.window_appearance()),
     };
-    let accent = Accent::from_id(&store.setting("accent").unwrap_or_default());
+    let accent_id = store.setting("accent");
+    let accent = Accent::from_id(accent_id.as_deref().unwrap_or_default());
     let surface =
         theme::Surface::from_settings(store.setting("surface").as_deref(), store.setting("frosted").as_deref());
+    // The library theme for this appearance (`theme_light` / `theme_dark`);
+    // none is Dove's own look.
+    let library = themes::resolve(store.setting(themes::key_for(appearance)).as_deref(), appearance)
+        .map(|palette| themes::Applied { palette, theme_accent: themes::follows_theme_accent(accent_id.as_deref()) });
     // Re-applying an unchanged theme is not free: on Windows, setting the
     // window backdrop can itself raise an appearance notification, which
     // would call back here and repaint forever.
@@ -130,10 +136,15 @@ pub fn apply_theme(engine: &Arc<Engine>, cx: &mut App) {
         && current.appearance == appearance
         && current.accent_choice == accent
         && current.surface_style == surface
+        && match (&current.themed, &library) {
+            (None, None) => true,
+            (Some(a), Some(b)) => a.same(b),
+            _ => false,
+        }
     {
         return;
     }
-    let theme = Theme::new(appearance, accent, surface);
+    let theme = Theme::with_library(appearance, accent, surface, library);
     assets::set_icon_color(theme.text_muted);
     theme::set_current_appearance(appearance);
     let background = theme.window_background();
@@ -313,6 +324,7 @@ fn main() {
         assets::load_fonts(cx);
         motion::init(&engine.store, cx);
         design::load_preferences(&engine.store);
+        themes::load_custom(engine.store.root());
         apply_theme(&engine, cx);
         keymap::apply(&engine.store, cx);
         browser::bind_keys(cx);
