@@ -3,18 +3,19 @@
 
 use dove_core::automation::{Trigger, WEEKDAYS};
 use dove_core::proto::HarnessKind;
-use dove_core::store::Automation;
+use dove_core::store::{Automation, AutomationRun};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, Context, InteractiveElement as _, IntoElement, ParentElement as _, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Window, div, px,
+    StatefulInteractiveElement as _, Styled as _, Window, div, px, uniform_list,
 };
 use gpui_base::input::{Input, Textarea};
 
-use super::{AutoEditor, AutoTab, input, page_with, textarea};
+use super::{AutoEditor, AutoTab, PageDialog, input, textarea};
 use crate::assets::{icon, icons};
-use crate::design::ty;
-use crate::kit;
+use crate::design::{radius, size, space, ty};
+use crate::kit::controls::{self as ctl, Segment, Tone};
+use crate::kit::{self, page};
 use crate::shell::Shell;
 use crate::theme::Theme;
 use crate::ui;
@@ -243,79 +244,141 @@ impl Shell {
 
     fn render_editor(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let ed = self.pages.editor.as_ref().expect("editor open");
-        let field = |label: &'static str, el: AnyElement| {
+        let full = |input: AnyElement| {
             div()
-                .flex()
-                .flex_col()
-                .gap(px(6.0))
-                .child(div().text_size(ty::META).text_color(t.text_faint).child(label))
-                .child(el)
-        };
-        let boxed = |el: AnyElement| {
-            div()
-                .min_h(px(32.0))
+                .w_full()
+                .min_h(px(size::FIELD))
                 .px(px(10.0))
                 .py(px(6.0))
                 .flex()
                 .items_center()
-                .rounded(px(8.0))
-                .border_1()
-                .border_color(t.border)
-                .bg(t.wash(0.04))
+                .rounded(px(radius::SELECT))
+                .bg(t.wash(0.06))
                 .text_size(ty::BODY)
-                .child(div().flex_1().child(el))
-                .into_any_element()
+                .child(div().flex_1().min_w_0().child(input))
         };
-        let kinds = div().flex().flex_wrap().gap(px(4.0)).children(TriggerKind::ALL.into_iter().map(|k| {
-            let on = ed.kind == k;
-            div()
-                .id(SharedString::from(format!("tk-{k:?}")))
-                .h(px(26.0))
-                .px(px(10.0))
-                .flex()
-                .items_center()
-                .rounded(px(7.0))
-                .border_1()
-                .border_color(if on { t.accent.opacity(0.6) } else { t.border })
-                .when(on, |d| d.bg(t.accent.opacity(0.10)).text_color(t.text))
-                .when(!on, |d| d.text_color(t.text_muted))
-                .text_size(ty::SMALL)
-                .cursor_pointer()
-                .child(k.label())
-                .on_click(cx.listener(move |this, _, _, cx| {
+        // A row whose control sits under its label, full width.
+        let stacked = |first: bool, title: &'static str, hint: &'static str, control: AnyElement| {
+            page::row(t, first).child(
+                div()
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .gap(px(space::SM))
+                    .child(page::row_text(t, title, hint))
+                    .child(control),
+            )
+        };
+
+        let project_ids: Vec<_> = self.projects.iter().map(|p| p.id).collect();
+        let project_ix = ed.project.and_then(|id| project_ids.iter().position(|x| *x == id)).unwrap_or(usize::MAX);
+        let project = ctl::select("auto-project", "Project", |s: &mut Shell| &mut s.pages.auto_sel_project)
+            .options(
+                self.projects.iter().map(|p| ctl::SelectOption::new(p.name.clone()).glyph(icons::FOLDER)),
+                project_ix,
+            )
+            .placeholder("Pick a project")
+            .width(220.0)
+            .on_select(move |this, i, _, cx| {
+                if let Some(ed) = this.pages.editor.as_mut() {
+                    ed.project = project_ids.get(i).copied().or(ed.project);
+                }
+                cx.notify();
+            })
+            .render(t, &self.pages.auto_sel_project, cx);
+
+        let agents: Vec<HarnessKind> =
+            self.installed.iter().map(|i| i.kind).filter(|k| dove_core::harness_supported(*k)).collect();
+        let agent_ix = agents.iter().position(|k| *k == ed.harness).unwrap_or(usize::MAX);
+        let agent = ctl::select("auto-agent", "Agent", |s: &mut Shell| &mut s.pages.auto_sel_agent)
+            .options(agents.iter().map(|k| ctl::SelectOption::new(k.label()).glyph(ui::harness_icon(*k))), agent_ix)
+            .placeholder(ed.harness.label())
+            .width(220.0)
+            .on_select(move |this, i, _, cx| {
+                if let (Some(ed), Some(k)) = (this.pages.editor.as_mut(), agents.get(i)) {
+                    ed.harness = *k;
+                }
+                cx.notify();
+            })
+            .render(t, &self.pages.auto_sel_agent, cx);
+
+        let persona = (!self.personas.is_empty()).then(|| {
+            let people: Vec<(String, HarnessKind)> = self.personas.iter().map(|p| (p.id.clone(), p.harness)).collect();
+            let ix = ed.persona.as_ref().and_then(|id| people.iter().position(|(p, _)| p == id)).map_or(0, |i| i + 1);
+            let labels = std::iter::once(ctl::SelectOption::new("Anyone")).chain(self.personas.iter().map(|p| {
+                let mark = if p.avatar.trim().is_empty() { String::new() } else { format!("{} ", p.avatar) };
+                ctl::SelectOption::new(format!("{mark}{}", p.name)).detail(p.harness.label())
+            }));
+            ctl::select("auto-persona", "Run as", |s: &mut Shell| &mut s.pages.auto_sel_persona)
+                .options(labels, ix)
+                .width(220.0)
+                .menu_width(260.0)
+                .on_select(move |this, i, _, cx| {
                     if let Some(ed) = this.pages.editor.as_mut() {
-                        ed.kind = k;
+                        match i.checked_sub(1).and_then(|i| people.get(i)) {
+                            Some((id, kind)) => {
+                                ed.persona = Some(id.clone());
+                                ed.harness = *kind;
+                            }
+                            None => ed.persona = None,
+                        }
                     }
                     cx.notify();
-                }))
-        }));
+                })
+                .render(t, &self.pages.auto_sel_persona, cx)
+        });
+
+        let trigger_ix = TriggerKind::ALL.iter().position(|k| *k == ed.kind).unwrap_or(0);
+        let trigger = ctl::select("auto-trigger", "Trigger", |s: &mut Shell| &mut s.pages.auto_sel_trigger)
+            .options(super::options(TriggerKind::ALL.iter().map(|k| k.label())), trigger_ix)
+            .width(220.0)
+            .on_select(|this, i, _, cx| {
+                if let (Some(ed), Some(k)) = (this.pages.editor.as_mut(), TriggerKind::ALL.get(i)) {
+                    ed.kind = *k;
+                }
+                cx.notify();
+            })
+            .render(t, &self.pages.auto_sel_trigger, cx);
+
+        let narrow = |input: AnyElement| full(input).w(px(220.0));
         let detail: AnyElement = match ed.kind {
-            TriggerKind::Every => field("Minutes between runs", boxed(Input::new(&ed.minutes).into_any_element())).into_any_element(),
-            TriggerKind::Daily | TriggerKind::Weekdays => field("Time (local)", boxed(Input::new(&ed.time).into_any_element())).into_any_element(),
+            TriggerKind::Every => page::setting_row(t, false, "Minutes between runs", "At least 5.", narrow(Input::new(&ed.minutes).into_any_element())).into_any_element(),
+            TriggerKind::Daily | TriggerKind::Weekdays => page::setting_row(t, false, "Time (local)", "Like 09:30.", narrow(Input::new(&ed.time).into_any_element())).into_any_element(),
             TriggerKind::Weekly => div()
                 .flex()
-                .gap(px(12.0))
-                .child(field("Time (local)", boxed(Input::new(&ed.time).into_any_element())))
-                .child(field(
-                    "Days",
+                .flex_col()
+                .child(page::setting_row(t, false, "Time (local)", "Like 09:30.", narrow(Input::new(&ed.time).into_any_element())))
+                .child(page::row(t, false)
+                .child(page::row_text(t, "Days", "Runs at that time on each chosen day."))
+                .child(
                     div()
+                        .flex_none()
                         .flex()
-                        .gap(px(4.0))
-                        .children(WEEKDAYS.iter().enumerate().map(|(i, d)| {
+                        .flex_wrap()
+                        .items_center()
+                        .gap(px(space::SM))
+                        .child(div().flex().gap(px(4.0)).children(WEEKDAYS.iter().enumerate().map(|(i, d)| {
                             let i = i as u32;
                             let on = ed.weekdays.contains(&i);
+                            let hover = t.wash(0.08);
                             div()
                                 .id(SharedString::from(format!("wd-{i}")))
-                                .size(px(32.0))
+                                .role(gpui::Role::CheckBox)
+                                .aria_toggled(if on { gpui::Toggled::True } else { gpui::Toggled::False })
+                                .aria_label(SharedString::from(d.to_string()))
+                                .size(px(30.0))
                                 .flex()
                                 .items_center()
                                 .justify_center()
-                                .rounded(px(7.0))
-                                .border_1()
-                                .border_color(if on { t.accent.opacity(0.6) } else { t.border })
-                                .when(on, |d| d.bg(t.accent.opacity(0.10)))
+                                .rounded(px(radius::SELECT))
                                 .text_size(ty::CAPTION)
+                                .font_weight(gpui::FontWeight::MEDIUM)
                                 .cursor_pointer()
+                                .map(|d| if on {
+                                    d.bg(t.accent).text_color(t.on_solid)
+                                } else {
+                                    d.bg(t.wash(0.06)).text_color(t.text_muted).hover(move |s| s.bg(hover))
+                                })
                                 .child(&d[..2])
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     if let Some(ed) = this.pages.editor.as_mut() {
@@ -328,147 +391,210 @@ impl Shell {
                                     }
                                     cx.notify();
                                 }))
-                        }))
-                        .into_any_element(),
+                        }))),
                 ))
                 .into_any_element(),
-            TriggerKind::Cron => field("Cron expression (minute hour day month weekday, local time)", boxed(Input::new(&ed.cron).into_any_element())).into_any_element(),
-            TriggerKind::OnCommit => field("Branch to watch", boxed(Input::new(&ed.branch).into_any_element())).into_any_element(),
-            TriggerKind::OnPr | TriggerKind::OnReview => div()
-                .text_size(ty::SMALL)
-                .text_color(t.text_faint)
-                .child("Checked every 5 minutes through the GitHub CLI (gh). The PR's number, title and link are added to the prompt.")
+            TriggerKind::Cron => stacked(false, "Cron expression (minute hour day month weekday, local time)", "", full(Input::new(&ed.cron).into_any_element()).into_any_element()).into_any_element(),
+            TriggerKind::OnCommit => page::setting_row(t, false, "Branch to watch", "", narrow(Input::new(&ed.branch).into_any_element())).into_any_element(),
+            TriggerKind::OnPr | TriggerKind::OnReview => page::row(t, false)
+                .child(page::info_strip(t, "Checked every 5 minutes through the GitHub CLI (gh). The PR's number, title and link are added to the prompt."))
                 .into_any_element(),
         };
-        let projects = div().flex().flex_wrap().gap(px(4.0)).children(self.projects.iter().map(|p| {
-            let on = ed.project == Some(p.id);
-            let id = p.id;
-            ui::chip(SharedString::from(format!("ap-{id}")), t)
-                .border_1()
-                .border_color(if on { t.accent.opacity(0.6) } else { t.border })
-                .when(on, |d| d.text_color(t.text))
-                .child(p.name.clone())
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    if let Some(ed) = this.pages.editor.as_mut() {
-                        ed.project = Some(id);
-                    }
-                    cx.notify();
-                }))
-        }));
-        let agents = div().flex().flex_wrap().gap(px(4.0)).children(
-            self.installed.iter().filter(|i| dove_core::harness_supported(i.kind)).map(|i| {
-                let k: HarnessKind = i.kind;
-                let on = ed.harness == k;
-                ui::chip(SharedString::from(format!("ah-{}", k.id())), t)
-                    .border_1()
-                    .border_color(if on { t.accent.opacity(0.6) } else { t.border })
-                    .when(on, |d| d.text_color(t.text))
-                    .child(icon(ui::harness_icon(k)).size(px(13.0)).text_color(ui::harness_tint(k, t, t.text_muted)))
-                    .child(k.label())
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if let Some(ed) = this.pages.editor.as_mut() {
-                            ed.harness = k;
-                        }
-                        cx.notify();
-                    }))
-            }),
-        );
+
+        let worktree = ctl::on_toggle(ctl::toggle(t, "auto-wt", ed.worktree), cx, |this, _, cx| {
+            if let Some(ed) = this.pages.editor.as_mut() {
+                ed.worktree = !ed.worktree;
+            }
+            cx.notify();
+        });
+        let enabled = ctl::on_toggle(ctl::toggle(t, "auto-enabled", ed.enabled), cx, |this, _, cx| {
+            if let Some(ed) = this.pages.editor.as_mut() {
+                ed.enabled = !ed.enabled;
+            }
+            cx.notify();
+        });
+
+        let what = page::card(t)
+            .child(stacked(true, "Name", "", full(Input::new(&ed.name).into_any_element()).into_any_element()))
+            .child(stacked(
+                false,
+                "Prompt",
+                "What the agent does each time.",
+                full(Textarea::new(&ed.prompt).into_any_element()).into_any_element(),
+            ))
+            .child(page::setting_row(t, false, "Project", "Where each run starts.", project))
+            .child(page::setting_row(t, false, "Agent", "Supported agents on this device.", agent))
+            .children(persona.map(|p| page::setting_row(t, false, "Run as", "The teammate each run starts as.", p)));
+        let when = page::card(t)
+            .child(page::setting_row(t, true, "Trigger", "", trigger))
+            .child(detail)
+            .child(page::setting_row(t, false, "Run in its own worktree", "Each run gets a fresh branch.", worktree))
+            .child(page::setting_row(t, false, "Enabled", "Paused automations keep their settings.", enabled));
         div()
-            .p(px(18.0))
             .flex()
             .flex_col()
-            .gap(px(14.0))
-            .rounded(px(14.0))
-            .border_1()
-            .border_color(t.border_strong)
-            .bg(t.surface_raised)
-            .child(div().text_size(ty::HEADING).font_weight(gpui::FontWeight::SEMIBOLD).child(if ed.id.is_some() {
-                "Edit automation"
-            } else {
-                "New automation"
-            }))
-            .child(field("Name", boxed(Input::new(&ed.name).into_any_element())))
-            .child(field("Prompt", boxed(Textarea::new(&ed.prompt).into_any_element())))
-            .child(field("Project", projects.into_any_element()))
-            .child(field("Agent", agents.into_any_element()))
-            .when(!self.personas.is_empty(), |d| {
-                let current = ed.persona.clone();
-                d.child(field(
-                    "Run as",
-                    div()
-                        .flex()
-                        .flex_wrap()
-                        .gap(px(4.0))
-                        .child(
-                            ui::chip("auto-as-anyone", t)
-                                .border_1()
-                                .border_color(if current.is_none() { t.accent.opacity(0.6) } else { t.border })
-                                .child("Anyone")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    if let Some(ed) = this.pages.editor.as_mut() {
-                                        ed.persona = None;
-                                    }
-                                    cx.notify();
-                                })),
-                        )
-                        .children(self.personas.iter().map(|p| {
-                            let on = current.as_deref() == Some(p.id.as_str());
-                            let (pid, kind) = (p.id.clone(), p.harness);
-                            ui::chip(SharedString::from(format!("auto-as-{}", p.id)), t)
-                                .pl(px(5.0))
-                                .border_1()
-                                .border_color(if on { t.accent.opacity(0.6) } else { t.border })
-                                .when(on, |c| c.text_color(t.text))
-                                .child(crate::team::avatar(p, 16.0, t))
-                                .child(p.name.clone())
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    if let Some(ed) = this.pages.editor.as_mut() {
-                                        ed.persona = Some(pid.clone());
-                                        ed.harness = kind;
-                                    }
-                                    cx.notify();
-                                }))
-                        }))
-                        .into_any_element(),
-                ))
-            })
-            .child(field("Trigger", kinds.into_any_element()))
-            .child(detail)
             .child(
                 div()
+                    .px(px(page::LABEL_INSET))
+                    .text_size(ty::TITLE)
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .child(if ed.id.is_some() { "Edit automation" } else { "New automation" }),
+            )
+            .child(page::section(t, "What it does", what).mt(px(space::MD)))
+            .child(page::section(t, "When it runs", when))
+            .when_some(ed.error.clone(), |d, e| d.child(div().mt(px(space::MD)).child(page::error_strip(t, e))))
+            .child(
+                div()
+                    .mt(px(space::LG))
                     .flex()
-                    .gap(px(16.0))
-                    .child(kit::checkbox("auto-wt", ed.worktree, "Run in its own worktree", t).on_click(cx.listener(
+                    .justify_end()
+                    .gap(px(space::SM))
+                    .child(ctl::button(t, "auto-cancel", "Cancel", Tone::Outlined).on_click(cx.listener(
                         |this, _, _, cx| {
-                            if let Some(ed) = this.pages.editor.as_mut() {
-                                ed.worktree = !ed.worktree;
-                            }
+                            this.pages.editor = None;
                             cx.notify();
                         },
                     )))
-                    .child(kit::checkbox("auto-enabled", ed.enabled, "Enabled", t).on_click(cx.listener(
-                        |this, _, _, cx| {
-                            if let Some(ed) = this.pages.editor.as_mut() {
-                                ed.enabled = !ed.enabled;
-                            }
-                            cx.notify();
-                        },
-                    ))),
+                    .child(
+                        ctl::button(t, "auto-save", "Save", Tone::Solid)
+                            .on_click(cx.listener(|this, _, _, cx| this.save_editor(cx))),
+                    ),
             )
-            .when_some(ed.error.clone(), |d, e| d.child(div().text_size(ty::SMALL).text_color(t.danger).child(e)))
+            .into_any_element()
+    }
+
+    /// One automation in the list card.
+    fn automation_row(&self, a: &Automation, first: bool, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let trigger = Trigger::parse(&a.trigger).map(|t| t.describe()).unwrap_or_else(|| "Unknown trigger".into());
+        let project = self.project(a.project_id).map(|p| p.name.clone()).unwrap_or_else(|| "missing project".into());
+        let last =
+            a.last_run.map(|r| format!("Last run {}", ui::relative_time(r))).unwrap_or_else(|| "Never run".into());
+        let (a1, a2, a3) = (a.clone(), a.clone(), a.clone());
+        let id = a.id.clone();
+        let toggle = ctl::on_toggle(
+            ctl::toggle(t, SharedString::from(format!("auto-on-{}", a.id)), a.enabled),
+            cx,
+            move |this, _, cx| {
+                let mut a = a1.clone();
+                a.enabled = !a.enabled;
+                let _ = this.engine.store.save_automation(&a);
+                this.pages.refresh_automations(&this.engine);
+                cx.notify();
+            },
+        );
+        let meta = [trigger, project, last]
+            .into_iter()
+            .chain(a.worktree.then(|| "worktree".to_string()))
+            .collect::<Vec<_>>()
+            .join(" · ");
+        page::row(t, first)
+            .child(page::row_tile(t, ui::harness_icon(a.harness), Some(ui::harness_tint(a.harness, t, t.text_muted))))
             .child(
                 div()
+                    .flex_1()
+                    .min_w(px(200.0))
                     .flex()
-                    .gap(px(6.0))
+                    .flex_col()
+                    .gap(px(2.0))
+                    .when(!a.enabled, |d| d.opacity(0.6))
                     .child(
-                        ui::button_primary("auto-save", "Save", t)
-                            .on_click(cx.listener(|this, _, _, cx| this.save_editor(cx))),
+                        div()
+                            .text_size(ty::BODY)
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .text_color(t.text)
+                            .child(a.name.clone()),
                     )
-                    .child(ui::button_ghost("auto-cancel", "Cancel", t).on_click(cx.listener(|this, _, _, cx| {
-                        this.pages.editor = None;
-                        cx.notify();
-                    }))),
+                    .child(
+                        div()
+                            .text_size(ty::META)
+                            .text_color(t.text_muted)
+                            .truncate()
+                            .child(a.prompt.lines().next().unwrap_or_default().to_string()),
+                    )
+                    .child(div().text_size(ty::CAPTION).text_color(t.text_faint).truncate().child(meta)),
             )
+            .child(
+                div()
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .gap(px(space::XS))
+                    .child(toggle)
+                    .child(
+                        ctl::button_sm(t, SharedString::from(format!("auto-run-{}", a.id)), "Run now", Tone::Filled)
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.run_automation(&a2, None, window, cx);
+                                this.pages.refresh_automations(&this.engine);
+                            })),
+                    )
+                    .child(ui::icon_button(
+                        SharedString::from(format!("auto-edit-{}", a.id)),
+                        icons::PEN,
+                        "Edit",
+                        t,
+                        cx.listener(move |this, _, window, cx| this.open_editor(Some(a3.clone()), window, cx)),
+                    ))
+                    .child(ui::icon_button(
+                        SharedString::from(format!("auto-del-{}", a.id)),
+                        icons::TRASH_BIN_MINIMALISTIC,
+                        "Delete",
+                        t,
+                        cx.listener(move |this, _, window, cx| {
+                            this.open_page_dialog(PageDialog::DeleteAutomation(id.clone()), window, cx)
+                        }),
+                    )),
+            )
+            .into_any_element()
+    }
+
+    /// One 40 px Inbox row.
+    fn run_row(&self, ix: usize, r: &AutomationRun, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let name = self
+            .pages
+            .automations
+            .iter()
+            .find(|a| a.id == r.automation_id)
+            .map(|a| a.name.clone())
+            .unwrap_or_else(|| "Deleted automation".into());
+        let task = self.task(r.task_id).cloned();
+        let id = r.task_id;
+        page::row_hover(t, page::table_row(t, ix == 0).id(SharedString::from(format!("run-{ix}"))), false)
+            .on_click(cx.listener(move |this, _, window, cx| {
+                let _ = this.engine.store.mark_run_read(id);
+                this.pages.refresh_automations(&this.engine);
+                this.inbox_unread = this.pages.runs.iter().filter(|r| r.unread).count();
+                this.open_task(id, window, cx);
+            }))
+            .child(if r.unread {
+                ui::dot(t.accent, 8.0).into_any_element()
+            } else {
+                div().w(px(8.0)).flex_none().into_any_element()
+            })
+            .child(
+                div().w(px(14.0)).flex_none().flex().justify_center().children(
+                    task.as_ref().map(|task| {
+                        kit::status_glyph(SharedString::from(format!("run-st-{ix}")), task.status, false, t)
+                    }),
+                ),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .truncate()
+                            .text_size(ty::BODY)
+                            .line_height(ty::lh::BODY)
+                            .text_color(t.text)
+                            .when(r.unread, |d| d.font_weight(gpui::FontWeight::SEMIBOLD))
+                            .child(task.map(|t| t.title).unwrap_or_else(|| "Thread deleted".into())),
+                    )
+                    .child(div().truncate().text_size(ty::CAPTION).text_color(t.text_faint).child(name)),
+            )
+            .child(div().flex_none().text_size(ty::META).text_color(t.text_faint).child(ui::relative_time(r.at)))
             .into_any_element()
     }
 
@@ -476,11 +602,11 @@ impl Shell {
         let t = Theme::of(cx).clone();
         let tab = self.pages.auto_tab;
         let unread = self.pages.runs.iter().filter(|r| r.unread).count();
-        let tabs = kit::segmented(
-            "auto-tabs",
-            &["Automations", if unread > 0 { "Inbox •" } else { "Inbox" }],
-            if tab == AutoTab::List { 0 } else { 1 },
+        let tabs = ctl::segmented(
             &t,
+            "auto-tabs",
+            vec![Segment::new("Automations"), Segment::new(if unread > 0 { "Inbox •" } else { "Inbox" })],
+            if tab == AutoTab::List { 0 } else { 1 },
             {
                 let weak = cx.weak_entity();
                 move |i, _, cx| {
@@ -492,239 +618,86 @@ impl Shell {
                 }
             },
         );
-        let new_btn = ui::button_primary("auto-new", "New automation", &t)
+        let new_btn = ctl::button(&t, "auto-new", "New automation", Tone::Solid)
             .child(icon(icons::PLUS).size(px(13.0)).text_color(t.on_solid))
             .on_click(cx.listener(|this, _, window, cx| this.open_editor(None, window, cx)));
-        let header = div().flex().items_center().gap(px(8.0)).child(tabs).child(new_btn).into_any_element();
+        let header = div().flex().items_center().gap(px(space::SM)).child(tabs).child(new_btn).into_any_element();
+        const TITLE: &str = "Automations";
+        const SUBTITLE: &str = "Prompts that start threads on a schedule or when something happens in a repo.";
 
-        let body: AnyElement = match tab {
+        let page: AnyElement = match tab {
             AutoTab::List => {
-                let list = div().flex().flex_col().gap(px(10.0)).children(
-                    self.pages.automations.clone().into_iter().map(|a| {
-                        let trigger = Trigger::parse(&a.trigger)
-                            .map(|t| t.describe())
-                            .unwrap_or_else(|| "Unknown trigger".into());
-                        let project = self
-                            .project(a.project_id)
-                            .map(|p| p.name.clone())
-                            .unwrap_or_else(|| "missing project".into());
-                        let last = a
-                            .last_run
-                            .map(|r| format!("Last run {}", ui::relative_time(r)))
-                            .unwrap_or_else(|| "Never run".into());
-                        let (a1, a2, a3, a4) = (a.clone(), a.clone(), a.clone(), a.clone());
-                        let confirm = self.pages.confirm_delete_auto.as_deref() == Some(a.id.as_str());
-                        div()
-                            .p(px(14.0))
-                            .flex()
-                            .items_center()
-                            .gap(px(14.0))
-                            .rounded(px(12.0))
-                            .border_1()
-                            .border_color(t.border)
-                            .when(!a.enabled, |d| d.opacity(0.6))
-                            .child(icon(ui::harness_icon(a.harness)).size(px(18.0)).text_color(ui::harness_tint(
-                                a.harness,
-                                &t,
-                                t.text_muted,
-                            )))
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(3.0))
-                                    .child(
-                                        div()
-                                            .text_size(ty::MD)
-                                            .font_weight(gpui::FontWeight::MEDIUM)
-                                            .child(a.name.clone()),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_size(ty::SMALL)
-                                            .text_color(t.text_muted)
-                                            .truncate()
-                                            .child(a.prompt.lines().next().unwrap_or_default().to_string()),
-                                    )
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .gap(px(10.0))
-                                            .text_size(ty::CAPTION)
-                                            .text_color(t.text_faint)
-                                            .child(trigger)
-                                            .child(project)
-                                            .child(last)
-                                            .when(a.worktree, |d| d.child("worktree")),
-                                    ),
-                            )
-                            .child(
-                                kit::switch(SharedString::from(format!("auto-on-{}", a.id)), a.enabled, &t).on_click(
-                                    cx.listener(move |this, _, _, cx| {
-                                        let mut a = a1.clone();
-                                        a.enabled = !a.enabled;
-                                        let _ = this.engine.store.save_automation(&a);
-                                        this.pages.refresh_automations(&this.engine);
-                                        cx.notify();
-                                    }),
-                                ),
-                            )
-                            .child(
-                                ui::button_ghost(SharedString::from(format!("auto-run-{}", a.id)), "Run now", &t)
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.run_automation(&a2, None, window, cx);
-                                        this.pages.refresh_automations(&this.engine);
-                                    })),
-                            )
-                            .child(ui::icon_button(
-                                SharedString::from(format!("auto-edit-{}", a.id)),
-                                icons::PEN,
-                                "Edit",
-                                &t,
-                                cx.listener(move |this, _, window, cx| this.open_editor(Some(a3.clone()), window, cx)),
-                            ))
-                            .child(if confirm {
-                                ui::button_ghost(SharedString::from(format!("auto-del-yes-{}", a.id)), "Delete?", &t)
-                                    .text_color(t.danger)
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        let _ = this.engine.store.delete_automation(&a4.id);
-                                        this.pages.confirm_delete_auto = None;
-                                        this.pages.refresh_automations(&this.engine);
-                                        cx.notify();
-                                    }))
-                                    .into_any_element()
-                            } else {
-                                let id = a.id.clone();
-                                ui::icon_button(
-                                    SharedString::from(format!("auto-del-{}", a.id)),
-                                    icons::TRASH_BIN_MINIMALISTIC,
-                                    "Delete",
-                                    &t,
-                                    cx.listener(move |this, _, _, cx| {
-                                        this.pages.confirm_delete_auto = Some(id.clone());
-                                        cx.notify();
-                                    }),
-                                )
-                                .into_any_element()
-                            })
-                    }),
-                );
-                let empty = (self.pages.automations.is_empty() && self.pages.editor.is_none()).then(|| {
-                    kit::empty_state(
+                let automations = self.pages.automations.clone();
+                let list = (!automations.is_empty()).then(|| {
+                    page::card(&t)
+                        .children(automations.iter().enumerate().map(|(i, a)| self.automation_row(a, i == 0, &t, cx)))
+                });
+                let empty = (automations.is_empty() && self.pages.editor.is_none()).then(|| {
+                    page::card(&t).child(page::empty_state(
+                        &t,
                         icons::CLOCK_CIRCLE,
                         "No automations yet",
                         "Run a prompt every morning, when commits land on main, or when someone asks you for a review. Each run is a normal thread.",
-                        &t,
-                    )
+                        None,
+                    ))
                 });
                 let keep = (!self.engine.store.setting(crate::notify::KEEP_RUNNING).is_some_and(|v| v == "true")).then(|| {
-                    div()
-                        .text_size(ty::META)
-                        .text_color(t.text_faint)
-                        .child("Automations run while Dove is open. To keep them running with the window closed, turn on \"Keep running in the background\" in Settings › Notifications.")
+                    page::info_strip(&t, "Automations run while Dove is open. To keep them running with the window closed, turn on \"Keep running in the background\" in Settings › Notifications.")
                 });
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(14.0))
-                    .children(self.pages.editor.as_ref().map(|_| self.render_editor(&t, cx)))
-                    .children(empty)
-                    .child(list)
-                    .children(keep)
-                    .into_any_element()
-            }
-            AutoTab::Inbox => {
-                let runs = self.pages.runs.clone();
-                if runs.is_empty() {
-                    kit::empty_state(
-                        icons::BELL,
-                        "Inbox is empty",
-                        "Each automation run lands here, unread until you open it.",
-                        &t,
-                    )
-                    .into_any_element()
-                } else {
+                super::page_with(
+                    "automations-page",
+                    TITLE,
+                    SUBTITLE,
+                    &t,
+                    Some(header),
                     div()
                         .flex()
                         .flex_col()
-                        .rounded(px(12.0))
-                        .border_1()
-                        .border_color(t.border)
-                        .overflow_hidden()
-                        .children(runs.into_iter().enumerate().map(|(i, r)| {
-                            let name = self
-                                .pages
-                                .automations
-                                .iter()
-                                .find(|a| a.id == r.automation_id)
-                                .map(|a| a.name.clone())
-                                .unwrap_or_else(|| "Deleted automation".into());
-                            let task = self.task(r.task_id).cloned();
-                            let id = r.task_id;
-                            div()
-                                .id(SharedString::from(format!("run-{i}")))
-                                .h(px(44.0))
-                                .px(px(14.0))
-                                .flex()
-                                .items_center()
-                                .gap(px(10.0))
-                                .when(i > 0, |d| d.border_t_1().border_color(t.border))
-                                .cursor_pointer()
-                                .hover(|s| s.bg(t.wash(0.04)))
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    let _ = this.engine.store.mark_run_read(id);
-                                    this.pages.refresh_automations(&this.engine);
-                                    this.inbox_unread = this.pages.runs.iter().filter(|r| r.unread).count();
-                                    this.open_task(id, window, cx);
-                                }))
-                                .child(if r.unread {
-                                    ui::dot(t.accent, 8.0).into_any_element()
-                                } else {
-                                    div().w(px(8.0)).into_any_element()
-                                })
-                                .when_some(task.as_ref(), |d, task| {
-                                    d.child(kit::status_glyph(
-                                        SharedString::from(format!("run-st-{i}")),
-                                        task.status,
-                                        false,
-                                        &t,
-                                    ))
-                                })
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .flex()
-                                        .flex_col()
-                                        .child(
-                                            div()
-                                                .truncate()
-                                                .text_size(ty::BODY)
-                                                .when(r.unread, |d| d.font_weight(gpui::FontWeight::SEMIBOLD))
-                                                .child(
-                                                    task.map(|t| t.title).unwrap_or_else(|| "Thread deleted".into()),
-                                                ),
-                                        )
-                                        .child(div().text_size(ty::CAPTION).text_color(t.text_faint).child(name)),
-                                )
-                                .child(
-                                    div().text_size(ty::META).text_color(t.text_faint).child(ui::relative_time(r.at)),
-                                )
-                        }))
-                        .into_any_element()
-                }
+                        .gap(px(space::LG))
+                        .children(self.pages.editor.as_ref().map(|_| self.render_editor(&t, cx)))
+                        .children(empty)
+                        .children(list)
+                        .children(keep),
+                )
+            }
+            AutoTab::Inbox => {
+                let runs = std::rc::Rc::new(self.pages.runs.clone());
+                let count = runs.len();
+                let body: AnyElement = if runs.is_empty() {
+                    page::empty_state(
+                        &t,
+                        icons::BELL,
+                        "Inbox is empty",
+                        "Each automation run lands here, unread until you open it.",
+                        None,
+                    )
+                    .into_any_element()
+                } else {
+                    let theme = t.clone();
+                    let rows = runs.clone();
+                    uniform_list(
+                        "inbox-list",
+                        count,
+                        cx.processor(move |this, range: std::ops::Range<usize>, _window, cx| {
+                            range.filter_map(|ix| rows.get(ix).map(|r| this.run_row(ix, r, &theme, cx))).collect()
+                        }),
+                    )
+                    .h(px(count as f32 * page::TABLE_ROW))
+                    .flex_shrink(1.0)
+                    .min_h_0()
+                    .into_any_element()
+                };
+                let (root, column) = page::page_fill("automations-inbox", page::PAGE_WIDE);
+                root.child(crate::motion::fade_in(
+                    "automations-inbox-in",
+                    column
+                        .child(page::page_head(&t, TITLE, SUBTITLE, Some(header)))
+                        .child(page::card(&t).mt(px(24.0)).flex_shrink(1.0).min_h_0().child(body)),
+                ))
+                .into_any_element()
             }
         };
-        page_with(
-            "automations-page",
-            "Automations",
-            "Prompts that start threads on a schedule or when something happens in a repo.",
-            &t,
-            Some(header),
-            body,
-        )
+        page
     }
 }
 

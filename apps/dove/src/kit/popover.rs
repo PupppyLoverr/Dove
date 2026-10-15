@@ -6,12 +6,12 @@ use std::time::Instant;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, Context, Div, ElementId, Hsla, InteractiveElement as _, IntoElement, ParentElement as _, SharedString,
-    StatefulInteractiveElement as _, Styled as _, div, px,
+    AnimationExt as _, AnyElement, Context, Div, ElementId, Hsla, InteractiveElement as _, IntoElement,
+    ParentElement as _, Pixels, SharedString, Size, StatefulInteractiveElement as _, Styled as _, Window, div, px,
 };
 
-use crate::assets::icon;
-use crate::design::ty;
+use crate::assets::{icon, icons};
+use crate::design::{space, ty};
 use crate::motion;
 use crate::theme::Theme;
 
@@ -363,6 +363,175 @@ pub fn menu_heading(t: &Theme, label: impl Into<SharedString>) -> Div {
 /// A hairline between groups, running border to border.
 pub fn menu_separator(t: &Theme) -> Div {
     div().h(px(1.0)).mx(px(-CARD_INSET)).my(px(MENU_GAP)).bg(t.border)
+}
+
+// ---------------------------------------------------------------------------
+// Modals: dialogs, sheets and the command palette
+// ---------------------------------------------------------------------------
+
+/// Dialog corner radius (Zeron's `dialog_card`).
+pub const DIALOG_RADIUS: f32 = 16.0;
+/// The command palette's corners; its rows are concentric with them.
+pub const PALETTE_RADIUS: f32 = 16.0;
+/// Palette rows: the palette's corners less the inset they sit in.
+pub const PALETTE_ITEM_RADIUS: f32 = PALETTE_RADIUS - 6.0;
+/// How strongly a palette dims the window, against a dialog's full scrim:
+/// lighter, so the frosted card keeps the backdrop's hue (Zeron's 0.35).
+pub const PALETTE_SCRIM: f32 = 0.58;
+
+/// The theme's scrim at `strength` (1 = a dialog's).
+pub fn scrim(t: &Theme, strength: f32) -> Hsla {
+    t.scrim.opacity(strength)
+}
+
+/// A full-window layer: the scrim fades in over [`motion::DIALOG_IN`] and
+/// `card` enters with [`motion::dialog_in`] (opacity + 2 px settle; both
+/// snap under reduced motion). The scrim swallows clicks and wheel events;
+/// `on_outside` runs for a press outside the card. Mounted as a deferred
+/// layer at the window origin, so it covers the whole window from wherever
+/// it is built.
+pub fn modal(
+    id: impl Into<SharedString>,
+    viewport: Size<Pixels>,
+    scrim_color: Hsla,
+    align_top: Option<f32>,
+    card: AnyElement,
+    on_outside: Option<Box<dyn Fn(&mut Window, &mut gpui::App)>>,
+) -> AnyElement {
+    let id: SharedString = id.into();
+    let backdrop = div().absolute().inset_0().bg(scrim_color).with_animation(
+        ElementId::Name(format!("{id}-scrim").into()),
+        motion::DIALOG_IN.animation(),
+        |el, t| el.opacity(t),
+    );
+    let card = motion::dialog_in(
+        ElementId::Name(format!("{id}-card").into()),
+        div().when_some(on_outside, |d, f| d.on_mouse_down_out(move |_, window, cx| f(window, cx))).child(card),
+    );
+    gpui::deferred(
+        gpui::anchored().position(gpui::point(px(0.0), px(0.0))).child(
+            div()
+                .id(ElementId::Name(id))
+                .occlude()
+                .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+                .relative()
+                .w(viewport.width)
+                .h(viewport.height)
+                .flex()
+                .flex_col()
+                .items_center()
+                .map(|d| match align_top {
+                    Some(top) => d.pt(px(top)),
+                    None => d.justify_center(),
+                })
+                .child(backdrop)
+                .child(card),
+        ),
+    )
+    .with_priority(3)
+    .into_any_element()
+}
+
+/// The dialog plate: the dialog surface, a hairline, 16 px corners and a
+/// deep shadow.
+pub fn dialog_card(t: &Theme, width: f32) -> Div {
+    div()
+        .w(px(width))
+        .max_w_full()
+        .flex()
+        .flex_col()
+        .rounded(px(DIALOG_RADIUS))
+        .bg(t.surface_dialog)
+        .border_1()
+        .border_color(t.border_strong)
+        .shadow(vec![gpui::BoxShadow {
+            color: gpui::hsla(0.0, 0.0, 0.0, if t.appearance.is_dark() { 0.45 } else { 0.18 }),
+            offset: gpui::point(px(0.0), px(16.0)),
+            blur_radius: px(40.0),
+            spread_radius: px(0.0),
+            inset: false,
+        }])
+        .text_color(t.text)
+        .overflow_hidden()
+}
+
+/// A dialog's title and message block.
+pub fn dialog_body(t: &Theme, title: impl Into<SharedString>, message: impl Into<SharedString>) -> Div {
+    let message: SharedString = message.into();
+    div()
+        .px(px(20.0))
+        .pt(px(18.0))
+        .pb(px(space::SM))
+        .flex()
+        .flex_col()
+        .gap(px(6.0))
+        .child(
+            div()
+                .text_size(ty::TITLE)
+                .line_height(ty::lh::LOOSE)
+                .font_weight(gpui::FontWeight::MEDIUM)
+                .child(title.into()),
+        )
+        .when(!message.is_empty(), |d| {
+            d.child(div().text_size(ty::BODY).line_height(ty::lh::BODY).text_color(t.text_muted).child(message))
+        })
+}
+
+/// A dialog's action row: right-aligned buttons.
+pub fn dialog_actions() -> Div {
+    div().px(px(20.0)).pt(px(space::MD)).pb(px(18.0)).flex().items_center().justify_end().gap(px(space::SM))
+}
+
+/// Zeron's `palette_card`: the frosted plate the command palette sits on.
+pub fn palette_card(t: &Theme, width: f32) -> Div {
+    div()
+        .w(px(width))
+        .flex()
+        .flex_col()
+        .rounded(px(PALETTE_RADIUS))
+        .border_1()
+        .border_color(t.border_strong)
+        .bg(surface_bg(t))
+        .shadow_lg()
+        .overflow_hidden()
+        .text_color(t.text)
+}
+
+/// One key cap of a palette footer legend.
+pub fn key_cap(t: &Theme) -> Div {
+    div()
+        .h(px(20.0))
+        .min_w(px(20.0))
+        .px(px(5.0))
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .gap(px(3.0))
+        .rounded(px(5.0))
+        .bg(t.wash(0.06))
+}
+
+/// A footer legend: the keys on a cap and the verb after it. Arrows and
+/// return are glyphs; other keys are text.
+pub fn key_hint(t: &Theme, keys: &str, label: &'static str) -> Div {
+    let glyph = |path: &'static str| icon(path).size(px(12.0)).text_color(t.text_muted);
+    let cap = key_cap(t);
+    let cap = match keys {
+        "↵" => cap.child(glyph(icons::RETURN)),
+        "↑ ↓" => cap.child(glyph(icons::ARROW_UP)).child(glyph(icons::ARROW_DOWN)),
+        _ => cap
+            .text_size(ty::MICRO)
+            .font_family(t.font_mono.clone())
+            .text_color(t.text_muted)
+            .child(SharedString::from(keys.to_string())),
+    };
+    div()
+        .flex()
+        .items_center()
+        .gap(px(5.0))
+        .child(cap)
+        .child(div().text_size(ty::BADGE).text_color(t.text_muted).child(label))
 }
 
 #[cfg(test)]

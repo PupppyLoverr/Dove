@@ -15,8 +15,9 @@ use gpui::{
 use gpui_base::input::{Input, InputState, Textarea, TextareaState};
 
 use crate::assets::{icon, icons};
-use crate::design::ty;
-use crate::kit;
+use crate::design::{radius, space, ty};
+use crate::kit::controls::{self as ctl, Tone};
+use crate::kit::{self, page};
 use crate::shell::{Route, Shell};
 use crate::theme::Theme;
 use crate::ui;
@@ -156,7 +157,6 @@ impl Shell {
     pub fn open_teammate(&mut self, id: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
         self.pages.team_edit = None;
         self.pages.team_notes_edit = None;
-        self.pages.team_confirm_delete = false;
         self.pages.team_focus = id.or_else(|| self.personas.first().map(|p| p.id.clone()));
         self.load_team_notes();
         self.navigate(Route::Team, window, cx);
@@ -307,7 +307,6 @@ impl Shell {
             error: None,
             created_at: p.created_at,
         });
-        self.pages.team_confirm_delete = false;
         if self.route != Route::Team {
             self.navigate(Route::Team, window, cx);
         }
@@ -363,10 +362,9 @@ impl Shell {
         cx.notify();
     }
 
-    fn delete_teammate(&mut self, id: &str, cx: &mut Context<Self>) {
+    pub(crate) fn delete_teammate(&mut self, id: &str, cx: &mut Context<Self>) {
         let _ = self.engine.store.delete_persona(id);
         self.pages.team_edit = None;
-        self.pages.team_confirm_delete = false;
         self.pages.team_focus = None;
         if self.pages.team_expanded.as_deref() == Some(id) {
             self.pages.team_expanded = None;
@@ -625,16 +623,16 @@ impl Shell {
         let header_right = div()
             .flex()
             .items_center()
-            .gap(px(8.0))
+            .gap(px(space::SM))
             .when(self.personas.len() < 4, |d| {
                 d.child(
-                    kit::button_outline("team-seed-top", "Add starter team", &t)
+                    ctl::button(&t, "team-seed-top", "Add starter team", Tone::Outlined)
                         .child(icon(icons::MAGIC_STICK_3).size(px(12.5)).text_color(t.accent))
                         .on_click(cx.listener(|this, _, _, cx| this.seed_starter_team(cx))),
                 )
             })
             .child(
-                ui::button_primary("team-new", "New teammate", &t)
+                ctl::button(&t, "team-new", "New teammate", Tone::Solid)
                     .on_click(cx.listener(|this, _, window, cx| this.edit_teammate(None, window, cx))),
             )
             .into_any_element();
@@ -645,205 +643,172 @@ impl Shell {
         } else {
             div()
                 .flex()
-                .gap(px(22.0))
+                .gap(px(space::XL))
                 .items_start()
                 .child(self.render_team_list(&t, cx))
                 .child(div().flex_1().min_w_0().children(self.render_team_detail(&t, cx)))
                 .into_any_element()
         };
-        crate::pages::page_with(
-            "team-page",
-            "Team",
-            "Agents with a name, a role and a standing brief. Each runs on its own agent and keeps notes from one thread to the next.",
-            &t,
-            Some(header_right),
-            body,
-        )
+        div()
+            .size_full()
+            .child(crate::pages::page_with(
+                "team-page",
+                "Team",
+                "Agents with a name, a role and a standing brief. Each runs on its own agent and keeps notes from one thread to the next.",
+                &t,
+                Some(header_right),
+                body,
+            ))
+            .into_any_element()
     }
 
     fn render_team_empty(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(16.0))
-            .child(
-                div()
-                    .p(px(18.0))
-                    .rounded(px(12.0))
-                    .border_1()
-                    .border_color(t.accent.opacity(0.35))
-                    .bg(t.accent.opacity(0.06))
-                    .flex()
-                    .items_center()
-                    .gap(px(14.0))
-                    .child(icon(icons::BOT).size(px(24.0)).text_color(t.accent))
+        let hero = page::card(t).child(
+            page::row(t, true)
+                .child(page::row_tile(t, icons::BOT, Some(t.accent)))
+                .child(page::row_text(
+                    t,
+                    "Assemble a team in one click",
+                    "Create Lead, Builder, Reviewer, and Designer personas pre-configured for your installed agents.",
+                ))
+                .child(
+                    ctl::button(t, "team-seed-hero", "Add starter team", Tone::Solid)
+                        .on_click(cx.listener(|this, _, _, cx| this.seed_starter_team(cx))),
+                ),
+        );
+        let hover = t.wash(0.075);
+        let templates = div().flex().flex_wrap().gap(px(space::MD)).children(TEMPLATES.iter().enumerate().map(
+            |(i, (name, role, avatar, hue, brief))| {
+                page::card(t)
+                    .id(SharedString::from(format!("team-tpl-{i}")))
+                    .w(px(280.0))
+                    .flex_grow(1.0)
+                    .p(px(space::LG))
+                    .gap(px(10.0))
+                    .cursor_pointer()
+                    .hover(move |s| s.bg(hover))
                     .child(
                         div()
-                            .flex_1()
                             .flex()
-                            .flex_col()
-                            .gap(px(2.0))
-                            .child(
-                                div()
-                                    .text_size(ty::MD)
-                                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                                    .text_color(t.text)
-                                    .child("Assemble a team in one click"),
-                            )
-                            .child(
-                                div()
-                                    .text_size(ty::SMALL)
-                                    .text_color(t.text_muted)
-                                    .child("Create Lead, Builder, Reviewer, and Designer personas pre-configured for your installed agents."),
-                            ),
-                    )
-                    .child(
-                        ui::button_primary("team-seed-hero", "Add starter team", t)
-                            .on_click(cx.listener(|this, _, _, cx| this.seed_starter_team(cx))),
-                    ),
-            )
-            .child(kit::section_label("Or start from a role", t))
-            .child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .gap(px(12.0))
-                    .children(TEMPLATES.iter().enumerate().map(|(i, (name, role, avatar, hue, brief))| {
-                        div()
-                            .id(SharedString::from(format!("team-tpl-{i}")))
-                            .w(px(280.0))
-                            .flex_grow(1.0)
-                            .p(px(16.0))
-                            .flex()
-                            .flex_col()
+                            .items_center()
                             .gap(px(10.0))
-                            .rounded(px(12.0))
-                            .border_1()
-                            .border_color(t.border)
-                            .bg(t.wash(0.022))
-                            .cursor_pointer()
-                            .hover(|s| s.border_color(t.border_strong).bg(t.wash(0.045)))
+                            .child(kit::avatar_tile(*avatar, *hue, 34.0, t))
                             .child(
                                 div()
                                     .flex()
-                                    .items_center()
-                                    .gap(px(10.0))
-                                    .child(kit::avatar_tile(*avatar, *hue, 34.0, t))
+                                    .flex_col()
                                     .child(
                                         div()
-                                            .flex()
-                                            .flex_col()
-                                            .child(
-                                                div()
-                                                    .text_size(ty::MD)
-                                                    .font_weight(gpui::FontWeight::MEDIUM)
-                                                    .text_color(t.text)
-                                                    .child(*name),
-                                            )
-                                            .child(div().text_size(ty::META).text_color(t.text_faint).child(*role)),
-                                    ),
-                            )
-                            .child(div().text_size(ty::SMALL).text_color(t.text_muted).line_clamp(3).child(*brief))
-                            .on_click(cx.listener(move |this, _, window, cx| this.use_template(i, window, cx)))
-                    })),
-            )
+                                            .text_size(ty::BODY)
+                                            .font_weight(gpui::FontWeight::MEDIUM)
+                                            .text_color(t.text)
+                                            .child(*name),
+                                    )
+                                    .child(div().text_size(ty::META).text_color(t.text_muted).child(*role)),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .text_size(ty::META)
+                            .line_height(ty::lh::META)
+                            .text_color(t.text_muted)
+                            .line_clamp(3)
+                            .child(*brief),
+                    )
+                    .on_click(cx.listener(move |this, _, window, cx| this.use_template(i, window, cx)))
+            },
+        ));
+        div()
+            .flex()
+            .flex_col()
+            .child(hero)
+            .child(page::section(t, "Or start from a role", templates))
             .into_any_element()
     }
 
     fn render_team_list(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let rows = page::card(t).p(px(space::XS)).gap(px(2.0)).children(self.personas.iter().map(|p| {
+            let a = self.persona_activity(&p.id);
+            let on = self.pages.team_focus.as_deref() == Some(p.id.as_str());
+            let id = p.id.clone();
+            let hover = t.wash(0.05);
+            div()
+                .id(SharedString::from(format!("team-row-{}", p.id)))
+                .role(gpui::Role::Tab)
+                .aria_selected(on)
+                .h(px(52.0))
+                .px(px(10.0))
+                .flex()
+                .items_center()
+                .gap(px(11.0))
+                .rounded(px(radius::CARD - space::XS))
+                .cursor_pointer()
+                .when(on, |d| d.bg(t.wash(0.09)))
+                .when(!on, |d| d.hover(move |s| s.bg(hover)))
+                .child(avatar(p, 32.0, t))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .child(
+                            div()
+                                .text_size(ty::BODY)
+                                .font_weight(if on { gpui::FontWeight::MEDIUM } else { gpui::FontWeight::NORMAL })
+                                .text_color(t.text)
+                                .truncate()
+                                .child(p.name.clone()),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(4.0))
+                                .text_size(ty::CAPTION)
+                                .text_color(t.text_faint)
+                                .child(icon(ui::harness_icon(p.harness)).size(px(11.0)).text_color(ui::harness_tint(
+                                    p.harness,
+                                    t,
+                                    t.text_faint,
+                                )))
+                                .child(div().truncate().child(if p.role.is_empty() {
+                                    p.harness.label().to_string()
+                                } else {
+                                    p.role.clone()
+                                })),
+                        ),
+                )
+                .when(a.needs_you > 0, |d| d.child(ui::dot(t.warning, 7.0)))
+                .when(a.needs_you == 0 && a.running > 0, |d| {
+                    d.child(kit::spinner(SharedString::from(format!("team-list-run-{}", p.id)), 11.0, t.busy))
+                })
+                .when(a.needs_you == 0 && a.running == 0 && a.threads > 0, |d| {
+                    d.child(div().text_size(ty::MICRO).text_color(t.text_faint).child(a.threads.to_string()))
+                })
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.pages.team_focus = Some(id.clone());
+                    this.pages.team_notes_edit = None;
+                    this.load_team_notes();
+                    cx.notify();
+                }))
+        }));
         div()
-            .w(px(250.0))
+            .w(px(260.0))
             .flex_none()
             .flex()
             .flex_col()
-            .gap(px(12.0))
-            .child(div().flex().flex_col().gap(px(2.0)).children(self.personas.iter().map(|p| {
-                let a = self.persona_activity(&p.id);
-                let on = self.pages.team_focus.as_deref() == Some(p.id.as_str());
-                let id = p.id.clone();
-                div()
-                    .id(SharedString::from(format!("team-row-{}", p.id)))
-                    .h(px(52.0))
-                    .px(px(10.0))
-                    .flex()
-                    .items_center()
-                    .gap(px(11.0))
-                    .rounded(px(10.0))
-                    .border_1()
-                    .border_color(if on { t.border_strong } else { gpui::transparent_black() })
-                    .cursor_pointer()
-                    .when(on, |d| d.bg(t.wash(0.08)))
-                    .when(!on, |d| d.hover(|s| s.bg(t.wash(0.04))))
-                    .child(avatar(p, 32.0, t))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .child(
-                                div()
-                                    .text_size(ty::BODY)
-                                    .font_weight(if on { gpui::FontWeight::MEDIUM } else { gpui::FontWeight::NORMAL })
-                                    .text_color(t.text)
-                                    .truncate()
-                                    .child(p.name.clone()),
-                            )
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(4.0))
-                                    .text_size(ty::CAPTION)
-                                    .text_color(t.text_faint)
-                                    .child(
-                                        icon(ui::harness_icon(p.harness)).size(px(11.0)).text_color(ui::harness_tint(
-                                            p.harness,
-                                            t,
-                                            t.text_faint,
-                                        )),
-                                    )
-                                    .child(div().truncate().child(if p.role.is_empty() {
-                                        p.harness.label().to_string()
-                                    } else {
-                                        p.role.clone()
-                                    })),
-                            ),
-                    )
-                    .when(a.needs_you > 0, |d| d.child(ui::dot(t.warning, 7.0)))
-                    .when(a.needs_you == 0 && a.running > 0, |d| {
-                        d.child(kit::spinner(SharedString::from(format!("team-list-run-{}", p.id)), 11.0, t.busy))
-                    })
-                    .when(a.needs_you == 0 && a.running == 0 && a.threads > 0, |d| {
-                        d.child(div().text_size(ty::MICRO).text_color(t.text_faint).child(a.threads.to_string()))
-                    })
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.pages.team_focus = Some(id.clone());
-                        this.pages.team_notes_edit = None;
-                        this.pages.team_confirm_delete = false;
-                        this.load_team_notes();
-                        cx.notify();
-                    }))
-            })))
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(6.0))
-                    .pt(px(8.0))
-                    .border_t_1()
-                    .border_color(t.border)
-                    .child(div().px(px(6.0)).text_size(ty::CAPTION).text_color(t.text_faint).child("Quick presets"))
-                    .child(div().flex().flex_wrap().gap(px(4.0)).children(TEMPLATES.iter().enumerate().map(
-                        |(i, (name, _, av, _, _))| {
-                            ui::chip(SharedString::from(format!("tpl-quick-{i}")), t)
-                                .border_1()
-                                .border_color(t.border)
-                                .child(format!("{av} {name}"))
-                                .on_click(cx.listener(move |this, _, window, cx| this.use_template(i, window, cx)))
-                        },
-                    ))),
-            )
+            .gap(px(space::SM))
+            .child(page::section_label(t, "Teammates"))
+            .child(rows)
+            .child(page::section_label(t, "Quick presets").mt(px(space::MD)))
+            .child(div().px(px(space::XS)).flex().flex_wrap().gap(px(4.0)).children(TEMPLATES.iter().enumerate().map(
+                |(i, (name, _, av, _, _))| {
+                    ui::chip(SharedString::from(format!("tpl-quick-{i}")), t)
+                        .child(format!("{av} {name}"))
+                        .on_click(cx.listener(move |this, _, window, cx| this.use_template(i, window, cx)))
+                },
+            )))
             .into_any_element()
     }
 
@@ -856,30 +821,33 @@ impl Shell {
         let model = p.model.clone().unwrap_or_else(|| "Default model".into());
         let head = div()
             .flex()
+            .flex_wrap()
             .items_center()
             .gap(px(14.0))
             .child(avatar(&p, 52.0, t))
             .child(
                 div()
                     .flex_1()
-                    .min_w_0()
+                    .min_w(px(200.0))
                     .flex()
                     .flex_col()
                     .gap(px(3.0))
                     .child(
                         div()
-                            .text_size(ty::H2)
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_size(ty::PAGE)
+                            .line_height(ty::lh::PAGE)
+                            .font_weight(gpui::FontWeight::MEDIUM)
                             .text_color(t.text)
                             .child(p.name.clone()),
                     )
                     .child(
                         div()
                             .flex()
+                            .flex_wrap()
                             .items_center()
                             .gap(px(6.0))
                             .text_size(ty::SMALL)
-                            .text_color(t.text_faint)
+                            .text_color(t.text_muted)
                             .when(!p.role.is_empty(), |d| d.child(p.role.clone()).child("·"))
                             .child(icon(ui::harness_icon(p.harness)).size(px(12.0)).text_color(ui::harness_tint(
                                 p.harness,
@@ -895,11 +863,11 @@ impl Shell {
                 div()
                     .flex()
                     .gap(px(6.0))
-                    .child(kit::button_outline("tm-edit", "Edit", t).on_click(cx.listener({
+                    .child(ctl::button(t, "tm-edit", "Edit", Tone::Outlined).on_click(cx.listener({
                         let p = p.clone();
                         move |this, _, window, cx| this.edit_teammate(Some(p.clone()), window, cx)
                     })))
-                    .child(ui::button_primary("tm-start", "Open in composer", t).on_click(cx.listener({
+                    .child(ctl::button(t, "tm-start", "Open in composer", Tone::Solid).on_click(cx.listener({
                         let id = id.clone();
                         move |this, _, window, cx| this.start_as(&id, window, cx)
                     }))),
@@ -907,200 +875,164 @@ impl Shell {
 
         // Quick-dispatch bar right inside the teammate's workspace
         let dispatch_bar = div()
-            .h(px(40.0))
-            .pl(px(12.0))
+            .h(px(44.0))
+            .pl(px(space::MD))
             .pr(px(6.0))
             .flex()
             .items_center()
             .gap(px(10.0))
-            .rounded(px(10.0))
+            .rounded(px(radius::CARD))
+            .bg(page::card_fill(t))
             .border_1()
-            .border_color(t.border_strong)
-            .bg(t.wash(0.035))
+            .border_color(t.border)
             .text_size(ty::BODY)
             .child(icon(ui::harness_icon(p.harness)).size(px(14.0)).text_color(ui::harness_tint(
                 p.harness,
                 t,
                 t.text_muted,
             )))
-            .child(div().flex_1().child(Input::new(&self.pages.team_prompt)))
+            .child(div().flex_1().min_w_0().child(Input::new(&self.pages.team_prompt)))
             .child(
-                ui::button_primary("tm-dispatch-go", format!("Ask {}", p.name), t)
-                    .h(px(28.0))
+                ctl::button_sm(t, "tm-dispatch-go", format!("Ask {}", p.name), Tone::Solid)
                     .on_click(cx.listener(move |this, _, window, cx| this.dispatch_as(&id_dispatch, window, cx))),
             );
 
-        let stats = div().flex().gap(px(8.0)).children(
-            [("Threads", a.threads, t.text), ("Working", a.running, t.busy), ("Needs you", a.needs_you, t.warning)]
-                .map(|(label, n, color)| {
-                    div()
-                        .flex_1()
-                        .px(px(14.0))
-                        .py(px(10.0))
-                        .rounded(px(10.0))
-                        .border_1()
-                        .border_color(t.border)
-                        .bg(t.wash(0.02))
-                        .flex()
-                        .flex_col()
-                        .gap(px(2.0))
-                        .child(div().text_size(ty::CAPTION).text_color(t.text_faint).child(label))
-                        .child(
-                            div()
-                                .text_size(ty::H2)
-                                .font_weight(gpui::FontWeight::SEMIBOLD)
-                                .text_color(if n > 0 { color } else { t.text })
-                                .child(n.to_string()),
-                        )
+        let stats = div().flex().flex_wrap().gap(px(space::SM)).children(
+            [
+                ("Threads", a.threads, None),
+                ("Working", a.running, Some(t.busy)),
+                ("Needs you", a.needs_you, Some(t.warning)),
+            ]
+            .map(|(label, n, tint)| page::stat(t, label, n.to_string(), tint.filter(|_| n > 0))),
+        );
+        let brief = page::card(t).child(
+            div()
+                .px(px(space::LG))
+                .py(px(space::MD))
+                .text_size(ty::BODY)
+                .line_height(ty::lh::BODY)
+                .text_color(if p.instructions.is_empty() { t.text_faint } else { t.text_muted })
+                .child(if p.instructions.is_empty() {
+                    "No standing instructions yet. Click Edit to define how this teammate works.".to_string()
+                } else {
+                    p.instructions.clone()
                 }),
         );
-        let brief = div().flex().flex_col().child(kit::section_label("Standing instructions (Brief)", t)).child(
-            kit::group(t).child(
+        let threads = if tasks.is_empty() {
+            page::card(t).child(
                 div()
-                    .p(px(16.0))
+                    .px(px(space::LG))
+                    .py(px(space::MD))
                     .text_size(ty::BODY)
-                    .text_color(if p.instructions.is_empty() { t.text_faint } else { t.text_muted })
-                    .child(if p.instructions.is_empty() {
-                        "No standing instructions yet. Click Edit to define how this teammate works.".to_string()
-                    } else {
-                        p.instructions.clone()
-                    }),
-            ),
-        );
-        let threads =
-            div().flex().flex_col().child(kit::section_label("Threads", t)).child(if tasks.is_empty() {
-                kit::group(t)
-                    .child(div().p(px(16.0)).text_size(ty::BODY).text_color(t.text_faint).child(format!(
-                        "{} has not run a thread yet. Use the dispatch bar above to start one.",
-                        p.name
+                    .text_color(t.text_faint)
+                    .child(format!("{} has not run a thread yet. Use the dispatch bar above to start one.", p.name)),
+            )
+        } else {
+            page::card(t).children(tasks.iter().take(15).enumerate().map(|(i, task)| {
+                let tid = task.id;
+                let proj = self.project(task.project_id).map(|pr| pr.name.clone()).unwrap_or_default();
+                page::row_hover(t, page::table_row(t, i == 0).id(SharedString::from(format!("tm-task-{tid}"))), false)
+                    .child(div().w(px(12.0)).flex_none().flex().justify_center().child(kit::status_glyph(
+                        SharedString::from(format!("tm-st-{tid}")),
+                        task.status,
+                        task.unread,
+                        t,
                     )))
-                    .into_any_element()
-            } else {
-                kit::group(t)
-                    .children(tasks.iter().take(15).enumerate().map(|(i, task)| {
-                        let tid = task.id;
-                        let proj = self.project(task.project_id).map(|pr| pr.name.clone()).unwrap_or_default();
+                    .child(
                         div()
-                            .id(SharedString::from(format!("tm-task-{tid}")))
-                            .h(px(40.0))
-                            .px(px(14.0))
-                            .flex()
-                            .items_center()
-                            .gap(px(10.0))
-                            .when(i > 0, |d| d.border_t_1().border_color(t.border))
-                            .cursor_pointer()
-                            .hover(|s| s.bg(t.wash(0.04)))
-                            .child(div().w(px(12.0)).flex().justify_center().child(kit::status_glyph(
-                                SharedString::from(format!("tm-st-{tid}")),
-                                task.status,
-                                task.unread,
-                                t,
-                            )))
-                            .child(div().flex_1().min_w_0().truncate().text_size(ty::BODY).child(task.title.clone()))
-                            .when(!proj.is_empty(), |d| {
-                                d.child(div().text_size(ty::CAPTION).text_color(t.text_faint).child(proj))
-                            })
-                            .child(
-                                div()
-                                    .text_size(ty::CAPTION)
-                                    .text_color(t.text_faint)
-                                    .child(ui::relative_time(task.updated_at)),
-                            )
-                            .on_click(cx.listener(move |this, _, window, cx| this.open_task(tid, window, cx)))
-                    }))
-                    .into_any_element()
-            });
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(ty::BODY)
+                            .text_color(t.text)
+                            .child(task.title.clone()),
+                    )
+                    .when(!proj.is_empty(), |d| {
+                        d.child(div().flex_none().text_size(ty::CAPTION).text_color(t.text_faint).child(proj))
+                    })
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_size(ty::CAPTION)
+                            .text_color(t.text_faint)
+                            .child(ui::relative_time(task.updated_at)),
+                    )
+                    .on_click(cx.listener(move |this, _, window, cx| this.open_task(tid, window, cx)))
+            }))
+        };
         let notes_text = self.pages.team_notes.clone().unwrap_or_default();
         let notes_path = self.engine.store.persona_notes_path(&p.id);
         let editing_notes = self.pages.team_notes_edit.clone();
+        let notes_actions = div()
+            .flex()
+            .items_center()
+            .gap(px(4.0))
+            .when(editing_notes.is_some(), |d| {
+                d.child(
+                    ctl::button_sm(t, "tm-notes-save", "Save notes", Tone::Solid)
+                        .on_click(cx.listener(|this, _, _, cx| this.save_team_notes(cx))),
+                )
+                .child(
+                    ctl::button_sm(t, "tm-notes-cancel", "Cancel", Tone::Quiet)
+                        .on_click(cx.listener(|this, _, window, cx| this.toggle_notes_editor(window, cx))),
+                )
+            })
+            .when(editing_notes.is_none(), |d| {
+                d.child(
+                    ctl::button_sm(t, "tm-notes-edit", "Edit notes", Tone::Quiet)
+                        .on_click(cx.listener(|this, _, window, cx| this.toggle_notes_editor(window, cx))),
+                )
+            })
+            .when(notes_path.exists(), |d| {
+                d.child(
+                    ctl::button_sm(t, "tm-notes-open", "Open file", Tone::Quiet)
+                        .on_click(cx.listener(move |_, _, _, cx| cx.open_with_system(&notes_path))),
+                )
+            });
+        let notes_body = if let Some(area) = editing_notes {
+            page::card(t)
+                .child(div().px(px(space::LG)).py(px(space::MD)).text_size(ty::BODY).child(Textarea::new(&area)))
+                .border_1()
+                .border_color(t.accent.opacity(0.5))
+        } else {
+            page::card(t).child(
+                div()
+                    .px(px(space::LG))
+                    .py(px(space::MD))
+                    .text_size(ty::BODY)
+                    .line_height(ty::lh::BODY)
+                    .text_color(if notes_text.trim().is_empty() { t.text_faint } else { t.text_muted })
+                    .child(if notes_text.trim().is_empty() {
+                        "Notes appear here as this teammate learns across threads, or click Edit notes to seed project conventions and memory."
+                            .to_string()
+                    } else {
+                        notes_text
+                    }),
+            )
+        };
         let notes = div()
+            .mt(px(page::SECTION_GAP))
             .flex()
             .flex_col()
+            .gap(px(space::SM))
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(10.0))
-                    .child(div().flex_1().child(kit::section_label("Persistent Memory (NOTES.md)", t)))
-                    .when(editing_notes.is_some(), |d| {
-                        d.child(
-                            div()
-                                .id("tm-notes-save")
-                                .pb(px(8.0))
-                                .text_size(ty::META)
-                                .font_weight(gpui::FontWeight::MEDIUM)
-                                .text_color(t.accent)
-                                .cursor_pointer()
-                                .child("Save notes")
-                                .on_click(cx.listener(|this, _, _, cx| this.save_team_notes(cx))),
-                        )
-                        .child(
-                            div()
-                                .id("tm-notes-cancel")
-                                .pb(px(8.0))
-                                .text_size(ty::META)
-                                .text_color(t.text_faint)
-                                .cursor_pointer()
-                                .hover(|s| s.text_color(t.text))
-                                .child("Cancel")
-                                .on_click(cx.listener(|this, _, window, cx| this.toggle_notes_editor(window, cx))),
-                        )
-                    })
-                    .when(editing_notes.is_none(), |d| {
-                        d.child(
-                            div()
-                                .id("tm-notes-edit")
-                                .pb(px(8.0))
-                                .text_size(ty::META)
-                                .text_color(t.text_muted)
-                                .cursor_pointer()
-                                .hover(|s| s.text_color(t.text))
-                                .child("Edit notes")
-                                .on_click(cx.listener(|this, _, window, cx| this.toggle_notes_editor(window, cx))),
-                        )
-                    })
-                    .when(notes_path.exists(), |d| {
-                        d.child(
-                            div()
-                                .id("tm-notes-open")
-                                .pb(px(8.0))
-                                .text_size(ty::META)
-                                .text_color(t.text_faint)
-                                .cursor_pointer()
-                                .hover(|s| s.text_color(t.text))
-                                .child("Open file")
-                                .on_click(cx.listener(move |_, _, _, cx| cx.open_with_system(&notes_path))),
-                        )
-                    }),
+                    .gap(px(space::SM))
+                    .child(div().flex_1().child(page::section_label(t, "Persistent Memory (NOTES.md)")))
+                    .child(notes_actions),
             )
-            .child(if let Some(area) = editing_notes {
-                kit::area_box(t).child(Textarea::new(&area)).into_any_element()
-            } else {
-                kit::group(t)
-                    .child(
-                        div()
-                            .p(px(16.0))
-                            .text_size(ty::BODY)
-                            .text_color(if notes_text.trim().is_empty() { t.text_faint } else { t.text_muted })
-                            .child(if notes_text.trim().is_empty() {
-                                "Notes appear here as this teammate learns across threads, or click Edit notes to seed project conventions and memory."
-                                    .to_string()
-                            } else {
-                                notes_text
-                            }),
-                    )
-                    .into_any_element()
-            });
+            .child(notes_body);
         Some(
             div()
                 .flex()
                 .flex_col()
-                .gap(px(20.0))
                 .child(head)
-                .child(dispatch_bar)
-                .child(stats)
-                .child(threads)
-                .child(brief)
+                .child(div().mt(px(space::LG)).child(dispatch_bar))
+                .child(div().mt(px(space::MD)).child(stats))
+                .child(page::section(t, "Threads", threads))
+                .child(page::section(t, "Standing instructions (Brief)", brief))
                 .child(notes)
                 .into_any_element(),
         )
@@ -1142,22 +1074,22 @@ impl Shell {
                     cx,
                 )
             }));
-        let hues = div().flex().gap(px(8.0)).children(HUES.iter().enumerate().map(|(i, h)| {
+        let hues = div().flex().flex_wrap().gap(px(space::SM)).children(HUES.iter().enumerate().map(|(i, h)| {
             let on = (ed.hue - h).abs() < 0.001;
             let h = *h;
-            div()
-                .id(SharedString::from(format!("tm-hue-{i}")))
-                .size(px(22.0))
-                .rounded_full()
-                .bg(gpui::hsla(h, 0.55, 0.55, 1.0))
-                .cursor_pointer()
-                .when(on, |d| d.border_2().border_color(t.text))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    if let Some(ed) = this.pages.team_edit.as_mut() {
-                        ed.hue = h;
-                    }
-                    cx.notify();
-                }))
+            ctl::swatch(
+                t,
+                SharedString::from(format!("tm-hue-{i}")),
+                gpui::hsla(h, 0.55, 0.55, 1.0),
+                on,
+                format!("Hue {}", i + 1),
+            )
+            .on_click(cx.listener(move |this, _, _, cx| {
+                if let Some(ed) = this.pages.team_edit.as_mut() {
+                    ed.hue = h;
+                }
+                cx.notify();
+            }))
         }));
         let mut agents: Vec<HarnessKind> = self
             .installed
@@ -1168,10 +1100,11 @@ impl Shell {
         if !agents.contains(&ed.harness) {
             agents.insert(0, ed.harness);
         }
+        let picked = |on: bool, chip: gpui::Stateful<gpui::Div>| {
+            chip.when(on, |d| d.border_color(t.accent).bg(t.accent.opacity(0.10)).text_color(t.text))
+        };
         let agent_picker = div().flex().flex_wrap().gap(px(6.0)).children(agents.into_iter().map(|k| {
-            let on = k == ed.harness;
-            ui::chip(SharedString::from(format!("tm-agent-{}", k.id())), t)
-                .when(on, |d| d.border_color(t.accent).bg(t.accent.opacity(0.10)).text_color(t.text))
+            picked(k == ed.harness, ui::chip(SharedString::from(format!("tm-agent-{}", k.id())), t))
                 .child(icon(ui::harness_icon(k)).size(px(13.0)).text_color(ui::harness_tint(k, t, t.text_muted)))
                 .child(k.label())
                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -1189,24 +1122,18 @@ impl Shell {
             .flex()
             .flex_wrap()
             .gap(px(6.0))
-            .child(
-                ui::chip("tm-model-default", t)
-                    .when(ed.model.is_none(), |d| {
-                        d.border_color(t.accent).bg(t.accent.opacity(0.10)).text_color(t.text)
-                    })
-                    .child("Agent default")
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        if let Some(ed) = this.pages.team_edit.as_mut() {
-                            ed.model = None;
-                        }
-                        cx.notify();
-                    })),
-            )
+            .child(picked(ed.model.is_none(), ui::chip("tm-model-default", t)).child("Agent default").on_click(
+                cx.listener(|this, _, _, cx| {
+                    if let Some(ed) = this.pages.team_edit.as_mut() {
+                        ed.model = None;
+                    }
+                    cx.notify();
+                }),
+            ))
             .children(models.into_iter().take(10).map(|m| {
                 let on = ed.model.as_deref() == Some(m.id.as_str());
                 let mid = m.id.clone();
-                ui::chip(SharedString::from(format!("tm-model-{}", m.id)), t)
-                    .when(on, |d| d.border_color(t.accent).bg(t.accent.opacity(0.10)).text_color(t.text))
+                picked(on, ui::chip(SharedString::from(format!("tm-model-{}", m.id)), t))
                     .child(m.label.clone())
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if let Some(ed) = this.pages.team_edit.as_mut() {
@@ -1216,79 +1143,116 @@ impl Shell {
                     }))
             }));
         let existing = ed.id.clone();
+        let field = |input: AnyElement| {
+            div()
+                .w_full()
+                .min_h(px(crate::design::size::FIELD))
+                .px(px(10.0))
+                .py(px(6.0))
+                .flex()
+                .items_center()
+                .rounded(px(radius::SELECT))
+                .bg(t.wash(0.06))
+                .text_size(ty::BODY)
+                .child(div().flex_1().min_w_0().child(input))
+        };
+        let stacked = |first: bool, title: &'static str, hint: &'static str, control: AnyElement| {
+            page::row(t, first).child(
+                div()
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .gap(px(space::SM))
+                    .child(page::row_text(t, title, hint))
+                    .child(control),
+            )
+        };
+        let identity = page::card(t)
+            .child(
+                page::row(t, true).child(avatar(&preview, 56.0, t)).child(
+                    div()
+                        .flex_1()
+                        .min_w(px(240.0))
+                        .flex()
+                        .flex_wrap()
+                        .gap(px(space::MD))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(160.0))
+                                .flex()
+                                .flex_col()
+                                .gap(px(6.0))
+                                .child(page::row_text(t, "Name", ""))
+                                .child(field(Input::new(&ed.name).into_any_element())),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(160.0))
+                                .flex()
+                                .flex_col()
+                                .gap(px(6.0))
+                                .child(page::row_text(t, "Role", ""))
+                                .child(field(Input::new(&ed.role).into_any_element())),
+                        ),
+                ),
+            )
+            .child(stacked(
+                false,
+                "Look",
+                "An emoji or the name's initial, on a hue.",
+                div().flex().flex_col().gap(px(10.0)).child(avatar_picker).child(hues).into_any_element(),
+            ));
+        let runs = page::card(t).child(stacked(true, "Runs on", "", agent_picker.into_any_element())).child(stacked(
+            false,
+            "Model",
+            "",
+            model_picker.into_any_element(),
+        ));
+        let brief = page::card(t).child(stacked(
+            true,
+            "Standing instructions (Brief)",
+            "Sent ahead of the first message of every thread this teammate runs, with a pointer to its NOTES.md.",
+            field(Textarea::new(&ed.instructions).into_any_element()).into_any_element(),
+        ));
         let footer = div()
+            .mt(px(space::LG))
             .flex()
+            .flex_wrap()
             .items_center()
-            .gap(px(8.0))
+            .gap(px(space::SM))
             .when_some(existing.clone(), |d, id| {
-                d.child(if self.pages.team_confirm_delete {
-                    ui::button_ghost("tm-delete-yes", "Delete for good", t)
-                        .text_color(t.danger)
-                        .on_click(cx.listener(move |this, _, _, cx| this.delete_teammate(&id, cx)))
-                        .into_any_element()
-                } else {
-                    ui::button_ghost("tm-delete", "Delete…", t)
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.pages.team_confirm_delete = true;
-                            cx.notify();
-                        }))
-                        .into_any_element()
-                })
+                d.child(ctl::button(t, "tm-delete", "Delete…", Tone::Danger).on_click(cx.listener(
+                    move |this, _, window, cx| {
+                        this.open_page_dialog(crate::pages::PageDialog::DeleteTeammate(id.clone()), window, cx)
+                    },
+                )))
             })
             .child(div().flex_1())
-            .when_some(ed.error.clone(), |d, e| d.child(div().text_size(ty::SMALL).text_color(t.danger).child(e)))
-            .child(kit::button_outline("tm-cancel", "Cancel", t).on_click(cx.listener(|this, _, _, cx| {
+            .child(ctl::button(t, "tm-cancel", "Cancel", Tone::Outlined).on_click(cx.listener(|this, _, _, cx| {
                 this.pages.team_edit = None;
                 cx.notify();
             })))
             .child(
-                ui::button_primary("tm-save", if existing.is_some() { "Save" } else { "Add to team" }, t)
+                ctl::button(t, "tm-save", if existing.is_some() { "Save" } else { "Add to team" }, Tone::Solid)
                     .on_click(cx.listener(|this, _, _, cx| this.save_teammate(cx))),
             );
-        let identity = div().flex().gap(px(18.0)).items_start().child(avatar(&preview, 64.0, t)).child(
-            div()
-                .flex_1()
-                .flex()
-                .flex_col()
-                .gap(px(12.0))
-                .child(
-                    div()
-                        .flex()
-                        .gap(px(12.0))
-                        .child(div().flex_1().child(kit::field(
-                            "Name",
-                            kit::field_box(t).child(div().flex_1().child(Input::new(&ed.name))),
-                            t,
-                        )))
-                        .child(div().flex_1().child(kit::field(
-                            "Role",
-                            kit::field_box(t).child(div().flex_1().child(Input::new(&ed.role))),
-                            t,
-                        ))),
-                )
-                .child(kit::field("Look", div().flex().flex_col().gap(px(10.0)).child(avatar_picker).child(hues), t)),
-        );
         div()
+            .max_w(px(crate::design::size::PAGE_MAX))
             .flex()
             .flex_col()
-            .gap(px(22.0))
-            .max_w(px(760.0))
-            .child(identity)
-            .child(kit::field("Runs on", agent_picker, t))
-            .child(kit::field("Model", model_picker, t))
-            .child(kit::field(
-                "Standing instructions (Brief)",
+            .child(
                 div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(6.0))
-                    .child(kit::area_box(t).child(Textarea::new(&ed.instructions)))
-                    .child(div().text_size(ty::META).text_color(t.text_faint).child(
-                        "Sent ahead of the first message of every thread this teammate runs, with a pointer to its NOTES.md.",
-                    )),
-                t,
-            ))
-            .child(div().h(px(1.0)).bg(t.border))
+                    .px(px(page::LABEL_INSET))
+                    .text_size(ty::TITLE)
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .child(if existing.is_some() { "Edit teammate" } else { "New teammate" }),
+            )
+            .child(page::section(t, "Identity", identity).mt(px(space::MD)))
+            .child(page::section(t, "Agent", runs))
+            .child(page::section(t, "Brief", brief))
+            .when_some(ed.error.clone(), |d, e| d.child(div().mt(px(space::MD)).child(page::error_strip(t, e))))
             .child(footer)
             .into_any_element()
     }
@@ -1302,14 +1266,17 @@ impl Shell {
         t: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let hover = t.wash(0.06);
         div()
             .id(gpui::ElementId::Name(id.into()))
+            .role(gpui::Role::RadioButton)
+            .aria_selected(on)
             .p(px(2.0))
             .rounded(px(10.0))
             .border_2()
             .border_color(if on { t.accent } else { gpui::transparent_black() })
             .cursor_pointer()
-            .hover(|s| s.bg(t.wash(0.06)))
+            .hover(move |s| s.bg(hover))
             .child(tile)
             .on_click(cx.listener(move |this, _, _, cx| {
                 if let Some(ed) = this.pages.team_edit.as_mut() {

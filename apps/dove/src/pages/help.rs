@@ -3,8 +3,8 @@
 use gpui::{AnyElement, Context, ParentElement as _, Styled as _, div, px};
 
 use super::page_with;
-use crate::design::ty;
-use crate::kit;
+use crate::design::{space, ty};
+use crate::kit::{self, page};
 use crate::shell::Shell;
 use crate::theme::Theme;
 
@@ -42,28 +42,27 @@ impl Shell {
     pub fn render_help_page(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let t = Theme::of(cx).clone();
         let store = self.engine.store.clone();
-        let shortcuts =
-            div().flex().flex_col().rounded(px(12.0)).border_1().border_color(t.border).overflow_hidden().children(
-                crate::keymap::shortcuts().into_iter().enumerate().map(|(i, s)| {
-                    let key = crate::keymap::binding(&store, &s);
-                    div()
-                        .h(px(36.0))
-                        .px(px(14.0))
-                        .flex()
-                        .items_center()
-                        .when_border(i > 0, &t)
-                        .child(div().flex_1().text_size(ty::BODY).child(s.label))
-                        .child(kit::kbd(&crate::keymap::pretty(&key), &t))
-                }),
-            );
-        let tips = div().flex().flex_col().gap(px(10.0)).children(TIPS.iter().map(|(title, body)| {
+        let shortcuts = page::card(&t).children(crate::keymap::shortcuts().into_iter().enumerate().map(|(i, s)| {
+            let key = crate::keymap::binding(&store, &s);
+            page::table_row(&t, i == 0)
+                .child(div().flex_1().min_w_0().truncate().text_size(ty::BODY).text_color(t.text).child(s.label))
+                .child(kit::kbd(&crate::keymap::pretty(&key), &t))
+        }));
+        let tips = page::card(&t).children(
+            TIPS.iter()
+                .enumerate()
+                .map(|(i, (title, body))| page::row(&t, i == 0).child(page::row_text(&t, *title, *body))),
+        );
+        let column = |label: &'static str, card: gpui::Div| {
             div()
+                .flex_1()
+                .min_w(px(320.0))
                 .flex()
                 .flex_col()
-                .gap(px(2.0))
-                .child(div().text_size(ty::BODY).font_weight(gpui::FontWeight::MEDIUM).child(*title))
-                .child(div().text_size(ty::BODY).text_color(t.text_muted).child(*body))
-        }));
+                .gap(px(space::SM))
+                .child(page::section_label(&t, label))
+                .child(card)
+        };
         page_with(
             "help-page",
             "Help & shortcuts",
@@ -72,33 +71,11 @@ impl Shell {
             None,
             div()
                 .flex()
-                .gap(px(24.0))
+                .flex_wrap()
+                .gap(px(space::XL))
                 .items_start()
-                .child(
-                    div()
-                        .flex_1()
-                        .flex()
-                        .flex_col()
-                        .gap(px(10.0))
-                        .child(
-                            div()
-                                .text_size(ty::BODY)
-                                .text_color(t.text_faint)
-                                .child("Keyboard (change them in Settings › Keyboard)"),
-                        )
-                        .child(shortcuts),
-                )
-                .child(div().flex_1().child(tips)),
+                .child(column("Keyboard (change them in Settings › Keyboard)", shortcuts))
+                .child(column("How Dove works", tips)),
         )
-    }
-}
-
-trait BorderTop {
-    fn when_border(self, on: bool, t: &Theme) -> Self;
-}
-
-impl BorderTop for gpui::Div {
-    fn when_border(self, on: bool, t: &Theme) -> Self {
-        if on { self.border_t_1().border_color(t.border) } else { self }
     }
 }

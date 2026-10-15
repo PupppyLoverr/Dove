@@ -8,12 +8,11 @@ use gpui::{
     AnyElement, AppContext as _, Context, InteractiveElement as _, IntoElement, ParentElement as _, SharedString,
     StatefulInteractiveElement as _, Styled as _, Window, div, px,
 };
-use gpui_base::input::Input;
 
-use super::{input, page_with};
-use crate::assets::icon;
-use crate::design::ty;
-use crate::kit;
+use super::input;
+use crate::design::{space, ty};
+use crate::kit::controls::{self as ctl, Tone};
+use crate::kit::{page, popover};
 use crate::shell::Shell;
 use crate::terminal::TerminalView;
 use crate::theme::Theme;
@@ -66,171 +65,176 @@ impl Shell {
         cx.notify();
     }
 
-    pub fn render_agents_page(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    fn close_agent_terminal(&mut self, cx: &mut Context<Self>) {
+        if let Some((_, term)) = self.pages.agent_terminal.take() {
+            term.update(cx, |t, cx| t.kill(cx));
+        }
+        cx.notify();
+    }
+
+    /// The sign-in (or update) sheet: the agent's own login running in a
+    /// terminal, over a scrim, until Done.
+    fn render_agent_sheet(&self, t: &Theme, window: &Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let (kind, term) = self.pages.agent_terminal.clone()?;
+        let card = popover::dialog_card(t, 720.0)
+            .id("agent-sheet")
+            .role(gpui::Role::Dialog)
+            .aria_label(SharedString::from(format!("Signing in to {}", kind.label())))
+            .child(
+                div()
+                    .px(px(20.0))
+                    .pt(px(16.0))
+                    .pb(px(space::MD))
+                    .flex()
+                    .items_center()
+                    .gap(px(space::MD))
+                    .child(page::row_tile(t, ui::harness_icon(kind), Some(ui::harness_tint(kind, t, t.text_muted))))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_size(ty::TITLE)
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .child(format!("Signing in to {} · follow the prompts below", kind.label())),
+                    )
+                    .child(
+                        ctl::button(t, "ag-term-close", "Done", Tone::Solid)
+                            .on_click(cx.listener(|this, _, _, cx| this.close_agent_terminal(cx))),
+                    ),
+            )
+            .child(
+                div()
+                    .mx(px(space::LG))
+                    .mb(px(space::LG))
+                    .h(px(340.0))
+                    .rounded(px(crate::design::radius::PANEL))
+                    .overflow_hidden()
+                    .border_1()
+                    .border_color(t.border)
+                    .child(term),
+            );
+        Some(popover::modal("agent-sheet-layer", window.viewport_size(), t.scrim, None, card.into_any_element(), None))
+    }
+
+    pub fn render_agents_page(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let t = Theme::of(cx).clone();
         let installed: Vec<HarnessKind> = self.installed.iter().map(|i| i.kind).collect();
         let memory = crate::picker_memory::PickerMemory::load(self.engine.store.clone());
-        let rows =
-            div().flex().flex_col().rounded(px(12.0)).border_1().border_color(t.border).overflow_hidden().children(
-                HarnessKind::ALL.iter().copied().filter(|k| *k != HarnessKind::Shell).enumerate().map(|(i, kind)| {
-                    let found = installed.contains(&kind);
-                    let supported = dove_core::harness_supported(kind);
-                    let enabled = agent_enabled(&self.engine.store, kind);
-                    let path = self.engine.program_for(kind);
-                    let version = self.versions.get(&kind).cloned();
-                    let last_model = memory.last(kind).map(|p| p.model.clone());
-                    let editing =
-                        self.pages.agent_path_edit.as_ref().filter(|(k, _)| *k == kind).map(|(_, f)| f.clone());
+        let kinds: Vec<HarnessKind> = HarnessKind::ALL.iter().copied().filter(|k| *k != HarnessKind::Shell).collect();
+        let found_n = kinds.iter().filter(|k| installed.contains(k)).count();
+        let rows = page::card(&t).children(kinds.into_iter().enumerate().map(|(i, kind)| {
+            let found = installed.contains(&kind);
+            let supported = dove_core::harness_supported(kind);
+            let enabled = agent_enabled(&self.engine.store, kind);
+            let path = self.engine.program_for(kind);
+            let version = self.versions.get(&kind).cloned();
+            let last_model = memory.last(kind).map(|p| p.model.clone());
+            let editing = self.pages.agent_path_edit.as_ref().filter(|(k, _)| *k == kind).map(|(_, f)| f.clone());
+            let toggle = ctl::on_toggle(
+                ctl::toggle(&t, SharedString::from(format!("ag-on-{}", kind.id())), enabled)
+                    .tooltip(ui::tip(if enabled { "Offered in the composer" } else { "Hidden from the composer" })),
+                cx,
+                move |this, _, cx| {
+                    let _ = this
+                        .engine
+                        .store
+                        .set_setting(&format!("agent_disabled.{}", kind.id()), if enabled { "true" } else { "false" });
+                    let installed: Vec<_> =
+                        this.installed.iter().filter(|i| agent_enabled(&this.engine.store, i.kind)).cloned().collect();
+                    this.composer.update(cx, |c, cx| c.set_installed(installed, cx));
+                    cx.notify();
+                },
+            );
+            page::row(&t, i == 0)
+                .child(page::row_tile(&t, ui::harness_icon(kind), Some(ui::harness_tint(kind, &t, t.text_muted))))
+                .child(
                     div()
-                        .px(px(14.0))
-                        .py(px(12.0))
+                        .flex_1()
+                        .min_w(px(220.0))
                         .flex()
-                        .items_center()
-                        .gap(px(12.0))
-                        .when(i > 0, |d| d.border_t_1().border_color(t.border))
-                        .when(!found, |d| d.opacity(0.65))
-                        .child(icon(ui::harness_icon(kind)).size(px(20.0)).text_color(ui::harness_tint(
-                            kind,
-                            &t,
-                            t.text_muted,
-                        )))
+                        .flex_col()
+                        .gap(px(3.0))
+                        .when(!found, |d| d.opacity(0.7))
                         .child(
                             div()
-                                .flex_1()
-                                .min_w_0()
                                 .flex()
-                                .flex_col()
-                                .gap(px(3.0))
+                                .flex_wrap()
+                                .items_center()
+                                .gap(px(6.0))
                                 .child(
                                     div()
-                                        .flex()
-                                        .items_center()
-                                        .gap(px(8.0))
-                                        .child(
-                                            div()
-                                                .text_size(ty::MD)
-                                                .font_weight(gpui::FontWeight::MEDIUM)
-                                                .child(kind.label()),
-                                        )
-                                        .when_some(version, |d, v| d.child(kit::badge(v, t.text_faint)))
-                                        .when(!supported, |d| d.child(kit::badge("terminal only", t.text_faint)))
-                                        .when(!found, |d| d.child(kit::badge("not installed", t.warning))),
+                                        .text_size(ty::BODY)
+                                        .font_weight(gpui::FontWeight::MEDIUM)
+                                        .text_color(t.text)
+                                        .child(kind.label()),
                                 )
-                                .child(match editing {
-                                    Some(f) => div()
-                                        .h(px(28.0))
-                                        .px(px(8.0))
-                                        .flex()
-                                        .items_center()
-                                        .rounded(px(6.0))
-                                        .border_1()
-                                        .border_color(t.border_strong)
-                                        .text_size(ty::SMALL)
-                                        .child(div().flex_1().child(Input::new(&f)))
-                                        .into_any_element(),
-                                    None => div()
-                                        .id(SharedString::from(format!("ag-path-{}", kind.id())))
-                                        .text_size(ty::META)
-                                        .font_family(t.font_mono.clone())
-                                        .text_color(t.text_faint)
-                                        .truncate()
-                                        .cursor_pointer()
-                                        .hover(|s| s.text_color(t.text_muted))
-                                        .tooltip(ui::tip("Click to set a custom path"))
-                                        .child(
-                                            path.map(|p| p.display().to_string())
-                                                .unwrap_or_else(|| "Not on PATH · click to set a path".into()),
-                                        )
-                                        .on_click(
-                                            cx.listener(move |this, _, window, cx| this.edit_path(kind, window, cx)),
-                                        )
-                                        .into_any_element(),
-                                })
-                                .when_some(last_model, |d, m| {
-                                    d.child(
-                                        div()
-                                            .text_size(ty::CAPTION)
-                                            .text_color(t.text_faint)
-                                            .child(format!("Last model: {m}")),
-                                    )
-                                }),
+                                .when_some(version, |d, v| d.child(page::badge(&t, v)))
+                                .when(!supported, |d| d.child(page::badge(&t, "terminal only")))
+                                .when(!found, |d| d.child(page::badge_tone("not installed", t.warning))),
                         )
-                        .when(found, |d| {
-                            d.child(
-                                ui::button_ghost(SharedString::from(format!("ag-login-{}", kind.id())), "Sign in", &t)
-                                    .on_click(cx.listener(move |this, _, _, cx| this.sign_in(kind, cx))),
-                            )
+                        .child(match editing {
+                            Some(f) => {
+                                ctl::text_field(&f, None, true, &t).h(px(28.0)).text_size(ty::SMALL).into_any_element()
+                            }
+                            None => div()
+                                .id(SharedString::from(format!("ag-path-{}", kind.id())))
+                                .text_size(ty::META)
+                                .font_family(t.font_mono.clone())
+                                .text_color(t.text_faint)
+                                .truncate()
+                                .cursor_pointer()
+                                .hover(|s| s.text_color(t.text_muted))
+                                .tooltip(ui::tip("Click to set a custom path"))
+                                .child(
+                                    path.map(|p| p.display().to_string())
+                                        .unwrap_or_else(|| "Not on PATH · click to set a path".into()),
+                                )
+                                .on_click(cx.listener(move |this, _, window, cx| this.edit_path(kind, window, cx)))
+                                .into_any_element(),
                         })
-                        .child(
-                            kit::switch(SharedString::from(format!("ag-on-{}", kind.id())), enabled, &t)
-                                .tooltip(ui::tip(if enabled {
-                                    "Offered in the composer"
-                                } else {
-                                    "Hidden from the composer"
-                                }))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    let _ = this.engine.store.set_setting(
-                                        &format!("agent_disabled.{}", kind.id()),
-                                        if enabled { "true" } else { "false" },
-                                    );
-                                    let installed: Vec<_> = this
-                                        .installed
-                                        .iter()
-                                        .filter(|i| agent_enabled(&this.engine.store, i.kind))
-                                        .cloned()
-                                        .collect();
-                                    this.composer.update(cx, |c, cx| c.set_installed(installed, cx));
-                                    cx.notify();
-                                })),
-                        )
-                }),
-            );
-        let sheet = self.pages.agent_terminal.clone().map(|(kind, term)| {
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(8.0))
+                        .when_some(last_model, |d, m| {
+                            d.child(
+                                div().text_size(ty::CAPTION).text_color(t.text_faint).child(format!("Last model: {m}")),
+                            )
+                        }),
+                )
                 .child(
                     div()
+                        .flex_none()
                         .flex()
                         .items_center()
-                        .gap(px(8.0))
-                        .child(
-                            div()
-                                .flex_1()
-                                .text_size(ty::BODY)
-                                .child(format!("Signing in to {} · follow the prompts below", kind.label())),
-                        )
-                        .child(ui::button_ghost("ag-term-close", "Done", &t).on_click(cx.listener(
-                            |this, _, _, cx| {
-                                if let Some((_, term)) = this.pages.agent_terminal.take() {
-                                    term.update(cx, |t, cx| t.kill(cx));
-                                }
-                                cx.notify();
-                            },
-                        ))),
+                        .gap(px(space::SM))
+                        .when(found, |d| {
+                            d.child(
+                                ctl::button_sm(
+                                    &t,
+                                    SharedString::from(format!("ag-login-{}", kind.id())),
+                                    "Sign in",
+                                    Tone::Filled,
+                                )
+                                .on_click(cx.listener(move |this, _, _, cx| this.sign_in(kind, cx))),
+                            )
+                        })
+                        .child(toggle),
                 )
-                .child(
-                    div()
-                        .h(px(340.0))
-                        .rounded(px(10.0))
-                        .overflow_hidden()
-                        .border_1()
-                        .border_color(t.border)
-                        .child(term),
-                )
-        });
-        let rescan = ui::button_ghost("ag-rescan", "Rescan PATH", &t)
+        }));
+        let rescan = ctl::button(&t, "ag-rescan", "Rescan PATH", Tone::Outlined)
             .on_click(cx.listener(|this, _, _, cx| this.rescan(cx)))
             .into_any_element();
-        page_with(
-            "agents-page",
-            "Agents",
-            "Every agent CLI Dove knows: where it lives, how to sign in, and whether the composer offers it.",
-            &t,
-            Some(rescan),
-            div().flex().flex_col().gap(px(14.0)).children(sheet).child(rows),
-        )
+        let sheet = self.render_agent_sheet(&t, window, cx);
+        div()
+            .size_full()
+            .child(super::page_at(
+                "agents-page",
+                crate::design::size::PAGE_MAX,
+                "Agents",
+                "Every agent CLI Dove knows: where it lives, how to sign in, and whether the composer offers it.",
+                &t,
+                Some(rescan),
+                page::section(&t, format!("{found_n} installed"), rows).mt(px(0.0)),
+            ))
+            .children(sheet)
+            .into_any_element()
     }
 
     pub fn rescan(&mut self, cx: &mut Context<Self>) {

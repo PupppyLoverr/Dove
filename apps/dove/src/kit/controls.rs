@@ -494,6 +494,7 @@ pub struct Select<V: 'static> {
     selected: usize,
     width: Option<f32>,
     menu_width: Option<f32>,
+    placeholder: Option<SharedString>,
     reach: Reach<V>,
     on_select: Option<OnSelect<V>>,
 }
@@ -510,6 +511,7 @@ pub fn select<V: 'static>(
         selected: 0,
         width: None,
         menu_width: None,
+        placeholder: None,
         reach: Rc::new(reach),
         on_select: None,
     }
@@ -540,13 +542,19 @@ impl<V: 'static> Select<V> {
         self
     }
 
+    /// Muted text the trigger shows while no option is selected.
+    pub fn placeholder(mut self, text: impl Into<SharedString>) -> Self {
+        self.placeholder = Some(text.into());
+        self
+    }
+
     pub fn on_select(mut self, f: impl Fn(&mut V, usize, &mut Window, &mut Context<V>) + 'static) -> Self {
         self.on_select = Some(Rc::new(f));
         self
     }
 
     pub fn render(self, t: &Theme, state: &SelectState, cx: &mut Context<V>) -> AnyElement {
-        let Self { id, label, options, selected, width, menu_width, reach, on_select } = self;
+        let Self { id, label, options, selected, width, menu_width, placeholder, reach, on_select } = self;
         let open = state.popup.is_open();
         let mounted = state.popup.is_mounted();
         let closing = state.popup.closing_since();
@@ -592,7 +600,15 @@ impl<V: 'static> Select<V> {
                 .when_some(current.as_ref().and_then(|o| o.glyph), |d, g| {
                     d.child(icon(g).size(px(14.0)).flex_none().text_color(t.text_muted))
                 })
-                .child(div().flex_1().min_w_0().truncate().child(current.map(|o| o.label).unwrap_or_default()))
+                .child(match current.map(|o| o.label) {
+                    Some(label) => div().flex_1().min_w_0().truncate().child(label),
+                    None => div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_color(t.text_muted)
+                        .child(placeholder.clone().unwrap_or_default()),
+                })
                 .child(icon(icons::ALT_ARROW_DOWN).size(px(13.0)).flex_none().text_color(if open {
                     t.text
                 } else {
@@ -610,7 +626,7 @@ impl<V: 'static> Select<V> {
                     if state.popup.is_open() {
                         close(this, &reach_click, cx);
                     } else {
-                        state.highlighted = Some(selected);
+                        state.highlighted = (selected < count).then_some(selected);
                         state.popup.open(());
                         cx.notify();
                     }
@@ -620,7 +636,7 @@ impl<V: 'static> Select<V> {
                     let state = reach_key(this);
                     if !state.popup.is_open() {
                         if matches!(key, popover::MenuKey::Up | popover::MenuKey::Down | popover::MenuKey::Activate) {
-                            state.highlighted = Some(selected);
+                            state.highlighted = (selected < count).then_some(selected);
                             state.popup.open(());
                             cx.stop_propagation();
                             cx.notify();

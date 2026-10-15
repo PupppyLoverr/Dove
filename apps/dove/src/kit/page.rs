@@ -4,7 +4,11 @@
 //! Metrics follow Zeron's settings widgets (MIT).
 
 use gpui::prelude::FluentBuilder as _;
-use gpui::{AnyElement, Div, Hsla, IntoElement, ParentElement as _, SharedString, Styled as _, div, px};
+use gpui::{
+    AnyElement, Div, ElementId, Entity, Hsla, InteractiveElement as _, IntoElement, ParentElement as _, SharedString,
+    Stateful, StatefulInteractiveElement as _, Styled as _, div, px,
+};
+use gpui_base::input::{Input, InputState};
 
 use crate::assets::{icon, icons};
 use crate::design::{size, space, ty};
@@ -26,6 +30,155 @@ pub fn page_column() -> Div {
         .pb(px(48.0))
         .flex()
         .flex_col()
+}
+
+/// The measure for pages whose tables need more room than the reading
+/// column (Threads, Team, Usage).
+pub const PAGE_WIDE: f32 = 980.0;
+/// Row height of table-like cards (Threads, Archived, Inbox, PRs).
+pub const TABLE_ROW: f32 = 40.0;
+/// Height of a table card's column header strip.
+pub const TABLE_HEAD: f32 = 32.0;
+
+/// [`page_column`] at a custom measure.
+pub fn page_column_max(max: f32) -> Div {
+    page_column().max_w(px(max))
+}
+
+/// A scrolling page: the whole route scrolls under its column.
+pub fn page_scroll(id: impl Into<ElementId>) -> Stateful<Div> {
+    div().id(id).size_full().overflow_y_scroll()
+}
+
+/// A page whose column fills the route's height without scrolling, for
+/// pages whose list scrolls on its own (a `uniform_list`): give the list's
+/// card `flex_shrink` and `min_h_0` so it takes what is left.
+pub fn page_fill(id: impl Into<ElementId>, max: f32) -> (Stateful<Div>, Div) {
+    (div().id(id).size_full().flex().flex_col().overflow_hidden(), page_column_max(max).h_full().min_h_0())
+}
+
+/// A page's headline block: the title with an optional trailing control,
+/// and a muted subtitle under it.
+pub fn page_head(
+    t: &Theme,
+    title: impl Into<SharedString>,
+    subtitle: impl Into<SharedString>,
+    trailing: Option<AnyElement>,
+) -> Div {
+    let subtitle: SharedString = subtitle.into();
+    div()
+        .flex_none()
+        .flex()
+        .flex_col()
+        .child(page_header(t, title, trailing))
+        .when(!subtitle.is_empty(), |d| d.child(page_subtitle(t, subtitle)))
+}
+
+/// One row of a table card: 40 px, inset 16, a hairline above every row
+/// but the first.
+pub fn table_row(t: &Theme, first: bool) -> Div {
+    div()
+        .flex_none()
+        .h(px(TABLE_ROW))
+        .px(px(space::LG))
+        .flex()
+        .items_center()
+        .gap(px(space::MD))
+        .when(!first, |d| d.border_t_1().border_color(row_divider(t)))
+}
+
+/// The column header strip at the top of a table card.
+pub fn table_head(t: &Theme) -> Div {
+    div()
+        .flex_none()
+        .h(px(TABLE_HEAD))
+        .px(px(space::LG))
+        .flex()
+        .items_center()
+        .gap(px(space::MD))
+        .text_size(ty::META)
+        .line_height(ty::lh::META)
+        .text_color(t.text_muted)
+}
+
+/// A page's search field: a magnifier and a borderless input in the field
+/// tone.
+pub fn search_field(t: &Theme, input: &Entity<InputState>) -> Div {
+    div()
+        .h(px(size::FIELD))
+        .px(px(10.0))
+        .flex()
+        .items_center()
+        .gap(px(space::SM))
+        .rounded(px(crate::design::radius::SELECT))
+        .bg(t.wash(0.06))
+        .text_size(ty::BODY)
+        .child(icon(icons::MAGNIFER).size(px(14.0)).flex_none().text_color(t.text_faint))
+        .child(div().flex_1().min_w_0().child(Input::new(input)))
+}
+
+/// A figure tile: a muted label over a large value, in the card fill.
+pub fn stat(t: &Theme, label: impl Into<SharedString>, value: impl Into<SharedString>, tint: Option<Hsla>) -> Div {
+    div()
+        .flex_1()
+        .min_w(px(120.0))
+        .px(px(space::LG))
+        .py(px(space::MD))
+        .flex()
+        .flex_col()
+        .gap(px(space::XS))
+        .rounded(px(crate::design::radius::CARD))
+        .bg(card_fill(t))
+        .child(div().text_size(ty::META).line_height(ty::lh::META).text_color(t.text_muted).child(label.into()))
+        .child(
+            div()
+                .text_size(ty::H1)
+                .line_height(ty::lh::PAGE)
+                .font_weight(gpui::FontWeight::MEDIUM)
+                .text_color(tint.unwrap_or(t.text))
+                .child(value.into()),
+        )
+}
+
+/// An empty state for a failure: the same grammar as [`empty_state`], with
+/// the glyph in the danger tone.
+pub fn error_state(
+    t: &Theme,
+    title: impl Into<SharedString>,
+    body: impl Into<SharedString>,
+    action: Option<AnyElement>,
+) -> Div {
+    let body: SharedString = body.into();
+    div()
+        .flex()
+        .flex_col()
+        .items_center()
+        .justify_center()
+        .gap(px(space::SM))
+        .py(px(40.0))
+        .px(px(space::LG))
+        .child(
+            div()
+                .size(px(44.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(crate::design::radius::CARD))
+                .bg(t.danger.opacity(0.08))
+                .child(icon(icons::DANGER_TRIANGLE).size(px(20.0)).text_color(t.danger)),
+        )
+        .child(div().text_size(ty::MD).font_weight(gpui::FontWeight::MEDIUM).text_color(t.text).child(title.into()))
+        .when(!body.is_empty(), |d| {
+            d.child(div().max_w(px(420.0)).text_center().text_size(ty::BODY).text_color(t.text_faint).child(body))
+        })
+        .when_some(action, |d, a| d.child(div().mt(px(space::XS)).child(a)))
+}
+
+/// A clickable row wash for table rows inside cached-free views (pages the
+/// shell draws): instant hover, a stronger wash when selected.
+pub fn row_hover(t: &Theme, el: Stateful<Div>, selected: bool) -> Stateful<Div> {
+    let hover = t.wash(0.05);
+    el.cursor_pointer().when(selected, |d| d.bg(t.accent.opacity(0.08))).hover(move |s| s.bg(hover))
 }
 
 /// The page headline, an optional count beside it, and an optional trailing
