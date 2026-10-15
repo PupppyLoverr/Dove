@@ -12,6 +12,7 @@ use gpui_base::input::Input;
 
 use super::{input, page_with};
 use crate::assets::icon;
+use crate::design::ty;
 use crate::kit;
 use crate::shell::Shell;
 use crate::terminal::TerminalView;
@@ -107,7 +108,7 @@ impl Shell {
                                         .gap(px(8.0))
                                         .child(
                                             div()
-                                                .text_size(px(14.0))
+                                                .text_size(ty::MD)
                                                 .font_weight(gpui::FontWeight::MEDIUM)
                                                 .child(kind.label()),
                                         )
@@ -124,12 +125,12 @@ impl Shell {
                                         .rounded(px(6.0))
                                         .border_1()
                                         .border_color(t.border_strong)
-                                        .text_size(px(12.5))
+                                        .text_size(ty::SMALL)
                                         .child(div().flex_1().child(Input::new(&f)))
                                         .into_any_element(),
                                     None => div()
                                         .id(SharedString::from(format!("ag-path-{}", kind.id())))
-                                        .text_size(px(12.0))
+                                        .text_size(ty::META)
                                         .font_family(t.font_mono.clone())
                                         .text_color(t.text_faint)
                                         .truncate()
@@ -148,7 +149,7 @@ impl Shell {
                                 .when_some(last_model, |d, m| {
                                     d.child(
                                         div()
-                                            .text_size(px(11.5))
+                                            .text_size(ty::CAPTION)
                                             .text_color(t.text_faint)
                                             .child(format!("Last model: {m}")),
                                     )
@@ -197,7 +198,7 @@ impl Shell {
                         .child(
                             div()
                                 .flex_1()
-                                .text_size(px(13.0))
+                                .text_size(ty::BODY)
                                 .child(format!("Signing in to {} · follow the prompts below", kind.label())),
                         )
                         .child(ui::button_ghost("ag-term-close", "Done", &t).on_click(cx.listener(

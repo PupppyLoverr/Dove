@@ -1,43 +1,59 @@
-//! Settings, with grouped navigation: App (General, Appearance,
-//! Notifications, Keyboard) · Agents & Studio (Agents, Crew & Team, Composer, Canvas) ·
-//! Workspace (Voice, Remote control, Integrations) · System (Data, About).
-//! Includes live section filtering, status badges on the navigation rail,
-//! contextual section hero headers, and interactive setting cards. Everything
-//! persists in the store's settings table and applies live.
+//! Settings, on Zeron's model. Opening Settings swaps the sidebar's thread
+//! list for the settings sections (with "← Back"); the selected section
+//! renders in the main card as a centred column of labelled cards. The
+//! search at the top of the sections finds individual settings across every
+//! section; choosing a result opens its section, scrolls to it and flashes
+//! it. Every control saves and applies at once (text after a short pause),
+//! and every value lives under the same storage key as before.
+//!
+//! The shell composes the page: [`SettingsPage::render_nav`] in the sidebar
+//! slot and [`SettingsPage::render_content`] in the card (the Archived
+//! section shows the shell's own Archived page there).
 
+use std::cell::Cell;
+use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use dove_core::Engine;
 use dove_core::proto::HarnessKind;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, App, AppContext as _, ClipboardItem, Context, Entity, EventEmitter, FocusHandle,
-    InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, Render, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, px,
+    AnyElement, App, AppContext as _, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, Focusable as _,
+    InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, ScrollHandle, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Subscription, Window, canvas, div, point, px,
 };
 use gpui_base::input::{Input, InputEvent, InputState};
 
 use crate::assets::{icon, icons};
-use crate::kit;
+use crate::design::{self, space, ty};
+use crate::kit::controls::{self as ctl, Segment, SelectOption, SelectState, SliderState, Tone};
+use crate::kit::page;
+use crate::motion::{self, ReduceMotion};
 use crate::theme::{Accent, Surface, Theme};
 use crate::ui;
 use crate::voice::{InstallState, VoiceModel};
 use crate::wallpaper::Effect;
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Section {
+// ---------------------------------------------------------------------------
+// Sections
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
+pub enum Section {
     General,
     Appearance,
+    Notifications,
+    Voice,
+    Shortcuts,
     Agents,
     Team,
     Canvas,
-    Composer,
-    Voice,
-    Keyboard,
-    Notifications,
-    Remote,
     Integrations,
+    Remote,
     Data,
+    Archived,
     About,
 }
 
@@ -47,66 +63,48 @@ pub enum SettingsEvent {
     OpenTeam { new: bool },
     /// Open the Agents page (sign-in terminals, binary paths).
     OpenAgents,
+    /// Leave Settings (Back, or Escape).
+    Close,
 }
 
 impl Section {
-    const ALL: [Section; 13] = [
+    pub const ALL: [Section; 13] = [
         Section::General,
         Section::Appearance,
+        Section::Notifications,
+        Section::Voice,
+        Section::Shortcuts,
         Section::Agents,
         Section::Team,
         Section::Canvas,
-        Section::Composer,
-        Section::Voice,
-        Section::Keyboard,
-        Section::Notifications,
-        Section::Remote,
         Section::Integrations,
+        Section::Remote,
         Section::Data,
+        Section::Archived,
         Section::About,
     ];
 
-    /// The navigation, in groups.
-    const GROUPS: [(&'static str, &'static [Section]); 4] = [
-        ("App", &[Section::General, Section::Appearance, Section::Notifications, Section::Keyboard]),
-        ("Agents & Studio", &[Section::Agents, Section::Team, Section::Composer, Section::Canvas]),
-        ("Workspace", &[Section::Voice, Section::Remote, Section::Integrations]),
-        ("System", &[Section::Data, Section::About]),
+    /// The navigation, grouped by spacing (no headers), as in Zeron.
+    const GROUPS: [&'static [Section]; 3] = [
+        &[Section::General, Section::Appearance, Section::Notifications, Section::Voice, Section::Shortcuts],
+        &[Section::Agents, Section::Team, Section::Canvas, Section::Integrations, Section::Remote],
+        &[Section::Data, Section::Archived, Section::About],
     ];
 
-    /// One line under the section title.
-    fn blurb(self) -> &'static str {
-        match self {
-            Section::General => "Threads, git worktrees, branch naming, and where new work starts.",
-            Section::Appearance => "Theme mode, accent color, surface materials, and the new-thread backdrop.",
-            Section::Agents => "Installed agent CLIs Dove orchestrates and which harnesses appear in the composer.",
-            Section::Team => "Specialists & Crew members with dedicated roles, standing briefs, and memory.",
-            Section::Canvas => "Live interactive HTML, React/TSX, and Tailwind artboards built by agents.",
-            Section::Composer => "Default execution permissions, slash skills, and per-project approval rules.",
-            Section::Voice => "On-device NVIDIA Parakeet dictation.",
-            Section::Keyboard => "Every global and workspace shortcut, customizable with live key recording.",
-            Section::Notifications => "System alerts, completion sounds, and background daemon behavior.",
-            Section::Remote => "Monitor and drive this computer's active sessions from your phone.",
-            Section::Integrations => "MCP tools, Chrome bridge, Composio, Paper, and computer-use drivers.",
-            Section::Data => "Local SQLite database, transcripts, voice weights, and storage location.",
-            Section::About => "Build version, runtime architecture, and open-source licensing.",
-        }
-    }
-
-    fn label(self) -> &'static str {
+    pub fn label(self) -> &'static str {
         match self {
             Section::General => "General",
             Section::Appearance => "Appearance",
-            Section::Agents => "Agents",
-            Section::Team => "Crew & Team",
-            Section::Canvas => "Canvas",
-            Section::Composer => "Composer",
-            Section::Voice => "Voice",
-            Section::Keyboard => "Keyboard",
             Section::Notifications => "Notifications",
-            Section::Remote => "Remote Control",
+            Section::Voice => "Voice",
+            Section::Shortcuts => "Shortcuts",
+            Section::Agents => "Agents",
+            Section::Team => "Team",
+            Section::Canvas => "Canvas",
             Section::Integrations => "Integrations",
+            Section::Remote => "Remote",
             Section::Data => "Data & Storage",
+            Section::Archived => "Archived",
             Section::About => "About",
         }
     }
@@ -114,81 +112,203 @@ impl Section {
     fn glyph(self) -> &'static str {
         match self {
             Section::General => icons::SETTINGS,
-            Section::Appearance => icons::PALETTE_SEARCH,
-            Section::Agents => icons::BOT,
-            Section::Team => icons::BOT,
-            Section::Canvas => icons::GALLERY,
-            Section::Composer => icons::PEN,
-            Section::Voice => icons::MICROPHONE,
-            Section::Keyboard => icons::KEYBOARD,
+            Section::Appearance => icons::TUNING,
             Section::Notifications => icons::BELL,
+            Section::Voice => icons::MICROPHONE,
+            Section::Shortcuts => icons::KEYBOARD,
+            Section::Agents => icons::WIDGET,
+            Section::Team => icons::USERS_GROUP,
+            Section::Canvas => icons::GALLERY,
+            Section::Integrations => icons::WIDGET_ADD,
             Section::Remote => icons::SMARTPHONE,
-            Section::Integrations => icons::WIDGET,
             Section::Data => icons::HARD_DRIVE,
+            Section::Archived => icons::ARCHIVE_MINIMALISTIC,
             Section::About => icons::INFO_CIRCLE,
         }
     }
 
-    fn id(self) -> &'static str {
+    pub fn id(self) -> &'static str {
         match self {
             Section::General => "general",
             Section::Appearance => "appearance",
+            Section::Notifications => "notifications",
+            Section::Voice => "voice",
+            Section::Shortcuts => "keyboard",
             Section::Agents => "agents",
             Section::Team => "team",
             Section::Canvas => "canvas",
-            Section::Composer => "composer",
-            Section::Voice => "voice",
-            Section::Keyboard => "keyboard",
-            Section::Notifications => "notifications",
-            Section::Remote => "remote",
             Section::Integrations => "integrations",
+            Section::Remote => "remote",
             Section::Data => "data",
+            Section::Archived => "archived",
             Section::About => "about",
         }
     }
 
-    fn keywords(self) -> &'static str {
-        match self {
-            Section::General => {
-                "general threads tabs reopen restore prewarm git worktree branch prefix clone folder directory"
-            }
-            Section::Appearance => {
-                "appearance theme dark light system accent sky indigo orange green pink surface glass acrylic normal frosted wallpaper background effect animate animation motion"
-            }
-            Section::Agents => {
-                "agents harness claude codex cursor gemini opencode kimi droid qwen kilocode cli binary sign in"
-            }
-            Section::Team => "team crew specialists personas teammates role brief notes memory",
-            Section::Canvas => {
-                "canvas design artboard html react tsx tailwind svg preview mobile tablet desktop bridge"
-            }
-            Section::Composer => "composer permissions default auto-edit plan ask bypass approvals",
-            Section::Voice => "voice dictation microphone parakeet nvidia speech to text",
-            Section::Keyboard => "keyboard shortcuts keybindings hotkeys rebind keys",
-            Section::Notifications => "notifications alerts sound tray background keep running",
-            Section::Remote => "remote control phone mobile woozlit account device",
-            Section::Integrations => "integrations mcp chrome browser composio paper computer use cua driver",
-            Section::Data => "data storage folder disk size location dove_home telemetry privacy",
-            Section::About => "about version license apache github repository source",
-        }
-    }
-
-    fn matches(self, q: &str) -> bool {
-        let q = q.trim().to_ascii_lowercase();
-        if q.is_empty() {
-            return true;
-        }
-        self.label().to_ascii_lowercase().contains(&q)
-            || self.blurb().to_ascii_lowercase().contains(&q)
-            || self.keywords().contains(&q)
+    /// A section by its id, including earlier names and Zeron's: deep links
+    /// (`DOVE_SETTINGS`, the composer's "Voice settings…") keep working.
+    pub fn from_id(id: &str) -> Option<Section> {
+        Some(match id {
+            "general" | "composer" => Section::General,
+            "appearance" => Section::Appearance,
+            "notifications" => Section::Notifications,
+            "voice" => Section::Voice,
+            "keyboard" | "shortcuts" => Section::Shortcuts,
+            "agents" | "providers" | "harnesses" => Section::Agents,
+            "team" | "crew" => Section::Team,
+            "canvas" => Section::Canvas,
+            "integrations" => Section::Integrations,
+            "remote" | "devices" => Section::Remote,
+            "data" | "storage" => Section::Data,
+            "archived" => Section::Archived,
+            "about" => Section::About,
+            _ => return None,
+        })
     }
 }
 
+// ---------------------------------------------------------------------------
+// The search index: one entry per setting row
+// ---------------------------------------------------------------------------
+
+struct Entry {
+    section: Section,
+    row: &'static str,
+    title: &'static str,
+    keywords: &'static str,
+}
+
+const fn e(section: Section, row: &'static str, title: &'static str, keywords: &'static str) -> Entry {
+    Entry { section, row, title, keywords }
+}
+
+const INDEX: &[Entry] = &[
+    e(Section::General, "restore_tabs", "Reopen thread tabs on launch", "restore startup tabs session"),
+    e(Section::General, "prewarm", "Prewarm agent while typing", "prewarm faster first token harness start"),
+    e(
+        Section::General,
+        "permission_mode",
+        "Default permission level",
+        "composer permissions ask auto-edit plan approvals mode",
+    ),
+    e(Section::General, "bypass", "Projects allowed to bypass permissions", "bypass permissions projects revoke trust"),
+    e(
+        Section::General,
+        "use_worktree",
+        "Isolate new threads in a git worktree",
+        "git worktree branch isolate parallel",
+    ),
+    e(Section::General, "branch_prefix", "Branch prefix", "git branch name prefix worktree"),
+    e(Section::General, "clone_dir", "Default clone folder", "clone repository url folder directory github"),
+    e(Section::General, "sidebar_group", "Group threads by project", "sidebar group project organize"),
+    e(Section::General, "sidebar_density", "Compact thread rows", "sidebar density compact rows single line"),
+    e(Section::General, "sidebar_archived", "Show archived threads in the sidebar", "sidebar archived show"),
+    e(Section::General, "agent_browser", "Browser tools for agents", "agent browser mcp tools webview"),
+    e(Section::General, "agent_office_skills", "Office document skills", "office docx pptx xlsx pdf skills agents"),
+    e(Section::Appearance, "appearance", "Color scheme", "theme dark light system mode appearance"),
+    e(Section::Appearance, "accent", "Accent color", "accent color sky indigo orange green pink amber cyan blue"),
+    e(Section::Appearance, "surface", "Window material", "glass acrylic normal frosted surface material blur"),
+    e(Section::Appearance, "wallpaper_path", "New-thread background", "wallpaper background image backdrop home"),
+    e(Section::Appearance, "wallpaper_effect", "Background effect", "dither halftone scanlines effect shader backdrop"),
+    e(Section::Appearance, "wallpaper_animate", "Animate background", "animate animation backdrop wallpaper motion"),
+    e(Section::Appearance, "reduce_motion", "Reduce motion", "motion animation accessibility reduce"),
+    e(
+        Section::Appearance,
+        "pause_animations_in_background",
+        "Pause animations in background",
+        "pause animation background inactive battery",
+    ),
+    e(Section::Appearance, "ui_font_size", "Interface font size", "font size text scale zoom interface ui"),
+    e(Section::Appearance, "code_font_size", "Code & diff font size", "font size code diff monospace"),
+    e(Section::Appearance, "terminal_font_size", "Terminal font size", "font size terminal monospace"),
+    e(Section::Appearance, "conversation_width", "Conversation width", "width column chat transcript conversation"),
+    e(Section::Notifications, "notifications", "Desktop notifications", "notifications alerts system os"),
+    e(Section::Notifications, "notification_sound", "Completion sound", "sound chime audio notification"),
+    e(
+        Section::Notifications,
+        "keep_running",
+        "Keep running in background",
+        "tray background daemon automations keep running",
+    ),
+    e(Section::Voice, "voice_model", "Dictation model", "voice dictation parakeet nvidia model download speech"),
+    e(Section::Voice, "voice_device", "Microphone", "microphone input device audio voice"),
+    e(Section::Shortcuts, "shortcuts", "Keyboard shortcuts", "keyboard shortcuts keybindings hotkeys rebind keys"),
+    e(Section::Agents, "agents", "Agents", "agents harness claude codex cursor gemini opencode cli binary enable hide"),
+    e(Section::Team, "team_roster", "Teammates", "team teammates personas roster specialists"),
+    e(Section::Team, "team_notes", "Persistent teammate notes", "team notes memory learn"),
+    e(Section::Canvas, "canvas_auto_open", "Open designs automatically", "canvas design artboard auto open"),
+    e(Section::Canvas, "canvas_bridge", "Two-way agent bridge", "canvas bridge dove.send interactive"),
+    e(
+        Section::Canvas,
+        "canvas_default_device",
+        "Default artboard size",
+        "canvas viewport desktop tablet mobile device",
+    ),
+    e(
+        Section::Integrations,
+        "integrations",
+        "Integrations",
+        "integrations mcp chrome extension composio paper computer use cua",
+    ),
+    e(Section::Remote, "remote_enabled", "Remote control", "remote phone mobile companion woozlit account"),
+    e(Section::Data, "data_size", "Storage", "data storage disk size folder"),
+    e(Section::Data, "data_path", "Storage location", "dove_home path location folder"),
+    e(Section::Data, "telemetry", "Privacy", "telemetry privacy local"),
+    e(Section::Archived, "archived", "Archived threads", "archived threads unarchive delete"),
+    e(Section::About, "version", "Version", "about version license source github"),
+];
+
+/// Every searchable setting, for the command palette:
+/// `(section id, row id, title, section label)`.
+pub fn search_index() -> Vec<(&'static str, &'static str, &'static str, &'static str)> {
+    INDEX.iter().map(|e| (e.section.id(), e.row, e.title, e.section.label())).collect()
+}
+
+fn find_settings(query: &str) -> Vec<&'static Entry> {
+    let q = query.trim().to_ascii_lowercase();
+    if q.is_empty() {
+        return Vec::new();
+    }
+    let words: Vec<&str> = q.split_whitespace().collect();
+    let mut hits: Vec<(u8, &'static Entry)> = INDEX
+        .iter()
+        .filter_map(|e| {
+            let title = e.title.to_ascii_lowercase();
+            let section = e.section.label().to_ascii_lowercase();
+            let all = format!("{title} {section} {}", e.keywords);
+            if !words.iter().all(|w| all.contains(w)) {
+                return None;
+            }
+            let rank = if title.starts_with(&q) {
+                0
+            } else if title.contains(&q) {
+                1
+            } else {
+                2
+            };
+            Some((rank, e))
+        })
+        .collect();
+    hits.sort_by_key(|(rank, _)| *rank);
+    hits.into_iter().map(|(_, e)| e).collect()
+}
+
+// ---------------------------------------------------------------------------
+// The page
+// ---------------------------------------------------------------------------
+
+/// How long a revealed setting glows.
+const FLASH: Duration = Duration::from_millis(900);
+/// Text fields save this long after typing stops (and on blur).
+const SAVE_AFTER: Duration = Duration::from_millis(400);
+
 pub struct SettingsPage {
     engine: Arc<Engine>,
-    section: Section,
+    pub section: Section,
     search: Entity<InputState>,
     query: String,
+    /// Keyboard cursor in the search results.
+    result: Option<usize>,
     prefix: Entity<InputState>,
     clone_dir: Entity<InputState>,
     /// The shortcut being recorded.
@@ -197,33 +317,25 @@ pub struct SettingsPage {
     data_size: Option<u64>,
     integrations: Entity<crate::pages::integrations::IntegrationsView>,
     focus: FocusHandle,
+    nav_focus: FocusHandle,
+    scroll: ScrollHandle,
+    /// The row to bring into view on the next paint.
+    pending_scroll: Rc<Cell<Option<&'static str>>>,
+    flash: Option<(&'static str, Instant)>,
+    /// Live value of the conversation-width slider while it is dragged.
+    width_drag: Option<f32>,
+    sel_mode: SelectState,
+    sel_surface: SelectState,
+    sel_effect: SelectState,
+    sel_reduce: SelectState,
+    sel_ui_size: SelectState,
+    sel_code_size: SelectState,
+    sel_term_size: SelectState,
+    sel_mic: SelectState,
+    sel_canvas: SelectState,
+    width_slider: SliderState,
+    save_gen: HashMap<&'static str, u64>,
     _subs: Vec<Subscription>,
-}
-
-fn text_setting(
-    engine: &Arc<Engine>,
-    key: &'static str,
-    default: String,
-    placeholder: &'static str,
-    window: &mut Window,
-    cx: &mut Context<SettingsPage>,
-) -> (Entity<InputState>, Subscription) {
-    let style = ui::input_style(Theme::of(cx));
-    let current = engine.store.setting(key).unwrap_or(default);
-    let input = cx.new(|cx| {
-        let mut s = InputState::new(window, cx).placeholder(placeholder);
-        s.set_editor_style(style);
-        s.set_value(current, window, cx);
-        s
-    });
-    let engine = engine.clone();
-    let sub = cx.subscribe(&input, move |_, s, ev: &InputEvent, cx| {
-        if matches!(ev, InputEvent::Change | InputEvent::Blur) {
-            let v = s.read(cx).value().trim().to_string();
-            let _ = engine.store.set_setting(key, &v);
-        }
-    });
-    (input, sub)
 }
 
 impl EventEmitter<SettingsEvent> for SettingsPage {}
@@ -232,68 +344,132 @@ impl SettingsPage {
     pub fn new(engine: Arc<Engine>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let style = ui::input_style(Theme::of(cx));
         let search = cx.new(|cx| {
-            let mut s = InputState::new(window, cx).placeholder("Filter settings…");
-            s.set_editor_style(style);
+            let mut s = InputState::new(window, cx).placeholder("Search settings");
+            s.set_editor_style(style.clone());
             s
         });
         let search_sub = cx.subscribe(&search, |this, s, ev: &InputEvent, cx| {
             if matches!(ev, InputEvent::Change) {
                 this.query = s.read(cx).value().to_string();
-                if !this.section.matches(&this.query)
-                    && let Some(first) = Section::ALL.into_iter().find(|sec| sec.matches(&this.query))
-                {
-                    this.select(first, cx);
-                } else {
-                    cx.notify();
-                }
+                this.result = (!this.query.trim().is_empty()).then_some(0);
+                cx.notify();
+            }
+            if let InputEvent::PressEnter { .. } = ev
+                && let Some(e) = find_settings(&this.query).get(this.result.unwrap_or(0)).copied()
+            {
+                this.reveal_entry(e, cx);
             }
         });
-
-        let (prefix, s1) = text_setting(&engine, "branch_prefix", "dove/".into(), "dove/", window, cx);
         let home = std::env::var_os("USERPROFILE")
             .or_else(|| std::env::var_os("HOME"))
             .map(std::path::PathBuf::from)
             .unwrap_or_default();
-        let (clone_dir, s2) = text_setting(
-            &engine,
-            "clone_dir",
-            home.join("Dove").display().to_string(),
-            "Folder for cloned repositories",
-            window,
-            cx,
-        );
-        let mut subs = vec![search_sub, s1, s2];
+        let prefix_value = engine.store.setting("branch_prefix").unwrap_or_else(|| "dove/".into());
+        let clone_value = engine.store.setting("clone_dir").unwrap_or_else(|| home.join("Dove").display().to_string());
+        let prefix = cx.new(|cx| {
+            let mut s = InputState::new(window, cx).placeholder("dove/");
+            s.set_editor_style(style.clone());
+            s.set_value(prefix_value, window, cx);
+            s
+        });
+        let clone_dir = cx.new(|cx| {
+            let mut s = InputState::new(window, cx).placeholder("Folder for cloned repositories");
+            s.set_editor_style(style.clone());
+            s.set_value(clone_value, window, cx);
+            s
+        });
+        let mut subs = vec![search_sub];
+        for (input, key) in [(&prefix, "branch_prefix"), (&clone_dir, "clone_dir")] {
+            subs.push(cx.subscribe(input, move |this, s, ev: &InputEvent, cx| match ev {
+                InputEvent::Change => {
+                    let value = s.read(cx).value().trim().to_string();
+                    this.save_later(key, value, cx);
+                }
+                InputEvent::Blur => {
+                    let value = s.read(cx).value().trim().to_string();
+                    this.save_gen.entry(key).and_modify(|g| *g += 1);
+                    let _ = this.engine.store.set_setting(key, &value);
+                }
+                _ => {}
+            }));
+            subs.push(cx.observe(input, |_, _, cx| cx.notify()));
+        }
         if let Some(model) = VoiceModel::global(cx) {
             subs.push(cx.observe(&model, |_, _, cx| cx.notify()));
         }
         if let Some(remote) = crate::remote::Remote::global(cx) {
             subs.push(cx.observe(&remote, |_, _, cx| cx.notify()));
         }
+        let section =
+            engine.store.setting("settings_section").and_then(|s| Section::from_id(&s)).unwrap_or(Section::General);
+        let integrations = cx.new(|cx| crate::pages::integrations::IntegrationsView::new(window, cx));
+        subs.push(cx.observe(&integrations, |_, _, cx| cx.notify()));
         Self {
             engine,
-            section: Section::General,
+            section,
             search,
             query: String::new(),
+            result: None,
             prefix,
             clone_dir,
             recording: None,
             devices: Vec::new(),
             data_size: None,
-            integrations: cx.new(|cx| crate::pages::integrations::IntegrationsView::new(window, cx)),
+            integrations,
             focus: cx.focus_handle(),
+            nav_focus: cx.focus_handle(),
+            scroll: ScrollHandle::new(),
+            pending_scroll: Rc::default(),
+            flash: None,
+            width_drag: None,
+            sel_mode: SelectState::default(),
+            sel_surface: SelectState::default(),
+            sel_effect: SelectState::default(),
+            sel_reduce: SelectState::default(),
+            sel_ui_size: SelectState::default(),
+            sel_code_size: SelectState::default(),
+            sel_term_size: SelectState::default(),
+            sel_mic: SelectState::default(),
+            sel_canvas: SelectState::default(),
+            width_slider: SliderState::default(),
+            save_gen: HashMap::new(),
             _subs: subs,
         }
     }
 
+    /// Open a section by id (deep links); unknown ids keep the current one.
     pub fn show_section(&mut self, id: &str, cx: &mut Context<Self>) {
-        if let Some(s) = Section::ALL.into_iter().find(|s| s.id() == id) {
+        if let Some(s) = Section::from_id(id) {
             self.select(s, cx);
         }
     }
 
+    /// Open the section holding `row`, bring it into view and flash it.
+    pub fn reveal(&mut self, row: &str, cx: &mut Context<Self>) {
+        if let Some(e) = INDEX.iter().find(|e| e.row == row) {
+            self.reveal_entry(e, cx);
+        }
+    }
+
+    fn reveal_entry(&mut self, e: &'static Entry, cx: &mut Context<Self>) {
+        self.select(e.section, cx);
+        self.pending_scroll.set(Some(e.row));
+        self.flash = Some((e.row, Instant::now()));
+        cx.notify();
+    }
+
+    /// Whether a shortcut is being recorded (Escape belongs to it then).
+    pub fn is_recording(&self) -> bool {
+        self.recording.is_some()
+    }
+
     fn select(&mut self, s: Section, cx: &mut Context<Self>) {
+        if self.section != s {
+            self.scroll.set_offset(point(px(0.0), px(0.0)));
+        }
         self.section = s;
         self.recording = None;
+        let _ = self.engine.store.set_setting("settings_section", s.id());
         match s {
             Section::Voice if self.devices.is_empty() => {
                 let load = cx.background_spawn(async move { crate::voice::input_devices() });
@@ -334,11 +510,29 @@ impl SettingsPage {
     }
 
     fn flag(&self, key: &str, default: bool) -> bool {
-        match self.get(key).as_deref() {
-            Some("true") => true,
-            Some("false") => false,
-            _ => default,
-        }
+        self.engine.store.flag(key, default)
+    }
+
+    fn set_flag(&self, key: &str, on: bool, cx: &mut Context<Self>) {
+        self.set(key, if on { "true" } else { "false" }, cx);
+    }
+
+    /// Save `value` under `key` once typing pauses.
+    fn save_later(&mut self, key: &'static str, value: String, cx: &mut Context<Self>) {
+        let generation = {
+            let g = self.save_gen.entry(key).or_insert(0);
+            *g += 1;
+            *g
+        };
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(SAVE_AFTER).await;
+            let _ = this.update(cx, |p, _| {
+                if p.save_gen.get(key) == Some(&generation) {
+                    let _ = p.engine.store.set_setting(key, &value);
+                }
+            });
+        })
+        .detach();
     }
 
     fn pick_wallpaper(&mut self, cx: &mut Context<Self>) {
@@ -391,568 +585,391 @@ impl SettingsPage {
         cx.notify();
     }
 
-    /// Renders a rich top hero card for the active section with icon badge, blurb, and contextual actions.
-    fn section_hero(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
-        let s = self.section;
-        let action: Option<AnyElement> = match s {
-            Section::General => {
-                let wt = self.flag("use_worktree", true);
-                Some(
-                    kit::badge(
-                        if wt { "Worktree isolation · On" } else { "Worktree isolation · Off" },
-                        if wt { t.success } else { t.text_faint },
-                    )
-                    .into_any_element(),
+    /// 0…1 glow of a revealed row.
+    fn flash_of(&self, row: &str) -> f32 {
+        match self.flash {
+            Some((r, at)) if r == row => {
+                let raw = at.elapsed().as_secs_f32() / FLASH.as_secs_f32();
+                if raw >= 1.0 { 0.0 } else { 1.0 - motion::EASE_OUT.eval(raw) }
+            }
+            _ => 0.0,
+        }
+    }
+
+    /// A setting row with its search anchor: it scrolls into view and glows
+    /// when revealed from search or the palette.
+    fn srow(
+        &self,
+        t: &Theme,
+        first: bool,
+        row: &'static str,
+        title: impl Into<SharedString>,
+        description: impl Into<SharedString>,
+        control: impl IntoElement,
+    ) -> AnyElement {
+        let glow = self.flash_of(row);
+        page::setting_row(t, first, title, description, control)
+            .relative()
+            .when(glow > 0.0, |d| d.bg(t.accent_wash.opacity(glow)).rounded(px(8.0)))
+            .child(self.anchor(row))
+            .into_any_element()
+    }
+
+    /// A zero-size probe that, when `row` is being revealed, scrolls the page
+    /// so the element it sits in lands near the top.
+    fn anchor(&self, row: &'static str) -> AnyElement {
+        let pending = self.pending_scroll.clone();
+        let scroll = self.scroll.clone();
+        canvas(
+            move |bounds, window, _| {
+                if pending.get() == Some(row) {
+                    pending.set(None);
+                    let area = scroll.bounds();
+                    let offset = scroll.offset();
+                    let max = scroll.max_offset();
+                    let delta = bounds.origin.y - area.origin.y - px(24.0);
+                    let y = (offset.y - delta).clamp(-max.y, px(0.0));
+                    scroll.set_offset(point(offset.x, y));
+                    window.refresh();
+                }
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .inset_0()
+        .into_any_element()
+    }
+
+    // ------------------------------------------------------------ navigation
+
+    /// The sections, in the sidebar's slot: Back, search, then the groups
+    /// (or, while searching, the matching settings).
+    pub fn render_nav(&mut self, width: f32, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let t = Theme::of(cx).clone();
+        let query = self.query.trim().to_string();
+        let back = div()
+            .id("set-back")
+            .mx(px(8.0))
+            .h(px(32.0))
+            .px(px(8.0))
+            .flex()
+            .items_center()
+            .gap(px(9.0))
+            .rounded(px(8.0))
+            .cursor_pointer()
+            .text_size(ty::BODY)
+            .text_color(motion::hover_blend("set-back", t.text_muted, t.text))
+            .bg(motion::hover_blend("set-back", t.wash(0.0), t.wash(0.06)))
+            .on_hover(motion::hover_listener("set-back"))
+            .role(gpui::Role::Button)
+            .aria_label("Back")
+            .tooltip(ui::tip("Back to where you were (Esc)"))
+            .child(icon(icons::ARROW_LEFT).size(px(16.0)))
+            .child("Back")
+            .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::Close)));
+
+        let search_box = div()
+            .mx(px(8.0))
+            .h(px(32.0))
+            .px(px(9.0))
+            .flex()
+            .items_center()
+            .gap(px(8.0))
+            .rounded(px(8.0))
+            .bg(t.wash(0.05))
+            .border_1()
+            .border_color(t.wash(0.06))
+            .text_size(ty::BODY)
+            .child(icon(icons::MAGNIFER).size(px(14.0)).text_color(t.text_faint))
+            .child(div().flex_1().min_w_0().child(Input::new(&self.search)))
+            .when(!query.is_empty(), |d| {
+                d.child(
+                    div()
+                        .id("set-search-clear")
+                        .size(px(20.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(5.0))
+                        .cursor_pointer()
+                        .hover(|s| s.bg(t.wash(0.08)))
+                        .tooltip(ui::tip("Clear search"))
+                        .child(icon(icons::CLOSE).size(px(10.0)).text_color(t.text_faint))
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.search.update(cx, |s, cx| s.set_value(String::new(), window, cx));
+                            this.query.clear();
+                            this.result = None;
+                            cx.notify();
+                        })),
                 )
+            })
+            .capture_key_down(cx.listener(|this, e: &KeyDownEvent, _, cx| {
+                if this.query.trim().is_empty() {
+                    return;
+                }
+                let count = find_settings(&this.query).len();
+                let step = match e.keystroke.key.as_str() {
+                    "down" => 1,
+                    "up" => -1,
+                    _ => return,
+                };
+                this.result = crate::kit::popover::menu_step(this.result, count, step);
+                cx.stop_propagation();
+                cx.notify();
+            }));
+
+        let body: AnyElement = if query.is_empty() {
+            let mut groups = div().flex().flex_col().gap(px(14.0));
+            for group in Section::GROUPS {
+                groups = groups.child(div().flex().flex_col().gap(px(1.0)).children(group.iter().map(|&s| {
+                    let selected = s == self.section;
+                    let key: SharedString = format!("set-nav-{}", s.id()).into();
+                    let badge = self.nav_badge(s, &t, cx);
+                    let rest_bg = if selected { ui::selected_bg(&t) } else { t.wash(0.0) };
+                    let rest_fg = if selected { t.text } else { t.text_muted };
+                    div()
+                        .id(gpui::ElementId::Name(key.clone()))
+                        .mx(px(8.0))
+                        .h(px(32.0))
+                        .px(px(8.0))
+                        .flex()
+                        .items_center()
+                        .gap(px(9.0))
+                        .rounded(px(8.0))
+                        .cursor_pointer()
+                        .role(gpui::Role::Tab)
+                        .aria_selected(selected)
+                        .aria_label(s.label())
+                        .text_size(ty::BODY)
+                        .when(selected, |d| d.font_weight(gpui::FontWeight::MEDIUM).shadow(ui::selected_ring(&t)))
+                        .text_color(motion::hover_blend(&key, rest_fg, t.text))
+                        .bg(motion::hover_blend(&key, rest_bg, if selected { rest_bg } else { t.wash(0.05) }))
+                        .on_hover(motion::hover_listener(key.clone()))
+                        .child(icon(s.glyph()).size(px(16.0)))
+                        .child(div().flex_1().min_w_0().truncate().child(s.label()))
+                        .children(badge)
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            window.focus(&this.nav_focus, cx);
+                            this.select(s, cx);
+                        }))
+                })));
             }
-            Section::Appearance => {
-                let surface = Surface::from_settings(self.get("surface").as_deref(), self.get("frosted").as_deref());
-                Some(kit::badge(format!("{} surface", surface.label()), t.accent).into_any_element())
-            }
-            Section::Agents => Some(
-                ui::button_primary("hero-open-agents", "Configure Harnesses", t)
-                    .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::OpenAgents)))
-                    .into_any_element(),
-            ),
-            Section::Team => Some(
+            groups.into_any_element()
+        } else {
+            let hits = find_settings(&query);
+            if hits.is_empty() {
+                div()
+                    .px(px(16.0))
+                    .py(px(8.0))
+                    .text_size(ty::BODY)
+                    .text_color(t.text_faint)
+                    .child("No settings match")
+                    .into_any_element()
+            } else {
                 div()
                     .flex()
-                    .items_center()
-                    .gap(px(8.0))
-                    .child(
-                        kit::button_outline("hero-open-team", "Manage Crew", t)
-                            .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::OpenTeam { new: false }))),
-                    )
-                    .child(
-                        ui::button_primary("hero-new-team", "+ New Specialist", t)
-                            .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::OpenTeam { new: true }))),
-                    )
-                    .into_any_element(),
-            ),
-            Section::Canvas => {
-                let bridge = self.flag("canvas_bridge", true);
-                Some(
-                    kit::badge(
-                        if bridge { "2-Way Bridge · Active" } else { "Preview Only" },
-                        if bridge { t.accent } else { t.text_faint },
-                    )
-                    .into_any_element(),
-                )
+                    .flex_col()
+                    .gap(px(1.0))
+                    .children(hits.into_iter().enumerate().map(|(i, e)| {
+                        let active = self.result == Some(i);
+                        div()
+                            .id(SharedString::from(format!("set-hit-{}", e.row)))
+                            .mx(px(8.0))
+                            .px(px(8.0))
+                            .py(px(6.0))
+                            .flex()
+                            .flex_col()
+                            .rounded(px(8.0))
+                            .cursor_pointer()
+                            .when(active, |d| d.bg(ui::selected_bg(&t)))
+                            .hover(|s| s.bg(t.wash(0.06)))
+                            .child(div().text_size(ty::BODY).text_color(t.text).truncate().child(e.title))
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(5.0))
+                                    .text_size(ty::CAPTION)
+                                    .text_color(t.text_faint)
+                                    .child(icon(e.section.glyph()).size(px(11.0)))
+                                    .child(e.section.label()),
+                            )
+                            .on_click(cx.listener(move |this, _, _, cx| this.reveal_entry(e, cx)))
+                    }))
+                    .into_any_element()
             }
-            Section::Keyboard => {
-                let store = self.engine.store.clone();
-                let any_custom =
-                    crate::keymap::shortcuts().iter().any(|sc| crate::keymap::binding(&store, sc) != sc.default);
-                if any_custom {
-                    Some(
-                        kit::button_outline("hero-reset-keys", "Reset All Shortcuts", t)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                for sc in crate::keymap::shortcuts() {
-                                    crate::keymap::rebind(&this.engine.store, sc.id, sc.default, cx);
-                                }
-                                cx.notify();
-                            }))
-                            .into_any_element(),
-                    )
-                } else {
-                    Some(kit::badge("Default bindings", t.text_faint).into_any_element())
-                }
-            }
-            Section::Data => {
-                let root = self.engine.store.root().to_path_buf();
-                Some(
-                    kit::button_outline("hero-open-data", "Open Data Folder", t)
-                        .on_click(cx.listener(move |_, _, _, cx| cx.open_with_system(&root)))
-                        .into_any_element(),
-                )
-            }
-            Section::About => Some(kit::badge(format!("v{}", env!("CARGO_PKG_VERSION")), t.accent).into_any_element()),
-            _ => None,
         };
 
         div()
-            .w_full()
-            .p(px(16.0))
-            .rounded(px(12.0))
-            .border_1()
-            .border_color(t.border)
-            .bg(t.wash(0.026))
+            .id("settings-nav")
+            .track_focus(&self.nav_focus)
+            .on_key_down(cx.listener(|this, e: &KeyDownEvent, _, cx| {
+                let order: Vec<Section> = Section::GROUPS.iter().flat_map(|g| g.iter().copied()).collect();
+                let at = order.iter().position(|s| *s == this.section).unwrap_or(0);
+                let next = match e.keystroke.key.as_str() {
+                    "down" => Some((at + 1).min(order.len() - 1)),
+                    "up" => Some(at.saturating_sub(1)),
+                    "home" => Some(0),
+                    "end" => Some(order.len() - 1),
+                    _ => None,
+                };
+                if let Some(i) = next {
+                    this.select(order[i], cx);
+                    cx.stop_propagation();
+                }
+            }))
+            .w(px(width))
+            .h_full()
+            .flex_none()
             .flex()
-            .items_center()
-            .gap(px(14.0))
-            .child(
-                div()
-                    .size(px(38.0))
-                    .flex_none()
-                    .rounded(px(10.0))
-                    .bg(t.accent.opacity(0.14))
-                    .border_1()
-                    .border_color(t.accent.opacity(0.28))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(icon(s.glyph()).size(px(18.0)).text_color(t.accent)),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .gap(px(2.0))
-                    .child(
-                        div()
-                            .text_size(px(18.0))
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .text_color(t.text)
-                            .child(s.label()),
-                    )
-                    .child(div().text_size(px(12.5)).text_color(t.text_muted).child(s.blurb())),
-            )
-            .when_some(action, |d, a| d.child(a))
+            .flex_col()
+            .gap(px(10.0))
+            .pt(px(8.0))
+            .pb(px(12.0))
+            .overflow_hidden()
+            .child(back)
+            .child(search_box)
+            .child(div().id("settings-nav-list").flex_1().min_h_0().overflow_y_scroll().pt(px(4.0)).child(body))
             .into_any_element()
+    }
+
+    /// Optional status badge on a navigation row.
+    fn nav_badge(&self, s: Section, t: &Theme, cx: &App) -> Option<AnyElement> {
+        let count = |n: usize| {
+            div()
+                .px(px(5.0))
+                .h(px(16.0))
+                .flex()
+                .items_center()
+                .rounded(px(4.0))
+                .bg(t.wash(0.08))
+                .text_size(ty::BADGE)
+                .text_color(t.text_muted)
+                .child(n.to_string())
+                .into_any_element()
+        };
+        match s {
+            Section::Agents => Some(self.engine.installed().len()).filter(|n| *n > 0).map(count),
+            Section::Team => {
+                Some(self.engine.store.personas().map(|v| v.len()).unwrap_or(0)).filter(|n| *n > 0).map(count)
+            }
+            Section::Voice => VoiceModel::global(cx)
+                .is_some_and(|m| matches!(m.read(cx).state, InstallState::Installed))
+                .then(|| ui::dot(t.success, 6.0).into_any_element()),
+            Section::Remote => crate::remote::Remote::global(cx)
+                .is_some_and(|r| {
+                    let r = r.read(cx);
+                    r.status.connected && r.enabled()
+                })
+                .then(|| ui::dot(t.success, 6.0).into_any_element()),
+            _ => None,
+        }
+    }
+
+    // ------------------------------------------------------------ content
+
+    /// The selected section's page. `None` for Archived, which the shell
+    /// draws with its own Archived page.
+    pub fn render_content(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let t = Theme::of(cx).clone();
+        if self.flash.is_some_and(|(_, at)| at.elapsed() < FLASH) {
+            window.request_animation_frame();
+        } else {
+            self.flash = None;
+        }
+        let (header_action, body): (Option<AnyElement>, AnyElement) = match self.section {
+            Section::General => (None, self.general(&t, window, cx)),
+            Section::Appearance => (None, self.appearance(&t, window, cx)),
+            Section::Notifications => (None, self.notifications(&t, cx)),
+            Section::Voice => (None, self.voice(&t, cx)),
+            Section::Shortcuts => (self.shortcuts_action(&t, cx), self.shortcuts(&t, cx)),
+            Section::Agents => (
+                Some(
+                    ctl::button_sm(&t, "set-configure-agents", "Sign-in & paths", Tone::Outlined)
+                        .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::OpenAgents)))
+                        .into_any_element(),
+                ),
+                self.agents(&t, cx),
+            ),
+            Section::Team => (
+                Some(
+                    ctl::button_sm(&t, "set-team-new", "New teammate", Tone::Solid)
+                        .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::OpenTeam { new: true })))
+                        .into_any_element(),
+                ),
+                self.team(&t, cx),
+            ),
+            Section::Canvas => (None, self.canvas(&t, cx)),
+            Section::Integrations => (None, self.integrations_section(&t)),
+            Section::Remote => (None, self.remote(&t, cx)),
+            Section::Data => (None, self.data(&t, cx)),
+            Section::About => (None, self.about(&t, cx)),
+            Section::Archived => return None,
+        };
+        Some(
+            div()
+                .id("settings-scroll")
+                .track_focus(&self.focus)
+                .on_key_down(cx.listener(Self::on_key))
+                .track_scroll(&self.scroll)
+                .size_full()
+                .overflow_y_scroll()
+                .child(
+                    page::page_column().child(page::page_header(&t, self.section.label(), header_action)).child(body),
+                )
+                .into_any_element(),
+        )
     }
 
     // ------------------------------------------------------------ sections
 
-    fn general(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+    fn general(&mut self, t: &Theme, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let restore = self.flag("restore_tabs", true);
         let prewarm = self.flag("prewarm", true);
         let worktree = self.flag("use_worktree", true);
-        stack()
-            .child(card(
-                "Threads & Startup",
-                t,
-                div()
-                    .child(row(
-                        "Reopen thread tabs on launch",
-                        "Restore the workspace tabs and active thread you had open last session",
-                        kit::switch("set-restore", restore, t).on_click(cx.listener(move |this, _, _, cx| {
-                            this.set("restore_tabs", if restore { "false" } else { "true" }, cx)
-                        })),
-                        t,
-                    ))
-                    .child(row(
-                        "Prewarm agent harness while typing",
-                        "Spawns the selected agent in the background as you compose so the first token arrives faster",
-                        kit::switch("set-prewarm", prewarm, t).on_click(cx.listener(move |this, _, _, cx| {
-                            this.set("prewarm", if prewarm { "false" } else { "true" }, cx)
-                        })),
-                        t,
-                    )),
-            ))
-            .child(card(
-                "Git & Worktrees",
-                t,
-                div()
-                    .child(row(
-                        "Isolate each new thread in a git worktree",
-                        "Creates a dedicated branch and working directory so parallel agents never collide",
-                        kit::switch("set-worktree", worktree, t).on_click(cx.listener(move |this, _, _, cx| {
-                            this.set("use_worktree", if worktree { "false" } else { "true" }, cx)
-                        })),
-                        t,
-                    ))
-                    .child(row(
-                        "Branch prefix",
-                        "Prefix applied to automatically created worktree branches (e.g. dove/fix-auth)",
-                        field(&self.prefix, 190.0, t),
-                        t,
-                    ))
-                    .child(row(
-                        "Default clone directory",
-                        "Destination folder when cloning repositories from a GitHub URL",
-                        div().flex().items_center().gap(px(6.0)).child(field(&self.clone_dir, 240.0, t)).child(
-                            ui::button_ghost("browse-clone-dir", "Browse…", t)
-                                .on_click(cx.listener(|this, _, window, cx| this.pick_clone_dir(window, cx))),
-                        ),
-                        t,
-                    )),
-            ))
-            .into_any_element()
-    }
+        let grouped = self.get("sidebar_group").as_deref() == Some("project");
+        let compact = self.get("sidebar_density").as_deref() == Some("compact");
+        let archived = self.flag("sidebar_archived", false);
+        let browser = self.flag("agent_browser", true);
+        let office = self.flag("agent_office_skills", true);
 
-    fn agents(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
-        let installed = self.engine.installed();
-        let supported: Vec<HarnessKind> = HarnessKind::ALL
-            .iter()
-            .copied()
-            .filter(|k| *k != HarnessKind::Shell && dove_core::harness_supported(*k))
-            .collect();
-        let installed_count = supported.iter().filter(|k| installed.iter().any(|i| i.kind == **k)).count();
-
-        let rows = supported.into_iter().map(|kind| {
-            let found = installed.iter().find(|i| i.kind == kind);
-            let enabled = crate::pages::agent_enabled(&self.engine.store, kind);
-            let key = format!("agent_disabled.{}", kind.id());
-            let control: AnyElement = if found.is_some() {
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(10.0))
-                    .child(kit::badge(
-                        if enabled { "Enabled" } else { "Hidden" },
-                        if enabled { t.success } else { t.text_faint },
-                    ))
-                    .child(kit::switch(SharedString::from(format!("set-agent-{}", kind.id())), enabled, t).on_click(
-                        cx.listener(move |this, _, _, cx| this.set(&key, if enabled { "true" } else { "false" }, cx)),
-                    ))
-                    .into_any_element()
-            } else {
-                kit::badge("Not installed", t.text_faint).into_any_element()
-            };
-            div()
-                .px(px(16.0))
-                .py(px(12.0))
-                .flex()
-                .items_center()
-                .gap(px(12.0))
-                .border_t_1()
-                .border_color(t.border)
-                .when(found.is_none(), |d| d.opacity(0.6))
-                .child(
-                    div()
-                        .size(px(30.0))
-                        .flex_none()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .rounded(px(8.0))
-                        .bg(t.wash(0.06))
-                        .border_1()
-                        .border_color(t.border)
-                        .child(icon(ui::harness_icon(kind)).size(px(15.0)).text_color(ui::harness_tint(
-                            kind,
-                            t,
-                            t.text_muted,
-                        ))),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .gap(px(2.0))
-                        .child(
-                            div()
-                                .text_size(px(13.5))
-                                .font_weight(gpui::FontWeight::MEDIUM)
-                                .text_color(t.text)
-                                .child(kind.label()),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(11.5))
-                                .font_family(t.font_mono.clone())
-                                .text_color(t.text_faint)
-                                .truncate()
-                                .child(
-                                    found
-                                        .map(|f| f.program.display().to_string())
-                                        .unwrap_or_else(|| "Binary not found on PATH".into()),
-                                ),
-                        ),
-                )
-                .child(control)
-        });
-        stack()
-            .child(card(
-                "Installed Harnesses",
+        let threads = page::card(t)
+            .child(self.srow(
                 t,
-                div()
-                    .child(
-                        div()
-                            .px(px(16.0))
-                            .py(px(10.0))
-                            .bg(t.wash(0.03))
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .child(
-                                div()
-                                    .text_size(px(12.0))
-                                    .text_color(t.text_muted)
-                                    .child(format!("{installed_count} agent CLI(s) detected on this machine")),
-                            )
-                            .child(
-                                ui::button_ghost("set-open-agents-inline", "Sign-in & custom paths →", t)
-                                    .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::OpenAgents))),
-                            ),
-                    )
-                    .children(rows),
+                true,
+                "restore_tabs",
+                "Reopen thread tabs on launch",
+                "Restore the tabs you had open last time.",
+                ctl::on_toggle(ctl::toggle(t, "set-restore", restore), cx, move |this, _, cx| {
+                    this.set_flag("restore_tabs", !restore, cx)
+                }),
             ))
-            .into_any_element()
-    }
-
-    fn team(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
-        let team = self.engine.store.personas().unwrap_or_default();
-        let notes = self.flag("team_notes", true);
-        let roster: AnyElement = if team.is_empty() {
-            row(
-                "No Crew specialists yet",
-                "Give an agent a name, a role, and a standing brief—or seed starter specialists from the Crew page",
-                ui::button_primary("set-team-new", "Create Specialist", t)
-                    .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::OpenTeam { new: true }))),
+            .child(self.srow(
                 t,
-            )
-            .into_any_element()
-        } else {
-            div()
-                .children(team.iter().map(|p| {
-                    let role = if p.role.is_empty() { "Specialist".to_string() } else { p.role.clone() };
-                    div()
-                        .px(px(16.0))
-                        .py(px(12.0))
-                        .flex()
-                        .items_center()
-                        .gap(px(12.0))
-                        .border_t_1()
-                        .border_color(t.border)
-                        .child(crate::team::avatar(p, 30.0, t))
-                        .child(kit::label_block(p.name.clone(), crate::team::subtitle(p), t))
-                        .child(kit::badge(role, t.accent))
-                }))
-                .into_any_element()
-        };
-        stack()
-            .child(card("Active Crew Roster", t, roster))
-            .child(card(
-                "Memory & Behavior",
-                t,
-                div()
-                    .child(row(
-                        "Persistent specialist notes",
-                        "Each specialist reads its accumulated notes at the start of a thread and updates them as it learns",
-                        kit::switch("set-team-notes", notes, t).on_click(cx.listener(move |this, _, _, cx| {
-                            this.set("team_notes", if notes { "false" } else { "true" }, cx)
-                        })),
-                        t,
-                    ))
-                    .child(row(
-                        "Crew Studio",
-                        "Create, brief, and edit specialists or launch a specialist thread in 1 click",
-                        kit::button_outline("set-open-team", "Open Crew Page", t)
-                            .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::OpenTeam { new: false }))),
-                        t,
-                    )),
-            ))
-            .into_any_element()
-    }
-
-    fn canvas(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
-        let auto = self.flag("canvas_auto_open", true);
-        let bridge = self.flag("canvas_bridge", true);
-        let dev = self.get("canvas_default_device").unwrap_or_else(|| "desktop".into());
-        let dev_modes = ["desktop", "tablet", "mobile"];
-        let dev_control = kit::segmented(
-            "set-canvas-device",
-            &["Desktop", "Tablet", "Mobile"],
-            dev_modes.iter().position(|m| *m == dev).unwrap_or(0),
-            t,
-            {
-                let weak = cx.weak_entity();
-                move |i, _, cx| {
-                    let _ = weak.update(cx, |s, cx| s.set("canvas_default_device", dev_modes[i], cx));
-                }
-            },
-        );
-        let pills = [
-            "HTML5",
-            "React 18 JSX / TSX",
-            "Tailwind CSS",
-            "SVG Artboards",
-            "Responsive Viewports",
-            "window.dove.send()",
-        ];
-        stack()
-            .child(card(
-                "Studio Behavior",
-                t,
-                div()
-                    .child(row(
-                        "Open designs automatically as they arrive",
-                        "Immediately reveals the Live Design Canvas in the right dock when an agent calls show_canvas or emits an artboard",
-                        kit::switch("set-canvas-auto", auto, t).on_click(cx.listener(move |this, _, _, cx| {
-                            this.set("canvas_auto_open", if auto { "false" } else { "true" }, cx)
-                        })),
-                        t,
-                    ))
-                    .child(row(
-                        "Interactive 2-way agent bridge",
-                        "Allows buttons and forms inside a rendered design to call dove.send() and reply directly to the agent",
-                        kit::switch("set-canvas-bridge", bridge, t).on_click(cx.listener(move |this, _, _, cx| {
-                            this.set("canvas_bridge", if bridge { "false" } else { "true" }, cx)
-                        })),
-                        t,
-                    ))
-                    .child(row(
-                        "Default artboard viewport",
-                        "Preferred device frame when a design does not specify a target viewport",
-                        dev_control,
-                        t,
-                    )),
-            ))
-            .child(card(
-                "Supported Runtimes",
-                t,
-                    div()
-                        .px(px(16.0))
-                        .py(px(14.0))
-                    .flex()
-                    .flex_col()
-                    .gap(px(10.0))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_wrap()
-                            .gap(px(6.0))
-                            .children(pills.into_iter().map(|p| kit::badge(p, t.accent))),
-                    )
-                    .child(
-                        div()
-                        .text_size(px(12.5))
-                        .text_color(t.text_muted)
-                        .child(
-                                "Agents invoke show_canvas with self-contained HTML, React (JSX/TSX), or SVG, or emit \
-                                 fenced code blocks you can open in one click. Artboards are served locally on 127.0.0.1 \
-                                 with live Desktop, Tablet, and Phone frames, zoom controls, and an editable source drawer.",
-                        ),
-                ),
-            ))
-            .into_any_element()
-    }
-
-    fn appearance(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
-        let mode = self.get("appearance").unwrap_or_else(|| "system".into());
-        let accent = Accent::from_id(&self.get("accent").unwrap_or_default());
-        let surface = Surface::from_settings(self.get("surface").as_deref(), self.get("frosted").as_deref());
-        let wall = self.get("wallpaper_path").filter(|p| !p.is_empty());
-        let effect = Effect::from_id(&self.get("wallpaper_effect").unwrap_or_default());
-        let animate = self.flag("wallpaper_animate", false);
-        let modes = ["system", "dark", "light"];
-        let appearance = kit::segmented(
-            "set-appearance",
-            &["System", "Dark", "Light"],
-            modes.iter().position(|m| *m == mode).unwrap_or(0),
-            t,
-            {
-                let weak = cx.weak_entity();
-                move |i, _, cx| {
-                    let _ = weak.update(cx, |s, cx| s.set("appearance", modes[i], cx));
-                }
-            },
-        );
-        let swatches = div().flex().items_center().gap(px(8.0)).children(Accent::ALL.into_iter().map(|a| {
-            let color = Theme::new(t.appearance, a, Surface::Normal).accent;
-            let selected = a == accent;
-            div()
-                .id(SharedString::from(format!("accent-{}", a.id())))
-                .size(px(24.0))
-                .rounded_full()
-                .bg(color)
-                .cursor_pointer()
-                .flex()
-                .items_center()
-                .justify_center()
-                .when(selected, |d| {
-                    d.border_2().border_color(t.text).child(icon(icons::CHECK).size(px(12.0)).text_color(gpui::white()))
-                })
-                .on_click(cx.listener(move |this, _, _, cx| this.set("accent", a.id(), cx)))
-        }));
-        let surfaces: Vec<&str> = Surface::ALL.iter().map(|s| s.label()).collect();
-        let surface_ix = Surface::ALL.iter().position(|s| *s == surface).unwrap_or(0);
-        let surface_control = kit::segmented("set-surface", &surfaces, surface_ix, t, {
-            let weak = cx.weak_entity();
-            move |i, _, cx| {
-                let _ = weak.update(cx, |s, cx| s.set("surface", Surface::ALL[i].id(), cx));
-            }
-        });
-        let effects: Vec<&str> = Effect::ALL.iter().map(|e| e.label()).collect();
-        let effect_ix = Effect::ALL.iter().position(|e| *e == effect).unwrap_or(0);
-        let effect_control = kit::segmented("set-effect", &effects, effect_ix, t, {
-            let weak = cx.weak_entity();
-            move |i, _, cx| {
-                let _ = weak.update(cx, |s, cx| s.set("wallpaper_effect", Effect::ALL[i].id(), cx));
-            }
-        });
-        let wall_name =
-            wall.as_ref().and_then(|w| std::path::Path::new(w).file_name().map(|n| n.to_string_lossy().to_string()));
-        let look = div()
-            .child(row("Color theme", "Follow the OS appearance or lock to Dark or Light", appearance, t))
-            .child(row("Accent color", "Primary highlight for buttons, active rings, and badges", swatches, t))
-            .child(row(
-                "Window surface material",
-                match surface {
-                    Surface::Glass => "Clear frosted glass over a blurred desktop backdrop",
-                    Surface::Acrylic => "Denser frosted acrylic with richer tint and wider blur",
-                    Surface::Normal => "Solid opaque surfaces with zero desktop blur",
-                },
-                surface_control,
-                t,
+                false,
+                "prewarm",
+                "Prewarm agent while typing",
+                "Start the agent in the background as you type, so the first reply arrives sooner.",
+                ctl::on_toggle(ctl::toggle(t, "set-prewarm", prewarm), cx, move |this, _, cx| {
+                    this.set_flag("prewarm", !prewarm, cx)
+                }),
             ));
-        let canvas = div()
-            .child(row(
-                "New-thread background image",
-                "Optional custom backdrop behind the composer on the home screen",
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(6.0))
-                    .when_some(wall_name, |d, name| d.child(kit::badge(name, t.text_muted)))
-                    .child(
-                        ui::button_ghost("wall-pick", if wall.is_some() { "Change…" } else { "Choose image…" }, t)
-                            .on_click(cx.listener(|this, _, _, cx| this.pick_wallpaper(cx))),
-                    )
-                    .when(wall.is_some(), |d| {
-                        d.child(
-                            ui::button_ghost("wall-clear", "Remove", t)
-                                .on_click(cx.listener(|this, _, _, cx| this.set("wallpaper_path", "", cx))),
-                        )
-                    }),
-                t,
-            ))
-            .child(row(
-                "Backdrop shader effect",
-                "Visual treatment applied over the new-thread canvas",
-                effect_control,
-                t,
-            ))
-            .child(row(
-                "Animate backdrop",
-                if wall.is_some() { effect.motion_hint() } else { "Choose a background image to animate it" },
-                kit::switch("set-wall-animate", animate, t).when_else(
-                    wall.is_some(),
-                    |s| {
-                        s.on_click(cx.listener(move |this, _, _, cx| {
-                            this.set("wallpaper_animate", if animate { "false" } else { "true" }, cx)
-                        }))
-                    },
-                    |s| s.opacity(0.45),
-                ),
-                t,
-            ));
-        stack()
-            .child(card("Theme & Materials", t, look))
-            .child(card("New-Thread Backdrop", t, canvas))
-            .into_any_element()
-    }
 
-    fn composer(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let mode = self.get("permission_mode").unwrap_or_else(|| "default".into());
         let modes = ["default", "accept_edits", "plan"];
-        let default_mode = kit::segmented(
-            "set-mode",
-            &["Ask every time", "Auto-edit", "Plan"],
-            modes.iter().position(|m| *m == mode).unwrap_or(0),
-            t,
-            {
-                let weak = cx.weak_entity();
-                move |i, _, cx| {
-                    let _ = weak.update(cx, |s, cx| s.set("permission_mode", modes[i], cx));
-                }
-            },
-        );
+        let mode_select = ctl::select::<Self>("set-mode", "Default permission level", |s| &mut s.sel_mode)
+            .options(
+                [
+                    SelectOption::new("Ask every time").detail("Approve edits and commands"),
+                    SelectOption::new("Auto-edit").detail("Edits apply; commands ask"),
+                    SelectOption::new("Plan").detail("Read-only until you approve a plan"),
+                ],
+                modes.iter().position(|m| *m == mode).unwrap_or(0),
+            )
+            .width(170.0)
+            .menu_width(320.0)
+            .on_select(move |this, i, _, cx| this.set("permission_mode", modes[i], cx))
+            .render(t, &self.sel_mode, cx);
         let bypassed: Vec<String> = self
             .engine
             .store
@@ -962,272 +979,1054 @@ impl SettingsPage {
             .filter(|p| self.get(&format!("bypass_ok.{}", p.id)).as_deref() == Some("1"))
             .map(|p| p.name)
             .collect();
-        let body = div()
-            .child(row(
-                "Default permission level",
-                "New threads start in this mode; Bypass is selected per thread and confirmed per project",
-                default_mode,
-                t,
-            ))
-            .child(row(
-                "Projects authorized for Bypass",
-                if bypassed.is_empty() {
-                    "No projects have Bypass enabled yet"
-                } else {
-                    "Agents may execute without confirmation prompts in these projects when Bypass is selected"
-                },
+        let bypass_control = div()
+            .flex()
+            .items_center()
+            .gap(px(8.0))
+            .child(if bypassed.is_empty() {
+                page::badge(t, "None").into_any_element()
+            } else {
                 div()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.0))
-                    .child(if bypassed.is_empty() {
-                        kit::badge("None", t.text_faint).into_any_element()
-                    } else {
-                        div()
-                            .text_size(px(12.5))
-                            .text_color(t.text_muted)
-                            .max_w(px(260.0))
-                            .truncate()
-                            .child(bypassed.join(", "))
-                            .into_any_element()
-                    })
-                    .when(!bypassed.is_empty(), |d| {
-                        d.child(ui::button_ghost("bypass-reset", "Revoke all", t).on_click(cx.listener(
-                            |this, _, _, cx| {
-                                for p in this.engine.store.projects().unwrap_or_default() {
-                                    let _ = this.engine.store.set_setting(&format!("bypass_ok.{}", p.id), "0");
-                                }
-                                cx.notify();
-                            },
-                        )))
-                    }),
-                t,
-            ));
-        stack().child(card("Execution & Approvals", t, body)).into_any_element()
-    }
-
-    fn voice(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
-        let Some(model) = VoiceModel::global(cx) else { return div().into_any_element() };
-        let state = model.read(cx).state.clone();
-        let size_mb = VoiceModel::download_size() / 1_000_000;
-        let control: AnyElement = match state {
-            InstallState::Missing => ui::button_primary("voice-install", format!("Download ({size_mb} MB)"), t)
-                .on_click(cx.listener(|_, _, _, cx| {
-                    if let Some(m) = VoiceModel::global(cx) {
-                        m.update(cx, |m, cx| m.install(cx));
-                    }
-                }))
-                .into_any_element(),
-            InstallState::Downloading { done, total } => {
-                let frac = done as f32 / total.max(1) as f32;
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(10.0))
-                    .child(
-                        div()
-                            .w(px(160.0))
-                            .h(px(6.0))
-                            .rounded_full()
-                            .bg(t.wash(0.10))
-                            .child(div().h_full().w(px(160.0 * frac)).rounded_full().bg(t.accent)),
-                    )
-                    .child(div().text_size(px(12.0)).text_color(t.text_muted).child(format!("{:.0}%", frac * 100.0)))
-                    .child(ui::button_ghost("voice-cancel", "Cancel", t).on_click(cx.listener(|_, _, _, cx| {
-                        if let Some(m) = VoiceModel::global(cx) {
-                            m.update(cx, |m, cx| m.cancel(cx));
-                        }
-                    })))
+                    .max_w(px(240.0))
+                    .truncate()
+                    .text_size(ty::META)
+                    .text_color(t.text_muted)
+                    .child(bypassed.join(", "))
                     .into_any_element()
-            }
-            InstallState::Installed => div()
-                .flex()
-                .items_center()
-                .gap(px(8.0))
-                .child(kit::badge("Installed", t.success))
-                .child(ui::button_ghost("voice-remove", "Remove", t).on_click(cx.listener(|_, _, _, cx| {
-                    if let Some(m) = VoiceModel::global(cx) {
-                        m.update(cx, |m, cx| m.remove(cx));
-                    }
-                })))
-                .into_any_element(),
-            InstallState::Failed(e) => div()
-                .flex()
-                .flex_col()
-                .items_end()
-                .gap(px(4.0))
-                .child(div().max_w(px(280.0)).text_size(px(12.0)).text_color(t.danger).child(e))
-                .child(ui::button_ghost("voice-retry", "Try again", t).on_click(cx.listener(|_, _, _, cx| {
-                    if let Some(m) = VoiceModel::global(cx) {
-                        m.update(cx, |m, cx| {
-                            m.state = InstallState::Missing;
-                            m.install(cx);
-                        });
-                    }
-                })))
-                .into_any_element(),
-        };
-        let current = self.get("voice_device").unwrap_or_default();
-        let devices = div()
+            })
+            .when(!bypassed.is_empty(), |d| {
+                d.child(ctl::button_sm(t, "bypass-reset", "Revoke all", Tone::Danger).on_click(cx.listener(
+                    |this, _, _, cx| {
+                        for p in this.engine.store.projects().unwrap_or_default() {
+                            let _ = this.engine.store.set_setting(&format!("bypass_ok.{}", p.id), "0");
+                        }
+                        cx.notify();
+                    },
+                )))
+            });
+        let composer = page::card(t)
+            .child(self.srow(
+                t,
+                true,
+                "permission_mode",
+                "Default permission level",
+                "New threads start in this mode. Bypass is chosen per thread and confirmed once per project.",
+                mode_select,
+            ))
+            .child(self.srow(
+                t,
+                false,
+                "bypass",
+                "Projects allowed to bypass permissions",
+                if bypassed.is_empty() {
+                    "No project has bypass enabled."
+                } else {
+                    "Agents may run without asking in these projects when Bypass is chosen."
+                },
+                bypass_control,
+            ));
+
+        let prefix_focused = self.prefix.read(cx).focus_handle(cx).is_focused(window);
+        let clone_focused = self.clone_dir.read(cx).focus_handle(cx).is_focused(window);
+        let git = page::card(t)
+            .child(self.srow(
+                t,
+                true,
+                "use_worktree",
+                "Isolate new threads in a git worktree",
+                "Each thread gets its own branch and folder, so parallel agents never collide.",
+                ctl::on_toggle(ctl::toggle(t, "set-worktree", worktree), cx, move |this, _, cx| {
+                    this.set_flag("use_worktree", !worktree, cx)
+                }),
+            ))
+            .child(self.srow(
+                t,
+                false,
+                "branch_prefix",
+                "Branch prefix",
+                "Added to the branches Dove creates, as in dove/fix-login.",
+                ctl::text_field(&self.prefix, Some(180.0), prefix_focused, t),
+            ))
+            .child(
+                self.srow(
+                    t,
+                    false,
+                    "clone_dir",
+                    "Default clone folder",
+                    "Where repositories cloned from a URL go.",
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.0))
+                        .child(ctl::text_field(&self.clone_dir, Some(230.0), clone_focused, t))
+                        .child(
+                            ctl::button_sm(t, "browse-clone-dir", "Browse…", Tone::Filled)
+                                .on_click(cx.listener(|this, _, window, cx| this.pick_clone_dir(window, cx))),
+                        ),
+                ),
+            );
+
+        let sidebar = page::card(t)
+            .child(self.srow(
+                t,
+                true,
+                "sidebar_group",
+                "Group threads by project",
+                "Also in the sidebar's options menu.",
+                ctl::on_toggle(ctl::toggle(t, "set-sb-group", grouped), cx, move |this, _, cx| {
+                    this.set("sidebar_group", if grouped { "none" } else { "project" }, cx)
+                }),
+            ))
+            .child(self.srow(
+                t,
+                false,
+                "sidebar_density",
+                "Compact thread rows",
+                "One line per thread; project and branch show on hover.",
+                ctl::on_toggle(ctl::toggle(t, "set-sb-compact", compact), cx, move |this, _, cx| {
+                    this.set("sidebar_density", if compact { "comfortable" } else { "compact" }, cx)
+                }),
+            ))
+            .child(self.srow(
+                t,
+                false,
+                "sidebar_archived",
+                "Show archived threads in the sidebar",
+                "Listed under the active threads.",
+                ctl::on_toggle(ctl::toggle(t, "set-sb-archived", archived), cx, move |this, _, cx| {
+                    this.set_flag("sidebar_archived", !archived, cx)
+                }),
+            ));
+
+        let tools = page::card(t)
+            .child(self.srow(
+                t,
+                true,
+                "agent_browser",
+                "Browser tools for agents",
+                "Agents can drive the in-app browser. Applies after Dove restarts.",
+                ctl::on_toggle(ctl::toggle(t, "set-agent-browser", browser), cx, move |this, _, cx| {
+                    this.set_flag("agent_browser", !browser, cx)
+                }),
+            ))
+            .child(self.srow(
+                t,
+                false,
+                "agent_office_skills",
+                "Office document skills",
+                "Agents can read and write Word, PowerPoint, Excel and PDF files.",
+                ctl::on_toggle(ctl::toggle(t, "set-agent-office", office), cx, move |this, _, cx| {
+                    dove_core::office_skills::set_enabled(!office);
+                    this.set_flag("agent_office_skills", !office, cx)
+                }),
+            ));
+
+        div()
             .flex()
             .flex_col()
-            .gap(px(2.0))
-            .child(
-                device_row("dev-default", "System default", current.is_empty(), t)
-                    .on_click(cx.listener(|this, _, _, cx| this.set("voice_device", "", cx))),
-            )
-            .children(self.devices.iter().enumerate().map(|(i, (id, name))| {
-                let id2 = id.clone();
-                device_row(SharedString::from(format!("dev-{i}")), name, *id == current, t)
-                    .on_click(cx.listener(move |this, _, _, cx| this.set("voice_device", &id2, cx)))
-            }));
-        let body = div()
-            .child(row(
-                "Local Parakeet dictation model",
-                "NVIDIA Parakeet TDT 0.6B v3 runs 100% on-device. Verified file-by-file via SHA-256.",
-                control,
-                t,
-            ))
-            .child(row("Microphone", "", devices, t))
-            .child(row("How to dictate", "Hold the mic in the composer (or the terminal) to talk; click it to toggle. Text is inserted, never sent.", div(), t));
-        stack().child(card("On-Device Dictation", t, body)).into_any_element()
+            .child(page::section(t, "Threads", threads))
+            .child(page::section(t, "Composer", composer))
+            .child(page::section(t, "Git & worktrees", git))
+            .child(page::section(t, "Sidebar", sidebar))
+            .child(page::section(t, "Agent tools", tools))
+            .into_any_element()
     }
 
-    fn keyboard(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
-        let store = self.engine.store.clone();
-        let list = div().flex().flex_col().children(crate::keymap::shortcuts().into_iter().map(|s| {
-            let key = crate::keymap::binding(&store, &s);
-            let recording = self.recording == Some(s.id);
-            let custom = key != s.default;
-            let id = s.id;
-            let default = s.default;
-            row(
-                s.label,
-                if custom { "Customized shortcut" } else { "" },
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(6.0))
-                    .when(custom && !recording, |d| d.child(kit::badge("Modified", t.accent)))
-                    .child(if recording {
-                        div()
-                            .px(px(10.0))
-                            .h(px(24.0))
-                            .flex()
-                            .items_center()
-                            .rounded(px(6.0))
-                            .border_1()
-                            .border_color(t.accent)
-                            .bg(t.accent.opacity(0.10))
-                            .text_size(px(12.0))
-                            .text_color(t.accent)
-                            .child("Press keys… (Esc cancels)")
-                            .into_any_element()
-                    } else {
-                        kit::kbd(&crate::keymap::pretty(&key), t).into_any_element()
-                    })
-                    .child(ui::button_ghost(SharedString::from(format!("rec-{id}")), "Rebind", t).on_click(
-                        cx.listener(move |this, _, window, cx| {
-                            this.recording = Some(id);
-                            window.focus(&this.focus, cx);
-                            cx.notify();
-                        }),
-                    ))
-                    .when(custom, |d| {
-                        d.child(ui::button_ghost(SharedString::from(format!("reset-{id}")), "Reset", t).on_click(
-                            cx.listener(move |this, _, _, cx| {
-                                crate::keymap::rebind(&this.engine.store, id, default, cx);
-                                cx.notify();
-                            }),
-                        ))
-                    }),
-                t,
-            )
+    fn appearance(&mut self, t: &Theme, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let mode = self.get("appearance").unwrap_or_else(|| "system".into());
+        let accent = Accent::from_id(&self.get("accent").unwrap_or_default());
+        let surface = Surface::from_settings(self.get("surface").as_deref(), self.get("frosted").as_deref());
+        let wall = self.get("wallpaper_path").filter(|p| !p.is_empty());
+        let effect = Effect::from_id(&self.get("wallpaper_effect").unwrap_or_default());
+        let animate = self.flag("wallpaper_animate", false);
+
+        // Color scheme: three preview cards.
+        let schemes =
+            [("system", "System", icons::MONITOR), ("light", "Light", icons::SUN), ("dark", "Dark", icons::MOON)];
+        let cards = div().w_full().flex().gap(px(space::LG)).children(schemes.into_iter().map(|(id, label, glyph)| {
+            let selected = mode == id;
+            let ring = if selected { t.accent } else { t.border };
+            div()
+                .id(SharedString::from(format!("scheme-{id}")))
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap(px(8.0))
+                .cursor_pointer()
+                .role(gpui::Role::RadioButton)
+                .aria_selected(selected)
+                .aria_label(label)
+                .child(
+                    div()
+                        .w_full()
+                        .h(px(104.0))
+                        .rounded(px(8.0))
+                        .overflow_hidden()
+                        .border_1()
+                        .border_color(ring)
+                        .when(selected, |d| {
+                            d.shadow(vec![gpui::BoxShadow {
+                                color: t.accent.opacity(0.35),
+                                offset: point(px(0.0), px(0.0)),
+                                blur_radius: px(0.0),
+                                spread_radius: px(1.0),
+                                inset: false,
+                            }])
+                        })
+                        .child(scheme_preview(id)),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.0))
+                        .text_size(ty::BODY)
+                        .when(selected, |d| d.font_weight(gpui::FontWeight::MEDIUM))
+                        .text_color(if selected { t.accent } else { t.text_muted })
+                        .child(icon(glyph).size(px(15.0)))
+                        .child(label),
+                )
+                .on_click(cx.listener(move |this, _, _, cx| this.set("appearance", id, cx)))
         }));
-        stack().child(card("Keyboard Shortcuts", t, list)).into_any_element()
+
+        let swatches =
+            div().flex().flex_wrap().items_center().gap(px(6.0)).children(Accent::ALL.into_iter().map(|a| {
+                let color = Theme::new(t.appearance, a, Surface::Normal).accent;
+                ctl::swatch(t, format!("accent-{}", a.id()), color, a == accent, a.label())
+                    .tooltip(ui::tip(a.label()))
+                    .on_click(cx.listener(move |this, _, _, cx| this.set("accent", a.id(), cx)))
+            }));
+        let scheme =
+            page::card(t).child(div().relative().p(px(space::LG)).child(cards).child(self.anchor("appearance"))).child(
+                self.srow(t, false, "accent", "Accent color", "Buttons, focus rings, selections and badges.", swatches),
+            );
+
+        let surface_select = ctl::select::<Self>("set-surface", "Window material", |s| &mut s.sel_surface)
+            .options(
+                Surface::ALL.iter().map(|s| {
+                    SelectOption::new(s.label()).detail(match s {
+                        Surface::Glass => "Frosted",
+                        Surface::Acrylic => "Denser frost",
+                        Surface::Normal => "Opaque",
+                    })
+                }),
+                Surface::ALL.iter().position(|s| *s == surface).unwrap_or(0),
+            )
+            .width(150.0)
+            .menu_width(220.0)
+            .on_select(|this, i, _, cx| this.set("surface", Surface::ALL[i].id(), cx))
+            .render(t, &self.sel_surface, cx);
+        let effect_select = ctl::select::<Self>("set-effect", "Background effect", |s| &mut s.sel_effect)
+            .options(
+                Effect::ALL.iter().map(|e| SelectOption::new(e.label())),
+                Effect::ALL.iter().position(|e| *e == effect).unwrap_or(0),
+            )
+            .width(150.0)
+            .on_select(|this, i, _, cx| this.set("wallpaper_effect", Effect::ALL[i].id(), cx))
+            .render(t, &self.sel_effect, cx);
+        let wall_name =
+            wall.as_ref().and_then(|w| std::path::Path::new(w).file_name().map(|n| n.to_string_lossy().to_string()));
+        let wall_control = div()
+            .flex()
+            .items_center()
+            .gap(px(6.0))
+            .child(
+                ctl::button_sm(t, "wall-pick", if wall.is_some() { "Replace…" } else { "Choose image…" }, Tone::Filled)
+                    .on_click(cx.listener(|this, _, _, cx| this.pick_wallpaper(cx))),
+            )
+            .when(wall.is_some(), |d| {
+                d.child(
+                    ctl::button_sm(t, "wall-clear", "Remove", Tone::Quiet)
+                        .on_click(cx.listener(|this, _, _, cx| this.set("wallpaper_path", "", cx))),
+                )
+            });
+        let has_wall = wall.is_some();
+        let material = page::card(t)
+            .child(self.srow(
+                t,
+                true,
+                "surface",
+                "Window material",
+                match surface {
+                    Surface::Glass => "Frosted glass over the blurred desktop.",
+                    Surface::Acrylic => "Denser frost: the desktop reads as colour, not shapes.",
+                    Surface::Normal => "Solid surfaces, no blur.",
+                },
+                surface_select,
+            ))
+            .child(self.srow(
+                t,
+                false,
+                "wallpaper_path",
+                "New-thread background",
+                wall_name.clone().unwrap_or_else(|| "No image selected".into()),
+                wall_control,
+            ))
+            .child(self.srow(
+                t,
+                false,
+                "wallpaper_effect",
+                "Background effect",
+                if has_wall {
+                    "How the background is drawn behind the composer."
+                } else {
+                    "Choose a background image first."
+                },
+                if has_wall { effect_select } else { div().opacity(0.45).child(effect_select).into_any_element() },
+            ))
+            .child(self.srow(
+                t,
+                false,
+                "wallpaper_animate",
+                "Animate background",
+                if has_wall { effect.motion_hint() } else { "Choose a background image to animate it." },
+                if has_wall {
+                    ctl::on_toggle(ctl::toggle(t, "set-wall-animate", animate), cx, move |this, _, cx| {
+                        this.set_flag("wallpaper_animate", !animate, cx)
+                    })
+                    .into_any_element()
+                } else {
+                    ctl::disabled(ctl::toggle(t, "set-wall-animate", animate), "Choose a background image first")
+                        .into_any_element()
+                },
+            ));
+
+        // Motion.
+        let preference = motion::preference(cx);
+        let system = motion::system_reduces_motion(cx);
+        let pause = motion::pause_in_background(cx);
+        let reduce_select = ctl::select::<Self>("set-reduce-motion", "Reduce motion", |s| &mut s.sel_reduce)
+            .options(
+                ReduceMotion::ALL.iter().map(|m| {
+                    let o = SelectOption::new(m.label());
+                    if *m == ReduceMotion::System {
+                        o.detail(if system { "Reduced" } else { "Full motion" })
+                    } else {
+                        o
+                    }
+                }),
+                ReduceMotion::ALL.iter().position(|m| *m == preference).unwrap_or(0),
+            )
+            .width(130.0)
+            .menu_width(200.0)
+            .on_select(|this, i, _, cx| {
+                motion::set_preference(ReduceMotion::ALL[i], &this.engine.store, cx);
+                cx.notify();
+            })
+            .render(t, &self.sel_reduce, cx);
+        let motion_card = page::card(t)
+            .child(self.srow(
+                t,
+                true,
+                "reduce_motion",
+                "Reduce motion",
+                match preference {
+                    ReduceMotion::System if system => "Following your system: motion is reduced.",
+                    ReduceMotion::System => "Following your system setting.",
+                    ReduceMotion::On => "Transitions snap; loops hold still.",
+                    ReduceMotion::Off => "Full motion, whatever the system says.",
+                },
+                reduce_select,
+            ))
+            .child(self.srow(
+                t,
+                false,
+                "pause_animations_in_background",
+                "Pause animations in background",
+                "Hold every animation still while Dove's window is not focused.",
+                ctl::on_toggle(ctl::toggle(t, "set-pause-bg", pause), cx, move |this, _, cx| {
+                    motion::set_pause_in_background(!pause, &this.engine.store, cx);
+                    cx.notify();
+                }),
+            ));
+
+        // Fonts and layout.
+        let size_select = |id: &'static str,
+                           label: &'static str,
+                           key: &'static str,
+                           sizes: &'static [f32],
+                           current: f32,
+                           default: f32,
+                           reach: fn(&mut Self) -> &mut SelectState,
+                           state: &SelectState,
+                           cx: &mut Context<Self>| {
+            ctl::select::<Self>(id, label, reach)
+                .options(
+                    sizes.iter().map(|s| {
+                        let o = SelectOption::new(format!("{} px", design::format_size(*s)));
+                        if (*s - default).abs() < 0.01 { o.detail("Default") } else { o }
+                    }),
+                    sizes.iter().position(|s| (*s - current).abs() < 0.01).unwrap_or(0),
+                )
+                .width(110.0)
+                .menu_width(170.0)
+                .on_select(move |this, i, _, cx| {
+                    design::set_preference(&this.engine.store, key, sizes[i], cx);
+                    cx.notify();
+                })
+                .render(&Theme::of(cx).clone(), state, cx)
+        };
+        let ui_size = size_select(
+            "set-ui-size",
+            "Interface font size",
+            "ui_font_size",
+            &design::UI_SIZES,
+            design::ui_size(),
+            design::BASE,
+            |s| &mut s.sel_ui_size,
+            &self.sel_ui_size,
+            cx,
+        );
+        let code_size = size_select(
+            "set-code-size",
+            "Code and diff font size",
+            "code_font_size",
+            &design::MONO_SIZES,
+            design::code(),
+            design::CODE_DEFAULT,
+            |s| &mut s.sel_code_size,
+            &self.sel_code_size,
+            cx,
+        );
+        let term_size = size_select(
+            "set-term-size",
+            "Terminal font size",
+            "terminal_font_size",
+            &design::MONO_SIZES,
+            design::terminal(),
+            design::TERMINAL_DEFAULT,
+            |s| &mut s.sel_term_size,
+            &self.sel_term_size,
+            cx,
+        );
+        let width = self.width_drag.unwrap_or_else(design::conversation_width);
+        let width_slider = ctl::slider::<Self>(
+            t,
+            "set-conversation-width",
+            width,
+            (design::CONVERSATION_MIN, design::CONVERSATION_MAX, design::CONVERSATION_STEP),
+            180.0,
+            &self.width_slider,
+            |s| &mut s.width_slider,
+            |this, v, commit, _, cx| {
+                if commit {
+                    this.width_drag = None;
+                    design::set_preference(&this.engine.store, "conversation_width", v, cx);
+                } else {
+                    this.width_drag = Some(v);
+                }
+                cx.notify();
+            },
+            cx,
+        );
+        let width_control = div()
+            .flex()
+            .items_center()
+            .gap(px(10.0))
+            .child(width_slider)
+            .child(div().w(px(56.0)).text_size(ty::META).text_color(t.text_muted).child(format!("{width:.0} px")))
+            .child(ctl::button_sm(t, "set-width-reset", "Reset", Tone::Quiet).on_click(cx.listener(
+                |this, _, _, cx| {
+                    design::set_preference(&this.engine.store, "conversation_width", design::CONVERSATION_DEFAULT, cx);
+                    cx.notify();
+                },
+            )));
+        let fonts = page::card(t)
+            .child(self.srow(
+                t,
+                true,
+                "ui_font_size",
+                "Interface font size",
+                "Menus, labels and conversations.",
+                ui_size,
+            ))
+            .child(self.srow(
+                t,
+                false,
+                "code_font_size",
+                "Code & diff font size",
+                "Code blocks, diffs and file previews.",
+                code_size,
+            ))
+            .child(self.srow(
+                t,
+                false,
+                "terminal_font_size",
+                "Terminal font size",
+                "Terminals and agents' own terminal views.",
+                term_size,
+            ))
+            .child(self.srow(
+                t,
+                false,
+                "conversation_width",
+                "Conversation width",
+                "The widest the conversation and composer get.",
+                width_control,
+            ));
+
+        div()
+            .flex()
+            .flex_col()
+            .child(page::section(t, "Color scheme", scheme))
+            .child(page::section(t, "Material and background", material))
+            .child(page::section(t, "Motion", motion_card))
+            .child(page::section(t, "Fonts and layout", fonts))
+            .into_any_element()
     }
 
     fn notifications(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let on = self.flag(crate::notify::NOTIFICATIONS, true);
         let sound = self.flag(crate::notify::SOUND, false);
         let keep = self.flag(crate::notify::KEEP_RUNNING, false);
-        let body = div()
-            .child(row(
-                "System desktop notifications",
-                "Alert when an agent awaits approval, finishes a turn, or encounters an error while Dove is unfocused",
-                kit::switch("set-notify", on, t).on_click(cx.listener(move |this, _, _, cx| {
-                    this.set(crate::notify::NOTIFICATIONS, if on { "false" } else { "true" }, cx)
-                })),
-                t,
-            ))
-            .child(row(
-                "Completion sound",
-                "Play a subtle chime when a background agent completes its task",
-                kit::switch("set-sound", sound, t).on_click(cx.listener(move |this, _, _, cx| {
-                    this.set(crate::notify::SOUND, if sound { "false" } else { "true" }, cx)
-                })),
-                t,
-            ))
-            .child(row(
-                "Keep running in background",
-                if crate::notify::tray_supported() {
-                    "Closing the window keeps Dove and scheduled automations running in the system tray"
-                } else {
-                    "Closing the window minimizes Dove so scheduled automations continue running"
-                },
-                kit::switch("set-keep", keep, t).on_click(cx.listener(move |this, _, window, cx| {
-                    crate::notify::set_keep_running(&this.engine, !keep, window, cx);
+        let desktop = page::card(t).child(self.srow(
+            t,
+            true,
+            "notifications",
+            "Desktop notifications",
+            "When an agent needs you, finishes or fails while Dove is in the background.",
+            ctl::on_toggle(ctl::toggle(t, "set-notify", on), cx, move |this, _, cx| {
+                this.set_flag(crate::notify::NOTIFICATIONS, !on, cx)
+            }),
+        ));
+        let sounds = page::card(t).child(self.srow(
+            t,
+            true,
+            "notification_sound",
+            "Completion sound",
+            "A short chime when a background agent finishes.",
+            ctl::on_toggle(ctl::toggle(t, "set-sound", sound), cx, move |this, _, cx| {
+                this.set_flag(crate::notify::SOUND, !sound, cx)
+            }),
+        ));
+        let background = page::card(t).child(self.srow(
+            t,
+            true,
+            "keep_running",
+            "Keep running in background",
+            if crate::notify::tray_supported() {
+                "Closing the window keeps Dove and its automations running in the system tray."
+            } else {
+                "Closing the window minimizes Dove so automations keep running."
+            },
+            ctl::on_toggle(ctl::toggle(t, "set-keep", keep), cx, move |this, window, cx| {
+                crate::notify::set_keep_running(&this.engine, !keep, window, cx);
+                cx.notify();
+            }),
+        ));
+        div()
+            .flex()
+            .flex_col()
+            .child(page::section(t, "Desktop", desktop))
+            .child(page::section(t, "Sounds", sounds))
+            .child(page::section(t, "Background", background))
+            .into_any_element()
+    }
+
+    fn voice(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let Some(model) = VoiceModel::global(cx) else { return div().into_any_element() };
+        let state = model.read(cx).state.clone();
+        let size_mb = VoiceModel::download_size() / 1_000_000;
+        let (status, control): (SharedString, AnyElement) = match state {
+            InstallState::Missing => (
+                "Not installed. Runs entirely on this device once downloaded.".into(),
+                ctl::button_sm(t, "voice-install", format!("Download ({size_mb} MB)"), Tone::Solid)
+                    .on_click(cx.listener(|_, _, _, cx| {
+                        if let Some(m) = VoiceModel::global(cx) {
+                            m.update(cx, |m, cx| m.install(cx));
+                        }
+                    }))
+                    .into_any_element(),
+            ),
+            InstallState::Downloading { done, total } => {
+                let frac = done as f32 / total.max(1) as f32;
+                (
+                    format!("Downloading · {:.0} of {:.0} MB", done as f64 / 1e6, total as f64 / 1e6).into(),
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(10.0))
+                        .child(
+                            div()
+                                .w(px(140.0))
+                                .h(px(5.0))
+                                .rounded_full()
+                                .bg(t.wash(0.10))
+                                .child(div().h_full().w(px(140.0 * frac)).rounded_full().bg(t.accent)),
+                        )
+                        .child(
+                            div().text_size(ty::META).text_color(t.text_muted).child(format!("{:.0}%", frac * 100.0)),
+                        )
+                        .child(ctl::button_sm(t, "voice-cancel", "Cancel", Tone::Quiet).on_click(cx.listener(
+                            |_, _, _, cx| {
+                                if let Some(m) = VoiceModel::global(cx) {
+                                    m.update(cx, |m, cx| m.cancel(cx));
+                                }
+                            },
+                        )))
+                        .into_any_element(),
+                )
+            }
+            InstallState::Installed => (
+                "NVIDIA Parakeet TDT 0.6B v3, verified file by file.".into(),
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .child(page::badge_tone("Installed", t.success))
+                    .child(ctl::button_sm(t, "voice-remove", "Remove", Tone::Quiet).on_click(cx.listener(
+                        |_, _, _, cx| {
+                            if let Some(m) = VoiceModel::global(cx) {
+                                m.update(cx, |m, cx| m.remove(cx));
+                            }
+                        },
+                    )))
+                    .into_any_element(),
+            ),
+            InstallState::Failed(e) => (
+                e.into(),
+                ctl::button_sm(t, "voice-retry", "Try again", Tone::Filled)
+                    .on_click(cx.listener(|_, _, _, cx| {
+                        if let Some(m) = VoiceModel::global(cx) {
+                            m.update(cx, |m, cx| {
+                                m.state = InstallState::Missing;
+                                m.install(cx);
+                            });
+                        }
+                    }))
+                    .into_any_element(),
+            ),
+        };
+        let current = self.get("voice_device").unwrap_or_default();
+        let mut names: Vec<SelectOption> = vec![SelectOption::new("System default")];
+        names.extend(self.devices.iter().map(|(_, name)| SelectOption::new(name.clone())));
+        let selected = if current.is_empty() {
+            0
+        } else {
+            self.devices.iter().position(|(id, _)| *id == current).map(|i| i + 1).unwrap_or(0)
+        };
+        let ids: Vec<String> =
+            std::iter::once(String::new()).chain(self.devices.iter().map(|(id, _)| id.clone())).collect();
+        let mic = ctl::select::<Self>("set-mic", "Microphone", |s| &mut s.sel_mic)
+            .options(names, selected)
+            .width(220.0)
+            .menu_width(300.0)
+            .on_select(move |this, i, _, cx| {
+                if let Some(id) = ids.get(i) {
+                    this.set("voice_device", id, cx);
+                }
+            })
+            .render(t, &self.sel_mic, cx);
+        let card = page::card(t)
+            .child(self.srow(t, true, "voice_model", "Dictation model", status, control))
+            .child(self.srow(t, false, "voice_device", "Microphone", "", mic))
+            .child(
+                page::row(t, false).child(page::row_text(
+                    t,
+                    "How to dictate",
+                    "Hold the mic in the composer or a terminal to talk, or click it to toggle. Text is inserted, never sent.",
+                )),
+            );
+        page::section(t, "Dictation", card).into_any_element()
+    }
+
+    fn shortcuts_action(&self, t: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let store = self.engine.store.clone();
+        let any_custom = crate::keymap::shortcuts().iter().any(|sc| crate::keymap::binding(&store, sc) != sc.default);
+        Some(if any_custom {
+            ctl::button_sm(t, "keys-restore", "Restore defaults", Tone::Quiet)
+                .child(icon(icons::RESTART).size(px(13.0)))
+                .on_click(cx.listener(|this, _, _, cx| {
+                    for sc in crate::keymap::shortcuts() {
+                        crate::keymap::rebind(&this.engine.store, sc.id, sc.default, cx);
+                    }
                     cx.notify();
-                })),
+                }))
+                .into_any_element()
+        } else {
+            page::badge(t, "Default bindings").into_any_element()
+        })
+    }
+
+    fn shortcuts(&mut self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let store = self.engine.store.clone();
+        let all = crate::keymap::shortcuts();
+        let groups: [(&str, &[&str]); 4] = [
+            ("Navigation", &["palette", "back", "forward", "threads", "kanban", "settings"]),
+            (
+                "Threads",
+                &["new_thread", "close_tab", "next_tab", "prev_tab", "rename", "focus_composer", "toggle_terminal"],
+            ),
+            ("Panels", &["toggle_sidebar", "toggle_panel"]),
+            ("App", &["add_project", "quit"]),
+        ];
+        let mut out = div()
+            .flex()
+            .flex_col()
+            .child(page::page_subtitle(t, "Click a binding, then press the new keys. Escape cancels."));
+        for (label, ids) in groups {
+            let mut card = page::card(t);
+            for (i, id) in ids.iter().enumerate() {
+                let Some(s) = all.iter().find(|s| s.id == *id) else { continue };
+                let key = crate::keymap::binding(&store, s);
+                let recording = self.recording == Some(s.id);
+                let custom = key != s.default;
+                let (sid, default) = (s.id, s.default);
+                let chip = div()
+                    .id(SharedString::from(format!("rec-{sid}")))
+                    .min_w(px(96.0))
+                    .h(px(30.0))
+                    .px(px(10.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(8.0))
+                    .bg(if recording { t.accent.opacity(0.12) } else { t.wash(0.06) })
+                    .border_1()
+                    .border_color(if recording { t.accent } else { gpui::transparent_black() })
+                    .font_family(t.font_mono.clone())
+                    .text_size(ty::META)
+                    .text_color(if recording { t.accent } else { t.text })
+                    .cursor_pointer()
+                    .hover(|s| s.bg(t.wash(0.10)))
+                    .role(gpui::Role::Button)
+                    .aria_label(format!("{}: {}", s.label, crate::keymap::pretty(&key)))
+                    .child(if recording { "Press keys…".to_string() } else { crate::keymap::pretty(&key) })
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.recording = Some(sid);
+                        window.focus(&this.focus, cx);
+                        cx.notify();
+                    }));
+                let control = div()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.0))
+                    .when(custom && !recording, |d| {
+                        d.child(
+                            ctl::button_sm(t, format!("reset-{sid}"), "Reset", Tone::Quiet)
+                                .tooltip(ui::tip(format!("Back to {}", crate::keymap::pretty(default))))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    crate::keymap::rebind(&this.engine.store, sid, default, cx);
+                                    cx.notify();
+                                })),
+                        )
+                    })
+                    .child(chip);
+                card =
+                    card.child(page::setting_row(t, i == 0, s.label, if custom { "Customized" } else { "" }, control));
+            }
+            out = out.child(page::section(t, label, card));
+        }
+        // Keys that are part of a surface rather than rebindable commands.
+        let fixed: [(&str, String); 14] = [
+            ("Go to thread tab 1–9", format!("{} 1–9", crate::keymap::pretty("secondary"))),
+            ("Close menu or overlay", "Esc".into()),
+            ("Send, steer or queue a message", "Enter".into()),
+            ("Stop the agent (empty composer)", "Esc".into()),
+            ("Paste an image", crate::keymap::pretty("secondary-v")),
+            ("Previous / next prompt", format!("{} ↑ / ↓", crate::keymap::pretty("alt"))),
+            ("Jump to top / latest", format!("{} Home / End", crate::keymap::pretty("secondary"))),
+            ("Allow once / always / deny", "A / S / D".into()),
+            ("Answer a question", "1–9".into()),
+            ("Browser: address bar", crate::keymap::pretty("secondary-l")),
+            ("Browser: new / close tab", format!("{} T / W", crate::keymap::pretty("secondary"))),
+            ("Browser: back / forward", format!("{} [ / ]", crate::keymap::pretty("secondary"))),
+            ("Browser: reload", format!("{} R, F5", crate::keymap::pretty("secondary"))),
+            ("Terminal: copy / paste", "Ctrl Shift C / V".into()),
+        ];
+        let mut fixed_card = page::card(t);
+        for (i, (label, keys)) in fixed.into_iter().enumerate() {
+            fixed_card = fixed_card.child(page::setting_row(
                 t,
+                i == 0,
+                label,
+                "",
+                div()
+                    .px(px(10.0))
+                    .h(px(26.0))
+                    .flex()
+                    .items_center()
+                    .rounded(px(7.0))
+                    .bg(t.wash(0.04))
+                    .font_family(t.font_mono.clone())
+                    .text_size(ty::META)
+                    .text_color(t.text_muted)
+                    .child(keys),
             ));
-        stack().child(card("Alerts & Background Daemon", t, body)).into_any_element()
+        }
+        out.child(page::section(t, "Built in", fixed_card)).into_any_element()
+    }
+
+    fn agents(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let installed = self.engine.installed();
+        let supported: Vec<HarnessKind> = HarnessKind::ALL
+            .iter()
+            .copied()
+            .filter(|k| *k != HarnessKind::Shell && dove_core::harness_supported(*k))
+            .collect();
+        let found_count = supported.iter().filter(|k| installed.iter().any(|i| i.kind == **k)).count();
+        let mut card = page::card(t);
+        for (i, kind) in supported.into_iter().enumerate() {
+            let found = installed.iter().find(|x| x.kind == kind);
+            let enabled = crate::pages::agent_enabled(&self.engine.store, kind);
+            let key = format!("agent_disabled.{}", kind.id());
+            let version = self
+                .get(&format!("agent_version.{}", kind.id()))
+                .and_then(|v| v.rsplit_once('|').map(|(_, ver)| ver.to_string()))
+                .filter(|v| !v.is_empty());
+            let meta: SharedString = match (found, version) {
+                (Some(_), Some(v)) => format!("v{v}").into(),
+                (Some(f), None) => f.program.display().to_string().into(),
+                (None, _) => "Not installed".into(),
+            };
+            let control: AnyElement = if found.is_some() {
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(10.0))
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("agent-more-{}", kind.id())))
+                            .size(px(26.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(6.0))
+                            .cursor_pointer()
+                            .hover(|s| s.bg(t.wash(0.08)))
+                            .tooltip(ui::tip("Sign-in, binary path and updates"))
+                            .child(icon(icons::ALT_ARROW_RIGHT).size(px(14.0)).text_color(t.text_faint))
+                            .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::OpenAgents))),
+                    )
+                    .child(ctl::on_toggle(
+                        ctl::toggle(t, format!("set-agent-{}", kind.id()), enabled).tooltip(ui::tip(if enabled {
+                            "Shown in the composer"
+                        } else {
+                            "Hidden from the composer"
+                        })),
+                        cx,
+                        move |this, _, cx| this.set(&key, if enabled { "true" } else { "false" }, cx),
+                    ))
+                    .into_any_element()
+            } else {
+                page::badge(t, "Not installed").into_any_element()
+            };
+            card = card.child(
+                page::row(t, i == 0)
+                    .when(found.is_none(), |d| d.opacity(0.6))
+                    .child(page::row_tile(t, ui::harness_icon(kind), Some(ui::harness_tint(kind, t, t.text_muted))))
+                    .child(page::row_text(t, kind.label(), meta))
+                    .child(control),
+            );
+        }
+        div()
+            .flex()
+            .flex_col()
+            .child(page::page_subtitle(
+                t,
+                format!("{found_count} agent CLIs found on this machine. Hidden agents stay installed but leave the composer."),
+            ))
+            .child(page::section(t, "", card.relative().child(self.anchor("agents"))))
+            .into_any_element()
+    }
+
+    fn team(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let team = self.engine.store.personas().unwrap_or_default();
+        let notes = self.flag("team_notes", true);
+        let roster: gpui::Div = if team.is_empty() {
+            page::card(t).child(page::empty_state(
+                t,
+                icons::USERS_GROUP,
+                "No teammates yet",
+                "Give an agent a name, a role and a standing brief.",
+                Some(
+                    ctl::button_sm(t, "set-team-create", "New teammate", Tone::Solid)
+                        .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::OpenTeam { new: true })))
+                        .into_any_element(),
+                ),
+            ))
+        } else {
+            let mut card = page::card(t);
+            for (i, p) in team.iter().enumerate() {
+                let role = if p.role.is_empty() { "Teammate".to_string() } else { p.role.clone() };
+                card = card.child(
+                    page::row(t, i == 0)
+                        .child(crate::team::avatar(p, 30.0, t))
+                        .child(page::row_text(t, p.name.clone(), crate::team::subtitle(p)))
+                        .child(page::badge(t, role)),
+                );
+            }
+            card
+        };
+        let behavior = page::card(t)
+            .child(self.srow(
+                t,
+                true,
+                "team_notes",
+                "Persistent teammate notes",
+                "Each teammate reads its notes when a thread starts and updates them as it learns.",
+                ctl::on_toggle(ctl::toggle(t, "set-team-notes", notes), cx, move |this, _, cx| {
+                    this.set_flag("team_notes", !notes, cx)
+                }),
+            ))
+            .child(
+                self.srow(
+                    t,
+                    false,
+                    "team_page",
+                    "Team page",
+                    "Create and brief teammates, or start a thread with one.",
+                    ctl::button_sm(t, "set-open-team", "Open Team page", Tone::Filled)
+                        .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::OpenTeam { new: false }))),
+                ),
+            );
+        div()
+            .flex()
+            .flex_col()
+            .child(page::section(t, "Teammates", roster.relative().child(self.anchor("team_roster"))))
+            .child(page::section(t, "Memory and behavior", behavior))
+            .into_any_element()
+    }
+
+    fn canvas(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let auto = self.flag("canvas_auto_open", true);
+        let bridge = self.flag("canvas_bridge", true);
+        let dev = self.get("canvas_default_device").unwrap_or_else(|| "desktop".into());
+        let dev_modes = ["desktop", "tablet", "mobile"];
+        let weak = cx.weak_entity();
+        let device = ctl::segmented(
+            t,
+            "set-canvas-device",
+            vec![
+                Segment::new("Desktop").glyph(icons::MONITOR),
+                Segment::new("Tablet").glyph(icons::SMARTPHONE),
+                Segment::new("Mobile").glyph(icons::SMARTPHONE),
+            ],
+            dev_modes.iter().position(|m| *m == dev).unwrap_or(0),
+            move |i, _, cx| {
+                let _ = weak.update(cx, |s, cx| s.set("canvas_default_device", dev_modes[i], cx));
+            },
+        );
+        let card = page::card(t)
+            .child(self.srow(
+                t,
+                true,
+                "canvas_auto_open",
+                "Open designs automatically",
+                "Show an agent's design in the side panel as soon as it arrives.",
+                ctl::on_toggle(ctl::toggle(t, "set-canvas-auto", auto), cx, move |this, _, cx| {
+                    this.set_flag("canvas_auto_open", !auto, cx)
+                }),
+            ))
+            .child(self.srow(
+                t,
+                false,
+                "canvas_bridge",
+                "Two-way agent bridge",
+                "Buttons and forms in a design can reply to the agent with dove.send().",
+                ctl::on_toggle(ctl::toggle(t, "set-canvas-bridge", bridge), cx, move |this, _, cx| {
+                    this.set_flag("canvas_bridge", !bridge, cx)
+                }),
+            ))
+            .child(self.srow(
+                t,
+                false,
+                "canvas_default_device",
+                "Default artboard size",
+                "Used when a design doesn't say which device it is for.",
+                device,
+            ));
+        let runtimes = page::card(t).child(
+            div()
+                .px(px(space::LG))
+                .py(px(14.0))
+                .flex()
+                .flex_col()
+                .gap(px(10.0))
+                .child(div().flex().flex_wrap().gap(px(6.0)).children(
+                    ["HTML", "React (JSX / TSX)", "Tailwind CSS", "SVG", "Responsive viewports", "dove.send()"]
+                        .into_iter()
+                        .map(|p| page::badge(t, p)),
+                ))
+                .child(div().text_size(ty::META).line_height(ty::lh::META).text_color(t.text_muted).child(
+                    "Agents call show_canvas with self-contained HTML, React or SVG, or send fenced blocks you can open \
+                     in one click. Designs are served on 127.0.0.1 with desktop, tablet and phone frames, zoom, and an \
+                     editable source drawer.",
+                )),
+        );
+        div()
+            .flex()
+            .flex_col()
+            .child(page::section(t, "Behavior", card))
+            .child(page::section(t, "Supported formats", runtimes))
+            .into_any_element()
+    }
+
+    fn integrations_section(&self, t: &Theme) -> AnyElement {
+        div()
+            .flex()
+            .flex_col()
+            .child(page::page_subtitle(t, "Extra tools every agent gets through Dove's MCP server."))
+            .child(div().relative().child(self.anchor("integrations")).child(self.integrations.clone()))
+            .into_any_element()
     }
 
     fn data(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let root = self.engine.store.root().to_path_buf();
         let root_str = root.display().to_string();
         let root_copy = root_str.clone();
-        let size = self.data_size.map(|b| format!("{:.1} MB", b as f64 / 1e6)).unwrap_or_else(|| "measuring…".into());
-        let body = div()
-            .child(row(
-                "Workspace & transcript storage",
-                "SQLite store containing projects, threads, transcripts, settings, and downloaded voice weights",
-                div().flex().items_center().gap(px(8.0)).child(kit::badge(size, t.accent)).child(
-                    ui::button_ghost("open-data", "Open folder", t)
-                        .child(icon(icons::ARROW_UP_RIGHT).size(px(12.0)).text_color(t.text_faint))
-                        .on_click(cx.listener(move |_, _, _, cx| cx.open_with_system(&root))),
+        let size = self.data_size.map(|b| format!("{:.1} MB", b as f64 / 1e6)).unwrap_or_else(|| "Measuring…".into());
+        let card = page::card(t)
+            .child(
+                self.srow(
+                    t,
+                    true,
+                    "data_size",
+                    "Storage",
+                    "Projects, threads, transcripts, settings and the voice model.",
+                    div().flex().items_center().gap(px(8.0)).child(page::badge(t, size)).child(
+                        ctl::button_sm(t, "open-data", "Open folder", Tone::Filled)
+                            .child(icon(icons::ARROW_UP_RIGHT).size(px(12.0)))
+                            .on_click(cx.listener(move |_, _, _, cx| cx.open_with_system(&root))),
+                    ),
                 ),
+            )
+            .child(
+                self.srow(
+                    t,
+                    false,
+                    "data_path",
+                    "Storage location",
+                    "Set DOVE_HOME to move Dove's data folder.",
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.0))
+                        .child(
+                            div()
+                                .max_w(px(260.0))
+                                .truncate()
+                                .font_family(t.font_mono.clone())
+                                .text_size(ty::META)
+                                .text_color(t.text_muted)
+                                .child(root_str),
+                        )
+                        .child(ctl::button_sm(t, "copy-data-path", "Copy", Tone::Quiet).on_click(cx.listener(
+                            move |_, _, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(root_copy.clone())),
+                        ))),
+                ),
+            )
+            .child(self.srow(
                 t,
-            ))
-            .child(row(
-                "Storage path (DOVE_HOME)",
-                "Set the DOVE_HOME environment variable to relocate Dove's data directory",
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.0))
-                    .child(
-                        div()
-                            .text_size(px(12.0))
-                            .font_family(t.font_mono.clone())
-                            .text_color(t.text_muted)
-                            .max_w(px(280.0))
-                            .truncate()
-                            .child(root_str),
-                    )
-                    .child(ui::button_ghost("copy-data-path", "Copy", t).on_click(cx.listener(move |_, _, _, cx| {
-                        cx.write_to_clipboard(ClipboardItem::new_string(root_copy.clone()));
-                    }))),
-                t,
-            ))
-            .child(row(
-                "Telemetry & privacy",
-                "All transcripts, credentials, and settings stay on your machine",
-                kit::badge("Zero telemetry", t.success),
-                t,
+                false,
+                "telemetry",
+                "Privacy",
+                "Transcripts, credentials and settings stay on this machine.",
+                page::badge_tone("Zero telemetry", t.success),
             ));
-        stack().child(card("Local Storage & Privacy", t, body)).into_any_element()
+        page::section(t, "Local data", card).into_any_element()
     }
 
     fn remote(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
@@ -1248,7 +2047,7 @@ impl SettingsPage {
         let (state_label, state_col) = if !enabled {
             ("Off", t.text_faint)
         } else if status.connected {
-            ("Connected · Phone paired", t.success)
+            ("Connected · phone paired", t.success)
         } else if status.signed_in {
             ("Connecting…", t.busy)
         } else if status.running {
@@ -1257,212 +2056,121 @@ impl SettingsPage {
             ("Starting…", t.busy)
         };
         let account_button = if status.signed_in {
-            ui::button_ghost("remote-sign-out", "Sign out", t).on_click({
+            ctl::button_sm(t, "remote-sign-out", "Sign out", Tone::Quiet).on_click({
                 let remote = remote.clone();
                 move |_, _, cx| remote.update(cx, |r, cx| r.sign_out(cx))
             })
         } else {
-            ui::button_primary("remote-sign-in", "Sign in with Woozlit", t).on_click({
+            ctl::button_sm(t, "remote-sign-in", "Sign in with Woozlit", Tone::Solid).on_click({
                 let remote = remote.clone();
                 move |_, _, cx| remote.update(cx, |r, cx| r.sign_in(cx))
             })
         };
-        let body = div()
-            .child(row(
-                "Enable remote control",
-                "Watch and steer this computer's active agent threads from the Dove mobile app. While off, no relay connection is opened.",
-                kit::switch("set-remote", enabled, t).on_click({
-                    let remote = remote.clone();
-                    move |_, _, cx| remote.update(cx, |r, cx| r.set_enabled(!enabled, cx))
-                }),
+        let toggle = ctl::toggle(t, "set-remote", enabled).on_click({
+            let remote = remote.clone();
+            move |_, _, cx| remote.update(cx, |r, cx| r.set_enabled(!enabled, cx))
+        });
+        let mut card = page::card(t)
+            .child(self.srow(
                 t,
+                true,
+                "remote_enabled",
+                "Remote control",
+                "Watch and steer this computer's threads from the Dove mobile app. While off, no connection is opened.",
+                toggle,
             ))
-            .child(row(
-                "Woozlit account",
-                "Sign in on your phone with the same account to pair automatically",
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(10.0))
-                    .child(div().text_size(px(12.5)).text_color(t.text_muted).child(account))
-                    .child(account_button),
+            .child(self.srow(t, false, "remote_account", "Woozlit account", account, account_button))
+            .child(page::setting_row(t, false, "Connection", "", page::badge_tone(state_label, state_col)));
+        if let Some(id) = status.device_id.clone() {
+            card = card.child(page::setting_row(
                 t,
-            ))
-            .child(row("Connection status", "", kit::badge(state_label, state_col), t))
-            .when_some(status.device_id.clone(), |d, id| {
-                d.child(row(
-                    "Device ID",
-                    "",
-                    div().font_family(t.font_mono.clone()).text_color(t.text_muted).text_size(px(12.0)).child(id),
-                    t,
-                ))
-            })
-            .when_some(status.error.clone(), |d, e| {
-                d.child(row("Last error", "", div().text_color(t.danger).text_size(px(12.0)).child(e), t))
-            });
-        stack().child(card("Mobile Companion", t, body)).into_any_element()
+                false,
+                "Device ID",
+                "",
+                div().font_family(t.font_mono.clone()).text_size(ty::META).text_color(t.text_muted).child(id),
+            ));
+        }
+        if let Some(e) = status.error.clone() {
+            card = card.child(page::row(t, false).child(page::error_strip(t, format!("Last error: {e}"))));
+        }
+        page::section(t, "This computer", card).into_any_element()
     }
 
     fn about(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
-        let body = div()
-            .child(row(
-                "Application version",
-                "Native Rust + GPUI desktop workspace for multi-harness coding agents",
-                kit::badge(format!("v{}", env!("CARGO_PKG_VERSION")), t.accent),
+        let card = page::card(t)
+            .child(self.srow(
                 t,
+                true,
+                "version",
+                "Version",
+                "Native Rust and GPUI workspace for coding agents.",
+                page::badge(t, format!("v{}", env!("CARGO_PKG_VERSION"))),
             ))
-            .child(row(
+            .child(page::setting_row(
+                t,
+                false,
                 "License",
-                "Apache-2.0 open-source license; third-party notices ship with the application",
-                div().text_size(px(12.5)).text_color(t.text_muted).child("Apache-2.0"),
-                t,
+                "Apache-2.0. Third-party notices ship with Dove.",
+                page::badge(t, "Apache-2.0"),
             ))
-            .child(row(
-                "Source repository",
-                "Browse source code, file issues, or contribute on GitHub",
-                ui::button_ghost("about-src", "Open GitHub", t)
-                    .child(icon(icons::ARROW_UP_RIGHT).size(px(12.0)).text_color(t.text_faint))
-                    .on_click(cx.listener(|_, _, _, cx| cx.open_url("https://github.com/dove-ade/dove"))),
+            .child(page::setting_row(
                 t,
+                false,
+                "Source",
+                "Read the code, file issues or contribute.",
+                ctl::button_sm(t, "about-src", "GitHub", Tone::Filled)
+                    .child(icon(icons::ARROW_UP_RIGHT).size(px(12.0)))
+                    .on_click(cx.listener(|_, _, _, cx| cx.open_url("https://github.com/dove-ade/dove"))),
             ));
-        stack().child(card("Dove Desktop", t, body)).into_any_element()
-    }
-
-    /// Optional status badge shown on the right side of a navigation rail item.
-    fn nav_badge(&self, s: Section, t: &Theme, cx: &App) -> Option<AnyElement> {
-        match s {
-            Section::Agents => {
-                let count = self.engine.installed().len();
-                if count > 0 {
-                    Some(
-                        div()
-                            .px(px(5.0))
-                            .h(px(16.0))
-                            .rounded(px(4.0))
-                            .bg(t.wash(0.08))
-                            .flex()
-                            .items_center()
-                            .text_size(px(10.5))
-                            .text_color(t.text_muted)
-                            .child(format!("{count}"))
-                            .into_any_element(),
-                    )
-                } else {
-                    None
-                }
-            }
-            Section::Team => {
-                let count = self.engine.store.personas().map(|v| v.len()).unwrap_or(0);
-                if count > 0 {
-                    Some(
-                        div()
-                            .px(px(5.0))
-                            .h(px(16.0))
-                            .rounded(px(4.0))
-                            .bg(t.accent.opacity(0.14))
-                            .flex()
-                            .items_center()
-                            .text_size(px(10.5))
-                            .text_color(t.accent)
-                            .child(format!("{count}"))
-                            .into_any_element(),
-                    )
-                } else {
-                    None
-                }
-            }
-            Section::Voice => {
-                let installed = VoiceModel::global(cx)
-                    .map(|m| matches!(m.read(cx).state, InstallState::Installed))
-                    .unwrap_or(false);
-                if installed { Some(ui::dot(t.success, 6.0).into_any_element()) } else { None }
-            }
-            Section::Remote => {
-                let connected = crate::remote::Remote::global(cx)
-                    .map(|r| {
-                        let r = r.read(cx);
-                        r.status.connected && r.enabled()
-                    })
-                    .unwrap_or(false);
-                if connected { Some(ui::dot(t.success, 6.0).into_any_element()) } else { None }
-            }
-            _ => None,
-        }
+        page::section(t, "Dove", card).into_any_element()
     }
 }
 
-fn field(input: &Entity<InputState>, w: f32, t: &Theme) -> impl IntoElement {
-    div()
-        .w(px(w))
-        .h(px(30.0))
-        .px(px(9.0))
-        .flex()
-        .items_center()
-        .rounded(px(8.0))
-        .bg(t.wash(0.05))
-        .border_1()
-        .border_color(t.border)
-        .text_size(px(13.0))
-        .child(Input::new(input))
-}
-
-fn device_row(id: impl Into<gpui::ElementId>, name: &str, selected: bool, t: &Theme) -> gpui::Stateful<gpui::Div> {
-    div()
-        .id(id)
-        .h(px(28.0))
-        .px(px(8.0))
-        .flex()
-        .items_center()
-        .gap(px(8.0))
-        .rounded(px(6.0))
-        .cursor_pointer()
-        .text_size(px(13.0))
-        .hover(|s| s.bg(t.wash(0.06)))
-        .child(div().w(px(14.0)).when(selected, |d| d.child(icon(icons::CHECK).size(px(13.0)).text_color(t.accent))))
-        .child(div().max_w(px(260.0)).truncate().child(name.to_string()))
-}
-
-/// One setting: label and hint on the left, its control on the right.
-/// Rows draw a hairline above themselves; a [`card`] hides the first one.
-fn row(label: &'static str, hint: &'static str, control: impl IntoElement, t: &Theme) -> gpui::Div {
-    div()
-        .px(px(16.0))
-        .py(px(13.5))
-        .flex()
-        .items_center()
-        .gap(px(16.0))
-        .border_t_1()
-        .border_color(t.border)
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .flex()
-                .flex_col()
-                .gap(px(2.5))
-                .child(div().text_size(px(13.5)).font_weight(gpui::FontWeight::MEDIUM).text_color(t.text).child(label))
-                .when(!hint.is_empty(), |d| d.child(div().text_size(px(12.0)).text_color(t.text_faint).child(hint))),
-        )
-        .child(control)
-}
-
-/// A titled plate of rows.
-fn card(title: &'static str, t: &Theme, rows: impl IntoElement) -> gpui::Div {
-    div().flex().flex_col().when(!title.is_empty(), |d| d.child(kit::section_label(title, t))).child(
+/// A miniature window for the colour-scheme cards: a sidebar and a content
+/// plane with a few lines, in light, dark, or split for System.
+fn scheme_preview(id: &'static str) -> AnyElement {
+    let pane = |dark: bool| {
+        let (shell, plane, line, strong) = if dark {
+            (gpui::rgb(0x0d0d0d), gpui::rgb(0x161616), gpui::rgb(0x2a2a2a), gpui::rgb(0x3a3a3a))
+        } else {
+            (gpui::rgb(0xf3f3f5), gpui::rgb(0xffffff), gpui::rgb(0xe2e2e6), gpui::rgb(0xcfcfd4))
+        };
         div()
-            .w_full()
-            .rounded(px(12.0))
-            .border_1()
-            .border_color(t.border)
-            .bg(t.wash(0.022))
-            .overflow_hidden()
-            .child(div().mt(px(-1.0)).child(rows)),
-    )
+            .flex_1()
+            .h_full()
+            .bg(shell)
+            .flex()
+            .gap(px(6.0))
+            .p(px(8.0))
+            .child(div().w(px(22.0)).flex().flex_col().gap(px(5.0)).pt(px(4.0)).children(
+                (0..4).map(move |i| div().h(px(3.0)).w(px(if i == 0 { 18.0 } else { 14.0 })).rounded_full().bg(strong)),
+            ))
+            .child(
+                div()
+                    .flex_1()
+                    .rounded(px(5.0))
+                    .bg(plane)
+                    .p(px(7.0))
+                    .flex()
+                    .flex_col()
+                    .gap(px(5.0))
+                    .child(div().h(px(4.0)).w(relative_w(0.55)).rounded_full().bg(strong))
+                    .children(
+                        [0.9, 0.75, 0.82]
+                            .into_iter()
+                            .map(move |w| div().h(px(3.0)).w(relative_w(w)).rounded_full().bg(line)),
+                    ),
+            )
+    };
+    match id {
+        "light" => pane(false).into_any_element(),
+        "dark" => pane(true).into_any_element(),
+        _ => div().size_full().flex().child(pane(false)).child(pane(true)).into_any_element(),
+    }
 }
 
-/// Cards, stacked with room between them.
-fn stack() -> gpui::Div {
-    div().flex().flex_col().gap(px(20.0))
+fn relative_w(f: f32) -> gpui::DefiniteLength {
+    gpui::relative(f)
 }
 
 fn dir_size(p: &std::path::Path) -> u64 {
@@ -1481,151 +2189,42 @@ fn dir_size(p: &std::path::Path) -> u64 {
     total
 }
 
-impl Render for SettingsPage {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let t = Theme::of(cx).clone();
-        let query = self.query.trim().to_string();
-        let has_query = !query.is_empty();
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-        let search_box = div()
-            .h(px(32.0))
-            .px(px(10.0))
-            .rounded(px(8.0))
-            .border_1()
-            .border_color(t.border)
-            .bg(t.wash(0.04))
-            .flex()
-            .items_center()
-            .gap(px(8.0))
-            .child(icon(icons::MAGNIFER).size(px(13.5)).text_color(t.text_faint))
-            .child(div().flex_1().min_w_0().text_size(px(12.5)).child(Input::new(&self.search)))
-            .when(has_query, |d| {
-                d.child(
-                    div()
-                        .id("set-search-clear")
-                        .size(px(18.0))
-                        .rounded(px(4.0))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .cursor_pointer()
-                        .hover(|s| s.bg(t.wash(0.08)))
-                        .child(icon(icons::CLOSE).size(px(10.0)).text_color(t.text_faint))
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.search.update(cx, |s, cx| s.set_value(String::new(), window, cx));
-                            this.query.clear();
-                            cx.notify();
-                        })),
-                )
-            });
+    #[test]
+    fn every_section_round_trips_its_id() {
+        for s in Section::ALL {
+            assert_eq!(Section::from_id(s.id()), Some(s));
+        }
+        assert_eq!(Section::from_id("composer"), Some(Section::General));
+        assert_eq!(Section::from_id("shortcuts"), Some(Section::Shortcuts));
+        assert_eq!(Section::from_id("nope"), None);
+    }
 
-        let nav = div()
-            .w(px(232.0))
-            .flex_none()
-            .flex()
-            .flex_col()
-            .gap(px(14.0))
-            .pt(px(26.0))
-            .child(
-                div()
-                    .px(px(6.0))
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .child(
-                        div()
-                            .text_size(px(15.0))
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .text_color(t.text)
-                            .child("Settings"),
-                    )
-                    .child(kit::badge("Live", t.text_faint)),
-            )
-            .child(search_box)
-            .children(Section::GROUPS.into_iter().filter_map(|(group, sections)| {
-                let visible: Vec<Section> = sections.iter().copied().filter(|s| s.matches(&query)).collect();
-                if visible.is_empty() {
-                    return None;
-                }
-                Some(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap(px(2.0))
-                        .child(
-                            div()
-                                .px(px(10.0))
-                                .pb(px(3.0))
-                                .text_size(px(11.0))
-                                .font_weight(gpui::FontWeight::SEMIBOLD)
-                                .text_color(t.text_faint)
-                                .child(group),
-                        )
-                        .children(visible.into_iter().map(|s| {
-                            let selected = s == self.section;
-                            let badge = self.nav_badge(s, &t, cx);
-                            div()
-                                .id(SharedString::from(format!("set-nav-{}", s.id())))
-                                .h(px(31.0))
-                                .px(px(10.0))
-                                .flex()
-                                .items_center()
-                                .gap(px(10.0))
-                                .rounded(px(8.0))
-                                .cursor_pointer()
-                                .text_size(px(13.0))
-                                .border_1()
-                                .when(selected, |d| {
-                                    d.bg(t.accent.opacity(0.12))
-                                        .border_color(t.accent.opacity(0.32))
-                                        .text_color(t.text)
-                                        .font_weight(gpui::FontWeight::MEDIUM)
-                                })
-                                .when(!selected, |d| {
-                                    d.border_color(gpui::transparent_black())
-                                        .text_color(t.text_muted)
-                                        .hover(|st| st.bg(t.wash(0.05)).text_color(t.text))
-                                })
-                                .child(icon(s.glyph()).size(px(14.5)).text_color(if selected {
-                                    t.accent
-                                } else {
-                                    t.text_muted
-                                }))
-                                .child(div().flex_1().truncate().child(s.label()))
-                                .when_some(badge, |d, b| d.child(b))
-                                .on_click(cx.listener(move |this, _, _, cx| this.select(s, cx)))
-                        })),
-                )
-            }));
+    #[test]
+    fn every_section_is_in_the_nav_once() {
+        let mut seen: Vec<Section> = Section::GROUPS.iter().flat_map(|g| g.iter().copied()).collect();
+        seen.sort_by_key(|s| s.id());
+        seen.dedup();
+        assert_eq!(seen.len(), Section::ALL.len());
+    }
 
-        let hero = self.section_hero(&t, cx);
-        let body = match self.section {
-            Section::General => self.general(&t, cx),
-            Section::Appearance => self.appearance(&t, cx),
-            Section::Agents => self.agents(&t, cx),
-            Section::Team => self.team(&t, cx),
-            Section::Canvas => self.canvas(&t, cx),
-            Section::Composer => self.composer(&t, cx),
-            Section::Voice => self.voice(&t, cx),
-            Section::Keyboard => self.keyboard(&t, cx),
-            Section::Notifications => self.notifications(&t, cx),
-            Section::Remote => self.remote(&t, cx),
-            Section::Integrations => self.integrations.clone().into_any_element(),
-            Section::Data => self.data(&t, cx),
-            Section::About => self.about(&t, cx),
-        };
-        div()
-            .id("settings")
-            .track_focus(&self.focus)
-            .on_key_down(cx.listener(Self::on_key))
-            .size_full()
-            .overflow_y_scroll()
-            .flex()
-            .justify_center()
-            .child(
-                div().w_full().max_w(px(1040.0)).px(px(32.0)).pb(px(56.0)).flex().gap(px(32.0)).child(nav).child(
-                    div().flex_1().min_w_0().pt(px(26.0)).flex().flex_col().gap(px(20.0)).child(hero).child(body),
-                ),
-            )
+    #[test]
+    fn search_finds_rows_by_title_and_keyword() {
+        assert_eq!(find_settings("reduce motion").first().map(|e| e.row), Some("reduce_motion"));
+        assert!(find_settings("worktree").iter().any(|e| e.row == "use_worktree"));
+        assert!(find_settings("parakeet").iter().any(|e| e.row == "voice_model"));
+        assert!(find_settings("").is_empty());
+    }
+
+    #[test]
+    fn index_rows_are_unique() {
+        let mut rows: Vec<&str> = INDEX.iter().map(|e| e.row).collect();
+        rows.sort_unstable();
+        let n = rows.len();
+        rows.dedup();
+        assert_eq!(rows.len(), n);
     }
 }

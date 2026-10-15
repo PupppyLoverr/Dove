@@ -16,6 +16,7 @@ use gpui_base::input::{Input, InputEvent, InputState};
 use zeron_syntax::{HighlightRequest, HighlightedDocument};
 
 use crate::assets::{icon, icons};
+use crate::design::ty;
 use crate::kit;
 use crate::markdown;
 use crate::markdown_extra;
@@ -522,7 +523,7 @@ impl FilesPanel {
                 .bg(t.wash(0.05))
                 .border_1()
                 .border_color(t.border)
-                .text_size(px(13.0))
+                .text_size(ty::BODY)
                 .child(Input::new(input))
         };
         let weak = cx.weak_entity();
@@ -570,7 +571,7 @@ impl FilesPanel {
                                 .bg(t.wash(0.06))
                                 .truncate()
                                 .font_family(t.font_mono.clone())
-                                .text_size(px(11.0))
+                                .text_size(ty::MICRO)
                                 .text_color(t.text_muted)
                                 .child(label),
                         )
@@ -584,7 +585,7 @@ impl FilesPanel {
                         .flex()
                         .items_center()
                         .gap(px(6.0))
-                        .text_size(px(11.5))
+                        .text_size(ty::CAPTION)
                         .text_color(t.text_faint)
                         .child("Click any text to edit it in place, or ask the agent:")
                         .child(div().flex_1())
@@ -602,7 +603,7 @@ impl FilesPanel {
                                 .border_color(t.border)
                                 .bg(t.wash(0.03))
                                 .cursor_pointer()
-                                .text_size(px(11.0))
+                                .text_size(ty::MICRO)
                                 .text_color(t.text_muted)
                                 .hover(|s| s.bg(t.wash(0.07)).text_color(t.text))
                                 .child(*chip)
@@ -626,7 +627,7 @@ impl FilesPanel {
             .when(dirty == 0 && self.office_status.is_some(), |d| {
                 d.child(
                     div()
-                        .text_size(px(12.0))
+                        .text_size(ty::META)
                         .text_color(t.text_muted)
                         .child(self.office_status.clone().unwrap_or_default()),
                 )
@@ -667,17 +668,17 @@ impl FilesPanel {
                         let _ = weak.update(cx, |v, cx| v.close_preview(cx));
                     }
                 }))
-                .child(kit::avatar_tile(kind.short(), kind.hue(), 30.0, t).text_size(px(11.0)))
+                .child(kit::avatar_tile(kind.short(), kind.hue(), 30.0, t).text_size(ty::MICRO))
                 .child(
                     div()
                         .flex_1()
                         .min_w_0()
                         .flex()
                         .flex_col()
-                        .child(div().text_size(px(13.0)).text_color(t.text).truncate().child(name))
+                        .child(div().text_size(ty::BODY).text_color(t.text).truncate().child(name))
                         .child(
                             div()
-                                .text_size(px(11.5))
+                                .text_size(ty::CAPTION)
                                 .text_color(t.text_faint)
                                 .truncate()
                                 .child(format!("{} · {summary}", kind.label())),
@@ -714,7 +715,7 @@ impl FilesPanel {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .text_size(px(12.5))
+                    .text_size(ty::SMALL)
                     .text_color(t.text_faint)
                     .child("Opening…")
                     .into_any_element(),
@@ -752,12 +753,12 @@ impl FilesPanel {
                     .flex_1()
                     .min_w_0()
                     .truncate()
-                    .text_size(px(12.5))
+                    .text_size(ty::SMALL)
                     .font_family(t.font_mono.clone())
                     .child(p.path.clone()),
             )
             .when(matches!(p.kind, PreviewKind::Text | PreviewKind::Markdown) && line_count > 0, |d| {
-                d.child(div().text_size(px(11.0)).text_color(t.text_faint).child(format!("{line_count} lines")))
+                d.child(div().text_size(ty::MICRO).text_color(t.text_faint).child(format!("{line_count} lines")))
             })
             .child(ui::icon_button("prev-copy-path", icons::COPY, "Copy relative path", t, move |_, _, cx| {
                 cx.write_to_clipboard(gpui::ClipboardItem::new_string(rel_for_copy.clone()));
@@ -826,7 +827,7 @@ impl FilesPanel {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .text_size(px(12.5))
+                    .text_size(ty::SMALL)
                     .text_color(t.text_faint)
                     .child("Opening…")
                     .into_any_element(),
@@ -913,7 +914,7 @@ impl FilesPanel {
                             .flex()
                             .when(current, |d| d.bg(t.accent.opacity(0.12)))
                             .font_family(t.font_mono.clone())
-                            .text_size(px(12.0))
+                            .text_size(ty::META)
                             .child(
                                 div()
                                     .w(px(gutter))
@@ -952,6 +953,7 @@ pub(crate) fn file_type_icon(path: &str, dir: bool, t: &Theme) -> gpui::Img {
 
 impl Render for FilesPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::perf_trace::count_render("FilesPanel");
         let t = Theme::of(cx).clone();
         if self.preview.is_some() {
             return self.render_preview(&t, window, cx);
@@ -974,11 +976,11 @@ impl Render for FilesPanel {
                     .bg(t.wash(0.05))
                     .border_1()
                     .border_color(t.border)
-                    .text_size(px(13.0))
+                    .text_size(ty::BODY)
                     .child(icon(icons::MAGNIFER).size(px(14.0)).text_color(t.text_faint))
                     .child(div().flex_1().child(Input::new(&self.search)))
                     .when(file_count > 0, |d| {
-                        d.child(div().text_size(px(11.0)).text_color(t.text_faint).child(format!("{file_count}")))
+                        d.child(div().text_size(ty::MICRO).text_color(t.text_faint).child(format!("{file_count}")))
                     }),
             )
             .child(ui::icon_button(
@@ -998,7 +1000,7 @@ impl Render for FilesPanel {
             div()
                 .px(px(14.0))
                 .py(px(6.0))
-                .text_size(px(13.0))
+                .text_size(ty::BODY)
                 .text_color(t.text_faint)
                 .child(if self.query.is_empty() { "Empty folder" } else { "No matches" })
                 .into_any_element()
@@ -1031,7 +1033,7 @@ impl Render for FilesPanel {
                             .items_center()
                             .gap(px(6.0))
                             .rounded(px(6.0))
-                            .text_size(px(13.0))
+                            .text_size(ty::BODY)
                             .text_color(t.text_muted)
                             .cursor_pointer()
                             .hover(|s| s.bg(t.wash(0.07)))
@@ -1060,7 +1062,7 @@ impl Render for FilesPanel {
                                     div()
                                         .w(px(12.0))
                                         .text_right()
-                                        .text_size(px(11.0))
+                                        .text_size(ty::MICRO)
                                         .font_weight(gpui::FontWeight::SEMIBOLD)
                                         .text_color(mark_color)
                                         .child(if m == '?' { "U".to_string() } else { m.to_string() })

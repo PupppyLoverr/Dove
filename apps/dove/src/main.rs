@@ -5,6 +5,7 @@ mod browser;
 mod canvas;
 mod changes;
 mod composer;
+mod design;
 mod file_icons;
 mod files_panel;
 mod history;
@@ -17,10 +18,12 @@ mod markdown;
 mod markdown_extra;
 mod math;
 mod mcp_browser;
+mod motion;
 mod notify;
 mod office;
 mod pages;
 mod palette;
+mod perf_trace;
 mod picker_memory;
 mod pull_requests;
 mod remote;
@@ -47,8 +50,9 @@ use std::sync::Arc;
 
 use dove_core::Engine;
 use gpui::{
-    App, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render, Styled as _, Subscription,
-    TitlebarOptions, Window, WindowBounds, WindowOptions, div, px, size,
+    App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _, Render,
+    Styled as _, Subscription, TitlebarOptions, Window, WindowBounds, WindowOptions, div, prelude::FluentBuilder as _,
+    px, size,
 };
 
 use crate::intro::{Intro, IntroFinished};
@@ -179,8 +183,18 @@ impl Root {
 }
 
 impl Render for Root {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div().relative().size_full().child(self.shell.clone()).child(self.toasts.clone()).children(self.intro.clone())
+    fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        crate::perf_trace::count_render("Root");
+        perf_trace::mark_first_render(window);
+        div()
+            .relative()
+            .size_full()
+            .when(perf_trace::input_enabled(), |d| {
+                d.capture_key_down(|e, window, _| perf_trace::key_down(&e.keystroke.unparse(), window))
+            })
+            .child(self.shell.clone())
+            .child(self.toasts.clone())
+            .children(self.intro.clone())
     }
 }
 
@@ -223,6 +237,7 @@ fn main() {
         mcp_browser::run();
         return;
     }
+    perf_trace::mark_main();
     // Dove can be launched from inside an agent session (a terminal in
     // Claude Code, say). Its child-session markers must not reach the agents
     // Dove starts: Claude would stop saving transcripts, breaking resume.
@@ -294,6 +309,8 @@ fn main() {
     gpui_platform::application().with_assets(assets::Assets).run(move |cx: &mut App| {
         gpui_base::init(cx);
         assets::load_fonts(cx);
+        motion::init(&engine.store, cx);
+        design::load_preferences(&engine.store);
         apply_theme(&engine, cx);
         keymap::apply(&engine.store, cx);
         browser::bind_keys(cx);
@@ -326,6 +343,8 @@ fn main() {
         let engine2 = engine.clone();
         let window = cx
             .open_window(options, |window, cx| {
+                // The interface font size is the window's rem size.
+                design::apply_to_window(window);
                 // Follow the OS light/dark switch when the theme is "system".
                 let engine3 = engine2.clone();
                 window
@@ -338,17 +357,27 @@ fn main() {
                 cx.new(|cx| Root::new(engine2.clone(), show_intro, window, cx))
             })
             .expect("failed to open the Dove window");
+        // `DOVE_NO_ACTIVATE`: benchmark and QA runs open without taking the
+        // foreground from whoever is using the machine.
+        let activate = !perf_trace::no_activate();
         let _ = window.update(cx, |_, window, cx| {
-            restore_if_minimized(window);
-            window.activate_window();
+            if activate {
+                restore_if_minimized(window);
+                window.activate_window();
+            }
             notify::install(engine.clone(), window, cx);
         });
-        cx.activate(true);
+        if activate {
+            cx.activate(true);
+        }
         // B1: launched from a background process (a hidden console, another
         // app), Windows applies the launcher's "minimized" show state after
         // the first activation. Activating again restores the window.
         let handle = window;
         cx.spawn(async move |cx| {
+            if !activate {
+                return;
+            }
             for delay in [250u64, 900] {
                 cx.background_executor().timer(std::time::Duration::from_millis(delay)).await;
                 let _ = handle.update(cx, |_, window, _| {

@@ -65,6 +65,7 @@ impl Intro {
 
 impl Render for Intro {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::perf_trace::count_render("Intro");
         let t = self.tick();
         let opacity = self.opacity(t);
         if opacity <= 0.0 {

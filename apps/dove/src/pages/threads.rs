@@ -12,6 +12,7 @@ use gpui_base::input::Input;
 
 use super::{ThreadSort, page_with};
 use crate::assets::{icon, icons};
+use crate::design::ty;
 use crate::kit;
 use crate::shell::Shell;
 use crate::sidebar::{attention_sort, project_badge};
@@ -249,7 +250,7 @@ impl Shell {
                     .gap(px(8.0))
                     .rounded(px(8.0))
                     .bg(t.wash(0.05))
-                    .text_size(px(13.0))
+                    .text_size(ty::BODY)
                     .child(icon(icons::MAGNIFER).size(px(14.0)).text_color(t.text_faint))
                     .child(div().flex_1().child(Input::new(&self.pages.threads_search))),
             )
@@ -269,7 +270,7 @@ impl Shell {
                 .bg(t.accent.opacity(0.08))
                 .border_1()
                 .border_color(t.accent.opacity(0.3))
-                .text_size(px(13.0))
+                .text_size(ty::BODY)
                 .child(format!("{selected_n} selected"))
                 .child(div().flex_1())
                 .child(
@@ -302,7 +303,7 @@ impl Shell {
             .flex()
             .items_center()
             .gap(px(10.0))
-            .text_size(px(11.5))
+            .text_size(ty::CAPTION)
             .text_color(t.text_faint)
             .child(kit::checkbox("sel-all", all_selected, "", &t).on_click({
                 let ids: Vec<TaskId> = threads.iter().map(|x| x.id).collect();
@@ -374,12 +375,12 @@ impl Shell {
                             .child(
                                 div()
                                     .truncate()
-                                    .text_size(px(13.5))
+                                    .text_size(ty::BODY)
                                     .when(task.unread, |d| d.font_weight(gpui::FontWeight::SEMIBOLD))
                                     .child(task.title.clone()),
                             )
                             .when_some(task.branch.clone(), |d, b| {
-                                d.child(div().truncate().text_size(px(11.5)).text_color(t.text_faint).child(b))
+                                d.child(div().truncate().text_size(ty::CAPTION).text_color(t.text_faint).child(b))
                             }),
                     )
                     .child(
@@ -388,7 +389,7 @@ impl Shell {
                             .flex()
                             .items_center()
                             .gap(px(6.0))
-                            .text_size(px(12.5))
+                            .text_size(ty::SMALL)
                             .text_color(t.text_muted)
                             .child(project_badge(&project, 14.0, &t))
                             .child(div().truncate().child(project)),
@@ -399,7 +400,7 @@ impl Shell {
                             .flex()
                             .items_center()
                             .gap(px(6.0))
-                            .text_size(px(12.5))
+                            .text_size(ty::SMALL)
                             .text_color(ui::status_color(task.status, &t))
                             .child(kit::status_glyph(
                                 SharedString::from(format!("tp-st-{id}")),
@@ -413,7 +414,7 @@ impl Shell {
                         div()
                             .w(px(70.0))
                             .text_right()
-                            .text_size(px(12.0))
+                            .text_size(ty::META)
                             .text_color(t.text_faint)
                             .child(ui::relative_time(task.updated_at)),
                     )
@@ -423,7 +424,7 @@ impl Shell {
             .flex()
             .items_center()
             .gap(px(10.0))
-            .child(div().text_size(px(13.0)).text_color(t.text_faint).child(format!("{} threads", threads.len())))
+            .child(div().text_size(ty::BODY).text_color(t.text_faint).child(format!("{} threads", threads.len())))
             .child(
                 ui::button_primary("threads-new", "New thread", &t)
                     .on_click(cx.listener(|this, _, window, cx| this.new_session(window, cx))),

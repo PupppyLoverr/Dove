@@ -10,6 +10,7 @@ use gpui::{
 };
 
 use crate::assets::{icon, icons};
+use crate::design::ty;
 use crate::theme::Theme;
 
 // ---------------------------------------------------------------- elements
@@ -263,6 +264,7 @@ pub struct Tip(SharedString);
 
 impl Render for Tip {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::perf_trace::count_render("Tip");
         let t = Theme::of(cx);
         div()
             .px(px(8.0))
@@ -272,7 +274,7 @@ impl Render for Tip {
             .border_1()
             .border_color(t.border)
             .text_color(t.text)
-            .text_size(px(12.0))
+            .text_size(ty::META)
             .child(self.0.clone())
     }
 }
@@ -402,7 +404,7 @@ pub fn windows_captions(window: &Window, theme: &Theme) -> Option<AnyElement> {
             .flex()
             .items_center()
             .justify_center()
-            .text_size(px(10.0))
+            .text_size(ty::BADGE)
             .text_color(theme.text)
             .hover(move |s| s.bg(hover_bg).text_color(hover_fg))
             .active(move |s| s.bg(active_bg).text_color(hover_fg))
@@ -476,7 +478,7 @@ pub fn button_primary(
         .rounded(px(8.0))
         .bg(solid)
         .text_color(theme.on_solid)
-        .text_size(px(13.0))
+        .text_size(ty::BODY)
         .font_weight(gpui::FontWeight::MEDIUM)
         .cursor_pointer()
         .hover(move |s| s.bg(solid.opacity(0.88)))
@@ -498,7 +500,7 @@ pub fn button_ghost(id: impl Into<SharedString>, label: impl Into<SharedString>,
         .gap(px(6.0))
         .rounded(px(7.0))
         .text_color(theme.text_muted)
-        .text_size(px(13.0))
+        .text_size(ty::BODY)
         .cursor_pointer()
         .hover(move |s| s.bg(hover))
         .child(label)
@@ -516,7 +518,7 @@ pub fn ghost_chip(id: impl Into<SharedString>, theme: &Theme) -> gpui::Stateful<
         .items_center()
         .gap(px(5.0))
         .rounded(px(7.0))
-        .text_size(px(12.5))
+        .text_size(ty::SMALL)
         .text_color(theme.text_muted)
         .cursor_pointer()
         .hover(move |s| s.bg(hover).text_color(theme.text))
@@ -569,7 +571,7 @@ pub fn footer_chip(
         .items_center()
         .gap(px(6.0))
         .rounded(px(6.0))
-        .text_size(px(12.0))
+        .text_size(ty::META)
         .font_weight(gpui::FontWeight::MEDIUM)
         .text_color(if open { lit } else { rest })
         .when(open, |d| d.bg(hover))
@@ -617,13 +619,14 @@ pub fn chip(id: impl Into<SharedString>, theme: &Theme) -> gpui::Stateful<Div> {
         .border_1()
         .border_color(theme.wash(0.08))
         .bg(theme.wash(0.03))
-        .text_size(px(12.5))
+        .text_size(ty::SMALL)
         .text_color(theme.text_muted)
         .cursor_pointer()
         .hover(move |s| s.bg(hover).border_color(border))
 }
 
-/// One row of a popover menu.
+/// One row of a popover menu: Zeron's menu grammar (13 px, concentric
+/// corners), with an immediate hover so it works inside cached views.
 pub fn menu_row(
     id: impl Into<SharedString>,
     path: &'static str,
@@ -631,46 +634,20 @@ pub fn menu_row(
     danger: bool,
     theme: &Theme,
 ) -> gpui::Stateful<Div> {
-    let hover = theme.wash(0.10);
-    let color = if danger { theme.danger } else { theme.text };
-    let label: SharedString = label.into();
-    div()
-        .id(gpui::ElementId::Name(id.into()))
-        .role(gpui::Role::MenuItem)
-        .aria_label(label.clone())
-        .h(px(34.0))
-        .px(px(10.0))
-        .mx(px(4.0))
-        .flex()
-        .items_center()
-        .gap(px(10.0))
-        .rounded(px(7.0))
-        .text_size(px(14.0))
-        .text_color(color)
-        .cursor_pointer()
-        .hover(move |s| s.bg(hover))
-        .child(icon(path).size(px(16.0)).text_color(if danger { theme.danger } else { theme.text_muted }))
-        .child(div().flex_1().child(label))
+    crate::kit::popover::menu_item(theme, id, Some(path), label, danger, false, false)
 }
 
-/// The floating card behind menus and popovers.
+/// The floating card behind menus and popovers: border, 12 px corners, a
+/// 4 px inset, frost on glass, and the menu entrance (140 ms fade and rise).
 pub fn menu_card(theme: &Theme, child: impl IntoElement) -> impl IntoElement {
-    frosted(
-        12.0,
-        16.0,
-        div()
-            .py(px(4.0))
-            .rounded(px(12.0))
-            .bg(theme.glass_overlay())
-            .border_1()
-            .border_color(theme.border_strong)
-            .shadow(vec![shadow(hsla(0.0, 0.0, 0.0, 0.35), 10.0, 30.0, 0.0, false)])
-            .child(child),
+    crate::motion::menu_in(
+        "menu-card",
+        div().child(frosted(crate::kit::popover::CARD_RADIUS, 16.0, crate::kit::popover::card(theme).child(child))),
     )
 }
 
 pub fn separator(theme: &Theme) -> Div {
-    div().mx(px(10.0)).my(px(4.0)).h(px(1.0)).bg(theme.border)
+    crate::kit::popover::menu_separator(theme)
 }
 
 /// Colors for gpui-base text inputs (their defaults are transparent).

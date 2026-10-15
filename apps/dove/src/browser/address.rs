@@ -72,6 +72,7 @@ impl AddressInput {
 
 impl Render for AddressInput {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::perf_trace::count_render("AddressInput");
         self.flush(window, cx);
         div().w_full().child(Input::new(&self.state))
     }

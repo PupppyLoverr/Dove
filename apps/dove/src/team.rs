@@ -15,6 +15,7 @@ use gpui::{
 use gpui_base::input::{Input, InputState, Textarea, TextareaState};
 
 use crate::assets::{icon, icons};
+use crate::design::ty;
 use crate::kit;
 use crate::shell::{Route, Shell};
 use crate::theme::Theme;
@@ -391,7 +392,7 @@ impl Shell {
             .flex()
             .items_center()
             .gap(px(6.0))
-            .text_size(px(11.5))
+            .text_size(ty::CAPTION)
             .font_weight(gpui::FontWeight::MEDIUM)
             .text_color(t.text_faint)
             .child(
@@ -413,7 +414,7 @@ impl Shell {
                                 .items_center()
                                 .rounded(px(4.0))
                                 .bg(t.wash(0.06))
-                                .text_size(px(10.5))
+                                .text_size(ty::BADGE)
                                 .text_color(t.text_faint)
                                 .child(total.to_string()),
                         )
@@ -450,7 +451,7 @@ impl Shell {
                     .gap(px(9.0))
                     .rounded(px(8.0))
                     .cursor_pointer()
-                    .text_size(px(13.0))
+                    .text_size(ty::BODY)
                     .text_color(t.text_faint)
                     .hover(|s| s.bg(t.wash(0.05)).text_color(t.text_muted))
                     .child(icon(icons::PLUS).size(px(14.0)))
@@ -471,7 +472,7 @@ impl Shell {
             } else if a.running > 0 {
                 kit::spinner(SharedString::from(format!("team-run-{}", p.id)), 11.0, t.busy).into_any_element()
             } else if a.threads > 0 {
-                div().text_size(px(11.0)).text_color(t.text_faint).child(a.threads.to_string()).into_any_element()
+                div().text_size(ty::MICRO).text_color(t.text_faint).child(a.threads.to_string()).into_any_element()
             } else {
                 icon(ui::harness_icon(p.harness))
                     .size(px(11.5))
@@ -490,7 +491,7 @@ impl Shell {
                     .gap(px(7.0))
                     .rounded(px(8.0))
                     .cursor_pointer()
-                    .text_size(px(13.0))
+                    .text_size(ty::BODY)
                     .when(selected, |d| d.bg(ui::selected_bg(t)).shadow(ui::selected_ring(t)).text_color(t.text))
                     .when(!selected, |d| d.text_color(t.text_muted).hover(|s| s.bg(t.wash(0.05)).text_color(t.text)))
                     .tooltip(ui::tip(subtitle(p)))
@@ -505,7 +506,11 @@ impl Shell {
                             .child(div().truncate().child(p.name.clone()))
                             .when(!p.role.is_empty(), |d| {
                                 d.child(
-                                    div().truncate().text_size(px(11.0)).text_color(t.text_faint).child(p.role.clone()),
+                                    div()
+                                        .truncate()
+                                        .text_size(ty::MICRO)
+                                        .text_color(t.text_faint)
+                                        .child(p.role.clone()),
                                 )
                             }),
                     )
@@ -589,7 +594,7 @@ impl Shell {
                             .border_l_1()
                             .border_color(t.border)
                             .cursor_pointer()
-                            .text_size(px(12.0))
+                            .text_size(ty::META)
                             .when(active_task, |d| d.bg(t.wash(0.09)).text_color(t.text))
                             .when(!active_task, |d| {
                                 d.text_color(t.text_muted).hover(|s| s.bg(t.wash(0.04)).text_color(t.text))
@@ -680,14 +685,14 @@ impl Shell {
                             .gap(px(2.0))
                             .child(
                                 div()
-                                    .text_size(px(14.5))
+                                    .text_size(ty::MD)
                                     .font_weight(gpui::FontWeight::SEMIBOLD)
                                     .text_color(t.text)
                                     .child("Assemble a team in one click"),
                             )
                             .child(
                                 div()
-                                    .text_size(px(12.5))
+                                    .text_size(ty::SMALL)
                                     .text_color(t.text_muted)
                                     .child("Create Lead, Builder, Reviewer, and Designer personas pre-configured for your installed agents."),
                             ),
@@ -730,15 +735,15 @@ impl Shell {
                                             .flex_col()
                                             .child(
                                                 div()
-                                                    .text_size(px(14.0))
+                                                    .text_size(ty::MD)
                                                     .font_weight(gpui::FontWeight::MEDIUM)
                                                     .text_color(t.text)
                                                     .child(*name),
                                             )
-                                            .child(div().text_size(px(12.0)).text_color(t.text_faint).child(*role)),
+                                            .child(div().text_size(ty::META).text_color(t.text_faint).child(*role)),
                                     ),
                             )
-                            .child(div().text_size(px(12.5)).text_color(t.text_muted).line_clamp(3).child(*brief))
+                            .child(div().text_size(ty::SMALL).text_color(t.text_muted).line_clamp(3).child(*brief))
                             .on_click(cx.listener(move |this, _, window, cx| this.use_template(i, window, cx)))
                     })),
             )
@@ -778,7 +783,7 @@ impl Shell {
                             .flex_col()
                             .child(
                                 div()
-                                    .text_size(px(13.5))
+                                    .text_size(ty::BODY)
                                     .font_weight(if on { gpui::FontWeight::MEDIUM } else { gpui::FontWeight::NORMAL })
                                     .text_color(t.text)
                                     .truncate()
@@ -789,7 +794,7 @@ impl Shell {
                                     .flex()
                                     .items_center()
                                     .gap(px(4.0))
-                                    .text_size(px(11.5))
+                                    .text_size(ty::CAPTION)
                                     .text_color(t.text_faint)
                                     .child(
                                         icon(ui::harness_icon(p.harness)).size(px(11.0)).text_color(ui::harness_tint(
@@ -810,7 +815,7 @@ impl Shell {
                         d.child(kit::spinner(SharedString::from(format!("team-list-run-{}", p.id)), 11.0, t.busy))
                     })
                     .when(a.needs_you == 0 && a.running == 0 && a.threads > 0, |d| {
-                        d.child(div().text_size(px(11.0)).text_color(t.text_faint).child(a.threads.to_string()))
+                        d.child(div().text_size(ty::MICRO).text_color(t.text_faint).child(a.threads.to_string()))
                     })
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.pages.team_focus = Some(id.clone());
@@ -828,7 +833,7 @@ impl Shell {
                     .pt(px(8.0))
                     .border_t_1()
                     .border_color(t.border)
-                    .child(div().px(px(6.0)).text_size(px(11.5)).text_color(t.text_faint).child("Quick presets"))
+                    .child(div().px(px(6.0)).text_size(ty::CAPTION).text_color(t.text_faint).child("Quick presets"))
                     .child(div().flex().flex_wrap().gap(px(4.0)).children(TEMPLATES.iter().enumerate().map(
                         |(i, (name, _, av, _, _))| {
                             ui::chip(SharedString::from(format!("tpl-quick-{i}")), t)
@@ -863,7 +868,7 @@ impl Shell {
                     .gap(px(3.0))
                     .child(
                         div()
-                            .text_size(px(18.0))
+                            .text_size(ty::H2)
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                             .text_color(t.text)
                             .child(p.name.clone()),
@@ -873,7 +878,7 @@ impl Shell {
                             .flex()
                             .items_center()
                             .gap(px(6.0))
-                            .text_size(px(12.5))
+                            .text_size(ty::SMALL)
                             .text_color(t.text_faint)
                             .when(!p.role.is_empty(), |d| d.child(p.role.clone()).child("·"))
                             .child(icon(ui::harness_icon(p.harness)).size(px(12.0)).text_color(ui::harness_tint(
@@ -912,7 +917,7 @@ impl Shell {
             .border_1()
             .border_color(t.border_strong)
             .bg(t.wash(0.035))
-            .text_size(px(13.0))
+            .text_size(ty::BODY)
             .child(icon(ui::harness_icon(p.harness)).size(px(14.0)).text_color(ui::harness_tint(
                 p.harness,
                 t,
@@ -939,10 +944,10 @@ impl Shell {
                         .flex()
                         .flex_col()
                         .gap(px(2.0))
-                        .child(div().text_size(px(11.5)).text_color(t.text_faint).child(label))
+                        .child(div().text_size(ty::CAPTION).text_color(t.text_faint).child(label))
                         .child(
                             div()
-                                .text_size(px(18.0))
+                                .text_size(ty::H2)
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
                                 .text_color(if n > 0 { color } else { t.text })
                                 .child(n.to_string()),
@@ -953,7 +958,7 @@ impl Shell {
             kit::group(t).child(
                 div()
                     .p(px(16.0))
-                    .text_size(px(13.0))
+                    .text_size(ty::BODY)
                     .text_color(if p.instructions.is_empty() { t.text_faint } else { t.text_muted })
                     .child(if p.instructions.is_empty() {
                         "No standing instructions yet. Click Edit to define how this teammate works.".to_string()
@@ -965,7 +970,7 @@ impl Shell {
         let threads =
             div().flex().flex_col().child(kit::section_label("Threads", t)).child(if tasks.is_empty() {
                 kit::group(t)
-                    .child(div().p(px(16.0)).text_size(px(13.0)).text_color(t.text_faint).child(format!(
+                    .child(div().p(px(16.0)).text_size(ty::BODY).text_color(t.text_faint).child(format!(
                         "{} has not run a thread yet. Use the dispatch bar above to start one.",
                         p.name
                     )))
@@ -991,13 +996,13 @@ impl Shell {
                                 task.unread,
                                 t,
                             )))
-                            .child(div().flex_1().min_w_0().truncate().text_size(px(13.0)).child(task.title.clone()))
+                            .child(div().flex_1().min_w_0().truncate().text_size(ty::BODY).child(task.title.clone()))
                             .when(!proj.is_empty(), |d| {
-                                d.child(div().text_size(px(11.5)).text_color(t.text_faint).child(proj))
+                                d.child(div().text_size(ty::CAPTION).text_color(t.text_faint).child(proj))
                             })
                             .child(
                                 div()
-                                    .text_size(px(11.5))
+                                    .text_size(ty::CAPTION)
                                     .text_color(t.text_faint)
                                     .child(ui::relative_time(task.updated_at)),
                             )
@@ -1022,7 +1027,7 @@ impl Shell {
                             div()
                                 .id("tm-notes-save")
                                 .pb(px(8.0))
-                                .text_size(px(12.0))
+                                .text_size(ty::META)
                                 .font_weight(gpui::FontWeight::MEDIUM)
                                 .text_color(t.accent)
                                 .cursor_pointer()
@@ -1033,7 +1038,7 @@ impl Shell {
                             div()
                                 .id("tm-notes-cancel")
                                 .pb(px(8.0))
-                                .text_size(px(12.0))
+                                .text_size(ty::META)
                                 .text_color(t.text_faint)
                                 .cursor_pointer()
                                 .hover(|s| s.text_color(t.text))
@@ -1046,7 +1051,7 @@ impl Shell {
                             div()
                                 .id("tm-notes-edit")
                                 .pb(px(8.0))
-                                .text_size(px(12.0))
+                                .text_size(ty::META)
                                 .text_color(t.text_muted)
                                 .cursor_pointer()
                                 .hover(|s| s.text_color(t.text))
@@ -1059,7 +1064,7 @@ impl Shell {
                             div()
                                 .id("tm-notes-open")
                                 .pb(px(8.0))
-                                .text_size(px(12.0))
+                                .text_size(ty::META)
                                 .text_color(t.text_faint)
                                 .cursor_pointer()
                                 .hover(|s| s.text_color(t.text))
@@ -1075,7 +1080,7 @@ impl Shell {
                     .child(
                         div()
                             .p(px(16.0))
-                            .text_size(px(13.0))
+                            .text_size(ty::BODY)
                             .text_color(if notes_text.trim().is_empty() { t.text_faint } else { t.text_muted })
                             .child(if notes_text.trim().is_empty() {
                                 "Notes appear here as this teammate learns across threads, or click Edit notes to seed project conventions and memory."
@@ -1231,7 +1236,7 @@ impl Shell {
                 })
             })
             .child(div().flex_1())
-            .when_some(ed.error.clone(), |d, e| d.child(div().text_size(px(12.5)).text_color(t.danger).child(e)))
+            .when_some(ed.error.clone(), |d, e| d.child(div().text_size(ty::SMALL).text_color(t.danger).child(e)))
             .child(kit::button_outline("tm-cancel", "Cancel", t).on_click(cx.listener(|this, _, _, cx| {
                 this.pages.team_edit = None;
                 cx.notify();
@@ -1278,7 +1283,7 @@ impl Shell {
                     .flex_col()
                     .gap(px(6.0))
                     .child(kit::area_box(t).child(Textarea::new(&ed.instructions)))
-                    .child(div().text_size(px(12.0)).text_color(t.text_faint).child(
+                    .child(div().text_size(ty::META).text_color(t.text_faint).child(
                         "Sent ahead of the first message of every thread this teammate runs, with a pointer to its NOTES.md.",
                     )),
                 t,

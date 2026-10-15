@@ -31,6 +31,11 @@ Dove changes:
 - `harness/src/opencode/mod.rs`: `basic_auth_user` picks the `serve` Basic-auth
   user from the executable name, so the same driver runs Kilo Code (an opencode
   fork whose server user is `kilo`). Re-apply after updating.
+- `harness/src/process/windows/escrow.rs`: the suspended escrow parent uses
+  `dove-escrow.exe` (crate `crates/dove-escrow`, an empty program) beside the
+  running binary when present, instead of a suspended copy of `dove.exe`, so
+  each agent spawn's helper costs about a megabyte rather than the app's
+  mapped image. Falls back to the running image. Re-apply after updating.
 
 To update: rerun the vendoring script (see git history of this file) against a newer Zeron checkout.
 

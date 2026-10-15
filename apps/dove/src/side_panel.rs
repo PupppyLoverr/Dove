@@ -26,6 +26,7 @@ use crate::assets::{icon, icons};
 use crate::browser::{BrowserContext, BrowserEvent, BrowserSurface};
 use crate::canvas::{CanvasEvent, CanvasView};
 use crate::changes::{Changes, ChangesEvent};
+use crate::design::ty;
 use crate::files_panel::{FilesEvent, FilesPanel};
 use crate::history::{GitHistory, HistoryEvent};
 use crate::kit;
@@ -178,6 +179,7 @@ struct ChipDrag {
 
 impl Render for ChipDrag {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::perf_trace::count_render("ChipDrag");
         let t = Theme::of(cx);
         div()
             .h(px(24.0))
@@ -190,7 +192,7 @@ impl Render for ChipDrag {
             .border_1()
             .border_color(t.border_strong)
             .shadow_md()
-            .text_size(px(12.0))
+            .text_size(ty::META)
             .child(self.title.clone())
     }
 }
@@ -969,7 +971,7 @@ impl SidePanel {
                             .flex_1()
                             .min_w_0()
                             .truncate()
-                            .text_size(px(11.5))
+                            .text_size(ty::CAPTION)
                             .text_color(if selected { t.text } else { t.text_muted })
                             .child(title),
                     )
@@ -1029,7 +1031,7 @@ impl SidePanel {
                             .gap(px(8.0))
                             .rounded(px(7.0))
                             .cursor_pointer()
-                            .text_size(px(13.0))
+                            .text_size(ty::BODY)
                             .text_color(t.text)
                             .hover(|s| s.bg(t.wash(0.10)))
                             .child(icon(k.glyph()).size(px(13.0)).text_color(t.text_muted))
@@ -1142,7 +1144,7 @@ impl SidePanel {
                         .flex_1()
                         .min_w_0()
                         .truncate()
-                        .text_size(px(13.0))
+                        .text_size(ty::BODY)
                         .font_weight(gpui::FontWeight::MEDIUM)
                         .text_color(t.text)
                         .child(k.label()),
@@ -1173,7 +1175,7 @@ impl SidePanel {
                     .child(
                         div()
                             .px(px(2.0))
-                            .text_size(px(11.0))
+                            .text_size(ty::MICRO)
                             .font_weight(gpui::FontWeight::MEDIUM)
                             .text_color(t.text_faint)
                             .child(title),
@@ -1199,7 +1201,7 @@ impl SidePanel {
                     .child(
                         div()
                             .mt(px(18.0))
-                            .text_size(px(11.5))
+                            .text_size(ty::CAPTION)
                             .text_color(t.text_faint)
                             .child("Ctrl+\\ hides the panel"),
                     ),
@@ -1239,7 +1241,7 @@ impl SidePanel {
                     .flex()
                     .items_center()
                     .gap(px(8.0))
-                    .text_size(px(12.0))
+                    .text_size(ty::META)
                     .text_color(t.text_muted)
                     .child(icon(icons::FORK).size(px(13.0)).text_color(t.text_muted))
                     .child(format!("{} spawned", self.subagents.len()))
@@ -1259,7 +1261,7 @@ impl SidePanel {
                     .when(total_steps > 0, |d| {
                         d.child(
                             div()
-                                .text_size(px(11.0))
+                                .text_size(ty::MICRO)
                                 .text_color(t.text_faint)
                                 .child(format!("{total_steps} tool steps")),
                         )
@@ -1312,7 +1314,7 @@ impl SidePanel {
                                     .flex_1()
                                     .min_w_0()
                                     .truncate()
-                                    .text_size(px(13.0))
+                                    .text_size(ty::BODY)
                                     .font_weight(gpui::FontWeight::MEDIUM)
                                     .text_color(t.text)
                                     .child(a.title.clone()),
@@ -1321,7 +1323,7 @@ impl SidePanel {
                             .when(!a.running && a.steps > 0, |d| {
                                 d.child(
                                     div()
-                                        .text_size(px(11.0))
+                                        .text_size(ty::MICRO)
                                         .text_color(t.text_faint)
                                         .child(format!("{} steps", a.steps)),
                                 )
@@ -1329,7 +1331,7 @@ impl SidePanel {
                             .when_some(a.took, |d, took| {
                                 d.child(
                                     div()
-                                        .text_size(px(11.5))
+                                        .text_size(ty::CAPTION)
                                         .text_color(t.text_faint)
                                         .child(format!("{:.0}s", took.as_secs_f32())),
                                 )
@@ -1362,7 +1364,7 @@ impl SidePanel {
                                 .flex()
                                 .items_center()
                                 .gap(px(6.0))
-                                .text_size(px(12.0))
+                                .text_size(ty::META)
                                 .text_color(t.busy)
                                 .child(div().min_w_0().truncate().child(doing))
                                 .when(steps > 0, |d| {
@@ -1377,7 +1379,7 @@ impl SidePanel {
                     })
                     .when(!a.prompt.is_empty(), |d| {
                         d.child(
-                            div().text_size(px(12.5)).text_color(t.text_muted).line_clamp(3).child(a.prompt.clone()),
+                            div().text_size(ty::SMALL).text_color(t.text_muted).line_clamp(3).child(a.prompt.clone()),
                         )
                     })
                     .when_some(result.filter(|r| !r.is_empty()), |d, r| {
@@ -1387,7 +1389,7 @@ impl SidePanel {
                                 .py(px(8.0))
                                 .rounded(px(8.0))
                                 .bg(ink(0.035))
-                                .text_size(px(12.0))
+                                .text_size(ty::META)
                                 .text_color(t.text_faint)
                                 .line_clamp(4)
                                 .child(r),
@@ -1432,7 +1434,7 @@ impl SidePanel {
                     .flex_1()
                     .min_w_0()
                     .truncate()
-                    .text_size(px(12.5))
+                    .text_size(ty::SMALL)
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .text_color(t.text)
                     .child(info.as_ref().map(|i| i.title.clone()).unwrap_or_else(|| "Subagent".into())),
@@ -1440,7 +1442,7 @@ impl SidePanel {
             .when_some(info.as_ref().map(|i| i.kind.clone()).filter(|k| !k.is_empty()), |d, k| {
                 d.child(kit::badge(k, t.text_muted))
             })
-            .child(div().flex_none().text_size(px(11.5)).text_color(t.text_faint).child(state))
+            .child(div().flex_none().text_size(ty::CAPTION).text_color(t.text_faint).child(state))
             .when_some(row, |d, row| {
                 d.child(
                     surface_chrome::toolbar_button("sub-head-reveal", "Show in the conversation")
@@ -1474,7 +1476,7 @@ impl SidePanel {
                     .border_color(t.border)
                     .bg(ink(0.025))
                     .cursor_pointer()
-                    .text_size(px(11.5))
+                    .text_size(ty::CAPTION)
                     .text_color(t.text_muted)
                     .hover(|s| s.bg(ink(0.06)).text_color(t.text))
                     .child(icon(icons::MAGIC_STICK_3).size(px(11.0)).text_color(t.text_faint))
@@ -1511,9 +1513,12 @@ impl SidePanel {
                             c.unread,
                             t,
                         )))
-                        .child(div().flex_1().min_w_0().truncate().text_size(px(13.0)).child(c.title.clone()))
+                        .child(div().flex_1().min_w_0().truncate().text_size(ty::BODY).child(c.title.clone()))
                         .child(
-                            div().text_size(px(11.5)).text_color(t.text_faint).child(ui::relative_time(c.updated_at)),
+                            div()
+                                .text_size(ty::CAPTION)
+                                .text_color(t.text_faint)
+                                .child(ui::relative_time(c.updated_at)),
                         )
                         .on_click(cx.listener(move |_, _, _, cx| cx.emit(SidePanelEvent::OpenThread(id))))
                 }))
@@ -1598,7 +1603,7 @@ impl SidePanel {
                     .child(icon(icons::MAGIC_STICK_3).size(px(15.0)).text_color(t.text_muted))
                     .child(
                         div()
-                            .text_size(px(13.0))
+                            .text_size(ty::BODY)
                             .font_weight(gpui::FontWeight::MEDIUM)
                             .text_color(t.text)
                             .child("Open scratchpad"),
@@ -1629,7 +1634,7 @@ impl SidePanel {
             .flex_col()
             .gap(px(10.0))
             .child(div().flex().items_center().gap(px(8.0)).child(kit::ring(frac, 16.0, t.accent, t.wash(0.12))).child(
-                div().text_size(px(13.0)).text_color(t.text).child(format!("{done} of {} done", self.todos.len())),
+                div().text_size(ty::BODY).text_color(t.text).child(format!("{done} of {} done", self.todos.len())),
             ))
             .children(self.todos.iter().map(|item| {
                 let (glyph, color) = match item.status {
@@ -1641,7 +1646,7 @@ impl SidePanel {
                     .flex()
                     .items_start()
                     .gap(px(10.0))
-                    .text_size(px(13.5))
+                    .text_size(ty::BODY)
                     .child(
                         div().mt(px(3.0)).size(px(14.0)).flex_none().flex().items_center().justify_center().child(
                             match glyph {
@@ -1690,6 +1695,7 @@ pub fn find_local_urls(line: &str) -> Vec<String> {
 
 impl Render for SidePanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::perf_trace::count_render("SidePanel");
         let t = Theme::of(cx).clone();
         let body: AnyElement = match self.active() {
             None if self.show_canvas_empty => self.render_canvas_empty(&t, cx),
@@ -1735,7 +1741,7 @@ impl Render for SidePanel {
                                 .min_w_0()
                                 .truncate()
                                 .font_family(t.font_mono.clone())
-                                .text_size(px(11.5))
+                                .text_size(ty::CAPTION)
                                 .text_color(t.text)
                                 .child(cwd_name),
                         )

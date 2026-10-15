@@ -16,6 +16,7 @@ use gpui::{
 use gpui_base::input::{Input, InputEvent, InputState};
 
 use crate::assets::{icon, icons};
+use crate::design::ty;
 use crate::theme::Theme;
 use crate::ui;
 
@@ -179,7 +180,7 @@ impl PullRequestsPage {
                     .flex_1()
                     .min_w_0()
                     .truncate()
-                    .text_size(px(20.0))
+                    .text_size(ty::PAGE)
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .child(pr.title.clone()),
             )
@@ -188,7 +189,7 @@ impl PullRequestsPage {
         let meta = div()
             .flex()
             .gap(px(10.0))
-            .text_size(px(12.5))
+            .text_size(ty::SMALL)
             .text_color(t.text_faint)
             .child(format!("#{}", pr.number))
             .child(pr.author.clone())
@@ -201,7 +202,7 @@ impl PullRequestsPage {
             .rounded(px(10.0))
             .border_1()
             .border_color(t.border)
-            .child(div().px(px(12.0)).py(px(8.0)).text_size(px(12.0)).text_color(t.text_faint).child(
+            .child(div().px(px(12.0)).py(px(8.0)).text_size(ty::META).text_color(t.text_faint).child(
                 match d.detail.as_ref() {
                     Some(x) => format!("Checks · {}", x.checks_summary()),
                     None => "Checks · loading…".into(),
@@ -223,7 +224,7 @@ impl PullRequestsPage {
                     .gap(px(8.0))
                     .border_t_1()
                     .border_color(t.border)
-                    .text_size(px(13.0))
+                    .text_size(ty::BODY)
                     .cursor_pointer()
                     .hover(|s| s.bg(t.wash(0.04)))
                     .on_click(move |_, _, cx| {
@@ -233,7 +234,7 @@ impl PullRequestsPage {
                     })
                     .child(ui::dot(color, 7.0))
                     .child(div().flex_1().truncate().child(c.name))
-                    .child(div().text_size(px(11.0)).text_color(t.text_faint).child(c.state.to_lowercase()))
+                    .child(div().text_size(ty::MICRO).text_color(t.text_faint).child(c.state.to_lowercase()))
             }));
         let blocks = crate::markdown::parse(if body.trim().is_empty() { "_No description._" } else { &body });
         let files = div()
@@ -261,10 +262,12 @@ impl PullRequestsPage {
                             .items_center()
                             .gap(px(8.0))
                             .bg(t.wash(0.03))
-                            .text_size(px(13.0))
+                            .text_size(ty::BODY)
                             .child(div().flex_1().truncate().child(f.path.clone()))
-                            .child(div().text_size(px(11.0)).text_color(t.diff_add).child(format!("+{}", f.additions)))
-                            .child(div().text_size(px(11.0)).text_color(t.diff_del).child(format!("−{}", f.deletions))),
+                            .child(div().text_size(ty::MICRO).text_color(t.diff_add).child(format!("+{}", f.additions)))
+                            .child(
+                                div().text_size(ty::MICRO).text_color(t.diff_del).child(format!("−{}", f.deletions)),
+                            ),
                     )
                     .children(preview.into_iter().map(|l| {
                         let (bg, sign) = if l.kind == LineKind::Added {
@@ -279,7 +282,7 @@ impl PullRequestsPage {
                             .gap(px(8.0))
                             .bg(bg)
                             .font_family(t.font_mono.clone())
-                            .text_size(px(12.0))
+                            .text_size(ty::META)
                             .child(sign)
                             .child(div().flex_1().truncate().child(l.text.to_string()))
                     }))
@@ -290,7 +293,7 @@ impl PullRequestsPage {
             .gap(px(16.0))
             .child(header)
             .child(meta)
-            .when_some(d.error.clone(), |el, e| el.child(div().text_size(px(13.0)).text_color(t.danger).child(e)))
+            .when_some(d.error.clone(), |el, e| el.child(div().text_size(ty::BODY).text_color(t.danger).child(e)))
             .child(
                 div()
                     .p(px(14.0))
@@ -302,7 +305,7 @@ impl PullRequestsPage {
             .child(checks_el)
             .child(
                 div()
-                    .text_size(px(13.0))
+                    .text_size(ty::BODY)
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .child(format!("Files ({})", d.files.len())),
             )
@@ -320,6 +323,7 @@ impl PullRequestsPage {
 
 impl Render for PullRequestsPage {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::perf_trace::count_render("PullRequestsPage");
         let t = Theme::of(cx).clone();
         if self.detail.is_some() {
             let detail = self.render_detail(&t, window, cx);
@@ -383,7 +387,7 @@ impl Render for PullRequestsPage {
                 .flex()
                 .items_center()
                 .rounded(px(7.0))
-                .text_size(px(13.0))
+                .text_size(ty::BODY)
                 .cursor_pointer()
                 .when(selected, |d| d.bg(t.wash(0.11)).text_color(t.text))
                 .when(!selected, |d| d.text_color(t.text_muted))
@@ -419,7 +423,7 @@ impl Render for PullRequestsPage {
                     .gap(px(8.0))
                     .rounded(px(9.0))
                     .bg(t.wash(0.04))
-                    .text_size(px(13.0))
+                    .text_size(ty::BODY)
                     .child(icon(icons::MAGNIFER).size(px(14.0)).text_color(t.text_faint))
                     .child(div().flex_1().child(Input::new(&self.search))),
             );
@@ -476,12 +480,12 @@ impl Render for PullRequestsPage {
                                         .flex()
                                         .flex_col()
                                         .gap(px(2.0))
-                                        .child(div().truncate().text_size(px(14.0)).child(p.title.clone()))
+                                        .child(div().truncate().text_size(ty::MD).child(p.title.clone()))
                                         .child(
                                             div()
                                                 .flex()
                                                 .gap(px(8.0))
-                                                .text_size(px(12.0))
+                                                .text_size(ty::META)
                                                 .text_color(t.text_faint)
                                                 .child(format!("#{}", p.number))
                                                 .child(p.author.clone())
@@ -492,10 +496,10 @@ impl Render for PullRequestsPage {
                                         ),
                                 )
                                 .child(
-                                    div().text_size(px(12.0)).text_color(t.diff_add).child(format!("+{}", p.additions)),
+                                    div().text_size(ty::META).text_color(t.diff_add).child(format!("+{}", p.additions)),
                                 )
                                 .child(
-                                    div().text_size(px(12.0)).text_color(t.diff_del).child(format!("−{}", p.deletions)),
+                                    div().text_size(ty::META).text_color(t.diff_del).child(format!("−{}", p.deletions)),
                                 )
                         }))
                         .into_any_element()
@@ -538,18 +542,18 @@ impl Render for PullRequestsPage {
                                             .gap(px(8.0))
                                             .child(
                                                 div()
-                                                    .text_size(px(22.0))
+                                                    .text_size(ty::H1)
                                                     .font_weight(gpui::FontWeight::SEMIBOLD)
                                                     .child("Pull requests"),
                                             )
                                             .child(
                                                 div()
-                                                    .text_size(px(14.0))
+                                                    .text_size(ty::MD)
                                                     .text_color(t.text_faint)
                                                     .child(self.count().to_string()),
                                             ),
                                     )
-                                    .child(div().text_size(px(13.0)).text_color(t.text_faint).child(
+                                    .child(div().text_size(ty::BODY).text_color(t.text_faint).child(
                                         "Open pull requests on GitHub. Check one out into a thread to review or finish it.",
                                     )),
                             )
@@ -576,13 +580,13 @@ fn empty_state(t: &Theme, title: &str, body: &str) -> AnyElement {
         .items_center()
         .gap(px(8.0))
         .child(icon(icons::PULL_REQUEST).size(px(26.0)).text_color(t.text_muted))
-        .child(div().text_size(px(16.0)).font_weight(gpui::FontWeight::SEMIBOLD).child(title.to_string()))
+        .child(div().text_size(ty::HEADING).font_weight(gpui::FontWeight::SEMIBOLD).child(title.to_string()))
         .when(!body.is_empty(), |d| {
             d.child(
                 div()
                     .max_w(px(420.0))
                     .text_center()
-                    .text_size(px(13.0))
+                    .text_size(ty::BODY)
                     .text_color(t.text_muted)
                     .child(body.to_string()),
             )

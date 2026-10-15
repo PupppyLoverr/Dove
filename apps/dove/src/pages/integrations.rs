@@ -19,6 +19,7 @@ use gpui_base::input::{Input, InputEvent, InputState};
 use serde::{Deserialize, Serialize};
 
 use crate::assets::{icon, icons};
+use crate::design::ty;
 use crate::kit;
 use crate::theme::Theme;
 use crate::ui;
@@ -233,10 +234,11 @@ impl IntegrationsView {
         let mut view =
             Self { config, api_key, toolkits, probe: Probe::default(), checking: false, copied: false, _subs: subs };
         view.refresh(cx);
-        // Connection state changes outside GPUI (the extension's socket); poll it.
+        // Connection state changes outside GPUI (the extension's socket): wait
+        // on its watch instead of polling, so an idle view schedules nothing.
+        let mut changes = crate::browser::control::connection_watch();
         cx.spawn(async move |this, cx| {
-            loop {
-                cx.background_executor().timer(Duration::from_secs(2)).await;
+            while changes.changed().await.is_ok() {
                 if this.update(cx, |_, cx| cx.notify()).is_err() {
                     break;
                 }
@@ -310,8 +312,8 @@ fn head(
                 .flex()
                 .flex_col()
                 .gap(px(2.0))
-                .child(div().text_size(px(14.0)).font_weight(gpui::FontWeight::MEDIUM).child(title))
-                .child(div().text_size(px(12.0)).text_color(t.text_faint).child(hint.into())),
+                .child(div().text_size(ty::MD).font_weight(gpui::FontWeight::MEDIUM).child(title))
+                .child(div().text_size(ty::META).text_color(t.text_faint).child(hint.into())),
         )
         .child(right)
 }
@@ -334,8 +336,8 @@ fn line(label: &'static str, hint: impl Into<SharedString>, control: impl IntoEl
                 .flex()
                 .flex_col()
                 .gap(px(2.0))
-                .child(div().text_size(px(13.0)).child(label))
-                .when(!hint.is_empty(), |d| d.child(div().text_size(px(12.0)).text_color(t.text_faint).child(hint))),
+                .child(div().text_size(ty::BODY).child(label))
+                .when(!hint.is_empty(), |d| d.child(div().text_size(ty::META).text_color(t.text_faint).child(hint))),
         )
         .child(control)
 }
@@ -346,7 +348,7 @@ fn status(on: bool, label: impl Into<SharedString>, t: &Theme) -> gpui::Div {
         .flex_none()
         .items_center()
         .gap(px(6.0))
-        .text_size(px(12.0))
+        .text_size(ty::META)
         .text_color(if on { t.text_muted } else { t.text_faint })
         .child(div().size(px(6.0)).rounded_full().bg(if on { t.text } else { t.wash(0.22) }))
         .child(label.into())
@@ -379,7 +381,7 @@ fn pick(id: SharedString, label: &'static str, on: bool, t: &Theme) -> gpui::Sta
         .gap(px(5.0))
         .rounded_full()
         .border_1()
-        .text_size(px(12.5))
+        .text_size(ty::SMALL)
         .cursor_pointer()
         .map(|d| {
             if on {
@@ -421,12 +423,13 @@ fn field(input: &Entity<InputState>, w: f32, t: &Theme) -> impl IntoElement {
         .bg(t.wash(0.04))
         .border_1()
         .border_color(t.border)
-        .text_size(px(13.0))
+        .text_size(ty::BODY)
         .child(Input::new(input))
 }
 
 impl Render for IntegrationsView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::perf_trace::count_render("IntegrationsView");
         let t = Theme::of(cx).clone();
         let browser = crate::browser::control::connected_browser();
         let code = crate::browser::control::pairing_code();
@@ -483,7 +486,7 @@ impl Render for IntegrationsView {
                             .bg(t.wash(0.04))
                             .border_1()
                             .border_color(t.border)
-                            .text_size(px(12.0))
+                            .text_size(ty::META)
                             .font_family(t.font_mono.clone())
                             .text_color(t.text_muted)
                             .child(
@@ -557,8 +560,8 @@ impl Render for IntegrationsView {
                                 .flex()
                                 .flex_col()
                                 .gap(px(2.0))
-                                .child(div().text_size(px(13.0)).child("Toolkits"))
-                                .child(div().text_size(px(12.0)).text_color(t.text_faint).child(if scoped {
+                                .child(div().text_size(ty::BODY).child("Toolkits"))
+                                .child(div().text_size(ty::META).text_color(t.text_faint).child(if scoped {
                                     "Pick none to allow every toolkit"
                                 } else {
                                     "Applies to project (ak_) and user (uak_) keys"
@@ -685,7 +688,7 @@ impl Render for IntegrationsView {
                 div()
                     .px(px(4.0))
                     .pt(px(2.0))
-                    .text_size(px(12.0))
+                    .text_size(ty::META)
                     .text_color(t.text_faint)
                     .child("Changes apply to agents started from now on."),
             )

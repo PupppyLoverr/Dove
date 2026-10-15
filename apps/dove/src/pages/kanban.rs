@@ -16,6 +16,7 @@ use gpui_base::input::{Input, Textarea};
 
 use super::page_with;
 use crate::assets::{icon, icons};
+use crate::design::ty;
 use crate::kit;
 use crate::shell::Shell;
 use crate::sidebar::project_badge;
@@ -64,6 +65,7 @@ struct CardDrag {
 
 impl Render for CardDrag {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::perf_trace::count_render("CardDrag");
         let t = Theme::of(cx);
         div()
             .w(px(220.0))
@@ -73,7 +75,7 @@ impl Render for CardDrag {
             .border_1()
             .border_color(t.accent.opacity(0.5))
             .shadow_lg()
-            .text_size(px(13.0))
+            .text_size(ty::BODY)
             .child(self.title.clone())
     }
 }
@@ -256,7 +258,7 @@ impl Shell {
                         t,
                     )))
                     .children(self.persona_for(id).map(|p| crate::team::avatar(p, 16.0, t).mt(px(1.0))))
-                    .child(div().flex_1().min_w_0().text_size(px(13.0)).line_clamp(2).child(task.title.clone()))
+                    .child(div().flex_1().min_w_0().text_size(ty::BODY).line_clamp(2).child(task.title.clone()))
                     .child(icon(ui::harness_icon(task.harness)).size(px(13.0)).text_color(ui::harness_tint(
                         task.harness,
                         t,
@@ -266,7 +268,7 @@ impl Shell {
             .when(col == Column::Draft, |d| {
                 d.child(
                     div()
-                        .text_size(px(12.0))
+                        .text_size(ty::META)
                         .text_color(t.text_faint)
                         .line_clamp(2)
                         .child(task.prompt.clone().unwrap_or_default()),
@@ -278,7 +280,7 @@ impl Shell {
                     .items_center()
                     .flex_wrap()
                     .gap(px(6.0))
-                    .text_size(px(11.5))
+                    .text_size(ty::CAPTION)
                     .text_color(t.text_faint)
                     .child(
                         div().flex().items_center().gap(px(4.0)).child(project_badge(&project, 12.0, t)).child(project),
@@ -321,7 +323,7 @@ impl Shell {
                 d.child(
                     ui::button_ghost(SharedString::from(format!("card-start-{id}")), "Start", t)
                         .h(px(24.0))
-                        .text_size(px(12.0))
+                        .text_size(ty::META)
                         .child(icon(icons::ACTION_PLAY).size(px(12.0)))
                         .on_click(cx.listener(move |this, _, window, cx| {
                             cx.stop_propagation();
@@ -353,8 +355,8 @@ impl Shell {
                 .items_center()
                 .gap(px(8.0))
                 .child(ui::dot(col.color(&t), 7.0))
-                .child(div().text_size(px(13.0)).font_weight(gpui::FontWeight::MEDIUM).child(col.label()))
-                .child(div().text_size(px(12.0)).text_color(t.text_faint).child(cards.len().to_string()))
+                .child(div().text_size(ty::BODY).font_weight(gpui::FontWeight::MEDIUM).child(col.label()))
+                .child(div().text_size(ty::META).text_color(t.text_faint).child(cards.len().to_string()))
                 .child(div().flex_1())
                 .child(ui::icon_button(
                     SharedString::from(format!("col-add-{col:?}")),
@@ -385,7 +387,7 @@ impl Shell {
                             .items_center()
                             .rounded(px(6.0))
                             .bg(t.wash(0.05))
-                            .text_size(px(13.0))
+                            .text_size(ty::BODY)
                             .child(div().flex_1().child(Input::new(&self.pages.draft_title))),
                     )
                     .child(
@@ -394,7 +396,7 @@ impl Shell {
                             .py(px(6.0))
                             .rounded(px(6.0))
                             .bg(t.wash(0.05))
-                            .text_size(px(13.0))
+                            .text_size(ty::BODY)
                             .child(Textarea::new(&self.pages.draft_prompt)),
                     )
                     .when(!self.personas.is_empty(), |d| {
@@ -405,7 +407,9 @@ impl Shell {
                                 .flex_wrap()
                                 .items_center()
                                 .gap(px(4.0))
-                                .child(div().text_size(px(11.5)).text_color(t.text_faint).mr(px(2.0)).child("Run as"))
+                                .child(
+                                    div().text_size(ty::CAPTION).text_color(t.text_faint).mr(px(2.0)).child("Run as"),
+                                )
                                 .child(
                                     ui::chip("draft-as-anyone", &t)
                                         .h(px(24.0))
@@ -484,7 +488,7 @@ impl Shell {
                 .child(header)
                 .children(form)
                 .when(cards.is_empty() && !(col == Column::Draft && self.pages.adding_draft), |d| {
-                    d.child(div().py(px(18.0)).text_center().text_size(px(12.0)).text_color(t.text_faint).child(
+                    d.child(div().py(px(18.0)).text_center().text_size(ty::META).text_color(t.text_faint).child(
                         match col {
                             Column::Draft => "Drafts wait here until you start them",
                             Column::InProgress => "Running and idle threads",
@@ -508,7 +512,7 @@ impl Shell {
                 .border_1()
                 .border_color(t.warning.opacity(0.4))
                 .bg(t.warning.opacity(0.06))
-                .text_size(px(13.0))
+                .text_size(ty::BODY)
                 .child(
                     div()
                         .flex_1()
@@ -526,7 +530,7 @@ impl Shell {
                 })))
         });
         let note = self.pages.kanban_note.clone().map(|n| {
-            div().id("kanban-note").text_size(px(12.5)).text_color(t.text_muted).cursor_pointer().child(n).on_click(
+            div().id("kanban-note").text_size(ty::SMALL).text_color(t.text_muted).cursor_pointer().child(n).on_click(
                 cx.listener(|this, _, _, cx| {
                     this.pages.kanban_note = None;
                     cx.notify();

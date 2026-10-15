@@ -15,6 +15,7 @@ use gpui::{
 use gpui_base::input::Input;
 
 use crate::assets::{icon, icons};
+use crate::design::ty;
 use crate::kit;
 use crate::shell::{ChatMenu, Route, Shell};
 use crate::theme::Theme;
@@ -92,7 +93,7 @@ impl Shell {
                 .gap(px(9.0))
                 .rounded(px(8.0))
                 .cursor_pointer()
-                .text_size(px(13.0))
+                .text_size(ty::BODY)
                 .when(selected, |d| d.bg(ui::selected_bg(&t)).shadow(ui::selected_ring(&t)).text_color(t.text))
                 .when(!selected, |d| d.text_color(t.text_muted).hover(|s| s.bg(t.wash(0.05)).text_color(t.text)))
                 .child(icon(glyph).size(px(16.0)))
@@ -121,7 +122,7 @@ impl Shell {
             .border_color(t.border_strong)
             .bg(t.wash(0.055))
             .cursor_pointer()
-            .text_size(px(13.0))
+            .text_size(ty::BODY)
             .font_weight(gpui::FontWeight::MEDIUM)
             .text_color(t.text)
             .hover(|s| s.bg(t.wash(0.095)).border_color(t.wash(0.18)))
@@ -147,7 +148,7 @@ impl Shell {
                 } else if active_threads > 0 {
                     Some(
                         div()
-                            .text_size(px(11.0))
+                            .text_size(ty::MICRO)
                             .text_color(t.text_faint)
                             .child(active_threads.to_string())
                             .into_any_element(),
@@ -164,7 +165,7 @@ impl Shell {
                 "Kanban",
                 Some(Route::Kanban),
                 (drafts > 0).then(|| {
-                    div().text_size(px(11.0)).text_color(t.text_faint).child(drafts.to_string()).into_any_element()
+                    div().text_size(ty::MICRO).text_color(t.text_faint).child(drafts.to_string()).into_any_element()
                 }),
                 self,
                 cx,
@@ -196,7 +197,7 @@ impl Shell {
                         .flex()
                         .items_center()
                         .gap(px(6.0))
-                        .text_size(px(12.0))
+                        .text_size(ty::META)
                         .font_weight(gpui::FontWeight::MEDIUM)
                         .text_color(t.warning)
                         .child(icon(icons::BELL).size(px(13.0)).text_color(t.warning))
@@ -254,7 +255,7 @@ impl Shell {
                     .flex()
                     .items_center()
                     .gap(px(2.0))
-                    .text_size(px(11.5))
+                    .text_size(ty::CAPTION)
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .text_color(t.text_faint)
                     .child(div().flex_1().flex().items_center().gap(px(6.0)).child("Threads").when(
@@ -268,7 +269,7 @@ impl Shell {
                                     .items_center()
                                     .rounded(px(4.0))
                                     .bg(t.wash(0.06))
-                                    .text_size(px(10.5))
+                                    .text_size(ty::BADGE)
                                     .child(active_threads.to_string()),
                             )
                         },
@@ -307,7 +308,7 @@ impl Shell {
                         .bg(t.wash(0.05))
                         .border_1()
                         .border_color(t.wash(0.06))
-                        .text_size(px(13.0))
+                        .text_size(ty::BODY)
                         .child(icon(icons::MAGNIFER).size(px(14.0)).text_color(t.text_faint))
                         .child(div().flex_1().min_w_0().child(Input::new(&self.search))),
                 )
@@ -324,7 +325,7 @@ impl Shell {
             .pb(px(8.0))
             .pt(px(4.0));
         if visible.is_empty() {
-            list = list.child(div().px(px(16.0)).py(px(8.0)).text_size(px(13.0)).text_color(t.text_faint).child(
+            list = list.child(div().px(px(16.0)).py(px(8.0)).text_size(ty::BODY).text_color(t.text_faint).child(
                 if self.projects.is_empty() {
                     "Add a project to begin"
                 } else if !q.is_empty() {
@@ -348,7 +349,7 @@ impl Shell {
                         .flex()
                         .items_center()
                         .gap(px(6.0))
-                        .text_size(px(11.5))
+                        .text_size(ty::CAPTION)
                         .text_color(t.text_faint)
                         .child(project_badge(&p.name, 12.0, &t))
                         .child(p.name.clone()),
@@ -371,7 +372,7 @@ impl Shell {
                     .flex()
                     .items_center()
                     .gap(px(6.0))
-                    .text_size(px(11.5))
+                    .text_size(ty::CAPTION)
                     .text_color(t.text_faint)
                     .child(icon(icons::ARCHIVE_MINIMALISTIC).size(px(13.0)).text_color(t.text_faint))
                     .child("Archived"),
@@ -423,14 +424,14 @@ impl Shell {
                             .flex_col()
                             .child(
                                 div()
-                                    .text_size(px(13.0))
+                                    .text_size(ty::BODY)
                                     .font_weight(gpui::FontWeight::MEDIUM)
                                     .truncate()
                                     .child(format!("Local · {}", ui::host_name())),
                             )
                             .child(
                                 div()
-                                    .text_size(px(11.0))
+                                    .text_size(ty::MICRO)
                                     .text_color(t.text_faint)
                                     .truncate()
                                     .child(format!("Today {}", ui::usage_line(&self.today))),
@@ -503,7 +504,7 @@ impl Shell {
             .gap(px(9.0))
             .rounded(px(8.0))
             .cursor_pointer()
-            .text_size(px(13.0))
+            .text_size(ty::BODY)
             .when(selected || open, |d| d.bg(ui::selected_bg(t)).shadow(ui::selected_ring(t)).text_color(t.text))
             .when(!selected && !open, |d| d.text_color(t.text_muted).hover(|s| s.bg(t.wash(0.05)).text_color(t.text)))
             .child(icon(icons::MORE_HORIZONTAL).size(px(16.0)))
@@ -620,7 +621,7 @@ impl Shell {
             } else {
                 ui::button_ghost(SharedString::from(format!("need-{label}-{id}")), label, t).h(px(24.0))
             };
-            el.text_size(px(12.0)).on_click(cx.listener(move |this, _, _, cx| {
+            el.text_size(ty::META).on_click(cx.listener(move |this, _, _, cx| {
                 if let Some(v) = this.threads.get(&id) {
                     let chat = v.read(cx).chat.clone();
                     let rid = rid.clone();
@@ -653,9 +654,9 @@ impl Shell {
                         t,
                         t.text_muted,
                     )))
-                    .child(div().flex_1().min_w_0().truncate().text_size(px(13.0)).child(task.title.clone())),
+                    .child(div().flex_1().min_w_0().truncate().text_size(ty::BODY).child(task.title.clone())),
             )
-            .child(div().text_size(px(12.0)).text_color(t.text_muted).line_clamp(2).child(summary))
+            .child(div().text_size(ty::META).text_color(t.text_muted).line_clamp(2).child(summary))
             .when(approval, |d| {
                 d.child(
                     div()
@@ -679,7 +680,7 @@ impl Shell {
         let step = (task.status == TaskStatus::Running)
             .then(|| self.threads.get(&id).and_then(|v| v.read(cx).chat.read(cx).current_step()))
             .flatten();
-        let corner = div().text_size(px(11.5)).text_color(t.text_faint).child(ui::relative_time(task.updated_at));
+        let corner = div().text_size(ty::CAPTION).text_color(t.text_faint).child(ui::relative_time(task.updated_at));
         let archive_btn = div()
             .id(SharedString::from(format!("row-archive-{id}")))
             .size(px(22.0))
@@ -779,25 +780,27 @@ impl Shell {
                     .bg(t.wash(0.08))
                     .child(Input::new(&input))
                     .into_any_element(),
-                None => div()
-                    .flex_1()
-                    .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .child(
-                        div()
-                            .truncate()
-                            .text_size(px(13.0))
-                            .when(task.unread, |d| d.font_weight(gpui::FontWeight::SEMIBOLD))
-                            .text_color(if selected || task.unread { t.text } else { t.text_muted })
-                            .child(task.title.clone()),
-                    )
-                    .when(two_line, |d| {
-                        d.children(
-                            detail.map(|line| div().truncate().text_size(px(11.5)).text_color(detail_tint).child(line)),
+                None => {
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .child(
+                            div()
+                                .truncate()
+                                .text_size(ty::BODY)
+                                .when(task.unread, |d| d.font_weight(gpui::FontWeight::SEMIBOLD))
+                                .text_color(if selected || task.unread { t.text } else { t.text_muted })
+                                .child(task.title.clone()),
                         )
-                    })
-                    .into_any_element(),
+                        .when(two_line, |d| {
+                            d.children(detail.map(|line| {
+                                div().truncate().text_size(ty::CAPTION).text_color(detail_tint).child(line)
+                            }))
+                        })
+                        .into_any_element()
+                }
             })
             .when(task.pinned, |d| d.child(icon(icons::PIN).size(px(12.0)).text_color(t.text_faint)))
             .child(

@@ -24,6 +24,7 @@ use gpui_base::input::{InputEvent, InputState};
 
 use crate::assets::{icon, icons};
 use crate::composer::{Composer, ComposerEvent};
+use crate::design::ty;
 use crate::kit::{self, Toasts, Tone};
 use crate::pages::PageState;
 use crate::palette::{Palette, PaletteEvent, PaletteItem};
@@ -217,8 +218,13 @@ impl Shell {
                 crate::settings::SettingsEvent::OpenTeam { new: true } => this.edit_teammate(None, window, cx),
                 crate::settings::SettingsEvent::OpenTeam { new: false } => this.open_teammate(None, window, cx),
                 crate::settings::SettingsEvent::OpenAgents => this.navigate(Route::Agents, window, cx),
+                crate::settings::SettingsEvent::Close => this.close_settings(window, cx),
             },
         ));
+        // The shell draws the settings page's parts itself (its sections in
+        // the sidebar slot, the section in the card), so it repaints when the
+        // page changes.
+        subs.push(cx.observe(&settings, |_, _, cx| cx.notify()));
         subs.push(cx.subscribe_in(&prs, window, |this, _, ev: &PrEvent, window, cx| match ev {
             PrEvent::Checkout { project, number, title } => {
                 this.checkout_pr(project.clone(), *number, title.clone(), window, cx)
@@ -243,6 +249,7 @@ impl Shell {
         }
         subs.push(cx.observe_window_activation(window, |this, window, cx| {
             this.window_active = window.is_window_active();
+            crate::motion::window_activation_changed(this.window_active, cx);
             if this.window_active
                 && let Some((id, at)) = this.pending_focus.take()
                 && at.elapsed() < Duration::from_secs(60)
@@ -374,24 +381,51 @@ impl Shell {
     }
 
     fn scan_harnesses(&mut self, cx: &mut Context<Self>) {
-        // PATH lookups are instant; show the agents right away and fill in
-        // versions as each `--version` probe (a process start) returns.
+        // PATH lookups are instant; show the agents right away. Versions come
+        // from a cache keyed by each binary's size and modified time, so an
+        // unchanged agent costs no process start; a new or updated one is
+        // probed with `--version`, one at a time, once launch has settled.
         let engine = self.engine.clone();
         let scan = cx.background_spawn(async move { engine.rescan_harnesses() });
         cx.spawn(async move |this, cx| {
             let found = scan.await;
             let probes: Vec<_> = found.iter().map(|i| (i.kind, i.program.clone())).collect();
-            let _ = this.update(cx, |s, cx| {
+            let Ok(store) = this.update(cx, |s, cx| {
                 s.installed = found.clone();
                 let enabled: Vec<_> =
                     found.into_iter().filter(|i| crate::pages::agent_enabled(&s.engine.store, i.kind)).collect();
                 s.composer.update(cx, |c, cx| c.set_installed(enabled, cx));
                 cx.notify();
-            });
+                s.engine.store.clone()
+            }) else {
+                return;
+            };
             let mut known = Vec::new();
+            let mut settled = false;
             for (kind, program) in probes {
-                let probe = cx.background_spawn(async move { version_of(&program) });
-                if let Some(v) = probe.await {
+                let cached = {
+                    let (store, program) = (store.clone(), program.clone());
+                    cx.background_spawn(async move { cached_version(&store, kind, &program) }).await
+                };
+                let version = match cached {
+                    Some(v) => Some(v),
+                    None => {
+                        if !settled {
+                            cx.background_executor().timer(VERSION_PROBE_DELAY).await;
+                            settled = true;
+                        }
+                        let store = store.clone();
+                        cx.background_spawn(async move {
+                            let v = version_of(&program);
+                            if let Some(v) = &v {
+                                remember_version(&store, kind, &program, v);
+                            }
+                            v
+                        })
+                        .await
+                    }
+                };
+                if let Some(v) = version {
                     known.push((kind, v.clone()));
                     let _ = this.update(cx, |s, cx| {
                         s.versions.insert(kind, v);
@@ -1232,6 +1266,25 @@ impl Shell {
         self.navigate(Route::Settings, window, cx);
     }
 
+    /// Open Settings on one setting: its section, scrolled to it, glowing.
+    pub fn reveal_setting(&mut self, row: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let row = row.to_string();
+        self.settings.update(cx, |s, cx| s.reveal(&row, cx));
+        self.navigate(Route::Settings, window, cx);
+    }
+
+    /// Leave Settings for wherever the user came from.
+    pub fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.route != Route::Settings {
+            return;
+        }
+        if self.back.last().is_some_and(|r| *r != Route::Settings) {
+            self.go_back(window, cx);
+        } else {
+            self.navigate(Route::Home, window, cx);
+        }
+    }
+
     /// The active thread's working directory.
     pub fn task_dir(&self) -> Option<PathBuf> {
         let task = self.active_task()?;
@@ -1313,6 +1366,9 @@ impl Shell {
         );
         items.extend(self.projects.iter().map(|p| P::Project(p.id, p.name.clone())));
         items.extend(self.installed.iter().filter(|i| dove_core::harness_supported(i.kind)).map(|i| P::Agent(i.kind)));
+        items.extend(
+            crate::settings::search_index().into_iter().map(|(_, row, title, section)| P::Setting(row, title, section)),
+        );
         items
     }
 
@@ -1333,6 +1389,7 @@ impl Shell {
                 self.show_panel(Tab::Files, window, cx);
                 self.panel.update(cx, |p, cx| p.open_path(&path, None, window, cx));
             }
+            PaletteItem::Setting(row, _, _) => self.reveal_setting(row, window, cx),
             PaletteItem::Action(_, _, id) => match id {
                 "new" => self.new_session(window, cx),
                 "threads" => self.navigate(Route::Threads, window, cx),
@@ -1517,13 +1574,14 @@ impl Shell {
                     .into_any_element()
             }
         };
+        let side = self.sidebar_open || self.route == Route::Settings;
         let cluster = div()
             .flex()
             .flex_none()
             .items_center()
             .pl(px(left_pad))
-            .when(self.sidebar_open, |d| d.w(px(self.sidebar_w)))
-            .when(!self.sidebar_open, |d| d.pr(px(8.0)))
+            .when(side, |d| d.w(px(self.sidebar_w)))
+            .when(!side, |d| d.pr(px(8.0)))
             .child(ui::window_button(
                 "tb-sidebar",
                 ui::sidebar_glyph(if self.sidebar_open { 1.0 } else { 0.0 }, false, 16.0, t.text_muted),
@@ -1542,7 +1600,7 @@ impl Shell {
         let panel_w = self.panel_width(window);
         // What the tabs get: the bar minus the cluster, the tools beside the
         // tabs and the dock's strip (or the caption buttons).
-        let cluster_w = if self.sidebar_open {
+        let cluster_w = if side {
             self.sidebar_w
         } else {
             // Toggle, group gap, back, 2 px, forward, trailing pad.
@@ -1711,7 +1769,7 @@ impl Shell {
                                 .flex_1()
                                 .min_w_0()
                                 .truncate()
-                                .text_size(px(12.5))
+                                .text_size(ty::SMALL)
                                 .when(task.unread && !selected, |d| d.font_weight(gpui::FontWeight::SEMIBOLD))
                                 .text_color(if selected { t.text } else { t.text_muted })
                                 .child(task.title.clone()),
@@ -1810,7 +1868,7 @@ impl Shell {
                 .flex()
                 .items_center()
                 .gap(px(10.0))
-                .text_size(px(14.0))
+                .text_size(ty::MD)
                 .child(icon(glyph).text_color(t.text_muted))
                 .child(div().truncate().child(text))
         };
@@ -1955,7 +2013,7 @@ impl Shell {
                         .flex()
                         .items_center()
                         .rounded(px(7.0))
-                        .text_size(px(13.0))
+                        .text_size(ty::BODY)
                         .text_color(t.text_muted)
                         .cursor_pointer()
                         .hover(|s| s.bg(t.wash(0.10)))
@@ -2009,7 +2067,11 @@ impl Shell {
             Route::Agents => self.render_agents_page(cx),
             Route::Usage => self.render_usage_page(cx),
             Route::Archived => self.render_archived_page(cx),
-            Route::Settings => self.settings.clone().into_any_element(),
+            Route::Settings => match self.settings.update(cx, |s, cx| s.render_content(window, cx)) {
+                Some(content) => content,
+                // Settings › Archived is the Archived page itself.
+                None => self.render_archived_page(cx),
+            },
             Route::Help => self.render_help_page(cx),
             Route::Team => self.render_team_page(cx),
         }
@@ -2024,6 +2086,7 @@ struct TabDrag {
 
 impl Render for TabDrag {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::perf_trace::count_render("TabDrag");
         let t = Theme::of(cx);
         div()
             .px(px(10.0))
@@ -2032,7 +2095,7 @@ impl Render for TabDrag {
             .bg(t.surface_raised)
             .border_1()
             .border_color(t.border)
-            .text_size(px(12.5))
+            .text_size(ty::SMALL)
             .child(self.title.clone())
     }
 }
@@ -2062,6 +2125,29 @@ fn frame_stats() {
     }
 }
 
+/// Version probes start agent processes; launch waits this long first.
+const VERSION_PROBE_DELAY: Duration = Duration::from_secs(10);
+
+/// `size:modified` of a binary: changes whenever the agent is updated.
+fn binary_stamp(program: &std::path::Path) -> Option<String> {
+    let meta = std::fs::metadata(program).ok()?;
+    let modified = meta.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
+    Some(format!("{}:{modified}", meta.len()))
+}
+
+/// The version probed last time, if the binary has not changed since.
+fn cached_version(store: &dove_core::store::Store, kind: HarnessKind, program: &std::path::Path) -> Option<String> {
+    let saved = store.setting(&format!("agent_version.{}", kind.id()))?;
+    let (stamp, version) = saved.rsplit_once('|')?;
+    (Some(stamp) == binary_stamp(program).as_deref() && !version.is_empty()).then(|| version.to_string())
+}
+
+fn remember_version(store: &dove_core::store::Store, kind: HarnessKind, program: &std::path::Path, version: &str) {
+    if let Some(stamp) = binary_stamp(program) {
+        let _ = store.set_setting(&format!("agent_version.{}", kind.id()), &format!("{stamp}|{version}"));
+    }
+}
+
 pub fn version_of(program: &std::path::Path) -> Option<String> {
     let mut cmd = std::process::Command::new(program);
     let ext = program.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
@@ -2087,6 +2173,7 @@ pub fn version_of(program: &std::path::Path) -> Option<String> {
 
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::perf_trace::count_render("Shell");
         frame_stats();
         let t = Theme::of(cx).clone();
         let in_thread = matches!(self.route, Route::Thread(_));
@@ -2099,14 +2186,23 @@ impl Render for Shell {
         let topbar = (!bare).then(|| self.render_topbar(window, cx));
         // With no title bar, the sidebar starts below the floating window
         // controls instead of running under them.
-        let sidebar = self.sidebar_open.then(|| {
-            let sidebar = self.render_sidebar(cx);
-            if bare {
-                div().h_full().flex().flex_col().pt(px(Theme::TITLEBAR_HEIGHT)).child(sidebar).into_any_element()
-            } else {
-                sidebar
-            }
-        });
+        let in_settings = self.route == Route::Settings;
+        let sidebar = if in_settings {
+            // Settings swaps the thread list for its sections (with Back);
+            // the thread list returns when Settings closes.
+            let width = self.sidebar_w;
+            let nav = self.settings.update(cx, |s, cx| s.render_nav(width, window, cx));
+            Some(div().h_full().flex_none().child(nav).into_any_element())
+        } else {
+            self.sidebar_open.then(|| {
+                let sidebar = self.render_sidebar(cx);
+                if bare {
+                    div().h_full().flex().flex_col().pt(px(Theme::TITLEBAR_HEIGHT)).child(sidebar).into_any_element()
+                } else {
+                    sidebar
+                }
+            })
+        };
         let center = (!expanded).then(|| self.render_center(window, cx));
         let panel_w = self.panel_width(window);
 
@@ -2158,7 +2254,7 @@ impl Render for Shell {
                     .h_full()
                     .mr(px(GUTTER))
                     .mb(px(GUTTER))
-                    .when(!self.sidebar_open, |d| d.ml(px(GUTTER)))
+                    .when(!self.sidebar_open && !in_settings, |d| d.ml(px(GUTTER)))
                     .rounded(px(12.0))
                     .bg(t.panel_bg())
                     .border_1()
@@ -2200,7 +2296,7 @@ impl Render for Shell {
             .bg(t.glass())
             .text_color(t.text)
             .font_family(t.font_sans.clone())
-            .text_size(px(14.0))
+            .text_size(ty::MD)
             .on_action(cx.listener(|this, _: &actions::NewSession, window, cx| this.new_session(window, cx)))
             .on_action(cx.listener(|this, _: &actions::AddProject, _, cx| this.add_project_dialog(cx)))
             .on_action(cx.listener(|this, _: &actions::ToggleSidebar, _, cx| this.toggle_sidebar(cx)))
@@ -2256,7 +2352,7 @@ impl Render for Shell {
                 this.panel.update(cx, |p, cx| p.open_subagent(&source, call, window, cx));
                 cx.notify();
             }))
-            .on_key_down(cx.listener(|this, e: &gpui::KeyDownEvent, _, cx| {
+            .on_key_down(cx.listener(|this, e: &gpui::KeyDownEvent, window, cx| {
                 if e.keystroke.key == "escape" {
                     let open = this.menu.is_some()
                         || this.info_open
@@ -2271,6 +2367,9 @@ impl Render for Shell {
                         this.palette = None;
                         cx.stop_propagation();
                         cx.notify();
+                    } else if this.route == Route::Settings && !this.settings.read(cx).is_recording() {
+                        this.close_settings(window, cx);
+                        cx.stop_propagation();
                     }
                 }
             }))
@@ -2316,6 +2415,16 @@ impl Render for Shell {
             .when(bare, |d| d.child(self.render_bare_chrome(window, cx)))
             .children(menu)
             .children(palette)
+            .child(gpui::canvas(
+                |_, _, _| {},
+                |_, _, window, _| {
+                    // Hover and state fades advance from wall time; keep frames
+                    // coming only while one of them is still moving.
+                    if crate::motion::fades_active() {
+                        window.request_animation_frame();
+                    }
+                },
+            ))
     }
 }
 

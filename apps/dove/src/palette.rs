@@ -15,6 +15,7 @@ use gpui::{
 use gpui_base::input::{Input, InputEvent, InputState};
 
 use crate::assets::{icon, icons};
+use crate::design::ty;
 use crate::kit;
 use crate::theme::Theme;
 use crate::ui;
@@ -27,6 +28,8 @@ pub enum PaletteItem {
     Project(ProjectId, String),
     Agent(HarnessKind),
     File(String),
+    /// One setting: (row id, title, section label).
+    Setting(&'static str, &'static str, &'static str),
 }
 
 impl PaletteItem {
@@ -37,6 +40,7 @@ impl PaletteItem {
             PaletteItem::Project(_, n) => n.clone(),
             PaletteItem::Agent(k) => format!("New thread with {}", k.label()),
             PaletteItem::File(p) => p.clone(),
+            PaletteItem::Setting(_, title, section) => format!("{section}: {title}"),
         }
     }
 
@@ -47,6 +51,7 @@ impl PaletteItem {
             PaletteItem::Project(..) => "Project",
             PaletteItem::Agent(..) => "Agent",
             PaletteItem::File(..) => "File",
+            PaletteItem::Setting(..) => "Setting",
         }
     }
 }
@@ -149,7 +154,9 @@ impl Palette {
             return;
         }
         if q.is_empty() {
-            self.shown = self.items.iter().take(MAX_ROWS).cloned().collect();
+            // Settings are found by searching, not listed up front.
+            self.shown =
+                self.items.iter().filter(|i| !matches!(i, PaletteItem::Setting(..))).take(MAX_ROWS).cloned().collect();
             return;
         }
         let mut scored: Vec<(i32, &PaletteItem)> =
@@ -195,12 +202,16 @@ impl Palette {
                 .text_color(ui::harness_tint(*k, t, t.text_muted))
                 .into_any_element(),
             PaletteItem::File(_) => icon(icons::DOCUMENT).size(px(15.0)).text_color(t.text_muted).into_any_element(),
+            PaletteItem::Setting(..) => {
+                icon(icons::SETTINGS).size(px(15.0)).text_color(t.text_muted).into_any_element()
+            }
         }
     }
 }
 
 impl Render for Palette {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::perf_trace::count_render("Palette");
         let t = Theme::of(cx).clone();
         ui::frosted(
             14.0,
@@ -228,7 +239,7 @@ impl Render for Palette {
                         .gap(px(10.0))
                         .border_b_1()
                         .border_color(t.border)
-                        .text_size(px(15.0))
+                        .text_size(ty::TITLE)
                         .child(icon(icons::MAGNIFER).size(px(16.0)).text_color(t.text_faint))
                         .child(div().flex_1().child(Input::new(&self.input)))
                         .child(kit::kbd("Esc", &t)),
@@ -242,7 +253,7 @@ impl Render for Palette {
                         .track_scroll(&self.scroll)
                         .py(px(6.0))
                         .when(self.shown.is_empty(), |d| {
-                            d.child(div().px(px(16.0)).py(px(10.0)).text_size(px(13.0)).text_color(t.text_faint).child(
+                            d.child(div().px(px(16.0)).py(px(10.0)).text_size(ty::BODY).text_color(t.text_faint).child(
                                 if self.query.starts_with('@') && self.files.is_empty() {
                                     "No files (open a thread first)"
                                 } else {
@@ -266,8 +277,8 @@ impl Render for Palette {
                                 .when(selected, |d| d.bg(t.wash(0.10)))
                                 .hover(|s| s.bg(t.wash(0.07)))
                                 .child(div().w(px(16.0)).flex().justify_center().child(Self::glyph(item, &t)))
-                                .child(div().flex_1().min_w_0().truncate().text_size(px(13.5)).child(item.label()))
-                                .child(div().text_size(px(11.5)).text_color(t.text_faint).child(item.kind()))
+                                .child(div().flex_1().min_w_0().truncate().text_size(ty::BODY).child(item.label()))
+                                .child(div().text_size(ty::CAPTION).text_color(t.text_faint).child(item.kind()))
                                 .on_click(cx.listener(move |_, _, _, cx| cx.emit(PaletteEvent::Pick(item2.clone()))))
                         })),
                 ),

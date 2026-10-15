@@ -13,6 +13,7 @@ use gpui::{
 use gpui_base::input::{Input, InputEvent, InputState};
 
 use crate::assets::{icon, icons};
+use crate::design::ty;
 use crate::kit;
 use crate::theme::Theme;
 use crate::ui;
@@ -96,6 +97,7 @@ impl GitHistory {
 
 impl Render for GitHistory {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::perf_trace::count_render("GitHistory");
         let t = Theme::of(cx).clone();
         let search = div()
             .m(px(8.0))
@@ -108,7 +110,7 @@ impl Render for GitHistory {
             .bg(t.wash(0.05))
             .border_1()
             .border_color(t.border)
-            .text_size(px(13.0))
+            .text_size(ty::BODY)
             .child(icon(icons::MAGNIFER).size(px(13.0)).text_color(t.text_faint))
             .child(div().flex_1().child(Input::new(&self.search)));
 
@@ -172,7 +174,7 @@ impl Render for GitHistory {
                                             .child(
                                                 div()
                                                     .font_family(t.font_mono.clone())
-                                                    .text_size(px(11.5))
+                                                    .text_size(ty::CAPTION)
                                                     .text_color(t.accent)
                                                     .child(c.short.clone()),
                                             )
@@ -181,7 +183,7 @@ impl Render for GitHistory {
                                                     .flex_1()
                                                     .min_w_0()
                                                     .truncate()
-                                                    .text_size(px(13.0))
+                                                    .text_size(ty::BODY)
                                                     .text_color(t.text)
                                                     .child(c.subject.clone()),
                                             ),
@@ -191,7 +193,7 @@ impl Render for GitHistory {
                                             .flex()
                                             .items_center()
                                             .gap(px(8.0))
-                                            .text_size(px(11.5))
+                                            .text_size(ty::CAPTION)
                                             .text_color(t.text_faint)
                                             .child(c.author.clone())
                                             .child("·")

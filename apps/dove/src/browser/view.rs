@@ -1,7 +1,8 @@
 use super::{BrowserEvent, BrowserSurface};
 use crate::assets::{icon, icons};
+use crate::design::rem;
+use crate::design::ty;
 use crate::{surface_chrome, theme::Theme};
-use gpui::AnimationExt as _;
 use gpui::{
     AnyElement, Context, Focusable, IntoElement, KeyDownEvent, MouseButton, Render, Window, div, prelude::*, px,
 };
@@ -196,14 +197,18 @@ impl BrowserSurface {
                     .border_1()
                     .border_color(theme.border)
                     .text_size(gpui::px(12.0))
-                    .line_height(px(19.0))
+                    .line_height(rem(19.0))
                     .text_color(theme.text_muted)
                     .child(message),
             );
         }
         if let Some(error) = &snapshot.error {
             content = content.child(
-                div().text_size(gpui::px(11.0)).line_height(px(17.0)).text_color(theme.text_muted).child(error.clone()),
+                div()
+                    .text_size(gpui::px(11.0))
+                    .line_height(rem(17.0))
+                    .text_color(theme.text_muted)
+                    .child(error.clone()),
             );
         }
         content = content.child(
@@ -289,7 +294,7 @@ impl BrowserSurface {
                         div()
                             .text_center()
                             .text_size(gpui::px(12.0))
-                            .line_height(px(19.0))
+                            .line_height(rem(19.0))
                             .text_color(theme.text_muted)
                             .child(description),
                     )
@@ -449,6 +454,7 @@ impl BrowserSurface {
 
 impl Render for BrowserSurface {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::perf_trace::count_render("BrowserSurface");
         let theme = Theme::of(cx).clone();
         let focused = self.address.focus_handle(cx).is_focused(window);
         let external = !cfg!(any(target_os = "macos", target_os = "linux", windows));
@@ -515,12 +521,22 @@ impl Render for BrowserSurface {
                 .role(gpui::Role::Status)
                 .aria_label(text.clone())
                 .tooltip(crate::ui::tip("An agent is using this browser"))
-                .child(div().size(px(6.0)).flex_none().rounded_full().bg(theme.accent).with_animation(
-                    "agent-pulse",
-                    gpui::Animation::new(std::time::Duration::from_millis(1100)).repeat(),
-                    |d, t| d.opacity(0.35 + 0.65 * (1.0 - (t * 2.0 - 1.0).abs())),
-                ))
-                .child(div().min_w_0().truncate().text_size(px(11.5)).text_color(theme.text).child(text))
+                .child({
+                    let accent = theme.accent;
+                    // Slow pulse on the shared clock at 15 Hz: smooth for a
+                    // 1.1 s breath, a quarter of the frames of a per-frame loop.
+                    crate::motion::pulse(std::time::Duration::from_millis(1100), 2, move |phase| {
+                        let level = if phase.still { 1.0 } else { 1.0 - (phase.phase * 2.0 - 1.0).abs() };
+                        div()
+                            .size(px(6.0))
+                            .flex_none()
+                            .rounded_full()
+                            .bg(accent)
+                            .opacity(0.35 + 0.65 * level)
+                            .into_any_element()
+                    })
+                })
+                .child(div().min_w_0().truncate().text_size(ty::CAPTION).text_color(theme.text).child(text))
         });
         let toolbar = surface_chrome::toolbar(&theme)
             .when(!external, |el| el.child(back).child(forward).child(reload))

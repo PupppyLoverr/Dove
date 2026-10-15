@@ -8,9 +8,7 @@
 
 use std::time::Duration;
 
-use gpui::{
-    Animation, AnimationExt as _, ElementId, Hsla, IntoElement, ParentElement as _, SharedString, Styled as _, div, px,
-};
+use gpui::{ElementId, Hsla, IntoElement, ParentElement as _, Styled as _, div, px};
 
 use crate::theme::Theme;
 
@@ -33,29 +31,31 @@ pub fn gspin_opacity(t: f32, dim: f32) -> f32 {
     }
 }
 
-fn cell(key: SharedString, size: f32, tint: Hsla, phase: f32) -> impl IntoElement {
-    div().size(px(size)).flex_none().rounded(px(size / 2.0)).bg(tint).with_animation(
-        key,
-        Animation::new(PERIOD).repeat(),
-        move |el, delta| el.opacity(gspin_opacity(delta + phase, DIM)),
-    )
+fn cell(size: f32, tint: Hsla, opacity: f32) -> gpui::Div {
+    div().size(px(size)).flex_none().rounded(px(size / 2.0)).bg(tint).opacity(opacity)
 }
 
 /// The working indicator: a 3×3 grid tinted per row from the sunrise
 /// gradient. The pulse enters at the bottom edge and converges on the
 /// top-centre cell, so the wave reads as travelling upward.
-pub fn gradient_spinner(id: impl Into<ElementId>, cell_px: f32) -> impl IntoElement {
-    let key = format!("{:?}", id.into());
+pub fn gradient_spinner(_id: impl Into<ElementId>, cell_px: f32) -> impl IntoElement {
     let center = 1.0f32;
     let max = 2.0 + center;
-    div().flex().flex_none().flex_col().gap(px(cell_px / 2.0)).children((0..3).map(|row| {
-        let tint: Hsla = gpui::rgb(ROW_TINTS[row]).into();
-        let key = key.clone();
-        div().flex().gap(px(cell_px / 2.0)).children((0..3).map(move |col| {
-            let d = 2.0 - row as f32 + (col as f32 - center).abs();
-            cell(SharedString::from(format!("{key}-g{row}{col}")), cell_px, tint, d / (max + 1.0))
-        }))
-    }))
+    crate::motion::pulse(PERIOD, 1, move |phase| {
+        div()
+            .flex()
+            .flex_none()
+            .flex_col()
+            .gap(px(cell_px / 2.0))
+            .children((0..3).map(|row| {
+                let tint: Hsla = gpui::rgb(ROW_TINTS[row]).into();
+                div().flex().gap(px(cell_px / 2.0)).children((0..3).map(move |col| {
+                    let d = 2.0 - row as f32 + (col as f32 - center).abs();
+                    cell(cell_px, tint, phase.opacity(d / (max + 1.0), DIM))
+                }))
+            }))
+            .into_any_element()
+    })
 }
 
 /// Zeron's glyph palette: the accent lifted, the accent, the accent deepened.
@@ -73,18 +73,26 @@ pub fn glyph_rows(t: &Theme) -> [Hsla; 3] {
 }
 
 /// The 2×3 glyph spinner: brightness snakes clockwise around the ring.
-pub fn glyph_spinner(id: impl Into<ElementId>, cell_px: f32, rows: [Hsla; 3]) -> impl IntoElement {
+pub fn glyph_spinner(_id: impl Into<ElementId>, cell_px: f32, rows: [Hsla; 3]) -> impl IntoElement {
     // Clockwise ring position of each (row, col), top-left first.
     const RING: [[usize; 2]; 3] = [[0, 1], [5, 2], [4, 3]];
-    let key = format!("{:?}", id.into());
-    div().w(px(cell_px * 2.5)).h(px(cell_px * 4.0)).flex().flex_none().flex_col().gap(px(cell_px / 2.0)).children(
-        (0..3).map(|row| {
-            let key = key.clone();
-            div().flex().gap(px(cell_px / 2.0)).children((0..2).map(move |col| {
-                cell(SharedString::from(format!("{key}-m{row}{col}")), cell_px, rows[row], RING[row][col] as f32 / 6.0)
-            }))
-        }),
-    )
+    div().w(px(cell_px * 2.5)).h(px(cell_px * 4.0)).flex().flex_none().child(crate::motion::pulse(
+        PERIOD,
+        1,
+        move |phase| {
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(cell_px / 2.0))
+                .children((0..3).map(|row| {
+                    div().flex().gap(px(cell_px / 2.0)).children(
+                        (0..2)
+                            .map(move |col| cell(cell_px, rows[row], phase.opacity(RING[row][col] as f32 / 6.0, DIM))),
+                    )
+                }))
+                .into_any_element()
+        },
+    ))
 }
 
 #[cfg(test)]

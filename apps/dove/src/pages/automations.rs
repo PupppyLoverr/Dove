@@ -13,6 +13,7 @@ use gpui_base::input::{Input, Textarea};
 
 use super::{AutoEditor, AutoTab, input, page_with, textarea};
 use crate::assets::{icon, icons};
+use crate::design::ty;
 use crate::kit;
 use crate::shell::Shell;
 use crate::theme::Theme;
@@ -247,7 +248,7 @@ impl Shell {
                 .flex()
                 .flex_col()
                 .gap(px(6.0))
-                .child(div().text_size(px(12.0)).text_color(t.text_faint).child(label))
+                .child(div().text_size(ty::META).text_color(t.text_faint).child(label))
                 .child(el)
         };
         let boxed = |el: AnyElement| {
@@ -261,7 +262,7 @@ impl Shell {
                 .border_1()
                 .border_color(t.border)
                 .bg(t.wash(0.04))
-                .text_size(px(13.0))
+                .text_size(ty::BODY)
                 .child(div().flex_1().child(el))
                 .into_any_element()
         };
@@ -278,7 +279,7 @@ impl Shell {
                 .border_color(if on { t.accent.opacity(0.6) } else { t.border })
                 .when(on, |d| d.bg(t.accent.opacity(0.10)).text_color(t.text))
                 .when(!on, |d| d.text_color(t.text_muted))
-                .text_size(px(12.5))
+                .text_size(ty::SMALL)
                 .cursor_pointer()
                 .child(k.label())
                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -313,7 +314,7 @@ impl Shell {
                                 .border_1()
                                 .border_color(if on { t.accent.opacity(0.6) } else { t.border })
                                 .when(on, |d| d.bg(t.accent.opacity(0.10)))
-                                .text_size(px(11.5))
+                                .text_size(ty::CAPTION)
                                 .cursor_pointer()
                                 .child(&d[..2])
                                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -334,7 +335,7 @@ impl Shell {
             TriggerKind::Cron => field("Cron expression (minute hour day month weekday, local time)", boxed(Input::new(&ed.cron).into_any_element())).into_any_element(),
             TriggerKind::OnCommit => field("Branch to watch", boxed(Input::new(&ed.branch).into_any_element())).into_any_element(),
             TriggerKind::OnPr | TriggerKind::OnReview => div()
-                .text_size(px(12.5))
+                .text_size(ty::SMALL)
                 .text_color(t.text_faint)
                 .child("Checked every 5 minutes through the GitHub CLI (gh). The PR's number, title and link are added to the prompt.")
                 .into_any_element(),
@@ -381,7 +382,7 @@ impl Shell {
             .border_1()
             .border_color(t.border_strong)
             .bg(t.surface_raised)
-            .child(div().text_size(px(16.0)).font_weight(gpui::FontWeight::SEMIBOLD).child(if ed.id.is_some() {
+            .child(div().text_size(ty::HEADING).font_weight(gpui::FontWeight::SEMIBOLD).child(if ed.id.is_some() {
                 "Edit automation"
             } else {
                 "New automation"
@@ -454,7 +455,7 @@ impl Shell {
                         },
                     ))),
             )
-            .when_some(ed.error.clone(), |d, e| d.child(div().text_size(px(12.5)).text_color(t.danger).child(e)))
+            .when_some(ed.error.clone(), |d, e| d.child(div().text_size(ty::SMALL).text_color(t.danger).child(e)))
             .child(
                 div()
                     .flex()
@@ -536,13 +537,13 @@ impl Shell {
                                     .gap(px(3.0))
                                     .child(
                                         div()
-                                            .text_size(px(14.0))
+                                            .text_size(ty::MD)
                                             .font_weight(gpui::FontWeight::MEDIUM)
                                             .child(a.name.clone()),
                                     )
                                     .child(
                                         div()
-                                            .text_size(px(12.5))
+                                            .text_size(ty::SMALL)
                                             .text_color(t.text_muted)
                                             .truncate()
                                             .child(a.prompt.lines().next().unwrap_or_default().to_string()),
@@ -551,7 +552,7 @@ impl Shell {
                                         div()
                                             .flex()
                                             .gap(px(10.0))
-                                            .text_size(px(11.5))
+                                            .text_size(ty::CAPTION)
                                             .text_color(t.text_faint)
                                             .child(trigger)
                                             .child(project)
@@ -620,7 +621,7 @@ impl Shell {
                 });
                 let keep = (!self.engine.store.setting(crate::notify::KEEP_RUNNING).is_some_and(|v| v == "true")).then(|| {
                     div()
-                        .text_size(px(12.0))
+                        .text_size(ty::META)
                         .text_color(t.text_faint)
                         .child("Automations run while Dove is open. To keep them running with the window closed, turn on \"Keep running in the background\" in Settings › Notifications.")
                 });
@@ -700,16 +701,16 @@ impl Shell {
                                         .child(
                                             div()
                                                 .truncate()
-                                                .text_size(px(13.5))
+                                                .text_size(ty::BODY)
                                                 .when(r.unread, |d| d.font_weight(gpui::FontWeight::SEMIBOLD))
                                                 .child(
                                                     task.map(|t| t.title).unwrap_or_else(|| "Thread deleted".into()),
                                                 ),
                                         )
-                                        .child(div().text_size(px(11.5)).text_color(t.text_faint).child(name)),
+                                        .child(div().text_size(ty::CAPTION).text_color(t.text_faint).child(name)),
                                 )
                                 .child(
-                                    div().text_size(px(12.0)).text_color(t.text_faint).child(ui::relative_time(r.at)),
+                                    div().text_size(ty::META).text_color(t.text_faint).child(ui::relative_time(r.at)),
                                 )
                         }))
                         .into_any_element()

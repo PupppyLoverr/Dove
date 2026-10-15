@@ -28,6 +28,7 @@ use gpui_base::input::{Input, InputEvent, InputState};
 use zeron_syntax::{HighlightRequest, HighlightSpan};
 
 use crate::assets::{icon, icons};
+use crate::design::ty;
 use crate::kit;
 use crate::surface_chrome;
 use crate::theme::{Theme, ink};
@@ -37,10 +38,16 @@ use crate::ui;
 
 const FILE_HEADER_HEIGHT: f32 = surface_chrome::HEADER_HEIGHT;
 const HUNK_HEADER_HEIGHT: f32 = 28.0;
-const LINE_HEIGHT: f32 = 21.0;
 const NOTICE_HEIGHT: f32 = 24.0;
+/// Diff text size and row height: Settings › Appearance › Code & diff font size.
+fn code_px() -> f32 {
+    crate::design::code()
+}
+
+fn line_h() -> f32 {
+    crate::design::code_line()
+}
 const BODY_BOTTOM_PAD: f32 = 8.0;
-const TEXT_SIZE: f32 = 12.0;
 /// Narrowest line-number column.
 const GUTTER_WIDTH: f32 = 36.0;
 /// The +/−/· column between the gutters and the code.
@@ -122,6 +129,8 @@ pub struct Changes {
     staged: HashSet<String>,
     layout: Layout,
     wrap: bool,
+    /// The code size the rows were measured at; a change remeasures them.
+    code_size: f32,
     loading: bool,
     loaded: bool,
     error: Option<SharedString>,
@@ -167,6 +176,7 @@ impl Changes {
             collapsed: HashSet::new(),
             staged: HashSet::new(),
             layout: Layout::Unified,
+            code_size: crate::design::code(),
             wrap: false,
             loading: false,
             loaded: false,
@@ -347,7 +357,7 @@ impl Changes {
                     };
                     let line_key = |li: usize, h: &mut std::collections::hash_map::DefaultHasher| {
                         let l = &hunk.lines[li];
-                        (&hunk.header, li, &*l.text, l.old_no, l.new_no, self.wrap).hash(h)
+                        (&hunk.header, li, &*l.text, l.old_no, l.new_no, self.wrap, self.code_size.to_bits()).hash(h)
                     };
                     match self.layout {
                         Layout::Unified => {
@@ -638,7 +648,7 @@ impl Changes {
             .unwrap_or(0);
         let ts = window.text_system();
         let id = ts.resolve_font(&font(t.font_mono.clone()));
-        let advance = ts.advance(id, px(TEXT_SIZE), '0').map(|s| f32::from(s.width)).unwrap_or(7.2);
+        let advance = ts.advance(id, px(code_px()), '0').map(|s| f32::from(s.width)).unwrap_or(7.2);
         Some(cols as f32 * advance + CODE_PAD_RIGHT)
     }
 
@@ -682,7 +692,7 @@ impl Changes {
                     .min_w_0()
                     .truncate()
                     .font_family(t.font_mono.clone())
-                    .text_size(px(12.0))
+                    .text_size(ty::META)
                     .text_color(t.text_muted)
                     .child(f.path.clone()),
             )
@@ -693,18 +703,18 @@ impl Changes {
                         .px(px(5.0))
                         .rounded(px(4.0))
                         .bg(t.success.opacity(0.12))
-                        .text_size(px(10.0))
+                        .text_size(ty::BADGE)
                         .text_color(t.success)
                         .child("STAGED"),
                 )
             })
-            .when(f.binary, |d| d.child(div().flex_none().text_size(px(10.0)).text_color(t.text_faint).child("BIN")))
+            .when(f.binary, |d| d.child(div().flex_none().text_size(ty::BADGE).text_color(t.text_faint).child("BIN")))
             .when(f.additions > 0 || !f.binary, |d| {
                 d.child(
                     div()
                         .flex_none()
                         .font_family(t.font_mono.clone())
-                        .text_size(px(11.0))
+                        .text_size(ty::MICRO)
                         .text_color(t.diff_add)
                         .child(format!("+{}", f.additions)),
                 )
@@ -714,7 +724,7 @@ impl Changes {
                     div()
                         .flex_none()
                         .font_family(t.font_mono.clone())
-                        .text_size(px(11.0))
+                        .text_size(ty::MICRO)
                         .text_color(t.diff_del)
                         .child(format!("−{}", f.deletions)),
                 )
@@ -741,7 +751,7 @@ impl Changes {
                     .items_center()
                     .rounded(px(surface_chrome::CONTROL_RADIUS))
                     .bg(t.danger.opacity(0.14))
-                    .text_size(px(11.0))
+                    .text_size(ty::MICRO)
                     .text_color(t.danger)
                     .cursor_pointer()
                     .child("Discard?")
@@ -829,8 +839,8 @@ impl Changes {
                 .w(px(gutter))
                 .flex_none()
                 .font_family(t.font_mono.clone())
-                .text_size(px(11.0))
-                .line_height(px(LINE_HEIGHT))
+                .text_size(ty::MICRO)
+                .line_height(px(line_h()))
                 .text_color(color)
                 .flex()
                 .justify_end()
@@ -850,7 +860,7 @@ impl Changes {
             .flex_none()
             .flex()
             .items_start()
-            .map(|d| if self.wrap { d.min_h(px(LINE_HEIGHT)) } else { d.h(px(LINE_HEIGHT)) })
+            .map(|d| if self.wrap { d.min_h(px(line_h())) } else { d.h(px(line_h())) })
             .when_some(paint.bg, |d, bg| d.bg(bg))
             .child(div().w(px(ACCENT_BAR_WIDTH)).self_stretch().flex_none().when_some(paint.accent, |d, c| d.bg(c)))
             .child(number(line.old_no, if line.kind == LineKind::Removed { paint.number } else { faint }))
@@ -862,8 +872,8 @@ impl Changes {
                     .flex()
                     .justify_center()
                     .font_family(t.font_mono.clone())
-                    .text_size(px(TEXT_SIZE))
-                    .line_height(px(LINE_HEIGHT))
+                    .text_size(px(code_px()))
+                    .line_height(px(line_h()))
                     .text_color(if commented { t.accent } else { paint.marker_color })
                     .child(if commented { "●" } else { paint.marker }),
             )
@@ -907,8 +917,8 @@ impl Changes {
                         .w(px(gutter))
                         .flex_none()
                         .font_family(t.font_mono.clone())
-                        .text_size(px(11.0))
-                        .line_height(px(LINE_HEIGHT))
+                        .text_size(ty::MICRO)
+                        .line_height(px(line_h()))
                         .text_color(paint.number)
                         .flex()
                         .justify_end()
@@ -922,8 +932,8 @@ impl Changes {
                         .flex()
                         .justify_center()
                         .font_family(t.font_mono.clone())
-                        .text_size(px(TEXT_SIZE))
-                        .line_height(px(LINE_HEIGHT))
+                        .text_size(px(code_px()))
+                        .line_height(px(line_h()))
                         .text_color(paint.marker_color)
                         .child(paint.marker),
                 )
@@ -950,7 +960,7 @@ impl Changes {
             .flex_none()
             .flex()
             .items_stretch()
-            .map(|d| if self.wrap { d.min_h(px(LINE_HEIGHT)) } else { d.h(px(LINE_HEIGHT)) })
+            .map(|d| if self.wrap { d.min_h(px(line_h())) } else { d.h(px(line_h())) })
             .child(cell(left, true))
             .child(div().w(px(1.0)).self_stretch().flex_none().bg(ink(0.06)))
             .child(
@@ -992,14 +1002,14 @@ impl Changes {
         let content = div()
             .pl(px(pad))
             .font_family(t.font_mono.clone())
-            .text_size(px(TEXT_SIZE))
-            .line_height(px(LINE_HEIGHT))
+            .text_size(px(code_px()))
+            .line_height(px(line_h()))
             .map(|d| match width {
                 Some(w) => d.w(px(w + pad)).flex_none().overflow_hidden().whitespace_nowrap(),
                 None => d.w_full().min_w_0().whitespace_normal(),
             })
             .child(StyledText::new(text).with_runs(runs));
-        let viewport = div().flex_1().min_w_0().min_h(px(LINE_HEIGHT)).overflow_hidden().child(content);
+        let viewport = div().flex_1().min_w_0().min_h(px(line_h())).overflow_hidden().child(content);
         if width.is_none() {
             return viewport.into_any_element();
         }
@@ -1029,13 +1039,13 @@ impl Changes {
             .border_1()
             .border_color(t.border)
             .bg(t.surface_raised)
-            .text_size(px(12.5))
+            .text_size(ty::SMALL)
             .child(
                 div()
                     .flex()
                     .items_center()
                     .gap(px(6.0))
-                    .text_size(px(11.5))
+                    .text_size(ty::CAPTION)
                     .text_color(t.text_faint)
                     .child(icon(icons::CHAT_ROUND_LINE).size(px(12.0)).text_color(t.accent))
                     .child(div().flex_1().child(if editing.is_some() { "New comment" } else { "Comment" }))
@@ -1121,18 +1131,18 @@ impl Changes {
                         .rounded(px(surface_chrome::CONTROL_RADIUS))
                         .bg(ink(0.05))
                         .font_family(t.font_mono.clone())
-                        .text_size(px(10.5))
+                        .text_size(ty::BADGE)
                         .text_color(t.text_muted)
                         .child(sha.chars().take(7).collect::<String>()),
                 )
             })
             .when(self.loaded && self.error.is_none(), |d| {
-                d.child(div().min_w_0().truncate().text_size(px(12.0)).text_color(t.text_muted).child(label))
+                d.child(div().min_w_0().truncate().text_size(ty::META).text_color(t.text_muted).child(label))
                     .child(
                         div()
                             .flex_none()
                             .font_family(t.font_mono.clone())
-                            .text_size(px(11.0))
+                            .text_size(ty::MICRO)
                             .text_color(t.diff_add)
                             .child(format!("+{adds}")),
                     )
@@ -1140,7 +1150,7 @@ impl Changes {
                         div()
                             .flex_none()
                             .font_family(t.font_mono.clone())
-                            .text_size(px(11.0))
+                            .text_size(ty::MICRO)
                             .text_color(t.diff_del)
                             .child(format!("−{dels}")),
                     )
@@ -1217,7 +1227,7 @@ impl Changes {
                 (_, false) => {
                     steps = steps.child(
                         div()
-                            .text_size(px(12.0))
+                            .text_size(ty::META)
                             .text_color(t.text_faint)
                             .child("Install the GitHub CLI (gh) to open PRs"),
                     );
@@ -1245,7 +1255,7 @@ impl Changes {
                                 .flex()
                                 .items_center()
                                 .gap(px(6.0))
-                                .text_size(px(12.5))
+                                .text_size(ty::SMALL)
                                 .cursor_pointer()
                                 .hover(|s| s.text_color(t.text))
                                 .text_color(t.text_muted)
@@ -1269,7 +1279,7 @@ impl Changes {
             }
         } else {
             steps =
-                steps.child(div().text_size(px(12.0)).text_color(t.text_faint).child("No remote: commits stay local"));
+                steps.child(div().text_size(ty::META).text_color(t.text_faint).child("No remote: commits stay local"));
         }
         div()
             .p(px(10.0))
@@ -1288,17 +1298,24 @@ impl Changes {
                     .border_1()
                     .border_color(t.border)
                     .bg(t.wash(0.03))
-                    .text_size(px(13.0))
+                    .text_size(ty::BODY)
                     .child(div().flex_1().child(Input::new(&self.message))),
             )
             .child(steps)
-            .when_some(d.note.clone(), |el, n| el.child(div().text_size(px(12.0)).text_color(t.text_muted).child(n)))
+            .when_some(d.note.clone(), |el, n| el.child(div().text_size(ty::META).text_color(t.text_muted).child(n)))
             .into_any_element()
     }
 }
 
 impl Render for Changes {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::perf_trace::count_render("Changes");
+        // The code font size changed in Settings: remeasure every row.
+        let code_size = crate::design::code();
+        if (code_size - self.code_size).abs() > f32::EPSILON {
+            self.code_size = code_size;
+            self.rebuild();
+        }
         let t = Theme::of(cx).clone();
         let quiet = |text: SharedString| {
             div()
@@ -1307,7 +1324,7 @@ impl Render for Changes {
                 .items_center()
                 .justify_center()
                 .px(px(16.0))
-                .text_size(px(12.0))
+                .text_size(ty::META)
                 .text_color(t.text_faint)
                 .child(text)
                 .into_any_element()
@@ -1327,7 +1344,7 @@ impl Render for Changes {
                 .justify_center()
                 .gap(px(8.0))
                 .child(kit::spinner("changes-preparing", 16.0, t.text_muted))
-                .child(div().text_size(px(12.0)).text_color(t.text_faint).child("Preparing diff…"))
+                .child(div().text_size(ty::META).text_color(t.text_faint).child("Preparing diff…"))
                 .into_any_element()
         } else if self.files.is_empty() {
             quiet(if self.commit.is_some() { "Empty commit".into() } else { "No uncommitted changes".into() })
@@ -1411,7 +1428,7 @@ pub(crate) fn inline_rows(f: &FileDiff, spans: &[Vec<Vec<HighlightSpan>>], take:
             .flex()
             .justify_end()
             .pr(px(8.0))
-            .text_size(px(11.0))
+            .text_size(ty::MICRO)
             .text_color(color)
             .child(n.map(|n| n.to_string()).unwrap_or_default())
     };
@@ -1430,13 +1447,13 @@ pub(crate) fn inline_rows(f: &FileDiff, spans: &[Vec<Vec<HighlightSpan>>], take:
             rows.push(
                 div()
                     .w_full()
-                    .h(px(LINE_HEIGHT))
+                    .h(px(line_h()))
                     .flex_none()
                     .flex()
                     .items_start()
                     .overflow_hidden()
                     .font_family(t.font_mono.clone())
-                    .line_height(px(LINE_HEIGHT))
+                    .line_height(px(line_h()))
                     .when_some(paint.bg, |d, bg| d.bg(bg))
                     .child(div().w(px(ACCENT_BAR_WIDTH)).h_full().flex_none().when_some(paint.accent, |d, c| d.bg(c)))
                     .child(number(line.old_no, if line.kind == LineKind::Removed { paint.number } else { faint }))
@@ -1447,7 +1464,7 @@ pub(crate) fn inline_rows(f: &FileDiff, spans: &[Vec<Vec<HighlightSpan>>], take:
                             .flex_none()
                             .flex()
                             .justify_center()
-                            .text_size(px(TEXT_SIZE))
+                            .text_size(px(code_px()))
                             .text_color(paint.marker_color)
                             .child(paint.marker),
                     )
@@ -1458,7 +1475,7 @@ pub(crate) fn inline_rows(f: &FileDiff, spans: &[Vec<Vec<HighlightSpan>>], take:
                             .overflow_hidden()
                             .whitespace_nowrap()
                             .pl(px(UNIFIED_CODE_PAD))
-                            .text_size(px(TEXT_SIZE))
+                            .text_size(px(code_px()))
                             .child(StyledText::new(text).with_runs(runs)),
                     )
                     .into_any_element(),
@@ -1483,7 +1500,7 @@ fn notice_row(notice: String, t: &Theme) -> impl IntoElement {
         .flex()
         .items_center()
         .px(px(16.0))
-        .text_size(px(11.0))
+        .text_size(ty::MICRO)
         .text_color(t.text_faint)
         .child(notice)
 }
@@ -1499,7 +1516,7 @@ fn hunk_header_row(header: &str, t: &Theme) -> impl IntoElement {
         .px(px(16.0))
         .bg(t.diff_hunk_bg)
         .font_family(t.font_mono.clone())
-        .text_size(px(11.0))
+        .text_size(ty::MICRO)
         .text_color(t.text_faint)
         .truncate()
         .child(header.to_string())

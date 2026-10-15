@@ -19,7 +19,7 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt as _, AsyncWriteExt, BufReader};
 
 use super::agent::Outcome;
 
-pub use extension::{connected_browser, pairing_code};
+pub use extension::{connected_browser, connection_watch, pairing_code};
 
 pub struct Request {
     /// The agent's working directory: which thread is asking.
@@ -156,6 +156,21 @@ mod extension {
     /// The connected browser's user agent, when the extension is paired and live.
     pub fn connected_browser() -> Option<String> {
         state().conn.as_ref().map(|c| c.browser.clone())
+    }
+
+    fn changes() -> &'static tokio::sync::watch::Sender<u64> {
+        static CHANGES: OnceLock<tokio::sync::watch::Sender<u64>> = OnceLock::new();
+        CHANGES.get_or_init(|| tokio::sync::watch::channel(0).0)
+    }
+
+    /// Wakes when the extension connects or disconnects, so views that show
+    /// its state redraw without polling.
+    pub fn connection_watch() -> tokio::sync::watch::Receiver<u64> {
+        changes().subscribe()
+    }
+
+    fn connection_changed() {
+        changes().send_modify(|n| *n = n.wrapping_add(1));
     }
 
     fn config_path() -> std::path::PathBuf {
@@ -326,6 +341,7 @@ mod extension {
                     // A newer connection (another profile, a reload) replaces the old one.
                     st.conn = Some(Conn { generation, tx: tx.clone(), browser });
                     drop(st);
+                    connection_changed();
                     let _ = tx.send(
                         json!({"type": "welcome", "app": format!("Dove {}", env!("CARGO_PKG_VERSION"))}).to_string(),
                     );
@@ -344,6 +360,8 @@ mod extension {
             if st.conn.as_ref().is_some_and(|c| c.generation == generation) {
                 st.conn = None;
                 st.pending.clear();
+                drop(st);
+                connection_changed();
             }
         }
         writer.abort();

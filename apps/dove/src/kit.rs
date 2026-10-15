@@ -5,17 +5,22 @@
 //! Anything animated requests frames only while it is on screen and moving,
 //! so an idle window still renders nothing.
 
+pub mod controls;
+pub mod page;
+pub mod popover;
+
 use std::time::Duration;
 
 use dove_core::proto::TaskStatus;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    Animation, AnimationExt as _, AnyElement, App, AppContext as _, Bounds, Context, Div, ElementId, Entity, Global,
-    Hsla, InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, PathBuilder, Pixels, Render,
-    SharedString, StatefulInteractiveElement as _, Styled as _, Window, canvas, div, point, px,
+    AnyElement, App, AppContext as _, Bounds, Context, Div, ElementId, Entity, Global, Hsla, InteractiveElement as _,
+    IntoElement, MouseButton, ParentElement as _, PathBuilder, Pixels, Render, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Window, canvas, div, point, px,
 };
 
 use crate::assets::{icon, icons};
+use crate::design::ty;
 use crate::theme::Theme;
 use crate::ui;
 
@@ -33,7 +38,7 @@ pub fn kbd(key: &str, t: &Theme) -> Div {
         .border_1()
         .border_color(t.border)
         .bg(t.wash(0.05))
-        .text_size(px(10.5))
+        .text_size(ty::BADGE)
         .font_family(t.font_mono.clone())
         .text_color(t.text_faint)
         .child(key.to_string())
@@ -120,7 +125,7 @@ pub fn checkbox(id: impl Into<ElementId>, on: bool, label: impl Into<SharedStrin
         .items_center()
         .gap(px(6.0))
         .cursor_pointer()
-        .text_size(px(13.0))
+        .text_size(ty::BODY)
         .text_color(t.text_muted)
         .hover(|s| s.text_color(t.text))
         .child(
@@ -168,7 +173,7 @@ pub fn segmented(
                 .flex()
                 .items_center()
                 .rounded(px(8.0))
-                .text_size(px(12.5))
+                .text_size(ty::SMALL)
                 .font_weight(gpui::FontWeight::MEDIUM)
                 .cursor_pointer()
                 .when(on, |d| d.bg(t.surface_raised).text_color(t.text).shadow_sm())
@@ -194,27 +199,28 @@ pub fn status_glyph(id: impl Into<ElementId>, status: TaskStatus, unread: bool, 
     }
 }
 
-/// A rotating arc.
 /// Zeron's activity glyph: a 2×3 grid of round cells whose brightness
-/// chases around the ring, sized to fit a `size` square.
-pub fn spinner(id: impl Into<ElementId>, size: f32, color: Hsla) -> impl IntoElement {
+/// chases around the ring, sized to fit a `size` square. It runs on the
+/// shared 30 Hz pulse clock (see `motion::pulse`), so a spinner re-renders
+/// only its own view's subtree, at a quarter of the display rate, and stops
+/// scheduling frames the moment it unmounts.
+pub fn spinner(_id: impl Into<ElementId>, size: f32, color: Hsla) -> impl IntoElement {
     // Clockwise ring position of each (row, col), top-left first.
     const RING: [[usize; 2]; 3] = [[0, 1], [5, 2], [4, 3]];
-    let id: ElementId = id.into();
-    let key = format!("{id:?}");
     let cell = (size / 4.0).max(2.0);
-    let grid = div().flex().flex_col().gap(px(cell / 2.0)).children((0..3).map(|row| {
-        let key = key.clone();
-        div().flex().gap(px(cell / 2.0)).children((0..2).map(move |col| {
-            let phase = RING[row][col] as f32 / 6.0;
-            div().size(px(cell)).rounded_full().bg(color).with_animation(
-                SharedString::from(format!("{key}-{row}{col}")),
-                Animation::new(Duration::from_millis(750)).repeat(),
-                // Zeron's mono spinner: the same gspin pulse and ring.
-                move |el, delta| el.opacity(crate::loaders::gspin_opacity(delta + phase, 0.1)),
-            )
-        }))
-    }));
+    let grid = crate::motion::pulse(crate::motion::SPIN_PERIOD, 1, move |phase| {
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(cell / 2.0))
+            .children((0..3).map(|row| {
+                div().flex().gap(px(cell / 2.0)).children((0..2).map(move |col| {
+                    let at = RING[row][col] as f32 / 6.0;
+                    div().size(px(cell)).rounded_full().bg(color).opacity(phase.opacity(at, 0.1))
+                }))
+            }))
+            .into_any_element()
+    });
     div().size(px(size)).flex().flex_none().items_center().justify_center().child(grid)
 }
 
@@ -238,10 +244,10 @@ pub fn empty_state(glyph: &'static str, title: &str, body: &str, t: &Theme) -> D
                 .child(icon(glyph).size(px(20.0)).text_color(t.text_faint)),
         )
         .child(
-            div().text_size(px(14.0)).font_weight(gpui::FontWeight::MEDIUM).text_color(t.text).child(title.to_string()),
+            div().text_size(ty::MD).font_weight(gpui::FontWeight::MEDIUM).text_color(t.text).child(title.to_string()),
         )
         .child(
-            div().max_w(px(360.0)).text_center().text_size(px(13.0)).text_color(t.text_faint).child(body.to_string()),
+            div().max_w(px(360.0)).text_center().text_size(ty::BODY).text_color(t.text_faint).child(body.to_string()),
         )
 }
 
@@ -256,7 +262,7 @@ pub fn badge(label: impl Into<SharedString>, color: Hsla) -> Div {
         .rounded(px(5.0))
         .bg(color.opacity(0.12))
         .text_color(color)
-        .text_size(px(11.0))
+        .text_size(ty::MICRO)
         .font_weight(gpui::FontWeight::MEDIUM)
         .child(label.into())
 }
@@ -285,8 +291,8 @@ pub fn label_block(label: impl Into<SharedString>, hint: impl Into<SharedString>
         .flex()
         .flex_col()
         .gap(px(2.0))
-        .child(div().text_size(px(13.5)).text_color(t.text).child(label.into()))
-        .when(!hint.is_empty(), |d| d.child(div().text_size(px(12.0)).text_color(t.text_faint).child(hint)))
+        .child(div().text_size(ty::BODY).text_color(t.text).child(label.into()))
+        .when(!hint.is_empty(), |d| d.child(div().text_size(ty::META).text_color(t.text_faint).child(hint)))
 }
 
 /// A section heading above a group: small, quiet, never shouting.
@@ -294,7 +300,7 @@ pub fn section_label(text: impl Into<SharedString>, t: &Theme) -> Div {
     div()
         .px(px(2.0))
         .pb(px(8.0))
-        .text_size(px(12.0))
+        .text_size(ty::META)
         .font_weight(gpui::FontWeight::MEDIUM)
         .text_color(t.text_faint)
         .child(text.into())
@@ -312,7 +318,7 @@ pub fn field_box(t: &Theme) -> Div {
         .border_1()
         .border_color(t.border_strong)
         .bg(t.wash(0.03))
-        .text_size(px(13.0))
+        .text_size(ty::BODY)
 }
 
 /// The box around a multi-line text area.
@@ -324,7 +330,7 @@ pub fn area_box(t: &Theme) -> Div {
         .border_1()
         .border_color(t.border_strong)
         .bg(t.wash(0.03))
-        .text_size(px(13.0))
+        .text_size(ty::BODY)
 }
 
 /// A labelled form field: the label above, the control under it.
@@ -333,7 +339,7 @@ pub fn field(label: impl Into<SharedString>, control: impl IntoElement, t: &Them
         .flex()
         .flex_col()
         .gap(px(6.0))
-        .child(div().text_size(px(12.5)).text_color(t.text_muted).child(label.into()))
+        .child(div().text_size(ty::SMALL).text_color(t.text_muted).child(label.into()))
         .child(control)
 }
 
@@ -377,7 +383,7 @@ pub fn button_outline(id: impl Into<SharedString>, label: impl Into<SharedString
         .rounded(px(8.0))
         .border_1()
         .border_color(t.border_strong)
-        .text_size(px(13.0))
+        .text_size(ty::BODY)
         .text_color(t.text)
         .cursor_pointer()
         .hover(move |s| s.bg(hover))
@@ -483,6 +489,7 @@ impl Toasts {
 
 impl Render for Toasts {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::perf_trace::count_render("Toasts");
         let t = Theme::of(cx).clone();
         div().absolute().bottom(px(16.0)).right(px(16.0)).flex().flex_col().gap(px(8.0)).children(
             self.items.iter().map(|toast| {
@@ -527,13 +534,13 @@ impl Render for Toasts {
                                 .gap(px(2.0))
                                 .child(
                                     div()
-                                        .text_size(px(13.0))
+                                        .text_size(ty::BODY)
                                         .font_weight(gpui::FontWeight::MEDIUM)
                                         .text_color(t.text)
                                         .child(toast.title.clone()),
                                 )
                                 .when_some(toast.body.clone(), |d, b| {
-                                    d.child(div().text_size(px(12.5)).text_color(t.text_muted).line_clamp(2).child(b))
+                                    d.child(div().text_size(ty::SMALL).text_color(t.text_muted).line_clamp(2).child(b))
                                 }),
                         ),
                 )

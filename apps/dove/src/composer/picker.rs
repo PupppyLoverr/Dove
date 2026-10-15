@@ -8,8 +8,10 @@
 //!   every offered model: starred first, then one run per agent.
 //! - **Option**: one trait's choices.
 //!
-//! Model lists are live: [`Engine::models`] answers from cache and refreshes
-//! in the background; the open card polls [`Engine::models_version`]. The
+//! Model lists are live: [`Engine::models`] answers from cache at once. Opening
+//! the card refreshes the shown agent's list if it is stale (the model list
+//! page refreshes every offered agent's), and the picker redraws when
+//! [`Engine::models_watch`] says a list changed: no timers, no polling. The
 //! picker remembers favorites plus each agent's last model, effort and
 //! traits across launches.
 
@@ -33,6 +35,8 @@ use gpui::{
 use gpui_base::input::{Input, InputEvent, InputState};
 
 use crate::assets::{icon, icons};
+use crate::design::rem;
+use crate::design::ty;
 use crate::picker_memory::{Pick, PickerMemory};
 use crate::theme::{Theme, ink};
 use crate::{kit, ui};
@@ -121,7 +125,8 @@ pub struct Picker {
     /// A click on the chip right after an outside-click close must not
     /// reopen the card.
     closed_at: Option<Instant>,
-    _poll: Option<Task<()>>,
+    /// Waits on the engine's catalog watch; idle costs nothing.
+    _watch: Option<Task<()>>,
     _subs: Vec<Subscription>,
 }
 
@@ -164,7 +169,7 @@ impl Picker {
             slider: Rc::default(),
             dragging: false,
             closed_at: None,
-            _poll: None,
+            _watch: None,
             _subs: subs,
         };
         this.ensure_model();
@@ -177,7 +182,7 @@ impl Picker {
         self.seen_version = engine.models_version();
         self.engine = Some(engine);
         self.attach_memory(store);
-        self.start_polling(cx);
+        self.watch_catalogs(cx);
     }
 
     /// Load favorites and remembered picks. The new-session picker also
@@ -228,11 +233,6 @@ impl Picker {
         }
         self.installed = installed;
         self.ensure_model();
-        if let Some(engine) = &self.engine {
-            for kind in self.offered() {
-                let _ = engine.models(kind);
-            }
-        }
         cx.emit(PickerEvent::Changed);
         cx.notify();
     }
@@ -389,7 +389,10 @@ impl Picker {
         self.active = 0;
         self.dragging = false;
         self.focus.focus(window, cx);
-        self.start_polling(cx);
+        // The card shows this agent's models first: freshen just that list.
+        if let Some(engine) = &self.engine {
+            engine.refresh_models_if_stale(self.harness);
+        }
         cx.notify();
     }
 
@@ -405,26 +408,27 @@ impl Picker {
         cx.notify();
     }
 
-    /// While the card is open, redraw when a fresher catalog lands.
-    fn start_polling(&mut self, cx: &mut Context<Self>) {
+    /// Redraw when a fresher catalog lands. The task sleeps on the engine's
+    /// watch channel, so an idle picker schedules nothing, and it ends when
+    /// the picker is dropped.
+    fn watch_catalogs(&mut self, cx: &mut Context<Self>) {
         let Some(engine) = self.engine.clone() else { return };
-        // Kick refreshes for everything the card can show.
-        for kind in self.offered() {
-            let _ = engine.models(kind);
-        }
-        if self._poll.is_some() {
+        if self._watch.is_some() {
             return;
         }
-        self._poll = Some(cx.spawn(async move |this, cx| {
-            loop {
-                cx.background_executor().timer(Duration::from_millis(700)).await;
-                let version = engine.models_version();
-                let _ = this.update(cx, |this, cx| {
+        let mut rx = engine.models_watch();
+        self._watch = Some(cx.spawn(async move |this, cx| {
+            while rx.changed().await.is_ok() {
+                let version = *rx.borrow_and_update();
+                let alive = this.update(cx, |this, cx| {
                     if version != this.seen_version {
                         this.seen_version = version;
                         this.on_catalog_changed(cx);
                     }
                 });
+                if alive.is_err() {
+                    break;
+                }
             }
         }));
     }
@@ -437,6 +441,13 @@ impl Picker {
     }
 
     fn show_models(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // The list spans every offered agent: freshen any stale ones (at
+        // most two fetch at once, in the background).
+        if let Some(engine) = &self.engine {
+            for kind in self.offered() {
+                engine.refresh_models_if_stale(kind);
+            }
+        }
         self.page = Page::Models;
         self.query.clear();
         self.search.update(cx, |s, cx| {
@@ -860,8 +871,8 @@ impl Picker {
             .when_some(effort, |d, effort| {
                 d.child(
                     div()
-                        .text_size(px(14.0))
-                        .line_height(px(17.0))
+                        .text_size(ty::MD)
+                        .line_height(rem(17.0))
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .text_color(t.text)
                         .child(effort),
@@ -875,10 +886,10 @@ impl Picker {
                     .min_w_0()
                     .map(|d| {
                         if two_lines {
-                            d.text_size(px(12.0)).line_height(px(15.0)).text_color(t.text_muted)
+                            d.text_size(ty::META).line_height(rem(15.0)).text_color(t.text_muted)
                         } else {
-                            d.text_size(px(14.0))
-                                .line_height(px(17.0))
+                            d.text_size(ty::MD)
+                                .line_height(rem(17.0))
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
                                 .text_color(t.text)
                         }
@@ -1008,7 +1019,7 @@ impl Picker {
             .rounded(px(RADIUS))
             .cursor_pointer()
             .hover(|s| s.bg(ink(0.05)))
-            .text_size(px(12.0))
+            .text_size(ty::META)
             .child(
                 div()
                     .flex_1()
@@ -1110,7 +1121,7 @@ impl Picker {
                 d.child(
                     div()
                         .pl(px(4.0))
-                        .text_size(px(13.0))
+                        .text_size(ty::BODY)
                         .font_weight(gpui::FontWeight::MEDIUM)
                         .text_color(t.text)
                         .child("Models"),
@@ -1126,7 +1137,7 @@ impl Picker {
             .gap(px(8.0))
             .border_b_1()
             .border_color(t.border)
-            .text_size(px(13.0))
+            .text_size(ty::BODY)
             .child(icon(icons::MAGNIFER).size(px(14.0)).text_color(t.text_muted).flex_none())
             .child(div().flex_1().min_w_0().child(Input::new(&self.search)));
 
@@ -1140,7 +1151,7 @@ impl Picker {
                 .h(px(visible * (ROW + GAP) + 2.0 * INSET))
                 .px(px(12.0))
                 .py(px(10.0))
-                .text_size(px(12.0))
+                .text_size(ty::META)
                 .text_color(t.text_muted)
                 .child(note)
                 .into_any_element()
@@ -1212,7 +1223,7 @@ impl Picker {
                             .flex()
                             .items_baseline()
                             .gap(px(6.0))
-                            .text_size(px(12.0))
+                            .text_size(ty::META)
                             .child(
                                 div()
                                     .flex_none()
@@ -1224,7 +1235,7 @@ impl Picker {
                             )
                             .when_some(attribution, |d, a| {
                                 d.child(
-                                    div().min_w_0().truncate().text_size(px(11.0)).text_color(t.text_muted).child(a),
+                                    div().min_w_0().truncate().text_size(ty::MICRO).text_color(t.text_muted).child(a),
                                 )
                             }),
                     )
@@ -1276,7 +1287,7 @@ impl Picker {
             .child(
                 div()
                     .pl(px(4.0))
-                    .text_size(px(13.0))
+                    .text_size(ty::BODY)
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .text_color(t.text)
                     .child(opt.label.clone()),
@@ -1295,7 +1306,7 @@ impl Picker {
                     .gap(px(8.0))
                     .rounded(px(RADIUS))
                     .cursor_pointer()
-                    .text_size(px(12.0))
+                    .text_size(ty::META)
                     .when(on, |d| d.bg(ink(0.09)))
                     .when(!on && ix == self.active, |d| d.bg(ink(0.05)))
                     .hover(|s| s.bg(ink(0.05)))
@@ -1319,6 +1330,7 @@ impl Picker {
 
 impl Render for Picker {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::perf_trace::count_render("Picker");
         let theme = Theme::of(cx).clone();
         let t = &theme;
         let kind = self.harness;
@@ -1334,7 +1346,7 @@ impl Render for Picker {
             .gap(px(6.0))
             .rounded(px(8.0))
             .cursor_pointer()
-            .text_size(px(13.0))
+            .text_size(ty::BODY)
             .text_color(t.text)
             .hover(|s| s.bg(t.wash(0.08)))
             .child(icon(ui::harness_icon(kind)).size(px(14.0)).text_color(ui::harness_tint(kind, t, t.text_muted)))

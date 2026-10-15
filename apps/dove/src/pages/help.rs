@@ -3,6 +3,7 @@
 use gpui::{AnyElement, Context, ParentElement as _, Styled as _, div, px};
 
 use super::page_with;
+use crate::design::ty;
 use crate::kit;
 use crate::shell::Shell;
 use crate::theme::Theme;
@@ -51,7 +52,7 @@ impl Shell {
                         .flex()
                         .items_center()
                         .when_border(i > 0, &t)
-                        .child(div().flex_1().text_size(px(13.5)).child(s.label))
+                        .child(div().flex_1().text_size(ty::BODY).child(s.label))
                         .child(kit::kbd(&crate::keymap::pretty(&key), &t))
                 }),
             );
@@ -60,8 +61,8 @@ impl Shell {
                 .flex()
                 .flex_col()
                 .gap(px(2.0))
-                .child(div().text_size(px(13.5)).font_weight(gpui::FontWeight::MEDIUM).child(*title))
-                .child(div().text_size(px(13.0)).text_color(t.text_muted).child(*body))
+                .child(div().text_size(ty::BODY).font_weight(gpui::FontWeight::MEDIUM).child(*title))
+                .child(div().text_size(ty::BODY).text_color(t.text_muted).child(*body))
         }));
         page_with(
             "help-page",
@@ -81,7 +82,7 @@ impl Shell {
                         .gap(px(10.0))
                         .child(
                             div()
-                                .text_size(px(13.0))
+                                .text_size(ty::BODY)
                                 .text_color(t.text_faint)
                                 .child("Keyboard (change them in Settings › Keyboard)"),
                         )

@@ -28,6 +28,7 @@ use gpui::{
 };
 
 use crate::assets::{icon, icons};
+use crate::design::ty;
 use crate::kit;
 use crate::terminal::{TerminalEvent, TerminalView};
 use crate::theme::Theme;
@@ -492,8 +493,8 @@ impl ThreadView {
                         .bg(t.surface_overlay)
                         .shadow_lg()
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        .child(div().text_size(px(15.0)).font_weight(gpui::FontWeight::SEMIBOLD).child(title))
-                        .child(div().text_size(px(13.0)).text_color(t.text_muted).child(body))
+                        .child(div().text_size(ty::TITLE).font_weight(gpui::FontWeight::SEMIBOLD).child(title))
+                        .child(div().text_size(ty::BODY).text_color(t.text_muted).child(body))
                         .child(
                             div()
                                 .flex()
@@ -584,7 +585,7 @@ impl ThreadView {
                 .gap(px(10.0))
                 .child(kit::spinner("term-opening", 18.0, t.text_muted))
                 .child(
-                    div().text_size(px(13.0)).text_color(t.text_muted).child(self.busy.unwrap_or("Opening terminal…")),
+                    div().text_size(ty::BODY).text_color(t.text_muted).child(self.busy.unwrap_or("Opening terminal…")),
                 )
                 .into_any_element();
         };
@@ -613,7 +614,7 @@ impl ThreadView {
             .border_color(if recording { t.danger.opacity(0.5) } else { t.border })
             .bg(if recording { t.danger.opacity(0.16) } else { t.wash(0.05) })
             .cursor_pointer()
-            .text_size(px(11.5))
+            .text_size(ty::CAPTION)
             .text_color(if recording { t.danger } else { t.text_muted })
             .tooltip(ui::tip(if ready {
                 "Hold or click to dictate into the terminal"
@@ -645,7 +646,7 @@ impl ThreadView {
             .border_b_1()
             .border_color(t.border)
             .bg(t.wash(0.025))
-            .text_size(px(12.0))
+            .text_size(ty::META)
             .child(ui::dot(if running { t.success } else { t.text_faint }, 6.5))
             .child(icon(ui::harness_icon(task.harness)).size(px(13.0)).text_color(ui::harness_tint(
                 task.harness,
@@ -671,7 +672,7 @@ impl ThreadView {
                         .rounded(px(5.0))
                         .bg(t.wash(0.05))
                         .font_family(t.font_mono.clone())
-                        .text_size(px(11.0))
+                        .text_size(ty::MICRO)
                         .text_color(t.text_muted)
                         .child(icon(icons::GIT_BRANCH).size(px(10.5)).text_color(t.text_faint))
                         .child(b),
@@ -686,7 +687,7 @@ impl ThreadView {
                 term_clear.update(cx, |v, cx| v.clear(cx));
             }))
             .when(!running, |d| {
-                d.child(ui::button_ghost("term-restart", "Restart", t).h(px(24.0)).text_size(px(11.5)).on_click(
+                d.child(ui::button_ghost("term-restart", "Restart", t).h(px(24.0)).text_size(ty::CAPTION).on_click(
                     move |_, _, cx| {
                         term_restart.update(cx, |v, cx| v.restart(cx));
                     },
@@ -710,6 +711,7 @@ impl ThreadView {
 
 impl Render for ThreadView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::perf_trace::count_render("ThreadView");
         let t = Theme::of(cx).clone();
         let body: AnyElement = match self.view {
             // The switch lives in the title bar, so the transcript gets the
@@ -737,7 +739,7 @@ impl Render for ThreadView {
                         .bg(t.accent.opacity(0.08))
                         .border_b_1()
                         .border_color(t.border)
-                        .text_size(px(12.5))
+                        .text_size(ty::SMALL)
                         .text_color(t.text_muted)
                         .child(icon(icons::INFO_CIRCLE).size(px(13.0)).text_color(t.accent))
                         .child(div().flex_1().truncate().child(n))

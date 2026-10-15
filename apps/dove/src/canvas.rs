@@ -30,6 +30,7 @@ use serde_json::Value;
 
 use crate::assets::{icon, icons};
 use crate::browser::{BrowserContext, BrowserSurface};
+use crate::design::ty;
 use crate::kit;
 use crate::theme::Theme;
 use crate::ui;
@@ -448,7 +449,7 @@ pub fn card(spec: &Spec, t: &Theme, on_open: impl Fn(&mut Window, &mut gpui::App
                 .gap(px(3.0))
                 .child(
                     div()
-                        .text_size(px(14.0))
+                        .text_size(ty::MD)
                         .font_weight(gpui::FontWeight::MEDIUM)
                         .text_color(t.text)
                         .truncate()
@@ -459,7 +460,7 @@ pub fn card(spec: &Spec, t: &Theme, on_open: impl Fn(&mut Window, &mut gpui::App
                         .flex()
                         .items_center()
                         .gap(px(6.0))
-                        .text_size(px(12.0))
+                        .text_size(ty::META)
                         .text_color(t.text_faint)
                         .child(icon(spec.device.glyph()).size(px(12.0)).text_color(t.text_faint))
                         .child(format!("{} · {} · {lines} lines", spec.device.label(), spec.kind.label())),
@@ -467,7 +468,7 @@ pub fn card(spec: &Spec, t: &Theme, on_open: impl Fn(&mut Window, &mut gpui::App
                 .when(!spec.description.trim().is_empty(), |d| {
                     d.child(
                         div()
-                            .text_size(px(12.5))
+                            .text_size(ty::SMALL)
                             .text_color(t.text_muted)
                             .line_clamp(2)
                             .child(spec.description.clone()),
@@ -485,7 +486,7 @@ pub fn card(spec: &Spec, t: &Theme, on_open: impl Fn(&mut Window, &mut gpui::App
                 .rounded(px(8.0))
                 .bg(t.solid)
                 .text_color(t.on_solid)
-                .text_size(px(12.5))
+                .text_size(ty::SMALL)
                 .font_weight(gpui::FontWeight::MEDIUM)
                 .child(icon(icons::ACTION_PLAY).size(px(13.0)).text_color(t.on_solid))
                 .child("Open"),
@@ -641,6 +642,7 @@ impl CanvasView {
 
 impl Render for CanvasView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::perf_trace::count_render("CanvasView");
         let t = Theme::of(cx).clone();
         let device = self.device;
         let devices = div().flex().items_center().gap(px(2.0)).p(px(2.0)).rounded(px(8.0)).bg(t.wash(0.05)).children(
@@ -694,8 +696,8 @@ impl Render for CanvasView {
                     .min_w_0()
                     .flex()
                     .flex_col()
-                    .child(div().text_size(px(13.0)).text_color(t.text).truncate().child(self.spec.title.clone()))
-                    .child(div().text_size(px(11.0)).text_color(t.text_faint).child(format!(
+                    .child(div().text_size(ty::BODY).text_color(t.text).truncate().child(self.spec.title.clone()))
+                    .child(div().text_size(ty::MICRO).text_color(t.text_faint).child(format!(
                         "{} · {} · live",
                         self.spec.kind.label(),
                         device.label()
@@ -744,14 +746,14 @@ impl Render for CanvasView {
                         .border_b_1()
                         .border_color(t.border)
                         .bg(t.wash(0.025))
-                        .text_size(px(12.0))
+                        .text_size(ty::META)
                         .text_color(t.text_muted)
                         .child(format!("{} source ({} lines)", self.spec.kind.label(), self.spec.code.lines().count()))
                         .child(div().flex_1())
                         .child(
                             ui::button_primary("canvas-apply-code", "Apply & Reload", &t)
                                 .h(px(24.0))
-                                .text_size(px(11.5))
+                                .text_size(ty::CAPTION)
                                 .on_click(cx.listener(|this, _, window, cx| this.apply_code_edit(window, cx))),
                         ),
                 )
@@ -761,7 +763,7 @@ impl Render for CanvasView {
                         .min_h_0()
                         .p(px(12.0))
                         .font_family(t.font_mono.clone())
-                        .text_size(px(12.5))
+                        .text_size(ty::SMALL)
                         .child(Textarea::new(&self.code_editor)),
                 )
                 .into_any_element()
@@ -841,7 +843,7 @@ impl Render for CanvasView {
                         .border_color(t.border)
                         .bg(t.wash(0.03))
                         .cursor_pointer()
-                        .text_size(px(11.0))
+                        .text_size(ty::MICRO)
                         .text_color(t.text_muted)
                         .hover(|s| s.bg(t.wash(0.07)).text_color(t.text))
                         .child(*chip)
@@ -866,7 +868,7 @@ impl Render for CanvasView {
                             .border_1()
                             .border_color(t.border)
                             .bg(t.wash(0.04))
-                            .text_size(px(12.5))
+                            .text_size(ty::SMALL)
                             .child(Input::new(&self.refine_input)),
                     )
                     .child(

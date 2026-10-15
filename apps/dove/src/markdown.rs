@@ -26,6 +26,7 @@ use zeron_syntax::{HighlightRequest, HighlightedDocument};
 mod mend;
 
 use crate::assets::{icon, icons};
+use crate::design::ty;
 use crate::markdown_extra::{self, Diagram};
 use crate::theme::Theme;
 use crate::ui;
@@ -703,7 +704,7 @@ pub fn render_block(id: &str, b: &Block, theme: &Theme, window: &Window) -> AnyE
                     .when(r == 0, |d| d.bg(theme.wash(0.05)).font_weight(FontWeight::MEDIUM))
                     .when(r > 0, |d| d.border_t_1().border_color(theme.border))
                     .children(row.iter().enumerate().map(|(c, cell)| {
-                        div().flex_1().min_w_0().px(px(10.0)).py(px(6.0)).text_size(px(13.0)).child(inline(
+                        div().flex_1().min_w_0().px(px(10.0)).py(px(6.0)).text_size(ty::BODY).child(inline(
                             &format!("{id}-t{r}-{c}"),
                             cell,
                             theme,
@@ -770,11 +771,11 @@ fn mermaid_block(id: &str, src: &str, theme: &Theme) -> AnyElement {
             .flex()
             .flex_col()
             .gap(px(6.0))
-            .child(div().text_size(px(12.0)).text_color(theme.danger).child(err))
+            .child(div().text_size(ty::META).text_color(theme.danger).child(err))
             .child(
                 div()
                     .font_family(theme.font_mono.clone())
-                    .text_size(px(12.0))
+                    .text_size(ty::META)
                     .text_color(theme.text_muted)
                     .child(src.to_string()),
             )
@@ -787,7 +788,7 @@ fn mermaid_block(id: &str, src: &str, theme: &Theme) -> AnyElement {
         .border_color(theme.border)
         .bg(theme.wash(0.03))
         .p(px(12.0))
-        .child(div().pb(px(8.0)).text_size(px(11.5)).text_color(theme.text_faint).child("Diagram"))
+        .child(div().pb(px(8.0)).text_size(ty::CAPTION).text_color(theme.text_faint).child("Diagram"))
         .child(body)
         .into_any_element()
 }
@@ -839,12 +840,12 @@ fn widget_preview(src: &str, theme: &Theme) -> AnyElement {
                 .flex()
                 .items_center()
                 .gap(px(8.0))
-                .text_size(px(13.0))
+                .text_size(ty::BODY)
                 .text_color(theme.text_muted)
                 .child(icon(icons::WIDGET).size(px(13.0)).text_color(theme.text_faint))
                 .child(title.unwrap_or_else(|| "Building card…".into())),
         )
-        .when_some(body, |d, body| d.child(div().text_size(px(13.0)).text_color(theme.text).child(body)))
+        .when_some(body, |d, body| d.child(div().text_size(ty::BODY).text_color(theme.text).child(body)))
         .into_any_element()
 }
 
@@ -881,7 +882,7 @@ fn image_block(id: &str, alt: &str, url: &str, theme: &Theme) -> AnyElement {
         .child(picture)
         .when(!alt.is_empty(), |d| {
             d.child(
-                div().px(px(10.0)).py(px(6.0)).text_size(px(12.0)).text_color(theme.text_faint).child(alt.to_string()),
+                div().px(px(10.0)).py(px(6.0)).text_size(ty::META).text_color(theme.text_faint).child(alt.to_string()),
             )
         })
         .when(href.starts_with("http"), |d| {
@@ -940,7 +941,7 @@ fn code_block(id: &str, lang: Option<&str>, text: &str, hl: Option<&HighlightedD
                 .justify_between()
                 .border_b_1()
                 .border_color(theme.border)
-                .text_size(px(12.0))
+                .text_size(ty::META)
                 .text_color(theme.text_faint)
                 .child(lang.unwrap_or("").to_string())
                 .child(
@@ -955,8 +956,8 @@ fn code_block(id: &str, lang: Option<&str>, text: &str, hl: Option<&HighlightedD
                 .py(px(10.0))
                 .overflow_x_scroll()
                 .font_family(theme.font_mono.clone())
-                .text_size(px(13.0))
-                .line_height(px(20.0))
+                .text_size(px(crate::design::code() + 1.0))
+                .line_height(px(((crate::design::code() + 1.0) * 20.0 / 13.0).round()))
                 .whitespace_nowrap()
                 .flex()
                 .flex_col()

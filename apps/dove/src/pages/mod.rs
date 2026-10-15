@@ -21,6 +21,7 @@ use dove_core::store::{Automation, AutomationRun, UsageRow};
 use gpui::{AppContext as _, Context, Entity, Window};
 use gpui_base::input::{InputState, TextareaState};
 
+use crate::design::ty;
 use crate::shell::Shell;
 use crate::terminal::TerminalView;
 use crate::theme::Theme;
@@ -259,7 +260,7 @@ pub fn page_with(
                                 .gap(px(4.0))
                                 .child(
                                     div()
-                                        .text_size(px(22.0))
+                                        .text_size(ty::H1)
                                         .font_weight(gpui::FontWeight::SEMIBOLD)
                                         .text_color(t.text)
                                         .child(title.to_string()),
@@ -268,7 +269,7 @@ pub fn page_with(
                                     d.child(
                                         div()
                                             .max_w(px(620.0))
-                                            .text_size(px(13.0))
+                                            .text_size(ty::BODY)
                                             .text_color(t.text_faint)
                                             .child(subtitle.to_string()),
                                     )

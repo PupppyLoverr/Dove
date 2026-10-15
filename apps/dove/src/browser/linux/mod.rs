@@ -1,6 +1,7 @@
 //! WebKitGTK renders offscreen in an isolated helper process. GPUI composites
 //! its frames, so browser content uses the same clipping and blur as other UI.
 use super::model::{PageState, Presentation};
+use crate::design::ty;
 use gpui::{Bounds, Pixels, RenderImage};
 use serde_json::{Value, json};
 use std::{
@@ -664,7 +665,7 @@ impl super::BrowserSurface {
                 .flex()
                 .items_center()
                 .rounded(px(7.))
-                .text_size(px(13.5))
+                .text_size(ty::BODY)
                 .text_color(theme.text)
                 .when(index == native.menu_active, |el| el.bg(hover))
                 .child(gpui::SharedString::from(item["label"].as_str().unwrap_or("").to_owned()))

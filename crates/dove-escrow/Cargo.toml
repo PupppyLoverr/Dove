@@ -1,0 +1,10 @@
+[package]
+name = "dove-escrow"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Inert parent image for Dove's Windows agent spawns (created suspended, never runs)"
+
+[[bin]]
+name = "dove-escrow"
+path = "src/main.rs"

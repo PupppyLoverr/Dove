@@ -16,6 +16,7 @@ use gpui::{
 
 use crate::assets::{icon, icons};
 use crate::composer::{self, Composer, ComposerEvent};
+use crate::design::ty;
 use crate::kit;
 use crate::surface_chrome;
 use crate::theme::Theme;
@@ -109,6 +110,7 @@ impl SideChat {
 
 impl Render for SideChat {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::perf_trace::count_render("SideChat");
         let t = Theme::of(cx).clone();
         if let Some(chat) = &self.chat {
             let task = chat.read(cx).task.clone();
@@ -122,7 +124,7 @@ impl Render for SideChat {
                         .flex_1()
                         .min_w_0()
                         .truncate()
-                        .text_size(px(12.5))
+                        .text_size(ty::SMALL)
                         .font_weight(gpui::FontWeight::MEDIUM)
                         .text_color(t.text)
                         .child(task.title.clone()),
@@ -138,7 +140,7 @@ impl Render for SideChat {
                             .rounded(px(5.0))
                             .bg(t.wash(0.05))
                             .font_family(t.font_mono.clone())
-                            .text_size(px(10.5))
+                            .text_size(ty::BADGE)
                             .text_color(t.text_muted)
                             .child(icon(icons::GIT_BRANCH).size(px(10.0)).text_color(t.text_faint))
                             .child(b),
@@ -207,7 +209,7 @@ impl Render for SideChat {
                                     .border_color(t.border)
                                     .bg(t.wash(0.03))
                                     .cursor_pointer()
-                                    .text_size(px(11.5))
+                                    .text_size(ty::CAPTION)
                                     .text_color(t.text_muted)
                                     .hover(|s| s.bg(t.wash(0.07)).text_color(t.text))
                                     .child(*label)
@@ -227,7 +229,7 @@ impl Render for SideChat {
                             .items_center()
                             .gap(px(6.0))
                             .pb(px(8.0))
-                            .text_size(px(12.0))
+                            .text_size(ty::META)
                             .text_color(t.text_faint)
                             .child(icon(icons::CHAT_ROUND_LINE).size(px(12.0)))
                             .child(format!("Beside {}", self.parent.title)),

@@ -16,6 +16,7 @@ use gpui::{
 };
 
 use super::{Document, docx, pdf, pptx, xlsx};
+use crate::design::ty;
 use crate::files_panel::FilesPanel;
 use crate::theme::Theme;
 
@@ -340,7 +341,7 @@ fn docx_view(view: &OfficeView, d: &docx::Docx, t: &Theme, cx: &mut Context<File
         .border_b_1()
         .border_color(t.border)
         .bg(t.wash(0.02))
-        .text_size(px(11.5))
+        .text_size(ty::CAPTION)
         .text_color(t.text_faint)
         .child(div().font_weight(FontWeight::MEDIUM).text_color(t.text_muted).child("Word Document"))
         .child("·")
@@ -500,7 +501,7 @@ fn pptx_view(view: &OfficeView, d: &pptx::Deck, t: &Theme, cx: &mut Context<File
                         .flex()
                         .items_center()
                         .gap(px(6.0))
-                        .text_size(px(11.5))
+                        .text_size(ty::CAPTION)
                         .text_color(if is_sel { t.text } else { t.text_faint })
                         .child(format!("Slide {} of {total_slides}", si + 1))
                         .when(slide_edited, |el| el.child(crate::kit::badge("Edited", t.accent))),
@@ -534,7 +535,7 @@ fn pptx_view(view: &OfficeView, d: &pptx::Deck, t: &Theme, cx: &mut Context<File
         .border_b_1()
         .border_color(t.border)
         .bg(t.wash(0.02))
-        .text_size(px(11.5))
+        .text_size(ty::CAPTION)
         .text_color(t.text_faint)
         .child(div().font_weight(FontWeight::MEDIUM).text_color(t.text_muted).child("Presentation"))
         .child("·")
@@ -695,7 +696,7 @@ fn xlsx_view(view: &OfficeView, b: &xlsx::Book, t: &Theme, cx: &mut Context<File
                 .flex()
                 .items_center()
                 .rounded(px(6.0))
-                .text_size(px(12.0))
+                .text_size(ty::META)
                 .font_weight(if i == sheet { FontWeight::MEDIUM } else { FontWeight::NORMAL })
                 .cursor_pointer()
                 .when(i == sheet, |d| d.bg(t.surface_raised).border_1().border_color(t.border).text_color(t.text))
@@ -706,7 +707,7 @@ fn xlsx_view(view: &OfficeView, b: &xlsx::Book, t: &Theme, cx: &mut Context<File
                 })
         }))
         .child(div().flex_1())
-        .child(div().px(px(6.0)).text_size(px(11.0)).text_color(t.text_faint).child(format!("{sh_rows} × {sh_cols}")));
+        .child(div().px(px(6.0)).text_size(ty::MICRO).text_color(t.text_faint).child(format!("{sh_rows} × {sh_cols}")));
 
     let (cell_coord, cell_raw, cell_disp) = match selected {
         Some(at) => (xlsx::cell_name(at.0, at.1), b.input(sheet, at), b.display(sheet, at)),
@@ -723,7 +724,7 @@ fn xlsx_view(view: &OfficeView, b: &xlsx::Book, t: &Theme, cx: &mut Context<File
         .border_b_1()
         .border_color(t.border)
         .bg(t.wash(0.015))
-        .text_size(px(12.0))
+        .text_size(ty::META)
         .child(
             div()
                 .min_w(px(46.0))
@@ -735,18 +736,20 @@ fn xlsx_view(view: &OfficeView, b: &xlsx::Book, t: &Theme, cx: &mut Context<File
                 .rounded(px(4.0))
                 .bg(t.wash(0.05))
                 .font_family(t.font_mono.clone())
-                .text_size(px(11.0))
+                .text_size(ty::MICRO)
                 .text_color(t.text)
                 .child(cell_coord),
         )
-        .child(div().font_family(t.font_mono.clone()).italic().text_size(px(11.5)).text_color(t.text_faint).child("fx"))
+        .child(
+            div().font_family(t.font_mono.clone()).italic().text_size(ty::CAPTION).text_color(t.text_faint).child("fx"),
+        )
         .child(
             div()
                 .flex_1()
                 .min_w_0()
                 .truncate()
                 .font_family(t.font_mono.clone())
-                .text_size(px(11.5))
+                .text_size(ty::CAPTION)
                 .text_color(if selected.is_some() && !cell_raw.is_empty() { t.text } else { t.text_faint })
                 .child(if selected.is_none() {
                     "Click any cell to inspect formula or edit value".to_string()
@@ -788,7 +791,7 @@ fn xlsx_view(view: &OfficeView, b: &xlsx::Book, t: &Theme, cx: &mut Context<File
                 .justify_center()
                 .border_l_1()
                 .border_color(line)
-                .text_size(px(11.5))
+                .text_size(ty::CAPTION)
                 .text_color(t.text_faint)
                 .child(xlsx::col_name(c as u32))
         }));
@@ -812,7 +815,7 @@ fn xlsx_view(view: &OfficeView, b: &xlsx::Book, t: &Theme, cx: &mut Context<File
                             .justify_end()
                             .border_b_1()
                             .border_color(line)
-                            .text_size(px(11.5))
+                            .text_size(ty::CAPTION)
                             .text_color(t.text_faint)
                             .child((r + 1).to_string()),
                     )
@@ -832,7 +835,7 @@ fn xlsx_view(view: &OfficeView, b: &xlsx::Book, t: &Theme, cx: &mut Context<File
                             .when(num, |d| d.justify_end())
                             .overflow_hidden()
                             .whitespace_nowrap()
-                            .text_size(px(12.5))
+                            .text_size(ty::SMALL)
                             .border_l_1()
                             .border_b_1()
                             .border_color(line)
@@ -882,7 +885,7 @@ fn pdf_view(view: &OfficeView, p: &pdf::Pdf, t: &Theme, cx: &mut Context<FilesPa
         .border_b_1()
         .border_color(t.border)
         .bg(t.wash(0.02))
-        .text_size(px(11.5))
+        .text_size(ty::CAPTION)
         .text_color(t.text_faint)
         .child(div().font_weight(FontWeight::MEDIUM).text_color(t.text_muted).child("PDF Document"))
         .child("·")
@@ -906,7 +909,7 @@ fn pdf_view(view: &OfficeView, p: &pdf::Pdf, t: &Theme, cx: &mut Context<FilesPa
                 div()
                     .px(px(6.0))
                     .py(px(4.0))
-                    .text_size(px(11.5))
+                    .text_size(ty::CAPTION)
                     .text_color(t.text_faint)
                     .child("Interactive AcroForm Fields"),
             )
@@ -930,7 +933,7 @@ fn pdf_view(view: &OfficeView, p: &pdf::Pdf, t: &Theme, cx: &mut Context<FilesPa
                             .w(relative(0.4))
                             .flex_none()
                             .truncate()
-                            .text_size(px(12.0))
+                            .text_size(ty::META)
                             .text_color(t.text_muted)
                             .child(f.name.clone()),
                     );
@@ -954,7 +957,7 @@ fn pdf_view(view: &OfficeView, p: &pdf::Pdf, t: &Theme, cx: &mut Context<FilesPa
                             .flex_1()
                             .min_w_0()
                             .truncate()
-                            .text_size(px(13.0))
+                            .text_size(ty::BODY)
                             .when(f.value.is_empty(), |d| d.text_color(t.text_faint))
                             .child(if f.value.is_empty() { "Empty".to_string() } else { f.value.clone() }),
                     )
@@ -964,7 +967,7 @@ fn pdf_view(view: &OfficeView, p: &pdf::Pdf, t: &Theme, cx: &mut Context<FilesPa
             }))
     });
     let more = (p.page_count > p.pages.len()).then(|| {
-        div().text_size(px(12.0)).text_color(t.text_faint).child(format!(
+        div().text_size(ty::META).text_color(t.text_faint).child(format!(
             "Showing the first {} of {} pages. Open the file in your PDF viewer for the rest.",
             p.pages.len(),
             p.page_count
@@ -994,7 +997,7 @@ fn pdf_view(view: &OfficeView, p: &pdf::Pdf, t: &Theme, cx: &mut Context<FilesPa
                         .gap(px(5.0))
                         .child(
                             div()
-                                .text_size(px(11.5))
+                                .text_size(ty::CAPTION)
                                 .text_color(t.text_faint)
                                 .child(format!("Page {} of {total_pages}", pi + 1)),
                         )

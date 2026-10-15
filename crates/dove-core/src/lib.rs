@@ -289,13 +289,13 @@ impl Engine {
     }
 
     /// Re-scan PATH for agent CLIs. Cheap (no processes), but call it off the
-    /// UI thread anyway.
+    /// UI thread anyway. Model lists are not fetched here, so launching starts
+    /// no agent processes: saved lists serve at once, a picker refreshes the
+    /// agent it shows, and a daily sweep runs a while after launch.
     pub fn rescan_harnesses(&self) -> Vec<Installed> {
         let found = dove_harness::detect::scan();
         *self.installed.write() = found.clone();
-        for agent in &found {
-            self.refresh_models(agent.kind);
-        }
+        self.schedule_model_sweep();
         found
     }
 
@@ -1005,10 +1005,14 @@ struct LiveModels {
     lists: RwLock<HashMap<HarnessKind, Vec<dove_proto::Model>>>,
     /// When a fetch last started, for throttling.
     asked: parking_lot::Mutex<HashMap<HarnessKind, std::time::Instant>>,
-    /// Bumped whenever a list changes, so the picker can poll cheaply.
+    /// Bumped whenever a list changes.
     version: std::sync::atomic::AtomicU64,
+    /// Wakes pickers when `version` moves, so nothing polls.
+    changed: tokio::sync::watch::Sender<u64>,
     /// Fetches start agent CLIs: at most two at once.
     slots: tokio::sync::Semaphore,
+    /// The background sweep has been scheduled this run.
+    sweep: std::sync::atomic::AtomicBool,
 }
 
 impl Default for LiveModels {
@@ -1017,8 +1021,17 @@ impl Default for LiveModels {
             lists: Default::default(),
             asked: Default::default(),
             version: Default::default(),
+            changed: tokio::sync::watch::channel(0).0,
             slots: tokio::sync::Semaphore::new(2),
+            sweep: Default::default(),
         }
+    }
+}
+
+impl LiveModels {
+    fn bump(&self) {
+        let v = self.version.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        self.changed.send_replace(v);
     }
 }
 
@@ -1046,16 +1059,67 @@ impl Engine {
                 }
             }
         };
-        let stale = self.live_models.asked.lock().get(&kind).is_none_or(|at| at.elapsed() > MODELS_FRESH_FOR);
-        if stale {
-            self.refresh_models(kind);
-        }
         list
     }
 
     /// Changes whenever any live list does.
     pub fn models_version(&self) -> u64 {
         self.live_models.version.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Wakes whenever any live list changes, so a picker redraws without
+    /// polling. Executor-agnostic (tokio's `watch` needs no runtime).
+    pub fn models_watch(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.live_models.changed.subscribe()
+    }
+
+    /// Refresh `kind`'s list if its last successful fetch (this run or an
+    /// earlier one) is older than the freshness window. A picker calls this
+    /// for the agent it is showing.
+    pub fn refresh_models_if_stale(&self, kind: HarnessKind) {
+        if self.models_age(kind).is_none_or(|age| age > MODELS_FRESH_FOR) {
+            self.refresh_models(kind);
+        }
+    }
+
+    /// How long ago `kind`'s list was last fetched successfully.
+    fn models_age(&self, kind: HarnessKind) -> Option<std::time::Duration> {
+        let at: i64 = self.store.setting(&models_fetched_key(kind))?.parse().ok()?;
+        let age = (dove_store::now_ms() - at).max(0) as u64;
+        Some(std::time::Duration::from_millis(age))
+    }
+
+    /// Once per run, a couple of minutes after launch: refresh, one agent at
+    /// a time, every installed agent whose list is a day old or was never
+    /// fetched.
+    fn schedule_model_sweep(&self) {
+        if self.live_models.sweep.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            return;
+        }
+        let installed: Vec<(HarnessKind, std::path::PathBuf)> =
+            self.installed.read().iter().map(|i| (i.kind, i.program.clone())).collect();
+        let due: Vec<(HarnessKind, std::path::PathBuf)> = installed
+            .into_iter()
+            .filter(|(kind, _)| self.models_age(*kind).is_none_or(|age| age > MODELS_SWEEP_AFTER))
+            .collect();
+        if due.is_empty() {
+            return;
+        }
+        let live = self.live_models.clone();
+        let store = self.store.clone();
+        self.rt.spawn(async move {
+            tokio::time::sleep(MODELS_SWEEP_DELAY).await;
+            for (kind, program) in due {
+                {
+                    let mut asked = live.asked.lock();
+                    if asked.get(&kind).is_some_and(|at| at.elapsed() < std::time::Duration::from_secs(60)) {
+                        continue;
+                    }
+                    asked.insert(kind, std::time::Instant::now());
+                }
+                fetch_models(&live, &store, kind, &program).await;
+            }
+        });
     }
 
     /// Fetch `kind`'s live models now, unless one started in the last minute.
@@ -1074,43 +1138,58 @@ impl Engine {
         let store = self.store.clone();
         self.rt.spawn(async move {
             let Ok(_slot) = live.slots.acquire().await else { return };
-            let fetched =
-                tokio::time::timeout(std::time::Duration::from_secs(90), dove_harness::catalog::fetch(kind, &program))
-                    .await;
-            match fetched {
-                Ok(Ok(list)) if !list.is_empty() => {
-                    if live.lists.read().get(&kind) != Some(&list) {
-                        if let Ok(json) = serde_json::to_string(&list) {
-                            let _ = store.set_setting(&models_key(kind), &json);
-                        }
-                        live.lists.write().insert(kind, list);
-                        live.version.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    }
-                }
-                failed => {
-                    match failed {
-                        Ok(Ok(_)) => tracing::debug!("{} advertised no models", kind.label()),
-                        Ok(Err(e)) => tracing::info!("{} models not refreshed: {e:#}", kind.label()),
-                        Err(_) => tracing::info!("{} models not refreshed: timed out", kind.label()),
-                    }
-                    // Try again soon rather than after the full freshness window.
-                    let retry_at = std::time::Instant::now().checked_sub(MODELS_FRESH_FOR - MODELS_RETRY_AFTER);
-                    if let Some(at) = retry_at {
-                        live.asked.lock().insert(kind, at);
-                    }
-                }
-            }
+            fetch_models(&live, &store, kind, &program).await;
         });
     }
 }
 
-/// How long a fetched list counts as current.
+/// Fetch one agent's live list, save it with the time it landed, and wake
+/// pickers if it changed.
+async fn fetch_models(live: &LiveModels, store: &dove_store::Store, kind: HarnessKind, program: &std::path::Path) {
+    let fetched =
+        tokio::time::timeout(std::time::Duration::from_secs(90), dove_harness::catalog::fetch(kind, program)).await;
+    match fetched {
+        Ok(Ok(list)) if !list.is_empty() => {
+            let _ = store.set_setting(&models_fetched_key(kind), &dove_store::now_ms().to_string());
+            if live.lists.read().get(&kind) != Some(&list) {
+                if let Ok(json) = serde_json::to_string(&list) {
+                    let _ = store.set_setting(&models_key(kind), &json);
+                }
+                live.lists.write().insert(kind, list);
+                live.bump();
+            }
+        }
+        failed => {
+            match failed {
+                Ok(Ok(_)) => tracing::debug!("{} advertised no models", kind.label()),
+                Ok(Err(e)) => tracing::info!("{} models not refreshed: {e:#}", kind.label()),
+                Err(_) => tracing::info!("{} models not refreshed: timed out", kind.label()),
+            }
+            // `refresh_models` throttles to one start a minute; let a failed
+            // fetch be retried once `MODELS_RETRY_AFTER` has passed.
+            let throttle = std::time::Duration::from_secs(60);
+            if let Some(at) = std::time::Instant::now().checked_sub(throttle.saturating_sub(MODELS_RETRY_AFTER)) {
+                live.asked.lock().insert(kind, at);
+            }
+        }
+    }
+}
+
+/// How long a fetched list counts as current when a picker shows it.
 const MODELS_FRESH_FOR: std::time::Duration = std::time::Duration::from_secs(30 * 60);
-/// How soon a failed fetch is retried.
-const MODELS_RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(2 * 60);
+/// How soon a failed fetch may be retried.
+const MODELS_RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(30);
+/// The background sweep refreshes lists older than a day...
+const MODELS_SWEEP_AFTER: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+/// ...starting this long after launch, so launch itself spawns nothing.
+const MODELS_SWEEP_DELAY: std::time::Duration = std::time::Duration::from_secs(120);
 
 fn models_key(kind: HarnessKind) -> String {
     format!("models.v2.{}", kind.id())
+}
+
+fn models_fetched_key(kind: HarnessKind) -> String {
+    format!("models.fetched.{}", kind.id())
 }
 
 #[cfg(test)]

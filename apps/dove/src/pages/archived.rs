@@ -9,6 +9,7 @@ use gpui_base::input::Input;
 
 use super::page_with;
 use crate::assets::{icon, icons};
+use crate::design::ty;
 use crate::kit;
 use crate::shell::Shell;
 use crate::theme::Theme;
@@ -28,7 +29,7 @@ impl Shell {
             .gap(px(8.0))
             .rounded(px(8.0))
             .bg(t.wash(0.05))
-            .text_size(px(13.0))
+            .text_size(ty::BODY)
             .child(icon(icons::MAGNIFER).size(px(14.0)).text_color(t.text_faint))
             .child(div().flex_1().child(Input::new(&self.pages.archived_search)));
         let rows = div()
@@ -68,10 +69,10 @@ impl Shell {
                             .min_w_0()
                             .flex()
                             .flex_col()
-                            .child(div().truncate().text_size(px(13.5)).child(task.title.clone()))
+                            .child(div().truncate().text_size(ty::BODY).child(task.title.clone()))
                             .child(
                                 div()
-                                    .text_size(px(11.5))
+                                    .text_size(ty::CAPTION)
                                     .text_color(t.text_faint)
                                     .child(format!("{project} · {}", ui::relative_time(task.updated_at))),
                             ),

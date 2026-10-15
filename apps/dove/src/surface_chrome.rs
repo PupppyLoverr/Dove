@@ -11,6 +11,7 @@ use gpui::{
     StatefulInteractiveElement as _, Styled as _, div, px,
 };
 
+use crate::design::ty;
 use crate::theme::{Theme, wash};
 
 pub const HEADER_HEIGHT: f32 = 38.0;
@@ -32,7 +33,7 @@ pub fn input() -> Div {
         .flex()
         .items_center()
         .gap(px(6.0))
-        .text_size(px(11.5))
+        .text_size(ty::CAPTION)
 }
 
 pub fn toolbar(theme: &Theme) -> Div {
@@ -85,7 +86,7 @@ pub fn tab_frame(id: impl Into<gpui::ElementId>, selected: bool, theme: &Theme) 
         .cursor_pointer()
         .role(gpui::Role::Button)
         .aria_selected(selected)
-        .text_size(px(12.0))
+        .text_size(ty::META)
         .text_color(if selected { theme.text } else { theme.text_muted })
         .when(selected, |el| el.bg(wash(0.10)))
 }
@@ -107,7 +108,7 @@ pub fn popover_card(theme: &Theme) -> Div {
         .p(px(4.0))
         .gap(px(2.0))
         .overflow_hidden()
-        .text_size(px(13.0))
+        .text_size(ty::BODY)
         .text_color(theme.text)
 }
 
@@ -121,7 +122,7 @@ pub fn menu_row(theme: &Theme, active: bool, _key: impl Into<SharedString>) -> D
         .px(px(8.0))
         .py(px(6.0))
         .rounded(px(7.0))
-        .text_size(px(13.0))
+        .text_size(ty::BODY)
         .cursor_pointer();
     if active {
         row.bg(wash(0.12)).text_color(theme.text)

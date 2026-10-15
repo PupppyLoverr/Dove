@@ -121,6 +121,8 @@ def diff(base: dict, new: dict) -> int:
 
 
 def main():
+    # Labels carry arrows and ellipses; print them on any console.
+    sys.stdout.reconfigure(encoding="utf-8")
     if len(sys.argv) == 4 and sys.argv[1] == "snapshot":
         inv = snapshot(Path(sys.argv[2]))
         Path(sys.argv[3]).parent.mkdir(parents=True, exist_ok=True)

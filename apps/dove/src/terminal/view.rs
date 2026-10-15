@@ -17,7 +17,6 @@ use gpui::{
 use super::TerminalView;
 use crate::theme::{Appearance, Theme};
 
-pub const TERM_FONT_SIZE: f32 = 13.0;
 const TERM_LINE_HEIGHT_RATIO: f32 = 18.0 / 13.0;
 pub const TERM_PADDING: f32 = 12.0;
 
@@ -262,10 +261,11 @@ impl gpui::Element for TerminalElement {
         let mut mono = font(theme.font_mono.clone());
         mono.features =
             gpui::FontFeatures(std::sync::Arc::new(vec![("liga".into(), 0), ("calt".into(), 0), ("dlig".into(), 0)]));
-        let font_size = px(TERM_FONT_SIZE);
+        let term_size = crate::design::terminal();
+        let font_size = px(term_size);
         let font_id = window.text_system().resolve_font(&mono);
-        let cell_w = window.text_system().em_advance(font_id, font_size).unwrap_or(px(TERM_FONT_SIZE * 0.6));
-        let line_h = px(TERM_FONT_SIZE * TERM_LINE_HEIGHT_RATIO);
+        let cell_w = window.text_system().em_advance(font_id, font_size).unwrap_or(px(term_size * 0.6));
+        let line_h = px((term_size * TERM_LINE_HEIGHT_RATIO).round());
 
         let inner_w = f32::from(bounds.size.width) - 2.0 * TERM_PADDING;
         let inner_h = f32::from(bounds.size.height) - 2.0 * TERM_PADDING;

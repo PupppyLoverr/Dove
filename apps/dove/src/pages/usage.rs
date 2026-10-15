@@ -11,6 +11,7 @@ use gpui::{
 
 use super::page_with;
 use crate::assets::icons;
+use crate::design::ty;
 use crate::kit;
 use crate::shell::Shell;
 use crate::theme::Theme;
@@ -123,8 +124,8 @@ impl Shell {
                 .rounded(px(12.0))
                 .border_1()
                 .border_color(t.border)
-                .child(div().text_size(px(12.0)).text_color(t.text_faint).child(label.to_string()))
-                .child(div().text_size(px(20.0)).font_weight(gpui::FontWeight::SEMIBOLD).child(value))
+                .child(div().text_size(ty::META).text_color(t.text_faint).child(label.to_string()))
+                .child(div().text_size(ty::PAGE).font_weight(gpui::FontWeight::SEMIBOLD).child(value))
         };
         let stats = div()
             .flex()
@@ -174,7 +175,7 @@ impl Shell {
                     div()
                         .px(px(12.0))
                         .py(px(8.0))
-                        .text_size(px(12.0))
+                        .text_size(ty::META)
                         .text_color(t.text_faint)
                         .child(title.to_string()),
                 )
@@ -187,7 +188,7 @@ impl Shell {
                         .gap(px(8.0))
                         .border_t_1()
                         .border_color(t.border)
-                        .text_size(px(13.0))
+                        .text_size(ty::BODY)
                         .child(div().flex_1().truncate().child(name.clone()))
                         .child(div().text_color(t.text_muted).child(ui::compact(u.total_tokens())))
                         .child(div().w(px(70.0)).text_right().text_color(t.text_faint).child(cost(u)))
@@ -239,11 +240,11 @@ impl Shell {
             &t,
             Some(header),
             body.when_some(self.pages.usage_note.clone(), |d, n| {
-                d.child(div().text_size(px(12.5)).text_color(t.text_muted).child(n))
+                d.child(div().text_size(ty::SMALL).text_color(t.text_muted).child(n))
             })
             .child(
                 div()
-                    .text_size(px(11.5))
+                    .text_size(ty::CAPTION)
                     .text_color(t.text_faint)
                     .child("Costs are what each agent reports; subscription plans often report none."),
             ),

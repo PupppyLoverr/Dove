@@ -4,10 +4,14 @@
 //! Microsoft's documented solution is an inert parent process holding duplicates:
 //! https://devblogs.microsoft.com/oldnewthing/20200306-00/?p=103538
 //!
-//! This suspended copy of our image never executes application code. It joins
-//! the job atomically, then the agent inherits that job and its selected handles
+//! This suspended process never executes application code. It joins the job
+//! atomically, then the agent inherits that job and its selected handles
 //! through PARENT_PROCESS. Keep it alive until agent exit so parent-liveness
-//! checks work. Job termination also kills the escrow; no helper binary ships.
+//! checks work. Job termination also kills the escrow.
+//!
+//! Dove change: the image is `dove-escrow.exe` beside the running binary when
+//! it exists (an empty program, about a megabyte resident while suspended),
+//! falling back to our own image as upstream does.
 use crate::windows_process::{Attributes, Job};
 use std::io;
 use std::os::windows::ffi::OsStrExt;
@@ -31,9 +35,19 @@ impl Drop for Escrow {
         unsafe { TerminateProcess(self.process.as_raw_handle(), 1) };
     }
 }
+/// The inert image to suspend: Dove's tiny escrow binary when shipped next
+/// to the app, else this process's own image.
+fn escrow_image() -> io::Result<std::path::PathBuf> {
+    let exe = std::env::current_exe()?;
+    if let Some(stub) = exe.parent().map(|dir| dir.join("dove-escrow.exe")).filter(|p| p.is_file()) {
+        return Ok(stub);
+    }
+    Ok(exe)
+}
+
 impl Escrow {
     pub(super) fn new(job: &Job) -> io::Result<Self> {
-        let image: Vec<u16> = std::env::current_exe()?.as_os_str().encode_wide().chain(Some(0)).collect();
+        let image: Vec<u16> = escrow_image()?.as_os_str().encode_wide().chain(Some(0)).collect();
         let jobs = [job.as_handle().as_raw_handle()];
         let mut attrs = Attributes::for_job(&jobs)?;
         let mut startup = STARTUPINFOEXW::default();

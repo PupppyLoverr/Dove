@@ -133,6 +133,10 @@ pub struct Persona {
 pub struct Store {
     conn: Mutex<Connection>,
     root: PathBuf,
+    /// Every setting, loaded once at open and written through. The UI reads
+    /// settings while it renders; this keeps those reads off SQLite and off
+    /// the connection lock the engine's writers hold.
+    settings: parking_lot::RwLock<std::collections::HashMap<String, String>>,
 }
 
 fn has_column(conn: &Connection, table: &str, column: &str) -> Result<bool> {
@@ -234,7 +238,12 @@ impl Store {
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         migrate(&conn)?;
-        Ok(Self { conn: Mutex::new(conn), root: root.to_path_buf() })
+        let settings = {
+            let mut st = conn.prepare("SELECT key, value FROM settings")?;
+            let rows = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+            rows.filter_map(|r| r.ok()).collect()
+        };
+        Ok(Self { conn: Mutex::new(conn), root: root.to_path_buf(), settings: parking_lot::RwLock::new(settings) })
     }
 
     pub fn root(&self) -> &Path {
@@ -640,21 +649,42 @@ impl Store {
     // ---- settings ----
 
     pub fn setting(&self, key: &str) -> Option<String> {
-        self.conn
-            .lock()
-            .query_row("SELECT value FROM settings WHERE key = ?1", [key], |r| r.get(0))
-            .optional()
-            .ok()
-            .flatten()
+        self.settings.read().get(key).cloned()
+    }
+
+    /// Whether `key` is set to `"true"` (`default` when unset).
+    pub fn flag(&self, key: &str, default: bool) -> bool {
+        match self.settings.read().get(key).map(String::as_str) {
+            Some("true") => true,
+            Some("false") => false,
+            _ => default,
+        }
     }
 
     pub fn set_setting(&self, key: &str, value: &str) -> Result<()> {
+        if self.settings.read().get(key).is_some_and(|v| v == value) {
+            return Ok(());
+        }
         self.conn.lock().execute(
             "INSERT INTO settings (key, value) VALUES (?1, ?2)
              ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             [key, value],
         )?;
+        self.settings.write().insert(key.to_string(), value.to_string());
         Ok(())
+    }
+
+    /// Every setting whose key starts with `prefix`, sorted by key.
+    pub fn settings_with_prefix(&self, prefix: &str) -> Vec<(String, String)> {
+        let mut out: Vec<(String, String)> = self
+            .settings
+            .read()
+            .iter()
+            .filter(|(k, _)| k.starts_with(prefix))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        out.sort();
+        out
     }
 
     // ---- transcripts ----
@@ -944,5 +974,13 @@ mod tests {
         s.set_setting("theme", "dark").unwrap();
         s.set_setting("theme", "light").unwrap();
         assert_eq!(s.setting("theme").as_deref(), Some("light"));
+        assert!(s.flag("missing", true));
+        s.set_setting("on", "true").unwrap();
+        assert!(s.flag("on", false));
+        drop(s);
+        // The cache is loaded from disk on open.
+        let s = Store::open(dir.path()).unwrap();
+        assert_eq!(s.setting("theme").as_deref(), Some("light"));
+        assert_eq!(s.settings_with_prefix("t"), vec![("theme".to_string(), "light".to_string())]);
     }
 }

@@ -306,6 +306,7 @@ impl TerminalView {
 
 impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::perf_trace::count_render("TerminalView");
         let t = Theme::of(cx).clone();
         let focused = self.focus.is_focused(window);
         let entity = cx.entity();

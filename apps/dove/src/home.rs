@@ -10,6 +10,7 @@ use gpui::{
 };
 
 use crate::assets::{icon, icons};
+use crate::design::ty;
 use crate::shell::Shell;
 use crate::theme::Theme;
 use crate::ui;
@@ -164,13 +165,13 @@ impl Shell {
                         .child(
                             div()
                                 .text_center()
-                                .text_size(px(26.0))
+                                .text_size(ty::DISPLAY)
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
                                 .text_color(t.text)
                                 .child(heading),
                         )
                         .when_some(subheading, |d, sub| {
-                            d.child(div().text_size(px(13.0)).text_color(t.text_muted).child(sub))
+                            d.child(div().text_size(ty::BODY).text_color(t.text_muted).child(sub))
                         }),
                 )
             })
@@ -185,7 +186,7 @@ impl Shell {
                         .rounded(px(10.0))
                         .bg(t.danger.opacity(0.12))
                         .text_color(t.danger)
-                        .text_size(px(13.0))
+                        .text_size(ty::BODY)
                         .cursor_pointer()
                         .child(e)
                         .on_click(cx.listener(|this, _, _, cx| {
@@ -238,12 +239,12 @@ impl Shell {
                         .flex()
                         .items_center()
                         .gap(px(10.0))
-                        .text_size(px(14.0))
+                        .text_size(ty::MD)
                         .when(!ok, |d| d.opacity(0.5))
                         .child(icon(ui::harness_icon(i.kind)).text_color(ui::harness_tint(i.kind, t, t.text)))
                         .child(div().flex_1().child(i.kind.label()))
                         .child(
-                            div().text_size(px(12.0)).text_color(t.text_faint).child(
+                            div().text_size(ty::META).text_color(t.text_faint).child(
                                 self.versions
                                     .get(&i.kind)
                                     .cloned()
@@ -304,10 +305,10 @@ impl Shell {
                                 .min_w_0()
                                 .flex()
                                 .flex_col()
-                                .child(div().text_size(px(13.0)).text_color(t.text).child(kind.label()))
+                                .child(div().text_size(ty::BODY).text_color(t.text).child(kind.label()))
                                 .child(
                                     div()
-                                        .text_size(px(12.0))
+                                        .text_size(ty::META)
                                         .text_color(t.text_faint)
                                         .child(format!("{} → {}", u.installed, u.latest)),
                                 ),
@@ -315,7 +316,7 @@ impl Shell {
                         .child(
                             ui::button_primary(SharedString::from(format!("update-{}", kind.id())), "Update", t)
                                 .h(px(26.0))
-                                .text_size(px(12.0))
+                                .text_size(ty::META)
                                 .on_click(cx.listener(move |this, _, window, cx| this.run_update(kind, window, cx))),
                         )
                 })),
@@ -354,13 +355,13 @@ impl Shell {
             .child(
                 div()
                     .mt(px(18.0))
-                    .text_size(px(16.0))
+                    .text_size(ty::HEADING)
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .child("Add a project to get started"),
             )
             .child(
                 div()
-                    .text_size(px(13.0))
+                    .text_size(ty::BODY)
                     .text_color(t.text_muted)
                     .child("A project is a folder on this device, usually a git repository."),
             )
@@ -398,7 +399,7 @@ fn pill_body(id: &'static str, t: &Theme) -> gpui::Stateful<gpui::Div> {
         .bg(t.glass_overlay())
         .border_1()
         .border_color(t.border)
-        .text_size(px(12.5))
+        .text_size(ty::SMALL)
         .font_weight(gpui::FontWeight::MEDIUM)
         .text_color(t.text)
         .cursor_pointer()

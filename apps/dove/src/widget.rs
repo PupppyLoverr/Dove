@@ -23,6 +23,8 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::assets::{icon, icons};
+use crate::design::rem;
+use crate::design::ty;
 use crate::theme::Theme;
 use crate::ui;
 
@@ -608,7 +610,7 @@ pub fn render<V: 'static>(
                     .flex_1()
                     .min_w_0()
                     .truncate()
-                    .text_size(px(14.5))
+                    .text_size(ty::MD)
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .text_color(t.text)
                     .child(title),
@@ -623,7 +625,7 @@ pub fn render<V: 'static>(
                     .items_center()
                     .gap(px(5.0))
                     .rounded(px(7.0))
-                    .text_size(px(11.5))
+                    .text_size(ty::CAPTION)
                     .text_color(t.text_faint)
                     .cursor_pointer()
                     .invisible()
@@ -641,7 +643,7 @@ pub fn render<V: 'static>(
     );
     if !spec.body.is_empty() {
         card = card
-            .child(div().text_size(px(13.5)).line_height(px(20.0)).text_color(t.text_muted).child(spec.body.clone()));
+            .child(div().text_size(ty::BODY).line_height(rem(20.0)).text_color(t.text_muted).child(spec.body.clone()));
     }
 
     for (n, item) in spec.blocks.iter().enumerate() {
@@ -692,7 +694,7 @@ pub fn render<V: 'static>(
                     .flex()
                     .items_center()
                     .gap(px(5.0))
-                    .text_size(px(12.0))
+                    .text_size(ty::META)
                     .text_color(t.success)
                     .child(icon(icons::CHECK).size(px(12.0)).text_color(t.success))
                     .child(format!("Sent \"{label}\"")),
@@ -704,7 +706,7 @@ pub fn render<V: 'static>(
 }
 
 fn section_title(text: &str, t: &Theme) -> gpui::Div {
-    div().text_size(px(11.5)).font_weight(gpui::FontWeight::MEDIUM).text_color(t.text_faint).child(text.to_string())
+    div().text_size(ty::CAPTION).font_weight(gpui::FontWeight::MEDIUM).text_color(t.text_faint).child(text.to_string())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -738,7 +740,7 @@ fn choice_row<V: 'static>(
                 .aria_label(SharedString::from(choice.clone()))
                 .when(on, |d| d.bg(t.solid).text_color(t.on_solid))
                 .when(!on, |d| d.bg(t.wash(0.07)).text_color(t.text).hover(|s| s.bg(t.wash(0.13))))
-                .text_size(px(12.5))
+                .text_size(ty::SMALL)
                 .child(choice.clone())
                 .on_click(move |_, window, cx| {
                     emit(&w, &h, Event::Set { id: fid.clone(), value: val.clone() }, window, cx)
@@ -831,7 +833,7 @@ fn render_item<V: 'static>(
 ) -> AnyElement {
     match item {
         Item::Text { text } => {
-            div().text_size(px(13.5)).line_height(px(20.0)).text_color(t.text).child(text.clone()).into_any_element()
+            div().text_size(ty::BODY).line_height(rem(20.0)).text_color(t.text).child(text.clone()).into_any_element()
         }
         Item::Callout { tone, title, text } => {
             let c = tone_color(tone, t);
@@ -863,13 +865,13 @@ fn render_item<V: 'static>(
                         .when(!title.is_empty(), |d| {
                             d.child(
                                 div()
-                                    .text_size(px(13.0))
+                                    .text_size(ty::BODY)
                                     .font_weight(gpui::FontWeight::SEMIBOLD)
                                     .text_color(t.text)
                                     .child(title.clone()),
                             )
                         })
-                        .child(div().text_size(px(13.0)).line_height(px(19.0)).text_color(t.text).child(text.clone())),
+                        .child(div().text_size(ty::BODY).line_height(rem(19.0)).text_color(t.text).child(text.clone())),
                 )
                 .into_any_element()
         }
@@ -890,7 +892,7 @@ fn render_item<V: 'static>(
                         .flex()
                         .flex_col()
                         .gap(px(4.0))
-                        .child(div().text_size(px(11.5)).text_color(t.text_faint).truncate().child(s.label.clone()))
+                        .child(div().text_size(ty::CAPTION).text_color(t.text_faint).truncate().child(s.label.clone()))
                         .child(
                             div()
                                 .flex()
@@ -898,7 +900,7 @@ fn render_item<V: 'static>(
                                 .gap(px(6.0))
                                 .child(
                                     div()
-                                        .text_size(px(21.0))
+                                        .text_size(ty::PAGE)
                                         .font_weight(gpui::FontWeight::SEMIBOLD)
                                         .text_color(t.text)
                                         .child(s.value.clone()),
@@ -907,7 +909,7 @@ fn render_item<V: 'static>(
                                     d.child(
                                         div()
                                             .pb(px(3.0))
-                                            .text_size(px(11.5))
+                                            .text_size(ty::CAPTION)
                                             .font_weight(gpui::FontWeight::MEDIUM)
                                             .text_color(if up {
                                                 t.success
@@ -953,7 +955,7 @@ fn render_item<V: 'static>(
                                             .w(px(96.0))
                                             .flex_none()
                                             .truncate()
-                                            .text_size(px(12.0))
+                                            .text_size(ty::META)
                                             .text_color(t.text_muted)
                                             .child(d.label.clone()),
                                     )
@@ -965,7 +967,7 @@ fn render_item<V: 'static>(
                                             .w(px(64.0))
                                             .flex_none()
                                             .text_right()
-                                            .text_size(px(12.0))
+                                            .text_size(ty::META)
                                             .text_color(t.text)
                                             .child(format!("{}{}", number(d.value), unit)),
                                     ),
@@ -989,7 +991,7 @@ fn render_item<V: 'static>(
                                 .items_center()
                                 .gap(px(4.0))
                                 .tooltip(ui::tip(tip))
-                                .child(div().text_size(px(10.5)).text_color(t.text_faint).child(number(d.value)))
+                                .child(div().text_size(ty::BADGE).text_color(t.text_faint).child(number(d.value)))
                                 .child(
                                     div()
                                         .w_full()
@@ -1004,7 +1006,7 @@ fn render_item<V: 'static>(
                                         .w_full()
                                         .truncate()
                                         .text_center()
-                                        .text_size(px(11.0))
+                                        .text_size(ty::MICRO)
                                         .text_color(t.text_muted)
                                         .child(d.label.clone()),
                                 ),
@@ -1068,14 +1070,14 @@ fn render_item<V: 'static>(
                 .flex_col()
                 .gap(px(6.0))
                 .child(div().flex().items_center().child(div().flex_1().child(section_title(title, t))).child(
-                    div().text_size(px(12.5)).font_weight(gpui::FontWeight::SEMIBOLD).text_color(t.text).child(latest),
+                    div().text_size(ty::SMALL).font_weight(gpui::FontWeight::SEMIBOLD).text_color(t.text).child(latest),
                 ))
                 .child(chart)
                 .child(
                     div()
                         .flex()
                         .justify_between()
-                        .text_size(px(10.5))
+                        .text_size(ty::BADGE)
                         .text_color(t.text_faint)
                         .child(first)
                         .child(last),
@@ -1096,7 +1098,7 @@ fn render_item<V: 'static>(
                             .px(px(10.0))
                             .py(px(7.0))
                             .truncate()
-                            .text_size(px(11.5))
+                            .text_size(ty::CAPTION)
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                             .text_color(t.text_muted)
                             .child(c.clone()),
@@ -1113,7 +1115,7 @@ fn render_item<V: 'static>(
                             .min_w_0()
                             .px(px(10.0))
                             .py(px(7.0))
-                            .text_size(px(12.5))
+                            .text_size(ty::SMALL)
                             .text_color(t.text)
                             .child(row.get(c).map(cell).unwrap_or_default()),
                     );
@@ -1131,7 +1133,7 @@ fn render_item<V: 'static>(
                 .child(
                     div()
                         .flex()
-                        .text_size(px(12.0))
+                        .text_size(ty::META)
                         .child(div().flex_1().text_color(t.text_muted).child(label.clone()))
                         .child(div().text_color(t.text).child(format!("{}%", (f * 100.0).round() as i32))),
                 )
@@ -1151,7 +1153,7 @@ fn render_item<V: 'static>(
                     div()
                         .flex()
                         .gap(px(12.0))
-                        .text_size(px(12.5))
+                        .text_size(ty::SMALL)
                         .child(div().w(px(132.0)).flex_none().truncate().text_color(t.text_faint).child(k.clone()))
                         .child(div().flex_1().min_w_0().text_color(t.text).child(cell(v))),
                 );
@@ -1167,15 +1169,17 @@ fn render_item<V: 'static>(
             .border_color(t.border)
             .overflow_hidden()
             .when(!lang.is_empty(), |d| {
-                d.child(div().px(px(10.0)).pt(px(6.0)).text_size(px(10.5)).text_color(t.text_faint).child(lang.clone()))
+                d.child(
+                    div().px(px(10.0)).pt(px(6.0)).text_size(ty::BADGE).text_color(t.text_faint).child(lang.clone()),
+                )
             })
             .child(
                 div()
                     .px(px(10.0))
                     .py(px(8.0))
                     .font_family(t.font_mono.clone())
-                    .text_size(px(12.0))
-                    .line_height(px(18.0))
+                    .text_size(ty::META)
+                    .line_height(rem(18.0))
                     .text_color(t.code_text)
                     .child(text.clone()),
             )
@@ -1185,7 +1189,9 @@ fn render_item<V: 'static>(
             .flex_col()
             .gap(px(4.0))
             .child(gpui::img(SharedString::from(src.clone())).max_w_full().max_h(px(320.0)).rounded(px(10.0)))
-            .when(!alt.is_empty(), |d| d.child(div().text_size(px(11.5)).text_color(t.text_faint).child(alt.clone())))
+            .when(!alt.is_empty(), |d| {
+                d.child(div().text_size(ty::CAPTION).text_color(t.text_faint).child(alt.clone()))
+            })
             .into_any_element(),
         Item::Checklist { id, label, items } => {
             let checked = state.checked(id);
@@ -1231,7 +1237,7 @@ fn render_item<V: 'static>(
                         )
                         .child(
                             div()
-                                .text_size(px(13.0))
+                                .text_size(ty::BODY)
                                 .text_color(if on { t.text_muted } else { t.text })
                                 .child(c.label.clone()),
                         )
@@ -1261,7 +1267,7 @@ fn render_item<V: 'static>(
                 .role(gpui::Role::Switch)
                 .aria_toggled(if on { gpui::Toggled::True } else { gpui::Toggled::False })
                 .aria_label(SharedString::from(label.clone()))
-                .child(div().flex_1().text_size(px(13.0)).text_color(t.text).child(label.clone()))
+                .child(div().flex_1().text_size(ty::BODY).text_color(t.text).child(label.clone()))
                 .child(
                     div()
                         .w(px(34.0))
@@ -1312,19 +1318,19 @@ fn render_item<V: 'static>(
                         })
                     })
                     .when(!enabled, |d| d.opacity(0.4))
-                    .child(div().text_size(px(15.0)).text_color(t.text).child(glyph))
+                    .child(div().text_size(ty::TITLE).text_color(t.text).child(glyph))
             };
             div()
                 .flex()
                 .items_center()
                 .gap(px(10.0))
-                .child(div().flex_1().text_size(px(13.0)).text_color(t.text).child(label.clone()))
+                .child(div().flex_1().text_size(ty::BODY).text_color(t.text).child(label.clone()))
                 .child(stepper(-1.0, "−", "Decrease"))
                 .child(
                     div()
                         .min_w(px(44.0))
                         .text_center()
-                        .text_size(px(14.0))
+                        .text_size(ty::MD)
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .text_color(t.text)
                         .child(number(cur)),
@@ -1383,7 +1389,7 @@ fn render_item<V: 'static>(
                                 .gap(px(2.0))
                                 .child(
                                     div()
-                                        .text_size(px(13.0))
+                                        .text_size(ty::BODY)
                                         .font_weight(if active {
                                             gpui::FontWeight::SEMIBOLD
                                         } else {
@@ -1398,7 +1404,7 @@ fn render_item<V: 'static>(
                                 )
                                 .when(!step.detail.is_empty(), |d| {
                                     d.child(
-                                        div().text_size(px(12.0)).text_color(t.text_faint).child(step.detail.clone()),
+                                        div().text_size(ty::META).text_color(t.text_faint).child(step.detail.clone()),
                                     )
                                 }),
                         ),
@@ -1447,7 +1453,7 @@ fn render_item<V: 'static>(
                                     div()
                                         .flex_1()
                                         .min_w_0()
-                                        .text_size(px(13.5))
+                                        .text_size(ty::BODY)
                                         .font_weight(gpui::FontWeight::SEMIBOLD)
                                         .text_color(t.text)
                                         .child(c.title.clone()),
@@ -1461,7 +1467,7 @@ fn render_item<V: 'static>(
                                             .items_center()
                                             .rounded(px(5.0))
                                             .bg(t.accent.opacity(0.14))
-                                            .text_size(px(10.5))
+                                            .text_size(ty::BADGE)
                                             .text_color(t.accent)
                                             .child(c.badge.clone()),
                                     )
@@ -1471,8 +1477,8 @@ fn render_item<V: 'static>(
                         .when(!c.body.is_empty(), |d| {
                             d.child(
                                 div()
-                                    .text_size(px(12.0))
-                                    .line_height(px(17.0))
+                                    .text_size(ty::META)
+                                    .line_height(rem(17.0))
                                     .text_color(t.text_muted)
                                     .child(c.body.clone()),
                             )
@@ -1504,7 +1510,7 @@ fn render_item<V: 'static>(
                         .flex()
                         .items_center()
                         .gap(px(6.0))
-                        .text_size(px(12.0))
+                        .text_size(ty::META)
                         .child(div().size(px(8.0)).rounded(px(2.0)).bg(c))
                         .child(div().text_color(t.text_muted).child(d.label.clone()))
                         .child(div().text_color(t.text).child(if unit.trim() == "%" {
@@ -1539,7 +1545,7 @@ fn render_item<V: 'static>(
                         .flex()
                         .items_center()
                         .rounded(px(8.0))
-                        .text_size(px(12.5))
+                        .text_size(ty::SMALL)
                         .cursor_pointer()
                         .role(gpui::Role::Tab)
                         .aria_selected(on)
@@ -1561,7 +1567,7 @@ fn render_item<V: 'static>(
         }
         Item::Heading { text } => div()
             .pt(px(2.0))
-            .text_size(px(14.0))
+            .text_size(ty::MD)
             .font_weight(gpui::FontWeight::SEMIBOLD)
             .text_color(t.text)
             .child(text.clone())
@@ -1616,7 +1622,7 @@ fn render_item<V: 'static>(
                         .flex()
                         .items_center()
                         .gap(px(8.0))
-                        .text_size(px(12.5))
+                        .text_size(ty::SMALL)
                         .child(div().size(px(9.0)).flex_none().rounded(px(3.0)).bg(colors[i]))
                         .child(div().flex_1().min_w_0().truncate().text_color(t.text_muted).child(d.label.clone()))
                         .child(div().text_color(t.text).child(format!("{}{unit}", number(d.value))))
@@ -1663,10 +1669,10 @@ fn render_item<V: 'static>(
                             .py(px(6.0))
                             .flex()
                             .flex_col()
-                            .child(div().text_size(px(12.0)).text_color(t.text).truncate().child(sw.name.clone()))
+                            .child(div().text_size(ty::META).text_color(t.text).truncate().child(sw.name.clone()))
                             .child(
                                 div()
-                                    .text_size(px(11.0))
+                                    .text_size(ty::MICRO)
                                     .font_family(t.font_mono.clone())
                                     .text_color(t.text_faint)
                                     .child(sw.hex.clone()),
@@ -1694,7 +1700,11 @@ fn render_item<V: 'static>(
                     )
                     .when(!shot.caption.is_empty(), |d| {
                         d.child(
-                            div().text_size(px(11.5)).text_color(t.text_faint).truncate().child(shot.caption.clone()),
+                            div()
+                                .text_size(ty::CAPTION)
+                                .text_color(t.text_faint)
+                                .truncate()
+                                .child(shot.caption.clone()),
                         )
                     })
             }))
@@ -1721,7 +1731,7 @@ fn render_item<V: 'static>(
                             .items_center()
                             .gap(px(6.0))
                             .px(px(2.0))
-                            .text_size(px(11.5))
+                            .text_size(ty::CAPTION)
                             .font_weight(gpui::FontWeight::MEDIUM)
                             .text_color(t.text_muted)
                             .child(col.title.clone())
@@ -1735,7 +1745,7 @@ fn render_item<V: 'static>(
                             .bg(t.surface_card)
                             .border_1()
                             .border_color(t.border)
-                            .text_size(px(12.5))
+                            .text_size(ty::SMALL)
                             .text_color(t.text)
                             .child(item.clone())
                     }))
@@ -1759,7 +1769,7 @@ fn render_item<V: 'static>(
                         .border_1()
                         .border_color(t.border_strong)
                         .cursor_pointer()
-                        .text_size(px(12.5))
+                        .text_size(ty::SMALL)
                         .text_color(t.text)
                         .hover(|s| s.bg(t.wash(0.07)))
                         .role(gpui::Role::Button)
@@ -1802,7 +1812,7 @@ fn render_item<V: 'static>(
                 .child(
                     div()
                         .flex()
-                        .text_size(px(12.5))
+                        .text_size(ty::SMALL)
                         .child(div().flex_1().text_color(t.text_muted).child(label.clone()))
                         .child(div().text_color(t.text).child(format!("{}{unit}", number(current)))),
                 )
@@ -1875,7 +1885,7 @@ fn render_item<V: 'static>(
                 .flex()
                 .items_center()
                 .gap(px(12.0))
-                .child(div().flex_1().text_size(px(13.0)).text_color(t.text).child(label.clone()))
+                .child(div().flex_1().text_size(ty::BODY).text_color(t.text).child(label.clone()))
                 .child(stars)
                 .into_any_element()
         }
@@ -1887,7 +1897,7 @@ fn render_item<V: 'static>(
                 .items_center()
                 .gap(px(6.0))
                 .self_start()
-                .text_size(px(13.0))
+                .text_size(ty::BODY)
                 .text_color(t.accent)
                 .cursor_pointer()
                 .hover(|s| s.underline())
@@ -1940,7 +1950,7 @@ fn render_item<V: 'static>(
                                     .items_center()
                                     .rounded(px(6.0))
                                     .bg(t.wash(0.06))
-                                    .text_size(px(11.0))
+                                    .text_size(ty::MICRO)
                                     .text_color(t.text_faint)
                                     .truncate()
                                     .child(if title.is_empty() {
@@ -1964,7 +1974,7 @@ fn render_item<V: 'static>(
                                             .items_center()
                                             .rounded(px(5.0))
                                             .cursor_pointer()
-                                            .text_size(px(11.0))
+                                            .text_size(ty::MICRO)
                                             .when(on, |s| s.bg(t.surface_raised).text_color(t.text))
                                             .when(!on, |s| s.text_color(t.text_muted).hover(|h| h.text_color(t.text)))
                                             .child(item.clone())
@@ -2009,7 +2019,7 @@ fn render_item<V: 'static>(
                                             .flex()
                                             .items_center()
                                             .justify_between()
-                                            .text_size(px(11.0))
+                                            .text_size(ty::MICRO)
                                             .font_weight(gpui::FontWeight::SEMIBOLD)
                                             .text_color(t.text)
                                             .child("9:41")
@@ -2032,7 +2042,7 @@ fn render_item<V: 'static>(
                                             div()
                                                 .px(px(16.0))
                                                 .pt(px(4.0))
-                                                .text_size(px(18.0))
+                                                .text_size(ty::H2)
                                                 .font_weight(gpui::FontWeight::SEMIBOLD)
                                                 .text_color(t.text)
                                                 .child(title.clone()),
@@ -2061,7 +2071,7 @@ fn render_item<V: 'static>(
                                                         .py(px(4.0))
                                                         .rounded(px(6.0))
                                                         .cursor_pointer()
-                                                        .text_size(px(11.0))
+                                                        .text_size(ty::MICRO)
                                                         .font_weight(if on {
                                                             gpui::FontWeight::SEMIBOLD
                                                         } else {
@@ -2106,7 +2116,7 @@ fn render_item<V: 'static>(
                         .py(px(2.0))
                         .rounded(px(99.0))
                         .bg(t.accent.opacity(0.14))
-                        .text_size(px(11.0))
+                        .text_size(ty::MICRO)
                         .font_weight(gpui::FontWeight::MEDIUM)
                         .text_color(t.accent)
                         .child(badge.clone()),
@@ -2114,13 +2124,13 @@ fn render_item<V: 'static>(
             })
             .child(
                 div()
-                    .text_size(px(20.0))
+                    .text_size(ty::PAGE)
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .text_color(t.text)
                     .child(title.clone()),
             )
             .when(!subtitle.is_empty(), |d| {
-                d.child(div().text_size(px(13.5)).text_color(t.text_muted).child(subtitle.clone()))
+                d.child(div().text_size(ty::BODY).text_color(t.text_muted).child(subtitle.clone()))
             })
             .when(!cta.is_empty() || !secondary.is_empty(), |d| {
                 let (w1, h1) = (weak.clone(), handler.clone());
@@ -2183,7 +2193,7 @@ fn render_item<V: 'static>(
                 .when(!brand.is_empty(), |d| {
                     d.child(
                         div()
-                            .text_size(px(13.5))
+                            .text_size(ty::BODY)
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                             .text_color(t.text)
                             .child(brand.clone()),
@@ -2203,7 +2213,7 @@ fn render_item<V: 'static>(
                             .items_center()
                             .rounded(px(6.0))
                             .cursor_pointer()
-                            .text_size(px(12.0))
+                            .text_size(ty::META)
                             .when(on, |s| {
                                 s.bg(t.surface_raised).text_color(t.text).font_weight(gpui::FontWeight::MEDIUM)
                             })
@@ -2218,7 +2228,7 @@ fn render_item<V: 'static>(
                     d.child(
                         ui::button_primary(SharedString::from(format!("{key}-nav-cta")), cta.clone(), t)
                             .h(px(26.0))
-                            .text_size(px(11.5))
+                            .text_size(ty::CAPTION)
                             .on_click(move |_, window, cx| {
                                 emit(
                                     &w_cta,
@@ -2265,7 +2275,7 @@ fn render_item<V: 'static>(
                                 .child(
                                     div()
                                         .flex_1()
-                                        .text_size(px(13.5))
+                                        .text_size(ty::BODY)
                                         .font_weight(gpui::FontWeight::SEMIBOLD)
                                         .text_color(t.text)
                                         .child(plan.name.clone()),
@@ -2277,7 +2287,7 @@ fn render_item<V: 'static>(
                                             .py(px(1.0))
                                             .rounded(px(99.0))
                                             .bg(t.accent.opacity(0.16))
-                                            .text_size(px(10.5))
+                                            .text_size(ty::BADGE)
                                             .text_color(t.accent)
                                             .child(plan.badge.clone()),
                                     )
@@ -2286,7 +2296,7 @@ fn render_item<V: 'static>(
                         .when(!plan.price.is_empty(), |d| {
                             d.child(
                                 div()
-                                    .text_size(px(20.0))
+                                    .text_size(ty::PAGE)
                                     .font_weight(gpui::FontWeight::SEMIBOLD)
                                     .text_color(t.text)
                                     .child(plan.price.clone()),
@@ -2297,7 +2307,7 @@ fn render_item<V: 'static>(
                                 .flex()
                                 .items_center()
                                 .gap(px(6.0))
-                                .text_size(px(12.0))
+                                .text_size(ty::META)
                                 .text_color(t.text_muted)
                                 .child(icon(icons::CHECK).size(px(11.5)).text_color(t.success))
                                 .child(feat.clone())

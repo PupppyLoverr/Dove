@@ -24,10 +24,14 @@ pub enum Accent {
     Orange,
     Green,
     Pink,
+    Amber,
+    Cyan,
+    Blue,
 }
 
 impl Accent {
-    pub const ALL: [Accent; 5] = [Self::Sky, Self::Indigo, Self::Orange, Self::Green, Self::Pink];
+    pub const ALL: [Accent; 8] =
+        [Self::Sky, Self::Indigo, Self::Orange, Self::Green, Self::Pink, Self::Amber, Self::Cyan, Self::Blue];
 
     pub fn id(self) -> &'static str {
         match self {
@@ -36,6 +40,22 @@ impl Accent {
             Self::Orange => "orange",
             Self::Green => "green",
             Self::Pink => "pink",
+            Self::Amber => "amber",
+            Self::Cyan => "cyan",
+            Self::Blue => "blue",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Sky => "Sky",
+            Self::Indigo => "Indigo",
+            Self::Orange => "Orange",
+            Self::Green => "Green",
+            Self::Pink => "Pink",
+            Self::Amber => "Amber",
+            Self::Cyan => "Cyan",
+            Self::Blue => "Blue",
         }
     }
 
@@ -56,6 +76,13 @@ impl Accent {
             Self::Green => (oklch(0.46, 0.14, 150.0), oklch(0.46, 0.14, 150.0)),
             Self::Pink if dark => (oklch(0.72, 0.18, 350.0), oklch(0.51, 0.20, 350.0)),
             Self::Pink => (oklch(0.48, 0.20, 350.0), oklch(0.48, 0.20, 350.0)),
+            // Zeron's extra presets (#fbbf24 / #22d3ee / #60a5fa dark).
+            Self::Amber if dark => (oklch(0.837, 0.164, 84.4), oklch(0.666, 0.157, 58.3)),
+            Self::Amber => (oklch(0.555, 0.146, 49.0), oklch(0.555, 0.146, 49.0)),
+            Self::Cyan if dark => (oklch(0.797, 0.134, 211.5), oklch(0.609, 0.111, 221.7)),
+            Self::Cyan => (oklch(0.52, 0.094, 223.1), oklch(0.52, 0.094, 223.1)),
+            Self::Blue if dark => (oklch(0.707, 0.165, 254.6), oklch(0.546, 0.215, 262.9)),
+            Self::Blue => (oklch(0.546, 0.215, 262.9), oklch(0.546, 0.215, 262.9)),
         }
     }
 }
@@ -133,6 +160,19 @@ pub struct Theme {
     pub success: Hsla,
     pub busy: Hsla,
 
+    /// Dialogs: one step above cards (Zeron's card ⊕ raised 18%).
+    pub surface_dialog: Hsla,
+    /// Pressed and selected rows: an accent tint.
+    pub element_active: Hsla,
+    /// Accent wash behind accent text (badges, selected chips).
+    pub accent_wash: Hsla,
+    /// Softer status colours for text on washes.
+    pub danger_muted: Hsla,
+    pub warning_muted: Hsla,
+    pub success_muted: Hsla,
+    /// Behind modals.
+    pub scrim: Hsla,
+
     pub selection: Hsla,
     pub code_text: Hsla,
     pub code_wash: Hsla,
@@ -186,7 +226,7 @@ impl Theme {
     pub fn new(appearance: Appearance, accent_choice: Accent, surface_style: Surface) -> Self {
         let (primary, strong) = accent_choice.pair(appearance);
         let dark = appearance.is_dark();
-        if dark {
+        let theme = if dark {
             Self {
                 appearance,
                 accent_choice,
@@ -210,6 +250,13 @@ impl Theme {
                 warning: oklch(0.828, 0.189, 84.429),
                 success: oklch(0.765, 0.177, 163.223),
                 busy: primary,
+                surface_dialog: mix(grey(0x0e), neutral(0.235), 0.18),
+                element_active: primary.opacity(0.18),
+                accent_wash: primary.opacity(0.22),
+                danger_muted: mix(oklch(0.704, 0.191, 22.216), neutral(0.922), 0.28),
+                warning_muted: mix(oklch(0.828, 0.189, 84.429), neutral(0.922), 0.25),
+                success_muted: mix(oklch(0.765, 0.177, 163.223), neutral(0.922), 0.25),
+                scrim: hsla(0.0, 0.0, 0.0, 0.60),
                 selection: primary.opacity(0.35),
                 code_text: primary,
                 code_wash: primary.opacity(0.12),
@@ -249,6 +296,13 @@ impl Theme {
                 warning: oklch(0.555, 0.163, 48.998),
                 success: oklch(0.596, 0.145, 163.225),
                 busy: primary,
+                surface_dialog: mix(grey(0xff), neutral(0.940), 0.04),
+                element_active: primary.opacity(0.10),
+                accent_wash: primary.opacity(0.12),
+                danger_muted: mix(oklch(0.577, 0.245, 27.325), neutral(0.25), 0.28),
+                warning_muted: mix(oklch(0.555, 0.163, 48.998), neutral(0.25), 0.25),
+                success_muted: mix(oklch(0.596, 0.145, 163.225), neutral(0.25), 0.25),
+                scrim: hsla(0.0, 0.0, 0.0, 0.32),
                 selection: primary.opacity(0.24),
                 code_text: primary,
                 code_wash: primary.opacity(0.10),
@@ -264,7 +318,17 @@ impl Theme {
                 ansi: palette(ANSI_LIGHT),
                 cursor: hsla(0.0, 0.0, 0.0, 0.55),
             }
-        }
+        };
+        theme.enforce_contrast()
+    }
+
+    /// Raise `text_muted` and `text_faint` until they read on the content
+    /// plane (WCAG 4.5:1 and 3:1), as Zeron's theme does for every palette.
+    fn enforce_contrast(mut self) -> Self {
+        let plane = flatten(self.panel_bg(), flatten(self.glass(), self.bg));
+        self.text_muted = ensure_contrast(self.text_muted, plane, 4.5);
+        self.text_faint = ensure_contrast(self.text_faint, plane, 3.0);
+        self
     }
 
     /// The shell tint painted over the blurred window background.
@@ -573,6 +637,32 @@ fn oklch_to_srgb(l: f32, c: f32, h_deg: f32) -> [f32; 3] {
     [gamma_encode(r), gamma_encode(g), gamma_encode(b)]
 }
 
+/// Blend `a` toward `b` by `t` in sRGB (opaque results).
+pub fn mix(a: Hsla, b: Hsla, t: f32) -> Hsla {
+    let t = t.clamp(0.0, 1.0);
+    let [ar, ag, ab] = hsl_to_rgb(a.h, a.s, a.l);
+    let [br, bg, bb] = hsl_to_rgb(b.h, b.s, b.l);
+    let (h, s, l) = rgb_to_hsl(ar + (br - ar) * t, ag + (bg - ag) * t, ab + (bb - ab) * t);
+    hsla(h, s, l, 1.0)
+}
+
+/// Move `fg`'s lightness away from `bg` until their contrast reaches
+/// `ratio` (or it can go no further).
+pub fn ensure_contrast(fg: Hsla, bg: Hsla, ratio: f32) -> Hsla {
+    if contrast(flatten(fg, bg), bg) >= ratio {
+        return fg;
+    }
+    let lighten = bg.l < 0.5;
+    let mut c = fg;
+    for _ in 0..40 {
+        c.l = (c.l + if lighten { 0.02 } else { -0.02 }).clamp(0.0, 1.0);
+        if contrast(flatten(c, bg), bg) >= ratio || c.l <= 0.0 || c.l >= 1.0 {
+            break;
+        }
+    }
+    c
+}
+
 /// Composite a translucent `fg` over an opaque `bg`: the colour the eye gets.
 pub fn flatten(fg: Hsla, bg: Hsla) -> Hsla {
     let a = fg.a.clamp(0.0, 1.0);
@@ -641,6 +731,26 @@ fn rgb_to_hsl(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn muted_text_stays_legible_on_every_material() {
+        for appearance in [Appearance::Dark, Appearance::Light] {
+            for surface in Surface::ALL {
+                for accent in Accent::ALL {
+                    let t = Theme::new(appearance, accent, surface);
+                    let plane = flatten(t.panel_bg(), flatten(t.glass(), t.bg));
+                    assert!(contrast(flatten(t.text_muted, plane), plane) >= 4.4, "{appearance:?} {surface:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn accent_ids_round_trip() {
+        for a in Accent::ALL {
+            assert_eq!(Accent::from_id(a.id()), a);
+        }
+    }
 
     #[test]
     fn neutrals_are_achromatic_and_ordered() {

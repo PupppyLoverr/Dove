@@ -36,6 +36,7 @@ use gpui::{
 use gpui_base::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 
 use crate::assets::{icon, icons};
+use crate::design::ty;
 use crate::kit;
 use crate::theme::Theme;
 use crate::ui;
@@ -970,10 +971,10 @@ impl Composer {
                                 .min_w_0()
                                 .flex()
                                 .flex_col()
-                                .child(div().text_size(px(13.0)).text_color(t.text).truncate().child(p.name.clone()))
+                                .child(div().text_size(ty::BODY).text_color(t.text).truncate().child(p.name.clone()))
                                 .child(
                                     div()
-                                        .text_size(px(11.5))
+                                        .text_size(ty::CAPTION)
                                         .text_color(t.text_faint)
                                         .truncate()
                                         .child(crate::team::subtitle(p)),
@@ -1019,8 +1020,8 @@ impl Composer {
                             .flex_1()
                             .flex()
                             .flex_col()
-                            .child(div().text_size(px(13.0)).text_color(t.text).child(title))
-                            .child(div().text_size(px(11.5)).text_color(t.text_faint).child(detail)),
+                            .child(div().text_size(ty::BODY).text_color(t.text).child(title))
+                            .child(div().text_size(ty::CAPTION).text_color(t.text_faint).child(detail)),
                     )
                     .when(on, |d| d.child(icon(icons::CHECK).size(px(14.0)).text_color(t.accent)))
                     .on_click(cx.listener(move |this, _, _, cx| {
@@ -1098,7 +1099,7 @@ impl Composer {
                                 .flex()
                                 .items_center()
                                 .gap(px(6.0))
-                                .text_size(px(12.5))
+                                .text_size(ty::SMALL)
                                 .text_color(t.text_muted)
                                 .child(icon(icons::GIT_BRANCH).size(px(13.0)))
                                 .child(b),
@@ -1112,7 +1113,7 @@ impl Composer {
                                 .flex()
                                 .items_center()
                                 .gap(px(6.0))
-                                .text_size(px(12.5))
+                                .text_size(ty::SMALL)
                                 .text_color(t.text_faint)
                                 .child(icon(icons::WORKTREE).size(px(13.0)))
                                 .child("Worktree"),
@@ -1151,7 +1152,7 @@ impl Composer {
                         .flex()
                         .items_center()
                         .gap(px(10.0))
-                        .text_size(px(14.0))
+                        .text_size(ty::MD)
                         .text_color(t.text_faint)
                         .child(icon(icons::CLOUD).size(px(16.0)))
                         .child(div().flex_1().child("Cloud"))
@@ -1198,7 +1199,7 @@ impl Composer {
                         .rounded(px(8.0))
                         .border_1()
                         .border_color(t.border_strong)
-                        .text_size(px(13.0))
+                        .text_size(ty::BODY)
                         .child(div().flex_1().child(Input::new(input)))
                         .into_any_element(),
                     None => ui::menu_row("proj-clone", icons::GLOBAL, "Clone from URL…", false, t)
@@ -1229,7 +1230,7 @@ impl Composer {
                         div()
                             .px(px(14.0))
                             .py(px(10.0))
-                            .text_size(px(13.0))
+                            .text_size(ty::BODY)
                             .text_color(t.text_faint)
                             .child("No branches (not a git repository?)"),
                     )
@@ -1360,7 +1361,7 @@ impl Composer {
                 .items_center()
                 .gap(px(5.0))
                 .rounded(px(6.0))
-                .text_size(px(11.5))
+                .text_size(ty::CAPTION)
                 .text_color(if frac.is_some() { color } else { t.text_faint })
                 .hover(|s| s.bg(t.glass_hover()))
                 .tooltip(ui::tip(tip))
@@ -1444,7 +1445,7 @@ impl Composer {
                     div()
                         .px(px(14.0))
                         .py(px(6.0))
-                        .text_size(px(12.0))
+                        .text_size(ty::META)
                         .text_color(t.text_faint)
                         .child("Tip: paste an image or drop files on the composer."),
                 );
@@ -1511,8 +1512,8 @@ impl Composer {
                         .flex()
                         .flex_col()
                         .gap(px(2.0))
-                        .child(div().text_size(px(13.0)).text_color(t.text).child("Dictation"))
-                        .child(div().text_size(px(12.0)).text_color(t.text_faint).child(v.status_line())),
+                        .child(div().text_size(ty::BODY).text_color(t.text).child("Dictation"))
+                        .child(div().text_size(ty::META).text_color(t.text_faint).child(v.status_line())),
                 )
                 .child(ui::separator(t))
                 .child(
@@ -1560,7 +1561,7 @@ impl Composer {
                 .gap(px(6.0))
                 .rounded_full()
                 .cursor_pointer()
-                .text_size(px(12.5))
+                .text_size(ty::SMALL)
                 .text_color(if bypass { t.danger } else { t.text_muted })
                 .when(bypass, |d| d.bg(t.danger.opacity(0.12)))
                 .hover(|s| s.bg(t.wash(0.08)))
@@ -1597,7 +1598,7 @@ impl Composer {
                             .child(icon(icons::DANGER_TRIANGLE).text_color(t.danger))
                             .child(div().font_weight(gpui::FontWeight::MEDIUM).child("Bypass permissions?")),
                     )
-                    .child(div().text_size(px(13.0)).text_color(t.text_muted).child(format!(
+                    .child(div().text_size(ty::BODY).text_color(t.text_muted).child(format!(
                         "In {project}, agents will run any command and edit any file without asking. Dove asks once per project."
                     )))
                     .child(
@@ -1636,8 +1637,8 @@ impl Composer {
                                     .flex_1()
                                     .flex()
                                     .flex_col()
-                                    .child(div().text_size(px(14.0)).text_color(if danger { t.danger } else { t.text }).child(label))
-                                    .child(div().text_size(px(12.0)).text_color(t.text_faint).child(desc)),
+                                    .child(div().text_size(ty::MD).text_color(if danger { t.danger } else { t.text }).child(label))
+                                    .child(div().text_size(ty::META).text_color(t.text_faint).child(desc)),
                             )
                             .when(selected, |d| d.child(icon(icons::CHECK).size(px(14.0)).text_color(t.accent)))
                             .on_click(cx.listener(move |this, _, _, cx| this.set_mode(m, cx)))
@@ -1691,7 +1692,7 @@ impl Composer {
             .when(enabled, |d| d.hover(|s| s.opacity(0.88)))
             .when(!enabled && self.variant == Variant::Hero, |d| d.opacity(0.9))
             .text_color(if enabled { t.on_solid } else { t.text_faint })
-            .text_size(px(12.0))
+            .text_size(ty::META)
             .font_weight(gpui::FontWeight::MEDIUM)
             .when(enabled, |d| d.cursor_pointer())
             .tooltip(ui::tip(tip))
@@ -1727,7 +1728,7 @@ impl Composer {
                         .border_1()
                         .border_color(t.border)
                         .bg(t.wash(0.04))
-                        .text_size(px(12.5))
+                        .text_size(ty::SMALL)
                         .text_color(t.text_muted)
                         .on_drag(QueueDrag(i), |d, _, _, cx| cx.new(|_| d.clone()))
                         .drag_over::<QueueDrag>(move |s, _, _, _| s.border_color(gpui::blue()))
@@ -1785,7 +1786,7 @@ impl Composer {
                         .border_1()
                         .border_color(t.border)
                         .bg(t.wash(0.04))
-                        .text_size(px(12.5))
+                        .text_size(ty::SMALL)
                         .text_color(t.text_muted)
                         .tooltip(ui::tip(p.display().to_string()))
                         .child(if is_image {
@@ -1828,7 +1829,7 @@ impl Composer {
                     .px(px(14.0))
                     .pt(px(6.0))
                     .pb(px(4.0))
-                    .text_size(px(11.0))
+                    .text_size(ty::MICRO)
                     .text_color(t.text_faint)
                     .child(if m.trigger == '@' { "Files" } else { "Commands" }),
             )
@@ -1837,7 +1838,7 @@ impl Composer {
                     div()
                         .px(px(14.0))
                         .py(px(8.0))
-                        .text_size(px(13.0))
+                        .text_size(ty::BODY)
                         .text_color(t.text_faint)
                         .child(if self.files.is_empty() { "Loading files…" } else { "No matching files" }),
                 )
@@ -1861,13 +1862,13 @@ impl Composer {
                             .size(px(14.0))
                             .text_color(t.text_faint),
                     )
-                    .child(div().flex_none().text_size(px(13.0)).text_color(t.text).child(item.label.clone()))
+                    .child(div().flex_none().text_size(ty::BODY).text_color(t.text).child(item.label.clone()))
                     .child(
                         div()
                             .flex_1()
                             .min_w_0()
                             .truncate()
-                            .text_size(px(12.0))
+                            .text_size(ty::META)
                             .text_color(t.text_faint)
                             .child(item.detail.clone()),
                     )
@@ -1887,13 +1888,14 @@ struct QueueDrag(usize);
 
 impl Render for QueueDrag {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::perf_trace::count_render("QueueDrag");
         let t = Theme::of(cx);
         div()
             .px(px(8.0))
             .py(px(4.0))
             .rounded(px(6.0))
             .bg(t.surface_raised)
-            .text_size(px(12.0))
+            .text_size(ty::META)
             .child(format!("Message {}", self.0 + 1))
     }
 }
@@ -1975,6 +1977,7 @@ const HERO_CORNER: f32 = 12.0;
 
 impl Render for Composer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::perf_trace::count_render("Composer");
         let theme = Theme::of(cx).clone();
         let t = &theme;
         let has_text = !self.input.read(cx).value().trim().is_empty();
@@ -2017,7 +2020,7 @@ impl Render for Composer {
             .shadow(t.composer_shadows(focused))
             .flex()
             .flex_col()
-            .text_size(px(15.0))
+            .text_size(ty::TITLE)
             .cursor_text()
             .on_click(cx.listener(|this, _, window, cx| focus_input(&this.input, window, cx)))
             .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
@@ -2150,7 +2153,7 @@ impl Render for Composer {
                     div()
                         .id("composer-error")
                         .px(px(8.0))
-                        .text_size(px(12.0))
+                        .text_size(ty::META)
                         .text_color(t.danger)
                         .cursor_pointer()
                         .child(e)

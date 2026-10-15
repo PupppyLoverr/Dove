@@ -33,6 +33,8 @@ use gpui_base::input::{Input, InputEvent, InputState};
 
 use crate::assets::{icon, icons};
 use crate::composer::{self, Composer, ComposerEvent};
+use crate::design::rem;
+use crate::design::ty;
 use crate::kit;
 use crate::markdown::{self, Block, Stream};
 use crate::theme::Theme;
@@ -49,7 +51,6 @@ const OUTPUT_KEEP: usize = 24;
 const OUTPUT_FULL: usize = 400;
 /// A one-line call this short reads whole in its chip header.
 const INVOCATION_INLINE: usize = 56;
-pub const COLUMN_MAX: f32 = 760.0;
 /// The composer dock's height before its first measurement: a one-line
 /// pill and its meta row.
 const DOCK_GUESS: f32 = 90.0;
@@ -1327,16 +1328,23 @@ impl TaskView {
         let before = self.chat.rows.len();
         let mut status = None;
         let mut runway = None;
-        // Adjacent text deltas parse once.
+        // Adjacent text deltas parse once. A run is gathered into one growing
+        // buffer (linear in its length), not re-joined per delta.
         let mut merged: Vec<AgentEvent> = Vec::with_capacity(events.len());
+        let mut run: Option<String> = None;
         for ev in events {
-            if let (AgentEvent::TextDelta { text: next }, Some(AgentEvent::TextDelta { text: prev })) =
-                (&ev, merged.last_mut())
-            {
-                *prev = format!("{prev}{next}").into();
-                continue;
+            match ev {
+                AgentEvent::TextDelta { text } => run.get_or_insert_with(String::new).push_str(&text),
+                other => {
+                    if let Some(text) = run.take() {
+                        merged.push(AgentEvent::TextDelta { text: text.into() });
+                    }
+                    merged.push(other);
+                }
             }
-            merged.push(ev);
+        }
+        if let Some(text) = run.take() {
+            merged.push(AgentEvent::TextDelta { text: text.into() });
         }
         for ev in merged {
             if let AgentEvent::ToolCall { name, input, .. } = &ev {
@@ -1851,7 +1859,7 @@ impl TaskView {
                         .flex()
                         .items_center()
                         .gap(px(6.0))
-                        .text_size(px(12.0))
+                        .text_size(ty::META)
                         .font_weight(gpui::FontWeight::MEDIUM)
                         .text_color(t.text_muted)
                         .child(icon(icons::CHECKLIST).size(px(14.0)))
@@ -1863,7 +1871,7 @@ impl TaskView {
                 .flex()
                 .items_center()
                 .gap(px(6.0))
-                .text_size(px(12.0))
+                .text_size(ty::META)
                 .text_color(t.text_faint)
                 .child(icon(icons::INFO_CIRCLE).size(px(13.0)))
                 .child(text.clone())
@@ -1878,7 +1886,7 @@ impl TaskView {
                 .border_1()
                 .border_color(t.danger.opacity(0.25))
                 .text_color(t.danger)
-                .text_size(px(13.0))
+                .text_size(ty::BODY)
                 .child(icon(icons::DANGER_TRIANGLE).size(px(15.0)).mt(px(1.0)))
                 .child(div().flex_1().min_w_0().child(text.clone()))
                 .into_any_element(),
@@ -1913,7 +1921,7 @@ impl TaskView {
             .justify_center()
             .px(px(28.0))
             .py(gap)
-            .child(div().w_full().max_w(px(COLUMN_MAX)).child(body))
+            .child(div().w_full().max_w(px(crate::design::conversation_width())).child(body))
             .into_any_element()
     }
 
@@ -1935,7 +1943,7 @@ impl TaskView {
             .child(crate::loaders::gradient_spinner(SharedString::from(format!("working-indicator-{key}")), 2.5))
             .child(
                 div()
-                    .text_size(px(12.0))
+                    .text_size(ty::META)
                     .text_color(t.text_muted)
                     .child(crate::roll_text::roll_text(format!("working-word-{key}"), format!("{word}…").into())),
             )
@@ -1943,7 +1951,7 @@ impl TaskView {
                 div()
                     .relative()
                     .top(px(1.0))
-                    .text_size(px(11.0))
+                    .text_size(ty::MICRO)
                     .text_color(t.text_faint)
                     .child(crate::roll_text::roll_text(format!("working-timer-{key}"), format_elapsed(secs).into())),
             )
@@ -1985,7 +1993,7 @@ impl TaskView {
             .flex()
             .items_center()
             .gap(px(8.0))
-            .text_size(px(12.5))
+            .text_size(ty::SMALL)
             .child(mark)
             .child(div().font_weight(gpui::FontWeight::MEDIUM).text_color(t.text).child(name))
             .when(!detail.is_empty(), |d| d.child(div().text_color(t.text_faint).child(detail)))
@@ -2018,7 +2026,7 @@ impl TaskView {
                     div()
                         .pr(px(4.0))
                         .pb(px(2.0))
-                        .text_size(px(11.5))
+                        .text_size(ty::CAPTION)
                         .text_color(t.text_faint)
                         .child("Sent to this subagent"),
                 )
@@ -2043,7 +2051,7 @@ impl TaskView {
                     .h(px(24.0))
                     .invisible()
                     .group_hover("user-msg", |s| s.visible())
-                    .text_size(px(12.0))
+                    .text_size(ty::META)
                     .text_color(t.text_faint)
                     .child(div().mr(px(4.0)).child(when))
                     .when(self.mirror.is_none(), |d| d.child(edit))
@@ -2085,7 +2093,7 @@ impl TaskView {
                         .rounded(px(7.0))
                         .border_1()
                         .border_color(t.border)
-                        .text_size(px(12.0))
+                        .text_size(ty::META)
                         .text_color(t.text_muted)
                         .cursor_pointer()
                         .hover(|s| s.bg(t.wash(0.06)).text_color(t.text))
@@ -2176,9 +2184,11 @@ impl TaskView {
 
         let open = a.pinned.unwrap_or(a.live || mirror);
         let frame = self.folds.step((i, tc::PART_GROUP, 0), open, now);
+        // Short transitions (folds, reveals) pump every frame until they
+        // land; the long-running shimmer rides the 30 Hz pulse clock.
         let mut moving = frame.animating;
-        let shimmer = a.live.then(|| tc::shimmer_phase(a.started.unwrap_or(now), now));
-        moving |= shimmer.is_some();
+        let shimmer =
+            (a.live && !crate::motion::reduced_now()).then(|| tc::shimmer_phase(a.started.unwrap_or(now), now));
 
         let view = weak.entity_id();
         let header = {
@@ -2290,6 +2300,7 @@ impl TaskView {
             .children(body)
             .when(!chips.is_empty(), |d| d.child(div().mt(px(2.0)).flex().flex_col().children(chips)))
             .when(moving, |d| d.child(tc::frame_pump(weak.entity_id())))
+            .when(!moving && shimmer.is_some(), |d| d.child(crate::motion::pulse_driver(1)))
             .into_any_element()
     }
 
@@ -2455,7 +2466,7 @@ impl TaskView {
                             .child(detail),
                     )
                     .when_some(tag, |d, tag| {
-                        d.child(div().flex_none().text_size(px(11.0)).text_color(t.text_faint).child(tag))
+                        d.child(div().flex_none().text_size(ty::MICRO).text_color(t.text_faint).child(tag))
                     })
                     .when(running, |d| {
                         d.child(crate::loaders::glyph_spinner(
@@ -2528,7 +2539,7 @@ impl TaskView {
                     .flex_none()
                     .gap(px(4.0))
                     .font_family(t.font_mono.clone())
-                    .text_size(px(11.0))
+                    .text_size(ty::MICRO)
                     .child(div().text_color(t.success).child(format!("+{}", diff.added)))
                     .child(div().text_color(t.danger).child(format!("−{}", diff.removed)))
                     .into_any_element(),
@@ -2539,7 +2550,7 @@ impl TaskView {
                 div()
                     .flex_none()
                     .font_family(t.font_mono.clone())
-                    .text_size(px(11.0))
+                    .text_size(ty::MICRO)
                     .text_color(t.text_faint)
                     .child(short_duration(took))
                     .into_any_element(),
@@ -2741,7 +2752,7 @@ impl TaskView {
                     .border_color(t.border)
                     .bg(t.wash(0.02))
                     .font_family(t.font_sans.clone())
-                    .text_size(px(12.0))
+                    .text_size(ty::META)
                     .text_color(t.text_faint)
                     .when(more > 0 || open, |d| {
                         d.child(
@@ -2784,7 +2795,7 @@ impl TaskView {
                 .flex()
                 .items_center()
                 .gap(px(8.0))
-                .text_size(px(13.0))
+                .text_size(ty::BODY)
                 .text_color(t.text_faint)
                 .child(icon(icons::CHAT_ROUND_LINE).size(px(14.0)).text_color(if decided.is_none() {
                     t.warning
@@ -2823,7 +2834,7 @@ impl TaskView {
                             .rounded(px(5.0))
                             .bg(t.warning.opacity(0.12))
                             .text_color(t.warning)
-                            .text_size(px(11.0))
+                            .text_size(ty::MICRO)
                             .child(h)
                     })),
             )
@@ -2834,7 +2845,7 @@ impl TaskView {
                     .rounded(px(8.0))
                     .bg(t.wash(0.04))
                     .font_family(t.font_mono.clone())
-                    .text_size(px(12.5))
+                    .text_size(ty::SMALL)
                     .text_color(t.text_muted)
                     .child(req.summary.to_string()),
             );
@@ -2863,7 +2874,7 @@ impl TaskView {
                 );
             }
             Some(d) => {
-                card = card.child(div().text_size(px(12.0)).text_color(t.text_faint).child(match d {
+                card = card.child(div().text_size(ty::META).text_color(t.text_faint).child(match d {
                     PermissionDecision::Deny => "Denied",
                     PermissionDecision::AllowAlways => "Allowed for this session",
                     PermissionDecision::AllowOnce => "Allowed",
@@ -2900,7 +2911,7 @@ impl TaskView {
             .flex()
             .items_center()
             .gap(px(2.0))
-            .text_size(px(12.0))
+            .text_size(ty::META)
             .text_color(t.text_faint)
             .when(!copy.is_empty(), |d| d.child(copy_button(SharedString::from(format!("copy-turn-{i}")), copy, t)))
             .when_some(prompt.filter(|_| idle), |d, p| {
@@ -2995,7 +3006,7 @@ impl TaskView {
                     .flex()
                     .items_start()
                     .gap(px(8.0))
-                    .text_size(px(13.0))
+                    .text_size(ty::BODY)
                     .child(
                         div().mt(px(3.0)).size(px(13.0)).flex_none().flex().items_center().justify_center().child(
                             match glyph {
@@ -3029,7 +3040,7 @@ impl TaskView {
                     .bg(t.glass_overlay())
                     .border_1()
                     .border_color(t.border)
-                    .text_size(px(13.0))
+                    .text_size(ty::BODY)
                     .child(header)
                     .children(items),
             )
@@ -3154,15 +3165,15 @@ impl TaskView {
                                             .flex()
                                             .items_center()
                                             .gap(px(6.0))
-                                            .text_size(px(11.0))
+                                            .text_size(ty::MICRO)
                                             .text_color(t.text_faint)
                                             .child(format!("Prompt {} of {n}", rep + 1))
                                             .when(span > 1, |d| d.child(format!("· {span} here"))),
                                     )
                                     .child(
                                         div()
-                                            .text_size(px(13.0))
-                                            .line_height(px(18.0))
+                                            .text_size(ty::BODY)
+                                            .line_height(rem(18.0))
                                             .text_color(t.text)
                                             .child(prompt),
                                     )
@@ -3172,8 +3183,8 @@ impl TaskView {
                                                 .pt(px(6.0))
                                                 .border_t_1()
                                                 .border_color(t.border)
-                                                .text_size(px(12.0))
-                                                .line_height(px(17.0))
+                                                .text_size(ty::META)
+                                                .line_height(rem(17.0))
                                                 .text_color(t.text_muted)
                                                 .child(r),
                                         )
@@ -3201,7 +3212,7 @@ impl TaskView {
             .flex()
             .items_center()
             .gap(px(8.0))
-            .text_size(px(12.0))
+            .text_size(ty::META)
             .text_color(t.text_faint)
             // The spinner and timer live in the transcript's working trailer;
             // the strip keeps what the agent is doing right now.
@@ -3250,7 +3261,7 @@ impl TaskView {
                         .flex()
                         .items_center()
                         .gap(px(8.0))
-                        .text_size(px(12.0))
+                        .text_size(ty::META)
                         .text_color(t.text_faint)
                         .child(icon(icons::CHAT_ROUND_LINE).size(px(14.0)).text_color(t.accent))
                         .child(question.header.clone())
@@ -3265,7 +3276,7 @@ impl TaskView {
                                 .on_click(cx.listener(|this, _, _, cx| this.skip_questions(cx))),
                         ),
                 )
-                .child(div().text_size(px(14.0)).text_color(t.text).child(question.question.clone()))
+                .child(div().text_size(ty::MD).text_color(t.text).child(question.question.clone()))
                 .child(div().flex().flex_col().gap(px(4.0)).children(question.options.iter().enumerate().map(
                     |(n, label)| {
                         let selected = chosen.contains(label);
@@ -3316,6 +3327,7 @@ fn copy_button(id: SharedString, text: String, t: &Theme) -> impl IntoElement {
 
 impl Render for TaskView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::perf_trace::count_render("TaskView");
         // The question panel needs a window to build its input.
         if self.questions.is_none()
             && let Some((_, req)) = self.chat.pending().filter(|(_, r)| r.is_question() && self.live.is_some())
@@ -3385,7 +3397,7 @@ impl Render for TaskView {
                     .border_color(t.border)
                     .bg(t.surface_raised)
                     .shadow_md()
-                    .text_size(px(12.0))
+                    .text_size(ty::META)
                     .text_color(t.text_muted)
                     .cursor_pointer()
                     .hover(|s| s.text_color(t.text))
@@ -3413,10 +3425,10 @@ impl Render for TaskView {
                         .flex_1()
                         .flex()
                         .flex_col()
-                        .child(div().text_size(px(13.5)).text_color(t.text).child("Running in the terminal"))
+                        .child(div().text_size(ty::BODY).text_color(t.text).child("Running in the terminal"))
                         .child(
                             div()
-                                .text_size(px(12.0))
+                                .text_size(ty::META)
                                 .text_color(t.text_faint)
                                 .child("Read-only here; this chat stays in sync"),
                         ),
@@ -3445,7 +3457,7 @@ impl Render for TaskView {
             div()
                 .relative()
                 .w_full()
-                .max_w(px(COLUMN_MAX + 8.0))
+                .max_w(px(crate::design::conversation_width() + 8.0))
                 .flex()
                 .flex_col()
                 .gap(px(6.0))
@@ -3469,14 +3481,9 @@ impl Render for TaskView {
                     .inset_0(),
                 ),
         );
-        let bottom = div()
-            .w_full()
-            .flex()
-            .justify_center()
-            .px(px(24.0))
-            .pt(px(4.0))
-            .pb(px(6.0))
-            .child(div().w_full().max_w(px(COLUMN_MAX + 8.0)).child(self.render_status_strip(&t)));
+        let bottom = div().w_full().flex().justify_center().px(px(24.0)).pt(px(4.0)).pb(px(6.0)).child(
+            div().w_full().max_w(px(crate::design::conversation_width() + 8.0)).child(self.render_status_strip(&t)),
+        );
 
         div()
             .id("task-view")
@@ -3739,7 +3746,7 @@ fn path_chip(id: (&'static str, usize, usize), path: String, t: &Theme) -> AnyEl
         .border_color(t.wash(0.08))
         .bg(t.wash(0.03))
         .font_family(t.font_mono.clone())
-        .text_size(px(11.5))
+        .text_size(ty::CAPTION)
         .text_color(t.text_muted)
         .cursor_pointer()
         .hover(|s| s.bg(t.wash(0.07)).text_color(t.text))
@@ -3776,7 +3783,7 @@ fn web_row(id: (&'static str, usize, usize), url: String, t: &Theme) -> AnyEleme
         .items_center()
         .gap(px(8.0))
         .rounded(px(6.0))
-        .text_size(px(12.5))
+        .text_size(ty::SMALL)
         .cursor_pointer()
         .hover(|s| s.bg(t.wash(0.05)))
         .child(icon(icons::GLOBE).size(px(12.0)).text_color(t.text_faint))
@@ -3799,7 +3806,7 @@ fn todo_list(items: &[(String, TodoStatus)], t: &Theme) -> AnyElement {
         .flex()
         .flex_col()
         .gap(px(3.0))
-        .text_size(px(13.0))
+        .text_size(ty::BODY)
         .children(items.iter().map(|(text, status)| {
             let mark: AnyElement = match status {
                 TodoStatus::Completed => icon(icons::CHECK).size(px(13.0)).text_color(t.text_faint).into_any_element(),
@@ -4043,7 +4050,7 @@ fn more_chip(i: usize, j: usize, label: String, weak: &WeakEntity<TaskView>, t: 
         .px(px(6.0))
         .flex()
         .items_center()
-        .text_size(px(12.0))
+        .text_size(ty::META)
         .text_color(t.text_faint)
         .cursor_pointer()
         .hover(|s| s.text_color(t.text_muted))
