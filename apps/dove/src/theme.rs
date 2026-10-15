@@ -189,6 +189,10 @@ pub struct Theme {
     pub terminal_selection: Hsla,
     pub ansi: [Hsla; 16],
     pub cursor: Hsla,
+
+    /// The library theme painted over Dove's look (`theme_light` /
+    /// `theme_dark`); `None` is Dove's own palette.
+    pub themed: Option<crate::themes::Applied>,
 }
 
 impl Global for Theme {}
@@ -271,6 +275,7 @@ impl Theme {
                 terminal_selection: hsla(0.0, 0.0, 1.0, 0.22),
                 ansi: palette(ANSI_DARK),
                 cursor: hsla(0.0, 0.0, 1.0, 0.35),
+                themed: None,
             }
         } else {
             Self {
@@ -317,9 +322,25 @@ impl Theme {
                 terminal_selection: hsla(0.0, 0.0, 0.0, 0.16),
                 ansi: palette(ANSI_LIGHT),
                 cursor: hsla(0.0, 0.0, 0.0, 0.55),
+                themed: None,
             }
         };
         theme.enforce_contrast()
+    }
+
+    /// [`Theme::new`] with a library theme's palette laid over it (see
+    /// [`crate::themes`]); `None` is exactly [`Theme::new`].
+    pub fn with_library(
+        appearance: Appearance,
+        accent_choice: Accent,
+        surface_style: Surface,
+        library: Option<crate::themes::Applied>,
+    ) -> Self {
+        let base = Self::new(appearance, accent_choice, surface_style);
+        match library {
+            Some(applied) => applied.apply(base).enforce_contrast(),
+            None => base,
+        }
     }
 
     /// Raise `text_muted` and `text_faint` until they read on the content
@@ -511,6 +532,9 @@ impl Theme {
     /// families at 72% saturation, so code reads colorful but calm.
     pub fn syntax(&self, kind: zeron_syntax::HighlightKind) -> Hsla {
         use zeron_syntax::HighlightKind as K;
+        if let Some(color) = self.themed.as_ref().and_then(|applied| applied.syntax(kind)) {
+            return color;
+        }
         let tone = |mut c: Hsla| {
             c.s *= 0.72;
             c

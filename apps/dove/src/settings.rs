@@ -31,7 +31,7 @@ use crate::design::{self, space, ty};
 use crate::kit::controls::{self as ctl, Segment, SelectOption, SelectState, SliderState, Tone};
 use crate::kit::page;
 use crate::motion::{self, ReduceMotion};
-use crate::theme::{Accent, Surface, Theme};
+use crate::theme::{Accent, Appearance, Surface, Theme};
 use crate::ui;
 use crate::voice::{InstallState, VoiceModel};
 use crate::wallpaper::Effect;
@@ -207,6 +207,19 @@ const INDEX: &[Entry] = &[
     e(Section::General, "agent_office_skills", "Office document skills", "office docx pptx xlsx pdf skills agents"),
     e(Section::Appearance, "appearance", "Color scheme", "theme dark light system mode appearance"),
     e(Section::Appearance, "accent", "Accent color", "accent color sky indigo orange green pink amber cyan blue"),
+    e(
+        Section::Appearance,
+        "theme_light",
+        "Light theme",
+        "theme light palette colors zeron catppuccin github ayu gruvbox rose pine night owl winter vscode",
+    ),
+    e(
+        Section::Appearance,
+        "theme_dark",
+        "Dark theme",
+        "theme dark palette colors zeron dracula nord tokyo night one dark catppuccin synthwave cobalt vscode",
+    ),
+    e(Section::Appearance, "theme_import", "Import VS Code theme", "import vscode visual studio code theme json file"),
     e(Section::Appearance, "surface", "Window material", "glass acrylic normal frosted surface material blur"),
     e(Section::Appearance, "wallpaper_path", "New-thread background", "wallpaper background image backdrop home"),
     e(Section::Appearance, "wallpaper_effect", "Background effect", "dither halftone scanlines effect shader backdrop"),
@@ -328,6 +341,11 @@ pub struct SettingsPage {
     sel_surface: SelectState,
     sel_effect: SelectState,
     sel_reduce: SelectState,
+    sel_theme_light: SelectState,
+    sel_theme_dark: SelectState,
+    /// The last VS Code import: the theme's name, or why it failed.
+    theme_import: Option<Result<SharedString, SharedString>>,
+    importing_theme: bool,
     sel_ui_size: SelectState,
     sel_code_size: SelectState,
     sel_term_size: SelectState,
@@ -426,6 +444,10 @@ impl SettingsPage {
             sel_surface: SelectState::default(),
             sel_effect: SelectState::default(),
             sel_reduce: SelectState::default(),
+            sel_theme_light: SelectState::default(),
+            sel_theme_dark: SelectState::default(),
+            theme_import: None,
+            importing_theme: false,
             sel_ui_size: SelectState::default(),
             sel_code_size: SelectState::default(),
             sel_term_size: SelectState::default(),
@@ -546,6 +568,49 @@ impl SettingsPage {
             let Ok(Ok(Some(paths))) = pick.await else { return };
             let Some(path) = paths.into_iter().next() else { return };
             let _ = this.update(cx, |s, cx| s.set("wallpaper_path", &path.to_string_lossy(), cx));
+        })
+        .detach();
+    }
+
+    /// Pick a VS Code theme JSON, import it (off the UI thread), save it
+    /// under DOVE_HOME and switch the matching appearance to it.
+    fn import_theme(&mut self, cx: &mut Context<Self>) {
+        if self.importing_theme {
+            return;
+        }
+        let pick = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Import VS Code theme".into()),
+        });
+        let root = self.engine.store.root().to_path_buf();
+        cx.spawn(async move |this, cx| {
+            let Ok(Ok(Some(paths))) = pick.await else { return };
+            let Some(path) = paths.into_iter().next() else { return };
+            if this
+                .update(cx, |s, cx| {
+                    s.importing_theme = true;
+                    cx.notify();
+                })
+                .is_err()
+            {
+                return;
+            }
+            let result = cx.background_spawn(async move { crate::themes::import_vscode(&path, &root) }).await;
+            let _ = this.update(cx, |s, cx| {
+                s.importing_theme = false;
+                match result {
+                    Ok(palette) => {
+                        s.theme_import = Some(Ok(palette.name.clone().into()));
+                        s.set(crate::themes::key_for(palette.appearance()), &palette.id, cx);
+                    }
+                    Err(e) => {
+                        s.theme_import = Some(Err(format!("{e:#}").into()));
+                        cx.notify();
+                    }
+                }
+            });
         })
         .detach();
     }
@@ -1191,17 +1256,60 @@ impl SettingsPage {
                 .on_click(cx.listener(move |this, _, _, cx| this.set("appearance", id, cx)))
         }));
 
-        let swatches =
-            div().flex().flex_wrap().items_center().gap(px(6.0)).children(Accent::ALL.into_iter().map(|a| {
+        // While a library theme is active its own accent is a choice too
+        // (and the default when no accent was picked).
+        let theme_accent = t.themed.as_ref().map(|applied| applied.palette.accent.hsla());
+        let follows_theme = t.themed.as_ref().is_some_and(|applied| applied.theme_accent);
+        let swatches = div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(px(6.0))
+            .children(theme_accent.map(|color| {
+                ctl::swatch(t, "accent-theme", color, follows_theme, "Theme default")
+                    .tooltip(ui::tip("Theme default"))
+                    .on_click(cx.listener(|this, _, _, cx| this.set("accent", crate::themes::THEME_ACCENT, cx)))
+            }))
+            .children(Accent::ALL.into_iter().map(|a| {
                 let color = Theme::new(t.appearance, a, Surface::Normal).accent;
-                ctl::swatch(t, format!("accent-{}", a.id()), color, a == accent, a.label())
+                ctl::swatch(t, format!("accent-{}", a.id()), color, !follows_theme && a == accent, a.label())
                     .tooltip(ui::tip(a.label()))
                     .on_click(cx.listener(move |this, _, _, cx| this.set("accent", a.id(), cx)))
             }));
-        let scheme =
-            page::card(t).child(div().relative().p(px(space::LG)).child(cards).child(self.anchor("appearance"))).child(
-                self.srow(t, false, "accent", "Accent color", "Buttons, focus rings, selections and badges.", swatches),
-            );
+        // Light and dark themes: Dove's look, Zeron's library, imports.
+        let light_select = self.theme_select(Appearance::Light, |s| &mut s.sel_theme_light, &self.sel_theme_light, cx);
+        let dark_select = self.theme_select(Appearance::Dark, |s| &mut s.sel_theme_dark, &self.sel_theme_dark, cx);
+        let import_note: SharedString = if self.importing_theme {
+            "Importing…".into()
+        } else {
+            match &self.theme_import {
+                Some(Ok(name)) => format!("Imported “{name}” and switched to it.").into(),
+                Some(Err(e)) => format!("Could not import: {e}").into(),
+                None => "A color theme JSON from a VS Code extension, saved in Dove's data folder.".into(),
+            }
+        };
+        let import_button = ctl::button_sm(t, "theme-import", "Import…", Tone::Filled)
+            .on_click(cx.listener(|this, _, _, cx| this.import_theme(cx)));
+        let scheme = page::card(t)
+            .child(div().relative().p(px(space::LG)).child(cards).child(self.anchor("appearance")))
+            .child(self.srow(
+                t,
+                false,
+                "theme_light",
+                "Light theme",
+                "Used when the color scheme is light.",
+                light_select,
+            ))
+            .child(self.srow(t, false, "theme_dark", "Dark theme", "Used when the color scheme is dark.", dark_select))
+            .child(self.srow(t, false, "theme_import", "Import VS Code theme", import_note, import_button))
+            .child(self.srow(
+                t,
+                false,
+                "accent",
+                "Accent color",
+                "Buttons, focus rings, selections and badges.",
+                swatches,
+            ));
 
         let surface_select = ctl::select::<Self>("set-surface", "Window material", |s| &mut s.sel_surface)
             .options(
@@ -1475,6 +1583,47 @@ impl SettingsPage {
             .child(page::section(t, "Motion", motion_card))
             .child(page::section(t, "Fonts and layout", fonts))
             .into_any_element()
+    }
+
+    /// The theme picker for one appearance: Dove's look first, then the
+    /// built-ins, then imports, each with its accent as a swatch.
+    fn theme_select(
+        &self,
+        appearance: Appearance,
+        reach: fn(&mut Self) -> &mut SelectState,
+        state: &SelectState,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let key = crate::themes::key_for(appearance);
+        let choices = crate::themes::choices(appearance);
+        let current = self.get(key);
+        let selected = current.and_then(|id| choices.iter().position(|c| c.id == id)).unwrap_or(0);
+        let ids: Vec<String> = choices.iter().map(|c| c.id.clone()).collect();
+        let dove_accent = Theme::new(appearance, Accent::default(), Surface::Normal).accent;
+        let label = if appearance.is_dark() { "Dark theme" } else { "Light theme" };
+        let t = Theme::of(cx).clone();
+        ctl::select::<Self>(format!("set-{key}"), label, reach)
+            .options(
+                choices.iter().map(|c| {
+                    let o = SelectOption::new(c.name.clone()).swatch(c.accent.map_or(dove_accent, |a| a.hsla()));
+                    if c.imported {
+                        o.detail("Imported")
+                    } else if c.id == crate::themes::DOVE_ID {
+                        o.detail("Default")
+                    } else {
+                        o
+                    }
+                }),
+                selected,
+            )
+            .width(190.0)
+            .menu_width(260.0)
+            .on_select(move |this, i, _, cx| {
+                if let Some(id) = ids.get(i) {
+                    this.set(key, id, cx);
+                }
+            })
+            .render(&t, state, cx)
     }
 
     fn notifications(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
