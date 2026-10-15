@@ -512,26 +512,47 @@ impl Render for PullRequestsPage {
             .child(
                 div()
                     .w_full()
-                    .max_w(px(860.0))
-                    .px(px(24.0))
-                    .pt(px(28.0))
-                    .pb(px(40.0))
+                    .max_w(px(980.0))
+                    .px(px(32.0))
+                    .pt(px(30.0))
+                    .pb(px(56.0))
                     .flex()
                     .flex_col()
-                    .gap(px(16.0))
+                    .gap(px(18.0))
                     .child(
                         div()
                             .flex()
-                            .items_center()
+                            .items_start()
                             .gap(px(8.0))
                             .child(
                                 div()
-                                    .text_size(px(24.0))
-                                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                                    .child("Pull requests"),
+                                    .flex_1()
+                                    .min_w_0()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(4.0))
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .items_baseline()
+                                            .gap(px(8.0))
+                                            .child(
+                                                div()
+                                                    .text_size(px(22.0))
+                                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                                    .child("Pull requests"),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_size(px(14.0))
+                                                    .text_color(t.text_faint)
+                                                    .child(self.count().to_string()),
+                                            ),
+                                    )
+                                    .child(div().text_size(px(13.0)).text_color(t.text_faint).child(
+                                        "Open pull requests on GitHub. Check one out into a thread to review or finish it.",
+                                    )),
                             )
-                            .child(div().text_size(px(15.0)).text_color(t.text_faint).child(self.count().to_string()))
-                            .child(div().flex_1())
                             .child(ui::icon_button("pr-refresh", icons::REFRESH, "Refresh", &t, {
                                 let weak = cx.weak_entity();
                                 move |_, _, cx| {

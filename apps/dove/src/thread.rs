@@ -70,6 +70,7 @@ pub enum TaskViewEventKind {
     ShowChanges,
     Title(String),
     DriveBrowser(crate::browser::Drive),
+    OpenCanvas(crate::canvas::Spec, bool),
 }
 
 pub struct ThreadView {
@@ -119,6 +120,7 @@ impl ThreadView {
                 TaskViewEvent::ShowChanges => TaskViewEventKind::ShowChanges,
                 TaskViewEvent::Title(t) => TaskViewEventKind::Title(t.clone()),
                 TaskViewEvent::DriveBrowser(d) => TaskViewEventKind::DriveBrowser(d.clone()),
+                TaskViewEvent::OpenCanvas(s, reveal) => TaskViewEventKind::OpenCanvas(s.clone(), *reveal),
                 TaskViewEvent::SwitchToChat => {
                     this.request(ViewMode::Chat, window, cx);
                     return;
@@ -166,7 +168,7 @@ impl ThreadView {
         (v.task.clone(), v.project.clone())
     }
 
-    /// Ctrl+` or the top-bar switch.
+    /// Ctrl+` or the view switch in the thread.
     pub fn toggle(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let next = if self.view == ViewMode::Chat { ViewMode::Terminal } else { ViewMode::Chat };
         self.request(next, window, cx);
@@ -517,6 +519,60 @@ impl ThreadView {
         )
     }
 
+    /// Chat | Terminal, a two-icon segment. The shell renders it in the
+    /// title bar's thread capsule, so it sits in one spot in both views and
+    /// never covers the transcript. Ctrl+` still flips it.
+    pub fn view_switch(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let mode = self.view;
+        let armed = self.armed.is_some();
+        let item =
+            |id: &'static str, glyph: &'static str, label: &'static str, want: ViewMode, cx: &mut Context<Self>| {
+                let on = mode == want;
+                div()
+                    .id(id)
+                    .relative()
+                    .h(px(22.0))
+                    .w(px(26.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(6.0))
+                    .cursor_pointer()
+                    .role(gpui::Role::Tab)
+                    .aria_selected(on)
+                    .aria_label(label)
+                    .tooltip(ui::tip(label))
+                    .when(on, |d| {
+                        d.bg(t.wash(0.10)).shadow(vec![gpui::BoxShadow {
+                            color: gpui::hsla(0.0, 0.0, 1.0, if t.appearance.is_dark() { 0.07 } else { 0.6 }),
+                            offset: gpui::point(px(0.0), px(1.0)),
+                            blur_radius: px(0.0),
+                            spread_radius: px(0.0),
+                            inset: true,
+                        }])
+                    })
+                    .when(!on, |d| d.hover(|s| s.bg(t.wash(0.06))))
+                    .child(icon(glyph).size(px(13.5)).text_color(if on { t.text } else { t.text_faint }))
+                    .when(armed && want == ViewMode::Terminal && !on, |d| {
+                        d.child(div().absolute().top(px(3.0)).right(px(3.0)).child(ui::dot(t.warning, 4.0)))
+                    })
+                    .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        cx.stop_propagation();
+                        this.request(want, window, cx);
+                    }))
+            };
+        div()
+            .id("view-switch")
+            .occlude()
+            .flex()
+            .items_center()
+            .gap(px(1.0))
+            .child(item("view-chat", icons::CHAT_ROUND_LINE, "Chat (Ctrl+`)", ViewMode::Chat, cx))
+            .child(item("view-terminal", icons::TERMINAL, "Terminal (Ctrl+`)", ViewMode::Terminal, cx))
+            .into_any_element()
+    }
+
     fn render_terminal(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let Some(term) = &self.terminal else {
             return div()
@@ -532,44 +588,123 @@ impl ThreadView {
                 )
                 .into_any_element();
         };
+        let (task, project) = self.task(cx);
+        let running = term.read(cx).is_running();
+        let cwd = term.read(cx).cwd().to_path_buf();
+        let cwd_for_ext = cwd.clone();
+        let term_copy = term.clone();
+        let term_clear = term.clone();
+        let term_restart = term.clone();
         let voice = self.voice.read(cx);
         let recording = voice.is_recording();
         let busy = voice.is_transcribing();
         let ready = voice.is_ready();
         let (press, release) = (self.voice.clone(), self.voice.clone());
+
         let mic = div()
             .id("term-mic")
-            .absolute()
-            .top(px(10.0))
-            .right(px(14.0))
-            .size(px(30.0))
+            .h(px(24.0))
+            .px(px(8.0))
             .flex()
             .items_center()
-            .justify_center()
-            .rounded_full()
+            .gap(px(5.0))
+            .rounded(px(6.0))
             .border_1()
-            .border_color(t.border)
-            .bg(if recording { t.danger.opacity(0.18) } else { t.surface_raised })
+            .border_color(if recording { t.danger.opacity(0.5) } else { t.border })
+            .bg(if recording { t.danger.opacity(0.16) } else { t.wash(0.05) })
             .cursor_pointer()
+            .text_size(px(11.5))
+            .text_color(if recording { t.danger } else { t.text_muted })
             .tooltip(ui::tip(if ready {
-                "Dictate into the terminal (hold, or click to toggle)"
+                "Hold or click to dictate into the terminal"
             } else {
                 "Install local voice in Settings › Voice"
             }))
             .child(if busy {
-                kit::spinner("term-mic-busy", 14.0, t.text_muted).into_any_element()
+                kit::spinner("term-mic-busy", 12.0, t.text_muted).into_any_element()
             } else {
                 icon(icons::MICROPHONE)
-                    .size(px(15.0))
+                    .size(px(12.5))
                     .text_color(if recording { t.danger } else { t.text_muted })
                     .into_any_element()
             })
+            .child(if recording { "Listening…" } else { "Voice" })
             .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                 cx.stop_propagation();
                 press.update(cx, |v, cx| v.press(cx));
             })
             .on_mouse_up(MouseButton::Left, move |_, _, cx| release.update(cx, |v, cx| v.release(cx)));
-        div().relative().size_full().child(term.clone()).child(mic).into_any_element()
+
+        let header = div()
+            .h(px(34.0))
+            .px(px(12.0))
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(px(8.0))
+            .border_b_1()
+            .border_color(t.border)
+            .bg(t.wash(0.025))
+            .text_size(px(12.0))
+            .child(ui::dot(if running { t.success } else { t.text_faint }, 6.5))
+            .child(icon(ui::harness_icon(task.harness)).size(px(13.0)).text_color(ui::harness_tint(
+                task.harness,
+                t,
+                t.text_muted,
+            )))
+            .child(
+                div()
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(t.text)
+                    .child(format!("{} TUI", task.harness.label())),
+            )
+            .child(div().text_color(t.text_faint).child("·"))
+            .child(div().text_color(t.text_muted).truncate().child(project.name))
+            .when_some(task.branch.clone(), |d, b| {
+                d.child(
+                    div()
+                        .h(px(20.0))
+                        .px(px(6.0))
+                        .flex()
+                        .items_center()
+                        .gap(px(4.0))
+                        .rounded(px(5.0))
+                        .bg(t.wash(0.05))
+                        .font_family(t.font_mono.clone())
+                        .text_size(px(11.0))
+                        .text_color(t.text_muted)
+                        .child(icon(icons::GIT_BRANCH).size(px(10.5)).text_color(t.text_faint))
+                        .child(b),
+                )
+            })
+            .child(div().flex_1())
+            .child(mic)
+            .child(ui::row_button("term-copy", icons::COPY, "Copy selection or screen", t).on_click(move |_, _, cx| {
+                term_copy.update(cx, |v, cx| v.copy_selection_or_screen(cx));
+            }))
+            .child(ui::row_button("term-clear", icons::REFRESH, "Clear screen", t).on_click(move |_, _, cx| {
+                term_clear.update(cx, |v, cx| v.clear(cx));
+            }))
+            .when(!running, |d| {
+                d.child(ui::button_ghost("term-restart", "Restart", t).h(px(24.0)).text_size(px(11.5)).on_click(
+                    move |_, _, cx| {
+                        term_restart.update(cx, |v, cx| v.restart(cx));
+                    },
+                ))
+            })
+            .child(
+                ui::row_button("term-ext", icons::ARROW_UP_RIGHT, "Open in system terminal", t)
+                    .on_click(move |_, _, _| crate::terminal::open_system_terminal(&cwd_for_ext)),
+            );
+
+        div()
+            .relative()
+            .size_full()
+            .flex()
+            .flex_col()
+            .child(header)
+            .child(div().flex_1().min_h_0().child(term.clone()))
+            .into_any_element()
     }
 }
 
@@ -577,7 +712,9 @@ impl Render for ThreadView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = Theme::of(cx).clone();
         let body: AnyElement = match self.view {
-            ViewMode::Chat => self.chat.clone().into_any_element(),
+            // The switch lives in the title bar, so the transcript gets the
+            // whole card.
+            ViewMode::Chat => div().size_full().child(self.chat.clone()).into_any_element(),
             ViewMode::Terminal => self.render_terminal(&t, cx),
         };
         let note = self.note.clone().or(self.busy.map(SharedString::from));

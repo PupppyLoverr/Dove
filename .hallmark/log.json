@@ -1,0 +1,34 @@
+[
+  {
+    "ts": "2026-10-14T21:30:00Z",
+    "verb": "redesign",
+    "genre": "atmospheric-workbench",
+    "macro": "05-workbench",
+    "theme": "lumen",
+    "drop": "night-day",
+    "paperBand": "dark",
+    "displayStyle": "classical-serif-roman",
+    "accentHue": 55,
+    "enrichment": "interactive-workbench-cmdk",
+    "nav": "N5",
+    "footer": "Ft5",
+    "components": [
+      "H2",
+      "F2",
+      "F3",
+      "F4",
+      "F5",
+      "T2",
+      "T4",
+      "C1"
+    ],
+    "critique": {
+      "P": 5,
+      "H": 5,
+      "E": 5,
+      "S": 5,
+      "R": 5,
+      "V": 5
+    }
+  }
+]

@@ -1,11 +1,17 @@
 //! Embedded icons and fonts, served to GPUI.
 //!
-//! Icons are Solar Icons (Linear, CC BY 4.0, 480 Design) and agent brand
-//! marks, adopted from Zeron's icon set. GPUI tints SVGs with the text color.
+//! The control set is Zeron's: Solar Icons (Linear, CC BY 4.0, 480 Design)
+//! plus the hand-drawn glyphs Zeron uses for the terminal, git family, and
+//! window chrome. They are served as drawn — stroke, fill, and viewBox stay
+//! in the file. Agent brand marks keep their own art. GPUI tints `currentColor`
+//! with the element's text color.
 
 use std::borrow::Cow;
 
-use gpui::{App, AssetSource, Result, SharedString, Styled as _, Svg, px, svg};
+use gpui::{
+    App, AssetSource, InteractiveElement, Interactivity, IntoElement, Result, SharedString, StyleRefinement, Styled,
+    Svg, Transformation, px, svg,
+};
 
 /// Every embedded icon has a constant, used or not.
 #[allow(dead_code)]
@@ -17,11 +23,18 @@ pub struct Assets;
 
 impl AssetSource for Assets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
-        Ok(icons::icon_bytes(path).map(Cow::Borrowed))
+        match icons::icon_bytes(path) {
+            Some(bytes) => Ok(Some(Cow::Borrowed(bytes))),
+            // Zeron's file-type icons (`file-icons/...`).
+            None => crate::file_icons::Assets.load(path),
+        }
     }
 
     fn list(&self, path: &str) -> Result<Vec<SharedString>> {
-        Ok(icons::ALL_ICONS.iter().filter(|p| p.starts_with(path)).map(|p| SharedString::from(*p)).collect())
+        let mut all: Vec<SharedString> =
+            icons::ALL_ICONS.iter().filter(|p| p.starts_with(path)).map(|p| SharedString::from(*p)).collect();
+        all.extend(crate::file_icons::Assets.list(path)?);
+        Ok(all)
     }
 }
 
@@ -37,9 +50,42 @@ pub fn set_icon_color(color: gpui::Hsla) {
 }
 
 /// An icon at the default 16px. Chain `.size()` / `.text_color()` to adjust.
-pub fn icon(path: &'static str) -> Svg {
+pub fn icon(path: &'static str) -> Icon {
     let color = ICON_COLOR.read().map(|c| *c).unwrap_or(gpui::Hsla { h: 0.0, s: 0.0, l: 0.6, a: 1.0 });
-    svg().path(path).size(px(16.0)).flex_none().text_color(color)
+    Icon { path, svg: svg().size(px(16.0)).flex_none().text_color(color) }
+}
+
+/// An embedded icon. Size and color are on the element; the SVG is served as drawn.
+pub struct Icon {
+    path: &'static str,
+    svg: Svg,
+}
+
+impl Icon {
+    pub fn with_transformation(mut self, transformation: Transformation) -> Self {
+        self.svg = self.svg.with_transformation(transformation);
+        self
+    }
+}
+
+impl Styled for Icon {
+    fn style(&mut self) -> &mut StyleRefinement {
+        self.svg.style()
+    }
+}
+
+impl InteractiveElement for Icon {
+    fn interactivity(&mut self) -> &mut Interactivity {
+        self.svg.interactivity()
+    }
+}
+
+impl IntoElement for Icon {
+    type Element = Svg;
+
+    fn into_element(self) -> Svg {
+        self.svg.path(self.path)
+    }
 }
 
 const FONTS: &[&[u8]] = &[

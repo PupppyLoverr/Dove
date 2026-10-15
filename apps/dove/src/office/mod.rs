@@ -35,6 +35,36 @@ impl Kind {
         }
     }
 
+    /// What the header calls it.
+    pub fn label(self) -> &'static str {
+        match self {
+            Kind::Docx => "Document",
+            Kind::Xlsx => "Spreadsheet",
+            Kind::Pptx => "Presentation",
+            Kind::Pdf => "PDF",
+        }
+    }
+
+    /// The badge on the document's tile.
+    pub fn short(self) -> &'static str {
+        match self {
+            Kind::Docx => "W",
+            Kind::Xlsx => "X",
+            Kind::Pptx => "P",
+            Kind::Pdf => "PDF",
+        }
+    }
+
+    /// The tile's hue: the colors people already know these files by.
+    pub fn hue(self) -> f32 {
+        match self {
+            Kind::Docx => 0.60,
+            Kind::Xlsx => 0.40,
+            Kind::Pptx => 0.05,
+            Kind::Pdf => 0.0,
+        }
+    }
+
     /// The matching skill in `skills/`.
     pub fn skill(self) -> &'static str {
         match self {
@@ -51,6 +81,19 @@ pub enum Document {
     Xlsx(xlsx::Book),
     Pptx(pptx::Deck),
     Pdf(pdf::Pdf),
+}
+
+impl Document {
+    /// "12 paragraphs", "8 slides", "3 sheets", "14 pages".
+    pub fn summary(&self) -> String {
+        let n = |count: usize, one: &str, many: &str| format!("{count} {}", if count == 1 { one } else { many });
+        match self {
+            Document::Docx(d) => n(d.paras.len(), "paragraph", "paragraphs"),
+            Document::Xlsx(b) => n(b.sheets.len(), "sheet", "sheets"),
+            Document::Pptx(d) => n(d.slides.len(), "slide", "slides"),
+            Document::Pdf(p) => n(p.page_count, "page", "pages"),
+        }
+    }
 }
 
 pub fn load(path: &Path, kind: Kind) -> Result<Document, String> {

@@ -14,7 +14,7 @@ use gpui::{
 };
 use gpui_base::input::{Input, Textarea};
 
-use super::page;
+use super::page_with;
 use crate::assets::{icon, icons};
 use crate::kit;
 use crate::shell::Shell;
@@ -41,6 +41,16 @@ impl Column {
             Column::NeedsYou => "Needs you",
             Column::Review => "Review",
             Column::Done => "Done",
+        }
+    }
+
+    fn color(self, t: &Theme) -> gpui::Hsla {
+        match self {
+            Column::Draft => t.text_faint,
+            Column::InProgress => t.busy,
+            Column::NeedsYou => t.warning,
+            Column::Review => t.accent,
+            Column::Done => t.success,
         }
     }
 }
@@ -147,22 +157,31 @@ impl Shell {
             cx.notify();
             return;
         };
-        let harness = self.composer.read(cx).harness(cx);
+        let persona = self.pages.draft_persona.clone().and_then(|id| self.persona(&id).cloned());
+        let harness = persona.as_ref().map(|p| p.harness).unwrap_or_else(|| self.composer.read(cx).harness(cx));
         let title = if title.is_empty() { ui::title_from_prompt(&prompt) } else { title };
         match self.pages.editing_draft.take() {
             Some(id) => {
                 if let Some(mut t) = self.task(id).cloned() {
                     t.title = title;
                     t.prompt = Some(prompt);
+                    if let Some(p) = &persona {
+                        t.harness = p.harness;
+                        let _ = self.engine.store.assign_persona(id, &p.id);
+                    }
                     let _ = self.engine.store.update_task(&t);
                 }
             }
-            None => {
-                if let Err(e) = self.engine.create_draft(&project, &title, &prompt, harness) {
-                    self.pages.kanban_note = Some(format!("{e:#}"));
+            None => match self.engine.create_draft(&project, &title, &prompt, harness) {
+                Ok(task) => {
+                    if let Some(p) = &persona {
+                        let _ = self.engine.store.assign_persona(task.id, &p.id);
+                    }
                 }
-            }
+                Err(e) => self.pages.kanban_note = Some(format!("{e:#}")),
+            },
         }
+        self.pages.draft_persona = None;
         self.pages.adding_draft = false;
         self.pages.draft_title.update(cx, |s, cx| s.set_value("", window, cx));
         self.pages.draft_prompt.update(cx, |s, cx| s.set_value("", window, cx));
@@ -171,6 +190,7 @@ impl Shell {
 
     fn edit_draft(&mut self, id: TaskId, window: &mut Window, cx: &mut Context<Self>) {
         let Some(t) = self.task(id).cloned() else { return };
+        self.pages.draft_persona = self.persona_of.get(&id).cloned();
         self.pages.editing_draft = Some(id);
         self.pages.adding_draft = true;
         self.pages.draft_title.update(cx, |s, cx| s.set_value(t.title.clone(), window, cx));
@@ -235,6 +255,7 @@ impl Shell {
                         task.unread,
                         t,
                     )))
+                    .children(self.persona_for(id).map(|p| crate::team::avatar(p, 16.0, t).mt(px(1.0))))
                     .child(div().flex_1().min_w_0().text_size(px(13.0)).line_clamp(2).child(task.title.clone()))
                     .child(icon(ui::harness_icon(task.harness)).size(px(13.0)).text_color(ui::harness_tint(
                         task.harness,
@@ -331,6 +352,7 @@ impl Shell {
                 .flex()
                 .items_center()
                 .gap(px(8.0))
+                .child(ui::dot(col.color(&t), 7.0))
                 .child(div().text_size(px(13.0)).font_weight(gpui::FontWeight::MEDIUM).child(col.label()))
                 .child(div().text_size(px(12.0)).text_color(t.text_faint).child(cards.len().to_string()))
                 .child(div().flex_1())
@@ -375,6 +397,41 @@ impl Shell {
                             .text_size(px(13.0))
                             .child(Textarea::new(&self.pages.draft_prompt)),
                     )
+                    .when(!self.personas.is_empty(), |d| {
+                        let current = self.pages.draft_persona.clone();
+                        d.child(
+                            div()
+                                .flex()
+                                .flex_wrap()
+                                .items_center()
+                                .gap(px(4.0))
+                                .child(div().text_size(px(11.5)).text_color(t.text_faint).mr(px(2.0)).child("Run as"))
+                                .child(
+                                    ui::chip("draft-as-anyone", &t)
+                                        .h(px(24.0))
+                                        .when(current.is_none(), |c| c.border_color(t.accent).text_color(t.text))
+                                        .child("Anyone")
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.pages.draft_persona = None;
+                                            cx.notify();
+                                        })),
+                                )
+                                .children(self.personas.iter().map(|p| {
+                                    let on = current.as_deref() == Some(p.id.as_str());
+                                    let pid = p.id.clone();
+                                    ui::chip(SharedString::from(format!("draft-as-{}", p.id)), &t)
+                                        .h(px(24.0))
+                                        .pl(px(4.0))
+                                        .when(on, |c| c.border_color(t.accent).text_color(t.text))
+                                        .child(crate::team::avatar(p, 16.0, &t))
+                                        .child(p.name.clone())
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.pages.draft_persona = Some(pid.clone());
+                                            cx.notify();
+                                        }))
+                                })),
+                        )
+                    })
                     .child(
                         div()
                             .flex()
@@ -484,9 +541,7 @@ impl Shell {
             cx.listener(|this, _, _, cx| this.load_kanban_meta(cx)),
         )
         .into_any_element();
-        page(
-            "kanban-page",
-            "Kanban",
+        page_with("kanban-page", "Kanban", "Drafts, work in flight and what is ready for review, across every project.",
             &t,
             Some(refresh),
             div()

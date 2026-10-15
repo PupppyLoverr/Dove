@@ -1,0 +1,11 @@
+[package]
+name = "zeron-markdown"
+version = "0.2.112"
+edition = "2024"
+license = "MIT"
+publish = false
+
+# Block-level markdown model + append-incremental reparse ("streamdown"),
+# from Zeron's `crates/markdown`. UI-free.
+[dependencies]
+pulldown-cmark = { version = "0.13", default-features = false }

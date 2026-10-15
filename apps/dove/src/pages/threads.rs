@@ -10,7 +10,7 @@ use gpui::{
 };
 use gpui_base::input::Input;
 
-use super::{ThreadSort, page};
+use super::{ThreadSort, page_with};
 use crate::assets::{icon, icons};
 use crate::kit;
 use crate::shell::Shell;
@@ -358,11 +358,13 @@ impl Shell {
                             cx.notify();
                         }),
                     ))
-                    .child(icon(ui::harness_icon(task.harness)).size(px(15.0)).text_color(ui::harness_tint(
-                        task.harness,
-                        &t,
-                        t.text_muted,
-                    )))
+                    .child(match self.persona_for(id) {
+                        Some(p) => crate::team::avatar(p, 16.0, &t).into_any_element(),
+                        None => icon(ui::harness_icon(task.harness))
+                            .size(px(15.0))
+                            .text_color(ui::harness_tint(task.harness, &t, t.text_muted))
+                            .into_any_element(),
+                    })
                     .child(
                         div()
                             .flex_1()
@@ -417,16 +419,19 @@ impl Shell {
                     )
             }));
 
-        let count = div()
-            .text_size(px(14.0))
-            .text_color(t.text_faint)
-            .child(format!("{} threads", threads.len()))
+        let right = div()
+            .flex()
+            .items_center()
+            .gap(px(10.0))
+            .child(div().text_size(px(13.0)).text_color(t.text_faint).child(format!("{} threads", threads.len())))
+            .child(
+                ui::button_primary("threads-new", "New thread", &t)
+                    .on_click(cx.listener(|this, _, window, cx| this.new_session(window, cx))),
+            )
             .into_any_element();
-        page(
-            "threads-page",
-            "Threads",
+        page_with("threads-page", "Threads", "Every conversation, filterable by project, agent and status.",
             &t,
-            Some(count),
+            Some(right),
             div().flex().flex_col().gap(px(12.0)).child(toolbar).children(bulk_bar).child(rows),
         )
     }

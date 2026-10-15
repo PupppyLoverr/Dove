@@ -50,3 +50,13 @@ Dove additions to the other vendored crates:
   user unless the permission level answers), honours `dove.permissionMode` and
   `dove.addDirs` model options; Codex emits `account/rateLimits/updated`; ACP
   tool permissions go through the bridge too.
+
+## zeron-markdown
+
+From `zeronsh/zeron` (MIT, Copyright (c) 2026 Wing), `crates/markdown` at workspace
+version 0.2.112: the block tree, the append-incremental parser and the `mend` pass
+for half-streamed inline markers. Dove renders tool-call thoughts through it
+exactly as Zeron does (`apps/dove/src/tool_calls.rs`).
+
+Dove change: the manifest names concrete versions, and `pulldown-cmark` is 0.13
+(the version the rest of Dove links) rather than Zeron's 0.12. Source unchanged.

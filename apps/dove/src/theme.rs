@@ -60,13 +60,55 @@ impl Accent {
     }
 }
 
+/// The material the chrome and floating surfaces (the composer above all)
+/// are made of. Glass is Zeron's frosted recipe: a faint tint over a scene
+/// blur, so what is behind stays legible as shapes. Acrylic is the denser
+/// material: more tint, a wider blur, a calmer read. Normal is opaque.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Surface {
+    #[default]
+    Glass,
+    Acrylic,
+    Normal,
+}
+
+impl Surface {
+    pub const ALL: [Surface; 3] = [Self::Glass, Self::Acrylic, Self::Normal];
+
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Glass => "glass",
+            Self::Acrylic => "acrylic",
+            Self::Normal => "normal",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Glass => "Glass",
+            Self::Acrylic => "Acrylic",
+            Self::Normal => "Normal",
+        }
+    }
+
+    /// `surface` wins; before it existed the only choice was the `frosted`
+    /// switch, whose "off" was the opaque look.
+    pub fn from_settings(surface: Option<&str>, legacy_frosted: Option<&str>) -> Self {
+        match surface {
+            Some(id) => Self::ALL.into_iter().find(|s| s.id() == id).unwrap_or_default(),
+            None if legacy_frosted == Some("false") => Self::Normal,
+            None => Self::default(),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 #[allow(dead_code)] // a token set: not every token is used yet
 pub struct Theme {
     pub appearance: Appearance,
     pub accent_choice: Accent,
-    /// Paint translucent chrome over the blurred desktop.
-    pub frosted: bool,
+    /// What the chrome is made of: glass, acrylic or opaque.
+    pub surface_style: Surface,
 
     pub bg: Hsla,
     pub surface: Hsla,
@@ -130,22 +172,25 @@ impl Theme {
     pub const TITLEBAR_TOP_PAD: f32 = 4.0;
     pub const BUBBLE_RADIUS: f32 = 18.0;
     pub const COMPOSER_RADIUS: f32 = 20.0;
-    /// Frost tint coverage over the blurred window. Linux compositors do not
-    /// all blur, so it stays opaque there.
+    /// Frost tint coverage over the blurred window: Zeron's 0.80, matched by
+    /// eye to a vibrancy material. Linux compositors do not all blur, so it
+    /// stays opaque there.
     pub const GLASS_ALPHA: f32 = if cfg!(any(target_os = "macos", target_os = "windows")) { 0.80 } else { 1.0 };
+    /// Acrylic is the denser material: the desktop reads as colour, not shapes.
+    pub const ACRYLIC_ALPHA: f32 = if cfg!(any(target_os = "macos", target_os = "windows")) { 0.90 } else { 1.0 };
 
     pub fn of(cx: &App) -> &Theme {
         cx.global::<Theme>()
     }
 
-    pub fn new(appearance: Appearance, accent_choice: Accent, frosted: bool) -> Self {
+    pub fn new(appearance: Appearance, accent_choice: Accent, surface_style: Surface) -> Self {
         let (primary, strong) = accent_choice.pair(appearance);
         let dark = appearance.is_dark();
         if dark {
             Self {
                 appearance,
                 accent_choice,
-                frosted,
+                surface_style,
                 bg: grey(6),
                 surface: grey(13),
                 surface_raised: neutral(0.235),
@@ -184,7 +229,7 @@ impl Theme {
             Self {
                 appearance,
                 accent_choice,
-                frosted,
+                surface_style,
                 bg: grey(0xff),
                 surface: neutral(0.968),
                 surface_raised: neutral(0.940),
@@ -224,28 +269,173 @@ impl Theme {
 
     /// The shell tint painted over the blurred window background.
     pub fn glass(&self) -> Hsla {
-        if self.frosted { self.surface.opacity(Self::GLASS_ALPHA) } else { self.surface }
+        match self.surface_style {
+            Surface::Glass => self.surface.opacity(Self::GLASS_ALPHA),
+            Surface::Acrylic => self.surface.opacity(Self::ACRYLIC_ALPHA),
+            Surface::Normal => self.surface,
+        }
     }
 
     pub fn is_frost(&self) -> bool {
         self.glass().a < 1.0
     }
 
+    /// The composer's fill. Glass is Zeron's dark frosted tint: a 15% plate
+    /// solved so the bar lands on the content plane's tone, leaving the blur
+    /// to do the work. Acrylic is a matte tint that hides shapes behind it.
+    /// Normal is an opaque plate one step above the page.
+    pub fn composer_bg(&self) -> Hsla {
+        let dark = self.appearance.is_dark();
+        match (self.surface_style, dark) {
+            _ if !self.is_frost() => {
+                if dark {
+                    grey(0x12)
+                } else {
+                    self.bg
+                }
+            }
+            (Surface::Acrylic, true) => grey(0x14).opacity(0.62),
+            (Surface::Acrylic, false) => self.bg.opacity(0.70),
+            (_, true) => self.composer_glass_tint(),
+            (_, false) => self.bg.opacity(0.35),
+        }
+    }
+
+    /// The new-thread bar sits on artwork rather than the page, so it needs
+    /// more body than the thread pill while keeping the material's character.
+    pub fn composer_hero_bg(&self) -> Hsla {
+        let dark = self.appearance.is_dark();
+        match (self.surface_style, dark) {
+            _ if !self.is_frost() => {
+                if dark {
+                    grey(0x12)
+                } else {
+                    self.bg
+                }
+            }
+            (Surface::Acrylic, true) => self.surface_overlay.opacity(0.74),
+            (Surface::Acrylic, false) => self.bg.opacity(0.84),
+            (_, true) => self.surface_overlay.opacity(0.52),
+            (_, false) => self.bg.opacity(0.66),
+        }
+    }
+
+    /// Zeron's `composer_sidebar_tint`: the colour that, laid at 15% over the
+    /// window glass, reproduces the content plane, so a frosted bar reads as
+    /// the same material as the page around it.
+    fn composer_glass_tint(&self) -> Hsla {
+        let canvas = flatten(self.glass(), self.bg);
+        let target = flatten(self.panel_bg(), canvas);
+        let (canvas, target) = (hsl_to_rgb(canvas.h, canvas.s, canvas.l), hsl_to_rgb(target.h, target.s, target.l));
+        let mut alpha: f32 = 0.60;
+        for (base, desired) in canvas.into_iter().zip(target) {
+            let needed = if desired > base {
+                (desired - base) / (1.0 - base).max(f32::EPSILON)
+            } else {
+                (base - desired) / base.max(f32::EPSILON)
+            };
+            alpha = alpha.max(needed);
+        }
+        let rgb: [f32; 3] =
+            std::array::from_fn(|i| ((target[i] - canvas[i] * (1.0 - alpha)) / alpha).clamp(0.0, 1.0));
+        let (h, s, l) = rgb_to_hsl(rgb[0], rgb[1], rgb[2]);
+        hsla(h, s, l, 0.15)
+    }
+
+    /// Backdrop blur behind the composer; zero when it is opaque. Acrylic
+    /// blurs wider, so what is behind reads as colour rather than shapes.
+    pub fn composer_blur(&self) -> f32 {
+        match self.surface_style {
+            _ if !self.is_frost() => 0.0,
+            Surface::Acrylic => 30.0,
+            _ => 16.0,
+        }
+    }
+
+    /// The composer's edge: Zeron's translucent cool silver on glass, a
+    /// softer neutral rim on acrylic, the theme's strong border when opaque.
+    pub fn composer_border(&self) -> Hsla {
+        if !self.is_frost() {
+            return self.border_strong;
+        }
+        match (self.surface_style, self.appearance) {
+            (Surface::Glass, Appearance::Dark) => hsla(210.0 / 360.0, 0.18, 0.78, 0.11),
+            (Surface::Glass, Appearance::Light) => hsla(210.0 / 360.0, 0.18, 0.32, 0.12),
+            (_, Appearance::Dark) => hsla(0.0, 0.0, 1.0, 0.08),
+            (_, Appearance::Light) => hsla(0.0, 0.0, 0.0, 0.09),
+        }
+    }
+
+    /// Light and depth for the composer. Glass is lit from above (a specular
+    /// top edge and a faint bottom glint, like Zeron's glass plates); acrylic
+    /// is matte with a soft inner glow; the opaque plate floats on a shadow.
+    pub fn composer_shadows(&self, focused: bool) -> Vec<gpui::BoxShadow> {
+        let dark = self.appearance.is_dark();
+        let white = |a: f32| hsla(0.0, 0.0, 1.0, a);
+        let black = |a: f32| hsla(0.0, 0.0, 0.0, a);
+        let lift = if focused { 1.0 } else { 0.0 };
+        match self.surface_style {
+            _ if !self.is_frost() => vec![
+                shadow(white(if dark { 0.05 } else { 0.9 }), 1.0, 0.0, 0.0, true),
+                shadow(black(if dark { 0.40 } else { 0.08 } + 0.06 * lift), 10.0, 28.0, -4.0, false),
+                shadow(black(if dark { 0.25 } else { 0.05 }), 1.0, 3.0, 0.0, false),
+            ],
+            Surface::Glass => vec![
+                shadow(white(if dark { 0.10 } else { 0.70 }), 1.0, 0.0, 0.0, true),
+                shadow(white(if dark { 0.03 } else { 0.25 }), -1.0, 0.0, 0.0, true),
+                shadow(white(if dark { 0.02 + 0.02 * lift } else { 0.10 }), 0.0, 18.0, 0.0, true),
+            ],
+            _ => vec![
+                shadow(white(if dark { 0.05 } else { 0.45 }), 1.0, 0.0, 0.0, true),
+                shadow(white(if dark { 0.015 + 0.015 * lift } else { 0.06 }), 0.0, 24.0, 0.0, true),
+            ],
+        }
+    }
+
     pub fn glass_hover(&self) -> Hsla {
         self.element_hover
     }
 
-    /// Popovers and menus over glass.
+    /// Popovers and menus over glass: Zeron's tint, raised only as far as
+    /// menu text needs to stay legible over a bright backdrop. Acrylic menus
+    /// are near-solid.
     pub fn glass_overlay(&self) -> Hsla {
         if !self.is_frost() {
             return self.surface_overlay;
         }
-        if self.appearance.is_dark() { self.surface_overlay.opacity(0.78) } else { self.surface_overlay.opacity(0.72) }
+        let dark = self.appearance.is_dark();
+        match self.surface_style {
+            Surface::Acrylic => self.surface_overlay.opacity(if dark { 0.88 } else { 0.84 }),
+            _ if !dark => self.surface_overlay.opacity(0.62),
+            _ => self.surface_overlay.opacity(self.legible_alpha(self.surface_overlay, 0.66)),
+        }
     }
 
-    /// The content plane; translucent on glass so the frost reads through.
+    /// The content plane; translucent on glass so the frost reads through
+    /// (Zeron's 40%), denser on acrylic, solid when opaque.
     pub fn panel_bg(&self) -> Hsla {
-        if self.is_frost() { self.bg.opacity(0.55) } else { self.bg }
+        match self.surface_style {
+            _ if !self.is_frost() => self.bg,
+            Surface::Acrylic => self.bg.opacity(0.62),
+            _ => self.bg.opacity(0.40),
+        }
+    }
+
+    /// The least coverage of `tint`, from `base` up, at which primary and
+    /// muted text stay legible over the window glass on the worst-case
+    /// desktop (white behind a dark theme, black behind a light one).
+    fn legible_alpha(&self, tint: Hsla, base: f32) -> f32 {
+        let worst = if self.appearance.is_dark() { grey(0xff) } else { grey(0) };
+        let backdrop = flatten(self.glass(), worst);
+        for step in 0..=20 {
+            let alpha = base + (1.0 - base) * step as f32 / 20.0;
+            let plate = flatten(tint.opacity(alpha), backdrop);
+            if contrast(flatten(self.text, plate), plate) >= 4.5 && contrast(flatten(self.text_muted, plate), plate) >= 3.0
+            {
+                return alpha;
+            }
+        }
+        1.0
     }
 
     /// A translucent wash for hover/selection that keeps the glass visible.
@@ -297,6 +487,16 @@ impl Theme {
         } else {
             gpui::WindowBackgroundAppearance::Opaque
         }
+    }
+}
+
+fn shadow(color: Hsla, y: f32, blur: f32, spread: f32, inset: bool) -> gpui::BoxShadow {
+    gpui::BoxShadow {
+        color,
+        offset: gpui::point(gpui::px(0.0), gpui::px(y)),
+        blur_radius: gpui::px(blur),
+        spread_radius: gpui::px(spread),
+        inset,
     }
 }
 
@@ -373,6 +573,47 @@ fn oklch_to_srgb(l: f32, c: f32, h_deg: f32) -> [f32; 3] {
     [gamma_encode(r), gamma_encode(g), gamma_encode(b)]
 }
 
+/// Composite a translucent `fg` over an opaque `bg`: the colour the eye gets.
+pub fn flatten(fg: Hsla, bg: Hsla) -> Hsla {
+    let a = fg.a.clamp(0.0, 1.0);
+    let [fr, fg_, fb] = hsl_to_rgb(fg.h, fg.s, fg.l);
+    let [br, bg_, bb] = hsl_to_rgb(bg.h, bg.s, bg.l);
+    let (h, s, l) = rgb_to_hsl(fr * a + br * (1.0 - a), fg_ * a + bg_ * (1.0 - a), fb * a + bb * (1.0 - a));
+    hsla(h, s, l, 1.0)
+}
+
+/// WCAG 2.1 contrast ratio between two opaque colours (1 to 21).
+fn contrast(a: Hsla, b: Hsla) -> f32 {
+    let luminance = |c: Hsla| {
+        let lin = |v: f32| if v <= 0.040_45 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) };
+        let [r, g, b] = hsl_to_rgb(c.h, c.s, c.l);
+        0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
+    };
+    let (la, lb) = (luminance(a), luminance(b));
+    (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+}
+
+fn hsl_to_rgb(h: f32, s: f32, l: f32) -> [f32; 3] {
+    if s <= f32::EPSILON {
+        return [l, l, l];
+    }
+    let q = if l < 0.5 { l * (1.0 + s) } else { l + s - l * s };
+    let p = 2.0 * l - q;
+    let hue = |t: f32| {
+        let t = t.rem_euclid(1.0);
+        if t < 1.0 / 6.0 {
+            p + (q - p) * 6.0 * t
+        } else if t < 0.5 {
+            q
+        } else if t < 2.0 / 3.0 {
+            p + (q - p) * (2.0 / 3.0 - t) * 6.0
+        } else {
+            p
+        }
+    };
+    [hue(h + 1.0 / 3.0), hue(h), hue(h - 1.0 / 3.0)]
+}
+
 fn gamma_encode(x: f32) -> f32 {
     let x = x.clamp(0.0, 1.0);
     if x <= 0.003_130_8 { 12.92 * x } else { 1.055 * x.powf(1.0 / 2.4) - 0.055 }
@@ -415,10 +656,43 @@ mod tests {
     }
 
     #[test]
-    fn frost_follows_flag() {
-        let t = Theme::new(Appearance::Dark, Accent::Sky, false);
+    fn frost_follows_surface() {
+        let t = Theme::new(Appearance::Dark, Accent::Sky, Surface::Normal);
         assert!(!t.is_frost());
-        let t = Theme::new(Appearance::Dark, Accent::Sky, true);
+        assert_eq!(t.composer_blur(), 0.0);
+        let t = Theme::new(Appearance::Dark, Accent::Sky, Surface::Glass);
         assert_eq!(t.is_frost(), Theme::GLASS_ALPHA < 1.0);
+        let t = Theme::new(Appearance::Dark, Accent::Sky, Surface::Acrylic);
+        assert_eq!(t.is_frost(), Theme::ACRYLIC_ALPHA < 1.0);
+    }
+
+    #[test]
+    fn materials_get_denser_from_glass_to_normal() {
+        for appearance in [Appearance::Dark, Appearance::Light] {
+            let [glass, acrylic, normal] =
+                Surface::ALL.map(|s| Theme::new(appearance, Accent::Sky, s));
+            assert!(glass.panel_bg().a <= acrylic.panel_bg().a && acrylic.panel_bg().a <= normal.panel_bg().a);
+            assert!(glass.composer_hero_bg().a <= acrylic.composer_hero_bg().a);
+            assert_eq!(normal.composer_bg().a, 1.0);
+            assert!(glass.glass_overlay().a <= 1.0 && acrylic.glass_overlay().a <= 1.0);
+        }
+    }
+
+    #[test]
+    fn flatten_composites_over_the_backdrop() {
+        let half_white = hsla(0.0, 0.0, 1.0, 0.5);
+        assert!((flatten(half_white, grey(0)).l - 0.5).abs() < 1e-3);
+        assert!((contrast(grey(0xff), grey(0)) - 21.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn surface_reads_legacy_switch() {
+        assert_eq!(Surface::from_settings(None, Some("false")), Surface::Normal);
+        assert_eq!(Surface::from_settings(None, Some("true")), Surface::Glass);
+        assert_eq!(Surface::from_settings(None, None), Surface::Glass);
+        assert_eq!(Surface::from_settings(Some("acrylic"), Some("false")), Surface::Acrylic);
+        for s in Surface::ALL {
+            assert_eq!(Surface::from_settings(Some(s.id()), None), s);
+        }
     }
 }

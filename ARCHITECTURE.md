@@ -37,6 +37,22 @@ The UI toolkit is GPUI from [zeronsh/zui](https://github.com/zeronsh/zui) (Zed's
 | `pages/` | Threads, kanban, automations, usage, agents, archived, help. |
 | `settings.rs`, `theme.rs`, `kit.rs`, `ui.rs` | Settings, light/dark theme tokens, shared glass/frost primitives. |
 | `mcp_browser.rs` | The `dove` MCP server injected into every harness. |
+| `home.rs`, `wallpaper.rs` | New-thread page: the user's wallpaper through a retro effect (Original, Dither, Halftone, Scanlines), optionally animated. |
+
+### Backdrop effects and animation (`wallpaper.rs`)
+
+The wallpaper is decoded once, cover-cropped to the hero's device-pixel size and rasterized on the background executor, so a dither or halftone cell stays the same few screen pixels on every display. The dither is ordered 4×4 Bayer dithering on 2×2 device-pixel cells: brightness is the brightest channel, the threshold is `(m + 0.5) / 16`, on cells are normalized so their brightest channel reaches 255, and off cells keep 8% of their color, so hue is preserved.
+
+**Animate backdrop** (setting `wallpaper_animate`) gives each effect its own motion, all derived from the image itself so it works on any wallpaper. A one-time analysis finds a focal point (the brightest blurred region, nudged toward the center) and two dominant hues (falling back to blue and orange for grey art).
+
+| Effect | Motion | Where it runs |
+| --- | --- | --- |
+| Original | Slow Ken Burns push toward the focal point, 20 s loop | GPU only: a paint transform (`Motion`), no re-raster |
+| Dither | An aircraft crosses toward the focal point with twin contrails in the image's hues; slow brightness waves move through the signal while the Bayer grid stays fixed; seamless 24 s loop | CPU, 24 fps |
+| Halftone | Dot radius ripples outward from the focal point | CPU, 15 fps |
+| Scanlines | The line pattern rolls, a soft band sweeps down, faint flicker (flicker is paint opacity) | CPU, 24 fps |
+
+Frames render on the background executor, one at a time; each finished frame refreshes the window, and the next is requested only from the home page's render, so animation stops whenever the home page is not drawn. Replaced frames are freed from GPUI's sprite atlas with `Window::drop_image`. The Dither frame precomputes each cell's on-color once per image (a uniform gain cancels out of it), so a frame is mostly a multiply and a compare per cell. GPUI exposes no custom-shader hook, so a full-resolution GPU path would need a new zui scene primitive.
 
 ## Data flow: engine → `LiveSession` → UI
 
@@ -112,7 +128,7 @@ Everything lives under `~/.dove` (override with `DOVE_HOME`):
 
 ## Remote control: desktop ⇄ Cloudflare edge ⇄ iOS / Android
 
-Status: lands with [PR #2](https://github.com/PupppyLoverr/Dove/pull/2): **Settings › Remote control** on the desktop, the `dove-mesh-host` sidecar (`mesh/crates/host`), the Rust mobile core (`mesh/`) and the iOS app (`apps/ios`). Android comes next. The edge is the Cosmos edge, which Dove reuses as-is; set `DOVE_EDGE_URL` to point at your own deployment.
+Status: the desktop host, the `dove-mesh-host` sidecar (`mesh/crates/host`), the Rust mobile core (`mesh/`), the iOS app (`apps/ios`) and the Android app (`apps/android`) are in the tree. The edge is the Cosmos edge, which Dove reuses as-is; set `DOVE_EDGE_URL` to point at your own deployment.
 
 On the desktop, `apps/dove/src/remote.rs` spawns `dove-mesh-host` and talks to it in JSON lines over stdin/stdout. The sidecar owns the Woozlit session and the edge connections. When it is switched off or signed out, nothing leaves the machine. When it is on, it publishes every project and session to the account's registry room and each session's transcript to its own room. It forwards the commands a phone queues back to `remote.rs`, which runs them on the same session the desktop shows.
 
@@ -132,6 +148,20 @@ On the desktop, `apps/dove/src/remote.rs` spawns `dove-mesh-host` and talks to i
 - **Commands.** The phone sends `send`, `steer`, `interrupt`, `permission` and `answer` frames. The desktop applies them through the same `LiveSession::send` path the composer uses; the agent always runs on the desktop.
 - **What leaves the machine.** Session events and command frames only. Repositories, worktrees and files stay local unless an agent puts their content into its own output.
 - **Cost.** The edge runs on Cloudflare's free tier for individual use. Enterprises can deploy the same Worker into their own Cloudflare account.
+
+## Voice, Jarvis and NEXI
+
+Speech models are not linked into `dove`. The binary stays in the 50–100 MB range; weights download into a separate checkout.
+
+`apps/dove/src/nexi.rs` finds [NEXI-Models-Drivers](https://github.com/PupppyLoverr/NEXI-Models-Drivers) via `DOVE_NEXI_ROOT`, a sibling `NEXI-Models-Drivers` directory, or `~/Downloads/NEXI-Models-Drivers`. It talks to three drivers as processes:
+
+| Driver | Role in Dove | How it is invoked |
+| --- | --- | --- |
+| `nexi-stt` | Speech to text when Settings › Voice › Speech engine is NEXI | The composer mic records PCM with `cpal`, writes a WAV, then `python -m nexi_stt transcribe` |
+| `nexi-tts` | Jarvis mode and the Test voice button | `python -m nexi_tts speak` writes a WAV; the OS plays it |
+| `nexi-cua` | `nexi_observe`, `nexi_decide`, `nexi_run` on the `dove` MCP server | `nexi-cua` CLI, only when Settings › Integrations › NEXI computer use is on |
+
+Parakeet (vendored `zeron-voice`) remains the default dictation engine. Fish Audio is an optional cloud TTS backend: Settings stores the user's key and `jarvis.rs` posts to `https://api.fish.audio/v1/tts`. Jarvis reads `jarvis=true` and speaks the plain text of a live turn when `TurnEnded` arrives. Replays and subagent mirrors do not speak.
 
 ## Principles
 

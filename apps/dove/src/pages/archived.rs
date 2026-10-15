@@ -7,7 +7,7 @@ use gpui::{
 };
 use gpui_base::input::Input;
 
-use super::page;
+use super::page_with;
 use crate::assets::{icon, icons};
 use crate::kit;
 use crate::shell::Shell;
@@ -91,6 +91,6 @@ impl Shell {
                             .on_click(cx.listener(move |this, _, window, cx| this.delete_task(id, window, cx))),
                     )
             }));
-        page("archived-page", "Archived", &t, None, div().flex().flex_col().gap(px(12.0)).child(search).child(rows))
+        page_with("archived-page", "Archived", "Threads you put away. They keep their transcripts and branches.", &t, None, div().flex().flex_col().gap(px(12.0)).child(search).child(rows))
     }
 }

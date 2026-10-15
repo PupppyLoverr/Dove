@@ -145,6 +145,8 @@ enum State {
 pub struct Dictation {
     engine: Arc<Engine>,
     session: Option<zeron_voice::Session>,
+    /// Microphone for the NEXI speech-to-text engine. Parakeet keeps its own.
+    capture: Option<crate::nexi::Capture>,
     state: State,
     pressed_at: Option<Instant>,
     /// Started by a tap: stays on until the next press.
@@ -161,6 +163,7 @@ impl Dictation {
         Self {
             engine,
             session: None,
+            capture: None,
             state: State::Idle,
             pressed_at: None,
             toggled: false,
@@ -170,8 +173,12 @@ impl Dictation {
         }
     }
 
+    fn uses_nexi(&self) -> bool {
+        self.engine.store.setting("stt_engine").as_deref() == Some("nexi")
+    }
+
     pub fn is_ready(&self) -> bool {
-        zeron_voice::installed(&model_dir(&self.engine))
+        if self.uses_nexi() { crate::nexi::stt_ready() } else { zeron_voice::installed(&model_dir(&self.engine)) }
     }
 
     pub fn is_recording(&self) -> bool {
@@ -185,6 +192,9 @@ impl Dictation {
     pub fn status_line(&self) -> String {
         if let Some(e) = &self.error {
             return e.clone();
+        }
+        if self.uses_nexi() {
+            return crate::nexi::Report::probe().stt_line();
         }
         if self.is_ready() {
             "Parakeet v3 · runs on this device · ready".into()
@@ -204,12 +214,32 @@ impl Dictation {
             return;
         }
         if !self.is_ready() {
-            self.error = Some("Install local voice in Settings › Voice to dictate.".into());
+            self.error = Some(if self.uses_nexi() {
+                "Set up NEXI speech-to-text in Settings › Voice.".into()
+            } else {
+                "Install local voice in Settings › Voice to dictate.".into()
+            });
             cx.emit(DictationEvent::Changed);
             cx.notify();
             return;
         }
         let device = self.engine.store.setting("voice_device").filter(|d| !d.is_empty());
+        if self.uses_nexi() {
+            match crate::nexi::Capture::start(device.as_deref()) {
+                Ok(capture) => {
+                    self.capture = Some(capture);
+                    self.state = State::Listening;
+                    self.error = None;
+                    self.pressed_at = Some(Instant::now());
+                    self.toggled = false;
+                    self.poll_level(cx);
+                }
+                Err(e) => self.error = Some(e),
+            }
+            cx.emit(DictationEvent::Changed);
+            cx.notify();
+            return;
+        }
         match zeron_voice::Session::start(model_dir(&self.engine), device) {
             Ok(session) => {
                 self.session = Some(session);
@@ -239,6 +269,29 @@ impl Dictation {
     }
 
     pub fn stop(&mut self, cx: &mut Context<Self>) {
+        if let Some(capture) = self.capture.take() {
+            self._poll = None;
+            self.state = State::Finalizing;
+            let (samples, rate) = capture.into_pcm();
+            cx.spawn(async move |this, cx| {
+                let result = cx.background_spawn(async move { crate::nexi::transcribe_samples(&samples, rate) }).await;
+                let _ = this.update(cx, |d, cx| {
+                    match result {
+                        Ok(text) if !text.trim().is_empty() => cx.emit(DictationEvent::Text(text)),
+                        Ok(_) => {}
+                        Err(e) => d.error = Some(e),
+                    }
+                    d.state = State::Idle;
+                    d.level = 0.0;
+                    cx.emit(DictationEvent::Changed);
+                    cx.notify();
+                });
+            })
+            .detach();
+            cx.emit(DictationEvent::Changed);
+            cx.notify();
+            return;
+        }
         if let Some(s) = self.session.as_mut() {
             s.finish();
         }
@@ -249,10 +302,33 @@ impl Dictation {
 
     pub fn cancel(&mut self, cx: &mut Context<Self>) {
         self.session = None;
+        self.capture = None;
         self.state = State::Idle;
         self._poll = None;
         cx.emit(DictationEvent::Changed);
         cx.notify();
+    }
+
+    fn poll_level(&mut self, cx: &mut Context<Self>) {
+        self._poll = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(POLL).await;
+                let done = this
+                    .update(cx, |d, cx| {
+                        if let Some(capture) = d.capture.as_ref() {
+                            d.level = capture.level();
+                        }
+                        let done = d.state != State::Listening || d.capture.is_none();
+                        cx.emit(DictationEvent::Changed);
+                        cx.notify();
+                        done
+                    })
+                    .unwrap_or(true);
+                if done {
+                    break;
+                }
+            }
+        }));
     }
 
     fn poll(&mut self, cx: &mut Context<Self>) {

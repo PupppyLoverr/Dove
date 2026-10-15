@@ -9,7 +9,7 @@ use gpui::{
     Styled as _, div, px,
 };
 
-use super::page;
+use super::page_with;
 use crate::assets::icons;
 use crate::kit;
 use crate::shell::Shell;
@@ -193,6 +193,19 @@ impl Shell {
                         .child(div().w(px(70.0)).text_right().text_color(t.text_faint).child(cost(u)))
                 }))
         };
+        // What each teammate's threads have used, all time.
+        let mut by_teammate: BTreeMap<String, Usage> = BTreeMap::new();
+        for p in &self.personas {
+            let mut sum = Usage::default();
+            for (task, pid) in &self.persona_of {
+                if pid == &p.id {
+                    sum += self.engine.store.task_usage(*task).unwrap_or_default();
+                }
+            }
+            if sum.total_tokens() > 0 {
+                by_teammate.insert(p.name.clone(), sum);
+            }
+        }
         let body = if rows.is_empty() {
             div().child(kit::empty_state(
                 icons::CLOCK_CIRCLE,
@@ -209,10 +222,11 @@ impl Shell {
                     .child(table("By agent", &by_agent))
                     .child(table("By project", &by_project)),
             )
+            .when(!by_teammate.is_empty(), |d| {
+                d.child(div().flex().child(table("By teammate (all time)", &by_teammate)))
+            })
         };
-        page(
-            "usage-page",
-            "Usage",
+        page_with("usage-page", "Usage", "Tokens and spend by day, agent and project. Counted on this device.",
             &t,
             Some(header),
             body.when_some(self.pages.usage_note.clone(), |d, n| {

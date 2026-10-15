@@ -1138,6 +1138,29 @@ mod tests {
         assert!(launch_args(HarnessKind::Kilo).is_none());
     }
 
+    /// amp-acp lists its effort modes as the "model" select.
+    #[test]
+    fn amp_effort_rides_the_model_select() {
+        let session = json!({"configOptions": [
+            {"id": "model", "type": "select", "category": "model", "currentValue": "medium",
+             "options": [{"value": "low"}, {"value": "medium"}, {"value": "high"}, {"value": "ultra"}]}
+        ]});
+        let models = models_from_session(&session, &[]);
+        assert_eq!(models.len(), 1);
+        assert_eq!(
+            models[0].reasoning_levels,
+            vec![ReasoningLevel::Low, ReasoningLevel::Medium, ReasoningLevel::High, ReasoningLevel::Ultra]
+        );
+        let mut spec = kilo_spec(dove_proto::PermissionMode::Default);
+        spec.kind = HarnessKind::Amp;
+        spec.model = Some(models[0].id.clone());
+        spec.reasoning = Some(ReasoningLevel::Ultra);
+        assert_eq!(
+            plan_setup(&spec, &session),
+            vec![WireSetup::Config { config_id: "model".into(), payload: json!({"value": "ultra"}) }]
+        );
+    }
+
     #[test]
     fn plan_mode_only_when_asked() {
         let session = kilo_options("kilo/anthropic/claude-opus-5.5", &["high"], "high");

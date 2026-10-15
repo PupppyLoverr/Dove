@@ -86,14 +86,14 @@ impl Shell {
                 .id(id)
                 .h(px(30.0))
                 .mx(px(8.0))
-                .px(px(9.0))
+                .px(px(8.0))
                 .flex()
                 .items_center()
                 .gap(px(9.0))
                 .rounded(px(8.0))
                 .cursor_pointer()
                 .text_size(px(13.0))
-                .when(selected, |d| d.bg(t.wash(0.10)).text_color(t.text))
+                .when(selected, |d| d.bg(ui::selected_bg(&t)).shadow(ui::selected_ring(&t)).text_color(t.text))
                 .when(!selected, |d| d.text_color(t.text_muted).hover(|s| s.bg(t.wash(0.05)).text_color(t.text)))
                 .child(icon(glyph).size(px(16.0)))
                 .child(div().flex_1().child(label))
@@ -104,28 +104,30 @@ impl Shell {
                 }))
         };
         let drafts = self.tasks.iter().filter(|t| t.status == TaskStatus::Draft).count();
+        let active_threads = self.tasks.iter().filter(|t| t.status != TaskStatus::Draft).count();
+        let running_threads = self.tasks.iter().filter(|t| t.status == TaskStatus::Running).count();
         // The one primary action, as a button rather than a list row.
         let new_thread = div()
             .id("nav-new")
             .mx(px(8.0))
             .mb(px(6.0))
             .h(px(34.0))
-            .px(px(10.0))
+            .px(px(8.0))
             .flex()
             .items_center()
             .gap(px(9.0))
-            .rounded(px(10.0))
+            .rounded(px(9.0))
             .border_1()
-            .border_color(t.wash(0.10))
-            .bg(t.wash(0.05))
+            .border_color(t.border_strong)
+            .bg(t.wash(0.055))
             .cursor_pointer()
             .text_size(px(13.0))
             .font_weight(gpui::FontWeight::MEDIUM)
             .text_color(t.text)
-            .hover(|s| s.bg(t.wash(0.09)).border_color(t.wash(0.16)))
+            .hover(|s| s.bg(t.wash(0.095)).border_color(t.wash(0.18)))
             .role(gpui::Role::Button)
             .aria_label("New thread")
-            .child(icon(icons::PEN_NEW_SQUARE).size(px(16.0)).text_color(t.text))
+            .child(icon(icons::PEN_NEW_SQUARE).size(px(15.0)).text_color(t.text))
             .child(div().flex_1().child("New thread"))
             .child(kit::kbd(&crate::keymap::pretty("secondary-n"), &t))
             .on_click(cx.listener(|this, _, window, cx| this.new_session(window, cx)));
@@ -135,14 +137,34 @@ impl Shell {
             .gap(px(1.0))
             .pt(px(8.0))
             .child(new_thread)
-            .child(nav_item("nav-threads", icons::MESSAGE_SQUARE_TEXT, "Threads", Some(Route::Threads), None, self, cx))
+            .child(nav_item(
+                "nav-threads",
+                icons::CHAT_ROUND_LINE,
+                "Threads",
+                Some(Route::Threads),
+                if running_threads > 0 {
+                    Some(kit::badge(format!("{running_threads} active"), t.busy).into_any_element())
+                } else if active_threads > 0 {
+                    Some(
+                        div()
+                            .text_size(px(11.0))
+                            .text_color(t.text_faint)
+                            .child(active_threads.to_string())
+                            .into_any_element(),
+                    )
+                } else {
+                    None
+                },
+                self,
+                cx,
+            ))
             .child(nav_item(
                 "nav-kanban",
-                icons::SQUARE_KANBAN,
+                icons::SPLIT_COLUMNS,
                 "Kanban",
                 Some(Route::Kanban),
                 (drafts > 0).then(|| {
-                    div().text_size(px(11.5)).text_color(t.text_faint).child(drafts.to_string()).into_any_element()
+                    div().text_size(px(11.0)).text_color(t.text_faint).child(drafts.to_string()).into_any_element()
                 }),
                 self,
                 cx,
@@ -195,42 +217,96 @@ impl Shell {
         attention_sort(&mut visible);
         let show_archived = self.engine.store.setting("sidebar_archived").as_deref() == Some("true");
 
+        // "Threads" reads like the Team header above it: a quiet label and
+        // count, with search and options as trailing glyphs that end on the
+        // same 16 px line as every other trailing mark.
+        let searching = self.search_open || !q.is_empty();
+        let header_button = |id: &'static str, glyph: &'static str, label: &'static str, on: bool| {
+            div()
+                .id(id)
+                .size(px(22.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(6.0))
+                .cursor_pointer()
+                .role(gpui::Role::Button)
+                .aria_label(label)
+                .tooltip(ui::tip(label))
+                .when(on, |d| d.bg(t.wash(0.10)))
+                .hover(|s| s.bg(t.wash(0.10)))
+                .child(icon(glyph).size(px(14.0)).text_color(if on { t.text_muted } else { t.text_faint }))
+        };
+        let options_menu = self
+            .sidebar_options_open
+            .then(|| self.render_options_menu(grouped, compact, show_archived, &t, cx));
         let header = div()
             .relative()
-            .px(px(10.0))
-            .pt(px(10.0))
+            .pt(px(14.0))
             .flex()
-            .items_center()
-            .gap(px(6.0))
+            .flex_col()
+            .gap(px(4.0))
             .child(
                 div()
-                    .flex_1()
-                    .h(px(28.0))
-                    .px(px(8.0))
+                    .h(px(26.0))
+                    .mx(px(8.0))
+                    .pl(px(8.0))
+                    .pr(px(4.0))
                     .flex()
                     .items_center()
-                    .gap(px(6.0))
-                    .rounded(px(7.0))
-                    .bg(t.wash(0.05))
-                    .text_size(px(13.0))
-                    .child(icon(icons::MAGNIFER).size(px(13.0)).text_color(t.text_faint))
-                    .child(div().flex_1().child(Input::new(&self.search))),
+                    .gap(px(2.0))
+                    .text_size(px(11.5))
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(t.text_faint)
+                    .child(div().flex_1().flex().items_center().gap(px(6.0)).child("Threads").when(
+                        active_threads > 0,
+                        |d| {
+                            d.child(
+                                div()
+                                    .px(px(5.0))
+                                    .h(px(15.0))
+                                    .flex()
+                                    .items_center()
+                                    .rounded(px(4.0))
+                                    .bg(t.wash(0.06))
+                                    .text_size(px(10.5))
+                                    .child(active_threads.to_string()),
+                            )
+                        },
+                    ))
+                    .child(header_button("sb-search", icons::MAGNIFER, "Search threads", searching).on_click(
+                        cx.listener(|this, _, window, cx| {
+                            this.search_open = true;
+                            this.search.update(cx, |s, cx| s.focus(window, cx));
+                            cx.notify();
+                        }),
+                    ))
+                    .child(
+                        header_button("sb-options", icons::MORE_HORIZONTAL, "Sidebar options", self.sidebar_options_open)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.sidebar_options_open = !this.sidebar_options_open;
+                                cx.notify();
+                            })),
+                    )
+                    .children(options_menu),
             )
-            .child(
-                ui::icon_button(
-                    "sb-options",
-                    icons::MORE_HORIZONTAL,
-                    "Sidebar options",
-                    &t,
-                    cx.listener(|this, _, _, cx| {
-                        this.sidebar_options_open = !this.sidebar_options_open;
-                        cx.notify();
-                    }),
+            .when(searching, |d| {
+                d.child(
+                    div()
+                        .mx(px(8.0))
+                        .h(px(30.0))
+                        .px(px(8.0))
+                        .flex()
+                        .items_center()
+                        .gap(px(9.0))
+                        .rounded(px(8.0))
+                        .bg(t.wash(0.05))
+                        .border_1()
+                        .border_color(t.wash(0.06))
+                        .text_size(px(13.0))
+                        .child(icon(icons::MAGNIFER).size(px(14.0)).text_color(t.text_faint))
+                        .child(div().flex_1().min_w_0().child(Input::new(&self.search))),
                 )
-                .when(self.sidebar_options_open, |d| d.bg(t.glass_hover())),
-            )
-            .when(self.sidebar_options_open, |d| {
-                d.child(self.render_options_menu(grouped, compact, show_archived, &t, cx))
             });
 
         let mut list = div()
@@ -303,50 +379,67 @@ impl Shell {
 
         let footer = div()
             .h(px(52.0))
-            .px(px(12.0))
+            .pl(px(11.0))
+            .pr(px(12.0))
             .flex()
             .items_center()
             .gap(px(8.0))
             .border_t_1()
             .border_color(t.border)
-            .child({
-                let host = ui::host_name();
-                let initial: String =
-                    host.chars().find(|c| c.is_alphanumeric()).map_or('D', |c| c.to_ascii_uppercase()).to_string();
-                div()
-                    .size(px(26.0))
-                    .flex_none()
-                    .rounded_full()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .bg(gpui::linear_gradient(
-                        135.0,
-                        gpui::linear_color_stop(t.accent, 0.0),
-                        gpui::linear_color_stop(t.accent_strong, 1.0),
-                    ))
-                    .text_size(px(12.0))
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .text_color(gpui::white())
-                    .child(initial)
-            })
             .child(
                 div()
                     .id("sb-usage")
                     .flex_1()
                     .min_w_0()
+                    .h(px(38.0))
+                    .ml(px(-5.0))
+                    .px(px(5.0))
                     .flex()
-                    .flex_col()
+                    .items_center()
+                    .gap(px(9.0))
+                    .rounded(px(8.0))
                     .cursor_pointer()
+                    .hover(|s| s.bg(t.wash(0.05)))
+                    .tooltip(ui::tip("Usage"))
                     .on_click(cx.listener(|this, _, window, cx| this.navigate(Route::Usage, window, cx)))
-                    .child(div().text_size(px(13.0)).truncate().child(format!("Local · {}", ui::host_name())))
+                    .child({
+                        let host = ui::host_name();
+                        let initial: String = host
+                            .chars()
+                            .find(|c| c.is_alphanumeric())
+                            .map_or('D', |c| c.to_ascii_uppercase())
+                            .to_string();
+                        kit::avatar_tile(initial, 0.6, 26.0, &t)
+                    })
                     .child(
                         div()
-                            .text_size(px(11.0))
-                            .text_color(t.text_faint)
-                            .child(format!("Today {}", ui::usage_line(&self.today))),
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div()
+                                    .text_size(px(13.0))
+                                    .font_weight(gpui::FontWeight::MEDIUM)
+                                    .truncate()
+                                    .child(format!("Local · {}", ui::host_name())),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(11.0))
+                                    .text_color(t.text_faint)
+                                    .truncate()
+                                    .child(format!("Today {}", ui::usage_line(&self.today))),
+                            ),
                     ),
             )
+            .child(ui::icon_button(
+                "sb-add-proj",
+                icons::FOLDER_WITH_FILES,
+                "Add project (Ctrl+O)",
+                &t,
+                cx.listener(|this, _, _, cx| this.add_project_dialog(cx)),
+            ))
             .child(ui::icon_button(
                 "sb-settings",
                 icons::SETTINGS,
@@ -363,24 +456,32 @@ impl Shell {
         });
 
         div()
+            .relative()
             .w(px(self.sidebar_w))
             .h_full()
             .flex_none()
             .flex()
             .child(
+                // No panel of its own: the sidebar is the window's glass, one
+                // surface with the titlebar above it, and the main card is the
+                // only inset, rounded thing.
                 div()
                     .flex_1()
                     .min_w_0()
                     .h_full()
                     .flex()
                     .flex_col()
+                    .overflow_hidden()
                     .child(nav)
+                    .child(div().pt(px(14.0)).child(self.render_team_section(&t, cx)))
                     .children(needs_section)
                     .child(header)
                     .child(list)
                     .child(footer),
             )
-            .child(handle)
+            // Laid over the edge rather than beside it, so the right
+            // gutter matches the left one.
+            .child(handle.absolute().top_0().right_0())
             .into_any_element()
     }
 
@@ -390,17 +491,17 @@ impl Shell {
         let open = self.more_open;
         let item = div()
             .id("nav-more")
-            .h(px(32.0))
-            .mx(px(6.0))
-            .px(px(10.0))
+            .h(px(30.0))
+            .mx(px(8.0))
+            .px(px(8.0))
             .flex()
             .items_center()
-            .gap(px(10.0))
+            .gap(px(9.0))
             .rounded(px(8.0))
             .cursor_pointer()
-            .text_size(px(13.5))
-            .when(selected || open, |d| d.bg(t.wash(0.11)).text_color(t.text))
-            .when(!selected && !open, |d| d.text_color(t.text_muted).hover(|s| s.bg(t.wash(0.06)).text_color(t.text)))
+            .text_size(px(13.0))
+            .when(selected || open, |d| d.bg(ui::selected_bg(t)).shadow(ui::selected_ring(t)).text_color(t.text))
+            .when(!selected && !open, |d| d.text_color(t.text_muted).hover(|s| s.bg(t.wash(0.05)).text_color(t.text)))
             .child(icon(icons::MORE_HORIZONTAL).size(px(16.0)))
             .child(div().flex_1().child("More"))
             .child(icon(icons::ALT_ARROW_RIGHT).size(px(12.0)).text_color(t.text_faint))
@@ -526,7 +627,7 @@ impl Shell {
         let approval = pending.as_ref().is_some_and(|p| !p.is_question());
         div()
             .id(SharedString::from(format!("need-{id}")))
-            .mx(px(6.0))
+            .mx(px(8.0))
             .px(px(10.0))
             .py(px(8.0))
             .flex()
@@ -595,32 +696,73 @@ impl Shell {
                     .text_color(t.text_muted),
             );
 
+        // The second line says where the thread stands: what it is doing,
+        // whether it waits on you, or where it works.
+        let (detail, detail_tint): (Option<String>, Hsla) = match task.status {
+            TaskStatus::NeedsInput => (Some("Waiting for you".into()), t.warning),
+            TaskStatus::Failed => (Some("Failed".into()), t.danger),
+            TaskStatus::Running => (Some(step.as_ref().map_or_else(|| "Working…".to_string(), |s| s.to_string())), t.text_faint),
+            _ => {
+                let project = (self.projects.len() > 1).then(|| self.project(task.project_id).map(|p| p.name.clone())).flatten();
+                let parts: Vec<String> = project.into_iter().chain(task.branch.clone()).collect();
+                let line = if parts.is_empty() { task.harness.label().to_string() } else { parts.join(" · ") };
+                (Some(line), t.text_faint)
+            }
+        };
+        let two_line = !compact && renaming.is_none();
         let row = div()
             .id(SharedString::from(format!("row-{id}")))
             .group(group.clone())
-            .h(px(if compact { 28.0 } else { 34.0 }))
-            .mx(px(6.0))
-            .px(px(10.0))
+            .h(px(if compact { 28.0 } else { 44.0 }))
+            .mx(px(8.0))
+            .px(px(8.0))
             .flex()
             .items_center()
             .gap(px(8.0))
             .rounded(px(8.0))
             .cursor_pointer()
-            .when(selected, |d| d.bg(t.wash(0.11)))
-            .when(!selected, |d| d.hover(|s| s.bg(t.wash(0.06))))
+            .when(selected, |d| d.bg(ui::selected_bg(t)).shadow(ui::selected_ring(t)))
+            .when(!selected, |d| d.hover(|s| s.bg(t.wash(0.05))))
             .when(archived && !selected, |d| d.opacity(0.6))
-            .when_some(step, |d, s| d.tooltip(ui::tip(s)))
+            .when_some(step.clone().filter(|_| compact), |d, s| d.tooltip(ui::tip(s)))
             .child(div().w(px(12.0)).flex().justify_center().child(kit::status_glyph(
                 SharedString::from(format!("sb-st-{id}")),
                 task.status,
                 task.unread,
                 t,
             )))
-            .child(icon(ui::harness_icon(task.harness)).size(px(15.0)).text_color(ui::harness_tint(
-                task.harness,
-                t,
-                t.text_muted,
-            )))
+            // One mark per row: the teammate (or agent), with the project as
+            // a small colored pip on its corner when there are several.
+            .child(
+                div()
+                    .relative()
+                    .flex_none()
+                    .size(px(16.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(match self.persona_for(id) {
+                        Some(p) => crate::team::avatar(p, 16.0, t).into_any_element(),
+                        None => icon(ui::harness_icon(task.harness))
+                            .size(px(14.0))
+                            .text_color(ui::harness_tint(task.harness, t, t.text_muted))
+                            .into_any_element(),
+                    })
+                    .when(self.projects.len() > 1, |d| {
+                        d.children(self.project(task.project_id).map(|p| {
+                            let hue = project_hue(&p.name);
+                            div()
+                                .absolute()
+                                .right(px(-3.0))
+                                .bottom(px(-2.0))
+                                .size(px(7.0))
+                                .rounded_full()
+                                .border_1()
+                                .border_color(t.bg)
+                                .bg(hsla(hue, 0.62, if t.appearance.is_dark() { 0.62 } else { 0.48 }, 1.0))
+                        }))
+                    }),
+            )
             .child(match renaming {
                 Some(input) => div()
                     .flex_1()
@@ -633,11 +775,21 @@ impl Shell {
                 None => div()
                     .flex_1()
                     .min_w_0()
-                    .truncate()
-                    .text_size(px(13.0))
-                    .when(task.unread, |d| d.font_weight(gpui::FontWeight::SEMIBOLD))
-                    .text_color(if selected || task.unread { t.text } else { t.text_muted })
-                    .child(task.title.clone())
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .truncate()
+                            .text_size(px(13.0))
+                            .when(task.unread, |d| d.font_weight(gpui::FontWeight::SEMIBOLD))
+                            .text_color(if selected || task.unread { t.text } else { t.text_muted })
+                            .child(task.title.clone()),
+                    )
+                    .when(two_line, |d| {
+                        d.children(detail.map(|line| {
+                            div().truncate().text_size(px(11.5)).text_color(detail_tint).child(line)
+                        }))
+                    })
                     .into_any_element(),
             })
             .when(task.pinned, |d| d.child(icon(icons::PIN).size(px(12.0)).text_color(t.text_faint)))

@@ -39,7 +39,40 @@ fn main() {
     let dest = Path::new(&std::env::var("OUT_DIR").unwrap()).join("icons_gen.rs");
     std::fs::write(dest, out).unwrap();
 
+    file_icons();
     linux_browser_helper();
+}
+
+/// Zeron's polychrome file-type icons (vscode-symbols) under
+/// `assets/file-icons/{files,folders}`: a lookup from `files/x.svg` to bytes.
+fn file_icons() {
+    let root = Path::new("assets/file-icons");
+    println!("cargo:rerun-if-changed=assets/file-icons");
+    let mut paths: Vec<String> = Vec::new();
+    for sub in ["files", "folders"] {
+        for e in std::fs::read_dir(root.join(sub)).expect("assets/file-icons exists").filter_map(|e| e.ok()) {
+            let name = e.file_name().to_string_lossy().to_string();
+            if name.ends_with(".svg") {
+                paths.push(format!("{sub}/{name}"));
+            }
+        }
+    }
+    paths.sort();
+    let mut out =
+        String::from("pub(crate) fn file_icon_bytes(path: &str) -> Option<&'static [u8]> {\n    match path {\n");
+    for p in &paths {
+        let abs = std::fs::canonicalize(root.join(p)).unwrap();
+        let abs = abs.to_string_lossy().replace('\\', "/");
+        let abs = abs.strip_prefix("//?/").unwrap_or(&abs).to_string();
+        writeln!(out, "        \"{p}\" => Some(include_bytes!(\"{abs}\")),").unwrap();
+    }
+    out.push_str("        _ => None,\n    }\n}\n\npub(crate) const ALL_FILE_ICONS: &[&str] = &[\n");
+    for p in &paths {
+        writeln!(out, "    \"{p}\",").unwrap();
+    }
+    out.push_str("];\n");
+    let dest = Path::new(&std::env::var("OUT_DIR").unwrap()).join("file_icons_gen.rs");
+    std::fs::write(dest, out).unwrap();
 }
 
 /// The Linux browser renders in an offscreen WebKitGTK helper process (from

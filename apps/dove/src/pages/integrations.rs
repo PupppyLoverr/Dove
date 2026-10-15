@@ -67,6 +67,8 @@ pub struct Config {
     pub composio: Composio,
     pub paper: Toggle,
     pub computer: Toggle,
+    /// NEXI-CUA: local computer and browser use from NEXI-Models-Drivers.
+    pub nexi: Toggle,
 }
 
 /// Which credential the user pasted, by Composio's documented prefixes.
@@ -172,6 +174,8 @@ struct Probe {
     /// The driver's own `health_report` summary, after "Check permissions".
     cua_health: Option<String>,
     paper: bool,
+    nexi: Option<PathBuf>,
+    nexi_line: String,
 }
 
 pub struct IntegrationsView {
@@ -255,7 +259,15 @@ impl IntegrationsView {
         let task = cx.background_spawn(async move {
             let cua = cua_driver();
             let cua_version = cua.as_deref().and_then(cua_version);
-            Probe { cua, cua_version, cua_health: None, paper: paper_running() }
+            let report = crate::nexi::Report::probe();
+            Probe {
+                cua,
+                cua_version,
+                cua_health: None,
+                paper: paper_running(),
+                nexi: report.cua.clone(),
+                nexi_line: report.cua_line(),
+            }
         });
         cx.spawn(async move |this, cx| {
             let probe = task.await;
@@ -661,7 +673,7 @@ impl Render for IntegrationsView {
                         .items_center()
                         .gap(px(4.0))
                         .child(
-                            small_icon("int-cua-docs", icons::EXTERNAL_LINK, "Open install guide", &t)
+                            small_icon("int-cua-docs", icons::ARROW_UP_RIGHT, "Open install guide", &t)
                                 .on_click(cx.listener(|_, _, _, cx| cx.open_url("https://github.com/trycua/cua"))),
                         )
                         .child(
@@ -672,6 +684,45 @@ impl Render for IntegrationsView {
                 )
             });
 
+        let nexi_on = self.config.nexi.enabled;
+        let nexi_installed = self.probe.nexi.is_some();
+        let (left, switch) = toggle(
+            nexi_on,
+            Some((nexi_installed, if nexi_installed { "Installed" } else { "Not installed" })),
+            "int-nexi",
+            &t,
+        );
+        let nexi_line = self.probe.nexi_line.clone();
+        let nexi = plate(&t)
+            .child(head(
+                icons::HARD_DRIVE,
+                "NEXI computer use",
+                "Local action ranker and Windows, macOS, Linux and browser drivers. Prefer this over a cloud computer-use API.",
+                left.child(switch.on_click(cx.listener(move |this, _, _, cx| {
+                    this.config.nexi.enabled = !nexi_on;
+                    this.persist(cx);
+                }))),
+                &t,
+            ))
+            .child(line(
+                "Driver",
+                nexi_line,
+                div().flex().items_center().gap(px(4.0)).child(
+                    small_icon("int-nexi-refresh", icons::REFRESH, "Detect again", &t)
+                        .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
+                ),
+                &t,
+            ))
+            .child(line(
+                "Setup",
+                "Copy the NEXI setup commands (speech and computer use) and run them once.",
+                ui::button_ghost("int-nexi-copy", "Copy setup", &t).on_click(cx.listener(|_, _, _, cx| {
+                    let script = crate::nexi::setup_script(crate::nexi::Report::probe().root.as_deref());
+                    cx.write_to_clipboard(ClipboardItem::new_string(script));
+                })),
+                &t,
+            ));
+
         div()
             .pt(px(8.0))
             .flex()
@@ -681,6 +732,7 @@ impl Render for IntegrationsView {
             .child(composio)
             .child(paper)
             .child(computer)
+            .child(nexi)
             .child(
                 div()
                     .px(px(4.0))

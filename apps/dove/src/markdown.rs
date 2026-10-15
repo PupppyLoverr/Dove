@@ -87,6 +87,8 @@ pub enum Block {
     Mermaid(String),
     Math(String),
     Widget(String),
+    /// A live design (`show_canvas`), as its JSON spec.
+    Canvas(String),
     /// A task list item's checkbox (first block of the item).
     Check(bool),
     Image {
@@ -108,6 +110,7 @@ impl Block {
         match self {
             Block::Paragraph(i) | Block::Heading(_, i) => i.text.clone(),
             Block::Code { text, .. } | Block::Mermaid(text) | Block::Math(text) | Block::Widget(text) => text.clone(),
+            Block::Canvas(src) => crate::canvas::Spec::parse(src).map(|s| s.code).unwrap_or_default(),
             Block::Check(done) => {
                 if *done {
                     "[x]".into()
@@ -423,7 +426,8 @@ fn parse_blocks(p: &mut P, until: Option<TagEnd>) -> Vec<Block> {
                 blocks.push(match kind.as_deref() {
                     Some("mermaid") => Block::Mermaid(text),
                     Some("math" | "latex" | "tex") => Block::Math(text),
-                    Some("ui" | "widget") => Block::Widget(text),
+                    Some("ui" | "widget" | "dove-ui") => Block::Widget(text),
+                    Some("canvas" | "dove-canvas") => Block::Canvas(text),
                     _ => Block::Code { lang, text, highlight: None },
                 });
             }
@@ -638,6 +642,10 @@ pub fn render_block(id: &str, b: &Block, theme: &Theme, window: &Window) -> AnyE
         Block::Math(src) => math_block(src, theme),
         Block::Check(done) => checkbox(*done, theme),
         Block::Widget(src) => widget_preview(src, theme),
+        Block::Canvas(src) => match crate::canvas::Spec::parse(src) {
+            Some(spec) => crate::canvas::card(&spec, theme, |_, _| {}),
+            None => div().into_any_element(),
+        },
         Block::Image { alt, url } => image_block(id, alt, url, theme),
         Block::List { ordered, items } => div()
             .flex()
@@ -884,8 +892,8 @@ fn image_block(id: &str, alt: &str, url: &str, theme: &Theme) -> AnyElement {
                     .absolute()
                     .top(px(8.0))
                     .right(px(8.0))
-                    .size(px(26.0))
-                    .rounded(px(8.0))
+                    .size(px(ui::BUTTON))
+                    .rounded(px(ui::BUTTON_RADIUS))
                     .flex()
                     .items_center()
                     .justify_center()
@@ -896,7 +904,7 @@ fn image_block(id: &str, alt: &str, url: &str, theme: &Theme) -> AnyElement {
                     .group_hover(SharedString::from(format!("{id}-img")), |s| s.visible())
                     .hover(move |s| s.bg(hover))
                     .tooltip(ui::tip("Open image"))
-                    .child(icon(icons::EXTERNAL_LINK).size(px(13.0)).text_color(theme.text_muted))
+                    .child(icon(icons::ARROW_UP_RIGHT).size(px(ui::ICON_SM)).text_color(theme.text_muted))
                     .on_click(move |_, _, cx| {
                         cx.stop_propagation();
                         cx.open_url(&href);
@@ -916,7 +924,6 @@ fn image_block(id: &str, alt: &str, url: &str, theme: &Theme) -> AnyElement {
 
 fn code_block(id: &str, lang: Option<&str>, text: &str, hl: Option<&HighlightedDocument>, theme: &Theme) -> AnyElement {
     let copy = text.to_string();
-    let hover = theme.glass_hover();
     let theme2 = theme.clone();
     div()
         .rounded(px(10.0))
@@ -937,17 +944,8 @@ fn code_block(id: &str, lang: Option<&str>, text: &str, hl: Option<&HighlightedD
                 .text_color(theme.text_faint)
                 .child(lang.unwrap_or("").to_string())
                 .child(
-                    div()
-                        .id(SharedString::from(format!("{id}-copy")))
-                        .size(px(22.0))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .rounded(px(5.0))
-                        .cursor_pointer()
-                        .hover(move |s| s.bg(hover))
-                        .on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.clone())))
-                        .child(icon(icons::COPY).size(px(14.0)).text_color(theme.text_muted)),
+                    ui::row_button(format!("{id}-copy"), icons::COPY, "Copy code", theme)
+                        .on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))),
                 ),
         )
         .child(

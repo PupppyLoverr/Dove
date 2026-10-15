@@ -173,6 +173,45 @@ impl TerminalView {
         cx.notify();
     }
 
+    pub fn cwd(&self) -> &Path {
+        &self.cwd
+    }
+
+    /// Clear screen and reset scrollback.
+    pub fn clear(&mut self, cx: &mut Context<Self>) {
+        self.emu = Emulator::new(self.geometry.cols.max(2), self.geometry.rows.max(1));
+        if let Some(p) = self.pty.as_mut() {
+            p.write(b"\x0c");
+        }
+        cx.notify();
+    }
+
+    /// Copy the active selection, or all visible screen text if nothing is selected.
+    pub fn copy_selection_or_screen(&self, cx: &mut Context<Self>) {
+        let text = self.emu.selection_text().unwrap_or_else(|| {
+            self.emu
+                .lines()
+                .into_iter()
+                .map(|row| row.into_iter().map(|c| c.ch).collect::<String>().trim_end().to_string())
+                .collect::<Vec<_>>()
+                .join("\n")
+                .trim()
+                .to_string()
+        });
+        if !text.is_empty() {
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+        }
+    }
+
+    /// Restart the shell or command in place.
+    pub fn restart(&mut self, cx: &mut Context<Self>) {
+        self._pump = None;
+        self.pty = None;
+        self.emu = Emulator::new(self.geometry.cols.max(2), self.geometry.rows.max(1));
+        self.start(cx);
+        cx.notify();
+    }
+
     fn write(&mut self, bytes: &[u8]) {
         if let Some(p) = self.pty.as_mut() {
             p.write(bytes);

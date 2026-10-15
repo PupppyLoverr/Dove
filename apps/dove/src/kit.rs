@@ -195,25 +195,27 @@ pub fn status_glyph(id: impl Into<ElementId>, status: TaskStatus, unread: bool, 
 }
 
 /// A rotating arc.
+/// Zeron's activity glyph: a 2×3 grid of round cells whose brightness
+/// chases around the ring, sized to fit a `size` square.
 pub fn spinner(id: impl Into<ElementId>, size: f32, color: Hsla) -> impl IntoElement {
-    icon(icons::SPINNER).size(px(size)).text_color(color).with_animation(
-        id,
-        Animation::new(Duration::from_millis(900)).repeat(),
-        |el, delta| el.with_transformation(gpui::Transformation::rotate(gpui::radians(delta * std::f32::consts::TAU))),
-    )
-}
-
-/// A shimmering placeholder bar.
-pub fn skeleton(id: impl Into<ElementId>, w: Pixels, h: Pixels, t: &Theme) -> impl IntoElement {
-    let base = t.wash(0.06);
-    div().w(w).h(h).rounded(px(6.0)).bg(base).with_animation(
-        id,
-        Animation::new(Duration::from_millis(1400)).repeat(),
-        move |el, delta| {
-            let wave = 0.5 - 0.5 * (delta * std::f32::consts::TAU).cos();
-            el.opacity(0.55 + 0.45 * wave)
-        },
-    )
+    // Clockwise ring position of each (row, col), top-left first.
+    const RING: [[usize; 2]; 3] = [[0, 1], [5, 2], [4, 3]];
+    let id: ElementId = id.into();
+    let key = format!("{id:?}");
+    let cell = (size / 4.0).max(2.0);
+    let grid = div().flex().flex_col().gap(px(cell / 2.0)).children((0..3).map(|row| {
+        let key = key.clone();
+        div().flex().gap(px(cell / 2.0)).children((0..2).map(move |col| {
+            let phase = RING[row][col] as f32 / 6.0;
+            div().size(px(cell)).rounded_full().bg(color).with_animation(
+                SharedString::from(format!("{key}-{row}{col}")),
+                Animation::new(Duration::from_millis(750)).repeat(),
+                // Zeron's mono spinner: the same gspin pulse and ring.
+                move |el, delta| el.opacity(crate::loaders::gspin_opacity(delta + phase, 0.1)),
+            )
+        }))
+    }));
+    div().size(px(size)).flex().flex_none().items_center().justify_center().child(grid)
 }
 
 /// A centered message for an empty page or list.
@@ -257,6 +259,129 @@ pub fn badge(label: impl Into<SharedString>, color: Hsla) -> Div {
         .text_size(px(11.0))
         .font_weight(gpui::FontWeight::MEDIUM)
         .child(label.into())
+}
+
+// ------------------------------------------------------------- page parts
+
+/// A quiet plate that groups rows (settings, detail panes, lists).
+pub fn group(t: &Theme) -> Div {
+    div()
+        .w_full()
+        .flex()
+        .flex_col()
+        .rounded(px(12.0))
+        .border_1()
+        .border_color(t.border)
+        .bg(t.wash(0.022))
+        .overflow_hidden()
+}
+
+/// A row's label with an optional one-line hint under it.
+pub fn label_block(label: impl Into<SharedString>, hint: impl Into<SharedString>, t: &Theme) -> Div {
+    let hint: SharedString = hint.into();
+    div()
+        .flex_1()
+        .min_w_0()
+        .flex()
+        .flex_col()
+        .gap(px(2.0))
+        .child(div().text_size(px(13.5)).text_color(t.text).child(label.into()))
+        .when(!hint.is_empty(), |d| d.child(div().text_size(px(12.0)).text_color(t.text_faint).child(hint)))
+}
+
+/// A section heading above a group: small, quiet, never shouting.
+pub fn section_label(text: impl Into<SharedString>, t: &Theme) -> Div {
+    div()
+        .px(px(2.0))
+        .pb(px(8.0))
+        .text_size(px(12.0))
+        .font_weight(gpui::FontWeight::MEDIUM)
+        .text_color(t.text_faint)
+        .child(text.into())
+}
+
+/// The box around a single-line text input.
+pub fn field_box(t: &Theme) -> Div {
+    div()
+        .h(px(34.0))
+        .px(px(10.0))
+        .flex()
+        .items_center()
+        .gap(px(8.0))
+        .rounded(px(8.0))
+        .border_1()
+        .border_color(t.border_strong)
+        .bg(t.wash(0.03))
+        .text_size(px(13.0))
+}
+
+/// The box around a multi-line text area.
+pub fn area_box(t: &Theme) -> Div {
+    div()
+        .px(px(12.0))
+        .py(px(10.0))
+        .rounded(px(10.0))
+        .border_1()
+        .border_color(t.border_strong)
+        .bg(t.wash(0.03))
+        .text_size(px(13.0))
+}
+
+/// A labelled form field: the label above, the control under it.
+pub fn field(label: impl Into<SharedString>, control: impl IntoElement, t: &Theme) -> Div {
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(6.0))
+        .child(div().text_size(px(12.5)).text_color(t.text_muted).child(label.into()))
+        .child(control)
+}
+
+/// A rounded tile with a letter or emoji on a tinted ground: teammates,
+/// projects, people.
+pub fn avatar_tile(label: impl Into<SharedString>, hue: f32, size: f32, t: &Theme) -> Div {
+    let (bg, fg) = if t.appearance.is_dark() {
+        (gpui::hsla(hue, 0.42, 0.42, 0.30), gpui::hsla(hue, 0.70, 0.78, 1.0))
+    } else {
+        (gpui::hsla(hue, 0.60, 0.55, 0.18), gpui::hsla(hue, 0.60, 0.34, 1.0))
+    };
+    div()
+        .size(px(size))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px((size * 0.28).max(4.0)))
+        .bg(bg)
+        .text_color(fg)
+        .text_size(px(size * 0.52))
+        .font_weight(gpui::FontWeight::SEMIBOLD)
+        .child(label.into())
+}
+
+/// A bordered secondary button.
+pub fn button_outline(id: impl Into<SharedString>, label: impl Into<SharedString>, t: &Theme) -> gpui::Stateful<Div> {
+    let label: SharedString = label.into();
+    let hover = t.wash(0.07);
+    div()
+        .id(gpui::ElementId::Name(id.into()))
+        .role(gpui::Role::Button)
+        .aria_label(label.clone())
+        .h(px(30.0))
+        .px(px(12.0))
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .gap(px(6.0))
+        .rounded(px(8.0))
+        .border_1()
+        .border_color(t.border_strong)
+        .text_size(px(13.0))
+        .text_color(t.text)
+        .cursor_pointer()
+        .hover(move |s| s.bg(hover))
+        .child(label)
 }
 
 /// A vertical drag strip on a panel edge. `on_drag` gets the pointer x.
@@ -423,7 +548,8 @@ mod tests {
 
     #[test]
     fn ring_thresholds() {
-        let t = Theme::new(crate::theme::Appearance::Dark, crate::theme::Accent::default(), false);
+        let t =
+            Theme::new(crate::theme::Appearance::Dark, crate::theme::Accent::default(), crate::theme::Surface::Normal);
         assert_eq!(ring_color(0.5, &t), t.text_muted);
         assert_eq!(ring_color(0.75, &t), t.warning);
         assert_eq!(ring_color(0.95, &t), t.danger);

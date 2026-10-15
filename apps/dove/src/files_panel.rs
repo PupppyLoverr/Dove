@@ -2,7 +2,7 @@
 //! inline syntax-highlighted preview (`path:line` links in the chat land
 //! here) with "Open in editor".
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -75,6 +75,8 @@ impl EventEmitter<FilesEvent> for FilesPanel {}
 pub struct FilesPanel {
     root: Option<PathBuf>,
     files: Arc<Vec<String>>,
+    /// Git status per path (and a dot for folders holding changes).
+    git_marks: Arc<HashMap<String, char>>,
     collapsed: HashSet<String>,
     search: Entity<InputState>,
     query: String,
@@ -111,6 +113,7 @@ impl FilesPanel {
         Self {
             root: None,
             files: Arc::default(),
+            git_marks: Arc::default(),
             collapsed: HashSet::new(),
             search,
             query: String::new(),
@@ -145,10 +148,25 @@ impl FilesPanel {
             cx.notify();
             return;
         };
-        let work = cx.background_spawn(async move { dove_core::git::list_files(&root).unwrap_or_default() });
+        let work = cx.background_spawn(async move {
+            let files = dove_core::git::list_files(&root).unwrap_or_default();
+            let status = dove_core::git::status(&root).unwrap_or_default();
+            (files, status)
+        });
         self._load = Some(cx.spawn(async move |this, cx| {
-            let files = work.await;
+            let (files, status) = work.await;
             let _ = this.update(cx, |p, cx| {
+                // What changed, by path; folders show a dot when anything
+                // inside them did.
+                let mut marks: HashMap<String, char> = HashMap::new();
+                for (path, mark) in &status {
+                    marks.insert(path.trim_end_matches('/').to_string(), *mark);
+                    let parts: Vec<&str> = path.split('/').collect();
+                    for k in 1..parts.len() {
+                        marks.entry(parts[..k].join("/")).or_insert('•');
+                    }
+                }
+                p.git_marks = Arc::new(marks);
                 // Directories start collapsed below the top level.
                 let mut dirs = HashSet::new();
                 for f in &files {
@@ -464,9 +482,13 @@ impl FilesPanel {
 
     /// Hand the document (and the selection, if any) to the thread's agent.
     fn office_ask(&mut self, cx: &mut Context<Self>) {
+        let instruction = self.agent_input.as_ref().map(|i| i.read(cx).value().to_string()).unwrap_or_default();
+        self.office_ask_with(&instruction, cx);
+    }
+
+    fn office_ask_with(&mut self, instruction: &str, cx: &mut Context<Self>) {
         let Some(p) = self.preview.as_ref() else { return };
         let PreviewKind::Office(kind) = p.kind else { return };
-        let instruction = self.agent_input.as_ref().map(|i| i.read(cx).value().to_string()).unwrap_or_default();
         let skill = kind.skill();
         let mut msg = format!(
             "Edit `{}` using Dove's {skill} skill (call the dove_skills tool with name \"{skill}\" for its instructions and script).",
@@ -510,16 +532,23 @@ impl FilesPanel {
                 let _ = weak.update(cx, f);
             }
         };
+        let quick_actions: &[(&str, &str)] = &[
+            ("Polish the writing", "Proofread and polish the text in this document while preserving structure and formatting."),
+            ("Summarize", "Summarize the key points and data in this document."),
+            ("Fill the blanks", "Fill in any missing or placeholder fields/cells with sensible, realistic values."),
+            ("Restyle", "Make this document look professionally designed: consistent headings, spacing and colors, without changing its content."),
+        ];
         div()
             .flex_none()
-            .px(px(10.0))
-            .py(px(8.0))
+            .px(px(12.0))
+            .py(px(10.0))
             .flex()
             .flex_col()
-            .gap(px(6.0))
+            .gap(px(8.0))
             .border_t_1()
             .border_color(t.border)
-            .when_some(label.zip(self.office_input.as_ref()), |d, (label, input)| {
+            .bg(t.wash(0.015))
+            .when_some(label.clone().zip(self.office_input.as_ref()), |d, (label, input)| {
                 d.child(
                     div()
                         .flex()
@@ -529,13 +558,53 @@ impl FilesPanel {
                             div()
                                 .flex_none()
                                 .max_w(px(140.0))
+                                .px(px(6.0))
+                                .py(px(2.0))
+                                .rounded(px(4.0))
+                                .bg(t.wash(0.06))
                                 .truncate()
-                                .text_size(px(12.0))
-                                .text_color(t.text_faint)
+                                .font_family(t.font_mono.clone())
+                                .text_size(px(11.0))
+                                .text_color(t.text_muted)
                                 .child(label),
                         )
                         .child(field(input))
                         .child(ui::button_ghost("office-apply", "Apply", t).on_click(on(Self::office_apply))),
+                )
+            })
+            .when(label.is_none(), |d| {
+                d.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.0))
+                        .text_size(px(11.5))
+                        .text_color(t.text_faint)
+                        .child("Click any text to edit it in place, or ask the agent:")
+                        .child(div().flex_1())
+                        .children(quick_actions.iter().enumerate().map(|(i, (chip, prompt))| {
+                            let weak = cx.weak_entity();
+                            let prompt = (*prompt).to_string();
+                            div()
+                                .id(SharedString::from(format!("office-qa-{i}")))
+                                .h(px(22.0))
+                                .px(px(7.0))
+                                .flex()
+                                .items_center()
+                                .rounded(px(5.0))
+                                .border_1()
+                                .border_color(t.border)
+                                .bg(t.wash(0.03))
+                                .cursor_pointer()
+                                .text_size(px(11.0))
+                                .text_color(t.text_muted)
+                                .hover(|s| s.bg(t.wash(0.07)).text_color(t.text))
+                                .child(*chip)
+                                .on_click(move |_, _, cx| {
+                                    let prompt = prompt.clone();
+                                    let _ = weak.update(cx, |v, cx| v.office_ask_with(&prompt, cx));
+                                })
+                        })),
                 )
             })
             .when_some(self.agent_input.as_ref(), |d, input| {
@@ -548,23 +617,12 @@ impl FilesPanel {
                         .child(ui::button_ghost("office-ask", "Ask agent", t).on_click(on(Self::office_ask))),
                 )
             })
-            .when(dirty > 0 || self.office_status.is_some(), |d| {
+            .when(dirty == 0 && self.office_status.is_some(), |d| {
                 d.child(
                     div()
-                        .flex()
-                        .items_center()
-                        .gap(px(8.0))
-                        .child(div().flex_1().min_w_0().truncate().text_size(px(12.0)).text_color(t.text_muted).child(
-                            if dirty > 0 {
-                                format!("{dirty} unsaved {}", if dirty == 1 { "change" } else { "changes" })
-                            } else {
-                                self.office_status.clone().unwrap_or_default()
-                            },
-                        ))
-                        .when(dirty > 0, |d| {
-                            d.child(ui::button_ghost("office-revert", "Revert", t).on_click(on(Self::office_revert)))
-                                .child(ui::button_primary("office-save", "Save", t).on_click(on(Self::office_save)))
-                        }),
+                        .text_size(px(12.0))
+                        .text_color(t.text_muted)
+                        .child(self.office_status.clone().unwrap_or_default()),
                 )
             })
             .into_any_element()
@@ -576,6 +634,92 @@ impl FilesPanel {
         }
         let p = self.preview.as_ref().expect("preview open");
         let full = self.root.as_ref().map(|r| r.join(&p.path));
+        let rel_for_copy = p.path.clone();
+        let line_count = p.lines.len();
+        let office_head = match (&p.kind, p.office.as_ref()) {
+            (PreviewKind::Office(kind), Some(view)) => Some((*kind, view.doc.summary(), view.dirty())),
+            (PreviewKind::Office(kind), None) => Some((*kind, "Opening…".to_string(), 0)),
+            _ => None,
+        };
+        if let Some((kind, summary, dirty)) = office_head {
+            let name = std::path::Path::new(&p.path)
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| p.path.clone());
+            let weak = cx.weak_entity();
+            let header = div()
+                .h(px(52.0))
+                .px(px(10.0))
+                .flex()
+                .items_center()
+                .gap(px(10.0))
+                .border_b_1()
+                .border_color(t.border)
+                .child(ui::icon_button("prev-back", icons::ARROW_LEFT, "Back to files", t, {
+                    let weak = weak.clone();
+                    move |_, _, cx| {
+                        let _ = weak.update(cx, |v, cx| v.close_preview(cx));
+                    }
+                }))
+                .child(kit::avatar_tile(kind.short(), kind.hue(), 30.0, t).text_size(px(11.0)))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .child(div().text_size(px(13.0)).text_color(t.text).truncate().child(name))
+                        .child(
+                            div()
+                                .text_size(px(11.5))
+                                .text_color(t.text_faint)
+                                .truncate()
+                                .child(format!("{} · {summary}", kind.label())),
+                        ),
+                )
+                .when(dirty > 0, |d| {
+                    let (w1, w2) = (weak.clone(), weak.clone());
+                    d.child(kit::badge(format!("{dirty} unsaved"), t.warning))
+                        .child(ui::button_ghost("office-revert-top", "Revert", t).on_click(move |_, _, cx| {
+                            let _ = w1.update(cx, |v, cx| v.office_revert(cx));
+                        }))
+                        .child(ui::button_primary("office-save-top", "Save", t).on_click(move |_, _, cx| {
+                            let _ = w2.update(cx, |v, cx| v.office_save(cx));
+                        }))
+                })
+                .child(ui::icon_button("prev-copy-path", icons::COPY, "Copy relative path", t, move |_, _, cx| {
+                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(rel_for_copy.clone()));
+                }))
+                .when_some(full.clone(), |d, full| {
+                    d.child(ui::icon_button("prev-open", icons::ARROW_UP_RIGHT, "Open in its app", t, move |_, _, cx| {
+                        cx.open_with_system(&full);
+                    }))
+                });
+            let body = match p.office.as_ref() {
+                Some(view) => office::view::render(view, t, cx),
+                None => div()
+                    .size_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_size(px(12.5))
+                    .text_color(t.text_faint)
+                    .child("Opening…")
+                    .into_any_element(),
+            };
+            let body = match &p.error {
+                Some(e) => kit::empty_state(icons::DOCUMENT, "No preview", e, t).into_any_element(),
+                None => body,
+            };
+            return div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .child(header)
+                .child(div().flex_1().min_h_0().bg(t.wash(0.03)).child(body))
+                .child(self.office_bar(t, cx))
+                .into_any_element();
+        }
         let header = div()
             .h(px(36.0))
             .px(px(8.0))
@@ -590,6 +734,7 @@ impl FilesPanel {
                     let _ = weak.update(cx, |v, cx| v.close_preview(cx));
                 }
             }))
+            .child(file_type_icon(&p.path, false, t).size(px(14.0)))
             .child(
                 div()
                     .flex_1()
@@ -599,6 +744,17 @@ impl FilesPanel {
                     .font_family(t.font_mono.clone())
                     .child(p.path.clone()),
             )
+            .when(matches!(p.kind, PreviewKind::Text | PreviewKind::Markdown) && line_count > 0, |d| {
+                d.child(
+                    div()
+                        .text_size(px(11.0))
+                        .text_color(t.text_faint)
+                        .child(format!("{line_count} lines")),
+                )
+            })
+            .child(ui::icon_button("prev-copy-path", icons::COPY, "Copy relative path", t, move |_, _, cx| {
+                cx.write_to_clipboard(gpui::ClipboardItem::new_string(rel_for_copy.clone()));
+            }))
             .when(!matches!(p.kind, PreviewKind::Image | PreviewKind::Office(_)), |d| {
                 d.child(ui::icon_button("prev-edit", icons::PEN, "Edit this file", t, {
                     let weak = cx.weak_entity();
@@ -780,17 +936,11 @@ impl FilesPanel {
     }
 }
 
-fn file_icon(name: &str) -> &'static str {
-    let ext = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
-    match ext.as_str() {
-        "md" | "mdx" => icons::FILE_MARKDOWN,
-        "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "ico" => icons::FILE_IMAGE,
-        "json" | "toml" | "yaml" | "yml" | "lock" | "csv" => icons::FILE_DATA,
-        "css" | "scss" | "less" => icons::FILE_STYLE,
-        "rs" | "ts" | "tsx" | "js" | "jsx" | "py" | "go" | "c" | "cpp" | "h" | "java" | "kt" | "swift" | "rb"
-        | "php" | "sh" | "html" => icons::FILE_CODE,
-        _ => icons::DOCUMENT,
-    }
+/// Zeron's polychrome file-type icon (vscode-symbols) for a file or folder.
+pub(crate) fn file_type_icon(path: &str, dir: bool, t: &Theme) -> gpui::Img {
+    use crate::file_icons::{FileIconIdentity, icon};
+    let identity = if dir { FileIconIdentity::directory(path, false) } else { FileIconIdentity::file(path) };
+    icon(identity, t.appearance)
 }
 
 impl Render for FilesPanel {
@@ -799,22 +949,41 @@ impl Render for FilesPanel {
         if self.preview.is_some() {
             return self.render_preview(&t, window, cx);
         }
+        let file_count = self.files.len();
         let search = div()
             .m(px(8.0))
-            .h(px(30.0))
-            .px(px(8.0))
             .flex()
             .items_center()
             .gap(px(6.0))
-            .rounded(px(8.0))
-            .bg(t.wash(0.05))
-            .border_1()
-            .border_color(t.border)
-            .text_size(px(13.0))
-            .child(icon(icons::MAGNIFER).size(px(14.0)).text_color(t.text_faint))
-            .child(div().flex_1().child(Input::new(&self.search)));
+            .child(
+                div()
+                    .flex_1()
+                    .h(px(30.0))
+                    .px(px(8.0))
+                    .flex()
+                    .items_center()
+                    .gap(px(6.0))
+                    .rounded(px(8.0))
+                    .bg(t.wash(0.05))
+                    .border_1()
+                    .border_color(t.border)
+                    .text_size(px(13.0))
+                    .child(icon(icons::MAGNIFER).size(px(14.0)).text_color(t.text_faint))
+                    .child(div().flex_1().child(Input::new(&self.search)))
+                    .when(file_count > 0, |d| {
+                        d.child(div().text_size(px(11.0)).text_color(t.text_faint).child(format!("{file_count}")))
+                    }),
+            )
+            .child(ui::icon_button(
+                "files-refresh",
+                icons::REFRESH,
+                "Refresh workspace files",
+                &t,
+                cx.listener(|this, _, _, cx| this.refresh(cx)),
+            ));
 
         let entries = self.visible.clone();
+        let marks = self.git_marks.clone();
         let weak = cx.weak_entity();
         let tree: AnyElement = if self.root.is_none() {
             kit::empty_state(icons::FOLDER, "No workspace", "Open a thread to browse its files.", &t).into_any_element()
@@ -837,6 +1006,14 @@ impl Render for FilesPanel {
                         let path = e.path.clone();
                         let dir = e.dir;
                         let open = dir && !collapsed.contains(&e.path);
+                        let mark = marks.get(&e.path).copied();
+                        let mark_color = match mark {
+                            Some('?' | 'A') => t.success,
+                            Some('D') => t.danger,
+                            Some('•') => t.warning.opacity(0.8),
+                            Some(_) => t.warning,
+                            None => t.text_faint,
+                        };
                         div()
                             .id(("file-row", i))
                             .h(px(26.0))
@@ -860,11 +1037,31 @@ impl Render for FilesPanel {
                                 div().w(px(12.0)).into_any_element()
                             })
                             .child(
-                                icon(if dir { icons::FOLDER } else { file_icon(&e.name) })
-                                    .size(px(14.0))
-                                    .text_color(t.text_faint),
+                                file_type_icon(&e.name, dir, t).size(px(14.0)),
                             )
-                            .child(div().flex_1().min_w_0().truncate().child(e.name.clone()))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .when(mark.is_some_and(|m| m != '•'), |d| d.text_color(mark_color))
+                                    .when(mark == Some('D'), |d| d.line_through())
+                                    .child(e.name.clone()),
+                            )
+                            .when_some(mark, |d, m| {
+                                d.child(if m == '•' {
+                                    ui::dot(mark_color, 5.0).into_any_element()
+                                } else {
+                                    div()
+                                        .w(px(12.0))
+                                        .text_right()
+                                        .text_size(px(11.0))
+                                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                                        .text_color(mark_color)
+                                        .child(if m == '?' { "U".to_string() } else { m.to_string() })
+                                        .into_any_element()
+                                })
+                            })
                             .on_click(move |_, _, cx| {
                                 let _ = weak.update(cx, |p, cx| {
                                     if dir { p.toggle_dir(&path, cx) } else { p.open_path(&path, None, cx) }

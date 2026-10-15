@@ -74,7 +74,7 @@ pub fn is_dove_tool(name: &str) -> bool {
     let n = name.trim().to_ascii_lowercase();
     let n = n.trim_start_matches("approve").trim();
     ["mcp__dove__", "dove/", "dove.", "dove__", "dove:"].iter().any(|p| {
-        n.starts_with(p) && (n[p.len()..].starts_with("browser_") || matches!(&n[p.len()..], "show_ui" | "dove_skills"))
+        n.starts_with(p) && (n[p.len()..].starts_with("browser_") || matches!(&n[p.len()..], "show_ui" | "show_canvas" | "dove_skills"))
     })
 }
 

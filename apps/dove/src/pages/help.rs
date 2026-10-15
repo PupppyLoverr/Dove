@@ -2,7 +2,7 @@
 
 use gpui::{AnyElement, Context, ParentElement as _, Styled as _, div, px};
 
-use super::page;
+use super::page_with;
 use crate::kit;
 use crate::shell::Shell;
 use crate::theme::Theme;
@@ -11,6 +11,14 @@ const TIPS: &[(&str, &str)] = &[
     (
         "Chat ⇄ Terminal",
         "Ctrl+` hands a thread to the agent's own terminal UI on the same session, and back. Mid-turn, it switches when the turn ends.",
+    ),
+    (
+        "Team",
+        "Create persistent teammates (Lead, Builder, Reviewer, Designer) in the left sidebar. Each teammate keeps its own harness, model, standing brief, and NOTES.md memory across all its threads.",
+    ),
+    (
+        "Live Canvas & Generative UI",
+        "Ask any agent to design an app, website, or mobile screen, or type /design or /mobile. Interactive HTML, React/TSX, and native UI cards render live in chat and in the side panel Canvas.",
     ),
     (
         "Approvals",
@@ -55,9 +63,7 @@ impl Shell {
                 .child(div().text_size(px(13.5)).font_weight(gpui::FontWeight::MEDIUM).child(*title))
                 .child(div().text_size(px(13.0)).text_color(t.text_muted).child(*body))
         }));
-        page(
-            "help-page",
-            "Help & shortcuts",
+        page_with("help-page", "Help & shortcuts", "How Dove works, and every key it listens for.",
             &t,
             None,
             div()

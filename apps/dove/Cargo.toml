@@ -25,7 +25,9 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 mermaid-rs-renderer = "0.3.1"
 dove-term = { workspace = true }
 dove-store.workspace = true
+uuid = { workspace = true }
 zeron-syntax = { path = "../../vendor/zeron-syntax" }
+zeron-markdown = { path = "../../vendor/zeron-markdown" }
 zeron-voice = { path = "../../vendor/zeron-voice" }
 similar = "2"
 notify-rust = "4.18"
@@ -35,6 +37,7 @@ serde = { workspace = true }
 tokio = { workspace = true, features = ["net"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 sha2 = "0.10"
+cpal = "=0.17.3"
 # Office previews: the same zip the vendored harness already links.
 zip = { version = "7.2", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 

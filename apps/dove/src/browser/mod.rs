@@ -46,7 +46,7 @@ pub fn set_runtime(handle: tokio::runtime::Handle) {
     let _ = RUNTIME.set(handle);
 }
 
-fn runtime() -> tokio::runtime::Handle {
+pub(crate) fn runtime() -> tokio::runtime::Handle {
     RUNTIME.get().cloned().unwrap_or_else(|| tokio::runtime::Handle::current())
 }
 
@@ -227,6 +227,8 @@ pub struct BrowserSurface {
     page_cursor: gpui::CursorStyle,
     /// What an agent is doing on this page right now.
     pub agent_activity: Option<gpui::SharedString>,
+    /// No address bar: the page alone (canvases).
+    pub chromeless: bool,
     agent_generation: u64,
 }
 
@@ -295,6 +297,7 @@ impl BrowserSurface {
             page_cursor: gpui::CursorStyle::Arrow,
             agent_activity: None,
             agent_generation: 0,
+            chromeless: false,
         }
     }
 

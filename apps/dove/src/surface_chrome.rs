@@ -44,6 +44,7 @@ pub fn toolbar(theme: &Theme) -> Div {
         .flex()
         .items_center()
         .gap(px(CONTROL_GAP))
+        .border_t_1()
         .border_b_1()
         .border_color(theme.border)
         .bg(if theme.is_frost() { theme.surface.opacity(0.26) } else { theme.surface })
@@ -71,6 +72,7 @@ pub fn toolbar_button(id: impl Into<gpui::ElementId>, label: &'static str) -> gp
 }
 
 /// A neutral chip: the right-panel tab strip and page navigation.
+/// Matches Zeron's `surface_chrome::tab_frame` exactly.
 pub fn tab_frame(id: impl Into<gpui::ElementId>, selected: bool, theme: &Theme) -> gpui::Stateful<Div> {
     div()
         .id(id)

@@ -49,6 +49,8 @@ pub struct AutoEditor {
     pub prompt: Entity<TextareaState>,
     pub project: Option<ProjectId>,
     pub harness: HarnessKind,
+    /// The teammate each run starts as.
+    pub persona: Option<String>,
     pub kind: TriggerKind,
     pub minutes: Entity<InputState>,
     pub time: Entity<InputState>,
@@ -74,6 +76,8 @@ pub struct PageState {
     pub draft_title: Entity<InputState>,
     pub draft_prompt: Entity<TextareaState>,
     pub adding_draft: bool,
+    /// The teammate a draft is handed to.
+    pub draft_persona: Option<String>,
     pub editing_draft: Option<TaskId>,
     pub confirm_done: Option<TaskId>,
     /// Open PR (number, url) per (project, branch).
@@ -96,9 +100,20 @@ pub struct PageState {
     // Archived
     pub archived_q: String,
     pub archived_search: Entity<InputState>,
+    // Team
+    pub team_focus: Option<String>,
+    pub team_expanded: Option<String>,
+    pub team_edit: Option<crate::team::TeamEditor>,
+    pub team_confirm_delete: bool,
+    /// The focused teammate's notes, read when focus changes.
+    pub team_notes: Option<String>,
+    /// In-app editor for the focused teammate's NOTES.md.
+    pub team_notes_edit: Option<Entity<TextareaState>>,
+    /// Quick-dispatch prompt bar on the teammate detail page.
+    pub team_prompt: Entity<InputState>,
 }
 
-fn input(placeholder: &'static str, window: &mut Window, cx: &mut Context<Shell>) -> Entity<InputState> {
+pub(crate) fn input(placeholder: &'static str, window: &mut Window, cx: &mut Context<Shell>) -> Entity<InputState> {
     let style = ui::input_style(Theme::of(cx));
     cx.new(|cx| {
         let mut s = InputState::new(window, cx).placeholder(placeholder);
@@ -107,7 +122,7 @@ fn input(placeholder: &'static str, window: &mut Window, cx: &mut Context<Shell>
     })
 }
 
-fn textarea(
+pub(crate) fn textarea(
     placeholder: &'static str,
     rows: (usize, usize),
     window: &mut Window,
@@ -151,6 +166,7 @@ impl PageState {
             draft_title: input("Draft title", window, cx),
             draft_prompt: textarea("What should the agent do?", (3, 10), window, cx),
             adding_draft: false,
+            draft_persona: None,
             editing_draft: None,
             confirm_done: None,
             pr_by_branch: HashMap::new(),
@@ -168,6 +184,13 @@ impl PageState {
             agent_path_edit: None,
             archived_q: String::new(),
             archived_search,
+            team_focus: None,
+            team_expanded: None,
+            team_edit: None,
+            team_confirm_delete: false,
+            team_notes: None,
+            team_notes_edit: None,
+            team_prompt: input("Dispatch a task to this teammate… (Enter to run)", window, cx),
         }
     }
 
@@ -191,10 +214,12 @@ impl PageState {
     }
 }
 
-/// A page's centered column with a title row.
-pub fn page(
+/// A page's centered column: a title, an optional one-line description
+/// under it, actions on the right, then the body.
+pub fn page_with(
     id: &'static str,
     title: &str,
+    subtitle: &str,
     t: &Theme,
     header_right: Option<gpui::AnyElement>,
     body: impl gpui::IntoElement,
@@ -214,26 +239,42 @@ pub fn page(
             div()
                 .w_full()
                 .max_w(px(980.0))
-                .px(px(28.0))
-                .pt(px(26.0))
-                .pb(px(48.0))
+                .px(px(32.0))
+                .pt(px(30.0))
+                .pb(px(56.0))
                 .flex()
                 .flex_col()
-                .gap(px(18.0))
+                .gap(px(22.0))
                 .child(
                     div()
                         .flex()
-                        .items_center()
-                        .gap(px(10.0))
+                        .items_start()
+                        .gap(px(16.0))
                         .child(
                             div()
-                                .text_size(px(24.0))
-                                .font_weight(gpui::FontWeight::SEMIBOLD)
-                                .text_color(t.text)
-                                .child(title.to_string()),
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .gap(px(4.0))
+                                .child(
+                                    div()
+                                        .text_size(px(22.0))
+                                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                                        .text_color(t.text)
+                                        .child(title.to_string()),
+                                )
+                                .when(!subtitle.is_empty(), |d| {
+                                    d.child(
+                                        div()
+                                            .max_w(px(620.0))
+                                            .text_size(px(13.0))
+                                            .text_color(t.text_faint)
+                                            .child(subtitle.to_string()),
+                                    )
+                                }),
                         )
-                        .child(div().flex_1())
-                        .when_some(header_right, |d, r| d.child(r)),
+                        .when_some(header_right, |d, r| d.child(div().flex_none().pt(px(2.0)).child(r))),
                 )
                 .child(body),
         )

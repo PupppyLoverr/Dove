@@ -139,6 +139,45 @@ pub struct NewTask {
     pub from_branch: Option<String>,
     /// Join an existing task's worktree instead (a side chat).
     pub join: Option<Joined>,
+    /// The teammate this thread runs as.
+    pub persona: Option<dove_store::Persona>,
+}
+
+const PERSONA_OPEN: &str = "<dove-persona>";
+const PERSONA_CLOSE: &str = "</dove-persona>";
+
+/// The brief that leads a teammate's first turn: who it is, how it works,
+/// and the notes it keeps between threads. Tagged so the chat can hide it.
+pub fn persona_preamble(p: &dove_store::Persona, notes: Option<&std::path::Path>) -> String {
+    let role = if p.role.trim().is_empty() { String::new() } else { format!(", {}", p.role.trim()) };
+    let name = p.name.trim();
+    let mut out = format!(
+        "{PERSONA_OPEN}\nYou are {name}{role}, a member of the user's team in Dove. Work as {name} for this whole thread.\n"
+    );
+    if !p.instructions.trim().is_empty() {
+        out.push_str(&format!("\nHow you work:\n{}\n", p.instructions.trim()));
+    }
+    if let Some(notes) = notes {
+        out.push_str(&format!(
+            "\nYour notes file is {}. If it exists, read it before you start. Before you finish, update it with \
+             what you would want to know at the start of your next thread: decisions, conventions, open questions. \
+             Keep it short.\n",
+            notes.display()
+        ));
+    }
+    out.push_str(&format!("{PERSONA_CLOSE}\n\n"));
+    out
+}
+
+/// A prompt without its teammate brief, as the user wrote it.
+pub fn strip_persona(text: &str) -> &str {
+    let trimmed = text.trim_start();
+    if let Some(rest) = trimmed.strip_prefix(PERSONA_OPEN)
+        && let Some(end) = rest.find(PERSONA_CLOSE)
+    {
+        return rest[end + PERSONA_CLOSE.len()..].trim_start();
+    }
+    text
 }
 
 /// Where a side chat runs: another task's worktree and branch.
@@ -335,6 +374,18 @@ impl Engine {
             self.store.insert_task(&task)?;
         }
         self.save_add_dirs(task.id, &new.run.add_dirs);
+        let prompt = match &new.persona {
+            Some(p) => {
+                self.store.assign_persona(task.id, &p.id)?;
+                let notes = self.store.persona_notes_path(&p.id);
+                if let Some(dir) = notes.parent() {
+                    let _ = std::fs::create_dir_all(dir);
+                }
+                let keep = self.store.setting("team_notes").as_deref() != Some("false");
+                format!("{}{}", persona_preamble(p, keep.then_some(notes.as_path())), new.prompt)
+            }
+            None => new.prompt,
+        };
         let spec = SessionSpec {
             kind: new.harness,
             program,
@@ -344,7 +395,7 @@ impl Engine {
             model_options: new.run.options(),
             permission_mode: new.run.mode,
             resume: None,
-            prompt: Some(new.prompt),
+            prompt: Some(prompt),
             fork: false,
         };
         // A matching pre-started session takes the prompt straight away.
@@ -508,6 +559,14 @@ impl Engine {
             worktree,
             from_branch: None,
             join: None,
+            // A draft handed to a teammate starts as that teammate.
+            persona: self
+                .store
+                .persona_assignments()
+                .unwrap_or_default()
+                .into_iter()
+                .find(|(t, _)| *t == draft.id)
+                .and_then(|(_, id)| self.store.personas().ok()?.into_iter().find(|p| p.id == id)),
         };
         self.start_task_with(project, new, Some(draft), None)
     }
@@ -602,14 +661,23 @@ impl Engine {
             None => a.prompt.clone(),
         };
         let stamp = chrono::Local::now().format("%b %-d %H:%M");
+        let persona = self
+            .store
+            .setting(&format!("automation_persona.{}", a.id))
+            .filter(|id| !id.is_empty())
+            .and_then(|id| self.store.personas().ok()?.into_iter().find(|p| p.id == id));
         let new = NewTask {
             title: format!("{} · {stamp}", a.name),
             prompt,
-            harness: a.harness,
-            run: RunSettings { model: a.model.clone(), ..Default::default() },
+            harness: persona.as_ref().map(|p| p.harness).unwrap_or(a.harness),
+            run: RunSettings {
+                model: persona.as_ref().and_then(|p| p.model.clone()).or_else(|| a.model.clone()),
+                ..Default::default()
+            },
             worktree: a.worktree,
             from_branch: None,
             join: None,
+            persona,
         };
         let mut updated = a.clone();
         updated.last_run = Some(dove_store::now_ms());
@@ -1043,4 +1111,31 @@ const MODELS_RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(2
 
 fn models_key(kind: HarnessKind) -> String {
     format!("models.v2.{}", kind.id())
+}
+
+#[cfg(test)]
+mod persona_tests {
+    use super::*;
+
+    #[test]
+    fn preamble_round_trips_through_strip() {
+        let p = dove_store::Persona {
+            id: "ava".into(),
+            name: "Ava".into(),
+            role: "Reviewer".into(),
+            avatar: "A".into(),
+            hue: 0.5,
+            harness: dove_proto::HarnessKind::ClaudeCode,
+            model: None,
+            instructions: "Be terse.".into(),
+            created_at: 0,
+        };
+        let sent = format!("{}Fix the login bug", persona_preamble(&p, Some(std::path::Path::new("/n/NOTES.md"))));
+        assert!(sent.contains("NOTES.md"));
+        assert!(!persona_preamble(&p, None).contains("notes file"));
+        assert!(sent.contains("You are Ava, Reviewer"));
+        assert!(sent.contains("Be terse."));
+        assert_eq!(strip_persona(&sent), "Fix the login bug");
+        assert_eq!(strip_persona("plain"), "plain");
+    }
 }

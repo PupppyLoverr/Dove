@@ -1916,6 +1916,7 @@ dependencies = [
  "block2 0.6.2",
  "core-foundation 0.10.1",
  "core-graphics 0.24.0",
+ "cpal",
  "dove-core",
  "dove-store",
  "dove-term",
@@ -1946,11 +1947,13 @@ dependencies = [
  "tracing-subscriber",
  "tray-icon",
  "url",
+ "uuid",
  "webview2-com",
  "windows 0.61.3",
  "windows-core 0.61.2",
  "windows-sys 0.61.2",
  "wry",
+ "zeron-markdown",
  "zeron-syntax",
  "zeron-voice",
  "zip",
@@ -10658,6 +10661,13 @@ dependencies = [
  "zeron-proto",
  "zeron-voice-media",
  "zip",
+]
+
+[[package]]
+name = "zeron-markdown"
+version = "0.2.112"
+dependencies = [
+ "pulldown-cmark 0.13.4",
 ]
 
 [[package]]

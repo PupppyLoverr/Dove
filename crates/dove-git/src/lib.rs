@@ -289,6 +289,31 @@ pub fn list_files(dir: &Path) -> Result<Vec<String>> {
     Ok(files)
 }
 
+/// Working-tree status per path: `M` modified, `A` added, `D` deleted, `R`
+/// renamed, `?` untracked (from `git status --porcelain`).
+pub fn status(dir: &Path) -> Result<Vec<(String, char)>> {
+    let out = run(dir, &["status", "--porcelain", "-z", "--untracked-files=all"])?;
+    let mut items = Vec::new();
+    let mut parts = out.split('\0').filter(|p| p.len() > 3);
+    while let Some(entry) = parts.next() {
+        let (code, path) = entry.split_at(3);
+        let xy: Vec<char> = code.chars().take(2).collect();
+        let mark = match (xy.first().copied().unwrap_or(' '), xy.get(1).copied().unwrap_or(' ')) {
+            ('?', _) => '?',
+            ('R', _) | (_, 'R') => {
+                // A rename is followed by its old path; skip it.
+                parts.next();
+                'R'
+            }
+            ('A', _) => 'A',
+            ('D', _) | (_, 'D') => 'D',
+            _ => 'M',
+        };
+        items.push((path.to_string(), mark));
+    }
+    Ok(items)
+}
+
 /// (files, additions, deletions) of `wt` against `base`, untracked files
 /// included as additions.
 pub fn shortstat(wt: &Path, base: &str) -> Result<(u32, u32, u32)> {

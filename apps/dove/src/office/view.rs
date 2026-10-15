@@ -280,6 +280,8 @@ fn content_width(view: &OfficeView) -> f32 {
 fn docx_view(view: &OfficeView, d: &docx::Docx, t: &Theme, cx: &mut Context<FilesPanel>) -> AnyElement {
     let mut items = Vec::new();
     let mut number = 0u32;
+    let mut table_count = 0usize;
+    let word_count: usize = d.paras.iter().map(|p| p.text().split_whitespace().count()).sum();
     for b in &d.blocks {
         match b {
             docx::Block::Para(i) => {
@@ -299,6 +301,7 @@ fn docx_view(view: &OfficeView, d: &docx::Docx, t: &Theme, cx: &mut Context<File
             }
             docx::Block::Table(rows) => {
                 number = 0;
+                table_count += 1;
                 let line = t.border;
                 let table = div()
                     .my(px(6.0))
@@ -317,7 +320,7 @@ fn docx_view(view: &OfficeView, d: &docx::Docx, t: &Theme, cx: &mut Context<File
                                 div()
                                     .flex_1()
                                     .min_w_0()
-                                    .p(px(3.0))
+                                    .p(px(4.0))
                                     .when(ci > 0, |d| d.border_l_1().border_color(line))
                                     .children(cell.iter().map(|&i| docx_para(view, i, &d.paras[i], None, true, t, cx)))
                             }))
@@ -327,16 +330,55 @@ fn docx_view(view: &OfficeView, d: &docx::Docx, t: &Theme, cx: &mut Context<File
             }
         }
     }
+    let strip = div()
+        .h(px(28.0))
+        .px(px(14.0))
+        .flex_none()
+        .flex()
+        .items_center()
+        .gap(px(8.0))
+        .border_b_1()
+        .border_color(t.border)
+        .bg(t.wash(0.02))
+        .text_size(px(11.5))
+        .text_color(t.text_faint)
+        .child(div().font_weight(FontWeight::MEDIUM).text_color(t.text_muted).child("Word Document"))
+        .child("·")
+        .child(format!("{word_count} words"))
+        .child("·")
+        .child(format!("{} paragraphs", d.paras.len()))
+        .when(table_count > 0, |el| el.child("·").child(format!("{table_count} tables")))
+        .child(div().flex_1())
+        .when(view.dirty() > 0, |el| {
+            el.child(crate::kit::badge(format!("{} edited", view.dirty()), t.accent))
+        });
+
     div()
-        .id("office-docx")
         .size_full()
-        .overflow_y_scroll()
-        .px(px(18.0))
-        .py(px(16.0))
         .flex()
         .flex_col()
-        .gap(px(2.0))
-        .children(items)
+        .child(strip)
+        .child(
+            div()
+                .id("office-docx")
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scroll()
+                .p(px(14.0))
+                .child(
+                    div()
+                        .rounded(px(10.0))
+                        .border_1()
+                        .border_color(t.border)
+                        .bg(t.wash(0.015))
+                        .px(px(16.0))
+                        .py(px(14.0))
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.0))
+                        .children(items),
+                ),
+        )
         .into_any_element()
 }
 
@@ -445,25 +487,42 @@ fn pptx_view(view: &OfficeView, d: &pptx::Deck, t: &Theme, cx: &mut Context<File
     let scale = w / d.width;
     let pt = w / (d.width / 12700.0);
     let h = d.height * scale;
+    let total_slides = d.slides.len();
+    let sel_slide = match &view.selected {
+        Some(Target::Slide { slide, .. }) => Some(*slide),
+        _ => None,
+    };
     let mut slides = Vec::new();
     for (si, s) in d.slides.iter().enumerate() {
         let sc = SlideCtx { deck: d, slide: si, scale, pt };
         let shapes: Vec<AnyElement> = s.shapes.iter().map(|sh| pptx_shape(view, &sc, sh, cx)).collect();
+        let slide_edited = view.edits.iter().any(|(tgt, _)| matches!(tgt, Target::Slide { slide, .. } if *slide == si));
+        let is_sel = sel_slide == Some(si);
         slides.push(
             div()
                 .flex()
                 .flex_col()
                 .gap(px(6.0))
-                .child(div().text_size(px(11.5)).text_color(t.text_faint).child(format!("Slide {}", si + 1)))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.0))
+                        .text_size(px(11.5))
+                        .text_color(if is_sel { t.text } else { t.text_faint })
+                        .child(format!("Slide {} of {total_slides}", si + 1))
+                        .when(slide_edited, |el| el.child(crate::kit::badge("Edited", t.accent))),
+                )
                 .child(
                     div()
                         .relative()
                         .w(px(w))
                         .h(px(h))
                         .bg(paper())
-                        .rounded(px(6.0))
+                        .rounded(px(8.0))
                         .border_1()
-                        .border_color(t.border)
+                        .border_color(if is_sel { t.accent } else { t.border })
+                        .shadow_sm()
                         .overflow_hidden()
                         .children(shapes),
                 ),
@@ -473,15 +532,43 @@ fn pptx_view(view: &OfficeView, d: &pptx::Deck, t: &Theme, cx: &mut Context<File
         return crate::kit::empty_state(crate::assets::icons::DOCUMENT, "No slides", "This deck is empty.", t)
             .into_any_element();
     }
+    let strip = div()
+        .h(px(28.0))
+        .px(px(14.0))
+        .flex_none()
+        .flex()
+        .items_center()
+        .gap(px(8.0))
+        .border_b_1()
+        .border_color(t.border)
+        .bg(t.wash(0.02))
+        .text_size(px(11.5))
+        .text_color(t.text_faint)
+        .child(div().font_weight(FontWeight::MEDIUM).text_color(t.text_muted).child("Presentation"))
+        .child("·")
+        .child(format!("{total_slides} slides"))
+        .child(div().flex_1())
+        .when(view.dirty() > 0, |el| {
+            el.child(crate::kit::badge(format!("{} edited", view.dirty()), t.accent))
+        });
+
     div()
-        .id("office-pptx")
         .size_full()
-        .overflow_y_scroll()
-        .p(px(16.0))
         .flex()
         .flex_col()
-        .gap(px(18.0))
-        .children(slides)
+        .child(strip)
+        .child(
+            div()
+                .id("office-pptx")
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scroll()
+                .p(px(16.0))
+                .flex()
+                .flex_col()
+                .gap(px(18.0))
+                .children(slides),
+        )
         .into_any_element()
 }
 
@@ -590,16 +677,23 @@ fn slide_para(
 
 fn xlsx_view(view: &OfficeView, b: &xlsx::Book, t: &Theme, cx: &mut Context<FilesPanel>) -> AnyElement {
     let sheet = view.sheet;
+    let selected = match &view.selected {
+        Some(Target::Cell { sheet: s, at }) if *s == sheet => Some(*at),
+        _ => None,
+    };
+    let (sh_rows, sh_cols) = b.sheets.get(sheet).map(|s| (s.rows, s.cols)).unwrap_or((0, 0));
     let tabs = div()
         .id("xlsx-tabs")
         .flex_none()
         .flex()
+        .items_center()
         .gap(px(2.0))
         .px(px(8.0))
-        .py(px(6.0))
+        .py(px(5.0))
         .overflow_x_scroll()
         .border_b_1()
         .border_color(t.border)
+        .bg(t.wash(0.02))
         .children(b.sheets.iter().enumerate().map(|(i, s)| {
             let weak = cx.weak_entity();
             let hover = t.wash(0.06);
@@ -612,19 +706,87 @@ fn xlsx_view(view: &OfficeView, b: &xlsx::Book, t: &Theme, cx: &mut Context<File
                 .items_center()
                 .rounded(px(6.0))
                 .text_size(px(12.0))
+                .font_weight(if i == sheet { FontWeight::MEDIUM } else { FontWeight::NORMAL })
                 .cursor_pointer()
-                .when(i == sheet, |d| d.bg(t.wash(0.09)).text_color(t.text))
+                .when(i == sheet, |d| d.bg(t.surface_raised).border_1().border_color(t.border).text_color(t.text))
                 .when(i != sheet, |d| d.text_color(t.text_muted).hover(move |s| s.bg(hover)))
                 .child(s.name.clone())
                 .on_click(move |_, _, cx| {
                     let _ = weak.update(cx, |p, cx| p.office_sheet(i, cx));
                 })
-        }));
-    let grid = view.grid.clone();
-    let selected = match &view.selected {
-        Some(Target::Cell { sheet: s, at }) if *s == sheet => Some(*at),
-        _ => None,
+        }))
+        .child(div().flex_1())
+        .child(
+            div()
+                .px(px(6.0))
+                .text_size(px(11.0))
+                .text_color(t.text_faint)
+                .child(format!("{sh_rows} × {sh_cols}")),
+        );
+
+    let (cell_coord, cell_raw, cell_disp) = match selected {
+        Some(at) => (
+            xlsx::cell_name(at.0, at.1),
+            b.input(sheet, at),
+            b.display(sheet, at),
+        ),
+        None => ("—".to_string(), String::new(), String::new()),
     };
+    let is_formula = cell_raw.starts_with('=');
+    let fx_bar = div()
+        .h(px(28.0))
+        .px(px(8.0))
+        .flex_none()
+        .flex()
+        .items_center()
+        .gap(px(8.0))
+        .border_b_1()
+        .border_color(t.border)
+        .bg(t.wash(0.015))
+        .text_size(px(12.0))
+        .child(
+            div()
+                .min_w(px(46.0))
+                .h(px(20.0))
+                .px(px(6.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(4.0))
+                .bg(t.wash(0.05))
+                .font_family(t.font_mono.clone())
+                .text_size(px(11.0))
+                .text_color(t.text)
+                .child(cell_coord),
+        )
+        .child(
+            div()
+                .font_family(t.font_mono.clone())
+                .italic()
+                .text_size(px(11.5))
+                .text_color(t.text_faint)
+                .child("fx"),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .font_family(t.font_mono.clone())
+                .text_size(px(11.5))
+                .text_color(if selected.is_some() && !cell_raw.is_empty() { t.text } else { t.text_faint })
+                .child(if selected.is_none() {
+                    "Click any cell to inspect formula or edit value".to_string()
+                } else if cell_raw.is_empty() {
+                    "(empty)".to_string()
+                } else if is_formula && cell_disp != cell_raw {
+                    format!("{cell_raw}  →  {cell_disp}")
+                } else {
+                    cell_raw
+                }),
+        );
+
+    let grid = view.grid.clone();
     let edited: Arc<HashSet<(u32, u32)>> = Arc::new(
         view.edits
             .iter()
@@ -721,6 +883,7 @@ fn xlsx_view(view: &OfficeView, b: &xlsx::Book, t: &Theme, cx: &mut Context<File
         .flex()
         .flex_col()
         .child(tabs)
+        .child(fx_bar)
         .child(
             div()
                 .id("xlsx-h")
@@ -736,6 +899,27 @@ fn xlsx_view(view: &OfficeView, b: &xlsx::Book, t: &Theme, cx: &mut Context<File
 
 fn pdf_view(view: &OfficeView, p: &pdf::Pdf, t: &Theme, cx: &mut Context<FilesPanel>) -> AnyElement {
     let w = content_width(view).max(160.0);
+    let strip = div()
+        .h(px(28.0))
+        .px(px(14.0))
+        .flex_none()
+        .flex()
+        .items_center()
+        .gap(px(8.0))
+        .border_b_1()
+        .border_color(t.border)
+        .bg(t.wash(0.02))
+        .text_size(px(11.5))
+        .text_color(t.text_faint)
+        .child(div().font_weight(FontWeight::MEDIUM).text_color(t.text_muted).child("PDF Document"))
+        .child("·")
+        .child(format!("{} pages", p.page_count))
+        .when(!p.fields.is_empty(), |el| el.child("·").child(format!("{} form fields", p.fields.len())))
+        .child(div().flex_1())
+        .when(view.dirty() > 0, |el| {
+            el.child(crate::kit::badge(format!("{} edited", view.dirty()), t.accent))
+        });
+
     let fields = (!p.fields.is_empty()).then(|| {
         let hover = t.wash(0.06);
         div()
@@ -746,7 +930,8 @@ fn pdf_view(view: &OfficeView, p: &pdf::Pdf, t: &Theme, cx: &mut Context<FilesPa
             .rounded(px(8.0))
             .border_1()
             .border_color(t.border)
-            .child(div().px(px(6.0)).py(px(4.0)).text_size(px(11.5)).text_color(t.text_faint).child("Form fields"))
+            .bg(t.wash(0.02))
+            .child(div().px(px(6.0)).py(px(4.0)).text_size(px(11.5)).text_color(t.text_faint).child("Interactive AcroForm Fields"))
             .children(p.fields.iter().enumerate().map(|(i, f)| {
                 let target = Target::Field(i);
                 let selected = view.selected.as_ref() == Some(&target);
@@ -807,27 +992,49 @@ fn pdf_view(view: &OfficeView, p: &pdf::Pdf, t: &Theme, cx: &mut Context<FilesPa
             p.page_count
         ))
     });
+    let total_pages = p.page_count;
     div()
-        .id("office-pdf")
         .size_full()
-        .overflow_y_scroll()
-        .p(px(16.0))
         .flex()
         .flex_col()
-        .gap(px(14.0))
-        .children(fields)
-        .children(p.pages.iter().map(|page| {
+        .child(strip)
+        .child(
             div()
-                .w(px(w))
-                .h(px(w * page.aspect))
-                .flex_none()
-                .rounded(px(4.0))
-                .border_1()
-                .border_color(t.border)
-                .overflow_hidden()
-                .bg(paper())
-                .child(gpui::img(page.image.clone()).size_full().object_fit(ObjectFit::Contain))
-        }))
-        .children(more)
+                .id("office-pdf")
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scroll()
+                .p(px(16.0))
+                .flex()
+                .flex_col()
+                .gap(px(14.0))
+                .children(fields)
+                .children(p.pages.iter().enumerate().map(|(pi, page)| {
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(5.0))
+                        .child(
+                            div()
+                                .text_size(px(11.5))
+                                .text_color(t.text_faint)
+                                .child(format!("Page {} of {total_pages}", pi + 1)),
+                        )
+                        .child(
+                            div()
+                                .w(px(w))
+                                .h(px(w * page.aspect))
+                                .flex_none()
+                                .rounded(px(6.0))
+                                .border_1()
+                                .border_color(t.border)
+                                .shadow_sm()
+                                .overflow_hidden()
+                                .bg(paper())
+                                .child(gpui::img(page.image.clone()).size_full().object_fit(ObjectFit::Contain)),
+                        )
+                }))
+                .children(more),
+        )
         .into_any_element()
 }

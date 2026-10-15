@@ -20,14 +20,14 @@ use dove_core::proto::{
     AgentEvent, PermissionDecision, PermissionRequest, RateWindow, TaskStatus, TodoItem, TodoStatus, ToolKind, Usage,
 };
 use dove_core::store::{Project, Task};
-use dove_core::{Command, Engine, LiveSession};
+use dove_core::{Command, Engine, LiveSession, git};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{Anchor, anchored, deferred};
 use gpui::{
-    Animation, AnimationExt as _, AnyElement, App, AppContext as _, ClipboardItem, Context, Entity, EventEmitter,
+    AnyElement, App, AppContext as _, ClipboardItem, Context, Entity, EventEmitter,
     FocusHandle, Focusable, FollowMode, InteractiveElement as _, IntoElement, KeyDownEvent, ListAlignment, ListOffset,
     ListState, ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription,
-    WeakEntity, Window, div, list, px,
+    WeakEntity, Window, canvas, div, list, px,
 };
 use gpui_base::input::{Input, InputEvent, InputState};
 
@@ -39,13 +39,22 @@ use crate::theme::Theme;
 use crate::ui;
 
 const FRAME: Duration = Duration::from_millis(8);
-const OUTPUT_TAIL: usize = 3;
-const OUTPUT_OPEN: usize = 40;
 const DIFF_PREVIEW: usize = 8;
-const DIFF_MAX: usize = 120;
+const DIFF_MAX: usize = 600;
 /// Steps of a live activity shown before the rest fold away.
-const LIVE_STEPS: usize = 4;
+const LIVE_STEPS: usize = 6;
+/// Output lines an open chip shows before its counted "more" row.
+const OUTPUT_KEEP: usize = 24;
+/// Output lines once the user asks for all of it.
+const OUTPUT_FULL: usize = 400;
+/// A one-line call this short reads whole in its chip header.
+const INVOCATION_INLINE: usize = 56;
 pub const COLUMN_MAX: f32 = 760.0;
+/// The composer dock's height before its first measurement: a one-line
+/// pill and its meta row.
+const DOCK_GUESS: f32 = 90.0;
+/// The composer's meta row under the pill, with its gap.
+const COMPOSER_META: f32 = 34.0;
 
 pub enum TaskViewEvent {
     Status(TaskStatus),
@@ -64,6 +73,9 @@ pub enum TaskViewEvent {
     ShowTerminal,
     /// Drive the in-app browser the way a person would.
     DriveBrowser(crate::browser::Drive),
+    /// Show a design in the side panel. `true` when the user asked (a
+    /// card's Open); `false` when it just arrived from the agent.
+    OpenCanvas(crate::canvas::Spec, bool),
 }
 
 // ------------------------------------------------------------------ model
@@ -71,15 +83,17 @@ pub enum TaskViewEvent {
 /// A tool call inside an activity fold.
 #[derive(Clone)]
 pub struct Tool {
-    /// The harness's call id (tests and debugging).
-    #[allow(dead_code)]
+    /// The harness's call id (it also keys a subagent's own events).
     pub id: String,
     pub title: SharedString,
     pub kind: ToolKind,
     pub output: Option<SharedString>,
     pub error: bool,
     pub diff: Option<Arc<MiniDiff>>,
-    pub open: bool,
+    /// The user's fold choice; `None` follows [`Tool::opens_by_default`].
+    pub open: Option<bool>,
+    /// Show the whole output (or diff), not its first screen.
+    pub full: bool,
     /// The harness's tool name (`Bash`, `mcp__server__tool`, ...).
     pub name: SharedString,
     pub input: Arc<serde_json::Value>,
@@ -88,51 +102,121 @@ pub struct Tool {
     pub took: Option<Duration>,
 }
 
-/// A compact line diff for an edit, capped for display.
+/// A subagent a thread started (Claude Code's Task tool and its kin).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Subagent {
+    pub title: String,
+    /// The subagent type, when the harness names one ("Explore", "Plan").
+    pub kind: String,
+    pub prompt: String,
+    pub output: Option<String>,
+    pub error: bool,
+    pub running: bool,
+    pub took: Option<Duration>,
+    /// The transcript row holding the call.
+    pub row: usize,
+    /// The spawning call's id, which keys the subagent's own events.
+    pub id: String,
+    /// Tool calls the subagent has made so far.
+    pub steps: usize,
+    /// What it is doing right now, while it runs.
+    pub doing: Option<String>,
+}
+
+/// An edit's diff in the Changes pane's model, as Zeron's inline tool
+/// diffs: hunks with 3 lines of context, dual line numbers, and syntax
+/// spans computed once here, never per paint. Capped for display.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MiniDiff {
     pub path: String,
     pub added: usize,
     pub removed: usize,
-    /// `('+'|'-'|' ', text)`.
-    pub lines: Vec<(char, String)>,
+    pub file: git::FileDiff,
+    /// Per hunk, per line; empty when the language is unknown.
+    pub spans: Vec<Vec<Vec<zeron_syntax::HighlightSpan>>>,
+    /// Lines kept across all hunks (hunk headers not counted).
+    pub lines: usize,
     pub truncated: bool,
 }
 
 impl MiniDiff {
     pub fn new(path: &str, old: &str, new: &str) -> Self {
+        use git::{DiffLine, FileDiff, FileStatus, Hunk, LineKind};
         let diff = similar::TextDiff::from_lines(old, new);
-        let (mut added, mut removed, mut lines) = (0, 0, Vec::new());
+        let (mut added, mut removed, mut kept) = (0, 0, 0usize);
         let mut truncated = false;
-        for group in diff.grouped_ops(1) {
-            for op in group {
-                for change in diff.iter_changes(&op) {
-                    let tag = match change.tag() {
+        let mut hunks = Vec::new();
+        for group in diff.grouped_ops(3) {
+            let (Some(first), Some(last)) = (group.first(), group.last()) else { continue };
+            let (o, n) = (first.old_range().start..last.old_range().end, first.new_range().start..last.new_range().end);
+            let header = format!("@@ -{},{} +{},{} @@", o.start + 1, o.len(), n.start + 1, n.len());
+            let mut lines = Vec::new();
+            for op in &group {
+                for change in diff.iter_changes(op) {
+                    let kind = match change.tag() {
                         similar::ChangeTag::Insert => {
                             added += 1;
-                            '+'
+                            LineKind::Added
                         }
                         similar::ChangeTag::Delete => {
                             removed += 1;
-                            '-'
+                            LineKind::Removed
                         }
-                        similar::ChangeTag::Equal => ' ',
+                        similar::ChangeTag::Equal => LineKind::Context,
                     };
-                    if lines.len() < DIFF_MAX {
-                        lines.push((tag, change.value().trim_end_matches(['\n', '\r']).to_string()));
-                    } else {
+                    if kept >= DIFF_MAX {
                         truncated = true;
+                        continue;
                     }
+                    kept += 1;
+                    let text = change.value().trim_end_matches(['\n', '\r']).replace('\t', "    ");
+                    lines.push(DiffLine {
+                        kind,
+                        old_no: change.old_index().map(|i| i as u32 + 1),
+                        new_no: change.new_index().map(|i| i as u32 + 1),
+                        text: text.into(),
+                    });
                 }
             }
+            if !lines.is_empty() {
+                hunks.push(Hunk { header: header.into(), lines });
+            }
         }
-        Self { path: path.to_string(), added, removed, lines, truncated }
+        let file = FileDiff {
+            path: path.to_string(),
+            old_path: None,
+            status: if old.is_empty() { FileStatus::Added } else { FileStatus::Modified },
+            binary: false,
+            additions: added as u32,
+            deletions: removed as u32,
+            hunks,
+        };
+        let spans = crate::changes::highlight_file(&file);
+        Self { path: path.to_string(), added, removed, file, spans, lines: kept, truncated }
     }
+}
+
+/// One stretch of reasoning inside an activity, parsed as it streams.
+#[derive(Default, Clone)]
+pub struct Thought {
+    /// How many tool calls preceded it, which places it on the rail.
+    pub at: usize,
+    pub text: String,
+    /// Zeron's flattened thought detail: the mended display tree while it
+    /// streams, the canonical tree once it settles.
+    pub detail: Arc<crate::tool_calls::ThoughtDetail>,
+    pub live: bool,
+    /// The user's fold choice; `None` is open while it streams.
+    pub open: Option<bool>,
+    started: Option<Instant>,
 }
 
 #[derive(Default, Clone)]
 pub struct Activity {
+    /// All reasoning, concatenated (for summaries and the status strip).
     pub thinking: String,
+    /// The same reasoning, segmented by the tool calls between it.
+    pub thoughts: Vec<Thought>,
     pub tools: Vec<Tool>,
     /// The user's choice; `None` follows the default (open while live).
     pub pinned: Option<bool>,
@@ -142,10 +226,8 @@ pub struct Activity {
 }
 
 impl Activity {
-    fn expanded(&self) -> bool {
-        self.pinned.unwrap_or(false)
-    }
-
+    /// Zeron's group summary ("Thought for 4s · ran 3 commands · edited 2
+    /// files · 1 failed"), with Dove's thinking time.
     pub fn summary(&self) -> String {
         let mut parts: Vec<String> = Vec::new();
         if !self.thinking.trim().is_empty() {
@@ -154,34 +236,55 @@ impl Activity {
                 _ => "Thought process".into(),
             });
         }
-        let count = |k: &[ToolKind]| self.tools.iter().filter(|t| k.contains(&t.kind)).count();
-        let plural = |n: usize, one: &str, many: &str| if n == 1 { one.to_string() } else { many.to_string() };
-        let ran = count(&[ToolKind::Execute]);
+        let plural = |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
+        let (mut ran, mut read, mut searched, mut fetched, mut todos, mut other) = (0, 0, 0, 0, 0, 0);
+        let mut edited: Vec<String> = Vec::new();
+        for t in &self.tools {
+            match t.kind {
+                _ if todo_items(&t.name, &t.input).is_some() => todos += 1,
+                ToolKind::Execute => ran += 1,
+                ToolKind::Edit => {
+                    let path = t.diff.as_ref().map(|d| d.path.clone()).or_else(|| tool_path(t)).unwrap_or_default();
+                    if !edited.contains(&path) {
+                        edited.push(path);
+                    }
+                }
+                ToolKind::Read => read += 1,
+                ToolKind::Search => searched += 1,
+                ToolKind::Fetch if t.name.to_ascii_lowercase().contains("search") => searched += 1,
+                ToolKind::Fetch => fetched += 1,
+                // Spawned subagents are cards outside the fold, not steps in it.
+                ToolKind::Agent => {}
+                ToolKind::Other | ToolKind::Think => other += 1,
+            }
+        }
         if ran > 0 {
-            parts.push(format!("Ran {ran} {}", plural(ran, "command", "commands")));
+            parts.push(format!("ran {}", plural(ran, "command", "commands")));
         }
-        let edited = count(&[ToolKind::Edit]);
-        if edited > 0 {
-            parts.push(format!("edited {edited} {}", plural(edited, "file", "files")));
+        if !edited.is_empty() {
+            parts.push(format!("edited {}", plural(edited.len(), "file", "files")));
         }
-        let read = count(&[ToolKind::Read, ToolKind::Search]);
         if read > 0 {
-            parts.push(format!("explored {read} {}", plural(read, "item", "items")));
+            parts.push(format!("read {}", plural(read, "file", "files")));
         }
-        let fetched = count(&[ToolKind::Fetch]);
+        if searched > 0 {
+            parts.push(format!("searched {}", plural(searched, "time", "times")));
+        }
         if fetched > 0 {
-            parts.push(format!("searched the web {fetched}×"));
+            parts.push(format!("fetched {}", plural(fetched, "page", "pages")));
         }
-        let agents = count(&[ToolKind::Agent]);
-        if agents > 0 {
-            parts.push(format!("ran {agents} {}", plural(agents, "subagent", "subagents")));
+        if todos > 0 {
+            parts.push("updated todos".into());
         }
-        let other = count(&[ToolKind::Other, ToolKind::Think]);
         if other > 0 {
-            parts.push(format!("called {other} {}", plural(other, "tool", "tools")));
+            parts.push(format!("called {}", plural(other, "tool", "tools")));
         }
         if parts.is_empty() {
             return "Working".into();
+        }
+        let failed = self.failed();
+        if failed > 0 {
+            parts.push(format!("{failed} failed"));
         }
         let mut s = parts.join(" · ");
         if let Some(first) = s.get_mut(0..1) {
@@ -241,6 +344,10 @@ pub struct Effects {
     /// A live user message: glide it to the top as the answer streams in.
     pub runway: Option<usize>,
     pub first_answer: bool,
+    /// A design arrived (or changed): show it.
+    pub canvas: Option<crate::canvas::Spec>,
+    /// Assistant text to speak, when Jarvis is on and this was a live turn.
+    pub speak: Option<String>,
 }
 
 /// A thread's transcript as plain data.
@@ -251,6 +358,8 @@ pub struct Chat {
     pub messages: Vec<String>,
     open: Option<Open>,
     open_activity: Option<usize>,
+    /// The streaming thought: its activity row and Zeron's incremental parser.
+    thought: Option<(usize, zeron_markdown::IncrementalParser)>,
     tools: HashMap<String, (usize, usize)>,
     pub todos: Vec<TodoItem>,
     pub running_agents: Vec<SharedString>,
@@ -268,6 +377,9 @@ pub struct Chat {
     /// Finished code blocks still waiting for syntax highlighting.
     pub to_highlight: Vec<usize>,
     answered: bool,
+    /// Each subagent's own events, by the spawning call's id, for the
+    /// subagent view to replay.
+    pub subs: HashMap<String, Vec<AgentEvent>>,
 }
 
 impl Chat {
@@ -313,7 +425,21 @@ impl Chat {
         }
     }
 
+    /// The current thought is over: its tail parses as final.
+    fn close_thought(&mut self) {
+        let Some((i, parser)) = self.thought.take() else { return };
+        if let Some(Row::Activity(a)) = self.rows.get_mut(i)
+            && let Some(th) = a.thoughts.last_mut()
+        {
+            // The honest settle: the canonical tree, not the mended display.
+            th.detail = Arc::new(crate::tool_calls::thought_detail(parser.tree(), false));
+            th.live = false;
+        }
+        self.touch(i);
+    }
+
     fn close_activity(&mut self) {
+        self.close_thought();
         if let Some(i) = self.open_activity.take() {
             if let Some(Row::Activity(a)) = self.rows.get_mut(i) {
                 a.live = false;
@@ -388,7 +514,7 @@ impl Chat {
                 // Transcripts carry no timestamps; a replayed message shows none
                 // rather than the time it was reloaded.
                 let at = if live { dove_core::store::now_ms() } else { 0 };
-                let text: SharedString = text.to_string().into();
+                let text: SharedString = dove_core::strip_persona(&text).to_string().into();
                 self.turn_prompt = Some(text.clone());
                 self.turn_started = live.then(Instant::now);
                 self.turn_first_msg = self.messages.len();
@@ -406,12 +532,67 @@ impl Chat {
             }
             AgentEvent::ThinkingDelta { text } => {
                 let i = self.activity();
+                let fresh = match &self.rows[i] {
+                    Row::Activity(a) => {
+                        a.thoughts.last().is_none_or(|th| !th.live || th.at != a.tools.len())
+                            || self.thought.as_ref().is_none_or(|(r, _)| *r != i)
+                    }
+                    _ => false,
+                };
+                if fresh {
+                    self.close_thought();
+                }
                 if let Row::Activity(a) = &mut self.rows[i] {
                     a.thinking.push_str(&text);
+                    if fresh {
+                        a.thoughts.push(Thought {
+                            at: a.tools.len(),
+                            live: true,
+                            started: live.then(Instant::now),
+                            ..Default::default()
+                        });
+                        self.thought = Some((i, zeron_markdown::IncrementalParser::new()));
+                    }
+                    if let (Some(th), Some((_, parser))) = (a.thoughts.last_mut(), self.thought.as_mut()) {
+                        th.text.push_str(&text);
+                        // Zeron's streamdown: append reparses only from the
+                        // last stable block; the display tree is mended so
+                        // half-typed markers never flash raw.
+                        parser.append(&text);
+                        th.detail = Arc::new(crate::tool_calls::thought_detail(&parser.display_tree(), true));
+                    }
                 }
                 self.touch(i);
             }
             AgentEvent::BlockEnd => self.close_text(),
+            // A live design from `show_canvas`: a card that opens the canvas.
+            AgentEvent::ToolCall { name, input, .. } if is_show_canvas(&name) => {
+                self.close_all();
+                if let Some(spec) = crate::canvas::Spec::from_value(input.clone()) {
+                    let json = spec.to_json();
+                    let existing = self.rows.iter().rposition(|r| match r {
+                        Row::Block { block, .. } => matches!(&**block, Block::Canvas(src)
+                            if crate::canvas::Spec::parse(src).is_some_and(|s| s.id == spec.id)),
+                        _ => false,
+                    });
+                    match existing {
+                        Some(i) => {
+                            if let Row::Block { block, .. } = &mut self.rows[i] {
+                                *block = Arc::new(Block::Canvas(json));
+                            }
+                            self.touch(i);
+                        }
+                        None => {
+                            let msg = self.messages.len();
+                            self.messages.push(String::new());
+                            self.push(Row::Block { block: Arc::new(Block::Canvas(json)), msg });
+                        }
+                    }
+                    if live {
+                        fx.canvas = Some(spec);
+                    }
+                }
+            }
             // Generative UI from Dove's `show_ui` tool: a card, not a step.
             AgentEvent::ToolCall { name, input, .. } if is_show_ui(&name) => {
                 self.close_all();
@@ -444,6 +625,7 @@ impl Chat {
             }
             AgentEvent::ToolCall { call_id, name, kind, title, input } => {
                 let i = self.activity();
+                self.close_thought();
                 if let Row::Activity(a) = &mut self.rows[i] {
                     if a.thought.is_none() && !a.thinking.is_empty() {
                         a.thought = a.started.map(|s| s.elapsed());
@@ -459,7 +641,8 @@ impl Chat {
                         output: None,
                         error: false,
                         diff: diff_from_input(&title, &input).map(Arc::new),
-                        open: false,
+                        open: None,
+                        full: false,
                         name: name.into(),
                         input: Arc::new(input),
                         started: live.then(Instant::now),
@@ -555,6 +738,13 @@ impl Chat {
                 self.close_all();
                 self.status_text = None;
                 self.running_agents.clear();
+                if live && !is_error {
+                    let raw = self.messages.get(self.turn_first_msg..).map(|m| m.join("\n\n")).unwrap_or_default();
+                    let spoken = crate::jarvis::for_speech(&raw);
+                    if !spoken.is_empty() {
+                        fx.speak = Some(spoken);
+                    }
+                }
                 if live {
                     self.usage += usage.unwrap_or_default();
                 }
@@ -567,6 +757,7 @@ impl Chat {
                 self.close_all();
                 self.turn_started = None;
             }
+            AgentEvent::Subagent { parent, event } => self.subs.entry(parent).or_default().push(*event),
         }
         fx
     }
@@ -606,6 +797,17 @@ impl Chat {
     }
 }
 
+/// A running subagent's latest step, read off its event log.
+fn sub_doing(events: &[AgentEvent]) -> Option<String> {
+    events.iter().rev().find_map(|e| match e {
+        AgentEvent::ToolCall { title, .. } => Some(title.to_string()),
+        AgentEvent::Status { text } => Some(text.to_string()),
+        AgentEvent::ThinkingDelta { .. } => Some("Thinking".into()),
+        AgentEvent::TextDelta { .. } => Some("Writing".into()),
+        _ => None,
+    })
+}
+
 fn step_label(t: &Tool) -> String {
     let verb = match t.kind {
         ToolKind::Execute => "Running",
@@ -628,6 +830,42 @@ fn diff_from_input(title: &str, input: &serde_json::Value) -> Option<MiniDiff> {
         (None, Some(new), _) => Some(MiniDiff::new(path, "", new)),
         (_, None, Some(content)) => Some(MiniDiff::new(path, "", content)),
         _ => None,
+    }
+}
+
+/// Zeron's working words; one turns in every [`FLAVOUR_ROTATE_SECS`].
+const FLAVOUR_WORDS: [&str; 21] = [
+    "Cooing",
+    "Thinking",
+    "Pondering",
+    "Scheming",
+    "Brewing",
+    "Weaving",
+    "Tinkering",
+    "Musing",
+    "Composing",
+    "Sifting",
+    "Untangling",
+    "Distilling",
+    "Sketching",
+    "Plotting",
+    "Riffing",
+    "Combobulating",
+    "Percolating",
+    "Marinating",
+    "Noodling",
+    "Puzzling",
+    "Conjuring",
+];
+const FLAVOUR_ROTATE_SECS: u64 = 7;
+
+/// Compact elapsed time, at most two units: "8s", "2m 5s", "1h 4m".
+fn format_elapsed(secs: u64) -> String {
+    match secs {
+        0..60 => format!("{secs}s"),
+        60..3_600 => format!("{}m {}s", secs / 60, secs % 60),
+        3_600..86_400 => format!("{}h {}m", secs / 3_600, (secs % 3_600) / 60),
+        _ => format!("{}d {}h", secs / 86_400, (secs % 86_400) / 3_600),
     }
 }
 
@@ -678,6 +916,21 @@ struct Questions {
     other: Entity<InputState>,
 }
 
+/// What a subagent view follows: one spawn in a parent thread's chat.
+struct Mirror {
+    source: WeakEntity<TaskView>,
+    call: String,
+    /// Events of the subagent's log already applied.
+    applied: usize,
+    /// The opening brief was already shown. The parent repaints while the
+    /// subagent works, and the brief is not itself an event.
+    briefed: bool,
+    /// The spawn finished and the rows were closed.
+    settled: bool,
+    pub info: Option<Subagent>,
+    _observe: Subscription,
+}
+
 pub struct TaskView {
     engine: Arc<Engine>,
     pub task: Task,
@@ -695,6 +948,12 @@ pub struct TaskView {
     flash: Option<usize>,
     glide: Option<gpui::Task<()>>,
     pub composer: Entity<Composer>,
+    /// Height of the composer dock floating over the transcript's bottom
+    /// edge, measured each frame; the list pads itself by it so the last
+    /// message can scroll clear of the glass.
+    dock_height: std::rc::Rc<std::cell::Cell<f32>>,
+    /// The teammate this thread runs as, for its replies' header.
+    persona: Option<dove_core::store::Persona>,
     pub status: TaskStatus,
     widgets: HashMap<String, crate::widget::State>,
     todos_open: bool,
@@ -702,6 +961,10 @@ pub struct TaskView {
     questions: Option<Questions>,
     /// The agent's TUI owns the session; the chat is read-only.
     pub terminal_banner: bool,
+    /// Set when this view shows one subagent's transcript (read-only).
+    mirror: Option<Mirror>,
+    /// Fold tweens and measured heights of the tool groups on screen.
+    folds: crate::tool_calls::Folds,
     focus: FocusHandle,
     _ticker: Option<gpui::Task<()>>,
     _pump: Option<gpui::Task<()>>,
@@ -725,6 +988,107 @@ impl TaskView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let mut this = Self::build(engine, task, project, window, cx);
+        this.load_transcript(live, cx);
+        this
+    }
+
+    /// A read-only view of the subagent spawned by `call` in `source`'s
+    /// chat: its brief as the opening message, then its own steps and
+    /// replies, following along while it runs.
+    pub fn subagent(source: &Entity<TaskView>, call: String, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let (engine, task, project) = {
+            let s = source.read(cx);
+            (s.engine.clone(), s.task.clone(), s.project.clone())
+        };
+        let mut this = Self::build(engine, task, project, window, cx);
+        this.loading = false;
+        this.chat = Chat::default();
+        let observe = cx.observe(source, |this: &mut Self, _, cx| this.sync_mirror(cx));
+        this.mirror = Some(Mirror {
+            source: source.downgrade(),
+            call,
+            applied: 0,
+            briefed: false,
+            settled: false,
+            info: None,
+            _observe: observe,
+        });
+        this.sync_mirror(cx);
+        this
+    }
+
+    /// The spawn this view follows, when it is a subagent view.
+    pub fn mirrored(&self) -> Option<(&str, Option<&Subagent>)> {
+        self.mirror.as_ref().map(|m| (m.call.as_str(), m.info.as_ref()))
+    }
+
+    /// Pull the subagent's new events from the parent chat.
+    fn sync_mirror(&mut self, cx: &mut Context<Self>) {
+        let Some(m) = &self.mirror else { return };
+        let Some(source) = m.source.upgrade() else { return };
+        let (info, fresh) = {
+            let src = source.read(cx);
+            let info = src.subagents().into_iter().find(|s| s.id == m.call);
+            let log = src.chat.subs.get(&m.call).map(Vec::as_slice).unwrap_or(&[]);
+            (info, log[m.applied.min(log.len())..].to_vec())
+        };
+        let Some(m) = self.mirror.as_mut() else { return };
+        let running = info.as_ref().is_some_and(|s| s.running);
+        let brief = info.as_ref().map(|s| s.prompt.clone()).filter(|p| !p.trim().is_empty());
+        let mut events = Vec::with_capacity(fresh.len() + 2);
+        // Drivers that do not echo the brief still open on it, once.
+        if !m.briefed
+            && m.applied == 0
+            && !matches!(fresh.first(), Some(AgentEvent::UserMessage { .. }))
+            && let Some(brief) = brief.clone()
+        {
+            m.briefed = true;
+            events.push(AgentEvent::UserMessage { text: brief.into() });
+        }
+        m.applied += fresh.len();
+        // A driver that later echoes the same brief would show it twice.
+        let mut fresh = fresh;
+        if m.briefed
+            && let Some(brief) = brief.as_deref().map(str::trim).filter(|b| !b.is_empty())
+        {
+            let shown = self.chat.rows.iter().any(|r| matches!(r, Row::User { text, .. } if text.trim() == brief));
+            if shown
+                && let Some(AgentEvent::UserMessage { text }) = fresh.first()
+                && text.trim() == brief
+            {
+                fresh.remove(0);
+            }
+        }
+        events.extend(fresh);
+        let finished = info.as_ref().is_some_and(|s| !s.running);
+        if finished && !m.settled {
+            m.settled = true;
+            events.push(AgentEvent::Exited { code: None });
+        }
+        let changed = m.info != info;
+        m.info = info;
+        if events.is_empty() {
+            if changed {
+                cx.notify();
+            }
+            return;
+        }
+        let before = self.chat.rows.len();
+        for ev in events {
+            self.chat.apply(ev, running);
+        }
+        let after = self.chat.rows.len();
+        let from = self.chat.dirty.take().unwrap_or(before).min(before);
+        if from < before || after > before {
+            self.list.splice(from..before, after - from);
+        }
+        self.highlight_pending(cx);
+        cx.emit(TaskViewEvent::Changed);
+        cx.notify();
+    }
+
+    fn build(engine: Arc<Engine>, task: Task, project: Project, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let composer = cx.new(|cx| Composer::for_task(engine.clone(), &task, &project, window, cx));
         let sub = cx.subscribe_in(&composer, window, |this, _, ev: &ComposerEvent, window, cx| match ev {
             ComposerEvent::Submit(text) => this.submit(text.clone(), window, cx),
@@ -752,7 +1116,14 @@ impl TaskView {
             rate_limits: engine.rate_limits(task.harness),
             ..Default::default()
         };
-        let mut this = Self {
+        let engine_persona = engine
+            .store
+            .persona_assignments()
+            .unwrap_or_default()
+            .into_iter()
+            .find(|(t, _)| *t == task.id)
+            .and_then(|(_, pid)| engine.store.personas().ok()?.into_iter().find(|p| p.id == pid));
+        Self {
             engine,
             status: task.status,
             task,
@@ -767,18 +1138,20 @@ impl TaskView {
             flash: None,
             glide: None,
             composer,
+            dock_height: std::rc::Rc::new(std::cell::Cell::new(DOCK_GUESS)),
+            persona: engine_persona.clone(),
             widgets: HashMap::new(),
             todos_open: true,
             todos_hidden: false,
             questions: None,
             terminal_banner: false,
+            mirror: None,
+            folds: Default::default(),
             focus: cx.focus_handle(),
             _ticker: None,
             _pump: None,
             _subs: vec![sub],
-        };
-        this.load_transcript(live, cx);
-        this
+        }
     }
 
     pub fn usage(&self) -> Usage {
@@ -791,6 +1164,57 @@ impl TaskView {
 
     pub fn context(&self) -> (Option<u64>, Option<u64>) {
         self.chat.context
+    }
+
+    /// Every design this thread made, newest first (one per id).
+    pub fn designs(&self) -> Vec<crate::canvas::Spec> {
+        let mut out: Vec<crate::canvas::Spec> = Vec::new();
+        for r in self.chat.rows.iter().rev() {
+            if let Row::Block { block, .. } = r
+                && let Block::Canvas(src) = &**block
+                && let Some(spec) = crate::canvas::Spec::parse(src)
+                && !out.iter().any(|s| s.id == spec.id)
+            {
+                out.push(spec);
+            }
+        }
+        out
+    }
+
+    /// Every subagent this thread started, oldest first, with where it sits
+    /// in the transcript.
+    pub fn subagents(&self) -> Vec<Subagent> {
+        let mut out = Vec::new();
+        for (row, r) in self.chat.rows.iter().enumerate() {
+            let Row::Activity(a) = r else { continue };
+            for tool in a.tools.iter().filter(|t| t.kind == ToolKind::Agent) {
+                let input = tool.input.as_ref();
+                let prompt = str_field(input, &["prompt", "task"]).unwrap_or_default();
+                let title = str_field(input, &["description", "subagent_type", "name"])
+                    .filter(|s| !s.trim().is_empty())
+                    .unwrap_or_else(|| tool.title.to_string());
+                out.push(Subagent {
+                    title,
+                    kind: str_field(input, &["subagent_type", "agent"]).unwrap_or_default(),
+                    prompt,
+                    output: tool.output.as_ref().map(|o| o.to_string()),
+                    error: tool.error,
+                    running: tool.output.is_none() && a.live,
+                    took: tool.took,
+                    row,
+                    id: tool.id.clone(),
+                    steps: self
+                        .chat
+                        .subs
+                        .get(&tool.id)
+                        .map_or(0, |evs| evs.iter().filter(|e| matches!(e, AgentEvent::ToolCall { .. })).count()),
+                    doing: (tool.output.is_none() && a.live)
+                        .then(|| self.chat.subs.get(&tool.id).and_then(|evs| sub_doing(evs)))
+                        .flatten(),
+                });
+            }
+        }
+        out
     }
 
     pub fn is_working(&self) -> bool {
@@ -828,7 +1252,22 @@ impl TaskView {
                 if chat.rate_limits.is_empty() {
                     chat.rate_limits = std::mem::take(&mut v.chat.rate_limits);
                 }
+                // `DOVE_EXPAND_TOOLS=1`: every tool group and chip opens;
+                // `=group`: groups only (QA).
+                if let Some(how) = std::env::var_os("DOVE_EXPAND_TOOLS") {
+                    let chips = how != "group";
+                    for r in &mut chat.rows {
+                        if let Row::Activity(a) = r {
+                            a.pinned = Some(true);
+                            if chips {
+                                a.thoughts.iter_mut().for_each(|th| th.open = Some(true));
+                                a.tools.iter_mut().for_each(|t| t.open = Some(true));
+                            }
+                        }
+                    }
+                }
                 v.chat = chat;
+                v.folds.clear();
                 v.loading = false;
                 v.list.reset(v.chat.rows.len());
                 v.list.set_follow_mode(FollowMode::Tail);
@@ -931,6 +1370,14 @@ impl TaskView {
                 && let Some(t) = self.auto_title()
             {
                 cx.emit(TaskViewEvent::Title(t));
+            }
+            if let Some(spec) = fx.canvas {
+                cx.emit(TaskViewEvent::OpenCanvas(spec, false));
+            }
+            if let Some(text) = fx.speak
+                && self.mirror.is_none()
+            {
+                crate::jarvis::maybe_speak(&self.engine, text);
             }
         }
         let after = self.chat.rows.len();
@@ -1065,8 +1512,38 @@ impl TaskView {
 
     fn toggle_activity(&mut self, i: usize, cx: &mut Context<Self>) {
         if let Some(Row::Activity(a)) = self.chat.rows.get_mut(i) {
-            a.pinned = Some(!a.expanded());
+            // Fold whatever is on screen: groups open while they work (and
+            // always in a subagent chat), so the default is not "closed".
+            let open = a.pinned.unwrap_or(a.live || self.mirror.is_some());
+            a.pinned = Some(!open);
             self.list.remeasure_items(i..i + 1);
+            cx.notify();
+        }
+    }
+
+    fn toggle_thought(&mut self, i: usize, k: usize, cx: &mut Context<Self>) {
+        if let Some(Row::Activity(a)) = self.chat.rows.get_mut(i)
+            && let Some(th) = a.thoughts.get_mut(k)
+        {
+            th.open = Some(!th.open.unwrap_or(th.live));
+            cx.notify();
+        }
+    }
+
+    /// A chip's "N more lines": its whole output, or back to the first screen.
+    fn toggle_full(&mut self, i: usize, j: usize, cx: &mut Context<Self>) {
+        if let Some(Row::Activity(a)) = self.chat.rows.get_mut(i)
+            && let Some(t) = a.tools.get_mut(j)
+        {
+            t.full = !t.full;
+            cx.notify();
+        }
+    }
+
+    /// A working group's "N earlier steps": pin the whole tree open.
+    fn show_all_steps(&mut self, i: usize, cx: &mut Context<Self>) {
+        if let Some(Row::Activity(a)) = self.chat.rows.get_mut(i) {
+            a.pinned = Some(true);
             cx.notify();
         }
     }
@@ -1074,7 +1551,7 @@ impl TaskView {
     fn toggle_tool(&mut self, i: usize, j: usize, cx: &mut Context<Self>) {
         if let Some(Row::Activity(a)) = self.chat.rows.get_mut(i) {
             if let Some(t) = a.tools.get_mut(j) {
-                t.open = !t.open;
+                t.open = Some(!t.open.unwrap_or_else(|| t.opens_by_default()));
             }
             self.list.remeasure_items(i..i + 1);
             cx.notify();
@@ -1344,7 +1821,8 @@ impl TaskView {
             Row::Block { block, msg } => {
                 let first = i == 0 || !matches!(&self.chat.rows[i - 1], Row::Block { msg: m, .. } if m == msg);
                 // Code blocks carry their own copy button; other blocks get one on hover.
-                let copyable = !matches!(&**block, Block::Code { .. } | Block::Rule | Block::Widget(_));
+                let copyable =
+                    !matches!(&**block, Block::Code { .. } | Block::Rule | Block::Widget(_) | Block::Canvas(_));
                 let group = SharedString::from(format!("blk-{i}"));
                 div()
                     .group(group.clone())
@@ -1422,6 +1900,22 @@ impl TaskView {
                 self.render_turn_end(i, msgs.clone(), prompt.clone(), *elapsed, *failed, weak, t)
             }
         };
+        // Each reply opens with who is answering: the teammate, or the agent.
+        let opens_reply = i > 0
+            && matches!(self.chat.rows[i - 1], Row::User { .. })
+            && matches!(self.chat.rows[i], Row::Activity(_) | Row::Block { .. } | Row::Live { .. });
+        let body = if opens_reply {
+            div().flex().flex_col().gap(px(8.0)).child(self.reply_header(t)).child(body).into_any_element()
+        } else {
+            body
+        };
+        // Zeron's working trailer rides under the last row, in the flow of
+        // the reply, and scrolls away with it.
+        let body = if i + 1 == self.chat.rows.len() && self.is_working() {
+            div().flex().flex_col().child(body).child(self.render_working(weak, t)).into_any_element()
+        } else {
+            body
+        };
         let gap = match &self.chat.rows[i] {
             Row::Block { .. } => px(5.0),
             Row::TurnEnd { .. } => px(0.0),
@@ -1437,6 +1931,81 @@ impl TaskView {
             .into_any_element()
     }
 
+    /// The working loader: the gradient spinner, a flavour word that turns
+    /// every 7s and rolls as it turns, and the turn's timer rolling its
+    /// digits in place.
+    fn render_working(&self, weak: &WeakEntity<Self>, t: &Theme) -> AnyElement {
+        let secs = self.chat.turn_started.map_or(0, |s| s.elapsed().as_secs());
+        let seed = format!("{:?}", self.task.id)
+            .bytes()
+            .fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3));
+        let word = FLAVOUR_WORDS[(seed.wrapping_add(secs / FLAVOUR_ROTATE_SECS) % FLAVOUR_WORDS.len() as u64) as usize];
+        let key = weak.entity_id().as_u64();
+        div()
+            .flex()
+            .items_center()
+            .gap(px(8.0))
+            .pt(px(16.0))
+            .child(crate::loaders::gradient_spinner(SharedString::from(format!("working-indicator-{key}")), 2.5))
+            .child(
+                div()
+                    .text_size(px(12.0))
+                    .text_color(t.text_muted)
+                    .child(crate::roll_text::roll_text(format!("working-word-{key}"), format!("{word}…").into())),
+            )
+            .child(
+                div()
+                    .relative()
+                    .top(px(1.0))
+                    .text_size(px(11.0))
+                    .text_color(t.text_faint)
+                    .child(crate::roll_text::roll_text(format!("working-timer-{key}"), format_elapsed(secs).into())),
+            )
+            .into_any_element()
+    }
+
+    /// "Ava · Claude Code · opus" over a reply.
+    fn reply_header(&self, t: &Theme) -> AnyElement {
+        let kind = self.task.harness;
+        let model = self.task.model.clone().filter(|m| !m.is_empty());
+        let (mark, name, detail): (AnyElement, String, String) = match &self.persona {
+            Some(p) => (
+                crate::team::avatar(p, 20.0, t).into_any_element(),
+                p.name.clone(),
+                match &model {
+                    Some(m) => format!("{} · {m}", kind.label()),
+                    None => kind.label().to_string(),
+                },
+            ),
+            None => (
+                div()
+                    .size(px(20.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(6.0))
+                    .bg(t.wash(0.06))
+                    .child(icon(ui::harness_icon(kind)).size(px(12.0)).text_color(ui::harness_tint(
+                        kind,
+                        t,
+                        t.text_muted,
+                    )))
+                    .into_any_element(),
+                kind.label().to_string(),
+                model.unwrap_or_default(),
+            ),
+        };
+        div()
+            .flex()
+            .items_center()
+            .gap(px(8.0))
+            .text_size(px(12.5))
+            .child(mark)
+            .child(div().font_weight(gpui::FontWeight::MEDIUM).text_color(t.text).child(name))
+            .when(!detail.is_empty(), |d| d.child(div().text_color(t.text_faint).child(detail)))
+            .into_any_element()
+    }
+
     fn render_user(&self, i: usize, text: &SharedString, at: i64, weak: &WeakEntity<Self>, t: &Theme) -> AnyElement {
         let copy = text.to_string();
         let when = if at > 0 { ui::relative_time(at) } else { String::new() };
@@ -1449,6 +2018,7 @@ impl TaskView {
                 },
             )
         };
+        let sent = self.mirror.is_some() && self.chat.rows[..i].iter().all(|r| !matches!(r, Row::User { .. }));
         div()
             .group("user-msg")
             .w_full()
@@ -1457,6 +2027,16 @@ impl TaskView {
             .items_end()
             .gap(px(2.0))
             .pt(px(10.0))
+            .when(sent, |d| {
+                d.child(
+                    div()
+                        .pr(px(4.0))
+                        .pb(px(2.0))
+                        .text_size(px(11.5))
+                        .text_color(t.text_faint)
+                        .child("Sent to this subagent"),
+                )
+            })
             .child(
                 div()
                     .max_w(px(580.0))
@@ -1480,13 +2060,58 @@ impl TaskView {
                     .text_size(px(12.0))
                     .text_color(t.text_faint)
                     .child(div().mr(px(4.0)).child(when))
-                    .child(edit)
+                    .when(self.mirror.is_none(), |d| d.child(edit))
                     .child(copy_button(SharedString::from(format!("copy-user-{i}")), copy, t)),
             )
             .into_any_element()
     }
 
     fn render_md(&self, id: &str, block: &Block, weak: &WeakEntity<Self>, t: &Theme, window: &Window) -> AnyElement {
+        if let Block::Canvas(src) = block
+            && let Some(spec) = crate::canvas::Spec::parse(src)
+        {
+            let weak = weak.clone();
+            let open = spec.clone();
+            return crate::canvas::card(&spec, t, move |_, cx| {
+                let _ = weak.update(cx, |_, cx| cx.emit(TaskViewEvent::OpenCanvas(open.clone(), true)));
+            });
+        }
+        // A finished ```html / ```jsx / ```svg block can open as a live design.
+        if let Block::Code { lang: Some(lang), text, .. } = block
+            && let Some(spec) = crate::canvas::Spec::from_fence(lang, text)
+        {
+            let weak = weak.clone();
+            let code = markdown::render_block(id, block, t, window);
+            return div()
+                .flex()
+                .flex_col()
+                .gap(px(6.0))
+                .child(code)
+                .child(
+                    div()
+                        .id(SharedString::from(format!("{id}-preview")))
+                        .h(px(26.0))
+                        .px(px(9.0))
+                        .flex()
+                        .items_center()
+                        .gap(px(6.0))
+                        .self_start()
+                        .rounded(px(7.0))
+                        .border_1()
+                        .border_color(t.border)
+                        .text_size(px(12.0))
+                        .text_color(t.text_muted)
+                        .cursor_pointer()
+                        .hover(|s| s.bg(t.wash(0.06)).text_color(t.text))
+                        .child(icon(icons::ACTION_PLAY).size(px(12.0)))
+                        .child("Preview as canvas")
+                        .on_click(move |_, _, cx| {
+                            let spec = spec.clone();
+                            let _ = weak.update(cx, |_, cx| cx.emit(TaskViewEvent::OpenCanvas(spec, true)));
+                        }),
+                )
+                .into_any_element();
+        }
         let Block::Widget(src) = block else {
             return markdown::render_block(id, block, t, window);
         };
@@ -1523,364 +2148,588 @@ impl TaskView {
         })
     }
 
+    /// One activity: Zeron's collapsible task group. A quiet summary (with a
+    /// light sweeping across it while the agent works) folds a task tree of
+    /// thoughts and tool calls; subagent spawn cards stay outside the fold.
     fn render_activity(&self, i: usize, a: &Activity, weak: &WeakEntity<Self>, t: &Theme) -> AnyElement {
-        let label = a.summary();
-        let failed = a.failed();
-        let expanded = a.expanded();
-        // While live the last few steps show; once done everything folds.
-        let shown: Vec<usize> = if expanded {
-            (0..a.tools.len()).collect()
-        } else if a.live {
-            (a.tools.len().saturating_sub(LIVE_STEPS)..a.tools.len()).collect()
-        } else {
+        use crate::tool_calls as tc;
+        let now = Instant::now();
+        let mirror = self.mirror.is_some();
+        let agents: Vec<usize> = if mirror {
             Vec::new()
+        } else {
+            a.tools.iter().enumerate().filter(|(_, t)| t.kind == ToolKind::Agent).map(|(j, _)| j).collect()
         };
-        let hidden = if a.live && !expanded { a.tools.len().saturating_sub(LIVE_STEPS) } else { 0 };
+        // Thoughts and calls in arrival order.
+        let mut items: Vec<Step> = Vec::new();
+        let thoughts_at = |at: usize| {
+            a.thoughts
+                .iter()
+                .enumerate()
+                .filter(move |(_, th)| th.at == at && !th.text.trim().is_empty())
+                .map(|(k, _)| Step::Thought(k))
+        };
+        for j in 0..a.tools.len() {
+            items.extend(thoughts_at(j));
+            if mirror || a.tools[j].kind != ToolKind::Agent {
+                items.push(Step::Tool(j));
+            }
+        }
+        items.extend(
+            a.thoughts
+                .iter()
+                .enumerate()
+                .filter(|(_, th)| th.at >= a.tools.len() && !th.text.trim().is_empty())
+                .map(|(k, _)| Step::Thought(k)),
+        );
+        let chips: Vec<AnyElement> = agents.iter().map(|&j| self.render_subagent_chip(i, j, &a.tools[j], t)).collect();
+        // A turn that only spawned helpers is the cards, not a "ran 1 subagent" fold.
+        if items.is_empty() {
+            return div().flex().flex_col().children(chips).into_any_element();
+        }
+
+        let open = a.pinned.unwrap_or(a.live || mirror);
+        let frame = self.folds.step((i, tc::PART_GROUP, 0), open, now);
+        let mut moving = frame.animating;
+        let shimmer = a.live.then(|| tc::shimmer_phase(a.started.unwrap_or(now), now));
+        moving |= shimmer.is_some();
+
+        let view = weak.entity_id();
         let header = {
             let weak = weak.clone();
             div()
                 .id(("activity", i))
-                .h(px(28.0))
-                .px(px(8.0))
-                .mx(px(-8.0))
+                .h(px(tc::HEADER_HEIGHT))
+                .pr(px(4.0))
                 .flex()
                 .items_center()
                 .gap(px(6.0))
-                .rounded(px(8.0))
-                .text_size(px(13.0))
-                .text_color(t.text_faint)
                 .cursor_pointer()
-                .hover(|s| s.bg(t.wash(0.06)).text_color(t.text_muted))
+                .text_size(px(tc::LABEL_SIZE))
+                .line_height(px(tc::LINE_HEIGHT))
+                // Quiet even when steps failed: probes fail mid-work all the
+                // time. Failures tint their own rows and count in the summary.
+                .text_color(t.text_muted)
+                .hover(|s| s.text_color(t.text))
                 .on_click(move |_, _, cx| {
                     let _ = weak.update(cx, |v, cx| v.toggle_activity(i, cx));
                 })
+                .child(tc::chevron(frame.disclosure, t))
                 .child(
-                    icon(if expanded { icons::ALT_ARROW_DOWN } else { icons::ALT_ARROW_RIGHT })
-                        .size(px(12.0))
-                        .text_color(t.text_faint),
+                    div()
+                        .min_w_0()
+                        .flex_1()
+                        .h(px(tc::LINE_HEIGHT))
+                        .flex()
+                        .items_center()
+                        .overflow_hidden()
+                        .child({
+                            // The summary rolls as the group grows ("Ran 2
+                            // commands" → "Ran 3 commands"), then shimmers on.
+                            let summary: SharedString = a.summary().into();
+                            crate::roll_text::rolling(
+                                format!("tool-group-{}-{i}", view.as_u64()),
+                                summary.clone(),
+                            )
+                            .unwrap_or_else(|| tc::title(summary, shimmer, t))
+                        }),
                 )
-                .when(a.live, |d| d.child(pulse(("act-pulse", i), t.busy)))
-                .child(label)
-                .when(failed > 0, |d| {
-                    d.child(
-                        div()
-                            .px(px(6.0))
-                            .rounded(px(5.0))
-                            .bg(t.danger.opacity(0.10))
-                            .text_color(t.danger)
-                            .text_size(px(11.0))
-                            .child(format!("{failed} failed")),
-                    )
-                })
         };
-        let thinking = (!a.thinking.trim().is_empty() && (expanded || (a.live && a.tools.is_empty()))).then(|| {
-            let text = a.thinking.trim();
-            let text: String = if expanded { text.to_string() } else { last_lines(text, 3) };
-            div().text_size(px(13.0)).italic().text_color(t.text_faint).child(text)
-        });
-        let steps = (!shown.is_empty() || thinking.is_some()).then(|| {
+        // A new group's header grows into place, like its rows.
+        let header_reveal = tc::progress(a.started.filter(|_| a.live), now, tc::ROW_REVEAL, tc::EASE_OUT_EXPO);
+        moving |= header_reveal < 1.0;
+        let header: AnyElement = if header_reveal < 1.0 {
             div()
-                .ml(px(5.0))
-                .pl(px(13.0))
-                .border_l_1()
-                .border_color(if failed > 0 { t.danger.opacity(0.35) } else { t.border })
-                .flex()
-                .flex_col()
-                .gap(px(8.0))
-                .children(thinking)
-                .when(hidden > 0, |d| {
-                    d.child(div().text_size(px(12.0)).text_color(t.text_faint).child(format!("{hidden} earlier steps")))
-                })
-                .children(shown.into_iter().map(|j| self.render_tool(i, j, &a.tools[j], weak, t)))
+                .w_full()
+                .h(px(tc::HEADER_HEIGHT * header_reveal))
+                .flex_none()
+                .overflow_hidden()
+                .child(header)
+                .into_any_element()
+        } else {
+            header.into_any_element()
+        };
+
+        let body = frame.mounted.then(|| {
+            // While it works (and the user has not chosen), only the newest
+            // steps show; the rest wait behind one row.
+            let hidden =
+                if a.live && a.pinned.is_none() && !mirror { items.len().saturating_sub(LIVE_STEPS) } else { 0 };
+            let shown = &items[hidden..];
+            let start_of = |s: &Step| {
+                match s {
+                    Step::Thought(k) => a.thoughts[*k].started,
+                    Step::Tool(j) => a.tools[*j].started,
+                }
+                .filter(|_| a.live)
+            };
+            let connectors: Vec<f32> = shown
+                .iter()
+                .map(|s| tc::progress(start_of(s), now, tc::CONNECTOR_REVEAL, tc::EASE_OUT_QUINT))
+                .collect();
+            let mut rows: Vec<AnyElement> = Vec::with_capacity(shown.len() + 1);
+            if hidden > 0 {
+                rows.push(self.render_earlier_steps(i, hidden, weak, t));
+            }
+            for (n, step) in shown.iter().enumerate() {
+                let rail = Rail {
+                    after: n > 0 || hidden > 0,
+                    continues: n + 1 < shown.len(),
+                    connector: connectors[n],
+                    continuation: tc::continuation(connectors.get(n + 1).copied()),
+                };
+                let reveal = tc::progress(start_of(step), now, tc::ROW_REVEAL, tc::EASE_OUT_EXPO);
+                moving |= reveal < 1.0 || rail.connector < 1.0;
+                let (row, key) = match step {
+                    Step::Thought(k) => (
+                        self.render_thought(i, *k, &a.thoughts[*k], rail, weak, t, &mut moving),
+                        (i, tc::PART_REVEAL_THOUGHT, *k),
+                    ),
+                    Step::Tool(j) => (
+                        self.render_tool(i, *j, &a.tools[*j], a.live, rail, weak, t, &mut moving),
+                        (i, tc::PART_REVEAL_TOOL, *j),
+                    ),
+                };
+                // A new arrival grows into place; settled rows lay out freely.
+                rows.push(if reveal < 1.0 {
+                    let cell = self.folds.cell(key);
+                    let h = cell.get() * reveal;
+                    div()
+                        .w_full()
+                        .h(px(h))
+                        .flex_none()
+                        .overflow_hidden()
+                        .child(tc::measured(row, cell))
+                        .into_any_element()
+                } else {
+                    row
+                });
+            }
+            tc::folding(div().w_full().pt(px(2.0)).flex().flex_col().children(rows), &frame)
         });
-        div().flex().flex_col().gap(px(8.0)).child(header).children(steps).into_any_element()
+
+        div()
+            .relative()
+            .flex()
+            .flex_col()
+            .child(header)
+            .children(body)
+            .when(!chips.is_empty(), |d| d.child(div().mt(px(2.0)).flex().flex_col().children(chips)))
+            .when(moving, |d| d.child(tc::frame_pump(weak.entity_id())))
+            .into_any_element()
     }
 
-    fn render_tool(&self, i: usize, j: usize, tool: &Tool, weak: &WeakEntity<Self>, t: &Theme) -> AnyElement {
-        let view = ToolView::of(tool);
-        let running = tool.output.is_none();
-        let glyph = match &view {
-            ToolView::Browser { .. } => icons::MONITOR,
-            ToolView::Mcp { .. } => icons::WIDGET,
-            ToolView::Todo(_) => icons::CHECKLIST,
-            _ => match tool.kind {
-                ToolKind::Execute => icons::TERMINAL,
-                ToolKind::Edit => icons::PEN,
-                ToolKind::Read => icons::DOCUMENT,
-                ToolKind::Search => icons::MAGNIFER,
-                ToolKind::Fetch => icons::GLOBE,
-                ToolKind::Agent => icons::BOT,
-                ToolKind::Think => icons::BRAIN,
-                ToolKind::Other => icons::SETTINGS_MINIMALISTIC,
-            },
-        };
-        let status: AnyElement = if running {
-            kit::spinner(SharedString::from(format!("spin-{i}-{j}")), 13.0, t.text_muted).into_any_element()
-        } else if tool.error {
-            icon(icons::CLOSE_CIRCLE).size(px(14.0)).text_color(t.danger).into_any_element()
-        } else {
-            icon(glyph).size(px(14.0)).text_color(t.text_faint).into_any_element()
-        };
+    /// The fold's first row while a long activity works: how many steps
+    /// scrolled off the tree. Clicking pins the whole tree open.
+    fn render_earlier_steps(&self, i: usize, hidden: usize, weak: &WeakEntity<Self>, t: &Theme) -> AnyElement {
+        use crate::tool_calls as tc;
+        let weak = weak.clone();
+        div()
+            .id(("earlier-steps", i))
+            .w_full()
+            .flex()
+            .flex_row()
+            .cursor_pointer()
+            .text_color(t.text_faint)
+            .hover(|s| s.text_color(t.text_muted))
+            .on_click(move |_, _, cx| {
+                let _ = weak.update(cx, |v, cx| v.show_all_steps(i, cx));
+            })
+            .child(tc::rail(tc::Glyph::Icon(icons::MORE_HORIZONTAL, t.text_faint), false, true, 1.0, 1.0, t))
+            .child(
+                div()
+                    .ml(px(tc::TEXT_GAP))
+                    .h(px(tc::ROW_HEIGHT))
+                    .flex()
+                    .items_center()
+                    .text_size(px(tc::LABEL_SIZE))
+                    .child(format!("{hidden} earlier {}", if hidden == 1 { "step" } else { "steps" })),
+            )
+            .into_any_element()
+    }
+
+    /// One branch of the tree: rail gutter, header strip, folding body.
+    fn rail_row(
+        &self,
+        glyph: crate::tool_calls::Glyph,
+        rail: Rail,
+        header: AnyElement,
+        body: Option<AnyElement>,
+        t: &Theme,
+    ) -> AnyElement {
+        use crate::tool_calls as tc;
+        let content = tc::connector_parts(rail.connector, rail.after).1;
+        div()
+            .w_full()
+            .flex()
+            .flex_row()
+            .child(tc::rail(glyph, rail.after, rail.continues, rail.connector, rail.continuation, t))
+            .child(
+                div()
+                    .ml(px(tc::TEXT_GAP))
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .when(content < 1.0, |d| d.relative().top(px(4.0 * (1.0 - content))).opacity(content))
+                    .child(header)
+                    .children(body),
+            )
+            .into_any_element()
+    }
+
+    /// A stretch of reasoning on the tree. It streams open (the live
+    /// thinking is the point), then settles shut; its markdown is parsed
+    /// incrementally and mended, so it never shows raw markers.
+    #[allow(clippy::too_many_arguments)]
+    fn render_thought(
+        &self,
+        i: usize,
+        k: usize,
+        th: &Thought,
+        rail: Rail,
+        weak: &WeakEntity<Self>,
+        t: &Theme,
+        moving: &mut bool,
+    ) -> AnyElement {
+        use crate::tool_calls as tc;
+        let open = th.open.unwrap_or(th.live);
+        let frame = self.folds.step((i, tc::PART_THOUGHT, k), open, Instant::now());
+        *moving |= frame.animating;
         let toggle = {
             let weak = weak.clone();
             move |_: &gpui::ClickEvent, _: &mut Window, cx: &mut App| {
-                let _ = weak.update(cx, |v, cx| v.toggle_tool(i, j, cx));
+                let _ = weak.update(cx, |v, cx| v.toggle_thought(i, k, cx));
             }
         };
-        let path_like = matches!(tool.kind, ToolKind::Read | ToolKind::Edit) && !tool.title.is_empty();
-        let mono = matches!(view, ToolView::Shell { .. } | ToolView::Search)
-            || matches!(tool.kind, ToolKind::Read | ToolKind::Edit);
-        let subject: AnyElement = match &view {
-            ToolView::Browser { action, target } => div()
-                .flex_1()
-                .min_w_0()
-                .flex()
-                .gap(px(6.0))
-                .child(div().flex_none().text_color(t.text_muted).child(action.clone()))
-                .child(div().min_w_0().truncate().text_color(t.text_faint).child(target.clone()))
-                .into_any_element(),
-            ToolView::Mcp { server, tool: name } => div()
-                .flex_1()
-                .min_w_0()
-                .flex()
-                .gap(px(6.0))
-                .child(div().flex_none().text_color(t.text_faint).child(server.clone()))
-                .child(div().flex_none().text_color(t.text_faint).child("·"))
-                .child(div().min_w_0().truncate().text_color(t.text_muted).child(name.clone()))
-                .into_any_element(),
-            ToolView::Web { query } => {
-                div().flex_1().min_w_0().truncate().text_color(t.text_muted).child(query.clone()).into_any_element()
-            }
-            _ => {
-                let el = div()
-                    .id(SharedString::from(format!("tool-{i}-{j}")))
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .text_color(t.text_muted)
-                    .when(mono, |d| d.font_family(t.font_mono.clone()).text_size(px(12.5)))
-                    .child(match &view {
-                        ToolView::Shell { cmd } => SharedString::from(first_line(cmd)),
-                        _ => tool.title.clone(),
-                    });
-                if path_like {
-                    let path = tool.title.to_string();
-                    el.cursor_pointer()
-                        .hover(|s| s.text_color(t.text).underline())
-                        .on_click(move |_, window, cx| {
-                            cx.stop_propagation();
-                            let (path, line) = markdown::split_path_line(&path);
-                            window.dispatch_action(Box::new(crate::actions::OpenPath { path, line }), cx);
-                        })
-                        .into_any_element()
-                } else {
-                    el.into_any_element()
-                }
-            }
-        };
-        let expandable = tool_expandable(tool, &view);
-        let head = div()
-            .id(SharedString::from(format!("tool-head-{i}-{j}")))
-            .flex()
-            .items_center()
-            .gap(px(8.0))
-            .text_size(px(13.0))
-            .when(expandable, |d| d.cursor_pointer().on_click(toggle.clone()))
-            .child(div().flex_none().size(px(14.0)).flex().items_center().justify_center().child(status))
-            .child(subject)
-            .when_some(tool.diff.as_ref(), |d, diff| {
-                d.child(
-                    div()
-                        .flex()
-                        .flex_none()
-                        .gap(px(4.0))
-                        .text_size(px(11.5))
-                        .font_family(t.font_mono.clone())
-                        .child(div().text_color(t.text_muted).child(format!("+{}", diff.added)))
-                        .child(div().text_color(t.text_faint).child(format!("−{}", diff.removed))),
-                )
-            })
-            .when(tool.error && !running, |d| {
-                d.child(div().flex_none().text_size(px(11.5)).text_color(t.danger).child("failed"))
-            })
-            .when_some(tool.took.filter(|d| d.as_millis() >= 100), |d, took| {
-                d.child(
-                    div()
-                        .flex_none()
-                        .text_size(px(11.5))
-                        .font_family(t.font_mono.clone())
-                        .text_color(t.text_faint)
-                        .child(short_duration(took)),
-                )
-            })
-            .when(expandable, |d| {
-                d.child(
-                    icon(if tool.open { icons::ALT_ARROW_DOWN } else { icons::ALT_ARROW_RIGHT })
-                        .size(px(11.0))
-                        .text_color(t.text_faint),
-                )
-            });
+        let header = chip_header(
+            SharedString::from(format!("thought-{i}-{k}")),
+            "Thought process".into(),
+            div().into_any_element(),
+            Vec::new(),
+            Some((open, Box::new(toggle))),
+            false,
+            t,
+        );
+        let body = frame.mounted.then(|| tc::folding(tc::thought_body(&th.detail, t), &frame));
+        self.rail_row(tc::Glyph::Icon(icons::CHAT_ROUND_LINE, t.text_muted), rail, header, body, t)
+    }
 
-        let body: Option<AnyElement> = match &view {
-            _ if tool.kind == ToolKind::Edit && tool.diff.is_some() => {
-                tool.diff.as_ref().map(|diff| self.render_mini_diff(i, j, diff, tool.open, weak, t))
-            }
-            ToolView::Todo(items) => Some(todo_list(items, t)),
-            ToolView::Shell { cmd } => {
-                let out = tool.output.as_deref().unwrap_or("");
-                let multi = cmd.contains('\n') || cmd.chars().count() > 72;
-                (tool.open || !out.trim().is_empty() || multi).then(|| {
-                    let mut text = String::new();
-                    if tool.open || multi {
-                        text.push_str("$ ");
-                        text.push_str(cmd.trim());
-                        if !out.trim().is_empty() {
-                            text.push('\n');
-                        }
-                    }
-                    let (shown, more) = tail(out, if tool.open { OUTPUT_OPEN } else { OUTPUT_TAIL });
-                    text.push_str(&shown);
-                    output_box(("out", i, j), text, more, tool, toggle.clone(), t)
-                })
-            }
-            ToolView::Search => tool.output.as_deref().filter(|o| !o.trim().is_empty()).map(|out| {
-                let paths = path_lines(out);
-                if paths.is_empty() || tool.error {
-                    let (shown, more) = tail(out, if tool.open { OUTPUT_OPEN } else { OUTPUT_TAIL });
-                    return output_box(("out", i, j), shown, more, tool, toggle.clone(), t);
-                }
-                let keep = if tool.open { 40 } else { 6 };
-                let more = paths.len().saturating_sub(keep);
-                div()
-                    .ml(px(22.0))
-                    .flex()
-                    .flex_wrap()
-                    .gap(px(6.0))
-                    .children(
-                        paths
-                            .into_iter()
-                            .take(keep)
-                            .enumerate()
-                            .map(|(k, p)| path_chip(("hit", i * 10_000 + j, k), p, t)),
-                    )
-                    .when(more > 0, |d| {
-                        d.child(
-                            div()
-                                .id(SharedString::from(format!("hits-more-{i}-{j}")))
-                                .h(px(22.0))
-                                .px(px(6.0))
-                                .flex()
-                                .items_center()
-                                .text_size(px(12.0))
-                                .text_color(t.text_faint)
-                                .cursor_pointer()
-                                .hover(|s| s.text_color(t.text_muted))
-                                .on_click(toggle.clone())
-                                .child(format!("+{more} more")),
-                        )
-                    })
-                    .into_any_element()
-            }),
-            ToolView::Web { .. } => tool.output.as_deref().filter(|o| !o.trim().is_empty()).map(|out| {
-                let urls = urls_in(out);
-                if urls.is_empty() || tool.error {
-                    let (shown, more) = tail(out, if tool.open { OUTPUT_OPEN } else { OUTPUT_TAIL });
-                    return output_box(("out", i, j), shown, more, tool, toggle.clone(), t);
-                }
-                let keep = if tool.open { 20 } else { 4 };
-                let more = urls.len().saturating_sub(keep);
-                div()
-                    .ml(px(22.0))
-                    .flex()
-                    .flex_col()
-                    .gap(px(2.0))
-                    .children(
-                        urls.into_iter().take(keep).enumerate().map(|(k, u)| web_row(("web", i * 10_000 + j, k), u, t)),
-                    )
-                    .when(more > 0, |d| {
-                        d.child(
-                            div()
-                                .id(SharedString::from(format!("web-more-{i}-{j}")))
-                                .px(px(6.0))
-                                .text_size(px(12.0))
-                                .text_color(t.text_faint)
-                                .cursor_pointer()
-                                .hover(|s| s.text_color(t.text_muted))
-                                .on_click(toggle.clone())
-                                .child(format!("+{more} more results")),
-                        )
-                    })
-                    .into_any_element()
-            }),
-            ToolView::Mcp { .. } => tool.open.then(|| {
-                let args = pretty_json(&tool.input);
-                let result = tool.output.as_deref().map(|o| {
-                    serde_json::from_str::<serde_json::Value>(o)
-                        .map(|v| pretty_json(&v))
-                        .unwrap_or_else(|_| o.to_string())
-                });
-                div()
-                    .ml(px(22.0))
-                    .flex()
-                    .flex_col()
-                    .gap(px(6.0))
-                    .when(!args.is_empty(), |d| d.child(json_box("Arguments", args, false, t)))
-                    .when_some(result.filter(|r| !r.trim().is_empty()), |d, r| {
-                        d.child(json_box("Result", r, tool.error, t))
-                    })
-                    .into_any_element()
-            }),
-            ToolView::Agent { prompt } => {
-                let out = tool.output.as_deref().unwrap_or("").trim();
-                (!prompt.is_empty() || !out.is_empty()).then(|| {
-                    let keep = if tool.open { OUTPUT_OPEN } else { 2 };
-                    let (p, _) = head_lines(prompt, keep);
-                    let (o, more) = tail(out, if tool.open { OUTPUT_OPEN } else { OUTPUT_TAIL });
-                    div()
-                        .id(SharedString::from(format!("agent-{i}-{j}")))
-                        .ml(px(22.0))
-                        .flex()
-                        .flex_col()
-                        .gap(px(4.0))
-                        .text_size(px(12.5))
-                        .cursor_pointer()
-                        .on_click(toggle.clone())
-                        .when(!p.is_empty(), |d| d.child(div().italic().text_color(t.text_faint).child(p)))
-                        .when(!o.is_empty(), |d| {
-                            d.child(
-                                div()
-                                    .pl(px(10.0))
-                                    .border_l_1()
-                                    .border_color(t.border)
-                                    .text_color(if tool.error { t.danger } else { t.text_muted })
-                                    .when(more > 0 && !tool.open, |d| {
-                                        d.child(div().text_color(t.text_faint).child(format!("… {more} more lines")))
-                                    })
-                                    .child(o),
-                            )
-                        })
-                        .into_any_element()
-                })
-            }
-            ToolView::Browser { .. } | ToolView::Generic | ToolView::File => {
-                let out = tool.output.as_deref().unwrap_or("");
-                let show = tool.open || tool.error || matches!(view, ToolView::Generic) && tool.kind != ToolKind::Read;
-                (show && !out.trim().is_empty()).then(|| {
-                    let (shown, more) = tail(out, if tool.open { OUTPUT_OPEN } else { OUTPUT_TAIL });
-                    output_box(("out", i, j), shown, more, tool, toggle.clone(), t)
-                })
-            }
+    /// Zeron's spawn link: the whole card opens the subagent's chat. One
+    /// quiet line (icon tile, "Agent", the task, the model) whose lifecycle
+    /// shows only in its own language: the glyph spinner while it runs, the
+    /// danger tint when it failed. No live text rewriting the header.
+    fn render_subagent_chip(&self, i: usize, j: usize, tool: &Tool, t: &Theme) -> AnyElement {
+        use crate::tool_calls as tc;
+        let input = tool.input.as_ref();
+        let running = tool.output.is_none();
+        let failed = tool.error && !running;
+        let call = tool.id.clone();
+        let (label, detail) = chip_content(tool, &ToolView::of(tool));
+        let tag = str_field(input, &["model"])
+            .or_else(|| str_field(input, &["subagent_type", "agent"]))
+            .filter(|k| !k.trim().is_empty());
+        let tint = if failed { t.danger } else { t.text_muted };
+        let tile = |glyph: &'static str, size: f32, bg: f32| {
+            div()
+                .size(px(18.0))
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(5.0))
+                .bg(crate::theme::ink(bg))
+                .child(icon(glyph).size(px(size)).text_color(t.text_muted.opacity(0.9)))
         };
         div()
+            .h(px(38.0))
+            .w_full()
+            .flex_none()
+            .flex()
+            .items_center()
+            .child(
+                div()
+                    .id(SharedString::from(format!("subagent-chip-{i}-{j}")))
+                    .h(px(tc::CARD_HEIGHT))
+                    .min_w_0()
+                    .flex_1()
+                    .px(px(8.0))
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .overflow_hidden()
+                    .rounded(px(9.0))
+                    .border_1()
+                    .border_color(crate::theme::ink(0.07))
+                    .bg(crate::theme::ink(0.03))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(crate::theme::ink(0.05)))
+                    .text_size(px(tc::LABEL_SIZE))
+                    .line_height(px(tc::LINE_HEIGHT))
+                    .tooltip(ui::tip(if running { "Watch this subagent" } else { "Open this subagent" }))
+                    .on_click(move |_, window, cx| {
+                        window.dispatch_action(Box::new(crate::actions::OpenSubagent { call: call.clone() }), cx);
+                    })
+                    .child(tile(icons::BOT, 12.0, 0.08))
+                    .child(div().flex_none().font_weight(gpui::FontWeight::MEDIUM).text_color(tint).child(label))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_color(if failed { t.danger } else { t.text.opacity(0.85) })
+                            .child(detail),
+                    )
+                    .when_some(tag, |d, tag| {
+                        d.child(div().flex_none().text_size(px(11.0)).text_color(t.text_faint).child(tag))
+                    })
+                    .when(running, |d| {
+                        d.child(crate::loaders::glyph_spinner(
+                            SharedString::from(format!("sub-chip-{i}-{j}")),
+                            2.0,
+                            crate::loaders::glyph_rows(t),
+                        ))
+                    })
+                    .child(tile(icons::ARROW_UP_RIGHT, 11.0, 0.06)),
+            )
+            .into_any_element()
+    }
+
+    /// One call on the tree: Zeron's chip (label, detail, file badge) that
+    /// unfolds into the full invocation and what came back. Edits unfold
+    /// by default into Dove's inline diff.
+    #[allow(clippy::too_many_arguments)]
+    fn render_tool(
+        &self,
+        i: usize,
+        j: usize,
+        tool: &Tool,
+        live: bool,
+        rail: Rail,
+        weak: &WeakEntity<Self>,
+        t: &Theme,
+        moving: &mut bool,
+    ) -> AnyElement {
+        use crate::tool_calls as tc;
+        let view = ToolView::of(tool);
+        let running = live && tool.output.is_none();
+        let failed = tool.error && !running;
+        let (label, detail) = chip_content(tool, &view);
+        // The full call, unless the header already shows all of it. A file
+        // badge shows only the name, so a path always unfolds.
+        let invocation = invocation(tool, &view).filter(|call| {
+            matches!(view, ToolView::File) && tc::file_name(call) != call
+                || call.contains('\n')
+                || tc::single_line(call) != detail
+                || call.chars().count() > INVOCATION_INLINE
+        });
+        let expandable = tool.diff.is_some()
+            || matches!(view, ToolView::Todo(_))
+            || invocation.is_some()
+            || tool.output.as_deref().is_some_and(|o| !o.trim().is_empty())
+            || matches!(&view, ToolView::Agent { prompt } if !prompt.trim().is_empty());
+        let open = expandable && tool.open.unwrap_or_else(|| tool.opens_by_default());
+        let frame = self.folds.step((i, tc::PART_TOOL, j), open, Instant::now());
+        *moving |= frame.animating;
+
+        // Zeron keeps the tool's glyph at the tip while it runs: the group's
+        // shimmering summary and the working trailer carry "busy".
+        let glyph = tc::Glyph::Icon(tool_glyph(tool, &view), if failed { t.danger } else { t.text_muted });
+        let detail: AnyElement = match tool_path(tool).filter(|_| matches!(view, ToolView::File)) {
+            Some(path) => tc::file_badge(SharedString::from(format!("tool-file-{i}-{j}")), &path, failed, t),
+            None => div()
+                .min_w_0()
+                .truncate()
+                .when(matches!(view, ToolView::Shell { .. } | ToolView::Search), |d| {
+                    d.font_family(t.font_mono.clone()).text_size(px(tc::LABEL_SIZE - 0.5))
+                })
+                .child(detail)
+                .into_any_element(),
+        };
+        let mut meta: Vec<AnyElement> = Vec::new();
+        if let Some(diff) = &tool.diff {
+            meta.push(
+                div()
+                    .flex()
+                    .flex_none()
+                    .gap(px(4.0))
+                    .font_family(t.font_mono.clone())
+                    .text_size(px(11.0))
+                    .child(div().text_color(t.success).child(format!("+{}", diff.added)))
+                    .child(div().text_color(t.danger).child(format!("−{}", diff.removed)))
+                    .into_any_element(),
+            );
+        }
+        if let Some(took) = tool.took.filter(|d| d.as_secs() >= 1) {
+            meta.push(
+                div()
+                    .flex_none()
+                    .font_family(t.font_mono.clone())
+                    .text_size(px(11.0))
+                    .text_color(t.text_faint)
+                    .child(short_duration(took))
+                    .into_any_element(),
+            );
+        }
+        let toggle = expandable.then(|| {
+            let weak = weak.clone();
+            let f: ChipToggle = Box::new(move |_, _, cx| {
+                let _ = weak.update(cx, |v, cx| v.toggle_tool(i, j, cx));
+            });
+            (open, f)
+        });
+        let header = chip_header(
+            SharedString::from(format!("tool-head-{i}-{j}")),
+            label.into(),
+            detail,
+            meta,
+            toggle,
+            failed,
+            t,
+        );
+        let body = frame.mounted.then(|| tc::folding(self.tool_body(i, j, tool, &view, invocation, weak, t), &frame));
+        self.rail_row(glyph, rail, header, body, t)
+    }
+
+    /// What an open chip shows: the full call, then what came back.
+    #[allow(clippy::too_many_arguments)]
+    fn tool_body(
+        &self,
+        i: usize,
+        j: usize,
+        tool: &Tool,
+        view: &ToolView,
+        invocation: Option<String>,
+        weak: &WeakEntity<Self>,
+        t: &Theme,
+    ) -> AnyElement {
+        use crate::tool_calls as tc;
+        let full = tool.full;
+        let keep = if full { OUTPUT_FULL } else { OUTPUT_KEEP };
+        let more = |tail: bool| {
+            let weak = weak.clone();
+            move |cut: usize| -> AnyElement {
+                let weak = weak.clone();
+                div()
+                    .id(SharedString::from(format!("tool-more-{i}-{j}")))
+                    .font_family(t.font_sans.clone())
+                    .text_color(t.text_faint)
+                    .cursor_pointer()
+                    .hover(|s| s.text_color(t.text_muted))
+                    .on_click(move |_, _, cx| {
+                        cx.stop_propagation();
+                        let _ = weak.update(cx, |v, cx| v.toggle_full(i, j, cx));
+                    })
+                    .child(if tail { format!("… {cut} earlier lines") } else { format!("… {cut} more lines") })
+                    .into_any_element()
+            }
+        };
+        let out = tool.output.as_deref().map(str::trim_end).filter(|o| !o.trim().is_empty());
+        // Faint even when the call failed: the chip carries the red, and a
+        // wall of red output reads as the whole turn breaking.
+        let out_color = t.text_faint;
+        let mut parts: Vec<AnyElement> = Vec::new();
+        if let Some(call) = &invocation {
+            parts.push(tc::lines_block(call, keep, false, t.text_muted, more(false), t));
+        }
+        let result: Option<AnyElement> = match view {
+            _ if tool.kind == ToolKind::Edit && tool.diff.is_some() => {
+                tool.diff.as_ref().map(|diff| self.render_mini_diff(i, j, diff, full, weak, t))
+            }
+            ToolView::Todo(items) => Some(todo_list(items, t)),
+            ToolView::Agent { prompt } => {
+                let mut prose = Vec::new();
+                if !prompt.trim().is_empty() {
+                    prose.push(tc::thought_body(&tc::prose_detail(prompt), t));
+                }
+                if let Some(o) = out {
+                    prose.push(
+                        div()
+                            .pl(px(10.0))
+                            .border_l_1()
+                            .border_color(t.border)
+                            .child(tc::thought_body(&tc::prose_detail(o), t))
+                            .into_any_element(),
+                    );
+                }
+                (!prose.is_empty()).then(|| div().flex().flex_col().gap(px(6.0)).children(prose).into_any_element())
+            }
+            ToolView::Search if !tool.error && out.is_some_and(|o| !path_lines(o).is_empty()) => {
+                let paths = path_lines(out.unwrap_or_default());
+                let keep = if full { 200 } else { 8 };
+                let more = paths.len().saturating_sub(keep);
+                Some(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .gap(px(6.0))
+                        .children(
+                            paths
+                                .into_iter()
+                                .take(keep)
+                                .enumerate()
+                                .map(|(k, p)| path_chip(("hit", i * 10_000 + j, k), p, t)),
+                        )
+                        .when(more > 0, |d| d.child(more_chip(i, j, format!("+{more} more"), weak, t)))
+                        .into_any_element(),
+                )
+            }
+            ToolView::Web { .. } if !tool.error && out.is_some_and(|o| !urls_in(o).is_empty()) => {
+                let urls = urls_in(out.unwrap_or_default());
+                let keep = if full { 40 } else { 5 };
+                let more = urls.len().saturating_sub(keep);
+                Some(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.0))
+                        .children(
+                            urls.into_iter()
+                                .take(keep)
+                                .enumerate()
+                                .map(|(k, u)| web_row(("web", i * 10_000 + j, k), u, t)),
+                        )
+                        .when(more > 0, |d| d.child(more_chip(i, j, format!("+{more} more results"), weak, t)))
+                        .into_any_element(),
+                )
+            }
+            _ => out.map(|o| {
+                // JSON results read better indented.
+                let text = serde_json::from_str::<serde_json::Value>(o)
+                    .ok()
+                    .filter(|v| v.is_object() || v.is_array())
+                    .map(|v| pretty_json(&v))
+                    .unwrap_or_else(|| o.to_string());
+                let tail = matches!(view, ToolView::Shell { .. });
+                tc::lines_block(&text, keep, tail, out_color, more(tail), t)
+            }),
+        };
+        parts.extend(result);
+        let cuttable = out.is_some_and(|o| tc::overflow(o, OUTPUT_KEEP) > 0)
+            || invocation.as_deref().is_some_and(|c| tc::overflow(c, OUTPUT_KEEP) > 0);
+        let less = (full && cuttable && tool.diff.is_none()).then(|| {
+            let weak = weak.clone();
+            div()
+                .id(SharedString::from(format!("tool-less-{i}-{j}")))
+                .text_size(px(tc::LABEL_SIZE))
+                .text_color(t.text_faint)
+                .cursor_pointer()
+                .hover(|s| s.text_color(t.text_muted))
+                .on_click(move |_, _, cx| {
+                    let _ = weak.update(cx, |v, cx| v.toggle_full(i, j, cx));
+                })
+                .child("Show less")
+        });
+        div()
+            .w_full()
+            .min_w_0()
+            .pt(px(2.0))
+            .pb(px(8.0))
             .flex()
             .flex_col()
             .gap(px(6.0))
-            .px(px(8.0))
-            .py(px(4.0))
-            .rounded(px(8.0))
-            .hover(|s| s.bg(t.wash(0.03)))
-            .child(head)
-            .children(body)
+            .children(parts)
+            .children(less)
             .into_any_element()
     }
 
@@ -1893,36 +2742,20 @@ impl TaskView {
         weak: &WeakEntity<Self>,
         t: &Theme,
     ) -> AnyElement {
-        let take = if open { diff.lines.len() } else { DIFF_PREVIEW };
-        let more = diff.lines.len().saturating_sub(take) + if diff.truncated { 1 } else { 0 };
+        let take = if open { diff.lines } else { DIFF_PREVIEW };
+        let more = diff.lines.saturating_sub(take) + if diff.truncated { 1 } else { 0 };
         let toggle = weak.clone();
         let changes = weak.clone();
+        // Zeron's inline diff (the Changes pane's own rows) inside Dove's
+        // card, with Dove's footer: unfold the rest, or jump to Changes.
         div()
-            .ml(px(22.0))
             .rounded(px(8.0))
             .border_1()
             .border_color(t.border)
             .overflow_hidden()
-            .font_family(t.font_mono.clone())
-            .text_size(px(12.0))
-            .line_height(px(18.0))
-            .children(diff.lines.iter().take(take).map(|(tag, text)| {
-                let (bg, fg) = match tag {
-                    '+' => (t.success.opacity(0.10), t.text),
-                    '-' => (t.danger.opacity(0.10), t.text_muted),
-                    _ => (gpui::transparent_black(), t.text_faint),
-                };
-                div()
-                    .flex()
-                    .bg(bg)
-                    .text_color(fg)
-                    .child(div().w(px(18.0)).flex_none().text_center().text_color(t.text_faint).child(tag.to_string()))
-                    .child(div().flex_1().min_w_0().truncate().pr(px(8.0)).child(if text.is_empty() {
-                        " ".to_string()
-                    } else {
-                        text.replace('\t', "    ")
-                    }))
-            }))
+            .flex()
+            .flex_col()
+            .children(crate::changes::inline_rows(&diff.file, &diff.spans, take, t))
             .child(
                 div()
                     .h(px(26.0))
@@ -1943,7 +2776,7 @@ impl TaskView {
                                 .cursor_pointer()
                                 .hover(|s| s.text_color(t.text))
                                 .on_click(move |_, _, cx| {
-                                    let _ = toggle.update(cx, |v, cx| v.toggle_tool(i, j, cx));
+                                    let _ = toggle.update(cx, |v, cx| v.toggle_full(i, j, cx));
                                 })
                                 .child(if open { "Show less".to_string() } else { format!("{more} more lines") }),
                         )
@@ -2085,8 +2918,8 @@ impl TaskView {
             .collect::<Vec<_>>()
             .join("\n\n");
         let last = !self.chat.rows[i + 1..].iter().any(|r| matches!(r, Row::TurnEnd { .. }));
-        let can_fork = last && Engine::can_fork(&self.task);
-        let idle = !self.is_working();
+        let can_fork = last && self.mirror.is_none() && Engine::can_fork(&self.task);
+        let idle = !self.is_working() && self.mirror.is_none();
         div()
             .group("turn-end")
             .h(px(28.0))
@@ -2386,7 +3219,6 @@ impl TaskView {
         let working = self.is_working();
         let waiting = self.status == TaskStatus::NeedsInput && self.live.is_some();
         let step = self.chat.current_step();
-        let elapsed = self.chat.turn_started.map(|s| duration(s.elapsed()));
         let todos = &self.chat.todos;
         let done = todos.iter().filter(|x| x.status == TodoStatus::Completed).count();
         div()
@@ -2397,18 +3229,9 @@ impl TaskView {
             .gap(px(8.0))
             .text_size(px(12.0))
             .text_color(t.text_faint)
-            .when(working, |d| {
-                d.child(pulse("strip-pulse", t.busy))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .text_color(t.text_muted)
-                            .child(step.unwrap_or_else(|| "Working".into())),
-                    )
-                    .when_some(elapsed, |d, e| d.child(e))
-            })
+            // The spinner and timer live in the transcript's working trailer;
+            // the strip keeps what the agent is doing right now.
+            .when(working, |d| d.child(div().flex_1().min_w_0().truncate().when_some(step, |d, step| d.child(step))))
             .when(waiting, |d| {
                 d.child(ui::dot(t.warning, 6.0)).child(div().flex_1().child(if self.questions.is_some() {
                     "Waiting for your answer"
@@ -2508,32 +3331,9 @@ impl TaskView {
     }
 }
 
-fn last_lines(s: &str, n: usize) -> String {
-    let lines: Vec<&str> = s.lines().collect();
-    lines[lines.len().saturating_sub(n)..].join("\n")
-}
-
-/// A softly pulsing dot: the "working" glyph.
-fn pulse(id: impl Into<gpui::ElementId>, color: gpui::Hsla) -> impl IntoElement {
-    ui::dot(color, 6.0).with_animation(id, Animation::new(Duration::from_millis(1200)).repeat(), move |el, delta| {
-        let wave = 0.5 - 0.5 * (delta * std::f32::consts::TAU).cos();
-        el.opacity(0.35 + 0.65 * wave)
-    })
-}
 
 fn action_button(id: SharedString, glyph: &'static str, tip: &'static str, t: &Theme) -> gpui::Stateful<gpui::Div> {
-    let hover = t.glass_hover();
-    div()
-        .id(id)
-        .size(px(24.0))
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded(px(6.0))
-        .cursor_pointer()
-        .hover(move |s| s.bg(hover))
-        .tooltip(ui::tip(tip))
-        .child(icon(glyph).size(px(14.0)).text_color(t.text_faint))
+    ui::row_button(id, glyph, tip, t)
 }
 
 fn copy_button(id: SharedString, text: String, t: &Theme) -> impl IntoElement {
@@ -2553,6 +3353,12 @@ impl Render for TaskView {
         let t = Theme::of(cx).clone();
         let weak = cx.weak_entity();
         let empty = self.chat.rows.is_empty();
+        let mirror = self.mirror.is_some();
+        // A subagent view has no composer dock.
+        let dock_h = if mirror { 0.0 } else { self.dock_height.get() };
+        // Replies dissolve as they slide under the pill and are gone by the
+        // composer's meta row, which has no plate of its own.
+        let under_meta = if self.terminal_banner || self.questions.is_some() { 0.0 } else { COMPOSER_META };
 
         let transcript: AnyElement = if self.loading {
             div().flex_1().into_any_element()
@@ -2563,11 +3369,17 @@ impl Render for TaskView {
                 .items_center()
                 .justify_center()
                 .text_color(t.text_faint)
-                .child(if self.live.is_some() { "Starting agent…" } else { "No messages yet" })
+                .child(if mirror {
+                    "Waiting for the subagent…"
+                } else if self.live.is_some() {
+                    "Starting agent…"
+                } else {
+                    "No messages yet"
+                })
                 .into_any_element()
         } else {
             let renderer = weak.clone();
-            list(self.list.clone(), move |i, window, cx| {
+            let rows = list(self.list.clone(), move |i, window, cx| {
                 let Some(view) = renderer.upgrade() else { return div().into_any_element() };
                 let v = view.read(cx);
                 if i >= v.chat.rows.len() {
@@ -2577,11 +3389,17 @@ impl Render for TaskView {
             })
             .flex_1()
             .size_full()
-            .into_any_element()
+            .pt(px(if mirror { 8.0 } else { 20.0 }))
+            .pb(px(dock_h + 12.0));
+            if mirror {
+                rows.into_any_element()
+            } else {
+                ui::bottom_faded(under_meta, (dock_h - under_meta).max(24.0), rows).into_any_element()
+            }
         };
 
         let jump = (!self.following.get() && !empty).then(|| {
-            div().absolute().bottom(px(10.0)).left_0().right_0().flex().justify_center().child(
+            div().absolute().bottom(px(dock_h + 10.0)).left_0().right_0().flex().justify_center().child(
                 div()
                     .id("jump-latest")
                     .h(px(30.0))
@@ -2645,8 +3463,14 @@ impl Render for TaskView {
                 None => self.composer.clone().into_any_element(),
             }
         };
-        let bottom = div().w_full().flex().justify_center().px(px(24.0)).pb(px(8.0)).child(
+        // The composer floats over the transcript's bottom edge, Zeron
+        // style: replies scroll up beneath the glass. Its measured height
+        // pads the list (and lifts the jump button) on the next frame.
+        let measured = self.dock_height.clone();
+        let view = cx.weak_entity();
+        let dock = div().absolute().left_0().right_0().bottom_0().flex().justify_center().px(px(24.0)).child(
             div()
+                .relative()
                 .w_full()
                 .max_w(px(COLUMN_MAX + 8.0))
                 .flex()
@@ -2654,8 +3478,32 @@ impl Render for TaskView {
                 .gap(px(6.0))
                 .children(self.render_todos(cx))
                 .child(input)
-                .child(self.render_status_strip(&t)),
+                .child(
+                    canvas(
+                        move |b, _, cx| {
+                            let h = f32::from(b.size.height);
+                            if (measured.get() - h).abs() > 0.5 {
+                                measured.set(h);
+                                let view = view.clone();
+                                cx.defer(move |cx| {
+                                    let _ = view.update(cx, |_, cx| cx.notify());
+                                });
+                            }
+                        },
+                        |_, _, _, _| {},
+                    )
+                    .absolute()
+                    .inset_0(),
+                ),
         );
+        let bottom = div()
+            .w_full()
+            .flex()
+            .justify_center()
+            .px(px(24.0))
+            .pt(px(4.0))
+            .pb(px(6.0))
+            .child(div().w_full().max_w(px(COLUMN_MAX + 8.0)).child(self.render_status_strip(&t)));
 
         div()
             .id("task-view")
@@ -2719,11 +3567,18 @@ impl Render for TaskView {
                                 }),
                         )
                     })
-                    .children(self.render_rail(cx))
-                    .children(jump),
+                    .when(!mirror, |d| d.children(self.render_rail(cx)))
+                    .children(jump)
+                    .when(!mirror, |d| d.child(dock)),
             )
-            .child(bottom)
+            .when(!mirror, |d| d.child(bottom))
     }
+}
+
+/// Dove's canvas tool, however the harness spells MCP names.
+fn is_show_canvas(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    n.contains("dove") && (n.ends_with("__show_canvas") || n.ends_with("/show_canvas") || n.ends_with(".show_canvas"))
 }
 
 /// Dove's generative-UI tool, however the harness spells MCP names.
@@ -2837,21 +3692,6 @@ fn todo_items(name: &str, input: &serde_json::Value) -> Option<Vec<(String, Todo
     (!items.is_empty()).then_some(items)
 }
 
-fn tool_expandable(tool: &Tool, view: &ToolView) -> bool {
-    let out = tool.output.as_deref().unwrap_or("");
-    match view {
-        ToolView::Todo(_) => false,
-        ToolView::Mcp { .. } => true,
-        ToolView::File if tool.kind == ToolKind::Edit => {
-            tool.diff.as_ref().is_some_and(|d| d.lines.len() > DIFF_PREVIEW || d.truncated)
-        }
-        ToolView::File => false,
-        ToolView::Browser { .. } => !out.trim().is_empty(),
-        ToolView::Shell { cmd } => out.lines().count() > OUTPUT_TAIL || !cmd.trim().is_empty() && !out.is_empty(),
-        _ => out.lines().count() > OUTPUT_TAIL,
-    }
-}
-
 fn first_line(s: &str) -> String {
     let line = s.trim().lines().next().unwrap_or("").trim();
     if s.trim().lines().nth(1).is_some() { format!("{line} …") } else { line.to_string() }
@@ -2860,23 +3700,6 @@ fn first_line(s: &str) -> String {
 /// `0.4s`, `12.3s`, `1m 12s`.
 fn short_duration(d: Duration) -> String {
     if d.as_secs() < 60 { format!("{:.1}s", d.as_secs_f64()) } else { duration(d) }
-}
-
-/// The last `keep` lines and how many were dropped.
-fn tail(s: &str, keep: usize) -> (String, usize) {
-    let lines: Vec<&str> = s.trim_end().lines().collect();
-    let more = lines.len().saturating_sub(keep);
-    (lines[more..].join("\n"), more)
-}
-
-fn head_lines(s: &str, keep: usize) -> (String, usize) {
-    let lines: Vec<&str> = s.trim().lines().collect();
-    let more = lines.len().saturating_sub(keep);
-    let mut out = lines[..lines.len() - more].join("\n");
-    if more > 0 {
-        out.push_str(" …");
-    }
-    (out, more)
 }
 
 /// Lines of a search result that name a file (`path`, `path:12`, `path:12:text`).
@@ -2948,7 +3771,7 @@ fn path_chip(id: (&'static str, usize, usize), path: String, t: &Theme) -> AnyEl
         .cursor_pointer()
         .hover(|s| s.bg(t.wash(0.07)).text_color(t.text))
         .tooltip(ui::tip(path.clone()))
-        .child(icon(icons::FILE_CODE).size(px(11.0)).text_color(t.text_faint))
+        .child(crate::files_panel::file_type_icon(&name, false, t).size(px(12.0)))
         .child(label)
         .on_click(move |_, window, cx| {
             let (path, line) = markdown::split_path_line(&path);
@@ -2998,74 +3821,15 @@ fn pretty_json(v: &serde_json::Value) -> String {
     }
 }
 
-fn json_box(label: &'static str, text: String, error: bool, t: &Theme) -> AnyElement {
-    let lines: Vec<&str> = text.lines().collect();
-    let more = lines.len().saturating_sub(OUTPUT_OPEN);
-    let shown = lines[..lines.len() - more].join("\n");
-    div()
-        .rounded(px(8.0))
-        .border_1()
-        .border_color(t.border)
-        .bg(t.wash(0.03))
-        .overflow_hidden()
-        .child(div().px(px(10.0)).pt(px(6.0)).text_size(px(11.0)).text_color(t.text_faint).child(label))
-        .child(
-            div()
-                .px(px(10.0))
-                .pt(px(2.0))
-                .pb(px(8.0))
-                .font_family(t.font_mono.clone())
-                .text_size(px(12.0))
-                .text_color(if error { t.danger } else { t.text_muted })
-                .child(shown)
-                .when(more > 0, |d| d.child(div().text_color(t.text_faint).child(format!("… {more} more lines")))),
-        )
-        .into_any_element()
-}
-
-fn output_box(
-    id: (&'static str, usize, usize),
-    text: String,
-    more: usize,
-    tool: &Tool,
-    toggle: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
-    t: &Theme,
-) -> AnyElement {
-    div()
-        .id(SharedString::from(format!("{}-{}-{}", id.0, id.1, id.2)))
-        .ml(px(22.0))
-        .px(px(10.0))
-        .py(px(6.0))
-        .rounded(px(8.0))
-        .bg(t.wash(0.035))
-        .font_family(t.font_mono.clone())
-        .text_size(px(12.0))
-        .text_color(if tool.error { t.danger } else { t.text_muted })
-        .cursor_pointer()
-        .on_click(toggle)
-        .when(more > 0, |d| {
-            d.child(div().text_color(t.text_faint).child(if tool.open {
-                format!("… {more} earlier lines")
-            } else {
-                format!("… {more} more lines · click to expand")
-            }))
-        })
-        .child(text)
-        .into_any_element()
-}
-
 fn todo_list(items: &[(String, TodoStatus)], t: &Theme) -> AnyElement {
     div()
-        .ml(px(22.0))
         .flex()
         .flex_col()
         .gap(px(3.0))
         .text_size(px(13.0))
         .children(items.iter().map(|(text, status)| {
             let mark: AnyElement = match status {
-                TodoStatus::Completed => {
-                    icon(icons::CIRCLE_CHECK).size(px(13.0)).text_color(t.text_faint).into_any_element()
-                }
+                TodoStatus::Completed => icon(icons::CHECK).size(px(13.0)).text_color(t.text_faint).into_any_element(),
                 TodoStatus::InProgress => div()
                     .size(px(11.0))
                     .rounded_full()
@@ -3100,6 +3864,223 @@ fn todo_list(items: &[(String, TodoStatus)], t: &Theme) -> AnyElement {
         .into_any_element()
 }
 
+// ------------------------------------------------------------ tool chips
+
+/// A step on an activity's tree.
+#[derive(Clone, Copy)]
+enum Step {
+    Thought(usize),
+    Tool(usize),
+}
+
+/// Where a row sits on the tree and how far its connector has drawn.
+#[derive(Clone, Copy)]
+struct Rail {
+    /// A row above it on the tree (its trunk comes from there).
+    after: bool,
+    /// A row below it (its trunk continues down).
+    continues: bool,
+    connector: f32,
+    continuation: f32,
+}
+
+type ChipToggle = Box<dyn Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static>;
+
+impl Tool {
+    /// Edits unfold into their diff; everything else waits to be asked.
+    pub fn opens_by_default(&self) -> bool {
+        self.kind == ToolKind::Edit && self.diff.is_some()
+    }
+}
+
+/// Zeron's chip header: label, one-line detail, trailing meta, and a
+/// chevron that surfaces on hover when the chip unfolds.
+fn chip_header(
+    id: SharedString,
+    label: SharedString,
+    detail: AnyElement,
+    meta: Vec<AnyElement>,
+    toggle: Option<(bool, ChipToggle)>,
+    failed: bool,
+    t: &Theme,
+) -> AnyElement {
+    use crate::tool_calls as tc;
+    let open = toggle.as_ref().map(|(open, _)| *open);
+    div()
+        .id(id)
+        .group("tool-header")
+        .h(px(tc::CARD_HEIGHT))
+        .my(px((tc::ROW_HEIGHT - tc::CARD_HEIGHT) / 2.0))
+        .w_full()
+        .min_w_0()
+        .flex()
+        .items_center()
+        .gap(px(8.0))
+        .text_size(px(tc::LABEL_SIZE))
+        .line_height(px(tc::LINE_HEIGHT))
+        .text_color(if failed { t.danger } else { t.text_muted })
+        .when(!failed, |d| d.hover(|s| s.text_color(t.text)))
+        .when_some(toggle, |d, (_, f)| d.cursor_pointer().on_click(f))
+        .child(div().flex_none().child(label))
+        .child(div().min_w_0().flex().items_center().child(detail))
+        .children(meta)
+        .when_some(open, |d, open| {
+            d.child(
+                div()
+                    .size(px(18.0))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .opacity(0.0)
+                    .group_hover("tool-header", |s| s.opacity(1.0))
+                    .child(
+                        icon(if open { icons::ALT_ARROW_DOWN } else { icons::ALT_ARROW_RIGHT })
+                            .size(px(12.0))
+                            .text_color(if failed { t.danger } else { t.text_faint }),
+                    ),
+            )
+        })
+        .into_any_element()
+}
+
+/// A chip's label and one-line detail, named the way Zeron names them
+/// ("Run", "Read", "Edit", "Search", "Web", "MCP" ...).
+fn chip_content(tool: &Tool, view: &ToolView) -> (String, String) {
+    use crate::tool_calls::single_line;
+    let name = tool.name.to_ascii_lowercase();
+    let input = tool.input.as_ref();
+    let (label, detail): (String, String) = match view {
+        ToolView::Browser { action, target } => (action.clone(), target.clone()),
+        ToolView::Todo(items) => {
+            let done = items.iter().filter(|(_, s)| *s == TodoStatus::Completed).count();
+            ("Todo".into(), format!("{done}/{} done", items.len()))
+        }
+        ToolView::Mcp { server, tool } => ("MCP".into(), format!("{server} · {tool}")),
+        ToolView::Shell { cmd } => ("Run".into(), cmd.clone()),
+        ToolView::Search => {
+            let pattern =
+                str_field(input, &["pattern", "query", "regex", "glob", "q"]).unwrap_or_else(|| tool.title.to_string());
+            let label =
+                if name.contains("glob") || name.contains("find") || name.contains("list") { "Glob" } else { "Search" };
+            let detail = match str_field(input, &["path", "include", "dir"]) {
+                Some(path) => format!("{pattern} in {path}"),
+                None => pattern,
+            };
+            (label.into(), detail)
+        }
+        ToolView::Web { query } => (if name.contains("search") { "Web" } else { "Fetch" }.into(), query.clone()),
+        ToolView::Agent { .. } => {
+            let what = str_field(input, &["description"]).unwrap_or_else(|| tool.title.to_string());
+            ("Agent".into(), what)
+        }
+        ToolView::File => {
+            let path = tool_path(tool).unwrap_or_else(|| tool.title.to_string());
+            let label = match tool.kind {
+                ToolKind::Read => "Read",
+                _ if name.contains("write") || name.contains("create") => "Write",
+                _ if name.contains("patch") => "Patch",
+                _ => "Edit",
+            };
+            (label.into(), path)
+        }
+        ToolView::Generic => {
+            (if tool.kind == ToolKind::Think { "Think" } else { "Tool" }.into(), tool.title.to_string())
+        }
+    };
+    (label, single_line(&detail))
+}
+
+/// The complete call the header cuts to one line, when there is more to it.
+fn invocation(tool: &Tool, view: &ToolView) -> Option<String> {
+    let input = tool.input.as_ref();
+    let text = match view {
+        ToolView::Shell { cmd } => cmd.trim().to_string(),
+        ToolView::Search => {
+            let pattern = str_field(input, &["pattern", "query", "regex", "glob", "q"])?;
+            match str_field(input, &["path", "include", "dir"]) {
+                Some(path) => format!("{pattern}\nin {path}"),
+                None => pattern,
+            }
+        }
+        ToolView::Web { .. } => {
+            let target = str_field(input, &["url", "query", "q"])?;
+            match str_field(input, &["prompt"]) {
+                Some(prompt) => format!("{target}\n{prompt}"),
+                None => target,
+            }
+        }
+        ToolView::File if tool.kind == ToolKind::Edit && tool.diff.is_some() => return None,
+        ToolView::File => {
+            let path = tool_path(tool)?;
+            let range =
+                match (input.get("offset").and_then(|v| v.as_u64()), input.get("limit").and_then(|v| v.as_u64())) {
+                    (Some(o), Some(l)) => format!(" (lines {}–{})", o.max(1), o.max(1) + l.saturating_sub(1)),
+                    (None, Some(l)) => format!(" (first {l} lines)"),
+                    _ => String::new(),
+                };
+            format!("{path}{range}")
+        }
+        ToolView::Mcp { .. } | ToolView::Generic | ToolView::Browser { .. } => pretty_json(input),
+        ToolView::Agent { .. } | ToolView::Todo(_) => return None,
+    };
+    (!text.trim().is_empty()).then_some(text)
+}
+
+/// Zeron's glyph for a tool, at the branch tip.
+fn tool_glyph(tool: &Tool, view: &ToolView) -> &'static str {
+    let name = tool.name.to_ascii_lowercase();
+    match view {
+        ToolView::Browser { .. } => icons::MONITOR,
+        ToolView::Mcp { .. } => icons::WIDGET,
+        ToolView::Todo(_) => icons::CHECKLIST,
+        _ => match tool.kind {
+            ToolKind::Execute => icons::TERMINAL,
+            ToolKind::Edit if name.contains("write") || name.contains("create") => icons::DOCUMENT_ADD,
+            ToolKind::Edit => icons::PEN,
+            ToolKind::Read => icons::DOCUMENT,
+            ToolKind::Search if name.contains("glob") || name.contains("find") || name.contains("list") => {
+                icons::FOLDER_WITH_FILES
+            }
+            ToolKind::Search => icons::MAGNIFER,
+            ToolKind::Fetch => icons::GLOBAL,
+            ToolKind::Agent => icons::BOT,
+            ToolKind::Think | ToolKind::Other => icons::WIDGET,
+        },
+    }
+}
+
+/// The file a read or edit touched.
+fn tool_path(tool: &Tool) -> Option<String> {
+    str_field(tool.input.as_ref(), &["file_path", "path", "filePath", "notebook_path", "target_file", "filename"])
+        .or_else(|| tool.diff.as_ref().map(|d| d.path.clone()))
+        .or_else(|| {
+            let title = tool.title.trim();
+            (matches!(tool.kind, ToolKind::Read | ToolKind::Edit) && markdown::looks_like_path(title))
+                .then(|| title.to_string())
+        })
+}
+
+/// "+12 more": unfolds the whole list.
+fn more_chip(i: usize, j: usize, label: String, weak: &WeakEntity<TaskView>, t: &Theme) -> AnyElement {
+    let weak = weak.clone();
+    div()
+        .id(SharedString::from(format!("tool-more-list-{i}-{j}")))
+        .h(px(22.0))
+        .px(px(6.0))
+        .flex()
+        .items_center()
+        .text_size(px(12.0))
+        .text_color(t.text_faint)
+        .cursor_pointer()
+        .hover(|s| s.text_color(t.text_muted))
+        .on_click(move |_, _, cx| {
+            let _ = weak.update(cx, |v, cx| v.toggle_full(i, j, cx));
+        })
+        .child(label)
+        .into_any_element()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3119,7 +4100,8 @@ mod tests {
             output: None,
             error: false,
             diff: None,
-            open: false,
+            open: None,
+            full: false,
             name: "".into(),
             input: Arc::new(serde_json::Value::Null),
             started: None,
@@ -3129,11 +4111,92 @@ mod tests {
         a.tools.push(tool(ToolKind::Execute));
         a.tools.push(tool(ToolKind::Execute));
         a.tools.push(tool(ToolKind::Other));
-        assert_eq!(a.summary(), "Thought process · Ran 3 commands · called 1 tool");
+        assert_eq!(a.summary(), "Thought process · ran 3 commands · called 1 tool");
         let b = Activity { tools: vec![tool(ToolKind::Edit)], ..Default::default() };
         assert_eq!(b.summary(), "Edited 1 file");
         a.thought = Some(Duration::from_secs(12));
         assert!(a.summary().starts_with("Thought for 12s"));
+        a.tools[0].error = true;
+        assert!(a.summary().ends_with(" · 1 failed"));
+        // Two edits of one file are one edited file.
+        let mut edit = tool(ToolKind::Edit);
+        edit.input = Arc::new(serde_json::json!({ "file_path": "src/a.rs" }));
+        let c = Activity { tools: vec![edit.clone(), edit, tool(ToolKind::Read)], ..Default::default() };
+        assert_eq!(c.summary(), "Edited 1 file · read 1 file");
+    }
+
+    fn line(th: &Thought, n: usize) -> String {
+        th.detail.lines[n].iter().map(|r| r.text.as_str()).collect::<String>().trim().to_string()
+    }
+
+    #[test]
+    fn thoughts_stream_as_markdown_and_split_at_tool_calls() {
+        let mut chat = Chat::default();
+        chat.apply(AgentEvent::UserMessage { text: "hi".into() }, true);
+        let think = |s: &str| AgentEvent::ThinkingDelta { text: s.into() };
+        chat.apply(think("**Plan"), true);
+        let Some(Row::Activity(a)) = chat.rows.last() else { panic!("no activity") };
+        assert_eq!(a.thoughts.len(), 1);
+        assert!(a.thoughts[0].live);
+        // The half-typed bold is mended: no raw markers reach the row.
+        assert_eq!(line(&a.thoughts[0], 0), "Plan");
+        assert!(a.thoughts[0].detail.lines[0].iter().any(|r| r.style.bold));
+        chat.apply(think("ning**\n\nNext I read the file."), true);
+        chat.apply(
+            AgentEvent::ToolCall {
+                call_id: "c1".into(),
+                name: "Read".into(),
+                kind: ToolKind::Read,
+                title: "src/main.rs".into(),
+                input: serde_json::json!({ "file_path": "src/main.rs" }),
+            },
+            true,
+        );
+        chat.apply(think("Now edit."), true);
+        let Some(Row::Activity(a)) = chat.rows.last() else { panic!("no activity") };
+        assert_eq!(a.thoughts.len(), 2, "a tool call ends a thought");
+        assert!(!a.thoughts[0].live);
+        // Two blocks: a line each with a blank separator between.
+        assert_eq!(a.thoughts[0].detail.lines.len(), 3);
+        assert_eq!(line(&a.thoughts[0], 0), "Planning");
+        assert_eq!(line(&a.thoughts[0], 2), "Next I read the file.");
+        assert_eq!((a.thoughts[0].at, a.thoughts[1].at), (0, 1));
+        assert_eq!(a.thinking, "**Planning**\n\nNext I read the file.Now edit.");
+        chat.apply(text("Done."), true);
+        let Some(Row::Activity(a)) = chat.rows.iter().find(|r| matches!(r, Row::Activity(_))) else {
+            panic!("no activity")
+        };
+        assert!(a.thoughts.iter().all(|th| !th.live), "the answer closes the thought");
+    }
+
+    #[test]
+    fn chips_name_tools_like_zeron() {
+        let tool = |kind, name: &str, input: serde_json::Value| Tool {
+            id: String::new(),
+            title: "t".into(),
+            kind,
+            output: None,
+            error: false,
+            diff: None,
+            open: None,
+            full: false,
+            name: name.to_string().into(),
+            input: Arc::new(input),
+            started: None,
+            took: None,
+        };
+        let run = tool(ToolKind::Execute, "Bash", serde_json::json!({ "command": "cargo  test\n--all" }));
+        assert_eq!(chip_content(&run, &ToolView::of(&run)), ("Run".into(), "cargo test --all".into()));
+        let read = tool(ToolKind::Read, "Read", serde_json::json!({ "file_path": "a/b.rs", "offset": 10, "limit": 5 }));
+        assert_eq!(chip_content(&read, &ToolView::of(&read)).0, "Read");
+        assert_eq!(invocation(&read, &ToolView::of(&read)).as_deref(), Some("a/b.rs (lines 10–14)"));
+        let glob = tool(ToolKind::Search, "Glob", serde_json::json!({ "pattern": "**/*.rs" }));
+        assert_eq!(chip_content(&glob, &ToolView::of(&glob)), ("Glob".into(), "**/*.rs".into()));
+        let mut edit = tool(ToolKind::Edit, "Edit", serde_json::json!({ "file_path": "x.rs" }));
+        assert!(!edit.opens_by_default());
+        edit.diff = Some(Arc::new(MiniDiff::new("x.rs", "a\n", "b\n")));
+        assert!(edit.opens_by_default(), "edits unfold into their diff");
+        assert_eq!(invocation(&edit, &ToolView::of(&edit)), None);
     }
 
     #[test]

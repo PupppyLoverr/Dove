@@ -2,36 +2,45 @@
 
 mod assets;
 mod browser;
+mod canvas;
 mod changes;
 mod composer;
+mod file_icons;
 mod files_panel;
 mod history;
 mod home;
 mod intro;
+mod jarvis;
 mod keymap;
 mod kit;
+mod loaders;
 mod markdown;
 mod markdown_extra;
 mod math;
 mod mcp_browser;
 mod notify;
+mod nexi;
 mod office;
 mod pages;
 mod palette;
 mod picker_memory;
 mod pull_requests;
 mod remote;
+mod roll_text;
 mod settings;
 mod shell;
 mod side_chat;
 mod side_panel;
 mod sidebar;
 mod surface_chrome;
+mod team;
 mod terminal;
 mod theme;
 mod thread;
+mod tool_calls;
 mod transcript;
 mod ui;
+mod updates;
 mod voice;
 mod wallpaper;
 mod widget;
@@ -83,6 +92,13 @@ pub mod actions {
         pub line: Option<u32>,
     }
 
+    /// Open a subagent's own chat in the side panel, by its spawning call.
+    #[derive(Clone, PartialEq, Debug, gpui::Action)]
+    #[action(namespace = dove, no_json)]
+    pub struct OpenSubagent {
+        pub call: String,
+    }
+
     /// Ctrl+N: the Nth open thread tab.
     #[derive(Clone, PartialEq, Debug, gpui::Action)]
     #[action(namespace = dove, no_json)]
@@ -101,18 +117,19 @@ pub fn apply_theme(engine: &Arc<Engine>, cx: &mut App) {
         _ => appearance_from_window(cx.window_appearance()),
     };
     let accent = Accent::from_id(&store.setting("accent").unwrap_or_default());
-    let frosted = store.setting("frosted").as_deref() != Some("false");
+    let surface =
+        theme::Surface::from_settings(store.setting("surface").as_deref(), store.setting("frosted").as_deref());
     // Re-applying an unchanged theme is not free: on Windows, setting the
     // window backdrop can itself raise an appearance notification, which
     // would call back here and repaint forever.
     if let Some(current) = cx.try_global::<Theme>()
         && current.appearance == appearance
         && current.accent_choice == accent
-        && current.frosted == frosted
+        && current.surface_style == surface
     {
         return;
     }
-    let theme = Theme::new(appearance, accent, frosted);
+    let theme = Theme::new(appearance, accent, surface);
     assets::set_icon_color(theme.text_muted);
     theme::set_current_appearance(appearance);
     let background = theme.window_background();

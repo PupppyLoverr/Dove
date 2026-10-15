@@ -542,10 +542,20 @@ fn map_event(event: ZEvent, usage: &mut Usage) -> Vec<AgentEvent> {
         ZEvent::GeneratedImage { name, path, .. } => {
             vec![AgentEvent::Notice { text: format!("Image {name} · {path}").into() }]
         }
-        // The host emits the parent's user lines. Nested transcripts stay on
-        // the spawning tool chip.
+        // A subagent's own transcript, tagged with its spawning call. Its
+        // usage is the parent's to report, so a scratch counter takes it.
+        ZEvent::Subagent { parent_tool_use_id, event } => {
+            let inner = match *event {
+                ZEvent::UserMessage { text } => vec![AgentEvent::UserMessage { text: text.into() }],
+                other => map_event(other, &mut Usage::default()),
+            };
+            inner
+                .into_iter()
+                .map(|e| AgentEvent::Subagent { parent: parent_tool_use_id.clone(), event: Box::new(e) })
+                .collect()
+        }
+        // The host emits the parent's user lines.
         ZEvent::UserMessage { .. }
-        | ZEvent::Subagent { .. }
         | ZEvent::Steered { .. }
         | ZEvent::InputRequested { .. }
         | ZEvent::InputResolved { .. } => Vec::new(),
@@ -636,6 +646,20 @@ fn tool_call(id: String, call: ToolCall) -> Vec<AgentEvent> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn subagent_traffic_is_tagged_not_dropped() {
+        let tagged = |event| ZEvent::Subagent { parent_tool_use_id: "spawn".into(), event: Box::new(event) };
+        let mut usage = Usage::default();
+        let out = map_event(tagged(ZEvent::UserMessage { text: "brief".into() }), &mut usage);
+        assert!(matches!(&out[..], [AgentEvent::Subagent { parent, event }]
+            if parent == "spawn" && matches!(**event, AgentEvent::UserMessage { .. })));
+        let out = map_event(tagged(ZEvent::TextDelta { text: "hi".into() }), &mut usage);
+        assert!(matches!(&out[..], [AgentEvent::Subagent { event, .. }] if matches!(**event, AgentEvent::TextDelta { .. })));
+        // The parent's own usage is untouched by a subagent's.
+        map_event(tagged(ZEvent::Usage { input_tokens: 9, output_tokens: 9 }), &mut usage);
+        assert_eq!(usage.total_tokens(), 0);
+    }
 
     fn q(options: &[&str]) -> UserInputQuestion {
         UserInputQuestion {

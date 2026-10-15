@@ -28,6 +28,13 @@ Visual answers: call show_ui to put an interactive card in the chat (stats, bar/
 progress, checklists, toggles, steppers, choices and action buttons) whenever something is clearer \
 shown than told, or when you want the user to pick or tune values. Their choice comes back as their \
 next message. Dove's chat also renders ```mermaid diagrams and $$ LaTeX $$ math.\n\
+Designs: call show_canvas to show a live, interactive design in Dove's canvas (a framed webview the user can \
+switch between desktop, tablet and phone): web pages, app screens, mobile mockups, dashboards, components. Send \
+kind html (a full document or a fragment; Tailwind is loaded for fragments) or react (JSX/TSX defining `App`; \
+React hooks and Tailwind are available, no imports needed) or svg. Reuse the same id to iterate in place. Make \
+it real: realistic content, a consistent spacing scale, accessible contrast, responsive layout. To let the user \
+answer from the design, call `dove.send(text)` from a button or give an element data-dove-send=\"choice\"; it \
+arrives as their next message.\n\
 Office documents: for .pdf, .pptx, .xlsx or .docx work, call dove_skills with {\"name\": \"pdf\"|\"pptx\"|\"xlsx\"|\"docx\"} \
 first. Each skill ships a ready script (python-docx, python-pptx, openpyxl, reportlab, pypdf) you run with \
 `uv run <script>`; it gives real layouts, styles, formulas and charts. The user previews and edits the result \
@@ -65,6 +72,31 @@ const COMPUTER_INSTRUCTIONS: &str = "\nComputer use: computer__* tools (the open
 native desktop apps. Prefer files, CLIs and browser tools; use computer use only for apps with no other interface, \
 observe the window before acting, and confirm destructive actions with the user.";
 
+const NEXI_INSTRUCTIONS: &str = "\nNEXI computer use: nexi_observe, nexi_decide and nexi_run drive the desktop or a \
+Chromium window through the local NEXI-CUA driver (accessibility first, screenshots only as a fallback). Pass \
+browser:true to act in the browser. Do not set yes:true unless the user has agreed to confirmation-gated actions. \
+Blocked actions (deletion, purchases, sending, installs) still stop.";
+
+/// `show_canvas`: a live design, rendered by Dove's canvas from the call.
+fn show_canvas_tool() -> Value {
+    json!({
+        "name": "show_canvas",
+        "description": "Show the user a live, interactive design in Dove's canvas: a website, an app or mobile screen, a dashboard, a component, a diagram. It opens in a framed preview they can switch between desktop, tablet and phone. Calling again with the same id updates the design in place. Pages can answer back: dove.send(text) or an element with data-dove-send=\"…\" sends the user's choice as their next message.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string", "description": "Stable id; reuse it to iterate on the same design."},
+                "title": {"type": "string"},
+                "description": {"type": "string", "description": "One line on what this design is."},
+                "kind": {"type": "string", "enum": ["html", "react", "svg"], "description": "html: a full document or a body fragment (Tailwind loaded for fragments). react: JSX/TSX that defines a component named App (React hooks and Tailwind available, no imports needed). svg: an SVG document."},
+                "device": {"type": "string", "enum": ["desktop", "tablet", "mobile"], "description": "The frame it opens in."},
+                "code": {"type": "string", "description": "The source."}
+            },
+            "required": ["title", "code"]
+        }
+    })
+}
+
 /// `show_ui`: rendered by Dove's chat straight from the tool call.
 fn show_ui_tool() -> Value {
     json!({
@@ -78,7 +110,7 @@ fn show_ui_tool() -> Value {
                 "body": {"type": "string", "description": "Short intro text."},
                 "blocks": {
                     "type": "array",
-                    "description": "Content, top to bottom. Each item has a `type`: text {text}; callout {tone: info|success|warning|danger, title?, text}; stats {items: [{label, value, delta?}]}; bars {title?, items: [{label, value}], unit?, horizontal?}; line {title?, values: [number], labels?: [string], unit?}; table {columns: [string], rows: [[any]]}; progress {label, value 0-1}; kv {items: [[key, value]]}; code {lang?, text}; image {src, alt?}; divider {}; timeline {title?, steps: [{title, detail?, status: done|active|todo|failed}]}; breakdown {title?, items: [{label, value}], unit?} (100% stacked bar); tabs {id, tabs: [{label, blocks: [...]}]}. Controls the user can change: cards {id, label?, items: [{id, title, body?, badge?}]} (pick one option card); choice {id, label, choices: [string], value?}; toggle {id, label, value: bool}; number {id, label, value, min?, max?, step?}; checklist {id, label?, items: [{label, checked?}]}.",
+                    "description": "Content, top to bottom. Each item has a `type`: text {text}; callout {tone: info|success|warning|danger, title?, text}; stats {items: [{label, value, delta?}]}; bars {title?, items: [{label, value}], unit?, horizontal?}; line {title?, values: [number], labels?: [string], unit?}; table {columns: [string], rows: [[any]]}; progress {label, value 0-1}; kv {items: [[key, value]]}; code {lang?, text}; image {src, alt?}; divider {}; timeline {title?, steps: [{title, detail?, status: done|active|todo|failed}]}; breakdown {title?, items: [{label, value}], unit?} (100% stacked bar); tabs {id, tabs: [{label, blocks: [...]}]}. Controls the user can change: cards {id, label?, items: [{id, title, body?, badge?}]} (pick one option card); choice {id, label, choices: [string], value?}; toggle {id, label, value: bool}; number {id, label, value, min?, max?, step?}; checklist {id, label?, items: [{label, checked?}]}; slider {id, label, value, min?, max?, step?, unit?}; rating {id, label, value?, max?}; replies {label?, items: [{id?, label}]} (buttons that answer at once). Design & app blocks: heading {text}; hero {badge?, title, subtitle?, cta?, secondary?}; navbar {id?, brand?, items: [string], cta?}; pricing {id?, plans: [{id?, name, price, badge?, features: [string]}]}; split {left: [...], right: [...]}; donut {title?, items: [{label, value}], unit?}; stats items may add spark: [number] for a trend line; swatches {title?, items: [{name, hex}]}; gallery {items: [{src, caption?}]}; board {columns: [{title, items: [string]}]}; link {label, url}; mockup {device: phone|tablet|browser|app, title?, nav?: [string], blocks: [...]} (an app screen or web page drawn natively from other blocks). For a full page or a React/TSX component use show_canvas instead.",
                     "items": {"type": "object", "properties": {"type": {"type": "string"}}, "required": ["type"]}
                 },
                 "actions": {
@@ -95,11 +127,13 @@ fn show_ui_tool() -> Value {
 pub fn run() {
     let config = crate::pages::integrations::load();
     let mut upstream = upstream::Hub::new(&config);
+    let nexi_on = config.nexi.enabled;
     let mut instructions = format!("{BASE_INSTRUCTIONS}{CHROME_INSTRUCTIONS}");
     for (on, text) in [
         (upstream.has("composio"), COMPOSIO_INSTRUCTIONS),
         (upstream.has("paper"), PAPER_INSTRUCTIONS),
         (upstream.has("computer"), COMPUTER_INSTRUCTIONS),
+        (nexi_on, NEXI_INSTRUCTIONS),
     ] {
         if on {
             instructions.push_str(text);
@@ -136,12 +170,20 @@ pub fn run() {
                 let mut tools = crate::browser::agent::tools();
                 if let Some(list) = tools.as_array_mut() {
                     list.push(show_ui_tool());
+                    list.push(show_canvas_tool());
                     list.extend(chrome_tools());
                     list.extend(upstream.tools());
                     list.push(skills_tool());
+                    if nexi_on {
+                        list.extend(nexi_tools());
+                    }
                 }
                 Ok(json!({"tools": tools}))
             }
+            "tools/call" if params.get("name").and_then(Value::as_str) == Some("show_canvas") => Ok(json!({
+                "content": [{"type": "text", "text": "The design is open in Dove's canvas. The user can switch frames, view the code and save it. Anything the page sends with dove.send arrives as their next message."}],
+                "isError": false
+            })),
             "tools/call" if params.get("name").and_then(Value::as_str) == Some("show_ui") => Ok(json!({
                 "content": [{"type": "text", "text": "Shown to the user inline in the chat. If it has actions, their choice arrives as their next message."}],
                 "isError": false
@@ -151,6 +193,11 @@ pub fn run() {
                     params.get("name").and_then(Value::as_str).unwrap_or_default(),
                     params.get("arguments").cloned().unwrap_or(json!({})),
                 ))
+            }
+            "tools/call" if params.get("name").and_then(Value::as_str).is_some_and(|n| n.starts_with("nexi_")) => {
+                let name = params.get("name").and_then(Value::as_str).unwrap_or_default();
+                let args = params.get("arguments").cloned().unwrap_or(json!({}));
+                Ok(nexi_call(name, &args))
             }
             "tools/call" if params.get("name").and_then(Value::as_str) == Some("dove_skills") => {
                 let name = params.pointer("/arguments/name").and_then(Value::as_str);
@@ -174,6 +221,89 @@ pub fn run() {
         if writeln!(out, "{msg}").is_err() || out.flush().is_err() {
             break;
         }
+    }
+}
+
+fn nexi_tools() -> Vec<Value> {
+    let goal = json!({"type": "string", "description": "What the user wants done, in one sentence."});
+    let browser = json!({"type": "boolean", "description": "Act in Chromium via CDP instead of the desktop accessibility tree."});
+    vec![
+        json!({
+            "name": "nexi_observe",
+            "description": "Read the current screen through NEXI-CUA (accessibility tree, or the browser DOM when browser is true). Does not click anything.",
+            "inputSchema": {"type": "object", "properties": {"browser": browser}, "required": []}
+        }),
+        json!({
+            "name": "nexi_decide",
+            "description": "Ask NEXI-CUA which typed action it would take for a goal. Does not perform the action.",
+            "inputSchema": {"type": "object", "properties": {"goal": goal, "browser": browser}, "required": ["goal"]}
+        }),
+        json!({
+            "name": "nexi_run",
+            "description": "Run NEXI-CUA's observe, decide, act and verify loop for a goal (at most max_steps, default 12). Set yes only after the user agreed to confirmation-gated steps.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "goal": goal,
+                    "browser": browser,
+                    "app": {"type": "string", "description": "Optional app name to focus, such as Calculator."},
+                    "max_steps": {"type": "integer"},
+                    "yes": {"type": "boolean", "description": "Auto-approve confirmation-class actions. Cannot override blocked actions."}
+                },
+                "required": ["goal"]
+            }
+        }),
+    ]
+}
+
+fn nexi_call(name: &str, args: &Value) -> Value {
+    let browser = args.get("browser").and_then(Value::as_bool).unwrap_or(false);
+    let goal = args.get("goal").and_then(Value::as_str).unwrap_or("").trim().to_string();
+    let mut argv: Vec<String> = Vec::new();
+    match name {
+        "nexi_observe" => {
+            argv.push("observe".into());
+            if browser {
+                argv.push("--browser".into());
+            }
+        }
+        "nexi_decide" => {
+            if goal.is_empty() {
+                return json!({"content": [{"type": "text", "text": "nexi_decide needs a goal."}], "isError": true});
+            }
+            argv.push("decide".into());
+            argv.push(goal);
+            if browser {
+                argv.push("--browser".into());
+            }
+        }
+        "nexi_run" => {
+            if goal.is_empty() {
+                return json!({"content": [{"type": "text", "text": "nexi_run needs a goal."}], "isError": true});
+            }
+            argv.push("run".into());
+            argv.push(goal);
+            if browser {
+                argv.push("--browser".into());
+            }
+            if let Some(app) = args.get("app").and_then(Value::as_str).filter(|s| !s.is_empty()) {
+                argv.push("--app".into());
+                argv.push(app.to_string());
+            }
+            let steps = args.get("max_steps").and_then(Value::as_u64).unwrap_or(12).clamp(1, 20);
+            argv.push("--max-steps".into());
+            argv.push(steps.to_string());
+            if args.get("yes").and_then(Value::as_bool).unwrap_or(false) {
+                argv.push("--yes".into());
+            }
+        }
+        other => {
+            return json!({"content": [{"type": "text", "text": format!("Unknown NEXI tool {other}")}], "isError": true});
+        }
+    }
+    match crate::nexi::cua_exec(&argv) {
+        Ok(text) => json!({"content": [{"type": "text", "text": text}], "isError": false}),
+        Err(text) => json!({"content": [{"type": "text", "text": text}], "isError": true}),
     }
 }
 

@@ -1,6 +1,5 @@
-//! The window: a top bar that never moves (thread tabs, Chat | Terminal,
-//! panel toggles), a collapsible sidebar, the routed page, and the thread's
-//! side panel.
+//! The window: a top bar that never moves (thread tabs and panel toggles),
+//! a collapsible sidebar, the routed page, and the thread's side panel.
 //!
 //! The shell owns app state (projects, threads, tabs, layout). Each thread is
 //! its own cached entity, so a streaming thread re-renders only itself.
@@ -38,6 +37,12 @@ use crate::{actions, notify, ui};
 
 pub const SIDEBAR_W: f32 = 264.0;
 pub const PANEL_W: f32 = 460.0;
+/// Gutter between the window edge and the card, and between columns.
+pub const GUTTER: f32 = 6.0;
+/// The chat column never gets narrower than this; the dock gives way first.
+const CENTER_MIN: f32 = 440.0;
+/// Narrowest the dock gets when the window is too small for both.
+const PANEL_FLOOR: f32 = 320.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Route {
@@ -52,6 +57,27 @@ pub enum Route {
     Archived,
     Settings,
     Help,
+    Team,
+}
+
+impl Route {
+    /// A page by its short name (`DOVE_ROUTE`, deep links).
+    pub fn from_id(id: &str) -> Option<Route> {
+        Some(match id {
+            "home" => Route::Home,
+            "threads" => Route::Threads,
+            "kanban" => Route::Kanban,
+            "automations" => Route::Automations,
+            "prs" | "pull-requests" => Route::PullRequests,
+            "agents" => Route::Agents,
+            "usage" => Route::Usage,
+            "archived" => Route::Archived,
+            "settings" => Route::Settings,
+            "help" => Route::Help,
+            "team" => Route::Team,
+            _ => return None,
+        })
+    }
 }
 
 #[derive(Clone)]
@@ -79,6 +105,9 @@ pub struct Shell {
     /// Live and draft threads (not archived).
     pub tasks: Vec<Task>,
     pub archived: Vec<Task>,
+    /// The team, and which teammate runs each thread.
+    pub personas: Vec<dove_core::store::Persona>,
+    pub persona_of: HashMap<TaskId, String>,
     pub home_project: Option<ProjectId>,
     pub join: Option<(TaskId, Joined)>,
     pub route: Route,
@@ -106,10 +135,15 @@ pub struct Shell {
     pub agents_open: bool,
     pub installed: Vec<Installed>,
     pub versions: HashMap<HarnessKind, String>,
+    /// Installed agents with a newer release.
+    pub updates: Vec<crate::updates::Update>,
     pub today: Usage,
     pub error: Option<SharedString>,
     pub search: Entity<InputState>,
     pub search_q: String,
+    /// The sidebar's thread filter is showing (it also shows while it holds
+    /// a query).
+    pub search_open: bool,
     pub pages: PageState,
     /// Unread automation runs, for the sidebar dot.
     pub inbox_unread: usize,
@@ -167,17 +201,38 @@ impl Shell {
                 let _ = this.engine.store.set_setting("panel_expanded", if on { "true" } else { "false" });
                 cx.notify();
             }
+            SidePanelEvent::RevealRow(row) => {
+                if let Some(v) = this.active_thread() {
+                    let chat = v.read(cx).chat.clone();
+                    let row = *row;
+                    chat.update(cx, |c, cx| c.glide_to_row(row, cx));
+                }
+            }
+            SidePanelEvent::OpenThread(id) => this.open_task(*id, window, cx),
+        }));
+        subs.push(cx.subscribe_in(&settings, window, |this, _, ev: &crate::settings::SettingsEvent, window, cx| {
+            match ev {
+                crate::settings::SettingsEvent::OpenTeam { new: true } => this.edit_teammate(None, window, cx),
+                crate::settings::SettingsEvent::OpenTeam { new: false } => this.open_teammate(None, window, cx),
+                crate::settings::SettingsEvent::OpenAgents => this.navigate(Route::Agents, window, cx),
+            }
         }));
         subs.push(cx.subscribe_in(&prs, window, |this, _, ev: &PrEvent, window, cx| match ev {
             PrEvent::Checkout { project, number, title } => {
                 this.checkout_pr(project.clone(), *number, title.clone(), window, cx)
             }
         }));
-        subs.push(cx.subscribe(&search, |this, s, ev: &InputEvent, cx| {
-            if matches!(ev, InputEvent::Change) {
+        subs.push(cx.subscribe(&search, |this, s, ev: &InputEvent, cx| match ev {
+            InputEvent::Change => {
                 this.search_q = s.read(cx).value().to_lowercase();
                 cx.notify();
             }
+            // An empty filter folds away when you leave it.
+            InputEvent::Blur if this.search_q.is_empty() => {
+                this.search_open = false;
+                cx.notify();
+            }
+            _ => {}
         }));
         if let Some(remote) = crate::remote::Remote::global(cx) {
             subs.push(cx.subscribe_in(&remote, window, |this, remote, ev: &RemoteEvent, window, cx| {
@@ -212,6 +267,8 @@ impl Shell {
             projects,
             tasks: Vec::new(),
             archived: Vec::new(),
+            personas: Vec::new(),
+            persona_of: HashMap::new(),
             home_project,
             join: None,
             route: Route::Home,
@@ -237,10 +294,12 @@ impl Shell {
             agents_open: false,
             installed: Vec::new(),
             versions: HashMap::new(),
+            updates: Vec::new(),
             today: Usage::default(),
             error: None,
             search,
             search_q: String::new(),
+            search_open: false,
             pages,
             inbox_unread: 0,
             focus: cx.focus_handle(),
@@ -257,10 +316,22 @@ impl Shell {
         this.scan_harnesses(cx);
         this.start_scheduler(cx);
         this.start_browser_control(window, cx);
+        this.start_canvas_inbox(window, cx);
         crate::composer::focus(&this.composer, window, cx);
         // `DOVE_OPEN_THREAD=<id>`: start on a thread (QA and scripting).
         if let Some(id) = std::env::var("DOVE_OPEN_THREAD").ok().and_then(|s| uuid_task(&s)) {
             this.open_task(id, window, cx);
+        }
+        // `DOVE_ROUTE=<page>`: start on a page (QA and scripting).
+        if let Some(route) = std::env::var("DOVE_ROUTE").ok().and_then(|r| Route::from_id(&r)) {
+            this.navigate(route, window, cx);
+        }
+        // `DOVE_PANEL=<tab>`: open the side panel on a tab.
+        if let Some(tab) = std::env::var("DOVE_PANEL").ok().and_then(|r| Tab::from_id(&r)) {
+            this.show_panel(tab, window, cx);
+        }
+        if let Ok(section) = std::env::var("DOVE_SETTINGS") {
+            this.open_settings_section(&section, window, cx);
         }
         this
     }
@@ -272,6 +343,10 @@ impl Shell {
         self.projects = store.projects().unwrap_or_default();
         self.tasks = store.all_tasks().unwrap_or_default();
         self.archived = store.archived_tasks(200).unwrap_or_default();
+        self.personas = store.personas().unwrap_or_default();
+        self.persona_of = store.persona_assignments().unwrap_or_default().into_iter().collect();
+        let personas = self.personas.clone();
+        self.composer.update(cx, |c, cx| c.set_personas(personas, cx));
         // A live view knows its status better than the database row.
         for t in &mut self.tasks {
             if let Some(v) = self.threads.get(&t.id) {
@@ -311,17 +386,44 @@ impl Shell {
                 s.composer.update(cx, |c, cx| c.set_installed(enabled, cx));
                 cx.notify();
             });
+            let mut known = Vec::new();
             for (kind, program) in probes {
                 let probe = cx.background_spawn(async move { version_of(&program) });
                 if let Some(v) = probe.await {
+                    known.push((kind, v.clone()));
                     let _ = this.update(cx, |s, cx| {
                         s.versions.insert(kind, v);
                         cx.notify();
                     });
                 }
             }
+            // With every version known, ask each agent's release channel
+            // whether there is a newer one.
+            let check = crate::browser::runtime().spawn(crate::updates::check(known));
+            if let Ok(updates) = check.await {
+                let _ = this.update(cx, |s, cx| {
+                    s.updates = updates;
+                    cx.notify();
+                });
+            }
         })
         .detach();
+    }
+
+    /// Update an agent in a terminal on the Agents page, where its output
+    /// (and any prompt it asks) is visible.
+    pub fn run_update(&mut self, kind: HarnessKind, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(program) = self.engine.program_for(kind) else { return };
+        let (program, args) = crate::updates::command(kind, &program);
+        let home = std::env::var_os("USERPROFILE")
+            .or_else(|| std::env::var_os("HOME"))
+            .map(PathBuf::from)
+            .unwrap_or_else(|| ".".into());
+        let term = cx.new(|cx| crate::terminal::TerminalView::for_command(home, program, args, cx));
+        self.pages.agent_terminal = Some((kind, term));
+        self.updates.retain(|u| u.kind != kind);
+        self.agents_open = false;
+        self.navigate(Route::Agents, window, cx);
     }
 
     /// Serve agents' browser tool calls (`dove --mcp-browser`): route each
@@ -661,6 +763,18 @@ impl Shell {
                     self.panel.update(cx, |p, cx| p.drive_browser(action, window, cx));
                     cx.notify();
                 }
+                TaskViewEventKind::OpenCanvas(spec, asked) => {
+                    // Designs open on the thread on screen; one from a thread
+                    // in the background waits for its card to be clicked.
+                    let auto = self.engine.store.setting("canvas_auto_open").as_deref() != Some("false");
+                    if self.route == Route::Thread(id) && (*asked || auto) {
+                        self.panel_open = true;
+                        let _ = self.engine.store.set_setting("panel_open", "true");
+                        let spec = spec.clone();
+                        self.panel.update(cx, |p, cx| p.open_canvas(spec, Some(id), true, window, cx));
+                        cx.notify();
+                    }
+                }
             },
         }
     }
@@ -696,11 +810,85 @@ impl Shell {
         cx.notify();
     }
 
-    /// Mirror the active thread's plan into the side panel.
+    /// Mirror the active thread's plan, subagents and side chats into the
+    /// side panel.
     fn sync_panel(&mut self, cx: &mut Context<Self>) {
         let Some(v) = self.active_thread() else { return };
-        let todos = v.read(cx).chat.read(cx).todos().to_vec();
-        self.panel.update(cx, |p, cx| p.set_todos(todos, cx));
+        let (todos, subagents, designs) = {
+            let chat = v.read(cx).chat.read(cx);
+            (chat.todos().to_vec(), chat.subagents(), chat.designs())
+        };
+        let chats = self.side_chats_of(self.active_task().map(|t| t.id));
+        self.panel.update(cx, |p, cx| {
+            p.set_todos(todos, cx);
+            p.set_subagents(subagents, cx);
+            p.set_side_chats(chats, cx);
+            p.set_designs(designs.clone(), cx);
+        });
+        // `DOVE_OPEN_CANVAS=1`: open the thread's latest design once it has
+        // loaded (QA and scripting).
+        static OPENED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        if std::env::var_os("DOVE_OPEN_CANVAS").is_some()
+            && let Some(spec) = designs.into_iter().next()
+            && !OPENED.swap(true, std::sync::atomic::Ordering::Relaxed)
+        {
+            let thread = self.active_task().map(|t| t.id);
+            self.panel_open = true;
+            if let Some(window) = cx.windows().first().copied() {
+                let panel = self.panel.clone();
+                cx.defer(move |cx| {
+                    let _ = window.update(cx, |_, window, cx| {
+                        panel.update(cx, |p, cx| p.open_canvas(spec, thread, true, window, cx));
+                    });
+                });
+            }
+        }
+    }
+
+    /// Threads that share `id`'s worktree (its side chats), newest first.
+    fn side_chats_of(&self, id: Option<TaskId>) -> Vec<crate::side_panel::SideChatInfo> {
+        let Some(task) = id.and_then(|id| self.task(id)) else { return Vec::new() };
+        let Some(wt) = task.worktree.clone() else { return Vec::new() };
+        let mut out: Vec<_> = self
+            .tasks
+            .iter()
+            .filter(|t| t.id != task.id && t.worktree.as_ref() == Some(&wt))
+            .map(|t| crate::side_panel::SideChatInfo {
+                id: t.id,
+                title: t.title.clone(),
+                status: t.status,
+                unread: t.unread,
+                updated_at: t.updated_at,
+            })
+            .collect();
+        out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        out
+    }
+
+    /// Messages that pages on a canvas sent with `dove.send`: each becomes
+    /// the user's next turn in the thread that made the design.
+    fn start_canvas_inbox(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        crate::canvas::start();
+        let Some(rx) = crate::canvas::inbox() else { return };
+        cx.spawn_in(window, async move |this, cx| {
+            while let Ok((thread, text)) = rx.recv_async().await {
+                let _ = this.update_in(cx, |this, window, cx| {
+                    if this.engine.store.setting("canvas_bridge").as_deref() == Some("false") {
+                        return;
+                    }
+                    let target = thread.or(match this.route {
+                        Route::Thread(id) => Some(id),
+                        _ => None,
+                    });
+                    let Some(id) = target else { return };
+                    if let Some(v) = this.threads.get(&id) {
+                        let chat = v.read(cx).chat.clone();
+                        chat.update(cx, |c, cx| c.submit(text.clone(), window, cx));
+                    }
+                });
+            }
+        })
+        .detach();
     }
 
     fn save_tabs(&self) {
@@ -739,9 +927,9 @@ impl Shell {
     // ------------------------------------------------------------ actions
 
     fn start(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
-        let (project, run, harness, worktree, branch) = {
+        let (project, run, harness, worktree, branch, persona) = {
             let c = self.composer.read(cx);
-            (c.project.clone(), c.run_settings(cx), c.harness(cx), c.worktree, c.branch.clone())
+            (c.project.clone(), c.run_settings(cx), c.harness(cx), c.worktree, c.branch.clone(), c.persona.clone())
         };
         let Some(project) = project.or_else(|| self.home_project.and_then(|id| self.project(id)).cloned()) else {
             self.error = Some("Add a project first.".into());
@@ -756,6 +944,7 @@ impl Shell {
             worktree,
             from_branch: if self.join.is_some() { None } else { branch },
             join: self.join.as_ref().map(|(_, j)| j.clone()),
+            persona,
         };
         match self.engine.start_task(&project, new) {
             Ok((task, live)) => {
@@ -1087,6 +1276,7 @@ impl Shell {
         let mut items = vec![
             P::Action("New thread", icons::PEN_NEW_SQUARE, "new"),
             P::Action("All threads", icons::LIST, "threads"),
+            P::Action("Team", icons::BOT, "team"),
             P::Action("Kanban", icons::WIDGET, "kanban"),
             P::Action("Automations", icons::CLOCK_CIRCLE, "automations"),
             P::Action("Pull requests", icons::PULL_REQUEST, "prs"),
@@ -1095,8 +1285,8 @@ impl Shell {
             P::Action("Archived threads", icons::ARCHIVE_MINIMALISTIC, "archived"),
             P::Action("Settings", icons::SETTINGS, "settings"),
             P::Action("Keyboard shortcuts", icons::KEYBOARD, "help"),
-            P::Action("Toggle sidebar", icons::SIDEBAR, "sidebar"),
-            P::Action("Toggle side panel", icons::PANEL_RIGHT, "panel"),
+            P::Action("Toggle sidebar", icons::SPLIT_COLUMNS, "sidebar"),
+            P::Action("Toggle side panel", icons::SPLIT_COLUMNS, "panel"),
             P::Action("Add project…", icons::DOCUMENT_ADD, "add_project"),
             P::Action("Switch theme (light / dark)", icons::MOON, "theme"),
         ];
@@ -1105,6 +1295,8 @@ impl Shell {
                 P::Action("Chat ⇄ Terminal", icons::TERMINAL, "toggle_terminal"),
                 P::Action("Show changes", icons::FILE_CODE, "panel_changes"),
                 P::Action("Show files", icons::FOLDER_TREE, "panel_files"),
+                P::Action("Show canvas", icons::GALLERY, "panel_canvas"),
+                P::Action("Show subagents", icons::FORK, "panel_subagents"),
                 P::Action("New shell", icons::TERMINAL, "panel_shell"),
                 P::Action("Rename thread", icons::PEN, "rename"),
                 P::Action("Fork thread", icons::FORK, "fork"),
@@ -1142,6 +1334,10 @@ impl Shell {
             PaletteItem::Action(_, _, id) => match id {
                 "new" => self.new_session(window, cx),
                 "threads" => self.navigate(Route::Threads, window, cx),
+                "team" => {
+                    self.pages.team_focus = None;
+                    self.navigate(Route::Team, window, cx);
+                }
                 "kanban" => self.navigate(Route::Kanban, window, cx),
                 "automations" => self.navigate(Route::Automations, window, cx),
                 "prs" => self.navigate(Route::PullRequests, window, cx),
@@ -1161,6 +1357,8 @@ impl Shell {
                 "toggle_terminal" => self.toggle_view_mode(window, cx),
                 "panel_changes" => self.show_panel(Tab::Changes, window, cx),
                 "panel_files" => self.show_panel(Tab::Files, window, cx),
+                "panel_canvas" => self.show_panel(Tab::Canvas, window, cx),
+                "panel_subagents" => self.show_panel(Tab::Subagents, window, cx),
                 "panel_shell" => {
                     self.show_panel(Tab::Terminal, window, cx);
                     self.panel.update(cx, |p, cx| p.new_shell(window, cx));
@@ -1202,83 +1400,200 @@ impl Shell {
             })
     }
 
+    /// Floating window chrome for the empty main page: sidebar and history,
+    /// with no tab strip. The strip appears once a thread is open.
+    fn render_bare_chrome(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let t = Theme::of(cx).clone();
+        let left_pad = if cfg!(target_os = "macos") { 78.0 } else { 10.0 };
+        let can_back = !self.back.is_empty();
+        let can_fwd = !self.forward.is_empty();
+        // A history arrow with nowhere to go stays visible, just dim.
+        let nav = |id: &'static str,
+                   path: &'static str,
+                   label: &'static str,
+                   enabled: bool,
+                   go: fn(&mut Shell, &mut Window, &mut Context<Shell>),
+                   cx: &mut Context<Self>| {
+            if enabled {
+                ui::icon_button(id, path, label, &t, cx.listener(move |this, _, window, cx| go(this, window, cx)))
+                    .into_any_element()
+            } else {
+                div()
+                    .id(id)
+                    .size(px(24.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(icon(path).size(px(16.0)).text_color(t.text_muted.opacity(0.35)))
+                    .into_any_element()
+            }
+        };
+        let buttons = div()
+            .flex()
+            .items_center()
+            .child(ui::window_button(
+                "home-sidebar",
+                ui::sidebar_glyph(if self.sidebar_open { 1.0 } else { 0.0 }, false, 16.0, t.text_muted),
+                "Toggle sidebar (Ctrl+B)",
+                &t,
+                cx.listener(|this, _, _, cx| this.toggle_sidebar(cx)),
+            ))
+            .child(div().w(px(8.0)))
+            .child(nav("home-back", icons::ARROW_LEFT, "Back (Alt+←)", can_back, |s, w, cx| s.go_back(w, cx), cx))
+            .child(div().w(px(2.0)))
+            .child(nav("home-fwd", icons::ARROW_RIGHT, "Forward (Alt+→)", can_fwd, |s, w, cx| s.go_forward(w, cx), cx));
+        // Over the artwork (sidebar closed) the controls ride a small frosted
+        // island, as in Zeron; with the sidebar open they sit on its top.
+        let island_on = !self.sidebar_open;
+        let island = div()
+            .h(px(32.0))
+            .px(px(6.0))
+            .flex()
+            .items_center()
+            .rounded(px(12.0))
+            .when(island_on, |d| {
+                d.bg(t.glass_overlay())
+                    .border_1()
+                    .border_color(t.wash(0.07))
+                    .shadow(vec![gpui::BoxShadow {
+                        color: gpui::hsla(0.0, 0.0, 0.0, 0.22),
+                        offset: gpui::point(px(0.0), px(2.0)),
+                        blur_radius: px(10.0),
+                        spread_radius: px(0.0),
+                        inset: false,
+                    }])
+            })
+            .child(buttons);
+        let cluster = div()
+            .ml(px(if cfg!(target_os = "macos") { left_pad } else { 6.0 }))
+            .child(if island_on { ui::frosted(12.0, 20.0, island).into_any_element() } else { island.into_any_element() });
+        let bar = div()
+            .relative()
+            .h(px(Theme::TITLEBAR_HEIGHT))
+            .pt(px(Theme::TITLEBAR_TOP_PAD))
+            .flex()
+            .items_center()
+            .child(cluster);
+        let bar = self.drag_region("home-chrome", bar, cx);
+        div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .right_0()
+            .child(bar)
+            .children(ui::windows_captions(window, &t))
+            .children(ui::linux_captions(&t))
+            .into_any_element()
+    }
+
     fn render_topbar(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let t = Theme::of(cx).clone();
         let left_pad = if cfg!(target_os = "macos") { 78.0 } else { 10.0 };
         let can_back = !self.back.is_empty();
         let can_fwd = !self.forward.is_empty();
+        // With the sidebar open the cluster is exactly the sidebar's width, so
+        // the tabs start where the card starts: the titlebar repeats the body's
+        // columns (sidebar | chat | dock) instead of spilling across them.
+        // Zeron's cluster: the sidebar toggle, a group gap, then both history
+        // arrows (dim when there is nowhere to go, so nothing shifts).
+        let arrow = |id: &'static str,
+                     path: &'static str,
+                     label: &'static str,
+                     enabled: bool,
+                     go: fn(&mut Shell, &mut Window, &mut Context<Shell>),
+                     cx: &mut Context<Self>| {
+            if enabled {
+                ui::icon_button(id, path, label, &t, cx.listener(move |this, _, window, cx| go(this, window, cx)))
+                    .into_any_element()
+            } else {
+                div()
+                    .id(id)
+                    .size(px(24.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(icon(path).size(px(16.0)).text_color(t.text_muted.opacity(0.35)))
+                    .into_any_element()
+            }
+        };
         let cluster = div()
             .flex()
             .flex_none()
             .items_center()
-            .gap(px(2.0))
             .pl(px(left_pad))
-            .child(ui::icon_button(
+            .when(self.sidebar_open, |d| d.w(px(self.sidebar_w)))
+            .when(!self.sidebar_open, |d| d.pr(px(8.0)))
+            .child(ui::window_button(
                 "tb-sidebar",
-                icons::SIDEBAR,
+                ui::sidebar_glyph(if self.sidebar_open { 1.0 } else { 0.0 }, false, 16.0, t.text_muted),
                 "Toggle sidebar (Ctrl+B)",
                 &t,
                 cx.listener(|this, _, _, cx| this.toggle_sidebar(cx)),
             ))
-            .when(can_back, |d| {
-                d.child(ui::icon_button(
-                    "tb-back",
-                    icons::ARROW_LEFT,
-                    "Back (Alt+←)",
-                    &t,
-                    cx.listener(|this, _, window, cx| this.go_back(window, cx)),
-                ))
-            })
-            .when(can_fwd, |d| {
-                d.child(ui::icon_button(
-                    "tb-fwd",
-                    icons::ARROW_RIGHT,
-                    "Forward (Alt+→)",
-                    &t,
-                    cx.listener(|this, _, window, cx| this.go_forward(window, cx)),
-                ))
-            });
+            .child(div().w(px(8.0)))
+            .child(arrow("tb-back", icons::ARROW_LEFT, "Back (Alt+←)", can_back, |s, w, cx| s.go_back(w, cx), cx))
+            .child(div().w(px(2.0)))
+            .child(arrow("tb-fwd", icons::ARROW_RIGHT, "Forward (Alt+→)", can_fwd, |s, w, cx| s.go_forward(w, cx), cx));
 
-        let tabs = self.render_tabs(&t, cx);
         let in_thread = matches!(self.route, Route::Thread(_));
         let panel_open = in_thread && self.panel_open;
         let expanded = panel_open && self.panel.read(cx).expanded;
-        let mode = self.active_thread().map(|v| v.read(cx).view);
+        let panel_w = self.panel_width(window);
+        // What the tabs get: the bar minus the cluster, the tools beside the
+        // tabs and the dock's strip (or the caption buttons).
+        let cluster_w = if self.sidebar_open {
+            self.sidebar_w
+        } else {
+            // Toggle, group gap, back, 2 px, forward, trailing pad.
+            left_pad + ui::BUTTON * 3.0 + 8.0 + 2.0 + 8.0
+        };
+        let tools_w = 16.0
+            + if in_thread { ui::BUTTON + 4.0 + 66.0 } else { 0.0 }
+            + if in_thread && !panel_open { ui::BUTTON + 4.0 } else { 0.0 }
+            + if panel_open { panel_w } else { ui::caption_reserve() };
+        let room = f32::from(window.viewport_size().width) - cluster_w - tools_w;
+        let tabs = self.render_tabs(room, &t, cx);
+        let switch = match self.route {
+            Route::Thread(id) => self.threads.get(&id).cloned(),
+            _ => None,
+        }
+        .map(|v| v.update(cx, |v, cx| v.view_switch(&t, cx)));
         let right_tools = div()
             .flex()
             .flex_none()
             .items_center()
-            .gap(px(2.0))
-            .when(!panel_open, |d| d.pr(px(ui::caption_reserve() + 8.0)))
-            .when(in_thread, |d| d.child(self.render_info_button(cx)))
-            .when(!expanded, |d| {
-                d.when_some(mode, |d, mode| {
-                    let terminal = mode == ViewMode::Terminal;
-                    d.child(
-                        ui::icon_button(
-                            "tb-terminal",
-                            icons::TERMINAL,
-                            if terminal { "Back to chat (Ctrl+`)" } else { "Open in the agent's terminal (Ctrl+`)" },
-                            &t,
-                            cx.listener(move |this, _, window, cx| {
-                                if let Some(v) = this.active_thread().cloned() {
-                                    let want = if terminal { ViewMode::Chat } else { ViewMode::Terminal };
-                                    v.update(cx, |v, cx| v.request(want, window, cx));
-                                }
-                            }),
-                        )
-                        .when(terminal, |b| b.bg(t.wash(0.10))),
-                    )
-                })
-            })
-            .when(in_thread && !panel_open, |d| {
-                d.child(ui::icon_button(
-                    "tb-panel",
-                    icons::PANEL_RIGHT,
-                    "Side panel: browser, diffs, files… (Ctrl+\\)",
-                    &t,
-                    cx.listener(|this, _, _, cx| this.toggle_panel(cx)),
-                ))
+            .gap(px(4.0))
+            .pl(px(8.0))
+            .pr(px(if panel_open { 8.0 } else { ui::caption_reserve() + 8.0 }))
+            // Thread tools share one quiet capsule: the chat/terminal
+            // segment, a hairline, then info and the panel toggle.
+            .when(in_thread, |d| {
+                d.child(
+                    div()
+                        .h(px(28.0))
+                        .px(px(2.0))
+                        .flex()
+                        .items_center()
+                        .gap(px(2.0))
+                        .rounded(px(9.0))
+                        .bg(t.wash(0.035))
+                        .border_1()
+                        .border_color(t.wash(0.06))
+                        .when_some(switch, |d, sw| {
+                            d.child(div().pl(px(1.0)).child(sw))
+                                .child(div().mx(px(3.0)).w(px(1.0)).h(px(14.0)).bg(t.wash(0.09)))
+                        })
+                        .child(self.render_info_button(cx))
+                        .when(!panel_open, |d| {
+                            d.child(ui::window_button(
+                                "tb-panel",
+                                ui::sidebar_glyph(0.0, true, 16.0, t.text_muted),
+                                "Side panel: browser, diffs, files… (Ctrl+\\)",
+                                &t,
+                                cx.listener(|this, _, _, cx| this.toggle_panel(cx)),
+                            ))
+                        }),
+                )
             });
         let strip = panel_open.then(|| self.panel.update(cx, |p, cx| p.render_strip(cx)));
 
@@ -1288,18 +1603,19 @@ impl Shell {
             .pt(px(Theme::TITLEBAR_TOP_PAD))
             .flex()
             .items_center()
-            .gap(px(8.0))
             .child(cluster)
-            .when(!expanded, |d| d.child(div().flex_1().min_w_0().h_full().flex().items_center().child(tabs)))
-            .child(right_tools)
+            // Expanded, the dock owns the whole card, so its strip owns the
+            // whole bar after the cluster; thread tabs and tools step aside.
+            .when(!expanded, |d| {
+                d.child(div().flex_1().min_w_0().h_full().flex().items_center().child(tabs)).child(right_tools)
+            })
             .when_some(strip, |d, strip| {
                 d.child(
                     div()
                         .h_full()
                         .min_w_0()
-                        .when(!expanded, |d| d.w(px(self.panel_w)).flex_none())
+                        .when(!expanded, |d| d.w(px(panel_w)).flex_none())
                         .when(expanded, |d| d.flex_1())
-                        .mr(px(6.0))
                         .pr(px(ui::caption_reserve()))
                         .child(strip),
                 )
@@ -1316,35 +1632,62 @@ impl Shell {
 
     /// Open threads as tabs: status glyph, title, close. Middle-click closes;
     /// drag to reorder.
-    fn render_tabs(&mut self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+    ///
+    /// Tabs split `room` evenly, like a browser's: as more open (or the dock
+    /// widens) they narrow, dropping the status glyph and then the title,
+    /// rather than spilling under the tools beside them. Only past `TAB_MIN`
+    /// each does the strip scroll.
+    fn render_tabs(&mut self, room: f32, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        const TAB_MAX: f32 = 210.0;
+        const TAB_MIN: f32 = 40.0;
+        const GAP: f32 = 2.0;
         let active = match self.route {
             Route::Thread(id) => Some(id),
             _ => None,
         };
-        let mut strip = div().id("thread-tabs").flex().items_center().gap(px(2.0)).min_w_0().overflow_x_scroll();
-        for (i, id) in self.tabs.clone().into_iter().enumerate() {
-            let Some(task) = self.task(id).cloned() else { continue };
+        let open: Vec<(usize, TaskId, Task)> = self
+            .tabs
+            .clone()
+            .into_iter()
+            .enumerate()
+            .filter_map(|(i, id)| self.task(id).cloned().map(|task| (i, id, task)))
+            .collect();
+        let n = open.len().max(1) as f32;
+        let width = ((room - ui::BUTTON - GAP * n) / n).clamp(TAB_MIN, TAB_MAX).floor();
+        // Full: glyph, avatar, title, close. Narrow: avatar, title. Icon: avatar.
+        let full = width >= 128.0;
+        let icon_only = width < 76.0;
+        let mut strip = div().id("thread-tabs").flex().items_center().gap(px(GAP)).min_w_0().overflow_x_scroll();
+        for (i, id, task) in open {
             let selected = active == Some(id);
+            let attention = matches!(task.status, TaskStatus::Running | TaskStatus::NeedsInput) || task.unread;
+            let show_glyph = (task.status != TaskStatus::Idle || task.unread) && (full || attention);
+            // Icon-only tabs have room for one mark: the glyph wins when the
+            // thread wants attention.
+            let show_avatar = !(icon_only && show_glyph);
+            let show_close = !icon_only && (full || selected);
             strip = strip.child(
                 div()
                     .id(SharedString::from(format!("tab-{id}")))
                     .group("tab")
-                    .h(px(30.0))
-                    .min_w(px(96.0))
-                    .max_w(px(210.0))
-                    .pl(px(9.0))
-                    .pr(px(4.0))
-                    .flex()
+                    .h(px(28.0))
+                    .w(px(width))
                     .flex_none()
+                    .when(icon_only, |d| d.justify_center())
+                    .when(!icon_only, |d| d.pl(px(9.0)).pr(px(if show_close { 4.0 } else { 9.0 })))
+                    .flex()
                     .items_center()
                     .gap(px(7.0))
-                    .rounded(px(9.0))
-                    .border_1()
+                    .rounded(px(8.0))
                     .occlude()
                     .cursor_pointer()
-                    .when(selected, |d| d.bg(t.surface_raised).border_color(t.wash(0.09)).shadow_sm())
-                    .when(!selected, |d| d.border_color(gpui::transparent_black()).hover(|s| s.bg(t.wash(0.05))))
-                    .when(task.status != TaskStatus::Idle || task.unread, |d| {
+                    .when(!full, |d| d.tooltip(ui::tip(task.title.clone())))
+                    .relative()
+                    // Zeron's selected glass chip: a wash plus an inset
+                    // hairline ring, nothing painted behind it.
+                    .when(selected, |d| d.bg(ui::selected_bg(t)).shadow(ui::selected_ring(t)))
+                    .when(!selected, |d| d.hover(|s| s.bg(t.wash(0.05))))
+                    .when(show_glyph, |d| {
                         d.child(kit::status_glyph(
                             SharedString::from(format!("tab-st-{id}")),
                             task.status,
@@ -1352,39 +1695,47 @@ impl Shell {
                             t,
                         ))
                     })
-                    .child(icon(ui::harness_icon(task.harness)).size(px(13.0)).text_color(ui::harness_tint(
-                        task.harness,
-                        t,
-                        t.text_muted,
-                    )))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .text_size(px(12.5))
-                            .when(task.unread && !selected, |d| d.font_weight(gpui::FontWeight::SEMIBOLD))
-                            .text_color(if selected { t.text } else { t.text_muted })
-                            .child(task.title.clone()),
-                    )
-                    .child(
-                        div()
-                            .id(SharedString::from(format!("tab-x-{id}")))
-                            .size(px(18.0))
-                            .flex()
-                            .flex_none()
-                            .items_center()
-                            .justify_center()
-                            .rounded(px(5.0))
-                            .when(!selected, |d| d.invisible().group_hover("tab", |s| s.visible()))
-                            .hover(|s| s.bg(t.wash(0.14)))
-                            .tooltip(ui::tip("Close tab (Ctrl+W)"))
-                            .child(icon(icons::CLOSE).size(px(10.0)).text_color(t.text_faint))
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                cx.stop_propagation();
-                                this.close_tab(id, window, cx);
-                            })),
-                    )
+                    .when(show_avatar, |d| {
+                        d.child(match self.persona_for(id) {
+                            Some(p) => crate::team::avatar(p, 15.0, t).into_any_element(),
+                            None => icon(ui::harness_icon(task.harness))
+                                .size(px(13.0))
+                                .text_color(ui::harness_tint(task.harness, t, t.text_muted))
+                                .into_any_element(),
+                        })
+                    })
+                    .when(!icon_only, |d| {
+                        d.child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_size(px(12.5))
+                                .when(task.unread && !selected, |d| d.font_weight(gpui::FontWeight::SEMIBOLD))
+                                .text_color(if selected { t.text } else { t.text_muted })
+                                .child(task.title.clone()),
+                        )
+                    })
+                    .when(show_close, |d| {
+                        d.child(
+                            div()
+                                .id(SharedString::from(format!("tab-x-{id}")))
+                                .size(px(18.0))
+                                .flex()
+                                .flex_none()
+                                .items_center()
+                                .justify_center()
+                                .rounded(px(5.0))
+                                .when(!selected, |d| d.invisible().group_hover("tab", |s| s.visible()))
+                                .hover(|s| s.bg(t.wash(0.14)))
+                                .tooltip(ui::tip("Close tab (Ctrl+W)"))
+                                .child(icon(icons::CLOSE).size(px(10.0)).text_color(t.text_faint))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    cx.stop_propagation();
+                                    this.close_tab(id, window, cx);
+                                })),
+                        )
+                    })
                     .on_click(cx.listener(move |this, _, window, cx| this.navigate(Route::Thread(id), window, cx)))
                     .on_mouse_up(
                         MouseButton::Middle,
@@ -1403,13 +1754,16 @@ impl Shell {
                     })),
             );
         }
-        strip = strip.child(ui::icon_button(
-            "tab-new",
-            icons::PLUS,
-            "New thread (Ctrl+N)",
-            t,
-            cx.listener(|this, _, window, cx| this.new_session(window, cx)),
-        ));
+        strip = strip.child(
+            ui::icon_button(
+                "tab-new",
+                icons::PLUS,
+                "New thread (Ctrl+N)",
+                t,
+                cx.listener(|this, _, window, cx| this.new_session(window, cx)),
+            )
+            .flex_none(),
+        );
         strip.into_any_element()
     }
 
@@ -1656,6 +2010,7 @@ impl Shell {
             Route::Archived => self.render_archived_page(cx),
             Route::Settings => self.settings.clone().into_any_element(),
             Route::Help => self.render_help_page(cx),
+            Route::Team => self.render_team_page(cx),
         }
     }
 }
@@ -1734,18 +2089,34 @@ impl Render for Shell {
         frame_stats();
         let t = Theme::of(cx).clone();
         let in_thread = matches!(self.route, Route::Thread(_));
+        // No open threads: the main page is the wallpaper and the composer.
+        // The tab strip only exists once a thread is open.
+        let bare = matches!(self.route, Route::Home) && self.tabs.is_empty();
         let panel_open = in_thread && self.panel_open;
         let expanded = panel_open && self.panel.read(cx).expanded;
         self.panel.update(cx, |p, cx| p.sync(panel_open, self.resize.is_some(), cx));
-        let topbar = self.render_topbar(window, cx);
-        let sidebar = self.sidebar_open.then(|| self.render_sidebar(cx));
+        let topbar = (!bare).then(|| self.render_topbar(window, cx));
+        // With no title bar, the sidebar starts below the floating window
+        // controls instead of running under them.
+        let sidebar = self.sidebar_open.then(|| {
+            let sidebar = self.render_sidebar(cx);
+            if bare {
+                div().h_full().flex().flex_col().pt(px(Theme::TITLEBAR_HEIGHT)).child(sidebar).into_any_element()
+            } else {
+                sidebar
+            }
+        });
         let center = (!expanded).then(|| self.render_center(window, cx));
+        let panel_w = self.panel_width(window);
 
+        // Zeron's flush dock: no inset card, the window's full height (its
+        // tone runs up under the titlebar strip, see `dock_layer`) and a
+        // hairline on the seam.
         let panel = panel_open.then(|| {
             div()
                 .relative()
                 .h_full()
-                .when(!expanded, |d| d.w(px(self.panel_w)).flex_none().border_l_1().border_color(t.border))
+                .when(!expanded, |d| d.w(px(panel_w)).flex_none())
                 .when(expanded, |d| d.flex_1().min_w_0())
                 .when(!expanded, |d| {
                     d.child(
@@ -1758,8 +2129,8 @@ impl Render for Shell {
                             .cursor_col_resize()
                             .on_mouse_down(
                                 MouseButton::Left,
-                                cx.listener(|this, e: &gpui::MouseDownEvent, _, cx| {
-                                    this.resize = Some((Edge::Panel, e.position.x, this.panel_w));
+                                cx.listener(|this, e: &gpui::MouseDownEvent, window, cx| {
+                                    this.resize = Some((Edge::Panel, e.position.x, this.panel_width(window)));
                                     cx.stop_propagation();
                                 }),
                             ),
@@ -1768,26 +2139,47 @@ impl Render for Shell {
                 .child(AnyView::from(self.panel.clone()).cached(StyleRefinement::default().size_full()))
         });
 
-        let card = div()
-            .flex_1()
-            .min_w_0()
-            .h_full()
-            .mr(px(6.0))
-            .mb(px(6.0))
-            .when(!self.sidebar_open, |d| d.ml(px(6.0)))
-            .rounded(px(12.0))
-            .bg(t.panel_bg())
-            .border_1()
-            .border_color(t.border)
-            .overflow_hidden()
-            .child(ui::rounded_clip(
-                12.0,
+        let card = if bare {
+            Some(div().flex_1().min_w_0().h_full().overflow_hidden().child(ui::rounded_clip(
+                0.0,
                 div()
                     .size_full()
                     .flex()
-                    .when_some(center, |d, center| d.child(div().flex_1().min_w_0().h_full().child(center)))
-                    .children(panel),
-            ));
+                    .when_some(center, |d, center| d.child(div().flex_1().min_w_0().h_full().child(center))),
+            )))
+        } else {
+            center.map(|center| {
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .mr(px(GUTTER))
+                    .mb(px(GUTTER))
+                    .when(!self.sidebar_open, |d| d.ml(px(GUTTER)))
+                    .rounded(px(12.0))
+                    .bg(t.panel_bg())
+                    .border_1()
+                    .border_color(t.border)
+                    .overflow_hidden()
+                    .child(ui::rounded_clip(
+                        12.0,
+                        div().size_full().flex().child(div().flex_1().min_w_0().h_full().child(center)),
+                    ))
+            })
+        };
+        // The dock's tone, painted behind the titlebar and the dock alike so
+        // the tab strip and the surface under it read as one column.
+        let dock_layer = panel_open.then(|| {
+            div()
+                .absolute()
+                .top_0()
+                .bottom_0()
+                .right_0()
+                .when(!expanded, |d| d.w(px(panel_w)))
+                .when(expanded, |d| d.left(px(if self.sidebar_open { self.sidebar_w } else { 0.0 })))
+                .bg(t.panel_bg())
+                .when(!expanded || self.sidebar_open, |d| d.border_l_1().border_color(t.border))
+        });
 
         let menu = self.render_menu_overlay(cx);
         let palette = self.palette.clone().map(|p| {
@@ -1852,6 +2244,15 @@ impl Render for Shell {
                 let (path, line) = (a.path.clone(), a.line);
                 this.panel.update(cx, |p, cx| p.open_path(&path, line, window, cx));
             }))
+            .on_action(cx.listener(|this, a: &actions::OpenSubagent, window, cx| {
+                let Some(v) = this.active_thread() else { return };
+                let source = v.read(cx).chat.clone();
+                this.panel_open = true;
+                let _ = this.engine.store.set_setting("panel_open", "true");
+                let call = a.call.clone();
+                this.panel.update(cx, |p, cx| p.open_subagent(&source, call, window, cx));
+                cx.notify();
+            }))
             .on_key_down(cx.listener(|this, e: &gpui::KeyDownEvent, _, cx| {
                 if e.keystroke.key == "escape" {
                     let open = this.menu.is_some()
@@ -1870,12 +2271,17 @@ impl Render for Shell {
                     }
                 }
             }))
-            .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, _, cx| {
+            .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, window, cx| {
                 if let Some((edge, origin, width)) = this.resize {
                     let delta = f32::from(e.position.x - origin);
                     match edge {
                         Edge::Sidebar => this.sidebar_w = (width + delta).clamp(208.0, 400.0),
-                        Edge::Panel => this.panel_w = (width - delta).clamp(360.0, 760.0),
+                        // Stops where the chat column would be squeezed, so the
+                        // saved width is the one you see.
+                        Edge::Panel => {
+                            let max = this.panel_room(window).clamp(360.0, 760.0);
+                            this.panel_w = (width - delta).clamp(360.0, max);
+                        }
                     }
                     cx.notify();
                 }
@@ -1901,14 +2307,30 @@ impl Render for Shell {
                 MouseButton::Navigate(gpui::NavigationDirection::Forward),
                 cx.listener(|this, _, window, cx| this.go_forward(window, cx)),
             )
-            .child(topbar)
-            .child(div().flex_1().min_h_0().flex().children(sidebar).child(card))
+            .children(dock_layer)
+            .children(topbar)
+            .child(div().flex_1().min_h_0().flex().children(sidebar).children(card).children(panel))
+            .when(bare, |d| d.child(self.render_bare_chrome(window, cx)))
             .children(menu)
             .children(palette)
     }
 }
 
 impl Shell {
+    /// The dock's laid-out width: the saved width, narrowed so the chat
+    /// column keeps `CENTER_MIN`. The titlebar strip and the dock both use
+    /// it, so they stay one column.
+    fn panel_width(&self, window: &Window) -> f32 {
+        self.panel_w.min(self.panel_room(window)).max(PANEL_FLOOR)
+    }
+
+    /// The widest the dock can be while the chat column keeps `CENTER_MIN`.
+    fn panel_room(&self, window: &Window) -> f32 {
+        let total = f32::from(window.viewport_size().width);
+        let left = if self.sidebar_open { self.sidebar_w } else { GUTTER };
+        total - left - GUTTER - CENTER_MIN
+    }
+
     /// Start a sidebar resize drag (from the sidebar's edge).
     pub fn begin_sidebar_resize(&mut self, x: Pixels) {
         self.resize = Some((Edge::Sidebar, x, self.sidebar_w));

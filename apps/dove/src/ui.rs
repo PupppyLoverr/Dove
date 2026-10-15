@@ -2,6 +2,7 @@
 //! and the control styles are adapted from Zeron (MIT).
 
 use dove_core::proto::{HarnessKind, TaskStatus, Usage};
+use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, AnyView, App, AppContext as _, Bounds, BoxShadow, ClickEvent, Context, Corners, Div, Element,
     GlobalElementId, Hsla, InspectorElementId, InteractiveElement, IntoElement, LayoutId, MouseButton, ParentElement,
@@ -81,6 +82,91 @@ impl Element for Frosted {
 }
 
 impl IntoElement for Frosted {
+    type Element = Self;
+
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+/// Fades `child`'s content out toward its bottom edge, per pixel: fully gone
+/// in the last `clear` px, ramping back to full over the `band` above that.
+/// For content sliding under floating glass, where no painted overlay could
+/// hide it (what is behind the window is not a paintable color). Adapted
+/// from Zeron's `edge_faded`.
+pub fn bottom_faded(clear: f32, band: f32, child: impl IntoElement) -> BottomFaded {
+    BottomFaded { clear, band, child: child.into_any_element() }
+}
+
+pub struct BottomFaded {
+    clear: f32,
+    band: f32,
+    child: AnyElement,
+}
+
+impl Element for BottomFaded {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<gpui::ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        (self.child.request_layout(window, cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.child.prepaint(window, cx);
+    }
+
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _: &mut (),
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let mut region = bounds;
+        region.size.height = (region.size.height - px(self.clear)).max(px(0.0));
+        let fade = gpui::EdgeFade {
+            bounds: region,
+            band: px(self.band),
+            band_top: None,
+            band_bottom: None,
+            band_left: None,
+            band_right: None,
+            top: false,
+            bottom: true,
+            left: false,
+            right: false,
+        };
+        window.with_edge_fade(Some(fade), |window| self.child.paint(window, cx));
+    }
+}
+
+impl IntoElement for BottomFaded {
     type Element = Self;
 
     fn into_element(self) -> Self {
@@ -198,6 +284,18 @@ pub fn tip(text: impl Into<SharedString>) -> impl Fn(&mut Window, &mut App) -> A
 
 // ---------------------------------------------------------------- controls
 
+/// Icon buttons follow Zeron's two shapes:
+/// - square: [`BUTTON`] px, [`BUTTON_RADIUS`] corners. Title bar glyphs are
+///   [`ICON_LG`], glyphs in rows and toolbars [`ICON_SM`] (see [`row_button`]).
+/// - round: [`ROUND_BUTTON`] px, for the composer (see [`round_button`]).
+///
+/// All share the same hover wash and a slightly deeper pressed one.
+pub const BUTTON: f32 = 24.0;
+pub const BUTTON_RADIUS: f32 = 6.0;
+pub const ROUND_BUTTON: f32 = 28.0;
+pub const ICON_LG: f32 = 16.0;
+pub const ICON_SM: f32 = 14.0;
+
 /// A 24px window-chrome button (sidebar toggle, history, new). Occludes the
 /// titlebar drag strip so clicks never start a window move.
 pub fn window_button(
@@ -207,26 +305,13 @@ pub fn window_button(
     theme: &Theme,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> gpui::Stateful<Div> {
-    let hover = theme.glass_hover();
-    div()
-        .id(gpui::ElementId::Name(id.into()))
-        .size(px(24.0))
-        .flex_none()
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded(px(6.0))
-        .cursor_pointer()
-        .role(gpui::Role::Button)
-        .aria_label(label)
-        .hover(move |s| s.bg(hover))
+    square_button(id, label, theme)
         .occlude()
         .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
         .on_click(move |e, window, cx| {
             cx.stop_propagation();
             on_click(e, window, cx)
         })
-        .tooltip(tip(label))
         .child(glyph)
 }
 
@@ -237,10 +322,63 @@ pub fn icon_button(
     theme: &Theme,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> gpui::Stateful<Div> {
-    window_button(id, icon(path).text_color(theme.text_muted), label, theme, on_click)
+    window_button(id, icon(path).size(px(ICON_LG)).text_color(theme.text_muted), label, theme, on_click)
 }
 
-const CAPTION_W: f32 = 46.0;
+/// The bare square button: size, corners, hover and pressed washes, a11y
+/// label and tooltip. Callers add the glyph and the click.
+pub fn square_button(id: impl Into<SharedString>, label: &'static str, theme: &Theme) -> gpui::Stateful<Div> {
+    let (hover, pressed) = (theme.glass_hover(), theme.wash(0.14));
+    div()
+        .id(gpui::ElementId::Name(id.into()))
+        .size(px(BUTTON))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(BUTTON_RADIUS))
+        .cursor_pointer()
+        .role(gpui::Role::Button)
+        .aria_label(label)
+        .hover(move |s| s.bg(hover))
+        .active(move |s| s.bg(pressed))
+        .tooltip(tip(label))
+}
+
+/// A small icon button for rows and toolbars (copy, edit, retry…): the
+/// square shape with a [`ICON_SM`] glyph. Keeps focus where it was.
+pub fn row_button(
+    id: impl Into<SharedString>,
+    path: &'static str,
+    label: &'static str,
+    theme: &Theme,
+) -> gpui::Stateful<Div> {
+    square_button(id, label, theme)
+        .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+        .child(icon(path).size(px(ICON_SM)).text_color(theme.text_muted))
+}
+
+/// The composer's round button (attach, voice…): [`ROUND_BUTTON`] px with
+/// the same washes as the square ones. Callers add the glyph ([`ICON_LG`]).
+pub fn round_button(id: impl Into<SharedString>, label: &'static str, theme: &Theme) -> gpui::Stateful<Div> {
+    let (hover, pressed) = (theme.glass_hover(), theme.wash(0.14));
+    div()
+        .id(gpui::ElementId::Name(id.into()))
+        .size(px(ROUND_BUTTON))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded_full()
+        .cursor_pointer()
+        .role(gpui::Role::Button)
+        .aria_label(label)
+        .hover(move |s| s.bg(hover))
+        .active(move |s| s.bg(pressed))
+        .tooltip(tip(label))
+}
+
+const CAPTION_W: f32 = 36.0;
 
 /// Native Windows caption buttons (min/max/close) drawn with the system
 /// glyph font; `WindowControlArea` hands their behavior to Windows,
@@ -251,8 +389,12 @@ pub fn windows_captions(window: &Window, theme: &Theme) -> Option<AnyElement> {
     }
     let (max_id, max_glyph) = if window.is_maximized() { ("win-restore", "\u{e923}") } else { ("win-max", "\u{e922}") };
     let button = |id: &'static str, glyph: &'static str, area: WindowControlArea, close: bool| {
-        let (hover_bg, hover_fg) =
-            if close { (gpui::rgb(0xe81123).into(), gpui::white()) } else { (theme.glass_hover(), theme.text) };
+        let red: Hsla = gpui::rgb(0xe81123).into();
+        let (hover_bg, hover_fg, active_bg) = if close {
+            (red, gpui::white(), red.opacity(0.8))
+        } else {
+            (theme.glass_hover(), theme.text, theme.wash(0.14))
+        };
         div()
             .id(id)
             .w(px(CAPTION_W))
@@ -263,6 +405,7 @@ pub fn windows_captions(window: &Window, theme: &Theme) -> Option<AnyElement> {
             .text_size(px(10.0))
             .text_color(theme.text)
             .hover(move |s| s.bg(hover_bg).text_color(hover_fg))
+            .active(move |s| s.bg(active_bg).text_color(hover_fg))
             .occlude()
             .window_control_area(area)
             .child(glyph)
@@ -293,22 +436,8 @@ pub fn linux_captions(theme: &Theme) -> Option<AnyElement> {
     if !cfg!(target_os = "linux") {
         return None;
     }
-    let hover = theme.glass_hover();
-    let b = |id: &'static str, path: &'static str, f: fn(&mut Window)| {
-        div()
-            .id(id)
-            .size(px(24.0))
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded(px(6.0))
-            .hover(move |s| s.bg(hover))
-            .occlude()
-            .on_click(move |_, window, cx| {
-                cx.stop_propagation();
-                f(window)
-            })
-            .child(icon(path).text_color(theme.text_muted))
+    let b = |id: &'static str, path: &'static str, label: &'static str, f: fn(&mut Window)| {
+        icon_button(id, path, label, theme, move |_, window, _| f(window))
     };
     Some(
         div()
@@ -319,9 +448,9 @@ pub fn linux_captions(theme: &Theme) -> Option<AnyElement> {
             .flex()
             .items_center()
             .gap(px(4.0))
-            .child(b("lx-min", icons::WINDOW_MINIMIZE, |w| w.minimize_window()))
-            .child(b("lx-max", icons::WINDOW_MAXIMIZE, |w| w.zoom_window()))
-            .child(b("lx-close", icons::CLOSE, |w| w.remove_window()))
+            .child(b("lx-min", icons::WINDOW_MINIMIZE, "Minimize", |w| w.minimize_window()))
+            .child(b("lx-max", icons::WINDOW_MAXIMIZE, "Maximize", |w| w.zoom_window()))
+            .child(b("lx-close", icons::CLOSE, "Close", |w| w.remove_window()))
             .into_any_element(),
     )
 }
@@ -375,8 +504,107 @@ pub fn button_ghost(id: impl Into<SharedString>, label: impl Into<SharedString>,
         .child(label)
 }
 
+/// A borderless selector for the new-thread row: icon, name, chevron.
+pub fn ghost_chip(id: impl Into<SharedString>, theme: &Theme) -> gpui::Stateful<Div> {
+    let hover = theme.wash(0.10);
+    div()
+        .id(gpui::ElementId::Name(id.into()))
+        .role(gpui::Role::Button)
+        .h(px(26.0))
+        .px(px(7.0))
+        .flex()
+        .items_center()
+        .gap(px(5.0))
+        .rounded(px(7.0))
+        .text_size(px(12.5))
+        .text_color(theme.text_muted)
+        .cursor_pointer()
+        .hover(move |s| s.bg(hover).text_color(theme.text))
+}
+
+/// Zeron's sidebar glyph: a rounded frame holding a panel whose width says
+/// whether the sidebar is open (`open` 1) or closed (0). Drawn from quads in
+/// the source's 24-unit space so the strokes stay crisp; `right` mirrors it
+/// for the side panel. Ported from Zeron's `icons::sidebar_glyph` (MIT).
+pub fn sidebar_glyph(open: f32, right: bool, size: f32, color: Hsla) -> Div {
+    let s = size / 24.0;
+    let stroke = 1.75;
+    let frame = div()
+        .absolute()
+        .left(px((3.0 - stroke / 2.0) * s))
+        .top(px((4.0 - stroke / 2.0) * s))
+        .w(px((18.0 + stroke) * s))
+        .h(px((16.0 + stroke) * s))
+        .rounded(px((4.0 + stroke / 2.0) * s))
+        .border(px(stroke * s))
+        .border_color(color);
+    let width = 1.75 + (5.5 - 1.75) * open.clamp(0.0, 1.0);
+    let inset = px(6.5 * s);
+    let panel = div().absolute().top(px(7.5 * s)).w(px(width * s)).h(px(9.0 * s)).rounded(px(0.875 * s)).bg(color);
+    let panel = if right { panel.right(inset) } else { panel.left(inset) };
+    div().relative().flex_none().size(px(size)).child(frame).child(panel)
+}
+
+/// A borderless selector that floats beside the new-thread composer
+/// (project, device, branch): a muted label that only shows a plate on
+/// hover or while its menu is open.
+pub fn footer_chip(
+    id: impl Into<SharedString>,
+    glyph: &'static str,
+    label: impl Into<SharedString>,
+    open: bool,
+    theme: &Theme,
+) -> gpui::Stateful<Div> {
+    let hover = theme.element_hover;
+    let rest = theme.text.opacity(0.74);
+    let lit = theme.text.opacity(0.95);
+    div()
+        .id(gpui::ElementId::Name(id.into()))
+        .role(gpui::Role::Button)
+        .h(px(22.0))
+        .max_w(px(280.0))
+        .px(px(8.0))
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(6.0))
+        .rounded(px(6.0))
+        .text_size(px(12.0))
+        .font_weight(gpui::FontWeight::MEDIUM)
+        .text_color(if open { lit } else { rest })
+        .when(open, |d| d.bg(hover))
+        .cursor_pointer()
+        .hover(move |s| s.bg(hover).text_color(lit))
+        .child(icon(glyph).size(px(12.0)).text_color(theme.text.opacity(0.62)))
+        .child(div().min_w_0().truncate().child(label.into()))
+        .child(icon(icons::ALT_ARROW_DOWN).size(px(10.0)).text_color(theme.text_faint))
+}
+
 /// A small selectable chip (picker triggers above the composer).
 /// A selector pill: hairline border, soft fill (project, branch, device…).
+/// Zeron's selected fill for rows and chips on glass: a light wash. The
+/// ring from [`selected_ring`] is what tells selection from hover.
+pub fn selected_bg(theme: &Theme) -> gpui::Hsla {
+    theme.wash(if theme.appearance.is_dark() { 0.10 } else { 0.11 })
+}
+
+/// The selected outline as an inset hairline: drawn over the fill at the
+/// edge only, so nothing paints behind a translucent chip.
+pub fn selected_ring(theme: &Theme) -> Vec<gpui::BoxShadow> {
+    let color = if theme.appearance.is_dark() {
+        gpui::hsla(0.0, 0.0, 1.0, 0.09)
+    } else {
+        gpui::hsla(0.0, 0.0, 0.0, 0.07)
+    };
+    vec![gpui::BoxShadow {
+        color,
+        offset: gpui::point(px(0.0), px(0.0)),
+        blur_radius: px(0.0),
+        spread_radius: px(1.0),
+        inset: true,
+    }]
+}
+
 pub fn chip(id: impl Into<SharedString>, theme: &Theme) -> gpui::Stateful<Div> {
     let hover = theme.wash(0.08);
     let border = theme.wash(0.14);

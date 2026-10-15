@@ -487,6 +487,13 @@ pub enum AgentEvent {
     Exited {
         code: Option<i32>,
     },
+    /// Something that happened inside a subagent's own transcript, keyed by
+    /// the parent's spawning tool call. The parent chat keeps only the
+    /// spawn's tool row; the subagent view replays these as its own chat.
+    Subagent {
+        parent: String,
+        event: Box<AgentEvent>,
+    },
 }
 
 /// One plan usage window.

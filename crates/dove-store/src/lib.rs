@@ -110,6 +110,26 @@ pub struct AutomationRun {
     pub unread: bool,
 }
 
+/// A teammate: a named persona one agent harness runs under for every
+/// thread it is given. Its instructions lead each new thread; its notes file
+/// carries what it learned from one thread to the next.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Persona {
+    pub id: String,
+    pub name: String,
+    /// What it does on the team ("Frontend lead", "Reviewer").
+    pub role: String,
+    /// One emoji or a single letter, shown on a tinted tile.
+    pub avatar: String,
+    /// Tile hue, 0..1.
+    pub hue: f32,
+    pub harness: HarnessKind,
+    pub model: Option<String>,
+    /// How it works: tone, standards, what to always or never do.
+    pub instructions: String,
+    pub created_at: i64,
+}
+
 pub struct Store {
     conn: Mutex<Connection>,
     root: PathBuf,
@@ -170,6 +190,24 @@ fn migrate(conn: &Connection) -> Result<()> {
              CREATE INDEX IF NOT EXISTS runs_by_time ON automation_runs(at DESC);",
         )?;
     }
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS personas (
+             id TEXT PRIMARY KEY,
+             name TEXT NOT NULL,
+             role TEXT NOT NULL DEFAULT '',
+             avatar TEXT NOT NULL DEFAULT '',
+             hue REAL NOT NULL DEFAULT 0.6,
+             harness TEXT NOT NULL,
+             model TEXT,
+             instructions TEXT NOT NULL DEFAULT '',
+             created_at INTEGER NOT NULL
+         );
+         CREATE TABLE IF NOT EXISTS persona_tasks (
+             task_id TEXT PRIMARY KEY,
+             persona_id TEXT NOT NULL
+         );
+         CREATE INDEX IF NOT EXISTS persona_tasks_by_persona ON persona_tasks(persona_id);",
+    )?;
     Ok(())
 }
 
@@ -522,6 +560,73 @@ impl Store {
         Ok(())
     }
 
+    // ---- team ----
+
+    pub fn save_persona(&self, p: &Persona) -> Result<()> {
+        self.conn.lock().execute(
+            "INSERT INTO personas (id, name, role, avatar, hue, harness, model, instructions, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+             ON CONFLICT(id) DO UPDATE SET name = excluded.name, role = excluded.role, avatar = excluded.avatar,
+                hue = excluded.hue, harness = excluded.harness, model = excluded.model,
+                instructions = excluded.instructions",
+            params![p.id, p.name, p.role, p.avatar, p.hue as f64, p.harness.id(), p.model, p.instructions, p.created_at],
+        )?;
+        Ok(())
+    }
+
+    pub fn personas(&self) -> Result<Vec<Persona>> {
+        let conn = self.conn.lock();
+        let mut st = conn.prepare_cached(
+            "SELECT id, name, role, avatar, hue, harness, model, instructions, created_at
+             FROM personas ORDER BY created_at",
+        )?;
+        let rows = st.query_map([], |r| {
+            let Some(harness) = HarnessKind::from_id(&r.get::<_, String>(5)?) else { return Ok(None) };
+            Ok(Some(Persona {
+                id: r.get(0)?,
+                name: r.get(1)?,
+                role: r.get(2)?,
+                avatar: r.get(3)?,
+                hue: r.get::<_, f64>(4)? as f32,
+                harness,
+                model: r.get(6)?,
+                instructions: r.get(7)?,
+                created_at: r.get(8)?,
+            }))
+        })?;
+        Ok(rows.filter_map(|r| r.ok()).flatten().collect())
+    }
+
+    /// Remove a teammate. Its threads stay, unassigned.
+    pub fn delete_persona(&self, id: &str) -> Result<()> {
+        let conn = self.conn.lock();
+        conn.execute("DELETE FROM personas WHERE id = ?1", [id])?;
+        conn.execute("DELETE FROM persona_tasks WHERE persona_id = ?1", [id])?;
+        Ok(())
+    }
+
+    pub fn assign_persona(&self, task: TaskId, persona: &str) -> Result<()> {
+        self.conn.lock().execute(
+            "INSERT INTO persona_tasks (task_id, persona_id) VALUES (?1, ?2)
+             ON CONFLICT(task_id) DO UPDATE SET persona_id = excluded.persona_id",
+            [task.0.to_string(), persona.to_string()],
+        )?;
+        Ok(())
+    }
+
+    /// Which teammate runs each thread, as (task, persona).
+    pub fn persona_assignments(&self) -> Result<Vec<(TaskId, String)>> {
+        let conn = self.conn.lock();
+        let mut st = conn.prepare_cached("SELECT task_id, persona_id FROM persona_tasks")?;
+        let rows = st.query_map([], |r| Ok((TaskId(parse_uuid(r.get(0)?)), r.get::<_, String>(1)?)))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// A teammate's working notes, carried between its threads.
+    pub fn persona_notes_path(&self, id: &str) -> PathBuf {
+        self.root.join("team").join(id).join("NOTES.md")
+    }
+
     // ---- settings ----
 
     pub fn setting(&self, key: &str) -> Option<String> {
@@ -683,6 +788,33 @@ mod tests {
             unread: false,
             automation: None,
         }
+    }
+
+    #[test]
+    fn team_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(dir.path()).unwrap();
+        let mut ava = Persona {
+            id: "ava".into(),
+            name: "Ava".into(),
+            role: "Frontend lead".into(),
+            avatar: "🦊".into(),
+            hue: 0.08,
+            harness: HarnessKind::ClaudeCode,
+            model: Some("opus".into()),
+            instructions: "Ship small, tested changes.".into(),
+            created_at: 1,
+        };
+        s.save_persona(&ava).unwrap();
+        ava.role = "Design engineer".into();
+        s.save_persona(&ava).unwrap();
+        assert_eq!(s.personas().unwrap(), vec![ava.clone()]);
+        let t = TaskId::new();
+        s.assign_persona(t, "ava").unwrap();
+        assert_eq!(s.persona_assignments().unwrap(), vec![(t, "ava".to_string())]);
+        s.delete_persona("ava").unwrap();
+        assert!(s.personas().unwrap().is_empty());
+        assert!(s.persona_assignments().unwrap().is_empty());
     }
 
     #[test]

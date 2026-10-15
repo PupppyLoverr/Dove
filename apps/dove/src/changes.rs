@@ -1,45 +1,82 @@
 //! What the agent changed, and the way out: review, stage, commit, push,
 //! open a pull request, watch its checks, merge.
 //!
-//! Every file header, hunk header and line is flattened into one
-//! `uniform_list`, so a 50k-line diff lays out only what is on screen.
-//! Unified and split views share the flat list; paired removed/added lines
-//! get intra-line highlights. Clicking a line number opens a comment box;
-//! comments collect into one review the agent receives as a message.
+//! The diff is Zeron's Changes pane (MIT): every file header, notice, hunk
+//! header and line is its own row in one variable-height `list()`, so a
+//! 50k-line diff lays out only what is on screen and a collapsed file's rows
+//! leave the list. Rows carry Zeron's look: a coloured accent bar, line
+//! number gutters fitted to the file, a +/−/· marker column, syntax colours
+//! computed off the UI thread, a sticky file header, and code that scrolls
+//! sideways as one plane (or wraps). Unified and split share the rows.
+//! Hovering a line offers a comment; comments collect into one review the
+//! agent receives as a message.
 
 use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
+use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use dove_core::git::{self, FileDiff, FileStatus, LineKind, github};
+use dove_core::git::{self, FileDiff, FileStatus, Hunk, LineKind, github};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, AppContext as _, Context, Entity, EventEmitter, HighlightStyle, InteractiveElement as _, IntoElement,
-    ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _, StyledText, Subscription,
-    UniformListScrollHandle, Window, div, px, transparent_black, uniform_list,
+    AnyElement, AppContext as _, Context, ElementId, Entity, EventEmitter, InteractiveElement as _, IntoElement,
+    ListAlignment, ListState, ParentElement as _, Render, ScrollHandle, SharedString, StatefulInteractiveElement as _,
+    Styled as _, StyledText, Subscription, TextRun, Window, div, font, list, px,
 };
 use gpui_base::input::{Input, InputEvent, InputState};
+use zeron_syntax::{HighlightRequest, HighlightSpan};
 
 use crate::assets::{icon, icons};
 use crate::kit;
-use crate::theme::Theme;
+use crate::surface_chrome;
+use crate::theme::{Theme, ink};
 use crate::ui;
+
+// ------------------------------------------------------------------ metrics
+
+const FILE_HEADER_HEIGHT: f32 = surface_chrome::HEADER_HEIGHT;
+const HUNK_HEADER_HEIGHT: f32 = 28.0;
+const LINE_HEIGHT: f32 = 21.0;
+const NOTICE_HEIGHT: f32 = 24.0;
+const BODY_BOTTOM_PAD: f32 = 8.0;
+const TEXT_SIZE: f32 = 12.0;
+/// Narrowest line-number column.
+const GUTTER_WIDTH: f32 = 36.0;
+/// The +/−/· column between the gutters and the code.
+const MARKER_WIDTH: f32 = 28.0;
+/// Each split half pays for its own marker, so it is narrower.
+const SPLIT_MARKER_WIDTH: f32 = 18.0;
+const ACCENT_BAR_WIDTH: f32 = 3.0;
+const UNIFIED_CODE_PAD: f32 = 12.0;
+const SPLIT_CODE_PAD: f32 = 6.0;
+/// Room after the widest line when scrolled fully right.
+const CODE_PAD_RIGHT: f32 = 24.0;
+const ADDER_SIZE: f32 = 16.0;
+const TAB: &str = "    ";
+/// Files longer than this (in diff lines) are not syntax highlighted.
+const MAX_HIGHLIGHT_LINES: usize = 20_000;
 
 pub enum ChangesEvent {
     /// Send this text to the thread's agent (a review).
     SendToAgent(String),
 }
 
-#[derive(Clone, Copy)]
-enum Flat {
+/// One row of the flat list.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Row {
     File(usize),
+    /// "New file", "Renamed from …", "Binary file".
+    Notice(usize, usize),
     Hunk(usize, usize),
-    /// Unified: one line.
+    /// Unified: (file, hunk, line).
     Line(usize, usize, usize),
-    /// Split: (left line, right line) indices within the hunk.
+    /// Split: the old and new line indices within the hunk.
     Pair(usize, usize, Option<usize>, Option<usize>),
     /// The comment box or a saved comment under a line.
     Comment(usize, usize, usize),
+    /// Breathing room under an open file.
+    End(usize),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -60,19 +97,34 @@ struct Delivery {
     note: Option<SharedString>,
 }
 
+/// Syntax spans by `[file][hunk][line]`; a file left empty is drawn plain.
+type Highlights = Arc<Vec<Vec<Vec<Vec<HighlightSpan>>>>>;
+
 pub struct Changes {
     target: Option<(PathBuf, String)>,
+    /// The working tree target, to come back to from a commit.
+    tree: Option<(PathBuf, String)>,
     /// When set, the panel shows that commit rather than the working tree.
     commit: Option<String>,
     title: String,
     files: Arc<Vec<FileDiff>>,
-    flat: Arc<Vec<Flat>>,
-    collapsed: Vec<bool>,
+    highlights: Highlights,
+    rows: Vec<Row>,
+    /// Content fingerprint per row: a rebuild splices only what changed, so
+    /// the scroll position survives refreshes, folds and comments.
+    keys: Vec<u64>,
+    /// Each file's rows, header first (drives the sticky header).
+    ranges: Vec<Range<usize>>,
+    list: ListState,
+    /// The code plane every row scrolls sideways together.
+    hscroll: ScrollHandle,
+    collapsed: HashSet<String>,
     staged: HashSet<String>,
     layout: Layout,
+    wrap: bool,
     loading: bool,
+    loaded: bool,
     error: Option<SharedString>,
-    scroll: UniformListScrollHandle,
     /// (file, hunk, line) → comment.
     comments: HashMap<(usize, usize, usize), String>,
     commenting: Option<((usize, usize, usize), Entity<InputState>)>,
@@ -80,6 +132,7 @@ pub struct Changes {
     message: Entity<InputState>,
     delivery: Delivery,
     _load: Option<gpui::Task<()>>,
+    _highlight: Option<gpui::Task<()>>,
     _subs: Vec<Subscription>,
 }
 
@@ -93,24 +146,38 @@ impl Changes {
             s.set_editor_style(style);
             s
         });
+        let list = ListState::new(0, ListAlignment::Top, px(600.0));
+        let weak = cx.weak_entity();
+        // The sticky header follows the scroll position.
+        list.set_scroll_handler(move |_, _, cx| {
+            let _ = weak.update(cx, |_, cx| cx.notify());
+        });
         Self {
             target: None,
+            tree: None,
             commit: None,
             title: String::new(),
             files: Arc::default(),
-            flat: Arc::default(),
-            collapsed: Vec::new(),
+            highlights: Arc::default(),
+            rows: Vec::new(),
+            keys: Vec::new(),
+            ranges: Vec::new(),
+            list,
+            hscroll: ScrollHandle::new(),
+            collapsed: HashSet::new(),
             staged: HashSet::new(),
             layout: Layout::Unified,
+            wrap: false,
             loading: false,
+            loaded: false,
             error: None,
-            scroll: UniformListScrollHandle::new(),
             comments: HashMap::new(),
             commenting: None,
             confirm_discard: None,
             message,
             delivery: Delivery { gh: github::gh_available(), ..Default::default() },
             _load: None,
+            _highlight: None,
             _subs: Vec::new(),
         }
     }
@@ -126,16 +193,14 @@ impl Changes {
         cx: &mut Context<Self>,
     ) {
         let target = dir.map(|d| (d, base.unwrap_or_else(|| "HEAD".into())));
-        if target == self.target {
+        if target == self.target && self.commit.is_none() {
             return;
         }
+        self.tree = target.clone();
         self.target = target;
         self.commit = None;
         self.title = title.to_string();
-        self.files = Arc::default();
-        self.flat = Arc::default();
-        self.comments.clear();
-        self.commenting = None;
+        self.clear();
         let title = title.to_string();
         self.message.update(cx, |s, cx| s.set_value(title, window, cx));
         self.refresh(cx);
@@ -151,9 +216,33 @@ impl Changes {
     ) {
         self.target = Some((dir, sha.clone()));
         self.commit = Some(sha);
-        self.title = subject.to_string();
+        self.clear();
         self.message.update(cx, |s, cx| s.set_value(subject.to_string(), window, cx));
         self.refresh(cx);
+    }
+
+    /// Leave a commit for the working tree again.
+    fn show_tree(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.target = self.tree.clone();
+        self.commit = None;
+        self.clear();
+        let title = self.title.clone();
+        self.message.update(cx, |s, cx| s.set_value(title, window, cx));
+        self.refresh(cx);
+    }
+
+    fn clear(&mut self) {
+        self.files = Arc::default();
+        self.highlights = Arc::default();
+        self.comments.clear();
+        self.commenting = None;
+        self.confirm_discard = None;
+        self.collapsed.clear();
+        self.loaded = false;
+        self.rows.clear();
+        self.keys.clear();
+        self.ranges.clear();
+        self.list.reset(0);
     }
 
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
@@ -168,7 +257,8 @@ impl Changes {
             let files = match commit.as_deref() {
                 Some(sha) => git::commit_diff(&dir, sha),
                 None => git::changes(&dir, &base),
-            };
+            }
+            .map(expand_tabs);
             let staged = git::staged(&dir).unwrap_or_default();
             let branch = git::current_branch(&dir).ok();
             let has_remote = git::has_remote(&dir);
@@ -180,11 +270,23 @@ impl Changes {
             let (files, staged, branch, has_remote, unpushed, pr) = work.await;
             let _ = this.update(cx, |v, cx| {
                 v.loading = false;
+                v.loaded = true;
                 match files {
                     Ok(files) => {
                         v.error = None;
-                        v.collapsed = vec![false; files.len()];
-                        v.files = Arc::new(files);
+                        if *v.files != files {
+                            // Comments are keyed by position; a changed diff
+                            // keeps only the ones still on the same text.
+                            v.comments.retain(|&(fi, hi, li), _| {
+                                let line = |fs: &[FileDiff]| {
+                                    fs.get(fi).and_then(|f| f.hunks.get(hi)).and_then(|h| h.lines.get(li)).cloned()
+                                };
+                                line(&v.files).is_some() && line(&v.files) == line(&files)
+                            });
+                            v.files = Arc::new(files);
+                            v.highlights = Arc::default();
+                            v.highlight(cx);
+                        }
                         v.rebuild();
                     }
                     Err(e) => v.error = Some(format!("{e:#}").into()),
@@ -200,53 +302,129 @@ impl Changes {
         cx.notify();
     }
 
+    /// Syntax-colour every file off the UI thread; colours only change paint,
+    /// never layout, so the rows need no re-measure.
+    fn highlight(&mut self, cx: &mut Context<Self>) {
+        let files = self.files.clone();
+        let work = cx.background_spawn(async move { highlight_files(&files) });
+        self._highlight = Some(cx.spawn(async move |this, cx| {
+            let spans = work.await;
+            let _ = this.update(cx, |v, cx| {
+                if spans.len() == v.files.len() {
+                    v.highlights = Arc::new(spans);
+                    cx.notify();
+                }
+            });
+        }));
+    }
+
     fn rebuild(&mut self) {
-        let mut flat = Vec::new();
+        let mut rows = Vec::new();
+        let mut keys = Vec::new();
+        let mut ranges = Vec::with_capacity(self.files.len());
+        let editing = self.commenting.as_ref().map(|(k, _)| *k);
+        let has_comment = |k: (usize, usize, usize)| self.comments.contains_key(&k) || editing == Some(k);
         for (fi, f) in self.files.iter().enumerate() {
-            flat.push(Flat::File(fi));
-            if self.collapsed.get(fi).copied().unwrap_or(false) {
-                continue;
-            }
-            for (hi, h) in f.hunks.iter().enumerate() {
-                flat.push(Flat::Hunk(fi, hi));
-                match self.layout {
-                    Layout::Unified => {
-                        for li in 0..h.lines.len() {
-                            flat.push(Flat::Line(fi, hi, li));
-                            if self.has_comment_row(fi, hi, li) {
-                                flat.push(Flat::Comment(fi, hi, li));
+            let start = rows.len();
+            let collapsed = self.collapsed.contains(&f.path);
+            let mut push = |row: Row, extra: &dyn Fn(&mut std::collections::hash_map::DefaultHasher)| {
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                std::mem::discriminant(&row).hash(&mut h);
+                f.path.hash(&mut h);
+                extra(&mut h);
+                rows.push(row);
+                keys.push(h.finish());
+            };
+            push(Row::File(fi), &|h| (f.additions, f.deletions, collapsed).hash(h));
+            if !collapsed {
+                for (ni, n) in notices(f).iter().enumerate() {
+                    push(Row::Notice(fi, ni), &|h| n.hash(h));
+                }
+                for (hi, hunk) in f.hunks.iter().enumerate() {
+                    push(Row::Hunk(fi, hi), &|h| hunk.header.hash(h));
+                    let comment_key = |li: usize, h: &mut std::collections::hash_map::DefaultHasher| {
+                        (li, self.comments.get(&(fi, hi, li)), editing == Some((fi, hi, li))).hash(h)
+                    };
+                    let line_key = |li: usize, h: &mut std::collections::hash_map::DefaultHasher| {
+                        let l = &hunk.lines[li];
+                        (&hunk.header, li, &*l.text, l.old_no, l.new_no, self.wrap).hash(h)
+                    };
+                    match self.layout {
+                        Layout::Unified => {
+                            for li in 0..hunk.lines.len() {
+                                push(Row::Line(fi, hi, li), &|h| line_key(li, h));
+                                if has_comment((fi, hi, li)) {
+                                    push(Row::Comment(fi, hi, li), &|h| comment_key(li, h));
+                                }
                             }
                         }
-                    }
-                    Layout::Split => {
-                        for (l, r) in split_pairs(&h.lines.iter().map(|l| l.kind).collect::<Vec<_>>()) {
-                            flat.push(Flat::Pair(fi, hi, l, r));
-                            let anchor = r.or(l).unwrap_or(0);
-                            if self.has_comment_row(fi, hi, anchor) {
-                                flat.push(Flat::Comment(fi, hi, anchor));
+                        Layout::Split => {
+                            for (l, r) in split_pairs(&hunk.lines) {
+                                push(Row::Pair(fi, hi, l, r), &|h| {
+                                    1u8.hash(h);
+                                    l.inspect(|&l| line_key(l, h));
+                                    r.inspect(|&r| line_key(r, h));
+                                });
+                                let anchor = r.or(l).unwrap_or(0);
+                                if has_comment((fi, hi, anchor)) {
+                                    push(Row::Comment(fi, hi, anchor), &|h| comment_key(anchor, h));
+                                }
                             }
                         }
                     }
                 }
+                push(Row::End(fi), &|_| {});
             }
+            ranges.push(start..rows.len());
         }
-        self.flat = Arc::new(flat);
-    }
-
-    fn has_comment_row(&self, fi: usize, hi: usize, li: usize) -> bool {
-        self.comments.contains_key(&(fi, hi, li)) || self.commenting.as_ref().is_some_and(|(k, _)| *k == (fi, hi, li))
+        // Splice only the span between the unchanged head and tail.
+        let head = self.keys.iter().zip(&keys).take_while(|(a, b)| a == b).count();
+        let max_tail = self.keys.len().min(keys.len()) - head;
+        let tail = self.keys.iter().rev().zip(keys.iter().rev()).take(max_tail).take_while(|(a, b)| a == b).count();
+        if head != self.keys.len() || head != keys.len() {
+            self.list.splice(head..self.keys.len() - tail, keys.len() - tail - head);
+        }
+        self.rows = rows;
+        self.keys = keys;
+        self.ranges = ranges;
     }
 
     fn toggle_file(&mut self, fi: usize, cx: &mut Context<Self>) {
-        if let Some(c) = self.collapsed.get_mut(fi) {
-            *c = !*c;
-            self.rebuild();
-            cx.notify();
+        let Some(path) = self.files.get(fi).map(|f| f.path.clone()) else { return };
+        if !self.collapsed.remove(&path) {
+            self.collapsed.insert(path);
         }
+        // Folding the stuck file brings its header back to the top.
+        let top = self.list.logical_scroll_top().item_ix;
+        let stuck = self.ranges.get(fi).is_some_and(|r| r.contains(&top) && top != r.start);
+        self.rebuild();
+        if stuck && let Some(r) = self.ranges.get(fi) {
+            self.list.scroll_to(gpui::ListOffset { item_ix: r.start, offset_in_item: px(0.0) });
+        }
+        cx.notify();
+    }
+
+    /// Fold every file, or open them all when all are folded.
+    fn toggle_all(&mut self, cx: &mut Context<Self>) {
+        let all = self.files.iter().all(|f| self.collapsed.contains(&f.path));
+        if all {
+            self.collapsed.clear();
+        } else {
+            self.collapsed = self.files.iter().map(|f| f.path.clone()).collect();
+        }
+        self.rebuild();
+        cx.notify();
     }
 
     fn set_layout(&mut self, layout: Layout, cx: &mut Context<Self>) {
         self.layout = layout;
+        self.rebuild();
+        cx.notify();
+    }
+
+    fn toggle_wrap(&mut self, cx: &mut Context<Self>) {
+        self.wrap = !self.wrap;
+        self.hscroll.set_offset(gpui::point(px(0.0), px(0.0)));
         self.rebuild();
         cx.notify();
     }
@@ -382,12 +560,23 @@ impl Changes {
                     this.comments.insert(key, text);
                 }
                 this.commenting = None;
+                this._subs.clear();
                 this.rebuild();
                 cx.notify();
             }
         });
-        self._subs.push(sub);
+        self._subs = vec![sub];
         self.commenting = Some((key, input));
+        self.rebuild();
+        cx.notify();
+    }
+
+    fn remove_comment(&mut self, key: (usize, usize, usize), cx: &mut Context<Self>) {
+        self.comments.remove(&key);
+        if self.commenting.as_ref().is_some_and(|(k, _)| *k == key) {
+            self.commenting = None;
+            self._subs.clear();
+        }
         self.rebuild();
         cx.notify();
     }
@@ -415,7 +604,592 @@ impl Changes {
         cx.notify();
     }
 
-    // ------------------------------------------------------------ render
+    // ------------------------------------------------------------ rows
+
+    fn render_row(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let t = Theme::of(cx).clone();
+        let Some(row) = self.rows.get(ix).copied() else { return div().into_any_element() };
+        let width = self.code_width(window, &t);
+        match row {
+            Row::File(fi) => self.render_file_header(fi, false, &t, cx),
+            Row::Notice(fi, ni) => {
+                notice_row(notices(&self.files[fi]).get(ni).cloned().unwrap_or_default(), &t).into_any_element()
+            }
+            Row::Hunk(fi, hi) => hunk_header_row(&self.files[fi].hunks[hi].header, &t).into_any_element(),
+            Row::Line(fi, hi, li) => self.render_line(ix, fi, hi, li, width, &t, cx),
+            Row::Pair(fi, hi, l, r) => self.render_pair(ix, fi, hi, l, r, width, &t, cx),
+            Row::Comment(fi, hi, li) => self.render_comment(fi, hi, li, &t, cx),
+            Row::End(_) => div().h(px(BODY_BOTTOM_PAD)).into_any_element(),
+        }
+    }
+
+    /// The code plane's width: the widest line in the diff, so every row
+    /// scrolls sideways as one.
+    fn code_width(&self, window: &Window, t: &Theme) -> Option<f32> {
+        if self.wrap {
+            return None;
+        }
+        let cols = self
+            .files
+            .iter()
+            .flat_map(|f| f.hunks.iter().flat_map(|h| h.lines.iter()))
+            .map(|l| l.text.chars().count())
+            .max()
+            .unwrap_or(0);
+        let ts = window.text_system();
+        let id = ts.resolve_font(&font(t.font_mono.clone()));
+        let advance = ts.advance(id, px(TEXT_SIZE), '0').map(|s| f32::from(s.width)).unwrap_or(7.2);
+        Some(cols as f32 * advance + CODE_PAD_RIGHT)
+    }
+
+    fn render_file_header(&self, fi: usize, sticky: bool, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let f = &self.files[fi];
+        let collapsed = self.collapsed.contains(&f.path);
+        let staged = self.staged.contains(&f.path);
+        let confirm = self.confirm_discard == Some(fi) && self.commit.is_none();
+        let in_tree = self.commit.is_none();
+        let path = f.path.clone();
+        let group = SharedString::from(if sticky { "diff-file-sticky".to_string() } else { format!("diff-file-{fi}") });
+        let id = |s: &str| ElementId::from(SharedString::from(format!("{s}-{}-{fi}", if sticky { "s" } else { "r" })));
+        let (rest, hover) = if sticky { (ink(0.025), ink(0.05)) } else { (ink(0.025), ink(0.05)) };
+        let head = div()
+            .id(id("diff-file"))
+            .group(group.clone())
+            .w_full()
+            .h(px(FILE_HEADER_HEIGHT))
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(px(8.0))
+            .px(px(10.0))
+            .when(!sticky && fi > 0, |d| d.border_t_1().border_color(ink(0.04)))
+            .when(sticky, |d| d.border_b_1().border_color(t.border))
+            .bg(rest)
+            .cursor_pointer()
+            .hover(move |s| s.bg(hover))
+            .on_click(cx.listener(move |this, _, _, cx| this.toggle_file(fi, cx)))
+            .child(
+                div().flex_none().size(px(14.0)).flex().items_center().justify_center().child(
+                    icon(if collapsed { icons::ALT_ARROW_RIGHT } else { icons::ALT_ARROW_DOWN })
+                        .size(px(13.0))
+                        .text_color(t.text_muted.opacity(0.7)),
+                ),
+            )
+            .child(crate::files_panel::file_type_icon(&f.path, false, t).size(px(14.0)).flex_none())
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .font_family(t.font_mono.clone())
+                    .text_size(px(12.0))
+                    .text_color(t.text_muted)
+                    .child(f.path.clone()),
+            )
+            .when(staged && in_tree, |d| {
+                d.child(
+                    div()
+                        .flex_none()
+                        .px(px(5.0))
+                        .rounded(px(4.0))
+                        .bg(t.success.opacity(0.12))
+                        .text_size(px(10.0))
+                        .text_color(t.success)
+                        .child("STAGED"),
+                )
+            })
+            .when(f.binary, |d| d.child(div().flex_none().text_size(px(10.0)).text_color(t.text_faint).child("BIN")))
+            .when(f.additions > 0 || !f.binary, |d| {
+                d.child(
+                    div()
+                        .flex_none()
+                        .font_family(t.font_mono.clone())
+                        .text_size(px(11.0))
+                        .text_color(t.diff_add)
+                        .child(format!("+{}", f.additions)),
+                )
+            })
+            .when(f.deletions > 0 || !f.binary, |d| {
+                d.child(
+                    div()
+                        .flex_none()
+                        .font_family(t.font_mono.clone())
+                        .text_size(px(11.0))
+                        .text_color(t.diff_del)
+                        .child(format!("−{}", f.deletions)),
+                )
+            });
+        let action = |key: &str, glyph: &'static str, label: &'static str| {
+            surface_chrome::toolbar_button(id(key), label)
+                .child(icon(glyph).size(px(surface_chrome::ICON_SIZE)).text_color(t.text_muted))
+        };
+        let hidden = |el: gpui::Stateful<gpui::Div>| el.invisible().group_hover(group.clone(), |s| s.visible());
+        head.when(in_tree, |d| {
+            d.child(hidden(action("diff-stage", icons::CHECK, if staged { "Unstage" } else { "Stage" })).on_click(
+                cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    this.toggle_stage(fi, cx);
+                }),
+            ))
+            .child(if confirm {
+                div()
+                    .id(id("diff-discard-yes"))
+                    .flex_none()
+                    .h(px(surface_chrome::CONTROL_SIZE))
+                    .px(px(7.0))
+                    .flex()
+                    .items_center()
+                    .rounded(px(surface_chrome::CONTROL_RADIUS))
+                    .bg(t.danger.opacity(0.14))
+                    .text_size(px(11.0))
+                    .text_color(t.danger)
+                    .cursor_pointer()
+                    .child("Discard?")
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.discard(fi, cx);
+                    }))
+                    .into_any_element()
+            } else {
+                hidden(action("diff-discard", icons::RESTART, "Discard changes to this file"))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.confirm_discard = Some(fi);
+                        cx.notify();
+                    }))
+                    .into_any_element()
+            })
+        })
+        .child(action("diff-open-file", icons::DOCUMENT, "Open in file browser").on_click(move |_, window, cx| {
+            cx.stop_propagation();
+            window.dispatch_action(Box::new(crate::actions::OpenPath { path: path.clone(), line: None }), cx);
+        }))
+        .into_any_element()
+    }
+
+    /// The `+` that opens a comment on a line. Each row has its own group,
+    /// so the adder shows on the hovered row only. A shared id painted it
+    /// on every virtual row; storing the hover and notifying rebuilt the list.
+    fn adder(
+        &self,
+        ix: usize,
+        left: f32,
+        key: (usize, usize, usize),
+        group: &SharedString,
+        t: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        div()
+            .absolute()
+            .left(px(left))
+            .top_0()
+            .h_full()
+            .flex()
+            .items_center()
+            .child(
+                div()
+                    .id(("diff-adder", ix))
+                    .size(px(ADDER_SIZE))
+                    .invisible()
+                    .group_hover(group.clone(), |s| s.visible())
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(4.0))
+                    .bg(t.accent)
+                    .cursor_pointer()
+                    .tooltip(ui::tip("Comment on this line"))
+                    .child(icon(icons::PLUS).size(px(11.0)).text_color(t.on_solid))
+                    .on_click(cx.listener(move |this, _, window, cx| this.start_comment(key, window, cx))),
+            )
+            .into_any_element()
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn render_line(
+        &self,
+        ix: usize,
+        fi: usize,
+        hi: usize,
+        li: usize,
+        width: Option<f32>,
+        t: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let f = &self.files[fi];
+        let line = &f.hunks[hi].lines[li];
+        let gutter = gutter_width(f);
+        let paint = LinePaint::of(line.kind, t);
+        let spans = self.spans(fi, hi, li);
+        let commented = self.comments.contains_key(&(fi, hi, li));
+        let key = (fi, hi, li);
+        let group = SharedString::from(format!("diff-line-{ix}"));
+        let number = |n: Option<u32>, color| {
+            div()
+                .w(px(gutter))
+                .flex_none()
+                .font_family(t.font_mono.clone())
+                .text_size(px(11.0))
+                .line_height(px(LINE_HEIGHT))
+                .text_color(color)
+                .flex()
+                .justify_end()
+                .pr(px(8.0))
+                .child(n.map(|n| n.to_string()).unwrap_or_default())
+        };
+        let faint = t.text_faint.opacity(0.8);
+        // A deletion is cited on the old side; everything else on the new.
+        let adder_left = ACCENT_BAR_WIDTH
+            + if line.kind == LineKind::Removed { 0.0 } else { gutter }
+            + (gutter - ADDER_SIZE) / 2.0;
+        div()
+            .id(("diff-line", ix))
+            .group(group.clone())
+            .relative()
+            .w_full()
+            .overflow_hidden()
+            .flex_none()
+            .flex()
+            .items_start()
+            .map(|d| if self.wrap { d.min_h(px(LINE_HEIGHT)) } else { d.h(px(LINE_HEIGHT)) })
+            .when_some(paint.bg, |d, bg| d.bg(bg))
+            .child(div().w(px(ACCENT_BAR_WIDTH)).self_stretch().flex_none().when_some(paint.accent, |d, c| d.bg(c)))
+            .child(number(line.old_no, if line.kind == LineKind::Removed { paint.number } else { faint }))
+            .child(number(line.new_no, if line.kind == LineKind::Added { paint.number } else { faint }))
+            .child(
+                div()
+                    .w(px(MARKER_WIDTH))
+                    .flex_none()
+                    .flex()
+                    .justify_center()
+                    .font_family(t.font_mono.clone())
+                    .text_size(px(TEXT_SIZE))
+                    .line_height(px(LINE_HEIGHT))
+                    .text_color(if commented { t.accent } else { paint.marker_color })
+                    .child(if commented { "●" } else { paint.marker }),
+            )
+            .child(self.code_plane(("diff-code", ix).into(), &line.text, spans, UNIFIED_CODE_PAD, width, t))
+            .when(self.commit.is_none(), |d| d.child(self.adder(ix, adder_left, key, &group, t, cx)))
+            .into_any_element()
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn render_pair(
+        &self,
+        ix: usize,
+        fi: usize,
+        hi: usize,
+        left: Option<usize>,
+        right: Option<usize>,
+        width: Option<f32>,
+        t: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let f = &self.files[fi];
+        let lines = &f.hunks[hi].lines;
+        let gutter = gutter_width(f);
+        let cell = |side: Option<usize>, old: bool| -> AnyElement {
+            let Some(li) = side else {
+                return div().flex_1().min_w_0().self_stretch().bg(ink(0.03)).into_any_element();
+            };
+            let line = &lines[li];
+            let paint = LinePaint::of(line.kind, t);
+            div()
+                .flex_1()
+                .min_w_0()
+                .self_stretch()
+                .overflow_hidden()
+                .flex()
+                .items_start()
+                .when_some(paint.bg, |d, bg| d.bg(bg))
+                .child(div().w(px(ACCENT_BAR_WIDTH)).self_stretch().flex_none().when_some(paint.accent, |d, c| d.bg(c)))
+                .child(
+                    div()
+                        .w(px(gutter))
+                        .flex_none()
+                        .font_family(t.font_mono.clone())
+                        .text_size(px(11.0))
+                        .line_height(px(LINE_HEIGHT))
+                        .text_color(paint.number)
+                        .flex()
+                        .justify_end()
+                        .pr(px(8.0))
+                        .child(if old { line.old_no } else { line.new_no }.map(|n| n.to_string()).unwrap_or_default()),
+                )
+                .child(
+                    div()
+                        .w(px(SPLIT_MARKER_WIDTH))
+                        .flex_none()
+                        .flex()
+                        .justify_center()
+                        .font_family(t.font_mono.clone())
+                        .text_size(px(TEXT_SIZE))
+                        .line_height(px(LINE_HEIGHT))
+                        .text_color(paint.marker_color)
+                        .child(paint.marker),
+                )
+                .child(self.code_plane(
+                    (SharedString::from(format!("diff-split-{}", if old { "l" } else { "r" })), ix).into(),
+                    &line.text,
+                    self.spans(fi, hi, li),
+                    SPLIT_CODE_PAD,
+                    width,
+                    t,
+                ))
+                .into_any_element()
+        };
+        let anchor = right.or(left).unwrap_or(0);
+        let key = (fi, hi, anchor);
+        let group = SharedString::from(format!("diff-pair-{ix}"));
+        let commentable = self.commit.is_none() && (right.is_some() || left.is_some());
+        div()
+            .id(("diff-pair", ix))
+            .group(group.clone())
+            .relative()
+            .w_full()
+            .overflow_hidden()
+            .flex_none()
+            .flex()
+            .items_stretch()
+            .map(|d| if self.wrap { d.min_h(px(LINE_HEIGHT)) } else { d.h(px(LINE_HEIGHT)) })
+            .child(cell(left, true))
+            .child(div().w(px(1.0)).self_stretch().flex_none().bg(ink(0.06)))
+            .child(
+                div()
+                    .relative()
+                    .flex_1()
+                    .min_w_0()
+                    .self_stretch()
+                    .flex()
+                    .child(cell(right, false))
+                    .when(commentable, |d| {
+                        d.child(self.adder(ix, ACCENT_BAR_WIDTH + (gutter - ADDER_SIZE) / 2.0, key, &group, t, cx))
+                    }),
+            )
+            .into_any_element()
+    }
+
+    fn spans(&self, fi: usize, hi: usize, li: usize) -> &[HighlightSpan] {
+        self.highlights
+            .get(fi)
+            .and_then(|f| f.get(hi))
+            .and_then(|h| h.get(li))
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
+    /// The only part of a row that moves sideways: gutters stay put while
+    /// the code scrolls with every other row (or wraps).
+    fn code_plane(
+        &self,
+        id: ElementId,
+        text: &str,
+        spans: &[HighlightSpan],
+        pad: f32,
+        width: Option<f32>,
+        t: &Theme,
+    ) -> AnyElement {
+        let text: SharedString = if text.is_empty() { " ".into() } else { text.to_string().into() };
+        let runs = runs(&text, spans, t);
+        // The inner box is the scroll extent. It is clipped to that width so
+        // a long line cannot stretch the row (and the virtual list) to the
+        // text's full width — that left the gutters in place and the code
+        // with nothing to scroll.
+        let content = div()
+            .pl(px(pad))
+            .font_family(t.font_mono.clone())
+            .text_size(px(TEXT_SIZE))
+            .line_height(px(LINE_HEIGHT))
+            .map(|d| match width {
+                Some(w) => d.w(px(w + pad)).flex_none().overflow_hidden().whitespace_nowrap(),
+                None => d.w_full().min_w_0().whitespace_normal(),
+            })
+            .child(StyledText::new(text).with_runs(runs));
+        let viewport = div().flex_1().min_w_0().min_h(px(LINE_HEIGHT)).overflow_hidden().child(content);
+        if width.is_none() {
+            return viewport.into_any_element();
+        }
+        let mut viewport = viewport.id(id).overflow_x_scroll().track_scroll(&self.hscroll);
+        viewport.style().restrict_scroll_to_axis = Some(true);
+        viewport.into_any_element()
+    }
+
+    fn render_comment(&self, fi: usize, hi: usize, li: usize, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let key = (fi, hi, li);
+        let editing = self.commenting.as_ref().filter(|(k, _)| *k == key).map(|(_, i)| i.clone());
+        let text = self.comments.get(&key).cloned();
+        let indent = ACCENT_BAR_WIDTH
+            + match self.layout {
+                Layout::Unified => 2.0 * gutter_width(&self.files[fi]) + MARKER_WIDTH,
+                Layout::Split => 0.0,
+            };
+        let card = div()
+            .w_full()
+            .max_w(px(560.0))
+            .px(px(10.0))
+            .py(px(8.0))
+            .flex()
+            .flex_col()
+            .gap(px(6.0))
+            .rounded(px(8.0))
+            .border_1()
+            .border_color(t.border)
+            .bg(t.surface_raised)
+            .text_size(px(12.5))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.0))
+                    .text_size(px(11.5))
+                    .text_color(t.text_faint)
+                    .child(icon(icons::CHAT_ROUND_LINE).size(px(12.0)).text_color(t.accent))
+                    .child(div().flex_1().child(if editing.is_some() { "New comment" } else { "Comment" }))
+                    .child(
+                        div()
+                            .id(("comment-del", li + hi * 100_000 + fi * 10_000_000))
+                            .cursor_pointer()
+                            .hover(|s| s.text_color(t.text))
+                            .child(if editing.is_some() && text.is_none() { "Cancel" } else { "Delete" })
+                            .on_click(cx.listener(move |this, _, _, cx| this.remove_comment(key, cx))),
+                    ),
+            )
+            .child(match editing {
+                Some(input) => div().child(Input::new(&input)).into_any_element(),
+                None => div()
+                    .id(("comment", li + hi * 100_000 + fi * 10_000_000))
+                    .cursor_pointer()
+                    .text_color(t.text)
+                    .tooltip(ui::tip("Edit"))
+                    .child(text.unwrap_or_default())
+                    .on_click(cx.listener(move |this, _, window, cx| this.start_comment(key, window, cx)))
+                    .into_any_element(),
+            });
+        div().w_full().pl(px(indent + 8.0)).pr(px(12.0)).py(px(6.0)).child(card).into_any_element()
+    }
+
+    /// The header of the file whose rows fill the top of the viewport, pinned
+    /// there and pushed up by the next file's header.
+    fn render_sticky(&self, t: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let top = self.list.logical_scroll_top();
+        let fi = self.ranges.partition_point(|r| r.start <= top.item_ix).checked_sub(1)?;
+        let range = self.ranges.get(fi)?;
+        if !range.contains(&top.item_ix) || (top.item_ix == range.start && f32::from(top.offset_in_item) <= 0.0) {
+            return None;
+        }
+        let next_y = self.ranges.get(fi + 1).and_then(|r| {
+            let b = self.list.bounds_for_item(r.start)?;
+            Some(f32::from(b.origin.y - self.list.viewport_bounds().origin.y))
+        });
+        let offset = next_y.map(|y| (y - FILE_HEADER_HEIGHT).min(0.0)).unwrap_or(0.0);
+        Some(
+            div()
+                .absolute()
+                .top(px(offset))
+                .left_0()
+                .w_full()
+                .bg(t.bg)
+                .occlude()
+                .child(self.render_file_header(fi, true, t, cx))
+                .into_any_element(),
+        )
+    }
+
+    // ------------------------------------------------------------ chrome
+
+    fn render_toolbar(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let (n, adds, dels) = self.summary();
+        let toggle = |id: &'static str, glyph: &'static str, label: &'static str, on: bool| {
+            surface_chrome::toolbar_button(id, label)
+                .when(on, |d| d.bg(ink(0.10)))
+                .child(icon(glyph).size(px(surface_chrome::ICON_SIZE)).text_color(if on { t.text } else { t.text_muted }))
+        };
+        let label = match (&self.commit, &self.target) {
+            (Some(_), _) => format!("{n} Changed {} in this commit", if n == 1 { "file" } else { "files" }),
+            (None, Some((_, base))) if base != "HEAD" => {
+                format!("{n} Changed {} vs {base}", if n == 1 { "file" } else { "files" })
+            }
+            _ if n == 1 => "1 Uncommitted change".into(),
+            _ => format!("{n} Uncommitted changes"),
+        };
+        let all_folded = !self.files.is_empty() && self.files.iter().all(|f| self.collapsed.contains(&f.path));
+        surface_chrome::toolbar(t)
+            .px(px(12.0))
+            .gap(px(8.0))
+            .when_some(self.commit.clone(), |d, sha| {
+                d.child(
+                    div()
+                        .flex_none()
+                        .h(px(surface_chrome::CONTROL_SIZE))
+                        .px(px(6.0))
+                        .flex()
+                        .items_center()
+                        .rounded(px(surface_chrome::CONTROL_RADIUS))
+                        .bg(ink(0.05))
+                        .font_family(t.font_mono.clone())
+                        .text_size(px(10.5))
+                        .text_color(t.text_muted)
+                        .child(sha.chars().take(7).collect::<String>()),
+                )
+            })
+            .when(self.loaded && self.error.is_none(), |d| {
+                d.child(div().min_w_0().truncate().text_size(px(12.0)).text_color(t.text_muted).child(label))
+                    .child(
+                        div()
+                            .flex_none()
+                            .font_family(t.font_mono.clone())
+                            .text_size(px(11.0))
+                            .text_color(t.diff_add)
+                            .child(format!("+{adds}")),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .font_family(t.font_mono.clone())
+                            .text_size(px(11.0))
+                            .text_color(t.diff_del)
+                            .child(format!("−{dels}")),
+                    )
+            })
+            .child(div().flex_1())
+            .when(!self.comments.is_empty(), |d| {
+                d.child(
+                    ui::button_primary("chg-review", format!("Send review ({})", self.comments.len()), t)
+                        .on_click(cx.listener(|this, _, _, cx| this.send_review(cx))),
+                )
+            })
+            .when(self.commit.is_some() && self.tree.is_some(), |d| {
+                d.child(
+                    ui::button_ghost("chg-tree", "Working tree", t)
+                        .on_click(cx.listener(|this, _, window, cx| this.show_tree(window, cx))),
+                )
+            })
+            .child(toggle("diff-wrap", icons::WRAP_TEXT, "Wrap long lines", self.wrap).on_click(
+                cx.listener(|this, _, _, cx| this.toggle_wrap(cx)),
+            ))
+            .child(
+                toggle("diff-split", icons::SPLIT_COLUMNS, "Side by side", self.layout == Layout::Split).on_click(
+                    cx.listener(|this, _, _, cx| {
+                        let next = if this.layout == Layout::Split { Layout::Unified } else { Layout::Split };
+                        this.set_layout(next, cx);
+                    }),
+                ),
+            )
+            .child(
+                toggle(
+                    "diff-fold",
+                    icons::FOLD_VERTICAL,
+                    if all_folded { "Expand all files" } else { "Collapse all files" },
+                    all_folded,
+                )
+                .on_click(cx.listener(|this, _, _, cx| this.toggle_all(cx))),
+            )
+            .child(
+                toggle("diff-refresh", icons::REFRESH, "Refresh", false)
+                    .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
+            )
+            .into_any_element()
+    }
 
     fn render_footer(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let d = &self.delivery;
@@ -530,503 +1304,378 @@ impl Changes {
     }
 }
 
-/// Pair removed and added runs side by side; context lines pair with
-/// themselves.
-fn split_pairs(kinds: &[LineKind]) -> Vec<(Option<usize>, Option<usize>)> {
+impl Render for Changes {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = Theme::of(cx).clone();
+        let quiet = |text: SharedString| {
+            div()
+                .flex_1()
+                .flex()
+                .items_center()
+                .justify_center()
+                .px(px(16.0))
+                .text_size(px(12.0))
+                .text_color(t.text_faint)
+                .child(text)
+                .into_any_element()
+        };
+        let body: AnyElement = if let Some(err) = &self.error {
+            quiet(err.clone())
+        } else if self.target.is_none() {
+            kit::empty_state(icons::FILE_CODE, "No thread selected", "Open a thread to see what its agent changed.", &t)
+                .flex_1()
+                .into_any_element()
+        } else if !self.loaded {
+            div()
+                .flex_1()
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .gap(px(8.0))
+                .child(kit::spinner("changes-preparing", 16.0, t.text_muted))
+                .child(div().text_size(px(12.0)).text_color(t.text_faint).child("Preparing diff…"))
+                .into_any_element()
+        } else if self.files.is_empty() {
+            quiet(if self.commit.is_some() { "Empty commit".into() } else { "No uncommitted changes".into() })
+        } else {
+            let sticky = self.render_sticky(&t, cx);
+            div()
+                .relative()
+                .flex_1()
+                .min_h_0()
+                .overflow_hidden()
+                .child(
+                    list(self.list.clone(), cx.processor(Self::render_row))
+                        .size_full()
+                        .with_sizing_behavior(gpui::ListSizingBehavior::Auto),
+                )
+                .children(sticky)
+                .into_any_element()
+        };
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .child(self.render_toolbar(&t, cx))
+            .child(div().flex_1().min_h_0().flex().flex_col().child(body))
+            .when(self.target.is_some() && self.commit.is_none(), |d| d.child(self.render_footer(&t, cx)))
+    }
+}
+
+// ------------------------------------------------------------------ pieces
+
+/// How a +, − or context line paints: ~5% washes over the pane, a solid
+/// accent bar and tinted numbers on changed lines.
+struct LinePaint {
+    marker: &'static str,
+    marker_color: gpui::Hsla,
+    bg: Option<gpui::Hsla>,
+    accent: Option<gpui::Hsla>,
+    number: gpui::Hsla,
+}
+
+impl LinePaint {
+    fn of(kind: LineKind, t: &Theme) -> Self {
+        let tint = |c: gpui::Hsla| gpui::Hsla { a: 0.055, ..c };
+        match kind {
+            LineKind::Added => Self {
+                marker: "+",
+                marker_color: t.diff_add,
+                bg: Some(tint(t.diff_add)),
+                accent: Some(t.diff_add.opacity(0.55)),
+                number: t.diff_add.opacity(0.9),
+            },
+            LineKind::Removed => Self {
+                marker: "−",
+                marker_color: t.diff_del,
+                bg: Some(tint(t.diff_del)),
+                accent: Some(t.diff_del.opacity(0.55)),
+                number: t.diff_del.opacity(0.9),
+            },
+            LineKind::Context => Self {
+                marker: "·",
+                marker_color: t.text_faint.opacity(0.5),
+                bg: None,
+                accent: None,
+                number: t.text_faint.opacity(0.8),
+            },
+        }
+    }
+}
+
+/// A file diff the way a transcript tool shows it, as in Zeron: the pane's
+/// own rows (hunk headers on the bluish wash, accent bars, fitted dual
+/// gutters, the marker column, syntax colours) stacked as plain elements,
+/// lines clipped rather than scrolled, cut after `take` lines.
+pub(crate) fn inline_rows(f: &FileDiff, spans: &[Vec<Vec<HighlightSpan>>], take: usize, t: &Theme) -> Vec<AnyElement> {
+    let gutter = gutter_width(f);
+    let faint = t.text_faint.opacity(0.8);
+    let number = |n: Option<u32>, color: gpui::Hsla| {
+        div()
+            .w(px(gutter))
+            .flex_none()
+            .flex()
+            .justify_end()
+            .pr(px(8.0))
+            .text_size(px(11.0))
+            .text_color(color)
+            .child(n.map(|n| n.to_string()).unwrap_or_default())
+    };
+    let mut rows = Vec::new();
+    let mut left = take;
+    for (hi, h) in f.hunks.iter().enumerate() {
+        if left == 0 {
+            break;
+        }
+        rows.push(hunk_header_row(&h.header, t).into_any_element());
+        for (li, line) in h.lines.iter().enumerate().take(left) {
+            let paint = LinePaint::of(line.kind, t);
+            let text: SharedString = if line.text.is_empty() { " ".into() } else { line.text.to_string().into() };
+            let line_spans = spans.get(hi).and_then(|h| h.get(li)).map(Vec::as_slice).unwrap_or(&[]);
+            let runs = runs(&text, line_spans, t);
+            rows.push(
+                div()
+                    .w_full()
+                    .h(px(LINE_HEIGHT))
+                    .flex_none()
+                    .flex()
+                    .items_start()
+                    .overflow_hidden()
+                    .font_family(t.font_mono.clone())
+                    .line_height(px(LINE_HEIGHT))
+                    .when_some(paint.bg, |d, bg| d.bg(bg))
+                    .child(div().w(px(ACCENT_BAR_WIDTH)).h_full().flex_none().when_some(paint.accent, |d, c| d.bg(c)))
+                    .child(number(line.old_no, if line.kind == LineKind::Removed { paint.number } else { faint }))
+                    .child(number(line.new_no, if line.kind == LineKind::Added { paint.number } else { faint }))
+                    .child(
+                        div()
+                            .w(px(MARKER_WIDTH))
+                            .flex_none()
+                            .flex()
+                            .justify_center()
+                            .text_size(px(TEXT_SIZE))
+                            .text_color(paint.marker_color)
+                            .child(paint.marker),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .pl(px(UNIFIED_CODE_PAD))
+                            .text_size(px(TEXT_SIZE))
+                            .child(StyledText::new(text).with_runs(runs)),
+                    )
+                    .into_any_element(),
+            );
+        }
+        left = left.saturating_sub(h.lines.len());
+    }
+    rows
+}
+
+/// Syntax spans for one file, per hunk per line (empty when the language is
+/// unknown or the file is too long).
+pub(crate) fn highlight_file(f: &FileDiff) -> Vec<Vec<Vec<HighlightSpan>>> {
+    highlight_files(std::slice::from_ref(f)).pop().unwrap_or_default()
+}
+
+fn notice_row(notice: String, t: &Theme) -> impl IntoElement {
+    div()
+        .h(px(NOTICE_HEIGHT))
+        .w_full()
+        .flex_none()
+        .flex()
+        .items_center()
+        .px(px(16.0))
+        .text_size(px(11.0))
+        .text_color(t.text_faint)
+        .child(notice)
+}
+
+/// One `@@ … @@` row on the bluish-grey wash.
+fn hunk_header_row(header: &str, t: &Theme) -> impl IntoElement {
+    div()
+        .h(px(HUNK_HEADER_HEIGHT))
+        .w_full()
+        .flex_none()
+        .flex()
+        .items_center()
+        .px(px(16.0))
+        .bg(t.diff_hunk_bg)
+        .font_family(t.font_mono.clone())
+        .text_size(px(11.0))
+        .text_color(t.text_faint)
+        .truncate()
+        .child(header.to_string())
+}
+
+fn notices(f: &FileDiff) -> Vec<String> {
     let mut out = Vec::new();
-    let mut i = 0;
-    while i < kinds.len() {
-        match kinds[i] {
-            LineKind::Context => {
-                out.push((Some(i), Some(i)));
-                i += 1;
+    match f.status {
+        FileStatus::Added => out.push("New file".to_string()),
+        FileStatus::Deleted => out.push("Deleted file".to_string()),
+        FileStatus::Renamed => out.push(format!("Renamed from {}", f.old_path.as_deref().unwrap_or("?"))),
+        FileStatus::Modified => {}
+    }
+    if f.binary {
+        out.push("Binary file — contents not shown".to_string());
+    }
+    out
+}
+
+/// One line-number column, fitted to the file's largest line number (11px
+/// mono is about 6.6px a digit, plus padding), never under 36px.
+fn gutter_width(f: &FileDiff) -> f32 {
+    let max = f.hunks.iter().flat_map(|h| &h.lines).map(|l| l.old_no.unwrap_or(0).max(l.new_no.unwrap_or(0))).max();
+    let digits = max.unwrap_or(1).max(1).ilog10() + 1;
+    (digits as f32 * 6.6 + 14.0).max(GUTTER_WIDTH)
+}
+
+fn runs(text: &str, spans: &[HighlightSpan], t: &Theme) -> Vec<TextRun> {
+    let mono = font(t.font_mono.clone());
+    let plain = t.text.opacity(0.92);
+    let run = |len: usize, color| TextRun {
+        len,
+        font: mono.clone(),
+        color,
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    let mut out = Vec::with_capacity(spans.len() * 2 + 1);
+    let mut at = 0usize;
+    for s in spans {
+        let (start, end) = (s.range.start.min(text.len()), s.range.end.min(text.len()));
+        if start < at || start >= end {
+            continue;
+        }
+        if start > at {
+            out.push(run(start - at, plain));
+        }
+        out.push(run(end - start, t.syntax(s.kind)));
+        at = end;
+    }
+    if at < text.len() {
+        out.push(run(text.len() - at, plain));
+    }
+    out
+}
+
+/// Tabs become spaces once, before highlighting, so spans and widths agree.
+fn expand_tabs(mut files: Vec<FileDiff>) -> Vec<FileDiff> {
+    for line in files.iter_mut().flat_map(|f| f.hunks.iter_mut().flat_map(|h| h.lines.iter_mut())) {
+        if line.text.contains('\t') {
+            line.text = line.text.replace('\t', TAB).into();
+        }
+    }
+    files
+}
+
+fn highlight_files(files: &[FileDiff]) -> Vec<Vec<Vec<Vec<HighlightSpan>>>> {
+    files
+        .iter()
+        .map(|f| {
+            let lines: usize = f.hunks.iter().map(|h| h.lines.len()).sum();
+            if f.binary || lines > MAX_HIGHLIGHT_LINES || zeron_syntax::language_for_path(&f.path).is_none() {
+                return Vec::new();
             }
-            _ => {
-                let start = i;
-                while i < kinds.len() && kinds[i] == LineKind::Removed {
-                    i += 1;
-                }
-                let removed: Vec<usize> = (start..i).collect();
-                let add_start = i;
-                while i < kinds.len() && kinds[i] == LineKind::Added {
-                    i += 1;
-                }
-                let added: Vec<usize> = (add_start..i).collect();
-                for k in 0..removed.len().max(added.len()) {
-                    out.push((removed.get(k).copied(), added.get(k).copied()));
-                }
-            }
+            f.hunks.iter().map(|h| highlight_hunk(&f.path, h)).collect()
+        })
+        .collect()
+}
+
+/// Highlight a hunk's old and new sides as two excerpts, so a string or
+/// comment opened on one line still colours the next.
+fn highlight_hunk(path: &str, h: &Hunk) -> Vec<Vec<HighlightSpan>> {
+    let mut out = vec![Vec::new(); h.lines.len()];
+    // Old side first, so context lines end up with the new side's colours.
+    for skip in [LineKind::Added, LineKind::Removed] {
+        let idx: Vec<usize> = (0..h.lines.len()).filter(|&i| h.lines[i].kind != skip).collect();
+        if idx.is_empty() {
+            continue;
+        }
+        let source = idx.iter().map(|&i| &*h.lines[i].text).collect::<Vec<_>>().join("\n");
+        let Ok(doc) = zeron_syntax::highlight(HighlightRequest { source: &source, path: Some(path), fence_tag: None })
+        else {
+            continue;
+        };
+        for (i, spans) in idx.into_iter().zip(doc.lines) {
+            out[i] = spans;
         }
     }
     out
 }
 
-/// Byte ranges that differ between a removed and an added line.
-pub fn intraline(old: &str, new: &str) -> (Vec<std::ops::Range<usize>>, Vec<std::ops::Range<usize>>) {
-    let diff = similar::TextDiff::from_chars(old, new);
-    let (mut a, mut b) = (Vec::new(), Vec::new());
-    let (mut oa, mut ob) = (0usize, 0usize);
-    for change in diff.iter_all_changes() {
-        let len = change.value().len();
-        match change.tag() {
-            similar::ChangeTag::Delete => {
-                push_range(&mut a, oa..oa + len);
-                oa += len;
-            }
-            similar::ChangeTag::Insert => {
-                push_range(&mut b, ob..ob + len);
-                ob += len;
-            }
-            similar::ChangeTag::Equal => {
-                oa += len;
-                ob += len;
-            }
+/// Pair a hunk's lines into split rows: context sits on both sides, and each
+/// run of removals followed by additions lines up index for index, the
+/// longer side's leftovers getting one-sided rows.
+fn split_pairs(lines: &[git::DiffLine]) -> Vec<(Option<usize>, Option<usize>)> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        if lines[i].kind == LineKind::Context {
+            out.push((Some(i), Some(i)));
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < lines.len() && lines[i].kind == LineKind::Removed {
+            i += 1;
+        }
+        let removed: Vec<usize> = (start..i).collect();
+        let add_start = i;
+        while i < lines.len() && lines[i].kind == LineKind::Added {
+            i += 1;
+        }
+        let added: Vec<usize> = (add_start..i).collect();
+        for k in 0..removed.len().max(added.len()) {
+            out.push((removed.get(k).copied(), added.get(k).copied()));
         }
     }
-    // Mostly-different lines read better without highlights.
-    if a.iter().map(|r| r.len()).sum::<usize>() * 2 > old.len().max(1) * 3 / 2 {
-        a.clear();
-        b.clear();
-    }
-    (a, b)
-}
-
-fn push_range(v: &mut Vec<std::ops::Range<usize>>, r: std::ops::Range<usize>) {
-    if let Some(last) = v.last_mut()
-        && last.end == r.start
-    {
-        last.end = r.end;
-        return;
-    }
-    v.push(r);
-}
-
-fn code(text: &str, highlights: Vec<std::ops::Range<usize>>, bg: gpui::Hsla) -> AnyElement {
-    let text = text.replace('\t', "    ");
-    if highlights.is_empty() {
-        return div().child(text).into_any_element();
-    }
-    let style = HighlightStyle { background_color: Some(bg), ..Default::default() };
-    let spans: Vec<_> = highlights.into_iter().filter(|r| r.end <= text.len()).map(|r| (r, style)).collect();
-    StyledText::new(SharedString::from(text)).with_highlights(spans).into_any_element()
-}
-
-impl Render for Changes {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let t = Theme::of(cx).clone();
-        let (n, adds, dels) = self.summary();
-        let layout = self.layout;
-        let header = div()
-            .h(px(40.0))
-            .px(px(12.0))
-            .flex()
-            .items_center()
-            .gap(px(8.0))
-            .border_b_1()
-            .border_color(t.border)
-            .when(n > 0, |d| {
-                d.child(div().text_size(px(12.0)).text_color(t.text_faint).child(format!("{n} files")))
-                    .child(div().text_size(px(12.0)).text_color(t.diff_add).child(format!("+{adds}")))
-                    .child(div().text_size(px(12.0)).text_color(t.diff_del).child(format!("−{dels}")))
-            })
-            .when_some(self.delivery.branch.clone(), |d, b| {
-                d.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(4.0))
-                        .text_size(px(12.0))
-                        .text_color(t.text_faint)
-                        .child(icon(icons::GIT_BRANCH).size(px(12.0)))
-                        .child(div().max_w(px(160.0)).truncate().child(b)),
-                )
-            })
-            .child(div().flex_1())
-            .when(!self.comments.is_empty(), |d| {
-                d.child(
-                    ui::button_primary("chg-review", format!("Send review ({})", self.comments.len()), &t)
-                        .on_click(cx.listener(|this, _, _, cx| this.send_review(cx))),
-                )
-            })
-            .child(kit::segmented(
-                "chg-layout",
-                &["Unified", "Split"],
-                if layout == Layout::Unified { 0 } else { 1 },
-                &t,
-                {
-                    let weak = cx.weak_entity();
-                    move |i, _, cx| {
-                        let _ = weak
-                            .update(cx, |v, cx| v.set_layout(if i == 0 { Layout::Unified } else { Layout::Split }, cx));
-                    }
-                },
-            ))
-            .child(ui::icon_button("diff-refresh", icons::REFRESH, "Refresh", &t, {
-                let weak = cx.weak_entity();
-                move |_, _, cx| {
-                    let _ = weak.update(cx, |v, cx| v.refresh(cx));
-                }
-            }));
-
-        let body: AnyElement = if let Some(err) = &self.error {
-            div().p(px(12.0)).text_size(px(13.0)).text_color(t.danger).child(err.clone()).into_any_element()
-        } else if self.target.is_none() {
-            kit::empty_state(icons::FILE_CODE, "No thread selected", "Open a thread to see what its agent changed.", &t)
-                .flex_1()
-                .into_any_element()
-        } else if self.files.is_empty() {
-            if self.loading {
-                div()
-                    .p(px(14.0))
-                    .flex()
-                    .flex_col()
-                    .gap(px(8.0))
-                    .children((0..6).map(|i| {
-                        kit::skeleton(("chg-skel", i as usize), px(220.0 + (i % 3) as f32 * 40.0), px(14.0), &t)
-                    }))
-                    .into_any_element()
-            } else {
-                kit::empty_state(
-                    icons::CHECK,
-                    "No changes yet",
-                    "Edits the agent makes in this worktree show up here.",
-                    &t,
-                )
-                .flex_1()
-                .into_any_element()
-            }
-        } else {
-            let files = self.files.clone();
-            let flat = self.flat.clone();
-            let staged = self.staged.clone();
-            let comments = self.comments.clone();
-            let commenting = self.commenting.clone();
-            let confirm = self.confirm_discard;
-            let weak = cx.weak_entity();
-            uniform_list("diff-lines", flat.len(), move |range, _window, cx| {
-                let t = Theme::of(cx);
-                range
-                    .map(|ix| match flat[ix] {
-                        Flat::File(fi) => {
-                            let f = &files[fi];
-                            let (label, color) = match f.status {
-                                FileStatus::Added => ("A", t.diff_add),
-                                FileStatus::Deleted => ("D", t.diff_del),
-                                FileStatus::Renamed => ("R", t.accent),
-                                FileStatus::Modified => ("M", t.warning),
-                            };
-                            let is_staged = staged.contains(&f.path);
-                            let (w1, w2, w3, w4) = (weak.clone(), weak.clone(), weak.clone(), weak.clone());
-                            let path = f.path.clone();
-                            div()
-                                .id(("diff-file", ix))
-                                .group("diff-file")
-                                .h(px(30.0))
-                                .px(px(8.0))
-                                .flex()
-                                .items_center()
-                                .gap(px(8.0))
-                                .bg(t.wash(0.04))
-                                .border_t_1()
-                                .border_color(t.border)
-                                .text_size(px(13.0))
-                                .child(
-                                    kit::checkbox(("stage", ix), is_staged, "", t)
-                                        .tooltip(ui::tip(if is_staged { "Unstage" } else { "Stage" }))
-                                        .on_click(move |_, _, cx| {
-                                            cx.stop_propagation();
-                                            let _ = w1.update(cx, |v, cx| v.toggle_stage(fi, cx));
-                                        }),
-                                )
-                                .child(
-                                    div()
-                                        .w(px(12.0))
-                                        .text_size(px(11.0))
-                                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                                        .text_color(color)
-                                        .child(label),
-                                )
-                                .child(
-                                    div()
-                                        .id(("diff-file-name", ix))
-                                        .flex_1()
-                                        .min_w_0()
-                                        .truncate()
-                                        .cursor_pointer()
-                                        .child(f.path.clone())
-                                        .on_click(move |_, _, cx| {
-                                            let _ = w2.update(cx, |v, cx| v.toggle_file(fi, cx));
-                                        }),
-                                )
-                                .when(f.binary, |d| {
-                                    d.child(div().text_size(px(11.0)).text_color(t.text_faint).child("binary"))
-                                })
-                                .child(
-                                    div().text_size(px(11.0)).text_color(t.diff_add).child(format!("+{}", f.additions)),
-                                )
-                                .child(
-                                    div().text_size(px(11.0)).text_color(t.diff_del).child(format!("−{}", f.deletions)),
-                                )
-                                .child(
-                                    div()
-                                        .id(("diff-open", ix))
-                                        .invisible()
-                                        .group_hover("diff-file", |s| s.visible())
-                                        .cursor_pointer()
-                                        .tooltip(ui::tip("Open in preview"))
-                                        .child(icon(icons::EYE).size(px(13.0)).text_color(t.text_faint))
-                                        .on_click(move |_, window, cx| {
-                                            window.dispatch_action(
-                                                Box::new(crate::actions::OpenPath { path: path.clone(), line: None }),
-                                                cx,
-                                            );
-                                        }),
-                                )
-                                .child(if confirm == Some(fi) {
-                                    div()
-                                        .id(("diff-discard-yes", ix))
-                                        .px(px(6.0))
-                                        .rounded(px(5.0))
-                                        .bg(t.danger.opacity(0.14))
-                                        .text_size(px(11.0))
-                                        .text_color(t.danger)
-                                        .cursor_pointer()
-                                        .child("Discard?")
-                                        .on_click(move |_, _, cx| {
-                                            let _ = w3.update(cx, |v, cx| v.discard(fi, cx));
-                                        })
-                                        .into_any_element()
-                                } else {
-                                    div()
-                                        .id(("diff-discard", ix))
-                                        .invisible()
-                                        .group_hover("diff-file", |s| s.visible())
-                                        .cursor_pointer()
-                                        .tooltip(ui::tip("Discard changes to this file"))
-                                        .child(icon(icons::RESTART).size(px(13.0)).text_color(t.text_faint))
-                                        .on_click(move |_, _, cx| {
-                                            let _ = w4.update(cx, |v, cx| {
-                                                v.confirm_discard = Some(fi);
-                                                cx.notify();
-                                            });
-                                        })
-                                        .into_any_element()
-                                })
-                                .into_any_element()
-                        }
-                        Flat::Hunk(fi, hi) => div()
-                            .h(px(22.0))
-                            .px(px(10.0))
-                            .flex()
-                            .items_center()
-                            .text_size(px(11.0))
-                            .text_color(t.text_faint)
-                            .bg(t.diff_hunk_bg)
-                            .font_family(t.font_mono.clone())
-                            .truncate()
-                            .child(files[fi].hunks[hi].header.to_string())
-                            .into_any_element(),
-                        Flat::Line(fi, hi, li) => {
-                            let lines = &files[fi].hunks[hi].lines;
-                            let l = &lines[li];
-                            let (bg, sign, fg) = match l.kind {
-                                LineKind::Added => (t.diff_add.opacity(0.12), "+", t.text),
-                                LineKind::Removed => (t.diff_del.opacity(0.12), "−", t.text),
-                                LineKind::Context => (transparent_black(), " ", t.text_muted),
-                            };
-                            // Pair a removed line with the added line at the same offset in its run.
-                            let hl = paired(lines, li).map(|(old, new)| {
-                                let (a, b) = intraline(&lines[old].text, &lines[new].text);
-                                if li == old { (a, t.diff_del.opacity(0.35)) } else { (b, t.diff_add.opacity(0.35)) }
-                            });
-                            let num = |n: Option<u32>| n.map(|n| n.to_string()).unwrap_or_default();
-                            let w = weak.clone();
-                            let commented = comments.contains_key(&(fi, hi, li));
-                            div()
-                                .id(("diff-line", ix))
-                                .group("diff-line")
-                                .h(px(20.0))
-                                .flex()
-                                .bg(bg)
-                                .font_family(t.font_mono.clone())
-                                .text_size(px(12.0))
-                                .child(
-                                    div()
-                                        .id(("diff-num", ix))
-                                        .w(px(76.0))
-                                        .flex()
-                                        .flex_none()
-                                        .cursor_pointer()
-                                        .text_color(t.text_faint)
-                                        .hover(|s| s.text_color(t.accent))
-                                        .tooltip(ui::tip("Comment on this line"))
-                                        .child(div().w(px(38.0)).pr(px(4.0)).text_right().child(num(l.old_no)))
-                                        .child(div().w(px(38.0)).pr(px(4.0)).text_right().child(num(l.new_no)))
-                                        .on_click(move |_, window, cx| {
-                                            let _ = w.update(cx, |v, cx| v.start_comment((fi, hi, li), window, cx));
-                                        }),
-                                )
-                                .child(
-                                    div()
-                                        .w(px(14.0))
-                                        .text_color(if commented { t.accent } else { fg })
-                                        .child(if commented { "●" } else { sign }),
-                                )
-                                .child(div().flex_1().whitespace_nowrap().overflow_hidden().text_color(fg).child(
-                                    match hl {
-                                        Some((ranges, color)) => code(&l.text, ranges, color),
-                                        None => code(&l.text, Vec::new(), bg),
-                                    },
-                                ))
-                                .into_any_element()
-                        }
-                        Flat::Pair(fi, hi, left, right) => {
-                            let lines = &files[fi].hunks[hi].lines;
-                            let (la, rb) = match (left, right) {
-                                (Some(a), Some(b)) if a != b => intraline(&lines[a].text, &lines[b].text),
-                                _ => (Vec::new(), Vec::new()),
-                            };
-                            let side = |idx: Option<usize>, ranges: Vec<std::ops::Range<usize>>, left: bool| {
-                                let Some(i) = idx else {
-                                    return div().flex_1().min_w_0().bg(t.wash(0.03)).into_any_element();
-                                };
-                                let l = &lines[i];
-                                let (bg, strong) = match l.kind {
-                                    LineKind::Added => (t.diff_add.opacity(0.12), t.diff_add.opacity(0.35)),
-                                    LineKind::Removed => (t.diff_del.opacity(0.12), t.diff_del.opacity(0.35)),
-                                    LineKind::Context => (transparent_black(), transparent_black()),
-                                };
-                                let n = if left { l.old_no } else { l.new_no };
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .flex()
-                                    .bg(bg)
-                                    .child(
-                                        div()
-                                            .w(px(38.0))
-                                            .flex_none()
-                                            .pr(px(4.0))
-                                            .text_right()
-                                            .text_color(t.text_faint)
-                                            .child(n.map(|n| n.to_string()).unwrap_or_default()),
-                                    )
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .min_w_0()
-                                            .overflow_hidden()
-                                            .whitespace_nowrap()
-                                            .text_color(if l.kind == LineKind::Context { t.text_muted } else { t.text })
-                                            .child(code(&l.text, ranges, strong)),
-                                    )
-                                    .into_any_element()
-                            };
-                            div()
-                                .h(px(20.0))
-                                .flex()
-                                .font_family(t.font_mono.clone())
-                                .text_size(px(12.0))
-                                .child(side(left, la, true))
-                                .child(div().w(px(1.0)).h_full().bg(t.border))
-                                .child(side(right, rb, false))
-                                .into_any_element()
-                        }
-                        Flat::Comment(fi, hi, li) => {
-                            let editing =
-                                commenting.as_ref().filter(|(k, _)| *k == (fi, hi, li)).map(|(_, i)| i.clone());
-                            let text = comments.get(&(fi, hi, li)).cloned();
-                            let w = weak.clone();
-                            div()
-                                .h(px(36.0))
-                                .pl(px(90.0))
-                                .pr(px(10.0))
-                                .flex()
-                                .items_center()
-                                .gap(px(8.0))
-                                .bg(t.accent.opacity(0.06))
-                                .text_size(px(12.5))
-                                .child(icon(icons::CHAT_ROUND_LINE).size(px(13.0)).text_color(t.accent))
-                                .child(match editing {
-                                    Some(input) => div().flex_1().child(Input::new(&input)).into_any_element(),
-                                    None => div()
-                                        .id(("comment", ix))
-                                        .flex_1()
-                                        .truncate()
-                                        .cursor_pointer()
-                                        .text_color(t.text)
-                                        .child(text.unwrap_or_default())
-                                        .on_click(move |_, window, cx| {
-                                            let _ = w.update(cx, |v, cx| v.start_comment((fi, hi, li), window, cx));
-                                        })
-                                        .into_any_element(),
-                                })
-                                .into_any_element()
-                        }
-                    })
-                    .collect()
-            })
-            .track_scroll(&self.scroll)
-            .flex_1()
-            .into_any_element()
-        };
-
-        div()
-            .size_full()
-            .flex()
-            .flex_col()
-            .child(header)
-            .child(div().flex_1().min_h_0().flex().flex_col().child(body))
-            .when(self.target.is_some(), |d| d.child(self.render_footer(&t, cx)))
-    }
-}
-
-/// For a removed or added line inside a change run, the (removed, added)
-/// pair at the same offset.
-fn paired(lines: &[dove_core::git::DiffLine], li: usize) -> Option<(usize, usize)> {
-    let kind = lines[li].kind;
-    if kind == LineKind::Context {
-        return None;
-    }
-    // Find the run of removed lines and the run of added lines around li.
-    let mut start = li;
-    while start > 0 && lines[start - 1].kind != LineKind::Context {
-        start -= 1;
-    }
-    let mut end = li;
-    while end + 1 < lines.len() && lines[end + 1].kind != LineKind::Context {
-        end += 1;
-    }
-    let removed: Vec<usize> = (start..=end).filter(|i| lines[*i].kind == LineKind::Removed).collect();
-    let added: Vec<usize> = (start..=end).filter(|i| lines[*i].kind == LineKind::Added).collect();
-    let pos = if kind == LineKind::Removed {
-        removed.iter().position(|i| *i == li)?
-    } else {
-        added.iter().position(|i| *i == li)?
-    };
-    Some((*removed.get(pos)?, *added.get(pos)?))
+    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn line(kind: LineKind) -> git::DiffLine {
+        git::DiffLine { kind, old_no: None, new_no: None, text: "x".into() }
+    }
+
     #[test]
     fn split_pairs_runs() {
         use LineKind::*;
-        let pairs = split_pairs(&[Context, Removed, Removed, Added, Context, Added]);
+        let lines: Vec<_> = [Context, Removed, Removed, Added, Context, Added].into_iter().map(line).collect();
         assert_eq!(
-            pairs,
+            split_pairs(&lines),
             vec![(Some(0), Some(0)), (Some(1), Some(3)), (Some(2), None), (Some(4), Some(4)), (None, Some(5))]
         );
     }
 
     #[test]
-    fn intraline_marks_only_the_change() {
-        let (a, b) = intraline("let x = 1;", "let x = 2;");
-        assert_eq!(a, vec![8..9]);
-        assert_eq!(b, vec![8..9]);
-        let (a, _) = intraline("abc", "xyz");
-        assert!(a.is_empty(), "wholly different lines get no highlights");
+    fn gutters_fit_the_largest_line_number() {
+        let mut f = git::diff::untracked_file(std::path::Path::new("."), "missing-file-for-test");
+        f.hunks = vec![Hunk {
+            header: "@@".into(),
+            lines: vec![git::DiffLine { kind: LineKind::Added, old_no: None, new_no: Some(123_456), text: "".into() }],
+        }];
+        assert!(gutter_width(&f) > GUTTER_WIDTH);
+        f.hunks[0].lines[0].new_no = Some(7);
+        assert_eq!(gutter_width(&f), GUTTER_WIDTH);
+    }
+
+    #[test]
+    fn tabs_expand_before_highlighting() {
+        let mut f = git::diff::untracked_file(std::path::Path::new("."), "missing-file-for-test");
+        f.hunks = vec![Hunk {
+            header: "@@".into(),
+            lines: vec![git::DiffLine { kind: LineKind::Context, old_no: Some(1), new_no: Some(1), text: "\tx".into() }],
+        }];
+        let files = expand_tabs(vec![f]);
+        assert_eq!(&*files[0].hunks[0].lines[0].text, "    x");
     }
 }

@@ -23,7 +23,7 @@ use std::time::Duration;
 
 use dove_core::harness_detect::Installed;
 use dove_core::proto::{HarnessKind, PermissionMode, ProjectId, RateWindow};
-use dove_core::store::{Project, Task};
+use dove_core::store::{Persona, Project, Task};
 use dove_core::{Engine, RunSettings};
 use gpui::StyledImage as _;
 use gpui::prelude::FluentBuilder as _;
@@ -57,6 +57,8 @@ pub enum ComposerEvent {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Menu {
+    Persona,
+    Checkout,
     Device,
     Project,
     Branch,
@@ -97,6 +99,26 @@ const TEMPLATES: &[(&str, &str, &str)] = &[
         "Run the project's tests. Fix any failures, then run them again until they pass.",
     ),
     (
+        "design",
+        "Design an interactive web or app screen on the Canvas",
+        "Design a clean, interactive screen and show it with Dove's `show_canvas` tool (React or HTML, realistic content), then summarize the choices in a short `show_ui` card: ",
+    ),
+    (
+        "mobile",
+        "Mock a mobile app flow in a phone frame",
+        "Design an interactive mobile app screen with Dove's `show_canvas` tool (`device: \"mobile\"`), with realistic data and working tabs and interactions: ",
+    ),
+    (
+        "dashboard",
+        "Build an interactive analytics or admin dashboard",
+        "Build an interactive dashboard with Dove's `show_canvas` tool, then put the headline metrics in a `show_ui` card with charts and tables: ",
+    ),
+    (
+        "simplify",
+        "Simplify and clean up recent changes",
+        "Audit the recently modified code and simplify complex logic, remove dead code, and tighten types without changing behavior.",
+    ),
+    (
         "explain",
         "Explain how this code works",
         "Explain how this part of the codebase works, with the key files and the flow between them.",
@@ -109,8 +131,20 @@ const TEMPLATES: &[(&str, &str, &str)] = &[
     ("commit", "Commit with a good message", "Commit the current changes with a clear, conventional commit message."),
 ];
 
+/// How the composer is laid out: a roomy card on the new-thread page, a
+/// one-line pill under a conversation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Variant {
+    Hero,
+    Pill,
+}
+
 pub struct Composer {
     engine: Arc<Engine>,
+    variant: Variant,
+    /// The teammate a new thread runs as (new-thread composer only).
+    pub persona: Option<Persona>,
+    personas: Vec<Persona>,
     pub input: Entity<TextareaState>,
     pub picker: Entity<Picker>,
     pub voice: Entity<Dictation>,
@@ -211,6 +245,9 @@ impl Composer {
         let mode = engine.store.setting("permission_mode").map(|m| mode_from_id(&m)).unwrap_or_default();
         Self {
             engine,
+            variant: Variant::Pill,
+            persona: None,
+            personas: Vec::new(),
             input,
             picker,
             voice,
@@ -242,7 +279,8 @@ impl Composer {
 
     /// The new-thread composer.
     pub fn home(engine: Arc<Engine>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let mut this = Self::build(engine, "Do anything…", (1, 10), window, cx);
+        let mut this = Self::build(engine, "Do anything…", (2, 12), window, cx);
+        this.variant = Variant::Hero;
         // Bypass is confirmed per project; a new thread starts from the
         // safe default unless the user picks it again.
         if this.mode == PermissionMode::Bypass {
@@ -271,6 +309,14 @@ impl Composer {
         }
         this.restore_draft(window, cx);
         this
+    }
+
+    /// Lay a new-thread composer out as the one-line pill (side chats live
+    /// in a narrow panel, beside a conversation).
+    pub fn as_pill(&mut self, cx: &mut Context<Self>) {
+        self.variant = Variant::Pill;
+        self.input.update(cx, |s, cx| s.set_auto_grow(1, 10, cx));
+        cx.notify();
     }
 
     fn draft_key(&self) -> String {
@@ -329,6 +375,26 @@ impl Composer {
         if changed || self.branches.is_empty() {
             self.load_branches(cx);
         }
+        cx.notify();
+    }
+
+    /// The team the new-thread composer offers.
+    pub fn set_personas(&mut self, personas: Vec<Persona>, cx: &mut Context<Self>) {
+        if let Some(cur) = &self.persona {
+            self.persona = personas.iter().find(|p| p.id == cur.id).cloned();
+        }
+        self.personas = personas;
+        cx.notify();
+    }
+
+    /// Run the next thread as `persona` (or as no one): its agent and model
+    /// come with it.
+    pub fn use_persona(&mut self, persona: Option<Persona>, cx: &mut Context<Self>) {
+        if let Some(p) = &persona {
+            self.use_harness(p.harness, p.model.clone(), cx);
+        }
+        self.persona = persona;
+        self.menu = None;
         cx.notify();
     }
 
@@ -430,7 +496,7 @@ impl Composer {
 
     // ------------------------------------------------------------ actions
 
-    fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let mut text = self.input.read(cx).value().trim().to_string();
         if text.is_empty() && self.attachments.is_empty() {
             return;
@@ -815,13 +881,190 @@ impl Composer {
 
     // ------------------------------------------------------------ render
 
+    /// Above the new-thread bar, right-aligned: who runs it, in which
+    /// project, on which device.
+    fn render_target_row(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .w_full()
+            .h(px(22.0))
+            .px(px(HERO_INSET - 8.0))
+            .flex()
+            .items_center()
+            .justify_end()
+            .gap(px(2.0))
+            .when(!self.personas.is_empty(), |d| d.child(self.persona_chip(t, cx)))
+            .child(self.project_chip(t, cx))
+            .child(self.device_chip(t, cx))
+            .into_any_element()
+    }
+
+    /// Below the new-thread bar, left-aligned: where the work happens (the
+    /// checkout or a worktree), from which branch, and any extra folders.
+    fn render_git_row(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .w_full()
+            .h(px(22.0))
+            .px(px(HERO_INSET - 8.0))
+            .flex()
+            .items_center()
+            .gap(px(2.0))
+            .child(self.checkout_chip(t, cx))
+            .child(self.branch_chip(t, cx))
+            .when(!self.add_dirs.is_empty(), |d| d.child(self.folders_chip(t, cx)))
+            .child(div().flex_1())
+            .child(self.mode_button(t, cx))
+            .into_any_element()
+    }
+
+    fn popover_below(&self, content: impl IntoElement, cx: &mut Context<Self>) -> AnyElement {
+        deferred(
+            anchored().anchor(Anchor::TopLeft).snap_to_window_with_margin(px(8.0)).child(
+                div()
+                    .mt(px(26.0))
+                    .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                        this.menu = None;
+                        cx.notify();
+                    }))
+                    .child(content),
+            ),
+        )
+        .with_priority(2)
+        .into_any_element()
+    }
+
+    fn persona_chip(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let open = self.menu == Some(Menu::Persona);
+        let label = self.persona.as_ref().map(|p| p.name.clone()).unwrap_or_else(|| "Default".into());
+        let chip = ui::footer_chip("composer-persona", icons::BOT, label, open, t)
+            .tooltip(ui::tip("Who runs this thread"))
+            .on_click(cx.listener(|this, _, _, cx| this.toggle_menu(Menu::Persona, cx)));
+        let menu = open.then(|| {
+            let selected = self.persona.as_ref().map(|p| p.id.clone());
+            let rows = div()
+                .w(px(280.0))
+                .flex()
+                .flex_col()
+                .child(
+                    ui::menu_row("persona-none", icons::BOT, "Default", false, t)
+                        .when(selected.is_none(), |d| d.child(icon(icons::CHECK).size(px(14.0)).text_color(t.accent)))
+                        .on_click(cx.listener(|this, _, _, cx| this.use_persona(None, cx))),
+                )
+                .children(self.personas.iter().map(|p| {
+                    let pick = p.clone();
+                    let on = selected.as_deref() == Some(p.id.as_str());
+                    div()
+                        .id(SharedString::from(format!("persona-{}", p.id)))
+                        .mx(px(4.0))
+                        .h(px(40.0))
+                        .px(px(10.0))
+                        .flex()
+                        .items_center()
+                        .gap(px(10.0))
+                        .rounded(px(7.0))
+                        .cursor_pointer()
+                        .hover(|s| s.bg(t.wash(0.10)))
+                        .child(crate::team::avatar(p, 22.0, t))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .child(div().text_size(px(13.0)).text_color(t.text).truncate().child(p.name.clone()))
+                                .child(
+                                    div()
+                                        .text_size(px(11.5))
+                                        .text_color(t.text_faint)
+                                        .truncate()
+                                        .child(crate::team::subtitle(p)),
+                                ),
+                        )
+                        .when(on, |d| d.child(icon(icons::CHECK).size(px(14.0)).text_color(t.accent)))
+                        .on_click(cx.listener(move |this, _, _, cx| this.use_persona(Some(pick.clone()), cx)))
+                }));
+            self.popover(Anchor::BottomLeft, ui::menu_card(t, rows), cx)
+        });
+        div().relative().child(chip).children(menu).into_any_element()
+    }
+
+    fn checkout_chip(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let open = self.menu == Some(Menu::Checkout);
+        let (glyph, label) =
+            if self.worktree { (icons::WORKTREE, "New worktree") } else { (icons::FOLDER, "Local checkout") };
+        let chip = ui::footer_chip("composer-checkout", glyph, label, open, t)
+            .tooltip(ui::tip("Where the agent works"))
+            .on_click(cx.listener(|this, _, _, cx| this.toggle_menu(Menu::Checkout, cx)));
+        let menu = open.then(|| {
+            let row = |id: &'static str, glyph: &'static str, title: &'static str, detail: &'static str, on: bool, value: bool, cx: &mut Context<Self>| {
+                div()
+                    .id(id)
+                    .mx(px(4.0))
+                    .px(px(10.0))
+                    .py(px(7.0))
+                    .flex()
+                    .items_center()
+                    .gap(px(10.0))
+                    .rounded(px(7.0))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(t.wash(0.10)))
+                    .child(icon(glyph).size(px(15.0)).text_color(t.text_muted))
+                    .child(
+                        div()
+                            .flex_1()
+                            .flex()
+                            .flex_col()
+                            .child(div().text_size(px(13.0)).text_color(t.text).child(title))
+                            .child(div().text_size(px(11.5)).text_color(t.text_faint).child(detail)),
+                    )
+                    .when(on, |d| d.child(icon(icons::CHECK).size(px(14.0)).text_color(t.accent)))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.worktree = value;
+                        this.menu = None;
+                        let _ = this.engine.store.set_setting("use_worktree", if value { "true" } else { "false" });
+                        cx.notify();
+                    }))
+            };
+            let rows = div()
+                .w(px(270.0))
+                .flex()
+                .flex_col()
+                .child(row(
+                    "checkout-local",
+                    icons::FOLDER,
+                    "Local checkout",
+                    "Work in the project folder itself",
+                    !self.worktree,
+                    false,
+                    cx,
+                ))
+                .child(row(
+                    "checkout-worktree",
+                    icons::WORKTREE,
+                    "New worktree",
+                    "Its own branch and folder, so threads never collide",
+                    self.worktree,
+                    true,
+                    cx,
+                ));
+            self.popover_below(ui::menu_card(t, rows), cx)
+        });
+        div().relative().child(chip).children(menu).into_any_element()
+    }
+
     fn render_context_row(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
-        let mut row = div().h(px(28.0)).flex().items_center().gap(px(6.0));
+        let home = self.thread.is_none();
+        let mut row = div()
+            .w_full()
+            .min_h(px(26.0))
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(px(if home { 2.0 } else { 6.0 }))
+            .when(home, |d| d.justify_end());
         match &self.thread {
             None => {
                 row = row
                     .child(self.device_chip(t, cx))
-                    .child(self.project_chip(t, cx))
                     .child(self.branch_chip(t, cx))
                     .child(
                         kit::checkbox("composer-worktree", self.worktree, "Worktree", t)
@@ -836,7 +1079,8 @@ impl Composer {
                                 cx.notify();
                             })),
                     )
-                    .child(self.folders_chip(t, cx));
+                    .when(!self.add_dirs.is_empty(), |d| d.child(self.folders_chip(t, cx)))
+                    .child(self.project_chip(t, cx));
             }
             Some((task, _)) => {
                 row = row
@@ -877,10 +1121,7 @@ impl Composer {
     }
 
     fn device_chip(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
-        let chip = ui::chip("composer-device", t)
-            .child(icon(icons::LAPTOP).size(px(14.0)))
-            .child("Local")
-            .child(icon(icons::ALT_ARROW_DOWN).size(px(11.0)).text_color(t.text_faint))
+        let chip = ui::footer_chip("composer-device", icons::MONITOR, ui::host_name(), self.menu == Some(Menu::Device), t)
             .on_click(cx.listener(|this, _, _, cx| this.toggle_menu(Menu::Device, cx)));
         let menu = (self.menu == Some(Menu::Device)).then(|| {
             let rows = div()
@@ -916,10 +1157,7 @@ impl Composer {
 
     fn project_chip(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let name = self.project.as_ref().map(|p| p.name.clone()).unwrap_or_else(|| "Add a project".into());
-        let chip = ui::chip("composer-project", t)
-            .child(icon(icons::FOLDER).size(px(14.0)))
-            .child(div().max_w(px(180.0)).truncate().text_color(t.text).child(name))
-            .child(icon(icons::ALT_ARROW_DOWN).size(px(11.0)).text_color(t.text_faint))
+        let chip = ui::footer_chip("composer-project", icons::FOLDER, name, self.menu == Some(Menu::Project), t)
             .on_click(cx.listener(|this, _, _, cx| this.toggle_menu(Menu::Project, cx)));
         let menu = (self.menu == Some(Menu::Project)).then(|| {
             let selected = self.project.as_ref().map(|p| p.id);
@@ -967,10 +1205,7 @@ impl Composer {
 
     fn branch_chip(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let label = self.branch.clone().unwrap_or_else(|| "branch".into());
-        let chip = ui::chip("composer-branch", t)
-            .child(icon(icons::GIT_BRANCH).size(px(14.0)))
-            .child(div().max_w(px(160.0)).truncate().child(label))
-            .child(icon(icons::ALT_ARROW_DOWN).size(px(11.0)).text_color(t.text_faint))
+        let chip = ui::footer_chip("composer-branch", icons::GIT_BRANCH, label, self.menu == Some(Menu::Branch), t)
             .tooltip(ui::tip(if self.worktree { "Branch the worktree starts from" } else { "Branch to check out" }))
             .on_click(cx.listener(|this, _, _, cx| this.toggle_menu(Menu::Branch, cx)));
         let menu = (self.menu == Some(Menu::Branch)).then(|| {
@@ -1004,7 +1239,7 @@ impl Composer {
                             cx.notify();
                         }))
                 }));
-            self.popover(Anchor::BottomLeft, ui::menu_card(t, rows), cx)
+            self.popover_below(ui::menu_card(t, rows), cx)
         });
         div().relative().child(chip).children(menu).into_any_element()
     }
@@ -1012,7 +1247,11 @@ impl Composer {
     fn folders_chip(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let supported = dove_core::supports_add_dirs(self.harness(cx));
         let n = self.add_dirs.len();
-        let chip = ui::chip("composer-folders", t)
+        let chip = if self.thread.is_none() {
+            ui::ghost_chip("composer-folders", t)
+        } else {
+            ui::chip("composer-folders", t)
+        }
             .child(icon(icons::FOLDER_WITH_FILES).size(px(14.0)))
             .child(if n == 0 {
                 "Add folder".to_string()
@@ -1170,16 +1409,9 @@ impl Composer {
     }
 
     fn attach_button(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
-        let button = ui::icon_button(
-            "composer-attach",
-            icons::PAPERCLIP,
-            "Attach files, images or a folder (or paste / drop)",
-            t,
-            |_, _, _| {},
-        )
-        .size(px(34.0))
-        .rounded_full()
-        .on_click(cx.listener(|this, _, _, cx| this.toggle_menu(Menu::Attach, cx)));
+        let button = ui::round_button("composer-attach", "Attach files, images or a folder (or paste / drop)", t)
+            .child(icon(icons::PAPERCLIP).size(px(ui::ICON_LG)).text_color(t.text_muted))
+            .on_click(cx.listener(|this, _, _, cx| this.toggle_menu(Menu::Attach, cx)));
         let menu = (self.menu == Some(Menu::Attach)).then(|| {
             let supported = dove_core::supports_add_dirs(self.harness(cx));
             let rows = div()
@@ -1224,50 +1456,44 @@ impl Composer {
         let ready = voice.is_ready();
         let voice_entity = self.voice.clone();
         let hold = voice_entity.clone();
-        let mic = div()
-            .id("composer-mic")
-            .size(px(30.0))
-            .justify_center()
-            .flex()
-            .items_center()
-            .gap(px(2.0))
-            .rounded_full()
-            .cursor_pointer()
-            .when(recording, |d| d.bg(t.danger.opacity(0.14)))
-            .hover(|s| s.bg(t.glass_hover()))
-            .tooltip(ui::tip(if !ready {
-                "Dictation: install local voice in Settings › Voice"
+        let mic = ui::round_button(
+            "composer-mic",
+            if !ready {
+                "Dictation: set up a speech model in Settings › Voice (right-click for options)"
             } else if recording {
                 "Release to transcribe (or click to stop)"
             } else {
-                "Hold to talk, or click to toggle"
-            }))
-            .child(if busy {
-                kit::spinner("mic-busy", 14.0, t.text_muted).into_any_element()
-            } else {
-                icon(if recording || ready { icons::MICROPHONE } else { icons::MICROPHONE_OFF })
-                    .size(px(16.0))
-                    .text_color(if recording { t.danger } else { t.text_muted })
-                    .into_any_element()
-            })
-            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                "Hold to talk, or click to toggle. Right-click for voice options"
+            },
+            t,
+        )
+        .when(recording, |d| d.bg(t.danger.opacity(0.14)))
+        .child(if busy {
+            kit::spinner("mic-busy", 14.0, t.text_muted).into_any_element()
+        } else {
+            icon(icons::MICROPHONE)
+                .size(px(ui::ICON_LG))
+                .text_color(if recording {
+                    t.danger
+                } else if ready {
+                    t.text_muted
+                } else {
+                    t.text_faint
+                })
+                .into_any_element()
+        })
+        .when(ready, |d| {
+            d.on_mouse_down(MouseButton::Left, move |_, _, cx| {
                 hold.update(cx, |v, cx| v.press(cx));
             })
             .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                 voice_entity.update(cx, |v, cx| v.release(cx));
-            });
-        let caret = div()
-            .id("composer-mic-menu")
-            .h(px(28.0))
-            .w(px(14.0))
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded(px(5.0))
-            .cursor_pointer()
-            .hover(|s| s.bg(t.glass_hover()))
-            .child(icon(icons::ALT_ARROW_DOWN).size(px(10.0)).text_color(t.text_faint))
-            .on_click(cx.listener(|this, _, _, cx| this.toggle_menu(Menu::Mic, cx)));
+            })
+        })
+        .when(!ready, |d| d.on_click(cx.listener(|this, _, _, cx| this.toggle_menu(Menu::Mic, cx))))
+        // Voice options open on right-click, so the button keeps the same
+        // footprint as its neighbours.
+        .on_mouse_down(MouseButton::Right, cx.listener(|this, _, _, cx| this.toggle_menu(Menu::Mic, cx)));
         let menu = (self.menu == Some(Menu::Mic)).then(|| {
             let v = self.voice.read(cx);
             let rows = div()
@@ -1285,6 +1511,20 @@ impl Composer {
                         .child(div().text_size(px(12.0)).text_color(t.text_faint).child(v.status_line())),
                 )
                 .child(ui::separator(t))
+                .child({
+                    let on = self.engine.store.setting("jarvis").as_deref() == Some("true");
+                    ui::menu_row("mic-jarvis", icons::VOLUME_LOUD, "Speak replies aloud", false, t)
+                        .when(on, |d| {
+                            d.child(div().flex_1()).child(icon(icons::CHECK).size(px(13.0)).text_color(t.accent))
+                        })
+                        .on_click(
+                        cx.listener(move |this, _, _, cx| {
+                            let _ = this.engine.store.set_setting("jarvis", if on { "false" } else { "true" });
+                            this.menu = None;
+                            cx.notify();
+                        }),
+                    )
+                })
                 .child(
                     ui::menu_row(
                         "mic-settings",
@@ -1301,25 +1541,47 @@ impl Composer {
                 );
             self.popover(Anchor::BottomLeft, ui::menu_card(t, rows), cx)
         });
-        div()
-            .relative()
-            .flex()
-            .items_center()
-            .group("mic")
-            .child(mic)
-            .child(div().invisible().group_hover("mic", |s| s.visible()).child(caret))
-            .children(menu)
-            .into_any_element()
+        div().relative().child(mic).children(menu).into_any_element()
+    }
+
+    fn jarvis_button(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let on = self.engine.store.setting("jarvis").as_deref() == Some("true");
+        ui::round_button(
+            "composer-jarvis",
+            if on {
+                "Jarvis is on. Replies are spoken. Click to stop."
+            } else {
+                "Jarvis mode: speak replies with NEXI TTS, or Fish Audio if you set a key"
+            },
+            t,
+        )
+        .when(on, |d| d.bg(t.accent.opacity(0.16)))
+        .child(icon(icons::VOLUME_LOUD).size(px(ui::ICON_LG)).text_color(if on { t.accent } else { t.text_muted }))
+        .on_click(cx.listener(move |this, _, _, cx| {
+            let next = if on { "false" } else { "true" };
+            let _ = this.engine.store.set_setting("jarvis", next);
+            cx.notify();
+        }))
+        .into_any_element()
     }
 
     fn mode_button(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let bypass = self.mode == PermissionMode::Bypass;
-        let chip = div()
+        let hero = self.variant == Variant::Hero;
+        let chip: AnyElement = if hero {
+            ui::footer_chip("composer-mode", mode_icon(self.mode), mode_label(self.mode), self.menu == Some(Menu::Mode), t)
+                .when(bypass, |d| d.text_color(t.danger))
+                .tooltip(ui::tip("Permission level"))
+                .on_click(cx.listener(|this, _, _, cx| this.toggle_menu(Menu::Mode, cx)))
+                .into_any_element()
+        } else {
+            div()
             .id("composer-mode")
             .h(px(28.0))
             .px(px(9.0))
             .flex()
             .items_center()
+            .justify_center()
             .gap(px(6.0))
             .rounded_full()
             .cursor_pointer()
@@ -1330,7 +1592,9 @@ impl Composer {
             .child(icon(mode_icon(self.mode)).size(px(14.0)).text_color(if bypass { t.danger } else { t.text_faint }))
             .child(mode_label(self.mode))
             .tooltip(ui::tip("Permission level"))
-            .on_click(cx.listener(|this, _, _, cx| this.toggle_menu(Menu::Mode, cx)));
+            .on_click(cx.listener(|this, _, _, cx| this.toggle_menu(Menu::Mode, cx)))
+            .into_any_element()
+        };
         let menu = (self.menu == Some(Menu::Mode)).then(|| {
             let modes = [
                 (PermissionMode::Default, "Ask every time", "Approve edits and commands"),
@@ -1401,7 +1665,11 @@ impl Composer {
                     }))
                     .into_any_element()
             };
-            self.popover(Anchor::BottomLeft, ui::menu_card(t, content), cx)
+            if hero {
+                self.popover_below(ui::menu_card(t, content), cx)
+            } else {
+                self.popover(Anchor::BottomLeft, ui::menu_card(t, content), cx)
+            }
         });
         div().relative().child(chip).children(menu).into_any_element()
     }
@@ -1411,7 +1679,7 @@ impl Composer {
         if self.running && !has_text {
             return div()
                 .id("composer-stop")
-                .size(px(32.0))
+                .size(px(ui::ROUND_BUTTON))
                 .flex()
                 .items_center()
                 .justify_center()
@@ -1420,7 +1688,7 @@ impl Composer {
                 .cursor_pointer()
                 .tooltip(ui::tip("Stop (Esc)"))
                 .on_click(cx.listener(|_, _, _, cx| cx.emit(ComposerEvent::Stop)))
-                .child(div().size(px(10.0)).rounded(px(2.0)).bg(t.on_solid))
+                .child(div().size(px(11.0)).rounded(px(3.0)).bg(t.on_solid))
                 .into_any_element();
         }
         let (glyph, tip, label) = match (self.running, steers) {
@@ -1431,8 +1699,8 @@ impl Composer {
         let enabled = has_text || !self.attachments.is_empty();
         div()
             .id("composer-send")
-            .h(px(32.0))
-            .min_w(px(32.0))
+            .h(px(ui::ROUND_BUTTON))
+            .min_w(px(ui::ROUND_BUTTON))
             .when(label.is_some(), |d| d.px(px(10.0)))
             .flex_none()
             .flex()
@@ -1440,15 +1708,18 @@ impl Composer {
             .justify_center()
             .gap(px(4.0))
             .rounded_full()
-            .bg(if enabled { t.solid } else { t.wash(0.08) })
+            .bg(if enabled || self.variant == Variant::Hero { t.solid } else { t.wash(0.08) })
             .when(enabled, |d| d.hover(|s| s.opacity(0.88)))
+            .when(!enabled && self.variant == Variant::Hero, |d| d.opacity(0.9))
             .text_color(if enabled { t.on_solid } else { t.text_faint })
             .text_size(px(12.0))
             .font_weight(gpui::FontWeight::MEDIUM)
             .when(enabled, |d| d.cursor_pointer())
             .tooltip(ui::tip(tip))
             .on_click(cx.listener(|this, _, window, cx| this.submit(window, cx)))
-            .child(icon(glyph).size(px(15.0)).text_color(if enabled { t.on_solid } else { t.text_faint }))
+            .child(icon(glyph).size(px(ui::ICON_SM)).text_color(
+                if enabled || self.variant == Variant::Hero { t.on_solid } else { t.text_faint },
+            ))
             .when_some(label, |d, l| d.child(l))
             .into_any_element()
     }
@@ -1715,6 +1986,12 @@ pub fn is_empty(composer: &Entity<Composer>, cx: &App) -> bool {
     composer.read(cx).input.read(cx).value().trim().is_empty()
 }
 
+/// The hero bar's left inset for its prompt text. The chips above and below
+/// the bar and the attach glyph inside it all start on this line.
+const HERO_INSET: f32 = 19.0;
+/// The gap between the send disc and the hero bar's right and bottom edges.
+const HERO_CORNER: f32 = 12.0;
+
 impl Render for Composer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::of(cx).clone();
@@ -1724,34 +2001,41 @@ impl Render for Composer {
         let focused = self.input.read(cx).focus_handle(cx).is_focused(window);
         let home = self.thread.is_none();
 
-        // One quiet row: attach, the text, then model, voice and send. It
-        // grows upward as you type; the controls stay on the last line.
+        let hero = self.variant == Variant::Hero;
+        let multiline = self.input.read(cx).value().contains('\n');
+        let staged = self.queue.len() + self.attachments.len() > 0;
+        // The new-thread bar is a short glass card. The thread pill stays
+        // round on one line and relaxes as it grows.
+        let radius = if hero {
+            ui::ROUND_BUTTON / 2.0 + HERO_CORNER
+        } else if multiline || staged {
+            20.0
+        } else {
+            25.0
+        };
+        let edge = t.composer_border();
         let border = if bypass {
             t.danger.opacity(0.55)
         } else if self.dragging_files {
             t.accent
         } else if focused {
-            t.wash(0.20)
+            edge.opacity((edge.a * 2.0).min(1.0))
         } else {
-            t.wash(0.09)
+            edge
         };
-        let multiline = self.input.read(cx).value().contains('\n');
-        let box_ = div()
+        let fill = if hero { t.composer_hero_bg() } else { t.composer_bg() };
+        // The material (glass, acrylic or opaque) is shared; only the
+        // layout differs between the hero and the pill.
+        let surface = div()
             .id("composer-pill")
             .w_full()
-            .min_h(px(54.0))
-            .rounded(px(if multiline || self.queue.len() + self.attachments.len() > 0 { 20.0 } else { 27.0 }))
+            .rounded(px(radius))
             .border_1()
             .border_color(border)
-            .bg(t.surface_raised)
-            .when(focused, |d| d.shadow_md())
-            .py(px(8.0))
-            .pl(px(8.0))
-            .pr(px(9.0))
+            .bg(fill)
+            .shadow(t.composer_shadows(focused))
             .flex()
             .flex_col()
-            .justify_center()
-            .gap(px(8.0))
             .text_size(px(15.0))
             .cursor_text()
             .on_click(cx.listener(|this, _, window, cx| focus_input(&this.input, window, cx)))
@@ -1759,52 +2043,117 @@ impl Render for Composer {
                 this.dragging_files = false;
                 this.attach(paths.paths().to_vec(), cx);
             }))
-            .drag_over::<ExternalPaths>(|s, _, _, _| s.bg(gpui::transparent_black()))
-            .children(self.render_queue(t, cx))
-            .children(self.render_attachments(t, cx))
-            .child(
-                div()
-                    .w_full()
-                    .min_w_0()
-                    .flex()
-                    .items_end()
-                    .gap(px(4.0))
-                    .child(self.attach_button(t, cx))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .relative()
-                            .px(px(4.0))
-                            .py(px(5.0))
-                            .child(Textarea::new(&self.input))
-                            .children(self.render_mention(t, cx)),
-                    )
-                    .child(
-                        div()
-                            .flex_none()
-                            .flex()
-                            .items_center()
-                            .gap(px(2.0))
-                            .child(div().min_w_0().max_w(px(220.0)).overflow_hidden().child(self.picker.clone()))
-                            .child(self.mic_button(t, cx))
-                            .child(div().pl(px(2.0)).child(self.action_button(has_text, t, cx))),
-                    ),
-            );
-
-        // Under it: how it runs (permission, and the thread's branch) and
-        // the meters.
-        let meta = div()
-            .w_full()
-            .h(px(28.0))
-            .px(px(4.0))
+            .drag_over::<ExternalPaths>(|s, _, _, _| s.bg(gpui::transparent_black()));
+        let text =
+            div().flex_1().min_w_0().relative().child(Textarea::new(&self.input)).children(self.render_mention(t, cx));
+        let staged_rows = div()
             .flex()
-            .items_center()
-            .gap(px(4.0))
-            .child(self.mode_button(t, cx))
-            .when(!home, |d| d.child(div().flex().min_w_0().overflow_hidden().child(self.render_context_row(t, cx))))
-            .child(div().flex_1())
-            .child(self.rings(t, cx));
+            .flex_col()
+            .gap(px(8.0))
+            .children(self.render_queue(t, cx))
+            .children(self.render_attachments(t, cx));
+
+        let box_ = if hero {
+            // A short glass bar: the prompt on top, attach and permissions on
+            // the left, the model picker and send on the right.
+            surface
+                .min_h(px(120.0))
+                .when(staged, |d| d.child(staged_rows.px(px(14.0)).pt(px(12.0))))
+                .child(
+                    div()
+                        .w_full()
+                        .flex_1()
+                        .min_h(px(64.0))
+                        .px(px(HERO_INSET - 1.0))
+                        .pt(px(16.0))
+                        .pb(px(4.0))
+                        .flex()
+                        .child(text),
+                )
+                .child(
+                    // Attach's glyph lines up with the prompt text; send
+                    // sits as far from the right edge as from the bottom,
+                    // concentric with the card's corner.
+                    div()
+                        .w_full()
+                        .h(px(ui::ROUND_BUTTON))
+                        .mb(px(HERO_CORNER - 1.0))
+                        .pl(px(HERO_INSET - 1.0 - (ui::ROUND_BUTTON - ui::ICON_LG) / 2.0))
+                        .pr(px(HERO_CORNER - 1.0))
+                        .flex()
+                        .items_center()
+                        .gap(px(2.0))
+                        .child(self.attach_button(t, cx))
+                        .child(div().flex_1())
+                        .child(div().min_w_0().max_w(px(240.0)).overflow_hidden().child(self.picker.clone()))
+                        .child(self.mic_button(t, cx))
+                        .child(div().pl(px(2.0)).child(self.action_button(has_text, t, cx))),
+                )
+        } else {
+            // One quiet row: attach, the text, then model, voice and send. It
+            // grows upward as you type; the controls stay on the last line.
+            surface
+                .min_h(px(50.0))
+                .py(px(7.0))
+                .pl(px(7.0))
+                .pr(px(8.0))
+                .justify_center()
+                .gap(px(8.0))
+                .when(staged, |d| d.child(staged_rows.px(px(4.0)).pt(px(2.0))))
+                .child(
+                    div()
+                        .w_full()
+                        .min_w_0()
+                        .flex()
+                        .items_end()
+                        .gap(px(4.0))
+                        .child(self.attach_button(t, cx))
+                        .child(text.min_w(px(72.0)).px(px(4.0)).py(px(5.0)))
+                        .child(
+                            // In a narrow column the model label gives way
+                            // first; voice and send always keep their size.
+                            div()
+                                .flex_shrink(1.0)
+                                .min_w_0()
+                                .flex()
+                                .items_center()
+                                .gap(px(2.0))
+                                .child(
+                                    div()
+                                        .flex_shrink(1.0)
+                                        .min_w_0()
+                                        .max_w(px(220.0))
+                                        .overflow_hidden()
+                                        .child(self.picker.clone()),
+                                )
+                                .child(div().flex_none().child(self.mic_button(t, cx)))
+                                .when(self.engine.store.setting("jarvis").as_deref() == Some("true"), |d| {
+                                    d.child(div().flex_none().child(self.jarvis_button(t, cx)))
+                                })
+                                .child(div().flex_none().pl(px(2.0)).child(self.action_button(has_text, t, cx))),
+                        ),
+                )
+        };
+        let blur = if hero { t.composer_blur().max(22.0) } else { t.composer_blur() };
+        let box_ = ui::frosted(radius, blur, box_);
+
+        // Under the pill: how it runs (permission, and the thread's branch)
+        // and the meters. The hero carries these inside its action row.
+        let meta = (!hero).then(|| {
+            div()
+                .w_full()
+                .h(px(28.0))
+                .px(px(4.0))
+                .flex()
+                .items_center()
+                .gap(px(4.0))
+                .child(self.mode_button(t, cx))
+                .when(!home, |d| {
+                    d.child(div().flex().min_w_0().overflow_hidden().child(self.render_context_row(t, cx)))
+                })
+                .child(div().flex_1())
+                .child(self.rings(t, cx))
+        });
 
         div()
             .id("composer")
@@ -1813,9 +2162,11 @@ impl Render for Composer {
             .flex_col()
             .gap(px(6.0))
             .capture_key_down(cx.listener(Self::on_key))
-            .when(home, |d| d.child(self.render_context_row(t, cx)))
+            .when(home && hero, |d| d.child(self.render_target_row(t, cx)))
+            .when(home && !hero, |d| d.child(self.render_context_row(t, cx)))
             .child(box_)
-            .child(meta)
+            .when(home && hero, |d| d.child(self.render_git_row(t, cx)))
+            .children(meta)
             .when_some(self.error.clone(), |d, e| {
                 d.child(
                     div()

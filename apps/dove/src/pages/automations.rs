@@ -11,7 +11,7 @@ use gpui::{
 };
 use gpui_base::input::{Input, Textarea};
 
-use super::{AutoEditor, AutoTab, input, page, textarea};
+use super::{AutoEditor, AutoTab, input, page_with, textarea};
 use crate::assets::{icon, icons};
 use crate::kit;
 use crate::shell::Shell;
@@ -76,6 +76,7 @@ impl Shell {
             prompt,
             project: self.home_project.or_else(|| self.projects.first().map(|p| p.id)),
             harness: self.composer.read(cx).harness(cx),
+            persona: None,
             kind: TriggerKind::Weekdays,
             minutes,
             time,
@@ -97,6 +98,11 @@ impl Shell {
             ed.id = Some(a.id.clone());
             ed.project = Some(a.project_id);
             ed.harness = a.harness;
+            ed.persona = self
+                .engine
+                .store
+                .setting(&format!("automation_persona.{}", a.id))
+                .filter(|id| self.personas.iter().any(|p| &p.id == id));
             ed.worktree = a.worktree;
             ed.enabled = a.enabled;
             set(&ed.name, a.name.clone(), window, cx);
@@ -218,6 +224,10 @@ impl Shell {
             last_run: existing.as_ref().and_then(|a| a.last_run).or(Some(dove_core::store::now_ms())),
             state: existing.map(|a| a.state).unwrap_or_else(|| "{}".into()),
         };
+        let _ = self
+            .engine
+            .store
+            .set_setting(&format!("automation_persona.{}", a.id), ed.persona.as_deref().unwrap_or(""));
         match self.engine.store.save_automation(&a) {
             Ok(()) => {
                 self.pages.editor = None;
@@ -382,6 +392,47 @@ impl Shell {
             .child(field("Prompt", boxed(Textarea::new(&ed.prompt).into_any_element())))
             .child(field("Project", projects.into_any_element()))
             .child(field("Agent", agents.into_any_element()))
+            .when(!self.personas.is_empty(), |d| {
+                let current = ed.persona.clone();
+                d.child(field(
+                    "Run as",
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .gap(px(4.0))
+                        .child(
+                            ui::chip("auto-as-anyone", t)
+                                .border_1()
+                                .border_color(if current.is_none() { t.accent.opacity(0.6) } else { t.border })
+                                .child("Anyone")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    if let Some(ed) = this.pages.editor.as_mut() {
+                                        ed.persona = None;
+                                    }
+                                    cx.notify();
+                                })),
+                        )
+                        .children(self.personas.iter().map(|p| {
+                            let on = current.as_deref() == Some(p.id.as_str());
+                            let (pid, kind) = (p.id.clone(), p.harness);
+                            ui::chip(SharedString::from(format!("auto-as-{}", p.id)), t)
+                                .pl(px(5.0))
+                                .border_1()
+                                .border_color(if on { t.accent.opacity(0.6) } else { t.border })
+                                .when(on, |c| c.text_color(t.text))
+                                .child(crate::team::avatar(p, 16.0, t))
+                                .child(p.name.clone())
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    if let Some(ed) = this.pages.editor.as_mut() {
+                                        ed.persona = Some(pid.clone());
+                                        ed.harness = kind;
+                                    }
+                                    cx.notify();
+                                }))
+                        }))
+                        .into_any_element(),
+                ))
+            })
             .child(field("Trigger", kinds.into_any_element()))
             .child(detail)
             .child(
@@ -667,7 +718,7 @@ impl Shell {
                 }
             }
         };
-        page("automations-page", "Automations", &t, Some(header), body)
+        page_with("automations-page", "Automations", "Prompts that start threads on a schedule or when something happens in a repo.", &t, Some(header), body)
     }
 }
 
