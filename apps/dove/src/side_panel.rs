@@ -105,6 +105,22 @@ impl Tab {
         }
     }
 
+    /// What the surface is for (picker cards and tooltips).
+    pub fn blurb(self) -> &'static str {
+        match self {
+            Tab::Browser => "Preview the app or any page",
+            Tab::Terminal => "A shell in this checkout",
+            Tab::Canvas => "Live designs from this thread",
+            Tab::Changes => "What changed, file by file",
+            Tab::Files => "Browse and edit the project",
+            Tab::History => "Commits on this branch",
+            Tab::Plan => "The agent's to-do list",
+            Tab::Subagents => "Work handed off by this thread",
+            Tab::Chats => "Side conversations in this thread",
+            Tab::SideChat => "Ask something without derailing",
+        }
+    }
+
     pub fn glyph(self) -> &'static str {
         match self {
             Tab::Changes => icons::LIST,
@@ -214,6 +230,9 @@ pub struct SidePanel {
     /// The panel has the conversation's width.
     pub expanded: bool,
     plus_open: bool,
+    /// The highlighted card of the `+` surface picker, and its focus.
+    plus_hi: Option<usize>,
+    plus_focus: FocusHandle,
     /// The Canvas surface was asked for before any design exists.
     show_canvas_empty: bool,
     next_id: u64,
@@ -261,6 +280,8 @@ impl SidePanel {
             designs: Vec::new(),
             expanded: false,
             plus_open: false,
+            plus_hi: None,
+            plus_focus: cx.focus_handle(),
             show_canvas_empty: false,
             next_id: 1,
             browser_context: BrowserContext::default(),
@@ -1013,38 +1034,17 @@ impl SidePanel {
             .child(
                 surface_chrome::toolbar_button("panel-plus", "New tab")
                     .child(icon(icons::PLUS).size(px(13.0)).text_color(t.text_muted))
-                    .on_click(cx.listener(|this, _, _, cx| {
+                    .on_click(cx.listener(|this, _, window, cx| {
                         this.plus_open = !this.plus_open;
+                        this.plus_hi = None;
+                        if this.plus_open {
+                            window.focus(&this.plus_focus, cx);
+                        }
                         cx.notify();
                     })),
             )
             .when(plus_open, |d| {
-                let rows = div().w(px(168.0)).py(px(2.0)).flex().flex_col().gap(px(2.0)).children(
-                    Tab::ALL.into_iter().map(|k| {
-                        div()
-                            .id(SharedString::from(format!("plus-{}", k.label())))
-                            .h(px(32.0))
-                            .px(px(8.0))
-                            .mx(px(4.0))
-                            .flex()
-                            .items_center()
-                            .gap(px(8.0))
-                            .rounded(px(7.0))
-                            .cursor_pointer()
-                            .text_size(ty::BODY)
-                            .text_color(t.text)
-                            .hover(|s| s.bg(t.wash(0.10)))
-                            .child(icon(k.glyph()).size(px(13.0)).text_color(t.text_muted))
-                            .child(k.label())
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                if matches!(k, Tab::Browser | Tab::Terminal | Tab::SideChat) {
-                                    this.open(k, None, window, cx);
-                                } else {
-                                    this.show(k, window, cx);
-                                }
-                            }))
-                    }),
-                );
+                let grid = self.render_surface_grid(&t, cx);
                 d.child(deferred(
                     anchored().anchor(gpui::Anchor::TopRight).snap_to_window_with_margin(px(8.0)).child(
                         div()
@@ -1053,7 +1053,7 @@ impl SidePanel {
                                 this.plus_open = false;
                                 cx.notify();
                             }))
-                            .child(ui::menu_card(&t, rows)),
+                            .child(ui::menu_card(&t, grid)),
                     ),
                 ))
             });
@@ -1087,41 +1087,118 @@ impl SidePanel {
             .into_any_element()
     }
 
+    /// Open a surface picked from a picker: browsers, terminals and side
+    /// chats always open a new one; the rest show the existing surface.
+    fn pick(&mut self, k: Tab, window: &mut Window, cx: &mut Context<Self>) {
+        if matches!(k, Tab::Browser | Tab::Terminal | Tab::SideChat) {
+            self.open(k, None, window, cx);
+        } else {
+            self.show(k, window, cx);
+        }
+    }
+
+    /// The `+` surface picker: a two-column grid of cards (glyph, name and
+    /// what it is for). Arrow keys move the highlight across the grid,
+    /// Enter or Space opens, Esc closes.
+    fn render_surface_grid(&self, t: &Theme, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
+        const COLS: usize = 2;
+        let count = Tab::ALL.len();
+        let hi = self.plus_hi;
+        let mut grid = div()
+            .id("surface-grid")
+            .w(px(340.0))
+            .flex()
+            .flex_wrap()
+            .gap(px(4.0))
+            .track_focus(&self.plus_focus)
+            .on_key_down(cx.listener(move |this, e: &gpui::KeyDownEvent, window, cx| {
+                let step: Option<isize> = match e.keystroke.key.as_str() {
+                    "left" => Some(-1),
+                    "right" => Some(1),
+                    "up" => Some(-(COLS as isize)),
+                    "down" => Some(COLS as isize),
+                    _ => None,
+                };
+                match (e.keystroke.key.as_str(), step) {
+                    (_, Some(d)) => {
+                        this.plus_hi = Some(match this.plus_hi {
+                            None => 0,
+                            Some(at) => (at as isize + d).clamp(0, count as isize - 1) as usize,
+                        });
+                    }
+                    ("home", _) => this.plus_hi = Some(0),
+                    ("end", _) => this.plus_hi = Some(count - 1),
+                    ("enter" | "space", _) => {
+                        if let Some(k) = this.plus_hi.and_then(|i| Tab::ALL.get(i).copied()) {
+                            this.pick(k, window, cx);
+                        }
+                    }
+                    ("escape", _) => this.plus_open = false,
+                    _ => return,
+                }
+                cx.stop_propagation();
+                cx.notify();
+            }));
+        for (i, k) in Tab::ALL.into_iter().enumerate() {
+            let on = hi == Some(i);
+            grid = grid.child(
+                div()
+                    .id(SharedString::from(format!("plus-{}", k.label())))
+                    .w(px(166.0))
+                    .h(px(62.0))
+                    .p(px(10.0))
+                    .flex()
+                    .flex_col()
+                    .justify_between()
+                    .rounded(px(kit::popover::MENU_ITEM_RADIUS))
+                    .border_1()
+                    .border_color(if on { t.border_strong } else { t.border })
+                    .bg(if on { kit::popover::row_active_bg(t) } else { ink(0.02) })
+                    .cursor_pointer()
+                    .role(gpui::Role::MenuItem)
+                    .aria_label(k.label())
+                    .hover(|s| s.bg(kit::popover::row_active_bg(t)))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(8.0))
+                            .child(icon(k.glyph()).size(px(14.0)).flex_none().text_color(t.text_muted))
+                            .child(
+                                div()
+                                    .text_size(ty::BODY)
+                                    .font_weight(gpui::FontWeight::MEDIUM)
+                                    .text_color(t.text)
+                                    .child(k.label()),
+                            ),
+                    )
+                    .child(div().truncate().text_size(ty::MICRO).text_color(t.text_faint).child(k.blurb()))
+                    .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                        if *hovered && this.plus_hi != Some(i) {
+                            this.plus_hi = Some(i);
+                            cx.notify();
+                        }
+                    }))
+                    .on_click(cx.listener(move |this, _, window, cx| this.pick(k, window, cx))),
+            );
+        }
+        grid
+    }
+
     /// Empty-pane picker: Zeron's compact vertical list of surface rows.
     fn render_picker(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         // Three quiet groups, top-aligned: what the agent changed, where it
         // runs, and who else is working. Each row says what it is for.
-        const GROUPS: [(&str, &[(Tab, &str)]); 3] = [
-            (
-                "Run",
-                &[
-                    (Tab::Browser, "Preview the app or any page"),
-                    (Tab::Terminal, "A shell in this checkout"),
-                    (Tab::Canvas, "Live designs from this thread"),
-                ],
-            ),
-            (
-                "Review",
-                &[
-                    (Tab::Changes, "What changed, file by file"),
-                    (Tab::Files, "Browse and edit the project"),
-                    (Tab::History, "Commits on this branch"),
-                    (Tab::Plan, "The agent's to-do list"),
-                ],
-            ),
-            (
-                "Agents",
-                &[
-                    (Tab::Subagents, "Work handed off by this thread"),
-                    (Tab::Chats, "Side conversations in this thread"),
-                    (Tab::SideChat, "Ask something without derailing"),
-                ],
-            ),
+        const GROUPS: [(&str, &[Tab]); 3] = [
+            ("Run", &[Tab::Browser, Tab::Terminal, Tab::Canvas]),
+            ("Review", &[Tab::Changes, Tab::Files, Tab::History, Tab::Plan]),
+            ("Agents", &[Tab::Subagents, Tab::Chats, Tab::SideChat]),
         ];
         // Zeron's surface row: a quiet bordered plate, icon and name. What
         // each one is for lives in its tooltip, so the list stays a list.
         let (border, border_strong) = (t.border, t.border_strong);
-        let row = |k: Tab, blurb: &'static str, cx: &mut Context<Self>| {
+        let row = |k: Tab, cx: &mut Context<Self>| {
+            let blurb = k.blurb();
             div()
                 .id(SharedString::from(format!("surface-card-{}", k.label())))
                 .group("surface-row")
@@ -1157,13 +1234,7 @@ impl SidePanel {
                         .invisible()
                         .group_hover("surface-row", |s| s.visible()),
                 )
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    if matches!(k, Tab::Browser | Tab::Terminal | Tab::SideChat) {
-                        this.open(k, None, window, cx);
-                    } else {
-                        this.show(k, window, cx);
-                    }
-                }))
+                .on_click(cx.listener(move |this, _, window, cx| this.pick(k, window, cx)))
         };
         let mut col = div().w_full().max_w(px(300.0)).flex().flex_col().gap(px(18.0));
         for (title, tabs) in GROUPS {
@@ -1180,7 +1251,7 @@ impl SidePanel {
                             .text_color(t.text_faint)
                             .child(title),
                     )
-                    .children(tabs.iter().map(|(k, blurb)| row(*k, blurb, cx))),
+                    .children(tabs.iter().map(|k| row(*k, cx))),
             );
         }
         // Centered in the pane when it fits, scrolling from the top when not.

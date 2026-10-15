@@ -964,24 +964,23 @@ mod tests {
     }
 
     #[test]
-    fn folds_tween_from_what_is_on_screen() {
+    fn folds_snap_height_and_fade_content() {
         let folds = Folds::default();
         let key = (0, PART_GROUP, 0);
         let t0 = Instant::now();
         let first = folds.step(key, false, t0);
         assert!(!first.mounted && !first.animating, "a first frame never animates");
-        first.natural.set(100.0);
+        // Opening mounts the body at once and fades it in.
         let opening = folds.step(key, true, t0);
         assert!(opening.animating && opening.mounted);
-        assert_eq!(opening.clip, Some(0.0));
+        assert_eq!(opening.reveal, 0.0);
         let mid = folds.step(key, true, t0 + FOLD / 2);
-        let h = mid.clip.expect("clipped mid-tween");
-        assert!(h > 0.0 && h < 100.0);
-        // Reversing mid-flight starts from the current height, not the end.
-        let back = folds.step(key, false, t0 + FOLD / 2);
-        assert_eq!(back.clip, Some(h));
+        assert!(mid.reveal > 0.0 && mid.reveal < 1.0 && mid.disclosure > 0.0);
+        // Closing removes the body at once; only the chevron turns.
+        let closing = folds.step(key, false, t0 + FOLD / 2);
+        assert!(!closing.mounted && closing.animating && closing.disclosure > 0.0);
         let done = folds.step(key, false, t0 + FOLD * 3);
-        assert!(!done.mounted && !done.animating);
+        assert!(!done.mounted && !done.animating && done.disclosure == 0.0);
     }
 
     #[test]

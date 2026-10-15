@@ -393,7 +393,8 @@ mod tests {
     #[test]
     fn filter_ranks_prefix_first() {
         let labels = ["Appearance", "Reduce motion", "Archived"];
-        assert_eq!(filter_indices("ar", &labels), vec![2]);
+        // "Archived" is a prefix match; "Appearance" holds "ar" inside.
+        assert_eq!(filter_indices("ar", &labels), vec![2, 0]);
         assert_eq!(filter_indices("a", &labels), vec![0, 2]);
         assert_eq!(filter_indices("", &labels), vec![0, 1, 2]);
     }

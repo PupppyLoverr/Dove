@@ -30,6 +30,7 @@ mod remote;
 mod roll_text;
 mod settings;
 mod shell;
+mod shell_menu;
 mod side_chat;
 mod side_panel;
 mod sidebar;

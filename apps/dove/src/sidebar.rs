@@ -50,6 +50,22 @@ pub fn project_badge(name: &str, size: f32, theme: &Theme) -> impl IntoElement {
         .child(initial)
 }
 
+/// A quiet label over a group of sidebar rows.
+fn group_label(glyph: &'static str, label: &'static str, t: &Theme) -> gpui::Div {
+    div()
+        .px(px(16.0))
+        .pt(px(6.0))
+        .pb(px(2.0))
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(6.0))
+        .text_size(ty::CAPTION)
+        .text_color(t.text_faint)
+        .child(icon(glyph).size(px(12.0)).text_color(t.text_faint))
+        .child(label)
+}
+
 /// Where a thread sorts: what needs you first, then work in flight, then
 /// unread results, failures, and the rest by recency.
 pub fn attention_rank(t: &Task) -> u8 {
@@ -245,8 +261,9 @@ impl Shell {
                 .hover(|s| s.bg(t.wash(0.10)))
                 .child(icon(glyph).size(px(14.0)).text_color(if on { t.text_muted } else { t.text_faint }))
         };
-        let options_menu =
-            self.sidebar_options_open.then(|| self.render_options_menu(grouped, compact, show_archived, &t, cx));
+        let options_exit = if self.sidebar_options_open { None } else { self.menus.options_exit() };
+        let options_menu = (self.sidebar_options_open || options_exit.is_some())
+            .then(|| self.render_options_menu(grouped, compact, show_archived, options_exit, &t, cx));
         let header = div()
             .relative()
             .pt(px(14.0))
@@ -295,8 +312,14 @@ impl Shell {
                             "Sidebar options",
                             self.sidebar_options_open,
                         )
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.sidebar_options_open = !this.sidebar_options_open;
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            if this.sidebar_options_open {
+                                this.close_menus();
+                            } else {
+                                this.close_menus();
+                                this.sidebar_options_open = true;
+                                this.menu_opened(window, cx);
+                            }
                             cx.notify();
                         })),
                     )
@@ -366,26 +389,87 @@ impl Shell {
                 }
             }
         } else {
-            for task in &visible {
+            // Pinned threads lead under their own label; the rest follow.
+            let pinned = visible.iter().filter(|x| x.pinned).count();
+            for (n, task) in visible.iter().enumerate() {
+                if n == 0 && pinned > 0 {
+                    list = list.child(group_label(icons::PIN, "Pinned", &t));
+                }
+                if n == pinned && pinned > 0 {
+                    list = list.child(div().h(px(6.0)).flex_none());
+                }
                 list = list.child(self.render_row(task, compact, &t, cx));
             }
         }
+        // Archived threads sit on a shelf that folds away (Zeron's archive
+        // disclosure); the full list is one click further, on its page.
         if show_archived && !self.archived.is_empty() {
+            let shelf_open = self.engine.store.flag("sidebar_archived_open", true);
+            let turn = crate::motion::state_t("sb-shelf", shelf_open, crate::motion::CHEVRON, cx.reduce_motion());
             list = list.child(
                 div()
-                    .px(px(16.0))
-                    .pt(px(10.0))
-                    .pb(px(2.0))
+                    .id("sb-shelf")
+                    .mx(px(8.0))
+                    .mt(px(8.0))
+                    .h(px(26.0))
+                    .px(px(8.0))
                     .flex()
+                    .flex_none()
                     .items_center()
                     .gap(px(6.0))
+                    .rounded(px(7.0))
+                    .cursor_pointer()
                     .text_size(ty::CAPTION)
                     .text_color(t.text_faint)
-                    .child(icon(icons::ARCHIVE_MINIMALISTIC).size(px(13.0)).text_color(t.text_faint))
-                    .child("Archived"),
+                    .role(gpui::Role::Button)
+                    .aria_expanded(shelf_open)
+                    .aria_label("Archived threads")
+                    .map(|d| {
+                        crate::motion::hover_fade(
+                            d,
+                            "sb-shelf",
+                            (t.wash(0.0), t.wash(0.05)),
+                            Some((t.text_faint, t.text_muted)),
+                        )
+                    })
+                    .child(icon(icons::ARCHIVE_MINIMALISTIC).size(px(13.0)))
+                    .child(div().flex_1().child("Archived"))
+                    .child(div().text_size(ty::BADGE).child(self.archived.len().to_string()))
+                    .child(icon(icons::ALT_ARROW_RIGHT).size(px(11.0)).with_transformation(
+                        gpui::Transformation::rotate(gpui::radians(turn * std::f32::consts::FRAC_PI_2)),
+                    ))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        let _ = this
+                            .engine
+                            .store
+                            .set_setting("sidebar_archived_open", if shelf_open { "false" } else { "true" });
+                        cx.notify();
+                    })),
             );
-            for task in self.archived.clone().iter().take(20) {
-                list = list.child(self.render_row(task, compact, &t, cx));
+            if shelf_open {
+                let mut shelf = div().flex().flex_col().gap(px(1.0));
+                for task in self.archived.clone().iter().take(20) {
+                    shelf = shelf.child(self.render_row(task, compact, &t, cx));
+                }
+                if self.archived.len() > 20 {
+                    shelf = shelf.child(
+                        div()
+                            .id("sb-shelf-all")
+                            .mx(px(8.0))
+                            .h(px(26.0))
+                            .px(px(8.0))
+                            .flex()
+                            .items_center()
+                            .rounded(px(7.0))
+                            .cursor_pointer()
+                            .text_size(ty::CAPTION)
+                            .text_color(t.text_faint)
+                            .hover(|s| s.bg(t.wash(0.05)).text_color(t.text_muted))
+                            .child(format!("Show all {} archived", self.archived.len()))
+                            .on_click(cx.listener(|this, _, window, cx| this.navigate(Route::Archived, window, cx))),
+                    );
+                }
+                list = list.child(crate::motion::reveal("sb-shelf-body", shelf));
             }
         }
 
@@ -519,37 +603,43 @@ impl Shell {
             .child(icon(icons::MORE_HORIZONTAL).size(px(16.0)))
             .child(div().flex_1().child("More"))
             .child(icon(icons::ALT_ARROW_RIGHT).size(px(12.0)).text_color(t.text_faint))
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.more_open = !this.more_open;
+            .on_click(cx.listener(|this, _, window, cx| {
+                if this.more_open {
+                    this.close_menus();
+                } else {
+                    this.close_menus();
+                    this.more_open = true;
+                    this.menu_opened(window, cx);
+                }
                 cx.notify();
             }));
-        let menu = open.then(|| {
-            let row =
-                |id: &'static str, glyph: &'static str, label: &'static str, route: Route, cx: &mut Context<Self>| {
-                    ui::menu_row(id, glyph, label, false, t).on_click(cx.listener(move |this, _, window, cx| {
-                        this.more_open = false;
-                        this.navigate(route, window, cx);
-                    }))
-                };
-            let body = div()
-                .w(px(220.0))
-                .flex()
-                .flex_col()
-                .child(row("more-agents", icons::BOT, "Agents", Route::Agents, cx))
-                .child(row("more-usage", icons::CLOCK_CIRCLE, "Usage", Route::Usage, cx))
-                .child(row("more-archived", icons::ARCHIVE_MINIMALISTIC, "Archived", Route::Archived, cx))
-                .child(ui::separator(t))
-                .child(row("more-settings", icons::SETTINGS, "Settings", Route::Settings, cx))
-                .child(row("more-help", icons::KEYBOARD, "Help & shortcuts", Route::Help, cx));
+        let exit = if open { None } else { self.menus.more_exit() };
+        let menu = (open || exit.is_some()).then(|| {
+            use crate::shell_menu::{Item, act};
+            let row = |id: &'static str, glyph: &'static str, label: &'static str, route: Route| {
+                Item::row(id, Some(glyph), label, act(move |this, window, cx| this.navigate(route, window, cx)))
+            };
+            let items = vec![
+                row("more-agents", icons::BOT, "Agents", Route::Agents),
+                row("more-usage", icons::CLOCK_CIRCLE, "Usage", Route::Usage),
+                row("more-archived", icons::ARCHIVE_MINIMALISTIC, "Archived", Route::Archived),
+                Item::Separator,
+                row("more-settings", icons::SETTINGS, "Settings", Route::Settings),
+                row("more-help", icons::KEYBOARD, "Help & shortcuts", Route::Help),
+            ];
+            let body = self.menu_list(items, 220.0, open, t, cx);
+            let card = self.menu_surface(t, body, exit);
             deferred(
                 anchored().anchor(Anchor::TopLeft).snap_to_window_with_margin(px(8.0)).child(
                     div()
                         .ml(px(self.sidebar_w - 20.0))
-                        .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                            this.more_open = false;
-                            cx.notify();
-                        }))
-                        .child(ui::menu_card(t, body)),
+                        .when(open, |d| {
+                            d.on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                                this.close_menus();
+                                cx.notify();
+                            }))
+                        })
+                        .child(card),
                 ),
             )
             .with_priority(2)
@@ -562,46 +652,55 @@ impl Shell {
         grouped: bool,
         compact: bool,
         archived: bool,
+        exit: Option<f32>,
         t: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        use crate::shell_menu::{Item, act};
+        // Toggles stay open so several can be flipped in one visit.
         let toggle = |id: &'static str,
                       label: &'static str,
                       on: bool,
                       key: &'static str,
                       on_value: &'static str,
-                      off_value: &'static str,
-                      cx: &mut Context<Self>| {
-            ui::menu_row(id, if on { icons::CHECK } else { icons::LIST }, label, false, t)
-                .when(!on, |d| d.opacity(0.75))
-                .on_click(cx.listener(move |this, _, _, cx| {
+                      off_value: &'static str| {
+            Item::row(
+                id,
+                Some(if on { icons::CHECK } else { icons::LIST }),
+                label,
+                act(move |this, _, _| {
                     let _ = this.engine.store.set_setting(key, if on { off_value } else { on_value });
-                    cx.notify();
-                }))
+                }),
+            )
+            .muted(!on)
+            .keep_open()
         };
-        let body = div()
-            .w(px(230.0))
-            .flex()
-            .flex_col()
-            .child(toggle("opt-group", "Group by project", grouped, "sidebar_group", "project", "none", cx))
-            .child(toggle("opt-compact", "Compact rows", compact, "sidebar_density", "compact", "comfortable", cx))
-            .child(toggle("opt-archived", "Show archived", archived, "sidebar_archived", "true", "false", cx))
-            .child(ui::separator(t))
-            .child(ui::menu_row("opt-add", icons::DOCUMENT_ADD, "Add project…", false, t).on_click(cx.listener(
-                |this, _, _, cx| {
-                    this.sidebar_options_open = false;
-                    this.add_project_dialog(cx);
-                },
-            )));
+        let items = vec![
+            toggle("opt-group", "Group by project", grouped, "sidebar_group", "project", "none"),
+            toggle("opt-compact", "Compact rows", compact, "sidebar_density", "compact", "comfortable"),
+            toggle("opt-archived", "Show archived", archived, "sidebar_archived", "true", "false"),
+            Item::Separator,
+            Item::row(
+                "opt-add",
+                Some(icons::DOCUMENT_ADD),
+                "Add project…",
+                act(|this, _, cx| this.add_project_dialog(cx)),
+            ),
+        ];
+        let live = exit.is_none();
+        let body = self.menu_list(items, 230.0, live, t, cx);
+        let card = self.menu_surface(t, body, exit);
         deferred(
             anchored().anchor(Anchor::TopRight).snap_to_window_with_margin(px(8.0)).child(
                 div()
                     .mt(px(32.0))
-                    .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                        this.sidebar_options_open = false;
-                        cx.notify();
-                    }))
-                    .child(ui::menu_card(t, body)),
+                    .when(live, |d| {
+                        d.on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                            this.close_menus();
+                            cx.notify();
+                        }))
+                    })
+                    .child(card),
             ),
         )
         .with_priority(2)
@@ -730,7 +829,7 @@ impl Shell {
         let row = div()
             .id(SharedString::from(format!("row-{id}")))
             .group(group.clone())
-            .h(px(if compact { 28.0 } else { 44.0 }))
+            .h(px(if compact { 32.0 } else { 44.0 }))
             .mx(px(8.0))
             .px(px(8.0))
             .flex()
@@ -838,8 +937,10 @@ impl Shell {
             }))
             .on_mouse_down(
                 MouseButton::Right,
-                cx.listener(move |this, e: &MouseDownEvent, _, cx| {
+                cx.listener(move |this, e: &MouseDownEvent, window, cx| {
+                    this.close_menus();
                     this.menu = Some(ChatMenu { task: id, at: e.position, copy_open: false, confirm_delete: false });
+                    this.menu_opened(window, cx);
                     cx.notify();
                 }),
             );

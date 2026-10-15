@@ -61,7 +61,8 @@ impl Shell {
         }
         let hero = wall_path.and_then(|p| {
             let scale = window.scale_factor();
-            let width = f32::from(window.viewport_size().width) - if self.sidebar_open { self.sidebar_w } else { 0.0 };
+            let width =
+                f32::from(window.viewport_size().width) - if self.sidebar_shown() { self.sidebar_w } else { 0.0 };
             let target = (width * scale, wallpaper::hero_height(viewport_h) * scale);
             let path = std::path::Path::new(&p);
             let light = !t.appearance.is_dark();

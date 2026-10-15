@@ -208,7 +208,7 @@ fn palette(hex: [u32; 16]) -> [Hsla; 16] {
 }
 
 impl Theme {
-    pub const TITLEBAR_HEIGHT: f32 = 36.0;
+    pub const TITLEBAR_HEIGHT: f32 = 38.0;
     pub const TITLEBAR_TOP_PAD: f32 = 4.0;
     pub const BUBBLE_RADIUS: f32 = 18.0;
     pub const COMPOSER_RADIUS: f32 = 20.0;

@@ -37,13 +37,58 @@ use crate::transcript::TaskView;
 use crate::{actions, notify, ui};
 
 pub const SIDEBAR_W: f32 = 264.0;
-pub const PANEL_W: f32 = 460.0;
+/// The dock's default width (Zeron's surface host).
+pub const PANEL_W: f32 = 520.0;
 /// Gutter between the window edge and the card, and between columns.
 pub const GUTTER: f32 = 6.0;
-/// The chat column never gets narrower than this; the dock gives way first.
-const CENTER_MIN: f32 = 440.0;
-/// Narrowest the dock gets when the window is too small for both.
-const PANEL_FLOOR: f32 = 320.0;
+/// The chat column never gets narrower than this; the dock gives way first,
+/// so the dock is at most the viewport less the sidebar and this.
+const CENTER_MIN: f32 = 300.0;
+/// Narrowest the dock gets.
+const PANEL_FLOOR: f32 = 360.0;
+
+/// Responsive fit, after Zeron's `horizontal_panel_fit`: which side columns
+/// the window has room for, as (sidebar, dock). A column that does not fit
+/// hides without closing (it keeps its width and its tabs) and returns once
+/// the window is wide enough. The least recently opened column hides first,
+/// except that an expanded dock (the user's takeover) outranks the sidebar.
+/// Each column is `(open, opened_at)`.
+pub(crate) fn panel_fit(
+    viewport: f32,
+    sidebar_w: f32,
+    sidebar: (bool, u64),
+    dock: (bool, u64),
+    expanded: bool,
+) -> (bool, bool) {
+    let mut cols = [sidebar, dock];
+    loop {
+        let takeover = expanded && cols[1].0;
+        let need = if cols[0].0 { sidebar_w } else { GUTTER }
+            + if cols[1].0 { PANEL_FLOOR } else { 0.0 }
+            + if takeover { 0.0 } else { CENTER_MIN + GUTTER };
+        if need <= viewport {
+            return (cols[0].0, cols[1].0);
+        }
+        let victim = (0..2).filter(|&i| cols[i].0).min_by_key(|&i| (expanded && i == 1, cols[i].1));
+        match victim {
+            Some(i) => cols[i].0 = false,
+            None => return (false, false),
+        }
+    }
+}
+
+/// Recency of the side columns for [`panel_fit`].
+#[derive(Default)]
+struct Fit {
+    seq: u64,
+    sidebar_at: u64,
+    panel_at: u64,
+    /// Last frame's open flags, to stamp a column when it opens.
+    sidebar_was: bool,
+    panel_was: bool,
+    /// This frame's verdict: (sidebar shown, dock shown).
+    shown: (bool, bool),
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Route {
@@ -122,6 +167,10 @@ pub struct Shell {
     pub panel_open: bool,
     pub panel_w: f32,
     resize: Option<(Edge, Pixels, f32)>,
+    /// The limit the current drag presses against, and the seam's nudge
+    /// when it first reaches one.
+    resize_pressing: Option<crate::motion::ResizeEdge>,
+    resize_bounce: Option<(Edge, crate::motion::ResizeEdge, Instant)>,
     pub panel: Entity<SidePanel>,
     pub composer: Entity<Composer>,
     pub composer_bounds: std::rc::Rc<std::cell::Cell<Option<Bounds<Pixels>>>>,
@@ -133,6 +182,10 @@ pub struct Shell {
     pub info_open: bool,
     pub more_open: bool,
     pub sidebar_options_open: bool,
+    /// The "+N" menu of tabs that do not fit the strip.
+    pub tab_overflow_open: bool,
+    /// Keyboard and exit state of the shell's own menus.
+    pub menus: crate::shell_menu::Menus,
     pub agents_open: bool,
     pub installed: Vec<Installed>,
     pub versions: HashMap<HarnessKind, String>,
@@ -148,7 +201,7 @@ pub struct Shell {
     pub pages: PageState,
     /// Unread automation runs, for the sidebar dot.
     pub inbox_unread: usize,
-    focus: FocusHandle,
+    pub(crate) focus: FocusHandle,
     titlebar_drag: bool,
     window_active: bool,
     /// The thread a background notification was about, opened when the
@@ -156,6 +209,8 @@ pub struct Shell {
     pending_focus: Option<(TaskId, Instant)>,
     /// Sidebar and dock open/close transitions.
     slides: Slides,
+    /// Which side columns fit the window.
+    fit: Fit,
     _subs: Vec<Subscription>,
     _scheduler: Option<gpui::Task<()>>,
     _browser_control: Option<gpui::Task<()>>,
@@ -273,8 +328,10 @@ impl Shell {
             sidebar_open: store.setting("sidebar_open").as_deref() != Some("false"),
             sidebar_w: num("sidebar_width", SIDEBAR_W, 208.0, 400.0),
             panel_open: store.setting("panel_open").as_deref() == Some("true"),
-            panel_w: num("panel_width", PANEL_W, 360.0, 760.0),
+            panel_w: num("panel_width", PANEL_W, PANEL_FLOOR, 4000.0),
             resize: None,
+            resize_pressing: None,
+            resize_bounce: None,
             projects,
             tasks: Vec::new(),
             archived: Vec::new(),
@@ -302,6 +359,8 @@ impl Shell {
             info_open: false,
             more_open: false,
             sidebar_options_open: false,
+            tab_overflow_open: false,
+            menus: crate::shell_menu::Menus::new(cx),
             agents_open: false,
             installed: Vec::new(),
             versions: HashMap::new(),
@@ -318,6 +377,7 @@ impl Shell {
             window_active: true,
             pending_focus: None,
             slides: Slides::default(),
+            fit: Fit { shown: (true, true), ..Fit::default() },
             engine,
             _subs: subs,
             _scheduler: None,
@@ -623,8 +683,7 @@ impl Shell {
     fn go(&mut self, route: Route, window: &mut Window, cx: &mut Context<Self>) {
         self.route = route;
         self.info_open = false;
-        self.menu = None;
-        self.more_open = false;
+        self.close_menus();
         match route {
             Route::Thread(id) => self.attach_task(id, window, cx),
             Route::Home => crate::composer::focus(&self.composer, window, cx),
@@ -1084,12 +1143,77 @@ impl Shell {
     }
 
     pub fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
+        // Hidden only for want of room: bring it back (the dock gives way).
+        if self.sidebar_open && !self.fit.shown.0 {
+            self.reveal_sidebar();
+            cx.notify();
+            return;
+        }
         self.sidebar_open = !self.sidebar_open;
         let _ = self.engine.store.set_setting("sidebar_open", if self.sidebar_open { "true" } else { "false" });
         cx.notify();
     }
 
+    /// Show the sidebar, making it the most recent column so the fit keeps
+    /// it over the dock.
+    fn reveal_sidebar(&mut self) {
+        self.sidebar_open = true;
+        self.fit.seq += 1;
+        self.fit.sidebar_at = self.fit.seq;
+    }
+
+    /// A drag sample's limit: reaching one (not holding it) nudges the seam.
+    fn note_resize_edge(&mut self, edge: Edge, pressing: Option<crate::motion::ResizeEdge>) {
+        if let Some(limit) = pressing
+            && self.resize_pressing != pressing
+            && !crate::motion::reduced_now()
+        {
+            self.resize_bounce = Some((edge, limit, Instant::now()));
+        }
+        self.resize_pressing = pressing;
+    }
+
+    /// The sidebar is open and the window has room for it.
+    pub fn sidebar_shown(&self) -> bool {
+        self.sidebar_open && self.fit.shown.0
+    }
+
+    /// The dock is open and the window has room for it.
+    fn panel_shown(&self) -> bool {
+        self.panel_open && self.fit.shown.1
+    }
+
+    /// Stamp columns that just opened and decide what fits this frame.
+    fn update_fit(&mut self, viewport: f32, in_thread: bool, expanded: bool) {
+        let f = &mut self.fit;
+        if self.sidebar_open && !f.sidebar_was {
+            f.seq += 1;
+            f.sidebar_at = f.seq;
+        }
+        if self.panel_open && !f.panel_was {
+            f.seq += 1;
+            f.panel_at = f.seq;
+        }
+        f.sidebar_was = self.sidebar_open;
+        f.panel_was = self.panel_open;
+        f.shown = panel_fit(
+            viewport,
+            self.sidebar_w,
+            (self.sidebar_open, f.sidebar_at),
+            (in_thread && self.panel_open, f.panel_at),
+            expanded,
+        );
+    }
+
     pub fn toggle_panel(&mut self, cx: &mut Context<Self>) {
+        if self.panel_open && matches!(self.route, Route::Thread(_)) && !self.fit.shown.1 {
+            // Hidden for want of room: bring it back (the sidebar gives way).
+            self.fit.seq += 1;
+            self.fit.panel_at = self.fit.seq;
+            self.panel.update(cx, |p, cx| p.refresh(cx));
+            cx.notify();
+            return;
+        }
         self.panel_open = !self.panel_open;
         let _ = self.engine.store.set_setting("panel_open", if self.panel_open { "true" } else { "false" });
         if self.panel_open {
@@ -1181,8 +1305,8 @@ impl Shell {
         self._subs.push(sub);
         self.rename = Some((id, input));
         self.menu = None;
-        if !self.sidebar_open {
-            self.sidebar_open = true;
+        if !self.sidebar_shown() {
+            self.reveal_sidebar();
         }
         cx.notify();
     }
@@ -1495,7 +1619,17 @@ impl Shell {
             .items_center()
             .child(ui::window_button(
                 "home-sidebar",
-                ui::sidebar_glyph(if self.sidebar_open { 1.0 } else { 0.0 }, false, 16.0, t.text_muted),
+                ui::sidebar_glyph(
+                    crate::motion::state_t(
+                        "glyph-sidebar",
+                        self.sidebar_shown(),
+                        crate::motion::GLYPH_STATE,
+                        cx.reduce_motion(),
+                    ),
+                    false,
+                    16.0,
+                    t.text_muted,
+                ),
                 "Toggle sidebar (Ctrl+B)",
                 &t,
                 cx.listener(|this, _, _, cx| this.toggle_sidebar(cx)),
@@ -1506,7 +1640,7 @@ impl Shell {
             .child(nav("home-fwd", icons::ARROW_RIGHT, "Forward (Alt+→)", can_fwd, |s, w, cx| s.go_forward(w, cx), cx));
         // Over the artwork (sidebar closed) the controls ride a small frosted
         // island, as in Zeron; with the sidebar open they sit on its top.
-        let island_on = !self.sidebar_open;
+        let island_on = !self.sidebar_shown();
         let island = div()
             .h(px(32.0))
             .px(px(6.0))
@@ -1577,7 +1711,7 @@ impl Shell {
                     .into_any_element()
             }
         };
-        let side = self.sidebar_open || self.route == Route::Settings;
+        let side = self.sidebar_shown() || self.route == Route::Settings;
         let cluster = div()
             .flex()
             .flex_none()
@@ -1587,7 +1721,17 @@ impl Shell {
             .when(!side, |d| d.pr(px(8.0)))
             .child(ui::window_button(
                 "tb-sidebar",
-                ui::sidebar_glyph(if self.sidebar_open { 1.0 } else { 0.0 }, false, 16.0, t.text_muted),
+                ui::sidebar_glyph(
+                    crate::motion::state_t(
+                        "glyph-sidebar",
+                        self.sidebar_shown(),
+                        crate::motion::GLYPH_STATE,
+                        cx.reduce_motion(),
+                    ),
+                    false,
+                    16.0,
+                    t.text_muted,
+                ),
                 "Toggle sidebar (Ctrl+B)",
                 &t,
                 cx.listener(|this, _, _, cx| this.toggle_sidebar(cx)),
@@ -1598,7 +1742,7 @@ impl Shell {
             .child(arrow("tb-fwd", icons::ARROW_RIGHT, "Forward (Alt+→)", can_fwd, |s, w, cx| s.go_forward(w, cx), cx));
 
         let in_thread = matches!(self.route, Route::Thread(_));
-        let panel_open = in_thread && self.panel_open;
+        let panel_open = in_thread && self.panel_shown();
         let expanded = panel_open && self.panel.read(cx).expanded;
         let panel_w = self.panel_width(window);
         // What the tabs get: the bar minus the cluster, the tools beside the
@@ -1695,39 +1839,85 @@ impl Shell {
     /// Open threads as tabs: status glyph, title, close. Middle-click closes;
     /// drag to reorder.
     ///
-    /// Tabs split `room` evenly, like a browser's: as more open (or the dock
-    /// widens) they narrow, dropping the status glyph and then the title,
-    /// rather than spilling under the tools beside them. Only past `TAB_MIN`
-    /// each does the strip scroll.
+    /// Tabs split `room` evenly, like a browser's, but never below a readable
+    /// width (status, mark and about ten characters). What does not fit goes
+    /// to a "+N" menu, and the active tab always stays on the strip. With no
+    /// room for even one tab, the strip shows the active thread's title.
     fn render_tabs(&mut self, room: f32, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         const TAB_MAX: f32 = 210.0;
-        const TAB_MIN: f32 = 40.0;
+        const TAB_MIN: f32 = 112.0;
         const GAP: f32 = 2.0;
+        const MORE_W: f32 = 40.0;
         let active = match self.route {
             Route::Thread(id) => Some(id),
             _ => None,
         };
-        let open: Vec<(usize, TaskId, Task)> = self
+        let all: Vec<(usize, TaskId, Task)> = self
             .tabs
             .clone()
             .into_iter()
             .enumerate()
             .filter_map(|(i, id)| self.task(id).cloned().map(|task| (i, id, task)))
             .collect();
-        let n = open.len().max(1) as f32;
-        let width = ((room - ui::BUTTON - GAP * n) / n).clamp(TAB_MIN, TAB_MAX).floor();
-        // Full: glyph, avatar, title, close. Narrow: avatar, title. Icon: avatar.
+        let total = all.len();
+        // Room for the tabs once the `+` (and, when needed, "+N") is placed.
+        let avail = room - ui::BUTTON - GAP;
+        let fits = |k: usize| {
+            let more = if k < total { MORE_W + GAP } else { 0.0 };
+            k == 0 || (avail - more - GAP * k as f32) / k as f32 >= TAB_MIN
+        };
+        let mut shown_n = total;
+        while !fits(shown_n) {
+            shown_n -= 1;
+        }
+        // The first `shown_n` in order; the active tab takes the last slot
+        // when it would otherwise overflow.
+        let mut shown: Vec<(usize, TaskId, Task)> = all.iter().take(shown_n).cloned().collect();
+        if shown_n > 0
+            && let Some(act) = active
+            && !shown.iter().any(|(_, id, _)| *id == act)
+            && let Some(entry) = all.iter().find(|(_, id, _)| *id == act)
+        {
+            shown.pop();
+            shown.push(entry.clone());
+        }
+        let hidden: Vec<(usize, TaskId, Task)> =
+            all.iter().filter(|(_, id, _)| !shown.iter().any(|(_, s, _)| s == id)).cloned().collect();
+        let k = shown.len().max(1) as f32;
+        let more_w = if hidden.is_empty() { 0.0 } else { MORE_W + GAP };
+        let width = ((avail - more_w - GAP * k) / k).clamp(TAB_MIN, TAB_MAX).floor();
+        // Full: glyph, avatar, title, close. Narrow: avatar, title.
         let full = width >= 128.0;
-        let icon_only = width < 76.0;
-        let mut strip = div().id("thread-tabs").flex().items_center().gap(px(GAP)).min_w_0().overflow_x_scroll();
-        for (i, id, task) in open {
+        let mut strip = div().id("thread-tabs").flex().items_center().gap(px(GAP)).min_w_0().overflow_hidden();
+        // No room for a tab: the active thread's title stands in.
+        if shown.is_empty()
+            && let Some(task) = active.and_then(|id| self.task(id)).cloned()
+        {
+            strip = strip.child(
+                div()
+                    .id("tab-title")
+                    .min_w_0()
+                    .px(px(6.0))
+                    .flex()
+                    .items_center()
+                    .gap(px(7.0))
+                    .tooltip(ui::tip(task.title.clone()))
+                    .child(kit::status_glyph(
+                        SharedString::from(format!("tab-st-{}", task.id)),
+                        task.status,
+                        task.unread,
+                        t,
+                    ))
+                    .child(
+                        div().min_w_0().truncate().text_size(ty::SMALL).text_color(t.text).child(task.title.clone()),
+                    ),
+            );
+        }
+        for (i, id, task) in shown {
             let selected = active == Some(id);
             let attention = matches!(task.status, TaskStatus::Running | TaskStatus::NeedsInput) || task.unread;
             let show_glyph = (task.status != TaskStatus::Idle || task.unread) && (full || attention);
-            // Icon-only tabs have room for one mark: the glyph wins when the
-            // thread wants attention.
-            let show_avatar = !(icon_only && show_glyph);
-            let show_close = !icon_only && (full || selected);
+            let show_close = full || selected;
             strip = strip.child(
                 div()
                     .id(SharedString::from(format!("tab-{id}")))
@@ -1735,15 +1925,17 @@ impl Shell {
                     .h(px(28.0))
                     .w(px(width))
                     .flex_none()
-                    .when(icon_only, |d| d.justify_center())
-                    .when(!icon_only, |d| d.pl(px(9.0)).pr(px(if show_close { 4.0 } else { 9.0 })))
+                    .pl(px(9.0))
+                    .pr(px(if show_close { 4.0 } else { 9.0 }))
                     .flex()
                     .items_center()
                     .gap(px(7.0))
                     .rounded(px(8.0))
                     .occlude()
                     .cursor_pointer()
-                    .when(!full, |d| d.tooltip(ui::tip(task.title.clone())))
+                    // The full title on hover wherever it may be cut short,
+                    // and always on the active tab.
+                    .when(!full || selected, |d| d.tooltip(ui::tip(task.title.clone())))
                     .relative()
                     // Zeron's selected glass chip: a wash plus an inset
                     // hairline ring, nothing painted behind it.
@@ -1764,7 +1956,7 @@ impl Shell {
                             t,
                         ))
                     })
-                    .when(show_avatar, |d| {
+                    .map(|d| {
                         d.child(match self.persona_for(id) {
                             Some(p) => crate::team::avatar(p, 15.0, t).into_any_element(),
                             None => icon(ui::harness_icon(task.harness))
@@ -1773,7 +1965,7 @@ impl Shell {
                                 .into_any_element(),
                         })
                     })
-                    .when(!icon_only, |d| {
+                    .map(|d| {
                         d.child(
                             div()
                                 .flex_1()
@@ -1823,6 +2015,9 @@ impl Shell {
                     })),
             );
         }
+        if !hidden.is_empty() {
+            strip = strip.child(self.render_tab_overflow(&hidden, t, cx));
+        }
         strip = strip.child(
             ui::icon_button(
                 "tab-new",
@@ -1834,6 +2029,116 @@ impl Shell {
             .flex_none(),
         );
         strip.into_any_element()
+    }
+
+    /// The "+N" chip and its menu of the tabs that did not fit.
+    fn render_tab_overflow(
+        &mut self,
+        hidden: &[(usize, TaskId, Task)],
+        t: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        use crate::shell_menu::{Item, act};
+        let open = self.tab_overflow_open;
+        let attention = hidden.iter().any(|(_, _, task)| {
+            matches!(task.status, TaskStatus::NeedsInput) || (task.unread && task.status != TaskStatus::Running)
+        });
+        let chip = div()
+            .id("tab-more")
+            .h(px(28.0))
+            .min_w(px(40.0))
+            .px(px(8.0))
+            .flex()
+            .flex_none()
+            .items_center()
+            .justify_center()
+            .gap(px(5.0))
+            .rounded(px(8.0))
+            .cursor_pointer()
+            .occlude()
+            .text_size(ty::SMALL)
+            .role(gpui::Role::Button)
+            .aria_label("More tabs")
+            .tooltip(ui::tip("More tabs"))
+            .when(open, |d| d.bg(ui::selected_bg(t)).shadow(ui::selected_ring(t)).text_color(t.text))
+            .when(!open, |d| {
+                crate::motion::hover_fade(d, "tab-more", (t.wash(0.0), t.wash(0.05)), Some((t.text_muted, t.text)))
+            })
+            .when(attention, |d| d.child(ui::dot(t.warning, 5.0)))
+            .child(format!("+{}", hidden.len()))
+            .on_click(cx.listener(|this, _, window, cx| {
+                if this.tab_overflow_open {
+                    this.close_menus();
+                } else {
+                    this.close_menus();
+                    this.tab_overflow_open = true;
+                    this.menu_opened(window, cx);
+                }
+                cx.notify();
+            }));
+        let exit = if open { None } else { self.menus.overflow_exit() };
+        let menu = (open || exit.is_some()).then(|| {
+            let items: Vec<Item> = hidden
+                .iter()
+                .map(|(_, id, task)| {
+                    let id = *id;
+                    let close = div()
+                        .id(SharedString::from(format!("tab-more-x-{id}")))
+                        .size(px(20.0))
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(5.0))
+                        .hover(|s| s.bg(t.wash(0.14)))
+                        .tooltip(ui::tip("Close tab"))
+                        .child(icon(icons::CLOSE).size(px(10.0)).text_color(t.text_faint))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            cx.stop_propagation();
+                            this.close_tab(id, window, cx);
+                        }));
+                    Item::row(
+                        SharedString::from(format!("tab-more-{id}")),
+                        Some(ui::harness_icon(task.harness)),
+                        task.title.clone(),
+                        act(move |this, window, cx| this.navigate(Route::Thread(id), window, cx)),
+                    )
+                    .trailing(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.0))
+                            .when(task.status != TaskStatus::Idle || task.unread, |d| {
+                                d.child(kit::status_glyph(
+                                    SharedString::from(format!("tab-more-st-{id}")),
+                                    task.status,
+                                    task.unread,
+                                    t,
+                                ))
+                            })
+                            .child(close),
+                    )
+                })
+                .collect();
+            let live = exit.is_none();
+            let body = self.menu_list(items, 280.0, live, t, cx);
+            let card = self.menu_surface(t, body, exit);
+            deferred(
+                anchored().anchor(Anchor::TopLeft).snap_to_window_with_margin(px(8.0)).child(
+                    div()
+                        .mt(px(32.0))
+                        .when(live, |d| {
+                            d.on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                                this.close_menus();
+                                cx.notify();
+                            }))
+                        })
+                        .child(card),
+                ),
+            )
+            .with_priority(2)
+        });
+        div().relative().flex_none().child(chip).children(menu).into_any_element()
     }
 
     fn render_info_button(&mut self, cx: &mut Context<Self>) -> AnyElement {
@@ -1961,100 +2266,105 @@ impl Shell {
     }
 
     fn render_menu_overlay(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let menu = self.menu.clone()?;
+        use crate::shell_menu::{Item, act};
+        let (menu, exit) = match self.menu.clone() {
+            Some(menu) => (menu, None),
+            None => self.menus.context_exit().map(|(m, p)| (m, Some(p)))?,
+        };
         let task = self.task(menu.task).cloned()?;
         let t = Theme::of(cx).clone();
         let id = task.id;
         let archived = task.status == TaskStatus::Archived;
+        let pinned = task.pinned;
         let project_path = self.project(task.project_id).map(|p| p.path.display().to_string()).unwrap_or_default();
-        let mut body = div()
-            .w(px(240.0))
-            .flex()
-            .flex_col()
-            .child(
-                ui::menu_row("cm-rename", icons::PEN, "Rename", false, &t)
-                    .child(kit::kbd("F2", &t))
-                    .on_click(cx.listener(move |this, _, window, cx| this.begin_rename(id, window, cx))),
+        let mut items = vec![
+            Item::row(
+                "cm-rename",
+                Some(icons::PEN),
+                "Rename",
+                act(move |this, window, cx| this.begin_rename(id, window, cx)),
             )
-            .child(ui::menu_row("cm-pin", icons::PIN, if task.pinned { "Unpin" } else { "Pin" }, false, &t).on_click(
-                cx.listener({
-                    let pinned = task.pinned;
-                    move |this, _, _, cx| this.set_pinned(id, !pinned, cx)
+            .trailing(kit::kbd("F2", &t)),
+            Item::row(
+                "cm-pin",
+                Some(icons::PIN),
+                if pinned { "Unpin" } else { "Pin" },
+                act(move |this, _, cx| this.set_pinned(id, !pinned, cx)),
+            ),
+            Item::row(
+                "cm-archive",
+                Some(if archived { icons::ARCHIVE_UP_MINIMALISTIC } else { icons::ARCHIVE_MINIMALISTIC }),
+                if archived { "Unarchive" } else { "Archive" },
+                act(move |this, window, cx| this.set_archived(id, !archived, window, cx)),
+            ),
+            Item::row(
+                "cm-copy",
+                Some(icons::COPY),
+                "Copy",
+                act(|this, _, _| {
+                    if let Some(m) = &mut this.menu {
+                        m.copy_open = !m.copy_open;
+                    }
                 }),
-            ))
-            .child(
-                ui::menu_row(
-                    "cm-archive",
-                    if archived { icons::ARCHIVE_UP_MINIMALISTIC } else { icons::ARCHIVE_MINIMALISTIC },
-                    if archived { "Unarchive" } else { "Archive" },
-                    false,
-                    &t,
-                )
-                .on_click(cx.listener(move |this, _, window, cx| this.set_archived(id, !archived, window, cx))),
             )
-            .child(
-                ui::menu_row("cm-copy", icons::COPY, "Copy", false, &t)
-                    .child(icon(icons::ALT_ARROW_RIGHT).size(px(14.0)).text_color(t.text_faint))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        if let Some(m) = &mut this.menu {
-                            m.copy_open = !m.copy_open;
-                        }
-                        cx.notify();
-                    })),
-            );
+            .keep_open()
+            .trailing(
+                icon(if menu.copy_open { icons::ALT_ARROW_DOWN } else { icons::ALT_ARROW_RIGHT })
+                    .size(px(14.0))
+                    .text_color(t.text_faint),
+            ),
+        ];
         if menu.copy_open {
-            let items: Vec<(&'static str, &'static str, String)> = vec![
+            let copies: Vec<(&'static str, &'static str, String)> = vec![
                 ("cc-title", "Title", task.title.clone()),
                 ("cc-branch", "Branch name", task.branch.clone().unwrap_or_default()),
                 ("cc-path", "Path", task.worktree.as_ref().map(|p| p.display().to_string()).unwrap_or(project_path)),
                 ("cc-session", "Session ID", task.native_session_id.clone().unwrap_or_default()),
             ];
-            for (cid, label, value) in items {
+            for (cid, label, value) in copies {
                 if value.is_empty() {
                     continue;
                 }
-                body = body.child(
-                    div()
-                        .id(cid)
-                        .h(px(30.0))
-                        .mx(px(4.0))
-                        .pl(px(36.0))
-                        .pr(px(10.0))
-                        .flex()
-                        .items_center()
-                        .rounded(px(7.0))
-                        .text_size(ty::BODY)
-                        .text_color(t.text_muted)
-                        .cursor_pointer()
-                        .hover(|s| s.bg(t.wash(0.10)))
-                        .child(label)
-                        .on_click(cx.listener(move |this, _, _, cx| this.copy(value.clone(), cx))),
-                );
+                items.push(Item::row(cid, None, label, act(move |this, _, cx| this.copy(value.clone(), cx))).indent());
             }
         }
-        body = body.child(ui::separator(&t)).child(if menu.confirm_delete {
-            ui::menu_row("cm-delete-confirm", icons::TRASH_BIN_MINIMALISTIC, "Click to delete for good", true, &t)
-                .on_click(cx.listener(move |this, _, window, cx| this.delete_task(id, window, cx)))
-                .into_any_element()
+        items.push(Item::Separator);
+        items.push(if menu.confirm_delete {
+            Item::row(
+                "cm-delete-confirm",
+                Some(icons::TRASH_BIN_MINIMALISTIC),
+                "Click to delete for good",
+                act(move |this, window, cx| this.delete_task(id, window, cx)),
+            )
+            .danger()
         } else {
-            ui::menu_row("cm-delete", icons::TRASH_BIN_MINIMALISTIC, "Delete…", true, &t)
-                .on_click(cx.listener(|this, _, _, cx| {
+            Item::row(
+                "cm-delete",
+                Some(icons::TRASH_BIN_MINIMALISTIC),
+                "Delete…",
+                act(|this, _, _| {
                     if let Some(m) = &mut this.menu {
                         m.confirm_delete = true;
                     }
-                    cx.notify();
-                }))
-                .into_any_element()
+                }),
+            )
+            .danger()
+            .keep_open()
         });
+        let live = exit.is_none();
+        let body = self.menu_list(items, 240.0, live, &t, cx);
+        let card = self.menu_surface(&t, body, exit);
         Some(
             deferred(
                 anchored().position(menu.at).snap_to_window_with_margin(px(8.0)).child(
                     div()
-                        .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                            this.menu = None;
-                            cx.notify();
-                        }))
-                        .child(ui::menu_card(&t, body)),
+                        .when(live, |d| {
+                            d.on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                                this.close_menus();
+                                cx.notify();
+                            }))
+                        })
+                        .child(card),
                 ),
             )
             .with_priority(2)
@@ -2185,14 +2495,18 @@ impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::perf_trace::count_render("Shell");
         crate::motion::set_chrome_view(cx.entity_id());
+        self.tick_menus(window, cx);
         frame_stats();
         let t = Theme::of(cx).clone();
         let in_thread = matches!(self.route, Route::Thread(_));
         // No open threads: the main page is the wallpaper and the composer.
         // The tab strip only exists once a thread is open.
         let bare = matches!(self.route, Route::Home) && self.tabs.is_empty();
-        let panel_open = in_thread && self.panel_open;
-        let expanded = panel_open && self.panel.read(cx).expanded;
+        let wants_expand = self.panel.read(cx).expanded;
+        self.update_fit(f32::from(window.viewport_size().width), in_thread, wants_expand);
+        let panel_open = in_thread && self.panel_shown();
+        let expanded = panel_open && wants_expand;
+        let sidebar_shown = self.sidebar_shown();
         self.panel.update(cx, |p, cx| p.sync(panel_open, self.resize.is_some(), cx));
         let topbar = (!bare).then(|| self.render_topbar(window, cx));
         // With no title bar, the sidebar starts below the floating window
@@ -2205,7 +2519,7 @@ impl Render for Shell {
             let nav = self.settings.update(cx, |s, cx| s.render_nav(width, window, cx));
             Some(div().h_full().flex_none().child(nav).into_any_element())
         } else {
-            self.sidebar_open.then(|| {
+            sidebar_shown.then(|| {
                 let sidebar = self.render_sidebar(cx);
                 if bare {
                     div().h_full().flex().flex_col().pt(px(Theme::TITLEBAR_HEIGHT)).child(sidebar).into_any_element()
@@ -2217,8 +2531,23 @@ impl Render for Shell {
         let center = (!expanded).then(|| self.render_center(window, cx));
         let panel_w = self.panel_width(window);
         let now = Instant::now();
-        self.slides.sidebar.step((!in_settings).then_some(self.sidebar_open), self.sidebar_w, now);
-        self.slides.panel.step(in_thread.then_some(self.panel_open && !expanded), panel_w, now);
+        self.slides.sidebar.step((!in_settings).then_some(sidebar_shown), self.sidebar_w, now);
+        self.slides.panel.step(in_thread.then_some(panel_open && !expanded), panel_w, now);
+        // A drag that reaches its limit nudges the column toward the drag
+        // and lets it settle back.
+        let bounce =
+            self.resize_bounce.and_then(|(e, limit, at)| crate::motion::resize_bounce(limit, at).map(|o| (e, o)));
+        if bounce.is_some() {
+            window.request_animation_frame();
+        } else {
+            self.resize_bounce = None;
+        }
+        let sidebar_nudge = bounce.filter(|(e, _)| *e == Edge::Sidebar).map(|(_, o)| o);
+        let panel_nudge = bounce.filter(|(e, _)| *e == Edge::Panel).map(|(_, o)| -o);
+        let sidebar = sidebar.map(|sidebar| match sidebar_nudge {
+            Some(o) => div().h_full().flex_none().relative().left(px(o)).child(sidebar).into_any_element(),
+            None => sidebar,
+        });
         let sidebar = sidebar.map(|sidebar| match self.slides.sidebar.entrance("sidebar-in") {
             Some(id) if !in_settings => {
                 crate::motion::slide_in(id, self.sidebar_w, false, div().h_full().flex_none().child(sidebar))
@@ -2289,9 +2618,10 @@ impl Render for Shell {
                 })
                 .child(AnyView::from(self.panel.clone()).cached(StyleRefinement::default().size_full()))
         });
-        let panel = panel.map(|panel| match panel_entrance {
-            Some(id) => crate::motion::slide_in(id, panel_w, true, panel).into_any_element(),
-            None => panel.into_any_element(),
+        let panel = panel.map(|panel| match (panel_entrance, panel_nudge) {
+            (Some(id), _) => crate::motion::slide_in(id, panel_w, true, panel).into_any_element(),
+            (None, Some(o)) => panel.left(px(o)).into_any_element(),
+            (None, None) => panel.into_any_element(),
         });
 
         let card = if bare {
@@ -2312,7 +2642,7 @@ impl Render for Shell {
                     .h_full()
                     .mr(px(GUTTER))
                     .mb(px(GUTTER))
-                    .when(!self.sidebar_open && !in_settings, |d| d.ml(px(GUTTER)))
+                    .when(!sidebar_shown && !in_settings, |d| d.ml(px(GUTTER)))
                     .rounded(px(12.0))
                     .bg(t.panel_bg())
                     .border_1()
@@ -2333,9 +2663,9 @@ impl Render for Shell {
                 .bottom_0()
                 .right_0()
                 .when(!expanded, |d| d.w(px(panel_w)))
-                .when(expanded, |d| d.left(px(if self.sidebar_open { self.sidebar_w } else { 0.0 })))
+                .when(expanded, |d| d.left(px(if sidebar_shown { self.sidebar_w } else { 0.0 })))
                 .bg(t.panel_bg())
-                .when(!expanded || self.sidebar_open, |d| d.border_l_1().border_color(t.border))
+                .when(!expanded || sidebar_shown, |d| d.border_l_1().border_color(t.border))
         });
 
         let menu = self.render_menu_overlay(cx);
@@ -2412,16 +2742,10 @@ impl Render for Shell {
             }))
             .on_key_down(cx.listener(|this, e: &gpui::KeyDownEvent, window, cx| {
                 if e.keystroke.key == "escape" {
-                    let open = this.menu.is_some()
-                        || this.info_open
-                        || this.more_open
-                        || this.sidebar_options_open
-                        || this.palette.is_some();
+                    let menu = this.close_menus();
+                    let open = menu || this.info_open || this.palette.is_some();
                     if open {
-                        this.menu = None;
                         this.info_open = false;
-                        this.more_open = false;
-                        this.sidebar_options_open = false;
                         this.palette = None;
                         cx.stop_propagation();
                         cx.notify();
@@ -2435,12 +2759,18 @@ impl Render for Shell {
                 if let Some((edge, origin, width)) = this.resize {
                     let delta = f32::from(e.position.x - origin);
                     match edge {
-                        Edge::Sidebar => this.sidebar_w = (width + delta).clamp(208.0, 400.0),
+                        Edge::Sidebar => {
+                            let (w, pressing) = crate::motion::clamp_resize(width + delta, 208.0, 400.0);
+                            this.sidebar_w = w;
+                            this.note_resize_edge(edge, pressing);
+                        }
                         // Stops where the chat column would be squeezed, so the
                         // saved width is the one you see.
                         Edge::Panel => {
-                            let max = this.panel_room(window).clamp(360.0, 760.0);
-                            this.panel_w = (width - delta).clamp(360.0, max);
+                            let max = this.panel_room(window).max(PANEL_FLOOR);
+                            let (w, pressing) = crate::motion::clamp_resize(width - delta, PANEL_FLOOR, max);
+                            this.panel_w = w;
+                            this.note_resize_edge(edge, pressing);
                         }
                     }
                     cx.notify();
@@ -2450,6 +2780,7 @@ impl Render for Shell {
                 MouseButton::Left,
                 cx.listener(|this, _, _, cx| {
                     if let Some((edge, _, _)) = this.resize.take() {
+                        this.resize_pressing = None;
                         let (key, w) = match edge {
                             Edge::Sidebar => ("sidebar_width", this.sidebar_w),
                             Edge::Panel => ("panel_width", this.panel_w),
@@ -2508,7 +2839,7 @@ impl Shell {
     /// The widest the dock can be while the chat column keeps `CENTER_MIN`.
     fn panel_room(&self, window: &Window) -> f32 {
         let total = f32::from(window.viewport_size().width);
-        let left = if self.sidebar_open { self.sidebar_w } else { GUTTER };
+        let left = if self.sidebar_shown() { self.sidebar_w } else { GUTTER };
         total - left - GUTTER - CENTER_MIN
     }
 
@@ -2596,5 +2927,33 @@ impl UpdateInAnyWindow for gpui::WeakEntity<Shell> {
             let _ = this.update(cx, |s, cx| f(s, window, cx));
         })?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn everything_fits_a_wide_window() {
+        assert_eq!(panel_fit(1600.0, 264.0, (true, 1), (true, 2), false), (true, true));
+    }
+
+    #[test]
+    fn least_recent_column_hides_first() {
+        // 264 + 360 + 306 = 930 does not fit 900: the older column goes.
+        assert_eq!(panel_fit(900.0, 264.0, (true, 1), (true, 2), false), (false, true));
+        assert_eq!(panel_fit(900.0, 264.0, (true, 3), (true, 2), false), (true, false));
+    }
+
+    #[test]
+    fn expanded_dock_outranks_the_sidebar() {
+        assert_eq!(panel_fit(500.0, 264.0, (true, 5), (true, 1), true), (false, true));
+    }
+
+    #[test]
+    fn closed_columns_stay_closed() {
+        assert_eq!(panel_fit(2000.0, 264.0, (false, 0), (false, 0), false), (false, false));
+        assert_eq!(panel_fit(200.0, 264.0, (true, 0), (true, 0), false), (false, false));
     }
 }
