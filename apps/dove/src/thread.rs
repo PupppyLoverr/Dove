@@ -83,6 +83,8 @@ pub struct ThreadView {
     /// Who drives the session.
     pub driver: ViewMode,
     sheet: Option<Pending>,
+    /// Keyboard focus of the switch sheet.
+    sheet_focus: FocusHandle,
     armed: Option<Pending>,
     busy: Option<&'static str>,
     note: Option<SharedString>,
@@ -152,6 +154,7 @@ impl ThreadView {
             view: ViewMode::Chat,
             driver: ViewMode::Chat,
             sheet: None,
+            sheet_focus: cx.focus_handle(),
             armed: None,
             busy: None,
             note: None,
@@ -468,8 +471,13 @@ impl ThreadView {
         }
     }
 
-    fn render_sheet(&self, t: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+    fn render_sheet(&self, t: &Theme, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         let p = self.sheet?;
+        if !self.sheet_focus.is_focused(window) {
+            window.focus(&self.sheet_focus, cx);
+        }
+        use crate::kit::controls::{self as ctl, Tone};
+        use crate::kit::popover;
         let (title, body, later, now) = match p {
             Pending::ToTerminal => (
                 "The agent is mid-turn",
@@ -484,53 +492,65 @@ impl ThreadView {
                 "Interrupt and switch now",
             ),
         };
-        Some(
-            div()
-                .absolute()
-                .inset_0()
-                .flex()
-                .items_center()
-                .justify_center()
-                .bg(gpui::hsla(0.0, 0.0, 0.0, 0.25))
-                .child(
-                    div()
-                        .id("switch-sheet")
-                        .w(px(380.0))
-                        .p(px(18.0))
-                        .flex()
-                        .flex_col()
-                        .gap(px(12.0))
-                        .rounded(px(14.0))
-                        .border_1()
-                        .border_color(t.border_strong)
-                        .bg(t.surface_overlay)
-                        .shadow_lg()
-                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        .child(div().text_size(ty::TITLE).font_weight(gpui::FontWeight::SEMIBOLD).child(title))
-                        .child(div().text_size(ty::BODY).text_color(t.text_muted).child(body))
-                        .child(
-                            div()
-                                .flex()
-                                .flex_col()
-                                .gap(px(6.0))
-                                .child(
-                                    ui::button_primary("sheet-later", later, t)
-                                        .on_click(cx.listener(|this, _, window, cx| this.choose(false, window, cx))),
-                                )
-                                .child(
-                                    ui::button_ghost("sheet-now", now, t)
-                                        .on_click(cx.listener(|this, _, window, cx| this.choose(true, window, cx))),
-                                )
-                                .child(ui::button_ghost("sheet-cancel", "Cancel", t).on_click(cx.listener(
-                                    |this, _, _, cx| {
-                                        this.sheet = None;
-                                        cx.notify();
-                                    },
-                                ))),
-                        ),
-                )
-                .into_any_element(),
-        )
+        // A kit dialog over the scrim: Enter waits for the turn, Esc or a
+        // click outside cancels.
+        let card = popover::dialog_card(t, 400.0)
+            .id("switch-sheet")
+            .role(gpui::Role::Dialog)
+            .aria_label(title)
+            .track_focus(&self.sheet_focus)
+            .on_key_down(cx.listener(|this, e: &gpui::KeyDownEvent, window, cx| match e.keystroke.key.as_str() {
+                "escape" => {
+                    this.sheet = None;
+                    cx.stop_propagation();
+                    cx.notify();
+                }
+                "enter" => {
+                    this.choose(false, window, cx);
+                    cx.stop_propagation();
+                }
+                _ => {}
+            }))
+            .child(popover::dialog_body(t, title, body))
+            .child(
+                div()
+                    .px(px(20.0))
+                    .pt(px(12.0))
+                    .pb(px(18.0))
+                    .flex()
+                    .flex_col()
+                    .gap(px(6.0))
+                    .child(
+                        ctl::button(t, "sheet-later", later, Tone::Solid)
+                            .w_full()
+                            .on_click(cx.listener(|this, _, window, cx| this.choose(false, window, cx))),
+                    )
+                    .child(
+                        ctl::button(t, "sheet-now", now, Tone::Outlined)
+                            .w_full()
+                            .on_click(cx.listener(|this, _, window, cx| this.choose(true, window, cx))),
+                    )
+                    .child(ctl::button(t, "sheet-cancel", "Cancel", Tone::Quiet).w_full().on_click(cx.listener(
+                        |this, _, _, cx| {
+                            this.sheet = None;
+                            cx.notify();
+                        },
+                    ))),
+            );
+        let weak = cx.weak_entity();
+        Some(popover::modal(
+            "switch-sheet-layer",
+            window.viewport_size(),
+            t.scrim,
+            None,
+            card.into_any_element(),
+            Some(Box::new(move |_, cx| {
+                let _ = weak.update(cx, |this, cx| {
+                    this.sheet = None;
+                    cx.notify();
+                });
+            })),
+        ))
     }
 
     /// Chat | Terminal, a two-icon segment. The shell renders it in the
@@ -739,7 +759,7 @@ impl ThreadView {
 }
 
 impl Render for ThreadView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::perf_trace::count_render("ThreadView");
         let t = Theme::of(cx).clone();
         let body: AnyElement = match self.view {
@@ -789,6 +809,6 @@ impl Render for ThreadView {
                 )
             })
             .child(div().flex_1().min_h_0().child(body))
-            .children(self.render_sheet(&t, cx))
+            .children(self.render_sheet(&t, window, cx))
     }
 }

@@ -368,11 +368,6 @@ pub fn error_strip(t: &Theme, text: impl Into<SharedString>) -> Div {
     strip(icons::CLOSE_CIRCLE, t.danger, t, text)
 }
 
-/// An inline warning.
-pub fn warning_strip(t: &Theme, text: impl Into<SharedString>) -> Div {
-    strip(icons::DANGER_TRIANGLE, t.warning, t, text)
-}
-
 /// An inline note.
 pub fn info_strip(t: &Theme, text: impl Into<SharedString>) -> Div {
     strip(icons::INFO_CIRCLE, t.text_muted, t, text)

@@ -243,19 +243,6 @@ pub fn group(t: &Theme) -> Div {
         .overflow_hidden()
 }
 
-/// A row's label with an optional one-line hint under it.
-pub fn label_block(label: impl Into<SharedString>, hint: impl Into<SharedString>, t: &Theme) -> Div {
-    let hint: SharedString = hint.into();
-    div()
-        .flex_1()
-        .min_w_0()
-        .flex()
-        .flex_col()
-        .gap(px(2.0))
-        .child(div().text_size(ty::BODY).text_color(t.text).child(label.into()))
-        .when(!hint.is_empty(), |d| d.child(div().text_size(ty::META).text_color(t.text_faint).child(hint)))
-}
-
 /// A section heading above a group: small, quiet, never shouting.
 pub fn section_label(text: impl Into<SharedString>, t: &Theme) -> Div {
     div()

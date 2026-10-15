@@ -1298,7 +1298,7 @@ impl Chat {
                 }
             }
         }
-        dupes.sort_unstable_by(|a, b| b.1.cmp(&a.1));
+        dupes.sort_unstable_by_key(|d| std::cmp::Reverse(d.1));
         let mut removed = Vec::new();
         for (old, new) in dupes {
             if let Some(Row::Block { block, .. }) = self.rows.get(new).cloned() {
@@ -5289,7 +5289,7 @@ mod tests {
 
     #[test]
     fn results_for_unloaded_calls_wait_for_hydration() {
-        let events = vec![
+        let events = [
             AgentEvent::UserMessage { text: "one".into() },
             call("bg", ToolKind::Execute),
             end(),

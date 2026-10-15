@@ -366,6 +366,7 @@ impl MotionSpec {
         Self { duration_ms, delay_ms: 0, curve }
     }
 
+    #[cfg(test)]
     pub const fn with_delay(mut self, delay_ms: u64) -> Self {
         self.delay_ms = delay_ms;
         self
@@ -412,8 +413,6 @@ pub const MENU_OUT: MotionSpec = MotionSpec::new(100, EASE);
 pub const DIALOG_IN: MotionSpec = MotionSpec::new(180, EASE);
 /// Sidebar and dock slides (stretched toward 240 ms for wide moves).
 pub const PANEL: MotionSpec = DIALOG_IN;
-/// Tab reorder slides.
-pub const TAB_SLIDE: MotionSpec = MotionSpec::new(150, EASE_OUT);
 /// Segment and nav selection indicators.
 pub const INDICATOR_SLIDE: MotionSpec = MotionSpec::new(260, EASE_OUT_SOFT);
 /// Two-state glyph morphs (sidebar and panel toggles).
@@ -428,8 +427,6 @@ pub const FADE_QUICK: MotionSpec = MotionSpec::new(150, EASE);
 pub const CHEVRON: MotionSpec = MotionSpec::new(200, EASE);
 /// Collapsible content reveal (opacity + rise; the height snaps).
 pub const REVEAL: MotionSpec = MotionSpec::new(180, EASE_OUT);
-/// Home → thread handoff.
-pub const NEW_THREAD: MotionSpec = MotionSpec::new(420, EASE_OUT_QUINT);
 /// Rail jumps and scroll-to-row.
 pub const SCROLL_GLIDE: MotionSpec = MotionSpec::new(500, EASE_IN_OUT);
 /// Toggle thumb travel.
@@ -547,10 +544,6 @@ impl IndicatorSlide {
         lerp(self.from, self.to, INDICATOR_SLIDE.since(self.started, Instant::now()))
     }
 
-    pub fn target(&self) -> f32 {
-        self.to
-    }
-
     /// Aim at a new slot; reduced motion snaps.
     pub fn retarget(&mut self, to: f32, reduced: bool) {
         if (to - self.to).abs() < f32::EPSILON {
@@ -558,10 +551,6 @@ impl IndicatorSlide {
         }
         let from = if reduced { to } else { self.value() };
         *self = Self { from, to, started: Instant::now() };
-    }
-
-    pub fn animating(&self) -> bool {
-        self.from != self.to && self.started.elapsed() < INDICATOR_SLIDE.total()
     }
 }
 

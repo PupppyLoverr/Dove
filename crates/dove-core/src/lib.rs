@@ -1037,12 +1037,12 @@ impl LiveModels {
 
 impl Engine {
     /// `kind`'s models: the last live list (this run's, else the one saved
-    /// last time), else the curated catalog. Returns at once; a refresh
-    /// runs in the background when the list is stale and bumps
-    /// [`Self::models_version`] when it lands.
+    /// last time), else the curated catalog. Returns at once; callers ask
+    /// for a background refresh with [`Self::refresh_models_if_stale`],
+    /// which bumps [`Self::models_version`] when it lands.
     pub fn models(&self, kind: HarnessKind) -> Vec<dove_proto::Model> {
         let cached = self.live_models.lists.read().get(&kind).cloned();
-        let list = match cached {
+        match cached {
             Some(list) => list,
             None => {
                 let saved: Option<Vec<dove_proto::Model>> = self
@@ -1058,8 +1058,7 @@ impl Engine {
                     None => models::catalog(kind),
                 }
             }
-        };
-        list
+        }
     }
 
     /// Changes whenever any live list does.

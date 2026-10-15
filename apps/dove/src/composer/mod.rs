@@ -184,6 +184,8 @@ pub struct Composer {
     limits: Vec<RateWindow>,
     menu: Option<Menu>,
     bypass_confirm: bool,
+    /// Keyboard focus of the Bypass confirmation dialog.
+    dialog_focus: FocusHandle,
     mention: Option<Mention>,
     files: Arc<Vec<String>>,
     files_root: Option<PathBuf>,
@@ -286,6 +288,7 @@ impl Composer {
             limits: Vec::new(),
             menu: None,
             bypass_confirm: false,
+            dialog_focus: cx.focus_handle(),
             mention: None,
             files: Arc::new(Vec::new()),
             files_root: None,
@@ -540,6 +543,8 @@ impl Composer {
 
     fn set_mode(&mut self, mode: PermissionMode, cx: &mut Context<Self>) {
         if mode == PermissionMode::Bypass && !self.bypass_allowed() {
+            // Asked in a modal dialog; the level menu steps aside for it.
+            self.menu = None;
             self.bypass_confirm = true;
             cx.notify();
             return;
@@ -561,6 +566,59 @@ impl Composer {
 
     fn bypass_allowed(&self) -> bool {
         self.bypass_key().is_some_and(|k| self.engine.store.setting(&k).as_deref() == Some("1"))
+    }
+
+    fn cancel_bypass(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.bypass_confirm = false;
+        focus_input(&self.input, window, cx);
+        cx.notify();
+    }
+
+    /// The Bypass confirmation: a kit dialog over a scrim, asked once per
+    /// project.
+    fn render_bypass_dialog(&self, window: &mut Window, t: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.bypass_confirm {
+            return None;
+        }
+        if !self.dialog_focus.is_focused(window) {
+            window.focus(&self.dialog_focus, cx);
+        }
+        use crate::kit::controls::{self as ctl, Tone};
+        let project = self.project.as_ref().map(|p| p.name.clone()).unwrap_or_else(|| "this project".into());
+        let card = popover::dialog_card(t, 400.0)
+            .id("bypass-dialog")
+            .role(gpui::Role::AlertDialog)
+            .aria_label("Bypass permissions?")
+            .track_focus(&self.dialog_focus)
+            .child(popover::dialog_body(
+                t,
+                "Bypass permissions?",
+                format!(
+                    "In {project}, agents will run any command and edit any file without asking. Dove asks once per project."
+                ),
+            ))
+            .child(
+                popover::dialog_actions()
+                    .child(
+                        ctl::button(t, "bypass-no", "Cancel", Tone::Outlined)
+                            .on_click(cx.listener(|this, _, window, cx| this.cancel_bypass(window, cx))),
+                    )
+                    .child(
+                        ctl::button(t, "bypass-yes", "Enable bypass", Tone::Danger)
+                            .on_click(cx.listener(|this, _, _, cx| this.confirm_bypass(cx))),
+                    ),
+            );
+        let weak = cx.weak_entity();
+        Some(popover::modal(
+            "bypass-dialog-layer",
+            window.viewport_size(),
+            t.scrim,
+            None,
+            card.into_any_element(),
+            Some(Box::new(move |window, cx| {
+                let _ = weak.update(cx, |this, cx| this.cancel_bypass(window, cx));
+            })),
+        ))
     }
 
     fn confirm_bypass(&mut self, cx: &mut Context<Self>) {
@@ -852,6 +910,16 @@ impl Composer {
     fn on_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let k = &ev.keystroke;
         let key = k.key.as_str();
+        // The Bypass dialog owns Enter and Esc while it is up.
+        if self.bypass_confirm {
+            match key {
+                "escape" => self.cancel_bypass(window, cx),
+                "enter" => self.confirm_bypass(cx),
+                _ => return,
+            }
+            cx.stop_propagation();
+            return;
+        }
         if let Some(m) = self.mention.as_mut() {
             match key {
                 "down" if !m.items.is_empty() => {
@@ -1601,37 +1669,7 @@ impl Composer {
                 (PermissionMode::Plan, "Plan", "Read-only until you approve a plan"),
                 (PermissionMode::Bypass, "Bypass permissions", "Never ask. Best in a worktree"),
             ];
-            let content: AnyElement = if self.bypass_confirm {
-                let project = self.project.as_ref().map(|p| p.name.clone()).unwrap_or_else(|| "this project".into());
-                div()
-                    .w(px(300.0))
-                    .p(px(14.0))
-                    .flex()
-                    .flex_col()
-                    .gap(px(10.0))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(8.0))
-                            .child(icon(icons::DANGER_TRIANGLE).text_color(t.danger))
-                            .child(div().font_weight(gpui::FontWeight::MEDIUM).child("Bypass permissions?")),
-                    )
-                    .child(div().text_size(ty::BODY).text_color(t.text_muted).child(format!(
-                        "In {project}, agents will run any command and edit any file without asking. Dove asks once per project."
-                    )))
-                    .child(
-                        div()
-                            .flex()
-                            .gap(px(6.0))
-                            .child(ui::button_primary("bypass-yes", "Enable bypass", t).bg(t.danger).on_click(cx.listener(|this, _, _, cx| this.confirm_bypass(cx))))
-                            .child(ui::button_ghost("bypass-no", "Cancel", t).on_click(cx.listener(|this, _, _, cx| {
-                                this.bypass_confirm = false;
-                                cx.notify();
-                            }))),
-                    )
-                    .into_any_element()
-            } else {
+            let content: AnyElement = {
                 div()
                     .w(px(280.0))
                     .flex()
@@ -1645,17 +1683,29 @@ impl Composer {
                         popover::menu_row_instant(t, format!("mode-{}", mode_id(m)), selected)
                             .aria_label(label)
                             .py(px(6.0))
-                            .child(icon(mode_icon(m)).size(px(16.0)).flex_none().text_color(if danger { t.danger } else { t.text_muted }))
+                            .child(icon(mode_icon(m)).size(px(16.0)).flex_none().text_color(if danger {
+                                t.danger
+                            } else {
+                                t.text_muted
+                            }))
                             .child(
                                 div()
                                     .flex_1()
                                     .min_w_0()
                                     .flex()
                                     .flex_col()
-                                    .child(div().truncate().text_size(ty::BODY).text_color(if danger { t.danger } else { t.text }).child(label))
+                                    .child(
+                                        div()
+                                            .truncate()
+                                            .text_size(ty::BODY)
+                                            .text_color(if danger { t.danger } else { t.text })
+                                            .child(label),
+                                    )
                                     .child(div().truncate().text_size(ty::META).text_color(t.text_faint).child(desc)),
                             )
-                            .when(selected, |d| d.child(icon(icons::CHECK).size(px(14.0)).flex_none().text_color(t.accent)))
+                            .when(selected, |d| {
+                                d.child(icon(icons::CHECK).size(px(14.0)).flex_none().text_color(t.accent))
+                            })
                             .on_click(cx.listener(move |this, _, _, cx| this.set_mode(m, cx)))
                     }))
                     .into_any_element()
@@ -2194,6 +2244,7 @@ impl Render for Composer {
             .flex_col()
             .gap(px(6.0))
             .capture_key_down(cx.listener(Self::on_key))
+            .children(self.render_bypass_dialog(window, t, cx))
             .when(home && hero, |d| d.child(self.render_target_row(t, cx)))
             .when(home && !hero, |d| d.child(self.render_context_row(t, cx)))
             .child(box_)
@@ -2227,7 +2278,7 @@ mod tests {
         assert_eq!(SendState::of(true, false, true), SendState::Stop);
         assert_eq!(SendState::of(true, true, true), SendState::Steer);
         assert_eq!(SendState::of(true, true, false), SendState::Queue);
-        assert!(PLATE_MIN_H < PLATE_MAX_H);
+        const { assert!(PLATE_MIN_H < PLATE_MAX_H) };
     }
 
     #[test]

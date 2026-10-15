@@ -64,26 +64,6 @@ impl<T> Popup<T> {
         }
     }
 
-    /// The state while mounted (open or fading out): for rendering.
-    pub fn get(&self) -> Option<&T> {
-        self.inner.as_ref().map(|(v, _)| v)
-    }
-
-    /// The state only while open: for event handlers.
-    pub fn as_open(&self) -> Option<&T> {
-        match &self.inner {
-            Some((v, None)) => Some(v),
-            _ => None,
-        }
-    }
-
-    pub fn open_mut(&mut self) -> Option<&mut T> {
-        match &mut self.inner {
-            Some((v, None)) => Some(v),
-            _ => None,
-        }
-    }
-
     /// Start the exit phase; `true` when this call started it.
     pub fn begin_close(&mut self) -> bool {
         match &mut self.inner {
@@ -96,6 +76,7 @@ impl<T> Popup<T> {
     }
 
     /// Close at once, without the exit animation.
+    #[cfg(test)]
     pub fn close_now(&mut self) {
         self.inner = None;
     }
@@ -133,18 +114,6 @@ pub fn reap_popup<V: 'static, T: 'static>(cx: &mut Context<V>, popup: impl Fn(&m
         });
     })
     .detach();
-}
-
-/// Close `popup` with its exit animation and schedule the reap.
-pub fn close_popup<V: 'static, T: 'static>(
-    view: &mut V,
-    popup: impl Fn(&mut V) -> &mut Popup<T> + 'static,
-    cx: &mut Context<V>,
-) {
-    if popup(view).begin_close() {
-        reap_popup(cx, popup);
-    }
-    cx.notify();
 }
 
 /// Wrap a menu's card in its entrance (or, while closing, its exit).
@@ -218,30 +187,6 @@ pub fn apply_key(key: MenuKey, active: &mut Option<usize>, count: usize) -> Opti
         MenuKey::Close | MenuKey::Other => {}
     }
     None
-}
-
-/// `0` prefix match, `1` substring, `None` no match (case-insensitive).
-pub fn match_rank(query: &str, label: &str) -> Option<usize> {
-    let query = query.trim().to_lowercase();
-    if query.is_empty() {
-        return Some(1);
-    }
-    let label = label.to_lowercase();
-    if label.starts_with(&query) {
-        Some(0)
-    } else if label.contains(&query) {
-        Some(1)
-    } else {
-        None
-    }
-}
-
-/// Indices of `labels` matching `query`: prefix matches first, stable.
-pub fn filter_indices<S: AsRef<str>>(query: &str, labels: &[S]) -> Vec<usize> {
-    let mut ranked: Vec<(usize, usize)> =
-        labels.iter().enumerate().filter_map(|(i, l)| match_rank(query, l.as_ref()).map(|r| (r, i))).collect();
-    ranked.sort_unstable();
-    ranked.into_iter().map(|(_, i)| i).collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -348,18 +293,6 @@ pub fn menu_item(
         .child(div().flex_1().min_w_0().truncate().child(label))
 }
 
-/// A small heading over a group of rows.
-pub fn menu_heading(t: &Theme, label: impl Into<SharedString>) -> Div {
-    div()
-        .px(px(8.0))
-        .pt(px(6.0))
-        .pb(px(2.0))
-        .text_size(ty::CAPTION)
-        .font_weight(gpui::FontWeight::MEDIUM)
-        .text_color(t.text_faint)
-        .child(label.into())
-}
-
 /// A hairline between groups, running border to border.
 pub fn menu_separator(t: &Theme) -> Div {
     div().h(px(1.0)).mx(px(-CARD_INSET)).my(px(MENU_GAP)).bg(t.border)
@@ -384,6 +317,9 @@ pub fn scrim(t: &Theme, strength: f32) -> Hsla {
     t.scrim.opacity(strength)
 }
 
+/// What a modal runs for a press outside its card.
+pub type OnOutside = Box<dyn Fn(&mut Window, &mut gpui::App)>;
+
 /// A full-window layer: the scrim fades in over [`motion::DIALOG_IN`] and
 /// `card` enters with [`motion::dialog_in`] (opacity + 2 px settle; both
 /// snap under reduced motion). The scrim swallows clicks and wheel events;
@@ -396,7 +332,7 @@ pub fn modal(
     scrim_color: Hsla,
     align_top: Option<f32>,
     card: AnyElement,
-    on_outside: Option<Box<dyn Fn(&mut Window, &mut gpui::App)>>,
+    on_outside: Option<OnOutside>,
 ) -> AnyElement {
     let id: SharedString = id.into();
     let backdrop = div().absolute().inset_0().bg(scrim_color).with_animation(
@@ -557,15 +493,6 @@ mod tests {
         assert_eq!(apply_key(MenuKey::Activate, &mut active, 4), Some(3));
         assert_eq!(classify("n", true), MenuKey::Down);
         assert_eq!(classify("escape", false), MenuKey::Close);
-    }
-
-    #[test]
-    fn filter_ranks_prefix_first() {
-        let labels = ["Appearance", "Reduce motion", "Archived"];
-        // "Archived" is a prefix match; "Appearance" holds "ar" inside.
-        assert_eq!(filter_indices("ar", &labels), vec![2, 0]);
-        assert_eq!(filter_indices("a", &labels), vec![0, 2]);
-        assert_eq!(filter_indices("", &labels), vec![0, 1, 2]);
     }
 
     #[test]

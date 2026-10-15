@@ -68,6 +68,7 @@ pub enum SettingsEvent {
 }
 
 impl Section {
+    #[cfg(test)]
     pub const ALL: [Section; 13] = [
         Section::General,
         Section::Appearance,
@@ -357,7 +358,6 @@ pub struct SettingsPage {
     sel_term_size: SelectState,
     sel_scrollback: SelectState,
     sel_mic: SelectState,
-    sel_canvas: SelectState,
     width_slider: SliderState,
     save_gen: HashMap<&'static str, u64>,
     _subs: Vec<Subscription>,
@@ -460,7 +460,6 @@ impl SettingsPage {
             sel_term_size: SelectState::default(),
             sel_scrollback: SelectState::default(),
             sel_mic: SelectState::default(),
-            sel_canvas: SelectState::default(),
             width_slider: SliderState::default(),
             save_gen: HashMap::new(),
             _subs: subs,

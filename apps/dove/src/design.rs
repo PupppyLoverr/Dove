@@ -13,7 +13,7 @@
 
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
-use gpui::{App, Pixels, Rems, Window, px};
+use gpui::{App, Rems, Window, px};
 
 /// The base size rems are measured against (Zeron's default).
 pub const BASE: f32 = 16.0;
@@ -68,43 +68,6 @@ pub mod ty {
         pub const MD: Rems = rem(22.0);
         pub const PAGE: Rems = rem(26.0);
     }
-
-    /// The role closest to a legacy pixel size (used by the size codemod
-    /// and by builders that take a numeric size).
-    pub const fn nearest(px: f32) -> Rems {
-        rem(snap(px))
-    }
-
-    /// The scale step closest to `px`.
-    pub const fn snap(px: f32) -> f32 {
-        if px <= 10.75 {
-            10.5
-        } else if px <= 11.25 {
-            11.0
-        } else if px <= 11.75 {
-            11.5
-        } else if px <= 12.25 {
-            12.0
-        } else if px <= 12.75 {
-            12.5
-        } else if px <= 13.5 {
-            13.0
-        } else if px <= 14.5 {
-            14.0
-        } else if px <= 15.5 {
-            15.0
-        } else if px <= 17.0 {
-            16.0
-        } else if px <= 19.0 {
-            18.0
-        } else if px <= 21.0 {
-            20.0
-        } else if px <= 24.0 {
-            22.0
-        } else {
-            26.0
-        }
-    }
 }
 
 /// The 4 px spacing grid.
@@ -115,15 +78,12 @@ pub mod space {
     pub const MD: f32 = 12.0;
     pub const LG: f32 = 16.0;
     pub const XL: f32 = 24.0;
-    pub const XXL: f32 = 32.0;
 }
 
 /// Corner radii.
 pub mod radius {
     /// Icon buttons, small controls.
     pub const CONTROL: f32 = 6.0;
-    /// Menu and picker rows.
-    pub const MENU_ITEM: f32 = 7.0;
     /// Selects, segmented controls, text fields.
     pub const SELECT: f32 = 8.0;
     /// Inset panels and the main card.
@@ -134,8 +94,6 @@ pub mod radius {
     pub const BUBBLE: f32 = 16.0;
     /// The composer plate.
     pub const COMPOSER: f32 = 26.0;
-    /// Pills.
-    pub const PILL: f32 = 999.0;
 }
 
 /// Fixed control metrics.
@@ -146,11 +104,6 @@ pub mod size {
     pub const ROW_MIN: f32 = 60.0;
     /// Select triggers and text fields.
     pub const FIELD: f32 = 32.0;
-    /// Icon buttons.
-    pub const BUTTON: f32 = 24.0;
-    /// Toggle switch.
-    pub const TOGGLE_W: f32 = 36.0;
-    pub const TOGGLE_H: f32 = 20.0;
     /// The settings and page reading column.
     pub const PAGE_MAX: f32 = 760.0;
     pub const PAGE_PAD_X: f32 = 40.0;
@@ -207,11 +160,6 @@ pub fn conversation_width() -> f32 {
 /// The interface base size in pixels.
 pub fn ui_size() -> f32 {
     load(&UI)
-}
-
-/// How much the interface text is scaled from the default.
-pub fn ui_scale() -> f32 {
-    ui_size() / BASE
 }
 
 fn parse(store: &dove_core::store::Store, key: &str, default: f32, lo: f32, hi: f32) -> f32 {
@@ -283,12 +231,6 @@ pub fn format_size(v: f32) -> String {
     if (v - v.round()).abs() < 0.01 { format!("{}", v.round() as i64) } else { format!("{v:.1}") }
 }
 
-/// A pixel length scaled with the interface size, for the few layout
-/// numbers that must track text (row heights holding a single label).
-pub fn scaled(px_at_base: f32) -> Pixels {
-    px((px_at_base * ui_scale()).round())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -297,16 +239,6 @@ mod tests {
     fn roles_render_at_their_pixel_size_at_base() {
         assert!((ty::BODY.0 * BASE - 13.0).abs() < 1e-6);
         assert!((ty::PAGE.0 * BASE - 20.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn snap_lands_on_the_scale() {
-        assert_eq!(ty::snap(10.0), 10.5);
-        assert_eq!(ty::snap(11.5), 11.5);
-        assert_eq!(ty::snap(13.5), 13.0);
-        assert_eq!(ty::snap(14.5), 14.0);
-        assert_eq!(ty::snap(21.0), 20.0);
-        assert_eq!(ty::snap(26.0), 26.0);
     }
 
     #[test]

@@ -2,13 +2,11 @@
 //! search and options, and the device footer. Collapsible to zero (Ctrl+B)
 //! and resizable (208–400 px).
 
-use std::time::Duration;
-
 use dove_core::proto::{PermissionDecision, TaskStatus};
 use dove_core::store::Task;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    Anchor, Animation, AnimationExt as _, AnyElement, Context, Hsla, InteractiveElement as _, IntoElement, MouseButton,
+    Anchor, AnimationExt as _, AnyElement, Context, Hsla, InteractiveElement as _, IntoElement, MouseButton,
     MouseDownEvent, ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled as _, anchored, deferred,
     div, hsla, px,
 };
@@ -950,7 +948,7 @@ impl Shell {
             .child(row)
             .with_animation(
                 SharedString::from(format!("glide-{id}-{rank}")),
-                Animation::new(Duration::from_millis(260)).with_easing(gpui::ease_out_quint()),
+                crate::motion::LIST_REORDER.animation(),
                 |el, delta| el.relative().opacity(0.4 + 0.6 * delta).top(px(6.0 * (1.0 - delta))),
             )
             .into_any_element()

@@ -77,7 +77,7 @@ pub fn count_render(view: &'static str) {
         return;
     }
     thread_local! {
-        static COUNTS: RefCell<(Option<Instant>, BTreeMap<&'static str, u32>)> = RefCell::new((None, BTreeMap::new()));
+        static COUNTS: RefCell<(Option<Instant>, BTreeMap<&'static str, u32>)> = const { RefCell::new((None, BTreeMap::new())) };
     }
     COUNTS.with(|c| {
         let mut c = c.borrow_mut();

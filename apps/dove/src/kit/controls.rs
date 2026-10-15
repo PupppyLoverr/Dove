@@ -95,12 +95,6 @@ pub fn button_sm(
     button(t, id, label, tone).h(px(26.0)).px(px(10.0))
 }
 
-/// Make a control reachable with Tab and ring it when focused from the keyboard.
-pub fn focusable(el: gpui::Stateful<Div>, t: &Theme) -> gpui::Stateful<Div> {
-    let ring = t.accent;
-    el.tab_index(0).focus_visible(move |s| s.border_1().border_color(ring))
-}
-
 /// A disabled look: dimmed, no pointer, with the reason as a tooltip.
 pub fn disabled(el: gpui::Stateful<Div>, reason: impl Into<SharedString>) -> gpui::Stateful<Div> {
     el.opacity(0.45).cursor_default().tooltip(crate::ui::tip(reason))
@@ -276,8 +270,11 @@ struct SegmentedControl {
     segments: Vec<Segment>,
     selected: usize,
     slot: f32,
-    on_pick: Rc<dyn Fn(usize, &mut Window, &mut App)>,
+    on_pick: OnPick,
 }
+
+/// A segmented control's pick handler.
+type OnPick = Rc<dyn Fn(usize, &mut Window, &mut App)>;
 
 impl RenderOnce for SegmentedControl {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
@@ -472,12 +469,6 @@ impl SelectOption {
 pub struct SelectState {
     popup: Popup<()>,
     highlighted: Option<usize>,
-}
-
-impl SelectState {
-    pub fn is_open(&self) -> bool {
-        self.popup.is_open()
-    }
 }
 
 type Reach<V> = Rc<dyn Fn(&mut V) -> &mut SelectState>;
@@ -827,11 +818,12 @@ pub fn slider<V: 'static>(
         )
         .on_mouse_move(cx.listener(move |this, e: &MouseMoveEvent, window, cx| {
             let state = r2(this);
-            if state.dragging && e.pressed_button == Some(MouseButton::Left) {
-                if let Some(v) = f2(e.position.x) {
-                    state.last = Some(v);
-                    c2(this, v, false, window, cx);
-                }
+            if state.dragging
+                && e.pressed_button == Some(MouseButton::Left)
+                && let Some(v) = f2(e.position.x)
+            {
+                state.last = Some(v);
+                c2(this, v, false, window, cx);
             }
         }))
         .on_mouse_up(
