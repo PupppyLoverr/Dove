@@ -660,6 +660,14 @@ impl Fades {
 thread_local! {
     static HOVERS: RefCell<Fades> = RefCell::new(Fades::default());
     static STATES: RefCell<Fades> = RefCell::new(Fades::default());
+    /// The view whose frames advance the fades (the shell).
+    static CHROME_VIEW: std::cell::Cell<Option<gpui::EntityId>> = const { std::cell::Cell::new(None) };
+}
+
+/// Name the view that draws faded chrome (the shell calls this as it
+/// renders), so a hover flip repaints just that view instead of the window.
+pub fn set_chrome_view(id: gpui::EntityId) {
+    CHROME_VIEW.with(|v| v.set(Some(id)));
 }
 
 /// Hover progress `[0, 1]` of `key` this frame.
@@ -677,10 +685,29 @@ pub fn hover_listener(key: impl Into<SharedString>) -> impl Fn(&bool, &mut Windo
     let key = key.into();
     move |hovered, window, cx| {
         set_hover(&key, *hovered, cx.reduce_motion());
-        // Event context: refresh marks the window dirty; the shell's render
-        // tail keeps frames coming while the fade is mid-flight.
-        window.refresh();
+        // Repaint the shell (cached children are reused); its render tail
+        // keeps frames coming while the fade is mid-flight.
+        match CHROME_VIEW.with(|v| v.get()) {
+            Some(id) => cx.notify(id),
+            None => window.refresh(),
+        }
     }
+}
+
+/// A shell-chrome row's hover: its wash (and optionally its text) fades
+/// between rest and hover over [`HOVER_FADE`]. Only for elements the shell
+/// draws itself; cached views keep instant `.hover()` styles.
+pub fn hover_fade<E>(el: E, key: impl Into<SharedString>, bg: (Hsla, Hsla), fg: Option<(Hsla, Hsla)>) -> E
+where
+    E: gpui::InteractiveElement + Styled + gpui::StatefulInteractiveElement,
+{
+    let key: SharedString = key.into();
+    let el = el.bg(hover_blend(&key, bg.0, bg.1));
+    let el = match fg {
+        Some((rest, hover)) => el.text_color(hover_blend(&key, rest, hover)),
+        None => el,
+    };
+    el.on_hover(hover_listener(key))
 }
 
 /// The rest → hover blend of `key`.

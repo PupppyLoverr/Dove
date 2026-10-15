@@ -2222,17 +2222,7 @@ impl TaskView {
         // A new group's header grows into place, like its rows.
         let header_reveal = tc::progress(a.started.filter(|_| a.live), now, tc::ROW_REVEAL, tc::EASE_OUT_EXPO);
         moving |= header_reveal < 1.0;
-        let header: AnyElement = if header_reveal < 1.0 {
-            div()
-                .w_full()
-                .h(px(tc::HEADER_HEIGHT * header_reveal))
-                .flex_none()
-                .overflow_hidden()
-                .child(header)
-                .into_any_element()
-        } else {
-            header.into_any_element()
-        };
+        let header: AnyElement = tc::arriving(header, header_reveal);
 
         let body = frame.mounted.then(|| {
             // While it works (and the user has not chosen), only the newest
@@ -2264,30 +2254,12 @@ impl TaskView {
                 };
                 let reveal = tc::progress(start_of(step), now, tc::ROW_REVEAL, tc::EASE_OUT_EXPO);
                 moving |= reveal < 1.0 || rail.connector < 1.0;
-                let (row, key) = match step {
-                    Step::Thought(k) => (
-                        self.render_thought(i, *k, &a.thoughts[*k], rail, weak, t, &mut moving),
-                        (i, tc::PART_REVEAL_THOUGHT, *k),
-                    ),
-                    Step::Tool(j) => (
-                        self.render_tool(i, *j, &a.tools[*j], a.live, rail, weak, t, &mut moving),
-                        (i, tc::PART_REVEAL_TOOL, *j),
-                    ),
+                let row = match step {
+                    Step::Thought(k) => self.render_thought(i, *k, &a.thoughts[*k], rail, weak, t, &mut moving),
+                    Step::Tool(j) => self.render_tool(i, *j, &a.tools[*j], a.live, rail, weak, t, &mut moving),
                 };
-                // A new arrival grows into place; settled rows lay out freely.
-                rows.push(if reveal < 1.0 {
-                    let cell = self.folds.cell(key);
-                    let h = cell.get() * reveal;
-                    div()
-                        .w_full()
-                        .h(px(h))
-                        .flex_none()
-                        .overflow_hidden()
-                        .child(tc::measured(row, cell))
-                        .into_any_element()
-                } else {
-                    row
-                });
+                // A new arrival fades and settles into place.
+                rows.push(if reveal < 1.0 { tc::arriving(row, reveal) } else { row });
             }
             tc::folding(div().w_full().pt(px(2.0)).flex().flex_col().children(rows), &frame)
         });

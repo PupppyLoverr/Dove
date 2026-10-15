@@ -95,7 +95,14 @@ impl Shell {
                 .cursor_pointer()
                 .text_size(ty::BODY)
                 .when(selected, |d| d.bg(ui::selected_bg(&t)).shadow(ui::selected_ring(&t)).text_color(t.text))
-                .when(!selected, |d| d.text_color(t.text_muted).hover(|s| s.bg(t.wash(0.05)).text_color(t.text)))
+                .when(!selected, |d| {
+                    crate::motion::hover_fade(
+                        d,
+                        SharedString::from(format!("nav-{label}")),
+                        (t.wash(0.0), t.wash(0.05)),
+                        Some((t.text_muted, t.text)),
+                    )
+                })
                 .child(icon(glyph).size(px(16.0)))
                 .child(div().flex_1().child(label))
                 .children(badge)
@@ -506,7 +513,9 @@ impl Shell {
             .cursor_pointer()
             .text_size(ty::BODY)
             .when(selected || open, |d| d.bg(ui::selected_bg(t)).shadow(ui::selected_ring(t)).text_color(t.text))
-            .when(!selected && !open, |d| d.text_color(t.text_muted).hover(|s| s.bg(t.wash(0.05)).text_color(t.text)))
+            .when(!selected && !open, |d| {
+                crate::motion::hover_fade(d, "nav-more", (t.wash(0.0), t.wash(0.05)), Some((t.text_muted, t.text)))
+            })
             .child(icon(icons::MORE_HORIZONTAL).size(px(16.0)))
             .child(div().flex_1().child("More"))
             .child(icon(icons::ALT_ARROW_RIGHT).size(px(12.0)).text_color(t.text_faint))
@@ -730,7 +739,9 @@ impl Shell {
             .rounded(px(8.0))
             .cursor_pointer()
             .when(selected, |d| d.bg(ui::selected_bg(t)).shadow(ui::selected_ring(t)))
-            .when(!selected, |d| d.hover(|s| s.bg(t.wash(0.05))))
+            .when(!selected, |d| {
+                crate::motion::hover_fade(d, SharedString::from(format!("row-{id}")), (t.wash(0.0), t.wash(0.05)), None)
+            })
             .when(archived && !selected, |d| d.opacity(0.6))
             .when_some(step.clone().filter(|_| compact), |d, s| d.tooltip(ui::tip(s)))
             .child(div().w(px(12.0)).flex().justify_center().child(kit::status_glyph(
@@ -832,13 +843,14 @@ impl Shell {
                     cx.notify();
                 }),
             );
-        // Rows glide in when they move to a new attention bucket.
+        // Rows glide in when they move to a new attention bucket (offset and
+        // opacity only: the list lays out once).
         div()
             .child(row)
             .with_animation(
                 SharedString::from(format!("glide-{id}-{rank}")),
                 Animation::new(Duration::from_millis(260)).with_easing(gpui::ease_out_quint()),
-                |el, delta| el.opacity(0.4 + 0.6 * delta).mt(px(6.0 * (1.0 - delta))),
+                |el, delta| el.relative().opacity(0.4 + 0.6 * delta).top(px(6.0 * (1.0 - delta))),
             )
             .into_any_element()
     }

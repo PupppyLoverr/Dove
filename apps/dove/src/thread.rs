@@ -526,6 +526,29 @@ impl ThreadView {
     pub fn view_switch(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let mode = self.view;
         let armed = self.armed.is_some();
+        // The selection plate slides between the two slots (the shell draws
+        // this switch, so its frames carry the glide).
+        let slot = crate::motion::state_t(
+            &format!("view-switch-{}", cx.entity_id()),
+            mode == ViewMode::Terminal,
+            crate::motion::INDICATOR_SLIDE,
+            cx.reduce_motion(),
+        );
+        let plate = div()
+            .absolute()
+            .top_0()
+            .left(px(27.0 * slot))
+            .h(px(22.0))
+            .w(px(26.0))
+            .rounded(px(6.0))
+            .bg(t.wash(0.10))
+            .shadow(vec![gpui::BoxShadow {
+                color: gpui::hsla(0.0, 0.0, 1.0, if t.appearance.is_dark() { 0.07 } else { 0.6 }),
+                offset: gpui::point(px(0.0), px(1.0)),
+                blur_radius: px(0.0),
+                spread_radius: px(0.0),
+                inset: true,
+            }]);
         let item =
             |id: &'static str, glyph: &'static str, label: &'static str, want: ViewMode, cx: &mut Context<Self>| {
                 let on = mode == want;
@@ -543,15 +566,6 @@ impl ThreadView {
                     .aria_selected(on)
                     .aria_label(label)
                     .tooltip(ui::tip(label))
-                    .when(on, |d| {
-                        d.bg(t.wash(0.10)).shadow(vec![gpui::BoxShadow {
-                            color: gpui::hsla(0.0, 0.0, 1.0, if t.appearance.is_dark() { 0.07 } else { 0.6 }),
-                            offset: gpui::point(px(0.0), px(1.0)),
-                            blur_radius: px(0.0),
-                            spread_radius: px(0.0),
-                            inset: true,
-                        }])
-                    })
                     .when(!on, |d| d.hover(|s| s.bg(t.wash(0.06))))
                     .child(icon(glyph).size(px(13.5)).text_color(if on { t.text } else { t.text_faint }))
                     .when(armed && want == ViewMode::Terminal && !on, |d| {
@@ -566,9 +580,11 @@ impl ThreadView {
         div()
             .id("view-switch")
             .occlude()
+            .relative()
             .flex()
             .items_center()
             .gap(px(1.0))
+            .child(plate)
             .child(item("view-chat", icons::CHAT_ROUND_LINE, "Chat (Ctrl+`)", ViewMode::Chat, cx))
             .child(item("view-terminal", icons::TERMINAL, "Terminal (Ctrl+`)", ViewMode::Terminal, cx))
             .into_any_element()

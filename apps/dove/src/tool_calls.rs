@@ -13,9 +13,8 @@
 //! - The shimmer shapes its line once per frame and paints a handful of
 //!   quantized bands, instead of one shaped line per 2px strip.
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::HashMap;
-use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use gpui::prelude::FluentBuilder as _;
@@ -137,28 +136,23 @@ pub type FoldKey = (usize, u8, usize);
 pub const PART_GROUP: u8 = 0;
 pub const PART_TOOL: u8 = 1;
 pub const PART_THOUGHT: u8 = 2;
-pub const PART_REVEAL_TOOL: u8 = 3;
-pub const PART_REVEAL_THOUGHT: u8 = 4;
 
 #[derive(Default)]
 struct Fold {
     shown: Option<bool>,
-    from: f32,
     at: Option<Instant>,
-    natural: Rc<Cell<f32>>,
-    current: f32,
 }
 
 /// What a fold looks like this frame.
 pub struct FoldFrame {
-    /// `None`: lay out at the natural height. `Some(h)`: clip to `h`.
-    pub clip: Option<f32>,
-    /// Whether the body is built at all (open, or tweening shut).
+    /// Whether the body is built at all.
     pub mounted: bool,
     pub animating: bool,
     /// 0 = closed, 1 = open, for the chevron's rotation.
     pub disclosure: f32,
-    pub natural: Rc<Cell<f32>>,
+    /// The body's entrance (0 → 1): it fades in and settles 3 px. The height
+    /// is final from the first frame, so nothing below reflows per frame.
+    pub reveal: f32,
 }
 
 /// Fold tween state for one transcript view (render-side, so `&self`
@@ -171,62 +165,55 @@ impl Folds {
         self.0.borrow_mut().clear();
     }
 
-    /// Step the fold at `key` toward `open`. A change of `open` since the
-    /// last frame — a click, or a live group settling shut — starts a tween
-    /// from whatever height is on screen, so reversals stay continuous.
+    /// Step the fold at `key` toward `open`. Opening lays the body out at
+    /// its full height at once and fades it in; closing removes it at once.
+    /// Only the chevron turns over the transition, so a fold never animates
+    /// layout. Reduced motion snaps both.
     pub fn step(&self, key: FoldKey, open: bool, now: Instant) -> FoldFrame {
         let mut map = self.0.borrow_mut();
         let f = map.entry(key).or_default();
         if f.shown.is_some_and(|was| was != open) {
-            f.from = f.current;
-            f.at = Some(now);
+            f.at = (!crate::motion::reduced_now()).then_some(now);
         }
         f.shown = Some(open);
-        let natural = f.natural.get();
-        let target = if open { natural } else { 0.0 };
-        let mut frame = FoldFrame {
-            clip: if open { None } else { Some(0.0) },
-            mounted: open,
-            animating: false,
-            disclosure: if open { 1.0 } else { 0.0 },
-            natural: f.natural.clone(),
-        };
+        let mut frame =
+            FoldFrame { mounted: open, animating: false, disclosure: if open { 1.0 } else { 0.0 }, reveal: 1.0 };
         if let Some(at) = f.at {
             let raw = now.saturating_duration_since(at).as_secs_f32() / FOLD.as_secs_f32();
             if raw < 1.0 {
                 let e = EASE_OUT.eval(raw);
-                frame.clip = Some(lerp(f.from, target, e));
-                frame.mounted = true;
                 frame.animating = true;
                 frame.disclosure = if open { e } else { 1.0 - e };
+                if open {
+                    frame.reveal = e;
+                }
             } else {
                 f.at = None;
             }
         }
-        f.current = frame.clip.unwrap_or(natural);
         frame
     }
-
-    /// A measured-height cell with no fold (row reveals).
-    pub fn cell(&self, key: FoldKey) -> Rc<Cell<f32>> {
-        self.0.borrow_mut().entry(key).or_default().natural.clone()
-    }
 }
 
-/// `child` with a prepaint probe that records its laid-out height.
-pub fn measured(child: impl IntoElement, cell: Rc<Cell<f32>>) -> gpui::Div {
-    div().relative().w_full().flex_none().child(child).child(
-        canvas(move |bounds, _, _| cell.set(f32::from(bounds.size.height)), |_, _, _, _| {}).absolute().inset_0(),
-    )
-}
-
-/// Clip `child` to `clip` (natural height when `None`), measuring it.
+/// The fold's body at its natural height, fading and settling in while it
+/// opens. Callers build it only while the fold is mounted (open).
 pub fn folding(child: impl IntoElement, frame: &FoldFrame) -> AnyElement {
-    let body = measured(child, frame.natural.clone());
-    match frame.clip {
-        None => body.into_any_element(),
-        Some(h) => div().w_full().h(px(h)).flex_none().overflow_hidden().child(body).into_any_element(),
+    let body = div().w_full().flex_none().child(child);
+    if frame.reveal < 1.0 {
+        body.relative().opacity(frame.reveal).top(px(-3.0 * (1.0 - frame.reveal))).into_any_element()
+    } else {
+        body.into_any_element()
     }
+}
+
+/// A new arrival's entrance: it takes its full height at once, then fades
+/// in and settles 4 px (opacity and offset only, so rows below it move
+/// once, not every frame).
+pub fn arriving(child: impl IntoElement, progress: f32) -> AnyElement {
+    if progress >= 1.0 {
+        return div().w_full().child(child).into_any_element();
+    }
+    div().relative().w_full().opacity(progress).top(px(-4.0 * (1.0 - progress))).child(child).into_any_element()
 }
 
 /// Keeps frames coming while something on screen is moving.

@@ -154,6 +154,8 @@ pub struct Shell {
     /// The thread a background notification was about, opened when the
     /// window comes back within a minute.
     pending_focus: Option<(TaskId, Instant)>,
+    /// Sidebar and dock open/close transitions.
+    slides: Slides,
     _subs: Vec<Subscription>,
     _scheduler: Option<gpui::Task<()>>,
     _browser_control: Option<gpui::Task<()>>,
@@ -315,6 +317,7 @@ impl Shell {
             titlebar_drag: false,
             window_active: true,
             pending_focus: None,
+            slides: Slides::default(),
             engine,
             _subs: subs,
             _scheduler: None,
@@ -1745,7 +1748,14 @@ impl Shell {
                     // Zeron's selected glass chip: a wash plus an inset
                     // hairline ring, nothing painted behind it.
                     .when(selected, |d| d.bg(ui::selected_bg(t)).shadow(ui::selected_ring(t)))
-                    .when(!selected, |d| d.hover(|s| s.bg(t.wash(0.05))))
+                    .when(!selected, |d| {
+                        crate::motion::hover_fade(
+                            d,
+                            SharedString::from(format!("tab-{id}")),
+                            (t.wash(0.0), t.wash(0.05)),
+                            None,
+                        )
+                    })
                     .when(show_glyph, |d| {
                         d.child(kit::status_glyph(
                             SharedString::from(format!("tab-st-{id}")),
@@ -2174,6 +2184,7 @@ pub fn version_of(program: &std::path::Path) -> Option<String> {
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::perf_trace::count_render("Shell");
+        crate::motion::set_chrome_view(cx.entity_id());
         frame_stats();
         let t = Theme::of(cx).clone();
         let in_thread = matches!(self.route, Route::Thread(_));
@@ -2205,10 +2216,53 @@ impl Render for Shell {
         };
         let center = (!expanded).then(|| self.render_center(window, cx));
         let panel_w = self.panel_width(window);
+        let now = Instant::now();
+        self.slides.sidebar.step((!in_settings).then_some(self.sidebar_open), self.sidebar_w, now);
+        self.slides.panel.step(in_thread.then_some(self.panel_open && !expanded), panel_w, now);
+        let sidebar = sidebar.map(|sidebar| match self.slides.sidebar.entrance("sidebar-in") {
+            Some(id) if !in_settings => {
+                crate::motion::slide_in(id, self.sidebar_w, false, div().h_full().flex_none().child(sidebar))
+                    .into_any_element()
+            }
+            // Entering Settings crossfades its sections into the slot.
+            _ if in_settings => crate::motion::fade_quick("settings-nav-in", div().h_full().flex_none().child(sidebar))
+                .into_any_element(),
+            _ => sidebar,
+        });
+        // Closing ghosts: the sidebar's own rows and a plain dock surface.
+        let sidebar_ghost = self.slides.sidebar.exit(now).map(|(p, w)| {
+            let rows = self.render_sidebar(cx);
+            div()
+                .absolute()
+                .top_0()
+                .bottom_0()
+                .left(px(-24.0 * p))
+                .w(px(w))
+                .opacity(1.0 - p)
+                .bg(t.glass())
+                .when(bare, |d| d.pt(px(Theme::TITLEBAR_HEIGHT)))
+                .child(rows)
+        });
+        let panel_ghost = self.slides.panel.exit(now).map(|(p, w)| {
+            div()
+                .absolute()
+                .top_0()
+                .bottom_0()
+                .right(px(-24.0 * p))
+                .w(px(w))
+                .opacity(1.0 - p)
+                .bg(t.panel_bg())
+                .border_l_1()
+                .border_color(t.border)
+        });
+        if sidebar_ghost.is_some() || panel_ghost.is_some() {
+            window.request_animation_frame();
+        }
 
         // Zeron's flush dock: no inset card, the window's full height (its
         // tone runs up under the titlebar strip, see `dock_layer`) and a
         // hairline on the seam.
+        let panel_entrance = (!expanded).then(|| self.slides.panel.entrance("panel-in")).flatten();
         let panel = panel_open.then(|| {
             div()
                 .relative()
@@ -2234,6 +2288,10 @@ impl Render for Shell {
                     )
                 })
                 .child(AnyView::from(self.panel.clone()).cached(StyleRefinement::default().size_full()))
+        });
+        let panel = panel.map(|panel| match panel_entrance {
+            Some(id) => crate::motion::slide_in(id, panel_w, true, panel).into_any_element(),
+            None => panel.into_any_element(),
         });
 
         let card = if bare {
@@ -2410,8 +2468,19 @@ impl Render for Shell {
                 cx.listener(|this, _, window, cx| this.go_forward(window, cx)),
             )
             .children(dock_layer)
+            .children(panel_ghost)
             .children(topbar)
-            .child(div().flex_1().min_h_0().flex().children(sidebar).children(card).children(panel))
+            .child(
+                div()
+                    .relative()
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .children(sidebar)
+                    .children(card)
+                    .children(panel)
+                    .children(sidebar_ghost),
+            )
             .when(bare, |d| d.child(self.render_bare_chrome(window, cx)))
             .children(menu)
             .children(palette)
@@ -2446,6 +2515,63 @@ impl Shell {
     /// Start a sidebar resize drag (from the sidebar's edge).
     pub fn begin_sidebar_resize(&mut self, x: Pixels) {
         self.resize = Some((Edge::Sidebar, x, self.sidebar_w));
+    }
+}
+
+/// Sidebar and dock transitions. Layout never animates: the chat column
+/// takes its final width at once. An opening surface slides 24 px in and
+/// fades up (a fresh generation id replays the entrance); a closing one
+/// leaves a ghost that slides out and fades over the content.
+#[derive(Default)]
+struct Slides {
+    sidebar: Slide,
+    panel: Slide,
+}
+
+#[derive(Default)]
+struct Slide {
+    /// Last frame's state; `None` while the surface is not in play (the
+    /// route has no dock, or Settings owns the sidebar slot), so coming back
+    /// to it snaps instead of sliding.
+    shown: Option<bool>,
+    generation: u32,
+    /// The exit in flight: when it started and the surface's width.
+    out: Option<(Instant, f32)>,
+}
+
+impl Slide {
+    fn step(&mut self, shown: Option<bool>, width: f32, now: Instant) {
+        if let (Some(was), Some(is)) = (self.shown, shown)
+            && was != is
+            && !crate::motion::reduced_now()
+        {
+            if is {
+                self.generation += 1;
+            } else {
+                self.out = Some((now, width));
+            }
+        }
+        if shown != Some(false) {
+            self.out = None;
+        }
+        self.shown = shown;
+    }
+
+    /// The entrance's element id, once the surface has been opened in this
+    /// session (the first paint never slides).
+    fn entrance(&self, name: &'static str) -> Option<gpui::ElementId> {
+        (self.generation > 0).then(|| gpui::ElementId::NamedInteger(name.into(), self.generation as u64))
+    }
+
+    /// Exit progress (0 → 1) and width while the ghost is out.
+    fn exit(&mut self, now: Instant) -> Option<(f32, f32)> {
+        let (at, width) = self.out?;
+        let t = crate::motion::panel_spec(width).since(at, now);
+        if t >= 1.0 {
+            self.out = None;
+            return None;
+        }
+        Some((t, width))
     }
 }
 

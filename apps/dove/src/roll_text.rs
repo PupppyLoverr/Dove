@@ -5,7 +5,7 @@
 //! either end stay put (the trailing run slides to its new place), while the
 //! changed middle rolls: old glyphs rise out and shrink away as new ones rise
 //! in from below, softened by a 0.1em blur and 2° tilt while in motion,
-//! staggered left to right, and the label's width glides between the two.
+//! staggered left to right, while the trailing run glides to its new place.
 //!
 //! Steady state renders the ordinary truncating label, so layout, ellipsis and
 //! hit-testing are unchanged whenever nothing is moving; the custom element
@@ -184,8 +184,12 @@ impl Element for RollText {
         };
         let from = shape(&self.roll.from);
         let to = shape(&self.roll.to);
+        // The box takes the wider of the two labels while the resize runs,
+        // then the new width: neighbours move at most twice, never per frame.
+        // The trailing run still glides inside it (paint only).
         let progress = layout_progress(self.elapsed());
-        let width = lerp(f32::from(from.width), f32::from(to.width), progress).ceil();
+        let width =
+            if progress < 1.0 { f32::from(from.width).max(f32::from(to.width)) } else { f32::from(to.width) }.ceil();
         let mut style = Style::default();
         style.size.width = gpui::Length::Definite(px(width).into());
         style.size.height = gpui::Length::Definite(line_height.into());
