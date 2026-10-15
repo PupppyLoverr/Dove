@@ -210,13 +210,15 @@ impl Shell {
             }
             SidePanelEvent::OpenThread(id) => this.open_task(*id, window, cx),
         }));
-        subs.push(cx.subscribe_in(&settings, window, |this, _, ev: &crate::settings::SettingsEvent, window, cx| {
-            match ev {
+        subs.push(cx.subscribe_in(
+            &settings,
+            window,
+            |this, _, ev: &crate::settings::SettingsEvent, window, cx| match ev {
                 crate::settings::SettingsEvent::OpenTeam { new: true } => this.edit_teammate(None, window, cx),
                 crate::settings::SettingsEvent::OpenTeam { new: false } => this.open_teammate(None, window, cx),
                 crate::settings::SettingsEvent::OpenAgents => this.navigate(Route::Agents, window, cx),
-            }
-        }));
+            },
+        ));
         subs.push(cx.subscribe_in(&prs, window, |this, _, ev: &PrEvent, window, cx| match ev {
             PrEvent::Checkout { project, number, title } => {
                 this.checkout_pr(project.clone(), *number, title.clone(), window, cx)
@@ -861,7 +863,7 @@ impl Shell {
                 updated_at: t.updated_at,
             })
             .collect();
-        out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        out.sort_by_key(|t| std::cmp::Reverse(t.updated_at));
         out
     }
 
@@ -1452,21 +1454,20 @@ impl Shell {
             .items_center()
             .rounded(px(12.0))
             .when(island_on, |d| {
-                d.bg(t.glass_overlay())
-                    .border_1()
-                    .border_color(t.wash(0.07))
-                    .shadow(vec![gpui::BoxShadow {
-                        color: gpui::hsla(0.0, 0.0, 0.0, 0.22),
-                        offset: gpui::point(px(0.0), px(2.0)),
-                        blur_radius: px(10.0),
-                        spread_radius: px(0.0),
-                        inset: false,
-                    }])
+                d.bg(t.glass_overlay()).border_1().border_color(t.wash(0.07)).shadow(vec![gpui::BoxShadow {
+                    color: gpui::hsla(0.0, 0.0, 0.0, 0.22),
+                    offset: gpui::point(px(0.0), px(2.0)),
+                    blur_radius: px(10.0),
+                    spread_radius: px(0.0),
+                    inset: false,
+                }])
             })
             .child(buttons);
-        let cluster = div()
-            .ml(px(if cfg!(target_os = "macos") { left_pad } else { 6.0 }))
-            .child(if island_on { ui::frosted(12.0, 20.0, island).into_any_element() } else { island.into_any_element() });
+        let cluster = div().ml(px(if cfg!(target_os = "macos") { left_pad } else { 6.0 })).child(if island_on {
+            ui::frosted(12.0, 20.0, island).into_any_element()
+        } else {
+            island.into_any_element()
+        });
         let bar = div()
             .relative()
             .h(px(Theme::TITLEBAR_HEIGHT))
@@ -2140,13 +2141,15 @@ impl Render for Shell {
         });
 
         let card = if bare {
-            Some(div().flex_1().min_w_0().h_full().overflow_hidden().child(ui::rounded_clip(
-                0.0,
-                div()
-                    .size_full()
-                    .flex()
-                    .when_some(center, |d, center| d.child(div().flex_1().min_w_0().h_full().child(center))),
-            )))
+            Some(
+                div().flex_1().min_w_0().h_full().overflow_hidden().child(ui::rounded_clip(
+                    0.0,
+                    div()
+                        .size_full()
+                        .flex()
+                        .when_some(center, |d, center| d.child(div().flex_1().min_w_0().h_full().child(center))),
+                )),
+            )
         } else {
             center.map(|center| {
                 div()

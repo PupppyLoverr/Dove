@@ -222,7 +222,10 @@ impl Shell {
         let rescan = ui::button_ghost("ag-rescan", "Rescan PATH", &t)
             .on_click(cx.listener(|this, _, _, cx| this.rescan(cx)))
             .into_any_element();
-        page_with("agents-page", "Agents", "Every agent CLI Dove knows: where it lives, how to sign in, and whether the composer offers it.",
+        page_with(
+            "agents-page",
+            "Agents",
+            "Every agent CLI Dove knows: where it lives, how to sign in, and whether the composer offers it.",
             &t,
             Some(rescan),
             div().flex().flex_col().gap(px(14.0)).children(sheet).child(rows),

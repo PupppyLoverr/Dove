@@ -591,11 +591,8 @@ pub fn selected_bg(theme: &Theme) -> gpui::Hsla {
 /// The selected outline as an inset hairline: drawn over the fill at the
 /// edge only, so nothing paints behind a translucent chip.
 pub fn selected_ring(theme: &Theme) -> Vec<gpui::BoxShadow> {
-    let color = if theme.appearance.is_dark() {
-        gpui::hsla(0.0, 0.0, 1.0, 0.09)
-    } else {
-        gpui::hsla(0.0, 0.0, 0.0, 0.07)
-    };
+    let color =
+        if theme.appearance.is_dark() { gpui::hsla(0.0, 0.0, 1.0, 0.09) } else { gpui::hsla(0.0, 0.0, 0.0, 0.07) };
     vec![gpui::BoxShadow {
         color,
         offset: gpui::point(px(0.0), px(0.0)),

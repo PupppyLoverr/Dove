@@ -8,7 +8,9 @@
 
 use std::time::Duration;
 
-use gpui::{Animation, AnimationExt as _, ElementId, Hsla, IntoElement, ParentElement as _, SharedString, Styled as _, div, px};
+use gpui::{
+    Animation, AnimationExt as _, ElementId, Hsla, IntoElement, ParentElement as _, SharedString, Styled as _, div, px,
+};
 
 use crate::theme::Theme;
 
@@ -75,24 +77,14 @@ pub fn glyph_spinner(id: impl Into<ElementId>, cell_px: f32, rows: [Hsla; 3]) ->
     // Clockwise ring position of each (row, col), top-left first.
     const RING: [[usize; 2]; 3] = [[0, 1], [5, 2], [4, 3]];
     let key = format!("{:?}", id.into());
-    div()
-        .w(px(cell_px * 2.5))
-        .h(px(cell_px * 4.0))
-        .flex()
-        .flex_none()
-        .flex_col()
-        .gap(px(cell_px / 2.0))
-        .children((0..3).map(|row| {
+    div().w(px(cell_px * 2.5)).h(px(cell_px * 4.0)).flex().flex_none().flex_col().gap(px(cell_px / 2.0)).children(
+        (0..3).map(|row| {
             let key = key.clone();
             div().flex().gap(px(cell_px / 2.0)).children((0..2).map(move |col| {
-                cell(
-                    SharedString::from(format!("{key}-m{row}{col}")),
-                    cell_px,
-                    rows[row],
-                    RING[row][col] as f32 / 6.0,
-                )
+                cell(SharedString::from(format!("{key}-m{row}{col}")), cell_px, rows[row], RING[row][col] as f32 / 6.0)
             }))
-        }))
+        }),
+    )
 }
 
 #[cfg(test)]

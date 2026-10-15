@@ -253,11 +253,7 @@ fn delim(
         // A lone `~` never opens; `~` entries of len 1 exist only as the
         // remainder of a half-streamed closer.
         if can_open && (c != '~' || rest == 2) {
-            delims.push(OpenDelim {
-                ch: c,
-                len: rest,
-                pos: end,
-            });
+            delims.push(OpenDelim { ch: c, len: rest, pos: end });
         } else {
             *last_content = Some(end - 1);
         }
@@ -272,13 +268,8 @@ fn setext_partial(text: &str) -> bool {
     };
     let last = &text[nl + 1..];
     let trimmed = last.trim_start();
-    let underline =
-        |c: char| !trimmed.is_empty() && trimmed.len() <= 2 && trimmed.chars().all(|x| x == c);
-    (underline('-') || underline('='))
-        && text[..nl]
-            .lines()
-            .last()
-            .is_some_and(|l| !l.trim().is_empty())
+    let underline = |c: char| !trimmed.is_empty() && trimmed.len() <= 2 && trimmed.chars().all(|x| x == c);
+    (underline('-') || underline('=')) && text[..nl].lines().last().is_some_and(|l| !l.trim().is_empty())
 }
 
 #[cfg(test)]

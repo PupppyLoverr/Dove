@@ -651,7 +651,7 @@ impl Changes {
         let path = f.path.clone();
         let group = SharedString::from(if sticky { "diff-file-sticky".to_string() } else { format!("diff-file-{fi}") });
         let id = |s: &str| ElementId::from(SharedString::from(format!("{s}-{}-{fi}", if sticky { "s" } else { "r" })));
-        let (rest, hover) = if sticky { (ink(0.025), ink(0.05)) } else { (ink(0.025), ink(0.05)) };
+        let (rest, hover) = (ink(0.025), ink(0.05));
         let head = div()
             .id(id("diff-file"))
             .group(group.clone())
@@ -839,9 +839,8 @@ impl Changes {
         };
         let faint = t.text_faint.opacity(0.8);
         // A deletion is cited on the old side; everything else on the new.
-        let adder_left = ACCENT_BAR_WIDTH
-            + if line.kind == LineKind::Removed { 0.0 } else { gutter }
-            + (gutter - ADDER_SIZE) / 2.0;
+        let adder_left =
+            ACCENT_BAR_WIDTH + if line.kind == LineKind::Removed { 0.0 } else { gutter } + (gutter - ADDER_SIZE) / 2.0;
         div()
             .id(("diff-line", ix))
             .group(group.clone())
@@ -970,12 +969,7 @@ impl Changes {
     }
 
     fn spans(&self, fi: usize, hi: usize, li: usize) -> &[HighlightSpan] {
-        self.highlights
-            .get(fi)
-            .and_then(|f| f.get(hi))
-            .and_then(|h| h.get(li))
-            .map(Vec::as_slice)
-            .unwrap_or(&[])
+        self.highlights.get(fi).and_then(|f| f.get(hi)).and_then(|h| h.get(li)).map(Vec::as_slice).unwrap_or(&[])
     }
 
     /// The only part of a row that moves sideways: gutters stay put while
@@ -1100,9 +1094,9 @@ impl Changes {
     fn render_toolbar(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let (n, adds, dels) = self.summary();
         let toggle = |id: &'static str, glyph: &'static str, label: &'static str, on: bool| {
-            surface_chrome::toolbar_button(id, label)
-                .when(on, |d| d.bg(ink(0.10)))
-                .child(icon(glyph).size(px(surface_chrome::ICON_SIZE)).text_color(if on { t.text } else { t.text_muted }))
+            surface_chrome::toolbar_button(id, label).when(on, |d| d.bg(ink(0.10))).child(
+                icon(glyph).size(px(surface_chrome::ICON_SIZE)).text_color(if on { t.text } else { t.text_muted }),
+            )
         };
         let label = match (&self.commit, &self.target) {
             (Some(_), _) => format!("{n} Changed {} in this commit", if n == 1 { "file" } else { "files" }),
@@ -1164,17 +1158,16 @@ impl Changes {
                         .on_click(cx.listener(|this, _, window, cx| this.show_tree(window, cx))),
                 )
             })
-            .child(toggle("diff-wrap", icons::WRAP_TEXT, "Wrap long lines", self.wrap).on_click(
-                cx.listener(|this, _, _, cx| this.toggle_wrap(cx)),
-            ))
             .child(
-                toggle("diff-split", icons::SPLIT_COLUMNS, "Side by side", self.layout == Layout::Split).on_click(
-                    cx.listener(|this, _, _, cx| {
-                        let next = if this.layout == Layout::Split { Layout::Unified } else { Layout::Split };
-                        this.set_layout(next, cx);
-                    }),
-                ),
+                toggle("diff-wrap", icons::WRAP_TEXT, "Wrap long lines", self.wrap)
+                    .on_click(cx.listener(|this, _, _, cx| this.toggle_wrap(cx))),
             )
+            .child(toggle("diff-split", icons::SPLIT_COLUMNS, "Side by side", self.layout == Layout::Split).on_click(
+                cx.listener(|this, _, _, cx| {
+                    let next = if this.layout == Layout::Split { Layout::Unified } else { Layout::Split };
+                    this.set_layout(next, cx);
+                }),
+            ))
             .child(
                 toggle(
                     "diff-fold",
@@ -1673,7 +1666,12 @@ mod tests {
         let mut f = git::diff::untracked_file(std::path::Path::new("."), "missing-file-for-test");
         f.hunks = vec![Hunk {
             header: "@@".into(),
-            lines: vec![git::DiffLine { kind: LineKind::Context, old_no: Some(1), new_no: Some(1), text: "\tx".into() }],
+            lines: vec![git::DiffLine {
+                kind: LineKind::Context,
+                old_no: Some(1),
+                new_no: Some(1),
+                text: "\tx".into(),
+            }],
         }];
         let files = expand_tabs(vec![f]);
         assert_eq!(&*files[0].hunks[0].lines[0].text, "    x");

@@ -921,7 +921,13 @@ fn render_item<V: 'static>(
                                 }),
                         )
                         .when(s.spark.len() > 1, |d| {
-                            let color = if down { t.danger } else if up { t.success } else { t.accent };
+                            let color = if down {
+                                t.danger
+                            } else if up {
+                                t.success
+                            } else {
+                                t.accent
+                            };
                             d.child(sparkline(s.spark.clone(), color, 28.0))
                         }),
                 );
@@ -1604,8 +1610,8 @@ fn render_item<V: 'static>(
                 .size(px(132.0))
                 .flex_none()
             };
-            let legend = div().flex_1().min_w_0().flex().flex_col().gap(px(7.0)).children(items.iter().enumerate().map(
-                |(i, d)| {
+            let legend = div().flex_1().min_w_0().flex().flex_col().gap(px(7.0)).children(
+                items.iter().enumerate().map(|(i, d)| {
                     div()
                         .flex()
                         .items_center()
@@ -1621,8 +1627,8 @@ fn render_item<V: 'static>(
                                 .text_color(t.text_faint)
                                 .child(format!("{:.0}%", fracs[i] * 100.0)),
                         )
-                },
-            ));
+                }),
+            );
             div()
                 .flex()
                 .flex_col()
@@ -1687,7 +1693,9 @@ fn render_item<V: 'static>(
                             .object_fit(gpui::ObjectFit::Cover),
                     )
                     .when(!shot.caption.is_empty(), |d| {
-                        d.child(div().text_size(px(11.5)).text_color(t.text_faint).truncate().child(shot.caption.clone()))
+                        d.child(
+                            div().text_size(px(11.5)).text_color(t.text_faint).truncate().child(shot.caption.clone()),
+                        )
                     })
             }))
             .into_any_element(),
@@ -1806,15 +1814,14 @@ fn render_item<V: 'static>(
                         .flex()
                         .items_center()
                         .cursor_pointer()
+                        .child(canvas(move |b, _, _| bounds.set(Some(b)), |_, _, _, _| {}).absolute().inset_0())
                         .child(
-                            canvas(move |b, _, _| bounds.set(Some(b)), |_, _, _, _| {})
-                                .absolute()
-                                .inset_0(),
-                        )
-                        .child(
-                            div().w_full().h(px(6.0)).rounded(px(3.0)).bg(t.wash(0.09)).child(
-                                div().h_full().w(gpui::relative(f.max(0.002))).rounded(px(3.0)).bg(t.accent),
-                            ),
+                            div()
+                                .w_full()
+                                .h(px(6.0))
+                                .rounded(px(3.0))
+                                .bg(t.wash(0.09))
+                                .child(div().h_full().w(gpui::relative(f.max(0.002))).rounded(px(3.0)).bg(t.accent)),
                         )
                         .child(
                             div()
@@ -1854,11 +1861,11 @@ fn render_item<V: 'static>(
                     div()
                         .id(SharedString::from(format!("{key}-s{n}")))
                         .cursor_pointer()
-                        .child(
-                            icon(if on { icons::STAR_BOLD } else { icons::STAR })
-                                .size(px(20.0))
-                                .text_color(if on { t.warning } else { t.text_faint }),
-                        )
+                        .child(icon(if on { icons::STAR_BOLD } else { icons::STAR }).size(px(20.0)).text_color(if on {
+                            t.warning
+                        } else {
+                            t.text_faint
+                        }))
                         .on_click(move |_, window, cx| {
                             emit(&w, &h, Event::Set { id: fid.clone(), value: n.to_string() }, window, cx)
                         }),
@@ -1890,15 +1897,13 @@ fn render_item<V: 'static>(
                 .into_any_element()
         }
         Item::Mockup { device, title, nav, blocks } => {
-            let browser = device == "browser" || device == "web" || device == "desktop" || device == "app" || device == "window";
+            let browser =
+                device == "browser" || device == "web" || device == "desktop" || device == "app" || device == "window";
             let tablet = device == "tablet" || device == "ipad";
             let nav_id = format!("{key}-nav");
             let current_nav = state.get(&nav_id).to_string();
-            let active_nav = if current_nav.is_empty() {
-                nav.first().cloned().unwrap_or_default()
-            } else {
-                current_nav
-            };
+            let active_nav =
+                if current_nav.is_empty() { nav.first().cloned().unwrap_or_default() } else { current_nav };
             let inner = div().flex().flex_col().gap(px(12.0)).p(px(16.0)).children(
                 blocks.iter().enumerate().map(|(n, b)| render_item(&format!("{key}-m{n}"), b, state, t, weak, handler)),
             );
@@ -1921,9 +1926,11 @@ fn render_item<V: 'static>(
                             .bg(t.wash(0.05))
                             .border_b_1()
                             .border_color(t.border)
-                            .child(div().flex().gap(px(5.0)).children(
-                                [0xff5f57u32, 0xfebc2e, 0x28c840].map(|c| ui::dot(gpui::rgb(c).into(), 9.0)),
-                            ))
+                            .child(
+                                div().flex().gap(px(5.0)).children(
+                                    [0xff5f57u32, 0xfebc2e, 0x28c840].map(|c| ui::dot(gpui::rgb(c).into(), 9.0)),
+                                ),
+                            )
                             .child(
                                 div()
                                     .flex_1()
@@ -1936,30 +1943,42 @@ fn render_item<V: 'static>(
                                     .text_size(px(11.0))
                                     .text_color(t.text_faint)
                                     .truncate()
-                                    .child(if title.is_empty() { "https://app.local/preview".to_string() } else { title.clone() }),
+                                    .child(if title.is_empty() {
+                                        "https://app.local/preview".to_string()
+                                    } else {
+                                        title.clone()
+                                    }),
                             )
                             .when(!nav.is_empty(), |d| {
-                                d.child(div().flex().items_center().gap(px(4.0)).children(nav.iter().enumerate().map(|(ni, item)| {
-                                    let on = *item == active_nav;
-                                    let (w, h) = (weak.clone(), handler.clone());
-                                    let nid = nav_id.clone();
-                                    let val = item.clone();
-                                    div()
-                                        .id(SharedString::from(format!("{key}-bnav-{ni}")))
-                                        .h(px(20.0))
-                                        .px(px(7.0))
-                                        .flex()
-                                        .items_center()
-                                        .rounded(px(5.0))
-                                        .cursor_pointer()
-                                        .text_size(px(11.0))
-                                        .when(on, |s| s.bg(t.surface_raised).text_color(t.text))
-                                        .when(!on, |s| s.text_color(t.text_muted).hover(|h| h.text_color(t.text)))
-                                        .child(item.clone())
-                                        .on_click(move |_, window, cx| {
-                                            emit(&w, &h, Event::Set { id: nid.clone(), value: val.clone() }, window, cx)
-                                        })
-                                })))
+                                d.child(div().flex().items_center().gap(px(4.0)).children(nav.iter().enumerate().map(
+                                    |(ni, item)| {
+                                        let on = *item == active_nav;
+                                        let (w, h) = (weak.clone(), handler.clone());
+                                        let nid = nav_id.clone();
+                                        let val = item.clone();
+                                        div()
+                                            .id(SharedString::from(format!("{key}-bnav-{ni}")))
+                                            .h(px(20.0))
+                                            .px(px(7.0))
+                                            .flex()
+                                            .items_center()
+                                            .rounded(px(5.0))
+                                            .cursor_pointer()
+                                            .text_size(px(11.0))
+                                            .when(on, |s| s.bg(t.surface_raised).text_color(t.text))
+                                            .when(!on, |s| s.text_color(t.text_muted).hover(|h| h.text_color(t.text)))
+                                            .child(item.clone())
+                                            .on_click(move |_, window, cx| {
+                                                emit(
+                                                    &w,
+                                                    &h,
+                                                    Event::Set { id: nid.clone(), value: val.clone() },
+                                                    window,
+                                                    cx,
+                                                )
+                                            })
+                                    },
+                                )))
                             }),
                     )
                     .child(screen)
@@ -1995,9 +2014,18 @@ fn render_item<V: 'static>(
                                             .text_color(t.text)
                                             .child("9:41")
                                             .when(!tablet, |d| {
-                                                d.child(div().w(px(70.0)).h(px(18.0)).rounded(px(9.0)).bg(gpui::black()))
+                                                d.child(
+                                                    div().w(px(70.0)).h(px(18.0)).rounded(px(9.0)).bg(gpui::black()),
+                                                )
                                             })
-                                            .child(div().w(px(22.0)).h(px(10.0)).rounded(px(3.0)).border_1().border_color(t.text_muted)),
+                                            .child(
+                                                div()
+                                                    .w(px(22.0))
+                                                    .h(px(10.0))
+                                                    .rounded(px(3.0))
+                                                    .border_1()
+                                                    .border_color(t.text_muted),
+                                            ),
                                     )
                                     .when(!title.is_empty(), |d| {
                                         d.child(
@@ -2034,102 +2062,108 @@ fn render_item<V: 'static>(
                                                         .rounded(px(6.0))
                                                         .cursor_pointer()
                                                         .text_size(px(11.0))
-                                                        .font_weight(if on { gpui::FontWeight::SEMIBOLD } else { gpui::FontWeight::NORMAL })
+                                                        .font_weight(if on {
+                                                            gpui::FontWeight::SEMIBOLD
+                                                        } else {
+                                                            gpui::FontWeight::NORMAL
+                                                        })
                                                         .text_color(if on { t.accent } else { t.text_faint })
                                                         .child(item.clone())
                                                         .on_click(move |_, window, cx| {
-                                                            emit(&w, &h, Event::Set { id: nid.clone(), value: val.clone() }, window, cx)
+                                                            emit(
+                                                                &w,
+                                                                &h,
+                                                                Event::Set { id: nid.clone(), value: val.clone() },
+                                                                window,
+                                                                cx,
+                                                            )
                                                         })
                                                 })),
                                         )
                                     })
-                                    .child(
-                                        div().h(px(20.0)).flex().items_center().justify_center().child(
-                                            div().w(px(108.0)).h(px(4.0)).rounded(px(2.0)).bg(t.text.opacity(0.35)),
-                                        ),
-                                    ),
+                                    .child(div().h(px(20.0)).flex().items_center().justify_center().child(
+                                        div().w(px(108.0)).h(px(4.0)).rounded(px(2.0)).bg(t.text.opacity(0.35)),
+                                    )),
                             ),
                     )
                     .into_any_element()
             }
         }
-        Item::Hero { badge, title, subtitle, cta, secondary } => {
-            div()
-                .p(px(20.0))
-                .rounded(px(12.0))
-                .border_1()
-                .border_color(t.border)
-                .bg(t.wash(0.03))
-                .flex()
-                .flex_col()
-                .gap(px(10.0))
-                .when(!badge.is_empty(), |d| {
-                    d.child(
-                        div()
-                            .self_start()
-                            .px(px(8.0))
-                            .py(px(2.0))
-                            .rounded(px(99.0))
-                            .bg(t.accent.opacity(0.14))
-                            .text_size(px(11.0))
-                            .font_weight(gpui::FontWeight::MEDIUM)
-                            .text_color(t.accent)
-                            .child(badge.clone()),
-                    )
-                })
-                .child(
+        Item::Hero { badge, title, subtitle, cta, secondary } => div()
+            .p(px(20.0))
+            .rounded(px(12.0))
+            .border_1()
+            .border_color(t.border)
+            .bg(t.wash(0.03))
+            .flex()
+            .flex_col()
+            .gap(px(10.0))
+            .when(!badge.is_empty(), |d| {
+                d.child(
                     div()
-                        .text_size(px(20.0))
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .text_color(t.text)
-                        .child(title.clone()),
+                        .self_start()
+                        .px(px(8.0))
+                        .py(px(2.0))
+                        .rounded(px(99.0))
+                        .bg(t.accent.opacity(0.14))
+                        .text_size(px(11.0))
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .text_color(t.accent)
+                        .child(badge.clone()),
                 )
-                .when(!subtitle.is_empty(), |d| {
-                    d.child(div().text_size(px(13.5)).text_color(t.text_muted).child(subtitle.clone()))
-                })
-                .when(!cta.is_empty() || !secondary.is_empty(), |d| {
-                    let (w1, h1) = (weak.clone(), handler.clone());
-                    let (w2, h2) = (weak.clone(), handler.clone());
-                    let cta_label = cta.clone();
-                    let sec_label = secondary.clone();
-                    d.child(
-                        div()
-                            .pt(px(4.0))
-                            .flex()
-                            .items_center()
-                            .gap(px(8.0))
-                            .when(!cta.is_empty(), |r| {
-                                r.child(
-                                    ui::button_primary(SharedString::from(format!("{key}-hero-cta")), cta.clone(), t)
-                                        .on_click(move |_, window, cx| {
-                                            emit(
-                                                &w1,
-                                                &h1,
-                                                Event::Act { action: cta_label.clone(), message: cta_label.clone() },
-                                                window,
-                                                cx,
-                                            )
-                                        }),
-                                )
-                            })
-                            .when(!secondary.is_empty(), |r| {
-                                r.child(
-                                    ui::button_ghost(SharedString::from(format!("{key}-hero-sec")), secondary.clone(), t)
-                                        .on_click(move |_, window, cx| {
-                                            emit(
-                                                &w2,
-                                                &h2,
-                                                Event::Act { action: sec_label.clone(), message: sec_label.clone() },
-                                                window,
-                                                cx,
-                                            )
-                                        }),
-                                )
-                            }),
-                    )
-                })
-                .into_any_element()
-        }
+            })
+            .child(
+                div()
+                    .text_size(px(20.0))
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(t.text)
+                    .child(title.clone()),
+            )
+            .when(!subtitle.is_empty(), |d| {
+                d.child(div().text_size(px(13.5)).text_color(t.text_muted).child(subtitle.clone()))
+            })
+            .when(!cta.is_empty() || !secondary.is_empty(), |d| {
+                let (w1, h1) = (weak.clone(), handler.clone());
+                let (w2, h2) = (weak.clone(), handler.clone());
+                let cta_label = cta.clone();
+                let sec_label = secondary.clone();
+                d.child(
+                    div()
+                        .pt(px(4.0))
+                        .flex()
+                        .items_center()
+                        .gap(px(8.0))
+                        .when(!cta.is_empty(), |r| {
+                            r.child(
+                                ui::button_primary(SharedString::from(format!("{key}-hero-cta")), cta.clone(), t)
+                                    .on_click(move |_, window, cx| {
+                                        emit(
+                                            &w1,
+                                            &h1,
+                                            Event::Act { action: cta_label.clone(), message: cta_label.clone() },
+                                            window,
+                                            cx,
+                                        )
+                                    }),
+                            )
+                        })
+                        .when(!secondary.is_empty(), |r| {
+                            r.child(
+                                ui::button_ghost(SharedString::from(format!("{key}-hero-sec")), secondary.clone(), t)
+                                    .on_click(move |_, window, cx| {
+                                        emit(
+                                            &w2,
+                                            &h2,
+                                            Event::Act { action: sec_label.clone(), message: sec_label.clone() },
+                                            window,
+                                            cx,
+                                        )
+                                    }),
+                            )
+                        }),
+                )
+            })
+            .into_any_element(),
         Item::Navbar { id, brand, items, cta } => {
             let nav_id = if id.is_empty() { format!("{key}-navbar") } else { id.clone() };
             let cur = state.get(&nav_id);
@@ -2155,8 +2189,8 @@ fn render_item<V: 'static>(
                             .child(brand.clone()),
                     )
                 })
-                .child(
-                    div().flex_1().flex().items_center().gap(px(4.0)).children(items.iter().enumerate().map(|(ni, item)| {
+                .child(div().flex_1().flex().items_center().gap(px(4.0)).children(items.iter().enumerate().map(
+                    |(ni, item)| {
                         let on = item == active;
                         let (w, h) = (weak.clone(), handler.clone());
                         let nid = nav_id.clone();
@@ -2170,14 +2204,16 @@ fn render_item<V: 'static>(
                             .rounded(px(6.0))
                             .cursor_pointer()
                             .text_size(px(12.0))
-                            .when(on, |s| s.bg(t.surface_raised).text_color(t.text).font_weight(gpui::FontWeight::MEDIUM))
+                            .when(on, |s| {
+                                s.bg(t.surface_raised).text_color(t.text).font_weight(gpui::FontWeight::MEDIUM)
+                            })
                             .when(!on, |s| s.text_color(t.text_muted).hover(|h| h.text_color(t.text)))
                             .child(item.clone())
                             .on_click(move |_, window, cx| {
                                 emit(&w, &h, Event::Set { id: nid.clone(), value: val.clone() }, window, cx)
                             })
-                    })),
-                )
+                    },
+                )))
                 .when(!cta.is_empty(), |d| {
                     d.child(
                         ui::button_primary(SharedString::from(format!("{key}-nav-cta")), cta.clone(), t)
@@ -2272,22 +2308,16 @@ fn render_item<V: 'static>(
                 }))
                 .into_any_element()
         }
-        Item::Split { left, right } => {
-            div()
-                .flex()
-                .gap(px(12.0))
-                .child(
-                    div().flex_1().min_w_0().flex().flex_col().gap(px(10.0)).children(
-                        left.iter().enumerate().map(|(n, b)| render_item(&format!("{key}-l{n}"), b, state, t, weak, handler)),
-                    ),
-                )
-                .child(
-                    div().flex_1().min_w_0().flex().flex_col().gap(px(10.0)).children(
-                        right.iter().enumerate().map(|(n, b)| render_item(&format!("{key}-r{n}"), b, state, t, weak, handler)),
-                    ),
-                )
-                .into_any_element()
-        }
+        Item::Split { left, right } => div()
+            .flex()
+            .gap(px(12.0))
+            .child(div().flex_1().min_w_0().flex().flex_col().gap(px(10.0)).children(
+                left.iter().enumerate().map(|(n, b)| render_item(&format!("{key}-l{n}"), b, state, t, weak, handler)),
+            ))
+            .child(div().flex_1().min_w_0().flex().flex_col().gap(px(10.0)).children(
+                right.iter().enumerate().map(|(n, b)| render_item(&format!("{key}-r{n}"), b, state, t, weak, handler)),
+            ))
+            .into_any_element(),
         Item::Unknown => div().into_any_element(),
     }
 }

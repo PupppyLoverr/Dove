@@ -159,7 +159,10 @@ impl Render for SideChat {
                 .child(div().flex_1().min_h_0().child(chat.clone()));
         }
         let starters: &[(&str, &str)] = &[
-            ("Review current diff", "Review the uncommitted changes in this worktree and point out bugs or edge cases."),
+            (
+                "Review current diff",
+                "Review the uncommitted changes in this worktree and point out bugs or edge cases.",
+            ),
             ("Write tests", "Write focused unit/integration tests for the recent changes in this worktree."),
             ("Explain changes", "Summarize what changed in this worktree and how the pieces fit together."),
             ("Simplify code", "Find opportunities to simplify and clean up the recently modified files."),

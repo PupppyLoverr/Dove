@@ -97,13 +97,7 @@ static CACHE: OnceLock<Mutex<Vec<Entry>>> = OnceLock::new();
 /// device pixels: the effect is rasterized at that size, as Zeron does, so a
 /// dither or halftone cell is the same few screen pixels on every display
 /// instead of growing with the source image's upscale.
-pub fn prepare(
-    path: &Path,
-    effect: Effect,
-    light: bool,
-    target: (f32, f32),
-    cx: &mut App,
-) -> Option<Arc<RenderImage>> {
+pub fn prepare(path: &Path, effect: Effect, light: bool, target: (f32, f32), cx: &mut App) -> Option<Arc<RenderImage>> {
     let cache = CACHE.get_or_init(|| Mutex::new(Vec::new()));
     let light = light && matches!(effect, Effect::Halftone | Effect::Scanlines);
     let step = |v: f32| ((v.max(64.0) / 64.0).ceil() as u32 * 64).min(8192);
@@ -295,9 +289,11 @@ fn analyze(src: &Source) -> Analysis {
     let mut bins = [0f32; 12];
     let mut total = 0.0;
     for gy in 0..gh {
-        let (y0, y1) = (gy * src.height / gh, ((gy + 1) * src.height / gh).max(gy * src.height / gh + 1).min(src.height));
+        let (y0, y1) =
+            (gy * src.height / gh, ((gy + 1) * src.height / gh).max(gy * src.height / gh + 1).min(src.height));
         for gx in 0..GW {
-            let (x0, x1) = (gx * src.width / GW, ((gx + 1) * src.width / GW).max(gx * src.width / GW + 1).min(src.width));
+            let (x0, x1) =
+                (gx * src.width / GW, ((gx + 1) * src.width / GW).max(gx * src.width / GW + 1).min(src.width));
             let mut sum = [0f32; 4];
             let mut count = 0.0;
             for y in y0..y1 {
@@ -704,9 +700,8 @@ pub fn animate(
     let slot = ANIM.get_or_init(|| Mutex::new(None));
     let mut guard = slot.lock().ok()?;
 
-    let same = guard
-        .as_ref()
-        .is_some_and(|a| a.path == path && a.effect == effect && a.light == light && a.target == target);
+    let same =
+        guard.as_ref().is_some_and(|a| a.path == path && a.effect == effect && a.light == light && a.target == target);
     if !same {
         // Keep the old picture on screen until the new image is ready.
         let (retired, carried) = match guard.take() {
@@ -893,7 +888,8 @@ mod tests {
                 if x > w * 3 / 4 && y < h / 4 { [255, 200, 40, 255] } else { [10, 20, 60, 255] }
             })
             .collect();
-        let luma = rgba.iter().map(|p| ((p[0] as u32 * 299 + p[1] as u32 * 587 + p[2] as u32 * 114) / 1000) as u8).collect();
+        let luma =
+            rgba.iter().map(|p| ((p[0] as u32 * 299 + p[1] as u32 * 587 + p[2] as u32 * 114) / 1000) as u8).collect();
         Source { width: w, height: h, rgba, luma }
     }
 
@@ -999,4 +995,3 @@ mod tests {
         assert!((hero_height(500.0) - 360.0).abs() < 1e-3);
     }
 }
-

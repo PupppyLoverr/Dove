@@ -533,10 +533,16 @@ impl FilesPanel {
             }
         };
         let quick_actions: &[(&str, &str)] = &[
-            ("Polish the writing", "Proofread and polish the text in this document while preserving structure and formatting."),
+            (
+                "Polish the writing",
+                "Proofread and polish the text in this document while preserving structure and formatting.",
+            ),
             ("Summarize", "Summarize the key points and data in this document."),
             ("Fill the blanks", "Fill in any missing or placeholder fields/cells with sensible, realistic values."),
-            ("Restyle", "Make this document look professionally designed: consistent headings, spacing and colors, without changing its content."),
+            (
+                "Restyle",
+                "Make this document look professionally designed: consistent headings, spacing and colors, without changing its content.",
+            ),
         ];
         div()
             .flex_none()
@@ -691,9 +697,15 @@ impl FilesPanel {
                     cx.write_to_clipboard(gpui::ClipboardItem::new_string(rel_for_copy.clone()));
                 }))
                 .when_some(full.clone(), |d, full| {
-                    d.child(ui::icon_button("prev-open", icons::ARROW_UP_RIGHT, "Open in its app", t, move |_, _, cx| {
-                        cx.open_with_system(&full);
-                    }))
+                    d.child(ui::icon_button(
+                        "prev-open",
+                        icons::ARROW_UP_RIGHT,
+                        "Open in its app",
+                        t,
+                        move |_, _, cx| {
+                            cx.open_with_system(&full);
+                        },
+                    ))
                 });
             let body = match p.office.as_ref() {
                 Some(view) => office::view::render(view, t, cx),
@@ -745,12 +757,7 @@ impl FilesPanel {
                     .child(p.path.clone()),
             )
             .when(matches!(p.kind, PreviewKind::Text | PreviewKind::Markdown) && line_count > 0, |d| {
-                d.child(
-                    div()
-                        .text_size(px(11.0))
-                        .text_color(t.text_faint)
-                        .child(format!("{line_count} lines")),
-                )
+                d.child(div().text_size(px(11.0)).text_color(t.text_faint).child(format!("{line_count} lines")))
             })
             .child(ui::icon_button("prev-copy-path", icons::COPY, "Copy relative path", t, move |_, _, cx| {
                 cx.write_to_clipboard(gpui::ClipboardItem::new_string(rel_for_copy.clone()));
@@ -1036,9 +1043,7 @@ impl Render for FilesPanel {
                             } else {
                                 div().w(px(12.0)).into_any_element()
                             })
-                            .child(
-                                file_type_icon(&e.name, dir, t).size(px(14.0)),
-                            )
+                            .child(file_type_icon(&e.name, dir, t).size(px(14.0)))
                             .child(
                                 div()
                                     .flex_1()

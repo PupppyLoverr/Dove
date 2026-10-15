@@ -72,11 +72,6 @@ const COMPUTER_INSTRUCTIONS: &str = "\nComputer use: computer__* tools (the open
 native desktop apps. Prefer files, CLIs and browser tools; use computer use only for apps with no other interface, \
 observe the window before acting, and confirm destructive actions with the user.";
 
-const NEXI_INSTRUCTIONS: &str = "\nNEXI computer use: nexi_observe, nexi_decide and nexi_run drive the desktop or a \
-Chromium window through the local NEXI-CUA driver (accessibility first, screenshots only as a fallback). Pass \
-browser:true to act in the browser. Do not set yes:true unless the user has agreed to confirmation-gated actions. \
-Blocked actions (deletion, purchases, sending, installs) still stop.";
-
 /// `show_canvas`: a live design, rendered by Dove's canvas from the call.
 fn show_canvas_tool() -> Value {
     json!({
@@ -127,13 +122,11 @@ fn show_ui_tool() -> Value {
 pub fn run() {
     let config = crate::pages::integrations::load();
     let mut upstream = upstream::Hub::new(&config);
-    let nexi_on = config.nexi.enabled;
     let mut instructions = format!("{BASE_INSTRUCTIONS}{CHROME_INSTRUCTIONS}");
     for (on, text) in [
         (upstream.has("composio"), COMPOSIO_INSTRUCTIONS),
         (upstream.has("paper"), PAPER_INSTRUCTIONS),
         (upstream.has("computer"), COMPUTER_INSTRUCTIONS),
-        (nexi_on, NEXI_INSTRUCTIONS),
     ] {
         if on {
             instructions.push_str(text);
@@ -174,9 +167,6 @@ pub fn run() {
                     list.extend(chrome_tools());
                     list.extend(upstream.tools());
                     list.push(skills_tool());
-                    if nexi_on {
-                        list.extend(nexi_tools());
-                    }
                 }
                 Ok(json!({"tools": tools}))
             }
@@ -193,11 +183,6 @@ pub fn run() {
                     params.get("name").and_then(Value::as_str).unwrap_or_default(),
                     params.get("arguments").cloned().unwrap_or(json!({})),
                 ))
-            }
-            "tools/call" if params.get("name").and_then(Value::as_str).is_some_and(|n| n.starts_with("nexi_")) => {
-                let name = params.get("name").and_then(Value::as_str).unwrap_or_default();
-                let args = params.get("arguments").cloned().unwrap_or(json!({}));
-                Ok(nexi_call(name, &args))
             }
             "tools/call" if params.get("name").and_then(Value::as_str) == Some("dove_skills") => {
                 let name = params.pointer("/arguments/name").and_then(Value::as_str);
@@ -221,89 +206,6 @@ pub fn run() {
         if writeln!(out, "{msg}").is_err() || out.flush().is_err() {
             break;
         }
-    }
-}
-
-fn nexi_tools() -> Vec<Value> {
-    let goal = json!({"type": "string", "description": "What the user wants done, in one sentence."});
-    let browser = json!({"type": "boolean", "description": "Act in Chromium via CDP instead of the desktop accessibility tree."});
-    vec![
-        json!({
-            "name": "nexi_observe",
-            "description": "Read the current screen through NEXI-CUA (accessibility tree, or the browser DOM when browser is true). Does not click anything.",
-            "inputSchema": {"type": "object", "properties": {"browser": browser}, "required": []}
-        }),
-        json!({
-            "name": "nexi_decide",
-            "description": "Ask NEXI-CUA which typed action it would take for a goal. Does not perform the action.",
-            "inputSchema": {"type": "object", "properties": {"goal": goal, "browser": browser}, "required": ["goal"]}
-        }),
-        json!({
-            "name": "nexi_run",
-            "description": "Run NEXI-CUA's observe, decide, act and verify loop for a goal (at most max_steps, default 12). Set yes only after the user agreed to confirmation-gated steps.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "goal": goal,
-                    "browser": browser,
-                    "app": {"type": "string", "description": "Optional app name to focus, such as Calculator."},
-                    "max_steps": {"type": "integer"},
-                    "yes": {"type": "boolean", "description": "Auto-approve confirmation-class actions. Cannot override blocked actions."}
-                },
-                "required": ["goal"]
-            }
-        }),
-    ]
-}
-
-fn nexi_call(name: &str, args: &Value) -> Value {
-    let browser = args.get("browser").and_then(Value::as_bool).unwrap_or(false);
-    let goal = args.get("goal").and_then(Value::as_str).unwrap_or("").trim().to_string();
-    let mut argv: Vec<String> = Vec::new();
-    match name {
-        "nexi_observe" => {
-            argv.push("observe".into());
-            if browser {
-                argv.push("--browser".into());
-            }
-        }
-        "nexi_decide" => {
-            if goal.is_empty() {
-                return json!({"content": [{"type": "text", "text": "nexi_decide needs a goal."}], "isError": true});
-            }
-            argv.push("decide".into());
-            argv.push(goal);
-            if browser {
-                argv.push("--browser".into());
-            }
-        }
-        "nexi_run" => {
-            if goal.is_empty() {
-                return json!({"content": [{"type": "text", "text": "nexi_run needs a goal."}], "isError": true});
-            }
-            argv.push("run".into());
-            argv.push(goal);
-            if browser {
-                argv.push("--browser".into());
-            }
-            if let Some(app) = args.get("app").and_then(Value::as_str).filter(|s| !s.is_empty()) {
-                argv.push("--app".into());
-                argv.push(app.to_string());
-            }
-            let steps = args.get("max_steps").and_then(Value::as_u64).unwrap_or(12).clamp(1, 20);
-            argv.push("--max-steps".into());
-            argv.push(steps.to_string());
-            if args.get("yes").and_then(Value::as_bool).unwrap_or(false) {
-                argv.push("--yes".into());
-            }
-        }
-        other => {
-            return json!({"content": [{"type": "text", "text": format!("Unknown NEXI tool {other}")}], "isError": true});
-        }
-    }
-    match crate::nexi::cua_exec(&argv) {
-        Ok(text) => json!({"content": [{"type": "text", "text": text}], "isError": false}),
-        Err(text) => json!({"content": [{"type": "text", "text": text}], "isError": true}),
     }
 }
 

@@ -541,7 +541,10 @@ impl Shell {
             cx.listener(|this, _, _, cx| this.load_kanban_meta(cx)),
         )
         .into_any_element();
-        page_with("kanban-page", "Kanban", "Drafts, work in flight and what is ready for review, across every project.",
+        page_with(
+            "kanban-page",
+            "Kanban",
+            "Drafts, work in flight and what is ready for review, across every project.",
             &t,
             Some(refresh),
             div()

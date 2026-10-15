@@ -46,6 +46,7 @@ pub fn set_runtime(handle: tokio::runtime::Handle) {
     let _ = RUNTIME.set(handle);
 }
 
+#[cfg_attr(target_os = "linux", allow(dead_code))] // Windows and macOS hosts only
 pub(crate) fn runtime() -> tokio::runtime::Handle {
     RUNTIME.get().cloned().unwrap_or_else(|| tokio::runtime::Handle::current())
 }

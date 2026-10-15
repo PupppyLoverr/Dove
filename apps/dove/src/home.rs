@@ -15,7 +15,7 @@ use crate::theme::Theme;
 use crate::ui;
 use crate::wallpaper;
 
-const SUGGESTIONS: &[(&str, &'static str, &str)] = &[
+const SUGGESTIONS: &[(&str, &str, &str)] = &[
     (
         "Explain codebase",
         icons::FOLDER_TREE,
@@ -86,7 +86,16 @@ impl Shell {
             });
             // Zeron's hero: the top 72% of the page (at most 760 px), fading
             // into the canvas below the composer.
-            Some(div().absolute().top_0().left_0().right_0().h(px(wallpaper::hero_height(viewport_h))).opacity(opacity).children(layers))
+            Some(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .right_0()
+                    .h(px(wallpaper::hero_height(viewport_h)))
+                    .opacity(opacity)
+                    .children(layers),
+            )
         });
 
         let join_chip = self.join.as_ref().map(|(_, j)| {
@@ -397,7 +406,10 @@ fn pill_body(id: &'static str, t: &Theme) -> gpui::Stateful<gpui::Div> {
 }
 
 fn pill_chevron(open: bool, t: &Theme) -> impl IntoElement {
-    icon(if open { icons::ALT_ARROW_DOWN } else { icons::ALT_ARROW_UP }).size(px(12.0)).flex_none().text_color(t.text_faint)
+    icon(if open { icons::ALT_ARROW_DOWN } else { icons::ALT_ARROW_UP })
+        .size(px(12.0))
+        .flex_none()
+        .text_color(t.text_faint)
 }
 
 fn mark(kind: HarnessKind, t: &Theme) -> gpui::Div {

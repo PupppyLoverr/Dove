@@ -505,11 +505,7 @@ impl Shell {
                             .child(div().truncate().child(p.name.clone()))
                             .when(!p.role.is_empty(), |d| {
                                 d.child(
-                                    div()
-                                        .truncate()
-                                        .text_size(px(11.0))
-                                        .text_color(t.text_faint)
-                                        .child(p.role.clone()),
+                                    div().truncate().text_size(px(11.0)).text_color(t.text_faint).child(p.role.clone()),
                                 )
                             }),
                     )
@@ -632,9 +628,10 @@ impl Shell {
                         .on_click(cx.listener(|this, _, _, cx| this.seed_starter_team(cx))),
                 )
             })
-            .child(ui::button_primary("team-new", "New teammate", &t).on_click(
-                cx.listener(|this, _, window, cx| this.edit_teammate(None, window, cx)),
-            ))
+            .child(
+                ui::button_primary("team-new", "New teammate", &t)
+                    .on_click(cx.listener(|this, _, window, cx| this.edit_teammate(None, window, cx))),
+            )
             .into_any_element();
         let body: AnyElement = if let Some(ed) = &self.pages.team_edit {
             self.render_team_editor(ed, &t, cx)
@@ -755,91 +752,74 @@ impl Shell {
             .flex()
             .flex_col()
             .gap(px(12.0))
-            .child(
+            .child(div().flex().flex_col().gap(px(2.0)).children(self.personas.iter().map(|p| {
+                let a = self.persona_activity(&p.id);
+                let on = self.pages.team_focus.as_deref() == Some(p.id.as_str());
+                let id = p.id.clone();
                 div()
+                    .id(SharedString::from(format!("team-row-{}", p.id)))
+                    .h(px(52.0))
+                    .px(px(10.0))
                     .flex()
-                    .flex_col()
-                    .gap(px(2.0))
-                    .children(self.personas.iter().map(|p| {
-                        let a = self.persona_activity(&p.id);
-                        let on = self.pages.team_focus.as_deref() == Some(p.id.as_str());
-                        let id = p.id.clone();
+                    .items_center()
+                    .gap(px(11.0))
+                    .rounded(px(10.0))
+                    .border_1()
+                    .border_color(if on { t.border_strong } else { gpui::transparent_black() })
+                    .cursor_pointer()
+                    .when(on, |d| d.bg(t.wash(0.08)))
+                    .when(!on, |d| d.hover(|s| s.bg(t.wash(0.04))))
+                    .child(avatar(p, 32.0, t))
+                    .child(
                         div()
-                            .id(SharedString::from(format!("team-row-{}", p.id)))
-                            .h(px(52.0))
-                            .px(px(10.0))
+                            .flex_1()
+                            .min_w_0()
                             .flex()
-                            .items_center()
-                            .gap(px(11.0))
-                            .rounded(px(10.0))
-                            .border_1()
-                            .border_color(if on { t.border_strong } else { gpui::transparent_black() })
-                            .cursor_pointer()
-                            .when(on, |d| d.bg(t.wash(0.08)))
-                            .when(!on, |d| d.hover(|s| s.bg(t.wash(0.04))))
-                            .child(avatar(p, 32.0, t))
+                            .flex_col()
                             .child(
                                 div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .flex()
-                                    .flex_col()
-                                    .child(
-                                        div()
-                                            .text_size(px(13.5))
-                                            .font_weight(if on {
-                                                gpui::FontWeight::MEDIUM
-                                            } else {
-                                                gpui::FontWeight::NORMAL
-                                            })
-                                            .text_color(t.text)
-                                            .truncate()
-                                            .child(p.name.clone()),
-                                    )
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .items_center()
-                                            .gap(px(4.0))
-                                            .text_size(px(11.5))
-                                            .text_color(t.text_faint)
-                                            .child(
-                                                icon(ui::harness_icon(p.harness))
-                                                    .size(px(11.0))
-                                                    .text_color(ui::harness_tint(p.harness, t, t.text_faint)),
-                                            )
-                                            .child(div().truncate().child(if p.role.is_empty() {
-                                                p.harness.label().to_string()
-                                            } else {
-                                                p.role.clone()
-                                            })),
-                                    ),
+                                    .text_size(px(13.5))
+                                    .font_weight(if on { gpui::FontWeight::MEDIUM } else { gpui::FontWeight::NORMAL })
+                                    .text_color(t.text)
+                                    .truncate()
+                                    .child(p.name.clone()),
                             )
-                            .when(a.needs_you > 0, |d| d.child(ui::dot(t.warning, 7.0)))
-                            .when(a.needs_you == 0 && a.running > 0, |d| {
-                                d.child(kit::spinner(
-                                    SharedString::from(format!("team-list-run-{}", p.id)),
-                                    11.0,
-                                    t.busy,
-                                ))
-                            })
-                            .when(a.needs_you == 0 && a.running == 0 && a.threads > 0, |d| {
-                                d.child(
-                                    div()
-                                        .text_size(px(11.0))
-                                        .text_color(t.text_faint)
-                                        .child(a.threads.to_string()),
-                                )
-                            })
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.pages.team_focus = Some(id.clone());
-                                this.pages.team_notes_edit = None;
-                                this.pages.team_confirm_delete = false;
-                                this.load_team_notes();
-                                cx.notify();
-                            }))
-                    })),
-            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(4.0))
+                                    .text_size(px(11.5))
+                                    .text_color(t.text_faint)
+                                    .child(
+                                        icon(ui::harness_icon(p.harness)).size(px(11.0)).text_color(ui::harness_tint(
+                                            p.harness,
+                                            t,
+                                            t.text_faint,
+                                        )),
+                                    )
+                                    .child(div().truncate().child(if p.role.is_empty() {
+                                        p.harness.label().to_string()
+                                    } else {
+                                        p.role.clone()
+                                    })),
+                            ),
+                    )
+                    .when(a.needs_you > 0, |d| d.child(ui::dot(t.warning, 7.0)))
+                    .when(a.needs_you == 0 && a.running > 0, |d| {
+                        d.child(kit::spinner(SharedString::from(format!("team-list-run-{}", p.id)), 11.0, t.busy))
+                    })
+                    .when(a.needs_you == 0 && a.running == 0 && a.threads > 0, |d| {
+                        d.child(div().text_size(px(11.0)).text_color(t.text_faint).child(a.threads.to_string()))
+                    })
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.pages.team_focus = Some(id.clone());
+                        this.pages.team_notes_edit = None;
+                        this.pages.team_confirm_delete = false;
+                        this.load_team_notes();
+                        cx.notify();
+                    }))
+            })))
             .child(
                 div()
                     .flex()
@@ -849,19 +829,15 @@ impl Shell {
                     .border_t_1()
                     .border_color(t.border)
                     .child(div().px(px(6.0)).text_size(px(11.5)).text_color(t.text_faint).child("Quick presets"))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_wrap()
-                            .gap(px(4.0))
-                            .children(TEMPLATES.iter().enumerate().map(|(i, (name, _, av, _, _))| {
-                                ui::chip(SharedString::from(format!("tpl-quick-{i}")), t)
-                                    .border_1()
-                                    .border_color(t.border)
-                                    .child(format!("{av} {name}"))
-                                    .on_click(cx.listener(move |this, _, window, cx| this.use_template(i, window, cx)))
-                            })),
-                    ),
+                    .child(div().flex().flex_wrap().gap(px(4.0)).children(TEMPLATES.iter().enumerate().map(
+                        |(i, (name, _, av, _, _))| {
+                            ui::chip(SharedString::from(format!("tpl-quick-{i}")), t)
+                                .border_1()
+                                .border_color(t.border)
+                                .child(format!("{av} {name}"))
+                                .on_click(cx.listener(move |this, _, window, cx| this.use_template(i, window, cx)))
+                        },
+                    ))),
             )
             .into_any_element()
     }
@@ -900,11 +876,11 @@ impl Shell {
                             .text_size(px(12.5))
                             .text_color(t.text_faint)
                             .when(!p.role.is_empty(), |d| d.child(p.role.clone()).child("·"))
-                            .child(
-                                icon(ui::harness_icon(p.harness))
-                                    .size(px(12.0))
-                                    .text_color(ui::harness_tint(p.harness, t, t.text_faint)),
-                            )
+                            .child(icon(ui::harness_icon(p.harness)).size(px(12.0)).text_color(ui::harness_tint(
+                                p.harness,
+                                t,
+                                t.text_faint,
+                            )))
                             .child(p.harness.label())
                             .child("·")
                             .child(model),
@@ -937,11 +913,11 @@ impl Shell {
             .border_color(t.border_strong)
             .bg(t.wash(0.035))
             .text_size(px(13.0))
-            .child(
-                icon(ui::harness_icon(p.harness))
-                    .size(px(14.0))
-                    .text_color(ui::harness_tint(p.harness, t, t.text_muted)),
-            )
+            .child(icon(ui::harness_icon(p.harness)).size(px(14.0)).text_color(ui::harness_tint(
+                p.harness,
+                t,
+                t.text_muted,
+            )))
             .child(div().flex_1().child(Input::new(&self.pages.team_prompt)))
             .child(
                 ui::button_primary("tm-dispatch-go", format!("Ask {}", p.name), t)
@@ -973,68 +949,62 @@ impl Shell {
                         )
                 }),
         );
-        let brief = div()
-            .flex()
-            .flex_col()
-            .child(kit::section_label("Standing instructions (Brief)", t))
-            .child(
-                kit::group(t).child(
-                    div()
-                        .p(px(16.0))
-                        .text_size(px(13.0))
-                        .text_color(if p.instructions.is_empty() { t.text_faint } else { t.text_muted })
-                        .child(if p.instructions.is_empty() {
-                            "No standing instructions yet. Click Edit to define how this teammate works.".to_string()
-                        } else {
-                            p.instructions.clone()
-                        }),
-                ),
-            );
-        let threads = div().flex().flex_col().child(kit::section_label("Threads", t)).child(if tasks.is_empty() {
-            kit::group(t)
-                .child(
-                    div()
-                        .p(px(16.0))
-                        .text_size(px(13.0))
-                        .text_color(t.text_faint)
-                        .child(format!("{} has not run a thread yet. Use the dispatch bar above to start one.", p.name)),
-                )
-                .into_any_element()
-        } else {
-            kit::group(t)
-                .children(tasks.iter().take(15).enumerate().map(|(i, task)| {
-                    let tid = task.id;
-                    let proj = self.project(task.project_id).map(|pr| pr.name.clone()).unwrap_or_default();
-                    div()
-                        .id(SharedString::from(format!("tm-task-{tid}")))
-                        .h(px(40.0))
-                        .px(px(14.0))
-                        .flex()
-                        .items_center()
-                        .gap(px(10.0))
-                        .when(i > 0, |d| d.border_t_1().border_color(t.border))
-                        .cursor_pointer()
-                        .hover(|s| s.bg(t.wash(0.04)))
-                        .child(div().w(px(12.0)).flex().justify_center().child(kit::status_glyph(
-                            SharedString::from(format!("tm-st-{tid}")),
-                            task.status,
-                            task.unread,
-                            t,
-                        )))
-                        .child(div().flex_1().min_w_0().truncate().text_size(px(13.0)).child(task.title.clone()))
-                        .when(!proj.is_empty(), |d| {
-                            d.child(div().text_size(px(11.5)).text_color(t.text_faint).child(proj))
-                        })
-                        .child(
-                            div()
-                                .text_size(px(11.5))
-                                .text_color(t.text_faint)
-                                .child(ui::relative_time(task.updated_at)),
-                        )
-                        .on_click(cx.listener(move |this, _, window, cx| this.open_task(tid, window, cx)))
-                }))
-                .into_any_element()
-        });
+        let brief = div().flex().flex_col().child(kit::section_label("Standing instructions (Brief)", t)).child(
+            kit::group(t).child(
+                div()
+                    .p(px(16.0))
+                    .text_size(px(13.0))
+                    .text_color(if p.instructions.is_empty() { t.text_faint } else { t.text_muted })
+                    .child(if p.instructions.is_empty() {
+                        "No standing instructions yet. Click Edit to define how this teammate works.".to_string()
+                    } else {
+                        p.instructions.clone()
+                    }),
+            ),
+        );
+        let threads =
+            div().flex().flex_col().child(kit::section_label("Threads", t)).child(if tasks.is_empty() {
+                kit::group(t)
+                    .child(div().p(px(16.0)).text_size(px(13.0)).text_color(t.text_faint).child(format!(
+                        "{} has not run a thread yet. Use the dispatch bar above to start one.",
+                        p.name
+                    )))
+                    .into_any_element()
+            } else {
+                kit::group(t)
+                    .children(tasks.iter().take(15).enumerate().map(|(i, task)| {
+                        let tid = task.id;
+                        let proj = self.project(task.project_id).map(|pr| pr.name.clone()).unwrap_or_default();
+                        div()
+                            .id(SharedString::from(format!("tm-task-{tid}")))
+                            .h(px(40.0))
+                            .px(px(14.0))
+                            .flex()
+                            .items_center()
+                            .gap(px(10.0))
+                            .when(i > 0, |d| d.border_t_1().border_color(t.border))
+                            .cursor_pointer()
+                            .hover(|s| s.bg(t.wash(0.04)))
+                            .child(div().w(px(12.0)).flex().justify_center().child(kit::status_glyph(
+                                SharedString::from(format!("tm-st-{tid}")),
+                                task.status,
+                                task.unread,
+                                t,
+                            )))
+                            .child(div().flex_1().min_w_0().truncate().text_size(px(13.0)).child(task.title.clone()))
+                            .when(!proj.is_empty(), |d| {
+                                d.child(div().text_size(px(11.5)).text_color(t.text_faint).child(proj))
+                            })
+                            .child(
+                                div()
+                                    .text_size(px(11.5))
+                                    .text_color(t.text_faint)
+                                    .child(ui::relative_time(task.updated_at)),
+                            )
+                            .on_click(cx.listener(move |this, _, window, cx| this.open_task(tid, window, cx)))
+                    }))
+                    .into_any_element()
+            });
         let notes_text = self.pages.team_notes.clone().unwrap_or_default();
         let notes_path = self.engine.store.persona_notes_path(&p.id);
         let editing_notes = self.pages.team_notes_edit.clone();
@@ -1270,34 +1240,29 @@ impl Shell {
                 ui::button_primary("tm-save", if existing.is_some() { "Save" } else { "Add to team" }, t)
                     .on_click(cx.listener(|this, _, _, cx| this.save_teammate(cx))),
             );
-        let identity = div()
-            .flex()
-            .gap(px(18.0))
-            .items_start()
-            .child(avatar(&preview, 64.0, t))
-            .child(
-                div()
-                    .flex_1()
-                    .flex()
-                    .flex_col()
-                    .gap(px(12.0))
-                    .child(
-                        div()
-                            .flex()
-                            .gap(px(12.0))
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .child(kit::field("Name", kit::field_box(t).child(div().flex_1().child(Input::new(&ed.name))), t)),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .child(kit::field("Role", kit::field_box(t).child(div().flex_1().child(Input::new(&ed.role))), t)),
-                            ),
-                    )
-                    .child(kit::field("Look", div().flex().flex_col().gap(px(10.0)).child(avatar_picker).child(hues), t)),
-            );
+        let identity = div().flex().gap(px(18.0)).items_start().child(avatar(&preview, 64.0, t)).child(
+            div()
+                .flex_1()
+                .flex()
+                .flex_col()
+                .gap(px(12.0))
+                .child(
+                    div()
+                        .flex()
+                        .gap(px(12.0))
+                        .child(div().flex_1().child(kit::field(
+                            "Name",
+                            kit::field_box(t).child(div().flex_1().child(Input::new(&ed.name))),
+                            t,
+                        )))
+                        .child(div().flex_1().child(kit::field(
+                            "Role",
+                            kit::field_box(t).child(div().flex_1().child(Input::new(&ed.role))),
+                            t,
+                        ))),
+                )
+                .child(kit::field("Look", div().flex().flex_col().gap(px(10.0)).child(avatar_picker).child(hues), t)),
+        );
         div()
             .flex()
             .flex_col()

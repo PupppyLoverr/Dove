@@ -224,10 +224,8 @@ impl Shell {
             last_run: existing.as_ref().and_then(|a| a.last_run).or(Some(dove_core::store::now_ms())),
             state: existing.map(|a| a.state).unwrap_or_else(|| "{}".into()),
         };
-        let _ = self
-            .engine
-            .store
-            .set_setting(&format!("automation_persona.{}", a.id), ed.persona.as_deref().unwrap_or(""));
+        let _ =
+            self.engine.store.set_setting(&format!("automation_persona.{}", a.id), ed.persona.as_deref().unwrap_or(""));
         match self.engine.store.save_automation(&a) {
             Ok(()) => {
                 self.pages.editor = None;
@@ -718,7 +716,14 @@ impl Shell {
                 }
             }
         };
-        page_with("automations-page", "Automations", "Prompts that start threads on a schedule or when something happens in a repo.", &t, Some(header), body)
+        page_with(
+            "automations-page",
+            "Automations",
+            "Prompts that start threads on a schedule or when something happens in a repo.",
+            &t,
+            Some(header),
+            body,
+        )
     }
 }
 

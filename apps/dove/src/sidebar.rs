@@ -237,9 +237,8 @@ impl Shell {
                 .hover(|s| s.bg(t.wash(0.10)))
                 .child(icon(glyph).size(px(14.0)).text_color(if on { t.text_muted } else { t.text_faint }))
         };
-        let options_menu = self
-            .sidebar_options_open
-            .then(|| self.render_options_menu(grouped, compact, show_archived, &t, cx));
+        let options_menu =
+            self.sidebar_options_open.then(|| self.render_options_menu(grouped, compact, show_archived, &t, cx));
         let header = div()
             .relative()
             .pt(px(14.0))
@@ -282,11 +281,16 @@ impl Shell {
                         }),
                     ))
                     .child(
-                        header_button("sb-options", icons::MORE_HORIZONTAL, "Sidebar options", self.sidebar_options_open)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.sidebar_options_open = !this.sidebar_options_open;
-                                cx.notify();
-                            })),
+                        header_button(
+                            "sb-options",
+                            icons::MORE_HORIZONTAL,
+                            "Sidebar options",
+                            self.sidebar_options_open,
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.sidebar_options_open = !this.sidebar_options_open;
+                            cx.notify();
+                        })),
                     )
                     .children(options_menu),
             )
@@ -701,9 +705,12 @@ impl Shell {
         let (detail, detail_tint): (Option<String>, Hsla) = match task.status {
             TaskStatus::NeedsInput => (Some("Waiting for you".into()), t.warning),
             TaskStatus::Failed => (Some("Failed".into()), t.danger),
-            TaskStatus::Running => (Some(step.as_ref().map_or_else(|| "Working…".to_string(), |s| s.to_string())), t.text_faint),
+            TaskStatus::Running => {
+                (Some(step.as_ref().map_or_else(|| "Working…".to_string(), |s| s.to_string())), t.text_faint)
+            }
             _ => {
-                let project = (self.projects.len() > 1).then(|| self.project(task.project_id).map(|p| p.name.clone())).flatten();
+                let project =
+                    (self.projects.len() > 1).then(|| self.project(task.project_id).map(|p| p.name.clone())).flatten();
                 let parts: Vec<String> = project.into_iter().chain(task.branch.clone()).collect();
                 let line = if parts.is_empty() { task.harness.label().to_string() } else { parts.join(" · ") };
                 (Some(line), t.text_faint)
@@ -786,9 +793,9 @@ impl Shell {
                             .child(task.title.clone()),
                     )
                     .when(two_line, |d| {
-                        d.children(detail.map(|line| {
-                            div().truncate().text_size(px(11.5)).text_color(detail_tint).child(line)
-                        }))
+                        d.children(
+                            detail.map(|line| div().truncate().text_size(px(11.5)).text_color(detail_tint).child(line)),
+                        )
                     })
                     .into_any_element(),
             })

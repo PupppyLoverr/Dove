@@ -24,7 +24,8 @@ Dove is written in Rust on [GPUI](https://github.com/zeronsh/zui). There is no E
 - **Generative UI.** Agents can answer with interactive cards (` ```ui ` fences or the `show_ui` tool): stats, charts, tables, checklists, toggles, choices. The user's pick returns as a normal message, so every harness can continue.
 - **Office documents.** Create, preview and edit PDF, PPTX, XLSX and DOCX files in the side panel.
 - **Integrations.** Paper design canvases, Composio apps (GitHub, Linear, Slack, Notion and more, with your own key) and desktop computer use through the open-source cua-driver, all injected through the same MCP server.
-- **Voice.** Hold the mic to dictate with on-device Parakeet, or switch the speech engine to NEXI STT. Jarvis mode, toggled from the waveform on the input bar, speaks finished replies with local NEXI TTS (or Fish Audio if you add a key).
+- **Dictation.** Hold the mic in the composer or terminal to talk; the text is inserted, never sent. Speech to text runs on your machine with NVIDIA Parakeet, downloaded on demand from Settings › Voice.
+- **Faster first reply.** Dove starts Claude Code while you type (process, settings and MCP servers) and hands it your message on send: 11.35 s → 2.87 s to first text in a local measurement.
 - **Mobile remote.** iOS and Android apps signed in with your Woozlit account show live transcripts and let you approve, steer and start runs. The agent keeps running on your desktop.
 - **Your own backdrop.** Put any image behind the new-thread page through Original, Dither, Halftone or Scanlines. Turn on **Animate backdrop** and each effect gets its own motion worked out from the image: a slow push, an aircraft with light trails crossing a Bayer-dithered scene, rippling halftone dots, or a rolling CRT scan.
 - **A transcript that reads like a document.** Markdown, tables, Mermaid, math and images render incrementally while tokens stream. Tool calls fold.
@@ -112,14 +113,9 @@ Model lists refresh from each CLI's live catalog when it answers.
 
 The iOS app (`apps/ios`) and the Android app (`apps/android`) are remote controls for the desktop. To turn it on, open **Settings › Remote control** on the desktop, click **Sign in with Woozlit**, and sign in on the phone with the same account. The desktop publishes each session as a Loro CRDT document to the Cosmos edge (Cloudflare Workers + Durable Objects). The phone shows it live and sends commands back: send, steer, interrupt, approve and answer. When remote control is off, nothing leaves the machine. Code and files always stay on your machine.
 
-## Voice and NEXI
+## Dictation
 
-Dictation and spoken replies are optional and are not inside the Dove binary.
-
-- **Parakeet** (Settings › Voice) is the built-in speech-to-text model, downloaded on demand into `~/.dove/voice`.
-- **NEXI** comes from [NEXI-Models-Drivers](https://github.com/PupppyLoverr/NEXI-Models-Drivers). Clone it next to Dove or set `DOVE_NEXI_ROOT`. Settings › Voice copies the one-time setup: `nexi-stt` (Whisper tiny.en) for dictation, `nexi-tts` (Kitten Nano) for speech. The waveform on the input bar turns on Jarvis mode, which reads each finished reply aloud.
-- **Fish Audio** is the cloud voice. Paste your own API key in Settings › Voice and choose Fish Audio as the text-to-speech engine. Dove does not ship a key.
-- **NEXI-CUA** is the local computer-use and browser driver. Turn it on in Settings › Integrations. Agents then get `nexi_observe`, `nexi_decide` and `nexi_run`. cua-driver remains available beside it.
+Speech to text is optional and is not inside the Dove binary. **Parakeet** (NVIDIA Parakeet TDT 0.6B v3, the model Zeron uses) downloads on demand from Settings › Voice into `~/.dove/voice` and runs entirely on your machine.
 
 ## Keyboard shortcuts
 

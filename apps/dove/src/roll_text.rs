@@ -226,9 +226,8 @@ impl Element for RollText {
         let to_len = self.roll.to.len();
         // The trailing run slides from its old x to its new one with the width.
         let slide = layout_progress(elapsed);
-        let suffix_dx =
-            f32::from(shaped.from.x_for_index(from_len - suffix) - shaped.to.x_for_index(to_len - suffix))
-                * (1.0 - slide);
+        let suffix_dx = f32::from(shaped.from.x_for_index(from_len - suffix) - shaped.to.x_for_index(to_len - suffix))
+            * (1.0 - slide);
 
         let glyphs = |line: &ShapedLine| {
             let mut out = Vec::new();
@@ -334,7 +333,15 @@ impl Element for RollText {
                     continue; // the new line paints the shared runs
                 }
                 let progress = GLIDE.eval(((elapsed - from_delay(glyph.x)) / duration).clamp(0.0, 1.0));
-                paint(window, glyph, 0.0, -travel * progress, lerp(1.0, REST_SCALE, progress), progress, 1.0 - progress);
+                paint(
+                    window,
+                    glyph,
+                    0.0,
+                    -travel * progress,
+                    lerp(1.0, REST_SCALE, progress),
+                    progress,
+                    1.0 - progress,
+                );
             }
             for glyph in &to_glyphs {
                 if glyph.index < prefix {

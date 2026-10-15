@@ -655,7 +655,9 @@ mod tests {
         assert!(matches!(&out[..], [AgentEvent::Subagent { parent, event }]
             if parent == "spawn" && matches!(**event, AgentEvent::UserMessage { .. })));
         let out = map_event(tagged(ZEvent::TextDelta { text: "hi".into() }), &mut usage);
-        assert!(matches!(&out[..], [AgentEvent::Subagent { event, .. }] if matches!(**event, AgentEvent::TextDelta { .. })));
+        assert!(
+            matches!(&out[..], [AgentEvent::Subagent { event, .. }] if matches!(**event, AgentEvent::TextDelta { .. }))
+        );
         // The parent's own usage is untouched by a subagent's.
         map_event(tagged(ZEvent::Usage { input_tokens: 9, output_tokens: 9 }), &mut usage);
         assert_eq!(usage.total_tokens(), 0);

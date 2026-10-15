@@ -141,7 +141,9 @@ impl Spec {
         let kind = match lang.to_ascii_lowercase().as_str() {
             "html" | "htm" => Kind::Html,
             "jsx" | "tsx" | "react" => Kind::React,
-            "ts" | "typescript" | "js" | "javascript" if code.contains("function App") || code.contains("export default") => {
+            "ts" | "typescript" | "js" | "javascript"
+                if code.contains("function App") || code.contains("export default") =>
+            {
                 Kind::React
             }
             "svg" => Kind::Svg,
@@ -464,7 +466,11 @@ pub fn card(spec: &Spec, t: &Theme, on_open: impl Fn(&mut Window, &mut gpui::App
                 )
                 .when(!spec.description.trim().is_empty(), |d| {
                     d.child(
-                        div().text_size(px(12.5)).text_color(t.text_muted).line_clamp(2).child(spec.description.clone()),
+                        div()
+                            .text_size(px(12.5))
+                            .text_color(t.text_muted)
+                            .line_clamp(2)
+                            .child(spec.description.clone()),
                     )
                 }),
         )
@@ -512,7 +518,13 @@ pub struct CanvasView {
 impl EventEmitter<CanvasEvent> for CanvasView {}
 
 impl CanvasView {
-    pub fn new(spec: Spec, thread: Option<TaskId>, ctx: BrowserContext, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        spec: Spec,
+        thread: Option<TaskId>,
+        ctx: BrowserContext,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let browser = cx.new(|cx| {
             let mut b = BrowserSurface::new(ctx, false, window, cx);
             b.chromeless = true;
@@ -683,12 +695,11 @@ impl Render for CanvasView {
                     .flex()
                     .flex_col()
                     .child(div().text_size(px(13.0)).text_color(t.text).truncate().child(self.spec.title.clone()))
-                    .child(
-                        div()
-                            .text_size(px(11.0))
-                            .text_color(t.text_faint)
-                            .child(format!("{} · {} · live", self.spec.kind.label(), device.label())),
-                    ),
+                    .child(div().text_size(px(11.0)).text_color(t.text_faint).child(format!(
+                        "{} · {} · live",
+                        self.spec.kind.label(),
+                        device.label()
+                    ))),
             )
             .child(devices)
             .child(
@@ -786,12 +797,14 @@ impl Render for CanvasView {
                                 .border_1()
                                 .border_color(gpui::hsla(0.0, 0.0, 1.0, 0.10))
                                 .shadow_lg()
-                                .child(
-                                    ui::rounded_clip(
-                                        (radius - bezel) * scale,
-                                        div().size_full().rounded(px((radius - bezel) * scale)).overflow_hidden().child(page),
-                                    ),
-                                ),
+                                .child(ui::rounded_clip(
+                                    (radius - bezel) * scale,
+                                    div()
+                                        .size_full()
+                                        .rounded(px((radius - bezel) * scale))
+                                        .overflow_hidden()
+                                        .child(page),
+                                )),
                         )
                         .into_any_element()
                 }
@@ -814,8 +827,8 @@ impl Render for CanvasView {
             .flex()
             .flex_col()
             .gap(px(6.0))
-            .child(
-                div().flex().flex_wrap().gap(px(5.0)).children(quick_refines.iter().enumerate().map(|(i, (chip, prompt))| {
+            .child(div().flex().flex_wrap().gap(px(5.0)).children(quick_refines.iter().enumerate().map(
+                |(i, (chip, prompt))| {
                     let prompt = (*prompt).to_string();
                     div()
                         .id(SharedString::from(format!("canvas-qref-{i}")))
@@ -835,8 +848,8 @@ impl Render for CanvasView {
                         .on_click(cx.listener(move |this, _, _, _| {
                             this.send_refinement(&prompt);
                         }))
-                })),
-            )
+                },
+            )))
             .child(
                 div()
                     .flex()

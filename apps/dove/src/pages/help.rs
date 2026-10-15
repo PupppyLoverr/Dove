@@ -63,7 +63,10 @@ impl Shell {
                 .child(div().text_size(px(13.5)).font_weight(gpui::FontWeight::MEDIUM).child(*title))
                 .child(div().text_size(px(13.0)).text_color(t.text_muted).child(*body))
         }));
-        page_with("help-page", "Help & shortcuts", "How Dove works, and every key it listens for.",
+        page_with(
+            "help-page",
+            "Help & shortcuts",
+            "How Dove works, and every key it listens for.",
             &t,
             None,
             div()

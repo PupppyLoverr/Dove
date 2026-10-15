@@ -349,9 +349,7 @@ fn docx_view(view: &OfficeView, d: &docx::Docx, t: &Theme, cx: &mut Context<File
         .child(format!("{} paragraphs", d.paras.len()))
         .when(table_count > 0, |el| el.child("·").child(format!("{table_count} tables")))
         .child(div().flex_1())
-        .when(view.dirty() > 0, |el| {
-            el.child(crate::kit::badge(format!("{} edited", view.dirty()), t.accent))
-        });
+        .when(view.dirty() > 0, |el| el.child(crate::kit::badge(format!("{} edited", view.dirty()), t.accent)));
 
     div()
         .size_full()
@@ -359,25 +357,19 @@ fn docx_view(view: &OfficeView, d: &docx::Docx, t: &Theme, cx: &mut Context<File
         .flex_col()
         .child(strip)
         .child(
-            div()
-                .id("office-docx")
-                .flex_1()
-                .min_h_0()
-                .overflow_y_scroll()
-                .p(px(14.0))
-                .child(
-                    div()
-                        .rounded(px(10.0))
-                        .border_1()
-                        .border_color(t.border)
-                        .bg(t.wash(0.015))
-                        .px(px(16.0))
-                        .py(px(14.0))
-                        .flex()
-                        .flex_col()
-                        .gap(px(2.0))
-                        .children(items),
-                ),
+            div().id("office-docx").flex_1().min_h_0().overflow_y_scroll().p(px(14.0)).child(
+                div()
+                    .rounded(px(10.0))
+                    .border_1()
+                    .border_color(t.border)
+                    .bg(t.wash(0.015))
+                    .px(px(16.0))
+                    .py(px(14.0))
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.0))
+                    .children(items),
+            ),
         )
         .into_any_element()
 }
@@ -548,9 +540,7 @@ fn pptx_view(view: &OfficeView, d: &pptx::Deck, t: &Theme, cx: &mut Context<File
         .child("·")
         .child(format!("{total_slides} slides"))
         .child(div().flex_1())
-        .when(view.dirty() > 0, |el| {
-            el.child(crate::kit::badge(format!("{} edited", view.dirty()), t.accent))
-        });
+        .when(view.dirty() > 0, |el| el.child(crate::kit::badge(format!("{} edited", view.dirty()), t.accent)));
 
     div()
         .size_full()
@@ -716,20 +706,10 @@ fn xlsx_view(view: &OfficeView, b: &xlsx::Book, t: &Theme, cx: &mut Context<File
                 })
         }))
         .child(div().flex_1())
-        .child(
-            div()
-                .px(px(6.0))
-                .text_size(px(11.0))
-                .text_color(t.text_faint)
-                .child(format!("{sh_rows} × {sh_cols}")),
-        );
+        .child(div().px(px(6.0)).text_size(px(11.0)).text_color(t.text_faint).child(format!("{sh_rows} × {sh_cols}")));
 
     let (cell_coord, cell_raw, cell_disp) = match selected {
-        Some(at) => (
-            xlsx::cell_name(at.0, at.1),
-            b.input(sheet, at),
-            b.display(sheet, at),
-        ),
+        Some(at) => (xlsx::cell_name(at.0, at.1), b.input(sheet, at), b.display(sheet, at)),
         None => ("—".to_string(), String::new(), String::new()),
     };
     let is_formula = cell_raw.starts_with('=');
@@ -759,14 +739,7 @@ fn xlsx_view(view: &OfficeView, b: &xlsx::Book, t: &Theme, cx: &mut Context<File
                 .text_color(t.text)
                 .child(cell_coord),
         )
-        .child(
-            div()
-                .font_family(t.font_mono.clone())
-                .italic()
-                .text_size(px(11.5))
-                .text_color(t.text_faint)
-                .child("fx"),
-        )
+        .child(div().font_family(t.font_mono.clone()).italic().text_size(px(11.5)).text_color(t.text_faint).child("fx"))
         .child(
             div()
                 .flex_1()
@@ -916,9 +889,7 @@ fn pdf_view(view: &OfficeView, p: &pdf::Pdf, t: &Theme, cx: &mut Context<FilesPa
         .child(format!("{} pages", p.page_count))
         .when(!p.fields.is_empty(), |el| el.child("·").child(format!("{} form fields", p.fields.len())))
         .child(div().flex_1())
-        .when(view.dirty() > 0, |el| {
-            el.child(crate::kit::badge(format!("{} edited", view.dirty()), t.accent))
-        });
+        .when(view.dirty() > 0, |el| el.child(crate::kit::badge(format!("{} edited", view.dirty()), t.accent)));
 
     let fields = (!p.fields.is_empty()).then(|| {
         let hover = t.wash(0.06);
@@ -931,7 +902,14 @@ fn pdf_view(view: &OfficeView, p: &pdf::Pdf, t: &Theme, cx: &mut Context<FilesPa
             .border_1()
             .border_color(t.border)
             .bg(t.wash(0.02))
-            .child(div().px(px(6.0)).py(px(4.0)).text_size(px(11.5)).text_color(t.text_faint).child("Interactive AcroForm Fields"))
+            .child(
+                div()
+                    .px(px(6.0))
+                    .py(px(4.0))
+                    .text_size(px(11.5))
+                    .text_color(t.text_faint)
+                    .child("Interactive AcroForm Fields"),
+            )
             .children(p.fields.iter().enumerate().map(|(i, f)| {
                 let target = Target::Field(i);
                 let selected = view.selected.as_ref() == Some(&target);

@@ -96,6 +96,10 @@ Dove gives every agent the same extra tools by registering one MCP server, named
 
 Tools exposed today: the browser set (`browser_navigate`, `browser_snapshot`, `browser_click`, `browser_type`, `browser_hover`, `browser_press`, `browser_scroll`, `browser_screenshot`, …) and `show_ui` for generative cards. New integrations (Composio, Paper, office documents, computer use) register through this same server so they work in every harness without per-agent code.
 
+### Pre-warmed sessions
+
+`Engine::prewarm` starts the Claude Code harness with no prompt while the user types in the composer (and `prewarm_resume` for a reopened thread). The Claude driver spawns the CLI immediately but holds its first stdin line on a one-shot slot keyed by `dove.deferPrompt`, so process start, settings and MCP servers overlap with typing. `start_task` / `resume_task` adopt the warm session when harness, folder, model, effort, options, mode and resume id match; otherwise it expires after four minutes.
+
 ## Browser control path
 
 ```text
@@ -149,19 +153,9 @@ On the desktop, `apps/dove/src/remote.rs` spawns `dove-mesh-host` and talks to i
 - **What leaves the machine.** Session events and command frames only. Repositories, worktrees and files stay local unless an agent puts their content into its own output.
 - **Cost.** The edge runs on Cloudflare's free tier for individual use. Enterprises can deploy the same Worker into their own Cloudflare account.
 
-## Voice, Jarvis and NEXI
+## Dictation (`apps/dove/src/voice.rs`)
 
-Speech models are not linked into `dove`. The binary stays in the 50–100 MB range; weights download into a separate checkout.
-
-`apps/dove/src/nexi.rs` finds [NEXI-Models-Drivers](https://github.com/PupppyLoverr/NEXI-Models-Drivers) via `DOVE_NEXI_ROOT`, a sibling `NEXI-Models-Drivers` directory, or `~/Downloads/NEXI-Models-Drivers`. It talks to three drivers as processes:
-
-| Driver | Role in Dove | How it is invoked |
-| --- | --- | --- |
-| `nexi-stt` | Speech to text when Settings › Voice › Speech engine is NEXI | The composer mic records PCM with `cpal`, writes a WAV, then `python -m nexi_stt transcribe` |
-| `nexi-tts` | Jarvis mode and the Test voice button | `python -m nexi_tts speak` writes a WAV; the OS plays it |
-| `nexi-cua` | `nexi_observe`, `nexi_decide`, `nexi_run` on the `dove` MCP server | `nexi-cua` CLI, only when Settings › Integrations › NEXI computer use is on |
-
-Parakeet (vendored `zeron-voice`) remains the default dictation engine. Fish Audio is an optional cloud TTS backend: Settings stores the user's key and `jarvis.rs` posts to `https://api.fish.audio/v1/tts`. Jarvis reads `jarvis=true` and speaks the plain text of a live turn when `TurnEnded` arrives. Replays and subagent mirrors do not speak.
+Dictation is speech to text only; Dove does not speak replies. It runs NVIDIA Parakeet TDT 0.6B v3 through the vendored `zeron-voice` crate, the same model Zeron uses. The model is not linked into `dove`, so the binary stays in the 50–100 MB range: Settings › Voice downloads it on demand into `~/.dove/voice` and verifies every file by SHA-256. Hold the mic in the composer or terminal to talk, or click to toggle; the text is inserted, never sent.
 
 ## Principles
 

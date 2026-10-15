@@ -4,10 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Dove — every coding agent, one native window</title>
-<meta name="description" content="Dove is the agentic development environment: a native, local-first desktop app that runs Claude Code, Codex, Cursor, Gemini, OpenCode, Devin and more side by side, each in its own worktree, with diffs, a browser it can drive, voice mode, computer use and your phone as a remote.">
+<meta name="description" content="Dove is the agentic development environment: a native, local-first desktop app that runs Claude Code, Codex, Cursor, Gemini, OpenCode, Devin and more side by side, each in its own worktree, with diffs, a browser it can drive, on-device dictation, computer use and your phone as a remote.">
 <meta name="theme-color" content="#07070a">
 <meta property="og:title" content="Dove — every coding agent, one native window">
-<meta property="og:description" content="Run every coding agent side by side in one native window. Worktrees, diffs, a browser the agent drives, voice mode, local computer use and your phone as the remote. Free and open source.">
+<meta property="og:description" content="Run every coding agent side by side in one native window. Worktrees, diffs, a browser the agent drives, on-device dictation, computer use and your phone as the remote. Free and open source.">
 <meta property="og:type" content="website">
 <meta property="og:image" content="assets/shots/og.jpg">
 <meta name="twitter:card" content="summary_large_image">
@@ -65,7 +65,7 @@
     <div class="stage reveal" id="stage">
       <div class="window" id="window">
         <div class="window-bar"><i></i><i></i><i></i><span>Dove</span></div>
-        <img src="assets/shots/app-dark.jpg" alt="The Dove app: threads in the sidebar, an agent's interactive plan card with a timeline, a traffic breakdown and a latency chart, and the composer with voice mode." width="1924" height="1092">
+        <img src="assets/shots/app-dark.jpg" alt="The Dove app: threads in the sidebar, an agent's interactive plan card with a timeline, a traffic breakdown and a latency chart, and the composer." width="1924" height="1092">
         <div class="glare" aria-hidden="true"></div>
       </div>
       <div class="float float-a" aria-hidden="true">
@@ -156,8 +156,8 @@
         <div class="viz viz-bars" aria-hidden="true"><i style="--h:.45"></i><i style="--h:.7"></i><i style="--h:.55"></i><i style="--h:.9"></i><i style="--h:.62"></i><i style="--h:.8"></i><i style="--h:.38"></i><i style="--h:.72"></i></div>
       </article>
       <article class="card spot">
-        <h3>Computer use, local</h3>
-        <p>NEXI-CUA reads the accessibility tree first and ranks typed actions with a 6&nbsp;MB model. Every step is verified and asks first. $0.</p>
+        <h3>Computer use</h3>
+        <p>Agents operate native desktop apps through the open-source cua-driver, reading the accessibility tree before they act. Destructive steps ask first.</p>
         <div class="viz viz-cursor" aria-hidden="true"><span class="ghost-btn">Save</span><span class="pointer"></span></div>
       </article>
       <article class="card spot">
@@ -181,20 +181,20 @@
   <!-- VOICE -->
   <section class="voice" id="voice" aria-labelledby="voice-title">
     <div class="voice-copy">
-      <p class="kicker reveal">Voice mode</p>
-      <h2 id="voice-title" class="section-title reveal">Talk to your agents. <em class="serif">They talk back.</em></h2>
-      <p class="lede reveal">Tap the waveform in the composer and just speak. Dove hears when you stop, sends it, and reads the answer aloud when the turn ends. Speech-to-text and text-to-speech run on your machine with NEXI models, or use Fish Audio.</p>
+      <p class="kicker reveal">Dictation</p>
+      <h2 id="voice-title" class="section-title reveal">Talk to your agents. <em class="serif">Dove types.</em></h2>
+      <p class="lede reveal">Hold the mic in the composer or the terminal and speak. NVIDIA Parakeet turns it into text on your machine, and it lands in the input for you to edit and send.</p>
       <ul class="ticks reveal">
-        <li>Local Whisper (NEXI-STT) or Parakeet dictation</li>
-        <li>NEXI-TTS voices on the CPU, no cloud</li>
-        <li>Barge in any time, it listens again</li>
+        <li>NVIDIA Parakeet, fully on-device</li>
+        <li>Downloaded once, verified by SHA-256</li>
+        <li>Inserted, never sent on its own</li>
       </ul>
     </div>
     <div class="orb-wrap reveal" aria-hidden="true">
       <canvas id="orb" class="orb"></canvas>
       <div class="orb-captions">
         <p class="cap cap-you">“Why is the checkout test failing?”</p>
-        <p class="cap cap-dove">The retry backoff was linear. I made it exponential and the test passes now.</p>
+        <p class="cap cap-dove">Typed into the composer, ready to send.</p>
       </div>
     </div>
   </section>
@@ -243,7 +243,7 @@
         <p class="price"><b>$0</b><span>forever</span></p>
         <p class="plan-for">Everything local, with your own keys.</p>
         <a class="btn btn-ghost btn-block" href="#download"><span>Download</span></a>
-        <ul><li>Every agent, unlimited threads</li><li>Worktrees, diffs, files, terminal</li><li>In-app browser + Chrome extension</li><li>Generative UI, office docs, MCP</li><li>Voice mode and NEXI computer use</li><li>One phone, 7 days of synced history</li></ul>
+        <ul><li>Every agent, unlimited threads</li><li>Worktrees, diffs, files, terminal</li><li>In-app browser + Chrome extension</li><li>Generative UI, office docs, MCP</li><li>Dictation and computer use</li><li>One phone, 7 days of synced history</li></ul>
       </article>
       <article class="plan plan-hot reveal">
         <span class="badge">Most popular</span>
@@ -278,7 +278,6 @@
       <details class="reveal"><summary>Is Dove an AI model or an agent?</summary><p>Neither. Dove is the development environment around the agents. It launches the CLIs you already use, normalises their output into one event stream and gives each task a worktree, diff, browser and terminal.</p></details>
       <details class="reveal"><summary>Do I need to pay Dove to use my agents?</summary><p>No. Agents run on your own subscriptions and API keys. The desktop app is free and open source; paid plans only cover hosted sync, extra devices and team features.</p></details>
       <details class="reveal"><summary>Where does my code go?</summary><p>Nowhere new. Dove runs on your machine and stores data in <code>~/.dove</code>. Agents talk to their own providers as they would in a terminal. Remote control relays session events, not your repository.</p></details>
-      <details class="reveal"><summary>What are the NEXI models?</summary><p>Dove's own local drivers: NEXI-STT (Whisper on the CPU) for dictation, NEXI-TTS (Kitten TTS) for spoken replies and NEXI-CUA for computer use. Each installs on demand into its own environment, so the app stays small, and runs offline afterwards.</p></details>
       <details class="reveal"><summary>How does remote control work?</summary><p>Turn it on in Settings › Remote control and sign in. Sign in on your phone with the same account. Each session is published as a Loro CRDT document to an edge on Cloudflare Workers and Durable Objects; the phone sends commands back and the agent keeps running on your desktop.</p></details>
       <details class="reveal"><summary>Which platforms are supported?</summary><p>macOS, Windows and Linux for the desktop app, with each OS's native web view for the in-app browser. iOS and Android for the remote.</p></details>
       <details class="reveal"><summary>How is this different from Cursor, Conductor or Warp?</summary><p>Dove does not ship its own model or bind you to one vendor. It runs many agents side by side in isolated worktrees, in a native Rust app, and adds the shared pieces they lack: review, browser control, generative UI, voice, computer use, office documents and a mobile remote.</p></details>
@@ -305,7 +304,6 @@
     <a href="https://github.com/PupppyLoverr/Dove">GitHub</a>
     <a href="https://github.com/PupppyLoverr/Dove/blob/main/ARCHITECTURE.md">Architecture</a>
     <a href="https://github.com/PupppyLoverr/Dove/blob/main/docs/PRICING.md">Pricing details</a>
-    <a href="https://github.com/PupppyLoverr/NEXI-Models-Drivers">NEXI models</a>
   </nav>
   <p class="foot-note">Agent names and logos are trademarks of their owners, shown to indicate compatibility.</p>
 </footer>

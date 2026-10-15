@@ -569,7 +569,17 @@ impl Store {
              ON CONFLICT(id) DO UPDATE SET name = excluded.name, role = excluded.role, avatar = excluded.avatar,
                 hue = excluded.hue, harness = excluded.harness, model = excluded.model,
                 instructions = excluded.instructions",
-            params![p.id, p.name, p.role, p.avatar, p.hue as f64, p.harness.id(), p.model, p.instructions, p.created_at],
+            params![
+                p.id,
+                p.name,
+                p.role,
+                p.avatar,
+                p.hue as f64,
+                p.harness.id(),
+                p.model,
+                p.instructions,
+                p.created_at
+            ],
         )?;
         Ok(())
     }

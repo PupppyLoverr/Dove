@@ -24,10 +24,10 @@ use dove_core::{Command, Engine, LiveSession, git};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{Anchor, anchored, deferred};
 use gpui::{
-    AnyElement, App, AppContext as _, ClipboardItem, Context, Entity, EventEmitter,
-    FocusHandle, Focusable, FollowMode, InteractiveElement as _, IntoElement, KeyDownEvent, ListAlignment, ListOffset,
-    ListState, ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription,
-    WeakEntity, Window, canvas, div, list, px,
+    AnyElement, App, AppContext as _, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, Focusable, FollowMode,
+    InteractiveElement as _, IntoElement, KeyDownEvent, ListAlignment, ListOffset, ListState, ParentElement as _,
+    Render, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, WeakEntity, Window, canvas, div,
+    list, px,
 };
 use gpui_base::input::{Input, InputEvent, InputState};
 
@@ -346,8 +346,6 @@ pub struct Effects {
     pub first_answer: bool,
     /// A design arrived (or changed): show it.
     pub canvas: Option<crate::canvas::Spec>,
-    /// Assistant text to speak, when Jarvis is on and this was a live turn.
-    pub speak: Option<String>,
 }
 
 /// A thread's transcript as plain data.
@@ -738,13 +736,6 @@ impl Chat {
                 self.close_all();
                 self.status_text = None;
                 self.running_agents.clear();
-                if live && !is_error {
-                    let raw = self.messages.get(self.turn_first_msg..).map(|m| m.join("\n\n")).unwrap_or_default();
-                    let spoken = crate::jarvis::for_speech(&raw);
-                    if !spoken.is_empty() {
-                        fx.speak = Some(spoken);
-                    }
-                }
                 if live {
                     self.usage += usage.unwrap_or_default();
                 }
@@ -1373,11 +1364,6 @@ impl TaskView {
             }
             if let Some(spec) = fx.canvas {
                 cx.emit(TaskViewEvent::OpenCanvas(spec, false));
-            }
-            if let Some(text) = fx.speak
-                && self.mirror.is_none()
-            {
-                crate::jarvis::maybe_speak(&self.engine, text);
             }
         }
         let after = self.chat.rows.len();
@@ -2215,25 +2201,13 @@ impl TaskView {
                     let _ = weak.update(cx, |v, cx| v.toggle_activity(i, cx));
                 })
                 .child(tc::chevron(frame.disclosure, t))
-                .child(
-                    div()
-                        .min_w_0()
-                        .flex_1()
-                        .h(px(tc::LINE_HEIGHT))
-                        .flex()
-                        .items_center()
-                        .overflow_hidden()
-                        .child({
-                            // The summary rolls as the group grows ("Ran 2
-                            // commands" → "Ran 3 commands"), then shimmers on.
-                            let summary: SharedString = a.summary().into();
-                            crate::roll_text::rolling(
-                                format!("tool-group-{}-{i}", view.as_u64()),
-                                summary.clone(),
-                            )
-                            .unwrap_or_else(|| tc::title(summary, shimmer, t))
-                        }),
-                )
+                .child(div().min_w_0().flex_1().h(px(tc::LINE_HEIGHT)).flex().items_center().overflow_hidden().child({
+                    // The summary rolls as the group grows ("Ran 2
+                    // commands" → "Ran 3 commands"), then shimmers on.
+                    let summary: SharedString = a.summary().into();
+                    crate::roll_text::rolling(format!("tool-group-{}-{i}", view.as_u64()), summary.clone())
+                        .unwrap_or_else(|| tc::title(summary, shimmer, t))
+                }))
         };
         // A new group's header grows into place, like its rows.
         let header_reveal = tc::progress(a.started.filter(|_| a.live), now, tc::ROW_REVEAL, tc::EASE_OUT_EXPO);
@@ -3330,7 +3304,6 @@ impl TaskView {
         )
     }
 }
-
 
 fn action_button(id: SharedString, glyph: &'static str, tip: &'static str, t: &Theme) -> gpui::Stateful<gpui::Div> {
     ui::row_button(id, glyph, tip, t)

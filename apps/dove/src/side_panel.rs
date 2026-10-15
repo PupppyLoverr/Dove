@@ -25,7 +25,6 @@ use std::sync::Arc;
 use crate::assets::{icon, icons};
 use crate::browser::{BrowserContext, BrowserEvent, BrowserSurface};
 use crate::canvas::{CanvasEvent, CanvasView};
-use crate::transcript::{Subagent, TaskView};
 use crate::changes::{Changes, ChangesEvent};
 use crate::files_panel::{FilesEvent, FilesPanel};
 use crate::history::{GitHistory, HistoryEvent};
@@ -34,6 +33,7 @@ use crate::side_chat::{SideChat, SideChatEvent};
 use crate::surface_chrome;
 use crate::terminal::TerminalView;
 use crate::theme::{Theme, ink};
+use crate::transcript::{Subagent, TaskView};
 use crate::ui;
 
 /// Fixed chip width, as in Zeron, so drag reordering is uniform.
@@ -434,7 +434,10 @@ impl SidePanel {
             Tab::Chats => Surface::Chats,
             Tab::Canvas => {
                 // The most recent design, or the gallery when there is none.
-                match self.panel_ref().and_then(|p| p.tabs.iter().rev().find(|s| matches!(s, Surface::Canvas(_))).copied()) {
+                match self
+                    .panel_ref()
+                    .and_then(|p| p.tabs.iter().rev().find(|s| matches!(s, Surface::Canvas(_))).copied())
+                {
                     Some(s) => s,
                     None => {
                         self.show_canvas_empty = true;
@@ -495,11 +498,7 @@ impl SidePanel {
     }
 
     pub fn open_scratchpad(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let default_dev = self
-            .engine
-            .store
-            .setting("canvas_default_device")
-            .unwrap_or_else(|| "desktop".into());
+        let default_dev = self.engine.store.setting("canvas_default_device").unwrap_or_else(|| "desktop".into());
         let device = crate::canvas::Device::parse(&default_dev);
         let spec = crate::canvas::Spec {
             id: "scratchpad".into(),
@@ -892,9 +891,7 @@ impl SidePanel {
                 .and_then(|v| v.read(cx).mirrored().and_then(|(_, info)| info.map(|i| i.title.clone())))
                 .unwrap_or_else(|| "Subagent".into())
                 .into(),
-            Surface::Subagents if !self.subagents.is_empty() => {
-                format!("Subagents · {}", self.subagents.len()).into()
-            }
+            Surface::Subagents if !self.subagents.is_empty() => format!("Subagents · {}", self.subagents.len()).into(),
             Surface::Chats if !self.side_chats.is_empty() => format!("Chats · {}", self.side_chats.len()).into(),
             Surface::Changes => {
                 let n = self.changes.read(cx).summary().0;
@@ -1020,13 +1017,8 @@ impl SidePanel {
                     })),
             )
             .when(plus_open, |d| {
-                let rows = div()
-                    .w(px(168.0))
-                    .py(px(2.0))
-                    .flex()
-                    .flex_col()
-                    .gap(px(2.0))
-                    .children(Tab::ALL.into_iter().map(|k| {
+                let rows = div().w(px(168.0)).py(px(2.0)).flex().flex_col().gap(px(2.0)).children(
+                    Tab::ALL.into_iter().map(|k| {
                         div()
                             .id(SharedString::from(format!("plus-{}", k.label())))
                             .h(px(32.0))
@@ -1049,7 +1041,8 @@ impl SidePanel {
                                     this.show(k, window, cx);
                                 }
                             }))
-                    }));
+                    }),
+                );
                 d.child(deferred(
                     anchored().anchor(gpui::Anchor::TopRight).snap_to_window_with_margin(px(8.0)).child(
                         div()
@@ -1189,25 +1182,29 @@ impl SidePanel {
             );
         }
         // Centered in the pane when it fits, scrolling from the top when not.
-        div().id("surface-picker").size_full().overflow_y_scroll().child(
-            div()
-                .w_full()
-                .min_h(gpui::relative(1.0))
-                .flex()
-                .flex_col()
-                .items_center()
-                .justify_center()
-                .p(px(16.0))
-                .child(col)
-                .child(
-                    div()
-                        .mt(px(18.0))
-                        .text_size(px(11.5))
-                        .text_color(t.text_faint)
-                        .child("Ctrl+\\ hides the panel"),
-                ),
-        )
-        .into_any_element()
+        div()
+            .id("surface-picker")
+            .size_full()
+            .overflow_y_scroll()
+            .child(
+                div()
+                    .w_full()
+                    .min_h(gpui::relative(1.0))
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .justify_center()
+                    .p(px(16.0))
+                    .child(col)
+                    .child(
+                        div()
+                            .mt(px(18.0))
+                            .text_size(px(11.5))
+                            .text_color(t.text_faint)
+                            .child("Ctrl+\\ hides the panel"),
+                    ),
+            )
+            .into_any_element()
     }
 
     fn render_subagents(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
@@ -1247,8 +1244,12 @@ impl SidePanel {
                     .child(icon(icons::FORK).size(px(13.0)).text_color(t.text_muted))
                     .child(format!("{} spawned", self.subagents.len()))
                     .when(running > 0, |d| {
-                        d.child(div().text_color(t.text_faint).child("·"))
-                            .child(div().text_color(t.busy).font_weight(gpui::FontWeight::MEDIUM).child(format!("{running} active")))
+                        d.child(div().text_color(t.text_faint).child("·")).child(
+                            div()
+                                .text_color(t.busy)
+                                .font_weight(gpui::FontWeight::MEDIUM)
+                                .child(format!("{running} active")),
+                        )
                     })
                     .when(done > 0, |d| {
                         d.child(div().text_color(t.text_faint).child("·"))
@@ -1256,7 +1257,12 @@ impl SidePanel {
                     })
                     .child(div().flex_1())
                     .when(total_steps > 0, |d| {
-                        d.child(div().text_size(px(11.0)).text_color(t.text_faint).child(format!("{total_steps} tool steps")))
+                        d.child(
+                            div()
+                                .text_size(px(11.0))
+                                .text_color(t.text_faint)
+                                .child(format!("{total_steps} tool steps")),
+                        )
                     }),
             )
             .children(self.subagents.iter().enumerate().map(|(i, a)| {
@@ -1360,15 +1366,19 @@ impl SidePanel {
                                 .text_color(t.busy)
                                 .child(div().min_w_0().truncate().child(doing))
                                 .when(steps > 0, |d| {
-                                    d.child(div().flex_none().text_color(t.text_faint).child(format!(
-                                        "· {steps} {}",
-                                        if steps == 1 { "step" } else { "steps" }
-                                    )))
+                                    d.child(
+                                        div()
+                                            .flex_none()
+                                            .text_color(t.text_faint)
+                                            .child(format!("· {steps} {}", if steps == 1 { "step" } else { "steps" })),
+                                    )
                                 }),
                         )
                     })
                     .when(!a.prompt.is_empty(), |d| {
-                        d.child(div().text_size(px(12.5)).text_color(t.text_muted).line_clamp(3).child(a.prompt.clone()))
+                        d.child(
+                            div().text_size(px(12.5)).text_color(t.text_muted).line_clamp(3).child(a.prompt.clone()),
+                        )
                     })
                     .when_some(result.filter(|r| !r.is_empty()), |d, r| {
                         d.child(
@@ -1449,11 +1459,8 @@ impl SidePanel {
             ("Write tests", "Write focused unit/integration tests for the recent changes in this worktree."),
             ("Explain changes", "Summarize what changed in this worktree and how the pieces fit together."),
         ];
-        let quick = div()
-            .flex()
-            .flex_wrap()
-            .gap(px(6.0))
-            .children(starters.iter().enumerate().map(|(i, (label, prompt))| {
+        let quick =
+            div().flex().flex_wrap().gap(px(6.0)).children(starters.iter().enumerate().map(|(i, (label, prompt))| {
                 let prompt = (*prompt).to_string();
                 div()
                     .id(SharedString::from(format!("chats-quick-{i}")))
@@ -1506,10 +1513,7 @@ impl SidePanel {
                         )))
                         .child(div().flex_1().min_w_0().truncate().text_size(px(13.0)).child(c.title.clone()))
                         .child(
-                            div()
-                                .text_size(px(11.5))
-                                .text_color(t.text_faint)
-                                .child(ui::relative_time(c.updated_at)),
+                            div().text_size(px(11.5)).text_color(t.text_faint).child(ui::relative_time(c.updated_at)),
                         )
                         .on_click(cx.listener(move |_, _, _, cx| cx.emit(SidePanelEvent::OpenThread(id))))
                 }))
@@ -1624,17 +1628,9 @@ impl SidePanel {
             .flex()
             .flex_col()
             .gap(px(10.0))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.0))
-                    .child(kit::ring(frac, 16.0, t.accent, t.wash(0.12)))
-                    .child(div().text_size(px(13.0)).text_color(t.text).child(format!(
-                        "{done} of {} done",
-                        self.todos.len()
-                    ))),
-            )
+            .child(div().flex().items_center().gap(px(8.0)).child(kit::ring(frac, 16.0, t.accent, t.wash(0.12))).child(
+                div().text_size(px(13.0)).text_color(t.text).child(format!("{done} of {} done", self.todos.len())),
+            ))
             .children(self.todos.iter().map(|item| {
                 let (glyph, color) = match item.status {
                     TodoStatus::Completed => (Some(icons::CHECK), t.success),
@@ -1774,7 +1770,9 @@ impl Render for SidePanel {
                         .child(
                             surface_chrome::toolbar_button("dock-term-new", "New shell tab")
                                 .child(icon(icons::PLUS).size(px(13.0)).text_color(t.text_muted))
-                                .on_click(cx.listener(|this, _, window, cx| this.open(Tab::Terminal, None, window, cx))),
+                                .on_click(
+                                    cx.listener(|this, _, window, cx| this.open(Tab::Terminal, None, window, cx)),
+                                ),
                         );
                     div()
                         .size_full()

@@ -429,7 +429,10 @@ impl Shell {
                     .on_click(cx.listener(|this, _, window, cx| this.new_session(window, cx))),
             )
             .into_any_element();
-        page_with("threads-page", "Threads", "Every conversation, filterable by project, agent and status.",
+        page_with(
+            "threads-page",
+            "Threads",
+            "Every conversation, filterable by project, agent and status.",
             &t,
             Some(right),
             div().flex().flex_col().gap(px(12.0)).child(toolbar).children(bulk_bar).child(rows),

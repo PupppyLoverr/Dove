@@ -60,7 +60,10 @@ pub fn command(kind: HarnessKind, program: &std::path::Path) -> (std::path::Path
 fn parts(v: &str) -> Vec<u64> {
     let v = v.trim().trim_start_matches(|c: char| !c.is_ascii_digit());
     let core = v.split(|c: char| c.is_whitespace() || c == '-' || c == '+').next().unwrap_or("");
-    core.split('.').map(|p| p.chars().take_while(|c| c.is_ascii_digit()).collect::<String>()).filter_map(|p| p.parse().ok()).collect()
+    core.split('.')
+        .map(|p| p.chars().take_while(|c| c.is_ascii_digit()).collect::<String>())
+        .filter_map(|p| p.parse().ok())
+        .collect()
 }
 
 /// Whether `latest` is newer than `installed`.

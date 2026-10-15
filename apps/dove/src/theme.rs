@@ -336,8 +336,7 @@ impl Theme {
             };
             alpha = alpha.max(needed);
         }
-        let rgb: [f32; 3] =
-            std::array::from_fn(|i| ((target[i] - canvas[i] * (1.0 - alpha)) / alpha).clamp(0.0, 1.0));
+        let rgb: [f32; 3] = std::array::from_fn(|i| ((target[i] - canvas[i] * (1.0 - alpha)) / alpha).clamp(0.0, 1.0));
         let (h, s, l) = rgb_to_hsl(rgb[0], rgb[1], rgb[2]);
         hsla(h, s, l, 0.15)
     }
@@ -430,7 +429,8 @@ impl Theme {
         for step in 0..=20 {
             let alpha = base + (1.0 - base) * step as f32 / 20.0;
             let plate = flatten(tint.opacity(alpha), backdrop);
-            if contrast(flatten(self.text, plate), plate) >= 4.5 && contrast(flatten(self.text_muted, plate), plate) >= 3.0
+            if contrast(flatten(self.text, plate), plate) >= 4.5
+                && contrast(flatten(self.text_muted, plate), plate) >= 3.0
             {
                 return alpha;
             }
@@ -669,8 +669,7 @@ mod tests {
     #[test]
     fn materials_get_denser_from_glass_to_normal() {
         for appearance in [Appearance::Dark, Appearance::Light] {
-            let [glass, acrylic, normal] =
-                Surface::ALL.map(|s| Theme::new(appearance, Accent::Sky, s));
+            let [glass, acrylic, normal] = Surface::ALL.map(|s| Theme::new(appearance, Accent::Sky, s));
             assert!(glass.panel_bg().a <= acrylic.panel_bg().a && acrylic.panel_bg().a <= normal.panel_bg().a);
             assert!(glass.composer_hero_bg().a <= acrylic.composer_hero_bg().a);
             assert_eq!(normal.composer_bg().a, 1.0);

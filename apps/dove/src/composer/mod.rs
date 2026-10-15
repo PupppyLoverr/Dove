@@ -496,7 +496,7 @@ impl Composer {
 
     // ------------------------------------------------------------ actions
 
-    pub fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let mut text = self.input.read(cx).value().trim().to_string();
         if text.is_empty() && self.attachments.is_empty() {
             return;
@@ -995,7 +995,13 @@ impl Composer {
             .tooltip(ui::tip("Where the agent works"))
             .on_click(cx.listener(|this, _, _, cx| this.toggle_menu(Menu::Checkout, cx)));
         let menu = open.then(|| {
-            let row = |id: &'static str, glyph: &'static str, title: &'static str, detail: &'static str, on: bool, value: bool, cx: &mut Context<Self>| {
+            let row = |id: &'static str,
+                       glyph: &'static str,
+                       title: &'static str,
+                       detail: &'static str,
+                       on: bool,
+                       value: bool,
+                       cx: &mut Context<Self>| {
                 div()
                     .id(id)
                     .mx(px(4.0))
@@ -1121,8 +1127,9 @@ impl Composer {
     }
 
     fn device_chip(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
-        let chip = ui::footer_chip("composer-device", icons::MONITOR, ui::host_name(), self.menu == Some(Menu::Device), t)
-            .on_click(cx.listener(|this, _, _, cx| this.toggle_menu(Menu::Device, cx)));
+        let chip =
+            ui::footer_chip("composer-device", icons::MONITOR, ui::host_name(), self.menu == Some(Menu::Device), t)
+                .on_click(cx.listener(|this, _, _, cx| this.toggle_menu(Menu::Device, cx)));
         let menu = (self.menu == Some(Menu::Device)).then(|| {
             let rows = div()
                 .w(px(250.0))
@@ -1247,33 +1254,30 @@ impl Composer {
     fn folders_chip(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let supported = dove_core::supports_add_dirs(self.harness(cx));
         let n = self.add_dirs.len();
-        let chip = if self.thread.is_none() {
-            ui::ghost_chip("composer-folders", t)
-        } else {
-            ui::chip("composer-folders", t)
-        }
-            .child(icon(icons::FOLDER_WITH_FILES).size(px(14.0)))
-            .child(if n == 0 {
-                "Add folder".to_string()
-            } else {
-                format!("{n} extra {}", if n == 1 { "folder" } else { "folders" })
-            })
-            .when(!supported, |d| d.opacity(0.5))
-            .tooltip(ui::tip(if supported {
-                "Let the agent read and edit another folder"
-            } else {
-                "Extra folders work with Claude Code"
-            }))
-            .on_click(cx.listener(move |this, _, _, cx| {
-                if !supported {
-                    return;
-                }
-                if this.add_dirs.is_empty() {
-                    this.add_dir(cx);
+        let chip =
+            if self.thread.is_none() { ui::ghost_chip("composer-folders", t) } else { ui::chip("composer-folders", t) }
+                .child(icon(icons::FOLDER_WITH_FILES).size(px(14.0)))
+                .child(if n == 0 {
+                    "Add folder".to_string()
                 } else {
-                    this.toggle_menu(Menu::Folders, cx);
-                }
-            }));
+                    format!("{n} extra {}", if n == 1 { "folder" } else { "folders" })
+                })
+                .when(!supported, |d| d.opacity(0.5))
+                .tooltip(ui::tip(if supported {
+                    "Let the agent read and edit another folder"
+                } else {
+                    "Extra folders work with Claude Code"
+                }))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if !supported {
+                        return;
+                    }
+                    if this.add_dirs.is_empty() {
+                        this.add_dir(cx);
+                    } else {
+                        this.toggle_menu(Menu::Folders, cx);
+                    }
+                }));
         let menu = (self.menu == Some(Menu::Folders)).then(|| {
             let rows = div()
                 .w(px(320.0))
@@ -1511,20 +1515,6 @@ impl Composer {
                         .child(div().text_size(px(12.0)).text_color(t.text_faint).child(v.status_line())),
                 )
                 .child(ui::separator(t))
-                .child({
-                    let on = self.engine.store.setting("jarvis").as_deref() == Some("true");
-                    ui::menu_row("mic-jarvis", icons::VOLUME_LOUD, "Speak replies aloud", false, t)
-                        .when(on, |d| {
-                            d.child(div().flex_1()).child(icon(icons::CHECK).size(px(13.0)).text_color(t.accent))
-                        })
-                        .on_click(
-                        cx.listener(move |this, _, _, cx| {
-                            let _ = this.engine.store.set_setting("jarvis", if on { "false" } else { "true" });
-                            this.menu = None;
-                            cx.notify();
-                        }),
-                    )
-                })
                 .child(
                     ui::menu_row(
                         "mic-settings",
@@ -1544,56 +1534,45 @@ impl Composer {
         div().relative().child(mic).children(menu).into_any_element()
     }
 
-    fn jarvis_button(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
-        let on = self.engine.store.setting("jarvis").as_deref() == Some("true");
-        ui::round_button(
-            "composer-jarvis",
-            if on {
-                "Jarvis is on. Replies are spoken. Click to stop."
-            } else {
-                "Jarvis mode: speak replies with NEXI TTS, or Fish Audio if you set a key"
-            },
-            t,
-        )
-        .when(on, |d| d.bg(t.accent.opacity(0.16)))
-        .child(icon(icons::VOLUME_LOUD).size(px(ui::ICON_LG)).text_color(if on { t.accent } else { t.text_muted }))
-        .on_click(cx.listener(move |this, _, _, cx| {
-            let next = if on { "false" } else { "true" };
-            let _ = this.engine.store.set_setting("jarvis", next);
-            cx.notify();
-        }))
-        .into_any_element()
-    }
-
     fn mode_button(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let bypass = self.mode == PermissionMode::Bypass;
         let hero = self.variant == Variant::Hero;
         let chip: AnyElement = if hero {
-            ui::footer_chip("composer-mode", mode_icon(self.mode), mode_label(self.mode), self.menu == Some(Menu::Mode), t)
-                .when(bypass, |d| d.text_color(t.danger))
-                .tooltip(ui::tip("Permission level"))
-                .on_click(cx.listener(|this, _, _, cx| this.toggle_menu(Menu::Mode, cx)))
-                .into_any_element()
-        } else {
-            div()
-            .id("composer-mode")
-            .h(px(28.0))
-            .px(px(9.0))
-            .flex()
-            .items_center()
-            .justify_center()
-            .gap(px(6.0))
-            .rounded_full()
-            .cursor_pointer()
-            .text_size(px(12.5))
-            .text_color(if bypass { t.danger } else { t.text_muted })
-            .when(bypass, |d| d.bg(t.danger.opacity(0.12)))
-            .hover(|s| s.bg(t.wash(0.08)))
-            .child(icon(mode_icon(self.mode)).size(px(14.0)).text_color(if bypass { t.danger } else { t.text_faint }))
-            .child(mode_label(self.mode))
+            ui::footer_chip(
+                "composer-mode",
+                mode_icon(self.mode),
+                mode_label(self.mode),
+                self.menu == Some(Menu::Mode),
+                t,
+            )
+            .when(bypass, |d| d.text_color(t.danger))
             .tooltip(ui::tip("Permission level"))
             .on_click(cx.listener(|this, _, _, cx| this.toggle_menu(Menu::Mode, cx)))
             .into_any_element()
+        } else {
+            div()
+                .id("composer-mode")
+                .h(px(28.0))
+                .px(px(9.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .gap(px(6.0))
+                .rounded_full()
+                .cursor_pointer()
+                .text_size(px(12.5))
+                .text_color(if bypass { t.danger } else { t.text_muted })
+                .when(bypass, |d| d.bg(t.danger.opacity(0.12)))
+                .hover(|s| s.bg(t.wash(0.08)))
+                .child(icon(mode_icon(self.mode)).size(px(14.0)).text_color(if bypass {
+                    t.danger
+                } else {
+                    t.text_faint
+                }))
+                .child(mode_label(self.mode))
+                .tooltip(ui::tip("Permission level"))
+                .on_click(cx.listener(|this, _, _, cx| this.toggle_menu(Menu::Mode, cx)))
+                .into_any_element()
         };
         let menu = (self.menu == Some(Menu::Mode)).then(|| {
             let modes = [
@@ -1717,9 +1696,11 @@ impl Composer {
             .when(enabled, |d| d.cursor_pointer())
             .tooltip(ui::tip(tip))
             .on_click(cx.listener(|this, _, window, cx| this.submit(window, cx)))
-            .child(icon(glyph).size(px(ui::ICON_SM)).text_color(
-                if enabled || self.variant == Variant::Hero { t.on_solid } else { t.text_faint },
-            ))
+            .child(icon(glyph).size(px(ui::ICON_SM)).text_color(if enabled || self.variant == Variant::Hero {
+                t.on_solid
+            } else {
+                t.text_faint
+            }))
             .when_some(label, |d, l| d.child(l))
             .into_any_element()
     }
@@ -2127,9 +2108,6 @@ impl Render for Composer {
                                         .child(self.picker.clone()),
                                 )
                                 .child(div().flex_none().child(self.mic_button(t, cx)))
-                                .when(self.engine.store.setting("jarvis").as_deref() == Some("true"), |d| {
-                                    d.child(div().flex_none().child(self.jarvis_button(t, cx)))
-                                })
                                 .child(div().flex_none().pl(px(2.0)).child(self.action_button(has_text, t, cx))),
                         ),
                 )

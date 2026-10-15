@@ -214,19 +214,28 @@ impl Shell {
                 &t,
             ))
         } else {
-            div().flex().flex_col().gap(px(14.0)).child(stats).child(chart).child(
-                div()
-                    .flex()
-                    .gap(px(10.0))
-                    .items_start()
-                    .child(table("By agent", &by_agent))
-                    .child(table("By project", &by_project)),
-            )
-            .when(!by_teammate.is_empty(), |d| {
-                d.child(div().flex().child(table("By teammate (all time)", &by_teammate)))
-            })
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(14.0))
+                .child(stats)
+                .child(chart)
+                .child(
+                    div()
+                        .flex()
+                        .gap(px(10.0))
+                        .items_start()
+                        .child(table("By agent", &by_agent))
+                        .child(table("By project", &by_project)),
+                )
+                .when(!by_teammate.is_empty(), |d| {
+                    d.child(div().flex().child(table("By teammate (all time)", &by_teammate)))
+                })
         };
-        page_with("usage-page", "Usage", "Tokens and spend by day, agent and project. Counted on this device.",
+        page_with(
+            "usage-page",
+            "Usage",
+            "Tokens and spend by day, agent and project. Counted on this device.",
             &t,
             Some(header),
             body.when_some(self.pages.usage_note.clone(), |d, n| {

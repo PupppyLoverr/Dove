@@ -83,7 +83,7 @@ impl Section {
             Section::Team => "Specialists & Crew members with dedicated roles, standing briefs, and memory.",
             Section::Canvas => "Live interactive HTML, React/TSX, and Tailwind artboards built by agents.",
             Section::Composer => "Default execution permissions, slash skills, and per-project approval rules.",
-            Section::Voice => "On-device Parakeet/Whisper dictation and spoken Jarvis voice responses.",
+            Section::Voice => "On-device NVIDIA Parakeet dictation.",
             Section::Keyboard => "Every global and workspace shortcut, customizable with live key recording.",
             Section::Notifications => "System alerts, completion sounds, and background daemon behavior.",
             Section::Remote => "Monitor and drive this computer's active sessions from your phone.",
@@ -101,7 +101,7 @@ impl Section {
             Section::Team => "Crew & Team",
             Section::Canvas => "Canvas",
             Section::Composer => "Composer",
-            Section::Voice => "Voice & Jarvis",
+            Section::Voice => "Voice",
             Section::Keyboard => "Keyboard",
             Section::Notifications => "Notifications",
             Section::Remote => "Remote Control",
@@ -149,13 +149,21 @@ impl Section {
 
     fn keywords(self) -> &'static str {
         match self {
-            Section::General => "general threads tabs reopen restore prewarm git worktree branch prefix clone folder directory",
-            Section::Appearance => "appearance theme dark light system accent sky indigo orange green pink surface glass acrylic normal frosted wallpaper background effect animate animation motion",
-            Section::Agents => "agents harness claude codex cursor gemini opencode kimi droid qwen kilocode cli binary sign in",
+            Section::General => {
+                "general threads tabs reopen restore prewarm git worktree branch prefix clone folder directory"
+            }
+            Section::Appearance => {
+                "appearance theme dark light system accent sky indigo orange green pink surface glass acrylic normal frosted wallpaper background effect animate animation motion"
+            }
+            Section::Agents => {
+                "agents harness claude codex cursor gemini opencode kimi droid qwen kilocode cli binary sign in"
+            }
             Section::Team => "team crew specialists personas teammates role brief notes memory",
-            Section::Canvas => "canvas design artboard html react tsx tailwind svg preview mobile tablet desktop bridge",
+            Section::Canvas => {
+                "canvas design artboard html react tsx tailwind svg preview mobile tablet desktop bridge"
+            }
             Section::Composer => "composer permissions default auto-edit plan ask bypass approvals",
-            Section::Voice => "voice dictation microphone parakeet nexi whisper jarvis tts speech spoken jasper bella luna bruno fish audio",
+            Section::Voice => "voice dictation microphone parakeet nvidia speech to text",
             Section::Keyboard => "keyboard shortcuts keybindings hotkeys rebind keys",
             Section::Notifications => "notifications alerts sound tray background keep running",
             Section::Remote => "remote control phone mobile woozlit account device",
@@ -188,8 +196,6 @@ pub struct SettingsPage {
     devices: Vec<(String, String)>,
     data_size: Option<u64>,
     integrations: Entity<crate::pages::integrations::IntegrationsView>,
-    fish_key: Entity<InputState>,
-    voice_note: Option<String>,
     focus: FocusHandle,
     _subs: Vec<Subscription>,
 }
@@ -263,8 +269,6 @@ impl SettingsPage {
         if let Some(remote) = crate::remote::Remote::global(cx) {
             subs.push(cx.observe(&remote, |_, _, cx| cx.notify()));
         }
-        let (fish_key, fish_sub) = text_setting(&engine, "fish_api_key", String::new(), "Fish Audio API key", window, cx);
-        subs.push(fish_sub);
         Self {
             engine,
             section: Section::General,
@@ -276,8 +280,6 @@ impl SettingsPage {
             devices: Vec::new(),
             data_size: None,
             integrations: cx.new(|cx| crate::pages::integrations::IntegrationsView::new(window, cx)),
-            fish_key,
-            voice_note: None,
             focus: cx.focus_handle(),
             _subs: subs,
         }
@@ -439,9 +441,8 @@ impl SettingsPage {
             }
             Section::Keyboard => {
                 let store = self.engine.store.clone();
-                let any_custom = crate::keymap::shortcuts()
-                    .iter()
-                    .any(|sc| crate::keymap::binding(&store, sc) != sc.default);
+                let any_custom =
+                    crate::keymap::shortcuts().iter().any(|sc| crate::keymap::binding(&store, sc) != sc.default);
                 if any_custom {
                     Some(
                         kit::button_outline("hero-reset-keys", "Reset All Shortcuts", t)
@@ -561,15 +562,10 @@ impl SettingsPage {
                     .child(row(
                         "Default clone directory",
                         "Destination folder when cloning repositories from a GitHub URL",
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(6.0))
-                            .child(field(&self.clone_dir, 240.0, t))
-                            .child(
-                                ui::button_ghost("browse-clone-dir", "Browse…", t)
-                                    .on_click(cx.listener(|this, _, window, cx| this.pick_clone_dir(window, cx))),
-                            ),
+                        div().flex().items_center().gap(px(6.0)).child(field(&self.clone_dir, 240.0, t)).child(
+                            ui::button_ghost("browse-clone-dir", "Browse…", t)
+                                .on_click(cx.listener(|this, _, window, cx| this.pick_clone_dir(window, cx))),
+                        ),
                         t,
                     )),
             ))
@@ -583,16 +579,13 @@ impl SettingsPage {
             .copied()
             .filter(|k| *k != HarnessKind::Shell && dove_core::harness_supported(*k))
             .collect();
-        let installed_count = supported
-            .iter()
-            .filter(|k| installed.iter().any(|i| i.kind == **k))
-            .count();
+        let installed_count = supported.iter().filter(|k| installed.iter().any(|i| i.kind == **k)).count();
 
         let rows = supported.into_iter().map(|kind| {
-                let found = installed.iter().find(|i| i.kind == kind);
-                let enabled = crate::pages::agent_enabled(&self.engine.store, kind);
-                let key = format!("agent_disabled.{}", kind.id());
-                let control: AnyElement = if found.is_some() {
+            let found = installed.iter().find(|i| i.kind == kind);
+            let enabled = crate::pages::agent_enabled(&self.engine.store, kind);
+            let key = format!("agent_disabled.{}", kind.id());
+            let control: AnyElement = if found.is_some() {
                 div()
                     .flex()
                     .items_center()
@@ -601,43 +594,39 @@ impl SettingsPage {
                         if enabled { "Enabled" } else { "Hidden" },
                         if enabled { t.success } else { t.text_faint },
                     ))
-                    .child(
-                        kit::switch(SharedString::from(format!("set-agent-{}", kind.id())), enabled, t).on_click(
-                            cx.listener(move |this, _, _, cx| {
-                            this.set(&key, if enabled { "true" } else { "false" }, cx)
-                            }),
-                        ),
-                    )
-                        .into_any_element()
-                } else {
+                    .child(kit::switch(SharedString::from(format!("set-agent-{}", kind.id())), enabled, t).on_click(
+                        cx.listener(move |this, _, _, cx| this.set(&key, if enabled { "true" } else { "false" }, cx)),
+                    ))
+                    .into_any_element()
+            } else {
                 kit::badge("Not installed", t.text_faint).into_any_element()
-                };
-                div()
-                    .px(px(16.0))
-                    .py(px(12.0))
-                    .flex()
-                    .items_center()
-                    .gap(px(12.0))
-                    .border_t_1()
-                    .border_color(t.border)
-                    .when(found.is_none(), |d| d.opacity(0.6))
-                    .child(
-                        div()
+            };
+            div()
+                .px(px(16.0))
+                .py(px(12.0))
+                .flex()
+                .items_center()
+                .gap(px(12.0))
+                .border_t_1()
+                .border_color(t.border)
+                .when(found.is_none(), |d| d.opacity(0.6))
+                .child(
+                    div()
                         .size(px(30.0))
-                            .flex_none()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .rounded(px(8.0))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(8.0))
                         .bg(t.wash(0.06))
                         .border_1()
                         .border_color(t.border)
-                            .child(
-                                icon(ui::harness_icon(kind))
-                                    .size(px(15.0))
-                                    .text_color(ui::harness_tint(kind, t, t.text_muted)),
-                            ),
-                    )
+                        .child(icon(ui::harness_icon(kind)).size(px(15.0)).text_color(ui::harness_tint(
+                            kind,
+                            t,
+                            t.text_muted,
+                        ))),
+                )
                 .child(
                     div()
                         .flex_1()
@@ -665,8 +654,8 @@ impl SettingsPage {
                                 ),
                         ),
                 )
-                    .child(control)
-            });
+                .child(control)
+        });
         stack()
             .child(card(
                 "Installed Harnesses",
@@ -688,7 +677,7 @@ impl SettingsPage {
                             )
                             .child(
                                 ui::button_ghost("set-open-agents-inline", "Sign-in & custom paths →", t)
-                        .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::OpenAgents))),
+                                    .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::OpenAgents))),
                             ),
                     )
                     .children(rows),
@@ -854,27 +843,21 @@ impl SettingsPage {
                 }
             },
         );
-        let swatches = div()
-            .flex()
-            .items_center()
-            .gap(px(8.0))
-            .children(Accent::ALL.into_iter().map(|a| {
+        let swatches = div().flex().items_center().gap(px(8.0)).children(Accent::ALL.into_iter().map(|a| {
             let color = Theme::new(t.appearance, a, Surface::Normal).accent;
-                let selected = a == accent;
+            let selected = a == accent;
             div()
                 .id(SharedString::from(format!("accent-{}", a.id())))
-                    .size(px(24.0))
+                .size(px(24.0))
                 .rounded_full()
                 .bg(color)
                 .cursor_pointer()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .when(selected, |d| {
-                        d.border_2()
-                            .border_color(t.text)
-                            .child(icon(icons::CHECK).size(px(12.0)).text_color(gpui::white()))
-                    })
+                .flex()
+                .items_center()
+                .justify_center()
+                .when(selected, |d| {
+                    d.border_2().border_color(t.text).child(icon(icons::CHECK).size(px(12.0)).text_color(gpui::white()))
+                })
                 .on_click(cx.listener(move |this, _, _, cx| this.set("accent", a.id(), cx)))
         }));
         let surfaces: Vec<&str> = Surface::ALL.iter().map(|s| s.label()).collect();
@@ -893,11 +876,8 @@ impl SettingsPage {
                 let _ = weak.update(cx, |s, cx| s.set("wallpaper_effect", Effect::ALL[i].id(), cx));
             }
         });
-        let wall_name = wall.as_ref().and_then(|w| {
-            std::path::Path::new(w)
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-        });
+        let wall_name =
+            wall.as_ref().and_then(|w| std::path::Path::new(w).file_name().map(|n| n.to_string_lossy().to_string()));
         let look = div()
             .child(row("Color theme", "Follow the OS appearance or lock to Dark or Light", appearance, t))
             .child(row("Accent color", "Primary highlight for buttons, active rings, and badges", swatches, t))
@@ -1014,10 +994,10 @@ impl SettingsPage {
                     .when(!bypassed.is_empty(), |d| {
                         d.child(ui::button_ghost("bypass-reset", "Revoke all", t).on_click(cx.listener(
                             |this, _, _, cx| {
-                            for p in this.engine.store.projects().unwrap_or_default() {
-                                let _ = this.engine.store.set_setting(&format!("bypass_ok.{}", p.id), "0");
-                            }
-                            cx.notify();
+                                for p in this.engine.store.projects().unwrap_or_default() {
+                                    let _ = this.engine.store.set_setting(&format!("bypass_ok.{}", p.id), "0");
+                                }
+                                cx.notify();
                             },
                         )))
                     }),
@@ -1108,216 +1088,62 @@ impl SettingsPage {
                 control,
                 t,
             ))
-            .child(row("Input microphone", "Select which audio input device captures voice dictation", devices, t))
-            .child(row(
-                "Dictation trigger",
-                "Hold the mic icon in the composer or terminal to talk, or click to toggle recording.",
-                kit::badge("Push-to-talk / Toggle", t.text_faint),
-                t,
-            ));
-        let stt = self.get("stt_engine").unwrap_or_else(|| "parakeet".into());
-        let tts = self.get("tts_backend").unwrap_or_else(|| "nexi".into());
-        let spoken = self.get("tts_voice").unwrap_or_else(|| "Jasper".into());
-        let jarvis = self.flag("jarvis", false);
-        let report = crate::nexi::Report::probe();
-        let nexi = report.clone();
-        let body = body
-            .child(row(
-                "Speech-to-text engine",
-                "Parakeet runs built-in. NEXI runs the local Whisper driver from NEXI-Models-Drivers.",
-                div()
-                    .flex()
-                    .gap(px(6.0))
-                    .child(self.choice("stt-parakeet", "Parakeet", stt != "nexi", "stt_engine", "parakeet", t, cx))
-                    .child(self.choice("stt-nexi", "NEXI", stt == "nexi", "stt_engine", "nexi", t, cx)),
-                t,
-            ))
-            .child(row(
-                "NEXI Whisper driver",
-                "Whisper tiny.en downloaded once into your local NEXI checkout.",
-                div()
-                    .flex()
-                    .flex_col()
-                    .items_end()
-                    .gap(px(6.0))
-                    .child(div().max_w(px(280.0)).text_size(px(12.0)).text_color(t.text_muted).child(report.stt_line()))
-                    .child(ui::button_ghost("stt-setup", "Copy setup", t).on_click(cx.listener(|this, _, _, cx| {
-                        let script = crate::nexi::setup_script(crate::nexi::Report::probe().root.as_deref());
-                        cx.write_to_clipboard(ClipboardItem::new_string(script));
-                        this.voice_note = Some("Setup commands copied.".into());
-                        cx.notify();
-                    }))),
-                t,
-            ));
-        let speak = div()
-            .child(row(
-                "Jarvis spoken mode",
-                "Automatically speaks each finished agent reply aloud. Can also be toggled from the composer bar.",
-                kit::switch("set-jarvis", jarvis, t).on_click(cx.listener(move |this, _, _, cx| {
-                    this.set("jarvis", if jarvis { "false" } else { "true" }, cx);
-                })),
-                t,
-            ))
-            .child(row(
-                "Spoken voice persona",
-                "On-device English neural voice presets",
-                div().flex().gap(px(6.0)).children(["Jasper", "Bella", "Luna", "Bruno"].into_iter().map(|name| {
-                    self.choice(
-                        SharedString::from(format!("tts-{name}")),
-                        name,
-                        spoken == name,
-                        "tts_voice",
-                        name,
-                        t,
-                        cx,
-                    )
-                })),
-                t,
-            ))
-            .child(row(
-                "Text-to-speech backend",
-                "NEXI runs locally on your machine; Fish Audio streams cloud voices with your API key.",
-                div()
-                    .flex()
-                    .gap(px(6.0))
-                    .child(self.choice("tts-nexi", "NEXI Local", tts != "fish", "tts_backend", "nexi", t, cx))
-                    .child(self.choice("tts-fish", "Fish Audio", tts == "fish", "tts_backend", "fish", t, cx)),
-                t,
-            ))
-            .child(row(
-                "Fish Audio API key",
-                "Stored locally in Dove settings. Leave blank to use on-device NEXI TTS.",
-                field(&self.fish_key, 220.0, t),
-                t,
-            ))
-            .child(row(
-                "NEXI TTS runtime",
-                "Kitten Nano (~25 MB weights), loaded on demand only while speaking.",
-                div()
-                    .flex()
-                    .flex_col()
-                    .items_end()
-                    .gap(px(6.0))
-                    .child(div().max_w(px(280.0)).text_size(px(12.0)).text_color(t.text_muted).child(nexi.tts_line()))
-                    .child(ui::button_ghost("tts-test", "Test voice", t).on_click(cx.listener(|this, _, _, cx| {
-                        let engine = this.engine.clone();
-                        this.voice_note = Some("Speaking…".into());
-                        cx.spawn(async move |this, cx| {
-                            let result = cx
-                                .background_spawn(async move {
-                                    crate::jarvis::speak_now(&engine, "Dove is listening.".into())
-                                })
-                                .await;
-                            let _ = this.update(cx, |s, cx| {
-                                s.voice_note = Some(match result {
-                                    Ok(()) => "Played a sample.".into(),
-                                    Err(e) => e,
-                                });
-                                cx.notify();
-                            });
-                        })
-                        .detach();
-                        cx.notify();
-                    }))),
-                t,
-            ))
-            .when_some(self.voice_note.clone(), |d, note| {
-                d.child(row(
-                    "Voice check status",
-                    "",
-                    div().max_w(px(280.0)).text_size(px(12.0)).text_color(t.text_muted).child(note),
-                    t,
-                ))
-            });
-        stack()
-            .child(card("On-Device Dictation (STT)", t, body))
-            .child(card("Jarvis Spoken Mode (TTS)", t, speak))
-            .into_any_element()
-    }
-
-    fn choice(
-        &self,
-        id: impl Into<gpui::ElementId>,
-        label: &'static str,
-        on: bool,
-        key: &'static str,
-        value: &'static str,
-        t: &Theme,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        div()
-            .id(id)
-            .h(px(28.0))
-            .px(px(11.0))
-            .flex()
-            .items_center()
-            .rounded_full()
-            .cursor_pointer()
-            .text_size(px(12.5))
-            .font_weight(if on { gpui::FontWeight::MEDIUM } else { gpui::FontWeight::NORMAL })
-            .border_1()
-            .border_color(if on { t.accent.opacity(0.45) } else { t.border })
-            .bg(if on { t.accent.opacity(0.14) } else { t.wash(0.04) })
-            .text_color(if on { t.text } else { t.text_muted })
-            .child(label)
-            .on_click(cx.listener(move |this, _, _, cx| this.set(key, value, cx)))
-            .into_any_element()
+            .child(row("Microphone", "", devices, t))
+            .child(row("How to dictate", "Hold the mic in the composer (or the terminal) to talk; click it to toggle. Text is inserted, never sent.", div(), t));
+        stack().child(card("On-Device Dictation", t, body)).into_any_element()
     }
 
     fn keyboard(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let store = self.engine.store.clone();
-        let list = div()
-            .flex()
-            .flex_col()
-            .children(crate::keymap::shortcuts().into_iter().map(|s| {
-                let key = crate::keymap::binding(&store, &s);
-                let recording = self.recording == Some(s.id);
-                let custom = key != s.default;
-                let id = s.id;
-                let default = s.default;
-                row(
-                    s.label,
-                    if custom { "Customized shortcut" } else { "" },
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(6.0))
-                        .when(custom && !recording, |d| d.child(kit::badge("Modified", t.accent)))
-                        .child(if recording {
-                            div()
-                                .px(px(10.0))
-                                .h(px(24.0))
-                                .flex()
-                                .items_center()
-                                .rounded(px(6.0))
-                                .border_1()
-                                .border_color(t.accent)
-                                .bg(t.accent.opacity(0.10))
-                                .text_size(px(12.0))
-                                .text_color(t.accent)
-                                .child("Press keys… (Esc cancels)")
-                                .into_any_element()
-                        } else {
-                            kit::kbd(&crate::keymap::pretty(&key), t).into_any_element()
-                        })
-                        .child(ui::button_ghost(SharedString::from(format!("rec-{id}")), "Rebind", t).on_click(
-                            cx.listener(move |this, _, window, cx| {
-                                this.recording = Some(id);
-                                window.focus(&this.focus, cx);
+        let list = div().flex().flex_col().children(crate::keymap::shortcuts().into_iter().map(|s| {
+            let key = crate::keymap::binding(&store, &s);
+            let recording = self.recording == Some(s.id);
+            let custom = key != s.default;
+            let id = s.id;
+            let default = s.default;
+            row(
+                s.label,
+                if custom { "Customized shortcut" } else { "" },
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.0))
+                    .when(custom && !recording, |d| d.child(kit::badge("Modified", t.accent)))
+                    .child(if recording {
+                        div()
+                            .px(px(10.0))
+                            .h(px(24.0))
+                            .flex()
+                            .items_center()
+                            .rounded(px(6.0))
+                            .border_1()
+                            .border_color(t.accent)
+                            .bg(t.accent.opacity(0.10))
+                            .text_size(px(12.0))
+                            .text_color(t.accent)
+                            .child("Press keys… (Esc cancels)")
+                            .into_any_element()
+                    } else {
+                        kit::kbd(&crate::keymap::pretty(&key), t).into_any_element()
+                    })
+                    .child(ui::button_ghost(SharedString::from(format!("rec-{id}")), "Rebind", t).on_click(
+                        cx.listener(move |this, _, window, cx| {
+                            this.recording = Some(id);
+                            window.focus(&this.focus, cx);
+                            cx.notify();
+                        }),
+                    ))
+                    .when(custom, |d| {
+                        d.child(ui::button_ghost(SharedString::from(format!("reset-{id}")), "Reset", t).on_click(
+                            cx.listener(move |this, _, _, cx| {
+                                crate::keymap::rebind(&this.engine.store, id, default, cx);
                                 cx.notify();
                             }),
                         ))
-                        .when(custom, |d| {
-                            d.child(ui::button_ghost(SharedString::from(format!("reset-{id}")), "Reset", t).on_click(
-                                cx.listener(move |this, _, _, cx| {
-                                    crate::keymap::rebind(&this.engine.store, id, default, cx);
-                                    cx.notify();
-                                }),
-                            ))
-                        }),
-                    t,
-                )
-            }));
+                    }),
+                t,
+            )
+        }));
         stack().child(card("Keyboard Shortcuts", t, list)).into_any_element()
     }
 
@@ -1367,16 +1193,11 @@ impl SettingsPage {
             .child(row(
                 "Workspace & transcript storage",
                 "SQLite store containing projects, threads, transcripts, settings, and downloaded voice weights",
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.0))
-                    .child(kit::badge(size, t.accent))
-                    .child(
-                        ui::button_ghost("open-data", "Open folder", t)
-                            .child(icon(icons::ARROW_UP_RIGHT).size(px(12.0)).text_color(t.text_faint))
-                            .on_click(cx.listener(move |_, _, _, cx| cx.open_with_system(&root))),
-                    ),
+                div().flex().items_center().gap(px(8.0)).child(kit::badge(size, t.accent)).child(
+                    ui::button_ghost("open-data", "Open folder", t)
+                        .child(icon(icons::ARROW_UP_RIGHT).size(px(12.0)).text_color(t.text_faint))
+                        .on_click(cx.listener(move |_, _, _, cx| cx.open_with_system(&root))),
+                ),
                 t,
             ))
             .child(row(
@@ -1387,19 +1208,17 @@ impl SettingsPage {
                     .items_center()
                     .gap(px(8.0))
                     .child(
-                div()
-                    .text_size(px(12.0))
-                    .font_family(t.font_mono.clone())
+                        div()
+                            .text_size(px(12.0))
+                            .font_family(t.font_mono.clone())
                             .text_color(t.text_muted)
                             .max_w(px(280.0))
                             .truncate()
                             .child(root_str),
                     )
-                    .child(ui::button_ghost("copy-data-path", "Copy", t).on_click(cx.listener(
-                        move |_, _, _, cx| {
-                            cx.write_to_clipboard(ClipboardItem::new_string(root_copy.clone()));
-                        },
-                    ))),
+                    .child(ui::button_ghost("copy-data-path", "Copy", t).on_click(cx.listener(move |_, _, _, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(root_copy.clone()));
+                    }))),
                 t,
             ))
             .child(row(
@@ -1556,11 +1375,7 @@ impl SettingsPage {
                 let installed = VoiceModel::global(cx)
                     .map(|m| matches!(m.read(cx).state, InstallState::Installed))
                     .unwrap_or(false);
-                if installed || self.flag("jarvis", false) {
-                    Some(ui::dot(t.success, 6.0).into_any_element())
-                } else {
-                    None
-                }
+                if installed { Some(ui::dot(t.success, 6.0).into_any_element()) } else { None }
             }
             Section::Remote => {
                 let connected = crate::remote::Remote::global(cx)
@@ -1569,11 +1384,7 @@ impl SettingsPage {
                         r.status.connected && r.enabled()
                     })
                     .unwrap_or(false);
-                if connected {
-                    Some(ui::dot(t.success, 6.0).into_any_element())
-                } else {
-                    None
-                }
+                if connected { Some(ui::dot(t.success, 6.0).into_any_element()) } else { None }
             }
             _ => None,
         }
@@ -1629,13 +1440,7 @@ fn row(label: &'static str, hint: &'static str, control: impl IntoElement, t: &T
                 .flex()
                 .flex_col()
                 .gap(px(2.5))
-                .child(
-                    div()
-                        .text_size(px(13.5))
-                        .font_weight(gpui::FontWeight::MEDIUM)
-                        .text_color(t.text)
-                        .child(label),
-                )
+                .child(div().text_size(px(13.5)).font_weight(gpui::FontWeight::MEDIUM).text_color(t.text).child(label))
                 .when(!hint.is_empty(), |d| d.child(div().text_size(px(12.0)).text_color(t.text_faint).child(hint))),
         )
         .child(control)
@@ -1643,20 +1448,16 @@ fn row(label: &'static str, hint: &'static str, control: impl IntoElement, t: &T
 
 /// A titled plate of rows.
 fn card(title: &'static str, t: &Theme, rows: impl IntoElement) -> gpui::Div {
-    div()
-        .flex()
-        .flex_col()
-        .when(!title.is_empty(), |d| d.child(kit::section_label(title, t)))
-        .child(
-            div()
-                .w_full()
-                .rounded(px(12.0))
-                .border_1()
-                .border_color(t.border)
-                .bg(t.wash(0.022))
-                .overflow_hidden()
-                .child(div().mt(px(-1.0)).child(rows)),
-        )
+    div().flex().flex_col().when(!title.is_empty(), |d| d.child(kit::section_label(title, t))).child(
+        div()
+            .w_full()
+            .rounded(px(12.0))
+            .border_1()
+            .border_color(t.border)
+            .bg(t.wash(0.022))
+            .overflow_hidden()
+            .child(div().mt(px(-1.0)).child(rows)),
+    )
 }
 
 /// Cards, stacked with room between them.
@@ -1700,7 +1501,7 @@ impl Render for SettingsPage {
             .child(div().flex_1().min_w_0().text_size(px(12.5)).child(Input::new(&self.search)))
             .when(has_query, |d| {
                 d.child(
-                div()
+                    div()
                         .id("set-search-clear")
                         .size(px(18.0))
                         .rounded(px(4.0))
@@ -1721,8 +1522,8 @@ impl Render for SettingsPage {
         let nav = div()
             .w(px(232.0))
             .flex_none()
-                    .flex()
-                    .flex_col()
+            .flex()
+            .flex_col()
             .gap(px(14.0))
             .pt(px(26.0))
             .child(
@@ -1742,11 +1543,7 @@ impl Render for SettingsPage {
             )
             .child(search_box)
             .children(Section::GROUPS.into_iter().filter_map(|(group, sections)| {
-                let visible: Vec<Section> = sections
-                    .iter()
-                    .copied()
-                    .filter(|s| s.matches(&query))
-                    .collect();
+                let visible: Vec<Section> = sections.iter().copied().filter(|s| s.matches(&query)).collect();
                 if visible.is_empty() {
                     return None;
                 }
@@ -1755,28 +1552,28 @@ impl Render for SettingsPage {
                         .flex()
                         .flex_col()
                         .gap(px(2.0))
-                    .child(
-                        div()
-                            .px(px(10.0))
+                        .child(
+                            div()
+                                .px(px(10.0))
                                 .pb(px(3.0))
                                 .text_size(px(11.0))
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .text_color(t.text_faint)
-                            .child(group),
-                    )
+                                .text_color(t.text_faint)
+                                .child(group),
+                        )
                         .children(visible.into_iter().map(|s| {
-                        let selected = s == self.section;
+                            let selected = s == self.section;
                             let badge = self.nav_badge(s, &t, cx);
-                        div()
-                            .id(SharedString::from(format!("set-nav-{}", s.id())))
+                            div()
+                                .id(SharedString::from(format!("set-nav-{}", s.id())))
                                 .h(px(31.0))
-                            .px(px(10.0))
-                            .flex()
-                            .items_center()
-                            .gap(px(10.0))
-                            .rounded(px(8.0))
-                            .cursor_pointer()
-                            .text_size(px(13.0))
+                                .px(px(10.0))
+                                .flex()
+                                .items_center()
+                                .gap(px(10.0))
+                                .rounded(px(8.0))
+                                .cursor_pointer()
+                                .text_size(px(13.0))
                                 .border_1()
                                 .when(selected, |d| {
                                     d.bg(t.accent.opacity(0.12))
@@ -1784,19 +1581,19 @@ impl Render for SettingsPage {
                                         .text_color(t.text)
                                         .font_weight(gpui::FontWeight::MEDIUM)
                                 })
-                            .when(!selected, |d| {
+                                .when(!selected, |d| {
                                     d.border_color(gpui::transparent_black())
                                         .text_color(t.text_muted)
                                         .hover(|st| st.bg(t.wash(0.05)).text_color(t.text))
                                 })
-                                .child(
-                                    icon(s.glyph())
-                                        .size(px(14.5))
-                                        .text_color(if selected { t.accent } else { t.text_muted }),
-                                )
+                                .child(icon(s.glyph()).size(px(14.5)).text_color(if selected {
+                                    t.accent
+                                } else {
+                                    t.text_muted
+                                }))
                                 .child(div().flex_1().truncate().child(s.label()))
                                 .when_some(badge, |d, b| d.child(b))
-                            .on_click(cx.listener(move |this, _, _, cx| this.select(s, cx)))
+                                .on_click(cx.listener(move |this, _, _, cx| this.select(s, cx)))
                         })),
                 )
             }));
@@ -1826,24 +1623,8 @@ impl Render for SettingsPage {
             .flex()
             .justify_center()
             .child(
-                    div()
-                    .w_full()
-                    .max_w(px(1040.0))
-                    .px(px(32.0))
-                    .pb(px(56.0))
-                        .flex()
-                    .gap(px(32.0))
-                    .child(nav)
-                        .child(
-                            div()
-                            .flex_1()
-                            .min_w_0()
-                            .pt(px(26.0))
-                                .flex()
-                                .flex_col()
-                            .gap(px(20.0))
-                            .child(hero)
-                        .child(body),
+                div().w_full().max_w(px(1040.0)).px(px(32.0)).pb(px(56.0)).flex().gap(px(32.0)).child(nav).child(
+                    div().flex_1().min_w_0().pt(px(26.0)).flex().flex_col().gap(px(20.0)).child(hero).child(body),
                 ),
             )
     }
