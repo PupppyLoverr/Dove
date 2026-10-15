@@ -210,7 +210,7 @@ fn palette(hex: [u32; 16]) -> [Hsla; 16] {
 impl Theme {
     pub const TITLEBAR_HEIGHT: f32 = 38.0;
     pub const TITLEBAR_TOP_PAD: f32 = 4.0;
-    pub const BUBBLE_RADIUS: f32 = 18.0;
+    pub const BUBBLE_RADIUS: f32 = crate::design::radius::BUBBLE;
     pub const COMPOSER_RADIUS: f32 = 20.0;
     /// Frost tint coverage over the blurred window: Zeron's 0.80, matched by
     /// eye to a vibrancy material. Linux compositors do not all blur, so it

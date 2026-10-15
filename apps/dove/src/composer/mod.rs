@@ -38,10 +38,29 @@ use gpui_base::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use crate::assets::{icon, icons};
 use crate::design::ty;
 use crate::kit;
+use crate::kit::popover;
 use crate::theme::Theme;
 use crate::ui;
 use crate::voice::{Dictation, DictationEvent};
 pub use picker::{Picker, PickerEvent};
+
+/// Zeron's composer plate: at most 768 px wide, 76 px tall at rest, and it
+/// grows with the prompt up to about 260 px before the text scrolls.
+pub const PLATE_MAX_W: f32 = 768.0;
+pub const PLATE_MIN_H: f32 = 76.0;
+pub const PLATE_MAX_H: f32 = 260.0;
+
+/// The plate's width cap: Zeron's 768 px, or narrower when the conversation
+/// column is set narrower (Settings › Appearance › Conversation width).
+pub fn plate_width() -> f32 {
+    PLATE_MAX_W.min(crate::design::conversation_width() + 8.0)
+}
+/// One prompt line at the plate's 15 px text.
+const PLATE_LINE: f32 = 24.0;
+/// The plate around the prompt: padding, border and the control row.
+const PLATE_CHROME: f32 = PLATE_MIN_H - PLATE_LINE;
+/// Prompt lines the thread plate grows through before the text scrolls.
+const PLATE_ROWS: (usize, usize) = (1, ((PLATE_MAX_H - PLATE_CHROME) / PLATE_LINE) as usize);
 
 pub enum ComposerEvent {
     Submit(String),
@@ -299,7 +318,7 @@ impl Composer {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let mut this = Self::build(engine.clone(), "Send follow-up", (1, 10), window, cx);
+        let mut this = Self::build(engine.clone(), "Send follow-up", PLATE_ROWS, window, cx);
         this.picker.update(cx, |p, _| p.lock_to(task.harness, task.model.clone()));
         this.add_dirs = engine.add_dirs(task.id);
         this.thread = Some((task.clone(), project.clone()));
@@ -316,7 +335,7 @@ impl Composer {
     /// in a narrow panel, beside a conversation).
     pub fn as_pill(&mut self, cx: &mut Context<Self>) {
         self.variant = Variant::Pill;
-        self.input.update(cx, |s, cx| s.set_auto_grow(1, 10, cx));
+        self.input.update(cx, |s, cx| s.set_auto_grow(PLATE_ROWS.0, PLATE_ROWS.1, cx));
         cx.notify();
     }
 
@@ -1617,30 +1636,26 @@ impl Composer {
                     .w(px(280.0))
                     .flex()
                     .flex_col()
+                    .gap(px(popover::MENU_GAP))
                     .children(modes.into_iter().map(|(m, label, desc)| {
                         let selected = m == self.mode;
                         let danger = m == PermissionMode::Bypass;
-                        div()
-                            .id(SharedString::from(format!("mode-{}", mode_id(m))))
-                            .mx(px(4.0))
-                            .px(px(10.0))
+                        // A kit menu row: the label over a one-line
+                        // description, the current level checked.
+                        popover::menu_row_instant(t, format!("mode-{}", mode_id(m)), selected)
+                            .aria_label(label)
                             .py(px(6.0))
-                            .flex()
-                            .items_center()
-                            .gap(px(10.0))
-                            .rounded(px(7.0))
-                            .cursor_pointer()
-                            .hover(|s| s.bg(t.wash(0.10)))
-                            .child(icon(mode_icon(m)).size(px(16.0)).text_color(if danger { t.danger } else { t.text_muted }))
+                            .child(icon(mode_icon(m)).size(px(16.0)).flex_none().text_color(if danger { t.danger } else { t.text_muted }))
                             .child(
                                 div()
                                     .flex_1()
+                                    .min_w_0()
                                     .flex()
                                     .flex_col()
-                                    .child(div().text_size(ty::MD).text_color(if danger { t.danger } else { t.text }).child(label))
-                                    .child(div().text_size(ty::META).text_color(t.text_faint).child(desc)),
+                                    .child(div().truncate().text_size(ty::BODY).text_color(if danger { t.danger } else { t.text }).child(label))
+                                    .child(div().truncate().text_size(ty::META).text_color(t.text_faint).child(desc)),
                             )
-                            .when(selected, |d| d.child(icon(icons::CHECK).size(px(14.0)).text_color(t.accent)))
+                            .when(selected, |d| d.child(icon(icons::CHECK).size(px(14.0)).flex_none().text_color(t.accent)))
                             .on_click(cx.listener(move |this, _, _, cx| this.set_mode(m, cx)))
                     }))
                     .into_any_element()
@@ -1656,7 +1671,13 @@ impl Composer {
 
     fn action_button(&self, has_text: bool, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let steers = dove_core::steers(self.harness(cx));
-        if self.running && !has_text {
+        let state = SendState::of(self.running, has_text, steers);
+        // The glyph and label crossfade whenever the state changes; the
+        // fade is keyed by the state, so it replays only on a change.
+        let morph = |content: gpui::Div| {
+            crate::motion::fade_quick(SharedString::from(format!("composer-send-{}", state.key())), content)
+        };
+        if state == SendState::Stop {
             return div()
                 .id("composer-stop")
                 .size(px(ui::ROUND_BUTTON))
@@ -1668,12 +1689,12 @@ impl Composer {
                 .cursor_pointer()
                 .tooltip(ui::tip("Stop (Esc)"))
                 .on_click(cx.listener(|_, _, _, cx| cx.emit(ComposerEvent::Stop)))
-                .child(div().size(px(11.0)).rounded(px(3.0)).bg(t.on_solid))
+                .child(morph(div().size(px(11.0)).rounded(px(3.0)).bg(t.on_solid)))
                 .into_any_element();
         }
-        let (glyph, tip, label) = match (self.running, steers) {
-            (true, true) => (icons::ARROW_UP, "Steer: send now, the agent adjusts mid-turn (Enter)", Some("Steer")),
-            (true, false) => (icons::QUEUE_SEND, "Queue: send when this turn ends (Enter)", Some("Queue")),
+        let (glyph, tip, label) = match state {
+            SendState::Steer => (icons::ARROW_UP, "Steer: send now, the agent adjusts mid-turn (Enter)", Some("Steer")),
+            SendState::Queue => (icons::QUEUE_SEND, "Queue: send when this turn ends (Enter)", Some("Queue")),
             _ => (icons::ARROW_UP, "Send (Enter)", None),
         };
         let enabled = has_text || !self.attachments.is_empty();
@@ -1697,12 +1718,18 @@ impl Composer {
             .when(enabled, |d| d.cursor_pointer())
             .tooltip(ui::tip(tip))
             .on_click(cx.listener(|this, _, window, cx| this.submit(window, cx)))
-            .child(icon(glyph).size(px(ui::ICON_SM)).text_color(if enabled || self.variant == Variant::Hero {
-                t.on_solid
-            } else {
-                t.text_faint
-            }))
-            .when_some(label, |d, l| d.child(l))
+            .child(morph(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(4.0))
+                    .child(icon(glyph).size(px(ui::ICON_SM)).text_color(if enabled || self.variant == Variant::Hero {
+                        t.on_solid
+                    } else {
+                        t.text_faint
+                    }))
+                    .when_some(label, |d, l| d.child(l)),
+            ))
             .into_any_element()
     }
 
@@ -1900,6 +1927,35 @@ impl Render for QueueDrag {
     }
 }
 
+/// What the composer's round button does right now.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum SendState {
+    Send,
+    Steer,
+    Queue,
+    Stop,
+}
+
+impl SendState {
+    fn of(running: bool, has_text: bool, steers: bool) -> Self {
+        match (running, has_text, steers) {
+            (false, _, _) => Self::Send,
+            (true, false, _) => Self::Stop,
+            (true, true, true) => Self::Steer,
+            (true, true, false) => Self::Queue,
+        }
+    }
+
+    fn key(self) -> &'static str {
+        match self {
+            Self::Send => "send",
+            Self::Steer => "steer",
+            Self::Queue => "queue",
+            Self::Stop => "stop",
+        }
+    }
+}
+
 fn focus_input(input: &Entity<TextareaState>, window: &mut Window, cx: &mut App) {
     input.update(cx, |s, cx| s.focus(window, cx));
 }
@@ -1986,17 +2042,10 @@ impl Render for Composer {
         let home = self.thread.is_none();
 
         let hero = self.variant == Variant::Hero;
-        let multiline = self.input.read(cx).value().contains('\n');
         let staged = self.queue.len() + self.attachments.len() > 0;
-        // The new-thread bar is a short glass card. The thread pill stays
-        // round on one line and relaxes as it grows.
-        let radius = if hero {
-            ui::ROUND_BUTTON / 2.0 + HERO_CORNER
-        } else if multiline || staged {
-            20.0
-        } else {
-            25.0
-        };
+        // Both are Zeron's 26 px plate; the hero's corner is also concentric
+        // with its send disc (14 + 12).
+        let radius = crate::design::radius::COMPOSER;
         let edge = t.composer_border();
         let border = if bypass {
             t.danger.opacity(0.55)
@@ -2074,25 +2123,27 @@ impl Render for Composer {
                         .child(div().pl(px(2.0)).child(self.action_button(has_text, t, cx))),
                 )
         } else {
-            // One quiet row: attach, the text, then model, voice and send. It
-            // grows upward as you type; the controls stay on the last line.
+            // Zeron's plate: the prompt on top, the controls on a row under
+            // it. It grows upward as you type (76 px to about 260 px).
             surface
-                .min_h(px(50.0))
-                .py(px(7.0))
+                .min_h(px(PLATE_MIN_H))
+                .pt(px(10.0))
+                .pb(px(7.0))
                 .pl(px(7.0))
                 .pr(px(8.0))
-                .justify_center()
-                .gap(px(8.0))
-                .when(staged, |d| d.child(staged_rows.px(px(4.0)).pt(px(2.0))))
+                .gap(px(4.0))
+                .when(staged, |d| d.child(staged_rows.px(px(4.0)).pt(px(2.0)).pb(px(4.0))))
+                .child(div().w_full().min_w_0().flex().px(px(8.0)).child(text.min_w(px(72.0))))
                 .child(
                     div()
                         .w_full()
                         .min_w_0()
+                        .h(px(ui::ROUND_BUTTON))
                         .flex()
-                        .items_end()
+                        .items_center()
                         .gap(px(4.0))
                         .child(self.attach_button(t, cx))
-                        .child(text.min_w(px(72.0)).px(px(4.0)).py(px(5.0)))
+                        .child(div().flex_1())
                         .child(
                             // In a narrow column the model label gives way
                             // first; voice and send always keep their size.
@@ -2169,6 +2220,15 @@ impl Render for Composer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn send_button_states() {
+        assert_eq!(SendState::of(false, true, true), SendState::Send);
+        assert_eq!(SendState::of(true, false, true), SendState::Stop);
+        assert_eq!(SendState::of(true, true, true), SendState::Steer);
+        assert_eq!(SendState::of(true, true, false), SendState::Queue);
+        assert!(PLATE_MIN_H < PLATE_MAX_H);
+    }
 
     #[test]
     fn mode_ids_round_trip() {

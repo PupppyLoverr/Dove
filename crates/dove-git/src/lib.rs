@@ -38,6 +38,19 @@ pub fn repo_root(path: &Path) -> Option<PathBuf> {
     run(path, &["rev-parse", "--show-toplevel"]).ok().map(|s| PathBuf::from(s.trim()))
 }
 
+/// Make `dir` a git repository (`git init`).
+pub fn init(dir: &Path) -> Result<()> {
+    run(dir, &["init"]).map(|_| ())
+}
+
+/// Whether `repo` has no commits yet (its HEAD names an unborn branch).
+pub fn is_unborn(repo: &Path) -> bool {
+    repo_root(repo).is_some() && run(repo, &["rev-parse", "--verify", "--quiet", "HEAD"]).is_err()
+}
+
+/// The empty tree, the base to diff against before the first commit.
+pub const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
 pub fn current_branch(repo: &Path) -> Result<String> {
     Ok(run(repo, &["rev-parse", "--abbrev-ref", "HEAD"])?.trim().to_string())
 }
@@ -540,5 +553,26 @@ mod tests {
         assert!(!wt.path.exists());
         let exclude = std::fs::read_to_string(r.join(".git/info/exclude")).unwrap();
         assert!(exclude.contains(".dove/"));
+    }
+
+    #[test]
+    fn init_then_diff_an_unborn_branch() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path();
+        std::fs::write(
+            p.join("notes.md"),
+            "hello
+",
+        )
+        .unwrap();
+        if repo_root(p).is_some() {
+            // The temp dir sits inside another repository; nothing to test.
+            return;
+        }
+        init(p).unwrap();
+        assert!(is_unborn(p));
+        assert!(changes(p, "HEAD").is_err(), "HEAD does not resolve before the first commit");
+        let files = changes(p, EMPTY_TREE).unwrap();
+        assert_eq!(files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(), ["notes.md"]);
     }
 }

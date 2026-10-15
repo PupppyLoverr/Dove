@@ -798,7 +798,7 @@ impl Picker {
         };
         let effort = self.effort_label(&model);
         let mut header = div()
-            .h(px(if effort.is_some() { 48.0 } else { 36.0 }))
+            .h(px(if effort.is_some() { 48.0 } else { ROW }))
             .flex()
             .gap(px(INSET))
             .child(self.title_button(t, effort, model.label.clone(), cx));
@@ -859,7 +859,7 @@ impl Picker {
             .flex_1()
             .min_w_0()
             .h_full()
-            .min_h(px(36.0))
+            .min_h(px(ROW))
             .px(px(8.0))
             .flex()
             .flex_col()
@@ -1011,7 +1011,7 @@ impl Picker {
         let current = models::option_value(&self.model_options, &opt.id).unwrap_or(&opt.default_choice).to_string();
         let row = div()
             .id(SharedString::from(format!("picker-opt-{}", opt.id)))
-            .h(px(26.0))
+            .h(px(ROW))
             .px(px(8.0))
             .flex()
             .items_center()

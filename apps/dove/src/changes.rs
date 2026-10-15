@@ -30,6 +30,8 @@ use zeron_syntax::{HighlightRequest, HighlightSpan};
 use crate::assets::{icon, icons};
 use crate::design::ty;
 use crate::kit;
+use crate::kit::controls::{self as ctl, Tone};
+use crate::kit::page;
 use crate::surface_chrome;
 use crate::theme::{Theme, ink};
 use crate::ui;
@@ -134,6 +136,13 @@ pub struct Changes {
     loading: bool,
     loaded: bool,
     error: Option<SharedString>,
+    /// The folder is not inside a git repository: the panel offers to
+    /// initialize one instead of showing git's stderr.
+    not_repo: bool,
+    /// `git init` is running from the not-a-repository state.
+    initializing: bool,
+    /// Why the last `git init` failed.
+    init_error: Option<SharedString>,
     /// (file, hunk, line) → comment.
     comments: HashMap<(usize, usize, usize), String>,
     commenting: Option<((usize, usize, usize), Entity<InputState>)>,
@@ -181,6 +190,9 @@ impl Changes {
             loading: false,
             loaded: false,
             error: None,
+            not_repo: false,
+            initializing: false,
+            init_error: None,
             comments: HashMap::new(),
             commenting: None,
             confirm_discard: None,
@@ -249,6 +261,8 @@ impl Changes {
         self.confirm_discard = None;
         self.collapsed.clear();
         self.loaded = false;
+        self.not_repo = false;
+        self.init_error = None;
         self.rows.clear();
         self.keys.clear();
         self.ranges.clear();
@@ -266,21 +280,27 @@ impl Changes {
         let work = cx.background_spawn(async move {
             let files = match commit.as_deref() {
                 Some(sha) => git::commit_diff(&dir, sha),
-                None => git::changes(&dir, &base),
+                // Before the first commit HEAD names nothing: everything in
+                // the folder is new, so diff against the empty tree.
+                None => git::changes(&dir, &base).or_else(|e| {
+                    if base == "HEAD" && git::is_unborn(&dir) { git::changes(&dir, git::EMPTY_TREE) } else { Err(e) }
+                }),
             }
             .map(expand_tabs);
+            let not_repo = files.is_err() && dir.is_dir() && git::repo_root(&dir).is_none();
             let staged = git::staged(&dir).unwrap_or_default();
             let branch = git::current_branch(&dir).ok();
             let has_remote = git::has_remote(&dir);
             let unpushed = git::unpushed(&dir);
             let pr = if gh && has_remote { github::pr_for_branch(&dir).ok().flatten() } else { None };
-            (files, staged, branch, has_remote, unpushed, pr)
+            (files, not_repo, staged, branch, has_remote, unpushed, pr)
         });
         self._load = Some(cx.spawn(async move |this, cx| {
-            let (files, staged, branch, has_remote, unpushed, pr) = work.await;
+            let (files, not_repo, staged, branch, has_remote, unpushed, pr) = work.await;
             let _ = this.update(cx, |v, cx| {
                 v.loading = false;
                 v.loaded = true;
+                v.not_repo = not_repo;
                 match files {
                     Ok(files) => {
                         v.error = None;
@@ -444,6 +464,41 @@ impl Changes {
     }
 
     // ------------------------------------------------------------ git
+
+    /// Run `git init` in the target folder, then load its changes.
+    fn init_repo(&mut self, cx: &mut Context<Self>) {
+        let Some((dir, _)) = self.target.clone() else { return };
+        if self.initializing {
+            return;
+        }
+        self.initializing = true;
+        self.init_error = None;
+        let work = cx.background_spawn(async move { git::init(&dir) });
+        cx.spawn(async move |this, cx| {
+            let result = work.await;
+            let _ = this.update(cx, |v, cx| {
+                v.initializing = false;
+                match result {
+                    Ok(()) => {
+                        v.not_repo = false;
+                        v.error = None;
+                        v.loaded = false;
+                    }
+                    Err(e) => v.init_error = Some(format!("{e:#}").into()),
+                }
+                v.refresh(cx);
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// Show the target folder in the system file manager.
+    fn open_folder(&self, cx: &mut Context<Self>) {
+        if let Some((dir, _)) = &self.target {
+            cx.open_with_system(dir);
+        }
+    }
 
     fn run_git(
         &mut self,
@@ -1329,8 +1384,27 @@ impl Render for Changes {
                 .child(text)
                 .into_any_element()
         };
-        let body: AnyElement = if let Some(err) = &self.error {
-            quiet(err.clone())
+        let body: AnyElement = if self.not_repo && self.target.is_some() {
+            self.render_not_repo(&t, cx)
+        } else if let Some(err) = self.error.clone() {
+            // git's stderr can be long: it wraps inside the strip, and the
+            // pane clips, so it never paints over the conversation.
+            div()
+                .flex_1()
+                .min_h_0()
+                .overflow_hidden()
+                .p(px(12.0))
+                .flex()
+                .flex_col()
+                .gap(px(8.0))
+                .child(page::error_strip(&t, err))
+                .child(
+                    div().flex().child(
+                        ctl::button_sm(&t, "chg-retry", "Try again", Tone::Filled)
+                            .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
+                    ),
+                )
+                .into_any_element()
         } else if self.target.is_none() {
             kit::empty_state(icons::FILE_CODE, "No thread selected", "Open a thread to see what its agent changed.", &t)
                 .flex_1()
@@ -1365,11 +1439,67 @@ impl Render for Changes {
         };
         div()
             .size_full()
+            .overflow_hidden()
             .flex()
             .flex_col()
             .child(self.render_toolbar(&t, cx))
-            .child(div().flex_1().min_h_0().flex().flex_col().child(body))
-            .when(self.target.is_some() && self.commit.is_none(), |d| d.child(self.render_footer(&t, cx)))
+            .child(div().flex_1().min_h_0().overflow_hidden().flex().flex_col().child(body))
+            .when(self.target.is_some() && self.commit.is_none() && !self.not_repo, |d| {
+                d.child(self.render_footer(&t, cx))
+            })
+    }
+}
+
+impl Changes {
+    /// The folder is not a git repository: say so, and offer to make it one
+    /// or to open it.
+    fn render_not_repo(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let folder = self
+            .target
+            .as_ref()
+            .and_then(|(dir, _)| dir.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .unwrap_or_else(|| "This folder".into());
+        let actions = div()
+            .flex()
+            .flex_wrap()
+            .justify_center()
+            .gap(px(8.0))
+            .child(
+                ctl::button(
+                    t,
+                    "chg-git-init",
+                    if self.initializing { "Initializing…" } else { "Initialize git" },
+                    Tone::Solid,
+                )
+                .when(self.initializing, |b| b.opacity(0.6))
+                .on_click(cx.listener(|this, _, _, cx| this.init_repo(cx))),
+            )
+            .child(
+                ctl::button(t, "chg-open-folder", "Open folder", Tone::Outlined)
+                    .child(icon(icons::ARROW_UP_RIGHT).size(px(12.0)))
+                    .on_click(cx.listener(|this, _, _, cx| this.open_folder(cx))),
+            );
+        div()
+            .flex_1()
+            .min_h_0()
+            .overflow_hidden()
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .child(page::empty_state(
+                t,
+                icons::GIT_BRANCH,
+                "Not a git repository",
+                format!(
+                    "{folder} isn't tracked by git yet. Initialize a repository to review, stage and commit changes here."
+                ),
+                Some(actions.into_any_element()),
+            ))
+            .when_some(self.init_error.clone(), |d, e| {
+                d.child(div().w_full().max_w(px(420.0)).px(px(16.0)).child(page::error_strip(t, e)))
+            })
+            .into_any_element()
     }
 }
 
