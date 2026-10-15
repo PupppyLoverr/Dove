@@ -1,6 +1,8 @@
-//! The command palette (Ctrl+K): threads, projects, agents, actions, and
-//! files in the active thread's worktree (type `@`). Fuzzy-ish matching:
-//! every query word must appear, earlier and tighter matches rank higher.
+//! The command palette (Ctrl+K): threads, projects, agents, actions,
+//! settings rows, and files in the active thread's worktree (type `@`).
+//! Fuzzy-ish matching: every query word must appear, earlier and tighter
+//! matches rank higher. It sits on Zeron's `palette_card` over a light
+//! scrim and enters with the dialog motion (opacity + 2 px settle).
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -16,7 +18,7 @@ use gpui_base::input::{Input, InputEvent, InputState};
 
 use crate::assets::{icon, icons};
 use crate::design::ty;
-use crate::kit;
+use crate::kit::{self, popover};
 use crate::theme::Theme;
 use crate::ui;
 
@@ -210,79 +212,101 @@ impl Palette {
 }
 
 impl Render for Palette {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::perf_trace::count_render("Palette");
         let t = Theme::of(cx).clone();
-        ui::frosted(
-            14.0,
-            22.0,
-            div()
-                .id("palette")
-                .track_focus(&self.focus)
-                .capture_key_down(cx.listener(Self::on_key))
-                .on_mouse_down_out(cx.listener(|_, _, _, cx| cx.emit(PaletteEvent::Close)))
-                .w(px(600.0))
-                .max_h(px(480.0))
-                .flex()
-                .flex_col()
-                .rounded(px(14.0))
-                .bg(t.glass_overlay())
-                .border_1()
-                .border_color(t.border_strong)
-                .shadow_lg()
-                .child(
-                    div()
-                        .h(px(48.0))
-                        .px(px(14.0))
-                        .flex()
-                        .items_center()
-                        .gap(px(10.0))
-                        .border_b_1()
-                        .border_color(t.border)
-                        .text_size(ty::TITLE)
-                        .child(icon(icons::MAGNIFER).size(px(16.0)).text_color(t.text_faint))
-                        .child(div().flex_1().child(Input::new(&self.input)))
-                        .child(kit::kbd("Esc", &t)),
-                )
-                .child(
-                    div()
-                        .id("palette-list")
-                        .flex_1()
-                        .min_h_0()
-                        .overflow_y_scroll()
-                        .track_scroll(&self.scroll)
-                        .py(px(6.0))
-                        .when(self.shown.is_empty(), |d| {
-                            d.child(div().px(px(16.0)).py(px(10.0)).text_size(ty::BODY).text_color(t.text_faint).child(
-                                if self.query.starts_with('@') && self.files.is_empty() {
-                                    "No files (open a thread first)"
-                                } else {
-                                    "Nothing matches"
-                                },
-                            ))
-                        })
-                        .children(self.shown.iter().enumerate().map(|(i, item)| {
-                            let selected = i == self.highlight;
-                            let item2 = item.clone();
-                            div()
-                                .id(("pal-row", i))
-                                .mx(px(6.0))
-                                .h(px(36.0))
-                                .px(px(10.0))
-                                .flex()
-                                .items_center()
-                                .gap(px(10.0))
-                                .rounded(px(8.0))
-                                .cursor_pointer()
-                                .when(selected, |d| d.bg(t.wash(0.10)))
-                                .hover(|s| s.bg(t.wash(0.07)))
-                                .child(div().w(px(16.0)).flex().justify_center().child(Self::glyph(item, &t)))
-                                .child(div().flex_1().min_w_0().truncate().text_size(ty::BODY).child(item.label()))
-                                .child(div().text_size(ty::CAPTION).text_color(t.text_faint).child(item.kind()))
-                                .on_click(cx.listener(move |_, _, _, cx| cx.emit(PaletteEvent::Pick(item2.clone()))))
-                        })),
-                ),
-        )
+        let viewport = window.viewport_size();
+        let width = 600.0_f32.min(f32::from(viewport.width) - 32.0).max(280.0);
+        let list_max = (f32::from(viewport.height) - 220.0).clamp(120.0, 380.0);
+        let hover = t.wash(0.07);
+        let active = popover::row_active_bg(&t);
+        let header = div()
+            .min_h(px(48.0))
+            .flex_none()
+            .px(px(16.0))
+            .py(px(8.0))
+            .flex()
+            .items_center()
+            .gap(px(10.0))
+            .border_b_1()
+            .border_color(t.border)
+            .child(icon(icons::PALETTE_SEARCH).size(px(16.0)).flex_none().text_color(t.text_muted))
+            .child(div().flex_1().min_w_0().text_size(ty::MD).child(Input::new(&self.input)))
+            .child(kit::kbd("Esc", &t));
+        let list = div()
+            .id("palette-list")
+            .max_h(px(list_max))
+            .overflow_y_scroll()
+            .track_scroll(&self.scroll)
+            .p(px(6.0))
+            .flex()
+            .flex_col()
+            .gap(px(2.0))
+            .when(self.shown.is_empty(), |d| {
+                d.child(div().px(px(10.0)).py(px(14.0)).text_size(ty::BODY).text_color(t.text_faint).child(
+                    if self.query.starts_with('@') && self.files.is_empty() {
+                        "No files (open a thread first)"
+                    } else {
+                        "Nothing matches"
+                    },
+                ))
+            })
+            .children(self.shown.iter().enumerate().map(|(i, item)| {
+                let selected = i == self.highlight;
+                let item2 = item.clone();
+                div()
+                    .id(("pal-row", i))
+                    .role(gpui::Role::ListBoxOption)
+                    .aria_selected(selected)
+                    .h(px(36.0))
+                    .flex_none()
+                    .px(px(10.0))
+                    .flex()
+                    .items_center()
+                    .gap(px(10.0))
+                    .rounded(px(popover::PALETTE_ITEM_RADIUS))
+                    .cursor_pointer()
+                    .text_color(if selected { t.text } else { t.text.opacity(0.9) })
+                    .when(selected, |d| d.bg(active))
+                    .when(!selected, |d| d.hover(move |s| s.bg(hover)))
+                    .child(div().w(px(16.0)).flex_none().flex().justify_center().child(Self::glyph(item, &t)))
+                    .child(div().flex_1().min_w_0().truncate().text_size(ty::BODY).child(item.label()))
+                    .child(div().flex_none().text_size(ty::CAPTION).text_color(t.text_faint).child(item.kind()))
+                    .on_click(cx.listener(move |_, _, _, cx| cx.emit(PaletteEvent::Pick(item2.clone()))))
+            }));
+        let footer = div()
+            .flex_none()
+            .px(px(16.0))
+            .py(px(7.0))
+            .border_t_1()
+            .border_color(t.border)
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(px(12.0))
+            .child(popover::key_hint(&t, "↑ ↓", "Navigate"))
+            .child(popover::key_hint(&t, "↵", "Open"))
+            .child(popover::key_hint(&t, "Esc", "Close"));
+        let card = popover::palette_card(&t, width)
+            .id("palette")
+            .role(gpui::Role::Dialog)
+            .aria_label("Command palette")
+            .track_focus(&self.focus)
+            .capture_key_down(cx.listener(Self::on_key))
+            .child(header)
+            .child(list)
+            .child(footer);
+        let weak = cx.weak_entity();
+        div().size_full().child(popover::modal(
+            "palette-layer",
+            viewport,
+            popover::scrim(&t, popover::PALETTE_SCRIM),
+            Some(90.0),
+            ui::frosted(popover::PALETTE_RADIUS, 22.0, card).into_any_element(),
+            Some(Box::new(move |_, cx| {
+                let _ = weak.update(cx, |_, cx| cx.emit(PaletteEvent::Close));
+            })),
+        ))
     }
 }
 

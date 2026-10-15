@@ -11,8 +11,9 @@ use gpui::{
 
 use super::page_with;
 use crate::assets::icons;
-use crate::design::ty;
-use crate::kit;
+use crate::design::{space, ty};
+use crate::kit::controls::{self as ctl, Segment, Tone};
+use crate::kit::page;
 use crate::shell::Shell;
 use crate::theme::Theme;
 use crate::ui;
@@ -83,20 +84,20 @@ impl Shell {
         }
         let max_day = by_day.values().map(|u| u.total_tokens()).max().unwrap_or(1).max(1);
         let days = self.pages.usage_days;
-        let range = kit::segmented(
+        let range = ctl::segmented(
+            &t,
             "usage-range",
-            &["7 days", "30 days", "90 days"],
+            vec![Segment::new("7 days"), Segment::new("30 days"), Segment::new("90 days")],
             match days {
                 7 => 0,
                 30 => 1,
                 _ => 2,
             },
-            &t,
             {
                 let weak = cx.weak_entity();
                 move |i, _, cx| {
                     let _ = weak.update(cx, |s, cx| {
-                        s.pages.usage_days = [7, 30, 90][i];
+                        s.pages.usage_days = [7, 30, 90][i.min(2)];
                         let engine = s.engine.clone();
                         s.pages.refresh_usage(&engine, cx);
                     });
@@ -106,91 +107,71 @@ impl Shell {
         let header = div()
             .flex()
             .items_center()
-            .gap(px(8.0))
+            .gap(px(space::SM))
             .child(range)
             .child(
-                ui::button_ghost("usage-csv", "Export CSV", &t)
+                ctl::button(&t, "usage-csv", "Export CSV", Tone::Outlined)
                     .on_click(cx.listener(|this, _, _, cx| this.export_usage_csv(cx))),
             )
             .into_any_element();
 
-        let stat = |label: &str, value: String| {
-            div()
-                .flex_1()
-                .p(px(14.0))
-                .flex()
-                .flex_col()
-                .gap(px(4.0))
-                .rounded(px(12.0))
-                .border_1()
-                .border_color(t.border)
-                .child(div().text_size(ty::META).text_color(t.text_faint).child(label.to_string()))
-                .child(div().text_size(ty::PAGE).font_weight(gpui::FontWeight::SEMIBOLD).child(value))
-        };
         let stats = div()
             .flex()
-            .gap(px(10.0))
-            .child(stat("Tokens", ui::compact(total.total_tokens())))
-            .child(stat("Output", ui::compact(total.output_tokens)))
-            .child(stat("Cache reads", ui::compact(total.cache_read_tokens)))
-            .child(stat("Cost (reported)", cost(&total)));
+            .flex_wrap()
+            .gap(px(space::SM))
+            .child(page::stat(&t, "Tokens", ui::compact(total.total_tokens()), None))
+            .child(page::stat(&t, "Output", ui::compact(total.output_tokens), None))
+            .child(page::stat(&t, "Cache reads", ui::compact(total.cache_read_tokens), None))
+            .child(page::stat(&t, "Cost (reported)", cost(&total), None));
 
-        let chart = div()
-            .h(px(120.0))
-            .p(px(12.0))
-            .flex()
-            .items_end()
-            .gap(px(3.0))
-            .rounded(px(12.0))
-            .border_1()
-            .border_color(t.border)
-            .children(by_day.iter().map(|(day, u)| {
-                let h = (u.total_tokens() as f32 / max_day as f32 * 90.0).max(2.0);
-                div()
-                    .id(("usage-bar", *day as usize))
-                    .flex_1()
-                    .h(px(h))
-                    .rounded_t(px(3.0))
-                    .bg(t.accent.opacity(0.6))
-                    .tooltip(ui::tip(format!(
-                        "{} · {} tokens · {}",
-                        chrono_date(*day),
-                        ui::compact(u.total_tokens()),
-                        cost(u)
-                    )))
-            }));
+        let chart = page::card(&t).child(
+            div()
+                .h(px(132.0))
+                .px(px(space::LG))
+                .pt(px(space::LG))
+                .pb(px(space::MD))
+                .flex()
+                .items_end()
+                .gap(px(3.0))
+                .children(by_day.iter().map(|(day, u)| {
+                    let h = (u.total_tokens() as f32 / max_day as f32 * 96.0).max(2.0);
+                    div()
+                        .id(("usage-bar", *day as usize))
+                        .flex_1()
+                        .h(px(h))
+                        .rounded_t(px(3.0))
+                        .bg(t.accent.opacity(0.6))
+                        .hover(|s| s.bg(t.accent))
+                        .tooltip(ui::tip(format!(
+                            "{} · {} tokens · {}",
+                            chrono_date(*day),
+                            ui::compact(u.total_tokens()),
+                            cost(u)
+                        )))
+                })),
+        );
 
-        let table = |title: &str, data: &BTreeMap<String, Usage>| {
+        let table = |data: &BTreeMap<String, Usage>| {
             let mut v: Vec<_> = data.iter().collect();
             v.sort_by_key(|e| std::cmp::Reverse(e.1.total_tokens()));
-            div()
-                .flex_1()
-                .flex()
-                .flex_col()
-                .rounded(px(12.0))
-                .border_1()
-                .border_color(t.border)
-                .overflow_hidden()
+            page::card(&t)
                 .child(
-                    div()
-                        .px(px(12.0))
-                        .py(px(8.0))
-                        .text_size(ty::META)
-                        .text_color(t.text_faint)
-                        .child(title.to_string()),
+                    page::table_head(&t)
+                        .child(div().flex_1().child("Name"))
+                        .child(div().w(px(80.0)).text_right().child("Tokens"))
+                        .child(div().w(px(70.0)).text_right().child("Cost")),
                 )
                 .children(v.into_iter().map(|(name, u)| {
-                    div()
-                        .h(px(34.0))
-                        .px(px(12.0))
-                        .flex()
-                        .items_center()
-                        .gap(px(8.0))
-                        .border_t_1()
-                        .border_color(t.border)
+                    page::table_row(&t, false)
                         .text_size(ty::BODY)
-                        .child(div().flex_1().truncate().child(name.clone()))
-                        .child(div().text_color(t.text_muted).child(ui::compact(u.total_tokens())))
+                        .child(div().flex_1().min_w_0().truncate().text_color(t.text).child(name.clone()))
+                        .child(
+                            div()
+                                .w(px(80.0))
+                                .text_right()
+                                .text_color(t.text_muted)
+                                .child(ui::compact(u.total_tokens())),
+                        )
                         .child(div().w(px(70.0)).text_right().text_color(t.text_faint).child(cost(u)))
                 }))
         };
@@ -207,44 +188,59 @@ impl Shell {
                 by_teammate.insert(p.name.clone(), sum);
             }
         }
+        let half = |label: &'static str, card: gpui::Div| {
+            div()
+                .flex_1()
+                .min_w(px(300.0))
+                .flex()
+                .flex_col()
+                .gap(px(space::SM))
+                .child(page::section_label(&t, label))
+                .child(card)
+        };
         let body = if rows.is_empty() {
-            div().child(kit::empty_state(
+            page::card(&t).child(page::empty_state(
+                &t,
                 icons::CLOCK_CIRCLE,
                 "No usage yet",
                 "Token counts and costs that agents report show up here.",
-                &t,
+                None,
             ))
         } else {
             div()
                 .flex()
                 .flex_col()
-                .gap(px(14.0))
                 .child(stats)
-                .child(chart)
+                .child(page::section(&t, "By day", chart))
                 .child(
                     div()
+                        .mt(px(page::SECTION_GAP))
                         .flex()
-                        .gap(px(10.0))
+                        .flex_wrap()
+                        .gap(px(space::LG))
                         .items_start()
-                        .child(table("By agent", &by_agent))
-                        .child(table("By project", &by_project)),
+                        .child(half("By agent", table(&by_agent)))
+                        .child(half("By project", table(&by_project))),
                 )
                 .when(!by_teammate.is_empty(), |d| {
-                    d.child(div().flex().child(table("By teammate (all time)", &by_teammate)))
+                    d.child(page::section(&t, "By teammate (all time)", table(&by_teammate)))
                 })
         };
+        let note =
+            self.pages.usage_note.clone().map(|n| {
+                if n.starts_with("Could not save") { page::error_strip(&t, n) } else { page::info_strip(&t, n) }
+            });
         page_with(
             "usage-page",
             "Usage",
             "Tokens and spend by day, agent and project. Counted on this device.",
             &t,
             Some(header),
-            body.when_some(self.pages.usage_note.clone(), |d, n| {
-                d.child(div().text_size(ty::SMALL).text_color(t.text_muted).child(n))
-            })
-            .child(
+            div().flex().flex_col().gap(px(space::MD)).children(note).child(body).child(
                 div()
-                    .text_size(ty::CAPTION)
+                    .mt(px(space::SM))
+                    .px(px(page::LABEL_INSET))
+                    .text_size(ty::META)
                     .text_color(t.text_faint)
                     .child("Costs are what each agent reports; subscription plans often report none."),
             ),

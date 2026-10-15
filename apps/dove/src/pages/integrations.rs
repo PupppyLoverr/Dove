@@ -19,8 +19,9 @@ use gpui_base::input::{Input, InputEvent, InputState};
 use serde::{Deserialize, Serialize};
 
 use crate::assets::{icon, icons};
-use crate::design::ty;
-use crate::kit;
+use crate::design::{radius, size, space, ty};
+use crate::kit::controls::{self as ctl, Tone};
+use crate::kit::page;
 use crate::theme::Theme;
 use crate::ui;
 
@@ -287,11 +288,13 @@ impl IntegrationsView {
     }
 }
 
-/// One integration: a rounded plate whose first line is the switch row.
+/// One integration: a kit card whose first row is the switch row.
 fn plate(t: &Theme) -> gpui::Div {
-    ui::card(div().flex().flex_col().rounded(px(12.0)).px(px(16.0)), t)
+    page::card(t)
 }
 
+/// The integration's head row: its glyph tile, name and hint, and the
+/// status and switch on the right.
 fn head(
     glyph: &'static str,
     title: &'static str,
@@ -299,47 +302,16 @@ fn head(
     right: impl IntoElement,
     t: &Theme,
 ) -> gpui::Div {
-    div()
-        .py(px(14.0))
-        .flex()
-        .items_center()
-        .gap(px(12.0))
-        .child(icon(glyph).size(px(16.0)).text_color(t.text_muted))
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .flex()
-                .flex_col()
-                .gap(px(2.0))
-                .child(div().text_size(ty::MD).font_weight(gpui::FontWeight::MEDIUM).child(title))
-                .child(div().text_size(ty::META).text_color(t.text_faint).child(hint.into())),
-        )
-        .child(right)
+    page::row(t, true)
+        .child(page::row_tile(t, glyph, None))
+        .child(page::row_text(t, title, hint))
+        .child(div().flex_none().max_w_full().flex().items_center().justify_end().child(right))
 }
 
-/// A detail line inside a plate, aligned with the title text.
+/// A detail row inside a plate: label and hint on the left, the control on
+/// the right (wrapping under the text on a narrow card).
 fn line(label: &'static str, hint: impl Into<SharedString>, control: impl IntoElement, t: &Theme) -> gpui::Div {
-    let hint: SharedString = hint.into();
-    div()
-        .ml(px(28.0))
-        .py(px(12.0))
-        .flex()
-        .items_center()
-        .gap(px(16.0))
-        .border_t_1()
-        .border_color(t.border)
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .flex()
-                .flex_col()
-                .gap(px(2.0))
-                .child(div().text_size(ty::BODY).child(label))
-                .when(!hint.is_empty(), |d| d.child(div().text_size(ty::META).text_color(t.text_faint).child(hint))),
-        )
-        .child(control)
+    page::setting_row(t, false, label, hint, control)
 }
 
 fn status(on: bool, label: impl Into<SharedString>, t: &Theme) -> gpui::Div {
@@ -350,7 +322,7 @@ fn status(on: bool, label: impl Into<SharedString>, t: &Theme) -> gpui::Div {
         .gap(px(6.0))
         .text_size(ty::META)
         .text_color(if on { t.text_muted } else { t.text_faint })
-        .child(div().size(px(6.0)).rounded_full().bg(if on { t.text } else { t.wash(0.22) }))
+        .child(div().size(px(6.0)).rounded_full().bg(if on { t.success } else { t.wash(0.22) }))
         .child(label.into())
 }
 
@@ -363,12 +335,12 @@ fn toggle(
 ) -> (gpui::Div, gpui::Stateful<gpui::Div>) {
     let left =
         div().flex().items_center().gap(px(14.0)).when_some(state, |d, (ok, label)| d.child(status(ok, label, t)));
-    (left, kit::switch(id, on, t))
+    (left, ctl::toggle(t, id, on))
 }
 
-/// A toolkit pick: hairline pill, filled with the foreground when chosen.
+/// A toolkit pick: a pill, filled with the accent when chosen.
 fn pick(id: SharedString, label: &'static str, on: bool, t: &Theme) -> gpui::Stateful<gpui::Div> {
-    let hover = t.wash(0.07);
+    let hover = t.wash(0.10);
     div()
         .id(gpui::ElementId::Name(id))
         .role(gpui::Role::CheckBox)
@@ -380,22 +352,21 @@ fn pick(id: SharedString, label: &'static str, on: bool, t: &Theme) -> gpui::Sta
         .items_center()
         .gap(px(5.0))
         .rounded_full()
-        .border_1()
         .text_size(ty::SMALL)
         .cursor_pointer()
         .map(|d| {
             if on {
-                d.bg(t.text).border_color(t.text).text_color(t.bg)
+                d.bg(t.accent).text_color(t.on_solid)
             } else {
-                d.border_color(t.border_strong).text_color(t.text_muted).hover(move |s| s.bg(hover))
+                d.bg(t.wash(0.06)).text_color(t.text_muted).hover(move |s| s.bg(hover))
             }
         })
-        .when(on, |d| d.child(icon(icons::CHECK).size(px(11.0)).text_color(t.bg)))
+        .when(on, |d| d.child(icon(icons::CHECK).size(px(11.0)).text_color(t.on_solid)))
         .child(label)
 }
 
 fn small_icon(id: &'static str, glyph: &'static str, label: &'static str, t: &Theme) -> gpui::Stateful<gpui::Div> {
-    let hover = t.wash(0.07);
+    let hover = t.wash(0.08);
     div()
         .id(id)
         .role(gpui::Role::Button)
@@ -405,7 +376,7 @@ fn small_icon(id: &'static str, glyph: &'static str, label: &'static str, t: &Th
         .flex_none()
         .items_center()
         .justify_center()
-        .rounded(px(7.0))
+        .rounded(px(radius::CONTROL + 1.0))
         .cursor_pointer()
         .hover(move |s| s.bg(hover))
         .tooltip(ui::tip(label))
@@ -415,16 +386,15 @@ fn small_icon(id: &'static str, glyph: &'static str, label: &'static str, t: &Th
 fn field(input: &Entity<InputState>, w: f32, t: &Theme) -> impl IntoElement {
     div()
         .w(px(w))
-        .h(px(30.0))
+        .max_w_full()
+        .h(px(size::FIELD))
         .px(px(10.0))
         .flex()
         .items_center()
-        .rounded(px(8.0))
-        .bg(t.wash(0.04))
-        .border_1()
-        .border_color(t.border)
+        .rounded(px(radius::SELECT))
+        .bg(t.wash(0.06))
         .text_size(ty::BODY)
-        .child(Input::new(input))
+        .child(div().flex_1().min_w_0().child(Input::new(input)))
 }
 
 impl Render for IntegrationsView {
@@ -477,15 +447,13 @@ impl Render for IntegrationsView {
                     .gap(px(4.0))
                     .child(
                         div()
-                            .h(px(28.0))
+                            .h(px(size::FIELD))
                             .px(px(10.0))
                             .flex()
                             .items_center()
                             .max_w(px(240.0))
-                            .rounded(px(7.0))
-                            .bg(t.wash(0.04))
-                            .border_1()
-                            .border_color(t.border)
+                            .rounded(px(radius::SELECT))
+                            .bg(t.wash(0.06))
                             .text_size(ty::META)
                             .font_family(t.font_mono.clone())
                             .text_color(t.text_muted)
@@ -528,10 +496,10 @@ impl Render for IntegrationsView {
                 icons::WIDGET,
                 "Composio",
                 "Gmail, GitHub, Slack, Notion and 1000+ apps through your own Composio account",
-                left.child(switch.on_click(cx.listener(move |this, _, _, cx| {
+                left.child(ctl::on_toggle(switch, cx, move |this, _, cx| {
                     this.config.composio.enabled = !composio_on;
                     this.persist(cx);
-                }))),
+                })),
                 &t,
             ))
             .when(composio_on, |d| {
@@ -547,42 +515,40 @@ impl Render for IntegrationsView {
                     &t,
                 ))
                 .child(
-                    div()
-                        .ml(px(28.0))
-                        .py(px(12.0))
-                        .flex()
-                        .flex_col()
-                        .gap(px(10.0))
-                        .border_t_1()
-                        .border_color(t.border)
-                        .child(
-                            div()
-                                .flex()
-                                .flex_col()
-                                .gap(px(2.0))
-                                .child(div().text_size(ty::BODY).child("Toolkits"))
-                                .child(div().text_size(ty::META).text_color(t.text_faint).child(if scoped {
+                    page::row(&t, false).child(
+                        div()
+                            .w_full()
+                            .flex()
+                            .flex_col()
+                            .gap(px(10.0))
+                            .child(page::row_text(
+                                &t,
+                                "Toolkits",
+                                if scoped {
                                     "Pick none to allow every toolkit"
                                 } else {
                                     "Applies to project (ak_) and user (uak_) keys"
-                                })),
-                        )
-                        .child(div().flex().flex_wrap().gap(px(6.0)).children(TOOLKITS.iter().map(|(slug, name)| {
-                            let on = c.toolkits.iter().any(|k| k == slug);
-                            let slug = slug.to_string();
-                            pick(SharedString::from(format!("int-tk-{slug}")), name, on, &t).on_click(cx.listener(
-                                move |this, _, _, cx| {
-                                    let list = &mut this.config.composio.toolkits;
-                                    if let Some(i) = list.iter().position(|k| *k == slug) {
-                                        list.remove(i);
-                                    } else {
-                                        list.push(slug.clone());
-                                    }
-                                    this.persist(cx);
                                 },
                             ))
-                        })))
-                        .child(field(&self.toolkits, 320.0, &t)),
+                            .child(div().flex().flex_wrap().gap(px(6.0)).children(TOOLKITS.iter().map(
+                                |(slug, name)| {
+                                    let on = c.toolkits.iter().any(|k| k == slug);
+                                    let slug = slug.to_string();
+                                    pick(SharedString::from(format!("int-tk-{slug}")), name, on, &t).on_click(
+                                        cx.listener(move |this, _, _, cx| {
+                                            let list = &mut this.config.composio.toolkits;
+                                            if let Some(i) = list.iter().position(|k| *k == slug) {
+                                                list.remove(i);
+                                            } else {
+                                                list.push(slug.clone());
+                                            }
+                                            this.persist(cx);
+                                        }),
+                                    )
+                                },
+                            )))
+                            .child(field(&self.toolkits, 320.0, &t)),
+                    ),
                 )
             });
 
@@ -601,11 +567,11 @@ impl Render for IntegrationsView {
             } else {
                 "Open Paper Desktop (paper.design) so agents can read and edit designs"
             },
-            left.child(switch.on_click(cx.listener(move |this, _, _, cx| {
+            left.child(ctl::on_toggle(switch, cx, move |this, _, cx| {
                 this.config.paper.enabled = !paper_on;
                 this.persist(cx);
                 this.refresh(cx);
-            }))),
+            })),
             &t,
         ));
 
@@ -625,10 +591,10 @@ impl Render for IntegrationsView {
                     (Some(_), None) => "Agents see and use your desktop apps through cua-driver".to_string(),
                     (None, _) => format!("Uses the open-source cua-driver {CUA_VERSION} or later, running locally"),
                 },
-                left.child(switch.on_click(cx.listener(move |this, _, _, cx| {
+                left.child(ctl::on_toggle(switch, cx, move |this, _, cx| {
                     this.config.computer.enabled = !cua_on;
                     this.persist(cx);
-                }))),
+                })),
                 &t,
             ))
             .child(if let Some(path) = self.probe.cua.clone() {
@@ -646,8 +612,13 @@ impl Render for IntegrationsView {
                         .items_center()
                         .gap(px(4.0))
                         .child(
-                            ui::button_ghost("int-cua-check", if self.checking { "Checking…" } else { "Check" }, &t)
-                                .on_click(cx.listener(|this, _, _, cx| this.check_cua(cx))),
+                            ctl::button_sm(
+                                &t,
+                                "int-cua-check",
+                                if self.checking { "Checking…" } else { "Check" },
+                                Tone::Filled,
+                            )
+                            .on_click(cx.listener(|this, _, _, cx| this.check_cua(cx))),
                         )
                         .child(
                             small_icon("int-refresh", icons::REFRESH, "Detect again", &t)
@@ -676,18 +647,18 @@ impl Render for IntegrationsView {
             });
 
         div()
-            .pt(px(8.0))
+            .pt(px(space::LG))
             .flex()
             .flex_col()
-            .gap(px(12.0))
+            .gap(px(space::MD))
             .child(chrome)
             .child(composio)
             .child(paper)
             .child(computer)
             .child(
                 div()
-                    .px(px(4.0))
-                    .pt(px(2.0))
+                    .px(px(page::LABEL_INSET))
+                    .pt(px(space::XXS))
                     .text_size(ty::META)
                     .text_color(t.text_faint)
                     .child("Changes apply to agents started from now on."),

@@ -4,9 +4,9 @@
 use dove_core::proto::{HarnessKind, TaskStatus, Usage};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, AnyView, App, AppContext as _, Bounds, BoxShadow, ClickEvent, Context, Corners, Div, Element,
-    GlobalElementId, Hsla, InspectorElementId, InteractiveElement, IntoElement, LayoutId, MouseButton, ParentElement,
-    Pixels, Render, SharedString, StatefulInteractiveElement, Styled, Window, WindowControlArea, div, hsla, point, px,
+    AnyElement, AnyView, App, AppContext as _, Bounds, ClickEvent, Context, Corners, Div, Element, GlobalElementId,
+    Hsla, InspectorElementId, InteractiveElement, IntoElement, LayoutId, MouseButton, ParentElement, Pixels, Render,
+    SharedString, StatefulInteractiveElement, Styled, Window, WindowControlArea, div, hsla, px,
 };
 
 use crate::assets::{icon, icons};
@@ -240,22 +240,6 @@ impl IntoElement for RoundedClip {
     fn into_element(self) -> Self {
         self
     }
-}
-
-// ------------------------------------------------------------------- glass
-
-fn shadow(color: Hsla, y: f32, blur: f32, spread: f32, inset: bool) -> BoxShadow {
-    BoxShadow { color, offset: point(px(0.0), px(y)), blur_radius: px(blur), spread_radius: px(spread), inset }
-}
-
-/// The composer / card plate: a translucent lifted panel over glass.
-pub fn card<E: Styled>(el: E, theme: &Theme) -> E {
-    let base = if theme.appearance.is_dark() { theme.surface_card } else { theme.bg };
-    let fill = if theme.is_frost() { base.opacity(0.72) } else { base };
-    el.bg(fill).border_1().border_color(theme.border).shadow(vec![
-        shadow(hsla(0.0, 0.0, 1.0, if theme.appearance.is_dark() { 0.04 } else { 0.6 }), 1.0, 0.0, 0.0, true),
-        shadow(hsla(0.0, 0.0, 0.0, if theme.appearance.is_dark() { 0.35 } else { 0.08 }), 8.0, 24.0, 0.0, false),
-    ])
 }
 
 // ----------------------------------------------------------------- tooltip

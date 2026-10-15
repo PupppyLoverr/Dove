@@ -2074,7 +2074,7 @@ impl Shell {
             Route::Kanban => self.render_kanban(window, cx),
             Route::Automations => self.render_automations(window, cx),
             Route::PullRequests => self.prs.clone().into_any_element(),
-            Route::Agents => self.render_agents_page(cx),
+            Route::Agents => self.render_agents_page(window, cx),
             Route::Usage => self.render_usage_page(cx),
             Route::Archived => self.render_archived_page(cx),
             Route::Settings => match self.settings.update(cx, |s, cx| s.render_content(window, cx)) {
@@ -2339,9 +2339,8 @@ impl Render for Shell {
         });
 
         let menu = self.render_menu_overlay(cx);
-        let palette = self.palette.clone().map(|p| {
-            div().absolute().inset_0().flex().justify_center().pt(px(90.0)).bg(gpui::hsla(0.0, 0.0, 0.0, 0.18)).child(p)
-        });
+        // The palette draws its own scrim and card (kit modal layer).
+        let palette = self.palette.clone().map(|p| div().absolute().inset_0().child(p));
 
         div()
             .id("shell")
@@ -2484,6 +2483,9 @@ impl Render for Shell {
             .when(bare, |d| d.child(self.render_bare_chrome(window, cx)))
             .children(menu)
             .children(palette)
+            // A page's confirmation (Threads, Archived, Kanban, Automations,
+            // Team): drawn here so it stays modal whichever route is showing.
+            .children(self.render_page_dialog(window, cx))
             .child(gpui::canvas(
                 |_, _, _| {},
                 |_, _, window, _| {
