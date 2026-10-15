@@ -45,8 +45,10 @@ setting("use_worktree", "false")
 for h in HARNESSES:
     setting(f"agent_path.{h}", str(fake))
 
-# An `at` trigger one minute in the past, on an automation created two
-# minutes ago, is due exactly once: on the scheduler's first tick.
+# An `at` trigger one minute in the past, on an automation saved two
+# minutes ago, is due exactly once: on the scheduler's first tick. The
+# scheduler counts from `last_run` (the editor stamps it on save), so the
+# seed stamps it too.
 fire = datetime.now() - timedelta(minutes=1)
 con.execute("DELETE FROM automations")
 for i in range(n):
@@ -54,9 +56,9 @@ for i in range(n):
     trigger = f'{{"type":"at","hour":{fire.hour},"minute":{fire.minute},"weekdays":[]}}'
     con.execute(
         "INSERT INTO automations(id, name, prompt, project_id, harness, model, trigger, worktree, enabled,"
-        " last_run, state, created_at) VALUES(?, ?, ?, ?, ?, NULL, ?, 0, 1, NULL, '{}', ?)",
+        " last_run, state, created_at) VALUES(?, ?, ?, ?, ?, NULL, ?, 0, 1, ?, '{}', ?)",
         (str(uuid.uuid4()), f"perf {i + 1} ({harness})", "Stream a long answer with tool calls.", project_id,
-         harness, trigger, now - 120_000),
+         harness, trigger, now - 120_000, now - 120_000),
     )
 con.commit()
 con.close()

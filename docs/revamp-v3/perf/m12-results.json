@@ -1,0 +1,326 @@
+﻿{
+    "exe":  "C:\\dvw\\release-m12\\dove.exe",
+    "started":  "2026-10-15T23:38:28",
+    "focused":  false,
+    "real_path":  false,
+    "runs":  [
+                 {
+                     "sessions":  1,
+                     "startup":  {
+                                     "window_ms":  384,
+                                     "first_frame_ms":  368.8
+                                 },
+                     "idle":  {
+                                  "cpu":  {
+                                              "dove_main":  0.73
+                                          },
+                                  "renders_per_sec":  0,
+                                  "memory":  {
+                                                 "dove_own_private_mb":  86.3,
+                                                 "dove_own_ws_mb":  62.9,
+                                                 "harness_private_mb":  0,
+                                                 "harness_ws_mb":  0,
+                                                 "by_class":  {
+                                                                  "dove-main":  {
+                                                                                    "count":  1,
+                                                                                    "private_mb":  86.3,
+                                                                                    "ws_mb":  62.9
+                                                                                }
+                                                              }
+                                             }
+                              },
+                     "streaming":  {
+                                       "sessions_started":  1,
+                                       "cpu":  {
+                                                   "harness":  0.36,
+                                                   "dove_other":  0,
+                                                   "dove_main":  21.57
+                                               },
+                                       "renders_per_sec":  0,
+                                       "memory":  {
+                                                      "dove_own_private_mb":  95.4,
+                                                      "dove_own_ws_mb":  81.2,
+                                                      "harness_private_mb":  2.1,
+                                                      "harness_ws_mb":  13.9,
+                                                      "by_class":  {
+                                                                       "dove-main":  {
+                                                                                         "count":  1,
+                                                                                         "private_mb":  95.4,
+                                                                                         "ws_mb":  81.2
+                                                                                     },
+                                                                       "console":  {
+                                                                                       "count":  2,
+                                                                                       "private_mb":  2.3,
+                                                                                       "ws_mb":  15.8
+                                                                                   },
+                                                                       "harness:dove-escrow.exe":  {
+                                                                                                       "count":  2,
+                                                                                                       "private_mb":  0.7,
+                                                                                                       "ws_mb":  4.9
+                                                                                                   },
+                                                                       "harness:fake-agent":  {
+                                                                                                  "count":  2,
+                                                                                                  "private_mb":  1.4,
+                                                                                                  "ws_mb":  9
+                                                                                              }
+                                                                   }
+                                                  }
+                                   },
+                     "input_latency":  {
+                                           "samples":  40,
+                                           "p50_ms":  55.85,
+                                           "p95_ms":  63.49,
+                                           "p99_ms":  64.44,
+                                           "max_ms":  65.11
+                                       },
+                     "after_sessions":  {
+                                            "cpu":  {
+                                                        "harness":  0,
+                                                        "dove_other":  0,
+                                                        "dove_main":  0.62
+                                                    },
+                                            "renders_per_sec":  0,
+                                            "memory":  {
+                                                           "dove_own_private_mb":  121,
+                                                           "dove_own_ws_mb":  79.6,
+                                                           "harness_private_mb":  2,
+                                                           "harness_ws_mb":  13.8,
+                                                           "by_class":  {
+                                                                            "dove-main":  {
+                                                                                              "count":  1,
+                                                                                              "private_mb":  121,
+                                                                                              "ws_mb":  79.6
+                                                                                          },
+                                                                            "console":  {
+                                                                                            "count":  2,
+                                                                                            "private_mb":  2.3,
+                                                                                            "ws_mb":  15.7
+                                                                                        },
+                                                                            "harness:dove-escrow.exe":  {
+                                                                                                            "count":  2,
+                                                                                                            "private_mb":  0.7,
+                                                                                                            "ws_mb":  4.9
+                                                                                                        },
+                                                                            "harness:fake-agent":  {
+                                                                                                       "count":  2,
+                                                                                                       "private_mb":  1.3,
+                                                                                                       "ws_mb":  8.9
+                                                                                                   }
+                                                                        }
+                                                       }
+                                        }
+                 },
+                 {
+                     "sessions":  5,
+                     "startup":  {
+                                     "window_ms":  357,
+                                     "first_frame_ms":  347
+                                 },
+                     "idle":  {
+                                  "cpu":  {
+                                              "dove_main":  0.62
+                                          },
+                                  "renders_per_sec":  0,
+                                  "memory":  {
+                                                 "dove_own_private_mb":  86.6,
+                                                 "dove_own_ws_mb":  63.1,
+                                                 "harness_private_mb":  0,
+                                                 "harness_ws_mb":  0,
+                                                 "by_class":  {
+                                                                  "dove-main":  {
+                                                                                    "count":  1,
+                                                                                    "private_mb":  86.6,
+                                                                                    "ws_mb":  63.1
+                                                                                }
+                                                              }
+                                             }
+                              },
+                     "streaming":  {
+                                       "sessions_started":  5,
+                                       "cpu":  {
+                                                   "harness":  2.05,
+                                                   "dove_other":  0,
+                                                   "dove_main":  29.26
+                                               },
+                                       "renders_per_sec":  0,
+                                       "memory":  {
+                                                      "dove_own_private_mb":  109.1,
+                                                      "dove_own_ws_mb":  82.2,
+                                                      "harness_private_mb":  5.1,
+                                                      "harness_ws_mb":  34.3,
+                                                      "by_class":  {
+                                                                       "dove-main":  {
+                                                                                         "count":  1,
+                                                                                         "private_mb":  109.1,
+                                                                                         "ws_mb":  82.2
+                                                                                     },
+                                                                       "console":  {
+                                                                                       "count":  6,
+                                                                                       "private_mb":  6.9,
+                                                                                       "ws_mb":  47.4
+                                                                                   },
+                                                                       "harness:dove-escrow.exe":  {
+                                                                                                       "count":  3,
+                                                                                                       "private_mb":  1.1,
+                                                                                                       "ws_mb":  7.3
+                                                                                                   },
+                                                                       "harness:fake-agent":  {
+                                                                                                  "count":  6,
+                                                                                                  "private_mb":  4,
+                                                                                                  "ws_mb":  27
+                                                                                              }
+                                                                   }
+                                                  }
+                                   },
+                     "input_latency":  {
+                                           "samples":  40,
+                                           "p50_ms":  56.63,
+                                           "p95_ms":  72.38,
+                                           "p99_ms":  73.17,
+                                           "max_ms":  75.62
+                                       },
+                     "after_sessions":  {
+                                            "cpu":  {
+                                                        "harness":  0,
+                                                        "dove_other":  0,
+                                                        "dove_main":  0.42
+                                                    },
+                                            "renders_per_sec":  0,
+                                            "memory":  {
+                                                           "dove_own_private_mb":  113.6,
+                                                           "dove_own_ws_mb":  78.2,
+                                                           "harness_private_mb":  4.9,
+                                                           "harness_ws_mb":  34.3,
+                                                           "by_class":  {
+                                                                            "dove-main":  {
+                                                                                              "count":  1,
+                                                                                              "private_mb":  113.6,
+                                                                                              "ws_mb":  78.2
+                                                                                          },
+                                                                            "console":  {
+                                                                                            "count":  6,
+                                                                                            "private_mb":  6.9,
+                                                                                            "ws_mb":  47.3
+                                                                                        },
+                                                                            "harness:dove-escrow.exe":  {
+                                                                                                            "count":  3,
+                                                                                                            "private_mb":  1.1,
+                                                                                                            "ws_mb":  7.3
+                                                                                                        },
+                                                                            "harness:fake-agent":  {
+                                                                                                       "count":  6,
+                                                                                                       "private_mb":  3.8,
+                                                                                                       "ws_mb":  27
+                                                                                                   }
+                                                                        }
+                                                       }
+                                        }
+                 },
+                 {
+                     "sessions":  10,
+                     "startup":  {
+                                     "window_ms":  370,
+                                     "first_frame_ms":  349
+                                 },
+                     "idle":  {
+                                  "cpu":  {
+                                              "dove_main":  0.52
+                                          },
+                                  "renders_per_sec":  0,
+                                  "memory":  {
+                                                 "dove_own_private_mb":  87.5,
+                                                 "dove_own_ws_mb":  63.1,
+                                                 "harness_private_mb":  0,
+                                                 "harness_ws_mb":  0,
+                                                 "by_class":  {
+                                                                  "dove-main":  {
+                                                                                    "count":  1,
+                                                                                    "private_mb":  87.5,
+                                                                                    "ws_mb":  63.1
+                                                                                }
+                                                              }
+                                             }
+                              },
+                     "streaming":  {
+                                       "sessions_started":  10,
+                                       "cpu":  {
+                                                   "harness":  4.88,
+                                                   "dove_other":  0,
+                                                   "dove_main":  39.65
+                                               },
+                                       "renders_per_sec":  0,
+                                       "memory":  {
+                                                      "dove_own_private_mb":  114,
+                                                      "dove_own_ws_mb":  86.7,
+                                                      "harness_private_mb":  8.7,
+                                                      "harness_ws_mb":  59.2,
+                                                      "by_class":  {
+                                                                       "dove-main":  {
+                                                                                         "count":  1,
+                                                                                         "private_mb":  114,
+                                                                                         "ws_mb":  86.7
+                                                                                     },
+                                                                       "console":  {
+                                                                                       "count":  11,
+                                                                                       "private_mb":  12.5,
+                                                                                       "ws_mb":  86.8
+                                                                                   },
+                                                                       "harness:dove-escrow.exe":  {
+                                                                                                       "count":  4,
+                                                                                                       "private_mb":  1.5,
+                                                                                                       "ws_mb":  9.7
+                                                                                                   },
+                                                                       "harness:fake-agent":  {
+                                                                                                  "count":  11,
+                                                                                                  "private_mb":  7.2,
+                                                                                                  "ws_mb":  49.5
+                                                                                              }
+                                                                   }
+                                                  }
+                                   },
+                     "input_latency":  {
+                                           "samples":  40,
+                                           "p50_ms":  54.89,
+                                           "p95_ms":  68.79,
+                                           "p99_ms":  72.16,
+                                           "max_ms":  73.72
+                                       },
+                     "after_sessions":  {
+                                            "cpu":  {
+                                                        "harness":  0,
+                                                        "dove_other":  0,
+                                                        "dove_main":  0.52
+                                                    },
+                                            "renders_per_sec":  0,
+                                            "memory":  {
+                                                           "dove_own_private_mb":  112.2,
+                                                           "dove_own_ws_mb":  83.8,
+                                                           "harness_private_mb":  8.4,
+                                                           "harness_ws_mb":  59.2,
+                                                           "by_class":  {
+                                                                            "dove-main":  {
+                                                                                              "count":  1,
+                                                                                              "private_mb":  112.2,
+                                                                                              "ws_mb":  83.8
+                                                                                          },
+                                                                            "console":  {
+                                                                                            "count":  11,
+                                                                                            "private_mb":  12.5,
+                                                                                            "ws_mb":  86.8
+                                                                                        },
+                                                                            "harness:dove-escrow.exe":  {
+                                                                                                            "count":  4,
+                                                                                                            "private_mb":  1.5,
+                                                                                                            "ws_mb":  9.7
+                                                                                                        },
+                                                                            "harness:fake-agent":  {
+                                                                                                       "count":  11,
+                                                                                                       "private_mb":  6.9,
+                                                                                                       "ws_mb":  49.5
+                                                                                                   }
+                                                                        }
+                                                       }
+                                        }
+                 }
+             ]
+}
