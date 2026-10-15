@@ -61,43 +61,24 @@ impl Shell {
         }
         let hero = wall_path.and_then(|p| {
             let scale = window.scale_factor();
-            let width =
-                f32::from(window.viewport_size().width) - if self.sidebar_shown() { self.sidebar_w } else { 0.0 };
-            let target = (width * scale, wallpaper::hero_height(viewport_h) * scale);
-            let path = std::path::Path::new(&p);
-            let light = !t.appearance.is_dark();
-            let (image, motion) = if animate {
-                wallpaper::animate(path, effect, light, target, window, cx)?
-            } else {
-                (wallpaper::prepare(path, effect, light, target, cx)?, wallpaper::Motion::STILL)
+            let width = f32::from(window.viewport_size().width) - if self.sidebar_shown() { self.sidebar_w } else { 0.0 };
+            let props = wallpaper::HeroProps {
+                path: p.into(),
+                effect,
+                light: !t.appearance.is_dark(),
+                target: (width * scale, wallpaper::hero_height(viewport_h) * scale),
+                animate,
+                frosted: t.is_frost(),
+                composer: self.composer_bounds.clone(),
             };
-            let opacity = motion.opacity * if t.is_frost() { wallpaper::FROSTED_OPACITY } else { 1.0 };
-            let layers = [false, true].map(|cutout| {
-                let image = image.clone();
-                let bounds_cell = self.composer_bounds.clone();
-                div().absolute().inset_0().opacity(if cutout { 1.0 } else { wallpaper::CUTOUT_REVEAL_OPACITY }).child(
-                    canvas(
-                        |_, _, _| {},
-                        move |bounds, _, window, _| {
-                            wallpaper::paint(image.clone(), bounds, bounds_cell.get(), cutout, motion, window);
-                        },
-                    )
-                    .absolute()
-                    .inset_0(),
-                )
-            });
+            // Its own view, so animation frames repaint only the hero; it is
+            // released (with its layers) when home stops drawing it.
+            let view = window.use_keyed_state("home-hero", cx, wallpaper::Hero::new);
             // Zeron's hero: the top 72% of the page (at most 760 px), fading
             // into the canvas below the composer.
-            Some(
-                div()
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .right_0()
-                    .h(px(wallpaper::hero_height(viewport_h)))
-                    .opacity(opacity)
-                    .children(layers),
-            )
+            view.update(cx, |hero, cx| hero.show(props, cx)).then(|| {
+                div().absolute().top_0().left_0().right_0().h(px(wallpaper::hero_height(viewport_h))).child(view)
+            })
         });
 
         let join_chip = self.join.as_ref().map(|(_, j)| {

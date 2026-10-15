@@ -2,12 +2,28 @@
 //! effect and faded into the canvas, with the composer cut out of it.
 //! Effects and mask geometry adapted from Zeron (MIT). Decoding and effect
 //! rasterization run once per image on the background executor.
+//!
+//! "Animate backdrop" never rasterizes per frame. Each effect is decomposed
+//! into a few textures built once with the still (the dithered aircraft at
+//! every heading, contrail strips, wave masks, a halftone ring, a scanline
+//! texture), and a frame only places them: paint transforms (offset and
+//! scale), clip rects and opacity. Frames are paced by the display
+//! (`request_animation_frame`) and requested only by the [`Hero`] view, only
+//! while it is drawn and decorative motion is allowed.
 
+use std::cell::Cell;
+use std::f32::consts::TAU;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-use gpui::{App, Bounds, Corners, ImageAlphaMask, Pixels, RenderImage, Window, point, px, size};
+use gpui::{
+    App, Bounds, Context, Corners, ImageAlphaMask, IntoElement, ParentElement as _, Pixels, Render, RenderImage,
+    Styled as _, Window, canvas, div, point, px, size,
+};
+
+use crate::motion;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Effect {
@@ -48,18 +64,9 @@ impl Effect {
         match self {
             Self::None => "Slow push toward the brightest part of the image",
             Self::Dither => "An aircraft crosses toward the brightest point, trailing light in the image's colors",
-            Self::Halftone => "Dots swell and shrink in a ripple from the brightest point",
+            Self::Halftone => "Rings of dots ripple outward from the brightest point",
             Self::Scanlines => "CRT roll: the lines scroll and a soft band sweeps down",
         }
-    }
-
-    /// Frame cadence. Original moves on the GPU only, so it just repaints.
-    fn frame_interval(self) -> Duration {
-        Duration::from_secs_f32(match self {
-            Self::None => 1.0 / 30.0,
-            Self::Halftone => 1.0 / 15.0,
-            Self::Dither | Self::Scanlines => 1.0 / 24.0,
-        })
     }
 }
 
@@ -78,6 +85,39 @@ struct Source {
     luma: Box<[u8]>,
 }
 
+/// Only Halftone and Scanlines have a light-paper variant.
+fn paper_light(effect: Effect, light: bool) -> bool {
+    light && matches!(effect, Effect::Halftone | Effect::Scanlines)
+}
+
+/// The device-pixel size an effect is rasterized at, in 64 px steps.
+fn step_target(target: (f32, f32)) -> (u32, u32) {
+    let step = |v: f32| ((v.max(64.0) / 64.0).ceil() as u32 * 64).min(8192);
+    (step(target.0), step(target.1))
+}
+
+// ------------------------------------------------------------ atlas hygiene
+
+/// Rasters no longer shown, freed from the sprite atlas at the next paint
+/// (dropping needs the window, and the background jobs that replace them
+/// have none).
+static RETIRED: Mutex<Vec<Arc<RenderImage>>> = Mutex::new(Vec::new());
+
+fn retire(images: impl IntoIterator<Item = Arc<RenderImage>>) {
+    if let Ok(mut retired) = RETIRED.lock() {
+        retired.extend(images);
+    }
+}
+
+fn drop_retired(window: &mut Window) {
+    let images = RETIRED.lock().map(|mut r| std::mem::take(&mut *r)).unwrap_or_default();
+    for image in images {
+        let _ = window.drop_image(image);
+    }
+}
+
+// ------------------------------------------------------------ static still
+
 type Slot = Arc<Mutex<Option<Arc<RenderImage>>>>;
 struct Entry {
     path: PathBuf,
@@ -90,6 +130,14 @@ struct Entry {
     fallback: Option<Arc<RenderImage>>,
 }
 
+impl Entry {
+    fn images(self) -> impl Iterator<Item = Arc<RenderImage>> {
+        let ready = self.slot.lock().ok().and_then(|s| s.clone());
+        ready.into_iter().chain(self.fallback)
+    }
+}
+
+/// Still rasters, most recently used last.
 static CACHE: OnceLock<Mutex<Vec<Entry>>> = OnceLock::new();
 
 /// The rendered artwork for `path`, or `None` while it is still decoding
@@ -97,18 +145,20 @@ static CACHE: OnceLock<Mutex<Vec<Entry>>> = OnceLock::new();
 /// device pixels: the effect is rasterized at that size, as Zeron does, so a
 /// dither or halftone cell is the same few screen pixels on every display
 /// instead of growing with the source image's upscale.
-pub fn prepare(path: &Path, effect: Effect, light: bool, target: (f32, f32), cx: &mut App) -> Option<Arc<RenderImage>> {
+fn prepare(path: &Path, effect: Effect, light: bool, target: (f32, f32), cx: &mut App) -> Option<Arc<RenderImage>> {
     let cache = CACHE.get_or_init(|| Mutex::new(Vec::new()));
-    let light = light && matches!(effect, Effect::Halftone | Effect::Scanlines);
-    let step = |v: f32| ((v.max(64.0) / 64.0).ceil() as u32 * 64).min(8192);
-    let target = (step(target.0), step(target.1));
+    let light = paper_light(effect, light);
+    let target = step_target(target);
     let mut stale = None;
     {
-        let entries = cache.lock().ok()?;
-        if let Some(e) = entries.iter().find(|e| e.path == path && e.effect == effect && e.light == light) {
+        let mut entries = cache.lock().ok()?;
+        if let Some(i) = entries.iter().position(|e| e.path == path && e.effect == effect && e.light == light) {
+            let e = entries.remove(i);
             let ready = e.slot.lock().ok()?.clone();
-            if e.target == target {
-                return ready.or_else(|| e.fallback.clone());
+            let (hit, fallback) = (e.target == target, e.fallback.clone());
+            entries.push(e);
+            if hit {
+                return ready.or(fallback);
             }
             // Resized: keep showing the old raster until the new one lands.
             stale = ready;
@@ -117,7 +167,10 @@ pub fn prepare(path: &Path, effect: Effect, light: bool, target: (f32, f32), cx:
     let slot: Slot = Arc::new(Mutex::new(None));
     {
         let mut entries = cache.lock().ok()?;
-        entries.retain(|e| !(e.path == path && e.effect == effect && e.light == light));
+        let mut gone = Vec::new();
+        while let Some(i) = entries.iter().position(|e| e.path == path && e.effect == effect && e.light == light) {
+            gone.extend(entries.remove(i).fallback);
+        }
         entries.push(Entry {
             path: path.to_path_buf(),
             effect,
@@ -126,23 +179,39 @@ pub fn prepare(path: &Path, effect: Effect, light: bool, target: (f32, f32), cx:
             slot: slot.clone(),
             fallback: stale.clone(),
         });
-        // A handful of variants is plenty; drop the oldest.
-        if entries.len() > 4 {
-            entries.remove(0);
+        // A handful of variants is plenty; drop the least recently used.
+        while entries.len() > 4 {
+            gone.extend(entries.remove(0).images());
         }
+        retire(gone);
     }
     let path = path.to_path_buf();
     let work = cx.background_executor().spawn(async move {
         let src = load_source(&path, target)?;
-        Some(Arc::new(RenderImage::new([image::Frame::new(render(&src, effect, light))])))
+        Some(raster(render(&src, effect, light)))
     });
     cx.spawn(async move |cx| {
         let image = work.await;
         *slot.lock().unwrap() = image;
+        // The resized raster replaces the old one, which can go.
+        if let Some(cache) = CACHE.get()
+            && let Ok(mut entries) = cache.lock()
+            && let Some(e) = entries.iter_mut().find(|e| Arc::ptr_eq(&e.slot, &slot))
+        {
+            retire(e.fallback.take());
+        }
         cx.update(|cx| cx.refresh_windows());
     })
     .detach();
     stale
+}
+
+fn raster(img: image::RgbaImage) -> Arc<RenderImage> {
+    Arc::new(RenderImage::new([image::Frame::new(img)]))
+}
+
+fn raster_frames(frames: Vec<image::RgbaImage>) -> Arc<RenderImage> {
+    Arc::new(RenderImage::new(frames.into_iter().map(image::Frame::new).collect::<Vec<_>>()))
 }
 
 /// GPUI's RenderImage consumes BGRA.
@@ -150,11 +219,8 @@ fn render(src: &Source, effect: Effect, light: bool) -> image::RgbaImage {
     let (w, h) = (src.width, src.height);
     let px_at = |x: u32, y: u32| src.rgba[(y * w + x) as usize];
     match effect {
-        Effect::None => image::RgbaImage::from_fn(w, h, |x, y| {
-            let [r, g, b, a] = px_at(x, y);
-            image::Rgba([b, g, r, a])
-        }),
-        Effect::Scanlines => scanlines(src, light, 0, |_| 1.0),
+        Effect::None => plain(src),
+        Effect::Scanlines => scanlines(src, light),
         Effect::Dither => {
             let mut out = image::RgbaImage::new(w, h);
             for y in (0..h).step_by(2) {
@@ -172,34 +238,44 @@ fn render(src: &Source, effect: Effect, light: bool) -> image::RgbaImage {
             }
             out
         }
-        Effect::Halftone => halftone(src, light, |_, _| 1.0),
+        Effect::Halftone => halftone(src, light),
     }
 }
 
-/// Every third row darkened (or lifted, on light paper). `roll` shifts the
-/// pattern down, `row_gain` brightens individual rows for the sweep band.
-fn scanlines(src: &Source, light: bool, roll: u32, row_gain: impl Fn(u32) -> f32) -> image::RgbaImage {
+/// The image as is, BGRA.
+fn plain(src: &Source) -> image::RgbaImage {
+    image::RgbaImage::from_fn(src.width, src.height, |x, y| {
+        let [r, g, b, a] = src.rgba[(y * src.width + x) as usize];
+        image::Rgba([b, g, r, a])
+    })
+}
+
+/// How much a scanline darkens (or, on light paper, lifts) its row.
+const SCANLINE_ALPHA: f32 = 0.48;
+
+/// Every third row darkened (or lifted, on light paper).
+fn scanlines(src: &Source, light: bool) -> image::RgbaImage {
     let (w, h) = (src.width, src.height);
     let mut out = image::RgbaImage::new(w, h);
+    let gain = 1.0 - SCANLINE_ALPHA;
     let mut lut = [0u8; 256];
+    for (v, slot) in lut.iter_mut().enumerate() {
+        let v = v as f32;
+        *slot = if light { (v + (255.0 - v) * (1.0 - gain)) as u8 } else { (v * gain) as u8 };
+    }
     for y in 0..h {
-        let gain = if (y + roll).is_multiple_of(3) { 0.52 } else { 1.0 };
-        let extra = row_gain(y);
-        for (v, slot) in lut.iter_mut().enumerate() {
-            let v = v as f32;
-            let c = if light { (v + (255.0 - v) * (1.0 - gain)) as u8 } else { (v * gain) as u8 };
-            *slot = if extra == 1.0 { c } else { (c as f32 * extra).min(255.0) as u8 };
-        }
+        let lined = y.is_multiple_of(3);
         for x in 0..w {
             let [r, g, b, a] = src.rgba[(y * w + x) as usize];
-            out.put_pixel(x, y, image::Rgba([lut[b as usize], lut[g as usize], lut[r as usize], a]));
+            let px = if lined { [lut[b as usize], lut[g as usize], lut[r as usize], a] } else { [b, g, r, a] };
+            out.put_pixel(x, y, image::Rgba(px));
         }
     }
     out
 }
 
-/// 4 px dots sized by luma. `ripple(cx, cy)` scales each dot's radius.
-fn halftone(src: &Source, light: bool, ripple: impl Fn(u32, u32) -> f32) -> image::RgbaImage {
+/// 4 px dots sized by luma.
+fn halftone(src: &Source, light: bool) -> image::RgbaImage {
     let (w, h) = (src.width, src.height);
     let px_at = |x: u32, y: u32| src.rgba[(y * w + x) as usize];
     let paper = if light { 255 } else { 0 };
@@ -210,7 +286,7 @@ fn halftone(src: &Source, light: bool, ripple: impl Fn(u32, u32) -> f32) -> imag
             let cy_ = (y + 2).min(h - 1);
             let luma = src.luma[(cy_ * w + cx_) as usize];
             let luma = if light { 255 - luma } else { luma };
-            let radius = 2.0 * (0.3 + 0.7 * (luma as f32 / 255.0).sqrt()) * ripple(cx_, cy_);
+            let radius = 2.0 * (0.3 + 0.7 * (luma as f32 / 255.0).sqrt());
             let [r, g, b, a] = px_at(cx_, cy_);
             for dy in 0..4.min(h - y) {
                 for dx in 0..4.min(w - x) {
@@ -247,27 +323,17 @@ fn dither([r, g, b, a]: [u8; 4], threshold: u8) -> [u8; 4] {
     [(r as f32 * gain).round() as u8, (g as f32 * gain).round() as u8, (b as f32 * gain).round() as u8, a]
 }
 
-// ------------------------------------------------------------ animation
-//
-// "Animate backdrop" gives each effect its own motion. Everything is derived
-// from the image (its brightest region and two dominant hues), so it works on
-// any wallpaper. Raster motion runs on the background executor at a capped
-// rate; motion the GPU can do alone (zoom, flicker) is a paint parameter.
-
 const BAYER: [[u8; 4]; 4] = [[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]];
 
-/// How the painted hero moves this frame, for motion that needs no raster.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Motion {
-    pub zoom: f32,
-    /// Zoom origin, normalized to the hero.
-    pub center: (f32, f32),
-    pub opacity: f32,
+/// The Bayer threshold of 2x2 cell `(cx, cy)`, 0..1.
+fn bayer(cx: u32, cy: u32) -> f32 {
+    (BAYER[cy as usize % 4][cx as usize % 4] as f32 + 0.5) / 16.0
 }
 
-impl Motion {
-    pub const STILL: Motion = Motion { zoom: 1.0, center: (0.5, 0.5), opacity: 1.0 };
-}
+// ------------------------------------------------------------ analysis
+//
+// Motion is derived from the image (its brightest region and two dominant
+// hues), so it works on any wallpaper.
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Analysis {
@@ -391,20 +457,9 @@ fn hsv(h: f32, s: f32, v: f32) -> [f32; 3] {
     [f(5.0), f(3.0), f(1.0)]
 }
 
-/// One loop of the Dither flight, in seconds. Every time term in the frame is
-/// periodic in it, so the animation repeats without a seam.
-const FLIGHT_LOOP: f32 = 24.0;
-
-/// The aircraft's position in hero pixels at loop phase `s`: lower left to
-/// upper right, off screen at both ends so the wrap is never seen, bending
-/// through the image's focal point so it crosses the subject.
-fn flight_path(a: &Analysis, w: f32, h: f32, s: f32) -> (f32, f32) {
-    let s = s.rem_euclid(1.0);
-    let x = -0.18 + 1.36 * s;
-    let base = |x: f32| 0.82 - 0.6 * x;
-    let over_focal = (a.focal.0 + 0.18) / 1.36;
-    let bend = (a.focal.1 - base(a.focal.0)) * (-((s - over_focal) / 0.22).powi(2)).exp();
-    (x * w, (base(x) + bend + 0.03 * (s * std::f32::consts::TAU).sin()) * h)
+fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
+    let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
 }
 
 fn seg_dist(p: (f32, f32), a: (f32, f32), b: (f32, f32)) -> f32 {
@@ -413,9 +468,143 @@ fn seg_dist(p: (f32, f32), a: (f32, f32), b: (f32, f32)) -> f32 {
     (p.0 - a.0 - ex * k).hypot(p.1 - a.1 - ey * k)
 }
 
-fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
-    let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
-    t * t * (3.0 - 2.0 * t)
+/// Round to the 2 px dither cell, so moving dithered sprites stay on it.
+fn snap2(v: f32) -> f32 {
+    (v / 2.0).round() * 2.0
+}
+
+/// The smallest even size of at least `v` (and 2).
+fn even(v: f32) -> u32 {
+    ((v.max(2.0) / 2.0).ceil() as u32) * 2
+}
+
+/// BGRA of `light` with its brightest channel at full: a dithered "on" cell.
+fn on_color(light: [f32; 3]) -> [u8; 4] {
+    let peak = light[0].max(light[1]).max(light[2]).max(1e-6);
+    let [r, g, b] = light.map(|c| (c / peak * 255.0).round().clamp(0.0, 255.0) as u8);
+    [b, g, r, 255]
+}
+
+// ------------------------------------------------------------ the flight
+//
+// Dither: an aircraft crosses the image toward its brightest point,
+// trailing two luminous contrails in the image's own hues, while slow
+// brightness waves move through the signal.
+
+/// One loop of the Dither flight, in seconds. Every Dither time term is
+/// periodic in it, so the animation repeats without a seam.
+const FLIGHT_LOOP: f32 = 24.0;
+/// The flight's x at path phase 0 and its travel over one loop, in heroes.
+const PATH_X0: f32 = -0.18;
+const PATH_DX: f32 = 1.36;
+/// Speed swing of the eased flight: fastest off screen, slowest over the
+/// middle of the image.
+const FLIGHT_EASE: f32 = 0.2;
+/// How far back along the path (in loop phase) the contrails reach.
+const TRAIL_SPAN: f32 = 0.42;
+/// Age slices of the contrail reveal.
+const TRAIL_SEGMENTS: usize = 12;
+/// Headings the aircraft sprite is pre-rendered at.
+const PLANE_HEADINGS: usize = 48;
+
+/// Path phase at loop phase `ph`: an eased glide, `s(ph + 1) = s(ph) + 1`
+/// and strictly increasing, so the loop has no seam and never reverses.
+fn flight_s(ph: f32) -> f32 {
+    ph + FLIGHT_EASE / TAU * (TAU * ph).sin()
+}
+
+/// The aircraft's position in hero pixels at path phase `s`: lower left to
+/// upper right, off screen at both ends so the wrap is never seen, banking
+/// through the image's focal point so it crosses the subject.
+fn flight_path(a: &Analysis, w: f32, h: f32, s: f32) -> (f32, f32) {
+    let s = s.rem_euclid(1.0);
+    let x = PATH_X0 + PATH_DX * s;
+    let base = |x: f32| 0.82 - 0.6 * x;
+    let over_focal = (a.focal.0 - PATH_X0) / PATH_DX;
+    let bend = (a.focal.1 - base(a.focal.0)) * (-((s - over_focal) / 0.22).powi(2)).exp();
+    (x * w, (base(x) + bend + 0.03 * (s * TAU).sin()) * h)
+}
+
+/// Heading (radians, y down) at path phase `s`.
+fn flight_heading(a: &Analysis, w: f32, h: f32, s: f32) -> f32 {
+    let p = flight_path(a, w, h, s);
+    let ahead = flight_path(a, w, h, s + 0.004);
+    (ahead.1 - p.1).atan2(ahead.0 - p.0)
+}
+
+/// The two pre-rendered headings around `angle` and the weight of the
+/// second, for a crossfade that turns smoothly between them.
+fn heading_frames(angle: f32, n: usize) -> (usize, usize, f32) {
+    let f = angle.rem_euclid(TAU) / TAU * n as f32;
+    let i0 = (f.floor() as usize) % n;
+    (i0, (i0 + 1) % n, f - f.floor())
+}
+
+/// The hero-x spans (in heroes) of contrail slice `seg` at loop phase `ph`
+/// and that slice's age, 0 at the aircraft. A slice straddling the loop
+/// wrap is split in two. x is linear in path phase, so a clip in x reveals
+/// exactly that stretch of the strip.
+fn trail_clips(ph: f32, seg: usize, segments: usize) -> (f32, [(f32, f32); 2]) {
+    let (a0, a1) = (seg as f32 / segments as f32, (seg + 1) as f32 / segments as f32);
+    let s_hi = flight_s(ph - a0 * TRAIL_SPAN);
+    let s_lo = flight_s(ph - a1 * TRAIL_SPAN);
+    let x = |s: f32| PATH_X0 + PATH_DX * s;
+    let (lo, hi) = (s_lo.rem_euclid(1.0), s_hi.rem_euclid(1.0));
+    let age = (a0 + a1) * 0.5;
+    if s_lo.floor() == s_hi.floor() {
+        (age, [(x(lo), x(hi)), (0.0, 0.0)])
+    } else {
+        (age, [(x(lo), x(1.0)), (x(0.0), x(hi))])
+    }
+}
+
+/// Wingtip lights: on for a moment once a second, eased in and out.
+fn blink(t: f32) -> f32 {
+    let f = t.rem_euclid(1.0);
+    smoothstep(0.78, 0.84, f) * (1.0 - smoothstep(0.95, 1.0, f))
+}
+
+/// A brightness wave: a soft band of a pre-dithered gain layer, swept
+/// across the hero.
+struct Wave {
+    /// The brighter (true) or darker gain layer.
+    lift: bool,
+    /// Sweeps along x (true) or y.
+    along_x: bool,
+    /// Seconds per sweep; divides [`FLIGHT_LOOP`].
+    period: f32,
+    /// Band width, in heroes.
+    width: f32,
+    peak: f32,
+    reverse: bool,
+}
+
+const WAVES: [Wave; 3] = [
+    Wave { lift: true, along_x: true, period: 12.0, width: 0.45, peak: 0.9, reverse: false },
+    Wave { lift: true, along_x: false, period: 8.0, width: 0.5, peak: 0.7, reverse: true },
+    Wave { lift: false, along_x: true, period: 24.0, width: 0.6, peak: 0.8, reverse: true },
+];
+const WAVE_STRIPS: usize = 6;
+/// Gains of the wave layers against the base's 1.0.
+const WAVE_LIFT: f32 = 1.16;
+const WAVE_DIM: f32 = 0.84;
+
+/// The band centre at `t`, in heroes: it enters fully off one edge and
+/// leaves fully off the other, so the wrap is invisible.
+fn wave_centre(wave: &Wave, t: f32) -> f32 {
+    let c = -wave.width * 0.5 + (1.0 + wave.width) * (t / wave.period).rem_euclid(1.0);
+    if wave.reverse { 1.0 - c } else { c }
+}
+
+/// Split a band of `width` centred at `centre` into `n` strips, each with
+/// the weight of a sine profile: `(start, end, weight)`, in heroes.
+fn band_strips(centre: f32, width: f32, n: usize) -> impl Iterator<Item = (f32, f32, f32)> {
+    let step = width / n as f32;
+    let start = centre - width * 0.5;
+    (0..n).map(move |i| {
+        let lo = start + step * i as f32;
+        (lo, lo + step, (std::f32::consts::PI * (i as f32 + 0.5) / n as f32).sin())
+    })
 }
 
 /// Light per 2x2 dither cell, RGB.
@@ -461,15 +650,14 @@ impl LightCells {
     }
 }
 
-/// One 2x2 dither cell's source colour, prepared once per image so a frame
-/// only scales it by the wave gain and compares it with the threshold.
+/// One 2x2 dither cell's source colour.
 struct DitherCell {
     /// RGB, 0..1.
     rgb: [f32; 3],
     /// Brightest channel, 0..1.
     peak: f32,
     /// BGRA with the brightest channel normalised to 255: the "on" colour.
-    /// A uniform gain cancels out of it, so it never changes per frame.
+    /// A uniform gain cancels out of it.
     on: [u8; 4],
     alpha: u8,
 }
@@ -493,154 +681,496 @@ fn dither_cells(src: &Source) -> Vec<DitherCell> {
     out
 }
 
-/// The Dither flight: an aircraft crosses the image toward its brightest
-/// point, trailing two luminous contrails in the image's own hues, while
-/// slow brightness waves move through the signal. The whole frame is
-/// re-dithered each time, but the Bayer grid never moves.
-fn dither_frame(src: &Source, table: &[DitherCell], a: &Analysis, t: f32) -> image::RgbaImage {
-    use std::f32::consts::TAU;
-    let (w, h) = (src.width, src.height);
+/// Paint one colour per 2x2 cell; `None` leaves the cell transparent.
+fn cell_image(w: u32, h: u32, mut cell: impl FnMut(u32, u32) -> Option<[u8; 4]>) -> image::RgbaImage {
+    let mut out = image::RgbaImage::new(w, h);
+    for cy in 0..h.div_ceil(2) {
+        for cx in 0..w.div_ceil(2) {
+            let Some(px) = cell(cx, cy) else { continue };
+            for y in cy * 2..(cy * 2 + 2).min(h) {
+                for x in cx * 2..(cx * 2 + 2).min(w) {
+                    out.put_pixel(x, y, image::Rgba(px));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The dithered image at `gain`, keeping only the cells that differ from
+/// the base (gain 1): a wave mask that, laid over the base, re-dithers it
+/// brighter or darker.
+fn dither_shift(src: &Source, cells: &[DitherCell], gain: f32) -> image::RgbaImage {
+    let gw = src.width.div_ceil(2);
+    cell_image(src.width, src.height, |cx, cy| {
+        let cell = &cells[(cy * gw + cx) as usize];
+        let threshold = bayer(cx, cy);
+        let (was, now) = (cell.peak > threshold, cell.peak * gain > threshold);
+        if was == now {
+            return None;
+        }
+        Some(if now {
+            cell.on
+        } else {
+            let [r, g, b] = cell.rgb.map(|v| (v * gain * 0.08 * 255.0).round() as u8);
+            [b, g, r, cell.alpha]
+        })
+    })
+}
+
+/// Dither a light field (no base under it): on cells at full brightness in
+/// their own colour, off cells transparent.
+fn dither_light(w: u32, h: u32, light: impl Fn(u32, u32) -> [f32; 3]) -> image::RgbaImage {
+    cell_image(w, h, |cx, cy| {
+        let l = light(cx, cy);
+        let peak = l[0].max(l[1]).max(l[2]).min(1.0);
+        (peak > bayer(cx, cy)).then(|| on_color(l))
+    })
+}
+
+/// The aircraft at every heading: body along the heading, wings and
+/// tailplane across, and a soft glow, dithered. Square, `side` px.
+fn plane_sheet(h: u32) -> (Vec<image::RgbaImage>, u32) {
+    let hf = h as f32;
+    let side = even(0.17 * hf).max(16);
+    let c = side as f32 * 0.5;
+    let frames = (0..PLANE_HEADINGS)
+        .map(|i| {
+            let angle = i as f32 / PLANE_HEADINGS as f32 * TAU;
+            let (ty, tx) = angle.sin_cos();
+            let (nx, ny) = (-ty, tx);
+            let at = |along: f32, across: f32| ((tx * along + nx * across) * hf, (ty * along + ny * across) * hf);
+            let parts = [
+                (at(-0.026, 0.0), at(0.02, 0.0)),
+                (at(-0.003, -0.032), at(-0.003, 0.032)),
+                (at(-0.026, -0.011), at(-0.026, 0.011)),
+            ];
+            dither_light(side, side, |cx, cy| {
+                let q = (cx as f32 * 2.0 + 1.0 - c, cy as f32 * 2.0 + 1.0 - c);
+                let d = parts.iter().map(|(a, b)| seg_dist(q, *a, *b)).fold(f32::MAX, f32::min);
+                let r2 = (q.0 * q.0 + q.1 * q.1) / (hf * hf);
+                let body = smoothstep(0.005 * hf, 0.002 * hf, d) + 0.4 * (-r2 / 0.002).exp();
+                [0.9 * body, 0.92 * body, body]
+            })
+        })
+        .collect();
+    (frames, side)
+}
+
+/// Port (red) and starboard (green) wingtip lights, dithered. Square, `side` px.
+fn light_sheet(h: u32) -> (Vec<image::RgbaImage>, u32) {
+    let hf = h as f32;
+    let side = even(0.04 * hf).max(8);
+    let c = side as f32 * 0.5;
+    let frames = [[1.0, 0.2, 0.15], [0.2, 1.0, 0.4]]
+        .map(|tint: [f32; 3]| {
+            dither_light(side, side, |cx, cy| {
+                let q = (cx as f32 * 2.0 + 1.0 - c, cy as f32 * 2.0 + 1.0 - c);
+                let tip = (-(q.0 * q.0 + q.1 * q.1) / (hf * hf) / 0.00004).exp();
+                tint.map(|v| v * tip)
+            })
+        })
+        .into();
+    (frames, side)
+}
+
+/// The twin contrails along the whole flight path at one `age` (tight and
+/// bright when fresh, spread and soft when old), dithered on the base's
+/// Bayer grid. Cropped to the rows they touch: `(image, top row)`.
+fn trail_strip(a: &Analysis, w: u32, h: u32, age: f32, amp: f32) -> (image::RgbaImage, u32) {
     let (wf, hf) = (w as f32, h as f32);
-    let ph = (t / FLIGHT_LOOP).rem_euclid(1.0);
     let (gw, gh) = (w.div_ceil(2), h.div_ceil(2));
     let mut cells = LightCells { gw, gh, rgb: vec![[0.0; 3]; (gw * gh) as usize] };
-
-    // Twin trails: 44 samples back along the path, drifting apart and
-    // widening with age, shimmering as they fade.
-    // Previous sample: trail A point, trail B point, wrapped path phase.
-    type Sample = ((f32, f32), (f32, f32), f32);
-    let mut prev: Option<Sample> = None;
-    for i in 0..44 {
-        let age = i as f32 / 43.0;
-        let s = ph - age * 0.42;
+    // Path phases that cross the hero (x in 0..w), with a margin.
+    let (s0, s1) = ((-PATH_X0 - 0.03) / PATH_DX, (1.0 - PATH_X0 + 0.03) / PATH_DX);
+    let samples = 240;
+    let spread = (0.009 + 0.04 * age) * hf;
+    let width = (0.006 + 0.02 * age) * hf;
+    let mut prev: Option<((f32, f32), (f32, f32))> = None;
+    for i in 0..=samples {
+        let s = s0 + (s1 - s0) * i as f32 / samples as f32;
         let c0 = flight_path(a, wf, hf, s);
         let c1 = flight_path(a, wf, hf, s + 0.004);
         let len = (c1.0 - c0.0).hypot(c1.1 - c0.1).max(1e-3);
         let (nx, ny) = (-(c1.1 - c0.1) / len, (c1.0 - c0.0) / len);
-        let spread = (0.009 + 0.04 * age) * hf;
         let (pa, pb) = ((c0.0 + nx * spread, c0.1 + ny * spread), (c0.0 - nx * spread, c0.1 - ny * spread));
-        let s_wrapped = s.rem_euclid(1.0);
-        // Skip the segment that would join both ends of the wrap.
-        if let Some((qa, qb, qs)) = prev
-            && (s_wrapped - qs).abs() < 0.5
-        {
-            let width = (0.006 + 0.02 * age) * hf;
-            let amp = (1.0 - age).powi(2) * (0.8 + 0.2 * (age * 48.0 - ph * TAU * 12.0).sin());
+        if let Some((qa, qb)) = prev {
             cells.trail(qa, pa, width, amp, a.hues[0]);
             cells.trail(qb, pb, width, amp, a.hues[1]);
         }
-        prev = Some((pa, pb, s_wrapped));
+        prev = Some((pa, pb));
     }
-
-    // The aircraft: body along its heading, wings and tailplane across,
-    // a soft glow, and wingtip lights blinking once a second.
-    let p = flight_path(a, wf, hf, ph);
-    let ahead = flight_path(a, wf, hf, ph + 0.004);
-    let len = (ahead.0 - p.0).hypot(ahead.1 - p.1).max(1e-3);
-    let (tx, ty) = ((ahead.0 - p.0) / len, (ahead.1 - p.1) / len);
-    let (nx, ny) = (-ty, tx);
-    let at = |along: f32, across: f32| (p.0 + (tx * along + nx * across) * hf, p.1 + (ty * along + ny * across) * hf);
-    let parts = [
-        (at(-0.026, 0.0), at(0.02, 0.0)),
-        (at(-0.003, -0.032), at(-0.003, 0.032)),
-        (at(-0.026, -0.011), at(-0.026, 0.011)),
-    ];
-    let blink = if (ph * FLIGHT_LOOP).fract() > 0.82 { 1.0 } else { 0.0 };
-    let (port, starboard) = (at(-0.003, 0.032), at(-0.003, -0.032));
-    let reach = 0.08 * hf;
-    cells.each(p, p, reach, |q, light| {
-        let d = parts.iter().map(|(a, b)| seg_dist(q, *a, *b)).fold(f32::MAX, f32::min);
-        let r2 = ((q.0 - p.0).powi(2) + (q.1 - p.1).powi(2)) / (hf * hf);
-        let body = smoothstep(0.005 * hf, 0.002 * hf, d) + 0.4 * (-r2 / 0.002).exp();
-        let tip = |c: (f32, f32)| blink * (-((q.0 - c.0).powi(2) + (q.1 - c.1).powi(2)) / (hf * hf) / 0.00004).exp();
-        let (red, green) = (tip(port), tip(starboard));
-        let add = [0.9 * body + red + 0.2 * green, 0.92 * body + 0.2 * red + green, body + 0.15 * red + 0.4 * green];
-        for (l, v) in light.iter_mut().zip(add) {
-            *l += v;
-        }
+    let lit = |cy: u32| (0..gw).any(|cx| cells.rgb[(cy * gw + cx) as usize].iter().any(|&v| v > 1.0 / 32.0));
+    let first = (0..gh).find(|&cy| lit(cy)).unwrap_or(0);
+    let last = (0..gh).rev().find(|&cy| lit(cy)).unwrap_or(0);
+    // A multiple of 8 rows keeps the strip on the base's Bayer phase.
+    let top = (first * 2) / 8 * 8;
+    let bottom = ((last + 1) * 2).clamp(top + 2, h.max(top + 2));
+    let strip = dither_light(w, bottom - top, |cx, cy| {
+        let cy = cy + top / 2;
+        if cy >= gh { [0.0; 3] } else { cells.rgb[(cy * gw + cx) as usize] }
     });
+    (strip, top)
+}
 
-    // Brightness waves: sin(kx·x + ky·y − φ) split into per-column and
-    // per-row terms, so each cell costs a few multiplies.
-    let wave = |kx: f32, ky: f32, phase: f32| {
-        let cols: Vec<(f32, f32)> = (0..gw).map(|cx| ((cx * 2 + 1) as f32 / hf * kx).sin_cos()).collect();
-        let rows: Vec<(f32, f32)> =
-            (0..gh).map(|cy| ((1.0 - (cy * 2 + 1) as f32 / hf) * ky + phase).sin_cos()).collect();
-        (cols, rows)
-    };
-    let (cols_a, rows_a) = wave(5.0, 2.75, -ph * TAU * 2.0);
-    let (cols_b, rows_b) = wave(-1.8, 3.0, ph * TAU);
+// ------------------------------------------------------------ the ripple
 
-    let mut out = vec![0u8; (w * h * 4) as usize];
-    for cy in 0..gh {
-        let (y, (ras, rac), (rbs, rbc)) = (cy * 2, rows_a[cy as usize], rows_b[cy as usize]);
-        let bayer = &BAYER[cy as usize % 4];
-        for cx in 0..gw {
-            let x = cx * 2;
-            let (cas, cac) = cols_a[cx as usize];
-            let (cbs, cbc) = cols_b[cx as usize];
-            let wa = 0.5 + 0.5 * (cas * rac + cac * ras);
-            let wb = 0.5 + 0.5 * (cbs * rbc + cbc * rbs);
-            let gain = 0.86 + 0.22 * wa * wb;
-            let i = (cy * gw + cx) as usize;
-            let cell = &table[i];
-            let light = cells.rgb[i];
-            let threshold = (bayer[cx as usize % 4] as f32 + 0.5) / 16.0;
-            // The `dither` rule: brightest channel against the Bayer
-            // threshold; on cells reach full brightness, off cells keep 8%.
-            let peak_light = light[0].max(light[1]).max(light[2]).min(1.0);
-            let px = if peak_light <= 0.0 {
-                if cell.peak * gain > threshold {
-                    cell.on
-                } else {
-                    let [r, g, b] = cell.rgb.map(|v| (v * gain * 0.08 * 255.0).round() as u8);
-                    [b, g, r, cell.alpha]
+/// Rings in flight at once, and the seconds each lives.
+const RINGS: usize = 3;
+const RING_PERIOD: f32 = 6.0;
+const RING_PEAK: f32 = 0.55;
+
+/// A ring of halftone dots in the image's lead hue (ink on light paper),
+/// dot size following a soft band profile. Square, `side` px; the ring sits
+/// at `0.36 * side`.
+fn ring_sprite(reach: f32, hue: [f32; 3], light: bool) -> (image::RgbaImage, u32) {
+    let side = even(reach * 0.7).clamp(32, 1024);
+    let s = side as f32;
+    let (radius, sigma) = (0.36 * s, 0.045 * s);
+    let ink = if light { hue.map(|c| c * 0.42) } else { hue };
+    let [r, g, b] = ink.map(|c| (c * 255.0).round().clamp(0.0, 255.0) as u8);
+    let mut out = image::RgbaImage::new(side, side);
+    for y in (0..side).step_by(4) {
+        for x in (0..side).step_by(4) {
+            let d0 = (x as f32 + 1.5 - s * 0.5).hypot(y as f32 + 1.5 - s * 0.5);
+            let band = (-((d0 - radius) / sigma).powi(2)).exp();
+            if band < 0.03 {
+                continue;
+            }
+            let dot = 1.9 * band;
+            for dy in 0..4.min(side - y) {
+                for dx in 0..4.min(side - x) {
+                    let d = (dx as f32 - 1.5).hypot(dy as f32 - 1.5);
+                    let cov = (dot + 0.5 - d).clamp(0.0, 1.0);
+                    if cov > 0.0 {
+                        out.put_pixel(x + dx, y + dy, image::Rgba([b, g, r, (cov * 255.0).round() as u8]));
+                    }
                 }
-            } else {
-                // Wave gain, then the light screened on top, all in 0..1.
-                let c = [0, 1, 2].map(|k| 1.0 - (1.0 - (cell.rgb[k] * gain).min(1.0)) * (1.0 - light[k].min(1.0)));
-                let peak = c[0].max(c[1]).max(c[2]);
-                let scale = if peak > threshold { 255.0 / peak.max(1.0 / 255.0) } else { 0.08 * 255.0 };
-                let [r, g, b] = c.map(|v| (v * scale).round().min(255.0) as u8);
-                // Light shows even over transparent parts of the art.
-                [b, g, r, cell.alpha.max((peak_light * 255.0) as u8)]
-            };
-            let pair = [px[0], px[1], px[2], px[3], px[0], px[1], px[2], px[3]];
-            let span = (2.min(w - x) * 4) as usize;
-            for dy in 0..2.min(h - y) {
-                let at = (((y + dy) * w + x) * 4) as usize;
-                out[at..at + span].copy_from_slice(&pair[..span]);
             }
         }
     }
-    image::RgbaImage::from_raw(w, h, out).unwrap_or_else(|| image::RgbaImage::new(w, h))
+    (out, side)
 }
 
-/// One animated frame at `t` seconds, or `None` when the effect moves on
-/// the GPU only (Original).
-fn render_frame(p: &Prepared, t: f32) -> Option<image::RgbaImage> {
-    let (w, h) = (p.src.width as f32, p.src.height as f32);
-    match p.effect {
-        Effect::None => None,
-        Effect::Dither => Some(dither_frame(&p.src, &p.cells, &p.analysis, t)),
-        Effect::Halftone => Some(halftone(&p.src, p.light, |cx_, cy_| {
-            let rel = ((cx_ as f32 / w - p.analysis.focal.0) * w / h, cy_ as f32 / h - p.analysis.focal.1);
-            1.0 + 0.15 * (rel.0.hypot(rel.1) * 16.0 - t * 2.2).sin()
-        })),
-        Effect::Scanlines => {
-            let band_pos = (t / 6.0).fract() * 1.3 - 0.15;
-            Some(scanlines(&p.src, p.light, (t * 8.0) as u32 % 3, |y| {
-                1.0 + 0.18 * (-((y as f32 / h - band_pos) / 0.05).powi(2)).exp()
-            }))
+/// Ring radius (in units of `reach`, the focal point's farthest corner) and
+/// opacity at life fraction `u`: it decelerates outward, fading in fast and
+/// out slowly, invisible at both ends of its life.
+fn ring_state(u: f32) -> (f32, f32) {
+    let u = u.clamp(0.0, 1.0);
+    let radius = 0.03 + 1.05 * motion::EASE_OUT.eval(u);
+    (radius, RING_PEAK * smoothstep(0.0, 0.12, u) * (1.0 - u).powi(2))
+}
+
+// ------------------------------------------------------------ the CRT
+
+const BAND_PEAK: f32 = 0.14;
+const VIGNETTE_DARK: f32 = 0.42;
+const VIGNETTE_LIGHT: f32 = 0.2;
+
+/// Which third row is lined at `t`: the roll steps 8 rows a second, as the
+/// rasterized roll did.
+fn scan_roll(t: f32) -> u32 {
+    ((t.max(0.0) * 8.0) as u32) % 3
+}
+
+/// The sweep band's centre at `t`, in heroes: once down every 6 s.
+fn band_position(t: f32) -> f32 {
+    (t / 6.0).rem_euclid(1.0) * 1.3 - 0.15
+}
+
+/// Every third row, as a 4 px wide strip stretched across the hero: black
+/// (or white on light paper) at the scanline strength.
+fn lines_strip(h: u32, light: bool) -> image::RgbaImage {
+    let v = if light { 255 } else { 0 };
+    let alpha = (SCANLINE_ALPHA * 255.0).round() as u8;
+    image::RgbaImage::from_fn(4, h + 3, |_, y| image::Rgba([v, v, v, if y % 3 == 0 { alpha } else { 0 }]))
+}
+
+/// The soft sweep band, a vertical gaussian, stretched across the hero.
+fn band_sprite() -> image::RgbaImage {
+    image::RgbaImage::from_fn(4, 64, |_, y| {
+        let v = (y as f32 + 0.5) / 64.0 - 0.5;
+        image::Rgba([255, 255, 255, ((-(v / 0.16).powi(2)).exp() * 255.0).round() as u8])
+    })
+}
+
+/// Darkened corners, stretched over the hero.
+fn vignette(light: bool) -> image::RgbaImage {
+    let strength = if light { VIGNETTE_LIGHT } else { VIGNETTE_DARK };
+    image::RgbaImage::from_fn(64, 64, |x, y| {
+        let (u, v) = ((x as f32 + 0.5) / 32.0 - 1.0, (y as f32 + 0.5) / 32.0 - 1.0);
+        let r = u.hypot(v) / std::f32::consts::SQRT_2;
+        image::Rgba([0, 0, 0, (strength * smoothstep(0.35, 1.0, r).powi(2) * 255.0).round() as u8])
+    })
+}
+
+// ------------------------------------------------------------ layers
+
+/// Everything an animated hero is drawn from, built once per image, effect
+/// and size on the background executor. Frames only place these.
+struct Layers {
+    effect: Effect,
+    width: u32,
+    height: u32,
+    analysis: Analysis,
+    /// The still (Scanlines: the image without lines, which roll on top).
+    base: Arc<RenderImage>,
+    kind: Kind,
+}
+
+enum Kind {
+    Original,
+    Dither {
+        lift: Arc<RenderImage>,
+        dim: Arc<RenderImage>,
+        /// Fresh and dissipated contrails, and the row the strips start at.
+        trails: [Arc<RenderImage>; 2],
+        trail_top: [u32; 2],
+        /// One frame per heading.
+        plane: Arc<RenderImage>,
+        plane_side: u32,
+        /// Frame 0 port, frame 1 starboard.
+        lights: Arc<RenderImage>,
+        light_side: u32,
+    },
+    Halftone {
+        ring: Arc<RenderImage>,
+        ring_side: u32,
+        /// Distance from the focal point to the farthest corner, in px.
+        reach: f32,
+    },
+    Scanlines {
+        lines: Arc<RenderImage>,
+        band: Arc<RenderImage>,
+        vignette: Arc<RenderImage>,
+    },
+}
+
+impl Layers {
+    fn build(src: &Source, effect: Effect, light: bool) -> Self {
+        let analysis = analyze(src);
+        let (w, h) = (src.width, src.height);
+        let base = raster(if effect == Effect::Scanlines { plain(src) } else { render(src, effect, light) });
+        let kind = match effect {
+            Effect::None => Kind::Original,
+            Effect::Dither => {
+                let cells = dither_cells(src);
+                let (fresh, fresh_top) = trail_strip(&analysis, w, h, 0.12, 1.0);
+                let (old, old_top) = trail_strip(&analysis, w, h, 0.7, 0.8);
+                let (plane, plane_side) = plane_sheet(h);
+                let (lights, light_side) = light_sheet(h);
+                Kind::Dither {
+                    lift: raster(dither_shift(src, &cells, WAVE_LIFT)),
+                    dim: raster(dither_shift(src, &cells, WAVE_DIM)),
+                    trails: [raster(fresh), raster(old)],
+                    trail_top: [fresh_top, old_top],
+                    plane: raster_frames(plane),
+                    plane_side,
+                    lights: raster_frames(lights),
+                    light_side,
+                }
+            }
+            Effect::Halftone => {
+                let (fx, fy) = (analysis.focal.0 * w as f32, analysis.focal.1 * h as f32);
+                let reach = [(0.0, 0.0), (w as f32, 0.0), (0.0, h as f32), (w as f32, h as f32)]
+                    .into_iter()
+                    .map(|(x, y)| (x - fx).hypot(y - fy))
+                    .fold(1.0, f32::max);
+                let (ring, ring_side) = ring_sprite(reach, analysis.hues[0], light);
+                Kind::Halftone { ring: raster(ring), ring_side, reach }
+            }
+            Effect::Scanlines => Kind::Scanlines {
+                lines: raster(lines_strip(h, light)),
+                band: raster(band_sprite()),
+                vignette: raster(vignette(light)),
+            },
+        };
+        Layers { effect, width: w, height: h, analysis, base, kind }
+    }
+
+    /// Every texture, for freeing them from the atlas.
+    fn images(&self) -> Vec<Arc<RenderImage>> {
+        let mut out = vec![self.base.clone()];
+        match &self.kind {
+            Kind::Original => {}
+            Kind::Dither { lift, dim, trails, plane, lights, .. } => {
+                out.extend([lift, dim, &trails[0], &trails[1], plane, lights].map(Arc::clone))
+            }
+            Kind::Halftone { ring, .. } => out.push(ring.clone()),
+            Kind::Scanlines { lines, band, vignette } => out.extend([lines, band, vignette].map(Arc::clone)),
+        }
+        out
+    }
+}
+
+// ------------------------------------------------------------ composition
+
+/// One texture placed in hero pixels (the base raster's space).
+#[derive(Clone)]
+struct Sprite {
+    image: Arc<RenderImage>,
+    frame: usize,
+    /// x, y, width, height.
+    rect: [f32; 4],
+    /// Optional clip, x0, y0, x1, y1.
+    clip: Option<[f32; 4]>,
+}
+
+impl Sprite {
+    fn new(image: &Arc<RenderImage>, frame: usize, rect: [f32; 4]) -> Self {
+        Sprite { image: image.clone(), frame, rect, clip: None }
+    }
+
+    fn clipped(mut self, clip: [f32; 4]) -> Self {
+        self.clip = Some(clip);
+        self
+    }
+}
+
+/// Sprites that share one opacity.
+struct Group {
+    opacity: f32,
+    sprites: Vec<Sprite>,
+}
+
+/// What the hero draws this frame.
+struct Composition {
+    motion: Motion,
+    /// The base raster's size, which the sprites are placed in.
+    size: (f32, f32),
+    groups: Vec<Group>,
+}
+
+impl Composition {
+    fn still(image: Arc<RenderImage>) -> Self {
+        let s = image.size(0);
+        let (w, h) = ((s.width.0 as f32).max(1.0), (s.height.0 as f32).max(1.0));
+        Composition {
+            motion: Motion::STILL,
+            size: (w, h),
+            groups: vec![Group { opacity: 1.0, sprites: vec![Sprite::new(&image, 0, [0.0, 0.0, w, h])] }],
+        }
+    }
+
+    fn push(&mut self, opacity: f32, sprites: impl IntoIterator<Item = Sprite>) {
+        let opacity = opacity.clamp(0.0, 1.0);
+        if opacity < 0.004 {
+            return;
+        }
+        let sprites: Vec<Sprite> = sprites.into_iter().collect();
+        if !sprites.is_empty() {
+            self.groups.push(Group { opacity, sprites });
         }
     }
 }
 
-/// GPU-side motion at `t`: Ken Burns for Original, flicker for Scanlines.
+/// Place the layers for clock time `t`. `intro` (0..1) fades the moving
+/// overlays in when the animation starts. Pure: no rasterizing, only
+/// rects, clips and opacities over textures that already exist.
+fn compose(layers: &Layers, t: f32, intro: f32) -> Composition {
+    let (w, h) = (layers.width as f32, layers.height as f32);
+    let a = &layers.analysis;
+    let mut c = Composition { motion: motion(layers.effect, a, t), size: (w, h), groups: Vec::new() };
+    c.push(1.0, [Sprite::new(&layers.base, 0, [0.0, 0.0, w, h])]);
+    match &layers.kind {
+        Kind::Original => {}
+        Kind::Dither { lift, dim, trails, trail_top, plane, plane_side, lights, light_side } => {
+            let ph = (t / FLIGHT_LOOP).rem_euclid(1.0);
+            // Waves: strips of a re-dithered gain layer, swept by offset.
+            for wave in &WAVES {
+                let image = if wave.lift { lift } else { dim };
+                for (lo, hi, weight) in band_strips(wave_centre(wave, t), wave.width, WAVE_STRIPS) {
+                    let clip = if wave.along_x {
+                        [snap2(lo * w), 0.0, snap2(hi * w), h]
+                    } else {
+                        [0.0, snap2(lo * h), w, snap2(hi * h)]
+                    };
+                    c.push(wave.peak * weight * intro, [Sprite::new(image, 0, [0.0, 0.0, w, h]).clipped(clip)]);
+                }
+            }
+            // Contrails: the strips revealed slice by slice behind the
+            // aircraft, fading with age as the fresh trail dissipates.
+            for seg in 0..TRAIL_SEGMENTS {
+                let (age, spans) = trail_clips(ph, seg, TRAIL_SEGMENTS);
+                let fade = (1.0 - age).powi(2) * (0.8 + 0.2 * (age * 48.0 - ph * TAU * 12.0).sin());
+                let fresh = 1.0 - smoothstep(0.15, 0.75, age);
+                for (v, weight) in [(0, fresh), (1, 1.0 - fresh)] {
+                    let (image, top) = (&trails[v], trail_top[v] as f32);
+                    let rows = trails[v].size(0).height.0 as f32;
+                    let sprites = spans
+                        .iter()
+                        .filter(|(x0, x1)| x1 - x0 > 1e-4)
+                        .map(|&(x0, x1)| Sprite::new(image, 0, [0.0, top, w, rows]).clipped([x0 * w, 0.0, x1 * w, h]));
+                    c.push(fade * weight * intro, sprites);
+                }
+            }
+            // The aircraft: translate along the eased path, turn by
+            // crossfading the two nearest pre-rendered headings.
+            let s = flight_s(ph);
+            let p = flight_path(a, w, h, s);
+            let heading = flight_heading(a, w, h, s);
+            let (i0, i1, mix) = heading_frames(heading, PLANE_HEADINGS);
+            let side = *plane_side as f32;
+            let rect = [snap2(p.0 - side * 0.5), snap2(p.1 - side * 0.5), side, side];
+            c.push((1.0 - mix) * intro, [Sprite::new(plane, i0, rect)]);
+            c.push(mix * intro, [Sprite::new(plane, i1, rect)]);
+            // Wingtip lights, blinking once a second.
+            let (ty, tx) = heading.sin_cos();
+            let at =
+                |along: f32, across: f32| (p.0 + (tx * along - ty * across) * h, p.1 + (ty * along + tx * across) * h);
+            let side = *light_side as f32;
+            let light = |frame: usize, q: (f32, f32)| {
+                Sprite::new(lights, frame, [snap2(q.0 - side * 0.5), snap2(q.1 - side * 0.5), side, side])
+            };
+            c.push(blink(t) * intro, [light(0, at(-0.003, 0.032)), light(1, at(-0.003, -0.032))]);
+        }
+        Kind::Halftone { ring, ring_side, reach } => {
+            let (fx, fy) = (a.focal.0 * w, a.focal.1 * h);
+            let ring_radius = 0.36 * *ring_side as f32;
+            for i in 0..RINGS {
+                let u = (t / RING_PERIOD + i as f32 / RINGS as f32).rem_euclid(1.0);
+                let (radius, opacity) = ring_state(u);
+                let side = *ring_side as f32 * radius * reach / ring_radius;
+                c.push(opacity * intro, [Sprite::new(ring, 0, [fx - side * 0.5, fy - side * 0.5, side, side])]);
+            }
+        }
+        Kind::Scanlines { lines, band, vignette } => {
+            let full = [0.0, 0.0, w, h];
+            // Rows y with (y + roll) % 3 == 0 are lined.
+            let offset = ((3 - scan_roll(t)) % 3) as f32;
+            c.push(1.0, [Sprite::new(lines, 0, [0.0, offset - 3.0, w, h + 3.0]).clipped(full)]);
+            let y = band_position(t) * h;
+            c.push(BAND_PEAK * intro, [Sprite::new(band, 0, [0.0, y - 0.15 * h, w, 0.3 * h]).clipped(full)]);
+            c.push(intro, [Sprite::new(vignette, 0, full)]);
+        }
+    }
+    c
+}
+
+/// How the whole painted hero moves this frame: zoom and opacity.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Motion {
+    pub zoom: f32,
+    /// Zoom origin, normalized to the hero.
+    pub center: (f32, f32),
+    pub opacity: f32,
+}
+
+impl Motion {
+    pub const STILL: Motion = Motion { zoom: 1.0, center: (0.5, 0.5), opacity: 1.0 };
+}
+
+/// Ken Burns period for Original, in seconds.
+const PUSH_PERIOD: f32 = 20.0;
+
+/// Paint-transform motion at `t`: Ken Burns for Original, flicker for
+/// Scanlines.
 fn motion(effect: Effect, a: &Analysis, t: f32) -> Motion {
     match effect {
         Effect::None => {
-            let k = 0.5 - 0.5 * (std::f32::consts::TAU * t / 20.0).cos();
+            // Out and back along an eased drift toward the focal point.
+            let tri = 1.0 - (2.0 * (t / PUSH_PERIOD).rem_euclid(1.0) - 1.0).abs();
+            let k = motion::EASE_IN_OUT.eval(tri);
             Motion {
                 zoom: 1.0 + 0.06 * k,
                 center: (0.5 + (a.focal.0 - 0.5) * k, 0.5 + (a.focal.1 - 0.5) * k),
@@ -654,186 +1184,291 @@ fn motion(effect: Effect, a: &Analysis, t: f32) -> Motion {
     }
 }
 
-/// Everything decoded once per image, effect and size.
-struct Prepared {
-    effect: Effect,
-    light: bool,
-    src: Source,
-    analysis: Analysis,
-    /// Dither only: per-cell source colours.
-    cells: Vec<DitherCell>,
-    still: Arc<RenderImage>,
+// ------------------------------------------------------------ the loop
+
+/// Longest step one frame may advance the clock, so a stall or a resume
+/// never jumps the scene.
+const MAX_STEP: f32 = 0.1;
+/// The clock wraps at a common multiple of every loop period (24 s flight,
+/// 20 s push, 6 s ripple and band, 3/8 s roll), so long sessions keep
+/// full float precision without a seam.
+const CLOCK_WRAP: f32 = 120.0;
+
+/// Animation time that only advances while the loop runs, so pausing
+/// (background, reduced motion) and resuming continue where it left off.
+#[derive(Debug, Default, Clone, Copy)]
+struct Clock {
+    /// Scene time, wrapped.
+    t: f32,
+    /// Unwrapped running time, for the intro.
+    elapsed: f32,
+    last: Option<Instant>,
 }
 
-struct Anim {
+impl Clock {
+    /// Advance to `now` if running (by real time over `scale`), else park.
+    fn advance(&mut self, now: Instant, running: bool, scale: f32) -> f32 {
+        if running {
+            if let Some(last) = self.last {
+                let dt = now.saturating_duration_since(last).as_secs_f32().min(MAX_STEP) / scale.max(0.01);
+                self.t = (self.t + dt).rem_euclid(CLOCK_WRAP);
+                self.elapsed += dt;
+            }
+            self.last = Some(now);
+        } else {
+            self.last = None;
+        }
+        self.t
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct Key {
     path: PathBuf,
     effect: Effect,
     light: bool,
     target: (u32, u32),
+}
+
+struct Anim {
+    /// `None` once home was left: only `still` is kept.
+    key: Option<Key>,
     generation: u64,
-    prepared: Option<Arc<Prepared>>,
-    frame: Option<Arc<RenderImage>>,
-    /// Frames replaced since the last paint, to free from the sprite atlas.
-    retired: Vec<Arc<RenderImage>>,
-    /// A decode, timer or frame job is in flight.
-    busy: bool,
-    start: Instant,
+    layers: Option<Arc<Layers>>,
+    /// Shown until `layers` land: the previous image, or the one still
+    /// kept after leaving home.
+    still: Option<Arc<RenderImage>>,
+    clock: Clock,
+    /// Clock `elapsed` when the layers were first drawn.
+    shown_at: Option<f32>,
 }
 
 static ANIM: OnceLock<Mutex<Option<Anim>>> = OnceLock::new();
 static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// The animated hero for this frame and its paint motion, or `None` while
-/// the image decodes. It keeps the next frame coming: each finished frame
-/// refreshes the window, which calls this again.
-pub fn animate(
-    path: &Path,
-    effect: Effect,
-    light: bool,
-    target: (f32, f32),
-    window: &mut Window,
-    cx: &mut App,
-) -> Option<(Arc<RenderImage>, Motion)> {
-    let light = light && matches!(effect, Effect::Halftone | Effect::Scanlines);
-    let step = |v: f32| ((v.max(64.0) / 64.0).ceil() as u32 * 64).min(8192);
-    let target = (step(target.0), step(target.1));
+/// Make the animation state match `key`, building its layers on the
+/// background executor. True when there is something to show.
+fn sync_animation(key: Key, cx: &mut App) -> bool {
     let slot = ANIM.get_or_init(|| Mutex::new(None));
-    let mut guard = slot.lock().ok()?;
-
-    let same =
-        guard.as_ref().is_some_and(|a| a.path == path && a.effect == effect && a.light == light && a.target == target);
-    if !same {
-        // Keep the old picture on screen until the new image is ready.
-        let (retired, carried) = match guard.take() {
-            Some(old) => {
-                let still = old.prepared.map(|p| p.still.clone());
-                match old.frame {
-                    Some(frame) => (old.retired.into_iter().chain(still).collect(), Some(frame)),
-                    None => (old.retired, still),
-                }
-            }
-            None => (Vec::new(), None),
-        };
+    let Ok(mut guard) = slot.lock() else { return false };
+    if guard.as_ref().is_none_or(|a| a.key.as_ref() != Some(&key)) {
+        // Keep the old picture on screen until the new layers are ready.
+        let mut gone = Vec::new();
+        let still = guard.take().and_then(|old| {
+            let still = old.layers.as_ref().map(|l| l.base.clone()).or_else(|| old.still.clone());
+            gone.extend(old.layers.iter().flat_map(|l| l.images()));
+            gone.extend(old.still);
+            gone.retain(|i| still.as_ref().is_none_or(|s| !Arc::ptr_eq(i, s)));
+            still
+        });
+        retire(gone);
         let generation = GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-        let job_path = path.to_path_buf();
+        let job = key.clone();
         let work = cx.background_executor().spawn(async move {
-            let src = load_source(&job_path, target)?;
-            let analysis = analyze(&src);
-            let cells = if effect == Effect::Dither { dither_cells(&src) } else { Vec::new() };
-            let still = Arc::new(RenderImage::new([image::Frame::new(render(&src, effect, light))]));
-            Some(Arc::new(Prepared { effect, light, src, analysis, cells, still }))
+            let src = load_source(&job.path, job.target)?;
+            Some(Arc::new(Layers::build(&src, job.effect, job.light)))
         });
         cx.spawn(async move |cx| {
-            let prepared = work.await;
+            let layers = work.await;
             if let Some(mut guard) = ANIM.get().and_then(|s| s.lock().ok())
                 && let Some(a) = guard.as_mut()
                 && a.generation == generation
+                && layers.is_some()
             {
-                a.prepared = prepared;
-                a.retired.extend(a.frame.take());
-                a.busy = false;
-                a.start = Instant::now();
+                retire(a.still.take());
+                a.layers = layers;
             }
             cx.update(|cx| cx.refresh_windows());
         })
         .detach();
-        *guard = Some(Anim {
-            path: path.to_path_buf(),
-            effect,
-            light,
-            target,
-            generation,
-            prepared: None,
-            frame: carried,
-            retired,
-            busy: true,
-            start: Instant::now(),
-        });
+        *guard =
+            Some(Anim { key: Some(key), generation, layers: None, still, clock: Clock::default(), shown_at: None });
     }
+    guard.as_ref().is_some_and(|a| a.layers.is_some() || a.still.is_some())
+}
 
-    let a = guard.as_mut()?;
-    for image in a.retired.drain(..) {
-        let _ = window.drop_image(image);
-    }
-    let t = a.start.elapsed().as_secs_f32();
-    let motion = a.prepared.as_ref().map_or(Motion::STILL, |p| motion(effect, &p.analysis, t));
-    // Frames are only requested from here, so the loop stops on its own when
-    // the home page is not being drawn (another page, or a hidden window).
-    if !a.busy
-        && let Some(prepared) = a.prepared.clone()
-    {
-        a.busy = true;
-        let generation = a.generation;
-        let interval = effect.frame_interval();
-        let next_t = t + interval.as_secs_f32();
-        let executor = cx.background_executor().clone();
-        cx.spawn(async move |cx| {
-            executor.timer(interval).await;
-            let frame = executor
-                .spawn(async move {
-                    render_frame(&prepared, next_t).map(|img| Arc::new(RenderImage::new([image::Frame::new(img)])))
-                })
-                .await;
-            if let Some(mut guard) = ANIM.get().and_then(|s| s.lock().ok())
-                && let Some(a) = guard.as_mut()
-                && a.generation == generation
-            {
-                if let Some(frame) = frame {
-                    a.retired.extend(a.frame.replace(frame));
-                }
-                a.busy = false;
-            }
-            cx.update(|cx| cx.refresh_windows());
-        })
-        .detach();
-    }
-    let image = a.frame.clone().or_else(|| a.prepared.as_ref().map(|p| p.still.clone()))?;
-    Some((image, motion))
+/// This frame of the animation, and whether the loop should keep going.
+fn animation_frame(cx: &App) -> (Option<Composition>, bool) {
+    let Some(mut guard) = ANIM.get().and_then(|s| s.lock().ok()) else { return (None, false) };
+    let Some(a) = guard.as_mut() else { return (None, false) };
+    let Some(layers) = a.layers.clone() else { return (a.still.clone().map(Composition::still), false) };
+    // Motion only while decorative motion is allowed: not reduced, and the
+    // window active (so not minimized or in the background).
+    let running = motion::decorative_motion(cx);
+    let t = a.clock.advance(Instant::now(), running, motion::speed_scale());
+    let elapsed = a.clock.elapsed;
+    // First drawn while paused: no intro, it is simply there.
+    let shown = *a.shown_at.get_or_insert(if running { elapsed } else { f32::NEG_INFINITY });
+    let intro_len = motion::FADE_IN.total().as_secs_f32() / motion::speed_scale();
+    let intro = motion::FADE_IN.progress((elapsed - shown) / intro_len.max(1e-3));
+    (Some(compose(&layers, t, intro)), running)
 }
 
 /// Stop animating and free its rasters, e.g. when the switch is turned off.
 pub fn release_animation(window: &mut Window) {
+    drop_retired(window);
     let Some(slot) = ANIM.get() else { return };
     let Some(old) = slot.lock().ok().and_then(|mut g| g.take()) else { return };
-    let images = old.retired.into_iter().chain(old.frame).chain(old.prepared.map(|p| p.still.clone()));
+    let images = old.layers.iter().flat_map(|l| l.images()).chain(old.still).collect::<Vec<_>>();
     for image in images {
         let _ = window.drop_image(image);
     }
 }
 
-pub fn hero_height(viewport_height: f32) -> f32 {
-    (viewport_height.max(0.0) * VIEWPORT_RATIO).min(MAX_HEIGHT)
+/// Home is no longer drawn: free the animation's layers and the cached
+/// still rasters, keeping one still so coming back shows the art at once.
+fn leave_home(window: &mut Window) {
+    let mut gone = RETIRED.lock().map(|mut r| std::mem::take(&mut *r)).unwrap_or_default();
+    let mut kept = None;
+    if let Some(slot) = ANIM.get()
+        && let Ok(mut guard) = slot.lock()
+        && let Some(old) = guard.take()
+    {
+        kept = old.layers.as_ref().map(|l| l.base.clone()).or_else(|| old.still.clone());
+        gone.extend(old.layers.iter().flat_map(|l| l.images()));
+        gone.extend(old.still);
+        if let Some(still) = &kept {
+            gone.retain(|i| !Arc::ptr_eq(i, still));
+            *guard = Some(Anim {
+                key: None,
+                generation: 0,
+                layers: None,
+                still: Some(still.clone()),
+                clock: Clock::default(),
+                shown_at: None,
+            });
+        }
+    }
+    if let Some(cache) = CACHE.get()
+        && let Ok(mut entries) = cache.lock()
+    {
+        // The animation's still is the one kept; otherwise the most recent.
+        let keep = if kept.is_some() { None } else { entries.pop() };
+        gone.extend(entries.drain(..).flat_map(Entry::images));
+        if let Some(mut entry) = keep {
+            gone.extend(entry.fallback.take());
+            entries.push(entry);
+        }
+    }
+    for image in gone {
+        let _ = window.drop_image(image);
+    }
 }
 
-/// Paint `image` cover-fitted into `bounds`, fading toward the bottom.
-/// With `cutout`, the composer's rounded rect is feathered out of it.
-/// `motion` zooms the picture inside `bounds`; the mask stays put.
-pub fn paint(
-    image: Arc<RenderImage>,
-    bounds: Bounds<Pixels>,
-    composer: Option<Bounds<Pixels>>,
-    cutout: bool,
-    motion: Motion,
-    window: &mut Window,
-) {
-    let src = image.size(0);
-    let (sw, sh) = ((src.width.0 as f32).max(1.0), (src.height.0 as f32).max(1.0));
+// ------------------------------------------------------------ the view
+
+/// What home wants the hero to show.
+pub struct HeroProps {
+    pub path: PathBuf,
+    pub effect: Effect,
+    /// Light appearance (Halftone and Scanlines print on light paper).
+    pub light: bool,
+    /// The hero's size in device pixels.
+    pub target: (f32, f32),
+    pub animate: bool,
+    pub frosted: bool,
+    /// The composer's bounds, cut out of the art.
+    pub composer: Rc<Cell<Option<Bounds<Pixels>>>>,
+}
+
+/// The hero as its own small view: an animation frame notifies only this
+/// view, never refreshes every window. Home holds it in element state, so
+/// it is released when home stops drawing it, which frees the layers.
+pub struct Hero {
+    props: Option<HeroProps>,
+}
+
+impl Hero {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        cx.on_release_in(window, |_, window, _| leave_home(window)).detach();
+        Hero { props: None }
+    }
+
+    /// Take this frame's props; true when there is art to show (otherwise
+    /// it is still decoding, and the window refreshes when it lands).
+    pub fn show(&mut self, props: HeroProps, cx: &mut App) -> bool {
+        let ready = if props.animate {
+            let key = Key {
+                path: props.path.clone(),
+                effect: props.effect,
+                light: paper_light(props.effect, props.light),
+                target: step_target(props.target),
+            };
+            sync_animation(key, cx)
+        } else {
+            prepare(&props.path, props.effect, props.light, props.target, cx).is_some()
+        };
+        self.props = Some(props);
+        ready
+    }
+}
+
+impl Render for Hero {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        drop_retired(window);
+        let Some(p) = self.props.as_ref() else { return div() };
+        let (composition, running) = if p.animate {
+            animation_frame(cx)
+        } else {
+            (prepare(&p.path, p.effect, p.light, p.target, cx).map(Composition::still), false)
+        };
+        let Some(composition) = composition else { return div() };
+        // Paced by the display; notifies this view only.
+        if running {
+            window.request_animation_frame();
+        }
+        let opacity = composition.motion.opacity * if p.frosted { FROSTED_OPACITY } else { 1.0 };
+        let composition = Rc::new(composition);
+        let layers = [false, true].map(|cutout| {
+            let groups = (0..composition.groups.len()).map(|i| {
+                let (composition, composer) = (composition.clone(), p.composer.clone());
+                div().absolute().inset_0().opacity(composition.groups[i].opacity).child(
+                    canvas(
+                        |_, _, _| {},
+                        move |bounds, _, window, _| {
+                            paint_group(&composition, i, bounds, composer.get(), cutout, window)
+                        },
+                    )
+                    .absolute()
+                    .inset_0(),
+                )
+            });
+            div()
+                .absolute()
+                .inset_0()
+                .opacity(if cutout { 1.0 } else { CUTOUT_REVEAL_OPACITY })
+                .children(groups.collect::<Vec<_>>())
+        });
+        div().size_full().opacity(opacity).children(layers)
+    }
+}
+
+// ------------------------------------------------------------ paint
+
+/// Where hero pixel (0, 0) lands in the window, and window px per hero px:
+/// the base cover-fitted into the bounds, zoomed by `motion` about its
+/// centre. Zooming about a point inside the hero keeps it covered.
+fn placement(bounds: Bounds<Pixels>, src: (f32, f32), motion: Motion) -> Option<(f32, f32, f32)> {
+    let (sw, sh) = (src.0.max(1.0), src.1.max(1.0));
     let (w, h) = (f32::from(bounds.size.width), f32::from(bounds.size.height));
     if w <= 0.0 || h <= 0.0 {
-        return;
+        return None;
     }
     let scale = (w / sw).max(h / sh);
     let (fw, fh) = (sw * scale, sh * scale);
-    // Scaling about a point inside the hero keeps it covered for zoom >= 1.
     let (zx, zy) = (w * motion.center.0, h * motion.center.1);
     let zoom = motion.zoom.max(1.0);
     let (left, top) = (zx + ((w - fw) * 0.5 - zx) * zoom, zy + ((h - fh) * 0.5 - zy) * zoom);
-    let fitted =
-        Bounds::new(point(bounds.left() + px(left), bounds.top() + px(top)), size(px(fw * zoom), px(fh * zoom)));
-    let mask = match (cutout, composer) {
+    Some((f32::from(bounds.left()) + left, f32::from(bounds.top()) + top, scale * zoom))
+}
+
+/// The bottom fade, and with `cutout` the composer's feathered rounded rect.
+fn alpha_mask(bounds: Bounds<Pixels>, composer: Option<Bounds<Pixels>>, cutout: bool) -> ImageAlphaMask {
+    let h = f32::from(bounds.size.height);
+    match (cutout, composer) {
         (true, Some(c)) => ImageAlphaMask {
             bounds: Bounds::new(c.origin, size(c.size.width, c.bottom().max(bounds.bottom()) - c.top())),
-            radius: px(crate::theme::Theme::COMPOSER_RADIUS),
+            radius: px(crate::design::radius::COMPOSER),
             feather: px((h * 0.52).clamp(120.0, 280.0)),
             clearance: px(8.0),
             bottom_fade: Some((bounds.bottom(), px(h.max(1.0)))),
@@ -846,8 +1481,56 @@ pub fn paint(
             clearance: px(0.0),
             bottom_fade: Some((bounds.bottom(), px(h.max(1.0)))),
         },
-    };
-    let _ = window.paint_image_fitted_masked(bounds, fitted, Corners::default(), image, 0, false, Some(mask));
+    }
+}
+
+/// Paint group `index` into the hero `bounds`. Each sprite reuses its atlas
+/// tile; only its rect, crop and opacity change between frames.
+fn paint_group(
+    composition: &Composition,
+    index: usize,
+    bounds: Bounds<Pixels>,
+    composer: Option<Bounds<Pixels>>,
+    cutout: bool,
+    window: &mut Window,
+) {
+    let Some(group) = composition.groups.get(index) else { return };
+    let Some((ox, oy, k)) = placement(bounds, composition.size, composition.motion) else { return };
+    let mask = alpha_mask(bounds, composer, cutout);
+    let map = |x: f32, y: f32| (ox + x * k, oy + y * k);
+    let (bx0, by0) = (f32::from(bounds.left()), f32::from(bounds.top()));
+    let (bx1, by1) = (f32::from(bounds.right()), f32::from(bounds.bottom()));
+    for sprite in &group.sprites {
+        let [x, y, w, h] = sprite.rect;
+        if w <= 0.0 || h <= 0.0 {
+            continue;
+        }
+        let (fx0, fy0) = map(x, y);
+        let (fx1, fy1) = map(x + w, y + h);
+        let (mut vx0, mut vy0, mut vx1, mut vy1) = (fx0.max(bx0), fy0.max(by0), fx1.min(bx1), fy1.min(by1));
+        if let Some([cx0, cy0, cx1, cy1]) = sprite.clip {
+            let ((cx0, cy0), (cx1, cy1)) = (map(cx0, cy0), map(cx1, cy1));
+            (vx0, vy0, vx1, vy1) = (vx0.max(cx0), vy0.max(cy0), vx1.min(cx1), vy1.min(cy1));
+        }
+        if vx1 - vx0 < 0.5 || vy1 - vy0 < 0.5 {
+            continue;
+        }
+        let rect =
+            |x0: f32, y0: f32, x1: f32, y1: f32| Bounds::new(point(px(x0), px(y0)), size(px(x1 - x0), px(y1 - y0)));
+        let _ = window.paint_image_fitted_masked(
+            rect(vx0, vy0, vx1, vy1),
+            rect(fx0, fy0, fx1, fy1),
+            Corners::default(),
+            sprite.image.clone(),
+            sprite.frame,
+            false,
+            Some(mask),
+        );
+    }
+}
+
+pub fn hero_height(viewport_height: f32) -> f32 {
+    (viewport_height.max(0.0) * VIEWPORT_RATIO).min(MAX_HEIGHT)
 }
 
 #[cfg(test)]
@@ -916,77 +1599,233 @@ mod tests {
         assert_ne!(a.hues, FALLBACK_HUES);
     }
 
-    fn prepared(src: Source, effect: Effect) -> Prepared {
-        let analysis = analyze(&src);
-        let still = Arc::new(RenderImage::new([image::Frame::new(render(&src, effect, false))]));
-        let cells = dither_cells(&src);
-        Prepared { effect, light: false, src, analysis, cells, still }
-    }
-
-    #[test]
-    fn frames_keep_dimensions() {
-        for e in [Effect::Dither, Effect::Halftone, Effect::Scanlines] {
-            let p = prepared(lit_corner(97, 61), e);
-            for t in [0.0, 0.7, 3.3] {
-                let img = render_frame(&p, t).expect("raster effect");
-                assert_eq!((img.width(), img.height()), (97, 61), "{e:?} at {t}");
-            }
-        }
-        assert!(render_frame(&prepared(lit_corner(8, 8), Effect::None), 1.0).is_none());
-    }
-
-    #[test]
-    fn dither_flight_follows_the_bayer_rule() {
-        // Every cell is either normalised to full brightness or kept at 8%.
-        let p = prepared(lit_corner(256, 144), Effect::Dither);
-        let frame = render_frame(&p, 9.0).unwrap();
-        for px in frame.pixels() {
-            let peak = px.0[0].max(px.0[1]).max(px.0[2]);
-            assert!(peak >= 254 || peak <= 21, "{:?}", px.0);
-        }
-        // Each 2x2 cell is one colour, so the grid stays put.
-        for y in (0..144).step_by(2) {
-            for x in (0..256).step_by(2) {
-                let c = frame.get_pixel(x, y);
-                assert_eq!(c, frame.get_pixel(x + 1, y + 1));
-            }
-        }
-    }
-
-    #[test]
-    fn dither_flight_moves_and_loops_without_a_seam() {
-        let p = prepared(lit_corner(256, 144), Effect::Dither);
-        let a = render_frame(&p, 6.0).unwrap();
-        assert_ne!(a, render_frame(&p, 7.0).unwrap());
-        assert_eq!(a, render_frame(&p, 6.0 + FLIGHT_LOOP).unwrap());
-    }
-
     #[test]
     fn flight_path_crosses_the_focal_point_and_starts_off_screen() {
         let a = Analysis { focal: (0.6, 0.35), hues: FALLBACK_HUES };
         let (x0, _) = flight_path(&a, 1000.0, 500.0, 0.0);
         let (x1, _) = flight_path(&a, 1000.0, 500.0, 0.999);
         assert!(x0 < 0.0 && x1 > 1000.0);
-        let over = (0.6 + 0.18) / 1.36;
+        let over = (0.6 - PATH_X0) / PATH_DX;
         let (x, y) = flight_path(&a, 1000.0, 500.0, over);
         assert!((x - 600.0).abs() < 1.0 && (y / 500.0 - 0.35).abs() < 0.04, "{x}, {y}");
     }
 
     #[test]
-    fn static_effects_match_unanimated_helpers() {
-        let s = src(9, 7);
-        assert_eq!(render(&s, Effect::Scanlines, false).get_pixel(0, 0).0, [26, 52, 104, 255]);
-        assert_eq!(render(&s, Effect::Scanlines, false).get_pixel(0, 1).0, [50, 100, 200, 255]);
+    fn eased_flight_never_reverses_and_loops() {
+        let mut prev = flight_s(0.0);
+        for i in 1..=1000 {
+            let s = flight_s(i as f32 / 1000.0);
+            assert!(s > prev, "reversed at {i}");
+            prev = s;
+        }
+        assert!((flight_s(1.0) - 1.0).abs() < 1e-5);
+        assert!((flight_s(0.3) + 1.0 - flight_s(1.3)).abs() < 1e-4);
+        // Slower over the middle of the image than off screen.
+        let speed = |ph: f32| flight_s(ph + 0.001) - flight_s(ph);
+        assert!(speed(0.5) < speed(0.0));
     }
 
     #[test]
-    fn motion_is_still_except_original_and_scanlines() {
+    fn heading_frames_crossfade_between_neighbours() {
+        assert_eq!(heading_frames(0.0, 48), (0, 1, 0.0));
+        let (i0, i1, mix) = heading_frames(TAU / 48.0 * 2.5, 48);
+        assert_eq!((i0, i1), (2, 3));
+        assert!((mix - 0.5).abs() < 1e-3);
+        // Negative angles wrap; the last heading blends into the first.
+        let (i0, i1, _) = heading_frames(-0.01, 48);
+        assert_eq!((i0, i1), (47, 0));
+    }
+
+    #[test]
+    fn band_strips_are_contiguous_with_a_soft_profile() {
+        let strips: Vec<_> = band_strips(0.5, 0.4, 6).collect();
+        assert_eq!(strips.len(), 6);
+        assert!((strips[0].0 - 0.3).abs() < 1e-5 && (strips[5].1 - 0.7).abs() < 1e-5);
+        for pair in strips.windows(2) {
+            assert!((pair[0].1 - pair[1].0).abs() < 1e-5);
+        }
+        assert!(strips[0].2 < strips[2].2 && (strips[2].2 - strips[3].2).abs() < 1e-5);
+        assert!(strips.iter().all(|s| s.2 > 0.0 && s.2 <= 1.0));
+    }
+
+    #[test]
+    fn waves_enter_and_leave_off_screen() {
+        for wave in &WAVES {
+            assert!(FLIGHT_LOOP % wave.period == 0.0, "wave period must divide the loop");
+            let start = wave_centre(wave, 0.0);
+            let edge = if wave.reverse { 1.0 + wave.width * 0.5 } else { -wave.width * 0.5 };
+            assert!((start - edge).abs() < 1e-5);
+        }
+    }
+
+    #[test]
+    fn trail_slices_tile_the_trail_and_split_at_the_wrap() {
+        let ph = 0.6;
+        let (age0, spans0) = trail_clips(ph, 0, 12);
+        assert!(age0 < 0.1);
+        // The freshest slice ends at the aircraft.
+        let head = PATH_X0 + PATH_DX * flight_s(ph);
+        assert!((spans0[0].1 - head).abs() < 1e-4);
+        // Consecutive slices meet.
+        for seg in 0..11 {
+            let (_, a) = trail_clips(ph, seg, 12);
+            let (_, b) = trail_clips(ph, seg + 1, 12);
+            assert!((a[0].0 - b[0].1).abs() < 1e-4, "{seg}");
+        }
+        // Early in the loop the tail is the previous pass, split at the wrap.
+        let wrapped = (0..12).map(|seg| trail_clips(0.02, seg, 12).1).find(|s| s[1].1 > s[1].0);
+        let [right, left] = wrapped.expect("a slice straddles the wrap");
+        assert!((right.1 - (PATH_X0 + PATH_DX)).abs() < 1e-5 && (left.0 - PATH_X0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn blink_and_rings_are_seamless() {
+        assert_eq!(blink(0.0), 0.0);
+        assert!(blink(0.9) > 0.99);
+        assert!(blink(0.5) == 0.0 && blink(0.9999) < 0.01);
+        let (r0, o0) = ring_state(0.0);
+        let (_, o1) = ring_state(1.0);
+        assert!(r0 < 0.05 && o0 == 0.0 && o1 == 0.0);
+        let (mid, peak) = ring_state(0.2);
+        assert!(mid > r0 && peak > 0.2);
+        assert!(ring_state(0.9).0 > 1.0);
+    }
+
+    #[test]
+    fn scan_roll_and_band_match_the_raster_cadence() {
+        assert_eq!([0.0, 0.124, 0.125, 0.25, 0.375].map(scan_roll), [0, 0, 1, 2, 0]);
+        assert!((band_position(0.0) + 0.15).abs() < 1e-6);
+        assert!((band_position(5.999) - 1.15).abs() < 1e-3);
+    }
+
+    #[test]
+    fn clock_pauses_and_resumes_without_a_jump() {
+        let start = Instant::now();
+        let at = |ms: u64| start + std::time::Duration::from_millis(ms);
+        let mut clock = Clock::default();
+        assert_eq!(clock.advance(at(0), true, 1.0), 0.0);
+        assert!((clock.advance(at(50), true, 1.0) - 0.05).abs() < 1e-4);
+        // Paused for ten seconds: no time passes.
+        clock.advance(at(60), false, 1.0);
+        assert!((clock.advance(at(10_060), true, 1.0) - 0.05).abs() < 1e-4);
+        // A long stall advances at most one step; the debug scale slows it.
+        assert!((clock.advance(at(12_000), true, 1.0) - 0.15).abs() < 1e-4);
+        assert!((clock.advance(at(12_040), true, 2.0) - 0.17).abs() < 1e-4);
+        assert!((clock.elapsed - 0.17).abs() < 1e-4);
+    }
+
+    #[test]
+    fn ken_burns_drifts_out_and_back() {
         let a = Analysis { focal: (0.7, 0.3), hues: FALLBACK_HUES };
         assert_eq!(motion(Effect::Dither, &a, 5.0), Motion::STILL);
         assert_eq!(motion(Effect::None, &a, 0.0), Motion::STILL);
         let mid = motion(Effect::None, &a, 10.0);
         assert!((mid.zoom - 1.06).abs() < 1e-4 && (mid.center.0 - 0.7).abs() < 1e-4);
+        let back = motion(Effect::None, &a, 20.0);
+        assert!((back.zoom - 1.0).abs() < 1e-4);
         assert!(motion(Effect::Scanlines, &a, 1.0).opacity <= 1.0);
+    }
+
+    #[test]
+    fn placement_covers_the_hero() {
+        let bounds = Bounds::new(point(px(10.0), px(20.0)), size(px(300.0), px(100.0)));
+        let (ox, oy, k) = placement(bounds, (640.0, 256.0), Motion::STILL).unwrap();
+        assert!(ox <= 10.0 && oy <= 20.0);
+        assert!(ox + 640.0 * k >= 310.0 - 1e-3 && oy + 256.0 * k >= 120.0 - 1e-3);
+        let zoomed = Motion { zoom: 1.06, center: (0.8, 0.2), opacity: 1.0 };
+        let (zx, zy, zk) = placement(bounds, (640.0, 256.0), zoomed).unwrap();
+        assert!(zx <= 10.0 && zy <= 20.0 && zx + 640.0 * zk >= 310.0 && zy + 256.0 * zk >= 120.0);
+    }
+
+    #[test]
+    fn frames_only_place_precomputed_layers() {
+        for e in Effect::ALL {
+            let layers = Layers::build(&lit_corner(97, 61), e, false);
+            let owned = layers.images();
+            for t in [0.0, 0.7, 3.3, 11.9, 23.5] {
+                let c = compose(&layers, t, 1.0);
+                assert_eq!(c.size, (97.0, 61.0));
+                assert!(!c.groups.is_empty(), "{e:?}");
+                for g in &c.groups {
+                    assert!(g.opacity > 0.0 && g.opacity <= 1.0, "{e:?} {}", g.opacity);
+                    for s in &g.sprites {
+                        assert!(owned.iter().any(|i| Arc::ptr_eq(i, &s.image)), "{e:?}: a per-frame raster");
+                        assert!(s.frame < s.image.frame_count());
+                        assert!(s.rect.iter().all(|v| v.is_finite()));
+                    }
+                }
+            }
+        }
+    }
+
+    fn placed(c: &Composition) -> Vec<(u32, usize, [i32; 4])> {
+        c.groups
+            .iter()
+            .flat_map(|g| {
+                let o = (g.opacity * 1000.0).round() as u32;
+                g.sprites.iter().map(move |s| (o, s.frame, s.rect.map(|v| v.round() as i32)))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn dither_flight_moves_and_loops_without_a_seam() {
+        let layers = Layers::build(&lit_corner(256, 144), Effect::Dither, false);
+        let a = compose(&layers, 6.0, 1.0);
+        assert_ne!(placed(&a), placed(&compose(&layers, 7.0, 1.0)));
+        assert_eq!(placed(&a), placed(&compose(&layers, 6.0 + FLIGHT_LOOP, 1.0)));
+        // The intro holds the overlays back; the base is always there.
+        let start = compose(&layers, 6.0, 0.0);
+        assert_eq!(start.groups.len(), 1);
+    }
+
+    #[test]
+    fn dither_layers_stay_on_the_bayer_rule() {
+        let s = lit_corner(256, 144);
+        let layers = Layers::build(&s, Effect::Dither, false);
+        let Kind::Dither { lift, trails, plane, trail_top, .. } = &layers.kind else { panic!() };
+        // Every opaque cell is normalised to full brightness or kept at 8%.
+        for image in [lift, &trails[0], plane] {
+            let bytes = image.as_bytes(0).unwrap();
+            for px in bytes.chunks(4).filter(|p| p[3] == 255) {
+                let peak = px[0].max(px[1]).max(px[2]);
+                assert!(peak >= 254 || peak <= 21, "{px:?}");
+            }
+        }
+        assert!(trail_top.iter().all(|t| t % 8 == 0));
+        assert_eq!(plane.frame_count(), PLANE_HEADINGS);
+        // The lift mask only holds cells that turn on at the higher gain.
+        let base = render(&s, Effect::Dither, false);
+        let lift = lift.as_bytes(0).unwrap();
+        for (i, px) in lift.chunks(4).enumerate().filter(|(_, p)| p[3] > 0) {
+            let b = base.as_raw()[i * 4..i * 4 + 4].to_vec();
+            assert_ne!(px, &b[..], "pixel {i} is already in the base");
+        }
+    }
+
+    #[test]
+    fn scanline_layers_reproduce_the_still() {
+        let s = src(9, 7);
+        let still = render(&s, Effect::Scanlines, false);
+        assert_eq!(still.get_pixel(0, 0).0, [26, 52, 104, 255]);
+        assert_eq!(still.get_pixel(0, 1).0, [50, 100, 200, 255]);
+        // Base plus the line strip at roll 0, blended as the GPU does.
+        let lines = lines_strip(7, false);
+        let base = plain(&s);
+        for y in 0..7u32 {
+            let line = lines.get_pixel(0, y + 3).0;
+            let a = line[3] as f32 / 255.0;
+            let b = base.get_pixel(0, y).0;
+            let over = [0, 1, 2].map(|i| b[i] as f32 * (1.0 - a) + line[i] as f32 * a);
+            let want = still.get_pixel(0, y).0;
+            for i in 0..3 {
+                assert!((over[i] - want[i] as f32).abs() <= 1.0, "row {y}: {over:?} vs {want:?}");
+            }
+        }
+        let layers = Layers::build(&s, Effect::Scanlines, false);
+        let c = compose(&layers, 0.0, 1.0);
+        let line = c.groups.iter().flat_map(|g| &g.sprites).find(|s| s.image.size(0).height.0 == 10).unwrap();
+        assert_eq!(line.rect[1], -3.0);
     }
 
     #[test]
