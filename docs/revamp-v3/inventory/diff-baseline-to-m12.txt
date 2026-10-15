@@ -1,0 +1,198 @@
+## routes: 11 -> 11 (removed 0, added 0)
+## panel_tabs: 10 -> 10 (removed 0, added 0)
+## settings_sections: 13 -> 13 (removed 4, added 4)
+  - Composer=Composer
+  - Keyboard=Keyboard
+  - Remote=Remote Control
+  - Team=Crew & Team
+  + Archived=Archived
+  + Remote=Remote
+  + Shortcuts=Shortcuts
+  + Team=Team
+## settings_keys: 42 -> 48 (removed 0, added 6)
+  + agent_version.*
+  + clone_dir
+  + pause_animations_in_background
+  + reduce_motion
+  + settings_section
+  + sidebar_archived_open
+## shortcuts: 17 -> 17 (removed 0, added 0)
+## fixed_bindings: 8 -> 8 (removed 0, added 0)
+## palette_actions: 24 -> 24 (removed 0, added 0)
+## ui_strings: 1365 -> 1536 (removed 125, added 258)
+  - Active Crew Roster
+  - Agents & Studio
+  - Agents may execute without confirmation prompts in these projects when Bypass is selected
+  - Alert when an agent awaits approval, finishes a turn, or encounters an error while Dove is unfocused
+  - Alerts & Background Daemon
+  - All transcripts, credentials, and settings stay on your machine
+  - Allows buttons and forms inside a rendered design to call dove.send() and reply directly to the agent
+  - Animate backdrop
+  - Apache-2.0 open-source license; third-party notices ship with the application
+  - Application version
+  - Backdrop shader effect
+  - Binary not found on PATH
+  - Browse source code, file issues, or contribute on GitHub
+  - Build version, runtime architecture, and open-source licensing.
+  - Change…
+  - Choose a background image to animate it
+  - Clear frosted glass over a blurred desktop backdrop
+  - Closing the window keeps Dove and scheduled automations running in the system tray
+  - Closing the window minimizes Dove so scheduled automations continue running
+  - Color theme
+  - Configure Harnesses
+  - Connected · Phone paired
+  - Connection status
+  - Create Specialist
+  - Create, brief, and edit specialists or launch a specialist thread in 1 click
+  - Creates a dedicated branch and working directory so parallel agents never collide
+  - Crew & Team
+  - Crew Studio
+  - Customized shortcut
+  - Default artboard viewport
+  - Default clone directory
+  - Default execution permissions, slash skills, and per-project approval rules.
+  - Delete?
+  - Denser frosted acrylic with richer tint and wider blur
+  - Destination folder when cloning repositories from a GitHub URL
+  - Dots swell and shrink in a ripple from the brightest point
+  - Dove Desktop
+  - Each specialist reads its accumulated notes at the start of a thread and updates them as it learns
+  - Enable remote control
+  - Every global and workspace shortcut, customizable with live key recording.
+  - Execution & Approvals
+  - Filter settings…
+  - Follow the OS appearance or lock to Dark or Light
+  - Git & Worktrees
+  - Give an agent a name, a role, and a standing brief—or seed starter specialists from the Crew page
+  - Hidden
+  - Hold the mic in the composer (or the terminal) to talk; click it to toggle. Text is inserted, never sent.
+  - Immediately reveals the Live Design Canvas in the right dock when an agent calls show_canvas or emits an artboard
+  - Installed Harnesses
+  - Installed agent CLIs Dove orchestrates and which harnesses appear in the composer.
+  - Interactive 2-way agent bridge
+  - Isolate each new thread in a git worktree
+  - Keyboard
+  - Keyboard Shortcuts
+  - Last error
+  - Live
+  - Live interactive HTML, React/TSX, and Tailwind artboards built by agents.
+  - Local Parakeet dictation model
+  - Local SQLite database, transcripts, voice weights, and storage location.
+  - Local Storage & Privacy
+  - MCP tools, Chrome bridge, Composio, Paper, and computer-use drivers.
+  - Manage Crew
+  - Memory & Behavior
+  - Mobile Companion
+  - Modified
+  - Monitor and drive this computer's active sessions from your phone.
+  - NVIDIA Parakeet TDT 0.6B v3 runs 100% on-device. Verified file-by-file via SHA-256.
+  - Native Rust + GPUI desktop workspace for multi-harness coding agents
+  - New threads start in this mode; Bypass is selected per thread and confirmed per project
+  - New-Thread Backdrop
+  - New-thread background image
+  - No Crew specialists yet
+  - No projects have Bypass enabled yet
+  - On-Device Dictation
+  - On-device NVIDIA Parakeet dictation.
+  - Open Crew Page
+  - Open Data Folder
+  - Open GitHub
+  - Open designs automatically as they arrive
+  - Optional custom backdrop behind the composer on the home screen
+  - Persistent specialist notes
+  - Play a subtle chime when a background agent completes its task
+  - Preferred device frame when a design does not specify a target viewport
+  - Prefix applied to automatically created worktree branches (e.g. dove/fix-auth)
+  - Press keys… (Esc cancels)
+  - Preview Only
+  - Prewarm agent harness while typing
+  - Primary highlight for buttons, active rings, and badges
+  - Projects authorized for Bypass
+  - React 18 JSX / TSX
+  - Rebind
+  - Remote Control
+  - Reset All Shortcuts
+  - Responsive Viewports
+  - Restore the workspace tabs and active thread you had open last session
+  - SQLite store containing projects, threads, transcripts, settings, and downloaded voice weights
+  - SVG Artboards
+  - Set the DOVE_HOME environment variable to relocate Dove's data directory
+  - Sign in on your phone with the same account to pair automatically
+  - Sign-in & custom paths →
+  - Solid opaque surfaces with zero desktop blur
+  - Sort: attention
+  - Sort: recent
+  - Sort: title
+  - Source repository
+  - Spawns the selected agent in the background as you compose so the first token arrives faster
+  - Specialist
+  - Specialists & Crew members with dedicated roles, standing briefs, and memory.
+  - Storage path (DOVE_HOME)
+  - Studio Behavior
+  - Supported Runtimes
+  - System alerts, completion sounds, and background daemon behavior.
+  - System desktop notifications
+  - Telemetry & privacy
+  - Theme & Materials
+  - Theme mode, accent color, surface materials, and the new-thread backdrop.
+  - Threads & Startup
+  - Threads, git worktrees, branch naming, and where new work starts.
+  - Visual treatment applied over the new-thread canvas
+  - Watch and steer this computer's active agent threads from the Dove mobile app. While off, no relay connection is opened.
+  - Window surface material
+  - Workspace
+  - Workspace & transcript storage
+  - Worktree isolation · Off
+  - Worktree isolation · On
+  + A / S / D
+  + A color theme JSON from a VS Code extension, saved in Dove's data folder.
+  + A short chime when a background agent finishes.
+  + Added to the branches Dove creates, as in dove/fix-login.
+  + Agent tools
+  + Agents can drive the in-app browser. Applies after Dove restarts.
+  + Agents can read and write Word, PowerPoint, Excel and PDF files.
+  + Agents may run without asking in these projects when Bypass is chosen.
+  + Allow once / always / deny
+  + Also in the sidebar's options menu.
+  + Amber
+  + An emoji or the name's initial, on a hue.
+  + Andromeda
+  + Animate background
+  + Answer a question
+  + Apache-2.0. Third-party notices ship with Dove.
+  + At least 5.
+  + Atom One Dark
+  + Ayu Dark
+  + Ayu Light
+  + Ayu Mirage
+  + Back to where you were (Esc)
+  + Back to {}
+  + Background
+  + Background effect
+  + Behavior
+  + Blue
+  + Brief
+  + Browser tools for agents
+  + Browser: address bar
+  + Browser: back / forward
+  + Browser: new / close tab
+  + Browser: reload
+  + Building card…
+  + Built in
+  + Buttons and forms in a design can reply to the agent with dove.send().
+  + Buttons, focus rings, selections and badges.
+  + By day
+  + Catppuccin Latte
+  + Catppuccin Mocha
+  + Changes
+  + Choose a background image first
+  + Choose a background image first.
+  + Choose a background image to animate it.
+  + Clear search
+  + Click a binding, then press the new keys. Escape cancels.
+  + Click to fit
+  + Click to zoom
+  + Close menu or overlay
+  + Closing the window keeps Dove and its automations running in the system tray.
+  + ... 208 more

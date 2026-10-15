@@ -28,8 +28,10 @@ def rust_files(root: Path, rel: Path):
 
 def strip_tests(text: str) -> str:
     """Drop `#[cfg(test)]` modules so test fixtures don't count as features."""
-    cut = text.find("#[cfg(test)]")
-    return text if cut < 0 else text[:cut]
+    # Only a test module ends the file's features: `#[cfg(test)]` on a
+    # single item (a test-only helper) must not cut what follows it.
+    m = re.search(r"#\[cfg\(test\)\]\s*(pub(\(\w+\))?\s+)?mod ", text)
+    return text if m is None else text[:m.start()]
 
 
 def read(path: Path) -> str:
