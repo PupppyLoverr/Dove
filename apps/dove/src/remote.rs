@@ -54,6 +54,8 @@ pub struct Remote {
     stdin: Option<Arc<Mutex<ChildStdin>>>,
     last_publish: HashMap<TaskId, Instant>,
     pending: HashMap<TaskId, bool>,
+    /// How far each session's transcript has been published.
+    feeds: Feeds,
 }
 
 impl EventEmitter<RemoteEvent> for Remote {}
@@ -88,6 +90,7 @@ impl Remote {
             stdin: None,
             last_publish: HashMap::new(),
             pending: HashMap::new(),
+            feeds: Feeds::default(),
         });
         cx.set_global(RemoteGlobal(e.clone()));
         if enabled {
@@ -265,6 +268,11 @@ impl Remote {
     fn publish_all(&mut self) {
         let Some(stdin) = self.stdin.clone() else { return };
         let engine = self.engine.clone();
+        // A fresh connection gets every turn again (publishing is idempotent).
+        if let Ok(mut f) = self.feeds.lock() {
+            f.clear();
+        }
+        let feeds = self.feeds.clone();
         std::thread::spawn(move || {
             let Ok(projects) = engine.store.projects() else { return };
             let mut recent = Vec::new();
@@ -280,7 +288,7 @@ impl Remote {
             }
             recent.sort_by_key(|e| std::cmp::Reverse(e.0));
             for (_, id) in recent.into_iter().take(HISTORY_SESSIONS) {
-                publish_transcript(&engine, &stdin, id, false);
+                publish_transcript(&engine, &stdin, &feeds, id, false);
             }
         });
     }
@@ -298,7 +306,7 @@ impl Remote {
         }
         self.pending.remove(&task);
         self.last_publish.insert(task, Instant::now());
-        let (engine, stdin) = (self.engine.clone(), self.stdin.clone().expect("checked"));
+        let (engine, stdin, feeds) = (self.engine.clone(), self.stdin.clone().expect("checked"), self.feeds.clone());
         std::thread::spawn(move || {
             if let Ok(Some(t)) = engine.store.task(task)
                 && let Ok(projects) = engine.store.projects()
@@ -306,7 +314,7 @@ impl Remote {
             {
                 write_line(&stdin, chat_row(&t, p));
             }
-            publish_transcript(&engine, &stdin, task, !finished);
+            publish_transcript(&engine, &stdin, &feeds, task, !finished);
         });
     }
 }
@@ -329,49 +337,96 @@ fn chat_row(t: &dove_core::store::Task, p: &dove_core::store::Project) -> Value 
     })
 }
 
-/// A transcript folded into chat turns, keyed by the event index each turn
-/// starts at, so republishing is idempotent across launches.
-pub fn fold_turns(events: &[AgentEvent]) -> Vec<(String, &'static str, String, bool)> {
-    let mut out: Vec<(String, &'static str, String, bool)> = Vec::new();
-    let mut open: Option<usize> = None;
-    for (i, ev) in events.iter().enumerate() {
-        match ev {
-            AgentEvent::UserMessage { text } => {
-                open = None;
-                out.push((format!("u{i}"), "user", text.to_string(), false));
-            }
-            AgentEvent::TextDelta { text } => match open {
-                Some(at) => out[at].2.push_str(text),
-                None => {
-                    out.push((format!("a{i}"), "assistant", text.to_string(), true));
-                    open = Some(out.len() - 1);
-                }
-            },
-            AgentEvent::ToolCall { title, .. } => {
-                let line = format!("\n\n`{}`\n\n", title.trim());
-                match open {
-                    Some(at) => out[at].2.push_str(&line),
-                    None => {
-                        out.push((format!("a{i}"), "assistant", line, true));
-                        open = Some(out.len() - 1);
-                    }
-                }
-            }
-            AgentEvent::TurnEnded { .. } | AgentEvent::Exited { .. } => {
-                if let Some(at) = open.take() {
-                    out[at].3 = false;
-                }
-            }
-            _ => {}
-        }
-    }
-    out
+/// One published chat turn: (stable id, role, text, still streaming).
+pub type Turn = (String, &'static str, String, bool);
+
+/// Folds a transcript into chat turns incrementally (P15): each turn is
+/// keyed by the event index it starts at, so republishing is idempotent
+/// across launches, and only the open assistant turn's text is kept.
+#[derive(Default)]
+pub struct Fold {
+    /// Events folded so far (the next event's index).
+    events: usize,
+    /// The assistant turn still streaming: (id, text).
+    open: Option<(String, String)>,
 }
 
-fn publish_transcript(engine: &Engine, stdin: &Arc<Mutex<ChildStdin>>, task: TaskId, live: bool) {
-    let events = engine.store.read_transcript(task);
+impl Fold {
+    /// Fold more events. Returns the turns they created or changed, each
+    /// once, in order of first appearance, with their latest state.
+    pub fn push(&mut self, events: &[AgentEvent]) -> Vec<Turn> {
+        let mut out: Vec<Turn> = Vec::new();
+        let put = |out: &mut Vec<Turn>, turn: Turn| match out.iter_mut().find(|t| t.0 == turn.0) {
+            Some(t) => *t = turn,
+            None => out.push(turn),
+        };
+        let mut touched = false;
+        for (k, ev) in events.iter().enumerate() {
+            let i = self.events + k;
+            match ev {
+                AgentEvent::UserMessage { text } => {
+                    // A superseded answer is no longer streaming.
+                    if let Some((id, text)) = self.open.take()
+                        && touched
+                    {
+                        put(&mut out, (id, "assistant", text, false));
+                    }
+                    touched = false;
+                    put(&mut out, (format!("u{i}"), "user", text.to_string(), false));
+                }
+                AgentEvent::TextDelta { text } => {
+                    self.open.get_or_insert_with(|| (format!("a{i}"), String::new())).1.push_str(text);
+                    touched = true;
+                }
+                AgentEvent::ToolCall { title, .. } => {
+                    let line = format!("\n\n`{}`\n\n", title.trim());
+                    self.open.get_or_insert_with(|| (format!("a{i}"), String::new())).1.push_str(&line);
+                    touched = true;
+                }
+                AgentEvent::TurnEnded { .. } | AgentEvent::Exited { .. } => {
+                    if let Some((id, text)) = self.open.take() {
+                        put(&mut out, (id, "assistant", text, false));
+                    }
+                    touched = false;
+                }
+                _ => {}
+            }
+        }
+        self.events += events.len();
+        if touched && let Some((id, text)) = &self.open {
+            put(&mut out, (id.clone(), "assistant", text.clone(), true));
+        }
+        out
+    }
+}
+
+/// A whole transcript folded into chat turns.
+#[cfg(test)]
+pub fn fold_turns(events: &[AgentEvent]) -> Vec<Turn> {
+    Fold::default().push(events)
+}
+
+/// Where each session's publishing stands: the transcript byte offset read
+/// so far and the fold state, so a publish reads and sends only what is new.
+#[derive(Default)]
+struct Feed {
+    offset: u64,
+    fold: Fold,
+}
+
+type Feeds = Arc<Mutex<HashMap<TaskId, Arc<Mutex<Feed>>>>>;
+
+fn publish_transcript(engine: &Engine, stdin: &Arc<Mutex<ChildStdin>>, feeds: &Feeds, task: TaskId, live: bool) {
+    let feed = match feeds.lock() {
+        Ok(mut f) => f.entry(task).or_default().clone(),
+        Err(_) => return,
+    };
+    // One publish per session at a time, so turns go out in order.
+    let Ok(mut feed) = feed.lock() else { return };
+    let (events, next) = engine.store.transcript_from(task, feed.offset);
+    feed.offset = next;
     let chat = task.to_string();
-    for (id, role, text, open) in fold_turns(&events) {
+    for (id, role, text, open) in feed.fold.push(&events) {
         let text = text.trim().to_owned();
         if text.is_empty() {
             continue;
@@ -410,5 +465,36 @@ mod tests {
         assert_eq!(turns[0], ("u0".into(), "user", "hi".into(), false));
         assert_eq!(turns[1], ("a1".into(), "assistant", "Hello".into(), false));
         assert_eq!(turns[3], ("a5".into(), "assistant", "Sure".into(), true));
+    }
+
+    #[test]
+    fn incremental_folds_send_only_what_changed() {
+        let events = vec![
+            AgentEvent::UserMessage { text: "hi".into() },
+            AgentEvent::TextDelta { text: "Hel".into() },
+            AgentEvent::TextDelta { text: "lo".into() },
+            AgentEvent::TurnEnded { usage: None, is_error: false },
+            AgentEvent::UserMessage { text: "again".into() },
+            AgentEvent::TextDelta { text: "Sure".into() },
+        ];
+        let mut fold = Fold::default();
+        let first = fold.push(&events[..2]);
+        assert_eq!(
+            first,
+            vec![("u0".into(), "user", "hi".into(), false), ("a1".into(), "assistant", "Hel".into(), true)]
+        );
+        // The open answer is resent whole; finished turns are not resent.
+        assert_eq!(fold.push(&events[2..3]), vec![("a1".into(), "assistant", "Hello".into(), true)]);
+        assert_eq!(fold.push(&events[3..4]), vec![("a1".into(), "assistant", "Hello".into(), false)]);
+        let rest = fold.push(&events[4..]);
+        assert_eq!(
+            rest,
+            vec![("u4".into(), "user", "again".into(), false), ("a5".into(), "assistant", "Sure".into(), true)]
+        );
+        // Nothing new, nothing sent.
+        assert!(fold.push(&[]).is_empty());
+        // Ids match a fold of the whole transcript.
+        let whole: Vec<String> = fold_turns(&events).into_iter().map(|t| t.0).collect();
+        assert_eq!(whole, ["u0", "a1", "u4", "a5"]);
     }
 }

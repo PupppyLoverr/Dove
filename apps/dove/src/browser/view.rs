@@ -455,6 +455,10 @@ impl BrowserSurface {
 impl Render for BrowserSurface {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::perf_trace::count_render("BrowserSurface");
+        if self.hibernated == Some(true) && self.presentation != super::model::Presentation::Hidden {
+            // Shown again after hibernating: reload the page at its URL.
+            cx.defer_in(window, |this, window, cx| this.wake(window, cx));
+        }
         let theme = Theme::of(cx).clone();
         let focused = self.address.focus_handle(cx).is_focused(window);
         let external = !cfg!(any(target_os = "macos", target_os = "linux", windows));

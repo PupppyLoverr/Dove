@@ -11,7 +11,7 @@
 //! previews, the terminal) read their own size settings through [`code`]
 //! and [`terminal`].
 
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
 use gpui::{App, Pixels, Rems, Window, px};
 
@@ -227,6 +227,35 @@ pub fn load_preferences(store: &dove_core::store::Store) {
         Ordering::Relaxed,
     );
     UI.store(parse(store, "ui_font_size", BASE, 12.0, 18.0).to_bits(), Ordering::Relaxed);
+    SCROLLBACK.store(
+        store
+            .setting(SCROLLBACK_KEY)
+            .and_then(|v| v.trim().parse::<usize>().ok())
+            .unwrap_or(SCROLLBACK_DEFAULT)
+            .clamp(SCROLLBACK_MIN, SCROLLBACK_MAX),
+        Ordering::Relaxed,
+    );
+}
+
+/// The "Scrollback lines" setting: the history each new terminal keeps.
+pub const SCROLLBACK_KEY: &str = "terminal_scrollback";
+pub const SCROLLBACK_DEFAULT: usize = dove_term::emulator::SCROLLBACK_LINES;
+pub const SCROLLBACK_MIN: usize = 1_000;
+pub const SCROLLBACK_MAX: usize = 100_000;
+/// The choices Settings offers.
+pub const SCROLLBACK_CHOICES: [usize; 6] = [1_000, 5_000, 10_000, 25_000, 50_000, 100_000];
+static SCROLLBACK: AtomicUsize = AtomicUsize::new(SCROLLBACK_DEFAULT);
+
+/// Lines of history a terminal keeps.
+pub fn scrollback() -> usize {
+    SCROLLBACK.load(Ordering::Relaxed)
+}
+
+/// Persist the scrollback setting. Terminals started, restarted or cleared
+/// from now on keep that much history.
+pub fn set_scrollback(store: &dove_core::store::Store, lines: usize) {
+    let _ = store.set_setting(SCROLLBACK_KEY, &lines.to_string());
+    load_preferences(store);
 }
 
 /// Apply the interface size to a window (its rem size).

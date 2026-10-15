@@ -15,6 +15,8 @@ use parking_lot::Mutex;
 use rusqlite::{Connection, OptionalExtension, params};
 use uuid::Uuid;
 
+pub mod transcript;
+
 const SCHEMA: &str = "CREATE TABLE projects (
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
@@ -703,6 +705,58 @@ impl Store {
     pub fn read_transcript(&self, task: TaskId) -> Vec<AgentEvent> {
         let Ok(f) = File::open(self.transcript_path(task)) else { return Vec::new() };
         BufReader::new(f).lines().map_while(Result::ok).filter_map(|l| serde_json::from_str(&l).ok()).collect()
+    }
+
+    /// Line offsets and kinds of `task`'s transcript, without parsing it.
+    pub fn transcript_index(&self, task: TaskId) -> transcript::Index {
+        transcript::Index::build(&self.transcript_path(task))
+    }
+
+    /// Lines `range` of `task`'s transcript (per `index`), each with its
+    /// byte offset.
+    pub fn transcript_lines(
+        &self,
+        task: TaskId,
+        index: &transcript::Index,
+        range: std::ops::Range<usize>,
+    ) -> Vec<(u64, AgentEvent)> {
+        transcript::read_lines(&self.transcript_path(task), index, range)
+    }
+
+    /// The given lines of `task`'s transcript (ascending), with their numbers.
+    pub fn transcript_picked(
+        &self,
+        task: TaskId,
+        index: &transcript::Index,
+        lines: &[usize],
+    ) -> Vec<(usize, AgentEvent)> {
+        transcript::read_picked(&self.transcript_path(task), index, lines)
+    }
+
+    /// Events of `task`'s transcript within byte range `span`.
+    pub fn transcript_span(&self, task: TaskId, span: std::ops::Range<u64>) -> Vec<AgentEvent> {
+        transcript::read_span(&self.transcript_path(task), span)
+    }
+
+    /// The event recorded at byte `offset` of `task`'s transcript.
+    pub fn transcript_event_at(&self, task: TaskId, offset: u64) -> Option<AgentEvent> {
+        transcript::read_event_at(&self.transcript_path(task), offset)
+    }
+
+    /// Complete events appended to `task`'s transcript since byte `from`,
+    /// and where the next read starts.
+    pub fn transcript_from(&self, task: TaskId, from: u64) -> (Vec<AgentEvent>, u64) {
+        transcript::read_from(&self.transcript_path(task), from)
+    }
+
+    /// The full recorded output of tool call `call_id` in `task`.
+    pub fn tool_output(&self, task: TaskId, call_id: &str) -> Option<std::sync::Arc<str>> {
+        transcript::find_tool_output(&self.transcript_path(task), call_id)
+    }
+
+    /// The recorded events of the subagent `parent` spawned in `task`.
+    pub fn subagent_events(&self, task: TaskId, parent: &str) -> Vec<AgentEvent> {
+        transcript::subagent_events(&self.transcript_path(task), parent)
     }
 }
 

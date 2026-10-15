@@ -252,6 +252,9 @@ impl Shell {
         subs.push(cx.observe_window_activation(window, |this, window, cx| {
             this.window_active = window.is_window_active();
             crate::motion::window_activation_changed(this.window_active, cx);
+            if !this.window_active {
+                crate::memory::watchdog(this, Some(window), cx);
+            }
             if this.window_active
                 && let Some((id, at)) = this.pending_focus.take()
                 && at.elapsed() < Duration::from_secs(60)
@@ -677,6 +680,7 @@ impl Shell {
     fn attach_task(&mut self, id: TaskId, window: &mut Window, cx: &mut Context<Self>) {
         let Some(task) = self.task(id).cloned() else { return };
         let Some(project) = self.project(task.project_id).cloned() else { return };
+        crate::memory::tab_opened(id, cx);
         if !self.tabs.contains(&id) {
             self.tabs.push(id);
             self.save_tabs();
@@ -752,7 +756,8 @@ impl Shell {
         let sub = cx.subscribe_in(&view, window, move |this, view, ev: &ThreadEvent, window, cx| {
             this.on_thread_event(id, view.clone(), ev, window, cx)
         });
-        self._subs.push(sub);
+        // Dropped with the view when it hibernates.
+        crate::memory::own_thread_sub(id, sub, cx);
         self.threads.insert(id, view.clone());
         view
     }
@@ -765,6 +770,7 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        crate::memory::thread_event(self, id, ev, cx);
         match ev {
             ThreadEvent::Mode => cx.notify(),
             ThreadEvent::Chat(kind) => match kind {
@@ -853,16 +859,23 @@ impl Shell {
     /// side panel.
     fn sync_panel(&mut self, cx: &mut Context<Self>) {
         let Some(v) = self.active_thread() else { return };
-        let (todos, subagents, designs) = {
-            let chat = v.read(cx).chat.read(cx);
+        let chat = v.read(cx).chat.clone();
+        // Todos, subagents and designs move only when the chat says so.
+        let fresh = crate::memory::panel_changed((chat.entity_id(), chat.read(cx).panel_rev()), cx);
+        let (todos, subagents, designs) = if fresh {
+            let chat = chat.read(cx);
             (chat.todos().to_vec(), chat.subagents(), chat.designs())
+        } else {
+            Default::default()
         };
         let chats = self.side_chats_of(self.active_task().map(|t| t.id));
         self.panel.update(cx, |p, cx| {
-            p.set_todos(todos, cx);
-            p.set_subagents(subagents, cx);
+            if fresh {
+                p.set_todos(todos, cx);
+                p.set_subagents(subagents, cx);
+                p.set_designs(designs.clone(), cx);
+            }
             p.set_side_chats(chats, cx);
-            p.set_designs(designs.clone(), cx);
         });
         // `DOVE_OPEN_CANVAS=1`: open the thread's latest design once it has
         // loaded (QA and scripting).
@@ -946,6 +959,7 @@ impl Shell {
                 None => self.navigate(Route::Home, window, cx),
             }
         }
+        crate::memory::tab_closed(self, id, window, cx);
         cx.notify();
     }
 
@@ -1094,6 +1108,8 @@ impl Shell {
         let _ = self.engine.store.set_setting("panel_open", if self.panel_open { "true" } else { "false" });
         if self.panel_open {
             self.panel.update(cx, |p, cx| p.refresh(cx));
+        } else {
+            crate::memory::watchdog(self, None, cx);
         }
         cx.notify();
     }

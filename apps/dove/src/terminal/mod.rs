@@ -77,7 +77,7 @@ impl TerminalView {
             program,
             last_output: Instant::now(),
             pty: None,
-            emu: Emulator::new(80, 24),
+            emu: emulator(80, 24),
             geometry: GridGeometry::default(),
             focus: cx.focus_handle(),
             error: None,
@@ -179,7 +179,7 @@ impl TerminalView {
 
     /// Clear screen and reset scrollback.
     pub fn clear(&mut self, cx: &mut Context<Self>) {
-        self.emu = Emulator::new(self.geometry.cols.max(2), self.geometry.rows.max(1));
+        self.emu = emulator(self.geometry.cols.max(2), self.geometry.rows.max(1));
         if let Some(p) = self.pty.as_mut() {
             p.write(b"\x0c");
         }
@@ -207,7 +207,7 @@ impl TerminalView {
     pub fn restart(&mut self, cx: &mut Context<Self>) {
         self._pump = None;
         self.pty = None;
-        self.emu = Emulator::new(self.geometry.cols.max(2), self.geometry.rows.max(1));
+        self.emu = emulator(self.geometry.cols.max(2), self.geometry.rows.max(1));
         self.start(cx);
         cx.notify();
     }
@@ -239,7 +239,7 @@ impl TerminalView {
             return;
         }
         if self.pty.is_none() && ks.key == "enter" && matches!(self.program, Program::Shell) {
-            self.emu = Emulator::new(self.geometry.cols.max(2), self.geometry.rows.max(1));
+            self.emu = emulator(self.geometry.cols.max(2), self.geometry.rows.max(1));
             self.start(cx);
             cx.notify();
             return;
@@ -425,4 +425,9 @@ pub fn open_system_terminal(dir: &Path) {
     if let Err(e) = result {
         tracing::warn!("could not open a terminal in {}: {e}", dir.display());
     }
+}
+
+/// A terminal grid keeping the user's "Scrollback lines" of history.
+fn emulator(cols: u16, rows: u16) -> Emulator {
+    Emulator::with_scrollback(cols, rows, crate::design::scrollback())
 }

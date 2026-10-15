@@ -12,10 +12,9 @@
 //! `App` component; React, hooks and Tailwind are available), and `svg`.
 //! React pages load React and Babel from unpkg the first time (cached).
 
-use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::{OnceLock, RwLock};
+use std::sync::{Mutex, OnceLock};
 
 use dove_core::proto::TaskId;
 use gpui::prelude::FluentBuilder as _;
@@ -284,7 +283,8 @@ struct Doc {
 
 struct Server {
     port: u16,
-    docs: RwLock<HashMap<String, Doc>>,
+    /// Published designs, most recently used kept (P13).
+    docs: Mutex<crate::memory::Lru<String, Doc>>,
     inbox: flume::Sender<(Option<TaskId>, String)>,
 }
 
@@ -300,7 +300,7 @@ pub fn start() -> Option<u16> {
     let port = listener.local_addr().ok()?.port();
     let (tx, rx) = flume::unbounded();
     let _ = INBOX.set(rx);
-    let _ = SERVER.set(Server { port, docs: RwLock::new(HashMap::new()), inbox: tx });
+    let _ = SERVER.set(Server { port, docs: Mutex::new(crate::memory::Lru::new(DOCS_MAX, DOCS_BYTES)), inbox: tx });
     std::thread::Builder::new()
         .name("dove-canvas".into())
         .spawn(move || {
@@ -333,12 +333,39 @@ pub fn send_to_thread(thread: Option<TaskId>, text: String) {
 pub fn publish(spec: &Spec, thread: Option<TaskId>) -> Option<String> {
     let port = start()?;
     let server = SERVER.get()?;
-    if let Ok(mut docs) = server.docs.write() {
-        docs.insert(spec.id.clone(), Doc { html: spec.page(), thread });
+    if let Ok(mut docs) = server.docs.lock() {
+        let html = spec.page();
+        let cost = html.len();
+        docs.insert(spec.id.clone(), Doc { html, thread }, cost);
     }
     // A cache-busting stamp so an updated design reloads.
     let stamp = dove_core::store::now_ms();
     Some(format!("http://127.0.0.1:{port}/c/{}?v={stamp}", spec.id))
+}
+
+/// Designs the loopback server keeps (a hibernated canvas republishes its
+/// own when shown again).
+const DOCS_MAX: usize = 48;
+const DOCS_BYTES: usize = 64 * 1024 * 1024;
+/// What the watchdog trims the server to.
+const DOCS_FLOOR: usize = 8;
+
+/// Stop serving a design (its canvas hibernated or closed).
+pub fn unpublish(id: &str) {
+    if let Some(server) = SERVER.get()
+        && let Ok(mut docs) = server.docs.lock()
+    {
+        docs.remove(&id.to_string());
+    }
+}
+
+/// The watchdog's trim: keep only the most recently used designs.
+pub fn trim_docs() {
+    if let Some(server) = SERVER.get()
+        && let Ok(mut docs) = server.docs.lock()
+    {
+        docs.shrink_to(DOCS_FLOOR, DOCS_BYTES, None);
+    }
 }
 
 fn serve(stream: TcpStream) -> std::io::Result<()> {
@@ -366,7 +393,7 @@ fn serve(stream: TcpStream) -> std::io::Result<()> {
     if method == "GET"
         && let Some(id) = path.strip_prefix("/c/")
     {
-        let html = server.docs.read().ok().and_then(|d| d.get(id).map(|d| d.html.clone()));
+        let html = server.docs.lock().ok().and_then(|mut d| d.get(&id.to_string()).map(|d| d.html.clone()));
         return match html {
             Some(html) => respond(&mut out, "200 OK", "text/html; charset=utf-8", html.as_bytes()),
             None => respond(&mut out, "404 Not Found", "text/plain", b"This design is no longer open."),
@@ -378,7 +405,7 @@ fn serve(stream: TcpStream) -> std::io::Result<()> {
         let mut body = vec![0u8; length];
         reader.read_exact(&mut body)?;
         let text = String::from_utf8_lossy(&body).trim().to_string();
-        let thread = server.docs.read().ok().and_then(|d| d.get(id).and_then(|d| d.thread));
+        let thread = server.docs.lock().ok().and_then(|mut d| d.get(&id.to_string()).and_then(|d| d.thread));
         if !text.is_empty() {
             let _ = server.inbox.send((thread, text));
         }
@@ -511,6 +538,9 @@ pub struct CanvasView {
     show_code: bool,
     url: Option<String>,
     loaded: bool,
+    /// The native page was dropped while hidden (D7); shown again, the
+    /// design is republished and reloaded.
+    hibernated: bool,
     refine_input: Entity<InputState>,
     code_editor: Entity<TextareaState>,
     _subs: Vec<Subscription>,
@@ -552,6 +582,7 @@ impl CanvasView {
             show_code: false,
             url: None,
             loaded: false,
+            hibernated: false,
             refine_input,
             code_editor,
             _subs: vec![sub],
@@ -612,6 +643,17 @@ impl CanvasView {
         cx.notify();
     }
 
+    /// Drop the native page and stop serving the design (D7: a hidden
+    /// canvas of a closed thread, or the memory watchdog).
+    pub fn hibernate(&mut self, cx: &mut Context<Self>) {
+        if self.hibernated || self.browser.read(cx).presentation() != crate::browser::model::Presentation::Hidden {
+            return;
+        }
+        self.browser.update(cx, |b, cx| b.hibernate(false, cx));
+        unpublish(&self.spec.id);
+        self.hibernated = true;
+    }
+
     /// Whether the native page should be live (it hides under the code view).
     pub fn page_visible(&self) -> bool {
         !self.show_code
@@ -643,6 +685,14 @@ impl CanvasView {
 impl Render for CanvasView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::perf_trace::count_render("CanvasView");
+        if self.hibernated
+            && self.page_visible()
+            && self.browser.read(cx).presentation() != crate::browser::model::Presentation::Hidden
+        {
+            // Shown again: republish and reload the design.
+            self.hibernated = false;
+            cx.defer_in(window, |this, window, cx| this.load(window, cx));
+        }
         let t = Theme::of(cx).clone();
         let device = self.device;
         let devices = div().flex().items_center().gap(px(2.0)).p(px(2.0)).rounded(px(8.0)).bg(t.wash(0.05)).children(

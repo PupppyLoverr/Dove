@@ -231,6 +231,10 @@ pub struct BrowserSurface {
     /// No address bar: the page alone (canvases).
     pub chromeless: bool,
     agent_generation: u64,
+    /// The native page was dropped while hidden (D7). `Some(true)`: reload
+    /// the URL when shown again; `Some(false)`: the owner reloads it (a
+    /// canvas republishes its design first).
+    hibernated: Option<bool>,
 }
 
 impl EventEmitter<BrowserEvent> for BrowserSurface {}
@@ -299,6 +303,7 @@ impl BrowserSurface {
             agent_activity: None,
             agent_generation: 0,
             chromeless: false,
+            hibernated: None,
         }
     }
 
@@ -447,6 +452,7 @@ impl BrowserSurface {
                     .map(|mut native| {
                         native.present(self.presentation);
                         self.native = Some(native);
+                        self.hibernated = None;
                     })
                     .and_then(|_| self.native.as_ref().unwrap().load(&url))
             };
@@ -592,6 +598,53 @@ impl BrowserSurface {
                 self.favicon_task = None;
                 self.favicon_generation += 1;
             }
+        }
+    }
+
+    /// How the native page is presented right now.
+    pub fn presentation(&self) -> Presentation {
+        self.presentation
+    }
+
+    /// Destroy the native web view of a hidden tab, keeping its URL, title
+    /// and favicon (D7). With `self_wake` the tab reloads its URL when it is
+    /// shown again; otherwise its owner reloads it.
+    pub fn hibernate(&mut self, self_wake: bool, cx: &mut Context<Self>) {
+        if self.presentation != Presentation::Hidden || self.hibernated.is_some() {
+            return;
+        }
+        #[cfg(any(target_os = "macos", target_os = "linux", windows))]
+        {
+            let Some(native) = self.native.as_mut() else { return };
+            native.present(Presentation::Hidden);
+            #[cfg(target_os = "linux")]
+            if let Some(image) = native.image.take() {
+                cx.defer(move |cx| gpui::ImageSource::Render(image).evict(None, cx));
+            }
+            self.native = None;
+            #[cfg(any(target_os = "macos", windows))]
+            {
+                self.favicon_task = None;
+                self.favicon_generation += 1;
+            }
+            self.page.loading = false;
+            self.hibernated = Some(self_wake);
+            cx.notify();
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+        let _ = (self_wake, cx);
+    }
+
+    /// Recreate a hibernated tab's page at its last URL. Canvases are woken
+    /// by their owner instead.
+    pub fn wake(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.hibernated != Some(true) {
+            return;
+        }
+        self.hibernated = None;
+        match self.page.url.clone() {
+            Some(url) => self.navigate_quiet(&url, window, cx),
+            None => cx.notify(),
         }
     }
 }

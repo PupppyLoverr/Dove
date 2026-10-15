@@ -970,18 +970,20 @@ mod tests {
         let t0 = Instant::now();
         let first = folds.step(key, false, t0);
         assert!(!first.mounted && !first.animating, "a first frame never animates");
-        first.natural.set(100.0);
+        // Opening lays the body out at once and fades it in.
         let opening = folds.step(key, true, t0);
         assert!(opening.animating && opening.mounted);
-        assert_eq!(opening.clip, Some(0.0));
+        assert_eq!(opening.reveal, 0.0);
         let mid = folds.step(key, true, t0 + FOLD / 2);
-        let h = mid.clip.expect("clipped mid-tween");
-        assert!(h > 0.0 && h < 100.0);
-        // Reversing mid-flight starts from the current height, not the end.
+        assert!(mid.reveal > 0.0 && mid.reveal < 1.0);
+        assert!(mid.disclosure > 0.0 && mid.disclosure < 1.0);
+        // Closing removes the body at once; only the chevron turns back.
         let back = folds.step(key, false, t0 + FOLD / 2);
-        assert_eq!(back.clip, Some(h));
+        assert!(!back.mounted && back.animating);
+        assert_eq!(back.disclosure, 1.0);
         let done = folds.step(key, false, t0 + FOLD * 3);
         assert!(!done.mounted && !done.animating);
+        assert_eq!(done.disclosure, 0.0);
     }
 
     #[test]

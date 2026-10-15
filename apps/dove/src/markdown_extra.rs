@@ -1,6 +1,5 @@
 //! Mermaid diagrams and a compact LaTeX → readable math line.
 
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use gpui::{Image, ImageFormat};
@@ -16,8 +15,21 @@ pub enum Diagram {
     Failed(String),
 }
 
-static MERMAID: std::sync::LazyLock<Mutex<HashMap<u64, Diagram>>> =
-    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+/// Rendered diagrams kept (each holds an SVG and, once drawn, its raster).
+pub const MERMAID_CACHE: usize = 64;
+/// What the watchdog trims the diagram cache to.
+const MERMAID_FLOOR: usize = 8;
+
+struct Diagrams {
+    cache: crate::memory::Lru<u64, Diagram>,
+    /// Images that left the cache, whose decoded rasters are released on
+    /// the next frame (that needs the app).
+    evicted: Vec<Arc<Image>>,
+}
+
+static MERMAID: std::sync::LazyLock<Mutex<Diagrams>> = std::sync::LazyLock::new(|| {
+    Mutex::new(Diagrams { cache: crate::memory::Lru::new(MERMAID_CACHE, usize::MAX), evicted: Vec::new() })
+});
 
 fn key(source: &str, dark: bool) -> u64 {
     use std::hash::{Hash, Hasher};
@@ -30,7 +42,7 @@ fn key(source: &str, dark: bool) -> u64 {
 pub fn mermaid(source: &str, theme: &Theme) -> Diagram {
     let dark = theme.appearance.is_dark();
     let k = key(source, dark);
-    if let Some(hit) = MERMAID.lock().ok().and_then(|c| c.get(&k).cloned()) {
+    if let Some(hit) = MERMAID.lock().ok().and_then(|mut c| c.cache.get(&k).cloned()) {
         return hit;
     }
     let rendered = render_mermaid(source, dark);
@@ -41,10 +53,42 @@ pub fn mermaid(source: &str, theme: &Theme) -> Diagram {
         }
         Err(e) => Diagram::Failed(e),
     };
-    if let Ok(mut cache) = MERMAID.lock() {
-        cache.insert(k, diagram.clone());
+    if let Ok(mut d) = MERMAID.lock() {
+        let out = d.cache.insert(k, diagram.clone(), 0);
+        d.evicted.extend(out.into_iter().filter_map(|(_, v)| match v {
+            Diagram::Ready(img, _) => Some(img),
+            Diagram::Failed(_) => None,
+        }));
     }
     diagram
+}
+
+/// Free the rasters of diagrams that left the cache. Call with a window
+/// being drawn (the transcript does, each frame; it is free when empty).
+pub fn release_evicted(window: &mut gpui::Window, cx: &mut gpui::App) {
+    release(Some(window), cx);
+}
+
+fn release(mut window: Option<&mut gpui::Window>, cx: &mut gpui::App) {
+    let gone = match MERMAID.lock() {
+        Ok(mut d) if !d.evicted.is_empty() => std::mem::take(&mut d.evicted),
+        _ => return,
+    };
+    for img in gone {
+        gpui::ImageSource::Image(img).evict(window.as_deref_mut(), cx);
+    }
+}
+
+/// The watchdog's trim: keep only the most recent few diagrams.
+pub fn trim(window: Option<&mut gpui::Window>, cx: &mut gpui::App) {
+    if let Ok(mut d) = MERMAID.lock() {
+        let out = d.cache.shrink_to(MERMAID_FLOOR, usize::MAX, None);
+        d.evicted.extend(out.into_iter().filter_map(|(_, v)| match v {
+            Diagram::Ready(img, _) => Some(img),
+            Diagram::Failed(_) => None,
+        }));
+    }
+    release(window, cx);
 }
 
 fn render_mermaid(source: &str, dark: bool) -> Result<String, String> {
