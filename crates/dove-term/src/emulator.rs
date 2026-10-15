@@ -167,8 +167,14 @@ pub struct Emulator {
 
 impl Emulator {
     pub fn new(cols: u16, rows: u16) -> Self {
+        Self::with_scrollback(cols, rows, SCROLLBACK_LINES)
+    }
+
+    /// An emulator keeping `scrollback` lines of history (the user's
+    /// "Scrollback lines" setting; [`SCROLLBACK_LINES`] by default).
+    pub fn with_scrollback(cols: u16, rows: u16, scrollback: usize) -> Self {
         let capture = EventCapture::default();
-        let config = Config { scrolling_history: SCROLLBACK_LINES, ..Config::default() };
+        let config = Config { scrolling_history: scrollback, ..Config::default() };
         let term = Term::new(config, &GridSize::new(cols, rows), capture.clone());
         Self { term, parser: Processor::new(), capture, title: None, bell: false }
     }
@@ -483,6 +489,17 @@ mod tests {
         let mut e = emu(20, 2);
         e.feed(b"abcdef\x1b[3D\x1b[K"); // erase from cursor (col 3) to end
         assert_eq!(e.row_text(0), "abc");
+    }
+
+    #[test]
+    fn scrollback_is_capped_by_the_setting() {
+        let mut e = Emulator::with_scrollback(10, 3, 4);
+        for i in 1..=20 {
+            e.feed(format!("line{i}\r\n").as_bytes());
+        }
+        assert_eq!(e.history_lines(), 4);
+        e.scroll(100);
+        assert_eq!(e.row_text(0), "line15");
     }
 
     #[test]

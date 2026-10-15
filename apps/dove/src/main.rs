@@ -18,6 +18,7 @@ mod markdown;
 mod markdown_extra;
 mod math;
 mod mcp_browser;
+mod memory;
 mod motion;
 mod notify;
 mod office;

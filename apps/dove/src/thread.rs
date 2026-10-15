@@ -443,6 +443,19 @@ impl ThreadView {
     }
 
     /// Stop everything (thread deleted or archived).
+    /// Whether this view can be dropped and rebuilt later from disk (tab
+    /// hibernation): no agent session is attached, no terminal runs, and no
+    /// hand-off between them is underway.
+    pub fn can_hibernate(&self, cx: &gpui::App) -> bool {
+        self.driver == ViewMode::Chat
+            && self.terminal.as_ref().is_none_or(|t| !t.read(cx).is_running())
+            && self.mirror.is_none()
+            && self.sheet.is_none()
+            && self.armed.is_none()
+            && self.busy.is_none()
+            && !self.chat.read(cx).is_live()
+    }
+
     pub fn shutdown(&mut self, cx: &mut Context<Self>) {
         let (task, _) = self.task(cx);
         if let Some(t) = self.terminal.take() {

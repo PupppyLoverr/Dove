@@ -12,7 +12,6 @@
 //! only the open tail row is re-laid out per frame.
 
 use std::collections::HashMap;
-use std::ops::Range;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -91,6 +90,11 @@ pub struct Tool {
     pub title: SharedString,
     pub kind: ToolKind,
     pub output: Option<SharedString>,
+    /// Lines of a long output left out between its head and tail (the whole
+    /// text is on disk; see [`compact_output`]).
+    pub elided: usize,
+    /// Byte offset of the result in the transcript, when replayed.
+    pub disk: Option<u64>,
     pub error: bool,
     pub diff: Option<Arc<MiniDiff>>,
     /// The user's fold choice; `None` follows [`Tool::opens_by_default`].
@@ -326,7 +330,8 @@ pub enum Row {
     Error(SharedString),
     /// The end of a turn: message actions and how long it took.
     TurnEnd {
-        msgs: Range<usize>,
+        /// The turn streamed some text (its Copy reads it back from disk).
+        has_text: bool,
         prompt: Option<SharedString>,
         elapsed: Option<Duration>,
         failed: bool,
@@ -351,16 +356,210 @@ pub struct Effects {
     pub canvas: Option<crate::canvas::Spec>,
 }
 
+/// A subagent's own event log, keyed by the spawning call's id.
+///
+/// Once the subagent has finished and every view following it has caught
+/// up, its events are pruned (they stay on disk); the counters the panel
+/// shows survive the pruning.
+#[derive(Default)]
+pub struct SubLog {
+    /// Events from absolute index [`SubLog::base`] on.
+    pub events: Vec<AgentEvent>,
+    /// Events already dropped from the front.
+    pub base: usize,
+    /// Tool calls the subagent has made.
+    pub steps: usize,
+    /// Its latest step, for "doing" while it runs.
+    pub doing: Option<String>,
+}
+
+impl SubLog {
+    /// Events seen in all, pruned or not.
+    pub fn len(&self) -> usize {
+        self.base + self.events.len()
+    }
+
+    fn push(&mut self, ev: AgentEvent) {
+        if matches!(ev, AgentEvent::ToolCall { .. }) {
+            self.steps += 1;
+        }
+        if let Some(d) = doing_of(&ev) {
+            self.doing = Some(d);
+        }
+        self.events.push(ev);
+    }
+
+    /// Drop the events before absolute index `upto`.
+    fn prune_to(&mut self, upto: usize) {
+        let n = upto.saturating_sub(self.base).min(self.events.len());
+        if n > 0 {
+            self.events.drain(..n);
+            self.events.shrink_to_fit();
+            self.base += n;
+        }
+    }
+
+    /// The events from absolute index `from` that are still in memory.
+    pub fn since(&self, from: usize) -> &[AgentEvent] {
+        &self.events[from.saturating_sub(self.base).min(self.events.len())..]
+    }
+}
+
+/// A step label from one subagent event.
+fn doing_of(e: &AgentEvent) -> Option<String> {
+    match e {
+        AgentEvent::ToolCall { title, .. } => Some(title.to_string()),
+        AgentEvent::Status { text } => Some(text.to_string()),
+        AgentEvent::ThinkingDelta { .. } => Some("Thinking".into()),
+        AgentEvent::TextDelta { .. } => Some("Writing".into()),
+        _ => None,
+    }
+}
+
+/// Outputs past this size keep only a head and a tail in memory; the whole
+/// text stays in the transcript on disk.
+const OUTPUT_COMPACT: usize = 32 * 1024;
+/// Bytes of a compacted output's head and of its tail.
+const OUTPUT_EDGE: usize = 16 * 1024;
+
+/// A long tool output's head and tail (each at most [`OUTPUT_FULL`] lines
+/// and [`OUTPUT_EDGE`] bytes) joined by a newline, and how many lines were
+/// left out between them. Short outputs come back whole.
+pub fn compact_output(s: &str) -> (SharedString, usize) {
+    if s.len() <= OUTPUT_COMPACT {
+        return (SharedString::from(s.to_string()), 0);
+    }
+    let text = s.trim_end();
+    // The head: up to OUTPUT_FULL lines, cut at a char boundary.
+    let mut head_end = 0;
+    for (n, (i, _)) in text.match_indices('\n').enumerate() {
+        if n >= OUTPUT_FULL || i > OUTPUT_EDGE {
+            break;
+        }
+        head_end = i;
+    }
+    if head_end == 0 {
+        head_end = floor_boundary(text, OUTPUT_EDGE);
+    }
+    // The tail: the last OUTPUT_FULL lines, at most OUTPUT_EDGE bytes.
+    let mut tail_start = text.len();
+    for (n, (i, _)) in text.rmatch_indices('\n').enumerate() {
+        if n >= OUTPUT_FULL || text.len() - i > OUTPUT_EDGE {
+            break;
+        }
+        tail_start = i + 1;
+    }
+    if tail_start == text.len() {
+        tail_start = ceil_boundary(text, text.len().saturating_sub(OUTPUT_EDGE));
+    }
+    if tail_start <= head_end {
+        return (SharedString::from(s.to_string()), 0);
+    }
+    let (head, middle, tail) = (&text[..head_end], &text[head_end..tail_start], &text[tail_start..]);
+    // Lines wholly between the two kept parts.
+    let elided = middle.matches('\n').count().saturating_sub(1);
+    (SharedString::from(format!("{head}\n{tail}")), elided)
+}
+
+fn floor_boundary(s: &str, mut i: usize) -> usize {
+    i = i.min(s.len());
+    while !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
+fn ceil_boundary(s: &str, mut i: usize) -> usize {
+    i = i.min(s.len());
+    while !s.is_char_boundary(i) {
+        i += 1;
+    }
+    i
+}
+
+/// Events that end the streaming assistant message (each later text delta
+/// opens a new one), as [`Chat::apply`] treats them.
+fn closes_text(ev: &AgentEvent) -> bool {
+    !matches!(
+        ev,
+        AgentEvent::SessionStarted { .. }
+            | AgentEvent::TextDelta { .. }
+            | AgentEvent::ToolTitle { .. }
+            | AgentEvent::ToolDiff { .. }
+            | AgentEvent::ToolResult { .. }
+            | AgentEvent::PermissionResolved { .. }
+            | AgentEvent::Todos { .. }
+            | AgentEvent::Status { .. }
+            | AgentEvent::ContextUsage { .. }
+            | AgentEvent::RateLimits { .. }
+            | AgentEvent::Commands { .. }
+            | AgentEvent::Subagent { .. }
+    )
+}
+
+/// The source text of the assistant messages in the turn that ended with
+/// the `from_end`-th `TurnEnded` counted from the end (0 = the last one),
+/// trimmed and joined by blank lines: what a turn's Copy puts on the
+/// clipboard. Read from the transcript, so the chat keeps no second copy.
+pub fn turn_text(events: &[AgentEvent], from_end: usize) -> String {
+    let Some(end) = events
+        .iter()
+        .enumerate()
+        .rev()
+        .filter(|(_, e)| matches!(e, AgentEvent::TurnEnded { .. }))
+        .nth(from_end)
+        .map(|(i, _)| i)
+    else {
+        return String::new();
+    };
+    // The turn's messages start after the previous turn end or user message.
+    let start = events[..end]
+        .iter()
+        .rposition(|e| matches!(e, AgentEvent::TurnEnded { .. } | AgentEvent::UserMessage { .. }))
+        .map_or(0, |i| i + 1);
+    let mut messages: Vec<String> = Vec::new();
+    let mut open = false;
+    for ev in &events[start..end] {
+        match ev {
+            AgentEvent::TextDelta { text } => {
+                if !open {
+                    messages.push(String::new());
+                    open = true;
+                }
+                if let Some(m) = messages.last_mut() {
+                    m.push_str(text);
+                }
+            }
+            e if closes_text(e) => open = false,
+            _ => {}
+        }
+    }
+    messages.iter().map(|m| m.trim()).filter(|m| !m.is_empty()).collect::<Vec<_>>().join("\n\n")
+}
+
+/// Unique change stamps for the side-panel data a chat feeds (todos,
+/// subagents, designs), so the shell re-sends that data only when it moved.
+fn next_rev() -> u64 {
+    static REV: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    REV.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 /// A thread's transcript as plain data.
+///
+/// Besides the rows it keeps small indexes, updated as events arrive, so
+/// what the UI asks for on every batch or render (the pending approval, the
+/// user messages for the rail, subagents, designs) costs O(new events) to
+/// maintain and O(answer) to read, never a scan of every row.
 #[derive(Default)]
 pub struct Chat {
     pub rows: Vec<Row>,
-    /// Source text of each assistant message, for copy.
-    pub messages: Vec<String>,
+    /// Assistant messages opened so far (they number [`Row::Block`]'s `msg`).
+    msgs: usize,
     open: Option<Open>,
     open_activity: Option<usize>,
     /// The streaming thought: its activity row and Zeron's incremental parser.
     thought: Option<(usize, zeron_markdown::IncrementalParser)>,
+    /// Every tool call by id: (activity row, index in the activity).
     tools: HashMap<String, (usize, usize)>,
     pub todos: Vec<TodoItem>,
     pub running_agents: Vec<SharedString>,
@@ -370,7 +569,8 @@ pub struct Chat {
     pub context: (Option<u64>, Option<u64>),
     pub rate_limits: Vec<RateWindow>,
     pub turn_started: Option<Instant>,
-    turn_first_msg: usize,
+    /// The current turn has streamed some non-blank text (its Copy shows).
+    turn_text: bool,
     turn_prompt: Option<SharedString>,
     /// Lowest row index changed since the last take (rows past the old
     /// length are new, not changed).
@@ -380,23 +580,69 @@ pub struct Chat {
     answered: bool,
     /// Each subagent's own events, by the spawning call's id, for the
     /// subagent view to replay.
-    pub subs: HashMap<String, Vec<AgentEvent>>,
+    pub subs: HashMap<String, SubLog>,
+    // ---- indexes (row numbers, ascending)
+    users: Vec<usize>,
+    permissions: Vec<usize>,
+    /// Agent tool calls: (activity row, index in the activity).
+    agents: Vec<(usize, usize)>,
+    /// The row of each design and each live widget card, by id.
+    canvas_rows: HashMap<String, usize>,
+    widget_rows: HashMap<String, usize>,
+    last_turn_end: Option<usize>,
+    /// Changes when todos, subagents or designs change.
+    rev: u64,
+    // ---- tail-first loading
+    /// Byte offset of the event being replayed, recorded on tool results so
+    /// a compacted output can be read back whole.
+    offset: Option<u64>,
+    /// Older history is not loaded yet.
+    pub partial: bool,
+    /// Events about calls or requests in the unloaded history, applied once
+    /// it is hydrated.
+    orphans: Vec<AgentEvent>,
+    /// The thread's first prompt when it is not loaded (for auto titles).
+    pub first_prompt: Option<SharedString>,
+    /// Designs made in the unloaded history, for the canvas gallery.
+    pub older_designs: Vec<crate::canvas::Spec>,
 }
 
 impl Chat {
     /// Rebuild a saved transcript (call off the UI thread).
+    #[cfg(test)]
     pub fn replay(events: Vec<AgentEvent>) -> Self {
-        let mut chat = Chat::default();
-        for ev in events {
+        Self::replay_tail(Vec::new(), events.into_iter().map(|e| (None, e)), false)
+    }
+
+    /// Rebuild the loaded part of a transcript: `state` (todos, context and
+    /// rate-limit events from the unloaded history, which make no rows)
+    /// then `events`, each with its byte offset on disk when known.
+    /// `partial` says older history exists that is not loaded.
+    pub fn replay_tail(
+        state: Vec<AgentEvent>,
+        events: impl IntoIterator<Item = (Option<u64>, AgentEvent)>,
+        partial: bool,
+    ) -> Self {
+        let mut chat = Chat { partial, ..Default::default() };
+        for ev in state {
             chat.apply(ev, false);
         }
+        for (offset, ev) in events {
+            chat.offset = offset;
+            chat.apply(ev, false);
+        }
+        chat.offset = None;
         chat.close_all();
         for i in std::mem::take(&mut chat.to_highlight) {
             if let Some(Row::Block { block, .. }) = chat.rows.get_mut(i) {
                 *block = Arc::new(markdown::highlight_block((**block).clone()));
             }
         }
+        // A replayed subagent's events are all on disk: its view reads
+        // them from there.
+        chat.prune_subs(&HashMap::new(), true);
         chat.dirty = None;
+        chat.rev = next_rev();
         chat
     }
 
@@ -404,9 +650,44 @@ impl Chat {
         self.dirty = Some(self.dirty.map_or(i, |d| d.min(i)));
     }
 
+    fn bump(&mut self) {
+        self.rev = next_rev();
+    }
+
+    /// Changes whenever todos, subagents or designs change.
+    pub fn panel_rev(&self) -> u64 {
+        self.rev
+    }
+
     fn push(&mut self, row: Row) -> usize {
+        let i = self.rows.len();
+        match &row {
+            Row::User { .. } => self.users.push(i),
+            Row::Permission { .. } => self.permissions.push(i),
+            Row::TurnEnd { .. } => self.last_turn_end = Some(i),
+            Row::Block { block, .. } => self.index_block(i, block),
+            _ => {}
+        }
         self.rows.push(row);
-        self.rows.len() - 1
+        i
+    }
+
+    /// Record a design or widget card's row by its id.
+    fn index_block(&mut self, i: usize, block: &Block) {
+        match block {
+            Block::Canvas(src) => {
+                if let Some(spec) = crate::canvas::Spec::parse(src) {
+                    self.canvas_rows.insert(spec.id, i);
+                    self.bump();
+                }
+            }
+            Block::Widget(src) => {
+                if let Some(spec) = crate::widget::Spec::parse(src).filter(|s| !s.id.is_empty()) {
+                    self.widget_rows.insert(spec.id, i);
+                }
+            }
+            _ => {}
+        }
     }
 
     /// End the streaming message: its tail becomes final rows.
@@ -442,11 +723,17 @@ impl Chat {
     fn close_activity(&mut self) {
         self.close_thought();
         if let Some(i) = self.open_activity.take() {
+            let mut agents = false;
             if let Some(Row::Activity(a)) = self.rows.get_mut(i) {
                 a.live = false;
                 if a.thought.is_none() {
                     a.thought = a.started.map(|s| s.elapsed());
                 }
+                agents = a.tools.iter().any(|t| t.kind == ToolKind::Agent);
+            }
+            if agents {
+                // Its subagents no longer count as running.
+                self.bump();
             }
             self.touch(i);
         }
@@ -462,8 +749,7 @@ impl Chat {
         if let Some(i) = self.open_activity {
             return i;
         }
-        self.push(Row::Activity(Activity { live: true, started: Some(Instant::now()), ..Default::default() }));
-        let i = self.rows.len() - 1;
+        let i = self.push(Row::Activity(Activity { live: true, started: Some(Instant::now()), ..Default::default() }));
         self.open_activity = Some(i);
         i
     }
@@ -473,13 +759,12 @@ impl Chat {
             self.close_activity();
         }
         if self.open.is_none() {
-            let msg = self.messages.len();
-            self.messages.push(String::new());
+            let msg = self.msgs;
+            self.msgs += 1;
             let row = self.push(Row::Live { blocks: Vec::new() });
             self.open = Some(Open { stream: Stream::default(), msg, row });
         }
         let open = self.open.as_mut().expect("opened above");
-        self.messages[open.msg].push_str(delta);
         let up = open.stream.push(delta);
         let (msg, row) = (open.msg, open.row);
         if up.finished.is_empty() {
@@ -502,10 +787,32 @@ impl Chat {
         }
     }
 
+    /// An event about a call or a request that lives in the unloaded
+    /// history: kept until that history is hydrated.
+    fn is_orphan(&self, ev: &AgentEvent) -> bool {
+        if !self.partial {
+            return false;
+        }
+        match ev {
+            AgentEvent::ToolTitle { call_id, .. }
+            | AgentEvent::ToolDiff { call_id, .. }
+            | AgentEvent::ToolResult { call_id, .. } => !self.tools.contains_key(call_id),
+            AgentEvent::PermissionResolved { request_id, .. } => !self
+                .permissions
+                .iter()
+                .any(|&i| matches!(&self.rows[i], Row::Permission { req, .. } if req.request_id == *request_id)),
+            _ => false,
+        }
+    }
+
     pub fn apply(&mut self, ev: AgentEvent, live: bool) -> Effects {
         let mut fx = Effects::default();
         if live {
             fx.status = dove_core::next_status(&ev);
+        }
+        if self.is_orphan(&ev) {
+            self.orphans.push(ev);
+            return fx;
         }
         match ev {
             AgentEvent::SessionStarted { native_session_id, .. } => fx.native = native_session_id,
@@ -518,7 +825,7 @@ impl Chat {
                 let text: SharedString = dove_core::strip_persona(&text).to_string().into();
                 self.turn_prompt = Some(text.clone());
                 self.turn_started = live.then(Instant::now);
-                self.turn_first_msg = self.messages.len();
+                self.turn_text = false;
                 let i = self.push(Row::User { text, at });
                 if live {
                     fx.runway = Some(i);
@@ -528,6 +835,9 @@ impl Chat {
                 if !self.answered && live && !text.trim().is_empty() {
                     self.answered = true;
                     fx.first_answer = true;
+                }
+                if !text.trim().is_empty() {
+                    self.turn_text = true;
                 }
                 self.text(&text);
             }
@@ -571,21 +881,17 @@ impl Chat {
                 self.close_all();
                 if let Some(spec) = crate::canvas::Spec::from_value(input.clone()) {
                     let json = spec.to_json();
-                    let existing = self.rows.iter().rposition(|r| match r {
-                        Row::Block { block, .. } => matches!(&**block, Block::Canvas(src)
-                            if crate::canvas::Spec::parse(src).is_some_and(|s| s.id == spec.id)),
-                        _ => false,
-                    });
-                    match existing {
+                    match self.canvas_rows.get(&spec.id).copied() {
                         Some(i) => {
-                            if let Row::Block { block, .. } = &mut self.rows[i] {
+                            if let Some(Row::Block { block, .. }) = self.rows.get_mut(i) {
                                 *block = Arc::new(Block::Canvas(json));
                             }
+                            self.bump();
                             self.touch(i);
                         }
                         None => {
-                            let msg = self.messages.len();
-                            self.messages.push(String::new());
+                            let msg = self.msgs;
+                            self.msgs += 1;
                             self.push(Row::Block { block: Arc::new(Block::Canvas(json)), msg });
                         }
                     }
@@ -600,25 +906,17 @@ impl Chat {
                 if let Some(spec) = crate::widget::Spec::from_value(input.clone()) {
                     // Same id as an earlier card: update that card in place
                     // (live dashboards, progress), instead of stacking copies.
-                    let existing = (!spec.id.is_empty())
-                        .then(|| {
-                            self.rows.iter().rposition(|r| match r {
-                                Row::Block { block, .. } => matches!(&**block, Block::Widget(src)
-                                    if crate::widget::Spec::parse(src).is_some_and(|s| s.id == spec.id)),
-                                _ => false,
-                            })
-                        })
-                        .flatten();
+                    let existing = (!spec.id.is_empty()).then(|| self.widget_rows.get(&spec.id).copied()).flatten();
                     match existing {
                         Some(i) => {
-                            if let Row::Block { block, .. } = &mut self.rows[i] {
+                            if let Some(Row::Block { block, .. }) = self.rows.get_mut(i) {
                                 *block = Arc::new(Block::Widget(input.to_string()));
                             }
                             self.touch(i);
                         }
                         None => {
-                            let msg = self.messages.len();
-                            self.messages.push(String::new());
+                            let msg = self.msgs;
+                            self.msgs += 1;
                             self.push(Row::Block { block: Arc::new(Block::Widget(input.to_string())), msg });
                         }
                     }
@@ -631,15 +929,20 @@ impl Chat {
                     if a.thought.is_none() && !a.thinking.is_empty() {
                         a.thought = a.started.map(|s| s.elapsed());
                     }
+                    let j = a.tools.len();
                     if kind == ToolKind::Agent {
                         self.running_agents.push(title.to_string().into());
+                        self.agents.push((i, j));
+                        self.rev = next_rev();
                     }
-                    self.tools.insert(call_id.clone(), (i, a.tools.len()));
+                    self.tools.insert(call_id.clone(), (i, j));
                     a.tools.push(Tool {
                         id: call_id,
                         title: title.to_string().into(),
                         kind,
                         output: None,
+                        elided: 0,
+                        disk: None,
                         error: false,
                         diff: diff_from_input(&title, &input).map(Arc::new),
                         open: None,
@@ -656,6 +959,9 @@ impl Chat {
                 if let Some(&(i, j)) = self.tools.get(&call_id) {
                     if let Some(Row::Activity(a)) = self.rows.get_mut(i) {
                         a.tools[j].title = title.to_string().into();
+                        if a.tools[j].kind == ToolKind::Agent {
+                            self.rev = next_rev();
+                        }
                     }
                     self.touch(i);
                 }
@@ -671,17 +977,26 @@ impl Chat {
             }
             AgentEvent::ToolResult { call_id, output, is_error } => {
                 if let Some(&(i, j)) = self.tools.get(&call_id) {
+                    let disk = self.offset;
+                    let mut agent = false;
                     if let Some(Row::Activity(a)) = self.rows.get_mut(i) {
                         let t = &mut a.tools[j];
                         if t.kind == ToolKind::Agent {
+                            agent = true;
                             let title = t.title.clone();
                             if let Some(p) = self.running_agents.iter().position(|x| *x == title) {
                                 self.running_agents.remove(p);
                             }
                         }
-                        t.output = Some(output.to_string().into());
+                        let (out, elided) = compact_output(&output);
+                        t.output = Some(out);
+                        t.elided = elided;
+                        t.disk = disk;
                         t.error = is_error;
                         t.took = t.started.map(|s| s.elapsed());
+                    }
+                    if agent {
+                        self.bump();
                     }
                     self.touch(i);
                 }
@@ -692,11 +1007,11 @@ impl Chat {
                 self.push(Row::Permission { req, decided });
             }
             AgentEvent::PermissionResolved { request_id, decision } => {
-                if let Some(i) = self
-                    .rows
-                    .iter()
-                    .rposition(|r| matches!(r, Row::Permission { req, .. } if req.request_id == request_id))
-                {
+                let found =
+                    self.permissions.iter().rev().copied().find(
+                        |&i| matches!(&self.rows[i], Row::Permission { req, .. } if req.request_id == request_id),
+                    );
+                if let Some(i) = found {
                     if let Row::Permission { decided, .. } = &mut self.rows[i] {
                         *decided = Some(decision);
                     }
@@ -707,7 +1022,10 @@ impl Chat {
                 self.close_all();
                 self.push(Row::Plan(markdown::parse(&text)));
             }
-            AgentEvent::Todos { items } => self.todos = items,
+            AgentEvent::Todos { items } => {
+                self.todos = items;
+                self.bump();
+            }
             AgentEvent::Status { text } => self.status_text = Some(text.to_string().into()),
             AgentEvent::ContextUsage { tokens, window } => {
                 // Missing fields keep the previous measurement.
@@ -742,23 +1060,25 @@ impl Chat {
                 if live {
                     self.usage += usage.unwrap_or_default();
                 }
-                let msgs = self.turn_first_msg..self.messages.len();
+                let has_text = std::mem::take(&mut self.turn_text);
                 let elapsed = self.turn_started.take().map(|s| s.elapsed());
-                self.push(Row::TurnEnd { msgs, prompt: self.turn_prompt.clone(), elapsed, failed: is_error });
-                self.turn_first_msg = self.messages.len();
+                self.push(Row::TurnEnd { has_text, prompt: self.turn_prompt.clone(), elapsed, failed: is_error });
             }
             AgentEvent::Exited { .. } => {
                 self.close_all();
                 self.turn_started = None;
             }
-            AgentEvent::Subagent { parent, event } => self.subs.entry(parent).or_default().push(*event),
+            AgentEvent::Subagent { parent, event } => {
+                self.subs.entry(parent).or_default().push(*event);
+                self.bump();
+            }
         }
         fx
     }
 
     /// The pending question or approval, if the agent is waiting on one.
     pub fn pending(&self) -> Option<(usize, &PermissionRequest)> {
-        self.rows.iter().enumerate().rev().find_map(|(i, r)| match r {
+        self.permissions.iter().rev().find_map(|&i| match &self.rows[i] {
             Row::Permission { req, decided: None } => Some((i, req)),
             _ => None,
         })
@@ -766,14 +1086,71 @@ impl Chat {
 
     /// Text of each user message, for the session rail.
     pub fn user_messages(&self) -> Vec<(usize, SharedString)> {
-        self.rows
+        self.users
             .iter()
-            .enumerate()
-            .filter_map(|(i, r)| match r {
+            .filter_map(|&i| match &self.rows[i] {
                 Row::User { text, .. } => Some((i, text.clone())),
                 _ => None,
             })
             .collect()
+    }
+
+    /// Whether `text` was sent as a user message (in the loaded rows).
+    pub fn has_user_message(&self, text: &str) -> bool {
+        self.users.iter().any(|&i| matches!(&self.rows[i], Row::User { text: t, .. } if t.trim() == text))
+    }
+
+    /// The last turn-end row, which alone offers Fork.
+    pub fn last_turn_end(&self) -> Option<usize> {
+        self.last_turn_end
+    }
+
+    /// Every design, newest first (one per id), with designs of the
+    /// unloaded history after the loaded ones.
+    pub fn designs(&self) -> Vec<crate::canvas::Spec> {
+        let mut rows: Vec<usize> = self.canvas_rows.values().copied().collect();
+        rows.sort_unstable_by(|a, b| b.cmp(a));
+        let mut out: Vec<crate::canvas::Spec> = rows
+            .into_iter()
+            .filter_map(|i| match self.rows.get(i) {
+                Some(Row::Block { block, .. }) => match &**block {
+                    Block::Canvas(src) => crate::canvas::Spec::parse(src),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect();
+        for spec in &self.older_designs {
+            if !out.iter().any(|s| s.id == spec.id) {
+                out.push(spec.clone());
+            }
+        }
+        out
+    }
+
+    /// The agent tool calls, oldest first: (row, activity, tool).
+    pub fn agent_tools(&self) -> impl Iterator<Item = (usize, &Activity, &Tool)> {
+        self.agents.iter().filter_map(|&(i, j)| match self.rows.get(i) {
+            Some(Row::Activity(a)) => a.tools.get(j).map(|t| (i, a, t)),
+            _ => None,
+        })
+    }
+
+    /// The tool call `id`, wherever it sits.
+    pub fn tool(&self, id: &str) -> Option<(usize, &Activity, &Tool)> {
+        let &(i, j) = self.tools.get(id)?;
+        match self.rows.get(i) {
+            Some(Row::Activity(a)) => a.tools.get(j).map(|t| (i, a, t)),
+            _ => None,
+        }
+    }
+
+    fn tool_mut(&mut self, id: &str) -> Option<&mut Tool> {
+        let &(i, j) = self.tools.get(id)?;
+        match self.rows.get_mut(i) {
+            Some(Row::Activity(a)) => a.tools.get_mut(j),
+            _ => None,
+        }
     }
 
     /// The step the agent is on right now, for the status strip.
@@ -789,17 +1166,240 @@ impl Chat {
             None => None,
         }
     }
+
+    /// Drop the in-memory events of finished subagents (they are on disk),
+    /// keeping what a following view (`followers`: call id → events it has
+    /// applied) still needs. `all` prunes running ones too (a replay).
+    pub fn prune_subs(&mut self, followers: &HashMap<String, usize>, all: bool) {
+        let finished: Vec<String> = self
+            .subs
+            .keys()
+            .filter(|id| all || self.tool(id).is_some_and(|(_, _, t)| t.output.is_some()))
+            .cloned()
+            .collect();
+        for id in finished {
+            if let Some(log) = self.subs.get_mut(&id) {
+                let upto = followers.get(&id).copied().unwrap_or(usize::MAX).min(log.len());
+                log.prune_to(upto);
+            }
+        }
+    }
+
+    /// Apply `map` to every stored row number (`None` drops the entry).
+    fn reindex(&mut self, map: impl Fn(usize) -> Option<usize>) {
+        self.tools.retain(|_, (i, _)| match map(*i) {
+            Some(n) => {
+                *i = n;
+                true
+            }
+            None => false,
+        });
+        self.open_activity = self.open_activity.and_then(&map);
+        if let Some((i, _)) = &mut self.thought {
+            match map(*i) {
+                Some(n) => *i = n,
+                None => self.thought = None,
+            }
+        }
+        if let Some(open) = &mut self.open
+            && let Some(n) = map(open.row)
+        {
+            open.row = n;
+        }
+        let list = |v: &mut Vec<usize>| *v = v.iter().filter_map(|&i| map(i)).collect();
+        list(&mut self.to_highlight);
+        list(&mut self.users);
+        list(&mut self.permissions);
+        self.agents = self.agents.iter().filter_map(|&(i, j)| map(i).map(|n| (n, j))).collect();
+        self.canvas_rows.retain(|_, i| match map(*i) {
+            Some(n) => {
+                *i = n;
+                true
+            }
+            None => false,
+        });
+        self.widget_rows.retain(|_, i| match map(*i) {
+            Some(n) => {
+                *i = n;
+                true
+            }
+            None => false,
+        });
+        self.last_turn_end = self.last_turn_end.and_then(&map);
+        self.dirty = None;
+    }
+
+    /// Put an older stretch of the same transcript (replayed on its own)
+    /// in front of these rows. Returns how many rows were added at the
+    /// front and the rows (in the new numbering, descending) that were then
+    /// removed: a design or card sent again with the same id lives in its
+    /// first row, as it would have had the history loaded in one go.
+    pub fn prepend(&mut self, mut older: Chat) -> (usize, Vec<usize>) {
+        let n = older.rows.len();
+        let m = older.msgs;
+        self.reindex(|i| Some(i + n));
+        for r in &mut self.rows {
+            if let Row::Block { msg, .. } = r {
+                *msg += m;
+            }
+        }
+        if let Some(open) = &mut self.open {
+            open.msg += m;
+        }
+        self.msgs += m;
+        let mut rows = std::mem::take(&mut older.rows);
+        rows.append(&mut self.rows);
+        self.rows = rows;
+        for (id, at) in older.tools.drain() {
+            self.tools.entry(id).or_insert(at);
+        }
+        let front = |mine: &mut Vec<usize>, theirs: Vec<usize>| {
+            let mut v = theirs;
+            v.append(mine);
+            *mine = v;
+        };
+        front(&mut self.users, std::mem::take(&mut older.users));
+        front(&mut self.permissions, std::mem::take(&mut older.permissions));
+        front(&mut self.to_highlight, std::mem::take(&mut older.to_highlight));
+        let mut agents = std::mem::take(&mut older.agents);
+        agents.append(&mut self.agents);
+        self.agents = agents;
+        self.last_turn_end = self.last_turn_end.or(older.last_turn_end);
+        for (id, mut log) in older.subs.drain() {
+            match self.subs.remove(&id) {
+                Some(newer) => {
+                    log.steps += newer.steps;
+                    log.doing = newer.doing.or(log.doing);
+                    // Both halves were pruned from disk replays; keep counts.
+                    log.base += newer.base + log.events.len();
+                    log.events = newer.events;
+                    self.subs.insert(id, log);
+                }
+                None => {
+                    self.subs.insert(id, log);
+                }
+            }
+        }
+        // A design or card id seen in both: the first row shows the latest.
+        let mut dupes: Vec<(usize, usize)> = Vec::new();
+        for (id, old) in older.canvas_rows.drain() {
+            match self.canvas_rows.get(&id).copied() {
+                Some(new) => dupes.push((old, new)),
+                None => {
+                    self.canvas_rows.insert(id, old);
+                }
+            }
+        }
+        for (id, old) in older.widget_rows.drain() {
+            match self.widget_rows.get(&id).copied() {
+                Some(new) => dupes.push((old, new)),
+                None => {
+                    self.widget_rows.insert(id, old);
+                }
+            }
+        }
+        dupes.sort_unstable_by(|a, b| b.1.cmp(&a.1));
+        let mut removed = Vec::new();
+        for (old, new) in dupes {
+            if let Some(Row::Block { block, .. }) = self.rows.get(new).cloned() {
+                if let Some(Row::Block { block: first, .. }) = self.rows.get_mut(old) {
+                    *first = block;
+                }
+                self.rows.remove(new);
+                self.reindex(|i| match i.cmp(&new) {
+                    std::cmp::Ordering::Less => Some(i),
+                    std::cmp::Ordering::Equal => None,
+                    std::cmp::Ordering::Greater => Some(i - 1),
+                });
+                // The surviving first row now carries the id.
+                if let Some(Row::Block { block, .. }) = self.rows.get(old).cloned() {
+                    self.index_block(old, &block);
+                }
+                removed.push(new);
+            }
+        }
+        self.partial = older.partial;
+        if !self.partial {
+            self.first_prompt = None;
+            self.older_designs.clear();
+        }
+        // Events about the newly loaded calls now find them; the older
+        // stretch's own orphans wait for the next hydration.
+        let pending = std::mem::take(&mut self.orphans);
+        self.orphans = std::mem::take(&mut older.orphans);
+        for ev in pending {
+            self.apply(ev, false);
+        }
+        self.dirty = None;
+        self.bump();
+        (n, removed)
+    }
 }
 
-/// A running subagent's latest step, read off its event log.
-fn sub_doing(events: &[AgentEvent]) -> Option<String> {
-    events.iter().rev().find_map(|e| match e {
-        AgentEvent::ToolCall { title, .. } => Some(title.to_string()),
-        AgentEvent::Status { text } => Some(text.to_string()),
-        AgentEvent::ThinkingDelta { .. } => Some("Thinking".into()),
-        AgentEvent::TextDelta { .. } => Some("Writing".into()),
-        _ => None,
-    })
+/// The tail of `task`'s transcript as a chat, and the history left above
+/// it. What the unloaded history contributes without rows (the latest
+/// todos, context and rate-limit readings, the first prompt, its designs)
+/// is read from just those lines.
+fn load_tail(store: &dove_store::Store, task: dove_core::proto::TaskId) -> (Chat, Option<Older>) {
+    use dove_store::transcript::Kind;
+    let index = store.transcript_index(task);
+    let end = index.lines();
+    let start = index.tail_start(end, TAIL_ENTRIES);
+    let events = store.transcript_lines(task, &index, start..end).into_iter().map(|(at, e)| (Some(at), e));
+    if start == 0 {
+        return (Chat::replay_tail(Vec::new(), events, false), None);
+    }
+    let last = |kind: Kind, n: usize| {
+        let all: Vec<usize> = index.of_kind(0..start, kind).collect();
+        all[all.len().saturating_sub(n)..].to_vec()
+    };
+    let mut picks: Vec<usize> = last(Kind::ContextUsage, 8);
+    picks.extend(last(Kind::RateLimits, 8));
+    picks.extend(last(Kind::Todos, 1));
+    picks.extend(index.of_kind(0..start, Kind::UserMessage).next());
+    picks.extend(index.of_kind(0..start, Kind::CanvasCall));
+    picks.sort_unstable();
+    picks.dedup();
+    let mut state = Vec::new();
+    let mut first_prompt = None;
+    let mut designs: Vec<crate::canvas::Spec> = Vec::new();
+    for (_, ev) in store.transcript_picked(task, &index, &picks) {
+        match ev {
+            AgentEvent::UserMessage { text } => {
+                first_prompt = Some(SharedString::from(dove_core::strip_persona(&text).to_string()));
+            }
+            AgentEvent::ToolCall { name, input, .. } => {
+                if is_show_canvas(&name)
+                    && let Some(spec) = crate::canvas::Spec::from_value(input)
+                {
+                    designs.retain(|s| s.id != spec.id);
+                    designs.push(spec);
+                }
+            }
+            other => state.push(other),
+        }
+    }
+    designs.reverse();
+    let mut chat = Chat::replay_tail(state, events, true);
+    chat.first_prompt = first_prompt;
+    chat.older_designs = designs;
+    (chat, Some(Older { index: Arc::new(index), end: start, loading: false }))
+}
+
+/// `DOVE_EXPAND_TOOLS=1`: every tool group and chip opens; `=group`:
+/// groups only (QA).
+fn qa_expand(rows: &mut [Row]) {
+    let Some(how) = std::env::var_os("DOVE_EXPAND_TOOLS") else { return };
+    let chips = how != "group";
+    for r in rows {
+        if let Row::Activity(a) = r {
+            a.pinned = Some(true);
+            if chips {
+                a.thoughts.iter_mut().for_each(|th| th.open = Some(true));
+                a.tools.iter_mut().for_each(|t| t.open = Some(true));
+            }
+        }
+    }
 }
 
 fn step_label(t: &Tool) -> String {
@@ -921,9 +1521,35 @@ struct Mirror {
     briefed: bool,
     /// The spawn finished and the rows were closed.
     settled: bool,
+    /// The subagent's events were pruned from the parent's memory; they
+    /// are being read back from disk.
+    reading: bool,
     pub info: Option<Subagent>,
+    /// The parent's record of how far each view following a subagent has
+    /// read, so pruning never drops events a view still needs.
+    followers: Followers,
     _observe: Subscription,
 }
+
+impl Drop for Mirror {
+    fn drop(&mut self) {
+        self.followers.borrow_mut().remove(&self.call);
+    }
+}
+
+/// Call id → events a subagent view has applied.
+type Followers = std::rc::Rc<std::cell::RefCell<HashMap<String, usize>>>;
+
+/// History not loaded yet: lines `..end` of the transcript (tail-first
+/// loading hydrates it a chunk at a time as the user scrolls up).
+struct Older {
+    index: Arc<dove_store::transcript::Index>,
+    end: usize,
+    loading: bool,
+}
+
+/// Entries the tail (and each older chunk) holds, about a screenful or two.
+const TAIL_ENTRIES: usize = 64;
 
 pub struct TaskView {
     engine: Arc<Engine>,
@@ -932,6 +1558,8 @@ pub struct TaskView {
     live: Option<LiveSession>,
     chat: Chat,
     loading: bool,
+    older: Option<Older>,
+    followers: Followers,
     list: ListState,
     following: std::rc::Rc<std::cell::Cell<bool>>,
     /// Hovered rail mark.
@@ -991,13 +1619,14 @@ impl TaskView {
     /// chat: its brief as the opening message, then its own steps and
     /// replies, following along while it runs.
     pub fn subagent(source: &Entity<TaskView>, call: String, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let (engine, task, project) = {
+        let (engine, task, project, followers) = {
             let s = source.read(cx);
-            (s.engine.clone(), s.task.clone(), s.project.clone())
+            (s.engine.clone(), s.task.clone(), s.project.clone(), s.followers.clone())
         };
         let mut this = Self::build(engine, task, project, window, cx);
         this.loading = false;
         this.chat = Chat::default();
+        followers.borrow_mut().insert(call.clone(), 0);
         let observe = cx.observe(source, |this: &mut Self, _, cx| this.sync_mirror(cx));
         this.mirror = Some(Mirror {
             source: source.downgrade(),
@@ -1005,7 +1634,9 @@ impl TaskView {
             applied: 0,
             briefed: false,
             settled: false,
+            reading: false,
             info: None,
+            followers,
             _observe: observe,
         });
         this.sync_mirror(cx);
@@ -1017,16 +1648,50 @@ impl TaskView {
         self.mirror.as_ref().map(|m| (m.call.as_str(), m.info.as_ref()))
     }
 
-    /// Pull the subagent's new events from the parent chat.
+    /// Pull the subagent's new events from the parent chat (or, when the
+    /// parent already pruned them, from the transcript on disk).
     fn sync_mirror(&mut self, cx: &mut Context<Self>) {
         let Some(m) = &self.mirror else { return };
+        if m.reading {
+            return;
+        }
         let Some(source) = m.source.upgrade() else { return };
-        let (info, fresh) = {
+        let (info, fresh, pruned) = {
             let src = source.read(cx);
-            let info = src.subagents().into_iter().find(|s| s.id == m.call);
-            let log = src.chat.subs.get(&m.call).map(Vec::as_slice).unwrap_or(&[]);
-            (info, log[m.applied.min(log.len())..].to_vec())
+            let info = src.subagent_info(&m.call);
+            match src.chat.subs.get(&m.call) {
+                Some(log) if m.applied < log.base => (info, Vec::new(), true),
+                Some(log) => (info, log.since(m.applied).to_vec(), false),
+                None => (info, Vec::new(), false),
+            }
         };
+        if pruned {
+            let Some(m) = self.mirror.as_mut() else { return };
+            m.reading = true;
+            let (store, task, call) = (self.engine.store.clone(), self.task.id, m.call.clone());
+            let read = cx.background_spawn(async move { store.subagent_events(task, &call) });
+            cx.spawn(async move |this, cx| {
+                let disk = read.await;
+                let _ = this.update(cx, |v, cx| v.catch_up(disk, cx));
+            })
+            .detach();
+            return;
+        }
+        self.mirror_apply(info, fresh, cx);
+    }
+
+    /// The subagent's recorded events arrived from disk: apply what this
+    /// view has not, then follow the parent's log from there.
+    fn catch_up(&mut self, disk: Vec<AgentEvent>, cx: &mut Context<Self>) {
+        let Some(m) = self.mirror.as_mut() else { return };
+        m.reading = false;
+        let fresh = disk[m.applied.min(disk.len())..].to_vec();
+        let info = m.source.upgrade().and_then(|s| s.read(cx).subagent_info(&m.call));
+        self.mirror_apply(info, fresh, cx);
+        self.sync_mirror(cx);
+    }
+
+    fn mirror_apply(&mut self, info: Option<Subagent>, fresh: Vec<AgentEvent>, cx: &mut Context<Self>) {
         let Some(m) = self.mirror.as_mut() else { return };
         let running = info.as_ref().is_some_and(|s| s.running);
         let brief = info.as_ref().map(|s| s.prompt.clone()).filter(|p| !p.trim().is_empty());
@@ -1041,12 +1706,14 @@ impl TaskView {
             events.push(AgentEvent::UserMessage { text: brief.into() });
         }
         m.applied += fresh.len();
+        m.followers.borrow_mut().insert(m.call.clone(), m.applied);
         // A driver that later echoes the same brief would show it twice.
         let mut fresh = fresh;
         if m.briefed
             && let Some(brief) = brief.as_deref().map(str::trim).filter(|b| !b.is_empty())
         {
-            let shown = self.chat.rows.iter().any(|r| matches!(r, Row::User { text, .. } if text.trim() == brief));
+            let shown = self.chat.has_user_message(brief)
+                || events.iter().any(|e| matches!(e, AgentEvent::UserMessage { text } if text.trim() == brief));
             if shown
                 && let Some(AgentEvent::UserMessage { text }) = fresh.first()
                 && text.trim() == brief
@@ -1102,7 +1769,15 @@ impl TaskView {
             flag.set(ev.is_following_tail);
             top.set(ev.visible_range.start);
             if follow_changed || top_changed {
-                let _ = weak.update(cx, |_, cx| cx.notify());
+                // Reaching the top of the loaded rows hydrates older history.
+                // (The list is mid-scroll here: only flags and spawns.)
+                let at_top = ev.visible_range.start == 0;
+                let _ = weak.update(cx, |v, cx| {
+                    if at_top {
+                        v.hydrate_older(false, false, cx);
+                    }
+                    cx.notify();
+                });
             }
         });
         let chat = Chat {
@@ -1125,6 +1800,8 @@ impl TaskView {
             live: None,
             chat,
             loading: true,
+            older: None,
+            followers: Default::default(),
             list,
             following,
             rail_hover: None,
@@ -1162,57 +1839,57 @@ impl TaskView {
 
     /// Every design this thread made, newest first (one per id).
     pub fn designs(&self) -> Vec<crate::canvas::Spec> {
-        let mut out: Vec<crate::canvas::Spec> = Vec::new();
-        for r in self.chat.rows.iter().rev() {
-            if let Row::Block { block, .. } = r
-                && let Block::Canvas(src) = &**block
-                && let Some(spec) = crate::canvas::Spec::parse(src)
-                && !out.iter().any(|s| s.id == spec.id)
-            {
-                out.push(spec);
-            }
+        self.chat.designs()
+    }
+
+    /// Changes whenever the todos, subagents or designs change, so the side
+    /// panel is fed only when they moved.
+    pub fn panel_rev(&self) -> u64 {
+        self.chat.panel_rev()
+    }
+
+    /// The panel entry for one agent call.
+    fn subagent_of(&self, row: usize, a: &Activity, tool: &Tool) -> Subagent {
+        let input = tool.input.as_ref();
+        let prompt = str_field(input, &["prompt", "task"]).unwrap_or_default();
+        let title = str_field(input, &["description", "subagent_type", "name"])
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| tool.title.to_string());
+        let log = self.chat.subs.get(&tool.id);
+        let running = tool.output.is_none() && a.live;
+        Subagent {
+            title,
+            kind: str_field(input, &["subagent_type", "agent"]).unwrap_or_default(),
+            prompt,
+            output: tool.output.as_ref().map(|o| o.to_string()),
+            error: tool.error,
+            running,
+            took: tool.took,
+            row,
+            id: tool.id.clone(),
+            steps: log.map_or(0, |l| l.steps),
+            doing: running.then(|| log.and_then(|l| l.doing.clone())).flatten(),
         }
-        out
     }
 
     /// Every subagent this thread started, oldest first, with where it sits
     /// in the transcript.
     pub fn subagents(&self) -> Vec<Subagent> {
-        let mut out = Vec::new();
-        for (row, r) in self.chat.rows.iter().enumerate() {
-            let Row::Activity(a) = r else { continue };
-            for tool in a.tools.iter().filter(|t| t.kind == ToolKind::Agent) {
-                let input = tool.input.as_ref();
-                let prompt = str_field(input, &["prompt", "task"]).unwrap_or_default();
-                let title = str_field(input, &["description", "subagent_type", "name"])
-                    .filter(|s| !s.trim().is_empty())
-                    .unwrap_or_else(|| tool.title.to_string());
-                out.push(Subagent {
-                    title,
-                    kind: str_field(input, &["subagent_type", "agent"]).unwrap_or_default(),
-                    prompt,
-                    output: tool.output.as_ref().map(|o| o.to_string()),
-                    error: tool.error,
-                    running: tool.output.is_none() && a.live,
-                    took: tool.took,
-                    row,
-                    id: tool.id.clone(),
-                    steps: self
-                        .chat
-                        .subs
-                        .get(&tool.id)
-                        .map_or(0, |evs| evs.iter().filter(|e| matches!(e, AgentEvent::ToolCall { .. })).count()),
-                    doing: (tool.output.is_none() && a.live)
-                        .then(|| self.chat.subs.get(&tool.id).and_then(|evs| sub_doing(evs)))
-                        .flatten(),
-                });
-            }
-        }
-        out
+        self.chat.agent_tools().map(|(row, a, t)| self.subagent_of(row, a, t)).collect()
+    }
+
+    /// The subagent spawned by call `id`.
+    fn subagent_info(&self, id: &str) -> Option<Subagent> {
+        self.chat.tool(id).filter(|(_, _, t)| t.kind == ToolKind::Agent).map(|(row, a, t)| self.subagent_of(row, a, t))
     }
 
     pub fn is_working(&self) -> bool {
         self.live.is_some() && self.status == TaskStatus::Running
+    }
+
+    /// Whether an agent session is attached to this chat.
+    pub fn is_live(&self) -> bool {
+        self.live.is_some()
     }
 
     /// The pending approval or question summary, for "Needs you".
@@ -1234,33 +1911,22 @@ impl TaskView {
         live
     }
 
-    /// Replay the saved transcript off-thread, then attach the live session.
+    /// Replay the transcript's tail off-thread (older history is hydrated
+    /// as the user scrolls up), then attach the live session.
     fn load_transcript(&mut self, live: Option<LiveSession>, cx: &mut Context<Self>) {
         let store = self.engine.store.clone();
         let id = self.task.id;
-        let build = cx.background_spawn(async move { Chat::replay(store.read_transcript(id)) });
+        let build = cx.background_spawn(async move { load_tail(&store, id) });
         cx.spawn(async move |this, cx| {
-            let mut chat = build.await;
+            let (mut chat, older) = build.await;
             let _ = this.update(cx, |v, cx| {
                 chat.usage = v.chat.usage;
                 if chat.rate_limits.is_empty() {
                     chat.rate_limits = std::mem::take(&mut v.chat.rate_limits);
                 }
-                // `DOVE_EXPAND_TOOLS=1`: every tool group and chip opens;
-                // `=group`: groups only (QA).
-                if let Some(how) = std::env::var_os("DOVE_EXPAND_TOOLS") {
-                    let chips = how != "group";
-                    for r in &mut chat.rows {
-                        if let Row::Activity(a) = r {
-                            a.pinned = Some(true);
-                            if chips {
-                                a.thoughts.iter_mut().for_each(|th| th.open = Some(true));
-                                a.tools.iter_mut().for_each(|t| t.open = Some(true));
-                            }
-                        }
-                    }
-                }
+                qa_expand(&mut chat.rows);
                 v.chat = chat;
+                v.older = older;
                 v.folds.clear();
                 v.loading = false;
                 v.list.reset(v.chat.rows.len());
@@ -1269,6 +1935,55 @@ impl TaskView {
                 if let Some(l) = live {
                     v.attach(l, cx);
                 }
+                cx.emit(TaskViewEvent::Changed);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Load the next older stretch of history (all of it with `all`) and
+    /// put it above the loaded rows, keeping the scroll position. With
+    /// `then_top` the list then scrolls to the very top.
+    fn hydrate_older(&mut self, all: bool, then_top: bool, cx: &mut Context<Self>) {
+        let Some(o) = self.older.as_mut() else { return };
+        if o.loading {
+            return;
+        }
+        o.loading = true;
+        let (index, end) = (o.index.clone(), o.end);
+        let (store, id) = (self.engine.store.clone(), self.task.id);
+        let build = cx.background_spawn(async move {
+            let start = if all { 0 } else { index.tail_start(end, TAIL_ENTRIES) };
+            let events = store.transcript_lines(id, &index, start..end);
+            (Chat::replay_tail(Vec::new(), events.into_iter().map(|(at, e)| (Some(at), e)), start > 0), start)
+        });
+        cx.spawn(async move |this, cx| {
+            let (mut older, start) = build.await;
+            let _ = this.update(cx, |v, cx| {
+                qa_expand(&mut older.rows);
+                let (added, removed) = v.chat.prepend(older);
+                v.list.splice(0..0, added);
+                for k in removed {
+                    v.list.splice(k..k + 1, 0);
+                }
+                // Row-keyed view state moves with the rows.
+                v.folds.clear();
+                v.flash = v.flash.map(|r| r + added);
+                v.rail_hover = None;
+                v.widgets = std::mem::take(&mut v.widgets)
+                    .into_iter()
+                    .map(|(k, s)| match k.strip_prefix('b').and_then(|n| n.parse::<usize>().ok()) {
+                        Some(n) => (format!("b{}", n + added), s),
+                        None => (k, s),
+                    })
+                    .collect();
+                v.older = v.older.take().filter(|_| start > 0).map(|o| Older { end: start, loading: false, ..o });
+                if then_top {
+                    v.list.set_follow_mode(FollowMode::Normal);
+                    v.list.scroll_to(ListOffset { item_ix: 0, offset_in_item: px(0.0) });
+                }
+                v.highlight_pending(cx);
                 cx.emit(TaskViewEvent::Changed);
                 cx.notify();
             });
@@ -1328,6 +2043,9 @@ impl TaskView {
             remote.update(cx, |r, _| r.observe(task, &events));
         }
         let before = self.chat.rows.len();
+        // The recorder flushes the transcript at a turn end, so finished
+        // subagents' events are on disk from here on.
+        let turn_over = events.iter().any(|e| matches!(e, AgentEvent::TurnEnded { .. } | AgentEvent::Exited { .. }));
         let mut status = None;
         let mut runway = None;
         // Adjacent text deltas parse once. A run is gathered into one growing
@@ -1375,6 +2093,10 @@ impl TaskView {
             if let Some(spec) = fx.canvas {
                 cx.emit(TaskViewEvent::OpenCanvas(spec, false));
             }
+        }
+        if turn_over {
+            let followers = self.followers.borrow().clone();
+            self.chat.prune_subs(&followers, false);
         }
         let after = self.chat.rows.len();
         let from = self.chat.dirty.take().unwrap_or(before).min(before);
@@ -1426,7 +2148,11 @@ impl TaskView {
 
     /// A short title from the first prompt, used until the user renames.
     fn auto_title(&self) -> Option<String> {
-        let prompt = self.chat.user_messages().into_iter().next()?.1;
+        // The thread's first prompt, even when its history is not loaded.
+        let prompt = match self.chat.first_prompt.clone() {
+            Some(p) => p,
+            None => self.chat.user_messages().into_iter().next()?.1,
+        };
         let t = ui::auto_title(&prompt);
         (t != self.task.title).then_some(t)
     }
@@ -1527,13 +2253,48 @@ impl TaskView {
     }
 
     /// A chip's "N more lines": its whole output, or back to the first screen.
+    /// A long output is kept as a head and a tail; showing it all reads the
+    /// whole text back from the transcript, and showing less drops it again.
     fn toggle_full(&mut self, i: usize, j: usize, cx: &mut Context<Self>) {
-        if let Some(Row::Activity(a)) = self.chat.rows.get_mut(i)
-            && let Some(t) = a.tools.get_mut(j)
-        {
-            t.full = !t.full;
+        let Some(Row::Activity(a)) = self.chat.rows.get_mut(i) else { return };
+        let Some(t) = a.tools.get_mut(j) else { return };
+        t.full = !t.full;
+        if !t.full {
+            if let Some(out) = t.output.clone().filter(|o| o.len() > OUTPUT_COMPACT) {
+                let (head_tail, elided) = compact_output(&out);
+                t.output = Some(head_tail);
+                t.elided = elided;
+            }
             cx.notify();
+            return;
         }
+        if t.elided > 0 {
+            let (store, task, call, disk) = (self.engine.store.clone(), self.task.id, t.id.clone(), t.disk);
+            let read = cx.background_spawn(async move {
+                disk.and_then(|at| store.transcript_event_at(task, at))
+                    .and_then(|ev| dove_store::transcript::tool_output_of(&ev, &call))
+                    .or_else(|| store.tool_output(task, &call))
+                    .map(|out| (call, out))
+            });
+            cx.spawn(async move |this, cx| {
+                let Some((call, out)) = read.await else { return };
+                let _ = this.update(cx, |v, cx| {
+                    let row = v.chat.tool(&call).map(|(row, _, _)| row);
+                    if let Some(t) = v.chat.tool_mut(&call)
+                        && t.full
+                    {
+                        t.output = Some(SharedString::from(out.to_string()));
+                        t.elided = 0;
+                    }
+                    if let Some(row) = row {
+                        v.list.remeasure_items(row..row + 1);
+                    }
+                    cx.notify();
+                });
+            })
+            .detach();
+        }
+        cx.notify();
     }
 
     /// A working group's "N earlier steps": pin the whole tree open.
@@ -1629,7 +2390,8 @@ impl TaskView {
         match target {
             Some(&r) => self.glide_to_row(r, cx),
             None if dir > 0 => self.jump_to_latest(cx),
-            None => {}
+            // Before the first loaded prompt: load the history above it.
+            None => self.hydrate_older(false, false, cx),
         }
     }
 
@@ -1641,6 +2403,10 @@ impl TaskView {
     }
 
     pub fn scroll_to_top(&mut self, cx: &mut Context<Self>) {
+        if self.older.is_some() {
+            // The very top: load the rest of the history, then go there.
+            self.hydrate_older(true, true, cx);
+        }
         self.list.set_follow_mode(FollowMode::Normal);
         self.list.scroll_to(ListOffset { item_ix: 0, offset_in_item: px(0.0) });
         cx.notify();
@@ -1892,8 +2658,8 @@ impl TaskView {
                 .child(text.clone())
                 .into_any_element(),
             Row::Error(text) => self.error_strip(i, text.clone(), self.error_retry(i), weak, t),
-            Row::TurnEnd { msgs, prompt, elapsed, failed } => {
-                self.render_turn_end(i, msgs.clone(), prompt.clone(), *elapsed, *failed, weak, t)
+            Row::TurnEnd { has_text, prompt, elapsed, failed } => {
+                self.render_turn_end(i, *has_text, prompt.clone(), *elapsed, *failed, weak, t)
             }
         };
         // Each reply opens with who is answering: the teammate, or the agent.
@@ -2567,6 +3333,8 @@ impl TaskView {
         use crate::tool_calls as tc;
         let full = tool.full;
         let keep = if full { OUTPUT_FULL } else { OUTPUT_KEEP };
+        // Lines of a long output kept only on disk count as hidden too.
+        let elided = tool.elided;
         let more = |tail: bool| {
             let weak = weak.clone();
             move |cut: usize| -> AnyElement {
@@ -2581,7 +3349,11 @@ impl TaskView {
                         cx.stop_propagation();
                         let _ = weak.update(cx, |v, cx| v.toggle_full(i, j, cx));
                     })
-                    .child(if tail { format!("… {cut} earlier lines") } else { format!("… {cut} more lines") })
+                    .child(if tail {
+                        format!("… {} earlier lines", cut + elided)
+                    } else {
+                        format!("… {} more lines", cut + elided)
+                    })
                     .into_any_element()
             }
         };
@@ -2618,7 +3390,7 @@ impl TaskView {
             ToolView::Search if !tool.error && out.is_some_and(|o| !path_lines(o).is_empty()) => {
                 let paths = path_lines(out.unwrap_or_default());
                 let keep = if full { 200 } else { 8 };
-                let more = paths.len().saturating_sub(keep);
+                let more = paths.len().saturating_sub(keep) + elided;
                 Some(
                     div()
                         .flex()
@@ -2854,25 +3626,68 @@ impl TaskView {
         card.into_any_element()
     }
 
+    /// Copy the answer text of the turn ending at row `i`. The chat keeps
+    /// no second copy of the source; it is read back from the transcript
+    /// (the recorder flushes it at every turn end). Without one, the
+    /// rendered blocks' plain text is copied.
+    fn copy_turn(&self, i: usize, cx: &mut Context<Self>) {
+        use dove_store::transcript::Kind;
+        let from_end = self.chat.rows[i + 1..].iter().filter(|r| matches!(r, Row::TurnEnd { .. })).count();
+        let start = self.chat.rows[..i]
+            .iter()
+            .rposition(|r| matches!(r, Row::TurnEnd { .. } | Row::User { .. }))
+            .map_or(0, |k| k + 1);
+        let fallback = self.chat.rows[start..i]
+            .iter()
+            .filter_map(|r| match r {
+                Row::Block { block, .. } => Some(block.plain()).filter(|t| !t.trim().is_empty()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        let (store, task) = (self.engine.store.clone(), self.task.id);
+        let call = self.mirror.as_ref().map(|m| m.call.clone());
+        let read = cx.background_spawn(async move {
+            let text = match call {
+                Some(call) => turn_text(&store.subagent_events(task, &call), from_end),
+                None => {
+                    let index = store.transcript_index(task);
+                    let ends: Vec<usize> = index.of_kind(0..index.lines(), Kind::TurnEnded).collect();
+                    match ends.len().checked_sub(from_end + 1).map(|k| ends[k]) {
+                        Some(end) => {
+                            let from = (0..end)
+                                .rev()
+                                .find(|&l| matches!(index.kinds[l], Kind::TurnEnded | Kind::UserMessage))
+                                .unwrap_or(0);
+                            turn_text(&store.transcript_span(task, index.span(from..end + 1)), 0)
+                        }
+                        None => String::new(),
+                    }
+                }
+            };
+            if text.is_empty() { fallback } else { text }
+        });
+        cx.spawn(async move |this, cx| {
+            let text = read.await;
+            if !text.is_empty() {
+                let _ = this.update(cx, |_, cx| cx.write_to_clipboard(ClipboardItem::new_string(text)));
+            }
+        })
+        .detach();
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn render_turn_end(
         &self,
         i: usize,
-        msgs: Range<usize>,
+        has_text: bool,
         prompt: Option<SharedString>,
         elapsed: Option<Duration>,
         failed: bool,
         weak: &WeakEntity<Self>,
         t: &Theme,
     ) -> AnyElement {
-        let copy: String = self.chat.messages
-            [msgs.start.min(self.chat.messages.len())..msgs.end.min(self.chat.messages.len())]
-            .iter()
-            .map(|m| m.trim())
-            .filter(|m| !m.is_empty())
-            .collect::<Vec<_>>()
-            .join("\n\n");
-        let last = !self.chat.rows[i + 1..].iter().any(|r| matches!(r, Row::TurnEnd { .. }));
+        let last = self.chat.last_turn_end() == Some(i);
         let can_fork = last && self.mirror.is_none() && Engine::can_fork(&self.task);
         let idle = !self.is_working() && self.mirror.is_none();
         // A failed turn says so in an error strip that carries the retry.
@@ -2892,7 +3707,14 @@ impl TaskView {
             .gap(px(2.0))
             .text_size(ty::META)
             .text_color(t.text_faint)
-            .when(!copy.is_empty(), |d| d.child(copy_button(SharedString::from(format!("copy-turn-{i}")), copy, t)))
+            .when(has_text, |d| {
+                let weak = weak.clone();
+                d.child(action_button(SharedString::from(format!("copy-turn-{i}")), icons::COPY, "Copy", t).on_click(
+                    move |_, _, cx| {
+                        let _ = weak.update(cx, |v, cx| v.copy_turn(i, cx));
+                    },
+                ))
+            })
             .when_some(prompt.filter(|_| idle), |d, p| {
                 let weak = weak.clone();
                 d.child(action_button(SharedString::from(format!("retry-{i}")), icons::RESTART, "Retry", t).on_click(
@@ -3522,73 +4344,79 @@ impl Render for TaskView {
             .pb(px(6.0))
             .child(div().w_full().max_w(px(composer::plate_width())).child(self.render_status_strip(&t)));
 
-        div()
-            .id("task-view")
-            .key_context("TaskView")
-            .track_focus(&self.focus)
-            .on_key_down(cx.listener(Self::on_key))
-            .relative()
-            .size_full()
-            .flex()
-            .flex_col()
-            .child(
-                div()
-                    .id("chat-area")
-                    .relative()
-                    .flex_1()
-                    .min_h_0()
-                    .flex()
-                    .flex_col()
-                    .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                        if this.chat_hovered != *hovered {
-                            this.chat_hovered = *hovered;
-                            cx.notify();
-                        }
-                    }))
-                    .child(transcript)
-                    .when(!empty && !self.loading, |d| {
-                        d.child(
-                            // Just a rounded thumb, no track: hidden at rest,
-                            // shown while scrolling or while the pointer is
-                            // over the conversation, then it fades.
-                            gpui_base::Scrollbar::vertical(&self.list)
-                                .id("chat-scrollbar")
-                                .mode(if self.chat_hovered {
-                                    gpui_base::ScrollbarMode::Always
-                                } else {
-                                    gpui_base::ScrollbarMode::Scrolling
-                                })
-                                .styles(|s| {
-                                    let clear = gpui::transparent_black();
-                                    s.track(|tr| tr.bg(clear).border_color(clear))
-                                        .track_hover(|tr| tr.bg(clear).border_color(clear))
-                                        .track_active(|tr| tr.bg(clear).border_color(clear))
-                                        .thumb(|th| {
-                                            th.bg(t.text.opacity(0.20))
-                                                .width(px(5.0))
-                                                .radius(px(3.0))
-                                                .min_length(px(40.0))
-                                        })
-                                        .thumb_hover(|th| {
-                                            th.bg(t.text.opacity(0.38))
-                                                .width(px(7.0))
-                                                .radius(px(4.0))
-                                                .min_length(px(40.0))
-                                        })
-                                        .thumb_active(|th| {
-                                            th.bg(t.text.opacity(0.50))
-                                                .width(px(7.0))
-                                                .radius(px(4.0))
-                                                .min_length(px(40.0))
-                                        })
-                                }),
-                        )
-                    })
-                    .when(!mirror, |d| d.children(self.render_rail(cx)))
-                    .children(jump)
-                    .when(!mirror, |d| d.child(dock)),
-            )
-            .when(!mirror, |d| d.child(bottom))
+        // Pictures in replies share one bounded cache (off-screen images go
+        // first); diagrams that left theirs are released here.
+        crate::markdown_extra::release_evicted(window, cx);
+        let images = crate::memory::image_cache(cx);
+        gpui::image_cache(images).size_full().child(
+            div()
+                .id("task-view")
+                .key_context("TaskView")
+                .track_focus(&self.focus)
+                .on_key_down(cx.listener(Self::on_key))
+                .relative()
+                .size_full()
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .id("chat-area")
+                        .relative()
+                        .flex_1()
+                        .min_h_0()
+                        .flex()
+                        .flex_col()
+                        .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                            if this.chat_hovered != *hovered {
+                                this.chat_hovered = *hovered;
+                                cx.notify();
+                            }
+                        }))
+                        .child(transcript)
+                        .when(!empty && !self.loading, |d| {
+                            d.child(
+                                // Just a rounded thumb, no track: hidden at rest,
+                                // shown while scrolling or while the pointer is
+                                // over the conversation, then it fades.
+                                gpui_base::Scrollbar::vertical(&self.list)
+                                    .id("chat-scrollbar")
+                                    .mode(if self.chat_hovered {
+                                        gpui_base::ScrollbarMode::Always
+                                    } else {
+                                        gpui_base::ScrollbarMode::Scrolling
+                                    })
+                                    .styles(|s| {
+                                        let clear = gpui::transparent_black();
+                                        s.track(|tr| tr.bg(clear).border_color(clear))
+                                            .track_hover(|tr| tr.bg(clear).border_color(clear))
+                                            .track_active(|tr| tr.bg(clear).border_color(clear))
+                                            .thumb(|th| {
+                                                th.bg(t.text.opacity(0.20))
+                                                    .width(px(5.0))
+                                                    .radius(px(3.0))
+                                                    .min_length(px(40.0))
+                                            })
+                                            .thumb_hover(|th| {
+                                                th.bg(t.text.opacity(0.38))
+                                                    .width(px(7.0))
+                                                    .radius(px(4.0))
+                                                    .min_length(px(40.0))
+                                            })
+                                            .thumb_active(|th| {
+                                                th.bg(t.text.opacity(0.50))
+                                                    .width(px(7.0))
+                                                    .radius(px(4.0))
+                                                    .min_length(px(40.0))
+                                            })
+                                    }),
+                            )
+                        })
+                        .when(!mirror, |d| d.children(self.render_rail(cx)))
+                        .children(jump)
+                        .when(!mirror, |d| d.child(dock)),
+                )
+                .when(!mirror, |d| d.child(bottom)),
+        )
     }
 }
 
@@ -4115,6 +4943,8 @@ mod tests {
             title: "".into(),
             kind,
             output: None,
+            elided: 0,
+            disk: None,
             error: false,
             diff: None,
             open: None,
@@ -4193,6 +5023,8 @@ mod tests {
             title: "t".into(),
             kind,
             output: None,
+            elided: 0,
+            disk: None,
             error: false,
             diff: None,
             open: None,
@@ -4232,8 +5064,17 @@ mod tests {
         let blocks = chat.rows.iter().filter(|r| matches!(r, Row::Block { .. })).count();
         assert_eq!(blocks, 4);
         assert!(!chat.rows.iter().any(|r| matches!(r, Row::Live { .. })));
-        assert!(matches!(chat.rows.last(), Some(Row::TurnEnd { msgs, .. }) if *msgs == (0..1)));
-        assert_eq!(chat.messages[0], "# Title\n\nFirst paragraph.\n\n- a\n- b\n\nLast");
+        assert!(matches!(chat.rows.last(), Some(Row::TurnEnd { has_text: true, .. })));
+        // The message source is not kept twice: Copy reads it back from the
+        // transcript.
+        let events = [
+            AgentEvent::UserMessage { text: "hi".into() },
+            text("# Title\n\nFirst para"),
+            text("graph.\n\n- a\n- b\n\n"),
+            text("Last"),
+            AgentEvent::TurnEnded { usage: None, is_error: false },
+        ];
+        assert_eq!(turn_text(&events, 0), "# Title\n\nFirst paragraph.\n\n- a\n- b\n\nLast");
     }
 
     #[test]
@@ -4332,5 +5173,218 @@ mod tests {
         assert_eq!(duration(Duration::from_secs(5)), "5s");
         assert_eq!(duration(Duration::from_secs(72)), "1m 12s");
         assert_eq!(duration(Duration::from_secs(3720)), "1h 2m");
+    }
+
+    fn canvas_call(id: &str, code: &str) -> AgentEvent {
+        AgentEvent::ToolCall {
+            call_id: format!("canvas-{id}-{code}"),
+            name: "mcp__dove__show_canvas".into(),
+            kind: ToolKind::Other,
+            title: "design".into(),
+            input: serde_json::json!({ "id": id, "title": id, "code": code }),
+        }
+    }
+
+    fn call(id: &str, kind: ToolKind) -> AgentEvent {
+        AgentEvent::ToolCall {
+            call_id: id.into(),
+            name: "Task".into(),
+            kind,
+            title: id.into(),
+            input: serde_json::json!({ "prompt": "go", "description": id }),
+        }
+    }
+
+    fn result(id: &str, out: &str) -> AgentEvent {
+        AgentEvent::ToolResult { call_id: id.into(), output: out.into(), is_error: false }
+    }
+
+    fn end() -> AgentEvent {
+        AgentEvent::TurnEnded { usage: None, is_error: false }
+    }
+
+    /// A transcript of `turns` turns, each with a design update, a subagent
+    /// and an answer.
+    fn history(turns: usize) -> Vec<AgentEvent> {
+        let mut events = Vec::new();
+        for n in 0..turns {
+            events.push(AgentEvent::UserMessage { text: format!("prompt {n}").into() });
+            events.push(canvas_call("board", &format!("<p>{n}</p>")));
+            events.push(call(&format!("a{n}"), ToolKind::Agent));
+            events.push(AgentEvent::Subagent { parent: format!("a{n}"), event: Box::new(call("s", ToolKind::Read)) });
+            events.push(result(&format!("a{n}"), "report"));
+            events.push(text(&format!("Answer {n}.\n\nMore.")));
+            events.push(end());
+        }
+        events
+    }
+
+    #[test]
+    fn indexes_answer_without_scanning_rows() {
+        let chat = Chat::replay(history(3));
+        assert_eq!(
+            chat.user_messages().iter().map(|(_, t)| t.to_string()).collect::<Vec<_>>(),
+            ["prompt 0", "prompt 1", "prompt 2"]
+        );
+        // One design, updated in place: it stays in its first row.
+        let designs = chat.designs();
+        assert_eq!(designs.len(), 1);
+        assert_eq!(designs[0].code, "<p>2</p>");
+        let canvas_rows = chat
+            .rows
+            .iter()
+            .filter(|r| matches!(r, Row::Block { block, .. } if matches!(&**block, Block::Canvas(_))))
+            .count();
+        assert_eq!(canvas_rows, 1);
+        assert_eq!(chat.agent_tools().count(), 3);
+        assert_eq!(chat.last_turn_end(), Some(chat.rows.len() - 1));
+        // Replayed subagent events are pruned (they are on disk), their
+        // counts are not.
+        let log = &chat.subs["a1"];
+        assert!(log.events.is_empty());
+        assert_eq!((log.base, log.steps), (1, 1));
+        assert_eq!(log.doing.as_deref(), Some("s"));
+    }
+
+    #[test]
+    fn tail_plus_hydrated_history_equals_a_full_replay() {
+        let events = history(4);
+        let full = Chat::replay(events.clone());
+        // The tail starts at the third turn's prompt.
+        let cut =
+            events.iter().enumerate().filter(|(_, e)| matches!(e, AgentEvent::UserMessage { .. })).nth(2).unwrap().0;
+        let mut tail = Chat::replay_tail(Vec::new(), events[cut..].iter().cloned().map(|e| (None, e)), true);
+        let older = Chat::replay_tail(Vec::new(), events[..cut].iter().cloned().map(|e| (None, e)), false);
+        let tail_rows = tail.rows.len();
+        let (added, removed) = tail.prepend(older);
+        // The design sent again in the tail moves into its first row.
+        assert_eq!(removed.len(), 1);
+        assert_eq!(added + tail_rows - removed.len(), full.rows.len());
+        assert_eq!(tail.rows.len(), full.rows.len());
+        assert!(!tail.partial);
+        assert_eq!(tail.user_messages(), full.user_messages());
+        assert_eq!(tail.designs()[0].code, "<p>3</p>");
+        assert_eq!(
+            tail.agent_tools().map(|(r, _, t)| (r, t.id.clone())).collect::<Vec<_>>(),
+            full.agent_tools().map(|(r, _, t)| (r, t.id.clone())).collect::<Vec<_>>()
+        );
+        assert_eq!(tail.last_turn_end(), full.last_turn_end());
+        assert_eq!(tail.tool("a0").map(|(r, _, _)| r), full.tool("a0").map(|(r, _, _)| r));
+        // Message numbers group the same blocks as one reply.
+        let msgs = |c: &Chat| {
+            c.rows
+                .iter()
+                .filter_map(|r| match r {
+                    Row::Block { msg, .. } => Some(*msg),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let (a, b) = (msgs(&tail), msgs(&full));
+        assert_eq!(a.len(), b.len());
+        for w in 0..a.len().saturating_sub(1) {
+            assert_eq!(a[w] == a[w + 1], b[w] == b[w + 1]);
+        }
+    }
+
+    #[test]
+    fn results_for_unloaded_calls_wait_for_hydration() {
+        let events = vec![
+            AgentEvent::UserMessage { text: "one".into() },
+            call("bg", ToolKind::Execute),
+            end(),
+            AgentEvent::UserMessage { text: "two".into() },
+            result("bg", "done later"),
+            end(),
+        ];
+        let mut tail = Chat::replay_tail(Vec::new(), events[3..].iter().cloned().map(|e| (None, e)), true);
+        assert!(tail.tool("bg").is_none());
+        let older = Chat::replay_tail(Vec::new(), events[..3].iter().cloned().map(|e| (None, e)), false);
+        tail.prepend(older);
+        assert_eq!(tail.tool("bg").and_then(|(_, _, t)| t.output.clone()).as_deref(), Some("done later"));
+    }
+
+    #[test]
+    fn long_outputs_keep_a_head_and_a_tail() {
+        let out: String = (0..5000).map(|n| format!("line-{n:05}\n")).collect();
+        let (kept, elided) = compact_output(&out);
+        assert_eq!(elided, 5000 - 2 * OUTPUT_FULL);
+        let lines: Vec<&str> = kept.lines().collect();
+        assert_eq!(lines.len(), 2 * OUTPUT_FULL);
+        assert_eq!(lines[0], "line-00000");
+        assert_eq!(lines[OUTPUT_FULL - 1], "line-00399");
+        assert_eq!(lines[OUTPUT_FULL], "line-04600");
+        assert_eq!(*lines.last().unwrap(), "line-04999");
+        // Short outputs stay whole.
+        assert_eq!(compact_output("a\nb"), (SharedString::from("a\nb"), 0));
+        // One huge line is cut at char boundaries.
+        let wide = "é".repeat(40_000);
+        let (kept, elided) = compact_output(&wide);
+        assert_eq!(elided, 0);
+        assert!(kept.len() <= 2 * OUTPUT_EDGE + 1);
+        let mut chat = Chat::default();
+        chat.apply(call("big", ToolKind::Execute), true);
+        chat.apply(result("big", &out), true);
+        let (_, _, t) = chat.tool("big").unwrap();
+        assert_eq!(t.elided, 5000 - 2 * OUTPUT_FULL);
+    }
+
+    #[test]
+    fn turn_copy_reads_the_right_turn() {
+        let events = history(3);
+        assert_eq!(turn_text(&events, 0), "Answer 2.\n\nMore.");
+        assert_eq!(turn_text(&events, 2), "Answer 0.\n\nMore.");
+        assert_eq!(turn_text(&events, 3), "");
+        // A tool call between two stretches of text splits them.
+        let split = vec![
+            AgentEvent::UserMessage { text: "q".into() },
+            text(" a "),
+            call("c", ToolKind::Read),
+            text("b"),
+            end(),
+        ];
+        assert_eq!(turn_text(&split, 0), "a\n\nb");
+    }
+
+    #[test]
+    fn subagent_events_are_pruned_after_their_followers() {
+        let mut chat = Chat::default();
+        chat.apply(AgentEvent::UserMessage { text: "q".into() }, true);
+        chat.apply(call("a", ToolKind::Agent), true);
+        for _ in 0..3 {
+            chat.apply(AgentEvent::Subagent { parent: "a".into(), event: Box::new(call("s", ToolKind::Read)) }, true);
+        }
+        // Still running: nothing is pruned.
+        chat.prune_subs(&HashMap::new(), false);
+        assert_eq!(chat.subs["a"].events.len(), 3);
+        chat.apply(result("a", "done"), true);
+        // A view following it has read two events.
+        let followers = HashMap::from([("a".to_string(), 2usize)]);
+        chat.prune_subs(&followers, false);
+        assert_eq!((chat.subs["a"].base, chat.subs["a"].events.len()), (2, 1));
+        assert_eq!(chat.subs["a"].since(2).len(), 1);
+        chat.prune_subs(&HashMap::new(), false);
+        assert_eq!((chat.subs["a"].len(), chat.subs["a"].steps), (3, 3));
+        assert!(chat.subs["a"].since(0).is_empty());
+    }
+
+    #[test]
+    fn pending_approval_comes_from_the_permission_index() {
+        let mut chat = Chat::replay(history(2));
+        let req = |id: &str| PermissionRequest {
+            request_id: id.into(),
+            tool: "Bash".into(),
+            summary: "rm".into(),
+            input: serde_json::Value::Null,
+            questions: Vec::new(),
+        };
+        chat.apply(AgentEvent::PermissionRequested(req("p1")), true);
+        chat.apply(AgentEvent::PermissionRequested(req("p2")), true);
+        assert_eq!(chat.pending().map(|(_, r)| r.request_id.clone()).as_deref(), Some("p2"));
+        chat.apply(
+            AgentEvent::PermissionResolved { request_id: "p2".into(), decision: PermissionDecision::Deny },
+            true,
+        );
+        assert_eq!(chat.pending().map(|(_, r)| r.request_id.clone()).as_deref(), Some("p1"));
     }
 }

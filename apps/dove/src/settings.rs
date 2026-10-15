@@ -221,6 +221,12 @@ const INDEX: &[Entry] = &[
     e(Section::Appearance, "ui_font_size", "Interface font size", "font size text scale zoom interface ui"),
     e(Section::Appearance, "code_font_size", "Code & diff font size", "font size code diff monospace"),
     e(Section::Appearance, "terminal_font_size", "Terminal font size", "font size terminal monospace"),
+    e(
+        Section::Appearance,
+        "terminal_scrollback",
+        "Scrollback lines",
+        "terminal scrollback history lines buffer memory",
+    ),
     e(Section::Appearance, "conversation_width", "Conversation width", "width column chat transcript conversation"),
     e(Section::Notifications, "notifications", "Desktop notifications", "notifications alerts system os"),
     e(Section::Notifications, "notification_sound", "Completion sound", "sound chime audio notification"),
@@ -331,6 +337,7 @@ pub struct SettingsPage {
     sel_ui_size: SelectState,
     sel_code_size: SelectState,
     sel_term_size: SelectState,
+    sel_scrollback: SelectState,
     sel_mic: SelectState,
     sel_canvas: SelectState,
     width_slider: SliderState,
@@ -429,6 +436,7 @@ impl SettingsPage {
             sel_ui_size: SelectState::default(),
             sel_code_size: SelectState::default(),
             sel_term_size: SelectState::default(),
+            sel_scrollback: SelectState::default(),
             sel_mic: SelectState::default(),
             sel_canvas: SelectState::default(),
             width_slider: SliderState::default(),
@@ -1401,6 +1409,26 @@ impl SettingsPage {
             &self.sel_term_size,
             cx,
         );
+        let scrollback = {
+            let current = design::scrollback();
+            let choices = &design::SCROLLBACK_CHOICES;
+            let selected = choices.iter().position(|n| *n >= current).unwrap_or(choices.len() - 1);
+            ctl::select::<Self>("set-scrollback", "Scrollback lines", |s| &mut s.sel_scrollback)
+                .options(
+                    choices.iter().map(|n| {
+                        let o = SelectOption::new(format!("{n} lines"));
+                        if *n == design::SCROLLBACK_DEFAULT { o.detail("Default") } else { o }
+                    }),
+                    selected,
+                )
+                .width(130.0)
+                .menu_width(190.0)
+                .on_select(move |this, i, _, cx| {
+                    design::set_scrollback(&this.engine.store, choices[i]);
+                    cx.notify();
+                })
+                .render(&Theme::of(cx).clone(), &self.sel_scrollback, cx)
+        };
         let width = self.width_drag.unwrap_or_else(design::conversation_width);
         let width_slider = ctl::slider::<Self>(
             t,
@@ -1457,6 +1485,14 @@ impl SettingsPage {
                 "Terminal font size",
                 "Terminals and agents' own terminal views.",
                 term_size,
+            ))
+            .child(self.srow(
+                t,
+                false,
+                "terminal_scrollback",
+                "Scrollback lines",
+                "History each terminal keeps. Applies to terminals opened, restarted or cleared from now on.",
+                scrollback,
             ))
             .child(self.srow(
                 t,

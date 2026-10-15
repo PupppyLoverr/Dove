@@ -683,6 +683,36 @@ impl SidePanel {
         }
     }
 
+    /// D7: drop the native web views of thread `id`'s browser tabs and
+    /// canvases (its tab is closed, so all are hidden). Each reloads its URL,
+    /// or republishes its design, when shown again.
+    pub fn hibernate_thread(&mut self, id: TaskId, cx: &mut Context<Self>) {
+        let Some(p) = self.panels.get(&id) else { return };
+        for (b, _) in p.browsers.values() {
+            b.update(cx, |b, cx| b.hibernate(true, cx));
+        }
+        for (c, _) in p.canvases.values() {
+            c.update(cx, |c, cx| c.hibernate(cx));
+        }
+    }
+
+    /// The memory watchdog: hibernate every web view not on screen, in any
+    /// thread.
+    pub fn hibernate_hidden(&mut self, cx: &mut Context<Self>) {
+        for p in self.panels.values() {
+            for (b, _) in p.browsers.values() {
+                if b.read(cx).presentation() == crate::browser::model::Presentation::Hidden {
+                    b.update(cx, |b, cx| b.hibernate(true, cx));
+                }
+            }
+            for (c, _) in p.canvases.values() {
+                if c.read(cx).browser().read(cx).presentation() == crate::browser::model::Presentation::Hidden {
+                    c.update(cx, |c, cx| c.hibernate(cx));
+                }
+            }
+        }
+    }
+
     /// Native browser views follow what is on screen: only the active
     /// browser of the visible panel is live. Call every shell frame.
     pub fn sync(&mut self, visible: bool, dragging: bool, cx: &mut Context<Self>) {
@@ -741,6 +771,8 @@ impl SidePanel {
             Some(found) => found,
             None => self.new_browser(thread, window, cx),
         };
+        // An agent drives a hibernated tab as it was: reload its page first.
+        browser.update(cx, |b, cx| b.wake(window, cx));
         if reveal {
             if let Some(p) = self.panels.get_mut(&thread) {
                 p.active = Some(Surface::Browser(id));
@@ -862,7 +894,10 @@ impl SidePanel {
             _ => None,
         };
         if let Some(b) = browser {
-            b.update(cx, |b, cx| b.drive(action, window, cx));
+            b.update(cx, |b, cx| {
+                b.wake(window, cx);
+                b.drive(action, window, cx)
+            });
         }
     }
 
