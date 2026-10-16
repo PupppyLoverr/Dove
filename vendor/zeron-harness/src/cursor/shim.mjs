@@ -647,6 +647,9 @@ function modelSelection(msg) {
   const params = [];
   for (const [key, value] of Object.entries(msg.modelOptions ?? {})) {
     if (typeof value !== "string" || !value) continue;
+    // Host bookkeeping (`dove.permissionMode`, `dove.addDirs`) is not a
+    // model parameter. The SDK rejects unknown parameter ids at startup.
+    if (key.startsWith("dove.")) continue;
     if (key === "optimizeFor") {
       params.push({ id: "optimize_for", value: value === "speed" ? "cost" : value });
     } else {
@@ -690,6 +693,9 @@ async function start(msg) {
   }
   const options = {
     model,
+    // Composer "plan" is the SDK's conversation mode. Other permission
+    // levels stay on the default agent mode.
+    ...(msg.modelOptions?.["dove.permissionMode"] === "plan" ? { mode: "plan" } : {}),
     ...(msg.mcp ? { mcpServers: { [msg.mcp.name]: {
       type: "stdio", command: msg.mcp.command, args: msg.mcp.args, env: msg.mcp.env,
     } } } : {}),

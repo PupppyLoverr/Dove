@@ -378,7 +378,13 @@ pub enum ToolKind {
 impl ToolKind {
     /// Best-effort mapping from a harness tool name.
     pub fn classify(name: &str) -> Self {
-        match name.to_ascii_lowercase().as_str() {
+        let name = name.to_ascii_lowercase();
+        // Spawned helpers share one name across harnesses: `Agent` or
+        // `Agent: <brief>` (Claude Task, Cursor task, OpenCode task).
+        if name == "agent" || name.starts_with("agent:") || name.starts_with("agent ") {
+            return Self::Agent;
+        }
+        match name.as_str() {
             "read" | "view" | "read_file" | "notebookread" => Self::Read,
             "edit" | "write" | "multiedit" | "notebookedit" | "apply_patch" | "write_file" | "str_replace"
             | "filechange" | "file_change" => Self::Edit,
@@ -389,7 +395,7 @@ impl ToolKind {
             | "browser_click" | "browser_type" | "browser_press" | "browser_scroll" | "open_browser" | "navigate" => {
                 Self::Fetch
             }
-            "task" | "agent" => Self::Agent,
+            "task" | "agent" | "subagent" | "invoke_subagent" | "browser_subagent" => Self::Agent,
             "think" => Self::Think,
             _ => Self::Other,
         }
@@ -577,6 +583,13 @@ pub struct Capabilities {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn agent_prefix_is_a_subagent_spawn() {
+        assert_eq!(ToolKind::classify("Agent: Find dove landing page"), ToolKind::Agent);
+        assert_eq!(ToolKind::classify("task"), ToolKind::Agent);
+        assert_eq!(ToolKind::classify("read"), ToolKind::Read);
+    }
 
     #[test]
     fn harness_ids_round_trip() {

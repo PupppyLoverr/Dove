@@ -56,6 +56,12 @@ struct Pending {
 }
 
 pub async fn run(spec: SessionSpec, ev_tx: flume::Sender<AgentEvent>, cmd_rx: flume::Receiver<Command>) {
+    // `agy` is the logged-in CLI. It does not speak ACP; the ACP server is a
+    // separate download. Drive the CLI's stream when that's what is installed.
+    if spec.kind == HarnessKind::Antigravity && crate::agy::is_cli(&spec.program) {
+        crate::agy::run(spec, ev_tx, cmd_rx).await;
+        return;
+    }
     let Some(harness) = driver(&spec) else {
         let _ = ev_tx.send(AgentEvent::Error { message: format!("{} is not supported yet", spec.kind.label()).into() });
         let _ = ev_tx.send(AgentEvent::Exited { code: None });
@@ -118,6 +124,17 @@ pub async fn run(spec: SessionSpec, ev_tx: flume::Sender<AgentEvent>, cmd_rx: fl
             },
         };
         started = harness.run(run_request(&spec, prompt.clone()), controls).await;
+    }
+
+    // The SDK shim needs Node and its own login. When that cannot even
+    // start, `cursor-agent acp` still speaks to the CLI the user signed into.
+    if spec.kind == HarnessKind::Cursor && started.is_err() {
+        let mut spec = spec;
+        if spec.prompt.as_ref().map(|text| text.trim().is_empty()).unwrap_or(true) {
+            spec.prompt = Some(prompt);
+        }
+        crate::acp::run(spec, ev_tx, cmd_rx).await;
+        return;
     }
 
     {
@@ -207,7 +224,10 @@ fn driver_for(kind: HarnessKind, program: &std::path::Path) -> Option<Arc<dyn Ha
     Some(match kind {
         HarnessKind::ClaudeCode => Arc::new(ClaudeHarness::new().with_executable(program)),
         HarnessKind::Codex => Arc::new(CodexHarness::new().with_executable(program)),
-        HarnessKind::Cursor => Arc::new(CursorHarness::new().with_executable(program)),
+        // `with_executable` replaces the SDK shim with that program. The
+        // installed `cursor-agent` CLI is not the shim — it is only how Dove
+        // knows Cursor is installed, and the ACP fallback below.
+        HarnessKind::Cursor => Arc::new(CursorHarness::new()),
         HarnessKind::OpenCode => Arc::new(OpencodeHarness::new().with_executable(program)),
         HarnessKind::Pi => Arc::new(PiHarness::new().with_executable(program)),
         HarnessKind::Devin => Arc::new(AcpHarness::devin().with_executable(program)),

@@ -1018,6 +1018,18 @@ impl Chat {
                         a.thought = a.started.map(|s| s.elapsed());
                     }
                     let j = a.tools.len();
+                    // `Agent: <brief>` is how several harnesses name a spawn.
+                    // Older transcripts stored that as Other; treat it as Agent
+                    // so the subagent panel can find it.
+                    let kind = if kind == ToolKind::Agent
+                        || ToolKind::classify(&name) == ToolKind::Agent
+                        || input.get("subagent_type").is_some()
+                        || input.get("subagentType").is_some()
+                    {
+                        ToolKind::Agent
+                    } else {
+                        kind
+                    };
                     if kind == ToolKind::Agent {
                         self.running_agents.push(title.to_string().into());
                         self.agents.push((i, j));
@@ -1488,6 +1500,15 @@ fn qa_expand(rows: &mut [Row]) {
             }
         }
     }
+}
+
+/// A helper the parent spawned. New events are tagged [`ToolKind::Agent`];
+/// older transcripts still carry the shared `Agent: <brief>` name.
+fn is_spawn(tool: &Tool) -> bool {
+    tool.kind == ToolKind::Agent
+        || ToolKind::classify(&tool.name) == ToolKind::Agent
+        || tool.input.get("subagent_type").is_some()
+        || tool.input.get("subagentType").is_some()
 }
 
 fn step_label(t: &Tool) -> String {
@@ -1967,12 +1988,12 @@ impl TaskView {
     /// Every subagent this thread started, oldest first, with where it sits
     /// in the transcript.
     pub fn subagents(&self) -> Vec<Subagent> {
-        self.chat.agent_tools().map(|(row, a, t)| self.subagent_of(row, a, t)).collect()
+        self.chat.agent_tools().filter(|(_, _, t)| is_spawn(t)).map(|(row, a, t)| self.subagent_of(row, a, t)).collect()
     }
 
     /// The subagent spawned by call `id`.
     fn subagent_info(&self, id: &str) -> Option<Subagent> {
-        self.chat.tool(id).filter(|(_, _, t)| t.kind == ToolKind::Agent).map(|(row, a, t)| self.subagent_of(row, a, t))
+        self.chat.tool(id).filter(|(_, _, t)| is_spawn(t)).map(|(row, a, t)| self.subagent_of(row, a, t))
     }
 
     pub fn is_working(&self) -> bool {
@@ -2788,12 +2809,15 @@ impl TaskView {
                 self.render_turn_end(i, *has_text, prompt.clone(), *elapsed, *failed, weak, t)
             }
         };
-        // Each reply opens with who is answering: the teammate, or the agent.
+        // A teammate's replies open with their name. The harness and model
+        // stay in the composer, not above the answer.
         let opens_reply = i > 0
             && matches!(self.chat.rows[i - 1], Row::User { .. })
             && matches!(self.chat.rows[i], Row::Activity(_) | Row::Block { .. } | Row::Live { .. });
-        let body = if opens_reply {
-            div().flex().flex_col().gap(px(8.0)).child(self.reply_header(t)).child(body).into_any_element()
+        let body = if opens_reply
+            && let Some(header) = self.reply_header(t)
+        {
+            div().flex().flex_col().gap(px(8.0)).child(header).child(body).into_any_element()
         } else {
             body
         };
@@ -2852,46 +2876,20 @@ impl TaskView {
             .into_any_element()
     }
 
-    /// "Ava · Claude Code · opus" over a reply.
-    fn reply_header(&self, t: &Theme) -> AnyElement {
-        let kind = self.task.harness;
-        let model = self.task.model.clone().filter(|m| !m.is_empty());
-        let (mark, name, detail): (AnyElement, String, String) = match &self.persona {
-            Some(p) => (
-                crate::team::avatar(p, 20.0, t).into_any_element(),
-                p.name.clone(),
-                match &model {
-                    Some(m) => format!("{} · {m}", kind.label()),
-                    None => kind.label().to_string(),
-                },
-            ),
-            None => (
-                div()
-                    .size(px(20.0))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded(px(6.0))
-                    .bg(t.wash(0.06))
-                    .child(icon(ui::harness_icon(kind)).size(px(12.0)).text_color(ui::harness_tint(
-                        kind,
-                        t,
-                        t.text_muted,
-                    )))
-                    .into_any_element(),
-                kind.label().to_string(),
-                model.unwrap_or_default(),
-            ),
-        };
-        div()
-            .flex()
-            .items_center()
-            .gap(px(8.0))
-            .text_size(ty::SMALL)
-            .child(mark)
-            .child(div().font_weight(gpui::FontWeight::MEDIUM).text_color(t.text).child(name))
-            .when(!detail.is_empty(), |d| d.child(div().text_color(t.text_faint).child(detail)))
-            .into_any_element()
+    /// A teammate's name over their reply. Ordinary chats do not label the
+    /// harness or model here.
+    fn reply_header(&self, t: &Theme) -> Option<AnyElement> {
+        let p = self.persona.as_ref()?;
+        Some(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.0))
+                .text_size(ty::SMALL)
+                .child(crate::team::avatar(p, 20.0, t))
+                .child(div().font_weight(gpui::FontWeight::MEDIUM).text_color(t.text).child(p.name.clone()))
+                .into_any_element(),
+        )
     }
 
     fn render_user(&self, i: usize, text: &SharedString, at: i64, weak: &WeakEntity<Self>, t: &Theme) -> AnyElement {
@@ -3048,7 +3046,7 @@ impl TaskView {
         let agents: Vec<usize> = if mirror {
             Vec::new()
         } else {
-            a.tools.iter().enumerate().filter(|(_, t)| t.kind == ToolKind::Agent).map(|(j, _)| j).collect()
+            a.tools.iter().enumerate().filter(|(_, t)| is_spawn(t)).map(|(j, _)| j).collect()
         };
         // Thoughts and calls in arrival order.
         let mut items: Vec<Step> = Vec::new();
@@ -3061,7 +3059,7 @@ impl TaskView {
         };
         for j in 0..a.tools.len() {
             items.extend(thoughts_at(j));
-            if mirror || a.tools[j].kind != ToolKind::Agent {
+            if mirror || !is_spawn(&a.tools[j]) {
                 items.push(Step::Tool(j));
             }
         }

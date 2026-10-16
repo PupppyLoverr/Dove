@@ -5,27 +5,25 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Dove — every coding agent, one native window</title>
 <meta name="description" content="Dove is the agentic development environment: a native, local-first desktop app that runs Claude Code, Codex, Cursor, Gemini, OpenCode, Devin and more side by side, each in its own worktree, with diffs, a browser it can drive, on-device dictation, computer use and your phone as a remote.">
-<meta name="theme-color" content="#07070a">
+<meta name="theme-color" content="#0a0a0f">
 <meta property="og:title" content="Dove — every coding agent, one native window">
 <meta property="og:description" content="Run every coding agent side by side in one native window. Worktrees, diffs, a browser the agent drives, on-device dictation, computer use and your phone as the remote. Free and open source.">
 <meta property="og:type" content="website">
-<meta property="og:image" content="assets/shots/og.jpg">
+<meta property="og:image" content="assets/shots/home-live.png">
 <meta name="twitter:card" content="summary_large_image">
 <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
 <link rel="preload" href="assets/fonts/geist-latin.woff2" as="font" type="font/woff2" crossorigin>
-<link rel="preload" href="assets/fonts/instrument-serif-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="assets/fonts/geist-mono-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="styles.css">
 <script>document.documentElement.classList.add("js");</script>
 <script defer src="main.js"></script>
 </head>
 <body>
 <a class="skip" href="#main">Skip to content</a>
-<div class="noise" aria-hidden="true"></div>
-<div class="progress" aria-hidden="true"><span id="progress"></span></div>
 
 <header class="nav" id="top">
   <a class="brand" href="#top" aria-label="Dove home">
-    <img src="assets/dove-logo.svg" alt="" width="22" height="22">
+    <img src="assets/dove-logo.svg" alt="" width="20" height="20">
     <span>Dove</span>
   </a>
   <nav class="nav-links" aria-label="Primary">
@@ -39,7 +37,7 @@
     <a class="gh" href="https://github.com/PupppyLoverr/Dove" aria-label="Dove on GitHub">
       <svg viewBox="0 0 16 16" width="17" height="17" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
     </a>
-    <a class="btn btn-light btn-sm magnetic" href="#download"><span>Download</span></a>
+    <a class="btn btn-primary btn-sm" href="#download">Download</a>
   </div>
 </header>
 
@@ -48,132 +46,120 @@
   <!-- HERO -->
   <section class="hero" id="hero">
     <canvas id="silk" class="silk" aria-hidden="true"></canvas>
-    <div class="hero-vignette" aria-hidden="true"></div>
     <div class="hero-inner">
-      <p class="eyebrow reveal"><span class="pulse" aria-hidden="true"></span> Open source · Native Rust · Local-first</p>
-      <h1 class="hero-title" aria-label="Every agent. One window.">
-        <span class="line"><span class="split">Every agent.</span></span>
-        <span class="line"><em class="split serif">One window.</em></span>
-      </h1>
-      <p class="hero-sub reveal">Dove runs Claude Code, Codex, Cursor, Gemini, Devin and every other coding agent side by side. Each task gets its own worktree, a live transcript, a diff to review and a browser the agent can drive. Talk to it. Hand it your computer. Steer it from your phone.</p>
-      <div class="hero-cta reveal">
-        <a class="btn btn-light btn-lg magnetic" id="dl-primary" href="#download"><span>Download for Windows</span></a>
-        <a class="btn btn-ghost btn-lg magnetic" href="https://github.com/PupppyLoverr/Dove"><span>Star on GitHub</span> <span aria-hidden="true">↗</span></a>
+      <div class="hero-copy">
+        <p class="badge reveal"><span class="dot" aria-hidden="true"></span>Open source · Native Rust · Local-first</p>
+        <h1 class="hero-title">
+          <span class="line"><span class="split">Every agent.</span></span>
+          <span class="line muted"><span class="split">One window.</span></span>
+        </h1>
+        <p class="hero-sub reveal">Dove runs Claude Code, Codex, Cursor, Gemini, Devin and every other coding agent side by side. Each task gets its own worktree, a live transcript, a diff to review and a browser the agent can drive.</p>
+        <div class="hero-actions reveal">
+          <a class="btn btn-primary btn-lg" id="dl-primary" href="#download">Download for Windows</a>
+          <a class="btn btn-ghost btn-lg" href="https://github.com/PupppyLoverr/Dove">Star on GitHub<span aria-hidden="true">↗</span></a>
+        </div>
+        <p class="hero-meta reveal">Free forever on your machine · 50–100 MB · macOS, Windows, Linux</p>
       </div>
-      <p class="hero-meta reveal">Free forever on your machine · 50–100 MB · macOS, Windows, Linux · iOS &amp; Android remote</p>
-    </div>
-    <div class="stage reveal" id="stage">
-      <div class="window" id="window">
-        <div class="window-bar"><i></i><i></i><i></i><span>Dove</span></div>
-        <img src="assets/shots/app-dark.jpg" alt="The Dove app: threads in the sidebar, an agent's interactive plan card with a timeline, a traffic breakdown and a latency chart, and the composer." width="1924" height="1092">
-        <div class="glare" aria-hidden="true"></div>
-      </div>
-      <div class="float float-a" aria-hidden="true">
-        <span class="dot ok"></span> Tests passed · <b>retry.rs</b> <em>+18 −4</em>
-      </div>
-      <div class="float float-b" aria-hidden="true">
-        <span class="wave"><i></i><i></i><i></i><i></i><i></i></span> “Ship it to staging”
-      </div>
+
+      <figure class="hero-shot reveal" id="stage">
+        <img id="window" src="assets/shots/home-live.png" alt="The Dove home screen: a single “Do anything…” composer over a starfield, with the active repo, agent and worktree chosen inline." width="1728" height="912" fetchpriority="high">
+      </figure>
     </div>
   </section>
 
-  <!-- AGENTS MARQUEE -->
-  <section class="agents" id="agents" aria-labelledby="agents-title">
-    <h2 id="agents-title" class="kicker reveal">Bring the agents you already pay for</h2>
+  <!-- AGENTS -->
+  <section class="agents" id="agents" aria-label="Supported agents">
+    <p class="agents-lead reveal">Bring the agents you already pay for.</p>
     <div class="marquee" aria-label="Supported agents">
       <div class="marquee-track">
-        <span><img src="assets/logos/claude-mark.svg" alt="" width="22" height="22">Claude Code</span>
-        <span><img src="assets/logos/openai-mark.svg" alt="" width="22" height="22">Codex</span>
-        <span><img src="assets/logos/cursor-mark.svg" alt="" width="22" height="22">Cursor</span>
-        <span><img src="assets/logos/gemini-mark.svg" alt="" width="22" height="22">Gemini CLI</span>
-        <span><img src="assets/logos/devin-mark.svg" alt="" width="22" height="22">Devin</span>
-        <span><img src="assets/logos/opencode-mark.svg" alt="" width="22" height="22">OpenCode</span>
-        <span><img src="assets/logos/grok-mark.svg" alt="" width="22" height="22">Grok</span>
-        <span><img src="assets/logos/copilot-mark.svg" alt="" width="22" height="22">Copilot</span>
-        <span><img src="assets/logos/qwen-mark.svg" alt="" width="22" height="22">Qwen Code</span>
-        <span><img src="assets/logos/antigravity-mark.svg" alt="" width="22" height="22">Antigravity</span>
-        <span><img src="assets/logos/pi-mark.svg" alt="" width="22" height="22">Pi</span>
+        <span><img src="assets/logos/claude-mark.svg" alt="" width="20" height="20">Claude Code</span>
+        <span><img src="assets/logos/openai-mark.svg" alt="" width="20" height="20">Codex</span>
+        <span><img src="assets/logos/cursor-mark.svg" alt="" width="20" height="20">Cursor</span>
+        <span><img src="assets/logos/gemini-mark.svg" alt="" width="20" height="20">Gemini CLI</span>
+        <span><img src="assets/logos/devin-mark.svg" alt="" width="20" height="20">Devin</span>
+        <span><img src="assets/logos/opencode-mark.svg" alt="" width="20" height="20">OpenCode</span>
+        <span><img src="assets/logos/grok-mark.svg" alt="" width="20" height="20">Grok</span>
+        <span><img src="assets/logos/copilot-mark.svg" alt="" width="20" height="20">Copilot</span>
+        <span><img src="assets/logos/qwen-mark.svg" alt="" width="20" height="20">Qwen Code</span>
+        <span><img src="assets/logos/antigravity-mark.svg" alt="" width="20" height="20">Antigravity</span>
+        <span><img src="assets/logos/pi-mark.svg" alt="" width="20" height="20">Pi</span>
       </div>
     </div>
   </section>
 
   <!-- STATEMENT -->
   <section class="statement" aria-label="What Dove is">
-    <p class="scrub" id="scrub">Dove is not another agent. It is the workspace around all of them: one thread holds the chat, the terminal, the diff, the browser and the files, whichever model is doing the work, and you stay in control of every change.</p>
+    <p class="statement-body reveal">Dove is not another agent. It is the workspace around all of them — one thread holds the chat, the terminal, the diff, the browser and the files, whichever model is doing the work, and you stay in control of every change.</p>
   </section>
 
-  <!-- PINNED PRODUCT TOUR -->
+  <!-- PRODUCT TOUR -->
   <section class="tour" id="tour" aria-labelledby="tour-title">
     <div class="tour-head">
-      <p class="kicker reveal">The product</p>
-      <h2 id="tour-title" class="section-title reveal">Everything an agent touches, <em class="serif">in one place.</em></h2>
+      <h2 id="tour-title" class="section-title reveal">Everything an agent touches, in one place.</h2>
     </div>
     <div class="tour-grid">
       <ol class="tour-steps" id="tour-steps">
         <li class="step is-active" data-shot="0">
           <span class="step-n">01</span>
-          <h3>A transcript you can actually read</h3>
-          <p>Streaming markdown, folded tool calls, inline diffs, mermaid, math and interactive cards the agent draws for you. A minimap of your prompts sits on the left.</p>
+          <h3>One window, every agent</h3>
+          <p>Start any task from a single composer. Pick the repo and the agent; Dove opens a worktree and gets to work while you keep moving.</p>
         </li>
         <li class="step" data-shot="1">
           <span class="step-n">02</span>
-          <h3>Worktrees, diffs and review</h3>
-          <p>Every task runs on its own branch. Stage hunks, comment on lines and send the review back to the agent. Commit, push and open the PR without leaving.</p>
+          <h3>A transcript you can actually read</h3>
+          <p>Streaming markdown, tables, inline code and folded thought and tool calls — the whole run in one readable thread, whichever model is driving.</p>
         </li>
         <li class="step" data-shot="2">
           <span class="step-n">03</span>
-          <h3>A browser the agent drives</h3>
-          <p>The side panel hosts a real browser. Agents navigate, click and type with trusted input and you watch the cursor move. Chrome extension for your logged-in tabs.</p>
+          <h3>Answers that draw their own UI</h3>
+          <p>Agents reply with live plans, charts and checklists you can act on. Review the diff, approve a step, and the agent keeps going.</p>
         </li>
         <li class="step" data-shot="3">
           <span class="step-n">04</span>
-          <h3>Threads, Kanban and automations</h3>
-          <p>Run ten agents at once. Attention-sorted threads surface what needs you; drafts become cards; schedules and commit triggers start agents on their own.</p>
+          <h3>Every agent you already pay for</h3>
+          <p>Dove detects the CLIs on your machine — Claude Code, Codex, Cursor, Gemini, Devin and more — and runs them side by side, each in its own worktree.</p>
         </li>
       </ol>
       <div class="tour-stage">
         <div class="tour-frame">
-          <img class="shot is-active" src="assets/shots/transcript.jpg" alt="An agent transcript with folded tool calls and an interactive card" loading="lazy" width="790" height="740">
-          <img class="shot" src="assets/shots/hero.jpg" alt="The changes panel with a diff ready for review" loading="lazy" width="1360" height="860">
-          <img class="shot" src="assets/shots/panel.jpg" alt="The side panel with the in-app browser" loading="lazy" width="468" height="360">
-          <img class="shot" src="assets/shots/threads.jpg" alt="The threads view with many agents running" loading="lazy" width="1360" height="860">
+          <img class="shot is-active" src="assets/shots/home-live.png" alt="The Dove home screen with a single composer over a starfield" loading="lazy" width="1728" height="912">
+          <img class="shot" src="assets/shots/thread.png" alt="A live agent thread with a table, a code block and the thread sidebar" loading="lazy" width="1470" height="927">
+          <img class="shot" src="assets/shots/app-dark.jpg" alt="An agent reply drawing an interactive plan with a timeline, a traffic breakdown and a latency chart" loading="lazy" width="1924" height="1092">
+          <img class="shot" src="assets/shots/agents.png" alt="The agents settings listing every detected coding-agent CLI" loading="lazy" width="1938" height="1038">
         </div>
         <div class="tour-rail" aria-hidden="true"><span id="tour-rail"></span></div>
       </div>
     </div>
   </section>
 
-  <!-- BENTO -->
-  <section class="bento-wrap" aria-labelledby="bento-title">
-    <p class="kicker reveal">Built in</p>
-    <h2 id="bento-title" class="section-title reveal">The parts every agent <em class="serif">was missing.</em></h2>
+  <!-- FEATURES -->
+  <section class="features" aria-labelledby="features-title">
+    <h2 id="features-title" class="section-title reveal">The parts every agent was missing.</h2>
     <div class="bento">
-      <article class="card c-wide spot">
+      <article class="card c-wide reveal">
         <div class="card-copy">
           <h3>Generative UI</h3>
           <p>Agents answer with live dashboards, charts, timelines, checklists and option cards you can change. Your picks go straight back to the agent.</p>
         </div>
         <div class="viz viz-bars" aria-hidden="true"><i style="--h:.45"></i><i style="--h:.7"></i><i style="--h:.55"></i><i style="--h:.9"></i><i style="--h:.62"></i><i style="--h:.8"></i><i style="--h:.38"></i><i style="--h:.72"></i></div>
       </article>
-      <article class="card spot">
+      <article class="card reveal">
         <h3>Computer use</h3>
         <p>Agents operate native desktop apps through the open-source cua-driver, reading the accessibility tree before they act. Destructive steps ask first.</p>
-        <div class="viz viz-cursor" aria-hidden="true"><span class="ghost-btn">Save</span><span class="pointer"></span></div>
       </article>
-      <article class="card spot">
+      <article class="card reveal">
         <h3>Office documents</h3>
         <p>Every agent can write .docx, .pptx, .xlsx and .pdf. Preview and edit them inside Dove.</p>
         <div class="viz viz-docs" aria-hidden="true"><span>DOCX</span><span>PPTX</span><span>XLSX</span><span>PDF</span></div>
       </article>
-      <article class="card spot">
+      <article class="card reveal">
         <h3>~4× faster first reply</h3>
         <p>Dove starts the agent while you type, so the answer begins the moment you hit enter.</p>
         <div class="viz viz-speed" aria-hidden="true"><span><b>11.4s</b> cold</span><span class="fast"><b>2.9s</b> Dove</span></div>
       </article>
-      <article class="card spot">
+      <article class="card reveal">
         <h3>Composio, Paper and MCP</h3>
         <p>GitHub, Slack, Linear, Notion and hundreds more, plus Paper for design. Every agent gets the same tools.</p>
-        <div class="viz viz-orbit" aria-hidden="true"><span></span><span></span><span></span><b><img src="assets/dove-logo.svg" alt="" width="26" height="26"></b></div>
       </article>
     </div>
   </section>
@@ -181,8 +167,7 @@
   <!-- VOICE -->
   <section class="voice" id="voice" aria-labelledby="voice-title">
     <div class="voice-copy">
-      <p class="kicker reveal">Dictation</p>
-      <h2 id="voice-title" class="section-title reveal">Talk to your agents. <em class="serif">Dove types.</em></h2>
+      <h2 id="voice-title" class="section-title reveal">Talk to your agents. Dove types.</h2>
       <p class="lede reveal">Hold the mic in the composer or the terminal and speak. NVIDIA Parakeet turns it into text on your machine, and it lands in the input for you to edit and send.</p>
       <ul class="ticks reveal">
         <li>NVIDIA Parakeet, fully on-device</li>
@@ -201,38 +186,36 @@
 
   <!-- REMOTE -->
   <section class="remote" id="remote" aria-labelledby="remote-title">
-    <div class="phone reveal" aria-hidden="true">
-      <div class="phone-notch"></div>
-      <div class="phone-screen">
-        <div class="ph-top"><b>Dove</b><span class="live">● Live</span></div>
-        <div class="ph-thread">
-          <p class="ph-user">Refactor the auth middleware</p>
-          <p class="ph-agent">Reading <code>auth.rs</code>…</p>
-          <p class="ph-agent">Edited 3 files <span class="add">+42</span> <span class="del">−17</span></p>
-          <div class="ph-approve"><span>Run <code>cargo test</code>?</span><div><button tabindex="-1">Deny</button><button tabindex="-1" class="ok">Allow</button></div></div>
+    <div class="remote-panel reveal" aria-hidden="true">
+      <div class="rp-top"><b>Dove</b><span class="live">Live</span></div>
+      <div class="rp-thread">
+        <p class="rp-user">Refactor the auth middleware</p>
+        <p class="rp-agent">Reading <code>auth.rs</code>…</p>
+        <p class="rp-agent">Edited 3 files <span class="add">+42</span> <span class="del">−17</span></p>
+        <div class="rp-approve">
+          <span>Run <code>cargo test</code>?</span>
+          <div><button tabindex="-1">Deny</button><button tabindex="-1" class="ok">Allow</button></div>
         </div>
       </div>
     </div>
     <div class="remote-copy">
-      <p class="kicker reveal">Remote control</p>
-      <h2 id="remote-title" class="section-title reveal">Your phone is <em class="serif">the remote.</em></h2>
+      <h2 id="remote-title" class="section-title reveal">Your phone is the remote.</h2>
       <p class="lede reveal">Pair the Dove app on iOS or Android with one sign-in. Watch transcripts live, approve commands, steer mid-turn and start new threads. The agent keeps running on your desktop; the edge relays events, never your repository.</p>
       <div class="stores reveal"><span class="pill">iOS</span><span class="pill">Android</span><span class="pill">Loro CRDT sync</span><span class="pill">Cloudflare edge</span></div>
     </div>
   </section>
 
-  <!-- NUMBERS -->
-  <section class="numbers" aria-label="Dove in numbers">
-    <div class="num reveal"><b data-count="12">0</b><span>agents supported</span></div>
-    <div class="num reveal"><b data-count="100" data-prefix="&lt;" data-suffix=" MB">0</b><span>the whole app</span></div>
-    <div class="num reveal"><b data-count="0" data-prefix="$">0</b><span>to run locally, forever</span></div>
-    <div class="num reveal"><b data-count="4" data-suffix="×">0</b><span>faster first reply</span></div>
+  <!-- STATS -->
+  <section class="stats" aria-label="Dove in numbers">
+    <div class="stat reveal"><b data-count="12">0</b><span>agents supported</span></div>
+    <div class="stat reveal"><b data-count="100" data-prefix="&lt;" data-suffix=" MB">0</b><span>the whole app</span></div>
+    <div class="stat reveal"><b data-count="0" data-prefix="$">0</b><span>to run locally, forever</span></div>
+    <div class="stat reveal"><b data-count="4" data-suffix="×">0</b><span>faster first reply</span></div>
   </section>
 
   <!-- PRICING -->
   <section class="pricing" id="pricing" aria-labelledby="pricing-title">
-    <p class="kicker reveal">Pricing</p>
-    <h2 id="pricing-title" class="section-title reveal">Free on your machine. <em class="serif">Pay for the cloud parts.</em></h2>
+    <h2 id="pricing-title" class="section-title reveal">Free on your machine. Pay for the cloud parts.</h2>
     <div class="billing reveal" role="group" aria-label="Billing period">
       <button type="button" class="is-on" data-period="month">Monthly</button>
       <button type="button" data-period="year">Yearly <em>−20%</em></button>
@@ -242,7 +225,7 @@
         <h3>Free</h3>
         <p class="price"><b>$0</b><span>forever</span></p>
         <p class="plan-for">Everything local, with your own keys.</p>
-        <a class="btn btn-ghost btn-block" href="#download"><span>Download</span></a>
+        <a class="btn btn-ghost btn-block" href="#download">Download</a>
         <ul><li>Every agent, unlimited threads</li><li>Worktrees, diffs, files, terminal</li><li>In-app browser + Chrome extension</li><li>Generative UI, office docs, MCP</li><li>Dictation and computer use</li><li>One phone, 7 days of synced history</li></ul>
       </article>
       <article class="plan plan-hot reveal">
@@ -250,21 +233,21 @@
         <h3>Pro</h3>
         <p class="price"><b data-month="$12" data-year="$9.60">$12</b><span>per month</span></p>
         <p class="plan-for">For one developer on many devices.</p>
-        <a class="btn btn-light btn-block" href="#download"><span>Start Pro</span></a>
+        <a class="btn btn-primary btn-block" href="#download">Start Pro</a>
         <ul><li>Everything in Free</li><li>Unlimited phones, tablets, desktops</li><li>Unlimited synced history and search</li><li>Push notifications for approvals</li><li>Encrypted settings and template sync</li></ul>
       </article>
       <article class="plan reveal">
         <h3>Team</h3>
         <p class="price"><b data-month="$24" data-year="$19.20">$24</b><span>per user / month</span></p>
         <p class="plan-for">Shared threads for small teams.</p>
-        <a class="btn btn-ghost btn-block" href="#download"><span>Start Team</span></a>
+        <a class="btn btn-ghost btn-block" href="#download">Start Team</a>
         <ul><li>Everything in Pro</li><li>Shared threads, multiplayer steering</li><li>Shared templates, automations, MCP</li><li>Team usage ledger across agents</li><li>Central billing and roles</li></ul>
       </article>
       <article class="plan reveal">
         <h3>Enterprise</h3>
         <p class="price"><b>Custom</b><span>annual</span></p>
         <p class="plan-for">For security reviews and scale.</p>
-        <a class="btn btn-ghost btn-block" href="mailto:hello@dove.sh"><span>Contact us</span></a>
+        <a class="btn btn-ghost btn-block" href="mailto:hello@dove.sh">Contact us</a>
         <ul><li>Everything in Team</li><li>SAML SSO and SCIM</li><li>Self-hosted edge relay</li><li>Audit log export, data residency</li><li>Support SLA</li></ul>
       </article>
     </div>
@@ -286,24 +269,26 @@
 
   <!-- CTA -->
   <section class="cta" id="download" aria-labelledby="cta-title">
-    <div class="cta-glow" id="cta-glow" aria-hidden="true"></div>
-    <h2 id="cta-title" class="cta-title"><span class="split">Fly with</span> <em class="split serif">Dove.</em></h2>
-    <p class="lede">Free and open source. Bring your own agents.</p>
-    <div class="cta-buttons">
-      <a class="btn btn-light btn-lg magnetic" href="https://github.com/PupppyLoverr/Dove/releases"><img src="assets/icons/windows.svg" alt="" width="16" height="16"><span>Windows</span></a>
-      <a class="btn btn-light btn-lg magnetic" href="https://github.com/PupppyLoverr/Dove/releases"><img src="assets/icons/apple.svg" alt="" width="16" height="16"><span>macOS</span></a>
-      <a class="btn btn-light btn-lg magnetic" href="https://github.com/PupppyLoverr/Dove/releases"><img src="assets/icons/linux.svg" alt="" width="16" height="16"><span>Linux</span></a>
+    <h2 id="cta-title" class="cta-title reveal">Fly with Dove.</h2>
+    <p class="lede reveal">Free and open source. Bring your own agents.</p>
+    <div class="cta-buttons reveal">
+      <a class="btn btn-primary btn-lg" href="https://github.com/PupppyLoverr/Dove/releases"><img src="assets/icons/windows.svg" alt="" width="15" height="15">Windows</a>
+      <a class="btn btn-primary btn-lg" href="https://github.com/PupppyLoverr/Dove/releases"><img src="assets/icons/apple.svg" alt="" width="15" height="15">macOS</a>
+      <a class="btn btn-primary btn-lg" href="https://github.com/PupppyLoverr/Dove/releases"><img src="assets/icons/linux.svg" alt="" width="15" height="15">Linux</a>
     </div>
     <code class="install">cargo run -p dove</code>
   </section>
 </main>
 
 <footer class="footer">
-  <div class="foot-brand"><img src="assets/dove-logo.svg" alt="" width="18" height="18"><span>Dove</span><small>Apache-2.0</small></div>
+  <div class="foot-brand">
+    <img src="assets/dove-logo.svg" alt="" width="16" height="16"><span>Dove</span>
+    <small>Apache-2.0</small>
+  </div>
   <nav aria-label="Footer">
     <a href="https://github.com/PupppyLoverr/Dove">GitHub</a>
     <a href="https://github.com/PupppyLoverr/Dove/blob/main/ARCHITECTURE.md">Architecture</a>
-    <a href="https://github.com/PupppyLoverr/Dove/blob/main/docs/PRICING.md">Pricing details</a>
+    <a href="https://github.com/PupppyLoverr/Dove/blob/main/docs/PRICING.md">Pricing</a>
   </nav>
   <p class="foot-note">Agent names and logos are trademarks of their owners, shown to indicate compatibility.</p>
 </footer>

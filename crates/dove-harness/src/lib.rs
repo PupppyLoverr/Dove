@@ -6,6 +6,7 @@
 //! them without touching tokio. Commands go in through a plain sender.
 
 pub mod acp;
+mod agy;
 pub mod catalog;
 pub mod detect;
 mod external;

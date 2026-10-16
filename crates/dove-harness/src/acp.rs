@@ -84,11 +84,20 @@ impl Mapper {
             "agent_thought_chunk" => push_text(out, &u["content"], true),
             "tool_call" => {
                 let id = u["toolCallId"].as_str().unwrap_or_default().to_string();
-                let kind = tool_kind(u["kind"].as_str());
                 let title = title_of(u).unwrap_or_else(|| u["kind"].as_str().unwrap_or("tool").to_string());
+                let name = u["title"].as_str().filter(|s| !s.is_empty()).unwrap_or(u["kind"].as_str().unwrap_or("tool"));
+                let mut kind = tool_kind(u["kind"].as_str());
+                if kind == ToolKind::Other {
+                    kind = ToolKind::classify(name);
+                }
+                // ACP has no agent kind. A spawn is `Agent: <brief>`, a task
+                // tool, or an input that names a subagent type.
+                if u["rawInput"].get("subagent_type").is_some() || u["rawInput"].get("subagentType").is_some() {
+                    kind = ToolKind::Agent;
+                }
                 out.push(AgentEvent::ToolCall {
                     call_id: id,
-                    name: u["kind"].as_str().unwrap_or("tool").into(),
+                    name: name.into(),
                     kind,
                     title: title.into(),
                     input: u["rawInput"].clone(),

@@ -165,7 +165,7 @@ impl CursorHarness {
                 .ok_or_else(|| HarnessError::Protocol("cursor models probe returned no catalog".into()))?;
             Ok::<_, HarnessError>(map_model_items(&items))
         };
-        tokio::time::timeout(Duration::from_secs(15), run)
+        tokio::time::timeout(Duration::from_secs(45), run)
             .await
             .map_err(|_| HarnessError::Protocol("cursor models probe timed out".into()))?
     }
@@ -326,14 +326,15 @@ impl Harness for CursorHarness {
 
         let (stdin_tx, stdin_rx) = mpsc::unbounded_channel::<String>();
         tokio::spawn(stdin_writer(stdin, stdin_rx));
+        let (model, model_options) = cursor_selection(&request.model, &request.model_options);
         let first = json!({
             "op": "run",
             "prompt": request.prompt,
             "cwd": request.cwd,
-            "model": request.model,
+            "model": model,
             // Typed parameter picks (thinking/context/effort/fast/…) — the
             // shim folds them into the SDK's ModelSelection params.
-            "modelOptions": request.model_options,
+            "modelOptions": model_options,
             "resume": request.resume,
             "mcp": request.mcp,
             "storeDir": lease.as_ref().and_then(|lease| lease.store_dir.as_ref()),
@@ -646,9 +647,10 @@ async fn run_session(session: Session) {
                     let mut line = json!({ "op": "steer", "prompt": msg.prompt });
                     // A changed model runs from this message's own turn.
                     if let Some(next) = msg.config {
+                        let (model, model_options) = cursor_selection(&next.model, &next.model_options);
                         line["reconfigure"] = Value::Bool(true);
-                        line["model"] = json!(next.model);
-                        line["modelOptions"] = Value::Object(next.model_options);
+                        line["model"] = json!(model);
+                        line["modelOptions"] = Value::Object(model_options);
                     }
                     let _ = stdin_tx.send(line.to_string());
                 }
@@ -866,9 +868,56 @@ fn map_shim_frame(frame: &Value, interrupted: bool) -> Vec<AgentEvent> {
     }
 }
 
+/// `cursor-agent acp` advertises one row per variant, with the parameters
+/// packed into the id (`grok-4.7[context=256k,reasoning_effort=high,fast=true]`).
+/// The SDK rejects that string. Split it into the bare id plus parameters.
+fn cursor_selection(
+    model: &Option<String>,
+    options: &serde_json::Map<String, Value>,
+) -> (Option<String>, serde_json::Map<String, Value>) {
+    let mut options = options.clone();
+    let Some(raw) = model.as_deref().map(str::trim).filter(|s| !s.is_empty()) else {
+        return (None, options);
+    };
+    let Some((id, rest)) = raw.split_once('[') else {
+        return (Some(raw.to_string()), options);
+    };
+    let Some(body) = rest.strip_suffix(']') else {
+        return (Some(raw.to_string()), options);
+    };
+    if id.is_empty() || id.contains('[') || body.contains('[') {
+        return (Some(raw.to_string()), options);
+    }
+    for part in body.split(',') {
+        let Some((key, value)) = part.split_once('=') else { continue };
+        let (key, value) = (key.trim(), value.trim());
+        if key.is_empty() || value.is_empty() || key.starts_with("dove.") {
+            continue;
+        }
+        options.entry(key.to_string()).or_insert_with(|| Value::String(value.to_string()));
+    }
+    (Some(id.to_string()), options)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn acp_variant_ids_become_sdk_model_params() {
+        let options = serde_json::Map::from_iter([("dove.permissionMode".to_string(), Value::String("default".into()))]);
+        let (id, out) = cursor_selection(
+            &Some("grok-4.7[context=256k,reasoning_effort=high,fast=true]".into()),
+            &options,
+        );
+        assert_eq!(id.as_deref(), Some("grok-4.7"));
+        assert_eq!(out.get("context").and_then(Value::as_str), Some("256k"));
+        assert_eq!(out.get("reasoning_effort").and_then(Value::as_str), Some("high"));
+        assert_eq!(out.get("fast").and_then(Value::as_str), Some("true"));
+        assert_eq!(out.get("dove.permissionMode").and_then(Value::as_str), Some("default"));
+        let (bare, _) = cursor_selection(&Some("composer-2.5".into()), &serde_json::Map::new());
+        assert_eq!(bare.as_deref(), Some("composer-2.5"));
+    }
 
     #[test]
     fn decodes_cursor_tool_vocabulary() {

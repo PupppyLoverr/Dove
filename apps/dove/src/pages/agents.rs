@@ -21,7 +21,7 @@ use crate::ui;
 /// The arguments that start an agent's sign-in flow.
 fn login_args(kind: HarnessKind) -> Vec<String> {
     match kind {
-        HarnessKind::Codex | HarnessKind::Cursor => vec!["login".into()],
+        HarnessKind::Codex | HarnessKind::Cursor | HarnessKind::Kimi | HarnessKind::Amp => vec!["login".into()],
         HarnessKind::OpenCode | HarnessKind::Kilo => vec!["auth".into(), "login".into()],
         HarnessKind::Devin => vec!["auth".into(), "login".into()],
         // Claude, Gemini, Copilot, Qwen and others sign in from their own UI.
