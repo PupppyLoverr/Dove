@@ -684,6 +684,7 @@ impl Shell {
     }
 
     fn go(&mut self, route: Route, window: &mut Window, cx: &mut Context<Self>) {
+        let prev = self.route;
         self.route = route;
         self.info_open = false;
         self.close_menus();
@@ -700,7 +701,23 @@ impl Shell {
             Route::Usage => self.pages.refresh_usage(&self.engine, cx),
             _ => {}
         }
+        if let Route::Thread(id) = prev
+            && prev != route
+        {
+            self.mark_thread_shown(id, false, cx);
+        }
+        if let Route::Thread(id) = route {
+            self.mark_thread_shown(id, true, cx);
+        }
         cx.notify();
+    }
+
+    /// Background sessions stay live, but only the open thread re-parses
+    /// tokens as they arrive.
+    fn mark_thread_shown(&mut self, id: TaskId, shown: bool, cx: &mut Context<Self>) {
+        if let Some(v) = self.threads.get(&id) {
+            v.update(cx, |t, cx| t.set_shown(shown, cx));
+        }
     }
 
     pub fn go_back(&mut self, window: &mut Window, cx: &mut Context<Self>) {

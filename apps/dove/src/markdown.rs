@@ -282,6 +282,17 @@ pub struct StreamUpdate {
 
 impl Stream {
     pub fn push(&mut self, delta: &str) -> StreamUpdate {
+        let finished = self.ingest(delta);
+        StreamUpdate { finished, live: self.live_blocks() }
+    }
+
+    /// Append `delta` and cut any top-level block that just closed.
+    ///
+    /// Does not re-parse the open tail. A hidden thread calls this on every
+    /// coalesced batch, then [`Self::live_blocks`] once when the thread is
+    /// shown. Re-parsing that tail on every token is most of the cost of a
+    /// background stream.
+    pub fn ingest(&mut self, delta: &str) -> Vec<Arc<Block>> {
         self.source.push_str(delta);
         self.scan();
         let mut finished = Vec::new();
@@ -292,15 +303,19 @@ impl Stream {
                 self.stable_end += cut;
             }
         }
-        let live = match self.open_code() {
+        finished
+    }
+
+    /// The open tail, parsed for display.
+    pub fn live_blocks(&mut self) -> Vec<Arc<Block>> {
+        match self.open_code() {
             Some(b) => vec![Arc::new(b)],
             None => {
                 let mended = mend_tail(&self.source[self.stable_end..]);
                 let mut parser = Parser::new_ext(&mended, OPTS).peekable();
                 parse_blocks(&mut parser, None).into_iter().map(Arc::new).collect()
             }
-        };
-        StreamUpdate { finished, live }
+        }
     }
 
     /// Track fences and blank lines over the newly completed lines.
@@ -1139,6 +1154,16 @@ mod tests {
         }
         bench_one("mixed / full re-parse", &mixed, 16, true);
         bench_one("50KB code block / full re-parse", &code, 16, true);
+    }
+
+    #[test]
+    fn ingest_then_live_blocks_matches_push() {
+        let mut pushed = Stream::default();
+        let mut held = Stream::default();
+        let up = pushed.push("Hello **world**");
+        let finished = held.ingest("Hello **world**");
+        assert_eq!(finished, up.finished);
+        assert_eq!(held.live_blocks(), up.live);
     }
 
     #[test]

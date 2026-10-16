@@ -105,6 +105,12 @@ impl Focusable for ThreadView {
 }
 
 impl ThreadView {
+    /// The open thread parses each token. Every other live thread coalesces
+    /// its stream and paints the tail when it is opened.
+    pub fn set_shown(&mut self, shown: bool, cx: &mut Context<Self>) {
+        self.chat.update(cx, |c, cx| c.set_shown(shown, cx));
+    }
+
     pub fn new(engine: Arc<Engine>, chat: Entity<TaskView>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let voice = cx.new(|cx| Dictation::new(engine.clone(), cx));
         let mut subs = vec![cx.subscribe_in(&chat, window, |this, _, ev: &TaskViewEvent, window, cx| {

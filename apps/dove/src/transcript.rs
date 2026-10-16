@@ -6,12 +6,16 @@
 //! background executor and the UI thread only swaps it in.
 //!
 //! Live events arrive from the engine on a channel. The pump wakes on the
-//! first event, waits one 120 Hz frame for more, applies the batch and
-//! notifies once. Assistant text is parsed incrementally (see
-//! [`markdown::Stream`]): finished top-level blocks become their own rows and
-//! only the open tail row is re-laid out per frame.
+//! first event, waits one frame for more, applies the batch and notifies
+//! once. A thread that is on screen waits one 120 Hz frame. A thread in the
+//! background waits longer and skips the live markdown parse, so ten
+//! unviewed sessions do not each re-parse their open tail on every token.
+//! Assistant text is parsed incrementally (see [`markdown::Stream`]):
+//! finished top-level blocks become their own rows and only the open tail
+//! row is re-laid out per frame.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -42,6 +46,18 @@ use crate::theme::Theme;
 use crate::ui;
 
 const FRAME: Duration = Duration::from_millis(8);
+/// How long a thread that is not on screen waits to fold stream deltas into
+/// one apply. Tokens arrive about every 50 ms; this lands near four applies
+/// a second instead of twenty, and the open tail is not parsed until the
+/// thread is shown.
+const HIDDEN_FRAME: Duration = Duration::from_millis(250);
+
+/// Text and thinking are safe to coalesce. Anything else (a tool, a
+/// permission, the end of a turn) is applied on the next frame so a
+/// background thread still reports that it needs you.
+fn stream_delta(ev: &AgentEvent) -> bool {
+    matches!(ev, AgentEvent::TextDelta { .. } | AgentEvent::ThinkingDelta { .. })
+}
 const DIFF_PREVIEW: usize = 8;
 const DIFF_MAX: usize = 600;
 /// Steps of a live activity shown before the rest fold away.
@@ -559,6 +575,14 @@ pub struct Chat {
     open_activity: Option<usize>,
     /// The streaming thought: its activity row and Zeron's incremental parser.
     thought: Option<(usize, zeron_markdown::IncrementalParser)>,
+    /// Thinking text not yet fed to the parser. Hidden threads append here
+    /// and parse once, when the thought closes or the thread is shown.
+    thought_pending: String,
+    /// Text and thinking skip the live re-parse. Set for a thread that is
+    /// not on screen.
+    defer_live: bool,
+    /// `defer_live` left the open tail or thought unparsed.
+    live_stale: bool,
     /// Every tool call by id: (activity row, index in the activity).
     tools: HashMap<String, (usize, usize)>,
     pub todos: Vec<TodoItem>,
@@ -709,6 +733,7 @@ impl Chat {
 
     /// The current thought is over: its tail parses as final.
     fn close_thought(&mut self) {
+        self.flush_thought();
         let Some((i, parser)) = self.thought.take() else { return };
         if let Some(Row::Activity(a)) = self.rows.get_mut(i)
             && let Some(th) = a.thoughts.last_mut()
@@ -765,6 +790,28 @@ impl Chat {
             self.open = Some(Open { stream: Stream::default(), msg, row });
         }
         let open = self.open.as_mut().expect("opened above");
+        if self.defer_live {
+            let finished = open.stream.ingest(delta);
+            let (msg, row) = (open.msg, open.row);
+            self.live_stale = true;
+            if finished.is_empty() {
+                return;
+            }
+            self.rows.truncate(row);
+            self.touch(row);
+            for b in finished {
+                let wants = b.wants_highlight();
+                let i = self.push(Row::Block { block: b, msg });
+                if wants {
+                    self.to_highlight.push(i);
+                }
+            }
+            let live = self.push(Row::Live { blocks: Vec::new() });
+            if let Some(open) = self.open.as_mut() {
+                open.row = live;
+            }
+            return;
+        }
         let up = open.stream.push(delta);
         let (msg, row) = (open.msg, open.row);
         if up.finished.is_empty() {
@@ -785,6 +832,42 @@ impl Chat {
         if let Some(open) = self.open.as_mut() {
             open.row = live;
         }
+    }
+
+    /// Parse the open tail and any held thinking once. Hidden threads defer
+    /// this until they are shown or the thought closes.
+    pub fn flush_deferred(&mut self) {
+        self.flush_thought();
+        if !self.live_stale {
+            return;
+        }
+        self.live_stale = false;
+        let Some(open) = self.open.as_mut() else { return };
+        let live = open.stream.live_blocks();
+        let row = open.row;
+        if let Some(Row::Live { blocks }) = self.rows.get_mut(row) {
+            *blocks = live;
+            self.touch(row);
+        }
+    }
+
+    fn flush_thought(&mut self) {
+        if self.thought_pending.is_empty() {
+            return;
+        }
+        let pending = std::mem::take(&mut self.thought_pending);
+        let Some(i) = self.thought.as_ref().map(|(i, _)| *i) else { return };
+        let detail = self.thought.as_mut().map(|(_, parser)| {
+            parser.append(&pending);
+            Arc::new(crate::tool_calls::thought_detail(&parser.display_tree(), true))
+        });
+        if let Some(detail) = detail
+            && let Some(Row::Activity(a)) = self.rows.get_mut(i)
+            && let Some(th) = a.thoughts.last_mut()
+        {
+            th.detail = detail;
+        }
+        self.touch(i);
     }
 
     /// An event about a call or a request that lives in the unloaded
@@ -864,13 +947,18 @@ impl Chat {
                         });
                         self.thought = Some((i, zeron_markdown::IncrementalParser::new()));
                     }
-                    if let (Some(th), Some((_, parser))) = (a.thoughts.last_mut(), self.thought.as_mut()) {
+                    if let Some(th) = a.thoughts.last_mut() {
                         th.text.push_str(&text);
-                        // Zeron's streamdown: append reparses only from the
-                        // last stable block; the display tree is mended so
-                        // half-typed markers never flash raw.
-                        parser.append(&text);
-                        th.detail = Arc::new(crate::tool_calls::thought_detail(&parser.display_tree(), true));
+                        if self.defer_live {
+                            self.thought_pending.push_str(&text);
+                            self.live_stale = true;
+                        } else if let Some((_, parser)) = self.thought.as_mut() {
+                            // Zeron's streamdown: append reparses only from the
+                            // last stable block; the display tree is mended so
+                            // half-typed markers never flash raw.
+                            parser.append(&text);
+                            th.detail = Arc::new(crate::tool_calls::thought_detail(&parser.display_tree(), true));
+                        }
                     }
                 }
                 self.touch(i);
@@ -1587,6 +1675,9 @@ pub struct TaskView {
     mirror: Option<Mirror>,
     /// Fold tweens and measured heights of the tool groups on screen.
     folds: crate::tool_calls::Folds,
+    /// The thread is the one on screen. Background streams coalesce and skip
+    /// the live markdown parse until this becomes true.
+    shown: Arc<AtomicBool>,
     focus: FocusHandle,
     _ticker: Option<gpui::Task<()>>,
     _pump: Option<gpui::Task<()>>,
@@ -1818,6 +1909,7 @@ impl TaskView {
             terminal_banner: false,
             mirror: None,
             folds: Default::default(),
+            shown: Arc::new(AtomicBool::new(false)),
             focus: cx.focus_handle(),
             _ticker: None,
             _pump: None,
@@ -1890,6 +1982,28 @@ impl TaskView {
     /// Whether an agent session is attached to this chat.
     pub fn is_live(&self) -> bool {
         self.live.is_some()
+    }
+
+    /// The shell calls this as the thread becomes the open one, or stops
+    /// being it. Showing paints the tail that background streaming deferred.
+    pub fn set_shown(&mut self, shown: bool, cx: &mut Context<Self>) {
+        if self.shown.load(Ordering::Relaxed) == shown {
+            return;
+        }
+        self.shown.store(shown, Ordering::Relaxed);
+        self.chat.defer_live = !shown;
+        if !shown {
+            return;
+        }
+        let before = self.chat.rows.len();
+        self.chat.flush_deferred();
+        let after = self.chat.rows.len();
+        let from = self.chat.dirty.take().unwrap_or(before).min(before);
+        if from < before || after > before {
+            self.list.splice(from..before, after - from);
+        }
+        self.highlight_pending(cx);
+        cx.notify();
     }
 
     /// The pending approval or question summary, for "Needs you".
@@ -1996,9 +2110,15 @@ impl TaskView {
         self.live = Some(live);
         self.composer.update(cx, |c, cx| c.set_running(true, cx));
         self.start_ticker(cx);
+        let shown = self.shown.clone();
         self._pump = Some(cx.spawn(async move |this, cx| {
             while let Ok(first) = rx.recv_async().await {
-                cx.background_executor().timer(FRAME).await;
+                let wait = if shown.load(Ordering::Relaxed) || !stream_delta(&first) {
+                    FRAME
+                } else {
+                    HIDDEN_FRAME
+                };
+                cx.background_executor().timer(wait).await;
                 let mut batch = vec![first];
                 batch.extend(rx.try_iter());
                 let exited = batch.iter().any(|e| matches!(e, AgentEvent::Exited { .. }));
@@ -2024,7 +2144,7 @@ impl TaskView {
                 cx.background_executor().timer(Duration::from_secs(1)).await;
                 let alive = this
                     .update(cx, |v, cx| {
-                        if v.is_working() {
+                        if v.is_working() && v.shown.load(Ordering::Relaxed) {
                             cx.notify();
                         }
                         v.live.is_some()
@@ -2043,6 +2163,7 @@ impl TaskView {
             remote.update(cx, |r, _| r.observe(task, &events));
         }
         let before = self.chat.rows.len();
+        self.chat.defer_live = !self.shown.load(Ordering::Relaxed);
         // The recorder flushes the transcript at a turn end, so finished
         // subagents' events are on disk from here on.
         let turn_over = events.iter().any(|e| matches!(e, AgentEvent::TurnEnded { .. } | AgentEvent::Exited { .. }));
@@ -2126,8 +2247,13 @@ impl TaskView {
         }
         self.sync_questions(cx);
         self.sync_composer(cx);
-        cx.emit(TaskViewEvent::Changed);
-        cx.notify();
+        // A hidden thread has nothing on screen. Status, title and permission
+        // events already emitted above; skipping the notify is what keeps ten
+        // background streams off the UI thread's paint path.
+        if self.shown.load(Ordering::Relaxed) {
+            cx.emit(TaskViewEvent::Changed);
+            cx.notify();
+        }
     }
 
     /// The chat shows a banner while the agent's terminal UI drives the
@@ -4933,6 +5059,20 @@ mod tests {
 
     fn text(s: &str) -> AgentEvent {
         AgentEvent::TextDelta { text: s.into() }
+    }
+
+    #[test]
+    fn hidden_stream_parses_the_tail_once_when_flushed() {
+        let mut chat = Chat::default();
+        chat.defer_live = true;
+        chat.apply(text("Hello "), true);
+        chat.apply(text("**world**"), true);
+        let Row::Live { blocks } = &chat.rows[0] else { panic!("expected a live row") };
+        assert!(blocks.is_empty());
+        chat.defer_live = false;
+        chat.flush_deferred();
+        let Row::Live { blocks } = &chat.rows[0] else { panic!("expected a live row") };
+        assert_eq!(blocks.len(), 1);
     }
 
     #[test]
