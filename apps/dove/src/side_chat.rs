@@ -16,7 +16,7 @@ use gpui::{
 
 use crate::assets::{icon, icons};
 use crate::composer::{self, Composer, ComposerEvent};
-use crate::design::ty;
+use crate::design::{radius, ty};
 use crate::kit;
 use crate::surface_chrome;
 use crate::theme::Theme;
@@ -78,8 +78,6 @@ impl SideChat {
             prompt: text.clone(),
             harness,
             run,
-            worktree: false,
-            from_branch: None,
             join: Some(Joined::of(&self.parent)),
             persona: None,
         };
@@ -137,7 +135,7 @@ impl Render for SideChat {
                             .flex()
                             .items_center()
                             .gap(px(4.0))
-                            .rounded(px(5.0))
+                            .rounded(px(radius::fit(20.0)))
                             .bg(t.wash(0.05))
                             .font_family(t.font_mono.clone())
                             .text_size(ty::BADGE)
@@ -204,7 +202,7 @@ impl Render for SideChat {
                                     .px(px(10.0))
                                     .flex()
                                     .items_center()
-                                    .rounded(px(7.0))
+                                    .rounded(px(radius::RADIUS))
                                     .border_1()
                                     .border_color(t.border)
                                     .bg(t.wash(0.03))

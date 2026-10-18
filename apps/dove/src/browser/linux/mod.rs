@@ -664,7 +664,7 @@ impl super::BrowserSurface {
                 .mx(px(4.))
                 .flex()
                 .items_center()
-                .rounded(px(7.))
+                .rounded(px(crate::kit::popover::MENU_ITEM_RADIUS))
                 .text_size(ty::BODY)
                 .text_color(theme.text)
                 .when(index == native.menu_active, |el| el.bg(hover))

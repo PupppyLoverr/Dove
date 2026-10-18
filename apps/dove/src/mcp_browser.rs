@@ -23,18 +23,9 @@ const BASE_INSTRUCTIONS: &str = "Tools from Dove, the app the user is chatting w
 Browser: Dove has an in-app browser the user watches in the side panel. Start with browser_navigate \
 (localhost dev servers work), then browser_snapshot for an outline whose elements carry refs like \
 [ref=e12]; pass refs to browser_click, browser_type, browser_hover and friends. Actions return a fresh \
-snapshot; browser_screenshot shows you the pixels.\n\
-Visual answers: call show_ui to put an interactive card in the chat (stats, bar/line charts, tables, \
-progress, checklists, toggles, steppers, choices and action buttons) whenever something is clearer \
-shown than told, or when you want the user to pick or tune values. Their choice comes back as their \
-next message. Dove's chat also renders ```mermaid diagrams and $$ LaTeX $$ math.\n\
-Designs: call show_canvas to show a live, interactive design in Dove's canvas (a framed webview the user can \
-switch between desktop, tablet and phone): web pages, app screens, mobile mockups, dashboards, components. Send \
-kind html (a full document or a fragment; Tailwind is loaded for fragments) or react (JSX/TSX defining `App`; \
-React hooks and Tailwind are available, no imports needed) or svg. Reuse the same id to iterate in place. Make \
-it real: realistic content, a consistent spacing scale, accessible contrast, responsive layout. To let the user \
-answer from the design, call `dove.send(text)` from a button or give an element data-dove-send=\"choice\"; it \
-arrives as their next message.\n\
+snapshot; browser_screenshot shows you the pixels. Dove's chat also renders ```mermaid diagrams and $$ LaTeX $$ math.\n\
+Visuals: call show_visual with a Luau script that returns a ui.* tree. ui.shader runs Shadertoy-style GLSL \
+(void mainImage) on the GPU, including buffer passes. The visual appears inline in the chat; don't restate it.\n\
 Office documents: for .pdf, .pptx, .xlsx or .docx work, call dove_skills with {\"name\": \"pdf\"|\"pptx\"|\"xlsx\"|\"docx\"} \
 first. Each skill ships a ready script (python-docx, python-pptx, openpyxl, reportlab, pypdf) you run with \
 `uv run <script>`; it gives real layouts, styles, formulas and charts. The user previews and edits the result \
@@ -72,52 +63,57 @@ const COMPUTER_INSTRUCTIONS: &str = "\nComputer use: computer__* tools (the open
 native desktop apps. Prefer files, CLIs and browser tools; use computer use only for apps with no other interface, \
 observe the window before acting, and confirm destructive actions with the user.";
 
-/// `show_canvas`: a live design, rendered by Dove's canvas from the call.
-fn show_canvas_tool() -> Value {
+fn show_visual_tool() -> Value {
     json!({
-        "name": "show_canvas",
-        "description": "Show the user a live, interactive design in Dove's canvas: a website, an app or mobile screen, a dashboard, a component, a diagram. It opens in a framed preview they can switch between desktop, tablet and phone. Calling again with the same id updates the design in place. Pages can answer back: dove.send(text) or an element with data-dove-send=\"…\" sends the user's choice as their next message.",
+        "name": "show_visual",
+        "description": SHOW_VISUAL,
         "inputSchema": {
             "type": "object",
             "properties": {
-                "id": {"type": "string", "description": "Stable id; reuse it to iterate on the same design."},
-                "title": {"type": "string"},
-                "description": {"type": "string", "description": "One line on what this design is."},
-                "kind": {"type": "string", "enum": ["html", "react", "svg"], "description": "html: a full document or a body fragment (Tailwind loaded for fragments). react: JSX/TSX that defines a component named App (React hooks and Tailwind available, no imports needed). svg: an SVG document."},
-                "device": {"type": "string", "enum": ["desktop", "tablet", "mobile"], "description": "The frame it opens in."},
-                "code": {"type": "string", "description": "The source."}
+                "script": {"type": "string", "description": "Luau script: setup at the top level, ending with `return function() return ui.column { ... } end`."},
+                "title": {"type": "string", "description": "Short name for the visual."},
+                "assets": {
+                    "type": "object",
+                    "additionalProperties": {"type": "string"},
+                    "description": "Files the script uses, by the name it uses them. Paths are on this machine, relative to the working directory."
+                }
             },
-            "required": ["title", "code"]
+            "required": ["script", "title"]
         }
     })
 }
 
-/// `show_ui`: rendered by Dove's chat straight from the tool call.
-fn show_ui_tool() -> Value {
-    json!({
-        "name": "show_ui",
-        "description": "Show the user an interactive card inline in the chat. Use it for dashboards, comparisons, charts, plans to tick off, settings to tune, or choices to make. If you add actions, the user's pick plus all control values arrive as their next message.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "id": {"type": "string", "description": "Optional stable id. Calling show_ui again with the same id updates that card in place (live dashboards, progress)."},
-                "title": {"type": "string"},
-                "body": {"type": "string", "description": "Short intro text."},
-                "blocks": {
-                    "type": "array",
-                    "description": "Content, top to bottom. Each item has a `type`: text {text}; callout {tone: info|success|warning|danger, title?, text}; stats {items: [{label, value, delta?}]}; bars {title?, items: [{label, value}], unit?, horizontal?}; line {title?, values: [number], labels?: [string], unit?}; table {columns: [string], rows: [[any]]}; progress {label, value 0-1}; kv {items: [[key, value]]}; code {lang?, text}; image {src, alt?}; divider {}; timeline {title?, steps: [{title, detail?, status: done|active|todo|failed}]}; breakdown {title?, items: [{label, value}], unit?} (100% stacked bar); tabs {id, tabs: [{label, blocks: [...]}]}. Controls the user can change: cards {id, label?, items: [{id, title, body?, badge?}]} (pick one option card); choice {id, label, choices: [string], value?}; toggle {id, label, value: bool}; number {id, label, value, min?, max?, step?}; checklist {id, label?, items: [{label, checked?}]}; slider {id, label, value, min?, max?, step?, unit?}; rating {id, label, value?, max?}; replies {label?, items: [{id?, label}]} (buttons that answer at once). Design & app blocks: heading {text}; hero {badge?, title, subtitle?, cta?, secondary?}; navbar {id?, brand?, items: [string], cta?}; pricing {id?, plans: [{id?, name, price, badge?, features: [string]}]}; split {left: [...], right: [...]}; donut {title?, items: [{label, value}], unit?}; stats items may add spark: [number] for a trend line; swatches {title?, items: [{name, hex}]}; gallery {items: [{src, caption?}]}; board {columns: [{title, items: [string]}]}; link {label, url}; mockup {device: phone|tablet|browser|app, title?, nav?: [string], blocks: [...]} (an app screen or web page drawn natively from other blocks). For a full page or a React/TSX component use show_canvas instead.",
-                    "items": {"type": "object", "properties": {"type": {"type": "string"}}, "required": ["type"]}
-                },
-                "actions": {
-                    "type": "array",
-                    "description": "Buttons; the first is primary.",
-                    "items": {"type": "object", "properties": {"id": {"type": "string"}, "label": {"type": "string"}}, "required": ["label"]}
-                }
-            },
-            "required": ["title"]
-        }
-    })
-}
+const SHOW_VISUAL: &str = "\
+Show an interactive visual (chart, table, dashboard, diagram, simulation, 3D view, GPU shader) inline in this \
+chat, above your final text reply; call it before writing that reply. Use it when a visual says more \
+than prose. The reader already sees it, so the reply should not announce, locate, or restate it.\n\
+\n\
+A visual is a Luau script (Lua 5.1 plus `+=`, `continue`, and `if` expressions). Dove runs it in a \
+sandbox (no I/O or network; math.random is seeded) and renders what it returns natively. Build data and \
+state at the top level, then return a view function. Dove calls the view again after every handler:\n\
+\n\
+local s = ui.state { metric = \"p95\" }\n\
+return function()\n\
+  return ui.column { gap = 16,\n\
+    ui.text { \"Latency\", size = \"lg\", weight = 600 },\n\
+    ui.chart { type = \"bar\", height = 220, unit = \"ms\", x = { \"us\", \"eu\" }, series = { { name = s.metric, values = { 182, 140 } } } },\n\
+  }\n\
+end\n\
+\n\
+Nodes: ui.column, ui.row, ui.grid, ui.text, ui.stat, ui.table, ui.chart (bar|line|area|scatter), ui.rule, \
+ui.space, ui.link, ui.tabs, ui.toggle, ui.slider, ui.button, ui.canvas (2D draw), ui.scene (3D, GPU), \
+ui.shader. Colors are theme tokens (text, muted, faint, accent, success, warning, danger, border, chart1-6), \
+not hex, except scene materials.\n\
+\n\
+ui.shader { height = 360, code = [[ GLSL ]], buffers = { [[ GLSL ]], ... }, inputs = { speed = s.speed }, \
+blend = \"alpha|light|opaque\", bloom = 0-3, orbit = bool, animate = true }: each pass is Shadertoy-style \
+void mainImage(out vec4 fragColor, in vec2 fragCoord), with iResolution, iTime, iTimeDelta, iFrame, iMouse, \
+iCamera, iNoise, iChannel0-iChannel3, and iTexture0-iTexture3. Buffers run first. blend = \"light\" treats \
+brightness as opacity (black is clear), which is what beams and a v-prism need. Don't paint a background. \
+Scale by min(iResolution.x, iResolution.y). GLSL errors come back with the pass and line number.\n\
+\n\
+Assets: pass files in assets (name -> path). s:model { asset = \"prism.glb\" }, textures, and environment maps \
+are named the same way. Dove checks the script before showing it and returns the first error with its line.";
 
 pub fn run() {
     let config = crate::pages::integrations::load();
@@ -162,22 +158,27 @@ pub fn run() {
             "tools/list" => {
                 let mut tools = crate::browser::agent::tools();
                 if let Some(list) = tools.as_array_mut() {
-                    list.push(show_ui_tool());
-                    list.push(show_canvas_tool());
+                    list.push(show_visual_tool());
                     list.extend(chrome_tools());
                     list.extend(upstream.tools());
                     list.push(skills_tool());
                 }
                 Ok(json!({"tools": tools}))
             }
-            "tools/call" if params.get("name").and_then(Value::as_str) == Some("show_canvas") => Ok(json!({
-                "content": [{"type": "text", "text": "The design is open in Dove's canvas. The user can switch frames, view the code and save it. Anything the page sends with dove.send arrives as their next message."}],
-                "isError": false
-            })),
-            "tools/call" if params.get("name").and_then(Value::as_str) == Some("show_ui") => Ok(json!({
-                "content": [{"type": "text", "text": "Shown to the user inline in the chat. If it has actions, their choice arrives as their next message."}],
-                "isError": false
-            })),
+            "tools/call" if params.get("name").and_then(Value::as_str) == Some("show_visual") => {
+                let script = params.pointer("/arguments/script").and_then(Value::as_str).unwrap_or("");
+                let title = params.pointer("/arguments/title").and_then(Value::as_str).unwrap_or("Visual");
+                match zeron_visual::check(script, zeron_visual::seed_for(title)) {
+                    Ok(_) => Ok(json!({
+                        "content": [{"type": "text", "text": "Shown inline in the chat. Don't mention or describe the visual; reply with only what it doesn't already say."}],
+                        "isError": false
+                    })),
+                    Err(err) => Ok(json!({
+                        "content": [{"type": "text", "text": err.to_string()}],
+                        "isError": true
+                    })),
+                }
+            }
             "tools/call" if params.get("name").and_then(Value::as_str).is_some_and(|n| upstream.owns(n)) => {
                 Ok(upstream.call(
                     params.get("name").and_then(Value::as_str).unwrap_or_default(),

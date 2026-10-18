@@ -28,7 +28,7 @@ use gpui::{
 };
 
 use crate::assets::{icon, icons};
-use crate::design::ty;
+use crate::design::{radius, ty};
 use crate::kit;
 use crate::terminal::{TerminalEvent, TerminalView};
 use crate::theme::Theme;
@@ -71,7 +71,6 @@ pub enum TaskViewEventKind {
     ShowChanges,
     Title(String),
     DriveBrowser(crate::browser::Drive),
-    OpenCanvas(crate::canvas::Spec, bool),
 }
 
 pub struct ThreadView {
@@ -129,7 +128,6 @@ impl ThreadView {
                 TaskViewEvent::ShowChanges => TaskViewEventKind::ShowChanges,
                 TaskViewEvent::Title(t) => TaskViewEventKind::Title(t.clone()),
                 TaskViewEvent::DriveBrowser(d) => TaskViewEventKind::DriveBrowser(d.clone()),
-                TaskViewEvent::OpenCanvas(s, reveal) => TaskViewEventKind::OpenCanvas(s.clone(), *reveal),
                 TaskViewEvent::SwitchToChat => {
                     this.request(ViewMode::Chat, window, cx);
                     return;
@@ -559,9 +557,9 @@ impl ThreadView {
         ))
     }
 
-    /// Chat | Terminal, a two-icon segment. The shell renders it in the
-    /// title bar's thread capsule, so it sits in one spot in both views and
-    /// never covers the transcript. Ctrl+` still flips it.
+    /// Chat | Terminal segment. The title bar no longer shows it; Ctrl+`
+    /// and the command palette still flip the view.
+    #[allow(dead_code)]
     pub fn view_switch(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let mode = self.view;
         let armed = self.armed.is_some();
@@ -579,15 +577,8 @@ impl ThreadView {
             .left(px(27.0 * slot))
             .h(px(22.0))
             .w(px(26.0))
-            .rounded(px(6.0))
-            .bg(t.wash(0.10))
-            .shadow(vec![gpui::BoxShadow {
-                color: gpui::hsla(0.0, 0.0, 1.0, if t.appearance.is_dark() { 0.07 } else { 0.6 }),
-                offset: gpui::point(px(0.0), px(1.0)),
-                blur_radius: px(0.0),
-                spread_radius: px(0.0),
-                inset: true,
-            }]);
+            .rounded(px(radius::fit(22.0)))
+            .bg(t.wash(0.10));
         let item =
             |id: &'static str, glyph: &'static str, label: &'static str, want: ViewMode, cx: &mut Context<Self>| {
                 let on = mode == want;
@@ -599,13 +590,12 @@ impl ThreadView {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .rounded(px(6.0))
+                    .rounded(px(radius::fit(22.0)))
                     .cursor_pointer()
                     .role(gpui::Role::Tab)
                     .aria_selected(on)
                     .aria_label(label)
                     .tooltip(ui::tip(label))
-                    .when(!on, |d| d.hover(|s| s.bg(t.wash(0.06))))
                     .child(icon(glyph).size(px(13.5)).text_color(if on { t.text } else { t.text_faint }))
                     .when(armed && want == ViewMode::Terminal && !on, |d| {
                         d.child(div().absolute().top(px(3.0)).right(px(3.0)).child(ui::dot(t.warning, 4.0)))
@@ -664,7 +654,7 @@ impl ThreadView {
             .flex()
             .items_center()
             .gap(px(5.0))
-            .rounded(px(6.0))
+            .rounded(px(radius::fit(24.0)))
             .border_1()
             .border_color(if recording { t.danger.opacity(0.5) } else { t.border })
             .bg(if recording { t.danger.opacity(0.16) } else { t.wash(0.05) })
@@ -724,7 +714,7 @@ impl ThreadView {
                         .flex()
                         .items_center()
                         .gap(px(4.0))
-                        .rounded(px(5.0))
+                        .rounded(px(radius::fit(20.0)))
                         .bg(t.wash(0.05))
                         .font_family(t.font_mono.clone())
                         .text_size(ty::MICRO)

@@ -905,11 +905,10 @@ mod tests {
 
     #[test]
     fn acp_variant_ids_become_sdk_model_params() {
-        let options = serde_json::Map::from_iter([("dove.permissionMode".to_string(), Value::String("default".into()))]);
-        let (id, out) = cursor_selection(
-            &Some("grok-4.7[context=256k,reasoning_effort=high,fast=true]".into()),
-            &options,
-        );
+        let options =
+            serde_json::Map::from_iter([("dove.permissionMode".to_string(), Value::String("default".into()))]);
+        let (id, out) =
+            cursor_selection(&Some("grok-4.7[context=256k,reasoning_effort=high,fast=true]".into()), &options);
         assert_eq!(id.as_deref(), Some("grok-4.7"));
         assert_eq!(out.get("context").and_then(Value::as_str), Some("256k"));
         assert_eq!(out.get("reasoning_effort").and_then(Value::as_str), Some("high"));

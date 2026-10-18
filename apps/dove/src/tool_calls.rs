@@ -27,6 +27,7 @@ use gpui::{
 use zeron_markdown::{Block as MdBlock, BlockTree, InlineRun, InlineStyle};
 
 use crate::assets::{icon, icons};
+use crate::design::radius;
 use crate::file_icons::{self, FileIconIdentity};
 use crate::markdown;
 use crate::theme::{self, Theme};
@@ -487,7 +488,7 @@ pub fn file_badge(id: SharedString, path: &str, failed: bool, t: &Theme) -> AnyE
         .items_center()
         .overflow_hidden()
         .gap(px(6.0))
-        .rounded(px(5.0))
+        .rounded(px(radius::RADIUS))
         .bg(theme::ink(0.06))
         .pl(px(1.0))
         .pr(px(6.0))
@@ -507,12 +508,12 @@ pub fn file_badge(id: SharedString, path: &str, failed: bool, t: &Theme) -> AnyE
                 .flex()
                 .items_center()
                 .justify_center()
-                .rounded(px(4.0))
+                .rounded(px(radius::RADIUS))
                 .bg(file_icons::well_bg(t))
                 .child(file_icons::icon(FileIconIdentity::file(path), t.appearance).size(px(14.0))),
         )
         .child(div().min_w_0().truncate().child(name));
-    crate::ui::frosted(5.0, 16.0, badge).into_any_element()
+    crate::ui::frosted(radius::RADIUS, 16.0, badge).into_any_element()
 }
 
 /// Mono lines (an invocation or an output), cut to `keep` lines.

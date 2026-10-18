@@ -41,6 +41,7 @@ fn main() {
 
     file_icons();
     linux_browser_helper();
+    windows_icon();
 }
 
 /// Zeron's polychrome file-type icons (vscode-symbols) under
@@ -100,4 +101,34 @@ fn linux_browser_helper() {
         .status()
         .expect("a C compiler is required to build the Linux browser helper");
     assert!(status.success(), "Linux browser helper compilation failed");
+}
+
+/// Square PNG and multi-size ICO from the source photo, then the exe icon.
+fn windows_icon() {
+    println!("cargo:rerun-if-changed=assets/dove-icon.jpg");
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
+        return;
+    }
+    let src = image::open("assets/dove-icon.jpg").expect("assets/dove-icon.jpg").into_rgba8();
+    let (w, h) = src.dimensions();
+    let side = w.min(h);
+    let square = image::imageops::crop_imm(&src, (w - side) / 2, (h - side) / 2, side, side).to_image();
+    square.save("assets/dove-icon.png").expect("write dove-icon.png");
+    let sizes = [16u32, 24, 32, 48, 64, 128, 256];
+    let mut raw = Vec::with_capacity(sizes.len());
+    for size in sizes {
+        let resized = image::imageops::resize(&square, size, size, image::imageops::FilterType::Lanczos3);
+        raw.push((resized.into_raw(), size));
+    }
+    let frames = raw
+        .iter()
+        .map(|(buf, size)| {
+            image::codecs::ico::IcoFrame::as_png(buf, *size, *size, image::ExtendedColorType::Rgba8).expect("ico frame")
+        })
+        .collect::<Vec<_>>();
+    let file = std::fs::File::create("assets/dove.ico").expect("create dove.ico");
+    image::codecs::ico::IcoEncoder::new(file).encode_images(&frames).expect("write dove.ico");
+    let mut res = winresource::WindowsResource::new();
+    res.set_icon("assets/dove.ico");
+    res.compile().expect("embed the Dove icon in the exe");
 }

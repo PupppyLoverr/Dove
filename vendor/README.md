@@ -65,3 +65,10 @@ exactly as Zeron does (`apps/dove/src/tool_calls.rs`).
 
 Dove change: the manifest names concrete versions, and `pulldown-cmark` is 0.13
 (the version the rest of Dove links) rather than Zeron's 0.12. Source unchanged.
+
+## zeron-visual, zeron-visual-gpu
+
+From `zeronsh/zeron` (MIT, Copyright (c) 2026 Wing), `crates/visual` and `crates/visual-gpu`
+at 0.2.113. They are the Luau `ui.*` runtime (shader validation, buffer passes) and the wgpu
+frame path. Dove vendors them unchanged except the manifests, which name concrete versions
+instead of workspace inheritance. Dove's in-chat renderer is `apps/dove/src/visuals.rs`.

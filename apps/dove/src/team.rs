@@ -59,11 +59,11 @@ pub const TEMPLATES: &[(&str, &str, &str, f32, &str)] = &[
     ),
     (
         "Designer",
-        "UI/UX & generative canvas",
+        "UI/UX design",
         "🎨",
         0.86,
         "Craft minimal, high-craft interfaces with zero AI slop. Use crisp 1px hairlines, clear typographic \
-         hierarchy, and cohesive tokens. Prototype and verify interactive layouts in the live Canvas.",
+         hierarchy, and cohesive tokens. Describe interactive layouts clearly enough to build.",
     ),
     (
         "Verifier",
@@ -404,18 +404,7 @@ impl Shell {
                     .hover(|s| s.text_color(t.text_muted))
                     .child("Team")
                     .when(total > 0, |d| {
-                        d.child(
-                            div()
-                                .px(px(5.0))
-                                .h(px(15.0))
-                                .flex()
-                                .items_center()
-                                .rounded(px(4.0))
-                                .bg(t.wash(0.06))
-                                .text_size(ty::BADGE)
-                                .text_color(t.text_faint)
-                                .child(total.to_string()),
-                        )
+                        d.child(div().text_size(ty::BADGE).text_color(t.text_faint).child(total.to_string()))
                     })
                     .on_click(cx.listener(|this, _, window, cx| this.open_teammate(None, window, cx))),
             )
@@ -424,16 +413,20 @@ impl Shell {
                 // area, ends on the sidebar's trailing line.
                 div()
                     .id("team-add")
+                    .group("team-add")
                     .size(px(20.0))
                     .mr(px(-3.0))
                     .flex()
                     .items_center()
                     .justify_center()
-                    .rounded(px(5.0))
                     .cursor_pointer()
-                    .hover(|s| s.bg(t.wash(0.10)))
                     .tooltip(ui::tip("New teammate"))
-                    .child(icon(icons::PLUS).size(px(14.0)).text_color(t.text_faint))
+                    .child(
+                        icon(icons::PLUS)
+                            .size(px(14.0))
+                            .text_color(t.text_faint)
+                            .group_hover("team-add", |s| s.text_color(t.text)),
+                    )
                     .on_click(cx.listener(|this, _, window, cx| this.edit_teammate(None, window, cx))),
             );
         let mut list = div().flex().flex_col().gap(px(1.0)).child(header);
@@ -447,11 +440,11 @@ impl Shell {
                     .flex()
                     .items_center()
                     .gap(px(9.0))
-                    .rounded(px(8.0))
+                    .rounded(px(radius::RADIUS))
                     .cursor_pointer()
                     .text_size(ty::BODY)
                     .text_color(t.text_faint)
-                    .hover(|s| s.bg(t.wash(0.05)).text_color(t.text_muted))
+                    .hover(|s| s.text_color(t.text_muted))
                     .child(icon(icons::PLUS).size(px(14.0)))
                     .child("Add a teammate")
                     .on_click(cx.listener(|this, _, window, cx| this.open_teammate(None, window, cx))),
@@ -487,11 +480,11 @@ impl Shell {
                     .flex()
                     .items_center()
                     .gap(px(7.0))
-                    .rounded(px(8.0))
+                    .rounded(px(radius::RADIUS))
                     .cursor_pointer()
                     .text_size(ty::BODY)
-                    .when(selected, |d| d.bg(ui::selected_bg(t)).shadow(ui::selected_ring(t)).text_color(t.text))
-                    .when(!selected, |d| d.text_color(t.text_muted).hover(|s| s.bg(t.wash(0.05)).text_color(t.text)))
+                    .when(selected, |d| d.bg(ui::selected_bg(t)).text_color(t.text))
+                    .when(!selected, |d| d.text_color(t.text_muted).hover(|s| s.text_color(t.text)))
                     .tooltip(ui::tip(subtitle(p)))
                     .child(avatar(p, 19.0, t))
                     .child(
@@ -515,17 +508,23 @@ impl Shell {
                     .child(
                         div()
                             .id(SharedString::from(format!("team-new-{}", p.id)))
+                            .group(SharedString::from(format!("team-new-{}", p.id)))
                             .size(px(19.0))
                             .flex_none()
-                            .rounded(px(5.0))
                             .flex()
                             .items_center()
                             .justify_center()
                             .invisible()
                             .group_hover(row_group.clone(), |s| s.visible())
-                            .hover(|s| s.bg(t.wash(0.12)))
                             .tooltip(ui::tip(format!("New thread as {}", p.name)))
-                            .child(icon(icons::PLUS).size(px(11.5)).text_color(t.text_muted))
+                            .child(
+                                icon(icons::PLUS)
+                                    .size(px(11.5))
+                                    .text_color(t.text_faint)
+                                    .group_hover(SharedString::from(format!("team-new-{}", p.id)), |s| {
+                                        s.text_color(t.text)
+                                    }),
+                            )
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 cx.stop_propagation();
                                 this.start_as(&id_start, window, cx);
@@ -535,18 +534,20 @@ impl Shell {
                         d.child(
                             div()
                                 .id(SharedString::from(format!("team-exp-{}", p.id)))
+                                .group(SharedString::from(format!("team-exp-{}", p.id)))
                                 .size(px(18.0))
                                 .flex_none()
-                                .rounded(px(4.0))
                                 .flex()
                                 .items_center()
                                 .justify_center()
-                                .hover(|s| s.bg(t.wash(0.10)))
                                 .tooltip(ui::tip(if expanded { "Hide threads" } else { "Show threads" }))
                                 .child(
                                     icon(if expanded { icons::ALT_ARROW_DOWN } else { icons::ALT_ARROW_RIGHT })
                                         .size(px(10.5))
-                                        .text_color(t.text_faint),
+                                        .text_color(t.text_faint)
+                                        .group_hover(SharedString::from(format!("team-exp-{}", p.id)), |s| {
+                                            s.text_color(t.text)
+                                        }),
                                 )
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     cx.stop_propagation();
@@ -588,15 +589,11 @@ impl Shell {
                             .flex()
                             .items_center()
                             .gap(px(6.0))
-                            .rounded(px(6.0))
-                            .border_l_1()
-                            .border_color(t.border)
+                            .rounded(px(radius::RADIUS))
                             .cursor_pointer()
                             .text_size(ty::META)
-                            .when(active_task, |d| d.bg(t.wash(0.09)).text_color(t.text))
-                            .when(!active_task, |d| {
-                                d.text_color(t.text_muted).hover(|s| s.bg(t.wash(0.04)).text_color(t.text))
-                            })
+                            .when(active_task, |d| d.bg(ui::selected_bg(t)).text_color(t.text))
+                            .when(!active_task, |d| d.text_color(t.text_muted).hover(|s| s.text_color(t.text)))
                             .child(kit::status_glyph(
                                 SharedString::from(format!("team-st-{tid}")),
                                 task.status,
@@ -741,7 +738,7 @@ impl Shell {
                 .flex()
                 .items_center()
                 .gap(px(11.0))
-                .rounded(px(radius::CARD - space::XS))
+                .rounded(px(radius::nested(space::XS)))
                 .cursor_pointer()
                 .when(on, |d| d.bg(t.wash(0.09)))
                 .when(!on, |d| d.hover(move |s| s.bg(hover)))
@@ -1272,7 +1269,7 @@ impl Shell {
             .role(gpui::Role::RadioButton)
             .aria_selected(on)
             .p(px(2.0))
-            .rounded(px(10.0))
+            .rounded(px(radius::RADIUS))
             .border_2()
             .border_color(if on { t.accent } else { gpui::transparent_black() })
             .cursor_pointer()

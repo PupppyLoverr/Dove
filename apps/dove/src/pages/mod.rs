@@ -67,7 +67,6 @@ pub struct AutoEditor {
     pub weekdays: Vec<u32>,
     pub cron: Entity<InputState>,
     pub branch: Entity<InputState>,
-    pub worktree: bool,
     pub enabled: bool,
     pub error: Option<String>,
 }

@@ -16,7 +16,7 @@ use gpui_base::input::{Input, InputEvent, InputState};
 use zeron_syntax::{HighlightRequest, HighlightedDocument};
 
 use crate::assets::{icon, icons};
-use crate::design::ty;
+use crate::design::{radius, ty};
 use crate::kit;
 use crate::markdown;
 use crate::markdown_extra;
@@ -519,7 +519,7 @@ impl FilesPanel {
                 .px(px(8.0))
                 .flex()
                 .items_center()
-                .rounded(px(7.0))
+                .rounded(px(radius::RADIUS))
                 .bg(t.wash(0.05))
                 .border_1()
                 .border_color(t.border)
@@ -567,7 +567,7 @@ impl FilesPanel {
                                 .max_w(px(140.0))
                                 .px(px(6.0))
                                 .py(px(2.0))
-                                .rounded(px(4.0))
+                                .rounded(px(radius::RADIUS))
                                 .bg(t.wash(0.06))
                                 .truncate()
                                 .font_family(t.font_mono.clone())
@@ -598,7 +598,7 @@ impl FilesPanel {
                                 .px(px(7.0))
                                 .flex()
                                 .items_center()
-                                .rounded(px(5.0))
+                                .rounded(px(radius::fit(22.0)))
                                 .border_1()
                                 .border_color(t.border)
                                 .bg(t.wash(0.03))
@@ -972,7 +972,7 @@ impl Render for FilesPanel {
                     .flex()
                     .items_center()
                     .gap(px(6.0))
-                    .rounded(px(8.0))
+                    .rounded(px(radius::RADIUS))
                     .bg(t.wash(0.05))
                     .border_1()
                     .border_color(t.border)
@@ -1032,7 +1032,7 @@ impl Render for FilesPanel {
                             .flex()
                             .items_center()
                             .gap(px(6.0))
-                            .rounded(px(6.0))
+                            .rounded(px(radius::RADIUS))
                             .text_size(ty::BODY)
                             .text_color(t.text_muted)
                             .cursor_pointer()

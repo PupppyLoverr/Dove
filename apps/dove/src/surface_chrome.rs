@@ -11,12 +11,12 @@ use gpui::{
     StatefulInteractiveElement as _, Styled as _, div, px,
 };
 
-use crate::design::ty;
+use crate::design::{radius, ty};
 use crate::theme::{Theme, wash};
 
 pub const HEADER_HEIGHT: f32 = 38.0;
 pub const CONTROL_SIZE: f32 = 24.0;
-pub const CONTROL_RADIUS: f32 = 6.0;
+pub const CONTROL_RADIUS: f32 = radius::CONTROL;
 pub const ICON_SIZE: f32 = 14.0;
 pub const CONTROL_GAP: f32 = 4.0;
 pub const EDGE_INSET: f32 = 8.0;
@@ -102,7 +102,7 @@ pub fn popover_card(theme: &Theme) -> Div {
     div()
         .border_1()
         .border_color(theme.border)
-        .rounded(px(12.0))
+        .rounded(px(radius::RADIUS))
         .when(!theme.is_frost(), |el| el.shadow_lg())
         .bg(theme.surface_overlay)
         .p(px(4.0))
@@ -121,7 +121,7 @@ pub fn menu_row(theme: &Theme, active: bool, _key: impl Into<SharedString>) -> D
         .gap(px(10.0))
         .px(px(8.0))
         .py(px(6.0))
-        .rounded(px(7.0))
+        .rounded(px(radius::nested(4.0)))
         .text_size(ty::BODY)
         .cursor_pointer();
     if active {

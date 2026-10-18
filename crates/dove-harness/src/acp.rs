@@ -85,7 +85,8 @@ impl Mapper {
             "tool_call" => {
                 let id = u["toolCallId"].as_str().unwrap_or_default().to_string();
                 let title = title_of(u).unwrap_or_else(|| u["kind"].as_str().unwrap_or("tool").to_string());
-                let name = u["title"].as_str().filter(|s| !s.is_empty()).unwrap_or(u["kind"].as_str().unwrap_or("tool"));
+                let name =
+                    u["title"].as_str().filter(|s| !s.is_empty()).unwrap_or(u["kind"].as_str().unwrap_or("tool"));
                 let mut kind = tool_kind(u["kind"].as_str());
                 if kind == ToolKind::Other {
                     kind = ToolKind::classify(name);

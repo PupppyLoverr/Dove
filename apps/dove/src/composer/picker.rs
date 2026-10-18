@@ -35,6 +35,7 @@ use gpui::{
 use gpui_base::input::{Input, InputEvent, InputState};
 
 use crate::assets::{icon, icons};
+use crate::design::radius;
 use crate::design::rem;
 use crate::design::ty;
 use crate::picker_memory::{Pick, PickerMemory};
@@ -53,7 +54,8 @@ const WIDTH: f32 = 256.0;
 const INSET: f32 = 4.0;
 const GAP: f32 = 2.0;
 const ROW: f32 = 32.0;
-const RADIUS: f32 = 8.0;
+/// Row corners, concentric with the card's inset.
+const RADIUS: f32 = radius::nested(INSET);
 const LIST_ROWS: f32 = 7.0;
 const SLIDER_H: f32 = 36.0;
 const RAIL_H: f32 = 28.0;
@@ -103,6 +105,8 @@ pub struct Picker {
     pub reasoning: Option<ReasoningLevel>,
     pub model_options: Vec<(String, String)>,
     pub open: bool,
+    /// Quiet text trigger for the bottom-center bar ("Opus 4.6  High").
+    text_trigger: bool,
     page: Page,
     /// Keyboard cursor into the current page's rows.
     active: usize,
@@ -154,6 +158,7 @@ impl Picker {
             reasoning: None,
             model_options: Vec::new(),
             open: false,
+            text_trigger: false,
             page: Page::Panel,
             active: 0,
             list_scroll: UniformListScrollHandle::new(),
@@ -308,6 +313,19 @@ impl Picker {
 // ------------------------------------------------------------ chip summary
 
 impl Picker {
+    pub fn set_text_trigger(&mut self, on: bool) {
+        self.text_trigger = on;
+    }
+
+    /// Model name, and the effort when the model has one.
+    pub fn summary(&self) -> String {
+        let name = self.chip_name();
+        match self.current_model().as_ref().and_then(|m| self.effort_label(m)) {
+            Some(effort) => format!("{name} · {effort}"),
+            None => name,
+        }
+    }
+
     fn chip_name(&self) -> String {
         self.current_model()
             .map(|m| m.label)
@@ -738,13 +756,13 @@ impl Picker {
         };
         let _ = window;
         ui::frosted(
-            14.0,
+            radius::RADIUS,
             22.0,
             div()
                 .id("agent-picker")
                 .track_focus(&self.focus)
                 .w(px(WIDTH))
-                .rounded(px(14.0))
+                .rounded(px(radius::RADIUS))
                 .bg(t.glass_overlay())
                 .border_1()
                 .border_color(t.border_strong)
@@ -1248,7 +1266,7 @@ impl Picker {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .rounded(px(6.0))
+                            .rounded(px(radius::RADIUS))
                             .when(!favorite && !active, |d| d.opacity(0.0))
                             .hover(|s| s.bg(ink(0.08)))
                             .tooltip(ui::tip(if favorite {
@@ -1337,31 +1355,40 @@ impl Render for Picker {
         let model = self.current_model();
         let effort = model.as_ref().and_then(|m| self.effort_label(m));
         let fast = model.as_ref().is_some_and(|m| self.fast_on(m));
+        let text = self.text_trigger;
         let trigger = div()
             .id("composer-agent")
-            .h(px(28.0))
-            .px(px(8.0))
+            .h(px(if text { 24.0 } else { 28.0 }))
+            .px(px(if text { 4.0 } else { 8.0 }))
             .flex()
             .items_center()
             .gap(px(6.0))
-            .rounded(px(8.0))
+            .rounded(px(radius::RADIUS))
             .cursor_pointer()
             .text_size(ty::BODY)
-            .text_color(t.text)
+            .when(text, |d| d.font_weight(gpui::FontWeight::MEDIUM))
+            .text_color(if text { t.text.opacity(0.88) } else { t.text })
             .hover(|s| s.bg(t.wash(0.08)))
-            .child(icon(ui::harness_icon(kind)).size(px(14.0)).text_color(ui::harness_tint(kind, t, t.text_muted)))
-            .child(div().truncate().max_w(px(160.0)).child(self.chip_name()))
-            .when_some(effort, |d, effort| d.child(div().text_color(t.text_faint).child(effort)))
+            .child(
+                icon(ui::harness_icon(kind))
+                    .size(px(if text { 13.0 } else { 14.0 }))
+                    .flex_none()
+                    .text_color(ui::harness_tint(kind, t, if text { t.text.opacity(0.8) } else { t.text_muted })),
+            )
+            .child(div().truncate().max_w(px(if text { 168.0 } else { 160.0 })).child(self.chip_name()))
+            .when_some(effort, |d, effort| {
+                d.child(div().text_color(t.text_faint).font_weight(gpui::FontWeight::NORMAL).child(effort))
+            })
             .when(fast, |d| d.child(icon(icons::FAST_TIER).size(px(13.0)).text_color(t.accent)))
             .tooltip(ui::tip(if self.locked { "Model and effort" } else { "Agent, model and effort" }))
             .on_click(cx.listener(|this, _, window, cx| this.toggle(window, cx)));
         let card = self.open.then(|| self.card(t, window, cx));
-        div().relative().child(trigger).when_some(card, |d, card| {
+        div().relative().when(text, |d| d.max_w(px(260.0))).child(trigger).when_some(card, |d, card| {
             d.child(deferred(
                 anchored()
-                    .anchor(Anchor::BottomLeft)
+                    .anchor(if text { Anchor::BottomRight } else { Anchor::BottomLeft })
                     .snap_to_window_with_margin(px(8.0))
-                    .child(div().mb(px(34.0)).child(card)),
+                    .child(div().mb(px(if text { 28.0 } else { 34.0 })).child(card)),
             ))
         })
     }

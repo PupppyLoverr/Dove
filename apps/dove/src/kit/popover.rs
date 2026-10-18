@@ -11,18 +11,18 @@ use gpui::{
 };
 
 use crate::assets::{icon, icons};
-use crate::design::{space, ty};
+use crate::design::{radius, space, ty};
 use crate::motion;
 use crate::theme::Theme;
 
 /// Card corner radius; rows inside are concentric with it.
-pub const CARD_RADIUS: f32 = 12.0;
+pub const CARD_RADIUS: f32 = radius::RADIUS;
 /// The card's inner padding.
 pub const CARD_INSET: f32 = 4.0;
 /// Gap between rows.
 pub const MENU_GAP: f32 = 2.0;
-/// Row corners: the card's radius less its border and inset.
-pub const MENU_ITEM_RADIUS: f32 = CARD_RADIUS - 1.0 - CARD_INSET;
+/// Row corners: the card's radius less the inset the rows sit in.
+pub const MENU_ITEM_RADIUS: f32 = radius::nested(CARD_INSET);
 
 // ---------------------------------------------------------------------------
 // Lifecycle
@@ -199,7 +199,7 @@ pub fn surface_bg(t: &Theme) -> Hsla {
     t.glass_overlay()
 }
 
-/// The floating card: hairline border, 12 px corners, 4 px inset, a soft
+/// The floating card: hairline border, 10 px corners, 4 px inset, a soft
 /// shadow, and a backdrop blur on glass.
 pub fn card(t: &Theme) -> Div {
     div()
@@ -302,12 +302,12 @@ pub fn menu_separator(t: &Theme) -> Div {
 // Modals: dialogs, sheets and the command palette
 // ---------------------------------------------------------------------------
 
-/// Dialog corner radius (Zeron's `dialog_card`).
-pub const DIALOG_RADIUS: f32 = 16.0;
+/// Dialog corner radius.
+pub const DIALOG_RADIUS: f32 = radius::RADIUS;
 /// The command palette's corners; its rows are concentric with them.
-pub const PALETTE_RADIUS: f32 = 16.0;
+pub const PALETTE_RADIUS: f32 = radius::RADIUS;
 /// Palette rows: the palette's corners less the inset they sit in.
-pub const PALETTE_ITEM_RADIUS: f32 = PALETTE_RADIUS - 6.0;
+pub const PALETTE_ITEM_RADIUS: f32 = radius::nested(4.0);
 /// How strongly a palette dims the window, against a dialog's full scrim:
 /// lighter, so the frosted card keeps the backdrop's hue (Zeron's 0.35).
 pub const PALETTE_SCRIM: f32 = 0.58;
@@ -368,7 +368,7 @@ pub fn modal(
     .into_any_element()
 }
 
-/// The dialog plate: the dialog surface, a hairline, 16 px corners and a
+/// The dialog plate: the dialog surface, a hairline, 10 px corners and a
 /// deep shadow.
 pub fn dialog_card(t: &Theme, width: f32) -> Div {
     div()
@@ -444,7 +444,7 @@ pub fn key_cap(t: &Theme) -> Div {
         .items_center()
         .justify_center()
         .gap(px(3.0))
-        .rounded(px(5.0))
+        .rounded(px(radius::fit(20.0)))
         .bg(t.wash(0.06))
 }
 

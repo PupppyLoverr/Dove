@@ -24,9 +24,8 @@ use std::sync::Arc;
 
 use crate::assets::{icon, icons};
 use crate::browser::{BrowserContext, BrowserEvent, BrowserSurface};
-use crate::canvas::{CanvasEvent, CanvasView};
 use crate::changes::{Changes, ChangesEvent};
-use crate::design::ty;
+use crate::design::{radius, ty};
 use crate::files_panel::{FilesEvent, FilesPanel};
 use crate::history::{GitHistory, HistoryEvent};
 use crate::kit;
@@ -49,7 +48,6 @@ pub enum Surface {
     Browser(u64),
     Terminal(u64),
     SideChat(u64),
-    Canvas(u64),
     Subagents,
     /// One subagent's own chat, read-only.
     Subagent(u64),
@@ -66,16 +64,14 @@ pub enum Tab {
     Browser,
     Terminal,
     SideChat,
-    Canvas,
     Subagents,
     Chats,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 10] = [
+    pub const ALL: [Tab; 9] = [
         Tab::Browser,
         Tab::Terminal,
-        Tab::Canvas,
         Tab::Changes,
         Tab::Files,
         Tab::History,
@@ -99,7 +95,6 @@ impl Tab {
             Tab::Browser => "Browser",
             Tab::Terminal => "Terminal",
             Tab::SideChat => "Side chat",
-            Tab::Canvas => "Canvas",
             Tab::Subagents => "Subagents",
             Tab::Chats => "Chats",
         }
@@ -110,7 +105,6 @@ impl Tab {
         match self {
             Tab::Browser => "Preview the app or any page",
             Tab::Terminal => "A shell in this checkout",
-            Tab::Canvas => "Live designs from this thread",
             Tab::Changes => "What changed, file by file",
             Tab::Files => "Browse and edit the project",
             Tab::History => "Commits on this branch",
@@ -130,7 +124,6 @@ impl Tab {
             Tab::Browser => icons::GLOBE,
             Tab::Terminal => icons::TERMINAL,
             Tab::SideChat => icons::CHAT_ROUND_LINE,
-            Tab::Canvas => icons::GALLERY,
             Tab::Subagents => icons::FORK,
             Tab::Chats => icons::BOT,
         }
@@ -147,7 +140,6 @@ impl Surface {
             Surface::Browser(_) => Tab::Browser,
             Surface::Terminal(_) => Tab::Terminal,
             Surface::SideChat(_) => Tab::SideChat,
-            Surface::Canvas(_) => Tab::Canvas,
             Surface::Subagents | Surface::Subagent(_) => Tab::Subagents,
             Surface::Chats => Tab::Chats,
         }
@@ -183,7 +175,6 @@ struct ThreadPanel {
     browsers: HashMap<u64, (Entity<BrowserSurface>, Subscription)>,
     terminals: HashMap<u64, Entity<TerminalView>>,
     chats: HashMap<u64, (Entity<SideChat>, Subscription)>,
-    canvases: HashMap<u64, (Entity<CanvasView>, Subscription)>,
     subagents: HashMap<u64, (Entity<TaskView>, Subscription)>,
 }
 
@@ -203,7 +194,7 @@ impl Render for ChipDrag {
             .px(px(8.0))
             .flex()
             .items_center()
-            .rounded(px(6.0))
+            .rounded(px(radius::RADIUS))
             .bg(t.surface_raised)
             .border_1()
             .border_color(t.border_strong)
@@ -225,16 +216,12 @@ pub struct SidePanel {
     todos: Vec<TodoItem>,
     subagents: Vec<Subagent>,
     side_chats: Vec<SideChatInfo>,
-    /// The thread's designs, for the canvas gallery.
-    designs: Vec<crate::canvas::Spec>,
     /// The panel has the conversation's width.
     pub expanded: bool,
     plus_open: bool,
     /// The highlighted card of the `+` surface picker, and its focus.
     plus_hi: Option<usize>,
     plus_focus: FocusHandle,
-    /// The Canvas surface was asked for before any design exists.
-    show_canvas_empty: bool,
     next_id: u64,
     browser_context: BrowserContext,
     /// Whether the shell is showing the panel (drives native browser views).
@@ -277,12 +264,10 @@ impl SidePanel {
             todos: Vec::new(),
             subagents: Vec::new(),
             side_chats: Vec::new(),
-            designs: Vec::new(),
             expanded: false,
             plus_open: false,
             plus_hi: None,
             plus_focus: cx.focus_handle(),
-            show_canvas_empty: false,
             next_id: 1,
             browser_context: BrowserContext::default(),
             visible: false,
@@ -342,57 +327,9 @@ impl SidePanel {
         }
     }
 
-    pub fn set_designs(&mut self, designs: Vec<crate::canvas::Spec>, cx: &mut Context<Self>) {
-        let ids = |v: &[crate::canvas::Spec]| v.iter().map(|s| (s.id.clone(), s.code.len())).collect::<Vec<_>>();
-        if ids(&self.designs) != ids(&designs) {
-            self.designs = designs;
-            cx.notify();
-        }
-    }
-
     pub fn set_side_chats(&mut self, chats: Vec<SideChatInfo>, cx: &mut Context<Self>) {
         if self.side_chats != chats {
             self.side_chats = chats;
-            cx.notify();
-        }
-    }
-
-    /// Show a design in the panel: the open canvas with the same id updates
-    /// in place, otherwise a new canvas tab opens.
-    pub fn open_canvas(
-        &mut self,
-        spec: crate::canvas::Spec,
-        thread: Option<TaskId>,
-        reveal: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let existing = self.panel_ref().and_then(|p| {
-            p.canvases.iter().find(|(_, (c, _))| c.read(cx).spec.id == spec.id).map(|(id, (c, _))| (*id, c.clone()))
-        });
-        let id = match existing {
-            Some((id, c)) => {
-                c.update(cx, |c, cx| c.update_spec(spec, window, cx));
-                id
-            }
-            None => {
-                let id = self.next_id;
-                self.next_id += 1;
-                let ctx = self.browser_context.clone();
-                let canvas = cx.new(|cx| CanvasView::new(spec, thread, ctx, window, cx));
-                let sub = cx.subscribe(&canvas, |_, _, ev: &CanvasEvent, cx| match ev {
-                    CanvasEvent::Changed => cx.notify(),
-                });
-                if let Some(p) = self.panel() {
-                    p.canvases.insert(id, (canvas, sub));
-                    p.tabs.push(Surface::Canvas(id));
-                }
-                id
-            }
-        };
-        if reveal || self.active().is_none() {
-            self.activate(Surface::Canvas(id), window, cx);
-        } else {
             cx.notify();
         }
     }
@@ -455,20 +392,6 @@ impl SidePanel {
             }
             Tab::Subagents => Surface::Subagents,
             Tab::Chats => Surface::Chats,
-            Tab::Canvas => {
-                // The most recent design, or the gallery when there is none.
-                match self
-                    .panel_ref()
-                    .and_then(|p| p.tabs.iter().rev().find(|s| matches!(s, Surface::Canvas(_))).copied())
-                {
-                    Some(s) => s,
-                    None => {
-                        self.show_canvas_empty = true;
-                        cx.notify();
-                        return;
-                    }
-                }
-            }
             Tab::SideChat => {
                 let Some((task, project)) = self.parent.clone() else { return };
                 let id = self.next_id;
@@ -502,7 +425,6 @@ impl SidePanel {
     }
 
     fn activate(&mut self, surface: Surface, window: &mut Window, cx: &mut Context<Self>) {
-        self.show_canvas_empty = false;
         if let Some(p) = self.panel() {
             p.active = Some(surface);
         }
@@ -518,57 +440,6 @@ impl SidePanel {
             _ => {}
         }
         cx.notify();
-    }
-
-    pub fn open_scratchpad(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let default_dev = self.engine.store.setting("canvas_default_device").unwrap_or_else(|| "desktop".into());
-        let device = crate::canvas::Device::parse(&default_dev);
-        let spec = crate::canvas::Spec {
-            id: "scratchpad".into(),
-            title: "Interactive Studio".into(),
-            description: "Live React + Tailwind playground".into(),
-            kind: crate::canvas::Kind::React,
-            device,
-            code: r#"function App() {
-  const [tab, setTab] = React.useState('overview');
-  const [dark, setDark] = React.useState(true);
-  const [count, setCount] = React.useState(42);
-  return (
-    <div style={{ minHeight: '100vh', background: dark ? '#0b0c0e' : '#f8fafc', color: dark ? '#f1f5f9' : '#0f172a', padding: '24px', fontFamily: 'system-ui, sans-serif' }}>
-      <div style={{ maxWidth: '640px', margin: '0 auto', display: 'flex', flexDirection: 'column', gap: '16px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <div>
-            <div style={{ fontSize: '11px', textTransform: 'uppercase', letterSpacing: '0.08em', opacity: 0.5 }}>Dove Live Canvas</div>
-            <h1 style={{ fontSize: '20px', fontWeight: 600, margin: '2px 0 0' }}>Interactive Prototype Studio</h1>
-          </div>
-          <button onClick={() => setDark(!dark)} style={{ padding: '6px 12px', borderRadius: '8px', border: '1px solid rgba(148,163,184,0.25)', background: 'transparent', color: 'inherit', cursor: 'pointer', fontSize: '12px' }}>
-            {dark ? 'Light' : 'Dark'}
-          </button>
-        </div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px' }}>
-          {[['Active Nodes', count], ['Latency', '1.4ms'], ['Uptime', '99.98%']].map(([k, v], i) => (
-            <div key={i} style={{ padding: '14px', borderRadius: '12px', border: '1px solid rgba(148,163,184,0.16)', background: dark ? 'rgba(255,255,255,0.03)' : '#ffffff' }}>
-              <div style={{ fontSize: '11px', opacity: 0.6 }}>{k}</div>
-              <div style={{ fontSize: '20px', fontWeight: 600, marginTop: '4px' }}>{v}</div>
-            </div>
-          ))}
-        </div>
-        <div style={{ display: 'flex', gap: '8px' }}>
-          <button onClick={() => setCount(c => c + 1)} style={{ padding: '8px 14px', borderRadius: '8px', border: 'none', background: '#3b82f6', color: '#fff', fontWeight: 500, fontSize: '12.5px', cursor: 'pointer' }}>
-            Increment Metric (+1)
-          </button>
-          <button onClick={() => window.dove && window.dove.send('Expand this prototype into a full multi-screen dashboard')} style={{ padding: '8px 14px', borderRadius: '8px', border: '1px solid rgba(148,163,184,0.25)', background: 'transparent', color: 'inherit', fontSize: '12.5px', cursor: 'pointer' }}>
-            Ask Agent to Expand →
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}"#
-                .into(),
-        };
-        let thread = self.thread;
-        self.open_canvas(spec, thread, true, window, cx);
     }
 
     pub fn close(&mut self, surface: Surface, _window: &mut Window, cx: &mut Context<Self>) {
@@ -591,11 +462,6 @@ impl SidePanel {
             }
             Surface::Subagent(id) => {
                 p.subagents.remove(&id);
-            }
-            Surface::Canvas(id) => {
-                if let Some((c, _)) = p.canvases.remove(&id) {
-                    c.update(cx, |c, cx| c.browser().update(cx, |b, cx| b.close(cx)));
-                }
             }
             _ => {}
         }
@@ -676,23 +542,16 @@ impl SidePanel {
             for (_, t) in p.terminals {
                 t.update(cx, |t, cx| t.kill(cx));
             }
-            for (_, (c, _)) in p.canvases {
-                c.update(cx, |c, cx| c.browser().update(cx, |b, cx| b.close(cx)));
-            }
             let _ = p.chats;
         }
     }
 
-    /// D7: drop the native web views of thread `id`'s browser tabs and
-    /// canvases (its tab is closed, so all are hidden). Each reloads its URL,
-    /// or republishes its design, when shown again.
+    /// Drop the native web views of thread `id`'s browser tabs (its tab is
+    /// closed, so all are hidden). Each reloads its URL when shown again.
     pub fn hibernate_thread(&mut self, id: TaskId, cx: &mut Context<Self>) {
         let Some(p) = self.panels.get(&id) else { return };
         for (b, _) in p.browsers.values() {
             b.update(cx, |b, cx| b.hibernate(true, cx));
-        }
-        for (c, _) in p.canvases.values() {
-            c.update(cx, |c, cx| c.hibernate(cx));
         }
     }
 
@@ -703,11 +562,6 @@ impl SidePanel {
             for (b, _) in p.browsers.values() {
                 if b.read(cx).presentation() == crate::browser::model::Presentation::Hidden {
                     b.update(cx, |b, cx| b.hibernate(true, cx));
-                }
-            }
-            for (c, _) in p.canvases.values() {
-                if c.read(cx).browser().read(cx).presentation() == crate::browser::model::Presentation::Hidden {
-                    c.update(cx, |c, cx| c.hibernate(cx));
                 }
             }
         }
@@ -734,15 +588,6 @@ impl SidePanel {
                         b.set_shortcuts(combos);
                     }
                 });
-            }
-            for (id, (c, _)) in &p.canvases {
-                let live = visible
-                    && Some(*thread) == current
-                    && active == Some(Surface::Canvas(*id))
-                    && c.read(cx).page_visible();
-                let presentation = crate::browser::model::presentation(live, dragging);
-                let browser = c.read(cx).browser().clone();
-                browser.update(cx, |b, cx| b.set_presentation(presentation, cx));
             }
         }
     }
@@ -939,11 +784,6 @@ impl SidePanel {
                     .unwrap_or(1);
                 format!("Chat {n}").into()
             }
-            Surface::Canvas(id) => self
-                .panel_ref()
-                .and_then(|p| p.canvases.get(&id))
-                .map(|(c, _)| c.read(cx).title())
-                .unwrap_or_else(|| "Canvas".into()),
             Surface::Subagent(id) => self
                 .subagent_view(id)
                 .and_then(|v| v.read(cx).mirrored().and_then(|(_, info)| info.map(|i| i.title.clone())))
@@ -1008,7 +848,7 @@ impl SidePanel {
                     .w(px(CHIP_W))
                     .flex_none()
                     .px(px(4.0))
-                    .rounded(px(6.0))
+                    .rounded(px(radius::RADIUS))
                     .gap(px(3.0))
                     .aria_label(title.clone())
                     .tooltip(ui::tip(title.clone()))
@@ -1036,7 +876,7 @@ impl SidePanel {
                             .id(("panel-chip-x", ix))
                             .size(px(18.0))
                             .flex_none()
-                            .rounded(px(4.0))
+                            .rounded(px(radius::RADIUS))
                             .relative()
                             .role(gpui::Role::Button)
                             .aria_label("Close tab")
@@ -1225,7 +1065,7 @@ impl SidePanel {
         // Three quiet groups, top-aligned: what the agent changed, where it
         // runs, and who else is working. Each row says what it is for.
         const GROUPS: [(&str, &[Tab]); 3] = [
-            ("Run", &[Tab::Browser, Tab::Terminal, Tab::Canvas]),
+            ("Run", &[Tab::Browser, Tab::Terminal]),
             ("Review", &[Tab::Changes, Tab::Files, Tab::History, Tab::Plan]),
             ("Agents", &[Tab::Subagents, Tab::Chats, Tab::SideChat]),
         ];
@@ -1240,7 +1080,7 @@ impl SidePanel {
                 .w_full()
                 .h(px(44.0))
                 .px(px(14.0))
-                .rounded(px(10.0))
+                .rounded(px(radius::RADIUS))
                 .border_1()
                 .border_color(border)
                 .bg(ink(0.02))
@@ -1340,7 +1180,7 @@ impl SidePanel {
                 div()
                     .h(px(32.0))
                     .px(px(10.0))
-                    .rounded(px(8.0))
+                    .rounded(px(radius::RADIUS))
                     .bg(ink(0.03))
                     .border_1()
                     .border_color(t.border)
@@ -1391,7 +1231,7 @@ impl SidePanel {
                     .flex()
                     .flex_col()
                     .gap(px(8.0))
-                    .rounded(px(12.0))
+                    .rounded(px(radius::RADIUS))
                     .border_1()
                     .border_color(t.border)
                     .bg(ink(0.02))
@@ -1411,7 +1251,7 @@ impl SidePanel {
                                     .flex()
                                     .items_center()
                                     .justify_center()
-                                    .rounded(px(6.0))
+                                    .rounded(px(radius::RADIUS))
                                     .bg(color.opacity(0.12))
                                     .child(glyph),
                             )
@@ -1450,7 +1290,7 @@ impl SidePanel {
                                     .flex()
                                     .items_center()
                                     .justify_center()
-                                    .rounded(px(6.0))
+                                    .rounded(px(radius::RADIUS))
                                     .invisible()
                                     .group_hover(card, |s| s.visible())
                                     .hover(|s| s.bg(ink(0.08)))
@@ -1493,7 +1333,7 @@ impl SidePanel {
                             div()
                                 .px(px(10.0))
                                 .py(px(8.0))
-                                .rounded(px(8.0))
+                                .rounded(px(radius::RADIUS))
                                 .bg(ink(0.035))
                                 .text_size(ty::META)
                                 .text_color(t.text_faint)
@@ -1577,7 +1417,7 @@ impl SidePanel {
                     .flex()
                     .items_center()
                     .gap(px(5.0))
-                    .rounded(px(7.0))
+                    .rounded(px(radius::RADIUS))
                     .border_1()
                     .border_color(t.border)
                     .bg(ink(0.025))
@@ -1640,82 +1480,6 @@ impl SidePanel {
             .gap(px(12.0))
             .child(div().flex().items_center().gap(px(8.0)).child(quick).child(div().flex_1()).child(new_chat))
             .child(body)
-            .into_any_element()
-    }
-
-    fn render_canvas_empty(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
-        if !self.designs.is_empty() {
-            let thread = self.thread;
-            return div()
-                .id("canvas-gallery")
-                .size_full()
-                .overflow_y_scroll()
-                .p(px(14.0))
-                .flex()
-                .flex_col()
-                .gap(px(10.0))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .child(kit::section_label(format!("Designs · {}", self.designs.len()), t))
-                        .child(
-                            ui::button_ghost("canvas-new-scratch", "Scratchpad", t)
-                                .on_click(cx.listener(|this, _, window, cx| this.open_scratchpad(window, cx))),
-                        ),
-                )
-                .children(self.designs.iter().map(|spec| {
-                    let weak = cx.weak_entity();
-                    let open = spec.clone();
-                    crate::canvas::card(spec, t, move |window, cx| {
-                        let open = open.clone();
-                        let _ = weak.update(cx, |p, cx| p.open_canvas(open, thread, true, window, cx));
-                    })
-                }))
-                .into_any_element();
-        }
-        div()
-            .id("canvas-empty")
-            .size_full()
-            .flex()
-            .flex_col()
-            .items_center()
-            .justify_center()
-            .p(px(16.0))
-            .gap(px(12.0))
-            .child(kit::empty_state(
-                icons::GALLERY,
-                "No designs yet",
-                "Ask for a page, a screen or a component and it opens here, live.",
-                t,
-            ))
-            .child(
-                div()
-                    .id("canvas-open-scratch")
-                    .w_full()
-                    .max_w(px(280.0))
-                    .h(px(44.0))
-                    .px(px(14.0))
-                    .rounded(px(10.0))
-                    .border_1()
-                    .border_color(t.border)
-                    .bg(ink(0.02))
-                    .flex()
-                    .items_center()
-                    .gap(px(10.0))
-                    .cursor_pointer()
-                    .hover(|s| s.bg(ink(0.05)).border_color(t.border_strong))
-                    .child(icon(icons::MAGIC_STICK_3).size(px(15.0)).text_color(t.text_muted))
-                    .child(
-                        div()
-                            .text_size(ty::BODY)
-                            .font_weight(gpui::FontWeight::MEDIUM)
-                            .text_color(t.text)
-                            .child("Open scratchpad"),
-                    )
-                    .on_click(cx.listener(|this, _, window, cx| this.open_scratchpad(window, cx))),
-            )
             .into_any_element()
     }
 
@@ -1804,7 +1568,6 @@ impl Render for SidePanel {
         crate::perf_trace::count_render("SidePanel");
         let t = Theme::of(cx).clone();
         let body: AnyElement = match self.active() {
-            None if self.show_canvas_empty => self.render_canvas_empty(&t, cx),
             None => self.render_picker(&t, cx),
             Some(Surface::Subagents) => self.render_subagents(&t, cx),
             Some(Surface::Subagent(id)) => match self.subagent_view(id) {
@@ -1812,10 +1575,6 @@ impl Render for SidePanel {
                 None => self.render_picker(&t, cx),
             },
             Some(Surface::Chats) => self.render_chats(&t, cx),
-            Some(Surface::Canvas(id)) => match self.panel_ref().and_then(|p| p.canvases.get(&id)) {
-                Some((c, _)) => c.clone().into_any_element(),
-                None => self.render_picker(&t, cx),
-            },
             Some(Surface::Changes) => self.changes.clone().into_any_element(),
             Some(Surface::Files) => self.files.clone().into_any_element(),
             Some(Surface::History) => self.git_history.clone().into_any_element(),

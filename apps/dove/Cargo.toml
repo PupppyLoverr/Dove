@@ -29,6 +29,8 @@ uuid = { workspace = true }
 zeron-syntax = { path = "../../vendor/zeron-syntax" }
 zeron-markdown = { path = "../../vendor/zeron-markdown" }
 zeron-voice = { path = "../../vendor/zeron-voice" }
+zeron-visual = { path = "../../vendor/zeron-visual" }
+zeron-visual-gpu = { path = "../../vendor/zeron-visual-gpu" }
 similar = "2"
 notify-rust = "4.18"
 # Embedded browser (ported from Zeron).
@@ -72,3 +74,7 @@ libc = "0.2"
 
 [features]
 browser-fixture = []
+
+[build-dependencies]
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "ico"] }
+winresource = "0.1"

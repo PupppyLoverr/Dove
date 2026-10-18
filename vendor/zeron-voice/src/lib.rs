@@ -103,6 +103,9 @@ impl Recognizer {
         if samples.len() < rate as usize / 5 || samples.iter().all(|s| s.abs() < 0.0001) {
             return Ok(String::new());
         }
+        // A whisper sits far below conversational level. Lift it toward a
+        // normal peak so the model hears it; leave loud speech untouched.
+        let samples = lift_quiet(samples);
         let samples = resample::for_model(samples, rate)?;
         self.0
             .transcribe_samples(samples, resample::MODEL_RATE, 1, None)
@@ -380,9 +383,84 @@ impl Drop for BusyGuard {
 }
 enum Command {
     Transcribe(Job, BusyGuard),
+    /// Load weights ahead of the first utterance so a short clip is not
+    /// waiting on the model.
+    Warm(std::path::PathBuf),
     Unload,
 }
+
+/// Bring a quiet recording up toward a conversational peak. Loud speech
+/// (peak at or above 0.22) is returned as recorded.
+fn lift_quiet(samples: Vec<f32>) -> Vec<f32> {
+    let peak = samples.iter().map(|s| s.abs()).fold(0.0_f32, f32::max);
+    if !peak.is_finite() || peak < 0.0001 || peak >= 0.22 {
+        return samples;
+    }
+    let gain = (0.32 / peak).min(16.0);
+    samples.into_iter().map(|s| (s * gain).clamp(-1.0, 1.0)).collect()
+}
 static WORKER: std::sync::OnceLock<std::sync::mpsc::SyncSender<Command>> = std::sync::OnceLock::new();
+
+fn worker() -> &'static std::sync::mpsc::SyncSender<Command> {
+    WORKER.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::sync_channel::<Command>(1);
+        std::thread::spawn(move || {
+            let mut cached: Option<(std::path::PathBuf, Recognizer)> = None;
+            loop {
+                let (job, _admission) = match rx.recv_timeout(std::time::Duration::from_secs(600)) {
+                    Ok(Command::Transcribe(j, admission)) => (j, admission),
+                    Ok(Command::Warm(dir)) => {
+                        if cached.as_ref().is_none_or(|(path, _)| *path != dir) {
+                            if let Ok(model) = Recognizer::load(&dir) {
+                                cached = Some((dir, model));
+                            }
+                        }
+                        continue;
+                    }
+                    Ok(Command::Unload) => {
+                        cached = None;
+                        continue;
+                    }
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                        cached = None;
+                        continue;
+                    }
+                    Err(_) => break,
+                };
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    run_job(
+                        &job,
+                        || Capture::start(job.device.as_deref(), job.level.clone()),
+                        || {
+                            if cached.as_ref().is_none_or(|(path, _)| *path != job.dir) {
+                                let model = Recognizer::load(&job.dir)
+                                    .context("Could not load the model. Remove it in Settings and download again.")?;
+                                cached = Some((job.dir.clone(), model));
+                            }
+                            let model = &mut cached.as_mut().unwrap().1;
+                            Ok(move |samples, rate| model.transcribe(samples, rate))
+                        },
+                    )
+                }))
+                .unwrap_or_else(|_| {
+                    cached = None;
+                    Err(anyhow::anyhow!("Dictation stopped unexpectedly. Your draft is safe."))
+                });
+                match result {
+                    Ok(Some(text)) => {
+                        let _ = job.events.try_send(Event::Final(text));
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        let _ = job.events.try_send(Event::Failed(e.to_string()));
+                    }
+                }
+            }
+        });
+        tx
+    })
+}
+
 pub struct Session {
     stop: Arc<AtomicBool>,
     cancel: Arc<AtomicBool>,
@@ -394,60 +472,7 @@ impl Session {
     /// records from the system default.
     pub fn start(dir: std::path::PathBuf, device: Option<String>) -> Result<Self> {
         let admission = BusyGuard::acquire()?;
-        let sender = WORKER.get_or_init(|| {
-            let (tx, rx) = std::sync::mpsc::sync_channel::<Command>(1);
-            std::thread::spawn(move || {
-                let mut cached: Option<(std::path::PathBuf, Recognizer)> = None;
-                loop {
-                    let (job, _admission) = match rx.recv_timeout(std::time::Duration::from_secs(30)) {
-                        Ok(Command::Transcribe(j, admission)) => (j, admission),
-                        Ok(Command::Unload) => {
-                            cached = None;
-                            continue;
-                        }
-                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                            cached = None;
-                            continue;
-                        }
-                        Err(_) => break,
-                    };
-                    // A native panic must not take down the worker, and with
-                    // it every later session, until the app restarts.
-                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        run_job(
-                            &job,
-                            || Capture::start(job.device.as_deref(), job.level.clone()),
-                            || {
-                                if cached.as_ref().is_none_or(|(path, _)| *path != job.dir) {
-                                    let model = Recognizer::load(&job.dir).context(
-                                        "Could not load the model. Remove it in Settings and download again.",
-                                    )?;
-                                    cached = Some((job.dir.clone(), model));
-                                }
-                                let model = &mut cached.as_mut().unwrap().1;
-                                Ok(move |samples, rate| model.transcribe(samples, rate))
-                            },
-                        )
-                    }))
-                    .unwrap_or_else(|_| {
-                        cached = None;
-                        Err(anyhow::anyhow!("Dictation stopped unexpectedly. Your draft is safe."))
-                    });
-                    match result {
-                        Ok(Some(text)) => {
-                            let _ = job.events.try_send(Event::Final(text));
-                        }
-                        Ok(None) => {}
-                        // Keep loaded weights: a microphone or recording error says
-                        // nothing about the model, and reloading takes seconds.
-                        Err(e) => {
-                            let _ = job.events.try_send(Event::Failed(e.to_string()));
-                        }
-                    }
-                }
-            });
-            tx
-        });
+        let sender = worker();
         let stop = Arc::new(AtomicBool::new(false));
         let cancel = Arc::new(AtomicBool::new(false));
         let level = Arc::new(AtomicU32::new(0));
@@ -491,6 +516,12 @@ pub fn unload() {
     }
 }
 
+/// Load the model on the worker before the first tap, so a short or quiet
+/// clip is transcribed as soon as the microphone closes.
+pub fn warm(dir: std::path::PathBuf) {
+    let _ = worker().try_send(Command::Warm(dir));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -524,6 +555,13 @@ mod tests {
         check::<u64>();
         check::<f32>();
         check::<f64>();
+    }
+    #[test]
+    fn quiet_speech_is_lifted_and_loud_speech_stays() {
+        let quiet = lift_quiet(vec![0.02, -0.01, 0.0]);
+        assert!(quiet[0] > 0.2 && quiet[0] <= 0.32, "{}", quiet[0]);
+        assert_eq!(lift_quiet(vec![0.5, -0.4]), vec![0.5, -0.4]);
+        assert_eq!(lift_quiet(vec![0.0, 0.0]), vec![0.0, 0.0]);
     }
     #[test]
     fn manifest_pins_only_v3_artifacts_and_exact_size() {

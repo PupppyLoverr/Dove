@@ -26,11 +26,10 @@ use zeron_syntax::{HighlightRequest, HighlightedDocument};
 mod mend;
 
 use crate::assets::{icon, icons};
-use crate::design::ty;
+use crate::design::{radius, ty};
 use crate::markdown_extra::{self, Diagram};
 use crate::theme::Theme;
 use crate::ui;
-use crate::widget;
 
 const OPTS: Options = Options::ENABLE_TABLES
     .union(Options::ENABLE_STRIKETHROUGH)
@@ -87,9 +86,6 @@ pub enum Block {
     },
     Mermaid(String),
     Math(String),
-    Widget(String),
-    /// A live design (`show_canvas`), as its JSON spec.
-    Canvas(String),
     /// A task list item's checkbox (first block of the item).
     Check(bool),
     Image {
@@ -110,8 +106,7 @@ impl Block {
     pub fn plain(&self) -> String {
         match self {
             Block::Paragraph(i) | Block::Heading(_, i) => i.text.clone(),
-            Block::Code { text, .. } | Block::Mermaid(text) | Block::Math(text) | Block::Widget(text) => text.clone(),
-            Block::Canvas(src) => crate::canvas::Spec::parse(src).map(|s| s.code).unwrap_or_default(),
+            Block::Code { text, .. } | Block::Mermaid(text) | Block::Math(text) => text.clone(),
             Block::Check(done) => {
                 if *done {
                     "[x]".into()
@@ -374,7 +369,6 @@ impl Stream {
         Some(match lang.as_deref().map(str::to_ascii_lowercase).as_deref() {
             // A diagram renders once whole; while it streams it is source.
             Some("math" | "latex" | "tex") => Block::Math(text),
-            Some("ui" | "widget") => Block::Widget(text),
             _ => Block::Code { lang, text, highlight: None },
         })
     }
@@ -442,8 +436,6 @@ fn parse_blocks(p: &mut P, until: Option<TagEnd>) -> Vec<Block> {
                 blocks.push(match kind.as_deref() {
                     Some("mermaid") => Block::Mermaid(text),
                     Some("math" | "latex" | "tex") => Block::Math(text),
-                    Some("ui" | "widget" | "dove-ui") => Block::Widget(text),
-                    Some("canvas" | "dove-canvas") => Block::Canvas(text),
                     _ => Block::Code { lang, text, highlight: None },
                 });
             }
@@ -630,7 +622,7 @@ pub fn render(id: impl Into<SharedString>, blocks: &[Block], theme: &Theme, wind
     div()
         .flex()
         .flex_col()
-        .gap(px(10.0))
+        .gap(px(8.0))
         .children(blocks.iter().enumerate().map(|(i, b)| render_block(&format!("{id}-{i}"), b, theme, window)))
         .into_any_element()
 }
@@ -657,11 +649,6 @@ pub fn render_block(id: &str, b: &Block, theme: &Theme, window: &Window) -> AnyE
         Block::Mermaid(src) => mermaid_block(id, src, theme),
         Block::Math(src) => math_block(src, theme),
         Block::Check(done) => checkbox(*done, theme),
-        Block::Widget(src) => widget_preview(src, theme),
-        Block::Canvas(src) => match crate::canvas::Spec::parse(src) {
-            Some(spec) => crate::canvas::card(&spec, theme, |_, _| {}),
-            None => div().into_any_element(),
-        },
         Block::Image { alt, url } => image_block(id, alt, url, theme),
         Block::List { ordered, items } => div()
             .flex()
@@ -709,7 +696,7 @@ pub fn render_block(id: &str, b: &Block, theme: &Theme, window: &Window) -> AnyE
             .children(inner.iter().enumerate().map(|(j, b)| render_block(&format!("{id}-q{j}"), b, theme, window)))
             .into_any_element(),
         Block::Table(rows) => div()
-            .rounded(px(8.0))
+            .rounded(px(radius::RADIUS))
             .border_1()
             .border_color(theme.border)
             .overflow_hidden()
@@ -798,7 +785,7 @@ fn mermaid_block(id: &str, src: &str, theme: &Theme) -> AnyElement {
     };
     div()
         .id(SharedString::from(format!("{id}-mermaid")))
-        .rounded(px(12.0))
+        .rounded(px(radius::RADIUS))
         .border_1()
         .border_color(theme.border)
         .bg(theme.wash(0.03))
@@ -814,7 +801,7 @@ fn math_block(src: &str, theme: &Theme) -> AnyElement {
         .w_full()
         .py(px(14.0))
         .px(px(14.0))
-        .rounded(px(12.0))
+        .rounded(px(radius::RADIUS))
         .bg(theme.wash(0.035))
         .overflow_x_scroll()
         .tooltip(crate::ui::tip(src.trim().to_string()))
@@ -834,33 +821,6 @@ fn checkbox(done: bool, theme: &Theme) -> AnyElement {
         .when(done, |d| d.bg(theme.accent).border_color(theme.accent))
         .when(!done, |d| d.border_color(theme.border_strong))
         .when(done, |d| d.child(icon(icons::CHECK).size(px(10.0)).text_color(gpui::white())))
-        .into_any_element()
-}
-
-fn widget_preview(src: &str, theme: &Theme) -> AnyElement {
-    let spec = widget::Spec::parse(src).or_else(|| widget::Spec::parse_partial(src));
-    let title = spec.as_ref().map(|s| s.title.clone()).filter(|s| !s.is_empty());
-    let body = spec.map(|s| s.body).filter(|s| !s.is_empty());
-    div()
-        .p(px(14.0))
-        .rounded(px(14.0))
-        .border_1()
-        .border_color(theme.border)
-        .bg(theme.wash(0.03))
-        .flex()
-        .flex_col()
-        .gap(px(8.0))
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(8.0))
-                .text_size(ty::BODY)
-                .text_color(theme.text_muted)
-                .child(icon(icons::WIDGET).size(px(13.0)).text_color(theme.text_faint))
-                .child(title.unwrap_or_else(|| "Building card…".into())),
-        )
-        .when_some(body, |d, body| d.child(div().text_size(ty::BODY).text_color(theme.text).child(body)))
         .into_any_element()
 }
 
@@ -885,7 +845,7 @@ fn image_block(id: &str, alt: &str, url: &str, theme: &Theme) -> AnyElement {
         .id(SharedString::from(format!("{id}-img")))
         .group(SharedString::from(format!("{id}-img")))
         .relative()
-        .rounded(px(14.0))
+        .rounded(px(radius::RADIUS))
         .border_1()
         .border_color(theme.border)
         .bg(theme.wash(0.02))
@@ -952,20 +912,18 @@ fn code_block(id: &str, lang: Option<&str>, text: &str, hl: Option<&HighlightedD
     let copy = text.to_string();
     let theme2 = theme.clone();
     div()
-        .rounded(px(10.0))
+        .rounded(px(radius::RADIUS))
         .border_1()
         .border_color(theme.border)
-        .bg(theme.wash(0.035))
+        .bg(theme.surface_raised.opacity(0.94))
         .overflow_hidden()
         .child(
             div()
-                .h(px(30.0))
+                .h(px(26.0))
                 .px(px(10.0))
                 .flex()
                 .items_center()
                 .justify_between()
-                .border_b_1()
-                .border_color(theme.border)
                 .text_size(ty::META)
                 .text_color(theme.text_faint)
                 .child(lang.unwrap_or("").to_string())

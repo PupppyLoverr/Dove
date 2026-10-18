@@ -271,8 +271,6 @@ impl Shell {
                 .flex()
                 .items_center()
                 .gap(px(6.0))
-                .rounded(px(crate::design::radius::CARD))
-                .bg(t.accent.opacity(0.08))
                 .text_size(ty::BODY)
                 .child(div().pl(px(space::XS)).child(format!("{selected_n} selected")))
                 .child(div().flex_1())

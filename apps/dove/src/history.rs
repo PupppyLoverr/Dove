@@ -14,7 +14,7 @@ use gpui::{
 use gpui_base::input::{Input, InputEvent, InputState};
 
 use crate::assets::{icon, icons};
-use crate::design::ty;
+use crate::design::{radius, ty};
 use crate::kit;
 use crate::kit::controls::{self as ctl, Tone};
 use crate::kit::page;
@@ -248,7 +248,7 @@ impl Render for GitHistory {
             .flex()
             .items_center()
             .gap(px(6.0))
-            .rounded(px(8.0))
+            .rounded(px(radius::RADIUS))
             .bg(t.wash(0.05))
             .border_1()
             .border_color(t.border)
@@ -288,7 +288,7 @@ impl Render for GitHistory {
                             .flex()
                             .items_center()
                             .gap(px(8.0))
-                            .rounded(px(8.0))
+                            .rounded(px(radius::RADIUS))
                             .cursor_pointer()
                             .hover(|s| s.bg(t.wash(0.07)))
                             .on_click(move |_, _, cx| {
@@ -339,7 +339,7 @@ impl Render for GitHistory {
                                             .children(c.refs.iter().take(2).map(|r| {
                                                 div()
                                                     .px(px(5.0))
-                                                    .rounded(px(4.0))
+                                                    .rounded(px(radius::RADIUS))
                                                     .bg(t.wash(0.08))
                                                     .text_color(t.text_muted)
                                                     .child(r.clone())

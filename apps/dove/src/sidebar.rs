@@ -13,7 +13,7 @@ use gpui::{
 use gpui_base::input::Input;
 
 use crate::assets::{icon, icons};
-use crate::design::ty;
+use crate::design::{radius, ty};
 use crate::kit;
 use crate::shell::{ChatMenu, Route, Shell};
 use crate::theme::Theme;
@@ -46,6 +46,31 @@ pub fn project_badge(name: &str, size: f32, theme: &Theme) -> impl IntoElement {
         .text_size(px(size * 0.66))
         .font_weight(gpui::FontWeight::SEMIBOLD)
         .child(initial)
+}
+
+/// A footer glyph. The hit target stays, and hover only darkens the mark —
+/// a filled rounded plate here reads as a button stuck on the row.
+fn quiet_glyph(
+    id: &'static str,
+    glyph: &'static str,
+    label: &'static str,
+    t: &Theme,
+    on_click: impl Fn(&gpui::ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static,
+) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .group(id)
+        .size(px(24.0))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .cursor_pointer()
+        .role(gpui::Role::Button)
+        .aria_label(label)
+        .tooltip(ui::tip(label))
+        .on_click(on_click)
+        .child(icon(glyph).size(px(16.0)).text_color(t.text_faint).group_hover(id, |s| s.text_color(t.text)))
 }
 
 /// A quiet label over a group of sidebar rows.
@@ -99,25 +124,31 @@ impl Shell {
             let selected = route.is_some_and(|r| r == this.route);
             div()
                 .id(id)
+                .group(id)
                 .h(px(30.0))
                 .mx(px(8.0))
                 .px(px(8.0))
                 .flex()
                 .items_center()
                 .gap(px(9.0))
-                .rounded(px(8.0))
+                .rounded(px(radius::RADIUS))
                 .cursor_pointer()
                 .text_size(ty::BODY)
-                .when(selected, |d| d.bg(ui::selected_bg(&t)).shadow(ui::selected_ring(&t)).text_color(t.text))
+                .when(selected, |d| d.text_color(t.text).font_weight(gpui::FontWeight::MEDIUM))
                 .when(!selected, |d| {
                     crate::motion::hover_fade(
                         d,
                         SharedString::from(format!("nav-{label}")),
-                        (t.wash(0.0), t.wash(0.05)),
+                        (t.wash(0.0), t.wash(0.0)),
                         Some((t.text_muted, t.text)),
                     )
                 })
-                .child(icon(glyph).size(px(16.0)))
+                .child(
+                    icon(glyph)
+                        .size(px(16.0))
+                        .text_color(if selected { t.text } else { t.text_muted })
+                        .group_hover(id, |s| s.text_color(t.text)),
+                )
                 .child(div().flex_1().child(label))
                 .children(badge)
                 .on_click(cx.listener(move |this, _, window, cx| match route {
@@ -128,25 +159,21 @@ impl Shell {
         let drafts = self.tasks.iter().filter(|t| t.status == TaskStatus::Draft).count();
         let active_threads = self.tasks.iter().filter(|t| t.status != TaskStatus::Draft).count();
         let running_threads = self.tasks.iter().filter(|t| t.status == TaskStatus::Running).count();
-        // The one primary action, as a button rather than a list row.
+        // Leads the list as a row. Same hit area as the items under it —
+        // a bordered plate here reads as a button sitting on the list.
         let new_thread = div()
             .id("nav-new")
+            .h(px(30.0))
             .mx(px(8.0))
-            .mb(px(6.0))
-            .h(px(34.0))
             .px(px(8.0))
             .flex()
             .items_center()
             .gap(px(9.0))
-            .rounded(px(9.0))
-            .border_1()
-            .border_color(t.border_strong)
-            .bg(t.wash(0.055))
+            .rounded(px(radius::RADIUS))
             .cursor_pointer()
             .text_size(ty::BODY)
             .font_weight(gpui::FontWeight::MEDIUM)
             .text_color(t.text)
-            .hover(|s| s.bg(t.wash(0.095)).border_color(t.wash(0.18)))
             .role(gpui::Role::Button)
             .aria_label("New thread")
             .child(icon(icons::PEN_NEW_SQUARE).size(px(15.0)).text_color(t.text))
@@ -246,18 +273,21 @@ impl Shell {
         let header_button = |id: &'static str, glyph: &'static str, label: &'static str, on: bool| {
             div()
                 .id(id)
+                .group(id)
                 .size(px(22.0))
                 .flex()
                 .items_center()
                 .justify_center()
-                .rounded(px(6.0))
                 .cursor_pointer()
                 .role(gpui::Role::Button)
                 .aria_label(label)
                 .tooltip(ui::tip(label))
-                .when(on, |d| d.bg(t.wash(0.10)))
-                .hover(|s| s.bg(t.wash(0.10)))
-                .child(icon(glyph).size(px(14.0)).text_color(if on { t.text_muted } else { t.text_faint }))
+                .child(
+                    icon(glyph)
+                        .size(px(14.0))
+                        .text_color(if on { t.text } else { t.text_faint })
+                        .group_hover(id, |s| s.text_color(t.text)),
+                )
         };
         let options_exit = if self.sidebar_options_open { None } else { self.menus.options_exit() };
         let options_menu = (self.sidebar_options_open || options_exit.is_some())
@@ -284,15 +314,7 @@ impl Shell {
                         active_threads > 0,
                         |d| {
                             d.child(
-                                div()
-                                    .px(px(5.0))
-                                    .h(px(15.0))
-                                    .flex()
-                                    .items_center()
-                                    .rounded(px(4.0))
-                                    .bg(t.wash(0.06))
-                                    .text_size(ty::BADGE)
-                                    .child(active_threads.to_string()),
+                                div().text_size(ty::BADGE).text_color(t.text_faint).child(active_threads.to_string()),
                             )
                         },
                     ))
@@ -332,10 +354,6 @@ impl Shell {
                         .flex()
                         .items_center()
                         .gap(px(9.0))
-                        .rounded(px(8.0))
-                        .bg(t.wash(0.05))
-                        .border_1()
-                        .border_color(t.wash(0.06))
                         .text_size(ty::BODY)
                         .child(icon(icons::MAGNIFER).size(px(14.0)).text_color(t.text_faint))
                         .child(div().flex_1().min_w_0().child(Input::new(&self.search))),
@@ -415,7 +433,7 @@ impl Shell {
                     .flex_none()
                     .items_center()
                     .gap(px(6.0))
-                    .rounded(px(7.0))
+                    .rounded(px(radius::RADIUS))
                     .cursor_pointer()
                     .text_size(ty::CAPTION)
                     .text_color(t.text_faint)
@@ -426,7 +444,7 @@ impl Shell {
                         crate::motion::hover_fade(
                             d,
                             "sb-shelf",
-                            (t.wash(0.0), t.wash(0.05)),
+                            (t.wash(0.0), t.wash(0.0)),
                             Some((t.text_faint, t.text_muted)),
                         )
                     })
@@ -458,11 +476,11 @@ impl Shell {
                             .px(px(8.0))
                             .flex()
                             .items_center()
-                            .rounded(px(7.0))
+                            .rounded(px(radius::RADIUS))
                             .cursor_pointer()
                             .text_size(ty::CAPTION)
                             .text_color(t.text_faint)
-                            .hover(|s| s.bg(t.wash(0.05)).text_color(t.text_muted))
+                            .hover(|s| s.text_color(t.text_muted))
                             .child(format!("Show all {} archived", self.archived.len()))
                             .on_click(cx.listener(|this, _, window, cx| this.navigate(Route::Archived, window, cx))),
                     );
@@ -478,8 +496,6 @@ impl Shell {
             .flex()
             .items_center()
             .gap(px(8.0))
-            .border_t_1()
-            .border_color(t.border)
             .child(
                 div()
                     .id("sb-usage")
@@ -491,9 +507,7 @@ impl Shell {
                     .flex()
                     .items_center()
                     .gap(px(9.0))
-                    .rounded(px(8.0))
                     .cursor_pointer()
-                    .hover(|s| s.bg(t.wash(0.05)))
                     .tooltip(ui::tip("Usage"))
                     .on_click(cx.listener(|this, _, window, cx| this.navigate(Route::Usage, window, cx)))
                     .child({
@@ -527,14 +541,14 @@ impl Shell {
                             ),
                     ),
             )
-            .child(ui::icon_button(
+            .child(quiet_glyph(
                 "sb-add-proj",
                 icons::FOLDER_WITH_FILES,
                 "Add project (Ctrl+O)",
                 &t,
                 cx.listener(|this, _, _, cx| this.add_project_dialog(cx)),
             ))
-            .child(ui::icon_button(
+            .child(quiet_glyph(
                 "sb-settings",
                 icons::SETTINGS,
                 "Settings (Ctrl+,)",
@@ -591,14 +605,20 @@ impl Shell {
             .flex()
             .items_center()
             .gap(px(9.0))
-            .rounded(px(8.0))
+            .rounded(px(radius::RADIUS))
             .cursor_pointer()
             .text_size(ty::BODY)
-            .when(selected || open, |d| d.bg(ui::selected_bg(t)).shadow(ui::selected_ring(t)).text_color(t.text))
+            .group("nav-more")
+            .when(selected || open, |d| d.text_color(t.text).font_weight(gpui::FontWeight::MEDIUM))
             .when(!selected && !open, |d| {
-                crate::motion::hover_fade(d, "nav-more", (t.wash(0.0), t.wash(0.05)), Some((t.text_muted, t.text)))
+                crate::motion::hover_fade(d, "nav-more", (t.wash(0.0), t.wash(0.0)), Some((t.text_muted, t.text)))
             })
-            .child(icon(icons::MORE_HORIZONTAL).size(px(16.0)))
+            .child(
+                icon(icons::MORE_HORIZONTAL)
+                    .size(px(16.0))
+                    .text_color(if selected || open { t.text } else { t.text_muted })
+                    .group_hover("nav-more", |s| s.text_color(t.text)),
+            )
             .child(div().flex_1().child("More"))
             .child(icon(icons::ALT_ARROW_RIGHT).size(px(12.0)).text_color(t.text_faint))
             .on_click(cx.listener(|this, _, window, cx| {
@@ -744,10 +764,8 @@ impl Shell {
             .flex()
             .flex_col()
             .gap(px(6.0))
-            .rounded(px(9.0))
-            .border_1()
-            .border_color(t.warning.opacity(0.35))
-            .bg(t.warning.opacity(0.06))
+            .rounded(px(radius::RADIUS))
+            .bg(t.warning.opacity(0.05))
             .cursor_pointer()
             .on_click(cx.listener(move |this, _, window, cx| this.open_task(id, window, cx)))
             .child(
@@ -787,14 +805,14 @@ impl Shell {
             .then(|| self.threads.get(&id).and_then(|v| v.read(cx).chat.read(cx).current_step()))
             .flatten();
         let corner = div().text_size(ty::CAPTION).text_color(t.text_faint).child(ui::relative_time(task.updated_at));
+        let archive_group = SharedString::from(format!("row-archive-{id}"));
         let archive_btn = div()
-            .id(SharedString::from(format!("row-archive-{id}")))
+            .id(archive_group.clone())
+            .group(archive_group.clone())
             .size(px(22.0))
             .flex()
             .items_center()
             .justify_center()
-            .rounded(px(5.0))
-            .hover(|s| s.bg(t.wash(0.12)))
             .tooltip(ui::tip(if archived { "Unarchive" } else { "Archive" }))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_click(cx.listener(move |this, _, window, cx| {
@@ -804,7 +822,8 @@ impl Shell {
             .child(
                 icon(if archived { icons::ARCHIVE_UP_MINIMALISTIC } else { icons::ARCHIVE_MINIMALISTIC })
                     .size(px(14.0))
-                    .text_color(t.text_muted),
+                    .text_color(t.text_faint)
+                    .group_hover(archive_group, |s| s.text_color(t.text)),
             );
 
         // The second line says where the thread stands: what it is doing,
@@ -833,12 +852,9 @@ impl Shell {
             .flex()
             .items_center()
             .gap(px(8.0))
-            .rounded(px(8.0))
+            .rounded(px(radius::RADIUS))
             .cursor_pointer()
-            .when(selected, |d| d.bg(ui::selected_bg(t)).shadow(ui::selected_ring(t)))
-            .when(!selected, |d| {
-                crate::motion::hover_fade(d, SharedString::from(format!("row-{id}")), (t.wash(0.0), t.wash(0.05)), None)
-            })
+            .when(selected, |d| d.bg(ui::selected_bg(t)))
             .when(archived && !selected, |d| d.opacity(0.6))
             .when_some(step.clone().filter(|_| compact), |d, s| d.tooltip(ui::tip(s)))
             .child(div().w(px(12.0)).flex().justify_center().child(kit::status_glyph(
@@ -884,7 +900,7 @@ impl Shell {
                     .flex_1()
                     .min_w_0()
                     .px(px(4.0))
-                    .rounded(px(5.0))
+                    .rounded(px(radius::RADIUS))
                     .bg(t.wash(0.08))
                     .child(Input::new(&input))
                     .into_any_element(),
@@ -900,6 +916,7 @@ impl Shell {
                                 .text_size(ty::BODY)
                                 .when(task.unread, |d| d.font_weight(gpui::FontWeight::SEMIBOLD))
                                 .text_color(if selected || task.unread { t.text } else { t.text_muted })
+                                .group_hover(group.clone(), |s| s.text_color(t.text))
                                 .child(task.title.clone()),
                         )
                         .when(two_line, |d| {
