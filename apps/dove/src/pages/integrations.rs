@@ -247,17 +247,16 @@ impl IntegrationsView {
                 }
             }),
         ];
-        let mut view =
-            Self {
-                config,
-                api_key,
-                toolkits,
-                probe: Probe::default(),
-                checking: false,
-                copied: false,
-                gh_step: GhStep::Idle,
-                _subs: subs,
-            };
+        let mut view = Self {
+            config,
+            api_key,
+            toolkits,
+            probe: Probe::default(),
+            checking: false,
+            copied: false,
+            gh_step: GhStep::Idle,
+            _subs: subs,
+        };
         view.refresh(cx);
         // Connection state changes outside GPUI (the extension's socket): wait
         // on its watch instead of polling, so an idle view schedules nothing.
@@ -530,19 +529,14 @@ impl Render for IntegrationsView {
                         "Install gh with your package manager".into()
                     }
                 }),
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(4.0))
-                    .children(gh_action)
-                    .child(
-                        small_icon("int-gh-refresh", icons::REFRESH, "Detect again", &t).on_click(cx.listener(
-                            |this, _, _, cx| {
-                                this.gh_step = GhStep::Idle;
-                                this.refresh(cx);
-                            },
-                        )),
-                    ),
+                div().flex().items_center().gap(px(4.0)).children(gh_action).child(
+                    small_icon("int-gh-refresh", icons::REFRESH, "Detect again", &t).on_click(cx.listener(
+                        |this, _, _, cx| {
+                            this.gh_step = GhStep::Idle;
+                            this.refresh(cx);
+                        },
+                    )),
+                ),
                 &t,
             ));
 

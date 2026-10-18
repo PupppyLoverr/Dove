@@ -1353,33 +1353,28 @@ impl SettingsPage {
                     None => page::skeleton(t, gpui::relative(1.0), thumb_h),
                 })
         });
-        let wall_control = div()
-            .flex()
-            .items_center()
-            .gap(px(10.0))
-            .children(thumb)
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .items_end()
-                    .gap(px(6.0))
-                    .child(
-                        ctl::button_sm(
-                            t,
-                            "wall-pick",
-                            if wall.is_some() { "Replace…" } else { "Choose image…" },
-                            Tone::Filled,
-                        )
-                        .on_click(cx.listener(|this, _, _, cx| this.pick_wallpaper(cx))),
+        let wall_control = div().flex().items_center().gap(px(10.0)).children(thumb).child(
+            div()
+                .flex()
+                .flex_col()
+                .items_end()
+                .gap(px(6.0))
+                .child(
+                    ctl::button_sm(
+                        t,
+                        "wall-pick",
+                        if wall.is_some() { "Replace…" } else { "Choose image…" },
+                        Tone::Filled,
                     )
-                    .when(wall.is_some(), |d| {
-                        d.child(
-                            ctl::button_sm(t, "wall-clear", "Remove", Tone::Quiet)
-                                .on_click(cx.listener(|this, _, _, cx| this.set("wallpaper_path", "", cx))),
-                        )
-                    }),
-            );
+                    .on_click(cx.listener(|this, _, _, cx| this.pick_wallpaper(cx))),
+                )
+                .when(wall.is_some(), |d| {
+                    d.child(
+                        ctl::button_sm(t, "wall-clear", "Remove", Tone::Quiet)
+                            .on_click(cx.listener(|this, _, _, cx| this.set("wallpaper_path", "", cx))),
+                    )
+                }),
+        );
         let has_wall = wall.is_some();
         let material = page::card(t)
             .child(self.srow(

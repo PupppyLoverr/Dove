@@ -40,7 +40,11 @@ enum Load {
     Ready(Vec<PullRequest>),
     Failed(SharedString),
     /// The GitHub CLI is missing or signed out: offer to set it up here.
-    NeedsGh { installed: bool, busy: bool, note: Option<SharedString> },
+    NeedsGh {
+        installed: bool,
+        busy: bool,
+        note: Option<SharedString>,
+    },
 }
 
 pub struct PullRequestsPage {
@@ -481,13 +485,18 @@ impl Render for PullRequestsPage {
                         .on_click(cx.listener(|this, _, _, cx| this.sign_in_gh(cx)))
                         .into_any_element()
                 } else if cfg!(any(windows, target_os = "macos")) {
-                    ctl::button(&t, "pr-gh-install", if busy { "Installing…" } else { "Install GitHub CLI" }, Tone::Filled)
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            if !busy {
-                                this.install_gh(cx)
-                            }
-                        }))
-                        .into_any_element()
+                    ctl::button(
+                        &t,
+                        "pr-gh-install",
+                        if busy { "Installing…" } else { "Install GitHub CLI" },
+                        Tone::Filled,
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if !busy {
+                            this.install_gh(cx)
+                        }
+                    }))
+                    .into_any_element()
                 } else {
                     ctl::button(&t, "pr-gh-docs", "Install guide", Tone::Filled)
                         .on_click(cx.listener(|_, _, _, cx| cx.open_url("https://cli.github.com")))

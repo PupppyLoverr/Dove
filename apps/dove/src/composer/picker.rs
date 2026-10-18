@@ -35,11 +35,11 @@ use gpui::{
 };
 use gpui_base::input::{Input, InputEvent, InputState};
 
+use crate::agent_auth::{self, SignIn};
 use crate::assets::{icon, icons};
 use crate::design::radius;
 use crate::design::rem;
 use crate::design::ty;
-use crate::agent_auth::{self, SignIn};
 use crate::picker_memory::{Pick, PickerMemory};
 use crate::theme::{Theme, ink};
 use crate::{kit, ui};
@@ -257,9 +257,8 @@ impl Picker {
         if !kinds.contains(&self.harness) {
             kinds.push(self.harness);
         }
-        let work = cx.background_spawn(async move {
-            kinds.into_iter().map(|k| (k, agent_auth::detect(k))).collect::<Vec<_>>()
-        });
+        let work = cx
+            .background_spawn(async move { kinds.into_iter().map(|k| (k, agent_auth::detect(k))).collect::<Vec<_>>() });
         self._auth = Some(cx.spawn(async move |this, cx| {
             let states = work.await;
             let _ = this.update(cx, |this, cx| {

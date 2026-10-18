@@ -190,7 +190,12 @@ pub fn spinner(_id: impl Into<ElementId>, size: f32, color: Hsla) -> impl IntoEl
 
 /// One frame of [`spinner`]: the track, then the arc (a quarter turn with a
 /// round head), as polylines fine enough to read as circles at any size.
-fn paint_spinner(bounds: gpui::Bounds<gpui::Pixels>, color: Hsla, phase: crate::motion::ActivityPhase, window: &mut gpui::Window) {
+fn paint_spinner(
+    bounds: gpui::Bounds<gpui::Pixels>,
+    color: Hsla,
+    phase: crate::motion::ActivityPhase,
+    window: &mut gpui::Window,
+) {
     use std::f32::consts::TAU;
     let side = f32::from(bounds.size.width.min(bounds.size.height));
     let stroke = (side / 8.0).clamp(1.25, 2.0);

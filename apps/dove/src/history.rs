@@ -308,8 +308,14 @@ impl GitHistory {
             })
             .child(div().flex_1())
             .child(
-                ui::icon_button("hist-refresh", icons::REFRESH, "Refresh", t, cx.listener(|this, _, _, cx| this.refresh(cx)))
-                    .flex_none(),
+                ui::icon_button(
+                    "hist-refresh",
+                    icons::REFRESH,
+                    "Refresh",
+                    t,
+                    cx.listener(|this, _, _, cx| this.refresh(cx)),
+                )
+                .flex_none(),
             )
             .into_any_element()
     }
@@ -369,7 +375,15 @@ fn lane_color(lane: usize, t: &Theme) -> Hsla {
 
 /// Paint one row of the graph: the lines through it, the bends into and
 /// out of its node, then the node.
-fn paint_graph(bounds: Bounds<Pixels>, g: &GraphRow, lane: usize, merge: bool, head: bool, t: &Theme, window: &mut Window) {
+fn paint_graph(
+    bounds: Bounds<Pixels>,
+    g: &GraphRow,
+    lane: usize,
+    merge: bool,
+    head: bool,
+    t: &Theme,
+    window: &mut Window,
+) {
     let x = |i: usize| bounds.origin.x + px(RAIL_LEFT + LANE_W * i as f32 + LANE_W / 2.0);
     let top = bounds.origin.y;
     let bottom = bounds.origin.y + bounds.size.height;
@@ -496,7 +510,9 @@ impl Render for GitHistory {
                         let paint_t = t.clone();
                         let rail_el = canvas(
                             |_, _, _| {},
-                            move |bounds, _, window, _| paint_graph(bounds, &graph, lane, merge, head, &paint_t, window),
+                            move |bounds, _, window, _| {
+                                paint_graph(bounds, &graph, lane, merge, head, &paint_t, window)
+                            },
                         )
                         .w(px(rail))
                         .h_full()
@@ -640,11 +656,11 @@ fn ref_chip(r: &str, current: bool, t: &Theme) -> AnyElement {
         .when(current, |d| d.bg(t.accent.opacity(0.16)).text_color(t.accent))
         .when(!current && remote, |d| d.border_1().border_color(t.wash(0.12)).text_color(t.text_faint))
         .when(!current && !remote, |d| d.bg(t.wash(0.08)).text_color(t.text_muted))
-        .child(
-            icon(if tag { icons::TAG } else { icons::GIT_BRANCH })
-                .size(px(9.0))
-                .text_color(if current { t.accent } else { t.text_faint }),
-        )
+        .child(icon(if tag { icons::TAG } else { icons::GIT_BRANCH }).size(px(9.0)).text_color(if current {
+            t.accent
+        } else {
+            t.text_faint
+        }))
         .child(div().min_w_0().truncate().child(label))
         .into_any_element()
 }

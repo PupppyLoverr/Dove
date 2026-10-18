@@ -1558,36 +1558,31 @@ impl Composer {
                             )
                             .into_any_element()
                     };
-                    div()
-                        .group(group.clone())
-                        .relative()
-                        .flex_none()
-                        .child(tile)
-                        .child(
-                            div()
-                                .id(SharedString::from(format!("att-x-{i}")))
-                                .absolute()
-                                .top(px(-6.0))
-                                .right(px(-6.0))
-                                .size(px(18.0))
-                                .rounded_full()
-                                .bg(t.bg)
-                                .border_1()
-                                .border_color(t.wash(0.12))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .cursor_pointer()
-                                .shadow_sm()
-                                .invisible()
-                                .group_hover(group, |s| s.visible())
-                                .tooltip(ui::tip(format!("Remove {name}")))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    cx.stop_propagation();
-                                    this.remove_attachment(i, cx);
-                                }))
-                                .child(icon(icons::CLOSE).size(px(10.0)).text_color(t.text_muted)),
-                        )
+                    div().group(group.clone()).relative().flex_none().child(tile).child(
+                        div()
+                            .id(SharedString::from(format!("att-x-{i}")))
+                            .absolute()
+                            .top(px(-6.0))
+                            .right(px(-6.0))
+                            .size(px(18.0))
+                            .rounded_full()
+                            .bg(t.bg)
+                            .border_1()
+                            .border_color(t.wash(0.12))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .cursor_pointer()
+                            .shadow_sm()
+                            .invisible()
+                            .group_hover(group, |s| s.visible())
+                            .tooltip(ui::tip(format!("Remove {name}")))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                cx.stop_propagation();
+                                this.remove_attachment(i, cx);
+                            }))
+                            .child(icon(icons::CLOSE).size(px(10.0)).text_color(t.text_muted)),
+                    )
                 }))
                 .into_any_element(),
         )

@@ -62,7 +62,9 @@ fn install_dirs() -> Vec<std::path::PathBuf> {
         dirs.extend(env("USERPROFILE").map(|p| p.join("scoop").join("shims")));
         dirs.extend(env("ProgramData").map(|p| p.join("chocolatey").join("bin")));
     } else {
-        dirs.extend(["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/home/linuxbrew/.linuxbrew/bin"].map(PathBuf::from));
+        dirs.extend(
+            ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/home/linuxbrew/.linuxbrew/bin"].map(PathBuf::from),
+        );
     }
     dirs
 }
@@ -132,12 +134,31 @@ pub fn open_gh_login() -> Result<()> {
     let gh = gh.to_string_lossy().into_owned();
     if cfg!(windows) {
         Command::new("cmd")
-            .args(["/c", "start", "GitHub sign-in", "cmd", "/k", &gh, "auth", "login", "--web", "--hostname", "github.com", "--git-protocol", "https"])
+            .args([
+                "/c",
+                "start",
+                "GitHub sign-in",
+                "cmd",
+                "/k",
+                &gh,
+                "auth",
+                "login",
+                "--web",
+                "--hostname",
+                "github.com",
+                "--git-protocol",
+                "https",
+            ])
             .spawn()
             .context("opening a terminal")?;
     } else if cfg!(target_os = "macos") {
-        let script = format!("tell application \"Terminal\" to do script \"'{gh}' auth login --web --hostname github.com --git-protocol https\"");
-        Command::new("osascript").args(["-e", &script, "-e", "tell application \"Terminal\" to activate"]).spawn().context("opening Terminal")?;
+        let script = format!(
+            "tell application \"Terminal\" to do script \"'{gh}' auth login --web --hostname github.com --git-protocol https\""
+        );
+        Command::new("osascript")
+            .args(["-e", &script, "-e", "tell application \"Terminal\" to activate"])
+            .spawn()
+            .context("opening Terminal")?;
     } else {
         let line = format!("'{gh}' auth login --web --hostname github.com --git-protocol https; exec $SHELL");
         Command::new("x-terminal-emulator").args(["-e", "sh", "-c", &line]).spawn().context("opening a terminal")?;

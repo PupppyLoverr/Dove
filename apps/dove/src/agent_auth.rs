@@ -146,7 +146,10 @@ pub fn open_login(kind: HarnessKind, program: &Path) -> std::io::Result<()> {
         cmd.args(["/c", "start", &format!("Sign in to {}", kind.label()), "cmd", "/k", &program]).args(args);
         cmd.spawn().map(|_| ())
     } else {
-        let line = std::iter::once(format!("'{program}'")).chain(args.iter().map(|a| a.to_string())).collect::<Vec<_>>().join(" ");
+        let line = std::iter::once(format!("'{program}'"))
+            .chain(args.iter().map(|a| a.to_string()))
+            .collect::<Vec<_>>()
+            .join(" ");
         if cfg!(target_os = "macos") {
             let script = format!("tell application \"Terminal\" to do script \"{line}\"");
             Command::new("osascript")
@@ -154,7 +157,10 @@ pub fn open_login(kind: HarnessKind, program: &Path) -> std::io::Result<()> {
                 .spawn()
                 .map(|_| ())
         } else {
-            Command::new("x-terminal-emulator").args(["-e", "sh", "-c", &format!("{line}; exec $SHELL")]).spawn().map(|_| ())
+            Command::new("x-terminal-emulator")
+                .args(["-e", "sh", "-c", &format!("{line}; exec $SHELL")])
+                .spawn()
+                .map(|_| ())
         }
     }
 }
