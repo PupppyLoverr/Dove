@@ -1367,6 +1367,9 @@ pub struct HeroProps {
     pub target: (f32, f32),
     pub animate: bool,
     pub frosted: bool,
+    /// Home fades the art into the canvas. A thread keeps it full-bleed
+    /// under the glass, so the color does not disappear down the page.
+    pub fade: bool,
     /// The composer's bounds, cut out of the art.
     pub composer: Rc<Cell<Option<Bounds<Pixels>>>>,
 }
@@ -1419,6 +1422,7 @@ impl Render for Hero {
         }
         let opacity = composition.motion.opacity * if p.frosted { FROSTED_OPACITY } else { 1.0 };
         let composition = Rc::new(composition);
+        let fade = p.fade;
         let layers = [false, true].map(|cutout| {
             let groups = (0..composition.groups.len()).map(|i| {
                 let (composition, composer) = (composition.clone(), p.composer.clone());
@@ -1426,7 +1430,7 @@ impl Render for Hero {
                     canvas(
                         |_, _, _| {},
                         move |bounds, _, window, _| {
-                            paint_group(&composition, i, bounds, composer.get(), cutout, window)
+                            paint_group(&composition, i, bounds, composer.get(), cutout, fade, window)
                         },
                     )
                     .absolute()
@@ -1463,15 +1467,16 @@ fn placement(bounds: Bounds<Pixels>, src: (f32, f32), motion: Motion) -> Option<
 }
 
 /// The bottom fade, and with `cutout` the composer's feathered rounded rect.
-fn alpha_mask(bounds: Bounds<Pixels>, composer: Option<Bounds<Pixels>>, cutout: bool) -> ImageAlphaMask {
+fn alpha_mask(bounds: Bounds<Pixels>, composer: Option<Bounds<Pixels>>, cutout: bool, fade: bool) -> ImageAlphaMask {
     let h = f32::from(bounds.size.height);
+    let bottom_fade = fade.then(|| (bounds.bottom(), px(h.max(1.0))));
     match (cutout, composer) {
         (true, Some(c)) => ImageAlphaMask {
             bounds: Bounds::new(c.origin, size(c.size.width, c.bottom().max(bounds.bottom()) - c.top())),
             radius: px(crate::design::radius::COMPOSER),
             feather: px((h * 0.52).clamp(120.0, 280.0)),
             clearance: px(8.0),
-            bottom_fade: Some((bounds.bottom(), px(h.max(1.0)))),
+            bottom_fade,
         },
         // No exclusion: park the rect below the image so only the fade applies.
         _ => ImageAlphaMask {
@@ -1479,7 +1484,7 @@ fn alpha_mask(bounds: Bounds<Pixels>, composer: Option<Bounds<Pixels>>, cutout: 
             radius: px(0.0),
             feather: px(1.0),
             clearance: px(0.0),
-            bottom_fade: Some((bounds.bottom(), px(h.max(1.0)))),
+            bottom_fade,
         },
     }
 }
@@ -1492,11 +1497,12 @@ fn paint_group(
     bounds: Bounds<Pixels>,
     composer: Option<Bounds<Pixels>>,
     cutout: bool,
+    fade: bool,
     window: &mut Window,
 ) {
     let Some(group) = composition.groups.get(index) else { return };
     let Some((ox, oy, k)) = placement(bounds, composition.size, composition.motion) else { return };
-    let mask = alpha_mask(bounds, composer, cutout);
+    let mask = alpha_mask(bounds, composer, cutout, fade);
     let map = |x: f32, y: f32| (ox + x * k, oy + y * k);
     let (bx0, by0) = (f32::from(bounds.left()), f32::from(bounds.top()));
     let (bx1, by1) = (f32::from(bounds.right()), f32::from(bounds.bottom()));

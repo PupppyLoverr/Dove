@@ -10,7 +10,7 @@ use gpui::{
 };
 
 use crate::assets::{icon, icons};
-use crate::design::ty;
+use crate::design::{radius, ty};
 use crate::theme::Theme;
 
 // ---------------------------------------------------------------- elements
@@ -253,7 +253,7 @@ impl Render for Tip {
         div()
             .px(px(8.0))
             .py(px(4.0))
-            .rounded(px(6.0))
+            .rounded(px(radius::RADIUS))
             .bg(t.surface_overlay)
             .border_1()
             .border_color(t.border)
@@ -277,7 +277,7 @@ pub fn tip(text: impl Into<SharedString>) -> impl Fn(&mut Window, &mut App) -> A
 ///
 /// All share the same hover wash and a slightly deeper pressed one.
 pub const BUTTON: f32 = 24.0;
-pub const BUTTON_RADIUS: f32 = 6.0;
+pub const BUTTON_RADIUS: f32 = radius::CONTROL;
 pub const ROUND_BUTTON: f32 = 28.0;
 pub const ICON_LG: f32 = 16.0;
 pub const ICON_SM: f32 = 14.0;
@@ -347,10 +347,21 @@ pub fn row_button(
 /// The composer's round button (attach, voice…): [`ROUND_BUTTON`] px with
 /// the same washes as the square ones. Callers add the glyph ([`ICON_LG`]).
 pub fn round_button(id: impl Into<SharedString>, label: &'static str, theme: &Theme) -> gpui::Stateful<Div> {
+    round_button_sized(id, label, ROUND_BUTTON, theme)
+}
+
+/// [`round_button`] at a chosen diameter. The bottom-center composer uses a
+/// smaller hit target so the field stays a single slim row.
+pub fn round_button_sized(
+    id: impl Into<SharedString>,
+    label: &'static str,
+    size: f32,
+    theme: &Theme,
+) -> gpui::Stateful<Div> {
     let (hover, pressed) = (theme.glass_hover(), theme.wash(0.14));
     div()
         .id(gpui::ElementId::Name(id.into()))
-        .size(px(ROUND_BUTTON))
+        .size(px(size))
         .flex_none()
         .flex()
         .items_center()
@@ -376,22 +387,26 @@ pub fn windows_captions(window: &Window, theme: &Theme) -> Option<AnyElement> {
     let (max_id, max_glyph) = if window.is_maximized() { ("win-restore", "\u{e923}") } else { ("win-max", "\u{e922}") };
     let button = |id: &'static str, glyph: &'static str, area: WindowControlArea, close: bool| {
         let red: Hsla = gpui::rgb(0xe81123).into();
-        let (hover_bg, hover_fg, active_bg) = if close {
-            (red, gpui::white(), red.opacity(0.8))
+        let (hover_bg, hover_fg, active_bg, active_fg) = if close {
+            (red, gpui::white(), red.opacity(0.8), gpui::white().opacity(0.8))
         } else {
-            (theme.glass_hover(), theme.text, theme.wash(0.14))
+            (theme.glass_hover(), theme.text, theme.glass_hover().opacity(0.7), theme.text)
         };
         div()
             .id(id)
             .w(px(CAPTION_W))
             .h_full()
+            .flex_none()
             .flex()
             .items_center()
             .justify_center()
-            .text_size(ty::BADGE)
+            .font_family("Segoe Fluent Icons")
+            .font_weight(gpui::FontWeight::NORMAL)
+            .text_size(px(10.0))
+            .line_height(px(10.0))
             .text_color(theme.text)
             .hover(move |s| s.bg(hover_bg).text_color(hover_fg))
-            .active(move |s| s.bg(active_bg).text_color(hover_fg))
+            .active(move |s| s.bg(active_bg).text_color(active_fg))
             .occlude()
             .window_control_area(area)
             .child(glyph)
@@ -459,7 +474,7 @@ pub fn button_primary(
         .items_center()
         .justify_center()
         .gap(px(6.0))
-        .rounded(px(8.0))
+        .rounded(px(radius::RADIUS))
         .bg(solid)
         .text_color(theme.on_solid)
         .text_size(ty::BODY)
@@ -482,7 +497,7 @@ pub fn button_ghost(id: impl Into<SharedString>, label: impl Into<SharedString>,
         .flex()
         .items_center()
         .gap(px(6.0))
-        .rounded(px(7.0))
+        .rounded(px(radius::RADIUS))
         .text_color(theme.text_muted)
         .text_size(ty::BODY)
         .cursor_pointer()
@@ -501,7 +516,7 @@ pub fn ghost_chip(id: impl Into<SharedString>, theme: &Theme) -> gpui::Stateful<
         .flex()
         .items_center()
         .gap(px(5.0))
-        .rounded(px(7.0))
+        .rounded(px(radius::RADIUS))
         .text_size(ty::SMALL)
         .text_color(theme.text_muted)
         .cursor_pointer()
@@ -554,7 +569,7 @@ pub fn footer_chip(
         .flex_none()
         .items_center()
         .gap(px(6.0))
-        .rounded(px(6.0))
+        .rounded(px(radius::fit(22.0)))
         .text_size(ty::META)
         .font_weight(gpui::FontWeight::MEDIUM)
         .text_color(if open { lit } else { rest })
@@ -599,7 +614,7 @@ pub fn chip(id: impl Into<SharedString>, theme: &Theme) -> gpui::Stateful<Div> {
         .flex()
         .items_center()
         .gap(px(6.0))
-        .rounded(px(9.0))
+        .rounded(px(radius::RADIUS))
         .border_1()
         .border_color(theme.wash(0.08))
         .bg(theme.wash(0.03))
@@ -621,7 +636,7 @@ pub fn menu_row(
     crate::kit::popover::menu_item(theme, id, Some(path), label, danger, false, false)
 }
 
-/// The floating card behind menus and popovers: border, 12 px corners, a
+/// The floating card behind menus and popovers: border, 10 px corners, a
 /// 4 px inset, frost on glass, and the menu entrance (140 ms fade and rise).
 pub fn menu_card(theme: &Theme, child: impl IntoElement) -> impl IntoElement {
     crate::motion::menu_in(

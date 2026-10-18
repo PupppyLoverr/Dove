@@ -11,7 +11,7 @@ use gpui::{
 use gpui_base::input::{Input, InputState};
 
 use crate::assets::{icon, icons};
-use crate::design::{size, space, ty};
+use crate::design::{radius, size, space, ty};
 use crate::theme::Theme;
 
 /// Section labels and titles sit a little inside the cards' edge.
@@ -110,8 +110,6 @@ pub fn search_field(t: &Theme, input: &Entity<InputState>) -> Div {
         .flex()
         .items_center()
         .gap(px(space::SM))
-        .rounded(px(crate::design::radius::SELECT))
-        .bg(t.wash(0.06))
         .text_size(ty::BODY)
         .child(icon(icons::MAGNIFER).size(px(14.0)).flex_none().text_color(t.text_faint))
         .child(div().flex_1().min_w_0().child(Input::new(input)))
@@ -127,8 +125,6 @@ pub fn stat(t: &Theme, label: impl Into<SharedString>, value: impl Into<SharedSt
         .flex()
         .flex_col()
         .gap(px(space::XS))
-        .rounded(px(crate::design::radius::CARD))
-        .bg(card_fill(t))
         .child(div().text_size(ty::META).line_height(ty::lh::META).text_color(t.text_muted).child(label.into()))
         .child(
             div()
@@ -157,16 +153,7 @@ pub fn error_state(
         .gap(px(space::SM))
         .py(px(40.0))
         .px(px(space::LG))
-        .child(
-            div()
-                .size(px(44.0))
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(px(crate::design::radius::CARD))
-                .bg(t.danger.opacity(0.08))
-                .child(icon(icons::DANGER_TRIANGLE).size(px(20.0)).text_color(t.danger)),
-        )
+        .child(icon(icons::DANGER_TRIANGLE).size(px(20.0)).text_color(t.danger))
         .child(div().text_size(ty::MD).font_weight(gpui::FontWeight::MEDIUM).text_color(t.text).child(title.into()))
         .when(!body.is_empty(), |d| {
             d.child(div().max_w(px(420.0)).text_center().text_size(ty::BODY).text_color(t.text_faint).child(body))
@@ -174,11 +161,10 @@ pub fn error_state(
         .when_some(action, |d, a| d.child(div().mt(px(space::XS)).child(a)))
 }
 
-/// A clickable row wash for table rows inside cached-free views (pages the
-/// shell draws): instant hover, a stronger wash when selected.
+/// A table row that stays flat. Selection is a faint wash; the pointer
+/// does not paint a plate over the row.
 pub fn row_hover(t: &Theme, el: Stateful<Div>, selected: bool) -> Stateful<Div> {
-    let hover = t.wash(0.05);
-    el.cursor_pointer().when(selected, |d| d.bg(t.accent.opacity(0.08))).hover(move |s| s.bg(hover))
+    el.cursor_pointer().when(selected, |d| d.bg(t.wash(0.045)))
 }
 
 /// The page headline, an optional count beside it, and an optional trailing
@@ -242,9 +228,10 @@ pub fn row_divider(t: &Theme) -> Hsla {
     t.border.opacity(0.6)
 }
 
-/// A filled, rounded block of rows.
+/// A stack of rows on the page itself. The page surface is the card.
 pub fn card(t: &Theme) -> Div {
-    div().w_full().rounded(px(crate::design::radius::CARD)).bg(card_fill(t)).overflow_hidden().flex().flex_col()
+    let _ = t;
+    div().w_full().overflow_hidden().flex().flex_col()
 }
 
 /// One row in a [`card`]: inset 16 px, at least 60 px tall, a hairline above
@@ -302,44 +289,20 @@ pub fn setting_row(
 pub fn row_tile(t: &Theme, glyph: &'static str, tint: Option<Hsla>) -> Div {
     div()
         .flex_none()
-        .size(px(32.0))
         .flex()
         .items_center()
         .justify_center()
-        .rounded(px(8.0))
-        .bg(t.wash(0.06))
         .child(icon(glyph).size(px(16.0)).text_color(tint.unwrap_or(t.text_muted)))
 }
 
 /// A quiet pill.
 pub fn badge(t: &Theme, label: impl Into<SharedString>) -> Div {
-    div()
-        .flex_none()
-        .h(px(20.0))
-        .px(px(space::SM))
-        .flex()
-        .items_center()
-        .rounded_full()
-        .bg(t.wash(0.08))
-        .text_size(ty::BADGE)
-        .text_color(t.text_muted)
-        .child(label.into())
+    div().flex_none().text_size(ty::BADGE).text_color(t.text_muted).child(label.into())
 }
 
 /// A pill in a status colour.
 pub fn badge_tone(label: impl Into<SharedString>, color: Hsla) -> Div {
-    div()
-        .flex_none()
-        .h(px(20.0))
-        .px(px(space::SM))
-        .flex()
-        .items_center()
-        .rounded_full()
-        .bg(color.opacity(0.13))
-        .text_size(ty::BADGE)
-        .font_weight(gpui::FontWeight::MEDIUM)
-        .text_color(color)
-        .child(label.into())
+    div().flex_none().text_size(ty::BADGE).font_weight(gpui::FontWeight::MEDIUM).text_color(color).child(label.into())
 }
 
 fn strip(glyph: &'static str, color: Hsla, t: &Theme, text: impl Into<SharedString>) -> Div {
@@ -351,10 +314,6 @@ fn strip(glyph: &'static str, color: Hsla, t: &Theme, text: impl Into<SharedStri
         .flex()
         .items_start()
         .gap(px(space::SM))
-        .rounded(px(crate::design::radius::SELECT))
-        .bg(color.opacity(0.08))
-        .border_1()
-        .border_color(color.opacity(0.22))
         .text_size(ty::META)
         .line_height(ty::lh::META)
         .text_color(t.text)
@@ -391,16 +350,7 @@ pub fn empty_state(
         .gap(px(space::SM))
         .py(px(40.0))
         .px(px(space::LG))
-        .child(
-            div()
-                .size(px(44.0))
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(px(crate::design::radius::CARD))
-                .bg(t.wash(0.05))
-                .child(icon(glyph).size(px(20.0)).text_color(t.text_faint)),
-        )
+        .child(icon(glyph).size(px(20.0)).text_color(t.text_faint))
         .child(div().text_size(ty::MD).font_weight(gpui::FontWeight::MEDIUM).text_color(t.text).child(title.into()))
         .when(!body.is_empty(), |d| {
             d.child(div().max_w(px(380.0)).text_center().text_size(ty::BODY).text_color(t.text_faint).child(body))
@@ -415,7 +365,12 @@ pub fn skeleton(t: &Theme, width: gpui::DefiniteLength, height: f32) -> AnyEleme
     let lift = t.wash(0.11);
     crate::motion::pulse(std::time::Duration::from_millis(1600), 2, move |phase| {
         let k = if phase.still { 0.0 } else { crate::motion::pulse_wave(phase.phase) };
-        div().w(width).h(px(height)).rounded(px(6.0)).bg(crate::motion::mix(base, lift, k)).into_any_element()
+        div()
+            .w(width)
+            .h(px(height))
+            .rounded(px(radius::RADIUS))
+            .bg(crate::motion::mix(base, lift, k))
+            .into_any_element()
     })
     .into_any_element()
 }

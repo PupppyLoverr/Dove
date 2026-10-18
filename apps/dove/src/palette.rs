@@ -238,7 +238,7 @@ impl Render for Palette {
             .max_h(px(list_max))
             .overflow_y_scroll()
             .track_scroll(&self.scroll)
-            .p(px(6.0))
+            .p(px(4.0))
             .flex()
             .flex_col()
             .gap(px(2.0))

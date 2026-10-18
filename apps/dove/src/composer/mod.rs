@@ -1,7 +1,7 @@
 //! The composer: everything between the user and an agent.
 //!
 //! ```text
-//!  [Local ▾] [▣ dove ▾] [⎇ main ▾] [☑ Worktree] [+ folder]          ◔ 38%  ◔ 6%
+//!  [▣ dove ▾] [+ folder]                                          ◔ 38%  ◔ 6%
 //! ╭──────────────────────────────────────────────────────────────────────────╮
 //! │ [queued: "also add tests" ×]                                              │
 //! │ [📎 screenshot.png ×] [@src/main.rs]                                      │
@@ -31,12 +31,12 @@ use gpui::{
     Anchor, AnyElement, App, AppContext as _, ClipboardEntry, Context, Entity, EventEmitter, ExternalPaths,
     FocusHandle, Focusable, InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, ParentElement as _,
     Render, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window, anchored, deferred, div,
-    img, px,
+    img, point, px, relative,
 };
 use gpui_base::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 
 use crate::assets::{icon, icons};
-use crate::design::ty;
+use crate::design::{radius, ty};
 use crate::kit;
 use crate::kit::popover;
 use crate::theme::Theme;
@@ -78,14 +78,29 @@ pub enum ComposerEvent {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Menu {
     Persona,
-    Checkout,
     Device,
     Project,
-    Branch,
+    /// Projects, extra folders and the device, in one menu (bottom bar).
+    Place,
+    /// Permission level. Only the bottom new-thread bar draws this.
     Mode,
     Mic,
     Attach,
     Folders,
+}
+
+/// Which usage meter the bottom bar is showing a detail card for.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Meter {
+    Plan,
+}
+
+/// Settings key for the new-thread composer. `center` is the current bar;
+/// `dock` is the bottom-center bar.
+pub const HOME_INPUT: &str = "home_input";
+
+pub fn home_input_is_dock(value: Option<&str>) -> bool {
+    value == Some("dock")
 }
 
 #[derive(Clone)]
@@ -121,17 +136,17 @@ const TEMPLATES: &[(&str, &str, &str)] = &[
     (
         "design",
         "Design an interactive web or app screen on the Canvas",
-        "Design a clean, interactive screen and show it with Dove's `show_canvas` tool (React or HTML, realistic content), then summarize the choices in a short `show_ui` card: ",
+        "Design a clean interactive screen in chat: realistic content, spacing, and the states a person would use. ",
     ),
     (
         "mobile",
         "Mock a mobile app flow in a phone frame",
-        "Design an interactive mobile app screen with Dove's `show_canvas` tool (`device: \"mobile\"`), with realistic data and working tabs and interactions: ",
+        "Design a mobile app screen with realistic data, working tabs, and the interactions a person would use: ",
     ),
     (
         "dashboard",
         "Build an interactive analytics or admin dashboard",
-        "Build an interactive dashboard with Dove's `show_canvas` tool, then put the headline metrics in a `show_ui` card with charts and tables: ",
+        "Build an analytics or admin dashboard in chat: headline metrics, charts, and the tables a person would scan. ",
     ),
     (
         "simplify",
@@ -173,9 +188,6 @@ pub struct Composer {
     thread: Option<(Task, Project)>,
     pub project: Option<Project>,
     projects: Vec<Project>,
-    branches: Vec<String>,
-    pub branch: Option<String>,
-    pub worktree: bool,
     pub add_dirs: Vec<PathBuf>,
     attachments: Vec<PathBuf>,
     running: bool,
@@ -183,9 +195,6 @@ pub struct Composer {
     context: (Option<u64>, Option<u64>),
     limits: Vec<RateWindow>,
     menu: Option<Menu>,
-    bypass_confirm: bool,
-    /// Keyboard focus of the Bypass confirmation dialog.
-    dialog_focus: FocusHandle,
     mention: Option<Mention>,
     files: Arc<Vec<String>>,
     files_root: Option<PathBuf>,
@@ -193,6 +202,19 @@ pub struct Composer {
     error: Option<SharedString>,
     draft_gen: u64,
     dragging_files: bool,
+    /// The new-thread page is using the bottom-center bar.
+    home_dock: bool,
+    /// A thread's composer draws the same bottom bar as the new-thread dock.
+    dock_bar: bool,
+    /// The sidebar is open, so the bar stays tucked until the pointer is over it.
+    dock_tuck: bool,
+    /// The pointer is over the dock, which holds a tucked bar open.
+    dock_hot: bool,
+    /// The usage card under the pointer, if any.
+    meter: Option<Meter>,
+    /// Bumped when the pointer enters a meter, so a leave-timer cannot
+    /// close a card the pointer has since re-entered.
+    meter_gen: u64,
     _subs: Vec<Subscription>,
 }
 
@@ -263,7 +285,6 @@ impl Composer {
             }
             DictationEvent::Changed => cx.notify(),
         }));
-        let worktree = engine.store.setting("use_worktree").as_deref() != Some("false");
         let mode = engine.store.setting("permission_mode").map(|m| mode_from_id(&m)).unwrap_or_default();
         Self {
             engine,
@@ -277,9 +298,6 @@ impl Composer {
             thread: None,
             project: None,
             projects: Vec::new(),
-            branches: Vec::new(),
-            branch: None,
-            worktree,
             add_dirs: Vec::new(),
             attachments: Vec::new(),
             running: false,
@@ -287,8 +305,6 @@ impl Composer {
             context: (None, None),
             limits: Vec::new(),
             menu: None,
-            bypass_confirm: false,
-            dialog_focus: cx.focus_handle(),
             mention: None,
             files: Arc::new(Vec::new()),
             files_root: None,
@@ -296,19 +312,37 @@ impl Composer {
             error: None,
             draft_gen: 0,
             dragging_files: false,
+            home_dock: false,
+            dock_bar: false,
+            dock_tuck: false,
+            dock_hot: false,
+            meter: None,
+            meter_gen: 0,
             _subs: subs,
         }
+    }
+
+    /// Match the new-thread bar to Settings › Appearance. No-op unless the
+    /// choice changed, so typing does not rebuild the field.
+    pub fn apply_home_chrome(&mut self, dock: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.variant != Variant::Hero || self.home_dock == dock {
+            return;
+        }
+        self.home_dock = dock;
+        let placeholder = if dock { "Describe a task or ask a question" } else { "Do anything…" };
+        let rows = if dock { (1, 8) } else { (2, 12) };
+        self.input.update(cx, |s, cx| {
+            s.set_placeholder(placeholder, window, cx);
+            s.set_auto_grow(rows.0, rows.1, cx);
+        });
+        self.picker.update(cx, |p, _| p.set_text_trigger(dock));
+        cx.notify();
     }
 
     /// The new-thread composer.
     pub fn home(engine: Arc<Engine>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let mut this = Self::build(engine, "Do anything…", (2, 12), window, cx);
         this.variant = Variant::Hero;
-        // Bypass is confirmed per project; a new thread starts from the
-        // safe default unless the user picks it again.
-        if this.mode == PermissionMode::Bypass {
-            this.mode = PermissionMode::Default;
-        }
         this.restore_draft(window, cx);
         this
     }
@@ -321,12 +355,15 @@ impl Composer {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let mut this = Self::build(engine.clone(), "Send follow-up", PLATE_ROWS, window, cx);
-        this.picker.update(cx, |p, _| p.lock_to(task.harness, task.model.clone()));
+        let mut this = Self::build(engine.clone(), "Send follow-up", (1, 8), window, cx);
+        this.dock_bar = true;
+        this.picker.update(cx, |p, _| {
+            p.lock_to(task.harness, task.model.clone());
+            p.set_text_trigger(true);
+        });
         this.add_dirs = engine.add_dirs(task.id);
         this.thread = Some((task.clone(), project.clone()));
         this.project = Some(project.clone());
-        this.branch = task.branch.clone();
         if let Some(m) = engine.store.setting(&format!("mode.{}", task.id)) {
             this.mode = mode_from_id(&m);
         }
@@ -338,6 +375,10 @@ impl Composer {
     /// in a narrow panel, beside a conversation).
     pub fn as_pill(&mut self, cx: &mut Context<Self>) {
         self.variant = Variant::Pill;
+        self.home_dock = false;
+        self.dock_bar = false;
+        self.dock_tuck = false;
+        self.picker.update(cx, |p, _| p.set_text_trigger(false));
         self.input.update(cx, |s, cx| s.set_auto_grow(PLATE_ROWS.0, PLATE_ROWS.1, cx));
         cx.notify();
     }
@@ -393,11 +434,7 @@ impl Composer {
             .and_then(|id| self.projects.iter().find(|p| p.id == id))
             .or_else(|| self.projects.first())
             .cloned();
-        let changed = pick.as_ref().map(|p| p.id) != self.project.as_ref().map(|p| p.id);
         self.project = pick;
-        if changed || self.branches.is_empty() {
-            self.load_branches(cx);
-        }
         cx.notify();
     }
 
@@ -448,8 +485,7 @@ impl Composer {
     }
 
     /// While a new thread is being typed, start its agent so the first
-    /// reply skips the cold start. Worktree threads get their folder only
-    /// at send time, so they start cold.
+    /// reply skips the cold start. The session runs in the project folder.
     fn prewarm(&self, cx: &App) {
         if self.input.read(cx).value().trim().is_empty() || self.running {
             return;
@@ -458,9 +494,6 @@ impl Composer {
             if dove_core::prewarms(task.harness) {
                 self.engine.prewarm_resume(task, project, &self.run_settings(cx));
             }
-            return;
-        }
-        if self.worktree {
             return;
         }
         let Some(project) = self.project.as_ref() else { return };
@@ -490,24 +523,6 @@ impl Composer {
         }
         cx.notify();
         Some(self.queue.remove(0))
-    }
-
-    fn load_branches(&mut self, cx: &mut Context<Self>) {
-        let Some(path) = self.project.as_ref().map(|p| p.path.clone()) else { return };
-        let load = cx.background_spawn(async move {
-            let branches = dove_core::git::branches(&path).unwrap_or_default();
-            let current = dove_core::git::current_branch(&path).ok();
-            (branches, current)
-        });
-        cx.spawn(async move |this, cx| {
-            let (branches, current) = load.await;
-            let _ = this.update(cx, |c, cx| {
-                c.branches = branches;
-                c.branch = current;
-                cx.notify();
-            });
-        })
-        .detach();
     }
 
     fn root(&self) -> Option<PathBuf> {
@@ -542,95 +557,18 @@ impl Composer {
     }
 
     fn set_mode(&mut self, mode: PermissionMode, cx: &mut Context<Self>) {
-        if mode == PermissionMode::Bypass && !self.bypass_allowed() {
-            // Asked in a modal dialog; the level menu steps aside for it.
-            self.menu = None;
-            self.bypass_confirm = true;
-            cx.notify();
-            return;
-        }
         self.mode = mode;
-        self.bypass_confirm = false;
         self.menu = None;
         let key = match &self.thread {
-            Some((t, _)) => format!("mode.{}", t.id),
+            Some((task, _)) => format!("mode.{}", task.id),
             None => "permission_mode".into(),
         };
         let _ = self.engine.store.set_setting(&key, mode_id(mode));
         cx.notify();
     }
 
-    fn bypass_key(&self) -> Option<String> {
-        self.project.as_ref().map(|p| format!("bypass_ok.{}", p.id))
-    }
-
-    fn bypass_allowed(&self) -> bool {
-        self.bypass_key().is_some_and(|k| self.engine.store.setting(&k).as_deref() == Some("1"))
-    }
-
-    fn cancel_bypass(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.bypass_confirm = false;
-        focus_input(&self.input, window, cx);
-        cx.notify();
-    }
-
-    /// The Bypass confirmation: a kit dialog over a scrim, asked once per
-    /// project.
-    fn render_bypass_dialog(&self, window: &mut Window, t: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
-        if !self.bypass_confirm {
-            return None;
-        }
-        if !self.dialog_focus.is_focused(window) {
-            window.focus(&self.dialog_focus, cx);
-        }
-        use crate::kit::controls::{self as ctl, Tone};
-        let project = self.project.as_ref().map(|p| p.name.clone()).unwrap_or_else(|| "this project".into());
-        let card = popover::dialog_card(t, 400.0)
-            .id("bypass-dialog")
-            .role(gpui::Role::AlertDialog)
-            .aria_label("Bypass permissions?")
-            .track_focus(&self.dialog_focus)
-            .child(popover::dialog_body(
-                t,
-                "Bypass permissions?",
-                format!(
-                    "In {project}, agents will run any command and edit any file without asking. Dove asks once per project."
-                ),
-            ))
-            .child(
-                popover::dialog_actions()
-                    .child(
-                        ctl::button(t, "bypass-no", "Cancel", Tone::Outlined)
-                            .on_click(cx.listener(|this, _, window, cx| this.cancel_bypass(window, cx))),
-                    )
-                    .child(
-                        ctl::button(t, "bypass-yes", "Enable bypass", Tone::Danger)
-                            .on_click(cx.listener(|this, _, _, cx| this.confirm_bypass(cx))),
-                    ),
-            );
-        let weak = cx.weak_entity();
-        Some(popover::modal(
-            "bypass-dialog-layer",
-            window.viewport_size(),
-            t.scrim,
-            None,
-            card.into_any_element(),
-            Some(Box::new(move |window, cx| {
-                let _ = weak.update(cx, |this, cx| this.cancel_bypass(window, cx));
-            })),
-        ))
-    }
-
-    fn confirm_bypass(&mut self, cx: &mut Context<Self>) {
-        if let Some(k) = self.bypass_key() {
-            let _ = self.engine.store.set_setting(&k, "1");
-        }
-        self.set_mode(PermissionMode::Bypass, cx);
-    }
-
     fn toggle_menu(&mut self, m: Menu, cx: &mut Context<Self>) {
         self.menu = if self.menu == Some(m) { None } else { Some(m) };
-        self.bypass_confirm = false;
         self.clone_url = None;
         cx.notify();
     }
@@ -640,7 +578,6 @@ impl Composer {
         self.menu = None;
         self.files = Arc::new(Vec::new());
         self.files_root = None;
-        self.load_branches(cx);
         cx.emit(ComposerEvent::ProjectChanged(id));
         cx.notify();
     }
@@ -910,16 +847,6 @@ impl Composer {
     fn on_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let k = &ev.keystroke;
         let key = k.key.as_str();
-        // The Bypass dialog owns Enter and Esc while it is up.
-        if self.bypass_confirm {
-            match key {
-                "escape" => self.cancel_bypass(window, cx),
-                "enter" => self.confirm_bypass(cx),
-                _ => return,
-            }
-            cx.stop_propagation();
-            return;
-        }
         if let Some(m) = self.mention.as_mut() {
             match key {
                 "down" if !m.items.is_empty() => {
@@ -986,8 +913,7 @@ impl Composer {
             .into_any_element()
     }
 
-    /// Below the new-thread bar, left-aligned: where the work happens (the
-    /// checkout or a worktree), from which branch, and any extra folders.
+    /// Below the new-thread bar, once an extra folder has been added.
     fn render_git_row(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         div()
             .w_full()
@@ -996,28 +922,8 @@ impl Composer {
             .flex()
             .items_center()
             .gap(px(2.0))
-            .child(self.checkout_chip(t, cx))
-            .child(self.branch_chip(t, cx))
-            .when(!self.add_dirs.is_empty(), |d| d.child(self.folders_chip(t, cx)))
-            .child(div().flex_1())
-            .child(self.mode_button(t, cx))
+            .child(self.folders_chip(t, cx))
             .into_any_element()
-    }
-
-    fn popover_below(&self, content: impl IntoElement, cx: &mut Context<Self>) -> AnyElement {
-        deferred(
-            anchored().anchor(Anchor::TopLeft).snap_to_window_with_margin(px(8.0)).child(
-                div()
-                    .mt(px(26.0))
-                    .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                        this.menu = None;
-                        cx.notify();
-                    }))
-                    .child(content),
-            ),
-        )
-        .with_priority(2)
-        .into_any_element()
     }
 
     fn persona_chip(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
@@ -1048,7 +954,7 @@ impl Composer {
                         .flex()
                         .items_center()
                         .gap(px(10.0))
-                        .rounded(px(7.0))
+                        .rounded(px(kit::popover::MENU_ITEM_RADIUS))
                         .cursor_pointer()
                         .hover(|s| s.bg(t.wash(0.10)))
                         .child(crate::team::avatar(p, 22.0, t))
@@ -1075,76 +981,6 @@ impl Composer {
         div().relative().child(chip).children(menu).into_any_element()
     }
 
-    fn checkout_chip(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
-        let open = self.menu == Some(Menu::Checkout);
-        let (glyph, label) =
-            if self.worktree { (icons::WORKTREE, "New worktree") } else { (icons::FOLDER, "Local checkout") };
-        let chip = ui::footer_chip("composer-checkout", glyph, label, open, t)
-            .tooltip(ui::tip("Where the agent works"))
-            .on_click(cx.listener(|this, _, _, cx| this.toggle_menu(Menu::Checkout, cx)));
-        let menu = open.then(|| {
-            let row = |id: &'static str,
-                       glyph: &'static str,
-                       title: &'static str,
-                       detail: &'static str,
-                       on: bool,
-                       value: bool,
-                       cx: &mut Context<Self>| {
-                div()
-                    .id(id)
-                    .mx(px(4.0))
-                    .px(px(10.0))
-                    .py(px(7.0))
-                    .flex()
-                    .items_center()
-                    .gap(px(10.0))
-                    .rounded(px(7.0))
-                    .cursor_pointer()
-                    .hover(|s| s.bg(t.wash(0.10)))
-                    .child(icon(glyph).size(px(15.0)).text_color(t.text_muted))
-                    .child(
-                        div()
-                            .flex_1()
-                            .flex()
-                            .flex_col()
-                            .child(div().text_size(ty::BODY).text_color(t.text).child(title))
-                            .child(div().text_size(ty::CAPTION).text_color(t.text_faint).child(detail)),
-                    )
-                    .when(on, |d| d.child(icon(icons::CHECK).size(px(14.0)).text_color(t.accent)))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.worktree = value;
-                        this.menu = None;
-                        let _ = this.engine.store.set_setting("use_worktree", if value { "true" } else { "false" });
-                        cx.notify();
-                    }))
-            };
-            let rows = div()
-                .w(px(270.0))
-                .flex()
-                .flex_col()
-                .child(row(
-                    "checkout-local",
-                    icons::FOLDER,
-                    "Local checkout",
-                    "Work in the project folder itself",
-                    !self.worktree,
-                    false,
-                    cx,
-                ))
-                .child(row(
-                    "checkout-worktree",
-                    icons::WORKTREE,
-                    "New worktree",
-                    "Its own branch and folder, so threads never collide",
-                    self.worktree,
-                    true,
-                    cx,
-                ));
-            self.popover_below(ui::menu_card(t, rows), cx)
-        });
-        div().relative().child(chip).children(menu).into_any_element()
-    }
-
     fn render_context_row(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let home = self.thread.is_none();
         let mut row = div()
@@ -1159,56 +995,13 @@ impl Composer {
             None => {
                 row = row
                     .child(self.device_chip(t, cx))
-                    .child(self.branch_chip(t, cx))
-                    .child(
-                        kit::checkbox("composer-worktree", self.worktree, "Worktree", t)
-                            .ml(px(6.0))
-                            .tooltip(ui::tip("Run in an isolated git worktree on its own branch"))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.worktree = !this.worktree;
-                                let _ = this
-                                    .engine
-                                    .store
-                                    .set_setting("use_worktree", if this.worktree { "true" } else { "false" });
-                                cx.notify();
-                            })),
-                    )
                     .when(!self.add_dirs.is_empty(), |d| d.child(self.folders_chip(t, cx)))
                     .child(self.project_chip(t, cx));
             }
-            Some((task, _)) => {
-                row = row
-                    .when_some(task.branch.clone(), |d, b| {
-                        d.child(
-                            div()
-                                .h(px(24.0))
-                                .px(px(8.0))
-                                .flex()
-                                .items_center()
-                                .gap(px(6.0))
-                                .text_size(ty::SMALL)
-                                .text_color(t.text_muted)
-                                .child(icon(icons::GIT_BRANCH).size(px(13.0)))
-                                .child(b),
-                        )
-                    })
-                    .when(task.worktree.is_some(), |d| {
-                        d.child(
-                            div()
-                                .h(px(24.0))
-                                .px(px(8.0))
-                                .flex()
-                                .items_center()
-                                .gap(px(6.0))
-                                .text_size(ty::SMALL)
-                                .text_color(t.text_faint)
-                                .child(icon(icons::WORKTREE).size(px(13.0)))
-                                .child("Worktree"),
-                        )
-                    })
-                    // Extra folders show here once added; adding lives in the
-                    // attach menu.
-                    .when(!self.add_dirs.is_empty(), |d| d.child(self.folders_chip(t, cx)));
+            Some(_) => {
+                // Extra folders show here once added; adding lives in the
+                // attach menu.
+                row = row.when(!self.add_dirs.is_empty(), |d| d.child(self.folders_chip(t, cx)));
             }
         }
         row.into_any_element()
@@ -1283,7 +1076,7 @@ impl Composer {
                         .px(px(10.0))
                         .flex()
                         .items_center()
-                        .rounded(px(8.0))
+                        .rounded(px(radius::RADIUS))
                         .border_1()
                         .border_color(t.border_strong)
                         .text_size(ty::BODY)
@@ -1294,47 +1087,6 @@ impl Composer {
                         .into_any_element(),
                 });
             self.popover(Anchor::BottomLeft, ui::menu_card(t, rows), cx)
-        });
-        div().relative().child(chip).children(menu).into_any_element()
-    }
-
-    fn branch_chip(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
-        let label = self.branch.clone().unwrap_or_else(|| "branch".into());
-        let chip = ui::footer_chip("composer-branch", icons::GIT_BRANCH, label, self.menu == Some(Menu::Branch), t)
-            .tooltip(ui::tip(if self.worktree { "Branch the worktree starts from" } else { "Branch to check out" }))
-            .on_click(cx.listener(|this, _, _, cx| this.toggle_menu(Menu::Branch, cx)));
-        let menu = (self.menu == Some(Menu::Branch)).then(|| {
-            let current = self.branch.clone();
-            let rows = div()
-                .id("branch-list")
-                .w(px(280.0))
-                .max_h(px(320.0))
-                .overflow_y_scroll()
-                .flex()
-                .flex_col()
-                .when(self.branches.is_empty(), |d| {
-                    d.child(
-                        div()
-                            .px(px(14.0))
-                            .py(px(10.0))
-                            .text_size(ty::BODY)
-                            .text_color(t.text_faint)
-                            .child("No branches (not a git repository?)"),
-                    )
-                })
-                .children(self.branches.iter().map(|b| {
-                    let name = b.clone();
-                    ui::menu_row(SharedString::from(format!("br-{b}")), icons::GIT_BRANCH, b.clone(), false, t)
-                        .when(current.as_deref() == Some(b.as_str()), |d| {
-                            d.child(icon(icons::CHECK).size(px(14.0)).text_color(t.accent))
-                        })
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.branch = Some(name.clone());
-                            this.menu = None;
-                            cx.notify();
-                        }))
-                }));
-            self.popover_below(ui::menu_card(t, rows), cx)
         });
         div().relative().child(chip).children(menu).into_any_element()
     }
@@ -1447,7 +1199,7 @@ impl Composer {
                 .flex()
                 .items_center()
                 .gap(px(5.0))
-                .rounded(px(6.0))
+                .rounded(px(radius::fit(24.0)))
                 .text_size(ty::CAPTION)
                 .text_color(if frac.is_some() { color } else { t.text_faint })
                 .hover(|s| s.bg(t.glass_hover()))
@@ -1490,7 +1242,6 @@ impl Composer {
                     .mb(px(30.0))
                     .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                         this.menu = None;
-                        this.bypass_confirm = false;
                         cx.notify();
                     }))
                     .child(content),
@@ -1500,10 +1251,15 @@ impl Composer {
         .into_any_element()
     }
 
-    fn attach_button(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
-        let button = ui::round_button("composer-attach", "Attach files, images or a folder (or paste / drop)", t)
-            .child(icon(icons::PAPERCLIP).size(px(ui::ICON_LG)).text_color(t.text_muted))
-            .on_click(cx.listener(|this, _, _, cx| this.toggle_menu(Menu::Attach, cx)));
+    fn attach_button(&self, glyph: &'static str, size: f32, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let button =
+            ui::round_button_sized("composer-attach", "Attach files, images or a folder (or paste / drop)", size, t)
+                .child(
+                    icon(glyph)
+                        .size(px(if size < ui::ROUND_BUTTON { 15.0 } else { ui::ICON_LG }))
+                        .text_color(t.text_muted),
+                )
+                .on_click(cx.listener(|this, _, _, cx| this.toggle_menu(Menu::Attach, cx)));
         let menu = (self.menu == Some(Menu::Attach)).then(|| {
             let supported = dove_core::supports_add_dirs(self.harness(cx));
             let rows = div()
@@ -1541,14 +1297,14 @@ impl Composer {
         div().relative().child(button).children(menu).into_any_element()
     }
 
-    fn mic_button(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+    fn mic_button(&self, size: f32, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let voice = self.voice.read(cx);
         let recording = voice.is_recording();
         let busy = voice.is_transcribing();
         let ready = voice.is_ready();
         let voice_entity = self.voice.clone();
         let hold = voice_entity.clone();
-        let mic = ui::round_button(
+        let mic = ui::round_button_sized(
             "composer-mic",
             if !ready {
                 "Dictation: set up a speech model in Settings › Voice (right-click for options)"
@@ -1557,6 +1313,7 @@ impl Composer {
             } else {
                 "Hold to talk, or click to toggle. Right-click for voice options"
             },
+            size,
             t,
         )
         .when(recording, |d| d.bg(t.danger.opacity(0.14)))
@@ -1564,7 +1321,7 @@ impl Composer {
             kit::spinner("mic-busy", 14.0, t.text_muted).into_any_element()
         } else {
             icon(icons::MICROPHONE)
-                .size(px(ui::ICON_LG))
+                .size(px(if size < ui::ROUND_BUTTON { 15.0 } else { ui::ICON_LG }))
                 .text_color(if recording {
                     t.danger
                 } else if ready {
@@ -1620,103 +1377,6 @@ impl Composer {
             self.popover(Anchor::BottomLeft, ui::menu_card(t, rows), cx)
         });
         div().relative().child(mic).children(menu).into_any_element()
-    }
-
-    fn mode_button(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
-        let bypass = self.mode == PermissionMode::Bypass;
-        let hero = self.variant == Variant::Hero;
-        let chip: AnyElement = if hero {
-            ui::footer_chip(
-                "composer-mode",
-                mode_icon(self.mode),
-                mode_label(self.mode),
-                self.menu == Some(Menu::Mode),
-                t,
-            )
-            .when(bypass, |d| d.text_color(t.danger))
-            .tooltip(ui::tip("Permission level"))
-            .on_click(cx.listener(|this, _, _, cx| this.toggle_menu(Menu::Mode, cx)))
-            .into_any_element()
-        } else {
-            div()
-                .id("composer-mode")
-                .h(px(28.0))
-                .px(px(9.0))
-                .flex()
-                .items_center()
-                .justify_center()
-                .gap(px(6.0))
-                .rounded_full()
-                .cursor_pointer()
-                .text_size(ty::SMALL)
-                .text_color(if bypass { t.danger } else { t.text_muted })
-                .when(bypass, |d| d.bg(t.danger.opacity(0.12)))
-                .hover(|s| s.bg(t.wash(0.08)))
-                .child(icon(mode_icon(self.mode)).size(px(14.0)).text_color(if bypass {
-                    t.danger
-                } else {
-                    t.text_faint
-                }))
-                .child(mode_label(self.mode))
-                .tooltip(ui::tip("Permission level"))
-                .on_click(cx.listener(|this, _, _, cx| this.toggle_menu(Menu::Mode, cx)))
-                .into_any_element()
-        };
-        let menu = (self.menu == Some(Menu::Mode)).then(|| {
-            let modes = [
-                (PermissionMode::Default, "Ask every time", "Approve edits and commands"),
-                (PermissionMode::AcceptEdits, "Auto-edit", "Edits apply; commands ask"),
-                (PermissionMode::Plan, "Plan", "Read-only until you approve a plan"),
-                (PermissionMode::Bypass, "Bypass permissions", "Never ask. Best in a worktree"),
-            ];
-            let content: AnyElement = {
-                div()
-                    .w(px(280.0))
-                    .flex()
-                    .flex_col()
-                    .gap(px(popover::MENU_GAP))
-                    .children(modes.into_iter().map(|(m, label, desc)| {
-                        let selected = m == self.mode;
-                        let danger = m == PermissionMode::Bypass;
-                        // A kit menu row: the label over a one-line
-                        // description, the current level checked.
-                        popover::menu_row_instant(t, format!("mode-{}", mode_id(m)), selected)
-                            .aria_label(label)
-                            .py(px(6.0))
-                            .child(icon(mode_icon(m)).size(px(16.0)).flex_none().text_color(if danger {
-                                t.danger
-                            } else {
-                                t.text_muted
-                            }))
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .flex()
-                                    .flex_col()
-                                    .child(
-                                        div()
-                                            .truncate()
-                                            .text_size(ty::BODY)
-                                            .text_color(if danger { t.danger } else { t.text })
-                                            .child(label),
-                                    )
-                                    .child(div().truncate().text_size(ty::META).text_color(t.text_faint).child(desc)),
-                            )
-                            .when(selected, |d| {
-                                d.child(icon(icons::CHECK).size(px(14.0)).flex_none().text_color(t.accent))
-                            })
-                            .on_click(cx.listener(move |this, _, _, cx| this.set_mode(m, cx)))
-                    }))
-                    .into_any_element()
-            };
-            if hero {
-                self.popover_below(ui::menu_card(t, content), cx)
-            } else {
-                self.popover(Anchor::BottomLeft, ui::menu_card(t, content), cx)
-            }
-        });
-        div().relative().child(chip).children(menu).into_any_element()
     }
 
     fn action_button(&self, has_text: bool, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
@@ -1801,7 +1461,7 @@ impl Composer {
                         .flex()
                         .items_center()
                         .gap(px(6.0))
-                        .rounded(px(7.0))
+                        .rounded(px(radius::RADIUS))
                         .border_1()
                         .border_color(t.border)
                         .bg(t.wash(0.04))
@@ -1859,7 +1519,7 @@ impl Composer {
                         .flex()
                         .items_center()
                         .gap(px(6.0))
-                        .rounded(px(8.0))
+                        .rounded(px(radius::RADIUS))
                         .border_1()
                         .border_color(t.border)
                         .bg(t.wash(0.04))
@@ -1869,7 +1529,7 @@ impl Composer {
                         .child(if is_image {
                             img(p.clone())
                                 .size(px(22.0))
-                                .rounded(px(4.0))
+                                .rounded(px(radius::fit(22.0)))
                                 .object_fit(gpui::ObjectFit::Cover)
                                 .into_any_element()
                         } else {
@@ -1930,7 +1590,7 @@ impl Composer {
                     .flex()
                     .items_center()
                     .gap(px(10.0))
-                    .rounded(px(7.0))
+                    .rounded(px(kit::popover::MENU_ITEM_RADIUS))
                     .cursor_pointer()
                     .when(selected, |d| d.bg(t.wash(0.10)))
                     .hover(|s| s.bg(t.wash(0.08)))
@@ -1970,7 +1630,7 @@ impl Render for QueueDrag {
         div()
             .px(px(8.0))
             .py(px(4.0))
-            .rounded(px(6.0))
+            .rounded(px(radius::RADIUS))
             .bg(t.surface_raised)
             .text_size(ty::META)
             .child(format!("Message {}", self.0 + 1))
@@ -2031,16 +1691,7 @@ pub fn mode_id(m: PermissionMode) -> &'static str {
     }
 }
 
-pub fn mode_from_id(id: &str) -> PermissionMode {
-    match id {
-        "accept_edits" => PermissionMode::AcceptEdits,
-        "plan" => PermissionMode::Plan,
-        "bypass" => PermissionMode::Bypass,
-        _ => PermissionMode::Default,
-    }
-}
-
-pub fn mode_label(m: PermissionMode) -> &'static str {
+fn mode_label(m: PermissionMode) -> &'static str {
     match m {
         PermissionMode::Default => "Ask every time",
         PermissionMode::AcceptEdits => "Auto-edit",
@@ -2055,6 +1706,15 @@ fn mode_icon(m: PermissionMode) -> &'static str {
         PermissionMode::AcceptEdits => icons::PEN,
         PermissionMode::Plan => icons::CHECKLIST,
         PermissionMode::Bypass => icons::DANGER_TRIANGLE,
+    }
+}
+
+pub fn mode_from_id(id: &str) -> PermissionMode {
+    match id {
+        "accept_edits" => PermissionMode::AcceptEdits,
+        "plan" => PermissionMode::Plan,
+        "bypass" => PermissionMode::Bypass,
+        _ => PermissionMode::Default,
     }
 }
 
@@ -2080,6 +1740,645 @@ pub fn is_empty(composer: &Entity<Composer>, cx: &App) -> bool {
 const HERO_INSET: f32 = 19.0;
 /// The gap between the send disc and the hero bar's right and bottom edges.
 const HERO_CORNER: f32 = 12.0;
+/// The docked bar: its height, the prompt's line box (a button's height, so
+/// text and controls share one centre), the row's side insets, and the
+/// footer under it. Tucked or open, the bar keeps these.
+const DOCK_H: f32 = 44.0;
+const DOCK_LINE: f32 = ui::ROUND_BUTTON;
+const DOCK_PAD_L: f32 = 4.0;
+const DOCK_PAD_R: f32 = 6.0;
+const DOCK_FOOTER_H: f32 = 26.0;
+const DOCK_GAP: f32 = 4.0;
+
+impl Composer {
+    fn docked(&self) -> bool {
+        self.dock_bar || (self.variant == Variant::Hero && self.home_dock)
+    }
+
+    fn note_dock_hover(&mut self, hovered: bool, cx: &mut Context<Self>) {
+        if self.dock_hot == hovered {
+            return;
+        }
+        self.dock_hot = hovered;
+        cx.notify();
+    }
+
+    /// Tuck the thread bar while the sidebar is open. No-op when unchanged.
+    pub fn set_dock_tuck(&mut self, tuck: bool, cx: &mut Context<Self>) {
+        if self.dock_tuck == tuck {
+            return;
+        }
+        self.dock_tuck = tuck;
+        if !tuck {
+            self.dock_hot = false;
+        }
+        cx.notify();
+    }
+
+    /// The pointer entered or left a usage meter. Leaving waits briefly so
+    /// the pointer can cross onto the card without the card vanishing.
+    fn note_meter(&mut self, which: Option<Meter>, cx: &mut Context<Self>) {
+        if which.is_some() {
+            self.meter = which;
+            self.meter_gen = self.meter_gen.wrapping_add(1);
+            cx.notify();
+            return;
+        }
+        let seen = self.meter_gen;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(Duration::from_millis(140)).await;
+            let _ = this.update(cx, |this, cx| {
+                if this.meter_gen == seen {
+                    this.meter = None;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn menu_caption(&self, text: &str, t: &Theme) -> AnyElement {
+        div()
+            .px(px(12.0))
+            .pt(px(8.0))
+            .pb(px(2.0))
+            .text_size(ty::MICRO)
+            .font_weight(gpui::FontWeight::MEDIUM)
+            .text_color(t.text_faint)
+            .child(text.to_string())
+            .into_any_element()
+    }
+
+    /// Project, extra folders and device in one menu. The bottom bar's
+    /// advantage over the center composer, which splits those controls.
+    fn place_chip(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let name = self.project.as_ref().map(|p| p.name.clone()).unwrap_or_else(|| "Choose a folder".into());
+        let open = self.menu == Some(Menu::Place);
+        let chip = div()
+            .id("composer-place")
+            .h(px(24.0))
+            .max_w(px(180.0))
+            .px(px(6.0))
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(px(5.0))
+            .rounded(px(radius::fit(24.0)))
+            .cursor_pointer()
+            .text_size(ty::BODY)
+            .text_color(if open { t.text.opacity(0.95) } else { t.text.opacity(0.72) })
+            .when(open, |d| d.bg(t.element_hover))
+            .hover(|s| s.bg(t.element_hover).text_color(t.text.opacity(0.95)))
+            .tooltip(ui::tip("Folder and environment"))
+            .child(icon(icons::FOLDER).size(px(12.0)).text_color(t.text.opacity(0.55)))
+            .child(div().min_w_0().truncate().child(name))
+            .on_click(cx.listener(|this, _, _, cx| this.toggle_menu(Menu::Place, cx)));
+        chip.into_any_element()
+    }
+
+    /// Folder rows, then one environment line. Anchored to the field's
+    /// top center so the card sits above the bar rather than the label.
+    fn place_card(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let selected = self.project.as_ref().map(|p| p.id);
+        let persona = self.persona.as_ref().map(|p| p.id.clone());
+        let mut rows = div().w(px(280.0)).max_h(px(360.0)).flex().flex_col();
+        if !self.personas.is_empty() {
+            rows = rows.child(self.menu_caption("Teammate", t)).child(
+                ui::menu_row("place-persona-none", icons::BOT, "Default", false, t)
+                    .when(persona.is_none(), |d| d.child(icon(icons::CHECK).size(px(14.0)).text_color(t.accent)))
+                    .on_click(cx.listener(|this, _, _, cx| this.use_persona(None, cx))),
+            );
+            for p in &self.personas {
+                let pick = p.clone();
+                let on = persona.as_deref() == Some(p.id.as_str());
+                rows = rows.child(
+                    ui::menu_row(
+                        SharedString::from(format!("place-persona-{}", p.id)),
+                        icons::BOT,
+                        p.name.clone(),
+                        false,
+                        t,
+                    )
+                    .when(on, |d| d.child(icon(icons::CHECK).size(px(14.0)).text_color(t.accent)))
+                    .on_click(cx.listener(move |this, _, _, cx| this.use_persona(Some(pick.clone()), cx))),
+                );
+            }
+            rows = rows.child(ui::separator(t));
+        }
+        rows = rows.child(div().id("place-projects").max_h(px(200.0)).overflow_y_scroll().flex().flex_col().children(
+            self.projects.iter().map(|p| {
+                let id = p.id;
+                ui::menu_row(SharedString::from(format!("place-{id}")), icons::FOLDER, p.name.clone(), false, t)
+                    .when(selected == Some(id), |d| d.child(icon(icons::CHECK).size(px(14.0)).text_color(t.accent)))
+                    .tooltip(ui::tip(p.path.display().to_string()))
+                    .on_click(cx.listener(move |this, _, _, cx| this.pick_project(id, cx)))
+            }),
+        ));
+        rows = rows
+            .child(
+                ui::menu_row("place-add", icons::ADD_CIRCLE, "Add folder…", false, t)
+                    .on_click(cx.listener(|this, _, _, cx| this.add_folder_project(cx))),
+            )
+            .child(match &self.clone_url {
+                Some(input) => div()
+                    .mx(px(8.0))
+                    .my(px(4.0))
+                    .h(px(32.0))
+                    .px(px(10.0))
+                    .flex()
+                    .items_center()
+                    .rounded(px(radius::RADIUS))
+                    .border_1()
+                    .border_color(t.border_strong)
+                    .text_size(ty::BODY)
+                    .child(div().flex_1().child(Input::new(input)))
+                    .into_any_element(),
+                None => ui::menu_row("place-clone", icons::GLOBAL, "Clone from URL…", false, t)
+                    .on_click(cx.listener(|this, _, window, cx| this.start_clone(window, cx)))
+                    .into_any_element(),
+            });
+        let supported = dove_core::supports_add_dirs(self.harness(cx));
+        if !self.add_dirs.is_empty() || supported {
+            for (i, dir) in self.add_dirs.iter().enumerate() {
+                rows = rows.child(
+                    ui::menu_row(
+                        SharedString::from(format!("place-dir-{i}")),
+                        icons::FOLDER_WITH_FILES,
+                        dir.file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_else(|| dir.display().to_string()),
+                        false,
+                        t,
+                    )
+                    .tooltip(ui::tip(dir.display().to_string()))
+                    .child(icon(icons::CLOSE).size(px(13.0)).text_color(t.text_faint))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if i < this.add_dirs.len() {
+                            this.add_dirs.remove(i);
+                        }
+                        cx.notify();
+                    })),
+                );
+            }
+            rows = rows.child(
+                ui::menu_row("place-dir-add", icons::ADD_CIRCLE, "Add another folder…", false, t)
+                    .when(!supported, |d| d.opacity(0.5).tooltip(ui::tip("Extra folders work with Claude Code")))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if dove_core::supports_add_dirs(this.harness(cx)) {
+                            this.add_dir(cx);
+                        }
+                    })),
+            );
+        }
+        rows = rows.child(ui::separator(t)).child(
+            div()
+                .id("place-env")
+                .h(px(34.0))
+                .px(px(10.0))
+                .mx(px(4.0))
+                .my(px(4.0))
+                .flex()
+                .items_center()
+                .gap(px(8.0))
+                .rounded(px(kit::popover::MENU_ITEM_RADIUS))
+                .cursor_pointer()
+                .text_size(ty::MD)
+                .text_color(t.text)
+                .hover(|s| s.bg(t.element_hover))
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.menu = None;
+                    cx.notify();
+                }))
+                .child(icon(icons::LAPTOP).size(px(16.0)).flex_none().text_color(t.text_muted))
+                .child(div().flex_1().min_w_0().truncate().child(format!("Local · {}", ui::host_name())))
+                .child(icon(icons::CHECK).size(px(14.0)).flex_none().text_color(t.accent))
+                .child(div().flex_none().text_size(ty::META).text_color(t.text_faint).child("Cloud · soon")),
+        );
+        deferred(
+            anchored()
+                .anchor(Anchor::BottomCenter)
+                .offset(point(px(0.0), px(-8.0)))
+                .snap_to_window_with_margin(px(8.0))
+                .child(
+                    div()
+                        .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                            this.menu = None;
+                            cx.notify();
+                        }))
+                        .child(ui::menu_card(t, rows)),
+                ),
+        )
+        .with_priority(2)
+        .into_any_element()
+    }
+
+    fn usage_bar(&self, fraction: f32, t: &Theme) -> AnyElement {
+        let fraction = fraction.clamp(0.0, 1.0);
+        let color = kit::ring_color(fraction, t);
+        div()
+            .w(px(96.0))
+            .h(px(4.0))
+            .flex_none()
+            .rounded_full()
+            .overflow_hidden()
+            .bg(t.wash(0.10))
+            .when(fraction > 0.0, |el| {
+                el.child(
+                    div().h_full().w(px((96.0 * fraction.max(0.04)).min(96.0))).rounded_full().bg(color.opacity(0.9)),
+                )
+            })
+            .into_any_element()
+    }
+
+    fn plan_card(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let used = self
+            .limits
+            .iter()
+            .filter_map(|w| w.used_percent)
+            .fold(None, |a: Option<f64>, b| Some(a.map_or(b, |a| a.max(b))));
+        let mut body = div().w(px(300.0)).px(px(8.0)).py(px(6.0)).flex().flex_col().gap(px(8.0)).child(
+            div()
+                .flex()
+                .items_center()
+                .child(
+                    div()
+                        .flex_1()
+                        .text_size(ty::BODY)
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .text_color(t.text)
+                        .child("Plan usage"),
+                )
+                .when_some(used, |d, u| {
+                    d.child(
+                        div()
+                            .text_size(ty::META)
+                            .text_color(kit::ring_color((u / 100.0) as f32, t))
+                            .child(format!("{u:.0}%")),
+                    )
+                }),
+        );
+        if self.limits.is_empty() {
+            body = body.child(
+                div().text_size(ty::META).text_color(t.text_muted).child("The agent has not reported its limits yet."),
+            );
+        } else {
+            for window in &self.limits {
+                let fraction = window.used_percent.map(|p| (p / 100.0) as f32).unwrap_or(0.0);
+                let pct = window.used_percent.map(|p| format!("{p:.0}%")).unwrap_or_else(|| "—".into());
+                let reset = window.resets_at.map(|r| format!("Resets {}", until(r)));
+                body = body.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(4.0))
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(8.0))
+                                .child(
+                                    div()
+                                        .w(px(108.0))
+                                        .flex_none()
+                                        .truncate()
+                                        .text_size(ty::META)
+                                        .text_color(t.text_muted)
+                                        .child(window.label()),
+                                )
+                                .child(self.usage_bar(fraction, t))
+                                .child(
+                                    div()
+                                        .w(px(36.0))
+                                        .text_right()
+                                        .text_size(ty::META)
+                                        .text_color(if window.blocked {
+                                            t.danger
+                                        } else {
+                                            kit::ring_color(fraction, t)
+                                        })
+                                        .child(pct),
+                                ),
+                        )
+                        .when(window.blocked || reset.is_some(), |d| {
+                            d.child(
+                                div()
+                                    .text_size(ty::MICRO)
+                                    .text_color(if window.blocked { t.danger } else { t.text_faint })
+                                    .child(match (window.blocked, reset.clone()) {
+                                        (true, Some(r)) => format!("Blocked · {r}"),
+                                        (true, None) => "Blocked".into(),
+                                        (false, Some(r)) => r,
+                                        (false, None) => String::new(),
+                                    }),
+                            )
+                        }),
+                );
+            }
+        }
+        body = body.child(ui::separator(t)).child(
+            div()
+                .id("plan-open-usage")
+                .h(px(28.0))
+                .px(px(4.0))
+                .flex()
+                .items_center()
+                .rounded(px(kit::popover::MENU_ITEM_RADIUS))
+                .cursor_pointer()
+                .text_size(ty::META)
+                .text_color(t.text_muted)
+                .hover(|s| s.bg(t.wash(0.08)).text_color(t.text))
+                .child("Open usage")
+                .on_click(cx.listener(|_, _, _, cx| cx.emit(ComposerEvent::OpenUsage))),
+        );
+        ui::menu_card(t, body).into_any_element()
+    }
+
+    fn meter_chip(&self, which: Meter, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let used = self
+            .limits
+            .iter()
+            .filter_map(|w| w.used_percent)
+            .fold(None, |a: Option<f64>, b| Some(a.map_or(b, |a| a.max(b))));
+        let fraction = used.map(|u| (u / 100.0) as f32).unwrap_or(0.0);
+        let color = if used.is_some() { kit::ring_color(fraction, t) } else { t.text_faint };
+        let id = "dock-plan";
+        let open = self.meter == Some(which);
+        let trigger = div()
+            .id(id)
+            .size(px(22.0))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(radius::fit(22.0)))
+            .cursor_pointer()
+            .when(open, |d| d.bg(t.wash(0.08)))
+            .hover(|s| s.bg(t.wash(0.08)))
+            .child(kit::ring(fraction, 15.0, color, t.wash(0.16)))
+            .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                this.note_meter(if *hovered { Some(which) } else { None }, cx);
+            }))
+            .on_click(cx.listener(|_, _, _, cx| cx.emit(ComposerEvent::OpenUsage)));
+        let card = open.then(|| {
+            let content = self.plan_card(t, cx);
+            deferred(
+                anchored().anchor(Anchor::BottomRight).snap_to_window_with_margin(px(8.0)).child(
+                    div()
+                        .id("meter-card")
+                        .mb(px(4.0))
+                        .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                            this.note_meter(if *hovered { Some(which) } else { None }, cx);
+                        }))
+                        .child(content),
+                ),
+            )
+            .with_priority(3)
+            .into_any_element()
+        });
+        div().relative().child(trigger).children(card).into_any_element()
+    }
+
+    /// Permission level. The dock, the thread composer, and the centered
+    /// home composer all draw this chip. The stored default stays Ask.
+    fn dock_mode(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let bypass = self.mode == PermissionMode::Bypass;
+        let open = self.menu == Some(Menu::Mode);
+        let label = if bypass { "Bypass permissions" } else { mode_label(self.mode) };
+        let chip = div()
+            .id("composer-mode")
+            .h(px(24.0))
+            .px(px(6.0))
+            .flex()
+            .items_center()
+            .rounded(px(radius::fit(24.0)))
+            .cursor_pointer()
+            .text_size(ty::BODY)
+            .text_color(if bypass { t.danger } else { t.text.opacity(0.62) })
+            .when(open, |d| d.bg(t.element_hover))
+            .hover(|s| s.bg(t.element_hover).text_color(if bypass { t.danger } else { t.text.opacity(0.9) }))
+            .tooltip(ui::tip("Permission level"))
+            .child(label)
+            .on_click(cx.listener(|this, _, _, cx| this.toggle_menu(Menu::Mode, cx)));
+        let menu = open.then(|| {
+            let modes = [
+                (PermissionMode::Default, "Ask every time", "Approve edits and commands"),
+                (PermissionMode::AcceptEdits, "Auto-edit", "Edits apply; commands ask"),
+                (PermissionMode::Plan, "Plan", "Read-only until you approve a plan"),
+                (PermissionMode::Bypass, "Bypass permissions", "Never ask"),
+            ];
+            let content = div().w(px(280.0)).flex().flex_col().gap(px(popover::MENU_GAP)).children(
+                modes.into_iter().map(|(m, label, desc)| {
+                    let selected = m == self.mode;
+                    let danger = m == PermissionMode::Bypass;
+                    popover::menu_row_instant(t, format!("dock-mode-{}", mode_id(m)), selected)
+                        .aria_label(label)
+                        .py(px(6.0))
+                        .child(icon(mode_icon(m)).size(px(16.0)).flex_none().text_color(if danger {
+                            t.danger
+                        } else {
+                            t.text_muted
+                        }))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .child(
+                                    div()
+                                        .truncate()
+                                        .text_size(ty::BODY)
+                                        .text_color(if danger { t.danger } else { t.text })
+                                        .child(label),
+                                )
+                                .child(div().truncate().text_size(ty::META).text_color(t.text_faint).child(desc)),
+                        )
+                        .when(selected, |d| d.child(icon(icons::CHECK).size(px(14.0)).flex_none().text_color(t.accent)))
+                        .on_click(cx.listener(move |this, _, _, cx| this.set_mode(m, cx)))
+                }),
+            );
+            self.popover(Anchor::BottomLeft, ui::menu_card(t, content), cx)
+        });
+        div().relative().child(chip).children(menu).into_any_element()
+    }
+
+    /// The bottom-center bar: a short field, then folder, permissions,
+    /// model and the two usage meters on the row beneath it.
+    fn render_dock(
+        &self,
+        _window: &mut Window,
+        t: &Theme,
+        has_text: bool,
+        focused: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let bypass = self.mode == PermissionMode::Bypass;
+        let staged = self.queue.len() + self.attachments.len() > 0;
+        // A squircle: large corners, with a straight run along the top and bottom.
+        let radius = radius::plate(DOCK_H);
+        let edge = t.composer_border();
+        let busy = has_text
+            || !self.attachments.is_empty()
+            || !self.queue.is_empty()
+            || self.running
+            || focused
+            || self.menu.is_some()
+            || self.meter.is_some();
+        if self.dock_tuck && !self.dock_hot && !busy {
+            // Tucked, the bar keeps its full size and the `+` and hint sit
+            // exactly where the open bar draws them, with the footer's room
+            // held empty, so opening it changes what is shown, never where.
+            let hint = if self.thread.is_some() { "Send follow-up" } else { "Do anything…" };
+            let bar = div()
+                .w_full()
+                .h(px(DOCK_H))
+                .pl(px(DOCK_PAD_L))
+                .pr(px(DOCK_PAD_R))
+                .flex()
+                .items_center()
+                .gap(px(2.0))
+                .rounded(px(radius))
+                .border_1()
+                .border_color(edge)
+                .bg(t.composer_bg())
+                .cursor_text()
+                .text_size(ty::TITLE)
+                .text_color(t.text_faint)
+                .child(
+                    div()
+                        .size(px(ui::ROUND_BUTTON))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(icon(icons::PLUS).size(px(ui::ICON_LG)).text_color(t.text_muted)),
+                )
+                .child(div().flex_1().min_w_0().px(px(2.0)).truncate().child(hint));
+            return div()
+                .id("composer")
+                .w_full()
+                .flex()
+                .flex_col()
+                .gap(px(DOCK_GAP))
+                .child(bar)
+                .child(div().h(px(DOCK_FOOTER_H)).flex_none())
+                .on_hover(cx.listener(|this, hovered: &bool, _, cx| this.note_dock_hover(*hovered, cx)))
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.dock_hot = true;
+                    focus_input(&this.input, window, cx);
+                    cx.notify();
+                }))
+                .into_any_element();
+        }
+        let border = if bypass {
+            t.danger.opacity(0.55)
+        } else if self.dragging_files {
+            t.accent
+        } else if focused {
+            edge.opacity((edge.a * 2.0).min(1.0))
+        } else {
+            edge
+        };
+        let surface = div()
+            .id("composer-pill")
+            .w_full()
+            .min_h(px(DOCK_H))
+            .rounded(px(radius))
+            .border_1()
+            .border_color(border)
+            .bg(t.composer_hero_bg())
+            .shadow(t.composer_shadows(focused))
+            .flex()
+            .flex_col()
+            .text_size(ty::TITLE)
+            .cursor_text()
+            .on_click(cx.listener(|this, _, window, cx| focus_input(&this.input, window, cx)))
+            .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
+                this.dragging_files = false;
+                this.attach(paths.paths().to_vec(), cx);
+            }))
+            .drag_over::<ExternalPaths>(|s, _, _, _| s.bg(gpui::transparent_black()));
+        // A fixed line box: one line is exactly as tall as the buttons, so
+        // the prompt's line and the controls share the bar's centre.
+        let text = div()
+            .flex_1()
+            .min_w_0()
+            .relative()
+            .line_height(px(DOCK_LINE))
+            .child(Textarea::new(&self.input))
+            .children(self.render_mention(t, cx));
+        let staged_rows = div()
+            .flex()
+            .flex_col()
+            .gap(px(8.0))
+            .children(self.render_queue(t, cx))
+            .children(self.render_attachments(t, cx));
+        let show_send = has_text || self.running || !self.attachments.is_empty();
+        // The row fills the bar inside its border, so its content is centred
+        // on the bar itself (equal room above and below).
+        let bar = surface.when(staged, |d| d.child(staged_rows.px(px(12.0)).pt(px(10.0)))).child(
+            div()
+                .w_full()
+                .min_h(px(DOCK_H - 2.0))
+                .pl(px(DOCK_PAD_L))
+                .pr(px(DOCK_PAD_R))
+                .py(px((DOCK_H - 2.0 - DOCK_LINE) / 2.0))
+                .flex()
+                .items_center()
+                .gap(px(2.0))
+                .child(self.attach_button(icons::PLUS, 28.0, t, cx))
+                .child(text.px(px(2.0)))
+                .child(self.mic_button(28.0, t, cx))
+                .when(show_send, |d| d.child(div().pl(px(2.0)).child(self.action_button(has_text, t, cx)))),
+        );
+        let bar = ui::frosted(radius, t.composer_blur().max(22.0), bar);
+        // The footer's ends line up with the bar's: the folder glyph under the
+        // `+`, the usage ring centred under the last button (mic or send).
+        let footer = div()
+            .w_full()
+            .h(px(DOCK_FOOTER_H))
+            .pl(px(DOCK_PAD_L + 1.0 + ui::ROUND_BUTTON / 2.0 - 12.0))
+            .pr(px(DOCK_PAD_R + 1.0 + ui::ROUND_BUTTON / 2.0 - 11.0))
+            .flex()
+            .items_center()
+            .gap(px(2.0))
+            .child(self.place_chip(t, cx))
+            .child(div().w(px(1.0)).h(px(10.0)).mx(px(6.0)).bg(t.border))
+            .child(self.dock_mode(t, cx))
+            .child(div().flex_1())
+            .child(div().flex_none().max_w(px(240.0)).child(self.picker.clone()))
+            .child(self.meter_chip(Meter::Plan, t, cx));
+        div()
+            .id("composer")
+            .relative()
+            .w_full()
+            .flex()
+            .flex_col()
+            .gap(px(DOCK_GAP))
+            .on_hover(cx.listener(|this, hovered: &bool, _, cx| this.note_dock_hover(*hovered, cx)))
+            .capture_key_down(cx.listener(Self::on_key))
+            .when(self.menu == Some(Menu::Place), |d| {
+                d.child(div().absolute().top_0().left(relative(0.5)).child(self.place_card(t, cx)))
+            })
+            .child(bar)
+            .child(footer)
+            .when_some(self.error.clone(), |d, e| {
+                d.child(
+                    div()
+                        .id("composer-error")
+                        .px(px(8.0))
+                        .text_size(ty::META)
+                        .text_color(t.danger)
+                        .cursor_pointer()
+                        .child(e)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.error = None;
+                            cx.notify();
+                        })),
+                )
+            })
+            .into_any_element()
+    }
+}
 
 impl Render for Composer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -2090,6 +2389,9 @@ impl Render for Composer {
         let bypass = self.mode == PermissionMode::Bypass;
         let focused = self.input.read(cx).focus_handle(cx).is_focused(window);
         let home = self.thread.is_none();
+        if self.docked() {
+            return self.render_dock(window, t, has_text, focused, cx);
+        }
 
         let hero = self.variant == Variant::Hero;
         let staged = self.queue.len() + self.attachments.len() > 0;
@@ -2137,8 +2439,8 @@ impl Render for Composer {
             .children(self.render_attachments(t, cx));
 
         let box_ = if hero {
-            // A short glass bar: the prompt on top, attach and permissions on
-            // the left, the model picker and send on the right.
+            // A short glass bar: the prompt on top, attach on the left, the
+            // model picker and send on the right.
             surface
                 .min_h(px(120.0))
                 .when(staged, |d| d.child(staged_rows.px(px(14.0)).pt(px(12.0))))
@@ -2166,10 +2468,11 @@ impl Render for Composer {
                         .flex()
                         .items_center()
                         .gap(px(2.0))
-                        .child(self.attach_button(t, cx))
+                        .child(self.attach_button(icons::PAPERCLIP, ui::ROUND_BUTTON, t, cx))
+                        .child(div().flex_none().child(self.dock_mode(t, cx)))
                         .child(div().flex_1())
                         .child(div().min_w_0().max_w(px(240.0)).overflow_hidden().child(self.picker.clone()))
-                        .child(self.mic_button(t, cx))
+                        .child(self.mic_button(ui::ROUND_BUTTON, t, cx))
                         .child(div().pl(px(2.0)).child(self.action_button(has_text, t, cx))),
                 )
         } else {
@@ -2192,7 +2495,7 @@ impl Render for Composer {
                         .flex()
                         .items_center()
                         .gap(px(4.0))
-                        .child(self.attach_button(t, cx))
+                        .child(self.attach_button(icons::PAPERCLIP, ui::ROUND_BUTTON, t, cx))
                         .child(div().flex_1())
                         .child(
                             // In a narrow column the model label gives way
@@ -2211,7 +2514,7 @@ impl Render for Composer {
                                         .overflow_hidden()
                                         .child(self.picker.clone()),
                                 )
-                                .child(div().flex_none().child(self.mic_button(t, cx)))
+                                .child(div().flex_none().child(self.mic_button(ui::ROUND_BUTTON, t, cx)))
                                 .child(div().flex_none().pl(px(2.0)).child(self.action_button(has_text, t, cx))),
                         ),
                 )
@@ -2219,8 +2522,7 @@ impl Render for Composer {
         let blur = if hero { t.composer_blur().max(22.0) } else { t.composer_blur() };
         let box_ = ui::frosted(radius, blur, box_);
 
-        // Under the pill: how it runs (permission, and the thread's branch)
-        // and the meters. The hero carries these inside its action row.
+        // Under the pill: extra folders on an open thread, and the meters.
         let meta = (!hero).then(|| {
             div()
                 .w_full()
@@ -2229,8 +2531,7 @@ impl Render for Composer {
                 .flex()
                 .items_center()
                 .gap(px(4.0))
-                .child(self.mode_button(t, cx))
-                .when(!home, |d| {
+                .when(!home && !self.add_dirs.is_empty(), |d| {
                     d.child(div().flex().min_w_0().overflow_hidden().child(self.render_context_row(t, cx)))
                 })
                 .child(div().flex_1())
@@ -2244,11 +2545,10 @@ impl Render for Composer {
             .flex_col()
             .gap(px(6.0))
             .capture_key_down(cx.listener(Self::on_key))
-            .children(self.render_bypass_dialog(window, t, cx))
             .when(home && hero, |d| d.child(self.render_target_row(t, cx)))
             .when(home && !hero, |d| d.child(self.render_context_row(t, cx)))
             .child(box_)
-            .when(home && hero, |d| d.child(self.render_git_row(t, cx)))
+            .when(home && hero && !self.add_dirs.is_empty(), |d| d.child(self.render_git_row(t, cx)))
             .children(meta)
             .when_some(self.error.clone(), |d, e| {
                 d.child(
@@ -2265,7 +2565,21 @@ impl Render for Composer {
                         })),
                 )
             })
+            .into_any_element()
     }
+}
+
+/// "12,400" — thousands separators for the usage cards.
+fn grouped(n: u64) -> String {
+    let digits = n.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(digit);
+    }
+    out
 }
 
 #[cfg(test)]
@@ -2294,5 +2608,21 @@ mod tests {
         assert_eq!(until(now + 30), "now");
         assert_eq!(until(now + 600), "in 10m");
         assert!(until(now + 7800).starts_with("in 2h"));
+    }
+
+    #[test]
+    fn home_input_stays_centered_unless_dock_is_chosen() {
+        assert!(!home_input_is_dock(None));
+        assert!(!home_input_is_dock(Some("center")));
+        assert!(!home_input_is_dock(Some("")));
+        assert!(home_input_is_dock(Some("dock")));
+    }
+
+    #[test]
+    fn usage_counts_are_grouped_by_thousands() {
+        assert_eq!(grouped(0), "0");
+        assert_eq!(grouped(999), "999");
+        assert_eq!(grouped(5417), "5,417");
+        assert_eq!(grouped(1_048_576), "1,048,576");
     }
 }

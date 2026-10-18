@@ -96,6 +96,17 @@ const FONTS: &[&[u8]] = &[
     include_bytes!("../assets/fonts/GeistMono-Medium.ttf"),
 ];
 
+/// The natural dove mark, decoded from the embedded photo.
+pub fn brand_icon() -> Option<image::RgbaImage> {
+    image::load_from_memory(include_bytes!("../assets/dove-icon.jpg")).ok().map(|img| img.to_rgba8())
+}
+
+/// `brand_icon` scaled to a square, for the tray and other small slots.
+pub fn brand_icon_square(size: u32) -> Option<image::RgbaImage> {
+    let img = brand_icon()?;
+    Some(image::imageops::resize(&img, size, size, image::imageops::FilterType::Lanczos3))
+}
+
 pub fn load_fonts(cx: &mut App) {
     let fonts = FONTS.iter().map(|f| Cow::Borrowed(*f)).collect();
     if let Err(e) = cx.text_system().add_fonts(fonts) {

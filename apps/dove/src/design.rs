@@ -80,20 +80,54 @@ pub mod space {
     pub const XL: f32 = 24.0;
 }
 
-/// Corner radii.
+/// Corner radii. Rectangular chrome shares [`radius::RADIUS`]. A corner
+/// inside that surface uses [`radius::nested`] so it follows the padding.
+/// A control too short to hold the full radius uses [`radius::fit`], which
+/// keeps a straight side. The composer plate is the one larger corner: the
+/// send disc plus its inset, pulled in by [`radius::plate`] when the bar is
+/// short enough that 26 px would turn it into a capsule.
 pub mod radius {
-    /// Icon buttons, small controls.
-    pub const CONTROL: f32 = 6.0;
+    /// Buttons, fields, rows, cards, menus, panels and bubbles.
+    pub const RADIUS: f32 = 10.0;
+    /// Straight side a short control keeps, so a 24 px button stays a rounded square.
+    const STRAIGHT: f32 = 8.0;
+    /// 24 px icon buttons: [`fit`] so they stay rounded squares.
+    pub const CONTROL: f32 = fit(24.0);
     /// Selects, segmented controls, text fields.
-    pub const SELECT: f32 = 8.0;
+    pub const SELECT: f32 = RADIUS;
     /// Inset panels and the main card.
-    pub const PANEL: f32 = 10.0;
+    pub const PANEL: f32 = RADIUS;
     /// Cards, popovers, menus.
-    pub const CARD: f32 = 12.0;
+    pub const CARD: f32 = RADIUS;
     /// Chat bubbles.
-    pub const BUBBLE: f32 = 16.0;
-    /// The composer plate.
+    pub const BUBBLE: f32 = RADIUS;
+    /// The composer plate: send-disc radius (14) plus the hero corner inset (12).
     pub const COMPOSER: f32 = 26.0;
+
+    /// The corner of something padded by `padding` inside a [`RADIUS`] surface.
+    pub const fn nested(padding: f32) -> f32 {
+        let inner = RADIUS - padding;
+        if inner > 0.0 { inner } else { 0.0 }
+    }
+
+    /// [`RADIUS`], limited so a control of `height` keeps a straight side.
+    pub const fn fit(height: f32) -> f32 {
+        let cap = (height - STRAIGHT) * 0.5;
+        if cap < RADIUS { if cap > 0.0 { cap } else { 0.0 } } else { RADIUS }
+    }
+
+    /// [`COMPOSER`] when `height` can hold it, otherwise the largest corner
+    /// that still leaves a 16 px straight run along the bar.
+    pub const fn plate(height: f32) -> f32 {
+        let cap = (height - 16.0) * 0.5;
+        if cap >= COMPOSER {
+            COMPOSER
+        } else if cap > RADIUS {
+            cap
+        } else {
+            RADIUS
+        }
+    }
 }
 
 /// Fixed control metrics.

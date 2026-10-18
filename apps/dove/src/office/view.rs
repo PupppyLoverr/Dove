@@ -16,7 +16,7 @@ use gpui::{
 };
 
 use super::{Document, docx, pdf, pptx, xlsx};
-use crate::design::ty;
+use crate::design::{radius, ty};
 use crate::files_panel::FilesPanel;
 use crate::theme::Theme;
 
@@ -308,7 +308,7 @@ fn docx_view(view: &OfficeView, d: &docx::Docx, t: &Theme, cx: &mut Context<File
                     .my(px(6.0))
                     .border_1()
                     .border_color(line)
-                    .rounded(px(6.0))
+                    .rounded(px(radius::RADIUS))
                     .overflow_hidden()
                     .flex()
                     .flex_col()
@@ -360,7 +360,7 @@ fn docx_view(view: &OfficeView, d: &docx::Docx, t: &Theme, cx: &mut Context<File
         .child(
             div().id("office-docx").flex_1().min_h_0().overflow_y_scroll().p(px(14.0)).child(
                 div()
-                    .rounded(px(10.0))
+                    .rounded(px(radius::RADIUS))
                     .border_1()
                     .border_color(t.border)
                     .bg(t.wash(0.015))
@@ -431,7 +431,7 @@ fn docx_para(
             Title | Heading(_) => 5.0,
             _ => 2.0,
         }))
-        .rounded(px(5.0))
+        .rounded(px(radius::RADIUS))
         .cursor_text()
         .text_size(px(size))
         .font_weight(weight)
@@ -512,7 +512,7 @@ fn pptx_view(view: &OfficeView, d: &pptx::Deck, t: &Theme, cx: &mut Context<File
                         .w(px(w))
                         .h(px(h))
                         .bg(paper())
-                        .rounded(px(8.0))
+                        .rounded(px(radius::RADIUS))
                         .border_1()
                         .border_color(if is_sel { t.accent } else { t.border })
                         .shadow_sm()
@@ -695,7 +695,7 @@ fn xlsx_view(view: &OfficeView, b: &xlsx::Book, t: &Theme, cx: &mut Context<File
                 .h(px(24.0))
                 .flex()
                 .items_center()
-                .rounded(px(6.0))
+                .rounded(px(radius::RADIUS))
                 .text_size(ty::META)
                 .font_weight(if i == sheet { FontWeight::MEDIUM } else { FontWeight::NORMAL })
                 .cursor_pointer()
@@ -733,7 +733,7 @@ fn xlsx_view(view: &OfficeView, b: &xlsx::Book, t: &Theme, cx: &mut Context<File
                 .flex()
                 .items_center()
                 .justify_center()
-                .rounded(px(4.0))
+                .rounded(px(radius::RADIUS))
                 .bg(t.wash(0.05))
                 .font_family(t.font_mono.clone())
                 .text_size(ty::MICRO)
@@ -901,7 +901,7 @@ fn pdf_view(view: &OfficeView, p: &pdf::Pdf, t: &Theme, cx: &mut Context<FilesPa
             .flex_col()
             .gap(px(2.0))
             .p(px(6.0))
-            .rounded(px(8.0))
+            .rounded(px(radius::RADIUS))
             .border_1()
             .border_color(t.border)
             .bg(t.wash(0.02))
@@ -923,7 +923,7 @@ fn pdf_view(view: &OfficeView, p: &pdf::Pdf, t: &Theme, cx: &mut Context<FilesPa
                     .gap(px(10.0))
                     .px(px(6.0))
                     .py(px(5.0))
-                    .rounded(px(6.0))
+                    .rounded(px(radius::RADIUS))
                     .cursor_pointer()
                     .hover(move |s| s.bg(hover))
                     .when(selected, |d| d.bg(t.wash(0.10)))
@@ -1006,7 +1006,7 @@ fn pdf_view(view: &OfficeView, p: &pdf::Pdf, t: &Theme, cx: &mut Context<FilesPa
                                 .w(px(w))
                                 .h(px(w * page.aspect))
                                 .flex_none()
-                                .rounded(px(6.0))
+                                .rounded(px(radius::RADIUS))
                                 .border_1()
                                 .border_color(t.border)
                                 .shadow_sm()

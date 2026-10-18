@@ -1,0 +1,18 @@
+[package]
+name = "zeron-visual-gpu"
+version = "0.2.113"
+edition = "2024"
+license = "MIT"
+publish = false
+description = "GPU rendering for agent visuals: shaders and 3D scenes drawn offscreen with wgpu"
+
+[dependencies]
+zeron-visual = { path = "../zeron-visual" }
+# Already GPUI's renderer on Linux; here it draws offscreen on every desktop.
+wgpu = { version = "29", features = ["glsl"] }
+pollster = "0.4"
+tracing = "0.1"
+
+[dev-dependencies]
+# Test textures and environment maps.
+image = { version = "0.25.10", default-features = false, features = ["png"] }

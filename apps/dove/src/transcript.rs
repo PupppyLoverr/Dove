@@ -15,8 +15,8 @@
 //! row is re-laid out per frame.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use dove_core::proto::{
@@ -36,6 +36,7 @@ use gpui_base::input::{Input, InputEvent, InputState};
 
 use crate::assets::{icon, icons};
 use crate::composer::{self, Composer, ComposerEvent};
+use crate::design::radius;
 use crate::design::rem;
 use crate::design::ty;
 use crate::kit;
@@ -91,9 +92,6 @@ pub enum TaskViewEvent {
     ShowTerminal,
     /// Drive the in-app browser the way a person would.
     DriveBrowser(crate::browser::Drive),
-    /// Show a design in the side panel. `true` when the user asked (a
-    /// card's Open); `false` when it just arrived from the agent.
-    OpenCanvas(crate::canvas::Spec, bool),
 }
 
 // ------------------------------------------------------------------ model
@@ -344,6 +342,13 @@ pub enum Row {
     Plan(Arc<Vec<Block>>),
     Notice(SharedString),
     Error(SharedString),
+    /// A Dove visual: the Luau script from `show_visual`, rendered inline.
+    Visual {
+        id: String,
+        title: SharedString,
+        script: String,
+        assets: Vec<(String, String)>,
+    },
     /// The end of a turn: message actions and how long it took.
     TurnEnd {
         /// The turn streamed some text (its Copy reads it back from disk).
@@ -368,8 +373,6 @@ pub struct Effects {
     /// A live user message: glide it to the top as the answer streams in.
     pub runway: Option<usize>,
     pub first_answer: bool,
-    /// A design arrived (or changed): show it.
-    pub canvas: Option<crate::canvas::Spec>,
 }
 
 /// A subagent's own event log, keyed by the spawning call's id.
@@ -610,9 +613,6 @@ pub struct Chat {
     permissions: Vec<usize>,
     /// Agent tool calls: (activity row, index in the activity).
     agents: Vec<(usize, usize)>,
-    /// The row of each design and each live widget card, by id.
-    canvas_rows: HashMap<String, usize>,
-    widget_rows: HashMap<String, usize>,
     last_turn_end: Option<usize>,
     /// Changes when todos, subagents or designs change.
     rev: u64,
@@ -627,8 +627,6 @@ pub struct Chat {
     orphans: Vec<AgentEvent>,
     /// The thread's first prompt when it is not loaded (for auto titles).
     pub first_prompt: Option<SharedString>,
-    /// Designs made in the unloaded history, for the canvas gallery.
-    pub older_designs: Vec<crate::canvas::Spec>,
 }
 
 impl Chat {
@@ -689,29 +687,10 @@ impl Chat {
             Row::User { .. } => self.users.push(i),
             Row::Permission { .. } => self.permissions.push(i),
             Row::TurnEnd { .. } => self.last_turn_end = Some(i),
-            Row::Block { block, .. } => self.index_block(i, block),
             _ => {}
         }
         self.rows.push(row);
         i
-    }
-
-    /// Record a design or widget card's row by its id.
-    fn index_block(&mut self, i: usize, block: &Block) {
-        match block {
-            Block::Canvas(src) => {
-                if let Some(spec) = crate::canvas::Spec::parse(src) {
-                    self.canvas_rows.insert(spec.id, i);
-                    self.bump();
-                }
-            }
-            Block::Widget(src) => {
-                if let Some(spec) = crate::widget::Spec::parse(src).filter(|s| !s.id.is_empty()) {
-                    self.widget_rows.insert(spec.id, i);
-                }
-            }
-            _ => {}
-        }
     }
 
     /// End the streaming message: its tail becomes final rows.
@@ -964,50 +943,17 @@ impl Chat {
                 self.touch(i);
             }
             AgentEvent::BlockEnd => self.close_text(),
-            // A live design from `show_canvas`: a card that opens the canvas.
-            AgentEvent::ToolCall { name, input, .. } if is_show_canvas(&name) => {
+            AgentEvent::ToolCall { call_id, name, input, .. } if is_show_visual(&name) => {
                 self.close_all();
-                if let Some(spec) = crate::canvas::Spec::from_value(input.clone()) {
-                    let json = spec.to_json();
-                    match self.canvas_rows.get(&spec.id).copied() {
-                        Some(i) => {
-                            if let Some(Row::Block { block, .. }) = self.rows.get_mut(i) {
-                                *block = Arc::new(Block::Canvas(json));
-                            }
-                            self.bump();
-                            self.touch(i);
-                        }
-                        None => {
-                            let msg = self.msgs;
-                            self.msgs += 1;
-                            self.push(Row::Block { block: Arc::new(Block::Canvas(json)), msg });
-                        }
-                    }
-                    if live {
-                        fx.canvas = Some(spec);
-                    }
-                }
-            }
-            // Generative UI from Dove's `show_ui` tool: a card, not a step.
-            AgentEvent::ToolCall { name, input, .. } if is_show_ui(&name) => {
-                self.close_all();
-                if let Some(spec) = crate::widget::Spec::from_value(input.clone()) {
-                    // Same id as an earlier card: update that card in place
-                    // (live dashboards, progress), instead of stacking copies.
-                    let existing = (!spec.id.is_empty()).then(|| self.widget_rows.get(&spec.id).copied()).flatten();
-                    match existing {
-                        Some(i) => {
-                            if let Some(Row::Block { block, .. }) = self.rows.get_mut(i) {
-                                *block = Arc::new(Block::Widget(input.to_string()));
-                            }
-                            self.touch(i);
-                        }
-                        None => {
-                            let msg = self.msgs;
-                            self.msgs += 1;
-                            self.push(Row::Block { block: Arc::new(Block::Widget(input.to_string())), msg });
-                        }
-                    }
+                let script = input.get("script").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                if !script.is_empty() {
+                    let title = input.get("title").and_then(|v| v.as_str()).unwrap_or("Visual");
+                    let assets = input
+                        .get("assets")
+                        .and_then(|v| v.as_object())
+                        .map(|o| o.iter().filter_map(|(k, v)| v.as_str().map(|p| (k.clone(), p.to_string()))).collect())
+                        .unwrap_or_default();
+                    self.push(Row::Visual { id: call_id.clone(), title: title.into(), script, assets });
                 }
             }
             AgentEvent::ToolCall { call_id, name, kind, title, input } => {
@@ -1205,29 +1151,6 @@ impl Chat {
         self.last_turn_end
     }
 
-    /// Every design, newest first (one per id), with designs of the
-    /// unloaded history after the loaded ones.
-    pub fn designs(&self) -> Vec<crate::canvas::Spec> {
-        let mut rows: Vec<usize> = self.canvas_rows.values().copied().collect();
-        rows.sort_unstable_by(|a, b| b.cmp(a));
-        let mut out: Vec<crate::canvas::Spec> = rows
-            .into_iter()
-            .filter_map(|i| match self.rows.get(i) {
-                Some(Row::Block { block, .. }) => match &**block {
-                    Block::Canvas(src) => crate::canvas::Spec::parse(src),
-                    _ => None,
-                },
-                _ => None,
-            })
-            .collect();
-        for spec in &self.older_designs {
-            if !out.iter().any(|s| s.id == spec.id) {
-                out.push(spec.clone());
-            }
-        }
-        out
-    }
-
     /// The agent tool calls, oldest first: (row, activity, tool).
     pub fn agent_tools(&self) -> impl Iterator<Item = (usize, &Activity, &Tool)> {
         self.agents.iter().filter_map(|&(i, j)| match self.rows.get(i) {
@@ -1311,20 +1234,6 @@ impl Chat {
         list(&mut self.users);
         list(&mut self.permissions);
         self.agents = self.agents.iter().filter_map(|&(i, j)| map(i).map(|n| (n, j))).collect();
-        self.canvas_rows.retain(|_, i| match map(*i) {
-            Some(n) => {
-                *i = n;
-                true
-            }
-            None => false,
-        });
-        self.widget_rows.retain(|_, i| match map(*i) {
-            Some(n) => {
-                *i = n;
-                true
-            }
-            None => false,
-        });
         self.last_turn_end = self.last_turn_end.and_then(&map);
         self.dirty = None;
     }
@@ -1380,48 +1289,10 @@ impl Chat {
                 }
             }
         }
-        // A design or card id seen in both: the first row shows the latest.
-        let mut dupes: Vec<(usize, usize)> = Vec::new();
-        for (id, old) in older.canvas_rows.drain() {
-            match self.canvas_rows.get(&id).copied() {
-                Some(new) => dupes.push((old, new)),
-                None => {
-                    self.canvas_rows.insert(id, old);
-                }
-            }
-        }
-        for (id, old) in older.widget_rows.drain() {
-            match self.widget_rows.get(&id).copied() {
-                Some(new) => dupes.push((old, new)),
-                None => {
-                    self.widget_rows.insert(id, old);
-                }
-            }
-        }
-        dupes.sort_unstable_by_key(|d| std::cmp::Reverse(d.1));
-        let mut removed = Vec::new();
-        for (old, new) in dupes {
-            if let Some(Row::Block { block, .. }) = self.rows.get(new).cloned() {
-                if let Some(Row::Block { block: first, .. }) = self.rows.get_mut(old) {
-                    *first = block;
-                }
-                self.rows.remove(new);
-                self.reindex(|i| match i.cmp(&new) {
-                    std::cmp::Ordering::Less => Some(i),
-                    std::cmp::Ordering::Equal => None,
-                    std::cmp::Ordering::Greater => Some(i - 1),
-                });
-                // The surviving first row now carries the id.
-                if let Some(Row::Block { block, .. }) = self.rows.get(old).cloned() {
-                    self.index_block(old, &block);
-                }
-                removed.push(new);
-            }
-        }
+        let removed = Vec::new();
         self.partial = older.partial;
         if !self.partial {
             self.first_prompt = None;
-            self.older_designs.clear();
         }
         // Events about the newly loaded calls now find them; the older
         // stretch's own orphans wait for the next hydration.
@@ -1457,32 +1328,20 @@ fn load_tail(store: &dove_store::Store, task: dove_core::proto::TaskId) -> (Chat
     picks.extend(last(Kind::RateLimits, 8));
     picks.extend(last(Kind::Todos, 1));
     picks.extend(index.of_kind(0..start, Kind::UserMessage).next());
-    picks.extend(index.of_kind(0..start, Kind::CanvasCall));
     picks.sort_unstable();
     picks.dedup();
     let mut state = Vec::new();
     let mut first_prompt = None;
-    let mut designs: Vec<crate::canvas::Spec> = Vec::new();
     for (_, ev) in store.transcript_picked(task, &index, &picks) {
         match ev {
             AgentEvent::UserMessage { text } => {
                 first_prompt = Some(SharedString::from(dove_core::strip_persona(&text).to_string()));
             }
-            AgentEvent::ToolCall { name, input, .. } => {
-                if is_show_canvas(&name)
-                    && let Some(spec) = crate::canvas::Spec::from_value(input)
-                {
-                    designs.retain(|s| s.id != spec.id);
-                    designs.push(spec);
-                }
-            }
             other => state.push(other),
         }
     }
-    designs.reverse();
     let mut chat = Chat::replay_tail(state, events, true);
     chat.first_prompt = first_prompt;
-    chat.older_designs = designs;
     (chat, Some(Older { index: Arc::new(index), end: start, loading: false }))
 }
 
@@ -1673,8 +1532,13 @@ pub struct TaskView {
     following: std::rc::Rc<std::cell::Cell<bool>>,
     /// Hovered rail mark.
     rail_hover: Option<usize>,
-    /// The pointer is over the conversation (shows the scroll thumb).
-    chat_hovered: bool,
+    /// Tick length in flight: from, to, started. Index matches the rail mark.
+    rail_tick: Vec<(f32, f32, Instant)>,
+    /// The pointer is within 24px of the chat column's right edge.
+    scroll_edge: bool,
+    /// The info card is open, so stream content clears it. The scrollbar
+    /// stays on the column edge either way.
+    pub(crate) info_reserve: bool,
     /// A user message just jumped to, briefly highlighted.
     flash: Option<usize>,
     glide: Option<gpui::Task<()>>,
@@ -1686,7 +1550,8 @@ pub struct TaskView {
     /// The teammate this thread runs as, for its replies' header.
     persona: Option<dove_core::store::Persona>,
     pub status: TaskStatus,
-    widgets: HashMap<String, crate::widget::State>,
+    /// Inline `show_visual` frames, keyed by the tool call id.
+    visuals: HashMap<String, Entity<crate::visuals::VisualFrame>>,
     todos_open: bool,
     todos_hidden: bool,
     questions: Option<Questions>,
@@ -1917,13 +1782,15 @@ impl TaskView {
             list,
             following,
             rail_hover: None,
-            chat_hovered: false,
+            rail_tick: Vec::new(),
+            scroll_edge: false,
+            info_reserve: false,
             flash: None,
             glide: None,
             composer,
             dock_height: std::rc::Rc::new(std::cell::Cell::new(DOCK_GUESS)),
             persona: engine_persona.clone(),
-            widgets: HashMap::new(),
+            visuals: HashMap::new(),
             todos_open: true,
             todos_hidden: false,
             questions: None,
@@ -1948,11 +1815,6 @@ impl TaskView {
 
     pub fn context(&self) -> (Option<u64>, Option<u64>) {
         self.chat.context
-    }
-
-    /// Every design this thread made, newest first (one per id).
-    pub fn designs(&self) -> Vec<crate::canvas::Spec> {
-        self.chat.designs()
     }
 
     /// Changes whenever the todos, subagents or designs change, so the side
@@ -2106,13 +1968,6 @@ impl TaskView {
                 v.folds.clear();
                 v.flash = v.flash.map(|r| r + added);
                 v.rail_hover = None;
-                v.widgets = std::mem::take(&mut v.widgets)
-                    .into_iter()
-                    .map(|(k, s)| match k.strip_prefix('b').and_then(|n| n.parse::<usize>().ok()) {
-                        Some(n) => (format!("b{}", n + added), s),
-                        None => (k, s),
-                    })
-                    .collect();
                 v.older = v.older.take().filter(|_| start > 0).map(|o| Older { end: start, loading: false, ..o });
                 if then_top {
                     v.list.set_follow_mode(FollowMode::Normal);
@@ -2134,11 +1989,7 @@ impl TaskView {
         let shown = self.shown.clone();
         self._pump = Some(cx.spawn(async move |this, cx| {
             while let Ok(first) = rx.recv_async().await {
-                let wait = if shown.load(Ordering::Relaxed) || !stream_delta(&first) {
-                    FRAME
-                } else {
-                    HIDDEN_FRAME
-                };
+                let wait = if shown.load(Ordering::Relaxed) || !stream_delta(&first) { FRAME } else { HIDDEN_FRAME };
                 cx.background_executor().timer(wait).await;
                 let mut batch = vec![first];
                 batch.extend(rx.try_iter());
@@ -2232,9 +2083,6 @@ impl TaskView {
             {
                 cx.emit(TaskViewEvent::Title(t));
             }
-            if let Some(spec) = fx.canvas {
-                cx.emit(TaskViewEvent::OpenCanvas(spec, false));
-            }
         }
         if turn_over {
             let followers = self.followers.borrow().clone();
@@ -2247,7 +2095,9 @@ impl TaskView {
         }
         if let Some(row) = runway {
             // The sent message glides to the top; the answer fills below it.
-            self.list.set_tail_reservation(Some((row, px(24.0))));
+            // Keep the sent bubble clear of the titlebar. Pinning it flush
+            // to the top put it under the tab strip, so only the reply showed.
+            self.list.set_tail_reservation(Some((row, px(64.0))));
             self.list.scroll_to(ListOffset { item_ix: row, offset_in_item: px(0.0) });
         }
         self.highlight_pending(cx);
@@ -2726,6 +2576,59 @@ impl TaskView {
 
     // ------------------------------------------------------------ render
 
+    fn render_visual(&mut self, i: usize, cx: &mut Context<Self>) -> AnyElement {
+        let (id, title, script, assets) = match &self.chat.rows[i] {
+            Row::Visual { id, title, script, assets } => (id.clone(), title.clone(), script.clone(), assets.clone()),
+            _ => return div().into_any_element(),
+        };
+        let frame = if let Some(frame) = self.visuals.get(&id) {
+            frame.clone()
+        } else {
+            let root = self.task.worktree.clone().unwrap_or_else(|| self.project.path.clone());
+            let mut files = HashMap::new();
+            for (name, path) in assets
+                .iter()
+                .filter(|(n, _)| zeron_visual::assets::valid_name(n))
+                .take(zeron_visual::assets::MAX_ASSETS)
+            {
+                let full = std::path::Path::new(path);
+                let full = if full.is_absolute() { full.to_path_buf() } else { root.join(full) };
+                if let Ok(bytes) = std::fs::read(&full) {
+                    files.insert(name.clone(), std::sync::Arc::<[u8]>::from(bytes));
+                }
+            }
+            let loaded = zeron_visual::Assets::new(files);
+            let frame = cx.new(|cx| {
+                crate::visuals::VisualFrame::new(id.clone().into(), title.to_string(), script.clone(), loaded, cx)
+            });
+            let key = id.clone();
+            cx.subscribe(&frame, move |this, _, _: &crate::visuals::VisualLayoutChanged, cx| {
+                if let Some(row) = this.chat.rows.iter().position(|r| matches!(r, Row::Visual { id, .. } if id == &key))
+                {
+                    this.list.remeasure_items(row..row + 1);
+                }
+                cx.notify();
+            })
+            .detach();
+            self.visuals.insert(id, frame.clone());
+            frame
+        };
+        self.stream_frame(frame).py(px(7.0)).into_any_element()
+    }
+
+    /// Centers a row in the conversation column. An open info card adds
+    /// right padding here, not on the chat column, so the scrollbar stays
+    /// on the column's right edge.
+    fn stream_frame(&self, body: impl IntoElement) -> gpui::Div {
+        div()
+            .w_full()
+            .flex()
+            .justify_center()
+            .pl(px(28.0))
+            .pr(px(if self.info_reserve { 312.0 } else { 28.0 }))
+            .child(div().w_full().max_w(px(crate::design::conversation_width())).child(body))
+    }
+
     fn render_row(&self, i: usize, weak: &WeakEntity<Self>, window: &Window, cx: &App) -> AnyElement {
         let t = Theme::of(cx);
         let body: AnyElement = match &self.chat.rows[i] {
@@ -2734,8 +2637,7 @@ impl TaskView {
             Row::Block { block, msg } => {
                 let first = i == 0 || !matches!(&self.chat.rows[i - 1], Row::Block { msg: m, .. } if m == msg);
                 // Code blocks carry their own copy button; other blocks get one on hover.
-                let copyable =
-                    !matches!(&**block, Block::Code { .. } | Block::Rule | Block::Widget(_) | Block::Canvas(_));
+                let copyable = !matches!(&**block, Block::Code { .. } | Block::Rule);
                 let group = SharedString::from(format!("blk-{i}"));
                 div()
                     .group(group.clone())
@@ -2770,7 +2672,7 @@ impl TaskView {
             Row::Permission { req, decided } => self.render_permission(i, req, *decided, weak, t),
             Row::Plan(blocks) => div()
                 .p(px(14.0))
-                .rounded(px(12.0))
+                .rounded(px(radius::RADIUS))
                 .border_1()
                 .border_color(t.border)
                 .bg(t.wash(0.025))
@@ -2805,6 +2707,9 @@ impl TaskView {
                 .child(text.clone())
                 .into_any_element(),
             Row::Error(text) => self.error_strip(i, text.clone(), self.error_retry(i), weak, t),
+            Row::Visual { title, .. } => {
+                div().text_size(ty::META).text_color(t.text_muted).child(title.clone()).into_any_element()
+            }
             Row::TurnEnd { has_text, prompt, elapsed, failed } => {
                 self.render_turn_end(i, *has_text, prompt.clone(), *elapsed, *failed, weak, t)
             }
@@ -2814,9 +2719,7 @@ impl TaskView {
         let opens_reply = i > 0
             && matches!(self.chat.rows[i - 1], Row::User { .. })
             && matches!(self.chat.rows[i], Row::Activity(_) | Row::Block { .. } | Row::Live { .. });
-        let body = if opens_reply
-            && let Some(header) = self.reply_header(t)
-        {
+        let body = if opens_reply && let Some(header) = self.reply_header(t) {
             div().flex().flex_col().gap(px(8.0)).child(header).child(body).into_any_element()
         } else {
             body
@@ -2829,18 +2732,11 @@ impl TaskView {
             body
         };
         let gap = match &self.chat.rows[i] {
-            Row::Block { .. } => px(5.0),
+            Row::Block { .. } => px(8.0),
             Row::TurnEnd { .. } => px(0.0),
             _ => px(7.0),
         };
-        div()
-            .w_full()
-            .flex()
-            .justify_center()
-            .px(px(28.0))
-            .py(gap)
-            .child(div().w_full().max_w(px(crate::design::conversation_width())).child(body))
-            .into_any_element()
+        self.stream_frame(body).py(gap).into_any_element()
     }
 
     /// The working loader: the gradient spinner, a flavour word that turns
@@ -2931,9 +2827,9 @@ impl TaskView {
                     .rounded(px(Theme::BUBBLE_RADIUS))
                     .text_size(ty::MD)
                     .line_height(ty::lh::MD)
-                    .bg(t.surface_raised)
+                    .bg(t.wash(0.09))
                     .border_1()
-                    .border_color(if self.flash == Some(i) { t.accent.opacity(0.7) } else { gpui::transparent_black() })
+                    .border_color(if self.flash == Some(i) { t.accent.opacity(0.7) } else { t.wash(0.08) })
                     .text_color(t.text)
                     .child(text.clone()),
             )
@@ -2954,86 +2850,8 @@ impl TaskView {
             .into_any_element()
     }
 
-    fn render_md(&self, id: &str, block: &Block, weak: &WeakEntity<Self>, t: &Theme, window: &Window) -> AnyElement {
-        if let Block::Canvas(src) = block
-            && let Some(spec) = crate::canvas::Spec::parse(src)
-        {
-            let weak = weak.clone();
-            let open = spec.clone();
-            return crate::canvas::card(&spec, t, move |_, cx| {
-                let _ = weak.update(cx, |_, cx| cx.emit(TaskViewEvent::OpenCanvas(open.clone(), true)));
-            });
-        }
-        // A finished ```html / ```jsx / ```svg block can open as a live design.
-        if let Block::Code { lang: Some(lang), text, .. } = block
-            && let Some(spec) = crate::canvas::Spec::from_fence(lang, text)
-        {
-            let weak = weak.clone();
-            let code = markdown::render_block(id, block, t, window);
-            return div()
-                .flex()
-                .flex_col()
-                .gap(px(6.0))
-                .child(code)
-                .child(
-                    div()
-                        .id(SharedString::from(format!("{id}-preview")))
-                        .h(px(26.0))
-                        .px(px(9.0))
-                        .flex()
-                        .items_center()
-                        .gap(px(6.0))
-                        .self_start()
-                        .rounded(px(7.0))
-                        .border_1()
-                        .border_color(t.border)
-                        .text_size(ty::META)
-                        .text_color(t.text_muted)
-                        .cursor_pointer()
-                        .hover(|s| s.bg(t.wash(0.06)).text_color(t.text))
-                        .child(icon(icons::ACTION_PLAY).size(px(12.0)))
-                        .child("Preview as canvas")
-                        .on_click(move |_, _, cx| {
-                            let spec = spec.clone();
-                            let _ = weak.update(cx, |_, cx| cx.emit(TaskViewEvent::OpenCanvas(spec, true)));
-                        }),
-                )
-                .into_any_element();
-        }
-        let Block::Widget(src) = block else {
-            return markdown::render_block(id, block, t, window);
-        };
-        // A card still streaming renders what has arrived, inert until whole.
-        let (spec, partial) = match crate::widget::Spec::parse(src) {
-            Some(spec) => (spec, false),
-            None => match crate::widget::Spec::parse_partial(src) {
-                Some(spec) => (spec, true),
-                None => return markdown::render_block(id, block, t, window),
-            },
-        };
-        let key = id.to_string();
-        let state = match partial {
-            true => crate::widget::State::new(spec.clone()),
-            false => self.widgets.get(&key).cloned().unwrap_or_else(|| crate::widget::State::new(spec.clone())),
-        };
-        crate::widget::render(key.clone(), &state, t, weak.clone(), move |this, ev, window, cx| {
-            if partial {
-                return;
-            }
-            let entry = this.widgets.entry(key.clone()).or_insert_with(|| crate::widget::State::new(spec.clone()));
-            match ev {
-                crate::widget::Event::Act { action, message } => {
-                    entry.sent = Some(action);
-                    this.submit(message, window, cx);
-                }
-                crate::widget::Event::Set { id, value } => entry.set(&id, &value),
-                crate::widget::Event::Edit(prefill) => {
-                    composer::set_text(&this.composer, &prefill, window, cx);
-                    composer::focus(&this.composer, window, cx);
-                }
-            }
-            cx.notify();
-        })
+    fn render_md(&self, id: &str, block: &Block, _weak: &WeakEntity<Self>, t: &Theme, window: &Window) -> AnyElement {
+        markdown::render_block(id, block, t, window)
     }
 
     /// One activity: Zeron's collapsible task group. A quiet summary (with a
@@ -3100,7 +2918,8 @@ impl TaskView {
                 // Quiet even when steps failed: probes fail mid-work all the
                 // time. Failures tint their own rows and count in the summary.
                 .text_color(t.text_muted)
-                .hover(|s| s.text_color(t.text))
+                .rounded(px(8.0))
+                .hover(|s| s.bg(t.wash(0.06)).text_color(t.text))
                 .on_click(move |_, _, cx| {
                     let _ = weak.update(cx, |v, cx| v.toggle_activity(i, cx));
                 })
@@ -3288,7 +3107,7 @@ impl TaskView {
                 .flex()
                 .items_center()
                 .justify_center()
-                .rounded(px(5.0))
+                .rounded(px(radius::RADIUS))
                 .bg(crate::theme::ink(bg))
                 .child(icon(glyph).size(px(size)).text_color(t.text_muted.opacity(0.9)))
         };
@@ -3309,7 +3128,7 @@ impl TaskView {
                     .items_center()
                     .gap(px(8.0))
                     .overflow_hidden()
-                    .rounded(px(9.0))
+                    .rounded(px(radius::RADIUS))
                     .border_1()
                     .border_color(crate::theme::ink(0.07))
                     .bg(crate::theme::ink(0.03))
@@ -3606,7 +3425,7 @@ impl TaskView {
         // Zeron's inline diff (the Changes pane's own rows) inside Dove's
         // card, with Dove's footer: unfold the rest, or jump to Changes.
         div()
-            .rounded(px(8.0))
+            .rounded(px(radius::RADIUS))
             .border_1()
             .border_color(t.border)
             .overflow_hidden()
@@ -3680,74 +3499,68 @@ impl TaskView {
         }
         let root = self.task.worktree.clone().unwrap_or_else(|| self.project.path.clone());
         let hints = risk_hints(req, Some(&root));
-        let mut card = page::card(t)
-            .gap(px(10.0))
-            .p(px(14.0))
-            .border_1()
-            .border_color(if decided.is_none() { t.warning.opacity(0.45) } else { gpui::transparent_black() })
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.0))
-                    .child(icon(icons::DANGER_TRIANGLE).text_color(if decided.is_none() {
-                        t.warning
-                    } else {
-                        t.text_faint
-                    }))
-                    .child(div().font_weight(gpui::FontWeight::MEDIUM).child(format!("Allow {}?", req.tool)))
-                    .children(hints.into_iter().map(|h| {
-                        div()
-                            .px(px(6.0))
-                            .rounded(px(5.0))
-                            .bg(t.warning.opacity(0.12))
-                            .text_color(t.warning)
-                            .text_size(ty::MICRO)
-                            .child(h)
-                    })),
-            )
-            .child(
-                div()
-                    .px(px(10.0))
-                    .py(px(7.0))
-                    .rounded(px(8.0))
-                    .bg(t.wash(0.04))
-                    .font_family(t.font_mono.clone())
-                    .text_size(ty::SMALL)
-                    .text_color(t.text_muted)
-                    .child(req.summary.to_string()),
-            );
-        match decided {
-            None => {
-                let b =
-                    |id: &'static str, label: &'static str, key: &'static str, d: PermissionDecision, tone: Tone| {
-                        let weak = weak.clone();
-                        let rid = req.request_id.clone();
-                        ctl::button(t, format!("{id}-{i}"), label, tone).child(kit::kbd(key, t)).on_click(
-                            move |_, _, cx| {
-                                let _ = weak.update(cx, |v, cx| v.decide(rid.clone(), d, cx));
-                            },
-                        )
-                    };
-                card = card.child(
-                    div()
-                        .flex()
-                        .flex_wrap()
-                        .gap(px(6.0))
-                        .child(b("allow", "Allow", "A", PermissionDecision::AllowOnce, Tone::Solid))
-                        .child(b("always", "Allow for session", "S", PermissionDecision::AllowAlways, Tone::Outlined))
-                        .child(b("deny", "Deny", "D", PermissionDecision::Deny, Tone::Quiet)),
-                );
-            }
-            Some(d) => {
-                card = card.child(div().text_size(ty::META).text_color(t.text_faint).child(match d {
-                    PermissionDecision::Deny => "Denied",
-                    PermissionDecision::AllowAlways => "Allowed for this session",
-                    PermissionDecision::AllowOnce => "Allowed",
-                }));
-            }
-        }
-        card.into_any_element()
+        let hint = hints.join(" · ");
+        let detail = if hint.is_empty() {
+            req.summary.to_string()
+        } else if req.summary.is_empty() {
+            hint
+        } else {
+            format!("{} · {}", req.summary, hint)
+        };
+        let pending = decided.is_none();
+        let result = decided.map(|d| match d {
+            PermissionDecision::Deny => "Denied",
+            PermissionDecision::AllowAlways => "Allowed for this session",
+            PermissionDecision::AllowOnce => "Allowed",
+        });
+        let action = |id: &'static str, label: &'static str, key: &'static str, d: PermissionDecision| {
+            let weak = weak.clone();
+            let rid = req.request_id.clone();
+            div()
+                .id(SharedString::from(format!("{id}-{i}")))
+                .h(px(26.0))
+                .px(px(8.0))
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap(px(4.0))
+                .rounded(px(6.0))
+                .cursor_pointer()
+                .text_size(ty::META)
+                .text_color(t.text)
+                .hover(|s| s.bg(t.element_hover))
+                .child(label)
+                .child(kit::kbd(key, t))
+                .on_click(move |_, _, cx| {
+                    let _ = weak.update(cx, |v, cx| v.decide(rid.clone(), d, cx));
+                })
+        };
+        let row = div()
+            .w_full()
+            .min_h(px(32.0))
+            .px(px(8.0))
+            .flex()
+            .items_center()
+            .gap(px(8.0))
+            .rounded(px(8.0))
+            .text_size(ty::BODY)
+            .when(pending, |d| d.hover(|s| s.bg(t.element_hover)))
+            .child(icon(icons::DANGER_TRIANGLE).size(px(14.0)).text_color(if pending {
+                t.warning
+            } else {
+                t.text_faint
+            }))
+            .child(div().flex_none().font_weight(gpui::FontWeight::MEDIUM).child(req.tool.clone()))
+            .child(div().flex_1().min_w_0().truncate().text_color(t.text_muted).child(detail))
+            .when(pending, |d| {
+                d.child(action("allow", "Allow", "A", PermissionDecision::AllowOnce))
+                    .child(action("always", "Allow for session", "S", PermissionDecision::AllowAlways))
+                    .child(action("deny", "Deny", "D", PermissionDecision::Deny))
+            })
+            .when_some(result, |d, text| {
+                d.child(div().flex_none().text_size(ty::META).text_color(t.text_faint).child(text))
+            });
+        crate::motion::fade_quick(SharedString::from(format!("permit-{}", req.request_id)), row).into_any_element()
     }
 
     /// Copy the answer text of the turn ending at row `i`. The chat keeps
@@ -3997,11 +3810,11 @@ impl TaskView {
         });
         Some(
             ui::frosted(
-                12.0,
+                radius::RADIUS,
                 20.0,
                 div()
                     .w_full()
-                    .rounded(px(12.0))
+                    .rounded(px(radius::RADIUS))
                     .bg(t.glass_overlay())
                     .border_1()
                     .border_color(t.border)
@@ -4021,12 +3834,38 @@ impl TaskView {
         })
     }
 
+    /// Ease a rail tick toward `target` with the same short curve the rest of
+    /// the chrome uses, and keep frames coming only while it is still moving.
+    fn rail_tick_width(&mut self, window: &mut Window, ix: usize, target: f32) -> f32 {
+        if self.rail_tick.len() <= ix {
+            self.rail_tick.resize(ix + 1, (target, target, Instant::now()));
+        }
+        let now = Instant::now();
+        let (from, to, started) = self.rail_tick[ix];
+        let sample = |from: f32, to: f32, started: Instant| {
+            let t = (now.duration_since(started).as_secs_f32() / 0.16).min(1.0);
+            let e = 1.0 - (1.0 - t).powi(3);
+            from + (to - from) * e
+        };
+        if (to - target).abs() > 0.05 {
+            let current = sample(from, to, started);
+            self.rail_tick[ix] = (current, target, now);
+            window.request_animation_frame();
+            return current;
+        }
+        let current = sample(from, to, started);
+        if (current - target).abs() > 0.2 {
+            window.request_animation_frame();
+        }
+        current
+    }
+
     /// The message rail: a compact minimap of your prompts along the left
     /// edge. The prompt you are reading lights up; hover shows the prompt
     /// and the start of its reply; click glides there. Long threads fold
     /// into evenly sized buckets so the rail never grows past 12 ticks
     /// (Zeron's minimap: 10 px ticks that lengthen for the prompt in view).
-    fn render_rail(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    fn render_rail(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         const MAX_MARKS: usize = 12;
         const TICK: f32 = 10.0;
         let messages = self.chat.user_messages();
@@ -4042,10 +3881,10 @@ impl TaskView {
         let buckets: Vec<(usize, usize)> = (0..cap).map(|k| (k * n / cap, (k + 1) * n / cap)).collect();
         let mut rail = div()
             .absolute()
-            .left(px(10.0))
+            .left(px(8.0))
             .top_0()
             .bottom_0()
-            .w(px(30.0))
+            .w(px(36.0))
             .flex()
             .flex_col()
             .justify_center()
@@ -4056,6 +3895,14 @@ impl TaskView {
             let (row, text) = messages[rep].clone();
             let hovered = self.rail_hover == Some(ix);
             let reply = hovered.then(|| self.reply_after(row)).flatten();
+            let tick = if hovered {
+                TICK * 2.4
+            } else if is_active {
+                TICK * 2.2
+            } else {
+                TICK * 1.4
+            };
+            let tick = self.rail_tick_width(window, ix, tick);
             let w_hover = weak.clone();
             let w_click = weak.clone();
             let mark = div()
@@ -4084,25 +3931,13 @@ impl TaskView {
                 .on_click(move |_, _, cx| {
                     let _ = w_click.update(cx, |v, cx| v.glide_to_row(row, cx));
                 })
-                .child(
-                    div()
-                        .h(px(2.0))
-                        .w(px(if hovered {
-                            TICK * 2.0
-                        } else if is_active {
-                            TICK * 1.6
-                        } else {
-                            TICK
-                        }))
-                        .rounded_full()
-                        .bg(if hovered {
-                            t.text.opacity(0.85)
-                        } else if is_active {
-                            t.text.opacity(0.7)
-                        } else {
-                            t.text.opacity(0.2)
-                        }),
-                )
+                .child(div().h(px(2.0)).w(px(tick)).rounded_full().bg(if hovered {
+                    t.text.opacity(0.95)
+                } else if is_active {
+                    t.text.opacity(0.82)
+                } else {
+                    t.text.opacity(0.55)
+                }))
                 .when(hovered, |d| {
                     let prompt: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
                     let prompt: String = if prompt.chars().count() > 160 {
@@ -4271,14 +4106,7 @@ impl TaskView {
     /// A stand-in while the transcript loads off the UI thread: a prompt
     /// bubble and a reply's lines, pulsing on the shared clock.
     fn render_skeleton(&self, t: &Theme) -> gpui::Div {
-        let column = |child: gpui::Div| {
-            div()
-                .w_full()
-                .flex()
-                .justify_center()
-                .px(px(28.0))
-                .child(div().w_full().max_w(px(crate::design::conversation_width())).child(child))
-        };
+        let column = |child: gpui::Div| self.stream_frame(child);
         div()
             .flex_1()
             .min_h_0()
@@ -4348,11 +4176,14 @@ impl Render for TaskView {
                 if i >= v.chat.rows.len() {
                     return div().into_any_element();
                 }
+                if matches!(v.chat.rows[i], Row::Visual { .. }) {
+                    return view.update(cx, |v, cx| v.render_visual(i, cx));
+                }
                 v.render_row(i, &renderer, window, cx)
             })
             .flex_1()
             .size_full()
-            .pt(px(if mirror { 8.0 } else { 20.0 }))
+            .pt(px(if mirror { 8.0 } else { 28.0 }))
             .pb(px(dock_h + 12.0));
             if mirror {
                 rows.into_any_element()
@@ -4431,39 +4262,50 @@ impl Render for TaskView {
         // pads the list (and lifts the jump button) on the next frame.
         let measured = self.dock_height.clone();
         let view = cx.weak_entity();
-        let dock = div().absolute().left_0().right_0().bottom_0().flex().justify_center().px(px(24.0)).child(
-            div()
-                .relative()
-                .w_full()
-                .max_w(px(composer::plate_width()))
-                .flex()
-                .flex_col()
-                .gap(px(6.0))
-                .children(self.render_todos(cx))
-                .child(input)
-                .child(
-                    canvas(
-                        move |b, _, cx| {
-                            let h = f32::from(b.size.height);
-                            if (measured.get() - h).abs() > 0.5 {
-                                measured.set(h);
-                                let view = view.clone();
-                                cx.defer(move |cx| {
-                                    let _ = view.update(cx, |_, cx| cx.notify());
-                                });
-                            }
-                        },
-                        |_, _, _, _| {},
-                    )
-                    .absolute()
-                    .inset_0(),
-                ),
-        );
+        let scroll_bounds = std::rc::Rc::new(std::cell::Cell::new(None::<gpui::Bounds<gpui::Pixels>>));
+        let dock = div()
+            .absolute()
+            .left_0()
+            .right_0()
+            .bottom_0()
+            .flex()
+            .justify_center()
+            .pl(px(24.0))
+            .pr(px(if self.info_reserve { 308.0 } else { 24.0 }))
+            .child(
+                div()
+                    .relative()
+                    .w_full()
+                    .max_w(px(composer::plate_width()))
+                    .flex()
+                    .flex_col()
+                    .gap(px(6.0))
+                    .children(self.render_todos(cx))
+                    .child(input)
+                    .child(
+                        canvas(
+                            move |b, _, cx| {
+                                let h = f32::from(b.size.height);
+                                if (measured.get() - h).abs() > 0.5 {
+                                    measured.set(h);
+                                    let view = view.clone();
+                                    cx.defer(move |cx| {
+                                        let _ = view.update(cx, |_, cx| cx.notify());
+                                    });
+                                }
+                            },
+                            |_, _, _, _| {},
+                        )
+                        .absolute()
+                        .inset_0(),
+                    ),
+            );
         let bottom = div()
             .w_full()
             .flex()
             .justify_center()
-            .px(px(24.0))
+            .pl(px(24.0))
+            .pr(px(if self.info_reserve { 308.0 } else { 24.0 }))
             .pt(px(4.0))
             .pb(px(6.0))
             .child(div().w_full().max_w(px(composer::plate_width())).child(self.render_status_strip(&t)));
@@ -4490,24 +4332,41 @@ impl Render for TaskView {
                         .min_h_0()
                         .flex()
                         .flex_col()
-                        .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                            if this.chat_hovered != *hovered {
-                                this.chat_hovered = *hovered;
-                                cx.notify();
-                            }
-                        }))
+                        .on_mouse_move({
+                            let edge = scroll_bounds.clone();
+                            cx.listener(move |this, e: &gpui::MouseMoveEvent, _, cx| {
+                                let near = edge.get().is_some_and(|b| {
+                                    let right = b.origin.x + b.size.width;
+                                    let x = e.position.x;
+                                    let y = e.position.y;
+                                    right - x <= px(24.0)
+                                        && right - x >= px(-4.0)
+                                        && y >= b.origin.y
+                                        && y <= b.origin.y + b.size.height
+                                });
+                                if this.scroll_edge != near {
+                                    this.scroll_edge = near;
+                                    cx.notify();
+                                }
+                            })
+                        })
+                        .child(
+                            canvas(move |bounds, _, _| scroll_bounds.set(Some(bounds)), |_, _, _, _| {})
+                                .absolute()
+                                .size_full(),
+                        )
                         .child(transcript)
                         .when(!empty && !self.loading, |d| {
                             d.child(
-                                // Just a rounded thumb, no track: hidden at rest,
-                                // shown while scrolling or while the pointer is
-                                // over the conversation, then it fades.
+                                // Rounded thumb, no track. Hidden until the
+                                // pointer is on the chat column's right edge,
+                                // then the scrollbar's own fade takes it out.
                                 gpui_base::Scrollbar::vertical(&self.list)
                                     .id("chat-scrollbar")
-                                    .mode(if self.chat_hovered {
+                                    .mode(if self.scroll_edge {
                                         gpui_base::ScrollbarMode::Always
                                     } else {
-                                        gpui_base::ScrollbarMode::Scrolling
+                                        gpui_base::ScrollbarMode::Hover
                                     })
                                     .styles(|s| {
                                         let clear = gpui::transparent_black();
@@ -4535,7 +4394,7 @@ impl Render for TaskView {
                                     }),
                             )
                         })
-                        .when(!mirror, |d| d.children(self.render_rail(cx)))
+                        .when(!mirror, |d| d.children(self.render_rail(window, cx)))
                         .children(jump)
                         .when(!mirror, |d| d.child(dock)),
                 )
@@ -4544,16 +4403,9 @@ impl Render for TaskView {
     }
 }
 
-/// Dove's canvas tool, however the harness spells MCP names.
-fn is_show_canvas(name: &str) -> bool {
+fn is_show_visual(name: &str) -> bool {
     let n = name.to_ascii_lowercase();
-    n.contains("dove") && (n.ends_with("__show_canvas") || n.ends_with("/show_canvas") || n.ends_with(".show_canvas"))
-}
-
-/// Dove's generative-UI tool, however the harness spells MCP names.
-fn is_show_ui(name: &str) -> bool {
-    let n = name.to_ascii_lowercase();
-    n.contains("dove") && (n.ends_with("__show_ui") || n.ends_with("/show_ui") || n.ends_with(".show_ui"))
+    n == "show_visual" || n.ends_with("__show_visual") || n.ends_with("/show_visual") || n.ends_with(".show_visual")
 }
 
 // ------------------------------------------------------------ tool views
@@ -4730,7 +4582,7 @@ fn path_chip(id: (&'static str, usize, usize), path: String, t: &Theme) -> AnyEl
         .flex()
         .items_center()
         .gap(px(5.0))
-        .rounded(px(7.0))
+        .rounded(px(radius::fit(22.0)))
         .border_1()
         .border_color(t.wash(0.08))
         .bg(t.wash(0.03))
@@ -4771,7 +4623,7 @@ fn web_row(id: (&'static str, usize, usize), url: String, t: &Theme) -> AnyEleme
         .flex()
         .items_center()
         .gap(px(8.0))
-        .rounded(px(6.0))
+        .rounded(px(radius::fit(24.0)))
         .text_size(ty::SMALL)
         .cursor_pointer()
         .hover(|s| s.bg(t.wash(0.05)))
@@ -4887,8 +4739,11 @@ fn chip_header(
         .gap(px(8.0))
         .text_size(px(tc::LABEL_SIZE))
         .line_height(px(tc::LINE_HEIGHT))
+        .rounded(px(8.0))
+        .px(px(6.0))
         .text_color(if failed { t.danger } else { t.text_muted })
-        .when(!failed, |d| d.hover(|s| s.text_color(t.text)))
+        .when(!failed, |d| d.hover(|s| s.bg(t.wash(0.07)).text_color(t.text)))
+        .when(failed, |d| d.hover(|s| s.bg(t.danger.opacity(0.08))))
         .when_some(toggle, |d, (_, f)| d.cursor_pointer().on_click(f))
         .child(div().flex_none().child(label))
         .child(div().min_w_0().flex().items_center().child(detail))
@@ -4901,7 +4756,7 @@ fn chip_header(
                     .flex()
                     .items_center()
                     .justify_center()
-                    .opacity(0.0)
+                    .opacity(0.55)
                     .group_hover("tool-header", |s| s.opacity(1.0))
                     .child(
                         icon(if open { icons::ALT_ARROW_DOWN } else { icons::ALT_ARROW_RIGHT })
@@ -5313,16 +5168,6 @@ mod tests {
         assert_eq!(duration(Duration::from_secs(3720)), "1h 2m");
     }
 
-    fn canvas_call(id: &str, code: &str) -> AgentEvent {
-        AgentEvent::ToolCall {
-            call_id: format!("canvas-{id}-{code}"),
-            name: "mcp__dove__show_canvas".into(),
-            kind: ToolKind::Other,
-            title: "design".into(),
-            input: serde_json::json!({ "id": id, "title": id, "code": code }),
-        }
-    }
-
     fn call(id: &str, kind: ToolKind) -> AgentEvent {
         AgentEvent::ToolCall {
             call_id: id.into(),
@@ -5347,7 +5192,6 @@ mod tests {
         let mut events = Vec::new();
         for n in 0..turns {
             events.push(AgentEvent::UserMessage { text: format!("prompt {n}").into() });
-            events.push(canvas_call("board", &format!("<p>{n}</p>")));
             events.push(call(&format!("a{n}"), ToolKind::Agent));
             events.push(AgentEvent::Subagent { parent: format!("a{n}"), event: Box::new(call("s", ToolKind::Read)) });
             events.push(result(&format!("a{n}"), "report"));
@@ -5364,16 +5208,6 @@ mod tests {
             chat.user_messages().iter().map(|(_, t)| t.to_string()).collect::<Vec<_>>(),
             ["prompt 0", "prompt 1", "prompt 2"]
         );
-        // One design, updated in place: it stays in its first row.
-        let designs = chat.designs();
-        assert_eq!(designs.len(), 1);
-        assert_eq!(designs[0].code, "<p>2</p>");
-        let canvas_rows = chat
-            .rows
-            .iter()
-            .filter(|r| matches!(r, Row::Block { block, .. } if matches!(&**block, Block::Canvas(_))))
-            .count();
-        assert_eq!(canvas_rows, 1);
         assert_eq!(chat.agent_tools().count(), 3);
         assert_eq!(chat.last_turn_end(), Some(chat.rows.len() - 1));
         // Replayed subagent events are pruned (they are on disk), their
@@ -5395,13 +5229,11 @@ mod tests {
         let older = Chat::replay_tail(Vec::new(), events[..cut].iter().cloned().map(|e| (None, e)), false);
         let tail_rows = tail.rows.len();
         let (added, removed) = tail.prepend(older);
-        // The design sent again in the tail moves into its first row.
-        assert_eq!(removed.len(), 1);
+        assert!(removed.is_empty());
         assert_eq!(added + tail_rows - removed.len(), full.rows.len());
         assert_eq!(tail.rows.len(), full.rows.len());
         assert!(!tail.partial);
         assert_eq!(tail.user_messages(), full.user_messages());
-        assert_eq!(tail.designs()[0].code, "<p>3</p>");
         assert_eq!(
             tail.agent_tools().map(|(r, _, t)| (r, t.id.clone())).collect::<Vec<_>>(),
             full.agent_tools().map(|(r, _, t)| (r, t.id.clone())).collect::<Vec<_>>()

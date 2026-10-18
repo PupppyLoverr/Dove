@@ -10,7 +10,7 @@ use gpui::{
 };
 
 use crate::assets::{icon, icons};
-use crate::design::ty;
+use crate::design::{radius, ty};
 use crate::shell::Shell;
 use crate::theme::Theme;
 use crate::ui;
@@ -25,12 +25,12 @@ const SUGGESTIONS: &[(&str, &str, &str)] = &[
     (
         "Design an app screen",
         icons::PALETTE_SEARCH,
-        "Design an interactive screen in Dove's Canvas (`show_canvas`) with React and Tailwind, plus an inline `show_ui` summary card in chat: ",
+        "Sketch an interactive app screen in chat: layout, type, and the states that matter. ",
     ),
     (
         "Mobile UI mockup",
         icons::SMARTPHONE,
-        "Design a mobile app flow in Dove's Canvas (`device: \"mobile\"`) and an inline `show_ui` phone mockup card: ",
+        "Sketch a mobile app flow in chat, screen by screen, with the copy and states a person would see: ",
     ),
     (
         "Find & fix a bug",
@@ -51,36 +51,15 @@ impl Shell {
             return self.render_onboarding(&t, cx);
         }
 
-        // Wallpaper fills the page. The composer is cut out of it.
+        // The shell paints the artwork from the top of the window, through
+        // the tab strip. This page only chooses the layout over it.
         let viewport_h = f32::from(window.viewport_size().height);
         let wall_path = self.engine.store.setting("wallpaper_path").filter(|p| std::path::Path::new(p).is_file());
-        let effect = wallpaper::Effect::from_id(&self.engine.store.setting("wallpaper_effect").unwrap_or_default());
         let animate = self.engine.store.setting("wallpaper_animate").as_deref() == Some("true");
         if !animate || wall_path.is_none() {
             wallpaper::release_animation(window);
         }
-        let hero = wall_path.and_then(|p| {
-            let scale = window.scale_factor();
-            let width =
-                f32::from(window.viewport_size().width) - if self.sidebar_shown() { self.sidebar_w } else { 0.0 };
-            let props = wallpaper::HeroProps {
-                path: p.into(),
-                effect,
-                light: !t.appearance.is_dark(),
-                target: (width * scale, wallpaper::hero_height(viewport_h) * scale),
-                animate,
-                frosted: t.is_frost(),
-                composer: self.composer_bounds.clone(),
-            };
-            // Its own view, so animation frames repaint only the hero; it is
-            // released (with its layers) when home stops drawing it.
-            let view = window.use_keyed_state("home-hero", cx, wallpaper::Hero::new);
-            // Zeron's hero: the top 72% of the page (at most 760 px), fading
-            // into the canvas below the composer.
-            view.update(cx, |hero, cx| hero.show(props, cx)).then(|| {
-                div().absolute().top_0().left_0().right_0().h(px(wallpaper::hero_height(viewport_h))).child(view)
-            })
-        });
+        let scenic = wall_path.is_some();
 
         let join_chip = self.join.as_ref().map(|(_, j)| {
             ui::chip("home-join", &t)
@@ -129,74 +108,99 @@ impl Shell {
             }
         });
 
-        let scenic = hero.is_some();
-        let column = div()
-            .w_full()
-            .max_w(px(820.0))
-            .px(px(32.0))
-            .flex()
-            .flex_col()
-            .gap(px(8.0))
-            .when(!scenic, |d| {
-                d.child(
+        let dock =
+            crate::composer::home_input_is_dock(self.engine.store.setting(crate::composer::HOME_INPUT).as_deref());
+        self.composer.update(cx, |c, cx| c.apply_home_chrome(dock, window, cx));
+        let spacer =
+            if scenic { (viewport_h * 0.33).clamp(56.0, 380.0) } else { (viewport_h * 0.22).clamp(48.0, 240.0) };
+        let heading_block = (!scenic).then(|| {
+            div()
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap(px(4.0))
+                .pb(px(8.0))
+                .child(
                     div()
+                        .text_center()
+                        .text_size(ty::DISPLAY)
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(t.text)
+                        .child(heading),
+                )
+                .when_some(subheading, |d, sub| d.child(div().text_size(ty::BODY).text_color(t.text_muted).child(sub)))
+        });
+        let error = self.error.clone().map(|e| {
+            div()
+                .id("home-error")
+                .p(px(10.0))
+                .rounded(px(radius::RADIUS))
+                .bg(t.danger.opacity(0.12))
+                .text_color(t.danger)
+                .text_size(ty::BODY)
+                .cursor_pointer()
+                .child(e)
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.error = None;
+                    cx.notify();
+                }))
+        });
+        let join = join_chip.map(|c| div().flex().justify_end().child(c));
+
+        // Center: the bar sits a little above the middle. Bottom: the same
+        // page, with the bar parked at the center of the bottom edge.
+        let mut page = div().relative().size_full().flex().flex_col().items_center().child(div().h(px(spacer)));
+        if dock {
+            page = page
+                .child(
+                    div()
+                        .w_full()
+                        .max_w(px(820.0))
+                        .px(px(32.0))
                         .flex()
                         .flex_col()
-                        .items_center()
-                        .gap(px(4.0))
-                        .pb(px(8.0))
-                        .child(
-                            div()
-                                .text_center()
-                                .text_size(ty::DISPLAY)
-                                .font_weight(gpui::FontWeight::SEMIBOLD)
-                                .text_color(t.text)
-                                .child(heading),
-                        )
-                        .when_some(subheading, |d, sub| {
-                            d.child(div().text_size(ty::BODY).text_color(t.text_muted).child(sub))
-                        }),
+                        .gap(px(8.0))
+                        .children(heading_block)
+                        .children(join),
                 )
-            })
-            .children(join_chip.map(|c| div().flex().justify_end().child(c)))
-            .child(composer)
-            .when(!scenic, |d| d.child(suggestions))
-            .when_some(self.error.clone(), |d, e| {
-                d.child(
+                .child(div().flex_1())
+                .child(
                     div()
-                        .id("home-error")
-                        .p(px(10.0))
-                        .rounded(px(10.0))
-                        .bg(t.danger.opacity(0.12))
-                        .text_color(t.danger)
-                        .text_size(ty::BODY)
-                        .cursor_pointer()
-                        .child(e)
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.error = None;
-                            cx.notify();
-                        })),
+                        .w_full()
+                        .max_w(px(820.0))
+                        .px(px(20.0))
+                        .pb(px(20.0))
+                        .flex()
+                        .flex_col()
+                        .gap(px(8.0))
+                        .when(!scenic, |d| d.child(suggestions))
+                        .child(composer)
+                        .children(error),
+                );
+        } else {
+            page = page
+                .child(
+                    div()
+                        .w_full()
+                        .max_w(px(820.0))
+                        .px(px(32.0))
+                        .flex()
+                        .flex_col()
+                        .gap(px(8.0))
+                        .children(heading_block)
+                        .children(join)
+                        .child(composer)
+                        .when(!scenic, |d| d.child(suggestions))
+                        .children(error),
                 )
-            });
-
-        div()
-            .relative()
-            .size_full()
-            .flex()
-            .flex_col()
-            .items_center()
-            .children(hero)
-            // The bar sits a little above the middle, as in Zeron: the
-            // artwork owns the top, the bar the center.
-            .child(div().h(px(if scenic {
-                (viewport_h * 0.33).clamp(56.0, 380.0)
-            } else {
-                (viewport_h * 0.22).clamp(48.0, 240.0)
-            })))
-            .child(column)
-            .child(div().flex_1())
-            .child(self.render_agents_pill(&t, cx))
-            .into_any_element()
+                .child(div().flex_1());
+        }
+        // The agents-ready strip sits under the centered composer. In the
+        // bottom layout it lands on the input, so it stays off that page.
+        if !dock {
+            page = page.child(self.render_agents_pill(&t, cx));
+        }
+        page.into_any_element()
     }
 
     fn render_agents_pill(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
@@ -342,12 +346,7 @@ impl Shell {
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .child("Add a project to get started"),
             )
-            .child(
-                div()
-                    .text_size(ty::BODY)
-                    .text_color(t.text_muted)
-                    .child("A project is a folder on this device, usually a git repository."),
-            )
+            .child(div().text_size(ty::BODY).text_color(t.text_muted).child("A project is any folder on this device."))
             .child(
                 ui::button_primary("onboard-add", "Add a project", t)
                     .mt(px(16.0))

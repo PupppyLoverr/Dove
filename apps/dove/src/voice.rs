@@ -44,6 +44,9 @@ impl VoiceModel {
     pub fn init(engine: Arc<Engine>, cx: &mut App) -> Entity<VoiceModel> {
         let dir = model_dir(&engine);
         let state = if zeron_voice::installed(&dir) { InstallState::Installed } else { InstallState::Missing };
+        if matches!(state, InstallState::Installed) {
+            zeron_voice::warm(dir);
+        }
         let e = cx.new(|_| VoiceModel { engine, state, cancel: None });
         cx.set_global(VoiceModelGlobal(e.clone()));
         e
@@ -99,7 +102,10 @@ impl VoiceModel {
             let _ = this.update(cx, |m, cx| {
                 m.cancel = None;
                 m.state = match result {
-                    Ok(()) => InstallState::Installed,
+                    Ok(()) => {
+                        zeron_voice::warm(model_dir(&m.engine));
+                        InstallState::Installed
+                    }
                     Err(e) if e.contains("cancelled") => InstallState::Missing,
                     Err(e) => InstallState::Failed(e),
                 };

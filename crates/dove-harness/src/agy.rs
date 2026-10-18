@@ -198,18 +198,12 @@ fn map_step(step: &Value) -> Vec<AgentEvent> {
         }
     }
     match state {
-        "ACTIVE" | "RUNNING" => vec![AgentEvent::ToolCall {
-            call_id: id,
-            name: name.into(),
-            kind,
-            title: title.into(),
-            input,
-        }],
-        "DONE" | "FAILED" | "ERROR" => vec![AgentEvent::ToolResult {
-            call_id: id,
-            output: text.into(),
-            is_error: state != "DONE",
-        }],
+        "ACTIVE" | "RUNNING" => {
+            vec![AgentEvent::ToolCall { call_id: id, name: name.into(), kind, title: title.into(), input }]
+        }
+        "DONE" | "FAILED" | "ERROR" => {
+            vec![AgentEvent::ToolResult { call_id: id, output: text.into(), is_error: state != "DONE" }]
+        }
         _ => Vec::new(),
     }
 }
@@ -236,19 +230,16 @@ fn map_result(result: &Value) -> Vec<AgentEvent> {
 
 fn str_at(value: &Value, keys: &[&str]) -> Option<String> {
     keys.iter().find_map(|key| {
-        value
-            .get(*key)
-            .and_then(Value::as_str)
-            .filter(|text| !text.trim().is_empty())
-            .map(str::to_string)
-            .or_else(|| {
+        value.get(*key).and_then(Value::as_str).filter(|text| !text.trim().is_empty()).map(str::to_string).or_else(
+            || {
                 value
                     .get("input")
                     .and_then(|input| input.get(*key))
                     .and_then(Value::as_str)
                     .filter(|text| !text.trim().is_empty())
                     .map(str::to_string)
-            })
+            },
+        )
     })
 }
 
@@ -258,9 +249,7 @@ mod tests {
 
     #[test]
     fn reply_frames_become_text_and_a_finished_turn() {
-        let init = map_line(
-            r#"{"event":"init","conversation_id":"abc","init":{"model":"gemini-3.8-flash-low"}}"#,
-        );
+        let init = map_line(r#"{"event":"init","conversation_id":"abc","init":{"model":"gemini-3.8-flash-low"}}"#);
         assert!(matches!(
             &init[..],
             [AgentEvent::SessionStarted { native_session_id, model }]

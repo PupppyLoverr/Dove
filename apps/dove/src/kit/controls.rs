@@ -41,7 +41,7 @@ pub enum Tone {
     Danger,
 }
 
-/// A text button. 30 px tall (26 px when `small`), 8 px corners.
+/// A text button. 30 px tall (26 px when `small`), 10 px corners.
 pub fn button(
     t: &Theme,
     id: impl Into<SharedString>,
@@ -305,10 +305,7 @@ impl RenderOnce for SegmentedControl {
             .h(px(32.0))
             .p(px(2.0))
             .flex()
-            .rounded(px(radius::SELECT + 2.0))
-            .bg(t.wash(0.05))
-            .border_1()
-            .border_color(t.wash(0.06))
+            .rounded(px(radius::RADIUS))
             .tab_index(0)
             .focus_visible(move |s| s.border_color(ring))
             .on_key_down(move |e: &KeyDownEvent, window, cx| {
@@ -332,9 +329,8 @@ impl RenderOnce for SegmentedControl {
                     .bottom(px(2.0))
                     .left(px(2.0 + position * self.slot))
                     .w(px(self.slot))
-                    .rounded(px(radius::SELECT))
-                    .bg(t.surface_raised)
-                    .shadow(crate::ui::selected_ring(t)),
+                    .rounded(px(radius::nested(2.0)))
+                    .bg(t.wash(0.06)),
             )
             .children(self.segments.into_iter().enumerate().map(|(i, seg)| {
                 let on = i == self.selected;
@@ -352,7 +348,7 @@ impl RenderOnce for SegmentedControl {
                     .items_center()
                     .justify_center()
                     .gap(px(5.0))
-                    .rounded(px(radius::SELECT))
+                    .rounded(px(radius::nested(2.0)))
                     .text_size(ty::SMALL)
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .text_color(if on { t.text } else { t.text_muted })
@@ -412,7 +408,7 @@ pub fn swatch(
 // Text field
 // ---------------------------------------------------------------------------
 
-/// A single-line field: 32 px, 8 px corners, a wash fill and an accent edge
+/// A single-line field: 32 px, 10 px corners, a wash fill and an accent edge
 /// while focused.
 pub fn text_field(input: &Entity<InputState>, width: Option<f32>, focused: bool, t: &Theme) -> Div {
     div()
@@ -775,7 +771,7 @@ pub fn slider<V: 'static>(
         .h(px(28.0))
         .flex()
         .items_center()
-        .rounded(px(6.0))
+        .rounded(px(radius::RADIUS))
         .border_1()
         .border_color(gpui::transparent_black())
         .cursor_pointer()

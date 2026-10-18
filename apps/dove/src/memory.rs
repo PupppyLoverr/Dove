@@ -358,7 +358,6 @@ pub fn watchdog(shell: &mut Shell, window: Option<&mut Window>, cx: &mut Context
 /// Shrink every cache to its floor.
 pub fn trim_caches(window: Option<&mut Window>, cx: &mut App) {
     crate::markdown_extra::trim(window, cx);
-    crate::canvas::trim_docs();
     // Images are dropped on their next load, which has the window.
     let images = image_cache(cx);
     images.update(cx, |c, _| c.trim_pending = true);

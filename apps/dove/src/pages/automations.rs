@@ -85,7 +85,6 @@ impl Shell {
             weekdays: vec![0],
             cron,
             branch,
-            worktree: true,
             enabled: true,
             error: None,
         };
@@ -105,7 +104,6 @@ impl Shell {
                 .store
                 .setting(&format!("automation_persona.{}", a.id))
                 .filter(|id| self.personas.iter().any(|p| &p.id == id));
-            ed.worktree = a.worktree;
             ed.enabled = a.enabled;
             set(&ed.name, a.name.clone(), window, cx);
             ed.prompt.update(cx, |s, cx| s.set_value(a.prompt.clone(), window, cx));
@@ -220,7 +218,7 @@ impl Shell {
             harness: ed.harness,
             model: None,
             trigger: trigger.to_json(),
-            worktree: ed.worktree,
+            worktree: false,
             enabled: ed.enabled,
             // A new schedule counts from now, so it never fires for the past.
             last_run: existing.as_ref().and_then(|a| a.last_run).or(Some(dove_core::store::now_ms())),
@@ -360,7 +358,6 @@ impl Shell {
                         .child(div().flex().gap(px(4.0)).children(WEEKDAYS.iter().enumerate().map(|(i, d)| {
                             let i = i as u32;
                             let on = ed.weekdays.contains(&i);
-                            let hover = t.wash(0.08);
                             div()
                                 .id(SharedString::from(format!("wd-{i}")))
                                 .role(gpui::Role::CheckBox)
@@ -370,14 +367,13 @@ impl Shell {
                                 .flex()
                                 .items_center()
                                 .justify_center()
-                                .rounded(px(radius::SELECT))
                                 .text_size(ty::CAPTION)
                                 .font_weight(gpui::FontWeight::MEDIUM)
                                 .cursor_pointer()
                                 .map(|d| if on {
-                                    d.bg(t.accent).text_color(t.on_solid)
+                                    d.text_color(t.text)
                                 } else {
-                                    d.bg(t.wash(0.06)).text_color(t.text_muted).hover(move |s| s.bg(hover))
+                                    d.text_color(t.text_muted).hover(|s| s.text_color(t.text))
                                 })
                                 .child(&d[..2])
                                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -401,12 +397,6 @@ impl Shell {
                 .into_any_element(),
         };
 
-        let worktree = ctl::on_toggle(ctl::toggle(t, "auto-wt", ed.worktree), cx, |this, _, cx| {
-            if let Some(ed) = this.pages.editor.as_mut() {
-                ed.worktree = !ed.worktree;
-            }
-            cx.notify();
-        });
         let enabled = ctl::on_toggle(ctl::toggle(t, "auto-enabled", ed.enabled), cx, |this, _, cx| {
             if let Some(ed) = this.pages.editor.as_mut() {
                 ed.enabled = !ed.enabled;
@@ -428,7 +418,6 @@ impl Shell {
         let when = page::card(t)
             .child(page::setting_row(t, true, "Trigger", "", trigger))
             .child(detail)
-            .child(page::setting_row(t, false, "Run in its own worktree", "Each run gets a fresh branch.", worktree))
             .child(page::setting_row(t, false, "Enabled", "Paused automations keep their settings.", enabled));
         div()
             .flex()
@@ -482,11 +471,7 @@ impl Shell {
                 cx.notify();
             },
         );
-        let meta = [trigger, project, last]
-            .into_iter()
-            .chain(a.worktree.then(|| "worktree".to_string()))
-            .collect::<Vec<_>>()
-            .join(" · ");
+        let meta = [trigger, project, last].join(" · ");
         page::row(t, first)
             .child(page::row_tile(t, ui::harness_icon(a.harness), Some(ui::harness_tint(a.harness, t, t.text_muted))))
             .child(

@@ -24,7 +24,7 @@ use gpui_base::input::{InputEvent, InputState};
 
 use crate::assets::{icon, icons};
 use crate::composer::{Composer, ComposerEvent};
-use crate::design::ty;
+use crate::design::{radius, ty};
 use crate::kit::{self, Toasts, Tone};
 use crate::pages::PageState;
 use crate::palette::{Palette, PaletteEvent, PaletteItem};
@@ -39,13 +39,18 @@ use crate::{actions, notify, ui};
 pub const SIDEBAR_W: f32 = 264.0;
 /// The dock's default width (Zeron's surface host).
 pub const PANEL_W: f32 = 520.0;
-/// Gutter between the window edge and the card, and between columns.
-pub const GUTTER: f32 = 6.0;
 /// The chat column never gets narrower than this; the dock gives way first,
 /// so the dock is at most the viewport less the sidebar and this.
 const CENTER_MIN: f32 = 300.0;
 /// Narrowest the dock gets.
 const PANEL_FLOOR: f32 = 360.0;
+
+/// A thread's picture: blurred enough to read as colour and soft shapes,
+/// darkened enough that text stays calm on any image.
+const THREAD_ART_BLUR: f32 = 30.0;
+const THREAD_ART_TINT: f32 = 0.60;
+/// The sidebar and dock over that picture: the same frost, a shade deeper.
+const SIDE_ART_TINT: f32 = 0.24;
 
 /// Responsive fit, after Zeron's `horizontal_panel_fit`: which side columns
 /// the window has room for, as (sidebar, dock). A column that does not fit
@@ -63,9 +68,9 @@ pub(crate) fn panel_fit(
     let mut cols = [sidebar, dock];
     loop {
         let takeover = expanded && cols[1].0;
-        let need = if cols[0].0 { sidebar_w } else { GUTTER }
+        let need = if cols[0].0 { sidebar_w } else { 0.0 }
             + if cols[1].0 { PANEL_FLOOR } else { 0.0 }
-            + if takeover { 0.0 } else { CENTER_MIN + GUTTER };
+            + if takeover { 0.0 } else { CENTER_MIN };
         if need <= viewport {
             return (cols[0].0, cols[1].0);
         }
@@ -75,6 +80,35 @@ pub(crate) fn panel_fit(
             None => return (false, false),
         }
     }
+}
+
+/// A title-bar control. Hover only darkens the glyph; a filled plate here
+/// reads as a button sitting on the column.
+fn quiet_bar_button(
+    id: &'static str,
+    label: &'static str,
+    child: impl IntoElement,
+    on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
+) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .size(px(ui::BUTTON))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .cursor_pointer()
+        .occlude()
+        .role(gpui::Role::Button)
+        .aria_label(label)
+        .tooltip(ui::tip(label))
+        .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+        .on_hover(crate::motion::hover_listener(id))
+        .on_click(move |e, window, cx| {
+            cx.stop_propagation();
+            on_click(e, window, cx);
+        })
+        .child(child)
 }
 
 /// Recency of the side columns for [`panel_fit`].
@@ -391,7 +425,6 @@ impl Shell {
         this.scan_harnesses(cx);
         this.start_scheduler(cx);
         this.start_browser_control(window, cx);
-        this.start_canvas_inbox(window, cx);
         crate::composer::focus(&this.composer, window, cx);
         // `DOVE_OPEN_THREAD=<id>`: start on a thread (QA and scripting).
         if let Some(id) = std::env::var("DOVE_OPEN_THREAD").ok().and_then(|s| uuid_task(&s)) {
@@ -884,18 +917,6 @@ impl Shell {
                     self.panel.update(cx, |p, cx| p.drive_browser(action, window, cx));
                     cx.notify();
                 }
-                TaskViewEventKind::OpenCanvas(spec, asked) => {
-                    // Designs open on the thread on screen; one from a thread
-                    // in the background waits for its card to be clicked.
-                    let auto = self.engine.store.setting("canvas_auto_open").as_deref() != Some("false");
-                    if self.route == Route::Thread(id) && (*asked || auto) {
-                        self.panel_open = true;
-                        let _ = self.engine.store.set_setting("panel_open", "true");
-                        let spec = spec.clone();
-                        self.panel.update(cx, |p, cx| p.open_canvas(spec, Some(id), true, window, cx));
-                        cx.notify();
-                    }
-                }
             },
         }
     }
@@ -938,9 +959,9 @@ impl Shell {
         let chat = v.read(cx).chat.clone();
         // Todos, subagents and designs move only when the chat says so.
         let fresh = crate::memory::panel_changed((chat.entity_id(), chat.read(cx).panel_rev()), cx);
-        let (todos, subagents, designs) = if fresh {
+        let (todos, subagents) = if fresh {
             let chat = chat.read(cx);
-            (chat.todos().to_vec(), chat.subagents(), chat.designs())
+            (chat.todos().to_vec(), chat.subagents())
         } else {
             Default::default()
         };
@@ -949,28 +970,9 @@ impl Shell {
             if fresh {
                 p.set_todos(todos, cx);
                 p.set_subagents(subagents, cx);
-                p.set_designs(designs.clone(), cx);
             }
             p.set_side_chats(chats, cx);
         });
-        // `DOVE_OPEN_CANVAS=1`: open the thread's latest design once it has
-        // loaded (QA and scripting).
-        static OPENED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-        if std::env::var_os("DOVE_OPEN_CANVAS").is_some()
-            && let Some(spec) = designs.into_iter().next()
-            && !OPENED.swap(true, std::sync::atomic::Ordering::Relaxed)
-        {
-            let thread = self.active_task().map(|t| t.id);
-            self.panel_open = true;
-            if let Some(window) = cx.windows().first().copied() {
-                let panel = self.panel.clone();
-                cx.defer(move |cx| {
-                    let _ = window.update(cx, |_, window, cx| {
-                        panel.update(cx, |p, cx| p.open_canvas(spec, thread, true, window, cx));
-                    });
-                });
-            }
-        }
     }
 
     /// Threads that share `id`'s worktree (its side chats), newest first.
@@ -991,32 +993,6 @@ impl Shell {
             .collect();
         out.sort_by_key(|t| std::cmp::Reverse(t.updated_at));
         out
-    }
-
-    /// Messages that pages on a canvas sent with `dove.send`: each becomes
-    /// the user's next turn in the thread that made the design.
-    fn start_canvas_inbox(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        crate::canvas::start();
-        let Some(rx) = crate::canvas::inbox() else { return };
-        cx.spawn_in(window, async move |this, cx| {
-            while let Ok((thread, text)) = rx.recv_async().await {
-                let _ = this.update_in(cx, |this, window, cx| {
-                    if this.engine.store.setting("canvas_bridge").as_deref() == Some("false") {
-                        return;
-                    }
-                    let target = thread.or(match this.route {
-                        Route::Thread(id) => Some(id),
-                        _ => None,
-                    });
-                    let Some(id) = target else { return };
-                    if let Some(v) = this.threads.get(&id) {
-                        let chat = v.read(cx).chat.clone();
-                        chat.update(cx, |c, cx| c.submit(text.clone(), window, cx));
-                    }
-                });
-            }
-        })
-        .detach();
     }
 
     fn save_tabs(&self) {
@@ -1056,9 +1032,9 @@ impl Shell {
     // ------------------------------------------------------------ actions
 
     fn start(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
-        let (project, run, harness, worktree, branch, persona) = {
+        let (project, run, harness, persona) = {
             let c = self.composer.read(cx);
-            (c.project.clone(), c.run_settings(cx), c.harness(cx), c.worktree, c.branch.clone(), c.persona.clone())
+            (c.project.clone(), c.run_settings(cx), c.harness(cx), c.persona.clone())
         };
         let Some(project) = project.or_else(|| self.home_project.and_then(|id| self.project(id)).cloned()) else {
             self.error = Some("Add a project first.".into());
@@ -1070,8 +1046,6 @@ impl Shell {
             prompt: text.clone(),
             harness,
             run,
-            worktree,
-            from_branch: if self.join.is_some() { None } else { branch },
             join: self.join.as_ref().map(|(_, j)| j.clone()),
             persona,
         };
@@ -1126,8 +1100,7 @@ impl Shell {
         let Some(project) = self.project(draft.project_id).cloned() else { return };
         let run = self.composer.read(cx).run_settings(cx);
         let run = if self.composer.read(cx).harness(cx) == draft.harness { run } else { Default::default() };
-        let worktree = self.engine.store.setting("use_worktree").as_deref() != Some("false");
-        match self.engine.start_draft(&draft, &project, run, worktree) {
+        match self.engine.start_draft(&draft, &project, run) {
             Ok((task, live)) => {
                 self.tasks.retain(|t| t.id != id);
                 self.tasks.insert(0, task.clone());
@@ -1393,13 +1366,11 @@ impl Shell {
         cx.spawn_in(window, async move |this, cx| {
             let branch = work.await;
             let _ = this.update_in(cx, |s, window, cx| match branch {
-                Ok(branch) => {
+                Ok(_) => {
                     s.home_project = Some(project.id);
                     let projects = s.projects.clone();
                     s.composer.update(cx, |c, cx| {
                         c.set_projects(projects, Some(project.id), cx);
-                        c.branch = Some(branch);
-                        c.worktree = true;
                         cx.notify();
                     });
                     let prompt = format!(
@@ -1510,7 +1481,6 @@ impl Shell {
                 P::Action("Chat ⇄ Terminal", icons::TERMINAL, "toggle_terminal"),
                 P::Action("Show changes", icons::FILE_CODE, "panel_changes"),
                 P::Action("Show files", icons::FOLDER_TREE, "panel_files"),
-                P::Action("Show canvas", icons::GALLERY, "panel_canvas"),
                 P::Action("Show subagents", icons::FORK, "panel_subagents"),
                 P::Action("New shell", icons::TERMINAL, "panel_shell"),
                 P::Action("Rename thread", icons::PEN, "rename"),
@@ -1576,7 +1546,6 @@ impl Shell {
                 "toggle_terminal" => self.toggle_view_mode(window, cx),
                 "panel_changes" => self.show_panel(Tab::Changes, window, cx),
                 "panel_files" => self.show_panel(Tab::Files, window, cx),
-                "panel_canvas" => self.show_panel(Tab::Canvas, window, cx),
                 "panel_subagents" => self.show_panel(Tab::Subagents, window, cx),
                 "panel_shell" => {
                     self.show_panel(Tab::Terminal, window, cx);
@@ -1621,7 +1590,7 @@ impl Shell {
 
     /// Floating window chrome for the empty main page: sidebar and history,
     /// with no tab strip. The strip appears once a thread is open.
-    fn render_bare_chrome(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn render_bare_chrome(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let t = Theme::of(cx).clone();
         let left_pad = if cfg!(target_os = "macos") { 78.0 } else { 10.0 };
         let can_back = !self.back.is_empty();
@@ -1679,7 +1648,7 @@ impl Shell {
             .px(px(6.0))
             .flex()
             .items_center()
-            .rounded(px(12.0))
+            .rounded(px(radius::RADIUS))
             .when(island_on, |d| {
                 d.bg(t.glass_overlay()).border_1().border_color(t.wash(0.07)).shadow(vec![gpui::BoxShadow {
                     color: gpui::hsla(0.0, 0.0, 0.0, 0.22),
@@ -1691,7 +1660,7 @@ impl Shell {
             })
             .child(buttons);
         let cluster = div().ml(px(if cfg!(target_os = "macos") { left_pad } else { 6.0 })).child(if island_on {
-            ui::frosted(12.0, 20.0, island).into_any_element()
+            ui::frosted(radius::RADIUS, 20.0, island).into_any_element()
         } else {
             island.into_any_element()
         });
@@ -1703,15 +1672,7 @@ impl Shell {
             .items_center()
             .child(cluster);
         let bar = self.drag_region("home-chrome", bar, cx);
-        div()
-            .absolute()
-            .top_0()
-            .left_0()
-            .right_0()
-            .child(bar)
-            .children(ui::windows_captions(window, &t))
-            .children(ui::linux_captions(&t))
-            .into_any_element()
+        div().absolute().top_0().left_0().right_0().child(bar).into_any_element()
     }
 
     fn render_topbar(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
@@ -1720,7 +1681,7 @@ impl Shell {
         let can_back = !self.back.is_empty();
         let can_fwd = !self.forward.is_empty();
         // With the sidebar open the cluster is exactly the sidebar's width, so
-        // the tabs start where the card starts: the titlebar repeats the body's
+        // the tabs start where the chat starts. The bar repeats the body's
         // columns (sidebar | chat | dock) instead of spilling across them.
         // Zeron's cluster: the sidebar toggle, a group gap, then both history
         // arrows (dim when there is nowhere to go, so nothing shifts).
@@ -1731,8 +1692,14 @@ impl Shell {
                      go: fn(&mut Shell, &mut Window, &mut Context<Shell>),
                      cx: &mut Context<Self>| {
             if enabled {
-                ui::icon_button(id, path, label, &t, cx.listener(move |this, _, window, cx| go(this, window, cx)))
-                    .into_any_element()
+                let color = crate::motion::hover_blend(id, t.text_muted, t.text);
+                quiet_bar_button(
+                    id,
+                    label,
+                    icon(path).size(px(16.0)).text_color(color),
+                    cx.listener(move |this, _, window, cx| go(this, window, cx)),
+                )
+                .into_any_element()
             } else {
                 div()
                     .id(id)
@@ -1752,23 +1719,25 @@ impl Shell {
             .pl(px(left_pad))
             .when(side, |d| d.w(px(self.sidebar_w)))
             .when(!side, |d| d.pr(px(8.0)))
-            .child(ui::window_button(
-                "tb-sidebar",
-                ui::sidebar_glyph(
-                    crate::motion::state_t(
-                        "glyph-sidebar",
-                        self.sidebar_shown(),
-                        crate::motion::GLYPH_STATE,
-                        cx.reduce_motion(),
+            .child({
+                let color = crate::motion::hover_blend("tb-sidebar", t.text_muted, t.text);
+                quiet_bar_button(
+                    "tb-sidebar",
+                    "Toggle sidebar (Ctrl+B)",
+                    ui::sidebar_glyph(
+                        crate::motion::state_t(
+                            "glyph-sidebar",
+                            self.sidebar_shown(),
+                            crate::motion::GLYPH_STATE,
+                            cx.reduce_motion(),
+                        ),
+                        false,
+                        16.0,
+                        color,
                     ),
-                    false,
-                    16.0,
-                    t.text_muted,
-                ),
-                "Toggle sidebar (Ctrl+B)",
-                &t,
-                cx.listener(|this, _, _, cx| this.toggle_sidebar(cx)),
-            ))
+                    cx.listener(|this, _, _, cx| this.toggle_sidebar(cx)),
+                )
+            })
             .child(div().w(px(8.0)))
             .child(arrow("tb-back", icons::ARROW_LEFT, "Back (Alt+←)", can_back, |s, w, cx| s.go_back(w, cx), cx))
             .child(div().w(px(2.0)))
@@ -1787,16 +1756,11 @@ impl Shell {
             left_pad + ui::BUTTON * 3.0 + 8.0 + 2.0 + 8.0
         };
         let tools_w = 16.0
-            + if in_thread { ui::BUTTON + 4.0 + 66.0 } else { 0.0 }
+            + if in_thread { ui::BUTTON + 4.0 } else { 0.0 }
             + if in_thread && !panel_open { ui::BUTTON + 4.0 } else { 0.0 }
             + if panel_open { panel_w } else { ui::caption_reserve() };
         let room = f32::from(window.viewport_size().width) - cluster_w - tools_w;
         let tabs = self.render_tabs(room, &t, cx);
-        let switch = match self.route {
-            Route::Thread(id) => self.threads.get(&id).cloned(),
-            _ => None,
-        }
-        .map(|v| v.update(cx, |v, cx| v.view_switch(&t, cx)));
         let right_tools = div()
             .flex()
             .flex_none()
@@ -1804,47 +1768,36 @@ impl Shell {
             .gap(px(4.0))
             .pl(px(8.0))
             .pr(px(if panel_open { 8.0 } else { ui::caption_reserve() + 8.0 }))
-            // Thread tools share one quiet capsule: the chat/terminal
-            // segment, a hairline, then info and the panel toggle.
+            // Thread tools sit in the bar: info, then the panel toggle.
+            // Chat and terminal flip with Ctrl+`.
             .when(in_thread, |d| {
-                d.child(
-                    div()
-                        .h(px(28.0))
-                        .px(px(2.0))
-                        .flex()
-                        .items_center()
-                        .gap(px(2.0))
-                        .rounded(px(9.0))
-                        .bg(t.wash(0.035))
-                        .border_1()
-                        .border_color(t.wash(0.06))
-                        .when_some(switch, |d, sw| {
-                            d.child(div().pl(px(1.0)).child(sw))
-                                .child(div().mx(px(3.0)).w(px(1.0)).h(px(14.0)).bg(t.wash(0.09)))
-                        })
-                        .child(self.render_info_button(cx))
-                        .when(!panel_open, |d| {
-                            d.child(ui::window_button(
-                                "tb-panel",
-                                ui::sidebar_glyph(0.0, true, 16.0, t.text_muted),
-                                "Side panel: browser, diffs, files… (Ctrl+\\)",
-                                &t,
-                                cx.listener(|this, _, _, cx| this.toggle_panel(cx)),
-                            ))
-                        }),
-                )
+                d.child(div().h(px(28.0)).flex().items_center().gap(px(2.0)).child(self.render_info_button(cx)).when(
+                    !panel_open,
+                    |d| {
+                        let color = crate::motion::hover_blend("tb-panel", t.text_muted, t.text);
+                        d.child(quiet_bar_button(
+                            "tb-panel",
+                            "Side panel: browser, diffs, files… (Ctrl+\\)",
+                            ui::sidebar_glyph(0.0, true, 16.0, color),
+                            cx.listener(|this, _, _, cx| this.toggle_panel(cx)),
+                        ))
+                    },
+                ))
             });
         let strip = panel_open.then(|| self.panel.update(cx, |p, cx| p.render_strip(cx)));
 
-        let bar = div()
-            .relative()
-            .h(px(Theme::TITLEBAR_HEIGHT))
-            .pt(px(Theme::TITLEBAR_TOP_PAD))
+        // Over artwork the strip stays clear: the picture (and, in a thread,
+        // its frost) is already painted for this column, so the tabs sit on
+        // the same surface as the page. Everywhere else it is the solid bar.
+        let home_art = matches!(self.route, Route::Home) && self.has_wallpaper();
+        let thread_art = matches!(self.route, Route::Thread(_)) && self.has_wallpaper();
+        let surface = div()
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .when(!home_art && !thread_art, |d| d.bg(t.bg))
             .flex()
             .items_center()
-            .child(cluster)
-            // Expanded, the dock owns the whole card, so its strip owns the
-            // whole bar after the cluster; thread tabs and tools step aside.
             .when(!expanded, |d| {
                 d.child(div().flex_1().min_w_0().h_full().flex().items_center().child(tabs)).child(right_tools)
             })
@@ -1859,14 +1812,16 @@ impl Shell {
                         .child(strip),
                 )
             });
-        let bar = self.drag_region("titlebar", bar, cx);
-        div()
+        let bar = div()
             .relative()
-            .flex_none()
-            .child(bar)
-            .children(ui::windows_captions(window, &t))
-            .children(ui::linux_captions(&t))
-            .into_any_element()
+            .h(px(Theme::TITLEBAR_HEIGHT))
+            .flex()
+            .items_center()
+            .when(!side && !home_art && !thread_art, |d| d.bg(t.bg))
+            .child(cluster)
+            .child(surface);
+        let bar = self.drag_region("titlebar", bar, cx);
+        div().relative().flex_none().child(bar).into_any_element()
     }
 
     /// Open threads as tabs: status glyph, title, close. Middle-click closes;
@@ -1954,7 +1909,7 @@ impl Shell {
             strip = strip.child(
                 div()
                     .id(SharedString::from(format!("tab-{id}")))
-                    .group("tab")
+                    .group(SharedString::from(format!("tab-{id}")))
                     .h(px(28.0))
                     .w(px(width))
                     .flex_none()
@@ -1963,24 +1918,16 @@ impl Shell {
                     .flex()
                     .items_center()
                     .gap(px(7.0))
-                    .rounded(px(8.0))
+                    .rounded(px(radius::RADIUS))
                     .occlude()
                     .cursor_pointer()
+                    .when(selected && matches!(self.route, Route::Home) && self.has_wallpaper(), |d| {
+                        d.bg(t.bg.opacity(0.42))
+                    })
                     // The full title on hover wherever it may be cut short,
                     // and always on the active tab.
                     .when(!full || selected, |d| d.tooltip(ui::tip(task.title.clone())))
                     .relative()
-                    // Zeron's selected glass chip: a wash plus an inset
-                    // hairline ring, nothing painted behind it.
-                    .when(selected, |d| d.bg(ui::selected_bg(t)).shadow(ui::selected_ring(t)))
-                    .when(!selected, |d| {
-                        crate::motion::hover_fade(
-                            d,
-                            SharedString::from(format!("tab-{id}")),
-                            (t.wash(0.0), t.wash(0.05)),
-                            None,
-                        )
-                    })
                     .when(show_glyph, |d| {
                         d.child(kit::status_glyph(
                             SharedString::from(format!("tab-st-{id}")),
@@ -2007,6 +1954,7 @@ impl Shell {
                                 .text_size(ty::SMALL)
                                 .when(task.unread && !selected, |d| d.font_weight(gpui::FontWeight::SEMIBOLD))
                                 .text_color(if selected { t.text } else { t.text_muted })
+                                .group_hover(SharedString::from(format!("tab-{id}")), |s| s.text_color(t.text))
                                 .child(task.title.clone()),
                         )
                     })
@@ -2019,11 +1967,19 @@ impl Shell {
                                 .flex_none()
                                 .items_center()
                                 .justify_center()
-                                .rounded(px(5.0))
-                                .when(!selected, |d| d.invisible().group_hover("tab", |s| s.visible()))
-                                .hover(|s| s.bg(t.wash(0.14)))
+                                .group(SharedString::from(format!("tab-x-{id}")))
+                                .when(!selected, |d| {
+                                    d.invisible().group_hover(SharedString::from(format!("tab-{id}")), |s| s.visible())
+                                })
                                 .tooltip(ui::tip("Close tab (Ctrl+W)"))
-                                .child(icon(icons::CLOSE).size(px(10.0)).text_color(t.text_faint))
+                                .child(
+                                    icon(icons::CLOSE)
+                                        .size(px(10.0))
+                                        .text_color(t.text_faint)
+                                        .group_hover(SharedString::from(format!("tab-x-{id}")), |s| {
+                                            s.text_color(t.text)
+                                        }),
+                                )
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     cx.stop_propagation();
                                     this.close_tab(id, window, cx);
@@ -2052,11 +2008,14 @@ impl Shell {
             strip = strip.child(self.render_tab_overflow(&hidden, t, cx));
         }
         strip = strip.child(
-            ui::icon_button(
+            quiet_bar_button(
                 "tab-new",
-                icons::PLUS,
                 "New thread (Ctrl+N)",
-                t,
+                icon(icons::PLUS).size(px(16.0)).text_color(crate::motion::hover_blend(
+                    "tab-new",
+                    t.text_muted,
+                    t.text,
+                )),
                 cx.listener(|this, _, window, cx| this.new_session(window, cx)),
             )
             .flex_none(),
@@ -2086,16 +2045,16 @@ impl Shell {
             .items_center()
             .justify_center()
             .gap(px(5.0))
-            .rounded(px(8.0))
+            .rounded(px(radius::RADIUS))
             .cursor_pointer()
             .occlude()
             .text_size(ty::SMALL)
             .role(gpui::Role::Button)
             .aria_label("More tabs")
             .tooltip(ui::tip("More tabs"))
-            .when(open, |d| d.bg(ui::selected_bg(t)).shadow(ui::selected_ring(t)).text_color(t.text))
+            .when(open, |d| d.bg(ui::selected_bg(t)).text_color(t.text))
             .when(!open, |d| {
-                crate::motion::hover_fade(d, "tab-more", (t.wash(0.0), t.wash(0.05)), Some((t.text_muted, t.text)))
+                crate::motion::hover_fade(d, "tab-more", (t.wash(0.0), t.wash(0.0)), Some((t.text_muted, t.text)))
             })
             .when(attention, |d| d.child(ui::dot(t.warning, 5.0)))
             .child(format!("+{}", hidden.len()))
@@ -2122,7 +2081,7 @@ impl Shell {
                         .flex_none()
                         .items_center()
                         .justify_center()
-                        .rounded(px(5.0))
+                        .rounded(px(radius::RADIUS))
                         .hover(|s| s.bg(t.wash(0.14)))
                         .tooltip(ui::tip("Close tab"))
                         .child(icon(icons::CLOSE).size(px(10.0)).text_color(t.text_faint))
@@ -2177,79 +2136,141 @@ impl Shell {
     fn render_info_button(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let t = Theme::of(cx).clone();
         let open = self.info_open;
-        let mut root = div().relative().child(
-            ui::window_button(
+        let rest = if open { t.text } else { t.text_muted };
+        div()
+            .relative()
+            .child(quiet_bar_button(
                 "tb-info",
-                icon(icons::INFO_CIRCLE).text_color(if open { t.text } else { t.text_muted }),
                 "Thread info",
-                &t,
+                icon(icons::INFO_CIRCLE).text_color(crate::motion::hover_blend("tb-info", rest, t.text)),
                 cx.listener(|this, _, _, cx| {
                     this.info_open = !this.info_open;
                     cx.notify();
                 }),
-            )
-            .when(open, |d| d.bg(t.glass_hover())),
-        );
-        if open && let Some(task) = self.active_task().cloned() {
-            root = root.child(deferred(
-                anchored().anchor(Anchor::TopRight).snap_to_window_with_margin(px(8.0)).child(
-                    div()
-                        .mt(px(30.0))
-                        .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                            this.info_open = false;
-                            cx.notify();
-                        }))
-                        .child(self.render_info_card(&task, &t, cx)),
-                ),
-            ));
-        }
-        root.into_any_element()
+            ))
+            .into_any_element()
+    }
+
+    /// While the sidebar is open the chat column is too narrow for the full
+    /// bar, so it tucks until the pointer is over it.
+    fn sync_thread_dock(&mut self, tuck: bool, cx: &mut Context<Self>) {
+        let Route::Thread(id) = self.route else { return };
+        let Some(view) = self.threads.get(&id).cloned() else { return };
+        view.update(cx, |v, cx| {
+            let composer = v.chat.read(cx).composer.clone();
+            composer.update(cx, |c, cx| c.set_dock_tuck(tuck, cx));
+        });
     }
 
     fn render_info_card(&self, task: &Task, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let project = self.project(task.project_id).cloned();
         let path = task.worktree.clone().or_else(|| project.as_ref().map(|p| p.path.clone()));
-        let row = |glyph: &'static str, text: String| {
-            div()
-                .h(px(32.0))
-                .px(px(14.0))
-                .flex()
-                .items_center()
-                .gap(px(10.0))
-                .text_size(ty::MD)
-                .child(icon(glyph).text_color(t.text_muted))
-                .child(div().truncate().child(text))
-        };
-        let (usage, context) = self
+        let (usage, context, mode) = self
             .threads
             .get(&task.id)
             .map(|v| {
-                let c = v.read(cx).chat.read(cx);
-                (c.usage(), c.context())
+                let chat = v.read(cx).chat.read(cx);
+                let mode = chat.composer.read(cx).mode;
+                (chat.usage(), chat.context(), mode)
             })
             .unwrap_or_default();
+        let (files, adds, dels) = self.panel.read(cx).changes.read(cx).summary();
         let can_fork = Engine::can_fork(task);
         let path_s = path.as_ref().map(|p| p.display().to_string()).unwrap_or_default();
         let id = task.id;
-        let body = div()
-            .w(px(320.0))
+        let context_line = match context {
+            (Some(u), Some(w)) if w > 0 => {
+                format!("{:.0}% context · {} / {}", u as f32 / w as f32 * 100.0, ui::compact(u), ui::compact(w))
+            }
+            (Some(u), _) => format!("{} used", ui::compact(u)),
+            _ => "Context not reported yet".into(),
+        };
+        let mode_name = match mode {
+            dove_core::proto::PermissionMode::Default => "Ask every time",
+            dove_core::proto::PermissionMode::AcceptEdits => "Auto-edit",
+            dove_core::proto::PermissionMode::Plan => "Plan",
+            dove_core::proto::PermissionMode::Bypass => "Bypass",
+        };
+        let model = task
+            .model
+            .clone()
+            .map(|m| format!("{} · {m}", task.harness.label()))
+            .unwrap_or_else(|| task.harness.label().to_string());
+        let fact = |glyph: &'static str, text: String| {
+            div()
+                .min_h(px(32.0))
+                .px(px(8.0))
+                .flex()
+                .items_center()
+                .gap(px(8.0))
+                .rounded(px(8.0))
+                .text_size(ty::BODY)
+                .text_color(t.text)
+                .child(
+                    div()
+                        .size(px(16.0))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(icon(glyph).size(px(15.0)).text_color(t.text_muted)),
+                )
+                .child(div().flex_1().min_w_0().truncate().child(text))
+        };
+        let rule = div().h(px(1.0)).my(px(2.0)).bg(t.border.opacity(0.65));
+        let sheet = div()
+            .id("thread-info")
+            .w(px(272.0))
+            .max_h(px(560.0))
             .flex()
             .flex_col()
-            .child(row(icons::LAPTOP, format!("Local · {}", ui::host_name())))
-            .when_some(project, |d, p| d.child(row(icons::FOLDER, p.name.clone())))
-            .when_some(task.branch.clone(), |d, b| d.child(row(icons::GIT_BRANCH, b)))
-            .child(row(
-                ui::harness_icon(task.harness),
-                task.model
-                    .clone()
-                    .map(|m| format!("{} · {m}", task.harness.label()))
-                    .unwrap_or_else(|| task.harness.label().to_string()),
-            ))
-            .when(usage.total_tokens() > 0, |d| d.child(row(icons::CLOCK_CIRCLE, ui::usage_line(&usage))))
-            .when_some(context.0.zip(context.1), |d, (u, w)| {
-                d.child(row(icons::FILE_DATA, format!("Context {} / {}", ui::compact(u), ui::compact(w))))
+            .overflow_y_scroll()
+            .rounded(px(12.0))
+            .border_1()
+            .border_color(t.border)
+            .bg(t.bg.opacity(0.48))
+            .p(px(4.0))
+            .gap(px(2.0))
+            .child(fact(icons::LAPTOP, format!("Local · {}", ui::host_name())))
+            .child(fact(icons::FOLDER, project.as_ref().map(|p| p.name.clone()).unwrap_or_else(|| "No folder".into())))
+            .when_some(task.branch.clone(), |d, b| d.child(fact(icons::GIT_BRANCH, b)))
+            .when(!path_s.is_empty(), |d| d.child(fact(icons::FOLDER_WITH_FILES, path_s.clone())))
+            .child(rule)
+            .child(fact(icons::CLOCK_CIRCLE, context_line))
+            .child(fact(ui::harness_icon(task.harness), model))
+            .child(fact(icons::KEY_MINIMALISTIC, format!("Permissions · {mode_name}")))
+            .when(usage.total_tokens() > 0, |d| d.child(fact(icons::TAG, ui::usage_line(&usage))))
+            .when_some(usage.cost_usd, |d, cost| d.child(fact(icons::TAG, format!("${cost:.2} this thread"))))
+            .when(files > 0, |d| {
+                d.child(
+                    div()
+                        .id("info-open-changes")
+                        .min_h(px(32.0))
+                        .px(px(8.0))
+                        .flex()
+                        .items_center()
+                        .gap(px(8.0))
+                        .rounded(px(8.0))
+                        .cursor_pointer()
+                        .text_size(ty::BODY)
+                        .text_color(t.text)
+                        .hover(|s| s.bg(t.element_hover))
+                        .on_click(cx.listener(|this, _, window, cx| this.show_panel(Tab::Changes, window, cx)))
+                        .child(
+                            div()
+                                .size(px(16.0))
+                                .flex_none()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(icon(icons::GIT_BRANCH).size(px(15.0)).text_color(t.text_muted)),
+                        )
+                        .child(div().flex_1().min_w_0().truncate().child(format!("{files} changed")))
+                        .child(div().flex_none().text_color(t.success).child(format!("+{adds}")))
+                        .child(div().flex_none().text_color(t.danger).child(format!("−{dels}"))),
+                )
             })
-            .child(ui::separator(t))
+            .child(div().h(px(1.0)).my(px(2.0)).bg(t.border.opacity(0.65)))
             .child(
                 ui::menu_row("info-side", icons::PLUS, "New side chat", false, t)
                     .on_click(cx.listener(|this, _, window, cx| this.side_chat(window, cx))),
@@ -2264,38 +2285,31 @@ impl Shell {
                     .tooltip(ui::tip("Forking needs a Claude Code session that has started"))
                     .into_any_element()
             })
-            .child(ui::separator(t))
             .child({
                 let p = path.clone();
-                ui::menu_row("info-open", icons::FOLDER_WITH_FILES, "Open folder", false, t).on_click(cx.listener(
-                    move |this, _, _, cx| {
+                ui::menu_row("info-open", icons::FOLDER_WITH_FILES, "Open folder", false, t)
+                    .on_click(cx.listener(move |_, _, _, cx| {
                         if let Some(p) = &p {
                             cx.open_with_system(p);
                         }
-                        this.info_open = false;
-                        cx.notify();
-                    },
-                ))
+                    }))
+                    .into_any_element()
             })
             .child({
-                let p = path.clone();
-                ui::menu_row("info-term", icons::TERMINAL, "Open in system terminal", false, t).on_click(cx.listener(
-                    move |this, _, _, cx| {
+                let p = path;
+                ui::menu_row("info-term", icons::TERMINAL, "Open in system terminal", false, t)
+                    .on_click(cx.listener(move |_, _, _, _cx| {
                         if let Some(p) = &p {
                             crate::terminal::open_system_terminal(p);
                         }
-                        this.info_open = false;
-                        cx.notify();
-                    },
-                ))
+                    }))
+                    .into_any_element()
             })
-            .child(ui::menu_row("info-copy-path", icons::COPY, "Copy path", false, t).on_click(cx.listener(
-                move |this, _, _, cx| {
-                    this.info_open = false;
-                    this.copy(path_s.clone(), cx);
-                },
-            )));
-        ui::menu_card(t, body).into_any_element()
+            .child(
+                ui::menu_row("info-copy-path", icons::COPY, "Copy path", false, t)
+                    .on_click(cx.listener(move |this, _, _, cx| this.copy(path_s.clone(), cx))),
+            );
+        ui::frosted(12.0, 64.0, sheet).into_any_element()
     }
 
     fn render_menu_overlay(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -2405,6 +2419,67 @@ impl Shell {
         )
     }
 
+    fn has_wallpaper(&self) -> bool {
+        self.engine.store.setting("wallpaper_path").is_some_and(|p| std::path::Path::new(&p).is_file())
+    }
+
+    /// Artwork for the chat column only, from the top of the window. The
+    /// sidebar and the files panel stay on the shell's own fill.
+    fn wallpaper_layer(
+        &mut self,
+        left: f32,
+        width: f32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let home = matches!(self.route, Route::Home);
+        let thread = matches!(self.route, Route::Thread(_));
+        if !home && !thread || width < 8.0 {
+            return None;
+        }
+        let path = self.engine.store.setting("wallpaper_path").filter(|p| std::path::Path::new(&p).is_file())?;
+        let t = Theme::of(cx).clone();
+        let viewport_h = f32::from(window.viewport_size().height);
+        let height = if thread { viewport_h } else { crate::wallpaper::hero_height(viewport_h) };
+        let scale = window.scale_factor();
+        let effect =
+            crate::wallpaper::Effect::from_id(&self.engine.store.setting("wallpaper_effect").unwrap_or_default());
+        let animate = self.engine.store.setting("wallpaper_animate").as_deref() == Some("true");
+        let props = crate::wallpaper::HeroProps {
+            path: path.into(),
+            effect,
+            light: !t.appearance.is_dark(),
+            target: (width * scale, height * scale),
+            animate,
+            frosted: t.is_frost(),
+            fade: home,
+            composer: if home { self.composer_bounds.clone() } else { std::rc::Rc::new(std::cell::Cell::new(None)) },
+        };
+        let view = window.use_keyed_state("shell-hero", cx, crate::wallpaper::Hero::new);
+        view.update(cx, |hero, cx| hero.show(props, cx)).then(|| {
+            // One column, from the title strip down. Home fades into the
+            // canvas. A thread keeps the picture and lays one frost over
+            // the whole column, titlebar included, so the bar is the page.
+            div()
+                .absolute()
+                .top_0()
+                .bottom_0()
+                .left(px(left))
+                .w(px(width))
+                .overflow_hidden()
+                .bg(t.bg)
+                .child(div().absolute().top_0().left_0().right_0().h(px(height)).child(view))
+                .when(thread, |d| {
+                    d.child(div().absolute().inset_0().child(ui::frosted(
+                        0.0,
+                        THREAD_ART_BLUR,
+                        div().size_full().bg(t.bg.opacity(THREAD_ART_TINT)),
+                    )))
+                })
+                .into_any_element()
+        })
+    }
+
     fn render_center(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         match self.route {
             Route::Home => self.render_home(window, cx),
@@ -2444,7 +2519,7 @@ impl Render for TabDrag {
         div()
             .px(px(10.0))
             .py(px(5.0))
-            .rounded(px(8.0))
+            .rounded(px(radius::RADIUS))
             .bg(t.surface_raised)
             .border_1()
             .border_color(t.border)
@@ -2540,6 +2615,7 @@ impl Render for Shell {
         let panel_open = in_thread && self.panel_shown();
         let expanded = panel_open && wants_expand;
         let sidebar_shown = self.sidebar_shown();
+        self.sync_thread_dock(sidebar_shown, cx);
         self.panel.update(cx, |p, cx| p.sync(panel_open, self.resize.is_some(), cx));
         let topbar = (!bare).then(|| self.render_topbar(window, cx));
         // With no title bar, the sidebar starts below the floating window
@@ -2605,25 +2681,16 @@ impl Render for Shell {
                 .when(bare, |d| d.pt(px(Theme::TITLEBAR_HEIGHT)))
                 .child(rows)
         });
-        let panel_ghost = self.slides.panel.exit(now).map(|(p, w)| {
-            div()
-                .absolute()
-                .top_0()
-                .bottom_0()
-                .right(px(-24.0 * p))
-                .w(px(w))
-                .opacity(1.0 - p)
-                .bg(t.panel_bg())
-                .border_l_1()
-                .border_color(t.border)
-        });
+        let panel_ghost =
+            self.slides.panel.exit(now).map(|(p, w)| {
+                div().absolute().top_0().bottom_0().right(px(-24.0 * p)).w(px(w)).opacity(1.0 - p).bg(t.bg)
+            });
         if sidebar_ghost.is_some() || panel_ghost.is_some() {
             window.request_animation_frame();
         }
 
-        // Zeron's flush dock: no inset card, the window's full height (its
-        // tone runs up under the titlebar strip, see `dock_layer`) and a
-        // hairline on the seam.
+        // The dock is the window's full height. Its fill is the same as the
+        // chat, and it continues up through the titlebar strip (`dock_layer`).
         let panel_entrance = (!expanded).then(|| self.slides.panel.entrance("panel-in")).flatten();
         let panel = panel_open.then(|| {
             div()
@@ -2657,6 +2724,14 @@ impl Render for Shell {
             (None, None) => panel.into_any_element(),
         });
 
+        let home_art = matches!(self.route, Route::Home) && self.has_wallpaper();
+        let thread_art = in_thread && self.has_wallpaper();
+        let info_gutter = self.info_open && in_thread && !expanded;
+        if let Some(thread) = self.active_thread().cloned() {
+            thread.update(cx, |view, cx| {
+                view.chat.update(cx, |chat, _| chat.info_reserve = info_gutter);
+            });
+        }
         let card = if bare {
             Some(
                 div().flex_1().min_w_0().h_full().overflow_hidden().child(ui::rounded_clip(
@@ -2673,22 +2748,13 @@ impl Render for Shell {
                     .flex_1()
                     .min_w_0()
                     .h_full()
-                    .mr(px(GUTTER))
-                    .mb(px(GUTTER))
-                    .when(!sidebar_shown && !in_settings, |d| d.ml(px(GUTTER)))
-                    .rounded(px(12.0))
-                    .bg(t.panel_bg())
-                    .border_1()
-                    .border_color(t.border)
+                    .when(!home_art && !thread_art, |d| d.bg(t.bg))
                     .overflow_hidden()
-                    .child(ui::rounded_clip(
-                        12.0,
-                        div().size_full().flex().child(div().flex_1().min_w_0().h_full().child(center)),
-                    ))
+                    .child(div().size_full().flex().child(div().flex_1().min_w_0().h_full().child(center)))
             })
         };
-        // The dock's tone, painted behind the titlebar and the dock alike so
-        // the tab strip and the surface under it read as one column.
+        // The dock continues the same fill up through its strip. No rule on
+        // the seam: the two columns are one surface, split only by content.
         let dock_layer = panel_open.then(|| {
             div()
                 .absolute()
@@ -2697,8 +2763,27 @@ impl Render for Shell {
                 .right_0()
                 .when(!expanded, |d| d.w(px(panel_w)))
                 .when(expanded, |d| d.left(px(if sidebar_shown { self.sidebar_w } else { 0.0 })))
-                .bg(t.panel_bg())
-                .when(!expanded || sidebar_shown, |d| d.border_l_1().border_color(t.border))
+                // Over a thread's picture the dock is the same frost, a
+                // shade deeper, with a hairline seam; otherwise the page.
+                .when(thread_art, |d| {
+                    d.bg(t.bg.opacity(SIDE_ART_TINT)).when(!expanded, |d| d.border_l_1().border_color(t.wash(0.06)))
+                })
+                .when(!thread_art, |d| d.bg(t.bg))
+        });
+        // The sidebar column, titlebar included. Over a thread's picture it
+        // is the same frost a shade deeper (as the dock), with a hairline
+        // seam. Without one, a dark frosted sidebar is lifted a step so a
+        // near-black theme does not turn it into a black slab.
+        let side_layer = (sidebar_shown || in_settings).then(|| {
+            let lift = t.is_frost() && t.appearance.is_dark();
+            div()
+                .absolute()
+                .top_0()
+                .bottom_0()
+                .left_0()
+                .w(px(self.sidebar_w))
+                .when(thread_art, |d| d.bg(t.bg.opacity(SIDE_ART_TINT)).border_r_1().border_color(t.wash(0.06)))
+                .when(!thread_art && lift, |d| d.bg(t.surface_raised.opacity(0.30)))
         });
 
         let menu = self.render_menu_overlay(cx);
@@ -2830,6 +2915,17 @@ impl Render for Shell {
                 MouseButton::Navigate(gpui::NavigationDirection::Forward),
                 cx.listener(|this, _, window, cx| this.go_forward(window, cx)),
             )
+            .children({
+                // A thread's picture runs under the whole window (sidebar,
+                // chat and dock are one frosted surface); home keeps it to
+                // the chat column, where it fades into the canvas.
+                let full = thread_art;
+                let art_left = if sidebar_shown && !full { self.sidebar_w } else { 0.0 };
+                let art_right = if panel_open && !expanded && !full { panel_w } else { 0.0 };
+                let art_width = (f32::from(window.viewport_size().width) - art_left - art_right).max(1.0);
+                self.wallpaper_layer(art_left, art_width, window, cx)
+            })
+            .children(side_layer)
             .children(dock_layer)
             .children(panel_ghost)
             .children(topbar)
@@ -2850,6 +2946,20 @@ impl Render for Shell {
             // A page's confirmation (Threads, Archived, Kanban, Automations,
             // Team): drawn here so it stays modal whichever route is showing.
             .children(self.render_page_dialog(window, cx))
+            .children((self.info_open && in_thread && !expanded).then(|| self.active_task().cloned()).flatten().map(
+                |task| {
+                    let right = if panel_open { panel_w + 14.0 } else { 14.0 };
+                    div()
+                        .absolute()
+                        .top(px(Theme::TITLEBAR_HEIGHT + 8.0))
+                        .right(px(right))
+                        .child(self.render_info_card(&task, &t, cx))
+                },
+            ))
+            // Caption buttons sit on the window itself, above the titlebar's
+            // padding, in the same even slots Zeron uses.
+            .children(ui::windows_captions(window, &t))
+            .children(ui::linux_captions(&t))
             .child(gpui::canvas(
                 |_, _, _| {},
                 |_, _, window, _| {
@@ -2874,8 +2984,8 @@ impl Shell {
     /// The widest the dock can be while the chat column keeps `CENTER_MIN`.
     fn panel_room(&self, window: &Window) -> f32 {
         let total = f32::from(window.viewport_size().width);
-        let left = if self.sidebar_shown() { self.sidebar_w } else { GUTTER };
-        total - left - GUTTER - CENTER_MIN
+        let left = if self.sidebar_shown() || self.route == Route::Settings { self.sidebar_w } else { 0.0 };
+        total - left - CENTER_MIN
     }
 
     /// Start a sidebar resize drag (from the sidebar's edge).
@@ -2976,7 +3086,7 @@ mod tests {
 
     #[test]
     fn least_recent_column_hides_first() {
-        // 264 + 360 + 306 = 930 does not fit 900: the older column goes.
+        // 264 + 360 + 300 = 924 does not fit 900: the older column goes.
         assert_eq!(panel_fit(900.0, 264.0, (true, 1), (true, 2), false), (false, true));
         assert_eq!(panel_fit(900.0, 264.0, (true, 3), (true, 2), false), (true, false));
     }

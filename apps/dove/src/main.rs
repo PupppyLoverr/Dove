@@ -2,7 +2,6 @@
 
 mod assets;
 mod browser;
-mod canvas;
 mod changes;
 mod composer;
 mod design;
@@ -45,9 +44,9 @@ mod tool_calls;
 mod transcript;
 mod ui;
 mod updates;
+mod visuals;
 mod voice;
 mod wallpaper;
-mod widget;
 
 use std::sync::Arc;
 
@@ -352,6 +351,7 @@ fn main() {
             window_decorations: cfg!(target_os = "linux").then_some(gpui::WindowDecorations::Client),
             window_background: Theme::of(cx).window_background(),
             app_id: Some("dev.dove.Dove".into()),
+            icon: crate::assets::brand_icon().map(std::sync::Arc::new),
             ..Default::default()
         };
         let engine2 = engine.clone();

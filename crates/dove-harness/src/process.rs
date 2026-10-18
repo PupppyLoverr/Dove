@@ -148,11 +148,7 @@ mod tests {
         for name in ["opencode", "npx", "cursor-agent", "kimi", "amp", "claude", "node"] {
             let Some(path) = resolve(name) else { continue };
             let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
-            assert!(
-                matches!(ext.as_str(), "exe" | "cmd" | "bat" | "com"),
-                "{name} resolved to {}",
-                path.display()
-            );
+            assert!(matches!(ext.as_str(), "exe" | "cmd" | "bat" | "com"), "{name} resolved to {}", path.display());
             assert!(!is_broken_bun_stub(&path), "{name} resolved to broken stub {}", path.display());
         }
     }

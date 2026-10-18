@@ -7,8 +7,10 @@ or referenced below; everything else in this repository is Apache-2.0.
 
 Copyright (c) 2026 Wing. https://github.com/zeronsh/zeron
 
-Dove vendors Zeron's `proto`, `harness`, `voice-media` and `markdown` crates under `vendor/`
-(see `vendor/README.md`). Portions of Dove's user interface are adapted from Zeron: the glass and frost
+Dove vendors Zeron's `proto`, `harness`, `voice-media`, `markdown`, `visual` and `visual-gpu`
+crates under `vendor/` (see `vendor/README.md`). Dove visuals (`apps/dove/src/visuals.rs`, from
+`crates/ui/src/visuals.rs`) render those crates' Luau `ui.*` trees and GPU shaders inline in chat.
+Portions of Dove's user interface are adapted from Zeron: the glass and frost
 surface helpers, rounded clipping, window controls, the new-thread wallpaper
 effects (dither / halftone / scanlines), the theme tokens, the streaming
 markdown "mend" pass (`apps/dove/src/markdown_mend.rs`, from `crates/markdown`),

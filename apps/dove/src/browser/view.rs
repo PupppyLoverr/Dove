@@ -1,5 +1,6 @@
 use super::{BrowserEvent, BrowserSurface};
 use crate::assets::{icon, icons};
+use crate::design::radius;
 use crate::design::rem;
 use crate::design::ty;
 use crate::{surface_chrome, theme::Theme};
@@ -114,7 +115,7 @@ impl BrowserSurface {
                     .w_full()
                     .h(px(56.0))
                     .px(px(14.0))
-                    .rounded(px(10.0))
+                    .rounded(px(radius::RADIUS))
                     .border_1()
                     .border_color(theme.border)
                     .bg(crate::theme::ink(0.02))
@@ -161,7 +162,7 @@ impl BrowserSurface {
                             .h(px(28.0))
                             .px(px(6.0))
                             .flex_shrink_0()
-                            .rounded(px(6.0))
+                            .rounded(px(radius::RADIUS))
                             .flex()
                             .items_center()
                             .justify_center()
@@ -193,7 +194,7 @@ impl BrowserSurface {
             content = content.child(
                 div()
                     .p(px(16.0))
-                    .rounded(px(8.0))
+                    .rounded(px(radius::RADIUS))
                     .border_1()
                     .border_color(theme.border)
                     .text_size(gpui::px(12.0))
@@ -273,7 +274,7 @@ impl BrowserSurface {
                     .child(
                         div()
                             .size(px(44.0))
-                            .rounded(px(12.0))
+                            .rounded(px(radius::RADIUS))
                             .border_1()
                             .border_color(theme.border)
                             .bg(theme.surface_raised.opacity(0.5))
@@ -304,7 +305,7 @@ impl BrowserSurface {
                             .id("browser-empty-action")
                             .h(px(28.0))
                             .px(px(10.0))
-                            .rounded(px(6.0))
+                            .rounded(px(radius::RADIUS))
                             .border_1()
                             .border_color(theme.border)
                             .bg(theme.surface_raised)
@@ -491,7 +492,7 @@ impl Render for BrowserSurface {
                         .id("browser-go")
                         .size(px(18.0))
                         .flex_none()
-                        .rounded(px(4.0))
+                        .rounded(px(radius::RADIUS))
                         .flex()
                         .items_center()
                         .justify_center()
@@ -518,7 +519,7 @@ impl Render for BrowserSurface {
                 .flex()
                 .items_center()
                 .gap(px(6.0))
-                .rounded(px(11.0))
+                .rounded(px(radius::RADIUS))
                 .bg(theme.accent.opacity(0.14))
                 .border_1()
                 .border_color(theme.accent.opacity(0.35))

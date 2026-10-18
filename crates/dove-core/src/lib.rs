@@ -132,12 +132,7 @@ pub struct NewTask {
     pub prompt: String,
     pub harness: HarnessKind,
     pub run: RunSettings,
-    /// Run in an isolated git worktree rather than the project checkout.
-    pub worktree: bool,
-    /// Branch to start from: the worktree's base, or the branch to check out
-    /// when running in the project checkout.
-    pub from_branch: Option<String>,
-    /// Join an existing task's worktree instead (a side chat).
+    /// Join an existing task's folder instead (a side chat).
     pub join: Option<Joined>,
     /// The teammate this thread runs as.
     pub persona: Option<dove_store::Persona>,
@@ -316,7 +311,7 @@ impl Engine {
         dove_harness::detect::find(kind).with_context(|| format!("{} is not installed", kind.label()))
     }
 
-    /// Create a task (and its worktree, if asked) and start its first turn.
+    /// Create a task in the project folder and start its first turn.
     pub fn start_task(&self, project: &Project, new: NewTask) -> Result<(Task, LiveSession)> {
         self.start_task_with(project, new, None, None)
     }
@@ -333,21 +328,9 @@ impl Engine {
         let (cwd, worktree, branch, base) = if let Some(j) = new.join.clone() {
             let cwd = j.worktree.clone().unwrap_or_else(|| project.path.clone());
             (cwd, j.worktree, j.branch, j.base)
-        } else if new.worktree {
-            let prefix = self.store.setting("branch_prefix").unwrap_or_else(|| "dove/".into());
-            let wt = dove_git::create_worktree_from(
-                &project.path,
-                &dove_git::slug(&new.title),
-                &prefix,
-                new.from_branch.as_deref(),
-            )?;
-            (wt.path.clone(), Some(wt.path), Some(wt.branch), Some(wt.base))
         } else {
-            if let Some(b) = new.from_branch.as_deref()
-                && dove_git::current_branch(&project.path).ok().as_deref() != Some(b)
-            {
-                dove_git::checkout(&project.path, b)?;
-            }
+            // Any folder works. Git details are recorded when the folder is a
+            // repository, and left empty when it is not.
             let base = dove_git::head_sha(&project.path).ok();
             (project.path.clone(), None, dove_git::current_branch(&project.path).ok(), base)
         };
@@ -543,21 +526,13 @@ impl Engine {
     }
 
     /// Start a draft with its saved prompt.
-    pub fn start_draft(
-        &self,
-        draft: &Task,
-        project: &Project,
-        run: RunSettings,
-        worktree: bool,
-    ) -> Result<(Task, LiveSession)> {
+    pub fn start_draft(&self, draft: &Task, project: &Project, run: RunSettings) -> Result<(Task, LiveSession)> {
         let prompt = draft.prompt.clone().filter(|p| !p.trim().is_empty()).context("this draft has no prompt yet")?;
         let new = NewTask {
             title: draft.title.clone(),
             prompt,
             harness: draft.harness,
             run,
-            worktree,
-            from_branch: None,
             join: None,
             // A draft handed to a teammate starts as that teammate.
             persona: self
@@ -674,8 +649,6 @@ impl Engine {
                 model: persona.as_ref().and_then(|p| p.model.clone()).or_else(|| a.model.clone()),
                 ..Default::default()
             },
-            worktree: a.worktree,
-            from_branch: None,
             join: None,
             persona,
         };

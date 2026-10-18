@@ -28,7 +28,7 @@ use gpui_base::input::{Input, InputEvent, InputState};
 use zeron_syntax::{HighlightRequest, HighlightSpan};
 
 use crate::assets::{icon, icons};
-use crate::design::ty;
+use crate::design::{radius, ty};
 use crate::kit;
 use crate::kit::controls::{self as ctl, Tone};
 use crate::kit::page;
@@ -1090,7 +1090,7 @@ impl Changes {
             .flex()
             .flex_col()
             .gap(px(6.0))
-            .rounded(px(8.0))
+            .rounded(px(radius::RADIUS))
             .border_1()
             .border_color(t.border)
             .bg(t.surface_raised)
@@ -1349,7 +1349,7 @@ impl Changes {
                     .px(px(10.0))
                     .flex()
                     .items_center()
-                    .rounded(px(8.0))
+                    .rounded(px(radius::RADIUS))
                     .border_1()
                     .border_color(t.border)
                     .bg(t.wash(0.03))

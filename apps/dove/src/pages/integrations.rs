@@ -376,7 +376,7 @@ fn small_icon(id: &'static str, glyph: &'static str, label: &'static str, t: &Th
         .flex_none()
         .items_center()
         .justify_center()
-        .rounded(px(radius::CONTROL + 1.0))
+        .rounded(px(radius::RADIUS))
         .cursor_pointer()
         .hover(move |s| s.bg(hover))
         .tooltip(ui::tip(label))

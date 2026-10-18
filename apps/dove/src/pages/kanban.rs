@@ -86,8 +86,6 @@ impl Render for CardDrag {
             .gap(px(6.0))
             .rounded(px(radius::CARD))
             .bg(t.surface_raised)
-            .border_1()
-            .border_color(t.accent.opacity(0.5))
             .shadow(vec![
                 gpui::BoxShadow {
                     color: gpui::hsla(0.0, 0.0, 0.0, if t.appearance.is_dark() { 0.42 } else { 0.18 }),
@@ -292,6 +290,8 @@ impl Shell {
             .id(SharedString::from(format!("card-{id}")))
             .p(px(space::MD))
             .gap(px(space::SM))
+            .rounded(px(radius::CARD))
+            .bg(t.wash(0.04))
             .cursor_grab()
             .hover(move |s| s.bg(hover))
             // The source stays in its slot, dimmed, while its lifted copy
@@ -425,8 +425,8 @@ impl Shell {
         page::card(t)
             .p(px(space::MD))
             .gap(px(space::SM))
-            .border_1()
-            .border_color(t.accent.opacity(0.5))
+            .rounded(px(radius::CARD))
+            .bg(t.wash(0.04))
             .child(field(Input::new(&self.pages.draft_title).into_any_element()))
             .child(field(Textarea::new(&self.pages.draft_prompt).into_any_element()))
             .when(!self.personas.is_empty(), |d| {
@@ -534,17 +534,31 @@ impl Shell {
                 )
                 .child(div().text_size(ty::META).text_color(t.text_faint).child(cards.len().to_string()))
                 .child(div().flex_1())
-                .child(ui::icon_button(
-                    SharedString::from(format!("col-add-{col:?}")),
-                    icons::PLUS,
-                    "New draft",
-                    &t,
-                    cx.listener(|this, _, _, cx| {
-                        this.pages.adding_draft = true;
-                        this.pages.editing_draft = None;
-                        cx.notify();
-                    }),
-                ));
+                .child({
+                    let id = SharedString::from(format!("col-add-{col:?}"));
+                    div()
+                        .id(id.clone())
+                        .group(id.clone())
+                        .size(px(24.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .cursor_pointer()
+                        .role(gpui::Role::Button)
+                        .aria_label("New draft")
+                        .tooltip(ui::tip("New draft"))
+                        .child(
+                            icon(icons::PLUS)
+                                .size(px(14.0))
+                                .text_color(t.text_faint)
+                                .group_hover(id, |s| s.text_color(t.text)),
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.pages.adding_draft = true;
+                            this.pages.editing_draft = None;
+                            cx.notify();
+                        }))
+                });
             let form = (col == Column::Draft && self.pages.adding_draft).then(|| self.render_draft_form(&t, cx));
             let accent = t.accent;
             div()
@@ -556,11 +570,7 @@ impl Shell {
                 .flex()
                 .flex_col()
                 .gap(px(space::SM))
-                .rounded(px(radius::CARD + 2.0))
-                .bg(t.wash(0.025))
-                .border_1()
-                .border_color(gpui::transparent_black())
-                .drag_over::<CardDrag>(move |s, _, _, _| s.border_color(accent.opacity(0.6)).bg(accent.opacity(0.05)))
+                .drag_over::<CardDrag>(move |s, _, _, _| s.bg(accent.opacity(0.05)))
                 .on_drop(cx.listener(move |this, card: &CardDrag, window, cx| {
                     this.pages.kanban_drag.set(None);
                     this.drop_card(card, col, window, cx)
@@ -598,14 +608,25 @@ impl Shell {
                     cx.notify();
                 }))
         });
-        let refresh = ui::icon_button(
-            "kanban-refresh",
-            icons::REFRESH,
-            "Refresh PRs and diffstats",
-            &t,
-            cx.listener(|this, _, _, cx| this.load_kanban_meta(cx)),
-        )
-        .into_any_element();
+        let refresh = div()
+            .id("kanban-refresh")
+            .group("kanban-refresh")
+            .size(px(24.0))
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor_pointer()
+            .role(gpui::Role::Button)
+            .aria_label("Refresh PRs and diffstats")
+            .tooltip(ui::tip("Refresh PRs and diffstats"))
+            .child(
+                icon(icons::REFRESH)
+                    .size(px(15.0))
+                    .text_color(t.text_faint)
+                    .group_hover("kanban-refresh", |s| s.text_color(t.text)),
+            )
+            .on_click(cx.listener(|this, _, _, cx| this.load_kanban_meta(cx)))
+            .into_any_element();
         div()
             .size_full()
             .child(super::page_at(

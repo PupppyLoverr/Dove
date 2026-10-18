@@ -92,26 +92,11 @@ mod tray {
         static TRAY: RefCell<Option<(TrayIcon, String, String)>> = const { RefCell::new(None) };
     }
 
-    /// A 32×32 dove-blue disc with a white dot: Dove's tray mark.
+    /// The same dove as the exe, scaled for the tray.
     fn icon() -> Option<Icon> {
-        let n = 32u32;
-        let mut rgba = Vec::with_capacity((n * n * 4) as usize);
-        for y in 0..n {
-            for x in 0..n {
-                let (dx, dy) = (x as f32 - 15.5, y as f32 - 15.5);
-                let d = (dx * dx + dy * dy).sqrt();
-                let inner = ((dx - 3.0).powi(2) + (dy + 3.0).powi(2)).sqrt();
-                let px = if d > 15.5 {
-                    [0, 0, 0, 0]
-                } else if inner < 4.5 {
-                    [255, 255, 255, 255]
-                } else {
-                    [70, 120, 230, 255]
-                };
-                rgba.extend_from_slice(&px);
-            }
-        }
-        Icon::from_rgba(rgba, n, n).ok()
+        let image = crate::assets::brand_icon_square(32)?;
+        let (w, h) = image.dimensions();
+        Icon::from_rgba(image.into_raw(), w, h).ok()
     }
 
     pub fn start(window: &mut Window, cx: &mut App) {

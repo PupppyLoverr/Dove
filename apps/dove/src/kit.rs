@@ -20,7 +20,7 @@ use gpui::{
 };
 
 use crate::assets::{icon, icons};
-use crate::design::ty;
+use crate::design::{radius, ty};
 use crate::theme::Theme;
 use crate::ui;
 
@@ -200,7 +200,7 @@ pub fn empty_state(glyph: &'static str, title: &str, body: &str, t: &Theme) -> D
                 .flex()
                 .items_center()
                 .justify_center()
-                .rounded(px(12.0))
+                .rounded(px(radius::RADIUS))
                 .bg(t.wash(0.05))
                 .child(icon(glyph).size(px(20.0)).text_color(t.text_faint)),
         )
@@ -220,7 +220,7 @@ pub fn badge(label: impl Into<SharedString>, color: Hsla) -> Div {
         .flex()
         .flex_none()
         .items_center()
-        .rounded(px(5.0))
+        .rounded(px(radius::fit(18.0)))
         .bg(color.opacity(0.12))
         .text_color(color)
         .text_size(ty::MICRO)
@@ -236,7 +236,7 @@ pub fn group(t: &Theme) -> Div {
         .w_full()
         .flex()
         .flex_col()
-        .rounded(px(12.0))
+        .rounded(px(radius::RADIUS))
         .border_1()
         .border_color(t.border)
         .bg(t.wash(0.022))
@@ -268,7 +268,7 @@ pub fn avatar_tile(label: impl Into<SharedString>, hue: f32, size: f32, t: &Them
         .flex()
         .items_center()
         .justify_center()
-        .rounded(px((size * 0.28).max(4.0)))
+        .rounded(px(if size < 16.0 { (size * 0.28).max(4.0) } else { radius::RADIUS }))
         .bg(bg)
         .text_color(fg)
         .text_size(px(size * 0.52))

@@ -28,7 +28,7 @@ use gpui_base::input::{Input, InputEvent, InputState};
 
 use crate::assets::{icon, icons};
 use crate::design::{self, space, ty};
-use crate::kit::controls::{self as ctl, Segment, SelectOption, SelectState, SliderState, Tone};
+use crate::kit::controls::{self as ctl, SelectOption, SelectState, SliderState, Tone};
 use crate::kit::page;
 use crate::motion::{self, ReduceMotion};
 use crate::theme::{Accent, Appearance, Surface, Theme};
@@ -49,7 +49,6 @@ pub enum Section {
     Shortcuts,
     Agents,
     Team,
-    Canvas,
     Integrations,
     Remote,
     Data,
@@ -69,7 +68,7 @@ pub enum SettingsEvent {
 
 impl Section {
     #[cfg(test)]
-    pub const ALL: [Section; 13] = [
+    pub const ALL: [Section; 12] = [
         Section::General,
         Section::Appearance,
         Section::Notifications,
@@ -77,7 +76,6 @@ impl Section {
         Section::Shortcuts,
         Section::Agents,
         Section::Team,
-        Section::Canvas,
         Section::Integrations,
         Section::Remote,
         Section::Data,
@@ -88,7 +86,7 @@ impl Section {
     /// The navigation, grouped by spacing (no headers), as in Zeron.
     const GROUPS: [&'static [Section]; 3] = [
         &[Section::General, Section::Appearance, Section::Notifications, Section::Voice, Section::Shortcuts],
-        &[Section::Agents, Section::Team, Section::Canvas, Section::Integrations, Section::Remote],
+        &[Section::Agents, Section::Team, Section::Integrations, Section::Remote],
         &[Section::Data, Section::Archived, Section::About],
     ];
 
@@ -101,7 +99,6 @@ impl Section {
             Section::Shortcuts => "Shortcuts",
             Section::Agents => "Agents",
             Section::Team => "Team",
-            Section::Canvas => "Canvas",
             Section::Integrations => "Integrations",
             Section::Remote => "Remote",
             Section::Data => "Data & Storage",
@@ -119,7 +116,6 @@ impl Section {
             Section::Shortcuts => icons::KEYBOARD,
             Section::Agents => icons::WIDGET,
             Section::Team => icons::USERS_GROUP,
-            Section::Canvas => icons::GALLERY,
             Section::Integrations => icons::WIDGET_ADD,
             Section::Remote => icons::SMARTPHONE,
             Section::Data => icons::HARD_DRIVE,
@@ -137,7 +133,6 @@ impl Section {
             Section::Shortcuts => "keyboard",
             Section::Agents => "agents",
             Section::Team => "team",
-            Section::Canvas => "canvas",
             Section::Integrations => "integrations",
             Section::Remote => "remote",
             Section::Data => "data",
@@ -157,7 +152,6 @@ impl Section {
             "keyboard" | "shortcuts" => Section::Shortcuts,
             "agents" | "providers" | "harnesses" => Section::Agents,
             "team" | "crew" => Section::Team,
-            "canvas" => Section::Canvas,
             "integrations" => Section::Integrations,
             "remote" | "devices" => Section::Remote,
             "data" | "storage" => Section::Data,
@@ -193,13 +187,6 @@ const INDEX: &[Entry] = &[
         "composer permissions ask auto-edit plan approvals mode",
     ),
     e(Section::General, "bypass", "Projects allowed to bypass permissions", "bypass permissions projects revoke trust"),
-    e(
-        Section::General,
-        "use_worktree",
-        "Isolate new threads in a git worktree",
-        "git worktree branch isolate parallel",
-    ),
-    e(Section::General, "branch_prefix", "Branch prefix", "git branch name prefix worktree"),
     e(Section::General, "clone_dir", "Default clone folder", "clone repository url folder directory github"),
     e(Section::General, "sidebar_group", "Group threads by project", "sidebar group project organize"),
     e(Section::General, "sidebar_density", "Compact thread rows", "sidebar density compact rows single line"),
@@ -242,6 +229,12 @@ const INDEX: &[Entry] = &[
         "terminal scrollback history lines buffer memory",
     ),
     e(Section::Appearance, "conversation_width", "Conversation width", "width column chat transcript conversation"),
+    e(
+        Section::Appearance,
+        "home_input",
+        "New-thread input",
+        "composer input bar bottom center dock home layout permissions usage",
+    ),
     e(Section::Notifications, "notifications", "Desktop notifications", "notifications alerts system os"),
     e(Section::Notifications, "notification_sound", "Completion sound", "sound chime audio notification"),
     e(
@@ -256,14 +249,6 @@ const INDEX: &[Entry] = &[
     e(Section::Agents, "agents", "Agents", "agents harness claude codex cursor gemini opencode cli binary enable hide"),
     e(Section::Team, "team_roster", "Teammates", "team teammates personas roster specialists"),
     e(Section::Team, "team_notes", "Persistent teammate notes", "team notes memory learn"),
-    e(Section::Canvas, "canvas_auto_open", "Open designs automatically", "canvas design artboard auto open"),
-    e(Section::Canvas, "canvas_bridge", "Two-way agent bridge", "canvas bridge dove.send interactive"),
-    e(
-        Section::Canvas,
-        "canvas_default_device",
-        "Default artboard size",
-        "canvas viewport desktop tablet mobile device",
-    ),
     e(
         Section::Integrations,
         "integrations",
@@ -329,7 +314,6 @@ pub struct SettingsPage {
     query: String,
     /// Keyboard cursor in the search results.
     result: Option<usize>,
-    prefix: Entity<InputState>,
     clone_dir: Entity<InputState>,
     /// The shortcut being recorded.
     recording: Option<&'static str>,
@@ -357,6 +341,7 @@ pub struct SettingsPage {
     sel_code_size: SelectState,
     sel_term_size: SelectState,
     sel_scrollback: SelectState,
+    sel_home_input: SelectState,
     sel_mic: SelectState,
     width_slider: SliderState,
     save_gen: HashMap<&'static str, u64>,
@@ -389,14 +374,7 @@ impl SettingsPage {
             .or_else(|| std::env::var_os("HOME"))
             .map(std::path::PathBuf::from)
             .unwrap_or_default();
-        let prefix_value = engine.store.setting("branch_prefix").unwrap_or_else(|| "dove/".into());
         let clone_value = engine.store.setting("clone_dir").unwrap_or_else(|| home.join("Dove").display().to_string());
-        let prefix = cx.new(|cx| {
-            let mut s = InputState::new(window, cx).placeholder("dove/");
-            s.set_editor_style(style.clone());
-            s.set_value(prefix_value, window, cx);
-            s
-        });
         let clone_dir = cx.new(|cx| {
             let mut s = InputState::new(window, cx).placeholder("Folder for cloned repositories");
             s.set_editor_style(style.clone());
@@ -404,7 +382,7 @@ impl SettingsPage {
             s
         });
         let mut subs = vec![search_sub];
-        for (input, key) in [(&prefix, "branch_prefix"), (&clone_dir, "clone_dir")] {
+        for (input, key) in [(&clone_dir, "clone_dir")] {
             subs.push(cx.subscribe(input, move |this, s, ev: &InputEvent, cx| match ev {
                 InputEvent::Change => {
                     let value = s.read(cx).value().trim().to_string();
@@ -435,7 +413,6 @@ impl SettingsPage {
             search,
             query: String::new(),
             result: None,
-            prefix,
             clone_dir,
             recording: None,
             devices: Vec::new(),
@@ -459,6 +436,7 @@ impl SettingsPage {
             sel_code_size: SelectState::default(),
             sel_term_size: SelectState::default(),
             sel_scrollback: SelectState::default(),
+            sel_home_input: SelectState::default(),
             sel_mic: SelectState::default(),
             width_slider: SliderState::default(),
             save_gen: HashMap::new(),
@@ -682,7 +660,7 @@ impl SettingsPage {
         let glow = self.flash_of(row);
         page::setting_row(t, first, title, description, control)
             .relative()
-            .when(glow > 0.0, |d| d.bg(t.accent_wash.opacity(glow)).rounded(px(8.0)))
+            .when(glow > 0.0, |d| d.bg(t.accent_wash.opacity(glow)).rounded(px(design::radius::RADIUS)))
             .child(self.anchor(row))
             .into_any_element()
     }
@@ -727,7 +705,7 @@ impl SettingsPage {
             .flex()
             .items_center()
             .gap(px(9.0))
-            .rounded(px(8.0))
+            .rounded(px(design::radius::RADIUS))
             .cursor_pointer()
             .text_size(ty::BODY)
             .text_color(motion::hover_blend("set-back", t.text_muted, t.text))
@@ -747,7 +725,7 @@ impl SettingsPage {
             .flex()
             .items_center()
             .gap(px(8.0))
-            .rounded(px(8.0))
+            .rounded(px(design::radius::RADIUS))
             .bg(t.wash(0.05))
             .border_1()
             .border_color(t.wash(0.06))
@@ -762,7 +740,7 @@ impl SettingsPage {
                         .flex()
                         .items_center()
                         .justify_center()
-                        .rounded(px(5.0))
+                        .rounded(px(design::radius::RADIUS))
                         .cursor_pointer()
                         .hover(|s| s.bg(t.wash(0.08)))
                         .tooltip(ui::tip("Clear search"))
@@ -807,7 +785,7 @@ impl SettingsPage {
                         .flex()
                         .items_center()
                         .gap(px(9.0))
-                        .rounded(px(8.0))
+                        .rounded(px(design::radius::RADIUS))
                         .cursor_pointer()
                         .role(gpui::Role::Tab)
                         .aria_selected(selected)
@@ -851,7 +829,7 @@ impl SettingsPage {
                             .py(px(6.0))
                             .flex()
                             .flex_col()
-                            .rounded(px(8.0))
+                            .rounded(px(design::radius::RADIUS))
                             .cursor_pointer()
                             .when(active, |d| d.bg(ui::selected_bg(&t)))
                             .hover(|s| s.bg(t.wash(0.06)))
@@ -913,7 +891,7 @@ impl SettingsPage {
                 .h(px(16.0))
                 .flex()
                 .items_center()
-                .rounded(px(4.0))
+                .rounded(px(design::radius::fit(16.0)))
                 .bg(t.wash(0.08))
                 .text_size(ty::BADGE)
                 .text_color(t.text_muted)
@@ -971,7 +949,6 @@ impl SettingsPage {
                 ),
                 self.team(&t, cx),
             ),
-            Section::Canvas => (None, self.canvas(&t, cx)),
             Section::Integrations => (None, self.integrations_section(&t)),
             Section::Remote => (None, self.remote(&t, cx)),
             Section::Data => (None, self.data(&t, cx)),
@@ -998,7 +975,6 @@ impl SettingsPage {
     fn general(&mut self, t: &Theme, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let restore = self.flag("restore_tabs", true);
         let prewarm = self.flag("prewarm", true);
-        let worktree = self.flag("use_worktree", true);
         let grouped = self.get("sidebar_group").as_deref() == Some("project");
         let compact = self.get("sidebar_density").as_deref() == Some("compact");
         let archived = self.flag("sidebar_archived", false);
@@ -1098,45 +1074,25 @@ impl SettingsPage {
                 bypass_control,
             ));
 
-        let prefix_focused = self.prefix.read(cx).focus_handle(cx).is_focused(window);
         let clone_focused = self.clone_dir.read(cx).focus_handle(cx).is_focused(window);
-        let git = page::card(t)
-            .child(self.srow(
+        let git = page::card(t).child(
+            self.srow(
                 t,
                 true,
-                "use_worktree",
-                "Isolate new threads in a git worktree",
-                "Each thread gets its own branch and folder, so parallel agents never collide.",
-                ctl::on_toggle(ctl::toggle(t, "set-worktree", worktree), cx, move |this, _, cx| {
-                    this.set_flag("use_worktree", !worktree, cx)
-                }),
-            ))
-            .child(self.srow(
-                t,
-                false,
-                "branch_prefix",
-                "Branch prefix",
-                "Added to the branches Dove creates, as in dove/fix-login.",
-                ctl::text_field(&self.prefix, Some(180.0), prefix_focused, t),
-            ))
-            .child(
-                self.srow(
-                    t,
-                    false,
-                    "clone_dir",
-                    "Default clone folder",
-                    "Where repositories cloned from a URL go.",
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(6.0))
-                        .child(ctl::text_field(&self.clone_dir, Some(230.0), clone_focused, t))
-                        .child(
-                            ctl::button_sm(t, "browse-clone-dir", "Browse…", Tone::Filled)
-                                .on_click(cx.listener(|this, _, window, cx| this.pick_clone_dir(window, cx))),
-                        ),
-                ),
-            );
+                "clone_dir",
+                "Default clone folder",
+                "Where repositories cloned from a URL go.",
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.0))
+                    .child(ctl::text_field(&self.clone_dir, Some(230.0), clone_focused, t))
+                    .child(
+                        ctl::button_sm(t, "browse-clone-dir", "Browse…", Tone::Filled)
+                            .on_click(cx.listener(|this, _, window, cx| this.pick_clone_dir(window, cx))),
+                    ),
+            ),
+        );
 
         let sidebar = page::card(t)
             .child(self.srow(
@@ -1234,7 +1190,7 @@ impl SettingsPage {
                     div()
                         .w_full()
                         .h(px(104.0))
-                        .rounded(px(8.0))
+                        .rounded(px(design::radius::RADIUS))
                         .overflow_hidden()
                         .border_1()
                         .border_color(ring)
@@ -1608,7 +1564,8 @@ impl SettingsPage {
                 "Conversation width",
                 "The widest the conversation and composer get.",
                 width_control,
-            ));
+            ))
+            .child(self.home_input_row(t, cx));
 
         div()
             .flex()
@@ -1618,6 +1575,36 @@ impl SettingsPage {
             .child(page::section(t, "Motion", motion_card))
             .child(page::section(t, "Fonts and layout", fonts))
             .into_any_element()
+    }
+
+    fn home_input_row(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let dock = crate::composer::home_input_is_dock(self.get(crate::composer::HOME_INPUT).as_deref());
+        let select = ctl::select::<Self>("set-home-input", "New-thread input", |s| &mut s.sel_home_input)
+            .options(
+                [
+                    SelectOption::new("Center").detail("Current"),
+                    SelectOption::new("Bottom").detail("Project, permissions, usage"),
+                ],
+                if dock { 1 } else { 0 },
+            )
+            .width(140.0)
+            .menu_width(240.0)
+            .on_select(|this, i, _, cx| {
+                this.set(crate::composer::HOME_INPUT, if i == 1 { "dock" } else { "center" }, cx);
+            })
+            .render(t, &self.sel_home_input, cx);
+        self.srow(
+            t,
+            false,
+            "home_input",
+            "New-thread input",
+            if dock {
+                "The composer sits at the bottom, with folder and device in one menu, permissions, and usage meters."
+            } else {
+                "The composer stays in the middle of a new thread."
+            },
+            select,
+        )
     }
 
     /// The theme picker for one appearance: Dove's look first, then the
@@ -1866,7 +1853,7 @@ impl SettingsPage {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .rounded(px(8.0))
+                    .rounded(px(design::radius::RADIUS))
                     .bg(if recording { t.accent.opacity(0.12) } else { t.wash(0.06) })
                     .border_1()
                     .border_color(if recording { t.accent } else { gpui::transparent_black() })
@@ -1932,7 +1919,7 @@ impl SettingsPage {
                     .h(px(26.0))
                     .flex()
                     .items_center()
-                    .rounded(px(7.0))
+                    .rounded(px(design::radius::RADIUS))
                     .bg(t.wash(0.04))
                     .font_family(t.font_mono.clone())
                     .text_size(ty::META)
@@ -1977,7 +1964,7 @@ impl SettingsPage {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .rounded(px(6.0))
+                            .rounded(px(design::radius::RADIUS))
                             .cursor_pointer()
                             .hover(|s| s.bg(t.wash(0.08)))
                             .tooltip(ui::tip("Sign-in, binary path and updates"))
@@ -2071,80 +2058,6 @@ impl SettingsPage {
             .flex_col()
             .child(page::section(t, "Teammates", roster.relative().child(self.anchor("team_roster"))))
             .child(page::section(t, "Memory and behavior", behavior))
-            .into_any_element()
-    }
-
-    fn canvas(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
-        let auto = self.flag("canvas_auto_open", true);
-        let bridge = self.flag("canvas_bridge", true);
-        let dev = self.get("canvas_default_device").unwrap_or_else(|| "desktop".into());
-        let dev_modes = ["desktop", "tablet", "mobile"];
-        let weak = cx.weak_entity();
-        let device = ctl::segmented(
-            t,
-            "set-canvas-device",
-            vec![
-                Segment::new("Desktop").glyph(icons::MONITOR),
-                Segment::new("Tablet").glyph(icons::SMARTPHONE),
-                Segment::new("Mobile").glyph(icons::SMARTPHONE),
-            ],
-            dev_modes.iter().position(|m| *m == dev).unwrap_or(0),
-            move |i, _, cx| {
-                let _ = weak.update(cx, |s, cx| s.set("canvas_default_device", dev_modes[i], cx));
-            },
-        );
-        let card = page::card(t)
-            .child(self.srow(
-                t,
-                true,
-                "canvas_auto_open",
-                "Open designs automatically",
-                "Show an agent's design in the side panel as soon as it arrives.",
-                ctl::on_toggle(ctl::toggle(t, "set-canvas-auto", auto), cx, move |this, _, cx| {
-                    this.set_flag("canvas_auto_open", !auto, cx)
-                }),
-            ))
-            .child(self.srow(
-                t,
-                false,
-                "canvas_bridge",
-                "Two-way agent bridge",
-                "Buttons and forms in a design can reply to the agent with dove.send().",
-                ctl::on_toggle(ctl::toggle(t, "set-canvas-bridge", bridge), cx, move |this, _, cx| {
-                    this.set_flag("canvas_bridge", !bridge, cx)
-                }),
-            ))
-            .child(self.srow(
-                t,
-                false,
-                "canvas_default_device",
-                "Default artboard size",
-                "Used when a design doesn't say which device it is for.",
-                device,
-            ));
-        let runtimes = page::card(t).child(
-            div()
-                .px(px(space::LG))
-                .py(px(14.0))
-                .flex()
-                .flex_col()
-                .gap(px(10.0))
-                .child(div().flex().flex_wrap().gap(px(6.0)).children(
-                    ["HTML", "React (JSX / TSX)", "Tailwind CSS", "SVG", "Responsive viewports", "dove.send()"]
-                        .into_iter()
-                        .map(|p| page::badge(t, p)),
-                ))
-                .child(div().text_size(ty::META).line_height(ty::lh::META).text_color(t.text_muted).child(
-                    "Agents call show_canvas with self-contained HTML, React or SVG, or send fenced blocks you can open \
-                     in one click. Designs are served on 127.0.0.1 with desktop, tablet and phone frames, zoom, and an \
-                     editable source drawer.",
-                )),
-        );
-        div()
-            .flex()
-            .flex_col()
-            .child(page::section(t, "Behavior", card))
-            .child(page::section(t, "Supported formats", runtimes))
             .into_any_element()
     }
 
@@ -2332,7 +2245,7 @@ fn scheme_preview(id: &'static str) -> AnyElement {
             .child(
                 div()
                     .flex_1()
-                    .rounded(px(5.0))
+                    .rounded(px(design::radius::RADIUS))
                     .bg(plane)
                     .p(px(7.0))
                     .flex()
@@ -2398,7 +2311,7 @@ mod tests {
     #[test]
     fn search_finds_rows_by_title_and_keyword() {
         assert_eq!(find_settings("reduce motion").first().map(|e| e.row), Some("reduce_motion"));
-        assert!(find_settings("worktree").iter().any(|e| e.row == "use_worktree"));
+        assert!(find_settings("clone").iter().any(|e| e.row == "clone_dir"));
         assert!(find_settings("parakeet").iter().any(|e| e.row == "voice_model"));
         assert!(find_settings("").is_empty());
     }
