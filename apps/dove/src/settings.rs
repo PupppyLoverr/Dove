@@ -1033,7 +1033,7 @@ impl SettingsPage {
                 false,
                 "ai_titles",
                 "Name threads with AI",
-                "After the first reply, Claude Code or Codex names the thread in a few words, as their own apps do.                  Off: threads keep a title made from your first message. A rename always wins.",
+                "After the first reply, Claude Code or Codex names the thread in a few words, as their own apps do. Off: threads keep a title made from your first message. A rename always wins.",
                 ctl::on_toggle(ctl::toggle(t, "set-ai-titles", ai_titles), cx, move |this, _, cx| {
                     this.set_flag("ai_titles", !ai_titles, cx)
                 }),
