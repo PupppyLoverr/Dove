@@ -756,6 +756,30 @@ impl Engine {
         self.program(kind).ok()
     }
 
+    /// An AI title for a thread whose first prompt is `prompt` (Zeron's
+    /// restricted title run). The thread's own agent titles when it can,
+    /// else the first installed agent that can (Claude Code, Codex), on its
+    /// cheapest model. The receiver gets `None` when no agent can title or
+    /// every attempt failed; the caller keeps its own title then.
+    pub fn generate_title(&self, kind: HarnessKind, prompt: String) -> tokio::sync::oneshot::Receiver<Option<String>> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let installed: Vec<HarnessKind> = self.installed.read().iter().map(|i| i.kind).collect();
+        let pick = std::iter::once(kind)
+            .chain(installed)
+            .filter(|k| dove_harness::title::supports(*k))
+            .find_map(|k| self.program(k).ok().map(|p| (k, p)));
+        let Some((kind, program)) = pick else {
+            let _ = tx.send(None);
+            return rx;
+        };
+        let model = dove_harness::title::cheapest_model(&self.models(kind));
+        self.rt.spawn(async move {
+            let title = dove_harness::title::generate(kind, &program, &prompt, model).await;
+            let _ = tx.send(title);
+        });
+        rx
+    }
+
     /// The driver running `task`, if any.
     pub fn driver(&self, task: TaskId) -> Option<Driver> {
         self.drivers.lock().get(&task).copied()

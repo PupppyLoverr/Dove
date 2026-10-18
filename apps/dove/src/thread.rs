@@ -70,6 +70,7 @@ pub enum TaskViewEventKind {
     Fork,
     ShowChanges,
     Title(String),
+    AiTitle(String),
     DriveBrowser(crate::browser::Drive),
     OpenCanvas(crate::canvas::Spec, bool),
 }
@@ -128,6 +129,7 @@ impl ThreadView {
                 TaskViewEvent::Fork => TaskViewEventKind::Fork,
                 TaskViewEvent::ShowChanges => TaskViewEventKind::ShowChanges,
                 TaskViewEvent::Title(t) => TaskViewEventKind::Title(t.clone()),
+                TaskViewEvent::AiTitle(t) => TaskViewEventKind::AiTitle(t.clone()),
                 TaskViewEvent::DriveBrowser(d) => TaskViewEventKind::DriveBrowser(d.clone()),
                 TaskViewEvent::OpenCanvas(s, reveal) => TaskViewEventKind::OpenCanvas(s.clone(), *reveal),
                 TaskViewEvent::SwitchToChat => {

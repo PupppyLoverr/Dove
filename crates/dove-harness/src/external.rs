@@ -203,7 +203,7 @@ fn driver(spec: &SessionSpec) -> Option<Arc<dyn Harness>> {
     driver_for(spec.kind, &spec.program)
 }
 
-fn driver_for(kind: HarnessKind, program: &std::path::Path) -> Option<Arc<dyn Harness>> {
+pub(crate) fn driver_for(kind: HarnessKind, program: &std::path::Path) -> Option<Arc<dyn Harness>> {
     Some(match kind {
         HarnessKind::ClaudeCode => Arc::new(ClaudeHarness::new().with_executable(program)),
         HarnessKind::Codex => Arc::new(CodexHarness::new().with_executable(program)),
@@ -341,7 +341,7 @@ fn run_request(spec: &SessionSpec, prompt: String) -> RunRequest {
     }
 }
 
-fn harness_id(kind: HarnessKind) -> Option<HarnessId> {
+pub(crate) fn harness_id(kind: HarnessKind) -> Option<HarnessId> {
     Some(match kind {
         HarnessKind::ClaudeCode => HarnessId::ClaudeCode,
         HarnessKind::Codex => HarnessId::Codex,

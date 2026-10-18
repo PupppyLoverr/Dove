@@ -15,8 +15,8 @@
 //! row is re-laid out per frame.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use dove_core::proto::{
@@ -85,6 +85,9 @@ pub enum TaskViewEvent {
     ShowChanges,
     /// The thread's first answer arrived; a better title is available.
     Title(String),
+    /// An agent named the thread (an AI title). It replaces the quick title
+    /// above, and a later quick title never replaces it.
+    AiTitle(String),
     /// From the read-only banner: hand the session back to the chat.
     SwitchToChat,
     /// From the read-only banner: show the running terminal.
@@ -1641,6 +1644,11 @@ const TAIL_ENTRIES: usize = 64;
 
 pub struct TaskView {
     engine: Arc<Engine>,
+    /// An AI title run is in flight.
+    ai_titling: bool,
+    /// Whether this view names its thread with an AI title (side chats,
+    /// whose titles the shell does not keep, do not).
+    ai_titles: bool,
     pub task: Task,
     pub project: Project,
     live: Option<LiveSession>,
@@ -1885,6 +1893,8 @@ impl TaskView {
             .and_then(|(_, pid)| engine.store.personas().ok()?.into_iter().find(|p| p.id == pid));
         Self {
             engine,
+            ai_titling: false,
+            ai_titles: true,
             status: task.status,
             task,
             project,
@@ -2113,11 +2123,7 @@ impl TaskView {
         let shown = self.shown.clone();
         self._pump = Some(cx.spawn(async move |this, cx| {
             while let Ok(first) = rx.recv_async().await {
-                let wait = if shown.load(Ordering::Relaxed) || !stream_delta(&first) {
-                    FRAME
-                } else {
-                    HIDDEN_FRAME
-                };
+                let wait = if shown.load(Ordering::Relaxed) || !stream_delta(&first) { FRAME } else { HIDDEN_FRAME };
                 cx.background_executor().timer(wait).await;
                 let mut batch = vec![first];
                 batch.extend(rx.try_iter());
@@ -2206,10 +2212,11 @@ impl TaskView {
             if fx.runway.is_some() {
                 runway = fx.runway;
             }
-            if fx.first_answer
-                && let Some(t) = self.auto_title()
-            {
-                cx.emit(TaskViewEvent::Title(t));
+            if fx.first_answer {
+                if let Some(t) = self.auto_title() {
+                    cx.emit(TaskViewEvent::Title(t));
+                }
+                self.request_ai_title(cx);
             }
             if let Some(spec) = fx.canvas {
                 cx.emit(TaskViewEvent::OpenCanvas(spec, false));
@@ -2270,6 +2277,51 @@ impl TaskView {
         let context = self.chat.context;
         let limits = self.chat.rate_limits.clone();
         self.composer.update(cx, |c, cx| c.set_meters(context, limits, cx));
+    }
+
+    /// Ask an agent to name the thread once its first answer lands, as the
+    /// harnesses' own apps do. Skipped when AI titles are off (General ›
+    /// Threads), the user renamed the thread, it already has an AI title, or
+    /// one is being made. The quick title stays if the run fails.
+    fn request_ai_title(&mut self, cx: &mut Context<Self>) {
+        let id = self.task.id;
+        let store = &self.engine.store;
+        if self.ai_titling
+            || !self.ai_titles
+            || !store.flag("ai_titles", true)
+            || store.setting(&format!("renamed.{id}")).is_some()
+            || store.setting(&format!("title_ai.{id}")).is_some()
+        {
+            return;
+        }
+        let prompt = match self.chat.first_prompt.clone() {
+            Some(p) => p,
+            None => match self.chat.user_messages().into_iter().next() {
+                Some((_, p)) => p,
+                None => return,
+            },
+        };
+        let prompt = dove_core::strip_persona(&prompt).trim().to_string();
+        if prompt.is_empty() {
+            return;
+        }
+        self.ai_titling = true;
+        let rx = self.engine.generate_title(self.task.harness, prompt);
+        cx.spawn(async move |this, cx| {
+            let title = rx.await.ok().flatten();
+            let _ = this.update(cx, |v, cx| {
+                v.ai_titling = false;
+                if let Some(t) = title.filter(|t| *t != v.task.title) {
+                    cx.emit(TaskViewEvent::AiTitle(t));
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Keep the quick title only (no AI title run).
+    pub fn without_ai_titles(&mut self) {
+        self.ai_titles = false;
     }
 
     /// A short title from the first prompt, used until the user renames.
@@ -5063,8 +5115,7 @@ mod tests {
 
     #[test]
     fn hidden_stream_parses_the_tail_once_when_flushed() {
-        let mut chat = Chat::default();
-        chat.defer_live = true;
+        let mut chat = Chat { defer_live: true, ..Default::default() };
         chat.apply(text("Hello "), true);
         chat.apply(text("**world**"), true);
         let Row::Live { blocks } = &chat.rows[0] else { panic!("expected a live row") };

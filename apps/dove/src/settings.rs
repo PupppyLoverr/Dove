@@ -186,6 +186,7 @@ const fn e(section: Section, row: &'static str, title: &'static str, keywords: &
 const INDEX: &[Entry] = &[
     e(Section::General, "restore_tabs", "Reopen thread tabs on launch", "restore startup tabs session"),
     e(Section::General, "prewarm", "Prewarm agent while typing", "prewarm faster first token harness start"),
+    e(Section::General, "ai_titles", "Name threads with AI", "ai auto title name rename sidebar thread summary"),
     e(
         Section::General,
         "permission_mode",
@@ -998,6 +999,7 @@ impl SettingsPage {
     fn general(&mut self, t: &Theme, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let restore = self.flag("restore_tabs", true);
         let prewarm = self.flag("prewarm", true);
+        let ai_titles = self.flag("ai_titles", true);
         let worktree = self.flag("use_worktree", true);
         let grouped = self.get("sidebar_group").as_deref() == Some("project");
         let compact = self.get("sidebar_density").as_deref() == Some("compact");
@@ -1024,6 +1026,16 @@ impl SettingsPage {
                 "Start the agent in the background as you type, so the first reply arrives sooner.",
                 ctl::on_toggle(ctl::toggle(t, "set-prewarm", prewarm), cx, move |this, _, cx| {
                     this.set_flag("prewarm", !prewarm, cx)
+                }),
+            ))
+            .child(self.srow(
+                t,
+                false,
+                "ai_titles",
+                "Name threads with AI",
+                "After the first reply, Claude Code or Codex names the thread in a few words, as their own apps do.                  Off: threads keep a title made from your first message. A rename always wins.",
+                ctl::on_toggle(ctl::toggle(t, "set-ai-titles", ai_titles), cx, move |this, _, cx| {
+                    this.set_flag("ai_titles", !ai_titles, cx)
                 }),
             ));
 

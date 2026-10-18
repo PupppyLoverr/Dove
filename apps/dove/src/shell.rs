@@ -868,14 +868,19 @@ impl Shell {
                     cx.notify();
                 }
                 TaskViewEventKind::Title(title) => {
-                    // Auto titles never override a rename.
-                    let renamed = self.engine.store.setting(&format!("renamed.{id}")).is_some();
-                    if !renamed {
-                        let _ = self.engine.store.rename_task(id, title);
-                        for t in self.tasks.iter_mut().filter(|t| t.id == id) {
-                            t.title = title.clone();
-                        }
-                        cx.notify();
+                    // Quick titles never override a rename or an AI title.
+                    let store = &self.engine.store;
+                    let kept = store.setting(&format!("renamed.{id}")).is_some()
+                        || store.setting(&format!("title_ai.{id}")).is_some();
+                    if !kept {
+                        self.apply_title(id, title, cx);
+                    }
+                }
+                TaskViewEventKind::AiTitle(title) => {
+                    // An agent's title replaces the quick one; a rename wins.
+                    if self.engine.store.setting(&format!("renamed.{id}")).is_none() {
+                        let _ = self.engine.store.set_setting(&format!("title_ai.{id}"), "1");
+                        self.apply_title(id, title, cx);
                     }
                 }
                 TaskViewEventKind::DriveBrowser(action) => {
@@ -1259,6 +1264,20 @@ impl Shell {
         self.panel_open = true;
         let _ = self.engine.store.set_setting("panel_open", "true");
         self.panel.update(cx, |p, cx| p.show(tab, window, cx));
+        cx.notify();
+    }
+
+    /// Store a thread's new title and show it in the sidebar, tabs and pages.
+    fn apply_title(&mut self, id: TaskId, title: &str, cx: &mut Context<Self>) {
+        let _ = self.engine.store.rename_task(id, title);
+        for t in self.tasks.iter_mut().filter(|t| t.id == id) {
+            t.title = title.to_string();
+        }
+        if let Some(v) = self.threads.get(&id) {
+            let chat = v.read(cx).chat.clone();
+            let title = title.to_string();
+            chat.update(cx, |c, _| c.task.title = title);
+        }
         cx.notify();
     }
 
