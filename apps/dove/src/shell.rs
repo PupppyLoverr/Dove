@@ -441,6 +441,29 @@ impl Shell {
         if let Ok(section) = std::env::var("DOVE_SETTINGS") {
             this.open_settings_section(&section, window, cx);
         }
+        // `DOVE_ATTACH=<path>[|<path>…]`: stage files in the visible
+        // composer (QA of the attachment strip).
+        if let Ok(spec) = std::env::var("DOVE_ATTACH") {
+            let paths: Vec<PathBuf> = spec.split(['|', ';']).filter(|p| !p.is_empty()).map(PathBuf::from).collect();
+            let composer = match this.active_thread() {
+                Some(v) => v.read(cx).chat.read(cx).composer.clone(),
+                None => this.composer.clone(),
+            };
+            crate::composer::attach_paths(&composer, paths, cx);
+        }
+        // `DOVE_INFO=1`: open the thread's info card (QA).
+        if std::env::var("DOVE_INFO").is_ok_and(|v| v == "1") {
+            this.info_open = true;
+        }
+        // `DOVE_PICKER=1`: open the visible composer's model picker (QA).
+        if std::env::var("DOVE_PICKER").is_ok_and(|v| v == "1") {
+            let composer = match this.active_thread() {
+                Some(v) => v.read(cx).chat.read(cx).composer.clone(),
+                None => this.composer.clone(),
+            };
+            let picker = composer.read(cx).picker.clone();
+            picker.update(cx, |p, cx| p.toggle(window, cx));
+        }
         this
     }
 
@@ -901,14 +924,19 @@ impl Shell {
                     cx.notify();
                 }
                 TaskViewEventKind::Title(title) => {
-                    // Auto titles never override a rename.
-                    let renamed = self.engine.store.setting(&format!("renamed.{id}")).is_some();
-                    if !renamed {
-                        let _ = self.engine.store.rename_task(id, title);
-                        for t in self.tasks.iter_mut().filter(|t| t.id == id) {
-                            t.title = title.clone();
-                        }
-                        cx.notify();
+                    // Quick titles never override a rename or an AI title.
+                    let store = &self.engine.store;
+                    let kept = store.setting(&format!("renamed.{id}")).is_some()
+                        || store.setting(&format!("title_ai.{id}")).is_some();
+                    if !kept {
+                        self.apply_title(id, title, cx);
+                    }
+                }
+                TaskViewEventKind::AiTitle(title) => {
+                    // An agent's title replaces the quick one; a rename wins.
+                    if self.engine.store.setting(&format!("renamed.{id}")).is_none() {
+                        let _ = self.engine.store.set_setting(&format!("title_ai.{id}"), "1");
+                        self.apply_title(id, title, cx);
                     }
                 }
                 TaskViewEventKind::DriveBrowser(action) => {
@@ -1232,6 +1260,20 @@ impl Shell {
         self.panel_open = true;
         let _ = self.engine.store.set_setting("panel_open", "true");
         self.panel.update(cx, |p, cx| p.show(tab, window, cx));
+        cx.notify();
+    }
+
+    /// Store a thread's new title and show it in the sidebar, tabs and pages.
+    fn apply_title(&mut self, id: TaskId, title: &str, cx: &mut Context<Self>) {
+        let _ = self.engine.store.rename_task(id, title);
+        for t in self.tasks.iter_mut().filter(|t| t.id == id) {
+            t.title = title.to_string();
+        }
+        if let Some(v) = self.threads.get(&id) {
+            let chat = v.read(cx).chat.clone();
+            let title = title.to_string();
+            chat.update(cx, |c, _| c.task.title = title);
+        }
         cx.notify();
     }
 
@@ -1642,7 +1684,9 @@ impl Shell {
             .child(nav("home-fwd", icons::ARROW_RIGHT, "Forward (Alt+→)", can_fwd, |s, w, cx| s.go_forward(w, cx), cx));
         // Over the artwork (sidebar closed) the controls ride a small frosted
         // island, as in Zeron; with the sidebar open they sit on its top.
-        let island_on = !self.sidebar_shown();
+        // Zeron's rule: the frosted island only when the sidebar is closed
+        // and there is a picture under the controls.
+        let island_on = !self.sidebar_shown() && self.has_wallpaper();
         let island = div()
             .h(px(32.0))
             .px(px(6.0))
@@ -1673,6 +1717,75 @@ impl Shell {
             .child(cluster);
         let bar = self.drag_region("home-chrome", bar, cx);
         div().absolute().top_0().left_0().right_0().child(bar).into_any_element()
+    }
+
+    /// The slim bar's middle: the open chat's mark and title (double-click
+    /// to rename), or the page's name.
+    fn render_bar_title(&mut self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let page = |name: &'static str| {
+            div()
+                .px(px(6.0))
+                .min_w_0()
+                .truncate()
+                .text_size(ty::BODY)
+                .font_weight(gpui::FontWeight::MEDIUM)
+                .text_color(t.text)
+                .child(name)
+                .into_any_element()
+        };
+        let id = match self.route {
+            Route::Thread(id) => id,
+            Route::Home => return div().into_any_element(),
+            Route::Threads => return page("Threads"),
+            Route::Kanban => return page("Kanban"),
+            Route::Automations => return page("Automations"),
+            Route::PullRequests => return page("Pull requests"),
+            Route::Agents => return page("Agents"),
+            Route::Usage => return page("Usage"),
+            Route::Archived => return page("Archived"),
+            Route::Settings => return page("Settings"),
+            Route::Help => return page("Help & shortcuts"),
+            Route::Team => return page("Team"),
+        };
+        let Some(task) = self.task(id).cloned() else { return div().into_any_element() };
+        let mark = match self.persona_for(id) {
+            Some(p) => crate::team::avatar(p, 15.0, t).into_any_element(),
+            None => icon(ui::harness_icon(task.harness))
+                .size(px(14.0))
+                .text_color(ui::harness_tint(task.harness, t, t.text_muted))
+                .into_any_element(),
+        };
+        let status = kit::status_mark(SharedString::from(format!("tb-st-{id}")), task.status, task.unread, t);
+        div()
+            .id("tb-title")
+            .h(px(28.0))
+            .min_w_0()
+            .px(px(6.0))
+            .flex()
+            .items_center()
+            .gap(px(8.0))
+            .rounded(px(8.0))
+            .occlude()
+            .cursor_pointer()
+            .map(|d| crate::motion::hover_fade(d, "tb-title", (t.wash(0.0), t.wash(0.05)), None))
+            .tooltip(ui::tip(format!("{} (double-click to rename)", task.title)))
+            .on_click(cx.listener(move |this, e: &gpui::ClickEvent, window, cx| {
+                if e.click_count() == 2 {
+                    this.begin_rename(id, window, cx);
+                }
+            }))
+            .children(status)
+            .child(div().flex_none().size(px(16.0)).flex().items_center().justify_center().child(mark))
+            .child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(ty::BODY)
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(t.text)
+                    .child(task.title.clone()),
+            )
+            .into_any_element()
     }
 
     fn render_topbar(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
@@ -1711,6 +1824,9 @@ impl Shell {
                     .into_any_element()
             }
         };
+        // Tabs are optional (Settings › General): by default the bar is the
+        // slim one, with the chat's title where the tabs would be.
+        let tabs_on = self.engine.store.flag("topbar_tabs", false);
         let side = self.sidebar_shown() || self.route == Route::Settings;
         let cluster = div()
             .flex()
@@ -1741,7 +1857,17 @@ impl Shell {
             .child(div().w(px(8.0)))
             .child(arrow("tb-back", icons::ARROW_LEFT, "Back (Alt+←)", can_back, |s, w, cx| s.go_back(w, cx), cx))
             .child(div().w(px(2.0)))
-            .child(arrow("tb-fwd", icons::ARROW_RIGHT, "Forward (Alt+→)", can_fwd, |s, w, cx| s.go_forward(w, cx), cx));
+            .child(arrow("tb-fwd", icons::ARROW_RIGHT, "Forward (Alt+→)", can_fwd, |s, w, cx| s.go_forward(w, cx), cx))
+            // The new-thread page is where `+` leads, so it shows neither.
+            .when(!tabs_on && self.route != Route::Home, |d| {
+                let color = crate::motion::hover_blend("tb-new", t.text_muted, t.text);
+                d.child(div().w(px(2.0))).child(quiet_bar_button(
+                    "tb-new",
+                    "New thread (Ctrl+N)",
+                    icon(icons::PLUS).size(px(16.0)).text_color(color),
+                    cx.listener(|this, _, window, cx| this.new_session(window, cx)),
+                ))
+            });
 
         let in_thread = matches!(self.route, Route::Thread(_));
         let panel_open = in_thread && self.panel_shown();
@@ -1757,10 +1883,12 @@ impl Shell {
         };
         let tools_w = 16.0
             + if in_thread { ui::BUTTON + 4.0 } else { 0.0 }
+            + if in_thread && !tabs_on { ui::BUTTON + 2.0 } else { 0.0 }
             + if in_thread && !panel_open { ui::BUTTON + 4.0 } else { 0.0 }
             + if panel_open { panel_w } else { ui::caption_reserve() };
         let room = f32::from(window.viewport_size().width) - cluster_w - tools_w;
-        let tabs = self.render_tabs(room, &t, cx);
+        let tabs = if tabs_on { self.render_tabs(room, &t, cx) } else { self.render_bar_title(&t, cx) };
+        let files_on = panel_open && matches!(self.panel.read(cx).active(), Some(crate::side_panel::Surface::Files));
         let right_tools = div()
             .flex()
             .flex_none()
@@ -1771,18 +1899,43 @@ impl Shell {
             // Thread tools sit in the bar: info, then the panel toggle.
             // Chat and terminal flip with Ctrl+`.
             .when(in_thread, |d| {
-                d.child(div().h(px(28.0)).flex().items_center().gap(px(2.0)).child(self.render_info_button(cx)).when(
-                    !panel_open,
-                    |d| {
-                        let color = crate::motion::hover_blend("tb-panel", t.text_muted, t.text);
-                        d.child(quiet_bar_button(
-                            "tb-panel",
-                            "Side panel: browser, diffs, files… (Ctrl+\\)",
-                            ui::sidebar_glyph(0.0, true, 16.0, color),
-                            cx.listener(|this, _, _, cx| this.toggle_panel(cx)),
-                        ))
-                    },
-                ))
+                d.child(
+                    div()
+                        .h(px(28.0))
+                        .flex()
+                        .items_center()
+                        .gap(px(2.0))
+                        .child(self.render_info_button(cx))
+                        // The slim bar also opens the files straight away.
+                        .when(!tabs_on, |d| {
+                            let color = if files_on {
+                                t.text
+                            } else {
+                                crate::motion::hover_blend("tb-files", t.text_muted, t.text)
+                            };
+                            d.child(quiet_bar_button(
+                                "tb-files",
+                                "Files",
+                                icon(icons::FOLDER_TREE).size(px(16.0)).text_color(color),
+                                cx.listener(move |this, _, window, cx| {
+                                    if files_on {
+                                        this.toggle_panel(cx);
+                                    } else {
+                                        this.show_panel(Tab::Files, window, cx);
+                                    }
+                                }),
+                            ))
+                        })
+                        .when(!panel_open, |d| {
+                            let color = crate::motion::hover_blend("tb-panel", t.text_muted, t.text);
+                            d.child(quiet_bar_button(
+                                "tb-panel",
+                                "Side panel: browser, diffs, files… (Ctrl+\\)",
+                                ui::sidebar_glyph(0.0, true, 16.0, color),
+                                cx.listener(|this, _, _, cx| this.toggle_panel(cx)),
+                            ))
+                        }),
+                )
             });
         let strip = panel_open.then(|| self.panel.update(cx, |p, cx| p.render_strip(cx)));
 
@@ -2196,28 +2349,24 @@ impl Shell {
             .clone()
             .map(|m| format!("{} · {m}", task.harness.label()))
             .unwrap_or_else(|| task.harness.label().to_string());
+        // Facts and actions share the menu grammar (30 px rows, an 8 px
+        // inset, a 15 px glyph and a 10 px gap), so every icon and every
+        // label sits on one column down the card.
         let fact = |glyph: &'static str, text: String| {
             div()
-                .min_h(px(32.0))
+                .min_h(px(30.0))
                 .px(px(8.0))
+                .py(px(5.0))
                 .flex()
                 .items_center()
-                .gap(px(8.0))
-                .rounded(px(8.0))
+                .gap(px(10.0))
+                .rounded(px(kit::popover::MENU_ITEM_RADIUS))
                 .text_size(ty::BODY)
                 .text_color(t.text)
-                .child(
-                    div()
-                        .size(px(16.0))
-                        .flex_none()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(icon(glyph).size(px(15.0)).text_color(t.text_muted)),
-                )
+                .child(icon(glyph).size(px(15.0)).flex_none().text_color(t.text_muted))
                 .child(div().flex_1().min_w_0().truncate().child(text))
         };
-        let rule = div().h(px(1.0)).my(px(2.0)).bg(t.border.opacity(0.65));
+        let rule = kit::popover::menu_separator(t);
         let sheet = div()
             .id("thread-info")
             .w(px(272.0))
@@ -2225,12 +2374,12 @@ impl Shell {
             .flex()
             .flex_col()
             .overflow_y_scroll()
-            .rounded(px(12.0))
+            .rounded(px(kit::popover::CARD_RADIUS))
             .border_1()
-            .border_color(t.border)
+            .border_color(t.border_strong)
             .bg(t.bg.opacity(0.48))
-            .p(px(4.0))
-            .gap(px(2.0))
+            .p(px(kit::popover::CARD_INSET))
+            .gap(px(kit::popover::MENU_GAP))
             .child(fact(icons::LAPTOP, format!("Local · {}", ui::host_name())))
             .child(fact(icons::FOLDER, project.as_ref().map(|p| p.name.clone()).unwrap_or_else(|| "No folder".into())))
             .when_some(task.branch.clone(), |d, b| d.child(fact(icons::GIT_BRANCH, b)))
@@ -2245,32 +2394,33 @@ impl Shell {
                 d.child(
                     div()
                         .id("info-open-changes")
-                        .min_h(px(32.0))
+                        .min_h(px(30.0))
                         .px(px(8.0))
+                        .py(px(5.0))
                         .flex()
                         .items_center()
-                        .gap(px(8.0))
-                        .rounded(px(8.0))
+                        .gap(px(10.0))
+                        .rounded(px(kit::popover::MENU_ITEM_RADIUS))
                         .cursor_pointer()
                         .text_size(ty::BODY)
                         .text_color(t.text)
-                        .hover(|s| s.bg(t.element_hover))
+                        .hover(|s| s.bg(kit::popover::row_active_bg(t)))
+                        .tooltip(ui::tip("Show the changes"))
                         .on_click(cx.listener(|this, _, window, cx| this.show_panel(Tab::Changes, window, cx)))
+                        .child(icon(icons::GIT_BRANCH).size(px(15.0)).flex_none().text_color(t.text_muted))
+                        .child(div().flex_1().min_w_0().truncate().child(format!("{files} changed")))
                         .child(
                             div()
-                                .size(px(16.0))
                                 .flex_none()
                                 .flex()
-                                .items_center()
-                                .justify_center()
-                                .child(icon(icons::GIT_BRANCH).size(px(15.0)).text_color(t.text_muted)),
-                        )
-                        .child(div().flex_1().min_w_0().truncate().child(format!("{files} changed")))
-                        .child(div().flex_none().text_color(t.success).child(format!("+{adds}")))
-                        .child(div().flex_none().text_color(t.danger).child(format!("−{dels}"))),
+                                .gap(px(6.0))
+                                .text_size(ty::META)
+                                .child(div().text_color(t.success).child(format!("+{adds}")))
+                                .child(div().text_color(t.danger).child(format!("−{dels}"))),
+                        ),
                 )
             })
-            .child(div().h(px(1.0)).my(px(2.0)).bg(t.border.opacity(0.65)))
+            .child(kit::popover::menu_separator(t))
             .child(
                 ui::menu_row("info-side", icons::PLUS, "New side chat", false, t)
                     .on_click(cx.listener(|this, _, window, cx| this.side_chat(window, cx))),
@@ -2309,7 +2459,7 @@ impl Shell {
                 ui::menu_row("info-copy-path", icons::COPY, "Copy path", false, t)
                     .on_click(cx.listener(move |this, _, _, cx| this.copy(path_s.clone(), cx))),
             );
-        ui::frosted(12.0, 64.0, sheet).into_any_element()
+        ui::frosted(kit::popover::CARD_RADIUS, 64.0, sheet).into_any_element()
     }
 
     fn render_menu_overlay(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -2609,7 +2759,11 @@ impl Render for Shell {
         let in_thread = matches!(self.route, Route::Thread(_));
         // No open threads: the main page is the wallpaper and the composer.
         // The tab strip only exists once a thread is open.
-        let bare = matches!(self.route, Route::Home) && self.tabs.is_empty();
+        // The new-thread page draws only its floating window controls (the
+        // frosted island over the picture), unless thread tabs are on and
+        // some are open.
+        let bare = matches!(self.route, Route::Home)
+            && (self.tabs.is_empty() || !self.engine.store.flag("topbar_tabs", false));
         let wants_expand = self.panel.read(cx).expanded;
         self.update_fit(f32::from(window.viewport_size().width), in_thread, wants_expand);
         let panel_open = in_thread && self.panel_shown();

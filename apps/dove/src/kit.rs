@@ -160,29 +160,66 @@ pub fn status_glyph(id: impl Into<ElementId>, status: TaskStatus, unread: bool, 
     }
 }
 
-/// Zeron's activity glyph: a 2×3 grid of round cells whose brightness
-/// chases around the ring, sized to fit a `size` square. It runs on the
+/// The sidebar's status mark: only what asks for attention (working,
+/// waiting on you, an unread result, a failure, a draft). A thread that is
+/// done and read, or idle, shows nothing, so a calm list stays calm.
+pub fn status_mark(id: impl Into<ElementId>, status: TaskStatus, unread: bool, t: &Theme) -> Option<AnyElement> {
+    match status {
+        TaskStatus::Running => Some(spinner(id, 12.0, t.busy).into_any_element()),
+        TaskStatus::NeedsInput => Some(ui::dot(t.warning, 7.0).into_any_element()),
+        TaskStatus::Done if unread => Some(ui::dot(t.accent, 7.0).into_any_element()),
+        TaskStatus::Failed => Some(icon(icons::CLOSE).size(px(11.0)).text_color(t.danger).into_any_element()),
+        TaskStatus::Draft => Some(icon(icons::PEN).size(px(11.0)).text_color(t.text_faint).into_any_element()),
+        TaskStatus::Done | TaskStatus::Idle | TaskStatus::Archived => None,
+    }
+}
+
+/// The working indicator: a faint ring with a bright arc turning once per
+/// [`crate::motion::SPIN_PERIOD`], drawn as two strokes. It runs on the
 /// shared 30 Hz pulse clock (see `motion::pulse`), so a spinner re-renders
-/// only its own view's subtree, at a quarter of the display rate, and stops
-/// scheduling frames the moment it unmounts.
+/// only its own view's subtree and stops scheduling frames the moment it
+/// unmounts. Under reduced motion the arc holds still and breathes instead.
 pub fn spinner(_id: impl Into<ElementId>, size: f32, color: Hsla) -> impl IntoElement {
-    // Clockwise ring position of each (row, col), top-left first.
-    const RING: [[usize; 2]; 3] = [[0, 1], [5, 2], [4, 3]];
-    let cell = (size / 4.0).max(2.0);
-    let grid = crate::motion::pulse(crate::motion::SPIN_PERIOD, 1, move |phase| {
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(cell / 2.0))
-            .children((0..3).map(|row| {
-                div().flex().gap(px(cell / 2.0)).children((0..2).map(move |col| {
-                    let at = RING[row][col] as f32 / 6.0;
-                    div().size(px(cell)).rounded_full().bg(color).opacity(phase.opacity(at, 0.1))
-                }))
-            }))
+    let ring = crate::motion::pulse(crate::motion::SPIN_PERIOD, 1, move |phase| {
+        gpui::canvas(|_, _, _| {}, move |bounds, _, window, _| paint_spinner(bounds, color, phase, window))
+            .size(px(size))
             .into_any_element()
     });
-    div().size(px(size)).flex().flex_none().items_center().justify_center().child(grid)
+    div().size(px(size)).flex().flex_none().items_center().justify_center().child(ring)
+}
+
+/// One frame of [`spinner`]: the track, then the arc (a quarter turn with a
+/// round head), as polylines fine enough to read as circles at any size.
+fn paint_spinner(bounds: gpui::Bounds<gpui::Pixels>, color: Hsla, phase: crate::motion::ActivityPhase, window: &mut gpui::Window) {
+    use std::f32::consts::TAU;
+    let side = f32::from(bounds.size.width.min(bounds.size.height));
+    let stroke = (side / 8.0).clamp(1.25, 2.0);
+    let r = side / 2.0 - stroke / 2.0 - 0.25;
+    let (cx, cy) = (
+        f32::from(bounds.origin.x) + f32::from(bounds.size.width) / 2.0,
+        f32::from(bounds.origin.y) + f32::from(bounds.size.height) / 2.0,
+    );
+    let at = |a: f32| gpui::point(px(cx + r * a.cos()), px(cy + r * a.sin()));
+    let arc = |from: f32, sweep: f32, fill: Hsla, window: &mut gpui::Window| {
+        let steps = 40;
+        let mut b = gpui::PathBuilder::stroke(px(stroke));
+        b.move_to(at(from));
+        for i in 1..=steps {
+            b.line_to(at(from + sweep * i as f32 / steps as f32));
+        }
+        if let Ok(path) = b.build() {
+            window.paint_path(path, fill);
+        }
+    };
+    arc(0.0, TAU, color.opacity(color.a * 0.2), window);
+    // Moving: the arc turns. Reduced motion: it stays at the top and
+    // breathes, so work still reads as ongoing without anything moving.
+    let (start, alpha) = if phase.still || phase.subtle {
+        (-TAU / 4.0, if phase.still { 1.0 } else { 0.45 + 0.55 * crate::motion::pulse_wave(phase.phase) })
+    } else {
+        (phase.phase * TAU - TAU / 4.0, 1.0)
+    };
+    arc(start, TAU * 0.28, color.opacity(color.a * alpha), window);
 }
 
 /// A centered message for an empty page or list.

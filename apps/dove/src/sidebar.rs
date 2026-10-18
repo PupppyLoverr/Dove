@@ -82,10 +82,17 @@ fn group_label(glyph: &'static str, label: &'static str, t: &Theme) -> gpui::Div
         .flex()
         .flex_none()
         .items_center()
-        .gap(px(6.0))
+        .gap(px(9.0))
         .text_size(ty::CAPTION)
         .text_color(t.text_faint)
-        .child(icon(glyph).size(px(12.0)).text_color(t.text_faint))
+        .child(
+            div()
+                .w(px(16.0))
+                .flex_none()
+                .flex()
+                .justify_center()
+                .child(icon(glyph).size(px(12.0)).text_color(t.text_faint)),
+        )
         .child(label)
 }
 
@@ -856,44 +863,36 @@ impl Shell {
             .cursor_pointer()
             .when(selected, |d| d.bg(ui::selected_bg(t)))
             .when(archived && !selected, |d| d.opacity(0.6))
-            .when_some(step.clone().filter(|_| compact), |d, s| d.tooltip(ui::tip(s)))
-            .child(div().w(px(12.0)).flex().justify_center().child(kit::status_glyph(
+            // Compact rows have no second line: the step a working thread is
+            // on, or (with several projects) where it lives, is the tooltip.
+            .when_some(
+                step.clone()
+                    .or_else(|| {
+                        (self.projects.len() > 1)
+                            .then(|| self.project(task.project_id).map(|p| SharedString::from(p.name.clone())))
+                            .flatten()
+                    })
+                    .filter(|_| compact),
+                |d, s| d.tooltip(ui::tip(s)),
+            )
+            // The status column keeps its width when empty, so titles align.
+            .child(div().w(px(16.0)).flex_none().flex().justify_center().children(kit::status_mark(
                 SharedString::from(format!("sb-st-{id}")),
                 task.status,
                 task.unread,
                 t,
             )))
-            // One mark per row: the teammate (or agent), with the project as
-            // a small colored pip on its corner when there are several.
+            // One mark per row: the teammate, or the agent.
             .child(
-                div()
-                    .relative()
-                    .flex_none()
-                    .size(px(16.0))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(match self.persona_for(id) {
+                div().relative().flex_none().size(px(16.0)).flex().items_center().justify_center().child(
+                    match self.persona_for(id) {
                         Some(p) => crate::team::avatar(p, 16.0, t).into_any_element(),
                         None => icon(ui::harness_icon(task.harness))
                             .size(px(14.0))
                             .text_color(ui::harness_tint(task.harness, t, t.text_muted))
                             .into_any_element(),
-                    })
-                    .when(self.projects.len() > 1, |d| {
-                        d.children(self.project(task.project_id).map(|p| {
-                            let hue = project_hue(&p.name);
-                            div()
-                                .absolute()
-                                .right(px(-3.0))
-                                .bottom(px(-2.0))
-                                .size(px(7.0))
-                                .rounded_full()
-                                .border_1()
-                                .border_color(t.bg)
-                                .bg(hsla(hue, 0.62, if t.appearance.is_dark() { 0.62 } else { 0.48 }, 1.0))
-                        }))
-                    }),
+                    },
+                ),
             )
             .child(match renaming {
                 Some(input) => div()

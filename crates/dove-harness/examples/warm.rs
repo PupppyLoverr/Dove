@@ -1,4 +1,5 @@
-//! Time to first reply: a cold session vs a pre-warmed one (Claude Code).
+//! Time to first reply: a cold session vs a pre-warmed one (Claude Code, or
+//! OpenCode / Kilo with `DOVE_WARM_KIND=opencode|kilo`).
 //!
 //! cargo run -p dove-harness --example warm -- [model]
 
@@ -24,10 +25,15 @@ fn first_text(handle: &dove_harness::SessionHandle, since: Instant) -> Option<Du
 
 fn main() -> anyhow::Result<()> {
     let model = std::env::args().nth(1);
-    let program = detect::find(HarnessKind::ClaudeCode).ok_or_else(|| anyhow::anyhow!("claude is not on PATH"))?;
+    let kind = match std::env::var("DOVE_WARM_KIND").as_deref() {
+        Ok("opencode") => HarnessKind::OpenCode,
+        Ok("kilo") => HarnessKind::Kilo,
+        _ => HarnessKind::ClaudeCode,
+    };
+    let program = detect::find(kind).ok_or_else(|| anyhow::anyhow!("{} is not on PATH", kind.label()))?;
     let rt = tokio::runtime::Runtime::new()?;
     let spec = |prompt: Option<String>| SessionSpec {
-        kind: HarnessKind::ClaudeCode,
+        kind,
         program: program.clone(),
         cwd: std::env::temp_dir(),
         model: model.clone(),

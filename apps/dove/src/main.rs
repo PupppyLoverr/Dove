@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod agent_auth;
 mod assets;
 mod browser;
 mod changes;

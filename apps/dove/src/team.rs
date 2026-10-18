@@ -445,7 +445,14 @@ impl Shell {
                     .text_size(ty::BODY)
                     .text_color(t.text_faint)
                     .hover(|s| s.text_color(t.text_muted))
-                    .child(icon(icons::PLUS).size(px(14.0)))
+                    .child(
+                        div()
+                            .w(px(16.0))
+                            .flex_none()
+                            .flex()
+                            .justify_center()
+                            .child(icon(icons::PLUS).size(px(14.0))),
+                    )
                     .child("Add a teammate")
                     .on_click(cx.listener(|this, _, window, cx| this.open_teammate(None, window, cx))),
             );

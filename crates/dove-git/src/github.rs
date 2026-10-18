@@ -34,13 +34,115 @@ pub fn gh_available() -> bool {
     which_gh().is_some()
 }
 
+/// Where `gh` lives, if anywhere: PATH first, then the folders its
+/// installers use. Dove's PATH is fixed at launch, so a `gh` installed
+/// since (from Settings › Integrations, say) is only found there.
+pub fn gh_path() -> Option<std::path::PathBuf> {
+    which_gh()
+}
+
 fn which_gh() -> Option<std::path::PathBuf> {
     let exe = if cfg!(windows) { "gh.exe" } else { "gh" };
-    std::env::var_os("PATH")
+    let on_path = std::env::var_os("PATH")
         .into_iter()
         .flat_map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
-        .map(|d| d.join(exe))
-        .find(|p| p.is_file())
+        .map(|d| d.join(exe));
+    on_path.chain(install_dirs().into_iter().map(|d| d.join(exe))).find(|p| p.is_file())
+}
+
+/// Where the GitHub CLI's installers put it, beyond PATH.
+fn install_dirs() -> Vec<std::path::PathBuf> {
+    use std::path::PathBuf;
+    let env = |k: &str| std::env::var_os(k).map(PathBuf::from);
+    let mut dirs = Vec::new();
+    if cfg!(windows) {
+        // winget / MSI (machine and per-user), Scoop and Chocolatey.
+        dirs.extend(env("ProgramFiles").map(|p| p.join("GitHub CLI")));
+        dirs.extend(env("LOCALAPPDATA").map(|p| p.join("Programs").join("GitHub CLI")));
+        dirs.extend(env("USERPROFILE").map(|p| p.join("scoop").join("shims")));
+        dirs.extend(env("ProgramData").map(|p| p.join("chocolatey").join("bin")));
+    } else {
+        dirs.extend(["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/home/linuxbrew/.linuxbrew/bin"].map(PathBuf::from));
+    }
+    dirs
+}
+
+/// The signed-in GitHub account, `None` when `gh` is missing or signed out.
+pub fn gh_user() -> Option<String> {
+    let gh = which_gh()?;
+    let mut cmd = Command::new(gh);
+    cmd.env("GH_PROMPT_DISABLED", "1").args(["api", "user", "--jq", ".login"]);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000);
+    }
+    let out = cmd.output().ok()?;
+    let login = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (out.status.success() && !login.is_empty()).then_some(login)
+}
+
+/// Install the GitHub CLI with the platform's package manager: winget on
+/// Windows (it may ask for admin rights), Homebrew on macOS. Blocks until
+/// the installer exits.
+pub fn install_gh() -> Result<()> {
+    let mut cmd = if cfg!(windows) {
+        let mut c = Command::new("winget");
+        c.args([
+            "install",
+            "--id",
+            "GitHub.cli",
+            "--exact",
+            "--source",
+            "winget",
+            "--silent",
+            "--accept-package-agreements",
+            "--accept-source-agreements",
+        ]);
+        c
+    } else if cfg!(target_os = "macos") {
+        let brew = ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"]
+            .into_iter()
+            .find(|p| Path::new(p).is_file())
+            .context("Homebrew is not installed (brew.sh), or install gh from cli.github.com")?;
+        let mut c = Command::new(brew);
+        c.args(["install", "gh"]);
+        c
+    } else {
+        bail!("install gh with your package manager (see cli.github.com)");
+    };
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000);
+    }
+    let out = cmd.output().context(if cfg!(windows) { "winget is not available" } else { "running brew" })?;
+    if which_gh().is_some() {
+        return Ok(());
+    }
+    let text = String::from_utf8_lossy(if out.stderr.is_empty() { &out.stdout } else { &out.stderr }).into_owned();
+    let last = text.lines().map(str::trim).filter(|l| !l.is_empty()).last().unwrap_or("the installer did not finish");
+    bail!("{last}")
+}
+
+/// Open a terminal window running `gh auth login`, which signs in through
+/// the browser. Returns once the window is open, not when sign-in ends.
+pub fn open_gh_login() -> Result<()> {
+    let gh = which_gh().context("the GitHub CLI (gh) is not installed")?;
+    let gh = gh.to_string_lossy().into_owned();
+    if cfg!(windows) {
+        Command::new("cmd")
+            .args(["/c", "start", "GitHub sign-in", "cmd", "/k", &gh, "auth", "login", "--web", "--hostname", "github.com", "--git-protocol", "https"])
+            .spawn()
+            .context("opening a terminal")?;
+    } else if cfg!(target_os = "macos") {
+        let script = format!("tell application \"Terminal\" to do script \"'{gh}' auth login --web --hostname github.com --git-protocol https\"");
+        Command::new("osascript").args(["-e", &script, "-e", "tell application \"Terminal\" to activate"]).spawn().context("opening Terminal")?;
+    } else {
+        let line = format!("'{gh}' auth login --web --hostname github.com --git-protocol https; exec $SHELL");
+        Command::new("x-terminal-emulator").args(["-e", "sh", "-c", &line]).spawn().context("opening a terminal")?;
+    }
+    Ok(())
 }
 
 fn gh(repo: &Path, args: &[&str]) -> Result<String> {

@@ -16,6 +16,7 @@
 //! traits across launches.
 
 use std::cell::Cell;
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -38,6 +39,7 @@ use crate::assets::{icon, icons};
 use crate::design::radius;
 use crate::design::rem;
 use crate::design::ty;
+use crate::agent_auth::{self, SignIn};
 use crate::picker_memory::{Pick, PickerMemory};
 use crate::theme::{Theme, ink};
 use crate::{kit, ui};
@@ -129,8 +131,12 @@ pub struct Picker {
     /// A click on the chip right after an outside-click close must not
     /// reopen the card.
     closed_at: Option<Instant>,
+    /// Each agent's sign-in state, read in the background (see
+    /// [`agent_auth`]); missing until the first read lands.
+    sign_in: HashMap<HarnessKind, SignIn>,
     /// Waits on the engine's catalog watch; idle costs nothing.
     _watch: Option<Task<()>>,
+    _auth: Option<Task<()>>,
     _subs: Vec<Subscription>,
 }
 
@@ -174,7 +180,9 @@ impl Picker {
             slider: Rc::default(),
             dragging: false,
             closed_at: None,
+            sign_in: HashMap::new(),
             _watch: None,
+            _auth: None,
             _subs: subs,
         };
         this.ensure_model();
@@ -238,7 +246,48 @@ impl Picker {
         }
         self.installed = installed;
         self.ensure_model();
+        self.refresh_sign_in(cx);
         cx.emit(PickerEvent::Changed);
+        cx.notify();
+    }
+
+    /// Re-read every offered agent's sign-in state off the UI thread.
+    fn refresh_sign_in(&mut self, cx: &mut Context<Self>) {
+        let mut kinds = self.offered();
+        if !kinds.contains(&self.harness) {
+            kinds.push(self.harness);
+        }
+        let work = cx.background_spawn(async move {
+            kinds.into_iter().map(|k| (k, agent_auth::detect(k))).collect::<Vec<_>>()
+        });
+        self._auth = Some(cx.spawn(async move |this, cx| {
+            let states = work.await;
+            let _ = this.update(cx, |this, cx| {
+                let before = this.sign_in.clone();
+                this.sign_in.extend(states);
+                if this.sign_in != before {
+                    cx.notify();
+                }
+            });
+        }));
+    }
+
+    /// The current agent's sign-in state, when known.
+    fn current_sign_in(&self) -> Option<&SignIn> {
+        self.sign_in.get(&self.harness).filter(|s| **s != SignIn::Unknown)
+    }
+
+    /// Open a terminal running the current agent's own sign-in.
+    fn sign_in_now(&mut self, cx: &mut Context<Self>) {
+        let kind = self.harness;
+        let program = self.installed.iter().find(|i| i.kind == kind).map(|i| i.program.clone());
+        if let Some(program) = program
+            && let Err(err) = agent_auth::open_login(kind, &program)
+        {
+            tracing::warn!("opening {} sign-in: {err}", kind.label());
+        }
+        // Forget the stale state: the next open re-reads it.
+        self.sign_in.remove(&kind);
         cx.notify();
     }
 
@@ -411,6 +460,8 @@ impl Picker {
         if let Some(engine) = &self.engine {
             engine.refresh_models_if_stale(self.harness);
         }
+        // Signing in happens outside Dove; opening the card re-checks.
+        self.refresh_sign_in(cx);
         cx.notify();
     }
 
@@ -865,7 +916,61 @@ impl Picker {
             }
             panel = panel.child(list);
         }
+        if let Some(account) = self.account_row(t, cx) {
+            panel = panel.child(account);
+        }
         panel.into_any_element()
+    }
+
+    /// The agent's account: who it is signed in as, or a sign-in button.
+    fn account_row(&self, t: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let state = self.current_sign_in()?.clone();
+        let agent = self.harness.label();
+        let (dot, label): (gpui::Hsla, String) = match &state {
+            SignIn::SignedIn(Some(who)) => (t.success, format!("Signed in · {who}")),
+            SignIn::SignedIn(None) => (t.success, format!("Signed in to {agent}")),
+            _ => (t.warning, format!("Not signed in to {agent}")),
+        };
+        let signed_out = state == SignIn::SignedOut;
+        Some(
+            div()
+                .mt(px(4.0))
+                .pt(px(4.0))
+                .border_t_1()
+                .border_color(ink(0.06))
+                .child(
+                    div()
+                        .h(px(28.0))
+                        .px(px(8.0))
+                        .flex()
+                        .items_center()
+                        .gap(px(8.0))
+                        .text_size(ty::META)
+                        .text_color(t.text_muted)
+                        .child(div().size(px(6.0)).flex_none().rounded_full().bg(dot))
+                        .child(div().flex_1().min_w_0().truncate().child(label))
+                        .when(signed_out && agent_auth::can_sign_in(self.harness), |d| {
+                            d.child(
+                                div()
+                                    .id("picker-sign-in")
+                                    .flex_none()
+                                    .px(px(8.0))
+                                    .h(px(22.0))
+                                    .flex()
+                                    .items_center()
+                                    .rounded(px(RADIUS))
+                                    .cursor_pointer()
+                                    .text_color(t.accent)
+                                    .font_weight(gpui::FontWeight::MEDIUM)
+                                    .hover(|s| s.bg(ink(0.05)))
+                                    .tooltip(ui::tip("Opens the agent's sign-in in a terminal"))
+                                    .on_click(cx.listener(|this, _, _, cx| this.sign_in_now(cx)))
+                                    .child("Sign in"),
+                            )
+                        }),
+                )
+                .into_any_element(),
+        )
     }
 
     /// The effort over the model's name; opens the model list.
@@ -1355,6 +1460,7 @@ impl Render for Picker {
         let model = self.current_model();
         let effort = model.as_ref().and_then(|m| self.effort_label(m));
         let fast = model.as_ref().is_some_and(|m| self.fast_on(m));
+        let signed_out = self.current_sign_in() == Some(&SignIn::SignedOut);
         let text = self.text_trigger;
         let trigger = div()
             .id("composer-agent")
@@ -1380,16 +1486,29 @@ impl Render for Picker {
                 d.child(div().text_color(t.text_faint).font_weight(gpui::FontWeight::NORMAL).child(effort))
             })
             .when(fast, |d| d.child(icon(icons::FAST_TIER).size(px(13.0)).text_color(t.accent)))
-            .tooltip(ui::tip(if self.locked { "Model and effort" } else { "Agent, model and effort" }))
+            .when(signed_out, |d| d.child(div().size(px(6.0)).flex_none().rounded_full().bg(t.warning)))
+            .tooltip(ui::tip(if signed_out {
+                "Not signed in · open to sign in"
+            } else if self.locked {
+                "Model and effort"
+            } else {
+                "Agent, model and effort"
+            }))
             .on_click(cx.listener(|this, _, window, cx| this.toggle(window, cx)));
         let card = self.open.then(|| self.card(t, window, cx));
+        // The chip sits right-aligned and its width follows the effort label,
+        // so the card hangs from its right edge: anchored to the left edge it
+        // jumped sideways on every effort change, and mid-drag that jump moved
+        // the slider under the pointer and flipped the effort back and forth.
         div().relative().when(text, |d| d.max_w(px(260.0))).child(trigger).when_some(card, |d, card| {
-            d.child(deferred(
-                anchored()
-                    .anchor(if text { Anchor::BottomRight } else { Anchor::BottomLeft })
-                    .snap_to_window_with_margin(px(8.0))
-                    .child(div().mb(px(if text { 28.0 } else { 34.0 })).child(card)),
-            ))
+            d.child(
+                div().absolute().right_0().bottom_0().child(deferred(
+                    anchored()
+                        .anchor(Anchor::BottomRight)
+                        .snap_to_window_with_margin(px(8.0))
+                        .child(div().mb(px(if text { 28.0 } else { 34.0 })).child(card)),
+                )),
+            )
         })
     }
 }

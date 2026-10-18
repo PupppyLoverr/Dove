@@ -10,10 +10,12 @@ mod agy;
 pub mod catalog;
 pub mod detect;
 mod external;
+pub use external::defers_prompt;
 pub mod models;
 pub mod office_skills;
 pub mod process;
 mod rpc;
+pub mod title;
 pub mod tui;
 
 use std::path::PathBuf;

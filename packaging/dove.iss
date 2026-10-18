@@ -8,6 +8,10 @@
 #ifndef DoveIcon
   #define DoveIcon "..\apps\dove\assets\dove.ico"
 #endif
+; The release folder dove.exe was built into: dove-escrow.exe (the tiny
+; suspended helper each agent spawn uses on Windows) and DirectML.dll ship
+; beside it.
+#define DoveDir ExtractFilePath(DoveExe)
 
 [Setup]
 AppId={{7E4B9C2A-1D58-4F63-9A70-6C2E8B15D4F1}
@@ -30,6 +34,8 @@ ArchitecturesInstallIn64BitMode=x64compatible
 
 [Files]
 Source: "{#DoveExe}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#DoveDir}dove-escrow.exe"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "{#DoveDir}DirectML.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 
 [Icons]
 Name: "{group}\Dove"; Filename: "{app}\dove.exe"

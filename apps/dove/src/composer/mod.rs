@@ -46,14 +46,14 @@ pub use picker::{Picker, PickerEvent};
 
 /// Zeron's composer plate: at most 768 px wide, 76 px tall at rest, and it
 /// grows with the prompt up to about 260 px before the text scrolls.
-pub const PLATE_MAX_W: f32 = 768.0;
+pub const PLATE_MAX_W: f32 = 840.0;
 pub const PLATE_MIN_H: f32 = 76.0;
 pub const PLATE_MAX_H: f32 = 260.0;
 
-/// The plate's width cap: Zeron's 768 px, or narrower when the conversation
-/// column is set narrower (Settings › Appearance › Conversation width).
+/// The composer's width: a little wider than the conversation column, so
+/// the bar frames the messages above it, up to a cap.
 pub fn plate_width() -> f32 {
-    PLATE_MAX_W.min(crate::design::conversation_width() + 8.0)
+    (crate::design::conversation_width() + 40.0).min(PLATE_MAX_W)
 }
 /// One prompt line at the plate's 15 px text.
 const PLATE_LINE: f32 = 24.0;
@@ -541,7 +541,7 @@ impl Composer {
         }
         if !self.attachments.is_empty() {
             let list = self.attachments.iter().map(|p| format!("- {}", p.display())).collect::<Vec<_>>().join("\n");
-            text = format!("{text}\n\nAttached files (read them as needed):\n{list}").trim().to_string();
+            text = format!("{text}\n\n{ATTACH_HEADER}\n{list}").trim().to_string();
         }
         self.input.update(cx, |s, cx| s.set_value("", window, cx));
         self.attachments.clear();
@@ -1496,58 +1496,97 @@ impl Composer {
         )
     }
 
+    /// Staged files as Zeron's thumbnail strip: 56 px rounded tiles, an
+    /// image's picture (a click opens it full size) or a file's type icon and
+    /// name, and a round remove button that shows on hover.
     fn render_attachments(&self, t: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
         if self.attachments.is_empty() {
             return None;
         }
+        const THUMB: f32 = 56.0;
         Some(
             div()
                 .flex()
                 .flex_wrap()
-                .gap(px(6.0))
+                .gap(px(8.0))
                 .children(self.attachments.iter().enumerate().map(|(i, p)| {
                     let name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-                    let is_image = matches!(
-                        p.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref(),
-                        Some("png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp")
-                    );
-                    div()
+                    let is_image = is_image(p);
+                    let group = SharedString::from(format!("att-g-{i}"));
+                    let open = p.clone();
+                    let frame = div()
                         .id(SharedString::from(format!("att-{i}")))
-                        .h(px(30.0))
-                        .pl(px(4.0))
-                        .pr(px(8.0))
-                        .flex()
-                        .items_center()
-                        .gap(px(6.0))
-                        .rounded(px(radius::RADIUS))
+                        .size(px(THUMB))
+                        .rounded(px(8.0))
+                        .overflow_hidden()
                         .border_1()
-                        .border_color(t.border)
+                        .border_color(t.wash(0.10))
                         .bg(t.wash(0.04))
-                        .text_size(ty::SMALL)
-                        .text_color(t.text_muted)
+                        .cursor_pointer()
                         .tooltip(ui::tip(p.display().to_string()))
-                        .child(if is_image {
-                            img(p.clone())
-                                .size(px(22.0))
-                                .rounded(px(radius::fit(22.0)))
-                                .object_fit(gpui::ObjectFit::Cover)
-                                .into_any_element()
-                        } else {
-                            div()
-                                .size(px(22.0))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .child(icon(icons::PAPERCLIP).size(px(13.0)))
-                                .into_any_element()
-                        })
-                        .child(div().max_w(px(180.0)).truncate().child(name))
+                        .on_click(move |_, _, cx| cx.open_with_system(&open));
+                    let tile = if is_image {
+                        frame
+                            .child(
+                                img(p.clone())
+                                    .w(px(THUMB - 2.0))
+                                    .h(px(THUMB - 2.0))
+                                    .rounded(px(7.0))
+                                    .object_fit(gpui::ObjectFit::Cover),
+                            )
+                            .into_any_element()
+                    } else {
+                        frame
+                            .flex()
+                            .flex_col()
+                            .items_center()
+                            .justify_center()
+                            .gap(px(3.0))
+                            .px(px(4.0))
+                            .child(
+                                crate::file_icons::icon(crate::file_icons::FileIconIdentity::file(&name), t.appearance)
+                                    .size(px(22.0)),
+                            )
+                            .child(
+                                div()
+                                    .w_full()
+                                    .truncate()
+                                    .text_center()
+                                    .text_size(ty::BADGE)
+                                    .text_color(t.text_muted)
+                                    .child(name.clone()),
+                            )
+                            .into_any_element()
+                    };
+                    div()
+                        .group(group.clone())
+                        .relative()
+                        .flex_none()
+                        .child(tile)
                         .child(
                             div()
                                 .id(SharedString::from(format!("att-x-{i}")))
+                                .absolute()
+                                .top(px(-6.0))
+                                .right(px(-6.0))
+                                .size(px(18.0))
+                                .rounded_full()
+                                .bg(t.bg)
+                                .border_1()
+                                .border_color(t.wash(0.12))
+                                .flex()
+                                .items_center()
+                                .justify_center()
                                 .cursor_pointer()
-                                .child(icon(icons::CLOSE).size(px(11.0)).text_color(t.text_faint))
-                                .on_click(cx.listener(move |this, _, _, cx| this.remove_attachment(i, cx))),
+                                .shadow_sm()
+                                .invisible()
+                                .group_hover(group, |s| s.visible())
+                                .tooltip(ui::tip(format!("Remove {name}")))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    cx.stop_propagation();
+                                    this.remove_attachment(i, cx);
+                                }))
+                                .child(icon(icons::CLOSE).size(px(10.0)).text_color(t.text_muted)),
                         )
                 }))
                 .into_any_element(),
@@ -1720,6 +1759,37 @@ pub fn mode_from_id(id: &str) -> PermissionMode {
 
 /// Focus a composer's input. Takes the entity so callers holding `cx`
 /// mutably need no outstanding read borrow.
+/// The block a sent message carries for its staged files: the agent reads
+/// the paths, and the transcript draws them back as thumbnails and pills.
+pub const ATTACH_HEADER: &str = "Attached files (read them as needed):";
+
+/// A sent message's own text and the files it carried (see
+/// [`ATTACH_HEADER`]). Text without the block comes back whole.
+pub fn split_attachments(text: &str) -> (String, Vec<PathBuf>) {
+    let Some(at) = text.find(ATTACH_HEADER) else { return (text.to_string(), Vec::new()) };
+    let body = text[..at].trim_end().to_string();
+    let files = text[at + ATTACH_HEADER.len()..]
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("- "))
+        .filter(|p| !p.trim().is_empty())
+        .map(|p| PathBuf::from(p.trim()))
+        .collect();
+    (body, files)
+}
+
+/// Whether `path` is an image Dove can show as a thumbnail.
+pub fn is_image(path: &std::path::Path) -> bool {
+    matches!(
+        path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref(),
+        Some("png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp")
+    )
+}
+
+/// Stage files in `composer`, as a drop would.
+pub fn attach_paths(composer: &Entity<Composer>, paths: Vec<PathBuf>, cx: &mut App) {
+    composer.update(cx, |c, cx| c.attach(paths, cx));
+}
+
 pub fn focus(composer: &Entity<Composer>, window: &mut Window, cx: &mut App) {
     let input = composer.read(cx).input.clone();
     focus_input(&input, window, cx);
@@ -1743,7 +1813,7 @@ const HERO_CORNER: f32 = 12.0;
 /// The docked bar: its height, the prompt's line box (a button's height, so
 /// text and controls share one centre), the row's side insets, and the
 /// footer under it. Tucked or open, the bar keeps these.
-const DOCK_H: f32 = 44.0;
+const DOCK_H: f32 = 50.0;
 const DOCK_LINE: f32 = ui::ROUND_BUTTON;
 const DOCK_PAD_L: f32 = 4.0;
 const DOCK_PAD_R: f32 = 6.0;
@@ -2315,7 +2385,7 @@ impl Composer {
         let show_send = has_text || self.running || !self.attachments.is_empty();
         // The row fills the bar inside its border, so its content is centred
         // on the bar itself (equal room above and below).
-        let bar = surface.when(staged, |d| d.child(staged_rows.px(px(12.0)).pt(px(10.0)))).child(
+        let bar = surface.when(staged, |d| d.child(staged_rows.px(px(12.0)).pt(px(12.0)).pb(px(2.0)))).child(
             div()
                 .w_full()
                 .min_h(px(DOCK_H - 2.0))
@@ -2585,6 +2655,20 @@ fn grouped(n: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sent_files_split_from_the_words() {
+        let sent = format!("look at these\n\n{ATTACH_HEADER}\n- C:/a/shot.png\n- C:/b/Cargo.toml");
+        let (body, files) = split_attachments(&sent);
+        assert_eq!(body, "look at these");
+        assert_eq!(files, vec![PathBuf::from("C:/a/shot.png"), PathBuf::from("C:/b/Cargo.toml")]);
+        // Files alone, and plain text, both come back sensibly.
+        let (body, files) = split_attachments(&format!("{ATTACH_HEADER}\n- /tmp/x.jpg"));
+        assert!(body.is_empty());
+        assert_eq!(files.len(), 1);
+        assert_eq!(split_attachments("just words"), ("just words".to_string(), Vec::new()));
+        assert!(is_image(std::path::Path::new("A.PNG")) && !is_image(std::path::Path::new("a.toml")));
+    }
 
     #[test]
     fn send_button_states() {

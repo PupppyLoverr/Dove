@@ -39,6 +39,8 @@ enum Load {
     Loading,
     Ready(Vec<PullRequest>),
     Failed(SharedString),
+    /// The GitHub CLI is missing or signed out: offer to set it up here.
+    NeedsGh { installed: bool, busy: bool, note: Option<SharedString> },
 }
 
 pub struct PullRequestsPage {
@@ -100,8 +102,7 @@ impl PullRequestsPage {
     pub fn load(&mut self, cx: &mut Context<Self>) {
         let Some(repo) = self.repo.clone() else { return };
         if !github::gh_available() {
-            self.state =
-                Load::Failed("Install the GitHub CLI (gh) and run `gh auth login` to see pull requests.".into());
+            self.state = Load::NeedsGh { installed: false, busy: false, note: None };
             cx.notify();
             return;
         }
@@ -114,11 +115,45 @@ impl PullRequestsPage {
             let _ = this.update(cx, |p, cx| {
                 p.state = match r {
                     Ok(prs) => Load::Ready(prs),
-                    Err(e) => Load::Failed(format!("{e:#}").into()),
+                    Err(e) => {
+                        let msg = format!("{e:#}");
+                        if msg.contains("gh auth login") || msg.contains("not logged in") {
+                            Load::NeedsGh { installed: true, busy: false, note: None }
+                        } else {
+                            Load::Failed(msg.into())
+                        }
+                    }
                 };
                 cx.notify();
             });
         }));
+        cx.notify();
+    }
+
+    /// Install the GitHub CLI (winget / Homebrew), then load again.
+    fn install_gh(&mut self, cx: &mut Context<Self>) {
+        self.state = Load::NeedsGh { installed: false, busy: true, note: None };
+        let work = cx.background_spawn(async move { github::install_gh() });
+        self._load = Some(cx.spawn(async move |this, cx| {
+            let r = work.await;
+            let _ = this.update(cx, |p, cx| match r {
+                Ok(()) => p.load(cx),
+                Err(e) => {
+                    p.state = Load::NeedsGh { installed: false, busy: false, note: Some(format!("{e:#}").into()) };
+                    cx.notify();
+                }
+            });
+        }));
+        cx.notify();
+    }
+
+    /// Open `gh auth login` in a terminal; "Try again" loads once done.
+    fn sign_in_gh(&mut self, cx: &mut Context<Self>) {
+        let note = match github::open_gh_login() {
+            Ok(()) => "Finish signing in in the terminal and browser, then try again.".into(),
+            Err(e) => format!("{e:#}").into(),
+        };
+        self.state = Load::NeedsGh { installed: true, busy: false, note: Some(note) };
         cx.notify();
     }
 
@@ -432,6 +467,52 @@ impl Render for PullRequestsPage {
                     )
                 }))
                 .into_any_element(),
+            Load::NeedsGh { installed, busy, note } => {
+                let (installed, busy) = (*installed, *busy);
+                let body: SharedString = note.clone().unwrap_or_else(|| {
+                    if installed {
+                        "Sign in to GitHub once so Dove can list, open and merge pull requests.".into()
+                    } else {
+                        "Dove works with pull requests through the GitHub CLI (gh).".into()
+                    }
+                });
+                let primary = if installed {
+                    ctl::button(&t, "pr-gh-login", "Sign in to GitHub", Tone::Filled)
+                        .on_click(cx.listener(|this, _, _, cx| this.sign_in_gh(cx)))
+                        .into_any_element()
+                } else if cfg!(any(windows, target_os = "macos")) {
+                    ctl::button(&t, "pr-gh-install", if busy { "Installing…" } else { "Install GitHub CLI" }, Tone::Filled)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if !busy {
+                                this.install_gh(cx)
+                            }
+                        }))
+                        .into_any_element()
+                } else {
+                    ctl::button(&t, "pr-gh-docs", "Install guide", Tone::Filled)
+                        .on_click(cx.listener(|_, _, _, cx| cx.open_url("https://cli.github.com")))
+                        .into_any_element()
+                };
+                page::card(&t)
+                    .child(page::error_state(
+                        &t,
+                        if installed { "Sign in to GitHub" } else { "Set up GitHub" },
+                        body,
+                        Some(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(8.0))
+                                .child(primary)
+                                .child(
+                                    ctl::button(&t, "pr-retry", "Try again", Tone::Outlined)
+                                        .on_click(cx.listener(|this, _, _, cx| this.load(cx))),
+                                )
+                                .into_any_element(),
+                        ),
+                    ))
+                    .into_any_element()
+            }
             Load::Failed(e) => page::card(&t)
                 .child(page::error_state(
                     &t,

@@ -179,7 +179,9 @@ const fn e(section: Section, row: &'static str, title: &'static str, keywords: &
 
 const INDEX: &[Entry] = &[
     e(Section::General, "restore_tabs", "Reopen thread tabs on launch", "restore startup tabs session"),
+    e(Section::General, "topbar_tabs", "Show thread tabs in the title bar", "tabs title bar top bar strip slim"),
     e(Section::General, "prewarm", "Prewarm agent while typing", "prewarm faster first token harness start"),
+    e(Section::General, "ai_titles", "Name threads with AI", "ai auto title name rename sidebar thread summary"),
     e(
         Section::General,
         "permission_mode",
@@ -974,7 +976,9 @@ impl SettingsPage {
 
     fn general(&mut self, t: &Theme, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let restore = self.flag("restore_tabs", true);
+        let tabs = self.flag("topbar_tabs", false);
         let prewarm = self.flag("prewarm", true);
+        let ai_titles = self.flag("ai_titles", true);
         let grouped = self.get("sidebar_group").as_deref() == Some("project");
         let compact = self.get("sidebar_density").as_deref() == Some("compact");
         let archived = self.flag("sidebar_archived", false);
@@ -995,11 +999,31 @@ impl SettingsPage {
             .child(self.srow(
                 t,
                 false,
+                "topbar_tabs",
+                "Show thread tabs in the title bar",
+                "Off: a slim bar with the open chat's title. The sidebar lists every thread; Ctrl+Tab and Ctrl+1–9 still switch between open ones.",
+                ctl::on_toggle(ctl::toggle(t, "set-topbar-tabs", tabs), cx, move |this, _, cx| {
+                    this.set_flag("topbar_tabs", !tabs, cx)
+                }),
+            ))
+            .child(self.srow(
+                t,
+                false,
                 "prewarm",
                 "Prewarm agent while typing",
                 "Start the agent in the background as you type, so the first reply arrives sooner.",
                 ctl::on_toggle(ctl::toggle(t, "set-prewarm", prewarm), cx, move |this, _, cx| {
                     this.set_flag("prewarm", !prewarm, cx)
+                }),
+            ))
+            .child(self.srow(
+                t,
+                false,
+                "ai_titles",
+                "Name threads with AI",
+                "After the first reply, Claude Code or Codex names the thread in a few words, as their own apps do. Off: threads keep a title made from your first message. A rename always wins.",
+                ctl::on_toggle(ctl::toggle(t, "set-ai-titles", ai_titles), cx, move |this, _, cx| {
+                    this.set_flag("ai_titles", !ai_titles, cx)
                 }),
             ));
 
@@ -1160,7 +1184,7 @@ impl SettingsPage {
             .into_any_element()
     }
 
-    fn appearance(&mut self, t: &Theme, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn appearance(&mut self, t: &Theme, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let mode = self.get("appearance").unwrap_or_else(|| "system".into());
         let accent = Accent::from_id(&self.get("accent").unwrap_or_default());
         let surface = Surface::from_settings(self.get("surface").as_deref(), self.get("frosted").as_deref());
@@ -1299,20 +1323,63 @@ impl SettingsPage {
             .render(t, &self.sel_effect, cx);
         let wall_name =
             wall.as_ref().and_then(|w| std::path::Path::new(w).file_name().map(|n| n.to_string_lossy().to_string()));
+        // A small preview of the chosen image with its effect applied.
+        let (thumb_w, thumb_h) = crate::wallpaper::PREVIEW_SIZE;
+        let thumb = wall.as_ref().map(|w| {
+            let image = crate::wallpaper::preview(
+                std::path::Path::new(w),
+                effect,
+                !t.appearance.is_dark(),
+                window.scale_factor(),
+                cx,
+            );
+            div()
+                .id("wall-preview")
+                .flex_none()
+                .w(px(thumb_w))
+                .h(px(thumb_h))
+                .rounded(px(design::radius::RADIUS))
+                .overflow_hidden()
+                .border_1()
+                .border_color(t.border)
+                .bg(t.wash(0.06))
+                .cursor_pointer()
+                .tooltip(ui::tip("Replace image"))
+                .on_click(cx.listener(|this, _, _, cx| this.pick_wallpaper(cx)))
+                .child(match image {
+                    Some(image) => gpui::StyledImage::object_fit(gpui::img(image), gpui::ObjectFit::Cover)
+                        .size_full()
+                        .into_any_element(),
+                    None => page::skeleton(t, gpui::relative(1.0), thumb_h),
+                })
+        });
         let wall_control = div()
             .flex()
             .items_center()
-            .gap(px(6.0))
+            .gap(px(10.0))
+            .children(thumb)
             .child(
-                ctl::button_sm(t, "wall-pick", if wall.is_some() { "Replace…" } else { "Choose image…" }, Tone::Filled)
-                    .on_click(cx.listener(|this, _, _, cx| this.pick_wallpaper(cx))),
-            )
-            .when(wall.is_some(), |d| {
-                d.child(
-                    ctl::button_sm(t, "wall-clear", "Remove", Tone::Quiet)
-                        .on_click(cx.listener(|this, _, _, cx| this.set("wallpaper_path", "", cx))),
-                )
-            });
+                div()
+                    .flex()
+                    .flex_col()
+                    .items_end()
+                    .gap(px(6.0))
+                    .child(
+                        ctl::button_sm(
+                            t,
+                            "wall-pick",
+                            if wall.is_some() { "Replace…" } else { "Choose image…" },
+                            Tone::Filled,
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| this.pick_wallpaper(cx))),
+                    )
+                    .when(wall.is_some(), |d| {
+                        d.child(
+                            ctl::button_sm(t, "wall-clear", "Remove", Tone::Quiet)
+                                .on_click(cx.listener(|this, _, _, cx| this.set("wallpaper_path", "", cx))),
+                        )
+                    }),
+            );
         let has_wall = wall.is_some();
         let material = page::card(t)
             .child(self.srow(
@@ -1396,7 +1463,7 @@ impl SettingsPage {
                 match preference {
                     ReduceMotion::System if system => "Following your system: motion is reduced.",
                     ReduceMotion::System => "Following your system setting.",
-                    ReduceMotion::On => "Transitions snap; loops hold still.",
+                    ReduceMotion::On => "Transitions snap, indicators breathe slowly, background art holds still.",
                     ReduceMotion::Off => "Full motion, whatever the system says.",
                 },
                 reduce_select,
@@ -1406,12 +1473,17 @@ impl SettingsPage {
                 false,
                 "pause_animations_in_background",
                 "Pause animations in background",
-                "Hold every animation still while Dove's window is not focused.",
+                if pause {
+                    "Everything below holds still while another window is focused."
+                } else {
+                    "Off: everything below keeps playing behind other windows (minimized, nothing draws)."
+                },
                 ctl::on_toggle(ctl::toggle(t, "set-pause-bg", pause), cx, move |this, _, cx| {
                     motion::set_pause_in_background(!pause, &this.engine.store, cx);
                     cx.notify();
                 }),
-            ));
+            ))
+            .child(motion_inventory(t, cx.reduce_motion(), has_wall, animate, effect));
 
         // Fonts and layout.
         let size_select = |id: &'static str,
@@ -2284,6 +2356,78 @@ fn dir_size(p: &std::path::Path) -> u64 {
         }
     }
     total
+}
+
+/// What moves in Dove and what it does under the current motion settings,
+/// so "Reduce motion" and "Pause animations in background" are not a guess.
+fn motion_inventory(t: &Theme, reduced: bool, has_wall: bool, animate: bool, effect: Effect) -> AnyElement {
+    let background = if !has_wall {
+        ("No image chosen", "Off")
+    } else if !animate {
+        ("Animate background is off", "Off")
+    } else {
+        (effect.motion_hint(), if reduced { "Still" } else { "Playing" })
+    };
+    let items: [(&str, &str, &str, &str); 5] = [
+        (
+            "Working indicators",
+            "Spinners on running threads in the sidebar, tabs and transcript",
+            if reduced { "Slow breathe" } else { "Spinning" },
+            icons::REFRESH,
+        ),
+        (
+            "Live tool calls and thinking",
+            "A shimmer over the step an agent is on right now",
+            if reduced { "Still" } else { "Shimmer" },
+            icons::MAGIC_STICK_3,
+        ),
+        (
+            "Loading placeholders",
+            "Skeleton bars while history, files or models load",
+            if reduced { "Slow breathe" } else { "Pulsing" },
+            icons::CLOCK_CIRCLE,
+        ),
+        (
+            "Transitions",
+            "Sidebar and panel slides, menus, toasts, fades and scroll-to-message",
+            if reduced { "Snap" } else { "Animated" },
+            icons::WIDGET,
+        ),
+        ("Background art", background.0, background.1, icons::GALLERY),
+    ];
+    let mut list = div().w_full().flex().flex_col().gap(px(8.0));
+    for (title, detail, state, glyph) in items {
+        let moving = matches!(state, "Spinning" | "Shimmer" | "Pulsing" | "Animated" | "Playing");
+        list = list.child(
+            div()
+                .w_full()
+                .flex()
+                .items_center()
+                .gap(px(10.0))
+                .child(icon(glyph).size(px(14.0)).flex_none().text_color(t.text_muted))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .child(div().text_size(ty::BODY).text_color(t.text).child(title))
+                        .child(div().text_size(ty::META).text_color(t.text_muted).child(detail)),
+                )
+                .child(page::badge_tone(state, if moving { t.accent } else { t.text_muted })),
+        );
+    }
+    page::row(t, false)
+        .child(
+            div()
+                .w_full()
+                .flex()
+                .flex_col()
+                .gap(px(10.0))
+                .child(page::row_text(t, "What animates", "Everything in Dove that moves, and what it does right now."))
+                .child(list),
+        )
+        .into_any_element()
 }
 
 #[cfg(test)]

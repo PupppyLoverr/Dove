@@ -149,13 +149,21 @@ impl Shell {
 
         // Center: the bar sits a little above the middle. Bottom: the same
         // page, with the bar parked at the center of the bottom edge.
-        let mut page = div().relative().size_full().flex().flex_col().items_center().child(div().h(px(spacer)));
+        // The bar centres in the main area beside the sidebar, at full width.
+        let bar_max = 820.0;
+        let mut page = div()
+            .relative()
+            .size_full()
+            .flex()
+            .flex_col()
+            .items_center()
+            .child(div().h(px(spacer)));
         if dock {
             page = page
                 .child(
                     div()
                         .w_full()
-                        .max_w(px(820.0))
+                        .max_w(px(bar_max))
                         .px(px(32.0))
                         .flex()
                         .flex_col()
@@ -167,7 +175,7 @@ impl Shell {
                 .child(
                     div()
                         .w_full()
-                        .max_w(px(820.0))
+                        .max_w(px(bar_max))
                         .px(px(20.0))
                         .pb(px(20.0))
                         .flex()
@@ -182,7 +190,7 @@ impl Shell {
                 .child(
                     div()
                         .w_full()
-                        .max_w(px(820.0))
+                        .max_w(px(bar_max))
                         .px(px(32.0))
                         .flex()
                         .flex_col()

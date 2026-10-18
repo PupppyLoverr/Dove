@@ -86,6 +86,9 @@ pub enum TaskViewEvent {
     ShowChanges,
     /// The thread's first answer arrived; a better title is available.
     Title(String),
+    /// An agent named the thread (an AI title). It replaces the quick title
+    /// above, and a later quick title never replaces it.
+    AiTitle(String),
     /// From the read-only banner: hand the session back to the chat.
     SwitchToChat,
     /// From the read-only banner: show the running terminal.
@@ -1521,6 +1524,11 @@ const TAIL_ENTRIES: usize = 64;
 
 pub struct TaskView {
     engine: Arc<Engine>,
+    /// An AI title run is in flight.
+    ai_titling: bool,
+    /// Whether this view names its thread with an AI title (side chats,
+    /// whose titles the shell does not keep, do not).
+    ai_titles: bool,
     pub task: Task,
     pub project: Project,
     live: Option<LiveSession>,
@@ -1771,6 +1779,8 @@ impl TaskView {
             .and_then(|(_, pid)| engine.store.personas().ok()?.into_iter().find(|p| p.id == pid));
         Self {
             engine,
+            ai_titling: false,
+            ai_titles: true,
             status: task.status,
             task,
             project,
@@ -2078,10 +2088,11 @@ impl TaskView {
             if fx.runway.is_some() {
                 runway = fx.runway;
             }
-            if fx.first_answer
-                && let Some(t) = self.auto_title()
-            {
-                cx.emit(TaskViewEvent::Title(t));
+            if fx.first_answer {
+                if let Some(t) = self.auto_title() {
+                    cx.emit(TaskViewEvent::Title(t));
+                }
+                self.request_ai_title(cx);
             }
         }
         if turn_over {
@@ -2141,6 +2152,51 @@ impl TaskView {
         let context = self.chat.context;
         let limits = self.chat.rate_limits.clone();
         self.composer.update(cx, |c, cx| c.set_meters(context, limits, cx));
+    }
+
+    /// Ask an agent to name the thread once its first answer lands, as the
+    /// harnesses' own apps do. Skipped when AI titles are off (General ›
+    /// Threads), the user renamed the thread, it already has an AI title, or
+    /// one is being made. The quick title stays if the run fails.
+    fn request_ai_title(&mut self, cx: &mut Context<Self>) {
+        let id = self.task.id;
+        let store = &self.engine.store;
+        if self.ai_titling
+            || !self.ai_titles
+            || !store.flag("ai_titles", true)
+            || store.setting(&format!("renamed.{id}")).is_some()
+            || store.setting(&format!("title_ai.{id}")).is_some()
+        {
+            return;
+        }
+        let prompt = match self.chat.first_prompt.clone() {
+            Some(p) => p,
+            None => match self.chat.user_messages().into_iter().next() {
+                Some((_, p)) => p,
+                None => return,
+            },
+        };
+        let prompt = dove_core::strip_persona(&prompt).trim().to_string();
+        if prompt.is_empty() {
+            return;
+        }
+        self.ai_titling = true;
+        let rx = self.engine.generate_title(self.task.harness, prompt);
+        cx.spawn(async move |this, cx| {
+            let title = rx.await.ok().flatten();
+            let _ = this.update(cx, |v, cx| {
+                v.ai_titling = false;
+                if let Some(t) = title.filter(|t| *t != v.task.title) {
+                    cx.emit(TaskViewEvent::AiTitle(t));
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Keep the quick title only (no AI title run).
+    pub fn without_ai_titles(&mut self) {
+        self.ai_titles = false;
     }
 
     /// A short title from the first prompt, used until the user renames.
@@ -2424,7 +2480,13 @@ impl TaskView {
     }
 
     fn edit_message(&mut self, text: SharedString, window: &mut Window, cx: &mut Context<Self>) {
-        composer::set_text(&self.composer, &text, window, cx);
+        // Its files go back on the composer as attachments, not as paths.
+        let (body, files) = composer::split_attachments(&text);
+        composer::set_text(&self.composer, &body, window, cx);
+        let files: Vec<std::path::PathBuf> = files.into_iter().filter(|p| p.exists()).collect();
+        if !files.is_empty() {
+            composer::attach_paths(&self.composer, files, cx);
+        }
         composer::focus(&self.composer, window, cx);
     }
 
@@ -2801,6 +2863,10 @@ impl TaskView {
             )
         };
         let sent = self.mirror.is_some() && self.chat.rows[..i].iter().all(|r| !matches!(r, Row::User { .. }));
+        // The files a message carried show as Zeron does: image thumbnails
+        // and file pills above the bubble; the bubble keeps only the words.
+        let (body, files) = composer::split_attachments(text);
+        let strip = (!files.is_empty()).then(|| sent_attachments(i, &files, t));
         div()
             .group("user-msg")
             .w_full()
@@ -2819,20 +2885,23 @@ impl TaskView {
                         .child("Sent to this subagent"),
                 )
             })
-            .child(
-                div()
-                    .max_w(px((crate::design::conversation_width() * 0.78).round()))
-                    .px(px(14.0))
-                    .py(px(9.0))
-                    .rounded(px(Theme::BUBBLE_RADIUS))
-                    .text_size(ty::MD)
-                    .line_height(ty::lh::MD)
-                    .bg(t.wash(0.09))
-                    .border_1()
-                    .border_color(if self.flash == Some(i) { t.accent.opacity(0.7) } else { t.wash(0.08) })
-                    .text_color(t.text)
-                    .child(text.clone()),
-            )
+            .children(strip)
+            .when(!body.is_empty(), |d| {
+                d.child(
+                    div()
+                        .max_w(px((crate::design::conversation_width() * 0.78).round()))
+                        .px(px(14.0))
+                        .py(px(9.0))
+                        .rounded(px(Theme::BUBBLE_RADIUS))
+                        .text_size(ty::MD)
+                        .line_height(ty::lh::MD)
+                        .bg(t.wash(0.09))
+                        .border_1()
+                        .border_color(if self.flash == Some(i) { t.accent.opacity(0.7) } else { t.wash(0.08) })
+                        .text_color(t.text)
+                        .child(body),
+                )
+            })
             .child(
                 div()
                     .flex()
@@ -4131,6 +4200,81 @@ fn copy_button(id: SharedString, text: String, t: &Theme) -> impl IntoElement {
         .on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(text.clone())))
 }
 
+/// A sent message's files, right-aligned above its bubble (Zeron's strip):
+/// images as 112 × 80 thumbnails, other files as pills with their type icon.
+/// A click opens the file in its own app.
+fn sent_attachments(row: usize, files: &[std::path::PathBuf], t: &Theme) -> AnyElement {
+    const THUMB_W: f32 = 112.0;
+    const THUMB_H: f32 = 80.0;
+    div()
+        .max_w(px((crate::design::conversation_width() * 0.78).round()))
+        .flex()
+        .flex_wrap()
+        .justify_end()
+        .items_start()
+        .gap(px(8.0))
+        .px(px(4.0))
+        .pt(px(4.0))
+        .pb(px(4.0))
+        .children(files.iter().enumerate().map(|(k, path)| {
+            let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            let open = path.clone();
+            let base = div()
+                .id(SharedString::from(format!("sent-att-{row}-{k}")))
+                .flex_none()
+                .cursor_pointer()
+                .tooltip(ui::tip(path.display().to_string()))
+                .on_click(move |_, _, cx| cx.open_with_system(&open));
+            if composer::is_image(path) && path.exists() {
+                base.w(px(THUMB_W))
+                    .h(px(THUMB_H))
+                    .rounded(px(8.0))
+                    .overflow_hidden()
+                    .border_1()
+                    .border_color(t.wash(0.11))
+                    .bg(t.wash(0.035))
+                    .child(
+                        gpui::StyledImage::object_fit(gpui::img(path.clone()), gpui::ObjectFit::Cover)
+                            .w(px(THUMB_W - 2.0))
+                            .h(px(THUMB_H - 2.0))
+                            .rounded(px(7.0)),
+                    )
+                    .into_any_element()
+            } else {
+                base.h(px(28.0))
+                    .max_w(px(260.0))
+                    .min_w_0()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.0))
+                    .rounded(px(7.0))
+                    .bg(t.wash(0.06))
+                    .pl(px(2.0))
+                    .pr(px(10.0))
+                    .text_size(ty::BODY)
+                    .text_color(t.text.opacity(0.85))
+                    .hover(|s| s.bg(t.wash(0.09)))
+                    .child(
+                        div()
+                            .size(px(24.0))
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(5.0))
+                            .bg(t.wash(0.05))
+                            .child(
+                                crate::file_icons::icon(crate::file_icons::FileIconIdentity::file(&name), t.appearance)
+                                    .size(px(16.0)),
+                            ),
+                    )
+                    .child(div().min_w_0().truncate().child(name))
+                    .into_any_element()
+            }
+        }))
+        .into_any_element()
+}
+
 impl Render for TaskView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::perf_trace::count_render("TaskView");
@@ -4916,8 +5060,7 @@ mod tests {
 
     #[test]
     fn hidden_stream_parses_the_tail_once_when_flushed() {
-        let mut chat = Chat::default();
-        chat.defer_live = true;
+        let mut chat = Chat { defer_live: true, ..Default::default() };
         chat.apply(text("Hello "), true);
         chat.apply(text("**world**"), true);
         let Row::Live { blocks } = &chat.rows[0] else { panic!("expected a live row") };

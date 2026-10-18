@@ -187,6 +187,9 @@ fn prepare(path: &Path, effect: Effect, light: bool, target: (f32, f32), cx: &mu
     }
     let path = path.to_path_buf();
     let work = cx.background_executor().spawn(async move {
+        if effect == Effect::Dither {
+            return zeron_dither(&path, target).map(raster);
+        }
         let src = load_source(&path, target)?;
         Some(raster(render(&src, effect, light)))
     });
@@ -204,6 +207,54 @@ fn prepare(path: &Path, effect: Effect, light: bool, target: (f32, f32), cx: &mu
     })
     .detach();
     stale
+}
+
+// ------------------------------------------------------------ settings preview
+
+/// The thumbnail's size in Settings, in logical pixels (16:10, like most
+/// windows the art lands in).
+pub const PREVIEW_SIZE: (f32, f32) = (128.0, 80.0);
+
+/// The one thumbnail Settings shows. Kept apart from the hero's cache: the
+/// cache keys on image and effect, so a small raster there would push out
+/// the full-size one and both would rebuild on every visit.
+static PREVIEW: Mutex<Option<(PathBuf, Effect, bool, Slot)>> = Mutex::new(None);
+
+/// The chosen image as Settings previews it: the effect applied, rasterized
+/// small. `None` while it decodes (the window refreshes when it is ready).
+pub fn preview(path: &Path, effect: Effect, light: bool, scale: f32, cx: &mut App) -> Option<Arc<RenderImage>> {
+    let light = paper_light(effect, light);
+    let mut guard = PREVIEW.lock().ok()?;
+    if let Some((p, e, l, slot)) = guard.as_ref()
+        && p == path
+        && *e == effect
+        && *l == light
+    {
+        return slot.lock().ok()?.clone();
+    }
+    let slot: Slot = Arc::new(Mutex::new(None));
+    if let Some((_, _, _, old)) = guard.replace((path.to_path_buf(), effect, light, slot.clone())) {
+        retire(old.lock().ok().and_then(|s| s.clone()));
+    }
+    drop(guard);
+    let target = step_target((PREVIEW_SIZE.0 * scale, PREVIEW_SIZE.1 * scale));
+    let path = path.to_path_buf();
+    let work = cx.background_executor().spawn(async move {
+        if effect == Effect::Dither {
+            return zeron_dither(&path, target).map(raster);
+        }
+        let src = load_source(&path, target)?;
+        Some(raster(render(&src, effect, light)))
+    });
+    cx.spawn(async move |cx| {
+        let image = work.await;
+        if let Ok(mut s) = slot.lock() {
+            *s = image;
+        }
+        cx.update(|cx| cx.refresh_windows());
+    })
+    .detach();
+    None
 }
 
 fn raster(img: image::RgbaImage) -> Arc<RenderImage> {
@@ -301,6 +352,29 @@ fn halftone(src: &Source, light: bool) -> image::RgbaImage {
         }
     }
     out
+}
+
+/// Zeron's dither, exactly: the photo shrunk to at most 2048 px, dithered at
+/// that size in 2x2 dots on the 4x4 Bayer rule, then cropped (not rescaled)
+/// to the hero's shape. The hero stretches it to fit, so the dots scale with
+/// the picture, as in Zeron, rather than sitting on a fixed screen-pixel grid.
+fn zeron_dither(path: &Path, target: (u32, u32)) -> Option<image::RgbaImage> {
+    let bytes = std::fs::read(path).ok()?;
+    let img = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format().ok()?.decode().ok()?;
+    let proxy = img.thumbnail(2048, 2048);
+    let src = Source {
+        width: proxy.width(),
+        height: proxy.height(),
+        luma: proxy.to_luma8().into_raw().into_boxed_slice(),
+        rgba: proxy.to_rgba8().pixels().map(|p| p.0).collect(),
+    };
+    let full = render(&src, Effect::Dither, false);
+    let (w, h) = (src.width.max(1), src.height.max(1));
+    let (tw, th) = (target.0.max(1) as f32, target.1.max(1) as f32);
+    let scale = (tw / w as f32).max(th / h as f32);
+    let cw = ((tw / scale).round() as u32).clamp(1, w);
+    let ch = ((th / scale).round() as u32).clamp(1, h);
+    Some(image::imageops::crop_imm(&full, (w - cw) / 2, (h - ch) / 2, cw, ch).to_image())
 }
 
 /// Decode `path` and cover-crop it to the hero's own pixel size.
