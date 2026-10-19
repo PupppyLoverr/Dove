@@ -51,7 +51,7 @@ Priority: optional
 Architecture: amd64
 Maintainer: Dove <noreply@dove.sh>
 Installed-Size: ${SIZE_KB}
-Depends: libc6, libgcc-s1, libxkbcommon0, libxkbcommon-x11-0, libwayland-client0, libvulkan1, libx11-xcb1, libxcb1, libfontconfig1, libfreetype6, libssl3 | libssl3t64, libasound2t64 | libasound2, libwebkit2gtk-4.1-0, libgtk-3-0t64 | libgtk-3-0, libjson-glib-1.0-0
+Depends: libc6 (>= 2.38), libgcc-s1, libxkbcommon0, libxkbcommon-x11-0, libwayland-client0, libvulkan1, libx11-xcb1, libxcb1, libfontconfig1, libfreetype6, libssl3 | libssl3t64, libasound2t64 | libasound2, libwebkit2gtk-4.1-0, libgtk-3-0t64 | libgtk-3-0, libjson-glib-1.0-0
 Recommends: git, mesa-vulkan-drivers
 Homepage: https://github.com/PupppyLoverr/Dove
 Description: Dove, a desktop environment for coding agents

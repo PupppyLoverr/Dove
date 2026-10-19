@@ -5,7 +5,7 @@ name: Package
 #   macOS:   Dove-<v>-arm64.dmg (ad-hoc signed, not notarized)
 #   Linux:   dove_<v>_amd64.deb, Dove-<v>-x86_64.AppImage, tar.gz
 # The .deb is installed into clean Ubuntu and Debian containers to prove its
-# dependencies resolve there.
+# dependencies resolve there. Linux needs glibc 2.38+ (ort's onnxruntime).
 
 on:
   workflow_dispatch:
@@ -110,8 +110,9 @@ jobs:
           if-no-files-found: error
 
   linux:
-    # 22.04 keeps the glibc floor low enough for older distros.
-    runs-on: ubuntu-22.04
+    # ort's prebuilt onnxruntime needs glibc 2.38+ (it does not link on
+    # 22.04), so Linux builds start at 24.04 / Debian 13.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -162,7 +163,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        image: ["ubuntu:22.04", "ubuntu:24.04", "debian:12"]
+        image: ["ubuntu:24.04", "ubuntu:25.04", "debian:13"]
     container: ${{ matrix.image }}
     steps:
       - uses: actions/download-artifact@v4
