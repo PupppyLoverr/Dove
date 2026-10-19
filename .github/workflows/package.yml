@@ -1,0 +1,178 @@
+name: Package
+
+# Installers for every desktop platform, with a launch smoke test of each:
+#   Windows: Dove-Setup-<v>.exe (Inno Setup) and Dove-Portable-<v>-x64.zip
+#   macOS:   Dove-<v>-arm64.dmg (ad-hoc signed, not notarized)
+#   Linux:   dove_<v>_amd64.deb, Dove-<v>-x86_64.AppImage, tar.gz
+# The .deb is installed into clean Ubuntu and Debian containers to prove its
+# dependencies resolve there. Linux needs glibc 2.38+ (ort's onnxruntime).
+
+on:
+  workflow_dispatch:
+  # A version tag always packages; a branch push does when packaging changed
+  # (path filters do not apply to tag pushes).
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+    paths:
+      - ".github/workflows/package.yml"
+      - "packaging/**"
+      - "scripts/macos/**"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            mesh
+      - name: Build
+        run: cargo build --release --locked -p dove -p dove-escrow
+      - name: Build remote-control host
+        continue-on-error: true
+        run: cargo build --release --locked -p dove-mesh-host --manifest-path mesh/Cargo.toml
+      - name: Install Inno Setup
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) { choco install innosetup -y --no-progress }
+      - name: Package
+        run: .\packaging\windows\package.ps1
+      - name: Launch smoke test
+        run: |
+          $h = New-Item -ItemType Directory -Force "$env:RUNNER_TEMP\dove-home"
+          $env:DOVE_HOME = $h; $env:DOVE_SKIP_INTRO = "1"
+          $p = Start-Process -FilePath packaging\out\Dove\dove.exe -PassThru
+          Start-Sleep -Seconds 20
+          if ($p.HasExited) { throw "dove.exe exited early with code $($p.ExitCode)" }
+          Stop-Process -Id $p.Id -Force
+          "dove.exe ran for 20 s"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dove-windows
+          path: |
+            packaging/out/Dove-Setup-*.exe
+            packaging/out/Dove-Portable-*.zip
+          if-no-files-found: error
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            mesh
+      - name: Build
+        run: cargo build --release --locked -p dove
+      - name: Build remote-control host
+        id: mesh
+        continue-on-error: true
+        run: cargo build --release --locked -p dove-mesh-host --manifest-path mesh/Cargo.toml
+      - name: Bundle and make the dmg
+        run: |
+          if [[ "${{ steps.mesh.outcome }}" == "success" ]]; then
+            ./packaging/macos/dmg.sh
+          else
+            # bundle.sh needs the mesh host; assemble the app without it.
+            sed -i '' -e '/dove-mesh-host/d' scripts/macos/bundle.sh
+            ./packaging/macos/dmg.sh
+          fi
+      - name: Launch smoke test
+        run: |
+          APP=target/release/Dove.app
+          codesign --verify --deep "$APP" && echo "signature ok"
+          otool -L "$APP/Contents/MacOS/dove" | head -40
+          export DOVE_HOME="$RUNNER_TEMP/dove-home" DOVE_SKIP_INTRO=1
+          mkdir -p "$DOVE_HOME"
+          "$APP/Contents/MacOS/dove" > "$RUNNER_TEMP/dove.log" 2>&1 &
+          pid=$!
+          sleep 20
+          if ! kill -0 $pid 2>/dev/null; then
+            cat "$RUNNER_TEMP/dove.log"; echo "::error::dove exited early"; exit 1
+          fi
+          kill $pid
+          echo "dove ran for 20 s"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dove-macos
+          path: packaging/out/*.dmg
+          if-no-files-found: error
+
+  linux:
+    # ort's prebuilt onnxruntime needs glibc 2.38+ (it does not link on
+    # 22.04), so Linux builds start at 24.04 / Debian 13.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            mesh
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan-dev \
+            libx11-xcb-dev libxcb1-dev libfontconfig-dev libssl-dev libasound2-dev \
+            libwebkit2gtk-4.1-dev libjson-glib-dev pkg-config imagemagick \
+            xvfb mesa-vulkan-drivers libfuse2
+      - name: Build
+        run: cargo build --release --locked -p dove
+      - name: Build remote-control host
+        continue-on-error: true
+        run: cargo build --release --locked -p dove-mesh-host --manifest-path mesh/Cargo.toml
+      - name: Package
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/appimagetool" \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x "$RUNNER_TEMP/appimagetool"
+          APPIMAGE_EXTRACT_AND_RUN=1 APPIMAGETOOL="$RUNNER_TEMP/appimagetool" ./packaging/linux/package.sh
+      - name: Launch smoke test (Xvfb, software Vulkan)
+        continue-on-error: true
+        run: |
+          export DOVE_HOME="$RUNNER_TEMP/dove-home" DOVE_SKIP_INTRO=1
+          mkdir -p "$DOVE_HOME"
+          xvfb-run -a target/release/dove > "$RUNNER_TEMP/dove.log" 2>&1 &
+          sleep 20
+          if pgrep -x dove >/dev/null; then echo "dove ran for 20 s"; pkill -x dove; else cat "$RUNNER_TEMP/dove.log"; exit 1; fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dove-linux
+          path: |
+            packaging/out/*.deb
+            packaging/out/*.AppImage
+            packaging/out/*.tar.gz
+          if-no-files-found: error
+
+  linux-install:
+    needs: linux
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ["ubuntu:24.04", "ubuntu:25.04", "debian:13"]
+    container: ${{ matrix.image }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dove-linux
+      - name: Install the .deb and check its libraries resolve
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y ./dove_*_amd64.deb
+          ldd /usr/lib/dove/dove | tee ldd.txt
+          if grep -q "not found" ldd.txt; then echo "::error::unresolved libraries on ${{ matrix.image }}"; exit 1; fi
+          test -x /usr/bin/dove && echo "installed on ${{ matrix.image }}"

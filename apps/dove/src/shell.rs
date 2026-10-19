@@ -209,6 +209,8 @@ pub struct Shell {
     pub panel: Entity<SidePanel>,
     pub composer: Entity<Composer>,
     pub composer_bounds: std::rc::Rc<std::cell::Cell<Option<Bounds<Pixels>>>>,
+    /// The home composer's measured height, for embedding it cached.
+    pub composer_height: std::rc::Rc<std::cell::Cell<f32>>,
     pub prs: Entity<PullRequestsPage>,
     /// Each thread's pull request URL (mirrors the store's `task_prs`).
     pr_links: HashMap<TaskId, String>,
@@ -248,6 +250,8 @@ pub struct Shell {
     slides: Slides,
     /// Which side columns fit the window.
     fit: Fit,
+    /// The thread list, as a cached view (made on first render).
+    sidebar_view: Option<Entity<crate::sidebar::Sidebar>>,
     _subs: Vec<Subscription>,
     _scheduler: Option<gpui::Task<()>>,
     _browser_control: Option<gpui::Task<()>>,
@@ -256,6 +260,9 @@ pub struct Shell {
 impl Shell {
     pub fn new(engine: Arc<Engine>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let composer = cx.new(|cx| Composer::home(engine.clone(), window, cx));
+        let composer_height = std::rc::Rc::new(std::cell::Cell::new(0.0));
+        let host = cx.entity_id();
+        composer.update(cx, |c, _| c.set_cache_slot(composer_height.clone(), host));
         let panel = cx.new(|cx| {
             let mut p = SidePanel::new(engine.clone(), window, cx);
             p.expanded = engine.store.setting("panel_expanded").as_deref() == Some("true");
@@ -402,6 +409,7 @@ impl Shell {
             panel,
             composer,
             composer_bounds: Default::default(),
+            composer_height,
             prs,
             pr_links: store.task_prs().unwrap_or_default().into_iter().collect(),
             settings,
@@ -430,6 +438,7 @@ impl Shell {
             pending_focus: None,
             slides: Slides::default(),
             fit: Fit { shown: (true, true), ..Fit::default() },
+            sidebar_view: None,
             engine,
             _subs: subs,
             _scheduler: None,
@@ -2821,7 +2830,11 @@ impl Shell {
         match self.route {
             Route::Home => self.render_home(window, cx),
             Route::Thread(id) => match self.threads.get(&id) {
-                // Cached: a shell re-render reuses the thread's last layout.
+                // A chat is a light frame around its cached transcript and
+                // the composer (which GPUI could not reuse under a cached
+                // view that re-renders), so it is drawn directly; a
+                // terminal is cached whole.
+                Some(v) if v.read(cx).view == ViewMode::Chat => v.clone().into_any_element(),
                 Some(v) => AnyView::from(v.clone()).cached(StyleRefinement::default().size_full()).into_any_element(),
                 None => div().into_any_element(),
             },
@@ -2962,6 +2975,7 @@ impl Render for Shell {
         // With no title bar, the sidebar starts below the floating window
         // controls instead of running under them.
         let in_settings = self.route == Route::Settings;
+        let view = self.sidebar_view(sidebar_shown && !in_settings, cx);
         let sidebar = if in_settings {
             // Settings swaps the thread list for its sections (with Back);
             // the thread list returns when Settings closes.
@@ -2970,7 +2984,10 @@ impl Render for Shell {
             Some(div().h_full().flex_none().child(nav).into_any_element())
         } else {
             sidebar_shown.then(|| {
-                let sidebar = self.render_sidebar(cx);
+                let sidebar = match view {
+                    Some(v) => self.embed_sidebar(v, cx),
+                    None => self.render_sidebar(cx),
+                };
                 if bare {
                     div().h_full().flex().flex_col().pt(px(Theme::TITLEBAR_HEIGHT)).child(sidebar).into_any_element()
                 } else {
@@ -3330,6 +3347,32 @@ impl Shell {
         let total = f32::from(window.viewport_size().width);
         let left = if self.sidebar_shown() || self.route == Route::Settings { self.sidebar_w } else { 0.0 };
         total - left - CENTER_MIN
+    }
+
+    /// The sidebar's view while it is on screen. Off screen, its fades are
+    /// dropped (the shell's own would be pruned the same frame).
+    fn sidebar_view(&mut self, shown: bool, cx: &mut Context<Self>) -> Option<Entity<crate::sidebar::Sidebar>> {
+        if !shown {
+            if let Some(v) = &self.sidebar_view {
+                crate::motion::forget_owner(v.entity_id());
+            }
+            return None;
+        }
+        let shell = cx.entity();
+        Some(self.sidebar_view.get_or_insert_with(|| cx.new(|cx| crate::sidebar::Sidebar::new(&shell, cx))).clone())
+    }
+
+    /// The sidebar, reusing its last frame unless it needs drawing. A shell
+    /// change re-renders it (it observes the shell); a working thread's step
+    /// line is checked here, since that comes from the thread's own view.
+    fn embed_sidebar(&self, view: Entity<crate::sidebar::Sidebar>, cx: &mut Context<Self>) -> AnyElement {
+        let steps = self.sidebar_steps(cx);
+        if view.read(cx).steps != steps {
+            return AnyView::from(view).into_any_element();
+        }
+        AnyView::from(view)
+            .cached(StyleRefinement::default().w(px(self.sidebar_w)).h_full().flex_none())
+            .into_any_element()
     }
 
     /// Start a sidebar resize drag (from the sidebar's edge).

@@ -72,6 +72,11 @@ const INVOCATION_INLINE: usize = 56;
 /// The composer dock's height before its first measurement: a one-line
 /// pill and its meta row.
 const DOCK_GUESS: f32 = 90.0;
+/// The status strip under the chat column, padding included, and its
+/// (top, bottom) padding.
+pub(crate) const STATUS_STRIP_H: f32 = 32.0;
+const STATUS_STRIP_PAD: (f32, f32) = (4.0, 6.0);
+
 /// The composer's meta row under the pill, with its gap.
 const COMPOSER_META: f32 = 34.0;
 
@@ -1580,6 +1585,12 @@ pub struct TaskView {
     /// edge, measured each frame; the list pads itself by it so the last
     /// message can scroll clear of the glass.
     dock_height: std::rc::Rc<std::cell::Cell<f32>>,
+    /// The composer's own measured height. It is embedded as a cached view
+    /// at this height, so the transcript's frames (spinner ticks, streamed
+    /// tokens) reuse its last paint; 0 until the first measurement.
+    composer_height: std::rc::Rc<std::cell::Cell<f32>>,
+    /// Set by a ThreadView that draws this view's dock itself.
+    pub(crate) dock_outside: bool,
     /// The teammate this thread runs as, for its replies' header.
     persona: Option<dove_core::store::Persona>,
     pub status: TaskStatus,
@@ -1761,6 +1772,9 @@ impl TaskView {
 
     fn build(engine: Arc<Engine>, task: Task, project: Project, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let composer = cx.new(|cx| Composer::for_task(engine.clone(), &task, &project, window, cx));
+        let composer_height = std::rc::Rc::new(std::cell::Cell::new(0.0));
+        let host = cx.entity_id();
+        composer.update(cx, |c, _| c.set_cache_slot(composer_height.clone(), host));
         let sub = cx.subscribe_in(&composer, window, |this, _, ev: &ComposerEvent, window, cx| match ev {
             ComposerEvent::Submit(text) => this.submit(text.clone(), window, cx),
             ComposerEvent::Stop => this.interrupt(cx),
@@ -1824,6 +1838,8 @@ impl TaskView {
             glide: None,
             composer,
             dock_height: std::rc::Rc::new(std::cell::Cell::new(DOCK_GUESS)),
+            composer_height,
+            dock_outside: false,
             persona: engine_persona.clone(),
             visuals: HashMap::new(),
             todos_open: true,
@@ -2744,7 +2760,14 @@ impl TaskView {
                                 .right(px(-30.0))
                                 .invisible()
                                 .group_hover(group, |s| s.visible())
-                                .child(copy_button(SharedString::from(format!("copy-blk-{i}")), block.plain(), t)),
+                                .child({
+                                    // The text is gathered on click, not on every frame.
+                                    let block = block.clone();
+                                    action_button(SharedString::from(format!("copy-blk-{i}")), icons::COPY, "Copy", t)
+                                        .on_click(move |_, _, cx| {
+                                            cx.write_to_clipboard(ClipboardItem::new_string(block.plain()))
+                                        })
+                                }),
                         )
                     })
                     .into_any_element()
@@ -4210,6 +4233,152 @@ impl TaskView {
         Some(rail.into_any_element())
     }
 
+    /// Open the question panel for a pending question (it needs a window to
+    /// build its input, so it opens as the dock is drawn).
+    fn sync_question_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.questions.is_none()
+            && let Some((_, req)) = self.chat.pending().filter(|(_, r)| r.is_question() && self.live.is_some())
+        {
+            let req = req.clone();
+            self.open_questions(&req, window, cx);
+        }
+    }
+
+    /// The composer dock: the todo card, then the composer (or the question
+    /// panel, or the terminal banner), floating over the transcript's
+    /// bottom edge.
+    fn dock(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let t = Theme::of(cx).clone();
+        let input: AnyElement = if self.terminal_banner {
+            div()
+                .w_full()
+                .h(px(52.0))
+                .px(px(16.0))
+                .flex()
+                .items_center()
+                .gap(px(10.0))
+                .rounded(px(crate::design::radius::COMPOSER))
+                .border_1()
+                .border_color(t.border_strong)
+                .bg(t.wash(0.04))
+                .child(icon(icons::TERMINAL).size(px(16.0)).text_color(t.accent))
+                .child(
+                    div()
+                        .flex_1()
+                        .flex()
+                        .flex_col()
+                        .child(div().text_size(ty::BODY).text_color(t.text).child("Running in the terminal"))
+                        .child(
+                            div()
+                                .text_size(ty::META)
+                                .text_color(t.text_faint)
+                                .child("Read-only here; this chat stays in sync"),
+                        ),
+                )
+                .child(
+                    ui::button_ghost("banner-terminal", "Show terminal", &t)
+                        .on_click(cx.listener(|_, _, _, cx| cx.emit(TaskViewEvent::ShowTerminal))),
+                )
+                .child(
+                    ui::button_primary("banner-back", "Switch back to chat", &t)
+                        .on_click(cx.listener(|_, _, _, cx| cx.emit(TaskViewEvent::SwitchToChat))),
+                )
+                .into_any_element()
+        } else {
+            match self.render_questions(window, cx) {
+                Some(panel) => panel,
+                None => match self.composer_height.get() {
+                    h if h > 0.0 => self
+                        .composer
+                        .clone()
+                        .cached(gpui::StyleRefinement::default().w_full().h(px(h)))
+                        .into_any_element(),
+                    _ => self.composer.clone().into_any_element(),
+                },
+            }
+        };
+        // The composer floats over the transcript's bottom edge, Zeron
+        // style: replies scroll up beneath the glass. Its measured height
+        // pads the list (and lifts the jump button) on the next frame.
+        let measured = self.dock_height.clone();
+        let view = cx.weak_entity();
+        div()
+            .absolute()
+            .left_0()
+            .right_0()
+            .bottom_0()
+            .flex()
+            .justify_center()
+            .pl(px(24.0))
+            .pr(px(if self.info_reserve { 308.0 } else { 24.0 }))
+            .child(
+                div()
+                    .relative()
+                    .w_full()
+                    .max_w(px(composer::plate_width()))
+                    .flex()
+                    .flex_col()
+                    .gap(px(6.0))
+                    .children(self.render_todos(cx))
+                    .child(input)
+                    .child(
+                        canvas(
+                            move |b, _, cx| {
+                                let h = f32::from(b.size.height);
+                                if (measured.get() - h).abs() > 0.5 {
+                                    measured.set(h);
+                                    let view = view.clone();
+                                    cx.defer(move |cx| {
+                                        let _ = view.update(cx, |_, cx| cx.notify());
+                                    });
+                                }
+                            },
+                            |_, _, _, _| {},
+                        )
+                        .absolute()
+                        .inset_0(),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    /// The dock for a ThreadView to draw over this view's bottom edge,
+    /// `STATUS_STRIP_H` above its foot. Drawn there, the composer sits
+    /// under no cached view: this view re-renders on every transcript tick
+    /// (a cached view's re-render redraws every cached view inside it), and
+    /// the composer then reuses its last frame.
+    pub(crate) fn render_dock(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if self.mirror.is_some() {
+            return None;
+        }
+        self.sync_question_panel(window, cx);
+        let dock = self.dock(window, cx);
+        let images = crate::memory::image_cache(cx);
+        Some(
+            // The same column split as this view's own (a flexible chat
+            // area over the status strip), so the dock lands on the same
+            // pixel as it would inside it.
+            div()
+                .absolute()
+                .inset_0()
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .relative()
+                        .flex_1()
+                        .min_h_0()
+                        // Keys typed in the composer still reach this view's
+                        // shortcuts (approvals, reading navigation).
+                        .key_context("TaskView")
+                        .on_key_down(cx.listener(Self::on_key))
+                        .child(gpui::image_cache(images).size_full().child(dock)),
+                )
+                .child(div().h(px(STATUS_STRIP_H)).flex_none())
+                .into_any_element(),
+        )
+    }
+
     /// The reserved strip under the composer: what the agent is doing now.
     fn render_status_strip(&self, t: &Theme) -> impl IntoElement {
         let working = self.is_working();
@@ -4218,7 +4387,7 @@ impl TaskView {
         let todos = &self.chat.todos;
         let done = todos.iter().filter(|x| x.status == TodoStatus::Completed).count();
         div()
-            .h(px(22.0))
+            .h(px(STATUS_STRIP_H - STATUS_STRIP_PAD.0 - STATUS_STRIP_PAD.1))
             .px(px(4.0))
             .flex()
             .items_center()
@@ -4415,13 +4584,7 @@ fn sent_attachments(row: usize, files: &[std::path::PathBuf], t: &Theme) -> AnyE
 impl Render for TaskView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::perf_trace::count_render("TaskView");
-        // The question panel needs a window to build its input.
-        if self.questions.is_none()
-            && let Some((_, req)) = self.chat.pending().filter(|(_, r)| r.is_question() && self.live.is_some())
-        {
-            let req = req.clone();
-            self.open_questions(&req, window, cx);
-        }
+        self.sync_question_panel(window, cx);
         let t = Theme::of(cx).clone();
         let weak = cx.weak_entity();
         let empty = self.chat.rows.is_empty();
@@ -4500,98 +4663,18 @@ impl Render for TaskView {
             )
         });
 
-        let input: AnyElement = if self.terminal_banner {
-            div()
-                .w_full()
-                .h(px(52.0))
-                .px(px(16.0))
-                .flex()
-                .items_center()
-                .gap(px(10.0))
-                .rounded(px(crate::design::radius::COMPOSER))
-                .border_1()
-                .border_color(t.border_strong)
-                .bg(t.wash(0.04))
-                .child(icon(icons::TERMINAL).size(px(16.0)).text_color(t.accent))
-                .child(
-                    div()
-                        .flex_1()
-                        .flex()
-                        .flex_col()
-                        .child(div().text_size(ty::BODY).text_color(t.text).child("Running in the terminal"))
-                        .child(
-                            div()
-                                .text_size(ty::META)
-                                .text_color(t.text_faint)
-                                .child("Read-only here; this chat stays in sync"),
-                        ),
-                )
-                .child(
-                    ui::button_ghost("banner-terminal", "Show terminal", &t)
-                        .on_click(cx.listener(|_, _, _, cx| cx.emit(TaskViewEvent::ShowTerminal))),
-                )
-                .child(
-                    ui::button_primary("banner-back", "Switch back to chat", &t)
-                        .on_click(cx.listener(|_, _, _, cx| cx.emit(TaskViewEvent::SwitchToChat))),
-                )
-                .into_any_element()
-        } else {
-            match self.render_questions(window, cx) {
-                Some(panel) => panel,
-                None => self.composer.clone().into_any_element(),
-            }
-        };
-        // The composer floats over the transcript's bottom edge, Zeron
-        // style: replies scroll up beneath the glass. Its measured height
-        // pads the list (and lifts the jump button) on the next frame.
-        let measured = self.dock_height.clone();
-        let view = cx.weak_entity();
+        // A thread's dock is drawn by its ThreadView, beside this view
+        // rather than inside it (see `render_dock`).
+        let dock = (!mirror && !self.dock_outside).then(|| self.dock(window, cx));
         let scroll_bounds = std::rc::Rc::new(std::cell::Cell::new(None::<gpui::Bounds<gpui::Pixels>>));
-        let dock = div()
-            .absolute()
-            .left_0()
-            .right_0()
-            .bottom_0()
-            .flex()
-            .justify_center()
-            .pl(px(24.0))
-            .pr(px(if self.info_reserve { 308.0 } else { 24.0 }))
-            .child(
-                div()
-                    .relative()
-                    .w_full()
-                    .max_w(px(composer::plate_width()))
-                    .flex()
-                    .flex_col()
-                    .gap(px(6.0))
-                    .children(self.render_todos(cx))
-                    .child(input)
-                    .child(
-                        canvas(
-                            move |b, _, cx| {
-                                let h = f32::from(b.size.height);
-                                if (measured.get() - h).abs() > 0.5 {
-                                    measured.set(h);
-                                    let view = view.clone();
-                                    cx.defer(move |cx| {
-                                        let _ = view.update(cx, |_, cx| cx.notify());
-                                    });
-                                }
-                            },
-                            |_, _, _, _| {},
-                        )
-                        .absolute()
-                        .inset_0(),
-                    ),
-            );
         let bottom = div()
             .w_full()
             .flex()
             .justify_center()
             .pl(px(24.0))
             .pr(px(if self.info_reserve { 308.0 } else { 24.0 }))
-            .pt(px(4.0))
-            .pb(px(6.0))
+            .pt(px(STATUS_STRIP_PAD.0))
+            .pb(px(STATUS_STRIP_PAD.1))
             .child(div().w_full().max_w(px(composer::plate_width())).child(self.render_status_strip(&t)));
 
         // Pictures in replies share one bounded cache (off-screen images go
@@ -4680,7 +4763,7 @@ impl Render for TaskView {
                         })
                         .when(!mirror, |d| d.children(self.render_rail(window, cx)))
                         .children(jump)
-                        .when(!mirror, |d| d.child(dock)),
+                        .children(dock),
                 )
                 .when(!mirror, |d| d.child(bottom)),
         )

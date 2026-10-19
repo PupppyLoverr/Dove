@@ -2347,16 +2347,38 @@ impl<M: InputModeKind> Element for TextElement<M> {
         );
 
         self.state.update(cx, |state, cx| {
+            // Dove: notify only when what this paint records changed. An
+            // unconditional notify marks the input (and every view above
+            // it) dirty for the next frame, so an idle composer re-rendered
+            // on every frame anything else drew.
+            let layout = &prepaint.last_layout;
+            let changed = state.last_layout.as_ref().is_none_or(|old| {
+                old.visible_range != layout.visible_range
+                    || old.lines.len() != layout.lines.len()
+                    || old.line_height != layout.line_height
+                    || old.wrap_width != layout.wrap_width
+                    || old.cursor_bounds != layout.cursor_bounds
+                    || old.cursor_size != layout.cursor_size
+                    || old.content_width != layout.content_width
+                    || old.visible_top != layout.visible_top
+            }) || state.last_bounds != Some(bounds)
+                || state.input_bounds != input_bounds
+                || state.last_cursor != Some(state.cursor())
+                || state.last_selected_range != Some(selected_range)
+                || state.scroll_size != prepaint.scroll_size
+                || state.deferred_scroll_offset.is_some();
             state.last_layout = Some(prepaint.last_layout.clone());
             state.last_bounds = Some(bounds);
             state.last_cursor = Some(state.cursor());
             state.set_input_bounds(input_bounds, cx);
             state.last_selected_range = Some(selected_range);
             state.scroll_size = prepaint.scroll_size;
-            state.update_scroll_offset(Some(prepaint.cursor_scroll_offset), cx);
+            let scrolled = state.clamp_scroll_offset(Some(prepaint.cursor_scroll_offset));
             state.deferred_scroll_offset = None;
 
-            cx.notify();
+            if changed || scrolled {
+                cx.notify();
+            }
         });
 
         if let Some(hitbox) = prepaint.hover_definition_hitbox.as_ref() {
