@@ -1,6 +1,6 @@
 //! Pull requests through the GitHub CLI (`gh`), which owns authentication.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
@@ -123,7 +123,7 @@ pub fn install_gh() -> Result<()> {
         return Ok(());
     }
     let text = String::from_utf8_lossy(if out.stderr.is_empty() { &out.stdout } else { &out.stderr }).into_owned();
-    let last = text.lines().map(str::trim).filter(|l| !l.is_empty()).last().unwrap_or("the installer did not finish");
+    let last = text.lines().map(str::trim).rfind(|l| !l.is_empty()).unwrap_or("the installer did not finish");
     bail!("{last}")
 }
 
@@ -182,18 +182,144 @@ fn gh(repo: &Path, args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-/// A pull request with its description and checks.
+/// Where a pull request lives: a local clone (gh infers the repository from
+/// its remote) or a GitHub `owner/repo` that may not be cloned at all, as
+/// for a PR link an agent printed in chat.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum PrRepo {
+    Local(PathBuf),
+    Remote(String),
+}
+
+impl PrRepo {
+    /// Run `gh <args>` against this repository.
+    fn gh(&self, args: &[&str]) -> Result<String> {
+        match self {
+            PrRepo::Local(dir) => gh(dir, args),
+            PrRepo::Remote(slug) => {
+                let mut all = args.to_vec();
+                all.extend(["-R", slug.as_str()]);
+                gh(&std::env::temp_dir(), &all)
+            }
+        }
+    }
+}
+
+/// `https://github.com/<owner>/<repo>/pull/<n>[/...]` → (`owner/repo`, n).
+pub fn parse_pr_url(url: &str) -> Option<(String, u64)> {
+    let url = url.trim();
+    let rest = url.strip_prefix("https://github.com/").or_else(|| url.strip_prefix("http://github.com/"))?;
+    let mut parts = rest.split('/');
+    let (owner, repo, kind, num) = (parts.next()?, parts.next()?, parts.next()?, parts.next()?);
+    let valid = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+    if kind != "pull" || !valid(owner) || !valid(repo) {
+        return None;
+    }
+    let digits: String = num.chars().take_while(char::is_ascii_digit).collect();
+    let n = digits.parse().ok().filter(|n| *n > 0)?;
+    Some((format!("{owner}/{repo}"), n))
+}
+
+/// Every distinct GitHub pull request URL in `text`, canonicalised to
+/// `https://github.com/<owner>/<repo>/pull/<n>`, in order of appearance.
+pub fn pr_urls(text: &str) -> Vec<String> {
+    const SCHEMES: [&str; 2] = ["https://github.com/", "http://github.com/"];
+    let mut out: Vec<String> = Vec::new();
+    let mut at = 0;
+    while at < text.len() {
+        let Some((start, _)) = SCHEMES.iter().filter_map(|s| text[at..].find(s).map(|i| (at + i, *s))).min() else {
+            break;
+        };
+        let end = text[start..]
+            .find(|c: char| c.is_whitespace() || matches!(c, ')' | '>' | '"' | '\'' | ']' | ',' | '`'))
+            .map_or(text.len(), |e| start + e);
+        if let Some((slug, n)) = parse_pr_url(&text[start..end]) {
+            let url = format!("https://github.com/{slug}/pull/{n}");
+            if !out.contains(&url) {
+                out.push(url);
+            }
+        }
+        at = end.max(start + 1);
+    }
+    out
+}
+
+/// A pull request with its description, checks and (for [`pr_view`]) its
+/// conversation, commits and files.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct PrDetail {
     pub number: u64,
     pub title: String,
     pub body: String,
     pub url: String,
+    /// `OPEN`, `CLOSED` or `MERGED`.
     pub state: String,
     pub branch: String,
     pub base: String,
     pub mergeable: String,
     pub checks: Vec<Check>,
+    pub author: String,
+    pub draft: bool,
+    pub additions: u64,
+    pub deletions: u64,
+    pub head_sha: String,
+    pub created_at: String,
+    /// `APPROVED`, `CHANGES_REQUESTED`, `REVIEW_REQUIRED` or empty.
+    pub review_decision: String,
+    /// `CLEAN`, `BLOCKED`, `BEHIND`, `DIRTY`, `UNSTABLE`, ... or empty.
+    pub merge_state: String,
+    pub changed_files: u64,
+    pub reviews: Vec<Review>,
+    pub comments: Vec<Comment>,
+    pub commits: Vec<Commit>,
+    pub files: Vec<PrFile>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Review {
+    pub author: String,
+    /// `APPROVED`, `CHANGES_REQUESTED`, `COMMENTED`, ...
+    pub state: String,
+    pub body: String,
+    pub at: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Comment {
+    pub author: String,
+    pub body: String,
+    pub at: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Commit {
+    pub oid: String,
+    pub headline: String,
+    pub author: String,
+    pub at: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PrFile {
+    pub path: String,
+    pub additions: u64,
+    pub deletions: u64,
+}
+
+/// How [`merge`] lands a pull request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MergeMethod {
+    Squash,
+    Merge,
+    Rebase,
+}
+
+/// A review verdict for [`review`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReviewKind {
+    Approve,
+    RequestChanges,
+    Comment,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -221,7 +347,17 @@ impl PrDetail {
     }
 }
 
-const DETAIL_FIELDS: &str = "number,title,body,url,state,headRefName,baseRefName,mergeable,statusCheckRollup";
+/// What a branch lookup or a chat card needs: cheap for gh to answer.
+const DETAIL_FIELDS: &str = concat!(
+    "number,title,body,url,state,headRefName,baseRefName,mergeable,statusCheckRollup,",
+    "author,isDraft,additions,deletions,headRefOid,changedFiles,reviewDecision"
+);
+/// Everything the pull request view shows.
+const FULL_FIELDS: &str = concat!(
+    "number,title,body,url,state,headRefName,baseRefName,mergeable,statusCheckRollup,",
+    "author,isDraft,additions,deletions,headRefOid,changedFiles,reviewDecision,createdAt,",
+    "mergeStateStatus,reviews,comments,commits,files"
+);
 
 fn parse_detail(json: &str) -> Result<PrDetail> {
     let p: serde_json::Value = serde_json::from_str(json).context("unexpected gh output")?;
@@ -244,6 +380,9 @@ fn parse_detail(json: &str) -> Result<PrDetail> {
                 .collect()
         })
         .unwrap_or_default();
+    let list = |k: &str| p[k].as_array().cloned().unwrap_or_default();
+    let text = |v: &serde_json::Value, k: &str| v[k].as_str().unwrap_or_default().to_string();
+    let login = |v: &serde_json::Value| v["author"]["login"].as_str().unwrap_or_default().to_string();
     Ok(PrDetail {
         number: p["number"].as_u64().unwrap_or(0),
         title: s("title"),
@@ -254,12 +393,129 @@ fn parse_detail(json: &str) -> Result<PrDetail> {
         base: s("baseRefName"),
         mergeable: s("mergeable"),
         checks,
+        author: login(&p),
+        draft: p["isDraft"].as_bool().unwrap_or(false),
+        additions: p["additions"].as_u64().unwrap_or(0),
+        deletions: p["deletions"].as_u64().unwrap_or(0),
+        head_sha: s("headRefOid"),
+        created_at: s("createdAt"),
+        review_decision: s("reviewDecision"),
+        merge_state: s("mergeStateStatus"),
+        changed_files: p["changedFiles"].as_u64().unwrap_or(0),
+        reviews: list("reviews")
+            .iter()
+            .map(|r| Review {
+                author: login(r),
+                state: text(r, "state"),
+                body: text(r, "body"),
+                at: text(r, "submittedAt"),
+            })
+            .collect(),
+        comments: list("comments")
+            .iter()
+            .map(|c| Comment { author: login(c), body: text(c, "body"), at: text(c, "createdAt") })
+            .collect(),
+        commits: list("commits")
+            .iter()
+            .map(|c| Commit {
+                oid: text(c, "oid"),
+                headline: text(c, "messageHeadline"),
+                author: c["authors"][0]["login"]
+                    .as_str()
+                    .or_else(|| c["authors"][0]["name"].as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                at: text(c, "committedDate"),
+            })
+            .collect(),
+        files: list("files")
+            .iter()
+            .map(|f| PrFile {
+                path: text(f, "path"),
+                additions: f["additions"].as_u64().unwrap_or(0),
+                deletions: f["deletions"].as_u64().unwrap_or(0),
+            })
+            .collect(),
     })
+}
+
+impl PrDetail {
+    /// `merged`, `closed`, `draft` or `open`.
+    pub fn status(&self) -> &'static str {
+        match self.state.as_str() {
+            "MERGED" => "merged",
+            "CLOSED" => "closed",
+            _ if self.draft => "draft",
+            _ => "open",
+        }
+    }
+}
+
+/// The light details of PR `number` (title, state, checks, size): enough
+/// for a chat card or a branch's PR chip.
+pub fn pr_summary(repo: &PrRepo, number: u64) -> Result<PrDetail> {
+    parse_detail(&repo.gh(&["pr", "view", &number.to_string(), "--json", DETAIL_FIELDS])?)
+}
+
+/// Everything about PR `number`: details, checks, reviews, comments,
+/// commits and files.
+pub fn pr_view(repo: &PrRepo, number: u64) -> Result<PrDetail> {
+    parse_detail(&repo.gh(&["pr", "view", &number.to_string(), "--json", FULL_FIELDS])?)
+}
+
+/// The unified diff of PR `number`.
+pub fn diff(repo: &PrRepo, number: u64) -> Result<String> {
+    repo.gh(&["pr", "diff", &number.to_string(), "--color", "never"])
+}
+
+/// Merge PR `number` with `method`. Deletes the branch only for a local
+/// clone, where gh can also tidy the local branch.
+pub fn merge(repo: &PrRepo, number: u64, method: MergeMethod) -> Result<()> {
+    let n = number.to_string();
+    let flag = match method {
+        MergeMethod::Squash => "--squash",
+        MergeMethod::Merge => "--merge",
+        MergeMethod::Rebase => "--rebase",
+    };
+    let mut args = vec!["pr", "merge", n.as_str(), flag];
+    if matches!(repo, PrRepo::Local(_)) {
+        args.push("--delete-branch");
+    }
+    repo.gh(&args)?;
+    Ok(())
+}
+
+/// Leave a review on PR `number`. An approval may have an empty `body`.
+pub fn review(repo: &PrRepo, number: u64, kind: ReviewKind, body: &str) -> Result<()> {
+    let n = number.to_string();
+    let flag = match kind {
+        ReviewKind::Approve => "--approve",
+        ReviewKind::RequestChanges => "--request-changes",
+        ReviewKind::Comment => "--comment",
+    };
+    let mut args = vec!["pr", "review", n.as_str(), flag];
+    if !body.trim().is_empty() || kind != ReviewKind::Approve {
+        args.extend(["--body", body]);
+    }
+    repo.gh(&args)?;
+    Ok(())
+}
+
+/// Comment on PR `number`.
+pub fn comment(repo: &PrRepo, number: u64, body: &str) -> Result<()> {
+    repo.gh(&["pr", "comment", &number.to_string(), "--body", body])?;
+    Ok(())
+}
+
+/// Close PR `number` without merging.
+pub fn close(repo: &PrRepo, number: u64) -> Result<()> {
+    repo.gh(&["pr", "close", &number.to_string()])?;
+    Ok(())
 }
 
 /// Details of PR `number`.
 pub fn pr_detail(repo: &Path, number: u64) -> Result<PrDetail> {
-    parse_detail(&gh(repo, &["pr", "view", &number.to_string(), "--json", DETAIL_FIELDS])?)
+    pr_summary(&PrRepo::Local(repo.to_path_buf()), number)
 }
 
 /// The PR for the checked-out branch of `wt`, if any.
@@ -273,7 +529,7 @@ pub fn pr_for_branch(wt: &Path) -> Result<Option<PrDetail>> {
 
 /// The unified diff of PR `number`.
 pub fn pr_diff(repo: &Path, number: u64) -> Result<String> {
-    gh(repo, &["pr", "diff", &number.to_string(), "--color", "never"])
+    diff(&PrRepo::Local(repo.to_path_buf()), number)
 }
 
 /// Open a PR from the current branch of `wt`. Returns its URL.
@@ -290,8 +546,7 @@ pub fn create_pr(wt: &Path, title: &str, body: &str, base: Option<&str>, draft: 
 
 /// Squash-merge PR `number` and delete its branch.
 pub fn merge_pr(wt: &Path, number: u64) -> Result<()> {
-    gh(wt, &["pr", "merge", &number.to_string(), "--squash", "--delete-branch"])?;
-    Ok(())
+    merge(&PrRepo::Local(wt.to_path_buf()), number, MergeMethod::Squash)
 }
 
 /// Fetch PR `number`'s head into the local branch `pr-<number>` (for a new
@@ -385,6 +640,43 @@ mod tests {
         assert_eq!((d.number, d.base.as_str(), d.checks.len()), (3, "main", 2));
         assert_eq!(d.checks_summary(), "pending");
         assert_eq!(d.checks[1].name, "lint");
+    }
+
+    #[test]
+    fn parses_full_pr_view() {
+        let d = parse_detail(
+            r#"{"number":9,"title":"T","body":"","url":"https://github.com/a/b/pull/9","state":"OPEN",
+               "headRefName":"x","baseRefName":"main","mergeable":"MERGEABLE","statusCheckRollup":[],
+               "author":{"login":"rav"},"isDraft":true,"additions":12,"deletions":3,"headRefOid":"abc",
+               "changedFiles":2,"reviewDecision":"APPROVED","createdAt":"2026-10-19T00:00:00Z",
+               "mergeStateStatus":"CLEAN",
+               "reviews":[{"author":{"login":"kim"},"state":"APPROVED","body":"lgtm","submittedAt":"t1"}],
+               "comments":[{"author":{"login":"lee"},"body":"nice","createdAt":"t2"}],
+               "commits":[{"oid":"abc","messageHeadline":"Fix it","authors":[{"login":"rav","name":"Rav"}],"committedDate":"t0"}],
+               "files":[{"path":"src/a.rs","additions":10,"deletions":3},{"path":"README.md","additions":2,"deletions":0}]}"#,
+        )
+        .unwrap();
+        assert_eq!((d.author.as_str(), d.draft, d.head_sha.as_str()), ("rav", true, "abc"));
+        assert_eq!(d.status(), "draft");
+        assert_eq!((d.reviews[0].author.as_str(), d.reviews[0].state.as_str()), ("kim", "APPROVED"));
+        assert_eq!(d.comments[0].body, "nice");
+        assert_eq!((d.commits[0].headline.as_str(), d.commits[0].author.as_str()), ("Fix it", "rav"));
+        assert_eq!((d.files.len(), d.files[0].additions), (2, 10));
+        assert_eq!(d.checks_summary(), "none");
+    }
+
+    #[test]
+    fn parses_pr_urls() {
+        assert_eq!(parse_pr_url("https://github.com/PupppyLoverr/Dove/pull/9"), Some(("PupppyLoverr/Dove".into(), 9)));
+        assert_eq!(parse_pr_url("https://github.com/a/b.c/pull/12/files#diff"), Some(("a/b.c".into(), 12)));
+        assert_eq!(parse_pr_url("https://github.com/a/b/issues/3"), None);
+        assert_eq!(parse_pr_url("https://github.com/a/b/pull/x"), None);
+        let text = "Created https://github.com/a/b/pull/4\nsee (https://github.com/a/b/pull/4/checks) and \
+                    [link](https://github.com/c/d/pull/77). Not https://github.com/e/f/issues/1";
+        assert_eq!(
+            pr_urls(text),
+            vec!["https://github.com/a/b/pull/4".to_string(), "https://github.com/c/d/pull/77".to_string()]
+        );
     }
 
     #[test]

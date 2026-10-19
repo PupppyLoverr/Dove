@@ -123,6 +123,8 @@ struct Entry {
     path: PathBuf,
     effect: Effect,
     light: bool,
+    /// Gaussian blur baked in, in device pixels (0 for none).
+    blur: u32,
     /// The device-pixel size it was rasterized for, in 64 px steps.
     target: (u32, u32),
     slot: Slot,
@@ -145,14 +147,26 @@ static CACHE: OnceLock<Mutex<Vec<Entry>>> = OnceLock::new();
 /// device pixels: the effect is rasterized at that size, as Zeron does, so a
 /// dither or halftone cell is the same few screen pixels on every display
 /// instead of growing with the source image's upscale.
-fn prepare(path: &Path, effect: Effect, light: bool, target: (f32, f32), cx: &mut App) -> Option<Arc<RenderImage>> {
+///
+/// `blur` (device pixels) bakes a Gaussian blur into the raster, once, off
+/// the UI thread: a thread's frosted backdrop is then a plain image instead
+/// of a live blur pass over the whole column on every frame.
+fn prepare(
+    path: &Path,
+    effect: Effect,
+    light: bool,
+    target: (f32, f32),
+    blur: u32,
+    cx: &mut App,
+) -> Option<Arc<RenderImage>> {
     let cache = CACHE.get_or_init(|| Mutex::new(Vec::new()));
     let light = paper_light(effect, light);
     let target = step_target(target);
+    let same = |e: &Entry| e.path == path && e.effect == effect && e.light == light && e.blur == blur;
     let mut stale = None;
     {
         let mut entries = cache.lock().ok()?;
-        if let Some(i) = entries.iter().position(|e| e.path == path && e.effect == effect && e.light == light) {
+        if let Some(i) = entries.iter().position(same) {
             let e = entries.remove(i);
             let ready = e.slot.lock().ok()?.clone();
             let (hit, fallback) = (e.target == target, e.fallback.clone());
@@ -168,13 +182,14 @@ fn prepare(path: &Path, effect: Effect, light: bool, target: (f32, f32), cx: &mu
     {
         let mut entries = cache.lock().ok()?;
         let mut gone = Vec::new();
-        while let Some(i) = entries.iter().position(|e| e.path == path && e.effect == effect && e.light == light) {
+        while let Some(i) = entries.iter().position(same) {
             gone.extend(entries.remove(i).fallback);
         }
         entries.push(Entry {
             path: path.to_path_buf(),
             effect,
             light,
+            blur,
             target,
             slot: slot.clone(),
             fallback: stale.clone(),
@@ -187,11 +202,12 @@ fn prepare(path: &Path, effect: Effect, light: bool, target: (f32, f32), cx: &mu
     }
     let path = path.to_path_buf();
     let work = cx.background_executor().spawn(async move {
-        if effect == Effect::Dither {
-            return zeron_dither(&path, target).map(raster);
-        }
-        let src = load_source(&path, target)?;
-        Some(raster(render(&src, effect, light)))
+        let img = if effect == Effect::Dither {
+            zeron_dither(&path, target)?
+        } else {
+            render(&load_source(&path, target)?, effect, light)
+        };
+        Some(raster(if blur > 0 { soften(&img, blur) } else { img }))
     });
     cx.spawn(async move |cx| {
         let image = work.await;
@@ -255,6 +271,18 @@ pub fn preview(path: &Path, effect: Effect, light: bool, scale: f32, cx: &mut Ap
     })
     .detach();
     None
+}
+
+/// `img` under a Gaussian blur of `sigma` device pixels. Blurred at a
+/// quarter size and scaled back: the same look for a wide blur, at a
+/// fraction of the cost.
+fn soften(img: &image::RgbaImage, sigma: u32) -> image::RgbaImage {
+    use image::imageops::{self, FilterType};
+    let (w, h) = img.dimensions();
+    let (sw, sh) = ((w / 4).max(1), (h / 4).max(1));
+    let small = imageops::resize(img, sw, sh, FilterType::Triangle);
+    let small = imageops::blur(&small, (sigma as f32 / 4.0).max(0.5));
+    imageops::resize(&small, w, h, FilterType::Triangle)
 }
 
 fn raster(img: image::RgbaImage) -> Arc<RenderImage> {
@@ -1441,6 +1469,8 @@ pub struct HeroProps {
     pub target: (f32, f32),
     pub animate: bool,
     pub frosted: bool,
+    /// A blur baked into a still raster, in device pixels (0 for none).
+    pub blur: u32,
     /// Home fades the art into the canvas. A thread keeps it full-bleed
     /// under the glass, so the color does not disappear down the page.
     pub fade: bool,
@@ -1473,7 +1503,7 @@ impl Hero {
             };
             sync_animation(key, cx)
         } else {
-            prepare(&props.path, props.effect, props.light, props.target, cx).is_some()
+            prepare(&props.path, props.effect, props.light, props.target, props.blur, cx).is_some()
         };
         self.props = Some(props);
         ready
@@ -1487,7 +1517,7 @@ impl Render for Hero {
         let (composition, running) = if p.animate {
             animation_frame(cx)
         } else {
-            (prepare(&p.path, p.effect, p.light, p.target, cx).map(Composition::still), false)
+            (prepare(&p.path, p.effect, p.light, p.target, p.blur, cx).map(Composition::still), false)
         };
         let Some(composition) = composition else { return div() };
         // Paced by the display; notifies this view only.

@@ -17,6 +17,7 @@ pub mod process;
 mod rpc;
 pub mod title;
 pub mod tui;
+pub mod walkthrough;
 
 use std::path::PathBuf;
 

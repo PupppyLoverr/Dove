@@ -72,6 +72,7 @@ pub enum TaskViewEventKind {
     Title(String),
     AiTitle(String),
     DriveBrowser(crate::browser::Drive),
+    PullRequest(String),
 }
 
 pub struct ThreadView {
@@ -130,6 +131,7 @@ impl ThreadView {
                 TaskViewEvent::Title(t) => TaskViewEventKind::Title(t.clone()),
                 TaskViewEvent::AiTitle(t) => TaskViewEventKind::AiTitle(t.clone()),
                 TaskViewEvent::DriveBrowser(d) => TaskViewEventKind::DriveBrowser(d.clone()),
+                TaskViewEvent::PullRequest(url) => TaskViewEventKind::PullRequest(url.clone()),
                 TaskViewEvent::SwitchToChat => {
                     this.request(ViewMode::Chat, window, cx);
                     return;

@@ -170,7 +170,7 @@ fn activity_phase(view: EntityId, period: Duration, stride: u64, cx: &mut App) -
         return ActivityPhase { phase: 0.0, subtle: false, still: true };
     }
     let subtle = reduced;
-    schedule_pulse(view, if subtle { 2 } else { stride.max(1) }, cx);
+    schedule_pulse(view, if subtle { 3 } else { stride.max(1) }, cx);
     let phase = pulse_phase(if subtle { Duration::from_millis(2400) } else { period }, cx);
     ActivityPhase { phase, subtle, still: false }
 }

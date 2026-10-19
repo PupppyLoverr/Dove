@@ -6,6 +6,7 @@ mod browser;
 mod changes;
 mod composer;
 mod design;
+mod diff_list;
 mod file_icons;
 mod files_panel;
 mod history;
@@ -26,6 +27,7 @@ mod pages;
 mod palette;
 mod perf_trace;
 mod picker_memory;
+mod pr_view;
 mod pull_requests;
 mod remote;
 mod roll_text;
@@ -102,6 +104,13 @@ pub mod actions {
     #[action(namespace = dove, no_json)]
     pub struct OpenSubagent {
         pub call: String,
+    }
+
+    /// Open a GitHub pull request in the side panel, by its URL.
+    #[derive(Clone, PartialEq, Debug, gpui::Action)]
+    #[action(namespace = dove, no_json)]
+    pub struct OpenPullRequest {
+        pub url: String,
     }
 
     /// Ctrl+N: the Nth open thread tab.

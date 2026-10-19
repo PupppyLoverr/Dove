@@ -28,6 +28,7 @@ use crate::design::{radius, ty};
 use crate::kit::{self, Toasts, Tone};
 use crate::pages::PageState;
 use crate::palette::{Palette, PaletteEvent, PaletteItem};
+use crate::pr_view::PrTarget;
 use crate::pull_requests::{PrEvent, PullRequestsPage};
 use crate::remote::{Remote, RemoteCommand, RemoteEvent};
 use crate::side_panel::{SidePanel, SidePanelEvent, Tab};
@@ -209,6 +210,8 @@ pub struct Shell {
     pub composer: Entity<Composer>,
     pub composer_bounds: std::rc::Rc<std::cell::Cell<Option<Bounds<Pixels>>>>,
     pub prs: Entity<PullRequestsPage>,
+    /// Each thread's pull request URL (mirrors the store's `task_prs`).
+    pr_links: HashMap<TaskId, String>,
     pub settings: Entity<crate::settings::SettingsPage>,
     pub palette: Option<Entity<Palette>>,
     pub menu: Option<ChatMenu>,
@@ -258,7 +261,7 @@ impl Shell {
             p.expanded = engine.store.setting("panel_expanded").as_deref() == Some("true");
             p
         });
-        let prs = cx.new(|cx| PullRequestsPage::new(window, cx));
+        let prs = cx.new(|cx| PullRequestsPage::new(engine.clone(), window, cx));
         let settings = cx.new(|cx| crate::settings::SettingsPage::new(engine.clone(), window, cx));
         let style = ui::input_style(Theme::of(cx));
         let search = cx.new(|cx| {
@@ -301,6 +304,16 @@ impl Shell {
                 }
             }
             SidePanelEvent::OpenThread(id) => this.open_task(*id, window, cx),
+            SidePanelEvent::StageForAgent(text) => {
+                if let Some(v) = this.active_thread() {
+                    let composer = v.read(cx).chat.read(cx).composer.clone();
+                    crate::composer::set_text(&composer, text, window, cx);
+                }
+            }
+            SidePanelEvent::CheckoutPr { project, number, title } => {
+                this.checkout_pr(project.clone(), *number, title.clone(), window, cx)
+            }
+            SidePanelEvent::PrChanged => cx.notify(),
         }));
         subs.push(cx.subscribe_in(
             &settings,
@@ -320,6 +333,7 @@ impl Shell {
             PrEvent::Checkout { project, number, title } => {
                 this.checkout_pr(project.clone(), *number, title.clone(), window, cx)
             }
+            PrEvent::HandOff { project, prompt } => this.stage_new_thread(project.clone(), prompt, window, cx),
         }));
         subs.push(cx.subscribe(&search, |this, s, ev: &InputEvent, cx| match ev {
             InputEvent::Change => {
@@ -389,6 +403,7 @@ impl Shell {
             composer,
             composer_bounds: Default::default(),
             prs,
+            pr_links: store.task_prs().unwrap_or_default().into_iter().collect(),
             settings,
             palette: None,
             menu: None,
@@ -932,6 +947,7 @@ impl Shell {
                         self.apply_title(id, title, cx);
                     }
                 }
+                TaskViewEventKind::PullRequest(url) => self.link_pr(id, url, cx),
                 TaskViewEventKind::AiTitle(title) => {
                     // An agent's title replaces the quick one; a rename wins.
                     if self.engine.store.setting(&format!("renamed.{id}")).is_none() {
@@ -994,13 +1010,84 @@ impl Shell {
             Default::default()
         };
         let chats = self.side_chats_of(self.active_task().map(|t| t.id));
+        let pr = self.active_task().map(|t| (t.id, self.pr_target(t.id)));
         self.panel.update(cx, |p, cx| {
             if fresh {
                 p.set_todos(todos, cx);
                 p.set_subagents(subagents, cx);
             }
             p.set_side_chats(chats, cx);
+            if let Some((id, target)) = pr {
+                p.set_pr(id, target, cx);
+            }
         });
+    }
+
+    /// Link thread `id` to the pull request at `url` (an agent opened it, or
+    /// it is the branch's PR). The dock gains a Pull request tab.
+    pub fn link_pr(&mut self, id: TaskId, url: &str, cx: &mut Context<Self>) {
+        let Some((slug, n)) = dove_core::git::github::parse_pr_url(url) else { return };
+        let url = format!("https://github.com/{slug}/pull/{n}");
+        if self.pr_links.get(&id) == Some(&url) {
+            return;
+        }
+        let _ = self.engine.store.set_task_pr(id, Some(&url));
+        self.pr_links.insert(id, url);
+        if self.active_task().is_some_and(|t| t.id == id) {
+            self.sync_panel(cx);
+        }
+        cx.notify();
+    }
+
+    /// Thread `id`'s pull request as something a [`crate::pr_view::PrView`]
+    /// can show. Driven through `gh -R owner/repo`, so it works whether or
+    /// not the PR's repository is this thread's checkout.
+    fn pr_target(&self, id: TaskId) -> Option<PrTarget> {
+        let url = self.pr_links.get(&id)?;
+        let (slug, number) = dove_core::git::github::parse_pr_url(url)?;
+        let project = self.task(id).and_then(|t| self.project(t.project_id)).cloned();
+        Some(PrTarget { repo: dove_core::git::github::PrRepo::Remote(slug), number, url: url.clone(), project })
+    }
+
+    /// Open the pull request at `url` in the dock's Pull request tab.
+    pub fn open_pr_url(&mut self, url: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((slug, number)) = dove_core::git::github::parse_pr_url(url) else { return };
+        let project = self.active_task().and_then(|t| self.project(t.project_id)).cloned();
+        let target = PrTarget {
+            repo: dove_core::git::github::PrRepo::Remote(slug.clone()),
+            number,
+            url: format!("https://github.com/{slug}/pull/{number}"),
+            project,
+        };
+        if let Some(id) = self.active_task().map(|t| t.id)
+            && !self.pr_links.contains_key(&id)
+        {
+            self.link_pr(id, &target.url, cx);
+        }
+        self.panel_open = true;
+        let _ = self.engine.store.set_setting("panel_open", "true");
+        self.panel.update(cx, |p, cx| p.show_pr(target, window, cx));
+        cx.notify();
+    }
+
+    /// Put `prompt` in Home's composer, in `project`, for a new thread.
+    fn stage_new_thread(
+        &mut self,
+        project: Option<Project>,
+        prompt: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(project) = project {
+            self.home_project = Some(project.id);
+            let projects = self.projects.clone();
+            self.composer.update(cx, |c, cx| {
+                c.set_projects(projects, Some(project.id), cx);
+                cx.notify();
+            });
+        }
+        crate::composer::set_text(&self.composer, prompt, window, cx);
+        self.navigate(Route::Home, window, cx);
     }
 
     /// Threads that share `id`'s worktree (its side chats), newest first.
@@ -1254,6 +1341,37 @@ impl Shell {
             crate::memory::watchdog(self, None, cx);
         }
         cx.notify();
+    }
+
+    /// The titlebar's Pull request button, while the open thread has one:
+    /// the PR glyph in its state's colour; it opens (or closes) the tab.
+    fn render_pr_button(&self, t: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let task = self.active_task()?;
+        if !self.pr_links.contains_key(&task.id) {
+            return None;
+        }
+        let (target, detail) = self.panel.read(cx).pr(cx)?;
+        let showing = self.panel_open && self.panel.read(cx).active() == Some(crate::side_panel::Surface::PullRequest);
+        let color = match &detail {
+            Some(d) => crate::pr_view::status_style(d, t).1,
+            None => crate::motion::hover_blend("tb-pr", t.text_muted, t.text),
+        };
+        let _ = target;
+        Some(
+            quiet_bar_button(
+                "tb-pr",
+                "Pull request",
+                icon(icons::PULL_REQUEST).size(px(16.0)).text_color(color),
+                cx.listener(move |this, _, window, cx| {
+                    if showing {
+                        this.toggle_panel(cx);
+                    } else {
+                        this.show_panel(Tab::PullRequest, window, cx);
+                    }
+                }),
+            )
+            .into_any_element(),
+        )
     }
 
     pub fn show_panel(&mut self, tab: Tab, window: &mut Window, cx: &mut Context<Self>) {
@@ -1906,6 +2024,7 @@ impl Shell {
                         .items_center()
                         .gap(px(2.0))
                         .child(self.render_info_button(cx))
+                        .when_some(self.render_pr_button(&t, cx), |d, b| d.child(b))
                         // The slim bar also opens the files straight away.
                         .when(!tabs_on, |d| {
                             let color = if files_on {
@@ -2317,6 +2436,7 @@ impl Shell {
 
     fn render_info_card(&self, task: &Task, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let project = self.project(task.project_id).cloned();
+        let pr = self.panel.read(cx).pr(cx).filter(|_| self.pr_links.contains_key(&task.id));
         let path = task.worktree.clone().or_else(|| project.as_ref().map(|p| p.path.clone()));
         let (usage, context, mode) = self
             .threads
@@ -2418,6 +2538,50 @@ impl Shell {
                                 .child(div().text_color(t.success).child(format!("+{adds}")))
                                 .child(div().text_color(t.danger).child(format!("−{dels}"))),
                         ),
+                )
+            })
+            .when_some(pr, |d, (target, detail)| {
+                let (status, color) = match &detail {
+                    Some(d) => crate::pr_view::status_style(d, t),
+                    None => ("", t.text_muted),
+                };
+                let checks = detail.as_ref().map(|d| d.checks_summary()).unwrap_or("none");
+                let title = detail.as_ref().map(|d| d.title.clone()).unwrap_or_default();
+                d.child(
+                    div()
+                        .id("info-open-pr")
+                        .min_h(px(30.0))
+                        .px(px(8.0))
+                        .py(px(5.0))
+                        .flex()
+                        .items_center()
+                        .gap(px(10.0))
+                        .rounded(px(kit::popover::MENU_ITEM_RADIUS))
+                        .cursor_pointer()
+                        .text_size(ty::BODY)
+                        .text_color(t.text)
+                        .hover(|s| s.bg(kit::popover::row_active_bg(t)))
+                        .tooltip(ui::tip("Show the pull request"))
+                        .on_click(cx.listener(|this, _, window, cx| this.show_panel(Tab::PullRequest, window, cx)))
+                        .child(icon(icons::PULL_REQUEST).size(px(15.0)).flex_none().text_color(color))
+                        .child(div().flex_1().min_w_0().truncate().child(if title.is_empty() {
+                            format!("PR #{}", target.number)
+                        } else {
+                            format!("#{} · {title}", target.number)
+                        }))
+                        .when(!status.is_empty(), |d| {
+                            d.child(div().flex_none().text_size(ty::META).text_color(color).child(status))
+                        })
+                        .when(checks != "none", |d| {
+                            d.child(ui::dot(
+                                match checks {
+                                    "passing" => t.success,
+                                    "failing" => t.danger,
+                                    _ => t.warning,
+                                },
+                                6.0,
+                            ))
+                        }),
                 )
             })
             .child(kit::popover::menu_separator(t))
@@ -2570,7 +2734,25 @@ impl Shell {
     }
 
     fn has_wallpaper(&self) -> bool {
-        self.engine.store.setting("wallpaper_path").is_some_and(|p| std::path::Path::new(&p).is_file())
+        self.wallpaper_path().is_some()
+    }
+
+    /// The wallpaper image, when it is set and on disk. The disk check is
+    /// cached for a second: a render asks several times.
+    fn wallpaper_path(&self) -> Option<String> {
+        thread_local! {
+            static SEEN: std::cell::RefCell<Option<(String, bool, Instant)>> = const { std::cell::RefCell::new(None) };
+        }
+        let path = self.engine.store.setting("wallpaper_path").filter(|p| !p.is_empty())?;
+        SEEN.with(|seen| {
+            let mut seen = seen.borrow_mut();
+            let fresh = seen.as_ref().is_some_and(|(p, _, at)| *p == path && at.elapsed() < Duration::from_secs(1));
+            if !fresh {
+                let exists = std::path::Path::new(&path).is_file();
+                *seen = Some((path.clone(), exists, Instant::now()));
+            }
+            seen.as_ref().filter(|(_, exists, _)| *exists).map(|(p, ..)| p.clone())
+        })
     }
 
     /// Artwork for the chat column only, from the top of the window. The
@@ -2587,7 +2769,7 @@ impl Shell {
         if !home && !thread || width < 8.0 {
             return None;
         }
-        let path = self.engine.store.setting("wallpaper_path").filter(|p| std::path::Path::new(&p).is_file())?;
+        let path = self.wallpaper_path()?;
         let t = Theme::of(cx).clone();
         let viewport_h = f32::from(window.viewport_size().height);
         let height = if thread { viewport_h } else { crate::wallpaper::hero_height(viewport_h) };
@@ -2595,6 +2777,9 @@ impl Shell {
         let effect =
             crate::wallpaper::Effect::from_id(&self.engine.store.setting("wallpaper_effect").unwrap_or_default());
         let animate = self.engine.store.setting("wallpaper_animate").as_deref() == Some("true");
+        // A still thread backdrop gets its frost baked into the raster; only
+        // a moving one needs the live blur.
+        let baked = thread && !animate;
         let props = crate::wallpaper::HeroProps {
             path: path.into(),
             effect,
@@ -2602,6 +2787,7 @@ impl Shell {
             target: (width * scale, height * scale),
             animate,
             frosted: t.is_frost(),
+            blur: if baked { (THREAD_ART_BLUR * scale / 2.0).round() as u32 } else { 0 },
             fade: home,
             composer: if home { self.composer_bounds.clone() } else { std::rc::Rc::new(std::cell::Cell::new(None)) },
         };
@@ -2619,7 +2805,8 @@ impl Shell {
                 .overflow_hidden()
                 .bg(t.bg)
                 .child(div().absolute().top_0().left_0().right_0().h(px(height)).child(view))
-                .when(thread, |d| {
+                .when(baked, |d| d.child(div().absolute().inset_0().bg(t.bg.opacity(THREAD_ART_TINT))))
+                .when(thread && !baked, |d| {
                     d.child(div().absolute().inset_0().child(ui::frosted(
                         0.0,
                         THREAD_ART_BLUR,
@@ -3001,6 +3188,9 @@ impl Render for Shell {
                 this.show_panel(Tab::Files, window, cx);
                 let (path, line) = (a.path.clone(), a.line);
                 this.panel.update(cx, |p, cx| p.open_path(&path, line, window, cx));
+            }))
+            .on_action(cx.listener(|this, a: &actions::OpenPullRequest, window, cx| {
+                this.open_pr_url(&a.url, window, cx);
             }))
             .on_action(cx.listener(|this, a: &actions::OpenSubagent, window, cx| {
                 let Some(v) = this.active_thread() else { return };

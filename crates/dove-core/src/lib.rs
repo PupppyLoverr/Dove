@@ -29,6 +29,7 @@ pub use dove_harness::is_supported as harness_supported;
 pub use dove_harness::models;
 pub use dove_harness::office_skills;
 pub use dove_harness::tui;
+pub use dove_harness::walkthrough;
 pub use dove_harness::{ToolServer, is_dove_tool, set_tool_server};
 pub use dove_proto as proto;
 pub use dove_store as store;
@@ -753,6 +754,77 @@ impl Engine {
         rx
     }
 
+    /// A plain-language walkthrough of a pull request, on the same agent
+    /// pick as [`Self::generate_title`]. With `cache_key` (see
+    /// [`walkthrough_cache_key`]) a cached AI walkthrough is sent at once and
+    /// a fresh one is cached. The receiver always gets a walkthrough: the
+    /// stats-only fallback when no agent can write one, every attempt
+    /// failed, or the `pr_walkthrough_ai` setting is off.
+    pub fn generate_walkthrough(
+        &self,
+        kind: HarnessKind,
+        input: dove_harness::walkthrough::WalkthroughInput,
+        cache_key: Option<String>,
+    ) -> tokio::sync::oneshot::Receiver<dove_harness::walkthrough::Walkthrough> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        if let Some(cached) = cache_key.as_deref().and_then(|k| self.cached_walkthrough(k)) {
+            let _ = tx.send(cached);
+            return rx;
+        }
+        // The thread's own agent first, then every other installed agent
+        // that can make a restricted run: one that is signed out or fails
+        // hands over to the next before the stats-only fallback.
+        let installed: Vec<HarnessKind> = self.installed.read().iter().map(|i| i.kind).collect();
+        let mut picks: Vec<(HarnessKind, PathBuf, Option<String>)> = Vec::new();
+        if self.store.flag(PR_WALKTHROUGH_AI, true) {
+            for k in std::iter::once(kind).chain(installed) {
+                if picks.iter().any(|(p, ..)| *p == k) || !dove_harness::title::supports(k) {
+                    continue;
+                }
+                if let Ok(program) = self.program(k) {
+                    let model = dove_harness::title::cheapest_model(&self.models(k));
+                    picks.push((k, program, model));
+                }
+            }
+        }
+        if picks.is_empty() {
+            let _ = tx.send(dove_harness::walkthrough::fallback(&input));
+            return rx;
+        }
+        let store = self.store.clone();
+        self.rt.spawn(async move {
+            let fallback = dove_harness::walkthrough::fallback(&input);
+            let mut walkthrough = None;
+            for (kind, program, model) in picks {
+                if let Some(w) = dove_harness::walkthrough::generate(kind, &program, model, input.clone()).await {
+                    walkthrough = Some(w);
+                    break;
+                }
+            }
+            let walkthrough = match walkthrough {
+                Some(w) => {
+                    if let Some(key) = &cache_key {
+                        store_walkthrough(&store, key, &w);
+                    }
+                    w
+                }
+                None => fallback,
+            };
+            let _ = tx.send(walkthrough);
+        });
+        rx
+    }
+
+    /// The walkthrough cached under `key`, if any.
+    pub fn cached_walkthrough(&self, key: &str) -> Option<dove_harness::walkthrough::Walkthrough> {
+        serde_json::from_str(&self.store.setting(key)?).ok()
+    }
+
+    /// Cache `walkthrough` under `key`.
+    pub fn store_walkthrough(&self, key: &str, walkthrough: &dove_harness::walkthrough::Walkthrough) {
+        store_walkthrough(&self.store, key, walkthrough);
+    }
+
     /// The driver running `task`, if any.
     pub fn driver(&self, task: TaskId) -> Option<Driver> {
         self.drivers.lock().get(&task).copied()
@@ -999,7 +1071,8 @@ impl Recorder {
 
 /// Each agent's last fetched model list, plus when it was last asked.
 struct LiveModels {
-    lists: RwLock<HashMap<HarnessKind, Vec<dove_proto::Model>>>,
+    /// Shared, so a picker reading its catalog every frame copies nothing.
+    lists: RwLock<HashMap<HarnessKind, Arc<Vec<dove_proto::Model>>>>,
     /// When a fetch last started, for throttling.
     asked: parking_lot::Mutex<HashMap<HarnessKind, std::time::Instant>>,
     /// Bumped whenever a list changes.
@@ -1038,6 +1111,11 @@ impl Engine {
     /// for a background refresh with [`Self::refresh_models_if_stale`],
     /// which bumps [`Self::models_version`] when it lands.
     pub fn models(&self, kind: HarnessKind) -> Vec<dove_proto::Model> {
+        self.models_shared(kind).as_ref().clone()
+    }
+
+    /// [`Self::models`] without the copy: the live list itself.
+    pub fn models_shared(&self, kind: HarnessKind) -> Arc<Vec<dove_proto::Model>> {
         let cached = self.live_models.lists.read().get(&kind).cloned();
         match cached {
             Some(list) => list,
@@ -1049,10 +1127,11 @@ impl Engine {
                     .filter(|l: &Vec<dove_proto::Model>| !l.is_empty());
                 match saved {
                     Some(list) => {
+                        let list = Arc::new(list);
                         self.live_models.lists.write().insert(kind, list.clone());
                         list
                     }
-                    None => models::catalog(kind),
+                    None => Arc::new(models::catalog(kind)),
                 }
             }
         }
@@ -1147,11 +1226,11 @@ async fn fetch_models(live: &LiveModels, store: &dove_store::Store, kind: Harnes
     match fetched {
         Ok(Ok(list)) if !list.is_empty() => {
             let _ = store.set_setting(&models_fetched_key(kind), &dove_store::now_ms().to_string());
-            if live.lists.read().get(&kind) != Some(&list) {
+            if live.lists.read().get(&kind).map(|l| l.as_ref()) != Some(&list) {
                 if let Ok(json) = serde_json::to_string(&list) {
                     let _ = store.set_setting(&models_key(kind), &json);
                 }
-                live.lists.write().insert(kind, list);
+                live.lists.write().insert(kind, Arc::new(list));
                 live.bump();
             }
         }
@@ -1168,6 +1247,27 @@ async fn fetch_models(live: &LiveModels, store: &dove_store::Store, kind: Harnes
                 live.asked.lock().insert(kind, at);
             }
         }
+    }
+}
+
+/// Setting: whether PR walkthroughs ask an agent (`"false"` keeps them to
+/// the stats-only fallback). On by default.
+pub const PR_WALKTHROUGH_AI: &str = "pr_walkthrough_ai";
+
+/// The settings key a walkthrough of `repo` (`owner/name`) PR `number` at
+/// `head_sha` is cached under; a new push changes the head and the key.
+pub fn walkthrough_cache_key(repo: &str, number: u64, head_sha: &str) -> String {
+    format!("walkthrough:{repo}#{number}@{head_sha}")
+}
+
+fn store_walkthrough(store: &Store, key: &str, walkthrough: &dove_harness::walkthrough::Walkthrough) {
+    match serde_json::to_string(walkthrough) {
+        Ok(json) => {
+            if let Err(e) = store.set_setting(key, &json) {
+                tracing::warn!("caching walkthrough {key}: {e:#}");
+            }
+        }
+        Err(e) => tracing::warn!("serialising walkthrough {key}: {e}"),
     }
 }
 

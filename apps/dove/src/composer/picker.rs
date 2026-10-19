@@ -290,10 +290,10 @@ impl Picker {
         cx.notify();
     }
 
-    fn catalog(&self, kind: HarnessKind) -> Vec<Model> {
+    fn catalog(&self, kind: HarnessKind) -> std::sync::Arc<Vec<Model>> {
         match &self.engine {
-            Some(engine) => engine.models(kind),
-            None => models::catalog(kind),
+            Some(engine) => engine.models_shared(kind),
+            None => std::sync::Arc::new(models::catalog(kind)),
         }
     }
 
@@ -314,7 +314,7 @@ impl Picker {
 
     fn ensure_model(&mut self) {
         if self.model.is_none() {
-            self.model = self.catalog(self.harness).into_iter().next().map(|m| m.id);
+            self.model = self.catalog(self.harness).first().map(|m| m.id.clone());
         }
         self.align_traits();
     }
@@ -329,7 +329,7 @@ impl Picker {
 
     fn current_model(&self) -> Option<Model> {
         let id = self.model.as_deref()?;
-        self.catalog(self.harness).into_iter().find(|m| m.id == id)
+        self.catalog(self.harness).iter().find(|m| m.id == id).cloned()
     }
 
     /// A fresher catalog landed: keep the pick when it still exists. A
@@ -562,7 +562,8 @@ impl Picker {
     fn rows(&self) -> Vec<Row> {
         let query = self.query.trim().to_ascii_lowercase();
         let offered = self.offered();
-        let catalogs: Vec<(HarnessKind, Vec<Model>)> = offered.iter().map(|k| (*k, self.catalog(*k))).collect();
+        let catalogs: Vec<(HarnessKind, std::sync::Arc<Vec<Model>>)> =
+            offered.iter().map(|k| (*k, self.catalog(*k))).collect();
         let matches = |kind: HarnessKind, m: &Model| {
             query.is_empty()
                 || [m.label.as_str(), m.id.as_str(), m.description.as_deref().unwrap_or(""), kind.label()]
@@ -579,7 +580,7 @@ impl Picker {
             }
         }
         for (kind, catalog) in &catalogs {
-            for m in catalog {
+            for m in catalog.iter() {
                 if !self.memory.is_favorite(*kind, &m.id) && matches(*kind, m) {
                     rows.push(Row { kind: *kind, model: m.clone(), ambiguous: false });
                 }
