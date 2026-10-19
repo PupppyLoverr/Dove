@@ -36,7 +36,7 @@ Dove is written in Rust on [GPUI](https://github.com/zeronsh/zui). There is no E
 
 ## Install
 
-Release builds for macOS, Windows and Linux are published on [GitHub Releases](https://github.com/PupppyLoverr/Dove/releases). Until the first signed release, build from source.
+Download the latest beta from [GitHub Releases](https://github.com/PupppyLoverr/Dove/releases): `Dove-Setup-<version>.exe` or the portable zip for Windows, the `.dmg` for macOS (Apple Silicon), and the `.deb`, AppImage or tarball for Linux (glibc 2.38+: Ubuntu 24.04, Debian 13 or newer). The beta is not code-signed yet: on Windows choose **More info → Run anyway** at the SmartScreen prompt, and on macOS right-click Dove → **Open** the first time. Feedback, bugs and feature requests: [the beta form](https://form.typeform.com/to/LeOHrZiR).
 
 Dove drives agent CLIs you install yourself. Install at least one, for example:
 
