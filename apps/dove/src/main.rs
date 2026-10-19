@@ -1,10 +1,12 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod agent_auth;
 mod assets;
 mod browser;
 mod changes;
 mod composer;
 mod design;
+mod diff_list;
 mod file_icons;
 mod files_panel;
 mod history;
@@ -25,6 +27,7 @@ mod pages;
 mod palette;
 mod perf_trace;
 mod picker_memory;
+mod pr_view;
 mod pull_requests;
 mod remote;
 mod roll_text;
@@ -101,6 +104,13 @@ pub mod actions {
     #[action(namespace = dove, no_json)]
     pub struct OpenSubagent {
         pub call: String,
+    }
+
+    /// Open a GitHub pull request in the side panel, by its URL.
+    #[derive(Clone, PartialEq, Debug, gpui::Action)]
+    #[action(namespace = dove, no_json)]
+    pub struct OpenPullRequest {
+        pub url: String,
     }
 
     /// Ctrl+N: the Nth open thread tab.
@@ -242,7 +252,25 @@ fn restore_if_minimized(window: &Window) {
 #[cfg(not(windows))]
 fn restore_if_minimized(_: &Window) {}
 
+/// Portable mode: a file named `portable` beside the executable keeps all of
+/// Dove's data in a `data` folder next to it instead of `~/.dove`, so the
+/// folder can live on a USB stick. An explicit `DOVE_HOME` still wins, and
+/// child processes (agents, `--mcp-browser`) inherit the same home.
+fn portable_home() {
+    if std::env::var_os("DOVE_HOME").is_some() {
+        return;
+    }
+    let Some(dir) = std::env::current_exe().ok().and_then(|exe| exe.parent().map(|d| d.to_path_buf())) else {
+        return;
+    };
+    if dir.join("portable").is_file() {
+        // SAFETY: first thing in main, before any thread exists.
+        unsafe { std::env::set_var("DOVE_HOME", dir.join("data")) };
+    }
+}
+
 fn main() {
+    portable_home();
     // `dove --mcp-browser`: the stdio MCP bridge agents spawn to drive the
     // in-app browser. No window, no store.
     if std::env::args_os().nth(1).is_some_and(|a| a == "--mcp-browser") {

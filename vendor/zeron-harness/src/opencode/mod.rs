@@ -147,6 +147,22 @@ const INSTALL_HINT: &str = "opencode (searched PATH, the login shell's PATH, ~/.
      `npm install -g @opencode/cli`, then `opencode auth login`; set \
      OPENCODE_EXECUTABLE to override)";
 
+/// Prompts held back from pre-warmed runs, by `dove.deferPrompt` token.
+static DEFERRED: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Receiver<String>>>,
+> = std::sync::LazyLock::new(Default::default);
+
+/// Register a deferred prompt slot; pass `token` as `dove.deferPrompt`. The
+/// run boots its server at once and sends whatever arrives on the returned
+/// sender as its first prompt.
+pub fn defer_prompt(token: &str) -> tokio::sync::oneshot::Sender<String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    if let Ok(mut map) = DEFERRED.lock() {
+        map.insert(token.to_string(), rx);
+    }
+    tx
+}
+
 /// The user's opencode: `OPENCODE_EXECUTABLE` when it exists, else PATH (plus
 /// install locations). The override is validated at launch through
 /// [`crate::executable::validate_native_override`] — including the `.cmd`
@@ -422,21 +438,39 @@ impl Harness for OpencodeHarness {
         // The engine intentionally leaves OpenCode's canonical invocation
         // intact. Capture the selected identity before converting it to the
         // provider's `/command arguments` text.
-        let initial_native_command_selected = selected_native_command(&request.prompt, self.id());
-        request.prompt = zeron_proto::invocation::harness_prompt(&request.prompt, self.id());
+        // A pre-warmed run boots `opencode serve` now and takes its prompt
+        // later (see [`defer_prompt`]), so the first reply skips the cold start.
+        let deferred = request
+            .model_options
+            .get("dove.deferPrompt")
+            .and_then(Value::as_str)
+            .and_then(|token| DEFERRED.lock().ok()?.remove(token));
         let cwd = (!request.cwd.is_empty()).then(|| request.cwd.clone());
         let server = self.server(cwd.as_deref(), request.mcp.as_ref()).await?;
         let (event_tx, event_rx) = mpsc::channel::<Result<AgentEvent, HarnessError>>(256);
-        tokio::spawn(run_session(Session {
-            server,
-            event_tx,
-            controls,
-            request,
-            interrupt_grace: self.interrupt_grace,
-            kill_grace: self.kill_grace,
-            known_commands: None, // Resolve the live session directory, never a global probe cache.
-            initial_native_command_selected,
-        }));
+        let id = self.id();
+        let (interrupt_grace, kill_grace) = (self.interrupt_grace, self.kill_grace);
+        tokio::spawn(async move {
+            if let Some(prompt) = deferred {
+                // A dropped sender means the warm run was abandoned; the
+                // server dies with `server` here.
+                let Ok(prompt) = prompt.await else { return };
+                request.prompt = prompt;
+            }
+            let initial_native_command_selected = selected_native_command(&request.prompt, id);
+            request.prompt = zeron_proto::invocation::harness_prompt(&request.prompt, id);
+            run_session(Session {
+                server,
+                event_tx,
+                controls,
+                request,
+                interrupt_grace,
+                kill_grace,
+                known_commands: None, // Resolve the live session directory, never a global probe cache.
+                initial_native_command_selected,
+            })
+            .await
+        });
         Ok(futures::stream::unfold(event_rx, |mut rx| async move { rx.recv().await.map(|ev| (ev, rx)) }).boxed())
     }
 }

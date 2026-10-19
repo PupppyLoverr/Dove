@@ -174,6 +174,20 @@ struct Probe {
     /// The driver's own `health_report` summary, after "Check permissions".
     cua_health: Option<String>,
     paper: bool,
+    /// The GitHub CLI, and the account it is signed in to.
+    gh: Option<PathBuf>,
+    gh_user: Option<String>,
+}
+
+/// The GitHub CLI's setup, while Dove installs it or opens its sign-in.
+#[derive(Clone, Default)]
+enum GhStep {
+    #[default]
+    Idle,
+    Installing,
+    /// The sign-in terminal is open; detect again once it is done.
+    SigningIn,
+    Failed(String),
 }
 
 pub struct IntegrationsView {
@@ -183,6 +197,7 @@ pub struct IntegrationsView {
     probe: Probe,
     checking: bool,
     copied: bool,
+    gh_step: GhStep,
     _subs: Vec<Subscription>,
 }
 
@@ -232,8 +247,16 @@ impl IntegrationsView {
                 }
             }),
         ];
-        let mut view =
-            Self { config, api_key, toolkits, probe: Probe::default(), checking: false, copied: false, _subs: subs };
+        let mut view = Self {
+            config,
+            api_key,
+            toolkits,
+            probe: Probe::default(),
+            checking: false,
+            copied: false,
+            gh_step: GhStep::Idle,
+            _subs: subs,
+        };
         view.refresh(cx);
         // Connection state changes outside GPUI (the extension's socket): wait
         // on its watch instead of polling, so an idle view schedules nothing.
@@ -258,7 +281,9 @@ impl IntegrationsView {
         let task = cx.background_spawn(async move {
             let cua = cua_driver();
             let cua_version = cua.as_deref().and_then(cua_version);
-            Probe { cua, cua_version, cua_health: None, paper: paper_running() }
+            let gh = dove_core::git::github::gh_path();
+            let gh_user = gh.as_ref().and_then(|_| dove_core::git::github::gh_user());
+            Probe { cua, cua_version, cua_health: None, paper: paper_running(), gh, gh_user }
         });
         cx.spawn(async move |this, cx| {
             let probe = task.await;
@@ -269,6 +294,36 @@ impl IntegrationsView {
             });
         })
         .detach();
+    }
+
+    /// Install the GitHub CLI with the system package manager, then detect.
+    fn install_gh(&mut self, cx: &mut Context<Self>) {
+        if matches!(self.gh_step, GhStep::Installing) {
+            return;
+        }
+        self.gh_step = GhStep::Installing;
+        let task = cx.background_spawn(async move { dove_core::git::github::install_gh() });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |v, cx| {
+                v.gh_step = match result {
+                    Ok(()) => GhStep::Idle,
+                    Err(e) => GhStep::Failed(format!("{e:#}")),
+                };
+                v.refresh(cx);
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// Open `gh auth login` in a terminal; the browser finishes sign-in.
+    fn sign_in_gh(&mut self, cx: &mut Context<Self>) {
+        self.gh_step = match dove_core::git::github::open_gh_login() {
+            Ok(()) => GhStep::SigningIn,
+            Err(e) => GhStep::Failed(format!("{e:#}")),
+        };
+        cx.notify();
     }
 
     fn check_cua(&mut self, cx: &mut Context<Self>) {
@@ -420,6 +475,70 @@ impl Render for IntegrationsView {
         let cua_on = self.config.computer.enabled;
         let composio_on = c.enabled;
         let cua_installed = self.probe.cua.is_some();
+
+        // GitHub CLI: pull requests, PR reviews and PR automations.
+        let gh_installed = self.probe.gh.is_some();
+        let gh_state = match (&self.probe.gh, &self.probe.gh_user) {
+            (Some(_), Some(user)) => (true, format!("Signed in as {user}")),
+            (Some(_), None) => (false, "Not signed in".to_string()),
+            (None, _) => (false, "Not installed".to_string()),
+        };
+        let installing = matches!(self.gh_step, GhStep::Installing);
+        let gh_hint: SharedString = match &self.gh_step {
+            GhStep::Installing if cfg!(windows) => {
+                "Installing with winget. Windows may ask to allow the installer".into()
+            }
+            GhStep::Installing => "Installing with Homebrew…".into(),
+            GhStep::SigningIn => "Finish signing in in the terminal and browser, then detect again".into(),
+            GhStep::Failed(e) => format!("Could not finish: {e}").into(),
+            GhStep::Idle => match (&self.probe.gh, &self.probe.gh_user) {
+                (Some(_), Some(_)) => "Pull requests, reviews and PR automations use this account".into(),
+                (Some(_), None) => "Sign in once so Dove can list, open and merge pull requests".into(),
+                (None, _) => "Dove opens, reviews and merges pull requests through the GitHub CLI (gh)".into(),
+            },
+        };
+        let gh_action = if !gh_installed {
+            Some(if cfg!(any(windows, target_os = "macos")) {
+                ctl::button_sm(&t, "int-gh-install", if installing { "Installing…" } else { "Install" }, Tone::Filled)
+                    .on_click(cx.listener(|this, _, _, cx| this.install_gh(cx)))
+                    .into_any_element()
+            } else {
+                ctl::button_sm(&t, "int-gh-docs", "Install guide", Tone::Filled)
+                    .on_click(cx.listener(|_, _, _, cx| cx.open_url("https://cli.github.com")))
+                    .into_any_element()
+            })
+        } else if self.probe.gh_user.is_none() {
+            Some(
+                ctl::button_sm(&t, "int-gh-login", "Sign in", Tone::Filled)
+                    .on_click(cx.listener(|this, _, _, cx| this.sign_in_gh(cx)))
+                    .into_any_element(),
+            )
+        } else {
+            None
+        };
+        let github = plate(&t)
+            .child(head(icons::GIT_BRANCH, "GitHub", gh_hint, status(gh_state.0, gh_state.1, &t), &t))
+            .child(line(
+                "GitHub CLI",
+                self.probe.gh.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| {
+                    if cfg!(windows) {
+                        "One click: installs GitHub.cli with winget".into()
+                    } else if cfg!(target_os = "macos") {
+                        "One click: installs gh with Homebrew".into()
+                    } else {
+                        "Install gh with your package manager".into()
+                    }
+                }),
+                div().flex().items_center().gap(px(4.0)).children(gh_action).child(
+                    small_icon("int-gh-refresh", icons::REFRESH, "Detect again", &t).on_click(cx.listener(
+                        |this, _, _, cx| {
+                            this.gh_step = GhStep::Idle;
+                            this.refresh(cx);
+                        },
+                    )),
+                ),
+                &t,
+            ));
 
         // Dove for Chrome
         let chrome = plate(&t)
@@ -651,6 +770,7 @@ impl Render for IntegrationsView {
             .flex()
             .flex_col()
             .gap(px(space::MD))
+            .child(github)
             .child(chrome)
             .child(composio)
             .child(paper)

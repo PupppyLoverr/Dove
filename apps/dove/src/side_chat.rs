@@ -84,8 +84,11 @@ impl SideChat {
         match self.engine.start_task(&self.project, new) {
             Ok((task, live)) => {
                 let id = task.id;
-                let chat =
-                    cx.new(|cx| TaskView::new(self.engine.clone(), task, self.project.clone(), Some(live), window, cx));
+                let chat = cx.new(|cx| {
+                    let mut v = TaskView::new(self.engine.clone(), task, self.project.clone(), Some(live), window, cx);
+                    v.without_ai_titles();
+                    v
+                });
                 self._subs.push(cx.subscribe(&chat, |_, _, ev: &TaskViewEvent, cx| match ev {
                     TaskViewEvent::Changed | TaskViewEvent::Status(_) | TaskViewEvent::Title(_) => {
                         cx.emit(SideChatEvent::Changed);

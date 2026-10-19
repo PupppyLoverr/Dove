@@ -212,7 +212,11 @@ fn migrate(conn: &Connection) -> Result<()> {
              task_id TEXT PRIMARY KEY,
              persona_id TEXT NOT NULL
          );
-         CREATE INDEX IF NOT EXISTS persona_tasks_by_persona ON persona_tasks(persona_id);",
+         CREATE INDEX IF NOT EXISTS persona_tasks_by_persona ON persona_tasks(persona_id);
+         CREATE TABLE IF NOT EXISTS task_prs (
+             task_id TEXT PRIMARY KEY,
+             url TEXT NOT NULL
+         );",
     )?;
     Ok(())
 }
@@ -393,9 +397,42 @@ impl Store {
             let conn = self.conn.lock();
             conn.execute("DELETE FROM usage WHERE task_id = ?1", [id.0.to_string()])?;
             conn.execute("DELETE FROM tasks WHERE id = ?1", [id.0.to_string()])?;
+            conn.execute("DELETE FROM task_prs WHERE task_id = ?1", [id.0.to_string()])?;
         }
         let _ = std::fs::remove_file(self.transcript_path(id));
         Ok(())
+    }
+
+    /// The pull request a thread opened or works on, as its GitHub URL.
+    pub fn task_pr(&self, id: TaskId) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .lock()
+            .query_row("SELECT url FROM task_prs WHERE task_id = ?1", [id.0.to_string()], |r| r.get(0))
+            .optional()?)
+    }
+
+    /// Link a thread to its pull request (replacing any earlier link), or
+    /// clear the link with `None`.
+    pub fn set_task_pr(&self, id: TaskId, url: Option<&str>) -> Result<()> {
+        let conn = self.conn.lock();
+        match url {
+            Some(url) => conn.execute(
+                "INSERT INTO task_prs (task_id, url) VALUES (?1, ?2)
+                 ON CONFLICT(task_id) DO UPDATE SET url = excluded.url",
+                params![id.0.to_string(), url],
+            )?,
+            None => conn.execute("DELETE FROM task_prs WHERE task_id = ?1", [id.0.to_string()])?,
+        };
+        Ok(())
+    }
+
+    /// Every thread's pull request link.
+    pub fn task_prs(&self) -> Result<Vec<(TaskId, String)>> {
+        let conn = self.conn.lock();
+        let mut st = conn.prepare_cached("SELECT task_id, url FROM task_prs")?;
+        let rows = st.query_map([], |r| Ok((TaskId(parse_uuid(r.get(0)?)), r.get::<_, String>(1)?)))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
     pub fn set_status(&self, id: TaskId, status: TaskStatus) -> Result<()> {
@@ -882,6 +919,20 @@ mod tests {
             unread: false,
             automation: None,
         }
+    }
+
+    #[test]
+    fn task_pr_links() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(dir.path()).unwrap();
+        let t = TaskId::new();
+        assert_eq!(s.task_pr(t).unwrap(), None);
+        s.set_task_pr(t, Some("https://github.com/a/b/pull/1")).unwrap();
+        s.set_task_pr(t, Some("https://github.com/a/b/pull/2")).unwrap();
+        assert_eq!(s.task_pr(t).unwrap().as_deref(), Some("https://github.com/a/b/pull/2"));
+        assert_eq!(s.task_prs().unwrap(), vec![(t, "https://github.com/a/b/pull/2".to_string())]);
+        s.set_task_pr(t, None).unwrap();
+        assert_eq!(s.task_pr(t).unwrap(), None);
     }
 
     #[test]

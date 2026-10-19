@@ -84,15 +84,20 @@ pub async fn run(spec: SessionSpec, ev_tx: flume::Sender<AgentEvent>, cmd_rx: fl
         turn: turn.clone(),
     };
 
-    // A pre-warmed Claude run (no prompt yet): boot the CLI now, so its
-    // process, settings and MCP servers are up by the time the user sends;
-    // the first line is released on the first Send.
+    // A pre-warmed run (no prompt yet): boot the agent now, so its process,
+    // settings and MCP servers are up by the time the user sends; the first
+    // line is released on the first Send. Claude holds its CLI's stdin;
+    // OpenCode holds a booted `opencode serve`.
     let started;
     let prompt;
-    if given.is_none() && spec.kind == HarnessKind::ClaudeCode {
+    if given.is_none() && defers_prompt(spec.kind) {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let token = format!("{}-{}", std::process::id(), NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
-        let release = zeron_harness::claude::defer_prompt(&token);
+        let release = if spec.kind == HarnessKind::ClaudeCode {
+            zeron_harness::claude::defer_prompt(&token)
+        } else {
+            zeron_harness::opencode::defer_prompt(&token)
+        };
         let mut request = run_request(&spec, String::new());
         request.model_options.insert("dove.deferPrompt".into(), Value::String(token));
         started = harness.run(request, controls).await;
@@ -220,7 +225,12 @@ fn driver(spec: &SessionSpec) -> Option<Arc<dyn Harness>> {
     driver_for(spec.kind, &spec.program)
 }
 
-fn driver_for(kind: HarnessKind, program: &std::path::Path) -> Option<Arc<dyn Harness>> {
+/// Whether `kind`'s driver can boot before it has a prompt.
+pub fn defers_prompt(kind: HarnessKind) -> bool {
+    matches!(kind, HarnessKind::ClaudeCode | HarnessKind::OpenCode | HarnessKind::Kilo)
+}
+
+pub(crate) fn driver_for(kind: HarnessKind, program: &std::path::Path) -> Option<Arc<dyn Harness>> {
     Some(match kind {
         HarnessKind::ClaudeCode => Arc::new(ClaudeHarness::new().with_executable(program)),
         HarnessKind::Codex => Arc::new(CodexHarness::new().with_executable(program)),
@@ -361,7 +371,7 @@ fn run_request(spec: &SessionSpec, prompt: String) -> RunRequest {
     }
 }
 
-fn harness_id(kind: HarnessKind) -> Option<HarnessId> {
+pub(crate) fn harness_id(kind: HarnessKind) -> Option<HarnessId> {
     Some(match kind {
         HarnessKind::ClaudeCode => HarnessId::ClaudeCode,
         HarnessKind::Codex => HarnessId::Codex,

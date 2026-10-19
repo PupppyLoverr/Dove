@@ -1,11 +1,10 @@
 //! Pull requests for a project's GitHub repository, through the `gh` CLI:
-//! the list, and a detail page (description, checks, files) with "Check out
-//! in new thread".
+//! the list, and one PR at a time in the shared [`PrView`] (walkthrough,
+//! changes, checks and activity).
 
 use std::path::PathBuf;
 
-use dove_core::git::github::{self, PrDetail, PrFilter, PullRequest};
-use dove_core::git::{FileDiff, LineKind};
+use dove_core::git::github::{self, PrFilter, PrRepo, PullRequest};
 use dove_core::store::Project;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
@@ -19,19 +18,15 @@ use crate::assets::{icon, icons};
 use crate::design::{space, ty};
 use crate::kit::controls::{self as ctl, Segment, SelectState, Tone};
 use crate::kit::{self, page};
+use crate::pr_view::{PrTarget, PrView, PrViewEvent};
 use crate::theme::Theme;
 use crate::ui;
 
 pub enum PrEvent {
     /// Start a thread on this PR's branch.
     Checkout { project: Project, number: u64, title: String },
-}
-
-struct Detail {
-    pr: PullRequest,
-    detail: Option<PrDetail>,
-    files: Vec<FileDiff>,
-    error: Option<SharedString>,
+    /// Stage a prepared prompt in a new thread in `project`.
+    HandOff { project: Option<Project>, prompt: String },
 }
 
 enum Load {
@@ -39,6 +34,12 @@ enum Load {
     Loading,
     Ready(Vec<PullRequest>),
     Failed(SharedString),
+    /// The GitHub CLI is missing or signed out: offer to set it up here.
+    NeedsGh {
+        installed: bool,
+        busy: bool,
+        note: Option<SharedString>,
+    },
 }
 
 pub struct PullRequestsPage {
@@ -49,28 +50,46 @@ pub struct PullRequestsPage {
     search: Entity<InputState>,
     query: String,
     repo_select: SelectState,
-    detail: Option<Detail>,
+    /// The open PR, shared with the dock's Pull request tab design.
+    view: Entity<PrView>,
+    /// Whether the open PR is shown instead of the list.
+    showing: bool,
     _load: Option<gpui::Task<()>>,
-    _detail: Option<gpui::Task<()>>,
-    _sub: Subscription,
+    _subs: Vec<Subscription>,
 }
 
 impl EventEmitter<PrEvent> for PullRequestsPage {}
 
 impl PullRequestsPage {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(engine: std::sync::Arc<dove_core::Engine>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let style = ui::input_style(Theme::of(cx));
         let search = cx.new(|cx| {
             let mut s = InputState::new(window, cx).placeholder("Search pull requests");
             s.set_editor_style(style);
             s
         });
-        let _sub = cx.subscribe(&search, |this, s, ev: &InputEvent, cx| {
-            if matches!(ev, InputEvent::Change) {
-                this.query = s.read(cx).value().to_lowercase();
-                cx.notify();
-            }
-        });
+        let view = cx.new(|cx| PrView::new(engine, false, window, cx));
+        let _subs = vec![
+            cx.subscribe(&search, |this, s, ev: &InputEvent, cx| {
+                if matches!(ev, InputEvent::Change) {
+                    this.query = s.read(cx).value().to_lowercase();
+                    cx.notify();
+                }
+            }),
+            cx.subscribe(&view, |this, _, ev: &PrViewEvent, cx| match ev {
+                PrViewEvent::Back => {
+                    this.showing = false;
+                    cx.notify();
+                }
+                PrViewEvent::Checkout { project, number, title } => {
+                    cx.emit(PrEvent::Checkout { project: project.clone(), number: *number, title: title.clone() })
+                }
+                PrViewEvent::HandOff(prompt) => {
+                    cx.emit(PrEvent::HandOff { project: this.repo.clone(), prompt: prompt.clone() })
+                }
+                PrViewEvent::Loaded => {}
+            }),
+        ];
         Self {
             projects: Vec::new(),
             repo: None,
@@ -79,10 +98,10 @@ impl PullRequestsPage {
             search,
             query: String::new(),
             repo_select: SelectState::default(),
-            detail: None,
+            view,
+            showing: false,
             _load: None,
-            _detail: None,
-            _sub,
+            _subs,
         }
     }
 
@@ -100,8 +119,7 @@ impl PullRequestsPage {
     pub fn load(&mut self, cx: &mut Context<Self>) {
         let Some(repo) = self.repo.clone() else { return };
         if !github::gh_available() {
-            self.state =
-                Load::Failed("Install the GitHub CLI (gh) and run `gh auth login` to see pull requests.".into());
+            self.state = Load::NeedsGh { installed: false, busy: false, note: None };
             cx.notify();
             return;
         }
@@ -114,7 +132,14 @@ impl PullRequestsPage {
             let _ = this.update(cx, |p, cx| {
                 p.state = match r {
                     Ok(prs) => Load::Ready(prs),
-                    Err(e) => Load::Failed(format!("{e:#}").into()),
+                    Err(e) => {
+                        let msg = format!("{e:#}");
+                        if msg.contains("gh auth login") || msg.contains("not logged in") {
+                            Load::NeedsGh { installed: true, busy: false, note: None }
+                        } else {
+                            Load::Failed(msg.into())
+                        }
+                    }
                 };
                 cx.notify();
             });
@@ -122,181 +147,44 @@ impl PullRequestsPage {
         cx.notify();
     }
 
-    fn open_detail(&mut self, pr: PullRequest, cx: &mut Context<Self>) {
-        let Some(repo) = self.repo.clone() else { return };
-        let number = pr.number;
-        self.detail = Some(Detail { pr, detail: None, files: Vec::new(), error: None });
-        let work = cx.background_spawn(async move {
-            let detail = github::pr_detail(&repo.path, number)?;
-            let diff = github::pr_diff(&repo.path, number).unwrap_or_default();
-            anyhow::Ok((detail, dove_core::git::diff::parse(&diff)))
-        });
-        self._detail = Some(cx.spawn(async move |this, cx| {
+    /// Install the GitHub CLI (winget / Homebrew), then load again.
+    fn install_gh(&mut self, cx: &mut Context<Self>) {
+        self.state = Load::NeedsGh { installed: false, busy: true, note: None };
+        let work = cx.background_spawn(async move { github::install_gh() });
+        self._load = Some(cx.spawn(async move |this, cx| {
             let r = work.await;
-            let _ = this.update(cx, |p, cx| {
-                if let Some(d) = p.detail.as_mut().filter(|d| d.pr.number == number) {
-                    match r {
-                        Ok((detail, files)) => {
-                            d.detail = Some(detail);
-                            d.files = files;
-                        }
-                        Err(e) => d.error = Some(format!("{e:#}").into()),
-                    }
+            let _ = this.update(cx, |p, cx| match r {
+                Ok(()) => p.load(cx),
+                Err(e) => {
+                    p.state = Load::NeedsGh { installed: false, busy: false, note: Some(format!("{e:#}").into()) };
+                    cx.notify();
                 }
-                cx.notify();
             });
         }));
         cx.notify();
     }
 
-    fn render_detail(&self, t: &Theme, window: &Window, cx: &mut Context<Self>) -> AnyElement {
-        let d = self.detail.as_ref().expect("detail open");
-        let pr = &d.pr;
-        let checks = d.detail.as_ref().map(|x| x.checks.clone()).unwrap_or_default();
-        let body = d.detail.as_ref().map(|x| x.body.clone()).unwrap_or_default();
-        let url = pr.url.clone();
-        let checkout = {
-            let project = self.repo.clone();
-            let (number, title) = (pr.number, pr.title.clone());
-            ctl::button(t, "pr-checkout", "Check out in new thread", Tone::Solid).on_click(cx.listener(
-                move |_, _, _, cx| {
-                    if let Some(project) = project.clone() {
-                        cx.emit(PrEvent::Checkout { project, number, title: title.clone() });
-                    }
-                },
-            ))
+    /// Open `gh auth login` in a terminal; "Try again" loads once done.
+    fn sign_in_gh(&mut self, cx: &mut Context<Self>) {
+        let note = match github::open_gh_login() {
+            Ok(()) => "Finish signing in in the terminal and browser, then try again.".into(),
+            Err(e) => format!("{e:#}").into(),
         };
-        let header = div()
-            .flex()
-            .flex_wrap()
-            .items_center()
-            .gap(px(space::SM))
-            .child(ui::icon_button("pr-back", icons::ARROW_LEFT, "All pull requests", t, {
-                let weak = cx.weak_entity();
-                move |_, _, cx| {
-                    let _ = weak.update(cx, |p, cx| {
-                        p.detail = None;
-                        cx.notify();
-                    });
-                }
-            }))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w(px(200.0))
-                    .truncate()
-                    .text_size(ty::PAGE)
-                    .line_height(ty::lh::PAGE)
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .child(pr.title.clone()),
-            )
-            .child(
-                ctl::button(t, "pr-web", "Open on GitHub", Tone::Outlined).on_click(move |_, _, cx| cx.open_url(&url)),
-            )
-            .child(checkout);
-        let meta = div()
-            .mt(px(space::XS))
-            .px(px(page::LABEL_INSET))
-            .flex()
-            .flex_wrap()
-            .gap(px(10.0))
-            .text_size(ty::BODY)
-            .text_color(t.text_muted)
-            .child(format!("#{}", pr.number))
-            .child(pr.author.clone())
-            .child(format!("{} → {}", pr.branch, d.detail.as_ref().map(|x| x.base.clone()).unwrap_or_default()))
-            .child(div().text_color(t.diff_add).child(format!("+{}", pr.additions)))
-            .child(div().text_color(t.diff_del).child(format!("−{}", pr.deletions)));
-        let checks_label = match d.detail.as_ref() {
-            Some(x) => format!("Checks · {}", x.checks_summary()),
-            None => "Checks · loading…".into(),
+        self.state = Load::NeedsGh { installed: true, busy: false, note: Some(note) };
+        cx.notify();
+    }
+
+    fn open_detail(&mut self, pr: PullRequest, cx: &mut Context<Self>) {
+        let Some(repo) = self.repo.clone() else { return };
+        let target = PrTarget {
+            repo: PrRepo::Local(repo.path.clone()),
+            number: pr.number,
+            url: pr.url.clone(),
+            project: Some(repo),
         };
-        let checks_card = page::card(t).children(checks.into_iter().enumerate().map(|(i, c)| {
-            let color = match c.state.as_str() {
-                "SUCCESS" | "NEUTRAL" | "SKIPPED" => t.success,
-                "FAILURE" | "ERROR" | "CANCELLED" | "TIMED_OUT" => t.danger,
-                _ => t.warning,
-            };
-            let link = c.url.clone();
-            page::row_hover(t, page::table_row(t, i == 0).id(SharedString::from(format!("check-{i}"))), false)
-                .text_size(ty::BODY)
-                .on_click(move |_, _, cx| {
-                    if !link.is_empty() {
-                        cx.open_url(&link);
-                    }
-                })
-                .child(ui::dot(color, 7.0))
-                .child(div().flex_1().min_w_0().truncate().text_color(t.text).child(c.name))
-                .child(div().flex_none().text_size(ty::META).text_color(t.text_faint).child(c.state.to_lowercase()))
-        }));
-        let checks_card = if d.detail.as_ref().is_some_and(|x| !x.checks.is_empty()) {
-            checks_card
-        } else if d.detail.is_some() {
-            checks_card.child(
-                page::table_row(t, true)
-                    .text_size(ty::BODY)
-                    .text_color(t.text_faint)
-                    .child("No checks on this pull request."),
-            )
-        } else {
-            checks_card.child(div().px(px(space::LG)).py(px(space::MD)).child(page::skeleton_lines(t, 2)))
-        };
-        let blocks = crate::markdown::parse(if body.trim().is_empty() { "_No description._" } else { &body });
-        let files = page::card(t).children(d.files.iter().take(60).enumerate().map(|(i, f)| {
-            let preview: Vec<_> =
-                f.hunks.iter().flat_map(|h| h.lines.iter()).filter(|l| l.kind != LineKind::Context).take(6).collect();
-            div()
-                .when(i > 0, |d| d.border_t_1().border_color(page::row_divider(t)))
-                .child(
-                    div()
-                        .h(px(page::TABLE_ROW))
-                        .px(px(space::LG))
-                        .flex()
-                        .items_center()
-                        .gap(px(space::SM))
-                        .text_size(ty::BODY)
-                        .child(icon(icons::DOCUMENT).size(px(14.0)).flex_none().text_color(t.text_faint))
-                        .child(div().flex_1().min_w_0().truncate().text_color(t.text).child(f.path.clone()))
-                        .child(div().text_size(ty::META).text_color(t.diff_add).child(format!("+{}", f.additions)))
-                        .child(div().text_size(ty::META).text_color(t.diff_del).child(format!("−{}", f.deletions))),
-                )
-                .children(preview.into_iter().map(|l| {
-                    let (bg, sign) = if l.kind == LineKind::Added {
-                        (t.diff_add.opacity(0.10), "+")
-                    } else {
-                        (t.diff_del.opacity(0.10), "−")
-                    };
-                    div()
-                        .h(px(19.0))
-                        .px(px(space::LG))
-                        .flex()
-                        .gap(px(space::SM))
-                        .bg(bg)
-                        .font_family(t.font_mono.clone())
-                        .text_size(ty::META)
-                        .child(sign)
-                        .child(div().flex_1().truncate().child(l.text.to_string()))
-                }))
-        }));
-        div()
-            .flex()
-            .flex_col()
-            .child(header)
-            .child(meta)
-            .when_some(d.error.clone(), |el, e| el.child(div().mt(px(space::LG)).child(page::error_strip(t, e))))
-            .child(page::section(
-                t,
-                "Description",
-                page::card(t).child(
-                    div()
-                        .px(px(space::LG))
-                        .py(px(space::MD))
-                        .child(crate::markdown::render("pr-body", &blocks, t, window)),
-                ),
-            ))
-            .child(page::section(t, checks_label, checks_card))
-            .child(page::section(t, format!("Files ({})", d.files.len()), files))
-            .into_any_element()
+        self.view.update(cx, |v, cx| v.set_target(target, cx));
+        self.showing = true;
+        cx.notify();
     }
 
     fn count(&self) -> usize {
@@ -348,13 +236,12 @@ impl PullRequestsPage {
 }
 
 impl Render for PullRequestsPage {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::perf_trace::count_render("PullRequestsPage");
         let t = Theme::of(cx).clone();
-        if self.detail.is_some() {
-            let detail = self.render_detail(&t, window, cx);
+        if self.showing {
             return page::page_scroll("pr-page")
-                .child(crate::motion::fade_in("pr-detail-in", page::page_column_max(860.0).child(detail)))
+                .child(crate::motion::fade_in("pr-detail-in", page::page_column_max(860.0).child(self.view.clone())))
                 .into_any_element();
         }
 
@@ -369,6 +256,7 @@ impl Render for PullRequestsPage {
             .on_select(move |this, i, _, cx| {
                 if let Some(p) = projects.get(i) {
                     this.repo = Some(p.clone());
+                    this.showing = false;
                     this.load(cx);
                 }
             })
@@ -432,6 +320,57 @@ impl Render for PullRequestsPage {
                     )
                 }))
                 .into_any_element(),
+            Load::NeedsGh { installed, busy, note } => {
+                let (installed, busy) = (*installed, *busy);
+                let body: SharedString = note.clone().unwrap_or_else(|| {
+                    if installed {
+                        "Sign in to GitHub once so Dove can list, open and merge pull requests.".into()
+                    } else {
+                        "Dove works with pull requests through the GitHub CLI (gh).".into()
+                    }
+                });
+                let primary = if installed {
+                    ctl::button(&t, "pr-gh-login", "Sign in to GitHub", Tone::Filled)
+                        .on_click(cx.listener(|this, _, _, cx| this.sign_in_gh(cx)))
+                        .into_any_element()
+                } else if cfg!(any(windows, target_os = "macos")) {
+                    ctl::button(
+                        &t,
+                        "pr-gh-install",
+                        if busy { "Installing…" } else { "Install GitHub CLI" },
+                        Tone::Filled,
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if !busy {
+                            this.install_gh(cx)
+                        }
+                    }))
+                    .into_any_element()
+                } else {
+                    ctl::button(&t, "pr-gh-docs", "Install guide", Tone::Filled)
+                        .on_click(cx.listener(|_, _, _, cx| cx.open_url("https://cli.github.com")))
+                        .into_any_element()
+                };
+                page::card(&t)
+                    .child(page::error_state(
+                        &t,
+                        if installed { "Sign in to GitHub" } else { "Set up GitHub" },
+                        body,
+                        Some(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(8.0))
+                                .child(primary)
+                                .child(
+                                    ctl::button(&t, "pr-retry", "Try again", Tone::Outlined)
+                                        .on_click(cx.listener(|this, _, _, cx| this.load(cx))),
+                                )
+                                .into_any_element(),
+                        ),
+                    ))
+                    .into_any_element()
+            }
             Load::Failed(e) => page::card(&t)
                 .child(page::error_state(
                     &t,

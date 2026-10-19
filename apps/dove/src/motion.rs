@@ -161,14 +161,16 @@ pub fn pulse_wave(phase: f32) -> f32 {
 
 fn activity_phase(view: EntityId, period: Duration, stride: u64, cx: &mut App) -> ActivityPhase {
     let reduced = cx.reduce_motion();
-    let system_only = cx
-        .try_global::<MotionState>()
-        .is_some_and(|s| s.preference == ReduceMotion::System && s.system && !(s.pause_in_background && !s.active));
-    if reduced && !system_only {
+    // A window in the background (with "pause animations" on) holds every
+    // loop still and schedules nothing. Reduced motion (the OS or the
+    // user's override) calms a loop to a slow uniform breath instead: nothing
+    // travels, but a working indicator never looks frozen.
+    let paused = cx.try_global::<MotionState>().is_some_and(|s| s.pause_in_background && !s.active);
+    if paused {
         return ActivityPhase { phase: 0.0, subtle: false, still: true };
     }
     let subtle = reduced;
-    schedule_pulse(view, if subtle { 2 } else { stride.max(1) }, cx);
+    schedule_pulse(view, if subtle { 3 } else { stride.max(1) }, cx);
     let phase = pulse_phase(if subtle { Duration::from_millis(2400) } else { period }, cx);
     ActivityPhase { phase, subtle, still: false }
 }
@@ -949,11 +951,14 @@ pub fn system_reduces_motion(cx: &App) -> bool {
     cx.try_global::<MotionState>().is_some_and(|s| s.system)
 }
 
-/// Whether decorative loops should run now: motion is not reduced and the
-/// window is active. Status indicators use [`pulse`] instead, which keeps a
-/// subtle cue under system reduced motion.
+/// Whether decorative loops should run now: motion is not reduced, which
+/// already covers "Pause animations in background" while the window is
+/// inactive. With that off they keep playing behind other windows; a
+/// minimized window gets no frames, so it costs nothing there. Status
+/// indicators use [`pulse`] instead, which keeps a subtle cue under system
+/// reduced motion.
 pub fn decorative_motion(cx: &App) -> bool {
-    !cx.reduce_motion() && cx.try_global::<MotionState>().is_none_or(|s| s.active)
+    !cx.reduce_motion()
 }
 
 pub fn set_preference(preference: ReduceMotion, store: &Store, cx: &mut App) {

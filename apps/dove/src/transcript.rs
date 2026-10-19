@@ -91,12 +91,17 @@ pub enum TaskViewEvent {
     ShowChanges,
     /// The thread's first answer arrived; a better title is available.
     Title(String),
+    /// An agent named the thread (an AI title). It replaces the quick title
+    /// above, and a later quick title never replaces it.
+    AiTitle(String),
     /// From the read-only banner: hand the session back to the chat.
     SwitchToChat,
     /// From the read-only banner: show the running terminal.
     ShowTerminal,
     /// Drive the in-app browser the way a person would.
     DriveBrowser(crate::browser::Drive),
+    /// The agent opened this pull request.
+    PullRequest(String),
 }
 
 // ------------------------------------------------------------------ model
@@ -354,6 +359,13 @@ pub enum Row {
         script: String,
         assets: Vec<(String, String)>,
     },
+    /// A pull request the agent opened, as a card that opens it in the dock.
+    PullRequest {
+        url: String,
+        number: u64,
+        /// `owner/repo`.
+        repo: SharedString,
+    },
     /// The end of a turn: message actions and how long it took.
     TurnEnd {
         /// The turn streamed some text (its Copy reads it back from disk).
@@ -378,6 +390,8 @@ pub struct Effects {
     /// A live user message: glide it to the top as the answer streams in.
     pub runway: Option<usize>,
     pub first_answer: bool,
+    /// The agent opened this pull request (its canonical URL).
+    pub pr: Option<String>,
 }
 
 /// A subagent's own event log, keyed by the spawning call's id.
@@ -594,6 +608,8 @@ pub struct Chat {
     /// Every tool call by id: (activity row, index in the activity).
     tools: HashMap<String, (usize, usize)>,
     pub todos: Vec<TodoItem>,
+    /// Pull requests already shown as cards (canonical URLs).
+    prs: Vec<String>,
     pub running_agents: Vec<SharedString>,
     pub status_text: Option<SharedString>,
     pub usage: Usage,
@@ -1030,8 +1046,12 @@ impl Chat {
                 if let Some(&(i, j)) = self.tools.get(&call_id) {
                     let disk = self.offset;
                     let mut agent = false;
+                    let mut opened_pr = None;
                     if let Some(Row::Activity(a)) = self.rows.get_mut(i) {
                         let t = &mut a.tools[j];
+                        if !is_error && opens_pr(&t.name, t.kind, &t.input) {
+                            opened_pr = dove_core::git::github::pr_urls(&output).into_iter().next();
+                        }
                         if t.kind == ToolKind::Agent {
                             agent = true;
                             let title = t.title.clone();
@@ -1050,6 +1070,14 @@ impl Chat {
                         self.bump();
                     }
                     self.touch(i);
+                    if let Some(url) = opened_pr.filter(|u| !self.prs.contains(u))
+                        && let Some((repo, number)) = dove_core::git::github::parse_pr_url(&url)
+                    {
+                        self.close_all();
+                        self.prs.push(url.clone());
+                        self.push(Row::PullRequest { url: url.clone(), number, repo: repo.into() });
+                        fx.pr = Some(url);
+                    }
                 }
             }
             AgentEvent::PermissionRequested(req) => {
@@ -1526,6 +1554,11 @@ const TAIL_ENTRIES: usize = 64;
 
 pub struct TaskView {
     engine: Arc<Engine>,
+    /// An AI title run is in flight.
+    ai_titling: bool,
+    /// Whether this view names its thread with an AI title (side chats,
+    /// whose titles the shell does not keep, do not).
+    ai_titles: bool,
     pub task: Task,
     pub project: Project,
     live: Option<LiveSession>,
@@ -1785,6 +1818,8 @@ impl TaskView {
             .and_then(|(_, pid)| engine.store.personas().ok()?.into_iter().find(|p| p.id == pid));
         Self {
             engine,
+            ai_titling: false,
+            ai_titles: true,
             status: task.status,
             task,
             project,
@@ -2094,10 +2129,14 @@ impl TaskView {
             if fx.runway.is_some() {
                 runway = fx.runway;
             }
-            if fx.first_answer
-                && let Some(t) = self.auto_title()
-            {
-                cx.emit(TaskViewEvent::Title(t));
+            if let Some(url) = fx.pr {
+                cx.emit(TaskViewEvent::PullRequest(url));
+            }
+            if fx.first_answer {
+                if let Some(t) = self.auto_title() {
+                    cx.emit(TaskViewEvent::Title(t));
+                }
+                self.request_ai_title(cx);
             }
         }
         if turn_over {
@@ -2157,6 +2196,51 @@ impl TaskView {
         let context = self.chat.context;
         let limits = self.chat.rate_limits.clone();
         self.composer.update(cx, |c, cx| c.set_meters(context, limits, cx));
+    }
+
+    /// Ask an agent to name the thread once its first answer lands, as the
+    /// harnesses' own apps do. Skipped when AI titles are off (General ›
+    /// Threads), the user renamed the thread, it already has an AI title, or
+    /// one is being made. The quick title stays if the run fails.
+    fn request_ai_title(&mut self, cx: &mut Context<Self>) {
+        let id = self.task.id;
+        let store = &self.engine.store;
+        if self.ai_titling
+            || !self.ai_titles
+            || !store.flag("ai_titles", true)
+            || store.setting(&format!("renamed.{id}")).is_some()
+            || store.setting(&format!("title_ai.{id}")).is_some()
+        {
+            return;
+        }
+        let prompt = match self.chat.first_prompt.clone() {
+            Some(p) => p,
+            None => match self.chat.user_messages().into_iter().next() {
+                Some((_, p)) => p,
+                None => return,
+            },
+        };
+        let prompt = dove_core::strip_persona(&prompt).trim().to_string();
+        if prompt.is_empty() {
+            return;
+        }
+        self.ai_titling = true;
+        let rx = self.engine.generate_title(self.task.harness, prompt);
+        cx.spawn(async move |this, cx| {
+            let title = rx.await.ok().flatten();
+            let _ = this.update(cx, |v, cx| {
+                v.ai_titling = false;
+                if let Some(t) = title.filter(|t| *t != v.task.title) {
+                    cx.emit(TaskViewEvent::AiTitle(t));
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Keep the quick title only (no AI title run).
+    pub fn without_ai_titles(&mut self) {
+        self.ai_titles = false;
     }
 
     /// A short title from the first prompt, used until the user renames.
@@ -2440,7 +2524,13 @@ impl TaskView {
     }
 
     fn edit_message(&mut self, text: SharedString, window: &mut Window, cx: &mut Context<Self>) {
-        composer::set_text(&self.composer, &text, window, cx);
+        // Its files go back on the composer as attachments, not as paths.
+        let (body, files) = composer::split_attachments(&text);
+        composer::set_text(&self.composer, &body, window, cx);
+        let files: Vec<std::path::PathBuf> = files.into_iter().filter(|p| p.exists()).collect();
+        if !files.is_empty() {
+            composer::attach_paths(&self.composer, files, cx);
+        }
         composer::focus(&self.composer, window, cx);
     }
 
@@ -2733,6 +2823,9 @@ impl TaskView {
             Row::Visual { title, .. } => {
                 div().text_size(ty::META).text_color(t.text_muted).child(title.clone()).into_any_element()
             }
+            Row::PullRequest { url, .. } => {
+                div().text_size(ty::META).text_color(t.text_muted).child(url.clone()).into_any_element()
+            }
             Row::TurnEnd { has_text, prompt, elapsed, failed } => {
                 self.render_turn_end(i, *has_text, prompt.clone(), *elapsed, *failed, weak, t)
             }
@@ -2824,6 +2917,10 @@ impl TaskView {
             )
         };
         let sent = self.mirror.is_some() && self.chat.rows[..i].iter().all(|r| !matches!(r, Row::User { .. }));
+        // The files a message carried show as Zeron does: image thumbnails
+        // and file pills above the bubble; the bubble keeps only the words.
+        let (body, files) = composer::split_attachments(text);
+        let strip = (!files.is_empty()).then(|| sent_attachments(i, &files, t));
         div()
             .group("user-msg")
             .w_full()
@@ -2842,20 +2939,23 @@ impl TaskView {
                         .child("Sent to this subagent"),
                 )
             })
-            .child(
-                div()
-                    .max_w(px((crate::design::conversation_width() * 0.78).round()))
-                    .px(px(14.0))
-                    .py(px(9.0))
-                    .rounded(px(Theme::BUBBLE_RADIUS))
-                    .text_size(ty::MD)
-                    .line_height(ty::lh::MD)
-                    .bg(t.wash(0.09))
-                    .border_1()
-                    .border_color(if self.flash == Some(i) { t.accent.opacity(0.7) } else { t.wash(0.08) })
-                    .text_color(t.text)
-                    .child(text.clone()),
-            )
+            .children(strip)
+            .when(!body.is_empty(), |d| {
+                d.child(
+                    div()
+                        .max_w(px((crate::design::conversation_width() * 0.78).round()))
+                        .px(px(14.0))
+                        .py(px(9.0))
+                        .rounded(px(Theme::BUBBLE_RADIUS))
+                        .text_size(ty::MD)
+                        .line_height(ty::lh::MD)
+                        .bg(t.wash(0.09))
+                        .border_1()
+                        .border_color(if self.flash == Some(i) { t.accent.opacity(0.7) } else { t.wash(0.08) })
+                        .text_color(t.text)
+                        .child(body),
+                )
+            })
             .child(
                 div()
                     .flex()
@@ -3112,6 +3212,112 @@ impl TaskView {
     /// quiet line (icon tile, "Agent", the task, the model) whose lifecycle
     /// shows only in its own language: the glyph spinner while it runs, the
     /// danger tint when it failed. No live text rewriting the header.
+    /// The card for a pull request the agent opened: state, title, size and
+    /// checks, fetched once and kept fresh for a minute. A click opens it in
+    /// the dock; the corner tile opens it on GitHub.
+    fn render_pr_card(&mut self, i: usize, cx: &mut Context<Self>) -> AnyElement {
+        use crate::tool_calls as tc;
+        let Row::PullRequest { url, number, repo } = &self.chat.rows[i] else { return div().into_any_element() };
+        let (url, number, repo) = (url.clone(), *number, repo.clone());
+        let summary = crate::pr_view::summary_for(&url, cx);
+        let t = Theme::of(cx).clone();
+        let (status, color) = match &summary {
+            Some(d) => crate::pr_view::status_style(d, &t),
+            None => ("", t.text_muted),
+        };
+        let title: SharedString =
+            summary.as_ref().map(|d| d.title.clone()).unwrap_or_else(|| format!("Pull request #{number}")).into();
+        let checks = summary.as_ref().map(|d| d.checks_summary()).unwrap_or("none");
+        let (open_url, web_url) = (url.clone(), url.clone());
+        let card = div()
+            .id(SharedString::from(format!("pr-card-{i}")))
+            .w_full()
+            .min_h(px(52.0))
+            .px(px(10.0))
+            .py(px(8.0))
+            .flex()
+            .items_center()
+            .gap(px(10.0))
+            .rounded(px(radius::RADIUS))
+            .border_1()
+            .border_color(crate::theme::ink(0.07))
+            .bg(crate::theme::ink(0.03))
+            .cursor_pointer()
+            .hover(|s| s.bg(crate::theme::ink(0.05)))
+            .tooltip(ui::tip("Open the pull request"))
+            .on_click(move |_, window, cx| {
+                window.dispatch_action(Box::new(crate::actions::OpenPullRequest { url: open_url.clone() }), cx);
+            })
+            .child(
+                div()
+                    .size(px(28.0))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(radius::RADIUS))
+                    .bg(color.opacity(0.12))
+                    .child(icon(icons::PULL_REQUEST).size(px(15.0)).text_color(color)),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.0))
+                    .child(
+                        div()
+                            .truncate()
+                            .text_size(px(tc::LABEL_SIZE))
+                            .line_height(px(tc::LINE_HEIGHT))
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .text_color(t.text)
+                            .child(title),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(8.0))
+                            .text_size(ty::META)
+                            .text_color(t.text_faint)
+                            .when(!status.is_empty(), |d| d.child(div().text_color(color).child(status)))
+                            .child(format!("{repo} #{number}"))
+                            .when_some(summary.as_ref(), |d, s| {
+                                d.child(div().text_color(t.diff_add).child(format!("+{}", s.additions)))
+                                    .child(div().text_color(t.diff_del).child(format!("−{}", s.deletions)))
+                            })
+                            .when(checks != "none", |d| {
+                                let (label, c) = match checks {
+                                    "passing" => ("checks pass", t.success),
+                                    "failing" => ("checks failing", t.danger),
+                                    _ => ("checks running", t.warning),
+                                };
+                                d.child(div().flex().items_center().gap(px(4.0)).child(ui::dot(c, 6.0)).child(label))
+                            }),
+                    ),
+            )
+            .child(
+                div()
+                    .id(SharedString::from(format!("pr-card-web-{i}")))
+                    .size(px(22.0))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(radius::RADIUS))
+                    .hover(|s| s.bg(crate::theme::ink(0.08)))
+                    .tooltip(ui::tip("Open on GitHub"))
+                    .on_click(move |_, _, cx| {
+                        cx.stop_propagation();
+                        cx.open_url(&web_url);
+                    })
+                    .child(icon(icons::ARROW_UP_RIGHT).size(px(12.0)).text_color(t.text_muted)),
+            );
+        self.stream_frame(div().py(px(4.0)).child(card)).into_any_element()
+    }
+
     fn render_subagent_chip(&self, i: usize, j: usize, tool: &Tool, t: &Theme) -> AnyElement {
         use crate::tool_calls as tc;
         let input = tool.input.as_ref();
@@ -4300,6 +4506,81 @@ fn copy_button(id: SharedString, text: String, t: &Theme) -> impl IntoElement {
         .on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(text.clone())))
 }
 
+/// A sent message's files, right-aligned above its bubble (Zeron's strip):
+/// images as 112 × 80 thumbnails, other files as pills with their type icon.
+/// A click opens the file in its own app.
+fn sent_attachments(row: usize, files: &[std::path::PathBuf], t: &Theme) -> AnyElement {
+    const THUMB_W: f32 = 112.0;
+    const THUMB_H: f32 = 80.0;
+    div()
+        .max_w(px((crate::design::conversation_width() * 0.78).round()))
+        .flex()
+        .flex_wrap()
+        .justify_end()
+        .items_start()
+        .gap(px(8.0))
+        .px(px(4.0))
+        .pt(px(4.0))
+        .pb(px(4.0))
+        .children(files.iter().enumerate().map(|(k, path)| {
+            let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            let open = path.clone();
+            let base = div()
+                .id(SharedString::from(format!("sent-att-{row}-{k}")))
+                .flex_none()
+                .cursor_pointer()
+                .tooltip(ui::tip(path.display().to_string()))
+                .on_click(move |_, _, cx| cx.open_with_system(&open));
+            if composer::is_image(path) && path.exists() {
+                base.w(px(THUMB_W))
+                    .h(px(THUMB_H))
+                    .rounded(px(8.0))
+                    .overflow_hidden()
+                    .border_1()
+                    .border_color(t.wash(0.11))
+                    .bg(t.wash(0.035))
+                    .child(
+                        gpui::StyledImage::object_fit(gpui::img(path.clone()), gpui::ObjectFit::Cover)
+                            .w(px(THUMB_W - 2.0))
+                            .h(px(THUMB_H - 2.0))
+                            .rounded(px(7.0)),
+                    )
+                    .into_any_element()
+            } else {
+                base.h(px(28.0))
+                    .max_w(px(260.0))
+                    .min_w_0()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.0))
+                    .rounded(px(7.0))
+                    .bg(t.wash(0.06))
+                    .pl(px(2.0))
+                    .pr(px(10.0))
+                    .text_size(ty::BODY)
+                    .text_color(t.text.opacity(0.85))
+                    .hover(|s| s.bg(t.wash(0.09)))
+                    .child(
+                        div()
+                            .size(px(24.0))
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(5.0))
+                            .bg(t.wash(0.05))
+                            .child(
+                                crate::file_icons::icon(crate::file_icons::FileIconIdentity::file(&name), t.appearance)
+                                    .size(px(16.0)),
+                            ),
+                    )
+                    .child(div().min_w_0().truncate().child(name))
+                    .into_any_element()
+            }
+        }))
+        .into_any_element()
+}
+
 impl Render for TaskView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::perf_trace::count_render("TaskView");
@@ -4341,6 +4622,9 @@ impl Render for TaskView {
                 }
                 if matches!(v.chat.rows[i], Row::Visual { .. }) {
                     return view.update(cx, |v, cx| v.render_visual(i, cx));
+                }
+                if matches!(v.chat.rows[i], Row::PullRequest { .. }) {
+                    return view.update(cx, |v, cx| v.render_pr_card(i, cx));
                 }
                 v.render_row(i, &renderer, window, cx)
             })
@@ -4568,6 +4852,24 @@ fn mcp_parts(name: &str) -> (Option<String>, String) {
         return (Some(server.to_string()), tool.to_string());
     }
     (None, n.to_string())
+}
+
+/// Whether a tool call opens a pull request: `gh pr create` in a shell, or a
+/// GitHub MCP tool that creates one.
+fn opens_pr(name: &str, kind: ToolKind, input: &serde_json::Value) -> bool {
+    let name = name.to_ascii_lowercase();
+    if name.contains("create_pull_request") || name.contains("pull_request_create") || name.contains("create_pr") {
+        return true;
+    }
+    if kind != ToolKind::Execute {
+        return false;
+    }
+    let command = match input.get("command").or_else(|| input.get("cmd")) {
+        Some(serde_json::Value::String(s)) => s.clone(),
+        Some(serde_json::Value::Array(parts)) => parts.iter().filter_map(|p| p.as_str()).collect::<Vec<_>>().join(" "),
+        _ => return false,
+    };
+    command.split_whitespace().collect::<Vec<_>>().windows(3).any(|w| w == ["gh", "pr", "create"])
 }
 
 fn str_field(v: &serde_json::Value, keys: &[&str]) -> Option<String> {
@@ -4999,8 +5301,7 @@ mod tests {
 
     #[test]
     fn hidden_stream_parses_the_tail_once_when_flushed() {
-        let mut chat = Chat::default();
-        chat.defer_live = true;
+        let mut chat = Chat { defer_live: true, ..Default::default() };
         chat.apply(text("Hello "), true);
         chat.apply(text("**world**"), true);
         let Row::Live { blocks } = &chat.rows[0] else { panic!("expected a live row") };

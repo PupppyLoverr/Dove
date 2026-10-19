@@ -29,6 +29,7 @@ use crate::design::{radius, ty};
 use crate::files_panel::{FilesEvent, FilesPanel};
 use crate::history::{GitHistory, HistoryEvent};
 use crate::kit;
+use crate::pr_view::{PrTarget, PrView, PrViewEvent};
 use crate::side_chat::{SideChat, SideChatEvent};
 use crate::surface_chrome;
 use crate::terminal::TerminalView;
@@ -52,6 +53,8 @@ pub enum Surface {
     /// One subagent's own chat, read-only.
     Subagent(u64),
     Chats,
+    /// The thread's pull request.
+    PullRequest,
 }
 
 /// The kinds the `+` menu and the empty state offer.
@@ -66,6 +69,8 @@ pub enum Tab {
     SideChat,
     Subagents,
     Chats,
+    /// Offered only while the thread has a pull request.
+    PullRequest,
 }
 
 impl Tab {
@@ -83,7 +88,7 @@ impl Tab {
 
     /// A tab by its short name (`DOVE_PANEL`).
     pub fn from_id(id: &str) -> Option<Tab> {
-        Tab::ALL.into_iter().find(|t| t.label().to_ascii_lowercase().replace(' ', "-") == id)
+        Tab::ALL.into_iter().chain([Tab::PullRequest]).find(|t| t.label().to_ascii_lowercase().replace(' ', "-") == id)
     }
 
     pub fn label(self) -> &'static str {
@@ -97,6 +102,7 @@ impl Tab {
             Tab::SideChat => "Side chat",
             Tab::Subagents => "Subagents",
             Tab::Chats => "Chats",
+            Tab::PullRequest => "Pull request",
         }
     }
 
@@ -112,6 +118,7 @@ impl Tab {
             Tab::Subagents => "Work handed off by this thread",
             Tab::Chats => "Side conversations in this thread",
             Tab::SideChat => "Ask something without derailing",
+            Tab::PullRequest => "This thread's pull request, explained",
         }
     }
 
@@ -126,6 +133,7 @@ impl Tab {
             Tab::SideChat => icons::CHAT_ROUND_LINE,
             Tab::Subagents => icons::FORK,
             Tab::Chats => icons::BOT,
+            Tab::PullRequest => icons::PULL_REQUEST,
         }
     }
 }
@@ -142,12 +150,24 @@ impl Surface {
             Surface::SideChat(_) => Tab::SideChat,
             Surface::Subagents | Surface::Subagent(_) => Tab::Subagents,
             Surface::Chats => Tab::Chats,
+            Surface::PullRequest => Tab::PullRequest,
         }
     }
 }
 
 pub enum SidePanelEvent {
     SendToAgent(String),
+    /// Put this prompt in the thread's composer for the user to send.
+    StageForAgent(String),
+    /// Start a thread on a pull request's branch.
+    CheckoutPr {
+        project: Project,
+        number: u64,
+        title: String,
+    },
+    /// The thread's pull request loaded or changed state (titlebar and
+    /// info card mirror it).
+    PrChanged,
     /// The panel's own close button.
     Close,
     /// Expand / collapse toggled.
@@ -216,6 +236,10 @@ pub struct SidePanel {
     todos: Vec<TodoItem>,
     subagents: Vec<Subagent>,
     side_chats: Vec<SideChatInfo>,
+    /// One view for whichever thread is shown, like Changes.
+    pr_view: Entity<PrView>,
+    /// Each thread's pull request.
+    prs: HashMap<TaskId, PrTarget>,
     /// The panel has the conversation's width.
     pub expanded: bool,
     plus_open: bool,
@@ -237,7 +261,21 @@ impl SidePanel {
         let changes = cx.new(|cx| Changes::new(window, cx));
         let files = cx.new(|cx| FilesPanel::new(window, cx));
         let git_history = cx.new(|cx| GitHistory::new(window, cx));
+        let pr_view = cx.new(|cx| PrView::new(engine.clone(), true, window, cx));
         let mut subs = vec![
+            cx.subscribe(&pr_view, |_, _, ev: &PrViewEvent, cx| match ev {
+                PrViewEvent::HandOff(text) => cx.emit(SidePanelEvent::StageForAgent(text.clone())),
+                PrViewEvent::Checkout { project, number, title } => cx.emit(SidePanelEvent::CheckoutPr {
+                    project: project.clone(),
+                    number: *number,
+                    title: title.clone(),
+                }),
+                PrViewEvent::Loaded => {
+                    cx.emit(SidePanelEvent::PrChanged);
+                    cx.notify();
+                }
+                PrViewEvent::Back => {}
+            }),
             cx.subscribe(&changes, |_, _, ev: &ChangesEvent, cx| match ev {
                 ChangesEvent::SendToAgent(text) => cx.emit(SidePanelEvent::SendToAgent(text.clone())),
             }),
@@ -264,6 +302,8 @@ impl SidePanel {
             todos: Vec::new(),
             subagents: Vec::new(),
             side_chats: Vec::new(),
+            pr_view,
+            prs: HashMap::new(),
             expanded: false,
             plus_open: false,
             plus_hi: None,
@@ -306,7 +346,91 @@ impl SidePanel {
         self.changes.update(cx, |c, cx| c.set_target(dir.clone(), base, title, window, cx));
         self.files.update(cx, |f, cx| f.set_root(dir.clone(), cx));
         self.git_history.update(cx, |h, cx| h.set_root(dir, cx));
+        if let Some(target) = thread.and_then(|id| self.prs.get(&id)).cloned() {
+            let harness = self.parent.as_ref().map(|(task, _)| task.harness);
+            self.pr_view.update(cx, |v, cx| {
+                if let Some(h) = harness {
+                    v.set_harness(h);
+                }
+                v.set_target(target, cx)
+            });
+        }
         cx.notify();
+    }
+
+    /// Link `thread` to its pull request. The first time a thread gets one,
+    /// a Pull request tab joins its strip (without taking focus).
+    pub fn set_pr(&mut self, thread: TaskId, target: Option<PrTarget>, cx: &mut Context<Self>) {
+        let same = match (&target, self.prs.get(&thread)) {
+            (Some(a), Some(b)) => a.repo == b.repo && a.number == b.number,
+            (None, None) => true,
+            _ => false,
+        };
+        if same {
+            return;
+        }
+        let panel = self.panels.entry(thread).or_default();
+        match target {
+            Some(target) => {
+                if !panel.tabs.contains(&Surface::PullRequest) {
+                    panel.tabs.push(Surface::PullRequest);
+                }
+                if self.thread == Some(thread) {
+                    let t = target.clone();
+                    let harness = self.parent.as_ref().map(|(task, _)| task.harness);
+                    self.pr_view.update(cx, |v, cx| {
+                        if let Some(h) = harness {
+                            v.set_harness(h);
+                        }
+                        v.set_target(t, cx)
+                    });
+                }
+                self.prs.insert(thread, target);
+            }
+            None => {
+                panel.tabs.retain(|s| *s != Surface::PullRequest);
+                if panel.active == Some(Surface::PullRequest) {
+                    panel.active = panel.tabs.last().copied();
+                }
+                self.prs.remove(&thread);
+            }
+        }
+        cx.emit(SidePanelEvent::PrChanged);
+        cx.notify();
+    }
+
+    /// The shown thread's pull request and, once loaded, its details.
+    pub fn pr(&self, cx: &gpui::App) -> Option<(PrTarget, Option<dove_core::git::github::PrDetail>)> {
+        let target = self.prs.get(&self.thread?)?.clone();
+        let view = self.pr_view.read(cx);
+        let detail = view.target().filter(|t| t.number == target.number).and_then(|_| view.detail().cloned());
+        Some((target, detail))
+    }
+
+    /// Show `url` in the Pull request tab (a link clicked in chat). It
+    /// becomes the thread's PR when the thread has none yet.
+    pub fn show_pr(&mut self, target: PrTarget, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(thread) = self.thread
+            && !self.prs.contains_key(&thread)
+        {
+            self.set_pr(thread, Some(target.clone()), cx);
+        }
+        self.pr_view.update(cx, |v, cx| v.set_target(target, cx));
+        if let Some(p) = self.panel()
+            && !p.tabs.contains(&Surface::PullRequest)
+        {
+            p.tabs.push(Surface::PullRequest);
+        }
+        self.activate(Surface::PullRequest, window, cx);
+    }
+
+    /// The kinds the `+` menu offers for the shown thread.
+    fn offered(&self) -> Vec<Tab> {
+        let mut out = Tab::ALL.to_vec();
+        if self.thread.is_some_and(|id| self.prs.contains_key(&id)) {
+            out.insert(2, Tab::PullRequest);
+        }
+        out
     }
 
     pub fn set_parent(&mut self, task: Task, project: Project) {
@@ -392,6 +516,12 @@ impl SidePanel {
             }
             Tab::Subagents => Surface::Subagents,
             Tab::Chats => Surface::Chats,
+            Tab::PullRequest => {
+                if !self.thread.is_some_and(|id| self.prs.contains_key(&id)) {
+                    return;
+                }
+                Surface::PullRequest
+            }
             Tab::SideChat => {
                 let Some((task, project)) = self.parent.clone() else { return };
                 let id = self.next_id;
@@ -791,6 +921,10 @@ impl SidePanel {
                 .into(),
             Surface::Subagents if !self.subagents.is_empty() => format!("Subagents · {}", self.subagents.len()).into(),
             Surface::Chats if !self.side_chats.is_empty() => format!("Chats · {}", self.side_chats.len()).into(),
+            Surface::PullRequest => match self.thread.and_then(|id| self.prs.get(&id)) {
+                Some(t) => format!("PR #{}", t.number).into(),
+                None => "Pull request".into(),
+            },
             Surface::Changes => {
                 let n = self.changes.read(cx).summary().0;
                 if n > 0 { format!("Diffs · {n}").into() } else { "Diffs".into() }
@@ -977,7 +1111,8 @@ impl SidePanel {
     /// Enter or Space opens, Esc closes.
     fn render_surface_grid(&self, t: &Theme, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
         const COLS: usize = 2;
-        let count = Tab::ALL.len();
+        let offered = self.offered();
+        let count = offered.len();
         let hi = self.plus_hi;
         let mut grid = div()
             .id("surface-grid")
@@ -1004,7 +1139,7 @@ impl SidePanel {
                     ("home", _) => this.plus_hi = Some(0),
                     ("end", _) => this.plus_hi = Some(count - 1),
                     ("enter" | "space", _) => {
-                        if let Some(k) = this.plus_hi.and_then(|i| Tab::ALL.get(i).copied()) {
+                        if let Some(k) = this.plus_hi.and_then(|i| this.offered().get(i).copied()) {
                             this.pick(k, window, cx);
                         }
                     }
@@ -1014,7 +1149,7 @@ impl SidePanel {
                 cx.stop_propagation();
                 cx.notify();
             }));
-        for (i, k) in Tab::ALL.into_iter().enumerate() {
+        for (i, k) in offered.into_iter().enumerate() {
             let on = hi == Some(i);
             grid = grid.child(
                 div()
@@ -1111,6 +1246,7 @@ impl SidePanel {
                 )
                 .on_click(cx.listener(move |this, _, window, cx| this.pick(k, window, cx)))
         };
+        let has_pr = self.thread.is_some_and(|id| self.prs.contains_key(&id));
         let mut col = div().w_full().max_w(px(300.0)).flex().flex_col().gap(px(18.0));
         for (title, tabs) in GROUPS {
             col = col.child(
@@ -1126,7 +1262,12 @@ impl SidePanel {
                             .text_color(t.text_faint)
                             .child(title),
                     )
-                    .children(tabs.iter().map(|k| row(*k, cx))),
+                    .children(
+                        tabs.iter()
+                            .copied()
+                            .chain((title == "Review" && has_pr).then_some(Tab::PullRequest))
+                            .map(|k| row(k, cx)),
+                    ),
             );
         }
         // Centered in the pane when it fits, scrolling from the top when not.
@@ -1575,6 +1716,12 @@ impl Render for SidePanel {
                 None => self.render_picker(&t, cx),
             },
             Some(Surface::Chats) => self.render_chats(&t, cx),
+            Some(Surface::PullRequest) => div()
+                .id("dock-pr")
+                .size_full()
+                .overflow_y_scroll()
+                .child(div().px(px(14.0)).pt(px(12.0)).pb(px(24.0)).child(self.pr_view.clone()))
+                .into_any_element(),
             Some(Surface::Changes) => self.changes.clone().into_any_element(),
             Some(Surface::Files) => self.files.clone().into_any_element(),
             Some(Surface::History) => self.git_history.clone().into_any_element(),

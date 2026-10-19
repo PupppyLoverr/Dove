@@ -200,8 +200,8 @@ pub fn commit_diff(repo: &Path, sha: &str) -> Result<Vec<FileDiff>> {
     Ok(files)
 }
 
-/// Recent commits for the history panel: newest first, with parents for
-/// a simple lane graph.
+/// Recent commits for the history panel: newest first, with parents and
+/// the commit graph laid out row by row.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HistoryCommit {
     pub sha: String,
@@ -211,8 +211,26 @@ pub struct HistoryCommit {
     pub when: String,
     pub parents: Vec<String>,
     pub refs: Vec<String>,
+    /// HEAD points here (the checked-out commit).
+    pub head: bool,
     /// Graph column, 0 = the leftmost (usually HEAD's lane).
     pub lane: usize,
+    /// This row's slice of the commit graph.
+    pub graph: GraphRow,
+}
+
+/// One row of the commit graph. Lanes are columns; a row is split at the
+/// commit's node: lines in `top` run from the row's top edge down to the
+/// middle, lines in `bottom` from the middle to the bottom edge. A lane in
+/// `joins` bends from its top into the node (a branch merging here); a lane
+/// in `forks` bends from the node down into that lane (a second parent).
+/// Every other lane listed passes straight through.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct GraphRow {
+    pub top: Vec<usize>,
+    pub bottom: Vec<usize>,
+    pub joins: Vec<usize>,
+    pub forks: Vec<usize>,
 }
 
 pub fn history(repo: &Path, query: &str, limit: usize) -> Result<Vec<HistoryCommit>> {
@@ -242,40 +260,82 @@ pub fn history(repo: &Path, query: &str, limit: usize) -> Result<Vec<HistoryComm
             let author = p.next()?.to_string();
             let when = p.next()?.to_string();
             let parents = p.next().unwrap_or("").split_whitespace().map(str::to_string).collect();
-            let refs = p
-                .next()
-                .unwrap_or("")
+            let decorations = p.next().unwrap_or("");
+            let head = decorations.split(", ").any(|s| s == "HEAD" || s.starts_with("HEAD -> "));
+            let refs = decorations
                 .split(", ")
-                .filter(|s| !s.is_empty())
+                .filter(|s| !s.is_empty() && *s != "HEAD")
                 .map(|s| s.trim_start_matches("HEAD -> ").to_string())
                 .collect();
-            Some(HistoryCommit { sha, short, subject, author, when, parents, refs, lane: 0 })
+            Some(HistoryCommit {
+                sha,
+                short,
+                subject,
+                author,
+                when,
+                parents,
+                refs,
+                head,
+                lane: 0,
+                graph: GraphRow::default(),
+            })
         })
         .collect();
     assign_lanes(&mut commits);
     Ok(commits)
 }
 
+/// Lay the commit graph out row by row. Each column remembers the commit it
+/// is waiting for; a commit takes the first column waiting for it (other
+/// columns waiting for it merge into it here), hands its column to its first
+/// parent and opens (or joins) a column for each further parent. Freed
+/// columns are reused, so the graph stays as narrow as the branches that
+/// are actually open.
 fn assign_lanes(commits: &mut [HistoryCommit]) {
-    let mut lanes: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-    let mut next = 0usize;
+    let mut cols: Vec<Option<String>> = Vec::new();
     for c in commits.iter_mut() {
-        let lane = lanes.remove(&c.sha).unwrap_or_else(|| {
-            let l = next;
-            next += 1;
-            l
-        });
-        c.lane = lane;
-        if let Some(first) = c.parents.first() {
-            lanes.entry(first.clone()).or_insert(lane);
+        let waiting: Vec<usize> =
+            cols.iter().enumerate().filter(|(_, w)| w.as_deref() == Some(c.sha.as_str())).map(|(i, _)| i).collect();
+        let lane = match waiting.first() {
+            Some(&i) => i,
+            None => match cols.iter().position(Option::is_none) {
+                Some(i) => i,
+                None => {
+                    cols.push(None);
+                    cols.len() - 1
+                }
+            },
+        };
+        let top: Vec<usize> = cols.iter().enumerate().filter(|(_, w)| w.is_some()).map(|(i, _)| i).collect();
+        let joins: Vec<usize> = waiting.iter().copied().filter(|&i| i != lane).collect();
+        for &i in &joins {
+            cols[i] = None;
         }
+        cols[lane] = c.parents.first().cloned();
+        let mut forks = Vec::new();
         for p in c.parents.iter().skip(1) {
-            lanes.entry(p.clone()).or_insert_with(|| {
-                let l = next;
-                next += 1;
-                l
-            });
+            let j = match cols.iter().position(|w| w.as_deref() == Some(p.as_str())) {
+                Some(j) => j,
+                None => {
+                    let j = match cols.iter().position(Option::is_none) {
+                        Some(j) => j,
+                        None => {
+                            cols.push(None);
+                            cols.len() - 1
+                        }
+                    };
+                    cols[j] = Some(p.clone());
+                    j
+                }
+            };
+            forks.push(j);
         }
+        let bottom: Vec<usize> = cols.iter().enumerate().filter(|(_, w)| w.is_some()).map(|(i, _)| i).collect();
+        while cols.last().is_some_and(Option::is_none) {
+            cols.pop();
+        }
+        c.lane = lane;
+        c.graph = GraphRow { top, bottom, joins, forks };
     }
 }
 
@@ -474,6 +534,59 @@ pub fn discard_file(wt: &Path, base: &str, path: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn commit(sha: &str, parents: &[&str]) -> HistoryCommit {
+        HistoryCommit {
+            sha: sha.into(),
+            short: sha.into(),
+            subject: String::new(),
+            author: String::new(),
+            when: String::new(),
+            parents: parents.iter().map(|p| p.to_string()).collect(),
+            refs: Vec::new(),
+            head: false,
+            lane: 0,
+            graph: GraphRow::default(),
+        }
+    }
+
+    #[test]
+    fn a_straight_history_is_one_lane() {
+        let mut c = vec![commit("c", &["b"]), commit("b", &["a"]), commit("a", &[])];
+        assign_lanes(&mut c);
+        assert!(c.iter().all(|c| c.lane == 0));
+        assert_eq!(c[0].graph.top, Vec::<usize>::new());
+        assert_eq!(c[0].graph.bottom, vec![0]);
+        assert_eq!(c[1].graph.top, vec![0]);
+        assert_eq!(c[2].graph.bottom, Vec::<usize>::new());
+    }
+
+    #[test]
+    fn a_merge_forks_and_rejoins_and_the_lane_is_reused() {
+        // m merges f (side branch) into b; both come from a; then a newer
+        // side branch g also off a must reuse the freed lane 1.
+        let mut c = vec![
+            commit("m", &["b", "f"]),
+            commit("f", &["a"]),
+            commit("b", &["a"]),
+            commit("a", &["z"]),
+            commit("g", &["z"]),
+            commit("z", &[]),
+        ];
+        assign_lanes(&mut c);
+        assert_eq!(c[0].lane, 0);
+        assert_eq!(c[0].graph.forks, vec![1]);
+        assert_eq!(c[0].graph.bottom, vec![0, 1]);
+        assert_eq!(c[1].lane, 1);
+        assert_eq!(c[2].lane, 0);
+        // `a` is waited for by both lanes: lane 1 joins into lane 0.
+        assert_eq!(c[3].lane, 0);
+        assert_eq!(c[3].graph.joins, vec![1]);
+        assert_eq!(c[3].graph.bottom, vec![0]);
+        // `g` opens a lane again, reusing column 1 rather than a new one.
+        assert_eq!(c[4].lane, 1);
+        assert!(c.iter().all(|c| c.lane <= 1));
+    }
 
     fn repo() -> tempfile::TempDir {
         let d = tempfile::tempdir().unwrap();
