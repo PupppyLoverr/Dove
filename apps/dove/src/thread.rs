@@ -23,8 +23,8 @@ use dove_core::store::{Project, Task};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement as _,
-    IntoElement, MouseButton, ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _,
-    Subscription, Window, div, px,
+    IntoElement, MouseButton, ParentElement as _, Render, SharedString, StatefulInteractiveElement as _,
+    StyleRefinement, Styled as _, Subscription, Window, div, px,
 };
 
 use crate::assets::{icon, icons};
@@ -112,6 +112,7 @@ impl ThreadView {
 
     pub fn new(engine: Arc<Engine>, chat: Entity<TaskView>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let voice = cx.new(|cx| Dictation::new(engine.clone(), cx));
+        chat.update(cx, |c, _| c.dock_outside = true);
         let mut subs = vec![cx.subscribe_in(&chat, window, |this, _, ev: &TaskViewEvent, window, cx| {
             let kind = match ev {
                 TaskViewEvent::Status(s) => {
@@ -761,7 +762,18 @@ impl Render for ThreadView {
         let body: AnyElement = match self.view {
             // The switch lives in the title bar, so the transcript gets the
             // whole card.
-            ViewMode::Chat => div().size_full().child(self.chat.clone()).into_any_element(),
+            // The transcript is cached; its composer dock is drawn here,
+            // over its bottom edge, so a transcript tick leaves the
+            // composer's last frame in place.
+            ViewMode::Chat => {
+                let dock = self.chat.update(cx, |c, cx| c.render_dock(window, cx));
+                div()
+                    .relative()
+                    .size_full()
+                    .child(self.chat.clone().cached(StyleRefinement::default().size_full()))
+                    .children(dock)
+                    .into_any_element()
+            }
             ViewMode::Terminal => self.render_terminal(&t, cx),
         };
         let note = self.note.clone().or(self.busy.map(SharedString::from));

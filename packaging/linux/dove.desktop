@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Dove
+Comment=Desktop environment for coding agents
+Exec=dove %U
+Icon=dove
+Terminal=false
+Categories=Development;IDE;
+StartupWMClass=dove

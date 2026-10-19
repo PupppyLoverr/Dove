@@ -17,7 +17,9 @@
 
 pub mod picker;
 
+use std::cell::Cell;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -28,7 +30,7 @@ use dove_core::{Engine, RunSettings};
 use gpui::StyledImage as _;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    Anchor, AnyElement, App, AppContext as _, ClipboardEntry, Context, Entity, EventEmitter, ExternalPaths,
+    Anchor, AnyElement, App, AppContext as _, ClipboardEntry, Context, Entity, EntityId, EventEmitter, ExternalPaths,
     FocusHandle, Focusable, InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, ParentElement as _,
     Render, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window, anchored, deferred, div,
     img, point, px, relative,
@@ -215,6 +217,9 @@ pub struct Composer {
     /// Bumped when the pointer enters a meter, so a leave-timer cannot
     /// close a card the pointer has since re-entered.
     meter_gen: u64,
+    /// Set when the host embeds this composer as a cached view: the height
+    /// the host lays it out at, and the host to repaint when it changes.
+    cache_slot: Option<(Rc<Cell<f32>>, EntityId)>,
     _subs: Vec<Subscription>,
 }
 
@@ -318,8 +323,15 @@ impl Composer {
             dock_hot: false,
             meter: None,
             meter_gen: 0,
+            cache_slot: None,
             _subs: subs,
         }
+    }
+
+    /// Draw for a host that caches this view at `height` (see
+    /// [`Self::render`]); `host` re-renders when the height must change.
+    pub fn set_cache_slot(&mut self, height: Rc<Cell<f32>>, host: EntityId) {
+        self.cache_slot = Some((height, host));
     }
 
     /// Match the new-thread bar to Settings › Appearance. No-op unless the
@@ -2383,6 +2395,38 @@ impl Composer {
 impl Render for Composer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::perf_trace::count_render("Composer");
+        let body = self.render_body(window, cx);
+        let Some((height, host)) = self.cache_slot.clone() else { return body };
+        // A cached view is laid out at the host's last measured height, so a
+        // grown or shrunk composer keeps its bottom edge (it grows upward,
+        // as it does uncached) and asks the host for its new height.
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .justify_end()
+            .child(
+                div().relative().w_full().flex_none().child(body).child(
+                    gpui::canvas(
+                        move |b, _, cx| {
+                            let h = f32::from(b.size.height);
+                            if (height.get() - h).abs() > 0.5 {
+                                height.set(h);
+                                cx.defer(move |cx| cx.notify(host));
+                            }
+                        },
+                        |_, _, _, _| {},
+                    )
+                    .absolute()
+                    .inset_0(),
+                ),
+            )
+            .into_any_element()
+    }
+}
+
+impl Composer {
+    fn render_body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let theme = Theme::of(cx).clone();
         let t = &theme;
         let has_text = !self.input.read(cx).value().trim().is_empty();

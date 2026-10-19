@@ -78,7 +78,14 @@ impl Shell {
         let composer = div()
             .relative()
             .w_full()
-            .child(self.composer.clone())
+            // Cached at its measured height: a sidebar spinner tick redraws
+            // the shell, not the composer.
+            .child(match self.composer_height.get() {
+                h if h > 0.0 => {
+                    self.composer.clone().cached(gpui::StyleRefinement::default().w_full().h(px(h))).into_any_element()
+                }
+                _ => self.composer.clone().into_any_element(),
+            })
             .child(canvas(move |b, _, _| bounds_cell.set(Some(b)), |_, _, _, _| {}).absolute().inset_0());
 
         let suggestions = div().flex().flex_wrap().justify_center().gap(px(6.0)).children(

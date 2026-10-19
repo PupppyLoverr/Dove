@@ -563,6 +563,10 @@ impl IndicatorSlide {
 // builders read the key's progress, and the shell's render tail requests
 // frames while any fade is mid-flight. Entries unread for a whole frame are
 // pruned, so a reopened menu never inherits a dead entry.
+//
+// A cached view (the sidebar) does not render every frame, so its entries
+// carry it as their owner and are pruned only once that view has rendered
+// again without reading them.
 
 #[derive(Debug, Clone, Copy)]
 struct FadeEntry {
@@ -571,6 +575,7 @@ struct FadeEntry {
     started: Instant,
     spec: MotionSpec,
     seen: u64,
+    owner: Option<EntityId>,
 }
 
 impl FadeEntry {
@@ -587,10 +592,12 @@ impl FadeEntry {
 struct Fades {
     entries: HashMap<String, FadeEntry>,
     frame: u64,
+    /// The frame each owning view last rendered in.
+    rendered: HashMap<EntityId, u64>,
 }
 
 impl Fades {
-    fn set(&mut self, key: &str, on: bool, spec: MotionSpec, reduced: bool, now: Instant) {
+    fn set(&mut self, key: &str, on: bool, spec: MotionSpec, reduced: bool, now: Instant, owner: Option<EntityId>) {
         let target = if on { 1.0 } else { 0.0 };
         if target == 0.0 && !self.entries.contains_key(key) {
             return;
@@ -598,23 +605,32 @@ impl Fades {
         let current = self.entries.get(key).map(|e| e.value(now)).unwrap_or(0.0);
         let origin = if reduced { target } else { current };
         let seen = self.frame;
-        self.entries.insert(key.to_string(), FadeEntry { origin, target, started: now, spec, seen });
+        self.entries.insert(key.to_string(), FadeEntry { origin, target, started: now, spec, seen, owner });
     }
 
     /// A state morph: the first read snaps to `on`, later flips animate.
     fn state(&mut self, key: &str, on: bool, spec: MotionSpec, reduced: bool, now: Instant) -> f32 {
         let target = if on { 1.0 } else { 0.0 };
         let frame = self.frame;
+        let owner = current_owner();
         let Some(entry) = self.entries.get_mut(key) else {
-            self.entries.insert(key.to_string(), FadeEntry { origin: target, target, started: now, spec, seen: frame });
+            self.entries
+                .insert(key.to_string(), FadeEntry { origin: target, target, started: now, spec, seen: frame, owner });
             return target;
         };
         if entry.target != target {
             let current = entry.value(now);
-            *entry =
-                FadeEntry { origin: if reduced { target } else { current }, target, started: now, spec, seen: frame };
+            *entry = FadeEntry {
+                origin: if reduced { target } else { current },
+                target,
+                started: now,
+                spec,
+                seen: frame,
+                owner,
+            };
         }
         entry.seen = frame;
+        entry.owner = owner;
         entry.value(now)
     }
 
@@ -623,6 +639,7 @@ impl Fades {
         match self.entries.get_mut(key) {
             Some(entry) => {
                 entry.seen = frame;
+                entry.owner = current_owner();
                 entry.value(now)
             }
             None => 0.0,
@@ -634,8 +651,12 @@ impl Fades {
         self.frame += 1;
         let frame = self.frame;
         let mut active = false;
+        let rendered = &self.rendered;
         self.entries.retain(|_, entry| {
-            if entry.seen + 1 < frame {
+            // Unread last frame: dead, unless its view simply has not
+            // rendered since (a cached view reuses its last frame).
+            let idle_owner = entry.owner.is_some_and(|o| rendered.get(&o).is_some_and(|&at| at <= entry.seen));
+            if entry.seen + 1 < frame && !idle_owner {
                 return false;
             }
             let settled = entry.settled(now);
@@ -651,6 +672,42 @@ thread_local! {
     static STATES: RefCell<Fades> = RefCell::new(Fades::default());
     /// The view whose frames advance the fades (the shell).
     static CHROME_VIEW: std::cell::Cell<Option<gpui::EntityId>> = const { std::cell::Cell::new(None) };
+    /// The cached view rendering right now, if it draws fades of its own.
+    static OWNER: std::cell::Cell<Option<gpui::EntityId>> = const { std::cell::Cell::new(None) };
+}
+
+fn current_owner() -> Option<EntityId> {
+    OWNER.with(|o| o.get())
+}
+
+/// Render a cached view that draws fades (`hover_fade`, `state_t`): the
+/// keys it reads belong to it, so they outlive the frames it is reused in,
+/// and its hover flips repaint it.
+pub fn owned_render<R>(view: EntityId, render: impl FnOnce() -> R) -> R {
+    for store in [&HOVERS, &STATES] {
+        store.with(|f| {
+            let mut f = f.borrow_mut();
+            let frame = f.frame;
+            f.rendered.insert(view, frame);
+        });
+    }
+    let outer = OWNER.with(|o| o.replace(Some(view)));
+    let out = render();
+    OWNER.with(|o| o.set(outer));
+    out
+}
+
+/// `view` is off screen: drop its fades, as the next frame would for the
+/// shell's own.
+pub fn forget_owner(view: EntityId) {
+    for store in [&HOVERS, &STATES] {
+        store.with(|f| {
+            let mut f = f.borrow_mut();
+            if f.rendered.remove(&view).is_some() {
+                f.entries.retain(|_, e| e.owner != Some(view));
+            }
+        });
+    }
 }
 
 /// Name the view that draws faded chrome (the shell calls this as it
@@ -664,18 +721,19 @@ pub fn hover_t(key: &str) -> f32 {
     HOVERS.with(|f| f.borrow_mut().value(key, Instant::now()))
 }
 
-/// Record a hover flip for `key`.
-pub fn set_hover(key: &str, hovered: bool, reduced: bool) {
-    HOVERS.with(|f| f.borrow_mut().set(key, hovered, HOVER_FADE, reduced, Instant::now()));
-}
-
 /// An `.on_hover` listener that drives the fade for `key`.
 pub fn hover_listener(key: impl Into<SharedString>) -> impl Fn(&bool, &mut Window, &mut App) + 'static {
     let key = key.into();
+    let owner = current_owner();
     move |hovered, window, cx| {
-        set_hover(&key, *hovered, cx.reduce_motion());
-        // Repaint the shell (cached children are reused); its render tail
-        // keeps frames coming while the fade is mid-flight.
+        let reduced = cx.reduce_motion();
+        HOVERS.with(|f| f.borrow_mut().set(&key, *hovered, HOVER_FADE, reduced, Instant::now(), owner));
+        // Repaint the shell (cached children are reused) or the cached
+        // view that drew the row; the shell's render tail keeps frames
+        // coming while the fade is mid-flight.
+        if let Some(id) = owner {
+            cx.notify(id);
+        }
         match CHROME_VIEW.with(|v| v.get()) {
             Some(id) => cx.notify(id),
             None => window.refresh(),
@@ -1045,9 +1103,30 @@ mod tests {
     fn fades_snap_when_reduced_and_prune_unread() {
         let mut f = Fades::default();
         let now = Instant::now();
-        f.set("a", true, HOVER_FADE, true, now);
+        f.set("a", true, HOVER_FADE, true, now, None);
         assert_eq!(f.value("a", now), 1.0);
         f.tick(now, false);
+        f.tick(now, false);
+        f.tick(now, false);
+        assert!(f.entries.is_empty());
+    }
+
+    #[test]
+    fn a_cached_views_fades_live_until_it_renders_without_them() {
+        let view = EntityId::from(1u64 << 32 | 1);
+        let mut f = Fades::default();
+        let now = Instant::now();
+        f.rendered.insert(view, f.frame);
+        f.set("row", true, HOVER_FADE, true, now, Some(view));
+        // Frames go by with the view reused from its cache: the hover holds.
+        for _ in 0..5 {
+            f.tick(now, false);
+        }
+        assert_eq!(f.value("row", now), 1.0);
+        // It renders again and no longer draws the row: the entry goes.
+        f.entries.get_mut("row").unwrap().owner = Some(view);
+        f.tick(now, false);
+        f.rendered.insert(view, f.frame);
         f.tick(now, false);
         f.tick(now, false);
         assert!(f.entries.is_empty());

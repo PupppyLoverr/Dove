@@ -12,8 +12,14 @@ move. Upstream blinks forever, and every blink renders a full frame
 (including backdrop blur), which made an idle window with a focused input
 cost about 2–6% of a CPU core.
 
+Dove change, `src/input/base/element.rs` (and `clamp_scroll_offset` in
+`state.rs`): an input's paint notifies its state only when what it records
+(bounds, layout, caret, selection, scroll) changed. Upstream notifies on every
+paint, which marks the input and every view above it dirty for the next frame,
+so a cached composer could never reuse its last frame.
+
 To update: copy `crates/base` from the new revision, keep this manifest's
-dependency list in step with upstream, and re-apply the `MAX_BLINKS` change.
+dependency list in step with upstream, and re-apply both changes.
 
 ## zeron-proto, zeron-harness, zeron-voice-media
 
