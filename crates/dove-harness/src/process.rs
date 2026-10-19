@@ -190,6 +190,8 @@ mod tests {
 
     /// Bun's layout: `<root>/bin/<tool>.exe` + `<tool>.bunx`, whose path is
     /// relative to `<root>`. The stub works while that target exists.
+    /// Windows only: the targets are backslash paths.
+    #[cfg(windows)]
     #[test]
     fn bun_stub_counts_while_its_target_exists() {
         // `home/.bun/bin/codex.exe` -> `home/node_modules/...`, as Bun lays it out.
@@ -216,6 +218,8 @@ mod tests {
     }
 
     /// A pnpm shim left behind after its package moved is not launchable.
+    /// Windows only: `.cmd` shims name their script with backslashes.
+    #[cfg(windows)]
     #[test]
     fn cmd_shim_with_a_missing_script_is_skipped() {
         let dir = std::env::temp_dir().join(format!("dove-cmdshim-{}", std::process::id()));
