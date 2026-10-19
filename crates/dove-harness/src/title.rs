@@ -41,14 +41,34 @@ pub fn cheapest_model(models: &[dove_proto::Model]) -> Option<String> {
 /// agent at `program`. `None` when the agent has no title path or every
 /// attempt failed.
 pub async fn generate(kind: HarnessKind, program: &Path, prompt: &str, model: Option<String>) -> Option<String> {
-    let id = crate::external::harness_id(kind).filter(|id| zeron_harness::supports_titles(*id))?;
-    let harness = crate::external::driver_for(kind, program)?;
-    let scratch = Scratch::new()?;
+    match try_generate(kind, program, prompt, model).await {
+        Ok(title) => Some(title),
+        Err(e) => {
+            tracing::info!("{} title failed: {e:#}", kind.label());
+            None
+        }
+    }
+}
+
+/// [`generate`], with the last attempt's error when every attempt failed.
+pub async fn try_generate(
+    kind: HarnessKind,
+    program: &Path,
+    prompt: &str,
+    model: Option<String>,
+) -> anyhow::Result<String> {
+    let id = crate::external::harness_id(kind)
+        .filter(|id| zeron_harness::supports_titles(*id))
+        .ok_or_else(|| anyhow::anyhow!("{} has no restricted title run", kind.label()))?;
+    let harness =
+        crate::external::driver_for(kind, program).ok_or_else(|| anyhow::anyhow!("{} has no driver", kind.label()))?;
+    let scratch = Scratch::new().ok_or_else(|| anyhow::anyhow!("could not create a scratch folder"))?;
     let title_prompt = format!(
         "{}\n\nSession request (JSON string):\n{}",
         zeron_harness::TITLE_INSTRUCTIONS,
-        serde_json::to_string(prompt).ok()?
+        serde_json::to_string(prompt)?
     );
+    let mut last_error = anyhow::anyhow!("no attempt ran");
     for attempt in 0..=RETRY_DELAYS_MS.len() {
         let request = RunRequest {
             mcp: None,
@@ -70,17 +90,24 @@ pub async fn generate(kind: HarnessKind, program: &Path, prompt: &str, model: Op
             Ok(Ok(raw)) => {
                 let title = clean_title(&raw);
                 if !title.is_empty() {
-                    return Some(title);
+                    return Ok(title);
                 }
+                last_error = anyhow::anyhow!("the title run returned no text");
             }
-            Ok(Err(e)) => tracing::info!("{} title attempt {} failed: {e}", kind.label(), attempt + 1),
-            Err(_) => tracing::info!("{} title attempt {} timed out", kind.label(), attempt + 1),
+            Ok(Err(e)) => {
+                tracing::info!("{} title attempt {} failed: {e}", kind.label(), attempt + 1);
+                last_error = e;
+            }
+            Err(_) => {
+                tracing::info!("{} title attempt {} timed out", kind.label(), attempt + 1);
+                last_error = anyhow::anyhow!("the title run timed out");
+            }
         }
         if let Some(delay) = RETRY_DELAYS_MS.get(attempt) {
             tokio::time::sleep(Duration::from_millis(*delay)).await;
         }
     }
-    None
+    Err(last_error)
 }
 
 /// First line, stripped of quote and heading dressing, capped at 60 chars.
