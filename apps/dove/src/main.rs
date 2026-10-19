@@ -243,7 +243,25 @@ fn restore_if_minimized(window: &Window) {
 #[cfg(not(windows))]
 fn restore_if_minimized(_: &Window) {}
 
+/// Portable mode: a file named `portable` beside the executable keeps all of
+/// Dove's data in a `data` folder next to it instead of `~/.dove`, so the
+/// folder can live on a USB stick. An explicit `DOVE_HOME` still wins, and
+/// child processes (agents, `--mcp-browser`) inherit the same home.
+fn portable_home() {
+    if std::env::var_os("DOVE_HOME").is_some() {
+        return;
+    }
+    let Some(dir) = std::env::current_exe().ok().and_then(|exe| exe.parent().map(|d| d.to_path_buf())) else {
+        return;
+    };
+    if dir.join("portable").is_file() {
+        // SAFETY: first thing in main, before any thread exists.
+        unsafe { std::env::set_var("DOVE_HOME", dir.join("data")) };
+    }
+}
+
 fn main() {
+    portable_home();
     // `dove --mcp-browser`: the stdio MCP bridge agents spawn to drive the
     // in-app browser. No window, no store.
     if std::env::args_os().nth(1).is_some_and(|a| a == "--mcp-browser") {
