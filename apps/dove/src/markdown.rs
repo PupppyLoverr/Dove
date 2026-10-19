@@ -11,16 +11,16 @@
 //! closed) so text does not flicker between styles mid-stream.
 
 use std::ops::Range;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, ClipboardItem, FontStyle, FontWeight, InteractiveElement as _, InteractiveText, IntoElement,
-    ParentElement as _, SharedString, StatefulInteractiveElement as _, StrikethroughStyle, Styled as _,
+    AnyElement, ClipboardItem, FontStyle, FontWeight, HighlightStyle, Hsla, InteractiveElement as _, InteractiveText,
+    IntoElement, ParentElement as _, SharedString, StatefulInteractiveElement as _, StrikethroughStyle, Styled as _,
     StyledImage as _, StyledText, TextRun, UnderlineStyle, Window, div, px,
 };
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
-use zeron_syntax::{HighlightRequest, HighlightedDocument};
+use zeron_syntax::{HighlightKind, HighlightRequest, HighlightedDocument};
 
 #[path = "markdown_mend.rs"]
 mod mend;
@@ -45,6 +45,41 @@ struct Style {
     link: bool,
 }
 
+/// Render data derived from a parsed block the first time it is drawn and
+/// reused by every frame after (a transcript row re-renders on every spinner
+/// tick). Derived only, so it takes no part in equality or debug output.
+pub struct Memo<T>(OnceLock<T>);
+
+impl<T> Default for Memo<T> {
+    fn default() -> Self {
+        Self(OnceLock::new())
+    }
+}
+
+impl<T: Clone> Clone for Memo<T> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+impl<T> PartialEq for Memo<T> {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl<T> std::fmt::Debug for Memo<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Memo")
+    }
+}
+
+impl<T> Memo<T> {
+    fn get(&self, init: impl FnOnce() -> T) -> &T {
+        self.0.get_or_init(init)
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Inline {
     text: String,
@@ -53,6 +88,8 @@ pub struct Inline {
     images: Vec<(String, String)>,
     /// `$$…$$` met inside the paragraph; rendered as math blocks after it.
     display: Vec<String>,
+    /// The text and link targets as the renderer hands them out each frame.
+    memo: Memo<(SharedString, Arc<[String]>)>,
 }
 
 impl Inline {
@@ -83,6 +120,7 @@ pub enum Block {
         lang: Option<String>,
         text: String,
         highlight: Option<Arc<HighlightedDocument>>,
+        memo: Memo<CodeRender>,
     },
     Mermaid(String),
     Math(String),
@@ -172,7 +210,7 @@ pub fn highlight_block(b: Block) -> Block {
                     .ok()
                     .map(Arc::new)
             });
-            Block::Code { lang, text, highlight }
+            Block::Code { lang, text, highlight, memo: Memo::default() }
         }
         other => other,
     }
@@ -369,7 +407,7 @@ impl Stream {
         Some(match lang.as_deref().map(str::to_ascii_lowercase).as_deref() {
             // A diagram renders once whole; while it streams it is source.
             Some("math" | "latex" | "tex") => Block::Math(text),
-            _ => Block::Code { lang, text, highlight: None },
+            _ => Block::Code { lang, text, highlight: None, memo: Memo::default() },
         })
     }
 
@@ -436,7 +474,7 @@ fn parse_blocks(p: &mut P, until: Option<TagEnd>) -> Vec<Block> {
                 blocks.push(match kind.as_deref() {
                     Some("mermaid") => Block::Mermaid(text),
                     Some("math" | "latex" | "tex") => Block::Math(text),
-                    _ => Block::Code { lang, text, highlight: None },
+                    _ => Block::Code { lang, text, highlight: None, memo: Memo::default() },
                 });
             }
             Event::Start(Tag::List(start)) => {
@@ -645,7 +683,9 @@ pub fn render_block(id: &str, b: &Block, theme: &Theme, window: &Window) -> AnyE
                 .child(inline(id, inl, theme, window))
                 .into_any_element()
         }
-        Block::Code { lang, text, highlight } => code_block(id, lang.as_deref(), text, highlight.as_deref(), theme),
+        Block::Code { lang, text, highlight, memo } => {
+            code_block(id, memo.get(|| CodeRender::new(lang.as_deref(), text, highlight.as_deref())), theme)
+        }
         Block::Mermaid(src) => mermaid_block(id, src, theme),
         Block::Math(src) => math_block(src, theme),
         Block::Check(done) => checkbox(*done, theme),
@@ -717,42 +757,6 @@ pub fn render_block(id: &str, b: &Block, theme: &Theme, window: &Window) -> AnyE
             .into_any_element(),
         Block::Rule => div().h(px(1.0)).bg(theme.border).into_any_element(),
     }
-}
-
-fn code_line(line: &str, spans: Option<&[zeron_syntax::HighlightSpan]>, theme: &Theme, window: &Window) -> AnyElement {
-    if line.is_empty() {
-        return div().child(" ").into_any_element();
-    }
-    let Some(spans) = spans.filter(|s| !s.is_empty()) else {
-        return div().child(line.to_string()).into_any_element();
-    };
-    let mut font = window.text_style().font();
-    font.family = theme.font_mono.clone();
-    let run = |len: usize, color| TextRun {
-        len,
-        font: font.clone(),
-        color,
-        background_color: None,
-        underline: None,
-        strikethrough: None,
-    };
-    let mut runs = Vec::with_capacity(spans.len() * 2 + 1);
-    let mut at = 0usize;
-    for s in spans {
-        let (start, end) = (s.range.start.min(line.len()), s.range.end.min(line.len()));
-        if start < at || start >= end {
-            continue;
-        }
-        if start > at {
-            runs.push(run(start - at, theme.text));
-        }
-        runs.push(run(end - start, theme.syntax(s.kind)));
-        at = end;
-    }
-    if at < line.len() {
-        runs.push(run(line.len() - at, theme.text));
-    }
-    StyledText::new(SharedString::from(line.to_string())).with_runs(runs).into_any_element()
 }
 
 fn mermaid_block(id: &str, src: &str, theme: &Theme) -> AnyElement {
@@ -908,9 +912,126 @@ fn code_block_line() -> f32 {
     (code_block_size() * 18.0 / 12.5).round()
 }
 
-fn code_block(id: &str, lang: Option<&str>, text: &str, hl: Option<&HighlightedDocument>, theme: &Theme) -> AnyElement {
-    let copy = text.to_string();
-    let theme2 = theme.clone();
+/// A fenced code block as it is drawn: one text (lines joined by `\n`)
+/// with its highlight spans in absolute offsets, built once per block.
+#[derive(Clone)]
+pub struct CodeRender {
+    lang: SharedString,
+    /// The block's source, for the copy button.
+    copy: SharedString,
+    text: SharedString,
+    spans: Vec<(Range<usize>, HighlightKind)>,
+}
+
+impl CodeRender {
+    fn new(lang: Option<&str>, text: &str, hl: Option<&HighlightedDocument>) -> Self {
+        let mut joined = String::with_capacity(text.len());
+        let mut spans = Vec::new();
+        for (i, line) in text.lines().enumerate() {
+            if i > 0 {
+                joined.push('\n');
+            }
+            let base = joined.len();
+            joined.push_str(line);
+            let mut at = 0usize;
+            for s in hl.and_then(|h| h.lines.get(i)).map_or(&[][..], Vec::as_slice) {
+                let (start, end) = (s.range.start.min(line.len()), s.range.end.min(line.len()));
+                if start < at || start >= end || !line.is_char_boundary(start) || !line.is_char_boundary(end) {
+                    continue;
+                }
+                spans.push((base + start..base + end, s.kind));
+                at = end;
+            }
+        }
+        Self { lang: lang.unwrap_or("").to_string().into(), copy: text.to_string().into(), text: joined.into(), spans }
+    }
+}
+
+/// `Theme::syntax` for every highlight kind, worked out once per theme (it
+/// converts OKLCH colours, or looks up the imported palette, on each call).
+fn syntax_palette(theme: &Theme) -> std::rc::Rc<[Hsla; SYNTAX_KINDS]> {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    type Key = (bool, Hsla, Hsla, Hsla, usize);
+    thread_local! {
+        static MEMO: RefCell<Option<(Key, Rc<[Hsla; SYNTAX_KINDS]>)>> = const { RefCell::new(None) };
+    }
+    let key: Key = (
+        theme.appearance.is_dark(),
+        theme.text,
+        theme.text_faint,
+        theme.danger,
+        theme.themed.as_ref().map_or(0, |a| Arc::as_ptr(&a.palette) as usize),
+    );
+    MEMO.with(|m| {
+        let mut m = m.borrow_mut();
+        if let Some((k, p)) = m.as_ref()
+            && *k == key
+        {
+            return p.clone();
+        }
+        let p = Rc::new(std::array::from_fn(|i| theme.syntax(SYNTAX_ORDER[i])));
+        *m = Some((key, p.clone()));
+        p
+    })
+}
+
+const SYNTAX_KINDS: usize = 31;
+
+/// Every [`HighlightKind`] in declaration order, so `kind as usize` indexes it.
+const SYNTAX_ORDER: [HighlightKind; SYNTAX_KINDS] = {
+    use HighlightKind as K;
+    [
+        K::Comment,
+        K::Keyword,
+        K::String,
+        K::StringSpecial,
+        K::Escape,
+        K::Number,
+        K::Boolean,
+        K::Type,
+        K::TypeBuiltin,
+        K::Constructor,
+        K::Function,
+        K::FunctionBuiltin,
+        K::Macro,
+        K::Property,
+        K::Constant,
+        K::Variable,
+        K::VariableSpecial,
+        K::Parameter,
+        K::Operator,
+        K::Punctuation,
+        K::Tag,
+        K::Attribute,
+        K::Label,
+        K::MarkupHeading,
+        K::MarkupRaw,
+        K::MarkupLink,
+        K::MarkupReference,
+        K::MarkupEmphasis,
+        K::MarkupStrong,
+        K::Embedded,
+        K::Invalid,
+    ]
+};
+
+fn code_block(id: &str, code: &CodeRender, theme: &Theme) -> AnyElement {
+    let copy = code.copy.clone();
+    // One text for the whole block: its lines are the text's lines, so a
+    // long listing is a single element instead of one per line.
+    let body = (!code.text.is_empty()).then(|| {
+        let text = StyledText::new(code.text.clone());
+        if code.spans.is_empty() {
+            return text;
+        }
+        let palette = syntax_palette(theme);
+        text.with_highlights(
+            code.spans
+                .iter()
+                .map(|(r, k)| (r.clone(), HighlightStyle { color: Some(palette[*k as usize]), ..Default::default() })),
+        )
+    });
     div()
         .rounded(px(radius::RADIUS))
         .border_1()
@@ -926,10 +1047,10 @@ fn code_block(id: &str, lang: Option<&str>, text: &str, hl: Option<&HighlightedD
                 .justify_between()
                 .text_size(ty::META)
                 .text_color(theme.text_faint)
-                .child(lang.unwrap_or("").to_string())
+                .child(code.lang.clone())
                 .child(
                     ui::row_button(format!("{id}-copy"), icons::COPY, "Copy code", theme)
-                        .on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))),
+                        .on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.to_string()))),
                 ),
         )
         .child(
@@ -942,29 +1063,12 @@ fn code_block(id: &str, lang: Option<&str>, text: &str, hl: Option<&HighlightedD
                 .text_size(px(code_block_size()))
                 .line_height(px(code_block_line()))
                 .whitespace_nowrap()
+                .when(!code.spans.is_empty(), |d| d.text_color(theme.text))
                 .flex()
                 .flex_col()
-                .children(text.lines().enumerate().map(move |(i, l)| LineEl {
-                    line: l.to_string(),
-                    spans: hl.and_then(|h| h.lines.get(i)).cloned(),
-                    theme: theme2.clone(),
-                })),
+                .children(body),
         )
         .into_any_element()
-}
-
-/// A code line that resolves the window font at render time.
-#[derive(IntoElement)]
-struct LineEl {
-    line: String,
-    spans: Option<Vec<zeron_syntax::HighlightSpan>>,
-    theme: Theme,
-}
-
-impl gpui::RenderOnce for LineEl {
-    fn render(self, window: &mut Window, _: &mut gpui::App) -> impl IntoElement {
-        code_line(&self.line, self.spans.as_deref(), &self.theme, window)
-    }
 }
 
 fn inline(id: &str, inl: &Inline, theme: &Theme, window: &Window) -> AnyElement {
@@ -996,12 +1100,14 @@ fn inline(id: &str, inl: &Inline, theme: &Theme, window: &Window) -> AnyElement 
             strikethrough: s.strike.then(|| StrikethroughStyle { thickness: px(1.0), color: Some(base.color) }),
         });
     }
-    let styled = StyledText::new(SharedString::from(inl.text.clone())).with_runs(runs);
+    let (text, urls) =
+        inl.memo.get(|| (SharedString::from(inl.text.clone()), inl.links.iter().map(|(_, u)| u.clone()).collect()));
+    let styled = StyledText::new(text.clone()).with_runs(runs);
     if inl.links.is_empty() {
         return styled.into_any_element();
     }
     let ranges: Vec<Range<usize>> = inl.links.iter().map(|(r, _)| r.clone()).collect();
-    let urls: Vec<String> = inl.links.iter().map(|(_, u)| u.clone()).collect();
+    let urls = urls.clone();
     InteractiveText::new(SharedString::from(format!("{id}-links")), styled)
         .on_click(ranges, move |ix, window, cx| {
             let Some(u) = urls.get(ix) else { return };
@@ -1171,7 +1277,9 @@ mod tests {
     fn stream_matches_full_parse_for_every_split() {
         let doc = "# Plan\n\nFirst **bold** para with `code`.\n\n- a\n- b\n\n```rust\nfn main() {\n    println!(\"hi\");\n}\n```\n\n| x | y |\n|---|---|\n| 1 | 2 |\n\n> quote\n\nLast line.";
         let strip = |b: &Block| match b {
-            Block::Code { lang, text, .. } => Block::Code { lang: lang.clone(), text: text.clone(), highlight: None },
+            Block::Code { lang, text, .. } => {
+                Block::Code { lang: lang.clone(), text: text.clone(), highlight: None, memo: Memo::default() }
+            }
             other => other.clone(),
         };
         let full: Vec<Block> = parse(doc).iter().map(strip).collect();
@@ -1227,6 +1335,26 @@ mod tests {
         let Block::Paragraph(p) = &b[0] else { panic!("paragraph") };
         assert_eq!(p.links.len(), 1);
         assert_eq!(p.links[0].1, "dove-file:src/lib.rs:7");
+    }
+
+    #[test]
+    fn syntax_order_matches_the_enum() {
+        for (i, k) in SYNTAX_ORDER.iter().enumerate() {
+            assert_eq!(*k as usize, i, "{k:?}");
+        }
+    }
+
+    #[test]
+    fn code_render_joins_lines_and_shifts_spans() {
+        let blocks = parse_final("```rust\nfn a() {}\r\n\nlet x = 1;\n```");
+        let Block::Code { lang, text, highlight, .. } = &*blocks[0] else { panic!("code") };
+        let code = CodeRender::new(lang.as_deref(), text, highlight.as_deref());
+        assert_eq!(&*code.text, "fn a() {}\n\nlet x = 1;");
+        assert!(!code.spans.is_empty());
+        for (r, _) in &code.spans {
+            assert!(r.end <= code.text.len() && !code.text[r.clone()].contains('\n'));
+        }
+        assert!(code.spans.iter().any(|(r, _)| &code.text[r.clone()] == "let"));
     }
 
     #[test]

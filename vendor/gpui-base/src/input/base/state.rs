@@ -1783,7 +1783,15 @@ impl<M: InputModeKind> InputBaseState<M> {
         offset: Option<Point<Pixels>>,
         cx: &mut Context<Self>,
     ) {
-        let mut offset = offset.unwrap_or(self.scroll_handle.offset());
+        self.clamp_scroll_offset(offset);
+        cx.notify();
+    }
+
+    /// Dove: [`Self::update_scroll_offset`] without the notify, for the
+    /// element's paint; true when the offset moved.
+    pub(super) fn clamp_scroll_offset(&mut self, offset: Option<Point<Pixels>>) -> bool {
+        let before = self.scroll_handle.offset();
+        let mut offset = offset.unwrap_or(before);
         let cursor_width = self
             .last_layout
             .as_ref()
@@ -1808,7 +1816,7 @@ impl<M: InputModeKind> InputBaseState<M> {
         };
         offset.x = offset.x.clamp(safe_x_range.start, safe_x_range.end);
         self.scroll_handle.set_offset(offset);
-        cx.notify();
+        offset != before
     }
 
     /// Scroll to make the given offset visible.

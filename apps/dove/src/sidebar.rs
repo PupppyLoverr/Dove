@@ -2,13 +2,13 @@
 //! search and options, and the device footer. Collapsible to zero (Ctrl+B)
 //! and resizable (208–400 px).
 
-use dove_core::proto::{PermissionDecision, TaskStatus};
+use dove_core::proto::{PermissionDecision, TaskId, TaskStatus};
 use dove_core::store::Task;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    Anchor, AnimationExt as _, AnyElement, Context, Hsla, InteractiveElement as _, IntoElement, MouseButton,
-    MouseDownEvent, ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled as _, anchored, deferred,
-    div, hsla, px,
+    Anchor, AnimationExt as _, AnyElement, App, Context, Entity, Hsla, InteractiveElement as _, IntoElement,
+    MouseButton, MouseDownEvent, ParentElement as _, Render, SharedString, StatefulInteractiveElement as _,
+    Styled as _, Subscription, WeakEntity, Window, anchored, deferred, div, hsla, px,
 };
 use gpui_base::input::Input;
 
@@ -108,7 +108,47 @@ pub fn attention_sort(tasks: &mut [Task]) {
     });
 }
 
+/// The sidebar as its own cached view. The shell re-renders on every frame
+/// of anything below it (a streaming thread, a keystroke in the composer);
+/// the sidebar re-renders only when the shell itself changed, when one of
+/// its own spinners ticks, or when a working thread's step line moves.
+pub struct Sidebar {
+    shell: WeakEntity<Shell>,
+    /// The step lines the last render showed, per working thread.
+    pub(crate) steps: Vec<(TaskId, Option<SharedString>)>,
+    _shell_changed: Subscription,
+}
+
+impl Sidebar {
+    pub fn new(shell: &Entity<Shell>, cx: &mut Context<Self>) -> Self {
+        Self { shell: shell.downgrade(), steps: Vec::new(), _shell_changed: cx.observe(shell, |_, _, cx| cx.notify()) }
+    }
+}
+
+impl Render for Sidebar {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::perf_trace::count_render("Sidebar");
+        let Some(shell) = self.shell.upgrade() else { return div().into_any_element() };
+        let id = cx.entity_id();
+        crate::motion::owned_render(id, || {
+            shell.update(cx, |shell, cx| {
+                self.steps = shell.sidebar_steps(cx);
+                shell.render_sidebar(cx)
+            })
+        })
+    }
+}
+
 impl Shell {
+    /// What each working thread is doing now, as its sidebar row shows it.
+    pub(crate) fn sidebar_steps(&self, cx: &App) -> Vec<(TaskId, Option<SharedString>)> {
+        self.tasks
+            .iter()
+            .filter(|t| t.status == TaskStatus::Running)
+            .map(|t| (t.id, self.threads.get(&t.id).and_then(|v| v.read(cx).chat.read(cx).current_step())))
+            .collect()
+    }
+
     pub fn render_sidebar(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let t = Theme::of(cx).clone();
         let compact = self.engine.store.setting("sidebar_density").as_deref() == Some("compact");
