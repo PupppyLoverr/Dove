@@ -236,7 +236,7 @@ impl Bench {
         let b = self.backend.clone();
         let started = Instant::now();
         let mut found = false;
-        while started.elapsed() < Duration::from_secs(240) {
+        while started.elapsed() < Duration::from_secs(120) {
             if b.search(probe, &scope, 8).is_ok_and(|l| l.iter().any(|m| lower(&m.text).contains(&lower(probe)))) {
                 found = true;
                 break;

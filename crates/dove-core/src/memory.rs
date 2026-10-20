@@ -717,10 +717,196 @@ impl Outbox {
     }
 }
 
+// ------------------------------------------------------------- local index
+
+/// Everything Dove saved to memory on this machine (already redacted), so
+/// recall answers at once and offline, whatever the service's latency.
+/// Supermemory stays the source of truth across machines and its own
+/// plugins; its results are merged in when they arrive in time.
+pub struct LocalIndex {
+    path: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LocalEntry {
+    /// The scope's container, `user` for the user scope.
+    tag: String,
+    kind: String,
+    text: String,
+    /// Unix ms.
+    at: i64,
+}
+
+/// Newest entries kept.
+const LOCAL_CAP: usize = 4000;
+
+fn local_lock() -> &'static Mutex<()> {
+    static LOCK: Mutex<()> = Mutex::new(());
+    &LOCK
+}
+
+fn scope_tag(scope: &Scope) -> &str {
+    scope.container().unwrap_or("user")
+}
+
+/// Words that say nothing about what a memory is about.
+const STOP: &[&str] = &[
+    "a", "an", "the", "and", "or", "but", "if", "then", "so", "to", "of", "in", "on", "at", "by", "for", "with",
+    "from", "into", "is", "are", "was", "were", "be", "been", "it", "its", "this", "that", "these", "those", "i",
+    "me", "my", "we", "our", "you", "your", "he", "she", "they", "them", "do", "does", "did", "how", "what",
+    "which", "who", "when", "where", "why", "can", "could", "should", "would", "will", "just", "only", "please",
+    "reply", "answer", "say", "tell", "give", "use", "using", "here", "there", "now", "also", "any", "all", "some",
+    "one", "two", "short", "line", "lines", "exact", "nothing", "else", "not", "don", "t", "look", "files", "file",
+    "user", "agent", "acknowledge", "acknowledged", "noted", "got", "ok", "okay", "thanks", "briefly", "project",
+    "repo", "repository",
+];
+
+/// Lowercase word stems, without stop words: `locking` and `locks` both
+/// become `lock`.
+fn terms(text: &str) -> Vec<String> {
+    text.split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
+        .flat_map(|w| w.split('-'))
+        .map(str::to_lowercase)
+        .filter(|w| w.len() > 1 && !STOP.contains(&w.as_str()))
+        .map(|w| {
+            for suffix in ["ing", "es", "ed", "s"] {
+                if w.len() > suffix.len() + 2
+                    && let Some(stem) = w.strip_suffix(suffix)
+                {
+                    return stem.to_string();
+                }
+            }
+            w
+        })
+        .collect()
+}
+
+fn rfc3339(ms: i64) -> Option<String> {
+    chrono::DateTime::from_timestamp_millis(ms).map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+}
+
+impl LocalIndex {
+    /// `<root>/memory/local.jsonl`.
+    pub fn at(root: &Path) -> Self {
+        Self { path: root.join("memory").join("local.jsonl") }
+    }
+
+    fn entries(&self) -> Vec<LocalEntry> {
+        std::fs::read_to_string(&self.path)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| serde_json::from_str(l).ok())
+            .collect()
+    }
+
+    fn write(&self, entries: &[LocalEntry]) -> std::io::Result<()> {
+        let tmp = self.path.with_extension("jsonl.tmp");
+        let mut f = std::fs::File::create(&tmp)?;
+        for e in entries {
+            writeln!(f, "{}", serde_json::to_string(e).unwrap_or_default())?;
+        }
+        f.flush()?;
+        drop(f);
+        std::fs::rename(tmp, &self.path)
+    }
+
+    /// Remember `doc` (a resolved scope; the project placeholder is skipped).
+    pub fn add(&self, doc: &Doc) {
+        if matches!(&doc.scope, Scope::Project(t) if t.is_empty()) || doc.content.trim().is_empty() {
+            return;
+        }
+        let _g = local_lock().lock();
+        if let Some(dir) = self.path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let entry = LocalEntry {
+            tag: scope_tag(&doc.scope).to_string(),
+            kind: doc.metadata.get("kind").cloned().unwrap_or_else(|| "turn".into()),
+            text: doc.content.trim().to_string(),
+            at: if doc.at > 0 { doc.at } else { dove_store::now_ms() },
+        };
+        let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&self.path) else { return };
+        let _ = writeln!(f, "{}", serde_json::to_string(&entry).unwrap_or_default());
+        drop(f);
+        // Trim now and then, not on every save.
+        if std::fs::metadata(&self.path).is_ok_and(|m| m.len() > 8 * 1024 * 1024) {
+            let all = self.entries();
+            if all.len() > LOCAL_CAP {
+                let _ = self.write(&all[all.len() - LOCAL_CAP..]);
+            }
+        }
+    }
+
+    /// Entries of `scope` sharing enough words with `query`, best first.
+    /// Scores are the share of the query's words found (0–1).
+    pub fn search(&self, scope: &Scope, query: &str, limit: usize) -> Vec<Memory> {
+        let q: HashSet<String> = terms(query).into_iter().collect();
+        if q.is_empty() {
+            return Vec::new();
+        }
+        let tag = scope_tag(scope);
+        let need = if q.len() <= 2 { 1 } else { 2 };
+        let mut hits: Vec<(f32, LocalEntry)> = self
+            .entries()
+            .into_iter()
+            .filter(|e| e.tag == tag)
+            .filter_map(|e| {
+                let words: HashSet<String> = terms(&e.text).into_iter().collect();
+                let matched = q.iter().filter(|t| words.contains(*t)).count();
+                let share = matched as f32 / q.len() as f32;
+                (matched >= need && share >= 0.25).then_some((share, e))
+            })
+            .collect();
+        // Best match first; the newer of two equal matches first.
+        hits.sort_by(|a, b| b.0.total_cmp(&a.0).then(b.1.at.cmp(&a.1.at)));
+        hits.into_iter()
+            .take(limit)
+            .map(|(score, e)| Memory { id: None, text: e.text, score: Some(score), at: rfc3339(e.at) })
+            .collect()
+    }
+
+    /// The scope's rules and corrections, newest first.
+    pub fn standing(&self, scope: &Scope, limit: usize) -> Vec<Memory> {
+        let tag = scope_tag(scope);
+        let mut list: Vec<LocalEntry> =
+            self.entries().into_iter().filter(|e| e.tag == tag && matches!(e.kind.as_str(), "rule" | "feedback")).collect();
+        list.sort_by(|a, b| b.at.cmp(&a.at));
+        list.into_iter().take(limit).map(|e| Memory { id: None, text: e.text, score: None, at: rfc3339(e.at) }).collect()
+    }
+
+    /// Drop entries whose text is `text` (the user forgot a memory).
+    pub fn forget(&self, text: &str) {
+        let _g = local_lock().lock();
+        let norm = |t: &str| t.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase();
+        let target = norm(text);
+        let all = self.entries();
+        let kept: Vec<LocalEntry> = all.iter().filter(|e| norm(&e.text) != target).cloned().collect();
+        if kept.len() != all.len() {
+            let _ = self.write(&kept);
+        }
+    }
+}
+
+/// `local` followed by the `remote` items that are not the same memory (a
+/// remote document chunk is often a piece of a local entry).
+fn merge_unique(local: Vec<Memory>, remote: Vec<Memory>) -> Vec<Memory> {
+    let norm = |t: &str| t.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase();
+    let seen: Vec<String> = local.iter().map(|m| norm(&m.text)).collect();
+    let mut out = local;
+    for m in remote {
+        let n = norm(&m.text);
+        if !n.is_empty() && !seen.iter().any(|s| s.contains(&n) || n.contains(s.as_str())) {
+            out.push(m);
+        }
+    }
+    out
+}
+
 /// Save `doc` now, or queue it. Also flushes anything already queued once a
 /// save gets through.
 pub fn save_or_queue(root: &Path, doc: Doc) {
     let Some(b) = backend() else { return };
+    LocalIndex::at(root).add(&doc);
     let root = root.to_path_buf();
     drop(blocking(move || {
         let outbox = Outbox::at(&root);
@@ -1057,7 +1243,15 @@ pub async fn before_send(session: &Shared, prompt: String) -> String {
     let query = redact(&clip(&query, 1000));
     let started = std::time::Instant::now();
     let job = blocking(move || {
-        let scopes = shared.lock().scopes();
+        let (scopes, root) = {
+            let s = shared.lock();
+            (s.scopes(), s.store.root().to_path_buf())
+        };
+        // What this machine saved, at once; the service's results join below.
+        let local = LocalIndex::at(&root);
+        let local_found: Vec<Memory> = scopes.iter().flat_map(|s| local.search(s, &query, 6)).collect();
+        let local_standing: Vec<Memory> =
+            if first { scopes.iter().flat_map(|s| local.standing(s, 12)).collect() } else { Vec::new() };
         // The profile, each scope's standing rules and each scope's search
         // all at once; whatever has arrived by the deadline goes in, so one
         // slow call never costs the prompt the others.
@@ -1115,6 +1309,11 @@ pub async fn before_send(session: &Shared, prompt: String) -> String {
         }
         standing.sort_by(|a, b| b.at.cmp(&a.at));
         found.sort_by(|a, b| b.score.unwrap_or(0.0).total_cmp(&a.score.unwrap_or(0.0)));
+        let standing = merge_unique(local_standing, standing);
+        // A rule already shown as standing is not repeated as a match.
+        let found = merge_unique(local_found, found);
+        let found: Vec<Memory> =
+            found.into_iter().filter(|m| !standing.iter().any(|s| s.text == m.text)).collect();
         (standing, profile, found)
     });
     let Ok(Ok((standing, profile, found))) = tokio::time::timeout(RECALL_TIMEOUT, job).await else {
@@ -1452,7 +1651,9 @@ fn merged_prs(dir: &Path) -> Option<Vec<(u64, String, String)>> {
 /// Queue `docs` and send what can be sent now. Returns `(sent, waiting)`.
 pub fn ingest(root: &Path, docs: &[Doc]) -> (usize, usize) {
     let outbox = Outbox::at(root);
+    let local = LocalIndex::at(root);
     for d in docs {
+        local.add(d);
         let _ = outbox.push(d);
     }
     match backend() {
@@ -1588,6 +1789,51 @@ mod tests {
         assert!(is_rule("Correction: staging is orbit-stg now"));
         assert!(!is_rule("Nothing to add, thanks"));
         assert!(!is_rule("Add the dayjs package"));
+    }
+
+    #[test]
+    fn local_index_finds_rules_and_matches() {
+        let dir = tempfile::tempdir().unwrap();
+        let idx = LocalIndex::at(dir.path());
+        let project = Scope::Project("repo_x__1".into());
+        let doc = |text: &str, kind: &str, at: i64| Doc {
+            content: text.into(),
+            scope: project.clone(),
+            metadata: [("kind".to_string(), kind.to_string())].into(),
+            custom_id: None,
+            at,
+        };
+        idx.add(&doc("User: Background jobs take locks with Postgres advisory locks. Agent: Noted.", "turn", 1_000));
+        idx.add(&doc("User: Staging deploys with fly deploy --app orbit-stg. Agent: OK.", "turn", 2_000));
+        idx.add(&doc("User: No, the dev server port changed from 4100 to 41020.", "rule", 3_000));
+        idx.add(&doc("User: Start every answer with ORB:", "rule", 4_000));
+        idx.add(&Doc { scope: Scope::Project(String::new()), ..doc("placeholder scope is skipped", "turn", 6_000) });
+        idx.add(&Doc { scope: Scope::Project("other".into()), ..doc("Other repo: locking with Redis", "turn", 7_000) });
+
+        let hits = idx.search(&project, "Which locking mechanism should the nightly job use, and how do I deploy to staging?", 6);
+        let texts: Vec<&str> = hits.iter().map(|m| m.text.as_str()).collect();
+        assert!(texts.iter().any(|t| t.contains("advisory")), "{texts:?}");
+        assert!(texts.iter().any(|t| t.contains("orbit-stg")), "{texts:?}");
+        assert!(texts.iter().all(|t| !t.contains("Redis")), "other scope leaked: {texts:?}");
+        assert!(idx.search(&project, "What is a mutex?", 6).is_empty());
+
+        let rules = idx.standing(&project, 10);
+        assert_eq!(rules.len(), 2);
+        assert!(rules[0].text.contains("ORB:"), "newest first");
+        assert!(rules[0].at.as_deref().is_some_and(|t| t.starts_with("1970-01-01T00:00:04")));
+
+        idx.forget("User: Start every answer with ORB:");
+        assert_eq!(idx.standing(&project, 10).len(), 1);
+    }
+
+    #[test]
+    fn merge_drops_remote_copies_of_local_memories() {
+        let local = vec![Memory::new("User: build with just build-1. Agent: Noted: build with just build-1.")];
+        let remote = vec![Memory::new("build with just build-1."), Memory::new("Deploys go through staging")];
+        let merged = merge_unique(local, remote);
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged[1].text, "Deploys go through staging");
+        assert_eq!(terms("Locking the jobs"), vec!["lock", "job"]);
     }
 
     #[test]

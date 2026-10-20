@@ -76,6 +76,32 @@ pub struct Supermemory {
 struct Rest {
     def: McpServer,
     http: reqwest::Client,
+    /// One runtime for every REST call: pooled connections belong to the
+    /// runtime that opened them, so a runtime per call left the pool full of
+    /// dead connections ("error sending request" on the next call).
+    rt: Option<tokio::runtime::Runtime>,
+}
+
+impl Rest {
+    fn new(def: McpServer) -> Self {
+        let http = reqwest::Client::builder().timeout(Duration::from_secs(20)).build().unwrap_or_default();
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .thread_name("dove-supermemory-http")
+            .enable_all()
+            .build()
+            .ok();
+        Self { def, http, rt }
+    }
+}
+
+impl Drop for Rest {
+    fn drop(&mut self) {
+        // Never blocks, so the last handle may go anywhere.
+        if let Some(rt) = self.rt.take() {
+            rt.shutdown_background();
+        }
+    }
 }
 
 /// The live connection and what its tools accept.
@@ -105,8 +131,7 @@ const RECALL_MCP_WAIT: Duration = Duration::from_millis(2500);
 impl Supermemory {
     fn start(def: McpServer) -> Self {
         let (jobs, rx) = mpsc::channel::<Job>();
-        let http = reqwest::Client::builder().timeout(Duration::from_secs(20)).build().unwrap_or_default();
-        let rest = Arc::new(Rest { def: def.clone(), http });
+        let rest = Arc::new(Rest::new(def.clone()));
         let _ = std::thread::Builder::new().name("dove-supermemory".into()).spawn(move || {
             let mut conn = Conn { def, server: None, tools: Vec::new(), conversation: None };
             while let Ok(job) = rx.recv() {
@@ -162,7 +187,7 @@ impl Rest {
             if let Some(b) = &body {
                 req = req.json(b);
             }
-            let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| e.to_string())?;
+            let rt = self.rt.as_ref().ok_or("no runtime for Supermemory calls")?;
             let (status, text) = rt.block_on(async {
                 let resp = req.send().await.map_err(|e| format!("could not reach Supermemory: {e}"))?;
                 let status = resp.status();
@@ -784,11 +809,29 @@ mod e2e {
         false
     }
 
+    /// Pooled connections must survive between calls (a runtime per call
+    /// used to leave dead ones behind).
+    #[test]
+    #[ignore]
+    fn rest_calls_in_a_row() {
+        let def = server(&cfg::load()).unwrap();
+        let rest = Rest::new(def);
+        for i in 0..12 {
+            let started = Instant::now();
+            let r = rest.post("/v3/search", json!({"q": "build command", "limit": 1, "containerTags": [DEFAULT_SPACE]}));
+            println!("call {i}: {:?} in {:?}", r.as_ref().map(|_| "ok"), started.elapsed());
+            assert!(r.is_ok(), "call {i}: {r:?}");
+            if i % 4 == 3 {
+                std::thread::sleep(Duration::from_secs(5));
+            }
+        }
+    }
+
     #[test]
     #[ignore]
     fn rest_probe() {
         let def = server(&cfg::load()).unwrap();
-        let rest = Rest { def, http: reqwest::Client::new() };
+        let rest = Rest::new(def);
         let path = std::env::var("PROBE_PATH").unwrap_or_else(|_| "/v3/documents/list".into());
         let body: Value = serde_json::from_str(&std::env::var("PROBE_BODY").unwrap_or_else(|_| "{}".into())).unwrap();
         let r = rest.post(&path, body);

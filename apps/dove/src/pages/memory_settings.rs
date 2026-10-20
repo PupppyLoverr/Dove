@@ -213,7 +213,12 @@ impl MemoryView {
         let (Some(b), Some(scope)) = (memory::backend(), self.current_scope()) else { return };
         let Some(Ok(list)) = &self.results else { return };
         let Some(m) = list.get(i).cloned() else { return };
-        let task = cx.background_spawn(async move { b.forget(&m, &scope) });
+        let root = self.engine.store.root().to_path_buf();
+        let task = cx.background_spawn(async move {
+            // Also from this machine's index, or recall would bring it back.
+            memory::LocalIndex::at(&root).forget(&m.text);
+            b.forget(&m, &scope)
+        });
         cx.spawn(async move |this, cx| {
             let r = task.await;
             let _ = this.update(cx, |v, cx| {
@@ -309,8 +314,14 @@ impl MemoryView {
         let root = self.engine.store.root().to_path_buf();
         let task = cx.background_spawn(async move {
             let mut done = 0;
-            for (scope, _, copies) in &report.duplicates {
+            let norm = |t: &str| t.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase();
+            for (scope, keep, copies) in &report.duplicates {
                 for m in copies {
+                    // The local index matches by text: an exact copy of the
+                    // kept memory must not take the kept one with it.
+                    if norm(&m.text) != norm(&keep.text) {
+                        memory::LocalIndex::at(&root).forget(&m.text);
+                    }
                     if b.forget(m, scope).is_ok() {
                         done += 1;
                     }
