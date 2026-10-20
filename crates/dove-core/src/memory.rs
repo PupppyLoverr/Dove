@@ -936,6 +936,19 @@ impl LocalIndex {
             let _ = self.write(&kept);
         }
     }
+
+    /// Drop entries a recalled chip line shows ([`same_memory`]: the chip
+    /// holds them flattened and maybe clipped). Returns how many went.
+    pub fn forget_shown(&self, shown: &str) -> usize {
+        let _g = local_lock().lock();
+        let all = self.entries();
+        let kept: Vec<LocalEntry> = all.iter().filter(|e| !same_memory(shown, &e.text)).cloned().collect();
+        let gone = all.len() - kept.len();
+        if gone > 0 {
+            let _ = self.write(&kept);
+        }
+        gone
+    }
 }
 
 /// `local` followed by the `remote` items that are not the same memory (a
@@ -1644,9 +1657,18 @@ fn find_shown(b: &dyn Backend, shown: &str, scope: &Scope) -> Option<Memory> {
 /// "Forget" on a recalled memory: the chat only kept its text, so find it
 /// by content in each of `scopes` (project first) and forget it there.
 /// When no scope lists it yet, the first scope's service is asked to forget
-/// by content. Returns the scope it went from. Blocking.
-pub fn forget_recalled(b: &dyn Backend, shown: &str, scopes: &[Scope]) -> Result<Scope, String> {
+/// by content. Dove's own copy in `local` goes too, so recall stops
+/// offering it. Returns the scope it went from. Blocking.
+pub fn forget_recalled(
+    b: &dyn Backend,
+    local: Option<&LocalIndex>,
+    shown: &str,
+    scopes: &[Scope],
+) -> Result<Scope, String> {
     let first = scopes.first().ok_or("no memory scope")?;
+    if let Some(local) = local {
+        local.forget_shown(shown);
+    }
     for scope in scopes {
         if let Some(m) = find_shown(b, shown, scope) {
             b.forget(&m, scope)?;
@@ -2194,15 +2216,22 @@ mod tests {
         fake.mem.lock().push((Scope::User, Memory { id: Some("u1".into()), ..Memory::new("Prefers dark mode") }));
         fake.mem.lock().push((project.clone(), Memory { id: Some("p1".into()), ..Memory::new("Uses pnpm") }));
         let scopes = [project.clone(), Scope::User];
-        assert_eq!(forget_recalled(&fake, "Prefers dark mode", &scopes).unwrap(), Scope::User);
-        assert_eq!(forget_recalled(&fake, "uses pnpm", &scopes).unwrap(), project);
-        // Not listed anywhere: the project scope is asked to forget the words.
-        assert_eq!(forget_recalled(&fake, "Unknown fact…", &scopes).unwrap(), project);
+        let dir = tempfile::tempdir().unwrap();
+        let local = LocalIndex::at(dir.path());
+        let pinned = pin_doc("Unknown fact that runs on and on", project.clone(), None, 1).unwrap();
+        local.add(&pinned);
+        assert_eq!(local.search(&project, "unknown fact runs", 5).len(), 1);
+        assert_eq!(forget_recalled(&fake, None, "Prefers dark mode", &scopes).unwrap(), Scope::User);
+        assert_eq!(forget_recalled(&fake, Some(&local), "uses pnpm", &scopes).unwrap(), project);
+        // Not listed anywhere: the project scope is asked to forget the words,
+        // and Dove's own clipped copy goes too.
+        assert_eq!(forget_recalled(&fake, Some(&local), "Unknown fact…", &scopes).unwrap(), project);
+        assert!(local.search(&project, "unknown fact runs", 5).is_empty());
         let forgot = fake.forgot.lock();
         assert_eq!(forgot[0].1.id.as_deref(), Some("u1"));
         assert_eq!(forgot[1].1.id.as_deref(), Some("p1"));
         assert_eq!(forgot[2].1, Memory::new("Unknown fact"));
-        assert!(forget_recalled(&fake, "x", &[]).is_err());
+        assert!(forget_recalled(&fake, None, "x", &[]).is_err());
     }
 
     #[test]

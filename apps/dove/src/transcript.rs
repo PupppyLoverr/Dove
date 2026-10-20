@@ -4023,9 +4023,10 @@ impl TaskView {
             return;
         };
         let cwd = self.task.worktree.clone().unwrap_or_else(|| self.project.path.clone());
+        let root = self.engine.store.root().to_path_buf();
         let task = cx.background_spawn(async move {
             let scopes = [Scope::Project(memory::project_tag(&cwd)), Scope::User];
-            memory::forget_recalled(&*b, &shown, &scopes)
+            memory::forget_recalled(&*b, Some(&memory::LocalIndex::at(&root)), &shown, &scopes)
         });
         cx.spawn(async move |this, cx| {
             let r = task.await;
