@@ -247,6 +247,7 @@ pub fn next_status(event: &AgentEvent) -> Option<TaskStatus> {
 impl Engine {
     pub fn new(root: PathBuf) -> Result<Arc<Self>> {
         let store = Arc::new(Store::open(&root)?);
+        memory::apply_settings(&store);
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .thread_name("dove-io")

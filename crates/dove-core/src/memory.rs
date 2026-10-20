@@ -27,6 +27,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::hash::{Hash as _, Hasher as _};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -349,10 +350,37 @@ fn git(dir: &Path, args: &[&str]) -> Option<String> {
     out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string()).filter(|s| !s.is_empty())
 }
 
+/// Settings key: each worktree gets its own project memory (Supermemory's
+/// `SUPERMEMORY_ISOLATE_WORKTREES`). Off by default.
+pub const ISOLATE_WORKTREES: &str = "memory_isolate_worktrees";
+
+static ISOLATE: AtomicBool = AtomicBool::new(false);
+
+/// Apply the [`ISOLATE_WORKTREES`] setting (app start and when it changes);
+/// [`project_tag`] has no store to read it from.
+pub fn set_isolate_worktrees(on: bool) {
+    ISOLATE.store(on, Ordering::Relaxed);
+}
+
+/// The Dove setting or `SUPERMEMORY_ISOLATE_WORKTREES=true` (which
+/// Supermemory's own plugins read, so the two can agree).
+pub fn isolate_worktrees() -> bool {
+    isolating(ISOLATE.load(Ordering::Relaxed), std::env::var("SUPERMEMORY_ISOLATE_WORKTREES").ok().as_deref())
+}
+
+fn isolating(setting: bool, env: Option<&str>) -> bool {
+    setting || env == Some("true")
+}
+
+/// Read the memory settings that live outside [`Prefs`] into the process.
+pub fn apply_settings(store: &Store) {
+    set_isolate_worktrees(store.flag(ISOLATE_WORKTREES, false));
+}
+
 /// The repository root every worktree of it shares (its main checkout), or
 /// the folder itself outside git.
 pub fn project_base(dir: &Path) -> PathBuf {
-    let isolate = std::env::var("SUPERMEMORY_ISOLATE_WORKTREES").as_deref() == Ok("true");
+    let isolate = isolate_worktrees();
     let toplevel = || git(dir, &["rev-parse", "--show-toplevel"]).map(PathBuf::from);
     let root = if isolate {
         toplevel()
@@ -396,7 +424,7 @@ pub fn project_tag(dir: &Path) -> String {
     }
     let remote = git(&base, &["remote", "get-url", "origin"]);
     let normalized = remote.as_deref().and_then(normalize_remote);
-    let isolate = std::env::var("SUPERMEMORY_ISOLATE_WORKTREES").as_deref() == Ok("true");
+    let isolate = isolate_worktrees();
     let identity = match normalized {
         Some(n) if !isolate => n,
         _ => {
@@ -1566,6 +1594,119 @@ pub fn consolidation_due(store: &Store) -> bool {
     dove_store::now_ms() - last > WEEK_MS
 }
 
+// ------------------------------------------------------------- user actions
+
+/// `kind` of a memory the user pinned with "Remember this".
+pub const PINNED: &str = "pinned";
+/// Longest pinned message.
+const PIN_CHARS: usize = 8000;
+
+/// The memory "Remember this" saves for a chat message: its words without
+/// the recalled block or persona, redacted, `None` when nothing is left.
+/// Pinning the same words to the same scope twice keeps one copy.
+pub fn pin_doc(text: &str, scope: Scope, project: Option<&str>, at: i64) -> Option<Doc> {
+    let text = crate::strip_persona(text).trim();
+    if text.is_empty() {
+        return None;
+    }
+    let content = redact(&clip(text, PIN_CHARS));
+    let mut metadata: BTreeMap<String, String> =
+        [("source", "dove"), ("kind", PINNED)].into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+    if let Some(p) = project.filter(|p| !p.is_empty()) {
+        metadata.insert("project".into(), p.to_string());
+    }
+    let custom_id = Some(format!("dove_pin_{}", sha16(&format!("{}\n{content}", scope_key(&scope)))));
+    Some(Doc { content, scope, metadata, custom_id, at })
+}
+
+/// Whether `stored` is the memory a recalled chip line shows. The chip
+/// holds the text flattened to one line and clipped with `…`.
+pub fn same_memory(shown: &str, stored: &str) -> bool {
+    let flat = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase();
+    let shown = shown.trim();
+    let clipped = shown.ends_with('…');
+    let shown = flat(shown.trim_end_matches('…'));
+    let stored = flat(stored);
+    !shown.is_empty() && (stored == shown || (clipped && stored.starts_with(&shown)))
+}
+
+/// The memory in `scope` a chip line shows: a search with its words, then
+/// the newest few pages.
+fn find_shown(b: &dyn Backend, shown: &str, scope: &Scope) -> Option<Memory> {
+    let query = clip(shown.trim_end_matches('…').trim(), 1000);
+    let hit = b.search(&query, scope, 10).unwrap_or_default().into_iter().find(|m| same_memory(shown, &m.text));
+    if hit.is_some() {
+        return hit;
+    }
+    list_all(b, scope, 4).ok()?.into_iter().find(|m| same_memory(shown, &m.text))
+}
+
+/// "Forget" on a recalled memory: the chat only kept its text, so find it
+/// by content in each of `scopes` (project first) and forget it there.
+/// When no scope lists it yet, the first scope's service is asked to forget
+/// by content. Returns the scope it went from. Blocking.
+pub fn forget_recalled(b: &dyn Backend, shown: &str, scopes: &[Scope]) -> Result<Scope, String> {
+    let first = scopes.first().ok_or("no memory scope")?;
+    for scope in scopes {
+        if let Some(m) = find_shown(b, shown, scope) {
+            b.forget(&m, scope)?;
+            return Ok(scope.clone());
+        }
+    }
+    b.forget(&Memory::new(shown.trim_end_matches('…').trim()), first)?;
+    Ok(first.clone())
+}
+
+/// Up to `max_pages` pages (50 each) of a scope's memories, newest first.
+pub fn list_all(b: &dyn Backend, scope: &Scope, max_pages: usize) -> Result<Vec<Memory>, String> {
+    const PAGE: usize = 50;
+    let mut all = Vec::new();
+    for page in 1..=max_pages {
+        let list = b.list(scope, page, PAGE)?;
+        let short = list.len() < PAGE;
+        all.extend(list);
+        if short {
+            break;
+        }
+    }
+    Ok(all)
+}
+
+/// The export file's default name, `export-<YYYY-MM-DD>.json` (UTC).
+pub fn export_name(at: i64) -> String {
+    let date = chrono::DateTime::from_timestamp_millis(at).unwrap_or_default().format("%Y-%m-%d");
+    format!("export-{date}.json")
+}
+
+/// Where exports go unless the user picks a file: `<root>/memory`.
+pub fn export_dir(root: &Path) -> PathBuf {
+    root.join("memory")
+}
+
+/// One scope's memories as the export file's JSON.
+pub fn export_json(scope: &Scope, memories: &[Memory], at: i64) -> String {
+    let value = serde_json::json!({
+        "source": "dove",
+        "exported_at": chrono::DateTime::from_timestamp_millis(at).unwrap_or_default().to_rfc3339(),
+        "scope": scope.label(),
+        "container": scope.container(),
+        "count": memories.len(),
+        "memories": memories,
+    });
+    serde_json::to_string_pretty(&value).unwrap_or_default()
+}
+
+/// Export every memory of `scope` (up to 40 pages) to `path`. Returns how
+/// many were written. Blocking.
+pub fn export(b: &dyn Backend, scope: &Scope, path: &Path) -> Result<usize, String> {
+    let list = list_all(b, scope, 40)?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(path, export_json(scope, &list, dove_store::now_ms())).map_err(|e| e.to_string())?;
+    Ok(list.len())
+}
+
 // ------------------------------------------------------------------ backfill
 
 /// Project documents worth starting memory from.
@@ -1976,6 +2117,120 @@ mod tests {
         assert!(skills[0].skill_md().starts_with("---\nname: project-cargo-workflow\n"));
         assert_eq!(scope_short_name(&Scope::Project("repo_dove__ab12".into())), "dove");
         assert_eq!(scope_short_name(&Scope::User), "user");
+    }
+
+    /// Memories per scope; records what was forgotten.
+    #[derive(Default)]
+    struct Fake {
+        mem: Mutex<Vec<(Scope, Memory)>>,
+        forgot: Mutex<Vec<(Scope, Memory)>>,
+    }
+
+    impl Backend for Fake {
+        fn search(&self, query: &str, scope: &Scope, limit: usize) -> Result<Vec<Memory>, String> {
+            let word = query.split_whitespace().next().unwrap_or_default().to_lowercase();
+            Ok(self
+                .mem
+                .lock()
+                .iter()
+                .filter(|(s, m)| s == scope && m.text.to_lowercase().contains(&word))
+                .map(|(_, m)| m.clone())
+                .take(limit)
+                .collect())
+        }
+        fn profile(&self, _: &Scope) -> Result<Vec<Memory>, String> {
+            Ok(Vec::new())
+        }
+        fn add(&self, _: &Doc) -> Result<(), String> {
+            Ok(())
+        }
+        fn list(&self, scope: &Scope, page: usize, limit: usize) -> Result<Vec<Memory>, String> {
+            let all: Vec<Memory> = self.mem.lock().iter().filter(|(s, _)| s == scope).map(|(_, m)| m.clone()).collect();
+            Ok(all.into_iter().skip((page - 1) * limit).take(limit).collect())
+        }
+        fn forget(&self, memory: &Memory, scope: &Scope) -> Result<(), String> {
+            self.forgot.lock().push((scope.clone(), memory.clone()));
+            Ok(())
+        }
+        fn who_am_i(&self) -> Result<String, String> {
+            Ok("test".into())
+        }
+    }
+
+    #[test]
+    fn pinned_messages_are_clean_and_idempotent() {
+        let project = Scope::Project("repo_x__1".into());
+        let block = render_block(&[], &[Memory::new("old fact")], BUDGET_CHARS).unwrap().0;
+        let text = format!("{block}Always use pnpm. token=abcdef123456");
+        let d = pin_doc(&text, project.clone(), Some("Widget"), 7).unwrap();
+        assert_eq!(d.content, "Always use pnpm. token=[REDACTED]");
+        assert_eq!(d.metadata["kind"], PINNED);
+        assert_eq!(d.metadata["project"], "Widget");
+        assert_eq!(d.scope, project);
+        assert_eq!(d.custom_id, pin_doc(&text, project.clone(), None, 9).unwrap().custom_id);
+        assert_ne!(d.custom_id, pin_doc(&text, Scope::User, None, 7).unwrap().custom_id);
+        assert!(!pin_doc(&text, Scope::User, None, 7).unwrap().metadata.contains_key("project"));
+        assert!(pin_doc("   ", Scope::User, None, 0).is_none());
+        assert!(pin_doc(&block, Scope::User, None, 0).is_none());
+    }
+
+    #[test]
+    fn recalled_lines_match_their_memory() {
+        assert!(same_memory("Uses pnpm", "uses\n  pnpm"));
+        assert!(same_memory("Run tests with cargo…", "Run tests with cargo test -j 2"));
+        assert!(!same_memory("Run tests with cargo", "Run tests with cargo test -j 2"));
+        assert!(!same_memory("…", "anything"));
+        // The chip's own rendering round-trips.
+        let long = format!("Deploy {}", "step ".repeat(200));
+        let block = render_block(&[], &[Memory::new(long.clone())], BUDGET_CHARS).unwrap().0;
+        let shown = &recalled(&block).unwrap()[0];
+        assert!(same_memory(shown, &long));
+    }
+
+    #[test]
+    fn forget_recalled_finds_by_content() {
+        let project = Scope::Project("repo_x__1".into());
+        let fake = Fake::default();
+        fake.mem.lock().push((Scope::User, Memory { id: Some("u1".into()), ..Memory::new("Prefers dark mode") }));
+        fake.mem.lock().push((project.clone(), Memory { id: Some("p1".into()), ..Memory::new("Uses pnpm") }));
+        let scopes = [project.clone(), Scope::User];
+        assert_eq!(forget_recalled(&fake, "Prefers dark mode", &scopes).unwrap(), Scope::User);
+        assert_eq!(forget_recalled(&fake, "uses pnpm", &scopes).unwrap(), project);
+        // Not listed anywhere: the project scope is asked to forget the words.
+        assert_eq!(forget_recalled(&fake, "Unknown fact…", &scopes).unwrap(), project);
+        let forgot = fake.forgot.lock();
+        assert_eq!(forgot[0].1.id.as_deref(), Some("u1"));
+        assert_eq!(forgot[1].1.id.as_deref(), Some("p1"));
+        assert_eq!(forgot[2].1, Memory::new("Unknown fact"));
+        assert!(forget_recalled(&fake, "x", &[]).is_err());
+    }
+
+    #[test]
+    fn export_pages_and_names() {
+        let fake = Fake::default();
+        for i in 0..120 {
+            fake.mem.lock().push((Scope::User, Memory::new(format!("m{i}"))));
+        }
+        assert_eq!(list_all(&fake, &Scope::User, 40).unwrap().len(), 120);
+        assert_eq!(list_all(&fake, &Scope::User, 2).unwrap().len(), 100);
+        // 2026-10-20T00:00:00Z
+        assert_eq!(export_name(1_792_454_400_000), "export-2026-10-20.json");
+        let dir = tempfile::tempdir().unwrap();
+        let path = export_dir(dir.path()).join("out.json");
+        assert_eq!(export(&fake, &Scope::User, &path).unwrap(), 120);
+        let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(v["count"], 120);
+        assert_eq!(v["scope"], "user");
+        assert!(v["container"].is_null());
+        assert_eq!(v["memories"][0]["text"], "m0");
+    }
+
+    #[test]
+    fn isolate_worktrees_setting_or_env() {
+        assert!(!isolating(false, None));
+        assert!(!isolating(false, Some("1")));
+        assert!(isolating(false, Some("true")));
+        assert!(isolating(true, None));
     }
 
     #[test]
