@@ -54,6 +54,8 @@ struct Turn {
     sent: String,
     answer: String,
     secs: f32,
+    /// Tool calls the agent made (reading files, running commands).
+    tools: usize,
 }
 
 impl Turn {
@@ -87,7 +89,16 @@ impl Bench {
         let root = std::env::var("DOVE_BENCH_DIR").unwrap_or("C:/dvw/mem-e2e".into());
         let dir = PathBuf::from(root).join(format!("bench-{n}"));
         std::fs::create_dir_all(&dir).unwrap();
-        let engine = Engine::new(dir.join("dove")).unwrap();
+        // Dove's own store (transcripts of every teaching turn) lives far from
+        // the repositories, so an agent that searches around cannot read it.
+        let store = std::env::temp_dir().join(format!("dove-bench-store-{n}"));
+        let engine = Engine::new(store).unwrap();
+        let trace = std::fs::File::create(dir.join("trace.log")).unwrap();
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::new("warn,dove_core::memory=debug,dove::supermemory=debug"))
+            .with_writer(std::sync::Mutex::new(trace))
+            .with_ansi(false)
+            .try_init();
         engine.rescan_harnesses();
         let agy = PathBuf::from(std::env::var("LOCALAPPDATA").unwrap_or_default()).join("agy/bin/agy.exe");
         if agy.is_file() {
@@ -141,15 +152,14 @@ impl Bench {
                 },
             )
             .expect("start the session");
-        let (mut sent, mut answer) = (String::new(), String::new());
+        let (mut sent, mut answer, mut tools) = (String::new(), String::new(), 0);
         let until = Instant::now() + Duration::from_secs(420);
         while Instant::now() < until {
             match live.events.recv_timeout(Duration::from_secs(5)) {
                 Ok(AgentEvent::UserMessage { text }) if sent.is_empty() => sent = text.to_string(),
                 Ok(AgentEvent::TextDelta { text }) => answer.push_str(&text),
-                Ok(AgentEvent::ToolCall { call_id, .. }) => {
-                    // A new block starts after each tool call; keep the final one.
-                    let _ = call_id;
+                Ok(AgentEvent::ToolCall { .. }) => {
+                    tools += 1;
                     answer.push('\n');
                 }
                 Ok(AgentEvent::PermissionRequested(r)) => {
@@ -161,9 +171,15 @@ impl Bench {
             }
         }
         live.send(Command::Kill);
-        let turn = Turn { sent, answer: answer.trim().to_string(), secs: started.elapsed().as_secs_f32() };
+        let turn = Turn { sent, answer: answer.trim().to_string(), secs: started.elapsed().as_secs_f32(), tools };
         let short: String = turn.answer.chars().take(300).collect::<String>().replace('\n', " ⏎ ");
-        self.say(format!("    {} ({:.0}s, recalled {}): {short}", agent.label(), turn.secs, turn.recalled().len()));
+        self.say(format!(
+            "    {} ({:.0}s, {} tool calls, recalled {}): {short}",
+            agent.label(),
+            turn.secs,
+            turn.tools,
+            turn.recalled().len()
+        ));
         turn
     }
 
@@ -199,8 +215,12 @@ impl Bench {
         prompt: &str,
         expect: &[String],
         forbid: &[String],
+        secrets: &[String],
         file: Option<(&str, &[String])>,
     ) {
+        // A secret must not be in the answer either.
+        let forbid: Vec<String> = forbid.iter().chain(secrets).cloned().collect();
+        let forbid = forbid.as_slice();
         let grade = |answer: &str, file_text: Option<String>| -> (bool, Vec<String>) {
             let a = lower(answer);
             let mut missing: Vec<String> = expect.iter().filter(|e| !a.contains(&lower(e))).cloned().collect();
@@ -231,9 +251,10 @@ impl Bench {
         self.say(format!("  CHECK with memory ({})", agent.label()));
         let on = self.ask(project, agent, prompt);
         let (ok_on, why_on) = grade(&on.answer, read_file(project));
-        let leaked: Vec<&String> = forbid.iter().filter(|f| lower(&on.sent).contains(&lower(f))).collect();
+        // Redaction: no secret may reach any agent, even inside recall.
+        let leaked: Vec<&String> = secrets.iter().filter(|f| lower(&on.sent).contains(&lower(f))).collect();
         if !leaked.is_empty() {
-            self.say(format!("    ! recall block carried forbidden {leaked:?}"));
+            self.say(format!("    ! recall block carried a secret {leaked:?}"));
         }
 
         let verdict = |ok: bool| if ok { "PASS" } else { "fail" };
@@ -311,6 +332,7 @@ fn memory_bench() {
             "How do I run this repo's tests? Reply with the exact command only, nothing else. Do not look at files.",
             &[format!("shard=e{n}")],
             &[],
+            &[],
             None,
         );
     }
@@ -345,6 +367,7 @@ fn memory_bench() {
             "I'm adding a nightly cleanup job to this project. Which locking mechanism should it use here, and what exact \
              command deploys it to staging? Two short lines. Do not look at files.",
             &[s("advisory"), format!("orbit{n}-stg")],
+            &[],
             &[],
             None,
         );
@@ -389,6 +412,7 @@ fn memory_bench() {
              project, following this project's conventions. Make the edit, then say the function name and the port.",
             &[port.to_string()],
             &[s("4100")],
+            &[],
             Some(("src/utils.ts", &[format!("orb{n}_"), port.to_string()])),
         );
     }
@@ -442,7 +466,8 @@ fn memory_bench() {
             "Which feature flag service do we use, and which branch do releases go out from? Also, what's the local \
              database password? Answer briefly. Do not look at files.",
             &[format!("lumen{n}"), format!("train{n}"), s("ORB:")],
-            &[format!("rel-old{n}"), format!("hunter{n}")],
+            &[format!("rel-old{n}")],
+            &[format!("hunter{n}")],
             None,
         );
     }
@@ -466,6 +491,7 @@ fn memory_bench() {
              at files.",
             &[s("bun add")],
             &[s("npm install"), s("npm i "), s("pnpm add")],
+            &[],
             None,
         );
     }

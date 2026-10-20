@@ -1053,6 +1053,7 @@ pub async fn before_send(session: &Shared, prompt: String) -> String {
     }
     let shared = session.clone();
     let query = redact(&clip(&query, 1000));
+    let started = std::time::Instant::now();
     let job = blocking(move || {
         let scopes = shared.lock().scopes();
         // The profile and every scope's search at once: recall has a few
@@ -1097,15 +1098,27 @@ pub async fn before_send(session: &Shared, prompt: String) -> String {
         (standing, profile, found)
     });
     let Ok(Ok((standing, profile, found))) = tokio::time::timeout(RECALL_TIMEOUT, job).await else {
-        tracing::debug!("memory recall skipped (slow or failed)");
+        tracing::info!("memory recall skipped after {} ms (slow or failed)", started.elapsed().as_millis());
         return prompt;
     };
     let mut s = session.lock();
     s.profiled = true;
+    let counts = (standing.len(), profile.len(), found.len());
     let standing = s.dedupe.fresh(standing);
     let profile = s.dedupe.fresh(profile);
     let found = s.dedupe.fresh(found);
-    match render_block_with(&standing, &profile, &found, BUDGET_CHARS) {
+    let block = render_block_with(&standing, &profile, &found, BUDGET_CHARS);
+    tracing::info!(
+        "memory recall for {} in {} ms: {} standing, {} profile, {} found; {} new, {} sent",
+        s.task,
+        started.elapsed().as_millis(),
+        counts.0,
+        counts.1,
+        counts.2,
+        standing.len() + profile.len() + found.len(),
+        block.as_ref().map_or(0, |(_, n)| *n)
+    );
+    match block {
         Some((block, _)) => augment(&prompt, &block),
         None => prompt,
     }
