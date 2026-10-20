@@ -9,8 +9,10 @@
 //! ```
 //!
 //! Run it outside an agent session, or strip `CLAUDE*`/`ANTHROPIC*` from the
-//! environment first. Results land in `C:/dvw/mem-e2e/bench-<n>/report.md`
-//! (or `$DOVE_BENCH_DIR`).
+//! environment first. Repositories go in `C:/dvw/mem-bench/<n>/` (or
+//! `$DOVE_BENCH_DIR`), with nothing else in that tree: agents that search
+//! around must not find the bench's logs, Dove's transcripts or the report,
+//! which go to `$DOVE_BENCH_REPORT` (default: the temp folder).
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -56,6 +58,30 @@ struct Turn {
     secs: f32,
     /// Tool calls the agent made (reading files, running commands).
     tools: usize,
+    /// A tool call touched a path outside the repository.
+    peeked: bool,
+}
+
+/// Windows or POSIX absolute paths in a tool call's input that are not
+/// inside `repo`.
+fn outside(input: &serde_json::Value, repo: &Path) -> bool {
+    let text = input.to_string().to_lowercase().replace("\\\\", "/").replace('\\', "/");
+    let repo = repo.display().to_string().to_lowercase().replace('\\', "/");
+    let bytes = text.as_bytes();
+    let mut i = 1;
+    while i + 1 < bytes.len() {
+        // `c:/...`
+        if bytes[i] == b':' && bytes[i + 1] == b'/' && bytes[i - 1].is_ascii_alphabetic() {
+            let start = i - 1;
+            let end = text[start..].find(['"', ' ', '\'', ',']).map_or(text.len(), |e| start + e);
+            if !text[start..end].starts_with(&repo) {
+                return true;
+            }
+            i = end;
+        }
+        i += 1;
+    }
+    false
 }
 
 impl Turn {
@@ -69,6 +95,8 @@ struct Bench {
     backend: Arc<dyn memory::Backend>,
     n: String,
     dir: PathBuf,
+    /// Report and trace, outside the repositories' tree.
+    out: PathBuf,
     log: String,
     rows: Vec<String>,
     failures: Vec<String>,
@@ -86,14 +114,19 @@ impl Bench {
             "{}",
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() % 1_000_000_000
         );
-        let root = std::env::var("DOVE_BENCH_DIR").unwrap_or("C:/dvw/mem-e2e".into());
-        let dir = PathBuf::from(root).join(format!("bench-{n}"));
+        let root = std::env::var("DOVE_BENCH_DIR").unwrap_or("C:/dvw/mem-bench".into());
+        let dir = PathBuf::from(root).join(&n);
         std::fs::create_dir_all(&dir).unwrap();
+        let out = std::env::var("DOVE_BENCH_REPORT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| std::env::temp_dir().join("dove-bench-reports"))
+            .join(&n);
+        std::fs::create_dir_all(&out).unwrap();
         // Dove's own store (transcripts of every teaching turn) lives far from
         // the repositories, so an agent that searches around cannot read it.
         let store = std::env::temp_dir().join(format!("dove-bench-store-{n}"));
         let engine = Engine::new(store).unwrap();
-        let trace = std::fs::File::create(dir.join("trace.log")).unwrap();
+        let trace = std::fs::File::create(out.join("trace.log")).unwrap();
         let _ = tracing_subscriber::fmt()
             .with_env_filter(tracing_subscriber::EnvFilter::new("warn,dove_core::memory=debug,dove::supermemory=debug"))
             .with_writer(std::sync::Mutex::new(trace))
@@ -107,7 +140,7 @@ impl Bench {
         for a in [Agent::OpenCode, Agent::Antigravity] {
             assert!(engine.program_for(a.kind()).is_some(), "{} is not installed", a.label());
         }
-        Self { engine, backend, n, dir, log: String::new(), rows: Vec::new(), failures: Vec::new() }
+        Self { engine, backend, n, dir, out, log: String::new(), rows: Vec::new(), failures: Vec::new() }
     }
 
     fn say(&mut self, line: impl AsRef<str>) {
@@ -135,9 +168,17 @@ impl Bench {
         self.engine.store.add_project(&path).unwrap()
     }
 
-    /// One turn in a new session of `agent`.
+    /// One turn in a new session of `agent`, without tools (a question).
     fn ask(&mut self, project: &Project, agent: Agent, prompt: &str) -> Turn {
+        self.ask_with(project, agent, prompt, false)
+    }
+
+    /// One turn; `edit` lets the agent use tools without asking (a real
+    /// change), otherwise it runs in the normal mode and every tool request
+    /// is denied, so it answers from what it was given.
+    fn ask_with(&mut self, project: &Project, agent: Agent, prompt: &str, edit: bool) -> Turn {
         let started = Instant::now();
+        let mode = if edit { PermissionMode::Bypass } else { PermissionMode::Default };
         let (_task, live) = self
             .engine
             .start_task(
@@ -146,24 +187,26 @@ impl Bench {
                     title: "bench".into(),
                     prompt: prompt.to_string(),
                     harness: agent.kind(),
-                    run: RunSettings { mode: PermissionMode::Bypass, model: Some(agent.model()), ..Default::default() },
+                    run: RunSettings { mode, model: Some(agent.model()), ..Default::default() },
                     join: None,
                     persona: None,
                 },
             )
             .expect("start the session");
-        let (mut sent, mut answer, mut tools) = (String::new(), String::new(), 0);
+        let (mut sent, mut answer, mut tools, mut peeked) = (String::new(), String::new(), 0, false);
         let until = Instant::now() + Duration::from_secs(420);
         while Instant::now() < until {
             match live.events.recv_timeout(Duration::from_secs(5)) {
                 Ok(AgentEvent::UserMessage { text }) if sent.is_empty() => sent = text.to_string(),
                 Ok(AgentEvent::TextDelta { text }) => answer.push_str(&text),
-                Ok(AgentEvent::ToolCall { .. }) => {
+                Ok(AgentEvent::ToolCall { input, .. }) => {
                     tools += 1;
+                    peeked |= outside(&input, &project.path);
                     answer.push('\n');
                 }
                 Ok(AgentEvent::PermissionRequested(r)) => {
-                    live.send(Command::Permission { request_id: r.request_id, decision: PermissionDecision::AllowOnce });
+                    let decision = if edit { PermissionDecision::AllowOnce } else { PermissionDecision::Deny };
+                    live.send(Command::Permission { request_id: r.request_id, decision });
                 }
                 Ok(AgentEvent::Error { message }) => self.say(format!("    ! {}: {message}", agent.label())),
                 Ok(AgentEvent::TurnEnded { .. }) | Ok(AgentEvent::Exited { .. }) => break,
@@ -171,13 +214,15 @@ impl Bench {
             }
         }
         live.send(Command::Kill);
-        let turn = Turn { sent, answer: answer.trim().to_string(), secs: started.elapsed().as_secs_f32(), tools };
+        let turn =
+            Turn { sent, answer: answer.trim().to_string(), secs: started.elapsed().as_secs_f32(), tools, peeked };
         let short: String = turn.answer.chars().take(300).collect::<String>().replace('\n', " ⏎ ");
         self.say(format!(
-            "    {} ({:.0}s, {} tool calls, recalled {}): {short}",
+            "    {} ({:.0}s, {} tool calls{}, recalled {}): {short}",
             agent.label(),
             turn.secs,
             turn.tools,
+            if turn.peeked { ", LOOKED OUTSIDE THE REPO" } else { "" },
             turn.recalled().len()
         ));
         turn
@@ -191,7 +236,7 @@ impl Bench {
         let b = self.backend.clone();
         let started = Instant::now();
         let mut found = false;
-        while started.elapsed() < Duration::from_secs(120) {
+        while started.elapsed() < Duration::from_secs(240) {
             if b.search(probe, &scope, 8).is_ok_and(|l| l.iter().any(|m| lower(&m.text).contains(&lower(probe)))) {
                 found = true;
                 break;
@@ -240,7 +285,7 @@ impl Bench {
         // the answer into a later baseline.
         self.say(format!("  CHECK without memory ({})", agent.label()));
         let _ = self.engine.store.set_setting(memory::ENABLED, "false");
-        let off = self.ask(project, agent, prompt);
+        let off = self.ask_with(project, agent, prompt, file.is_some());
         let _ = self.engine.store.set_setting(memory::ENABLED, "true");
         let (ok_off, _) = grade(&off.answer, read_file(project));
         // Undo any edit, so both runs start from the same code.
@@ -249,7 +294,7 @@ impl Bench {
         }
 
         self.say(format!("  CHECK with memory ({})", agent.label()));
-        let on = self.ask(project, agent, prompt);
+        let on = self.ask_with(project, agent, prompt, file.is_some());
         let (ok_on, why_on) = grade(&on.answer, read_file(project));
         // Redaction: no secret may reach any agent, even inside recall.
         let leaked: Vec<&String> = secrets.iter().filter(|f| lower(&on.sent).contains(&lower(f))).collect();
@@ -257,22 +302,26 @@ impl Bench {
             self.say(format!("    ! recall block carried a secret {leaked:?}"));
         }
 
-        let verdict = |ok: bool| if ok { "PASS" } else { "fail" };
+        let verdict = |ok: bool, t: &Turn| match (ok, t.peeked) {
+            (true, true) => "pass, but read outside the repo",
+            (true, false) => "PASS",
+            (false, _) => "fail",
+        };
         self.say(format!(
             "  => {scenario}: memory {} {}| baseline {}",
-            verdict(ok_on),
+            verdict(ok_on, &on),
             if ok_on { String::new() } else { format!("({}) ", why_on.join(", ")) },
-            verdict(ok_off)
+            verdict(ok_off, &off)
         ));
         self.rows.push(format!(
             "| {scenario} | {} | **{}** | {} | {} | {:.0}s |",
             agent.label(),
-            verdict(ok_on),
-            verdict(ok_off),
+            verdict(ok_on, &on),
+            verdict(ok_off, &off),
             on.recalled().len(),
             on.secs
         ));
-        if !ok_on || !leaked.is_empty() {
+        if !ok_on || on.peeked || !leaked.is_empty() {
             self.failures.push(format!("{scenario}: {}", why_on.join(", ")));
         }
     }
@@ -292,7 +341,7 @@ impl Bench {
         md.push_str("\n\n## Log\n\n```\n");
         md.push_str(&self.log);
         md.push_str("```\n");
-        let path = self.dir.join("report.md");
+        let path = self.out.join("report.md");
         std::fs::write(&path, &md).unwrap();
         println!("\nREPORT {}\n{}", path.display(), md.split("## Log").next().unwrap_or_default());
     }
@@ -522,4 +571,15 @@ fn memory_bench() {
 
     b.report(&extra);
     assert!(b.failures.is_empty(), "with memory, these failed: {:#?}", b.failures);
+}
+
+#[test]
+fn flags_tool_calls_outside_the_repo() {
+    let repo = Path::new("C:/dvw/mem-bench/1/easy");
+    let inside = serde_json::json!({"tool_info": {"parameters": {"Path": r"C:\dvw\mem-bench\1\easy\README.md"}}});
+    let parent = serde_json::json!({"tool_info": {"parameters": {"CommandLine": r#"Get-ChildItem -Path "C:\dvw\mem-e2e""#}}});
+    let relative = serde_json::json!({"command": "ls src"});
+    assert!(!outside(&inside, repo));
+    assert!(outside(&parent, repo));
+    assert!(!outside(&relative, repo));
 }

@@ -499,6 +499,8 @@ pub const BUDGET_CHARS: usize = 6000;
 const ITEM_CHARS: usize = 600;
 /// How long a prompt may wait for recall before going without.
 pub const RECALL_TIMEOUT: Duration = Duration::from_secs(4);
+/// Lookups that answer within this go in; the rest are dropped.
+const RECALL_COLLECT: Duration = Duration::from_millis(3500);
 
 fn one_line(text: &str, max: usize) -> String {
     let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -1056,44 +1058,62 @@ pub async fn before_send(session: &Shared, prompt: String) -> String {
     let started = std::time::Instant::now();
     let job = blocking(move || {
         let scopes = shared.lock().scopes();
-        // The profile and every scope's search at once: recall has a few
-        // seconds at most.
-        let (standing, profile, mut found) = std::thread::scope(|t| {
-            let profile = t.spawn(|| match scopes.first().filter(|_| first).map(|p| b.profile(p)) {
-                Some(Ok(p)) => p,
-                Some(Err(e)) => {
-                    tracing::debug!("memory profile: {e}");
-                    Vec::new()
+        // The profile, each scope's standing rules and each scope's search
+        // all at once; whatever has arrived by the deadline goes in, so one
+        // slow call never costs the prompt the others.
+        let deadline = started + RECALL_COLLECT;
+        let (tx, rx) = std::sync::mpsc::channel::<(u8, Vec<Memory>)>();
+        let mut jobs = 0;
+        let mut spawn = |part: u8, f: Box<dyn FnOnce() -> Result<Vec<Memory>, String> + Send>| {
+            let tx = tx.clone();
+            jobs += 1;
+            let _ = std::thread::Builder::new().name("dove-recall".into()).spawn(move || {
+                match f() {
+                    Ok(list) => {
+                        let _ = tx.send((part, list));
+                    }
+                    Err(e) => {
+                        tracing::debug!("memory recall part {part}: {e}");
+                        let _ = tx.send((part, Vec::new()));
+                    }
                 }
-                None => Vec::new(),
             });
-            // Standing rules once per session, from every scope.
-            let standing: Vec<_> = scopes
-                .iter()
-                .filter(|_| first)
-                .map(|scope| {
-                    let (b, query) = (&b, &query);
-                    t.spawn(move || b.standing(scope, query, 12).unwrap_or_default())
-                })
-                .collect();
-            let searches: Vec<_> = scopes
-                .iter()
-                .map(|scope| {
-                    let (b, query) = (&b, &query);
-                    t.spawn(move || match b.search(query, scope, 6) {
-                        Ok(list) => list,
-                        Err(e) => {
-                            tracing::debug!("memory search ({}): {e}", scope.label());
-                            Vec::new()
-                        }
-                    })
-                })
-                .collect();
-            let found: Vec<Memory> = searches.into_iter().flat_map(|h| h.join().unwrap_or_default()).collect();
-            let mut standing: Vec<Memory> = standing.into_iter().flat_map(|h| h.join().unwrap_or_default()).collect();
-            standing.sort_by(|a, b| b.at.cmp(&a.at));
-            (standing, profile.join().unwrap_or_default(), found)
-        });
+        };
+        if first {
+            if let Some(project) = scopes.first().cloned() {
+                let b = b.clone();
+                spawn(1, Box::new(move || b.profile(&project)));
+            }
+            for scope in scopes.iter().cloned() {
+                let (b, q) = (b.clone(), query.clone());
+                spawn(0, Box::new(move || b.standing(&scope, &q, 12)));
+            }
+        }
+        for scope in scopes.iter().cloned() {
+            let (b, q) = (b.clone(), query.clone());
+            spawn(2, Box::new(move || b.search(&q, &scope, 6)));
+        }
+        drop(tx);
+        let (mut standing, mut profile, mut found) = (Vec::new(), Vec::new(), Vec::new());
+        let mut got = 0;
+        while got < jobs {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            match rx.recv_timeout(left) {
+                Ok((part, list)) => {
+                    got += 1;
+                    match part {
+                        0 => standing.extend(list),
+                        1 => profile.extend(list),
+                        _ => found.extend(list),
+                    }
+                }
+                Err(_) => {
+                    tracing::info!("memory recall: {} of {jobs} lookups answered in time", got);
+                    break;
+                }
+            }
+        }
+        standing.sort_by(|a, b| b.at.cmp(&a.at));
         found.sort_by(|a, b| b.score.unwrap_or(0.0).total_cmp(&a.score.unwrap_or(0.0)));
         (standing, profile, found)
     });

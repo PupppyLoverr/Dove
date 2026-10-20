@@ -97,6 +97,10 @@ const DEFAULT_SPACE: &str = "sm_project_default";
 
 /// How long one call may take.
 const CALL_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long recall waits for the MCP side (extracted memories, profile).
+/// Calls share one connection and queue, so a slow one must not cost the
+/// prompt its REST results: recall as a whole has a few seconds.
+const RECALL_MCP_WAIT: Duration = Duration::from_millis(2500);
 
 impl Supermemory {
     fn start(def: McpServer) -> Self {
@@ -113,13 +117,23 @@ impl Supermemory {
     }
 
     fn run<T: Send + 'static>(&self, f: impl FnOnce(&mut Conn) -> Result<T, String> + Send + 'static) -> Result<T, String> {
+        self.run_for(CALL_TIMEOUT, f)
+    }
+
+    /// [`Self::run`], waiting at most `wait` (the call itself still finishes
+    /// on the worker; its answer is dropped).
+    fn run_for<T: Send + 'static>(
+        &self,
+        wait: Duration,
+        f: impl FnOnce(&mut Conn) -> Result<T, String> + Send + 'static,
+    ) -> Result<T, String> {
         let (tx, rx) = mpsc::channel();
         self.jobs
             .send(Box::new(move |c| {
                 let _ = tx.send(f(c));
             }))
             .map_err(|_| "the Supermemory connection stopped".to_string())?;
-        rx.recv_timeout(CALL_TIMEOUT).unwrap_or_else(|_| Err("Supermemory did not answer in time".into()))
+        rx.recv_timeout(wait).unwrap_or_else(|_| Err("Supermemory did not answer in time".into()))
     }
 }
 
@@ -292,7 +306,7 @@ impl memory::Backend for Supermemory {
         let body = json!({"q": query, "limit": limit, "onlyMatchingChunks": true, "containerTags": [tag]});
         let rest = self.rest.clone();
         let documents = std::thread::spawn(move || rest.post("/v3/search", body).map(|r| relevant_documents(&r)));
-        let memories = self.run(move |c| {
+        let memories = self.run_for(RECALL_MCP_WAIT, move |c| {
             c.call(&["search_memory", "recall", "search"], |props| {
                 let mut a = serde_json::Map::new();
                 put(&mut a, props, &["query", "q", "informationToGet"], json!(query));
@@ -344,7 +358,7 @@ impl memory::Backend for Supermemory {
 
     fn profile(&self, scope: &Scope) -> Result<Vec<Memory>, String> {
         let scope = scope.clone();
-        self.run(move |c| {
+        self.run_for(RECALL_MCP_WAIT, move |c| {
             let r = c.call(&["get_profile", "profile"], |props| {
                 let mut a = serde_json::Map::new();
                 with_scope(&mut a, props, &scope, false);
