@@ -1282,7 +1282,8 @@ impl Render for IntegrationsView {
                 let on = self.config.ego_allow;
                 d.child(line(
                     "Run without asking",
-                    "Claude Code runs ego-browser without a prompt; a command chained to it still asks.                      Codex keeps asking, and OpenCode follows its own permission rules",
+                    "Claude Code runs ego-browser without a prompt; a command chained to it still asks. \
+                     Codex keeps asking, and OpenCode follows its own permission rules",
                     ctl::on_toggle(ctl::toggle(&t, "int-ego-allow", on), cx, move |this, _, cx| {
                         this.config.ego_allow = !on;
                         this.persist(cx);
