@@ -2800,9 +2800,9 @@ impl Shell {
         let effect =
             crate::wallpaper::Effect::from_id(&self.engine.store.setting("wallpaper_effect").unwrap_or_default());
         let animate = self.engine.store.setting("wallpaper_animate").as_deref() == Some("true");
-        // A still thread backdrop gets its frost baked into the raster; only
-        // a moving one needs the live blur.
-        let baked = thread && !animate;
+        // A thread backdrop always uses the live frost below: the baked
+        // raster blur (a quarter-size Gaussian under a flat tint) did not
+        // match its look.
         let props = crate::wallpaper::HeroProps {
             path: path.into(),
             effect,
@@ -2810,7 +2810,7 @@ impl Shell {
             target: (width * scale, height * scale),
             animate,
             frosted: t.is_frost(),
-            blur: if baked { (THREAD_ART_BLUR * scale / 2.0).round() as u32 } else { 0 },
+            blur: 0,
             fade: home,
             composer: if home { self.composer_bounds.clone() } else { std::rc::Rc::new(std::cell::Cell::new(None)) },
         };
@@ -2828,8 +2828,7 @@ impl Shell {
                 .overflow_hidden()
                 .bg(t.bg)
                 .child(div().absolute().top_0().left_0().right_0().h(px(height)).child(view))
-                .when(baked, |d| d.child(div().absolute().inset_0().bg(t.bg.opacity(THREAD_ART_TINT))))
-                .when(thread && !baked, |d| {
+                .when(thread, |d| {
                     d.child(div().absolute().inset_0().child(ui::frosted(
                         0.0,
                         THREAD_ART_BLUR,
