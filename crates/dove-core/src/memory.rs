@@ -1002,20 +1002,33 @@ pub async fn before_send(session: &Shared, prompt: String) -> String {
     let query = redact(&clip(&query, 1000));
     let job = blocking(move || {
         let scopes = shared.lock().scopes();
-        let mut profile = Vec::new();
-        if first && let Some(project) = scopes.first() {
-            match b.profile(project) {
-                Ok(p) => profile = p,
-                Err(e) => tracing::debug!("memory profile: {e}"),
-            }
-        }
-        let mut found = Vec::new();
-        for scope in &scopes {
-            match b.search(&query, scope, 6) {
-                Ok(list) => found.extend(list),
-                Err(e) => tracing::debug!("memory search ({}): {e}", scope.label()),
-            }
-        }
+        // The profile and every scope's search at once: recall has a few
+        // seconds at most.
+        let (profile, mut found) = std::thread::scope(|t| {
+            let profile = t.spawn(|| match scopes.first().filter(|_| first).map(|p| b.profile(p)) {
+                Some(Ok(p)) => p,
+                Some(Err(e)) => {
+                    tracing::debug!("memory profile: {e}");
+                    Vec::new()
+                }
+                None => Vec::new(),
+            });
+            let searches: Vec<_> = scopes
+                .iter()
+                .map(|scope| {
+                    let (b, query) = (&b, &query);
+                    t.spawn(move || match b.search(query, scope, 6) {
+                        Ok(list) => list,
+                        Err(e) => {
+                            tracing::debug!("memory search ({}): {e}", scope.label());
+                            Vec::new()
+                        }
+                    })
+                })
+                .collect();
+            let found: Vec<Memory> = searches.into_iter().flat_map(|h| h.join().unwrap_or_default()).collect();
+            (profile.join().unwrap_or_default(), found)
+        });
         found.sort_by(|a, b| b.score.unwrap_or(0.0).total_cmp(&a.score.unwrap_or(0.0)));
         (profile, found)
     });
