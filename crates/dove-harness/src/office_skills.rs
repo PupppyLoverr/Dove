@@ -39,6 +39,21 @@ pub const SKILLS: &[Skill] = &[
     skill!("pptx", "pptx_tool.py", "Create PowerPoint decks from outlines on real layouts; dump and edit slides."),
     skill!("xlsx", "xlsx_tool.py", "Create Excel workbooks with formulas, formats and charts; dump and edit cells."),
     skill!("docx", "docx_tool.py", "Create Word documents with styles, lists, tables and images; edit text."),
+    Skill {
+        name: "dove-browser",
+        description: "Browser playbook: ego lite (the user's own Chromium) or Dove's browser, with Dove's safety and hand-off rules.",
+        files: &[
+            ("SKILL.md", include_str!("../../../skills/dove-browser/SKILL.md")),
+            ("reference/recipes.md", include_str!("../../../skills/dove-browser/reference/recipes.md")),
+            ("reference/troubleshooting.md", include_str!("../../../skills/dove-browser/reference/troubleshooting.md")),
+            ("evals/tasks.md", include_str!("../../../skills/dove-browser/evals/tasks.md")),
+        ],
+    },
+    Skill {
+        name: "dove-memory",
+        description: "Long-term memory across sessions and harnesses (Supermemory): what to search, save and never save.",
+        files: &[("SKILL.md", include_str!("../../../skills/dove-memory/SKILL.md"))],
+    },
 ];
 
 /// Written into every folder Dove installs, so later runs know they may
@@ -183,12 +198,19 @@ pub fn describe(name: Option<&str>) -> Result<String, String> {
             })?;
             let dir = root.join(skill.name);
             let body = skill.files.iter().find(|(p, _)| *p == "SKILL.md").map(|(_, t)| *t).unwrap_or_default();
-            Ok(format!(
-                "Skill folder: {dir}\nRun its scripts from there, for example `uv run {script}` (or python3 after \
-                 installing the dependencies). Relative paths below are inside the skill folder.\n\n{body}",
-                dir = dir.display(),
-                script = dir.join(skill.files[1].0).display(),
-            ))
+            let script = skill.files.iter().map(|(p, _)| *p).find(|p| p.starts_with("scripts/"));
+            Ok(match script {
+                Some(script) => format!(
+                    "Skill folder: {dir}\nRun its scripts from there, for example `uv run {script}` (or python3 after \
+                     installing the dependencies). Relative paths below are inside the skill folder.\n\n{body}",
+                    dir = dir.display(),
+                    script = dir.join(script).display(),
+                ),
+                None => format!(
+                    "Skill folder: {dir}\nRelative paths below are inside the skill folder.\n\n{body}",
+                    dir = dir.display()
+                ),
+            })
         }
     }
 }
@@ -204,7 +226,9 @@ mod tests {
             assert!(md.starts_with("---\n"), "{} SKILL.md needs frontmatter", s.name);
             assert!(md.contains(&format!("\nname: {}\n", s.name)), "{} frontmatter name", s.name);
             assert!(md.contains("\ndescription: "), "{} frontmatter description", s.name);
-            assert!(s.files[1].1.contains("# /// script"), "{} script needs PEP 723 metadata", s.name);
+            for (path, body) in s.files.iter().filter(|(p, _)| p.starts_with("scripts/")) {
+                assert!(body.contains("# /// script"), "{} {path} needs PEP 723 metadata", s.name);
+            }
         }
     }
 
@@ -230,5 +254,6 @@ mod tests {
         assert!(describe(None).unwrap().contains("pptx"));
         assert!(describe(Some("XLSX")).unwrap().contains("name: xlsx"));
         assert!(describe(Some("nope")).is_err());
+        assert!(describe(Some("dove-memory")).unwrap().contains("name: dove-memory"));
     }
 }

@@ -7,6 +7,7 @@
 //! MCP server, so every harness Dove starts gets them without per-harness
 //! config.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -55,6 +56,149 @@ pub struct Composio {
     pub api_key: String,
     /// Toolkit slugs to allow; empty means Composio's unrestricted default.
     pub toolkits: Vec<String>,
+    /// Signed in with a Composio account (OAuth to Composio Connect)
+    /// instead of a pasted key.
+    pub account: bool,
+}
+
+/// An MCP server the user added from the catalog or by hand. Its tools reach
+/// every harness as `<id>__<tool>` through Dove's own MCP server.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct McpServer {
+    /// Tool prefix and OAuth token key: `[a-z0-9-]`, unique.
+    pub id: String,
+    pub name: String,
+    /// The catalog entry it came from, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catalog: Option<String>,
+    #[serde(default = "yes")]
+    pub enabled: bool,
+    #[serde(flatten)]
+    pub transport: Transport,
+}
+
+fn yes() -> bool {
+    true
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum Transport {
+    /// A local command speaking MCP on stdin/stdout.
+    Stdio {
+        command: String,
+        #[serde(default)]
+        args: Vec<String>,
+        #[serde(default)]
+        env: BTreeMap<String, String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
+    },
+    /// A remote streamable-HTTP server. Keys go in `headers`
+    /// (`Authorization: Bearer …`); `oauth` uses the token Dove signed in for.
+    Http {
+        url: String,
+        #[serde(default)]
+        headers: BTreeMap<String, String>,
+        #[serde(default)]
+        oauth: bool,
+    },
+}
+
+impl McpServer {
+    pub fn is_remote(&self) -> bool {
+        matches!(self.transport, Transport::Http { .. })
+    }
+
+    pub fn uses_oauth(&self) -> bool {
+        matches!(self.transport, Transport::Http { oauth: true, .. })
+    }
+}
+
+/// A tool prefix from a display name: lowercase `[a-z0-9-]`, at most 24
+/// characters, never empty.
+pub fn slug(name: &str) -> String {
+    let mut out = String::new();
+    for c in name.trim().chars().flat_map(char::to_lowercase) {
+        if c.is_ascii_alphanumeric() {
+            out.push(c);
+        } else if !out.is_empty() && !out.ends_with('-') {
+            out.push('-');
+        }
+        if out.len() >= 24 {
+            break;
+        }
+    }
+    let out = out.trim_end_matches('-').to_string();
+    if out.is_empty() { "server".into() } else { out }
+}
+
+/// Ids Dove's own server already uses as tool prefixes.
+const RESERVED: [&str; 5] = ["composio", "paper", "computer", "browser", "chrome"];
+
+/// `base`, or `base-2`, `base-3`… so it is unique among `taken` and never
+/// collides with Dove's own prefixes.
+pub fn unique_id(base: &str, taken: &[String]) -> String {
+    let base = slug(base);
+    let free = |id: &str| !RESERVED.contains(&id) && !taken.iter().any(|t| t == id);
+    if free(&base) {
+        return base;
+    }
+    (2..).map(|n| format!("{base}-{n}")).find(|id| free(id)).unwrap_or(base)
+}
+
+/// Read a pasted `{"mcpServers": {…}}` block (Claude Code / Cursor / Gemini
+/// shape), or a bare `{name: {…}}` map, or one server object with a name.
+pub fn parse_pasted(json: &str, taken: &[String]) -> Result<Vec<McpServer>, String> {
+    let v: serde_json::Value = serde_json::from_str(json.trim()).map_err(|e| format!("Not valid JSON: {e}"))?;
+    let map = v.get("mcpServers").or_else(|| v.get("mcp")).or_else(|| v.get("servers")).unwrap_or(&v);
+    let map = map.as_object().ok_or("Expected an object of servers")?;
+    let mut taken = taken.to_vec();
+    let mut out = Vec::new();
+    for (name, spec) in map {
+        let str_map = |key: &str| -> BTreeMap<String, String> {
+            spec.get(key)
+                .and_then(|m| m.as_object())
+                .map(|m| m.iter().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string()))).collect())
+                .unwrap_or_default()
+        };
+        let url = spec.get("url").or_else(|| spec.get("httpUrl")).or_else(|| spec.get("serverUrl")).and_then(|u| u.as_str());
+        let transport = if let Some(url) = url {
+            let mut headers = str_map("headers");
+            headers.extend(str_map("http_headers"));
+            Transport::Http { url: url.to_string(), headers, oauth: false }
+        } else {
+            // OpenCode writes `command` as one array; everyone else splits it.
+            let (command, mut args) = match spec.get("command") {
+                Some(serde_json::Value::Array(parts)) => {
+                    let mut parts = parts.iter().filter_map(|p| p.as_str().map(str::to_string));
+                    (parts.next().unwrap_or_default(), parts.collect::<Vec<_>>())
+                }
+                Some(c) => (c.as_str().unwrap_or_default().to_string(), Vec::new()),
+                None => (String::new(), Vec::new()),
+            };
+            if command.is_empty() {
+                return Err(format!("{name}: needs a command or a url"));
+            }
+            args.extend(
+                spec.get("args")
+                    .and_then(|a| a.as_array())
+                    .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect::<Vec<_>>())
+                    .unwrap_or_default(),
+            );
+            let mut env = str_map("env");
+            env.extend(str_map("environment"));
+            let cwd = spec.get("cwd").and_then(|c| c.as_str()).map(str::to_string);
+            Transport::Stdio { command, args, env, cwd }
+        };
+        let id = unique_id(name, &taken);
+        taken.push(id.clone());
+        out.push(McpServer { id, name: name.clone(), catalog: None, enabled: true, transport });
+    }
+    if out.is_empty() {
+        return Err("No servers found".into());
+    }
+    Ok(out)
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -69,6 +213,22 @@ pub struct Config {
     pub composio: Composio,
     pub paper: Toggle,
     pub computer: Toggle,
+    /// Catalog and custom MCP servers, in the order the user added them.
+    pub servers: Vec<McpServer>,
+    /// ego lite as the agents' only browser: hides Dove's `browser_*` tools
+    /// so agents use the `ego-browser` command (dove-browser skill).
+    pub ego: Toggle,
+}
+
+impl Config {
+    pub fn ids(&self) -> Vec<String> {
+        self.servers.iter().map(|s| s.id.clone()).collect()
+    }
+
+    /// Whether anything here needs Dove's MCP server running.
+    pub fn any_enabled(&self) -> bool {
+        self.composio.enabled || self.paper.enabled || self.computer.enabled || self.servers.iter().any(|s| s.enabled)
+    }
 }
 
 /// Which credential the user pasted, by Composio's documented prefixes.
@@ -162,6 +322,11 @@ pub fn cua_version(bin: &std::path::Path) -> Option<String> {
     (!v.is_empty()).then_some(v)
 }
 
+/// The `ego-browser` command ego lite registers on onboarding, if found.
+pub fn ego_browser() -> Option<PathBuf> {
+    dove_core::harness_process::resolve("ego-browser")
+}
+
 /// Whether Paper Desktop's MCP server is listening.
 pub fn paper_running() -> bool {
     std::net::TcpStream::connect_timeout(&([127, 0, 0, 1], 29979).into(), Duration::from_millis(250)).is_ok()
@@ -174,6 +339,8 @@ struct Probe {
     /// The driver's own `health_report` summary, after "Check permissions".
     cua_health: Option<String>,
     paper: bool,
+    /// ego lite's `ego-browser` command.
+    ego: Option<PathBuf>,
     /// The GitHub CLI, and the account it is signed in to.
     gh: Option<PathBuf>,
     gh_user: Option<String>,
@@ -190,10 +357,18 @@ enum GhStep {
     Failed(String),
 }
 
+#[path = "integrations_mcp.rs"]
+mod mcp;
+
 pub struct IntegrationsView {
     config: Config,
     api_key: Entity<InputState>,
     toolkits: Entity<InputState>,
+    /// Filters connected servers and the catalog.
+    search: Entity<InputState>,
+    /// Live per-server state (signing in, tested, failed), by id.
+    server_status: std::collections::HashMap<String, mcp::Status>,
+    dialog: Option<mcp::Dialog>,
     probe: Probe,
     checking: bool,
     copied: bool,
@@ -220,7 +395,17 @@ impl IntegrationsView {
             s.set_value(custom, window, cx);
             s
         });
+        let search = cx.new(|cx| {
+            let mut s = InputState::new(window, cx).placeholder("Search servers");
+            s.set_editor_style(ui::input_style(Theme::of(cx)));
+            s
+        });
         let subs = vec![
+            cx.subscribe(&search, |_, _, ev: &InputEvent, cx| {
+                if matches!(ev, InputEvent::Change) {
+                    cx.notify();
+                }
+            }),
             cx.subscribe(&api_key, |this, s, ev: &InputEvent, cx| {
                 if matches!(ev, InputEvent::Change | InputEvent::Blur) {
                     this.config.composio.api_key = s.read(cx).value().trim().to_string();
@@ -251,6 +436,9 @@ impl IntegrationsView {
             config,
             api_key,
             toolkits,
+            search,
+            server_status: Default::default(),
+            dialog: None,
             probe: Probe::default(),
             checking: false,
             copied: false,
@@ -274,6 +462,9 @@ impl IntegrationsView {
 
     fn persist(&mut self, cx: &mut Context<Self>) {
         let _ = save(&self.config);
+        // The first integration turned on with the agent browser off still
+        // needs Dove's server registered for the agents started next.
+        crate::mcp_browser::register_without_browser(&data_root());
         cx.notify();
     }
 
@@ -283,7 +474,7 @@ impl IntegrationsView {
             let cua_version = cua.as_deref().and_then(cua_version);
             let gh = dove_core::git::github::gh_path();
             let gh_user = gh.as_ref().and_then(|_| dove_core::git::github::gh_user());
-            Probe { cua, cua_version, cua_health: None, paper: paper_running(), gh, gh_user }
+            Probe { cua, cua_version, cua_health: None, paper: paper_running(), ego: ego_browser(), gh, gh_user }
         });
         cx.spawn(async move |this, cx| {
             let probe = task.await;
@@ -420,7 +611,12 @@ fn pick(id: SharedString, label: &'static str, on: bool, t: &Theme) -> gpui::Sta
         .child(label)
 }
 
-fn small_icon(id: &'static str, glyph: &'static str, label: &'static str, t: &Theme) -> gpui::Stateful<gpui::Div> {
+fn small_icon(
+    id: impl Into<gpui::ElementId>,
+    glyph: &'static str,
+    label: &'static str,
+    t: &Theme,
+) -> gpui::Stateful<gpui::Div> {
     let hover = t.wash(0.08);
     div()
         .id(id)
@@ -453,7 +649,7 @@ fn field(input: &Entity<InputState>, w: f32, t: &Theme) -> impl IntoElement {
 }
 
 impl Render for IntegrationsView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::perf_trace::count_render("IntegrationsView");
         let t = Theme::of(cx).clone();
         let browser = crate::browser::control::connected_browser();
@@ -622,6 +818,61 @@ impl Render for IntegrationsView {
                 &t,
             ))
             .when(composio_on, |d| {
+                let this = cx.entity().downgrade();
+                let account = c.account;
+                let signed_in = crate::mcp_oauth::signed_in("composio");
+                let state = self.server_status.get("composio").cloned();
+                d.child(line(
+                    "Connect with",
+                    "Sign in with your Composio account, or paste a key",
+                    ctl::segmented(
+                        &t,
+                        "int-composio-mode",
+                        vec![ctl::Segment::new("API key"), ctl::Segment::new("Composio account")],
+                        usize::from(account),
+                        move |i, _, cx| {
+                            let _ = this.update(cx, |v, cx| {
+                                v.config.composio.account = i == 1;
+                                v.persist(cx);
+                            });
+                        },
+                    ),
+                    &t,
+                ))
+                .when(account, |d| {
+                    let (ok, label) = match &state {
+                        Some(mcp::Status::Busy(m)) => (false, (*m).to_string()),
+                        Some(mcp::Status::Failed(e)) => (false, e.chars().take(90).collect()),
+                        _ if signed_in => (true, "Signed in. Agents can use every app you link in Composio".into()),
+                        _ => (false, "Not signed in".to_string()),
+                    };
+                    d.child(line(
+                        "Composio account",
+                        label.clone(),
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(8.0))
+                            .child(status(ok, if ok { "Connected" } else { "Not connected" }, &t))
+                            .child(if signed_in {
+                                ctl::button_sm(&t, "int-composio-signout", "Sign out", Tone::Quiet)
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        crate::mcp_oauth::sign_out("composio");
+                                        this.server_status.remove("composio");
+                                        cx.notify();
+                                    }))
+                            } else {
+                                ctl::button_sm(&t, "int-composio-signin", "Sign in", Tone::Filled).on_click(
+                                    cx.listener(|this, _, _, cx| {
+                                        this.sign_in("composio".into(), COMPOSIO_CONNECT_URL.into(), cx)
+                                    }),
+                                )
+                            }),
+                        &t,
+                    ))
+                })
+            })
+            .when(composio_on && !c.account, |d| {
                 d.child(line(
                     "API key",
                     match (c.api_key.is_empty(), key_kind) {
@@ -765,16 +1016,71 @@ impl Render for IntegrationsView {
                 )
             });
 
+        let mcp = self.render_mcp(&t, cx);
+        let dialog = self.render_dialog(&t, window, cx);
+        // ego lite: the agents' browser
+        let ego_on = self.config.ego.enabled;
+        let ego_found = self.probe.ego.is_some();
+        let ego = plate(&t)
+            .child(head(
+                icons::GLOBAL,
+                "ego lite",
+                if ego_found {
+                    "Agents browse in your own Chromium with your sign-ins, each task in its own space you can watch"
+                } else {
+                    "A browser built for agents. Install it and every harness uses it through the dove-browser skill"
+                },
+                status(ego_found, if ego_found { "Installed" } else { "Not installed" }, &t),
+                &t,
+            ))
+            .child(if ego_found {
+                let (left, switch) = toggle(ego_on, None, "int-ego-only", &t);
+                line(
+                    "Use ego lite only",
+                    "Hide Dove's own browser tools so agents always use ego lite",
+                    left.child(ctl::on_toggle(switch, cx, move |this, _, cx| {
+                        this.config.ego.enabled = !ego_on;
+                        this.persist(cx);
+                    })),
+                    &t,
+                )
+            } else {
+                line(
+                    "Install",
+                    "Download ego lite, finish its onboarding, then detect again",
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(4.0))
+                        .child(
+                            ctl::button_sm(&t, "int-ego-get", "Get ego lite", Tone::Filled)
+                                .on_click(cx.listener(|_, _, _, cx| cx.open_url("https://lite.ego.app/"))),
+                        )
+                        .child(
+                            small_icon("int-ego-refresh", icons::REFRESH, "Detect again", &t)
+                                .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
+                        ),
+                    &t,
+                )
+            });
+        let built_in = div()
+            .flex()
+            .flex_col()
+            .gap(px(space::MD))
+            .child(github)
+            .child(ego)
+            .child(chrome)
+            .child(composio)
+            .child(paper)
+            .child(computer);
         div()
             .pt(px(space::LG))
             .flex()
             .flex_col()
             .gap(px(space::MD))
-            .child(github)
-            .child(chrome)
-            .child(composio)
-            .child(paper)
-            .child(computer)
+            .child(page::section(&t, "MCP servers", mcp))
+            .child(page::section(&t, "Built in", built_in))
+            .children(dialog)
             .child(
                 div()
                     .px(px(page::LABEL_INSET))
