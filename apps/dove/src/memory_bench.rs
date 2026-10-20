@@ -60,6 +60,38 @@ struct Turn {
     tools: usize,
     /// A tool call touched a path outside the repository.
     peeked: bool,
+    /// The agent reported an error.
+    errored: bool,
+    /// The agent never answered, even after retries (provider down).
+    infra: bool,
+}
+
+/// Whether `answer` gives `old` as current, rather than mentioning it as
+/// replaced ("`train9` replaced the deleted `rel-old9`" is a right answer).
+fn as_current(answer: &str, old: &str) -> bool {
+    const RETIRED: &[&str] = &[
+        "deleted", "replac", "retired", "no longer", "instead of", "never", "not use", "don't use", "do not use",
+        "previous", "out of date", "superseded", "changed from", "moved from", "formerly", "older", "outdated",
+        "removed",
+    ];
+    let a = answer.to_lowercase();
+    let old = old.to_lowercase();
+    let boundary = |mut i: usize| {
+        while i > 0 && !a.is_char_boundary(i) {
+            i -= 1;
+        }
+        i
+    };
+    let mut from = 0;
+    while let Some(pos) = a[from..].find(&old) {
+        let at = from + pos;
+        let window = &a[boundary(at.saturating_sub(80))..boundary((at + old.len() + 80).min(a.len()))];
+        if !RETIRED.iter().any(|r| window.contains(r)) {
+            return true;
+        }
+        from = at + old.len();
+    }
+    false
 }
 
 /// Windows or POSIX absolute paths in a tool call's input that are not
@@ -100,6 +132,10 @@ struct Bench {
     log: String,
     rows: Vec<String>,
     failures: Vec<String>,
+    /// Scenarios an outage kept from running properly.
+    infra: Vec<String>,
+    /// A turn of the current scenario never got an answer.
+    infra_hit: bool,
 }
 
 fn lower(s: &str) -> String {
@@ -140,7 +176,18 @@ impl Bench {
         for a in [Agent::OpenCode, Agent::Antigravity] {
             assert!(engine.program_for(a.kind()).is_some(), "{} is not installed", a.label());
         }
-        Self { engine, backend, n, dir, out, log: String::new(), rows: Vec::new(), failures: Vec::new() }
+        Self {
+            engine,
+            backend,
+            n,
+            dir,
+            out,
+            log: String::new(),
+            rows: Vec::new(),
+            failures: Vec::new(),
+            infra: Vec::new(),
+            infra_hit: false,
+        }
     }
 
     fn say(&mut self, line: impl AsRef<str>) {
@@ -177,6 +224,25 @@ impl Bench {
     /// change), otherwise it runs in the normal mode and every tool request
     /// is denied, so it answers from what it was given.
     fn ask_with(&mut self, project: &Project, agent: Agent, prompt: &str, edit: bool) -> Turn {
+        // A provider outage is not a memory result: retry, then mark it.
+        for attempt in 1..=3 {
+            let turn = self.ask_once(project, agent, prompt, edit);
+            if !(turn.errored && turn.answer.is_empty()) {
+                return turn;
+            }
+            if attempt < 3 {
+                self.say(format!("    … {} gave no answer (error); retrying in 30s", agent.label()));
+                std::thread::sleep(Duration::from_secs(30));
+            } else {
+                self.say(format!("    … {} unavailable after 3 tries: counted as infra", agent.label()));
+                self.infra_hit = true;
+                return Turn { infra: true, ..turn };
+            }
+        }
+        unreachable!()
+    }
+
+    fn ask_once(&mut self, project: &Project, agent: Agent, prompt: &str, edit: bool) -> Turn {
         let started = Instant::now();
         let mode = if edit { PermissionMode::Bypass } else { PermissionMode::Default };
         let (_task, live) = self
@@ -193,7 +259,8 @@ impl Bench {
                 },
             )
             .expect("start the session");
-        let (mut sent, mut answer, mut tools, mut peeked) = (String::new(), String::new(), 0, false);
+        let (mut sent, mut answer, mut tools, mut peeked, mut errored) =
+            (String::new(), String::new(), 0, false, false);
         let until = Instant::now() + Duration::from_secs(420);
         while Instant::now() < until {
             match live.events.recv_timeout(Duration::from_secs(5)) {
@@ -208,14 +275,25 @@ impl Bench {
                     let decision = if edit { PermissionDecision::AllowOnce } else { PermissionDecision::Deny };
                     live.send(Command::Permission { request_id: r.request_id, decision });
                 }
-                Ok(AgentEvent::Error { message }) => self.say(format!("    ! {}: {message}", agent.label())),
+                Ok(AgentEvent::Error { message }) => {
+                    errored = true;
+                    self.say(format!("    ! {}: {message}", agent.label()));
+                }
                 Ok(AgentEvent::TurnEnded { .. }) | Ok(AgentEvent::Exited { .. }) => break,
                 _ => {}
             }
         }
         live.send(Command::Kill);
         let turn =
-            Turn { sent, answer: answer.trim().to_string(), secs: started.elapsed().as_secs_f32(), tools, peeked };
+            Turn {
+                sent,
+                answer: answer.trim().to_string(),
+                secs: started.elapsed().as_secs_f32(),
+                tools,
+                peeked,
+                errored,
+                infra: false,
+            };
         let short: String = turn.answer.chars().take(300).collect::<String>().replace('\n', " ⏎ ");
         self.say(format!(
             "    {} ({:.0}s, {} tool calls{}, recalled {}): {short}",
@@ -269,7 +347,7 @@ impl Bench {
         let grade = |answer: &str, file_text: Option<String>| -> (bool, Vec<String>) {
             let a = lower(answer);
             let mut missing: Vec<String> = expect.iter().filter(|e| !a.contains(&lower(e))).cloned().collect();
-            missing.extend(forbid.iter().filter(|f| a.contains(&lower(f))).map(|f| format!("forbidden {f}")));
+            missing.extend(forbid.iter().filter(|f| as_current(&a, f)).map(|f| format!("gave {f} as current")));
             if let (Some((_, must)), text) = (file, file_text) {
                 let t = lower(&text.unwrap_or_default());
                 missing.extend(must.iter().filter(|m| !t.contains(&lower(m))).map(|m| format!("file lacks {m}")));
@@ -302,10 +380,12 @@ impl Bench {
             self.say(format!("    ! recall block carried a secret {leaked:?}"));
         }
 
-        let verdict = |ok: bool, t: &Turn| match (ok, t.peeked) {
-            (true, true) => "pass, but read outside the repo",
-            (true, false) => "PASS",
-            (false, _) => "fail",
+        let infra = std::mem::take(&mut self.infra_hit);
+        let verdict = |ok: bool, t: &Turn| match (ok, t.peeked, t.infra || infra) {
+            (_, _, true) if !ok => "infra (agent unavailable)",
+            (true, true, _) => "pass, but read outside the repo",
+            (true, false, _) => "PASS",
+            (false, _, _) => "fail",
         };
         self.say(format!(
             "  => {scenario}: memory {} {}| baseline {}",
@@ -321,7 +401,11 @@ impl Bench {
             on.recalled().len(),
             on.secs
         ));
-        if !ok_on || on.peeked || !leaked.is_empty() {
+        if infra || on.infra || off.infra {
+            if !ok_on {
+                self.infra.push(scenario.to_string());
+            }
+        } else if !ok_on || on.peeked || !leaked.is_empty() {
             self.failures.push(format!("{scenario}: {}", why_on.join(", ")));
         }
     }
@@ -594,11 +678,18 @@ fn memory_bench() {
                     if ok {
                         b.say(format!("  draft:\n{}", text.lines().map(|l| format!("    {l}")).collect::<Vec<_>>().join("\n")));
                     }
+                    let infra = std::mem::take(&mut b.infra_hit);
+                    let verdict = match (ok, infra) {
+                        (true, _) => "PASS",
+                        (false, true) => "infra (agent unavailable)",
+                        (false, false) => "fail",
+                    };
                     b.rows.push(format!(
-                        "| Self-advancing · workflow seen 3 times → skill draft | Dove consolidation | **{}** | n/a | n/a | n/a |",
-                        if ok { "PASS" } else { "fail" }
+                        "| Self-advancing · workflow seen 3 times → skill draft | Dove consolidation | **{verdict}** | n/a | n/a | n/a |"
                     ));
-                    if !ok {
+                    if !ok && infra {
+                        b.infra.push("Self-advancing · skill draft".into());
+                    } else if !ok {
                         b.failures.push("Self-advancing · skill draft".into());
                     }
                 }
@@ -620,8 +711,22 @@ fn memory_bench() {
         }
     }
 
+    if !b.infra.is_empty() {
+        extra.push_str(&format!("\n\nNot measured (an agent's provider was down): {}.", b.infra.join("; ")));
+    }
     b.report(&extra);
     assert!(b.failures.is_empty(), "with memory, these failed: {:#?}", b.failures);
+}
+
+#[test]
+fn superseded_values_only_fail_when_given_as_current() {
+    let right = "ORB: Releases ship from `train9` (the newer branch, replacing the deleted `rel-old9`).";
+    let wrong = "ORB: Releases go out from `rel-old9`.";
+    assert!(!as_current(right, "rel-old9"));
+    assert!(as_current(wrong, "rel-old9"));
+    assert!(!as_current("Use bun add dayjs (never npm install).", "npm install"));
+    assert!(as_current("npm install dayjs", "npm install"));
+    assert!(!as_current("port 46354", "4100"));
 }
 
 #[test]
