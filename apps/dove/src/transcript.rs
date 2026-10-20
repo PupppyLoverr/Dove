@@ -334,6 +334,8 @@ pub enum Row {
     User {
         text: SharedString,
         at: i64,
+        /// Memories Dove recalled into this prompt (shown as a chip).
+        recalled: Option<Arc<Vec<SharedString>>>,
     },
     Activity(Activity),
     /// A finished top-level markdown block of assistant message `msg`.
@@ -905,11 +907,13 @@ impl Chat {
                 // Transcripts carry no timestamps; a replayed message shows none
                 // rather than the time it was reloaded.
                 let at = if live { dove_core::store::now_ms() } else { 0 };
+                let recalled = dove_core::memory::recalled(&text)
+                    .map(|items| Arc::new(items.into_iter().map(SharedString::from).collect::<Vec<_>>()));
                 let text: SharedString = dove_core::strip_persona(&text).to_string().into();
                 self.turn_prompt = Some(text.clone());
                 self.turn_started = live.then(Instant::now);
                 self.turn_text = false;
-                let i = self.push(Row::User { text, at });
+                let i = self.push(Row::User { text, at, recalled });
                 if live {
                     fx.runway = Some(i);
                 }
@@ -1579,6 +1583,8 @@ pub struct TaskView {
     pub(crate) info_reserve: bool,
     /// A user message just jumped to, briefly highlighted.
     flash: Option<usize>,
+    /// User rows whose recalled-memories chip is open.
+    recall_open: std::collections::HashSet<usize>,
     glide: Option<gpui::Task<()>>,
     pub composer: Entity<Composer>,
     /// Height of the composer dock floating over the transcript's bottom
@@ -1835,6 +1841,7 @@ impl TaskView {
             scroll_edge: false,
             info_reserve: false,
             flash: None,
+            recall_open: Default::default(),
             glide: None,
             composer,
             dock_height: std::rc::Rc::new(std::cell::Cell::new(DOCK_GUESS)),
@@ -2738,7 +2745,7 @@ impl TaskView {
     fn render_row(&self, i: usize, weak: &WeakEntity<Self>, window: &Window, cx: &App) -> AnyElement {
         let t = Theme::of(cx);
         let body: AnyElement = match &self.chat.rows[i] {
-            Row::User { text, at } => self.render_user(i, text, *at, weak, t),
+            Row::User { text, at, recalled } => self.render_user(i, text, *at, recalled.as_deref(), weak, t),
             Row::Activity(a) => self.render_activity(i, a, weak, t),
             Row::Block { block, msg } => {
                 let first = i == 0 || !matches!(&self.chat.rows[i - 1], Row::Block { msg: m, .. } if m == msg);
@@ -2904,7 +2911,15 @@ impl TaskView {
         )
     }
 
-    fn render_user(&self, i: usize, text: &SharedString, at: i64, weak: &WeakEntity<Self>, t: &Theme) -> AnyElement {
+    fn render_user(
+        &self,
+        i: usize,
+        text: &SharedString,
+        at: i64,
+        recalled: Option<&Vec<SharedString>>,
+        weak: &WeakEntity<Self>,
+        t: &Theme,
+    ) -> AnyElement {
         let copy = text.to_string();
         let when = if at > 0 { ui::relative_time(at) } else { String::new() };
         let edit = {
@@ -2921,6 +2936,7 @@ impl TaskView {
         // and file pills above the bubble; the bubble keeps only the words.
         let (body, files) = composer::split_attachments(text);
         let strip = (!files.is_empty()).then(|| sent_attachments(i, &files, t));
+        let chip = recalled.map(|items| self.recall_chip(i, items, weak, t));
         div()
             .group("user-msg")
             .w_full()
@@ -2940,6 +2956,7 @@ impl TaskView {
                 )
             })
             .children(strip)
+            .children(chip)
             .when(!body.is_empty(), |d| {
                 d.child(
                     div()
@@ -2970,6 +2987,67 @@ impl TaskView {
                     .when(self.mirror.is_none(), |d| d.child(edit))
                     .child(copy_button(SharedString::from(format!("copy-user-{i}")), copy, t)),
             )
+            .into_any_element()
+    }
+
+    /// "Recalled N memories": what Dove's memory added to a prompt, folded
+    /// by default; the agent saw them, the bubble shows only the words.
+    fn recall_chip(&self, i: usize, items: &[SharedString], weak: &WeakEntity<Self>, t: &Theme) -> AnyElement {
+        let open = self.recall_open.contains(&i);
+        let n = items.len();
+        let label = format!("Recalled {n} {}", if n == 1 { "memory" } else { "memories" });
+        let toggle = {
+            let weak = weak.clone();
+            move |_: &gpui::ClickEvent, _: &mut Window, cx: &mut App| {
+                let _ = weak.update(cx, |v, cx| {
+                    if !v.recall_open.remove(&i) {
+                        v.recall_open.insert(i);
+                    }
+                    cx.notify();
+                });
+            }
+        };
+        let head = div()
+            .id(SharedString::from(format!("recall-{i}")))
+            .flex()
+            .items_center()
+            .gap(px(5.0))
+            .px(px(8.0))
+            .h(px(22.0))
+            .rounded(px(11.0))
+            .cursor_pointer()
+            .text_size(ty::META)
+            .text_color(t.text_muted)
+            .bg(t.wash(0.05))
+            .hover(|s| s.bg(t.wash(0.09)))
+            .child(icon(icons::STAR).size(px(12.0)))
+            .child(label)
+            .child(icon(if open { icons::ALT_ARROW_DOWN } else { icons::ALT_ARROW_RIGHT }).size(px(10.0)))
+            .on_click(toggle);
+        div()
+            .flex()
+            .flex_col()
+            .items_end()
+            .gap(px(4.0))
+            .pb(px(2.0))
+            .child(head)
+            .when(open, |d| {
+                d.child(
+                    div()
+                        .max_w(px((crate::design::conversation_width() * 0.78).round()))
+                        .flex()
+                        .flex_col()
+                        .gap(px(4.0))
+                        .px(px(12.0))
+                        .py(px(8.0))
+                        .rounded(px(10.0))
+                        .border_1()
+                        .border_color(t.wash(0.08))
+                        .text_size(ty::SMALL)
+                        .text_color(t.text_muted)
+                        .children(items.iter().map(|m| div().child(format!("• {m}")))),
+                )
+            })
             .into_any_element()
     }
 

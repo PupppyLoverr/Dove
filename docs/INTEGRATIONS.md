@@ -74,3 +74,13 @@ When it's on, agents get the driver's tools as `computer__*` (`dove-driver mcp` 
 ## Status
 
 Tested on this build: the extension loads unpacked in Chrome, pairs, and an agent drove a real tab through `chrome_*` (see the PR). Composio, Paper and the computer-use driver are wired and their status shows in Settings, but they were not exercised end to end here: there was no Composio key, Paper Desktop or cua-driver install on the test machine.
+
+## Memory (Supermemory)
+
+Settings › Memory signs in to Supermemory (the same catalog server and OAuth token the hub uses) and turns Dove itself into every harness's memory layer (`crates/dove-core/src/memory.rs`, backend in `apps/dove/src/supermemory.rs`):
+
+- **Recall.** Every prompt Dove hands an agent (first turn, resumed turn, live send, automations, teammates) passes through the session recorder, which searches memory with it (plus the profile on a session's first turn) across the project, user and teammate scopes, drops what the session already saw, and prepends a `<memory source="dove-recall">` block of about 1.5k tokens. It waits at most 4 s. The chat shows a "Recalled N memories" chip instead of the block.
+- **Capture.** On each turn end the prompt, final answer and edited files are redacted (`[REDACTED]` for keys, tokens, passwords, private keys, URL credentials, `<private>` spans) and saved with `{source: "dove", harness, project, task}`. Paths matching the never-send globs are left out. Failed saves queue in `$DOVE_HOME/memory/outbox.jsonl` and retry on the next save, sign-in or launch.
+- **Corrections.** A prompt that corrects or re-asks the last turn, and a denied permission, become high-priority `feedback` memories.
+- **Scopes.** The project container is `repo_<name>__<sha256(normalized origin remote)[..16]>` (resolved path without a remote), honouring `.claude/.supermemory-claude/config.json` `repoContainerTag` and `SUPERMEMORY_REPO_TAG`, exactly as Supermemory's Claude/Codex/OpenCode plugins derive it, so memories are shared with them. The user scope is the account's default space; teammates get `team_<id>`.
+- **Warm-up and consolidation.** "Warm up" imports past Dove threads, project READMEs / ARCHITECTURE / CLAUDE.md / AGENTS.md and recent merged PRs. A weekly consolidation lists each scope, finds duplicates (forgotten only when you click) and drafts `SKILL.md` files for repeated command workflows in `$DOVE_HOME/memory/suggested-skills/`.

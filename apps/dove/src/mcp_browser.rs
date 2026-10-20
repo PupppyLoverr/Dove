@@ -465,7 +465,7 @@ fn summarize_health(report: Value) -> String {
     if parts.is_empty() { "Driver answered; no permission fields reported".into() } else { parts.join(" · ") }
 }
 
-mod upstream {
+pub(crate) mod upstream {
     //! Minimal MCP clients for the upstream servers: stdio (cua-driver,
     //! local catalog and custom servers) and streamable HTTP (Composio,
     //! Paper Desktop, remote catalog and custom servers).
@@ -746,7 +746,7 @@ mod upstream {
         ))
     }
 
-    type Make = Box<dyn FnOnce() -> Result<Server, String> + Send>;
+    pub type Make = Box<dyn FnOnce() -> Result<Server, String> + Send>;
 
     /// The upstream's tools as this server exposes them: `<prefix>__<tool>`,
     /// shortened (with a hash) when that would pass `MAX_TOOL_NAME`.
