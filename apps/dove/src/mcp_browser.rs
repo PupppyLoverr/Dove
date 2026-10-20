@@ -772,13 +772,13 @@ mod upstream {
             }
             // Dove Computer Use, with its own state, the user's permission
             // mode and lazy tool disclosure (computer_plugin::launch_env).
-            if config.computer.enabled
-                && let Some(bin) = cfg::cua_driver()
-            {
+            // The plugin's driver files are re-hashed before it starts.
+            if config.computer.enabled && cfg::cua_driver().is_some() {
                 let env = crate::computer_plugin::launch_env(&config.computer);
                 specs.push((
                     "computer".into(),
                     Some(Box::new(move || {
+                        let bin = crate::computer_plugin::launch_bin()?;
                         Server::stdio("computer", &bin.display().to_string(), &["mcp".into()], &env, None)
                     })),
                 ));

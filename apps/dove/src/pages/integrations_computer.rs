@@ -102,7 +102,14 @@ impl IntegrationsView {
         let Some(bin) = self.probe.cua.clone() else { return };
         self.cu.checking = true;
         let settings = self.config.computer.clone();
-        let task = cx.background_spawn(async move { crate::mcp_browser::cua_health(&bin, &settings) });
+        let installed = self.probe.cu_plugin.clone();
+        // The same file check the hub makes before it starts the driver.
+        let task = cx.background_spawn(async move {
+            match installed.as_ref().map(plugin::verify_installed) {
+                Some(Err(e)) => Health::failed(e),
+                _ => crate::mcp_browser::cua_health(&bin, &settings),
+            }
+        });
         cx.spawn(async move |this, cx| {
             let health = task.await;
             let _ = this.update(cx, |v, cx| {
@@ -183,8 +190,10 @@ impl IntegrationsView {
             format!(
                 "Downloads dove-driver {}{} from its GitHub releases and checks its SHA-256 against the manifest built into Dove",
                 m.version,
-                mb(asset.and_then(|a| a.size))
+                mb(asset.map(|a| a.size))
             )
+        } else if asset.is_some() {
+            format!("dove-driver {} needs Dove {} or later; update Dove first", m.version, m.min_dove_version)
         } else {
             format!("dove-driver {} is not published for this platform yet", m.version)
         };
@@ -234,7 +243,7 @@ impl IntegrationsView {
                             "dove-driver {} installed; {} is available{}",
                             p.version,
                             m.version,
-                            mb(asset.and_then(|a| a.size))
+                            mb(asset.map(|a| a.size))
                         )
                     } else {
                         format!("dove-driver {} in {}", p.version, p.dir().display())
@@ -401,7 +410,7 @@ impl IntegrationsView {
             }
             (_, Some(_)) if g_on => "Resolves intent steps on this device, at no token cost".into(),
             (_, Some(g)) => {
-                format!("Resolves intent steps on this device. Turning it on downloads its weights{}", mb(g.size))
+                format!("Resolves intent steps on this device. Turning it on downloads its weights{}", mb(Some(g.size)))
             }
         };
         let (g_left, g_switch) = toggle(g_on, None, "int-cu-grounder", t);

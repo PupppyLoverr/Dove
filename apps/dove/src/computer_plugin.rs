@@ -4,8 +4,10 @@
 //!
 //! The driver comes from the dove-driver GitHub releases, at the version
 //! pinned in the release manifest compiled into Dove
-//! (`assets/computer-use-release.json`), and is accepted only when its
-//! SHA-256 matches that manifest. It lands in
+//! (`assets/computer-use-release.json`, the release's
+//! `dove-driver-manifest.json`), and is accepted only when the archive's
+//! size and SHA-256 and every file in it match that manifest. Before each
+//! launch the hub re-hashes the driver and its helpers. It lands in
 //! `<dove data>/plugins/computer-use/<version>/`, which the hub launches as
 //! the `computer` upstream with [`launch_env`]. Update replaces it with the
 //! pinned version; Uninstall removes the plugin folder, and with it the
@@ -26,7 +28,8 @@ use sha2::{Digest as _, Sha256};
 const MANIFEST: &str = include_str!("../assets/computer-use-release.json");
 /// Larger downloads are refused (the driver is about 30 MB).
 const MAX_BYTES: u64 = 512 * 1024 * 1024;
-const EXE: &str = if cfg!(windows) { "dove-driver.exe" } else { "dove-driver" };
+/// The installer's record in each version folder.
+const RECORD: &str = "plugin.json";
 /// Driver state (`DOVE_DRIVER_HOME`) and the grounder live next to the
 /// version folders, so an update keeps them.
 const STATE_DIR: &str = "state";
@@ -69,110 +72,170 @@ impl PermissionMode {
 
 // ---------------------------------------------------------------- manifest
 
-/// The release manifest: one pinned dove-driver version, its per-platform
-/// assets and the optional grounder weights.
+/// The release manifest (`dove-driver-manifest.json`, `manifest_version`
+/// 1, written by dove-driver's release pipeline): one pinned version, an
+/// archive per platform with every file's hash, and the optional grounder.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct Manifest {
+    pub manifest_version: u32,
     pub version: String,
-    /// `owner/name` of the repository whose releases carry the assets.
-    pub repo: String,
-    /// Release tag, `dove-driver-v<version>` by convention.
+    /// Release tag, `dove-driver-v<version>`.
     pub tag: String,
-    pub assets: Vec<Asset>,
-    pub grounder: Option<Asset>,
+    /// `owner/name` of the repository whose releases carry the assets.
+    pub repository: String,
+    /// The oldest Dove that may install this release.
+    pub min_dove_version: String,
+    /// By platform key: `windows-x86_64`, `windows-arm64`, `macos-universal`,
+    /// `linux-x86_64`, `linux-arm64`. A missing key: no build for it.
+    pub platforms: BTreeMap<String, Platform>,
+    pub optional_assets: OptionalAssets,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
 #[serde(default)]
-pub struct Asset {
+pub struct OptionalAssets {
+    pub grounder: Option<Grounder>,
+}
+
+/// One platform's archive.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct Platform {
     /// File name on the release.
     pub name: String,
-    /// `windows` | `macos` | `linux` (empty for the grounder).
-    pub os: String,
-    /// `x86_64` | `aarch64` (empty for the grounder).
-    pub arch: String,
-    /// Lowercase hex SHA-256 of the file.
+    pub url: String,
+    /// Lowercase hex SHA-256 and exact size of the archive.
     pub sha256: String,
-    /// Size in bytes, when known; shown before downloading.
-    pub size: Option<u64>,
-    /// The file name the driver expects (grounder only).
-    pub file: Option<String>,
+    pub size: u64,
+    /// `zip` or `tar.gz`.
+    pub archive: String,
+    /// The archive's single top-level folder.
+    pub root: String,
+    /// The driver, relative to `root`.
+    pub entrypoint: String,
+    /// Every regular file under `root`, with its hash.
+    pub files: Vec<FileEntry>,
 }
 
-impl Asset {
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct FileEntry {
+    pub path: String,
+    pub sha256: String,
+    pub size: u64,
+    pub executable: bool,
+    /// `driver`, `uia-sidecar`, `app-bundle-driver`, `license`, `notice`.
+    pub role: String,
+}
+
+/// The W9 grounder weights.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct Grounder {
+    pub name: String,
+    pub url: String,
+    pub sha256: String,
+    pub size: u64,
+    /// `onnx`, `safetensors`, `gguf` or `bin`.
+    pub format: String,
+    /// `fp16`, `fp32` or `int8`.
+    pub precision: String,
+}
+
+fn is_sha(s: &str) -> bool {
+    s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// A file name or relative path with no way out of its folder.
+fn safe_rel(p: &str) -> bool {
+    !p.is_empty()
+        && !p.starts_with(['/', '\\'])
+        && !p.contains(':')
+        && p.split(['/', '\\']).all(|c| c != ".." && !c.is_empty())
+}
+
+impl Platform {
     fn valid(&self) -> bool {
-        !self.name.is_empty()
+        safe_rel(&self.name)
             && !self.name.contains(['/', '\\'])
-            && self.sha256.len() == 64
-            && self.sha256.bytes().all(|b| b.is_ascii_hexdigit())
+            && is_sha(&self.sha256)
+            && self.size > 0
+            && matches!(self.archive.as_str(), "zip" | "tar.gz")
+            && safe_rel(&self.root)
+            && !self.root.contains(['/', '\\'])
+            && self.files.iter().all(|f| safe_rel(&f.path) && is_sha(&f.sha256))
+            && self.files.iter().any(|f| f.path == self.entrypoint)
     }
 
-    fn kind(&self) -> Kind {
-        let n = self.name.to_ascii_lowercase();
-        if n.ends_with(".zip") {
-            Kind::Zip
-        } else if n.ends_with(".tar.gz") || n.ends_with(".tgz") {
-            Kind::TarGz
-        } else {
-            Kind::Binary
-        }
+    /// The files checked before every launch: the driver and its helpers.
+    fn launch_files(&self) -> Vec<FileEntry> {
+        self.files
+            .iter()
+            .filter(|f| {
+                f.path == self.entrypoint || matches!(f.role.as_str(), "driver" | "uia-sidecar" | "app-bundle-driver")
+            })
+            .cloned()
+            .collect()
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Kind {
-    Binary,
-    Zip,
-    TarGz,
+impl Grounder {
+    fn valid(&self) -> bool {
+        safe_rel(&self.name) && !self.name.contains(['/', '\\']) && is_sha(&self.sha256) && self.size > 0
+    }
 }
 
 impl Manifest {
     pub fn parse(text: &str) -> Result<Self, String> {
         let m: Manifest = serde_json::from_str(text).map_err(|e| format!("bad release manifest: {e}"))?;
+        if m.manifest_version != 1 {
+            return Err(format!("unsupported release manifest version {}", m.manifest_version));
+        }
         if parse_version(&m.version).is_none() {
             return Err(format!("bad release manifest: version {:?}", m.version));
         }
         Ok(m)
     }
 
-    /// The asset for `os`/`arch`, if the release has a valid one.
-    pub fn asset_for(&self, os: &str, arch: &str) -> Option<&Asset> {
-        self.assets.iter().find(|a| a.os == os && a.arch == arch && a.valid())
+    /// The archive for platform `key`, if the release has a valid one.
+    pub fn platform(&self, key: &str) -> Option<&Platform> {
+        self.platforms.get(key).filter(|p| p.valid())
     }
 
-    /// The asset for this machine.
-    pub fn asset(&self) -> Option<&Asset> {
-        let (os, arch) = platform()?;
-        self.asset_for(os, arch)
+    /// The archive for this machine.
+    pub fn asset(&self) -> Option<&Platform> {
+        self.platform(platform_key()?)
     }
 
-    pub fn grounder(&self) -> Option<&Asset> {
-        self.grounder.as_ref().filter(|a| a.valid())
+    pub fn grounder(&self) -> Option<&Grounder> {
+        self.optional_assets.grounder.as_ref().filter(|g| g.valid())
     }
 
-    fn url(&self, asset: &Asset) -> String {
+    /// Whether this Dove is new enough for the release.
+    pub fn dove_supported(&self) -> bool {
+        parse_version(&self.min_dove_version).is_none_or(|min| parse_version(env!("CARGO_PKG_VERSION")) >= Some(min))
+    }
+
+    fn url(&self, name: &str, url: &str) -> String {
         match release_base() {
-            Some(base) => format!("{}/{}", base.trim_end_matches('/'), asset.name),
-            None => format!("https://github.com/{}/releases/download/{}/{}", self.repo, self.tag, asset.name),
+            Some(base) => format!("{}/{name}", base.trim_end_matches('/')),
+            None if url.starts_with("https://") => url.to_string(),
+            None => format!("https://github.com/{}/releases/download/{}/{name}", self.repository, self.tag),
         }
     }
 }
 
-/// This OS and CPU in the manifest's names.
-pub fn platform() -> Option<(&'static str, &'static str)> {
-    let os = match std::env::consts::OS {
-        "windows" => "windows",
-        "macos" => "macos",
-        "linux" => "linux",
+/// This machine's platform key in the manifest.
+pub fn platform_key() -> Option<&'static str> {
+    Some(match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("windows", "x86_64") => "windows-x86_64",
+        ("windows", "aarch64") => "windows-arm64",
+        ("macos", _) => "macos-universal",
+        ("linux", "x86_64") => "linux-x86_64",
+        ("linux", "aarch64") => "linux-arm64",
         _ => return None,
-    };
-    let arch = match std::env::consts::ARCH {
-        "x86_64" => "x86_64",
-        "aarch64" => "aarch64",
-        _ => return None,
-    };
-    Some((os, arch))
+    })
 }
 
 /// The compiled-in manifest. Debug builds may point
@@ -190,7 +253,7 @@ pub fn manifest() -> &'static Manifest {
 
 /// Where release files are fetched from instead of GitHub, in debug
 /// builds: `DOVE_COMPUTER_USE_RELEASE_BASE` (a URL; for QA, a local server
-/// over a scratch folder). The SHA-256 check is the same either way.
+/// over a scratch folder). The size and SHA-256 checks are the same.
 fn release_base() -> Option<String> {
     cfg!(debug_assertions).then(|| std::env::var("DOVE_COMPUTER_USE_RELEASE_BASE").ok()).flatten()
 }
@@ -202,7 +265,8 @@ pub fn version() -> &'static str {
 
 /// Whether this build can install the plugin on this machine.
 pub fn available() -> bool {
-    manifest().asset().is_some()
+    let m = manifest();
+    m.asset().is_some() && m.dove_supported()
 }
 
 pub fn sha256_hex(bytes: &[u8]) -> String {
@@ -236,28 +300,42 @@ impl Installed {
     }
 }
 
+/// What the installer records next to the files (`plugin.json`).
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(default)]
+struct Record {
+    name: String,
+    version: String,
+    asset: String,
+    sha256: String,
+    entrypoint: String,
+    /// The driver and helpers, re-hashed before each launch.
+    launch_files: Vec<FileEntry>,
+}
+
+fn record_in(dir: &Path) -> Option<Record> {
+    serde_json::from_slice(&std::fs::read(dir.join(RECORD)).ok()?).ok()
+}
+
 /// The newest installed version under `root`, if its binary is there.
 fn installed_in(root: &Path) -> Option<Installed> {
     let mut best: Option<(Vec<u64>, Installed)> = None;
     for entry in std::fs::read_dir(root).ok()?.flatten() {
         let version = entry.file_name().to_string_lossy().to_string();
         let Some(key) = parse_version(&version) else { continue };
-        let Some(bin) = bin_in(&entry.path()) else { continue };
+        let Some(record) = record_in(&entry.path()) else { continue };
+        if !safe_rel(&record.entrypoint) {
+            continue;
+        }
+        let bin = entry.path().join(&record.entrypoint);
+        if !bin.is_file() {
+            continue;
+        }
         if best.as_ref().is_none_or(|(k, _)| key > *k) {
             best = Some((key, Installed { version, bin }));
         }
     }
     best.map(|(_, i)| i)
-}
-
-/// The driver binary in a version folder: where `plugin.json` says, else
-/// at the top.
-fn bin_in(dir: &Path) -> Option<PathBuf> {
-    let recorded = std::fs::read(dir.join("plugin.json"))
-        .ok()
-        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
-        .and_then(|v| v.get("bin")?.as_str().map(|s| dir.join(s)));
-    recorded.into_iter().chain([dir.join(EXE)]).find(|p| p.is_file())
 }
 
 fn parse_version(v: &str) -> Option<Vec<u64>> {
@@ -269,6 +347,32 @@ pub fn installed() -> Option<Installed> {
     installed_in(&root())
 }
 
+/// Re-hash the driver and its helpers against what was installed. The hub
+/// runs this before every launch; a changed file means no launch.
+pub fn verify_installed(i: &Installed) -> Result<(), String> {
+    let record = record_in(i.dir()).ok_or("the plugin's install record is missing; reinstall it")?;
+    if record.launch_files.is_empty() {
+        return Err("the plugin's install record lists no files; reinstall it".into());
+    }
+    for f in &record.launch_files {
+        let path = i.dir().join(&f.path);
+        let bytes = std::fs::read(&path).map_err(|e| format!("{} is missing ({e}); reinstall the plugin", f.path))?;
+        if bytes.len() as u64 != f.size || !sha256_hex(&bytes).eq_ignore_ascii_case(&f.sha256) {
+            return Err(format!("{} changed since it was installed; reinstall the plugin", f.path));
+        }
+    }
+    Ok(())
+}
+
+/// The driver the hub launches: the installed plugin when its files check
+/// out, otherwise a developer build on `PATH`.
+pub fn launch_bin() -> Result<PathBuf, String> {
+    match installed() {
+        Some(i) => verify_installed(&i).map(|()| i.bin),
+        None => crate::pages::integrations::dev_driver().ok_or_else(|| "Dove Computer Use is not installed".into()),
+    }
+}
+
 /// The installed grounder weights, if any.
 pub fn grounder_installed() -> Option<PathBuf> {
     grounder_in(&root(), manifest())
@@ -276,7 +380,7 @@ pub fn grounder_installed() -> Option<PathBuf> {
 
 fn grounder_in(root: &Path, m: &Manifest) -> Option<PathBuf> {
     let g = m.grounder()?;
-    let path = root.join(GROUNDER_DIR).join(&g.sha256[..12]).join(g.file.as_deref().unwrap_or(&g.name));
+    let path = root.join(GROUNDER_DIR).join(&g.sha256[..12]).join(&g.name);
     path.is_file().then_some(path)
 }
 
@@ -307,46 +411,55 @@ pub fn install() -> Result<Installed, String> {
 }
 
 fn install_in(root: &Path, m: &Manifest) -> Result<Installed, String> {
-    let (os, arch) = platform().ok_or("Dove Computer Use is not built for this platform")?;
-    let asset = m
-        .asset_for(os, arch)
-        .ok_or_else(|| format!("No dove-driver {} release for this platform ({os}-{arch}) yet", m.version))?;
-    let bytes = download(&m.url(asset), asset.size)?;
-    install_bytes(root, &m.version, asset, &bytes)
+    let key = platform_key().ok_or("Dove Computer Use is not built for this platform")?;
+    let p =
+        m.platform(key).ok_or_else(|| format!("dove-driver {} has no release for this platform ({key})", m.version))?;
+    if !m.dove_supported() {
+        return Err(format!("dove-driver {} needs Dove {} or later", m.version, m.min_dove_version));
+    }
+    let bytes = download(&m.url(&p.name, &p.url), p.size)?;
+    install_bytes(root, &m.version, p, &bytes)
 }
 
 /// Unpack a verified download into `root/<version>/` and drop older
-/// versions. Nothing is written unless `bytes` matches the manifest.
-fn install_bytes(root: &Path, version: &str, asset: &Asset, bytes: &[u8]) -> Result<Installed, String> {
-    verify(asset, bytes)?;
+/// versions. Nothing is written unless the archive matches the manifest,
+/// and nothing replaces the installed version unless every file does.
+fn install_bytes(root: &Path, version: &str, p: &Platform, bytes: &[u8]) -> Result<Installed, String> {
+    verify(&p.sha256, p.size, bytes)?;
     std::fs::create_dir_all(root).map_err(|e| format!("could not create {}: {e}", root.display()))?;
     let stage = root.join(format!(".stage-{version}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&stage);
     let result = (|| -> Result<Installed, String> {
         std::fs::create_dir_all(&stage).map_err(|e| format!("could not create {}: {e}", stage.display()))?;
-        match asset.kind() {
-            Kind::Binary => write_file(&stage.join(EXE), bytes)?,
-            Kind::Zip => unzip(bytes, &stage)?,
-            Kind::TarGz => untar(bytes, &stage)?,
+        match p.archive.as_str() {
+            "zip" => unzip(bytes, &stage, p)?,
+            _ => untar(bytes, &stage, p)?,
         }
-        let bin = find_exe(&stage).ok_or_else(|| format!("the release has no {EXE}"))?;
+        let top = stage.join(&p.root);
+        check_tree(&top, p)?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt as _;
-            for exe in executables(&stage) {
-                let _ = std::fs::set_permissions(exe, std::fs::Permissions::from_mode(0o755));
+            for f in p.files.iter().filter(|f| f.executable || f.path == p.entrypoint) {
+                let _ = std::fs::set_permissions(top.join(&f.path), std::fs::Permissions::from_mode(0o755));
             }
         }
-        let rel = bin.strip_prefix(&stage).unwrap_or(&bin).to_string_lossy().replace('\\', "/");
-        let meta = serde_json::json!({"name": "dove-driver", "version": version, "asset": asset.name,
-            "sha256": asset.sha256.to_ascii_lowercase(), "bin": rel});
-        write_file(&stage.join("plugin.json"), meta.to_string().as_bytes())?;
+        let record = Record {
+            name: "dove-driver".into(),
+            version: version.into(),
+            asset: p.name.clone(),
+            sha256: p.sha256.to_ascii_lowercase(),
+            entrypoint: p.entrypoint.clone(),
+            launch_files: p.launch_files(),
+        };
+        let json = serde_json::to_vec_pretty(&record).map_err(|e| e.to_string())?;
+        write_file(&top.join(RECORD), &json)?;
         let dir = root.join(version);
         if dir.exists() {
             std::fs::remove_dir_all(&dir).map_err(|e| busy(&dir, e))?;
         }
-        std::fs::rename(&stage, &dir).map_err(|e| format!("could not install {}: {e}", dir.display()))?;
-        Ok(Installed { version: version.to_string(), bin: dir.join(rel) })
+        std::fs::rename(&top, &dir).map_err(|e| format!("could not install {}: {e}", dir.display()))?;
+        Ok(Installed { version: version.to_string(), bin: dir.join(&p.entrypoint) })
     })();
     let _ = std::fs::remove_dir_all(&stage);
     let installed = result?;
@@ -354,15 +467,55 @@ fn install_bytes(root: &Path, version: &str, asset: &Asset, bytes: &[u8]) -> Res
     Ok(installed)
 }
 
-fn verify(asset: &Asset, bytes: &[u8]) -> Result<(), String> {
+fn verify(sha256: &str, size: u64, bytes: &[u8]) -> Result<(), String> {
+    if bytes.len() as u64 != size {
+        return Err(format!(
+            "The download is {} bytes, not the {size} in Dove's manifest. Nothing was installed.",
+            bytes.len()
+        ));
+    }
     let got = sha256_hex(bytes);
-    if got.eq_ignore_ascii_case(&asset.sha256) {
+    if got.eq_ignore_ascii_case(sha256) {
         Ok(())
     } else {
         Err(format!(
             "The download's checksum does not match Dove's manifest (got {}…). Nothing was installed.",
             &got[..12]
         ))
+    }
+}
+
+/// The unpacked `root/` holds exactly the manifest's files, each with its
+/// size and hash, and no links.
+fn check_tree(top: &Path, p: &Platform) -> Result<(), String> {
+    let mut seen = Vec::new();
+    let mut stack = vec![top.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).map_err(|e| format!("bad release archive: {e}"))?.flatten() {
+            let meta = std::fs::symlink_metadata(e.path()).map_err(|e| e.to_string())?;
+            if meta.file_type().is_symlink() {
+                return Err("the release archive contains a link".into());
+            }
+            if meta.is_dir() {
+                stack.push(e.path());
+                continue;
+            }
+            let rel = e.path().strip_prefix(top).unwrap_or(&e.path()).to_string_lossy().replace('\\', "/");
+            let f = p
+                .files
+                .iter()
+                .find(|f| f.path == rel)
+                .ok_or_else(|| format!("the release has an unlisted file {rel}"))?;
+            let bytes = std::fs::read(e.path()).map_err(|e| e.to_string())?;
+            if bytes.len() as u64 != f.size || !sha256_hex(&bytes).eq_ignore_ascii_case(&f.sha256) {
+                return Err(format!("{rel} does not match Dove's manifest"));
+            }
+            seen.push(rel);
+        }
+    }
+    match p.files.iter().find(|f| !seen.contains(&f.path)) {
+        Some(f) => Err(format!("the release is missing {}", f.path)),
+        None => Ok(()),
     }
 }
 
@@ -374,39 +527,24 @@ fn write_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
     std::fs::write(path, bytes).map_err(|e| format!("could not write {}: {e}", path.display()))
 }
 
-/// The driver binary in an unpacked release: at the top, or inside a
-/// single top-level folder.
-fn find_exe(dir: &Path) -> Option<PathBuf> {
-    let top = dir.join(EXE);
-    if top.is_file() {
-        return Some(top);
-    }
-    std::fs::read_dir(dir).ok()?.flatten().map(|e| e.path().join(EXE)).find(|p| p.is_file())
+/// Whether an archive entry belongs: under `root/`, relative, no `..`.
+fn entry_ok(name: &str, p: &Platform) -> bool {
+    let name = name.replace('\\', "/");
+    let name = name.trim_end_matches('/');
+    safe_rel(name) && (name == p.root || name.starts_with(&format!("{}/", p.root)))
 }
 
-#[cfg(unix)]
-fn executables(dir: &Path) -> Vec<PathBuf> {
-    let mut out = Vec::new();
-    let mut stack = vec![dir.to_path_buf()];
-    while let Some(d) = stack.pop() {
-        for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
-            let p = e.path();
-            if p.is_dir() {
-                stack.push(p);
-            } else if p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("dove-driver")) {
-                out.push(p);
-            }
-        }
-    }
-    out
-}
-
-fn unzip(bytes: &[u8], dest: &Path) -> Result<(), String> {
+fn unzip(bytes: &[u8], dest: &Path, p: &Platform) -> Result<(), String> {
     let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|e| format!("bad release archive: {e}"))?;
     for i in 0..zip.len() {
         let mut file = zip.by_index(i).map_err(|e| format!("bad release archive: {e}"))?;
-        // `enclosed_name` refuses absolute paths and `..`.
-        let Some(rel) = file.enclosed_name() else { return Err("the release archive has an unsafe path".into()) };
+        if file.is_symlink() {
+            return Err("the release archive contains a link".into());
+        }
+        // `enclosed_name` also refuses absolute paths and `..`.
+        let Some(rel) = file.enclosed_name().filter(|_| entry_ok(file.name(), p)) else {
+            return Err(format!("the release archive has an unexpected path {}", file.name()));
+        };
         let out = dest.join(rel);
         if file.is_dir() {
             std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
@@ -423,8 +561,8 @@ fn unzip(bytes: &[u8], dest: &Path) -> Result<(), String> {
 }
 
 /// `.tar.gz` releases (macOS, Linux) unpack with the system `tar`, after
-/// its listing is checked for absolute or `..` paths.
-fn untar(bytes: &[u8], dest: &Path) -> Result<(), String> {
+/// its listing is checked; [`check_tree`] then refuses links and strays.
+fn untar(bytes: &[u8], dest: &Path, p: &Platform) -> Result<(), String> {
     let archive = dest.join(".release.tar.gz");
     write_file(&archive, bytes)?;
     let run = |args: &[&std::ffi::OsStr]| {
@@ -439,8 +577,8 @@ fn untar(bytes: &[u8], dest: &Path) -> Result<(), String> {
         )
     };
     let listing = run(&["-tzf".as_ref(), archive.as_os_str()])?;
-    if listing.lines().any(|l| l.starts_with('/') || l.split(['/', '\\']).any(|c| c == "..")) {
-        return Err("the release archive has an unsafe path".into());
+    if let Some(bad) = listing.lines().find(|l| !entry_ok(l, p)) {
+        return Err(format!("the release archive has an unexpected path {bad}"));
     }
     run(&["-xzf".as_ref(), archive.as_os_str(), "-C".as_ref(), dest.as_os_str()])?;
     let _ = std::fs::remove_file(&archive);
@@ -482,14 +620,18 @@ fn install_grounder_in(root: &Path, m: &Manifest) -> Result<PathBuf, String> {
     if let Some(path) = grounder_in(root, m) {
         return Ok(path);
     }
-    let bytes = download(&m.url(g), g.size)?;
-    verify(g, &bytes)?;
+    let bytes = download(&m.url(&g.name, &g.url), g.size)?;
+    store_grounder(root, g, &bytes)
+}
+
+fn store_grounder(root: &Path, g: &Grounder, bytes: &[u8]) -> Result<PathBuf, String> {
+    verify(&g.sha256, g.size, bytes)?;
     let base = root.join(GROUNDER_DIR);
     let dir = base.join(&g.sha256[..12]);
     std::fs::create_dir_all(&dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
-    let path = dir.join(g.file.as_deref().unwrap_or(&g.name));
+    let path = dir.join(&g.name);
     let part = dir.join(".download.part");
-    write_file(&part, &bytes)?;
+    write_file(&part, bytes)?;
     std::fs::rename(&part, &path).map_err(|e| format!("could not install {}: {e}", path.display()))?;
     // Older weights go.
     for e in std::fs::read_dir(&base).into_iter().flatten().flatten() {
@@ -509,8 +651,9 @@ pub fn remove_grounder() -> Result<(), String> {
     }
 }
 
-fn download(url: &str, size: Option<u64>) -> Result<Vec<u8>, String> {
-    let limit = size.map_or(MAX_BYTES, |s| s.min(MAX_BYTES));
+/// Download `url`, stopping as soon as more than `size` bytes arrive.
+fn download(url: &str, size: u64) -> Result<Vec<u8>, String> {
+    let limit = size.min(MAX_BYTES);
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| e.to_string())?;
     rt.block_on(async {
         let client = reqwest::Client::builder()
@@ -643,7 +786,7 @@ pub fn walkthrough() -> &'static [Step] {
     } else if cfg!(windows) {
         &[Step {
             title: "Same integrity level",
-            body: "dove-driver runs as you, at the same integrity level as Dove. Windows stops it from reading or controlling apps started as administrator (elevated). Run those apps normally, or start Dove as administrator only when you need to automate them. UAC prompts always stay with you.",
+            body: "dove-driver runs as you, at the same integrity level as Dove. Windows stops it from reading or controlling apps started as administrator (elevated). Run those apps normally, or start Dove as administrator only when you need to automate them. Its UIA helper runs from Dove's per-user folder without UIAccess, so it cannot type into elevated windows either. UAC prompts always stay with you.",
             action: None,
         }]
     } else {
@@ -676,7 +819,8 @@ mod tests {
     use super::*;
     use std::io::Write as _;
 
-    const SHA_HELLO: &str = "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824";
+    const EXE: &str = if cfg!(windows) { "dove-driver.exe" } else { "dove-driver" };
+    const UIA: &str = "dove-driver-uia.exe";
 
     fn scratch(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("dove-cu-{name}-{}", std::process::id()));
@@ -685,15 +829,13 @@ mod tests {
         dir
     }
 
-    fn asset(name: &str, bytes: &[u8]) -> Asset {
-        let (os, arch) = platform().unwrap();
-        Asset {
-            name: name.into(),
-            os: os.into(),
-            arch: arch.into(),
+    fn entry(path: &str, bytes: &[u8], role: &str) -> FileEntry {
+        FileEntry {
+            path: path.into(),
             sha256: sha256_hex(bytes),
-            size: Some(bytes.len() as u64),
-            file: None,
+            size: bytes.len() as u64,
+            executable: role == "driver" || role == "uia-sidecar",
+            role: role.into(),
         }
     }
 
@@ -706,7 +848,29 @@ mod tests {
         out.finish().unwrap().into_inner()
     }
 
-    /// A one-shot-per-request HTTP server over `dir`: the "fake release".
+    const ROOT: &str = "dove-driver-0.37.0-windows-x86_64";
+
+    /// A release archive in R0.6's layout (one top folder, driver, UIA
+    /// sidecar, a notice) and its manifest entry.
+    fn release() -> (Platform, Vec<u8>) {
+        let files: [(&str, &[u8], &str); 3] =
+            [(EXE, b"driver", "driver"), (UIA, b"uia", "uia-sidecar"), ("LICENSE", b"MIT", "license")];
+        let zipped: Vec<(String, &[u8])> = files.iter().map(|(p, b, _)| (format!("{ROOT}/{p}"), *b)).collect();
+        let bytes = zip_of(&zipped.iter().map(|(p, b)| (p.as_str(), *b)).collect::<Vec<_>>());
+        let p = Platform {
+            name: format!("{ROOT}.zip"),
+            url: format!("https://github.com/o/r/releases/download/dove-driver-v0.37.0/{ROOT}.zip"),
+            sha256: sha256_hex(&bytes),
+            size: bytes.len() as u64,
+            archive: "zip".into(),
+            root: ROOT.into(),
+            entrypoint: EXE.into(),
+            files: files.iter().map(|(p, b, r)| entry(p, b, r)).collect(),
+        };
+        (p, bytes)
+    }
+
+    /// A one-response-per-connection HTTP server over `dir`: the fake release.
     fn serve(dir: PathBuf) -> String {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
@@ -739,103 +903,142 @@ mod tests {
     #[test]
     fn compiled_manifest_parses() {
         let m = Manifest::parse(MANIFEST).expect("assets/computer-use-release.json");
-        assert!(m.repo.contains('/'));
+        assert_eq!(m.manifest_version, 1);
+        assert!(m.repository.contains('/'));
         assert_eq!(m.tag, format!("dove-driver-v{}", m.version));
-        // Every listed asset is well formed; a bad line would silently hide a platform.
-        assert!(m.assets.iter().all(Asset::valid), "{:?}", m.assets);
+        // Every listed platform is well formed; a bad entry would silently hide it.
+        assert!(m.platforms.values().all(Platform::valid), "{:?}", m.platforms);
+        assert!(m.dove_supported());
     }
 
     #[test]
-    fn manifest_picks_this_platform_and_skips_bad_entries() {
-        let text = format!(
-            r#"{{"version":"0.38.0","repo":"o/r","tag":"dove-driver-v0.38.0","assets":[
-              {{"name":"dove-driver-0.38.0-linux-x86_64.tar.gz","os":"linux","arch":"x86_64","sha256":"{SHA_HELLO}"}},
-              {{"name":"bad","os":"windows","arch":"x86_64","sha256":"nothex"}},
-              {{"name":"../evil.zip","os":"macos","arch":"aarch64","sha256":"{SHA_HELLO}"}}],
-              "grounder":{{"name":"grounder.onnx","sha256":"{SHA_HELLO}","size":5}}}}"#
-        );
+    fn reads_the_release_pipelines_manifest() {
+        // Trimmed from the R0.6 dry run (dove-driver-release-manifest.md).
+        let (p, _) = release();
+        let text = serde_json::json!({
+            "manifest_version": 1, "name": "dove-driver", "version": "0.37.0", "tag": "dove-driver-v0.37.0",
+            "repository": "PupppyLoverr/NEXI-Models-Drivers", "published_at": "2026-10-20T10:47:25Z",
+            "source": {"commit": "a41d24f6c4671befeac6afa13e6e76031a02d0bb"}, "min_dove_version": "0.1.0",
+            "sigstore": {"certificate_identity": "x", "certificate_oidc_issuer": "y"},
+            "platforms": {
+                "windows-x86_64": {"name": p.name, "url": p.url, "sha256": p.sha256, "size": p.size,
+                    "sigstore_bundle": "z", "os": "windows", "arch": "x86_64", "archive": "zip", "root": ROOT,
+                    "entrypoint": EXE, "files": p.files, "signing": {"authenticode": "unsigned"}},
+                "linux-arm64": {"name": "../x.tar.gz", "sha256": p.sha256, "size": 1, "archive": "tar.gz",
+                    "root": "r", "entrypoint": "dove-driver", "files": []}
+            },
+            "optional_assets": {"grounder": {"name": "dove-grounder-0.37.0-fp16.onnx", "url": "u",
+                "sha256": "84aa797099f39740064785dc0b1b3e2b92cf1c5796ea40ed17a9a3df571e046c", "size": 3355443,
+                "format": "onnx", "precision": "fp16"}}
+        })
+        .to_string();
         let m = Manifest::parse(&text).unwrap();
-        assert_eq!(m.asset_for("linux", "x86_64").map(|a| a.kind()), Some(Kind::TarGz));
-        assert!(m.asset_for("windows", "x86_64").is_none(), "bad sha refused");
-        assert!(m.asset_for("macos", "aarch64").is_none(), "path in name refused");
-        assert!(m.grounder().is_some());
-        assert!(
-            m.url(m.asset_for("linux", "x86_64").unwrap())
-                .starts_with("https://github.com/o/r/releases/download/dove-driver-v0.38.0/")
-        );
-        assert!(Manifest::parse(r#"{"version":"latest"}"#).is_err());
+        assert_eq!(m.platform("windows-x86_64"), Some(&p));
+        assert!(m.platform("linux-arm64").is_none(), "a path in the name is refused");
+        assert!(m.platform("macos-universal").is_none());
+        assert_eq!(m.grounder().map(|g| g.precision.as_str()), Some("fp16"));
+        assert_eq!(m.url(&p.name, &p.url), p.url);
+        assert!(Manifest::parse(&text.replace("\"manifest_version\":1", "\"manifest_version\":2")).is_err());
+        let newer = text.replace("\"min_dove_version\":\"0.1.0\"", "\"min_dove_version\":\"999.0.0\"");
+        assert!(!Manifest::parse(&newer).unwrap().dove_supported());
+        assert!(install_in(&scratch("too-old"), &Manifest::parse(&newer).unwrap()).is_err());
     }
 
     #[test]
-    fn installs_only_verified_bytes_and_replaces_old_versions() {
+    fn platform_keys_match_the_release() {
+        let key = platform_key().unwrap();
+        assert!(["windows-x86_64", "windows-arm64", "macos-universal", "linux-x86_64", "linux-arm64"].contains(&key));
+    }
+
+    #[test]
+    fn installs_only_verified_archives_and_replaces_old_versions() {
         let root = scratch("bytes");
-        let a = asset(EXE, b"hello");
-        // A tampered download installs nothing.
-        assert!(install_bytes(&root, "0.36.0", &a, b"evil").is_err());
+        let (p, bytes) = release();
+        // A tampered or truncated download installs nothing.
+        let mut evil = bytes.clone();
+        evil[10] ^= 1;
+        assert!(install_bytes(&root, "0.36.0", &p, &evil).is_err());
+        assert!(install_bytes(&root, "0.36.0", &p, &bytes[..bytes.len() - 1]).is_err());
         assert!(installed_in(&root).is_none());
-        let old = install_bytes(&root, "0.36.0", &a, b"hello").unwrap();
-        assert!(old.bin.is_file());
+        let old = install_bytes(&root, "0.36.0", &p, &bytes).unwrap();
+        assert_eq!(std::fs::read(&old.bin).unwrap(), b"driver");
+        assert!(old.dir().join(UIA).is_file(), "the UIA sidecar sits next to the driver");
         assert_eq!(installed_in(&root), Some(old.clone()));
+        verify_installed(&old).unwrap();
         std::fs::create_dir_all(root.join(STATE_DIR)).unwrap();
-        install_bytes(&root, "0.37.0", &a, b"hello").unwrap();
-        assert_eq!(installed_in(&root).map(|i| i.version), Some("0.37.0".to_string()));
+        install_bytes(&root, "0.37.0", &p, &bytes).unwrap();
+        let new = installed_in(&root).unwrap();
+        assert_eq!(new.version, "0.37.0");
         assert!(!old.bin.exists(), "the update removes the old version");
         assert!(root.join(STATE_DIR).is_dir(), "the update keeps the driver's state");
+        // The pre-launch check catches a changed driver or sidecar.
+        std::fs::write(new.dir().join(UIA), b"swapped").unwrap();
+        assert!(verify_installed(&new).unwrap_err().contains(UIA));
         uninstall_in(&root).unwrap();
         assert!(installed_in(&root).is_none() && !root.exists());
     }
 
     #[test]
-    fn zip_release_with_helper_installs_from_a_fake_release() {
-        let release = scratch("release");
-        let root = scratch("root");
-        let uia = if cfg!(windows) { "dove-driver-uia.exe" } else { "dove-driver-uia" };
-        let bytes = zip_of(&[(&format!("dove-driver/{EXE}"), b"driver"), (&format!("dove-driver/{uia}"), b"uia")]);
-        std::fs::write(release.join("dove-driver.zip"), &bytes).unwrap();
-        let grounder_bytes = b"weights";
-        std::fs::write(release.join("grounder.onnx"), grounder_bytes).unwrap();
-        let base = serve(release);
-        let m = Manifest {
-            version: "0.37.0".into(),
-            repo: "o/r".into(),
-            tag: "dove-driver-v0.37.0".into(),
-            assets: vec![asset("dove-driver.zip", &bytes)],
-            grounder: Some(Asset { file: Some("model.onnx".into()), ..asset("grounder.onnx", grounder_bytes) }),
+    fn archives_that_differ_from_the_manifest_are_refused() {
+        let root = scratch("strict");
+        let (p, _) = release();
+        let check = |files: &[(&str, &[u8])]| {
+            let bytes = zip_of(files);
+            let p = Platform { sha256: sha256_hex(&bytes), size: bytes.len() as u64, ..p.clone() };
+            install_bytes(&root, "0.37.0", &p, &bytes)
         };
-        let fetch = |a: &Asset| download(&format!("{base}/{}", a.name), a.size);
-        let got = install_bytes(&root, &m.version, &m.assets[0], &fetch(&m.assets[0]).unwrap()).unwrap();
-        assert_eq!(std::fs::read(&got.bin).unwrap(), b"driver");
-        assert!(got.dir().join(uia).is_file(), "the UIA helper sits next to the driver");
+        let exe = format!("{ROOT}/{EXE}");
+        let uia = format!("{ROOT}/{UIA}");
+        let lic = format!("{ROOT}/LICENSE");
+        // Outside root, `..`, an unlisted file, a missing file, a changed file.
+        assert!(check(&[("../evil.exe", b"x"), (&exe, b"driver")]).is_err());
+        assert!(check(&[("other/dove-driver.exe", b"driver")]).is_err());
+        assert!(
+            check(&[(&exe, b"driver"), (&uia, b"uia"), (&lic, b"MIT"), (&format!("{ROOT}/extra.dll"), b"x")])
+                .unwrap_err()
+                .contains("unlisted")
+        );
+        assert!(check(&[(&exe, b"driver"), (&lic, b"MIT")]).unwrap_err().contains("missing"));
+        assert!(check(&[(&exe, b"driver"), (&uia, b"evil"), (&lic, b"MIT")]).is_err());
+        assert!(installed_in(&root).is_none());
+        assert!(check(&[(&exe, b"driver"), (&uia, b"uia"), (&lic, b"MIT")]).is_ok());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn installs_from_a_fake_release_server() {
+        let release_dir = scratch("release");
+        let root = scratch("root");
+        let (p, bytes) = release();
+        std::fs::write(release_dir.join(&p.name), &bytes).unwrap();
+        let weights = b"weights";
+        let g = Grounder {
+            name: "dove-grounder-0.37.0-fp16.onnx".into(),
+            url: String::new(),
+            sha256: sha256_hex(weights),
+            size: weights.len() as u64,
+            format: "onnx".into(),
+            precision: "fp16".into(),
+        };
+        std::fs::write(release_dir.join(&g.name), weights).unwrap();
+        let base = serve(release_dir);
+        let got =
+            install_bytes(&root, "0.37.0", &p, &download(&format!("{base}/{}", p.name), p.size).unwrap()).unwrap();
         assert_eq!(installed_in(&root), Some(got));
-        // The manifest's size caps the download.
-        let small = Asset { size: Some(3), ..m.assets[0].clone() };
-        assert!(fetch(&small).is_err());
-        assert!(download(&format!("{base}/missing.zip"), None).is_err());
+        // The manifest's size caps the download; a missing file fails.
+        assert!(download(&format!("{base}/{}", p.name), 3).is_err());
+        assert!(download(&format!("{base}/missing.zip"), 10).is_err());
 
         // Grounder: verified, stored under its hash, passed to the driver only when on.
-        let g = m.grounder().unwrap().clone();
-        let bytes = fetch(&g).unwrap();
-        verify(&g, &bytes).unwrap();
-        let dir = root.join(GROUNDER_DIR).join(&g.sha256[..12]);
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("model.onnx"), &bytes).unwrap();
-        let path = grounder_in(&root, &m).unwrap();
+        let path = store_grounder(&root, &g, &download(&format!("{base}/{}", g.name), g.size).unwrap()).unwrap();
+        let m = Manifest { optional_assets: OptionalAssets { grounder: Some(g.clone()) }, ..Manifest::default() };
+        assert_eq!(grounder_in(&root, &m), Some(path.clone()));
+        assert!(store_grounder(&root, &g, b"tampere").is_err());
         let on = Settings { enabled: true, grounder: true, ..Settings::default() };
         let env = launch_env_in(&root, &on, Some(path.clone()));
         assert_eq!(env["DOVE_DRIVER_GROUNDER_MODEL"], path.display().to_string());
         let off = launch_env_in(&root, &Settings { grounder: false, ..on }, Some(path));
         assert!(!off.contains_key("DOVE_DRIVER_GROUNDER_MODEL"));
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn zip_with_unsafe_paths_is_refused() {
-        let root = scratch("unsafe");
-        let bytes = zip_of(&[("../outside.exe", b"x"), (EXE, b"driver")]);
-        assert!(install_bytes(&root, "0.37.0", &asset("d.zip", &bytes), &bytes).is_err());
-        assert!(installed_in(&root).is_none());
-        let bytes = zip_of(&[("README.md", b"no driver here")]);
-        assert!(install_bytes(&root, "0.37.0", &asset("d.zip", &bytes), &bytes).unwrap_err().contains("has no"));
         let _ = std::fs::remove_dir_all(&root);
     }
 
