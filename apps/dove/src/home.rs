@@ -16,34 +16,6 @@ use crate::theme::Theme;
 use crate::ui;
 use crate::wallpaper;
 
-const SUGGESTIONS: &[(&str, &str, &str)] = &[
-    (
-        "Explain codebase",
-        icons::FOLDER_TREE,
-        "Give me a tour of this codebase: the main parts, how they fit together, and where to start reading.",
-    ),
-    (
-        "Design an app screen",
-        icons::PALETTE_SEARCH,
-        "Sketch an interactive app screen in chat: layout, type, and the states that matter. ",
-    ),
-    (
-        "Mobile UI mockup",
-        icons::SMARTPHONE,
-        "Sketch a mobile app flow in chat, screen by screen, with the copy and states a person would see: ",
-    ),
-    (
-        "Find & fix a bug",
-        icons::ACTION_DEBUG,
-        "Look for a likely bug in this project, explain it, and fix it with a test.",
-    ),
-    (
-        "Review my changes",
-        icons::FILE_CODE,
-        "Review the uncommitted changes in this project. List bugs and risks, most severe first.",
-    ),
-];
-
 impl Shell {
     pub fn render_home(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let t = Theme::of(cx).clone();
@@ -73,7 +45,6 @@ impl Shell {
                 }))
         });
 
-        let active_persona = self.composer.read(cx).persona.clone();
         let bounds_cell = self.composer_bounds.clone();
         let composer = div()
             .relative()
@@ -88,55 +59,11 @@ impl Shell {
             })
             .child(canvas(move |b, _, _| bounds_cell.set(Some(b)), |_, _, _, _| {}).absolute().inset_0());
 
-        let suggestions = div().flex().flex_wrap().justify_center().gap(px(6.0)).children(
-            SUGGESTIONS.iter().enumerate().map(|(i, (label, glyph, prompt))| {
-                let prompt = prompt.to_string();
-                ui::chip(SharedString::from(format!("suggest-{i}")), &t)
-                    .border_1()
-                    .border_color(t.border)
-                    .child(icon(glyph).size(px(12.5)).text_color(t.text_faint))
-                    .child(*label)
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        crate::composer::set_text(&this.composer, &prompt, window, cx);
-                        crate::composer::focus(&this.composer, window, cx);
-                    }))
-            }),
-        );
-
-        let heading = match &active_persona {
-            Some(p) => format!("What should {} work on?", p.name),
-            None => "What should we build?".to_string(),
-        };
-        let subheading = active_persona.as_ref().map(|p| {
-            if p.role.is_empty() {
-                format!("Running on {}", p.harness.label())
-            } else {
-                format!("{} · {}", p.role, p.harness.label())
-            }
-        });
-
         let dock =
             crate::composer::home_input_is_dock(self.engine.store.setting(crate::composer::HOME_INPUT).as_deref());
         self.composer.update(cx, |c, cx| c.apply_home_chrome(dock, window, cx));
         let spacer =
             if scenic { (viewport_h * 0.33).clamp(56.0, 380.0) } else { (viewport_h * 0.22).clamp(48.0, 240.0) };
-        let heading_block = (!scenic).then(|| {
-            div()
-                .flex()
-                .flex_col()
-                .items_center()
-                .gap(px(4.0))
-                .pb(px(8.0))
-                .child(
-                    div()
-                        .text_center()
-                        .text_size(ty::DISPLAY)
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .text_color(t.text)
-                        .child(heading),
-                )
-                .when_some(subheading, |d, sub| d.child(div().text_size(ty::BODY).text_color(t.text_muted).child(sub)))
-        });
         let error = self.error.clone().map(|e| {
             div()
                 .id("home-error")
@@ -169,7 +96,6 @@ impl Shell {
                         .flex()
                         .flex_col()
                         .gap(px(8.0))
-                        .children(heading_block)
                         .children(join),
                 )
                 .child(div().flex_1())
@@ -182,7 +108,6 @@ impl Shell {
                         .flex()
                         .flex_col()
                         .gap(px(8.0))
-                        .when(!scenic, |d| d.child(suggestions))
                         .child(composer)
                         .children(error),
                 );
@@ -196,10 +121,8 @@ impl Shell {
                         .flex()
                         .flex_col()
                         .gap(px(8.0))
-                        .children(heading_block)
                         .children(join)
                         .child(composer)
-                        .when(!scenic, |d| d.child(suggestions))
                         .children(error),
                 )
                 .child(div().flex_1());
