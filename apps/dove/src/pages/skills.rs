@@ -94,6 +94,10 @@ impl SkillsView {
             _subs: subs,
         };
         view.reload(cx);
+        // `DOVE_SKILLS_TAB=discover`: start on Discover (QA).
+        if std::env::var("DOVE_SKILLS_TAB").is_ok_and(|v| v == "discover") {
+            view.show(Tab::Discover, cx);
+        }
         view
     }
 
@@ -303,6 +307,35 @@ fn icon_button(id: SharedString, glyph: &'static str, label: &'static str, t: &T
         .child(icon(glyph).size(px(13.0)).text_color(t.text_muted))
 }
 
+/// [`page::row_text`] with the description held to two lines: upstream
+/// descriptions run up to 1024 characters.
+fn skill_text(t: &Theme, title: String, description: String) -> gpui::Div {
+    div()
+        .flex_1()
+        .min_w(px(180.0))
+        .flex()
+        .flex_col()
+        .gap(px(1.0))
+        .child(
+            div()
+                .text_size(ty::BODY)
+                .line_height(ty::lh::BODY)
+                .font_weight(gpui::FontWeight::MEDIUM)
+                .text_color(t.text)
+                .child(title),
+        )
+        .when(!description.is_empty(), |d| {
+            d.child(
+                div()
+                    .text_size(ty::META)
+                    .line_height(ty::lh::META)
+                    .text_color(t.text_muted)
+                    .line_clamp(2)
+                    .child(description),
+            )
+        })
+}
+
 fn right(children: impl IntoIterator<Item = AnyElement>) -> gpui::Div {
     div().flex_none().max_w_full().flex().items_center().justify_end().gap(px(space::SM)).children(children)
 }
@@ -337,7 +370,7 @@ impl SkillsView {
                 if s.source == Source::Bundled { icons::DOVE_LOGO } else { icons::MAGIC_STICK_3 },
                 None,
             ))
-            .child(page::row_text(t, s.name.clone(), detail))
+            .child(skill_text(t, s.name.clone(), detail))
             .child(right(controls))
             .into_any_element()
     }
@@ -405,7 +438,7 @@ impl SkillsView {
         let description = if a.description.is_empty() { a.problem.clone().unwrap_or_default() } else { a.description.clone() };
         page::row(t, first)
             .child(page::row_tile(t, icons::MAGIC_STICK_3, None))
-            .child(page::row_text(t, a.name.clone(), description))
+            .child(skill_text(t, a.name.clone(), description))
             .child(right([control]))
             .into_any_element()
     }
