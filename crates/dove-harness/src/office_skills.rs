@@ -39,6 +39,7 @@ pub const SKILLS: &[Skill] = &[
     skill!("pptx", "pptx_tool.py", "Create PowerPoint decks from outlines on real layouts; dump and edit slides."),
     skill!("xlsx", "xlsx_tool.py", "Create Excel workbooks with formulas, formats and charts; dump and edit cells."),
     skill!("docx", "docx_tool.py", "Create Word documents with styles, lists, tables and images; edit text."),
+    skill!("teach", "teach_tool.py", "Teach Dove a reusable skill: interview the user, write it, rehearse it, publish it."),
 ];
 
 /// Written into every folder Dove installs, so later runs know they may
@@ -167,7 +168,7 @@ pub fn describe(name: Option<&str>) -> Result<String, String> {
     match name.map(str::trim).filter(|n| !n.is_empty()) {
         None => {
             let mut out = String::from(
-                "Dove's office skills. Call dove_skills with {\"name\": ...} for the full instructions.\n\n",
+                "Dove's bundled skills. Call dove_skills with {\"name\": ...} for the full instructions.\n\n",
             );
             for s in SKILLS {
                 out.push_str(&format!("- {}: {} (folder: {})\n", s.name, s.description, root.join(s.name).display()));
