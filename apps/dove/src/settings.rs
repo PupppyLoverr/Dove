@@ -50,6 +50,7 @@ pub enum Section {
     Agents,
     Team,
     Integrations,
+    Skills,
     Remote,
     Data,
     Archived,
@@ -68,7 +69,7 @@ pub enum SettingsEvent {
 
 impl Section {
     #[cfg(test)]
-    pub const ALL: [Section; 12] = [
+    pub const ALL: [Section; 13] = [
         Section::General,
         Section::Appearance,
         Section::Notifications,
@@ -77,6 +78,7 @@ impl Section {
         Section::Agents,
         Section::Team,
         Section::Integrations,
+        Section::Skills,
         Section::Remote,
         Section::Data,
         Section::Archived,
@@ -86,7 +88,7 @@ impl Section {
     /// The navigation, grouped by spacing (no headers), as in Zeron.
     const GROUPS: [&'static [Section]; 3] = [
         &[Section::General, Section::Appearance, Section::Notifications, Section::Voice, Section::Shortcuts],
-        &[Section::Agents, Section::Team, Section::Integrations, Section::Remote],
+        &[Section::Agents, Section::Team, Section::Integrations, Section::Skills, Section::Remote],
         &[Section::Data, Section::Archived, Section::About],
     ];
 
@@ -100,6 +102,7 @@ impl Section {
             Section::Agents => "Agents",
             Section::Team => "Team",
             Section::Integrations => "Integrations",
+            Section::Skills => "Skills",
             Section::Remote => "Remote",
             Section::Data => "Data & Storage",
             Section::Archived => "Archived",
@@ -117,6 +120,7 @@ impl Section {
             Section::Agents => icons::WIDGET,
             Section::Team => icons::USERS_GROUP,
             Section::Integrations => icons::WIDGET_ADD,
+            Section::Skills => icons::MAGIC_STICK_3,
             Section::Remote => icons::SMARTPHONE,
             Section::Data => icons::HARD_DRIVE,
             Section::Archived => icons::ARCHIVE_MINIMALISTIC,
@@ -134,6 +138,7 @@ impl Section {
             Section::Agents => "agents",
             Section::Team => "team",
             Section::Integrations => "integrations",
+            Section::Skills => "skills",
             Section::Remote => "remote",
             Section::Data => "data",
             Section::Archived => "archived",
@@ -153,6 +158,7 @@ impl Section {
             "agents" | "providers" | "harnesses" => Section::Agents,
             "team" | "crew" => Section::Team,
             "integrations" => Section::Integrations,
+            "skills" | "skill" => Section::Skills,
             "remote" | "devices" => Section::Remote,
             "data" | "storage" => Section::Data,
             "archived" => Section::Archived,
@@ -194,7 +200,6 @@ const INDEX: &[Entry] = &[
     e(Section::General, "sidebar_density", "Compact thread rows", "sidebar density compact rows single line"),
     e(Section::General, "sidebar_archived", "Show archived threads in the sidebar", "sidebar archived show"),
     e(Section::General, "agent_browser", "Browser tools for agents", "agent browser mcp tools webview"),
-    e(Section::General, "agent_office_skills", "Office document skills", "office docx pptx xlsx pdf skills agents"),
     e(Section::Appearance, "appearance", "Color scheme", "theme dark light system mode appearance"),
     e(Section::Appearance, "accent", "Accent color", "accent color sky indigo orange green pink amber cyan blue"),
     e(
@@ -257,6 +262,13 @@ const INDEX: &[Entry] = &[
         "Integrations",
         "integrations mcp chrome extension composio paper computer use cua",
     ),
+    e(
+        Section::Skills,
+        "skills",
+        "Skills",
+        "skills agent skills library install github superpowers anthropic composio ego browser discover update",
+    ),
+    e(Section::Skills, "agent_office_skills", "Office document skills", "office docx pptx xlsx pdf skills agents"),
     e(Section::Remote, "remote_enabled", "Remote control", "remote phone mobile companion woozlit account"),
     e(Section::Data, "data_size", "Storage", "data storage disk size folder"),
     e(Section::Data, "data_path", "Storage location", "dove_home path location folder"),
@@ -322,6 +334,7 @@ pub struct SettingsPage {
     devices: Vec<(String, String)>,
     data_size: Option<u64>,
     integrations: Entity<crate::pages::integrations::IntegrationsView>,
+    skills: Entity<crate::pages::skills::SkillsView>,
     focus: FocusHandle,
     nav_focus: FocusHandle,
     scroll: ScrollHandle,
@@ -409,6 +422,8 @@ impl SettingsPage {
             engine.store.setting("settings_section").and_then(|s| Section::from_id(&s)).unwrap_or(Section::General);
         let integrations = cx.new(|cx| crate::pages::integrations::IntegrationsView::new(window, cx));
         subs.push(cx.observe(&integrations, |_, _, cx| cx.notify()));
+        let skills = cx.new(|cx| crate::pages::skills::SkillsView::new(window, cx));
+        subs.push(cx.observe(&skills, |_, _, cx| cx.notify()));
         Self {
             engine,
             section,
@@ -420,6 +435,7 @@ impl SettingsPage {
             devices: Vec::new(),
             data_size: None,
             integrations,
+            skills,
             focus: cx.focus_handle(),
             nav_focus: cx.focus_handle(),
             scroll: ScrollHandle::new(),
@@ -952,6 +968,7 @@ impl SettingsPage {
                 self.team(&t, cx),
             ),
             Section::Integrations => (None, self.integrations_section(&t)),
+            Section::Skills => (None, self.skills_section(&t)),
             Section::Remote => (None, self.remote(&t, cx)),
             Section::Data => (None, self.data(&t, cx)),
             Section::About => (None, self.about(&t, cx)),
@@ -983,7 +1000,6 @@ impl SettingsPage {
         let compact = self.get("sidebar_density").as_deref() == Some("compact");
         let archived = self.flag("sidebar_archived", false);
         let browser = self.flag("agent_browser", true);
-        let office = self.flag("agent_office_skills", true);
 
         let threads = page::card(t)
             .child(self.srow(
@@ -1150,28 +1166,16 @@ impl SettingsPage {
                 }),
             ));
 
-        let tools = page::card(t)
-            .child(self.srow(
-                t,
-                true,
-                "agent_browser",
-                "Browser tools for agents",
-                "Agents can drive the in-app browser. Applies after Dove restarts.",
-                ctl::on_toggle(ctl::toggle(t, "set-agent-browser", browser), cx, move |this, _, cx| {
-                    this.set_flag("agent_browser", !browser, cx)
-                }),
-            ))
-            .child(self.srow(
-                t,
-                false,
-                "agent_office_skills",
-                "Office document skills",
-                "Agents can read and write Word, PowerPoint, Excel and PDF files.",
-                ctl::on_toggle(ctl::toggle(t, "set-agent-office", office), cx, move |this, _, cx| {
-                    dove_core::office_skills::set_enabled(!office);
-                    this.set_flag("agent_office_skills", !office, cx)
-                }),
-            ));
+        let tools = page::card(t).child(self.srow(
+            t,
+            true,
+            "agent_browser",
+            "Browser tools for agents",
+            "Agents can drive the in-app browser. Applies after Dove restarts.",
+            ctl::on_toggle(ctl::toggle(t, "set-agent-browser", browser), cx, move |this, _, cx| {
+                this.set_flag("agent_browser", !browser, cx)
+            }),
+        ));
 
         div()
             .flex()
@@ -2137,6 +2141,24 @@ impl SettingsPage {
             .into_any_element()
     }
 
+    fn skills_section(&self, t: &Theme) -> AnyElement {
+        div()
+            .flex()
+            .flex_col()
+            .child(page::page_subtitle(
+                t,
+                "Instructions and scripts every agent Dove starts can use, from Dove and from GitHub.",
+            ))
+            .child(
+                div()
+                    .relative()
+                    .child(self.anchor("skills"))
+                    .child(self.anchor("agent_office_skills"))
+                    .child(self.skills.clone()),
+            )
+            .into_any_element()
+    }
+
     fn data(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let root = self.engine.store.root().to_path_buf();
         let root_str = root.display().to_string();
@@ -2436,6 +2458,7 @@ mod tests {
         }
         assert_eq!(Section::from_id("composer"), Some(Section::General));
         assert_eq!(Section::from_id("shortcuts"), Some(Section::Shortcuts));
+        assert_eq!(Section::from_id("skills"), Some(Section::Skills));
         assert_eq!(Section::from_id("nope"), None);
     }
 
@@ -2452,6 +2475,7 @@ mod tests {
         assert_eq!(find_settings("reduce motion").first().map(|e| e.row), Some("reduce_motion"));
         assert!(find_settings("clone").iter().any(|e| e.row == "clone_dir"));
         assert!(find_settings("parakeet").iter().any(|e| e.row == "voice_model"));
+        assert!(find_settings("superpowers").iter().any(|e| e.section == Section::Skills));
         assert!(find_settings("").is_empty());
     }
 

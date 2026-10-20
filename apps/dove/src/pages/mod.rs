@@ -12,6 +12,7 @@ mod automations;
 mod help;
 pub mod integrations;
 mod kanban;
+pub mod skills;
 mod threads;
 mod usage;
 

@@ -15,6 +15,7 @@ pub mod models;
 pub mod office_skills;
 pub mod process;
 mod rpc;
+pub mod skills;
 pub mod title;
 pub mod tui;
 pub mod walkthrough;
@@ -144,7 +145,7 @@ pub fn is_supported(kind: HarnessKind) -> bool {
 /// Start a session on `rt`. Returns immediately; failures to launch arrive as
 /// an [`AgentEvent::Error`] followed by [`AgentEvent::Exited`].
 pub fn spawn(rt: &tokio::runtime::Handle, spec: SessionSpec) -> Result<SessionHandle> {
-    office_skills::ensure_installed();
+    skills::ensure_installed();
     let (ev_tx, ev_rx) = flume::unbounded();
     let (cmd_tx, cmd_rx) = flume::unbounded();
     // Shared agents (Claude, Codex, Cursor, OpenCode, Pi, Devin, Grok,
