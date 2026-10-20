@@ -212,7 +212,8 @@ pub struct Toggle {
 pub struct Config {
     pub composio: Composio,
     pub paper: Toggle,
-    pub computer: Toggle,
+    /// Dove Computer Use (computer_plugin): on/off, approvals, grounder.
+    pub computer: crate::computer_plugin::Settings,
     /// Catalog and custom MCP servers, in the order the user added them.
     pub servers: Vec<McpServer>,
     /// Older builds' "Use ego lite only" switch, read once into `browser`
@@ -382,23 +383,12 @@ struct Probe {
     /// The Dove Computer Use plugin, when installed.
     cu_plugin: Option<crate::computer_plugin::Installed>,
     cua_version: Option<String>,
-    /// The driver's own `health_report` summary, after "Check permissions".
-    cua_health: Option<String>,
     paper: bool,
     /// ego lite's `ego-browser` command.
     ego: Option<PathBuf>,
     /// The GitHub CLI, and the account it is signed in to.
     gh: Option<PathBuf>,
     gh_user: Option<String>,
-}
-
-/// Installing, updating or removing the Dove Computer Use plugin.
-#[derive(Clone, Default)]
-enum CuStep {
-    #[default]
-    Idle,
-    Working(&'static str),
-    Failed(String),
 }
 
 /// The GitHub CLI's setup, while Dove installs it or opens its sign-in.
@@ -422,6 +412,8 @@ pub enum Scope {
     Connectors,
 }
 
+#[path = "integrations_computer.rs"]
+mod computer;
 #[path = "integrations_mcp.rs"]
 mod mcp;
 
@@ -436,10 +428,10 @@ pub struct IntegrationsView {
     server_status: std::collections::HashMap<String, mcp::Status>,
     dialog: Option<mcp::Dialog>,
     probe: Probe,
-    checking: bool,
     copied: bool,
     gh_step: GhStep,
-    cu_step: CuStep,
+    /// The Computer use plate's jobs, health report and walkthrough.
+    cu: computer::State,
     _subs: Vec<Subscription>,
 }
 
@@ -508,10 +500,9 @@ impl IntegrationsView {
             server_status: Default::default(),
             dialog: None,
             probe: Probe::default(),
-            checking: false,
             copied: false,
             gh_step: GhStep::Idle,
-            cu_step: CuStep::Idle,
+            cu: computer::State::default(),
             _subs: subs,
         };
         view.refresh(cx);
@@ -555,7 +546,6 @@ impl IntegrationsView {
                 cua,
                 cu_plugin: crate::computer_plugin::installed(),
                 cua_version,
-                cua_health: None,
                 paper: paper_running(),
                 ego: ego_browser(),
                 gh,
@@ -565,8 +555,8 @@ impl IntegrationsView {
         cx.spawn(async move |this, cx| {
             let probe = task.await;
             let _ = this.update(cx, |v, cx| {
-                let health = v.probe.cua_health.take();
-                v.probe = Probe { cua_health: health, ..probe };
+                v.probe = probe;
+                v.computer_probed(cx);
                 cx.notify();
             });
         })
@@ -600,52 +590,6 @@ impl IntegrationsView {
             Ok(()) => GhStep::SigningIn,
             Err(e) => GhStep::Failed(format!("{e:#}")),
         };
-        cx.notify();
-    }
-
-    /// Install or update the Dove Computer Use plugin (`install`), or remove
-    /// it. Only ever started from the plate's buttons.
-    fn run_cu(&mut self, install: bool, cx: &mut Context<Self>) {
-        if matches!(self.cu_step, CuStep::Working(_)) {
-            return;
-        }
-        self.cu_step = CuStep::Working(if install { "Downloading…" } else { "Removing…" });
-        let task = cx.background_spawn(async move {
-            if install { crate::computer_plugin::install().map(|_| ()) } else { crate::computer_plugin::uninstall() }
-        });
-        cx.spawn(async move |this, cx| {
-            let result = task.await;
-            let _ = this.update(cx, |v, cx| {
-                match result {
-                    Ok(()) => {
-                        v.cu_step = CuStep::Idle;
-                        // Installing turns it on; removing takes the tools away.
-                        v.config.computer.enabled = install;
-                        v.probe.cua_health = None;
-                        v.persist(cx);
-                    }
-                    Err(e) => v.cu_step = CuStep::Failed(e),
-                }
-                v.refresh(cx);
-            });
-        })
-        .detach();
-        cx.notify();
-    }
-
-    fn check_cua(&mut self, cx: &mut Context<Self>) {
-        let Some(bin) = self.probe.cua.clone() else { return };
-        self.checking = true;
-        let task = cx.background_spawn(async move { crate::mcp_browser::cua_health(&bin) });
-        cx.spawn(async move |this, cx| {
-            let health = task.await;
-            let _ = this.update(cx, |v, cx| {
-                v.checking = false;
-                v.probe.cua_health = Some(health);
-                cx.notify();
-            });
-        })
-        .detach();
         cx.notify();
     }
 }
@@ -784,9 +728,7 @@ impl Render for IntegrationsView {
         let key_kind = ComposioKey::of(&c.api_key);
         let scoped = !c.api_key.is_empty() && key_kind != ComposioKey::Consumer;
         let paper_on = self.config.paper.enabled;
-        let cua_on = self.config.computer.enabled;
         let composio_on = c.enabled;
-        let cua_installed = self.probe.cua.is_some();
 
         // GitHub CLI: pull requests, PR reviews and PR automations.
         let gh_installed = self.probe.gh.is_some();
@@ -1061,149 +1003,8 @@ impl Render for IntegrationsView {
             &t,
         ));
 
-        // Computer use: the Dove Computer Use plugin (dove-driver)
-        let plugin = self.probe.cu_plugin.clone();
-        let cu_busy = matches!(self.cu_step, CuStep::Working(_));
-        let cu_available = crate::computer_plugin::available();
-        let (left, switch) = toggle(
-            cua_on,
-            Some(match (&plugin, cua_installed) {
-                (Some(p), _) => (true, if p.outdated() { "Update available" } else { "Installed" }),
-                (None, true) => (true, "Developer build"),
-                (None, false) => (false, "Not installed"),
-            }),
-            "int-cua",
-            &t,
-        );
-        let cu_hint: SharedString = match (&self.cu_step, &plugin, &self.probe.cua_version) {
-            (CuStep::Working(m), _, _) => (*m).into(),
-            (CuStep::Failed(e), _, _) => format!("Could not finish: {e}").into(),
-            (_, Some(p), _) => format!("Agents see and use your desktop apps through dove-driver {}", p.version).into(),
-            (_, None, Some(v)) => format!("Agents see and use your desktop apps through {v}").into(),
-            _ => "Agents see and use your desktop apps by reading each window's accessibility tree".into(),
-        };
-        let install_hint = if cu_available {
-            format!(
-                "Downloads dove-driver {} from Dove's GitHub releases and checks it against the SHA-256 built into Dove",
-                crate::computer_plugin::VERSION
-            )
-        } else {
-            format!("dove-driver {} is not published for this platform yet", crate::computer_plugin::VERSION)
-        };
-        let computer = plate(&t)
-            .child(head(
-                icons::MONITOR,
-                "Dove Computer Use",
-                cu_hint,
-                left.when(cua_installed, |d| {
-                    d.child(ctl::on_toggle(switch, cx, move |this, _, cx| {
-                        this.config.computer.enabled = !cua_on;
-                        this.persist(cx);
-                    }))
-                }),
-                &t,
-            ))
-            .child(match &plugin {
-                None => line(
-                    "Install",
-                    install_hint,
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(4.0))
-                        .when(cu_available, |d| {
-                            d.child(
-                                ctl::button_sm(
-                                    &t,
-                                    "int-cu-install",
-                                    if cu_busy { "Installing…" } else { "Install" },
-                                    Tone::Filled,
-                                )
-                                .on_click(cx.listener(|this, _, _, cx| this.run_cu(true, cx))),
-                            )
-                        })
-                        .child(
-                            small_icon("int-refresh", icons::REFRESH, "Detect again", &t)
-                                .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
-                        ),
-                    &t,
-                ),
-                Some(p) => line(
-                    "Plugin",
-                    if p.outdated() {
-                        format!("dove-driver {} installed; {} is available", p.version, crate::computer_plugin::VERSION)
-                    } else {
-                        format!("dove-driver {} in {}", p.version, p.bin.parent().unwrap_or(&p.bin).display())
-                    },
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(4.0))
-                        .when(p.outdated() && cu_available, |d| {
-                            d.child(
-                                ctl::button_sm(
-                                    &t,
-                                    "int-cu-update",
-                                    if cu_busy { "Updating…" } else { "Update" },
-                                    Tone::Filled,
-                                )
-                                .on_click(cx.listener(|this, _, _, cx| this.run_cu(true, cx))),
-                            )
-                        })
-                        .child(
-                            ctl::button_sm(&t, "int-cu-remove", "Uninstall", Tone::Quiet)
-                                .on_click(cx.listener(|this, _, _, cx| this.run_cu(false, cx))),
-                        ),
-                    &t,
-                ),
-            })
-            .when_some(self.probe.cua.clone(), |d, path| {
-                let hint = self.probe.cua_health.clone().unwrap_or_else(|| {
-                    if plugin.is_none() {
-                        format!("Using {} (developer override)", path.display())
-                    } else if cfg!(target_os = "macos") {
-                        "Needs Accessibility and Screen Recording in System Settings".into()
-                    } else if cfg!(windows) {
-                        "Runs as you, so it cannot control apps started as administrator".into()
-                    } else {
-                        "Needs the AT-SPI accessibility bus (on by default in GNOME and KDE)".into()
-                    }
-                });
-                d.child(line(
-                    "Permissions",
-                    hint,
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(4.0))
-                        .when(cfg!(target_os = "macos"), |d| {
-                            d.child(ctl::button_sm(&t, "int-cu-ax", "Accessibility", Tone::Quiet).on_click(
-                                cx.listener(|_, _, _, cx| {
-                                    cx.open_url(
-                                        "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
-                                    )
-                                }),
-                            ))
-                            .child(ctl::button_sm(&t, "int-cu-sr", "Screen Recording", Tone::Quiet).on_click(
-                                cx.listener(|_, _, _, cx| {
-                                    cx.open_url(
-                                        "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
-                                    )
-                                }),
-                            ))
-                        })
-                        .child(
-                            ctl::button_sm(
-                                &t,
-                                "int-cua-check",
-                                if self.checking { "Checking…" } else { "Check" },
-                                Tone::Filled,
-                            )
-                            .on_click(cx.listener(|this, _, _, cx| this.check_cua(cx))),
-                        ),
-                    &t,
-                ))
-            });
+        // Computer use: the Dove Computer Use plugin (integrations_computer.rs)
+        let computer = self.render_computer(&t, cx);
 
         let (mcp, discover) = self.render_mcp(&t, cx);
         let dialog = self.render_dialog(&t, window, cx);

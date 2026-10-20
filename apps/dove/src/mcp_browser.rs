@@ -81,10 +81,12 @@ Slack, Notion, …) with accounts they connect through Composio. Search for the 
 connected, give the user the authorization link it returns.";
 
 const COMPUTER_INSTRUCTIONS: &str = "\nComputer use: computer__* tools (Dove Computer Use, dove-driver) see and \
-operate native desktop apps in the background. Prefer files, CLIs and browser tools; use computer use only for apps \
-with no other interface. Work from the accessibility tree: list_windows, then get_window_state with a query, act by \
-element token inside run_steps, and verify_state at checkpoints; take a screenshot only when the tree is empty or you \
-need to see pixels. Never type into password fields, and confirm destructive actions with the user.";
+operate native desktop apps in the background. Before the first computer__* call, call dove_skills with \
+{\"name\": \"dove-computer\"} (or read the dove-computer skill) and follow it. Prefer files, CLIs and browser tools; \
+use computer use only for apps with no other interface. The loop: list_windows, get_window_state with a query, \
+run_steps (element tokens or {intent} steps), verify_state at checkpoints; a screenshot only when the tree is empty or \
+you need pixels. For tools beyond the loop, call computer__describe_tools first. Never type into password fields, and \
+confirm destructive actions with the user.";
 
 fn show_visual_tool() -> Value {
     json!({
@@ -413,19 +415,19 @@ fn chrome_tools() -> Vec<Value> {
     ]
 }
 
-/// The driver's own health report, condensed for Settings.
-pub fn cua_health(bin: &std::path::Path) -> String {
+/// The driver's own `health_report`, run the way the hub starts it.
+pub fn cua_health(
+    bin: &std::path::Path,
+    settings: &crate::computer_plugin::Settings,
+) -> crate::computer_plugin::Health {
+    use crate::computer_plugin::Health;
     let bin = bin.to_path_buf();
+    let env = crate::computer_plugin::launch_env(settings);
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let result = (|| {
-            let mut server = upstream::Server::stdio(
-                "computer",
-                &bin.display().to_string(),
-                &["mcp".into()],
-                &Default::default(),
-                None,
-            )?;
+            let mut server =
+                upstream::Server::stdio("computer", &bin.display().to_string(), &["mcp".into()], &env, None)?;
             server.initialize()?;
             server.request("tools/call", json!({"name": "health_report", "arguments": {}}))
         })();
@@ -433,36 +435,14 @@ pub fn cua_health(bin: &std::path::Path) -> String {
     });
     let result = match rx.recv_timeout(Duration::from_secs(20)) {
         Ok(Ok(v)) => v,
-        Ok(Err(e)) => return format!("Driver check failed: {e}"),
-        Err(_) => return "The driver did not answer within 20 s".into(),
+        Ok(Err(e)) => return Health::failed(format!("Driver check failed: {e}")),
+        Err(_) => return Health::failed("The driver did not answer within 20 s"),
     };
     let report = result.get("structuredContent").cloned().or_else(|| {
         let text = result.pointer("/content/0/text").and_then(Value::as_str)?;
-        serde_json::from_str::<Value>(text).ok().or_else(|| Some(Value::String(text.to_string())))
+        serde_json::from_str::<Value>(text).ok()
     });
-    summarize_health(report.unwrap_or(Value::Null))
-}
-
-fn summarize_health(report: Value) -> String {
-    if let Some(text) = report.as_str() {
-        return text.lines().take(2).collect::<Vec<_>>().join(" · ").chars().take(160).collect();
-    }
-    let mut parts = Vec::new();
-    let mut walk = vec![("", &report)];
-    while let Some((key, v)) = walk.pop() {
-        match v {
-            Value::Object(map) => walk.extend(map.iter().map(|(k, v)| (k.as_str(), v))),
-            Value::Bool(b)
-                if key.to_ascii_lowercase().contains("accessibility")
-                    || key.to_ascii_lowercase().contains("screen") =>
-            {
-                parts.push(format!("{}: {}", key.replace('_', " "), if *b { "granted" } else { "missing" }));
-            }
-            Value::String(s) if matches!(key, "verdict" | "status" | "overall") => parts.insert(0, s.clone()),
-            _ => {}
-        }
-    }
-    if parts.is_empty() { "Driver answered; no permission fields reported".into() } else { parts.join(" · ") }
+    Health::from_report(&report.unwrap_or(Value::Null))
 }
 
 mod upstream {
@@ -790,13 +770,16 @@ mod upstream {
                     Some(Box::new(|| Server::http("paper", cfg::PAPER_MCP_URL.into(), Vec::new(), None))),
                 ));
             }
+            // Dove Computer Use, with its own state, the user's permission
+            // mode and lazy tool disclosure (computer_plugin::launch_env).
             if config.computer.enabled
                 && let Some(bin) = cfg::cua_driver()
             {
+                let env = crate::computer_plugin::launch_env(&config.computer);
                 specs.push((
                     "computer".into(),
                     Some(Box::new(move || {
-                        Server::stdio("computer", &bin.display().to_string(), &["mcp".into()], &BTreeMap::new(), None)
+                        Server::stdio("computer", &bin.display().to_string(), &["mcp".into()], &env, None)
                     })),
                 ));
             }
@@ -1048,5 +1031,11 @@ mod tests {
         // Any installed name is accepted, not only the bundled ones.
         assert!(tool.pointer("/inputSchema/properties/name/enum").is_none());
         assert!(skills_tool_for(&[])["description"].as_str().unwrap().contains("none are on"));
+    }
+
+    #[test]
+    fn computer_instructions_point_to_the_bundled_skill() {
+        assert!(COMPUTER_INSTRUCTIONS.contains("\"dove-computer\""));
+        assert!(dove_core::office_skills::find("dove-computer").is_some());
     }
 }
