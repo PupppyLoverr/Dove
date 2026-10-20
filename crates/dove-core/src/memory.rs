@@ -472,23 +472,68 @@ pub fn redact(text: &str) -> String {
             (r"\beyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}", "[REDACTED]"),
             (r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._\-~+/]{16,}=*", "${1} [REDACTED]"),
             // `API_KEY=…`, `"password": "…"`, `client_secret: …`.
-            (
-                r#"(?i)\b([A-Za-z0-9_\-]*(?:api[_\-]?key|secret|token|password|passwd|pwd|access[_\-]?key|private[_\-]?key|credential)[A-Za-z0-9_\-]*)(["']?\s*[:=]\s*)(["']?)([^\s"',;]{6,})"#,
-                "${1}${2}${3}[REDACTED]",
-            ),
+            (KEY_VALUE, "${1}${2}${3}[REDACTED]"),
         ]
         .into_iter()
         .map(|(re, with)| (Regex::new(re).expect("redaction rule"), with))
         .collect()
     });
+    // Values found next to a credential word anywhere in the text are
+    // scrubbed everywhere: an agent repeating "password is X" back must not
+    // carry X into memory.
+    static VALUES: OnceLock<[(Regex, usize); 3]> = OnceLock::new();
+    let values = VALUES.get_or_init(|| {
+        [
+            (Regex::new(KEY_VALUE).expect("rule"), 4),
+            (Regex::new(SAID).expect("rule"), 3),
+            (Regex::new(r"(?i)\b[a-z][a-z0-9+.\-]*://[^/\s:@]+:([^/\s@]+)@").expect("rule"), 1),
+        ]
+    });
+    let mut secrets: Vec<String> = values
+        .iter()
+        .flat_map(|(re, group)| {
+            let said = *group == 3;
+            re.captures_iter(text).filter_map(move |c| {
+                let v = c.get(*group)?.as_str().trim_end_matches(['.', '!', '?', ')']);
+                // "the token is valid" is prose; "password is hunter9" is not.
+                (!said || secret_like(v)).then(|| v.to_string())
+            })
+        })
+        .filter(|v| v.len() >= 6 && v != "[REDACTED]")
+        .collect();
+    secrets.sort_by_key(|v| std::cmp::Reverse(v.len()));
+    secrets.dedup();
     let mut out = text.to_string();
     for (re, with) in rules {
         if re.is_match(&out) {
             out = re.replace_all(&out, *with).into_owned();
         }
     }
+    // Plain English: "the password is …", "my api key was …".
+    let said = &values[1].0;
+    out = said
+        .replace_all(&out, |c: &regex::Captures| {
+            let v = c[3].trim_end_matches(['.', '!', '?', ')']);
+            if secret_like(v) { format!("{}{}[REDACTED]{}", &c[1], &c[2], &c[3][v.len()..]) } else { c[0].to_string() }
+        })
+        .into_owned();
+    for v in secrets {
+        out = out.replace(&v, "[REDACTED]");
+    }
     out
 }
+
+/// Whether a word after "password is" looks like a credential rather than
+/// prose: a digit, a symbol, or a capital after the first letter.
+fn secret_like(v: &str) -> bool {
+    v.len() >= 6
+        && (v.chars().any(|c| c.is_ascii_digit())
+            || v.chars().any(|c| !c.is_alphanumeric() && c != '-')
+            || v.chars().skip(1).any(|c| c.is_uppercase()))
+}
+
+const KEY_VALUE: &str = r#"(?i)\b([A-Za-z0-9_\-]*(?:api[_\-]?key|secret|token|password|passwd|pwd|access[_\-]?key|private[_\-]?key|credential)[A-Za-z0-9_\-]*)(["']?\s*[:=]\s*)(["']?)([^\s"',;]{6,})"#;
+const SAID: &str = r#"(?i)\b((?:password|passwd|passphrase|secret|token|api[_\- ]?key|access[_\- ]?key)s?)(\s+(?:is|was|are|were)\s+["'`]?)([^\s"'`,;]{6,})"#;
 
 /// Whether `path` matches a never-send glob (`*`, `?`, `**`). A pattern
 /// without `/` also matches the file name alone.
@@ -567,7 +612,9 @@ pub fn render_block_with(
     for (title, list) in [("Standing rules", standing), ("Profile", profile), ("Relevant", found)] {
         let mut section = String::new();
         for m in list {
-            let line = format!("- {}{}\n", stamp(m.at.as_deref()), one_line(&m.text, ITEM_CHARS));
+            // Redacted again on the way out: anything saved before a rule
+            // existed (or by another tool) must not reach an agent either.
+            let line = format!("- {}{}\n", stamp(m.at.as_deref()), one_line(&redact(&m.text), ITEM_CHARS));
             if line.trim().len() <= 2 || used + section.len() + line.len() > budget {
                 continue;
             }
@@ -580,6 +627,48 @@ pub fn render_block_with(
         }
     }
     (count > 0).then(|| (format!("{OPEN} count=\"{count}\">\n{head}\n{body}{CLOSE}\n\n"), count))
+}
+
+/// `text` cut to about `max` characters around what `query` asks: its most
+/// matching sentences, in their original order, joined with `…`. Short
+/// texts come back whole.
+pub fn excerpt(text: &str, query: &str, max: usize) -> String {
+    let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.chars().count() <= max {
+        return flat;
+    }
+    let q: HashSet<String> = terms(query).into_iter().collect();
+    // Sentences, keeping their end marks.
+    let mut sentences: Vec<&str> = Vec::new();
+    let mut start = 0;
+    for (i, c) in flat.char_indices() {
+        if matches!(c, '.' | '?' | '!') && flat[i + c.len_utf8()..].starts_with(' ') {
+            sentences.push(flat[start..=i].trim());
+            start = i + c.len_utf8();
+        }
+    }
+    if start < flat.len() {
+        sentences.push(flat[start..].trim());
+    }
+    let score = |s: &str| terms(s).into_iter().filter(|t| q.contains(t)).collect::<HashSet<_>>().len();
+    let mut order: Vec<usize> = (0..sentences.len()).filter(|&i| score(sentences[i]) > 0).collect();
+    if order.is_empty() {
+        return one_line(&flat, max);
+    }
+    order.sort_by(|&a, &b| score(sentences[b]).cmp(&score(sentences[a])).then(a.cmp(&b)));
+    let mut keep: Vec<usize> = Vec::new();
+    let mut used = 0;
+    for i in order {
+        let len = sentences[i].chars().count() + 3;
+        if used + len > max && !keep.is_empty() {
+            continue;
+        }
+        keep.push(i);
+        used += len;
+    }
+    keep.sort_unstable();
+    let joined = keep.iter().map(|&i| sentences[i]).collect::<Vec<_>>().join(" … ");
+    one_line(&joined, max)
 }
 
 /// `prompt` with `block` in front.
@@ -1378,7 +1467,12 @@ pub async fn before_send(session: &Shared, prompt: String) -> String {
         let found = merge_unique(local_found, found);
         let found: Vec<Memory> =
             found.into_iter().filter(|m| !standing.iter().any(|s| s.text == m.text)).collect();
-        (standing, profile, found)
+        // A long memory shows the part that answers this prompt, not its
+        // opening (the one sentence that matters is often in the middle).
+        let focus = |list: Vec<Memory>| -> Vec<Memory> {
+            list.into_iter().map(|m| Memory { text: excerpt(&m.text, &query, ITEM_CHARS), ..m }).collect()
+        };
+        (focus(standing), profile, focus(found))
     });
     let Ok(Ok((standing, profile, found))) = tokio::time::timeout(RECALL_TIMEOUT, job).await else {
         tracing::info!("memory recall skipped after {} ms (slow or failed)", started.elapsed().as_millis());
@@ -1938,6 +2032,14 @@ mod tests {
         // Ordinary prose survives.
         let plain = "Run cargo test -p dove-core, then open the token picker.";
         assert_eq!(redact(plain), plain);
+        // An agent echoing a secret back in plain words is scrubbed too.
+        let turn = "User: the db password=hunter9xyzSECRET\nAgent: Acknowledged: the DB password is hunter9xyzSECRET.";
+        let out = redact(turn);
+        assert!(!out.contains("hunter9xyzSECRET"), "{out}");
+        assert!(redact("My API key is abc123def456ghi").contains("API key is [REDACTED]"));
+        assert_eq!(redact("The token is valid."), "The token is valid.");
+        assert_eq!(redact("The password is required here."), "The password is required here.");
+        assert_eq!(redact("The password is Hunter2x."), "The password is [REDACTED].");
     }
 
     #[test]
@@ -1974,6 +2076,25 @@ mod tests {
         // Persona and memory both stripped.
         let p = format!("{block}<dove-persona>\nYou are Ava\n</dove-persona>\n\nHi");
         assert_eq!(crate::strip_persona(&p), "Hi");
+    }
+
+    #[test]
+    fn long_memories_show_the_part_that_answers() {
+        let filler = "The team discussed onboarding, CI caching and the docs site. ".repeat(20);
+        let text = format!("User: Long design note. {filler}Our feature flag service is called `lumen7`. {filler}");
+        let out = excerpt(&text, "Which feature flag service do we use?", ITEM_CHARS);
+        assert!(out.contains("lumen7"), "{out}");
+        assert!(out.chars().count() <= ITEM_CHARS);
+        assert_eq!(excerpt("Short memory.", "anything", ITEM_CHARS), "Short memory.");
+        // Nothing matches: the opening, as before.
+        assert!(excerpt(&text, "zzz qqq", 50).starts_with("User: Long design note."));
+    }
+
+    #[test]
+    fn recall_redacts_old_memories_on_the_way_out() {
+        let leaked = Memory::new("Agent: Acknowledged: local test DB password is hunter7xyzSECRET.");
+        let (block, _) = render_block(&[], &[leaked], BUDGET_CHARS).unwrap();
+        assert!(!block.contains("hunter7xyzSECRET"), "{block}");
     }
 
     #[test]
