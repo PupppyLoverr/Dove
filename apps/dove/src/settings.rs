@@ -50,6 +50,7 @@ pub enum Section {
     Agents,
     Team,
     Integrations,
+    Memory,
     Remote,
     Data,
     Archived,
@@ -68,7 +69,7 @@ pub enum SettingsEvent {
 
 impl Section {
     #[cfg(test)]
-    pub const ALL: [Section; 12] = [
+    pub const ALL: [Section; 13] = [
         Section::General,
         Section::Appearance,
         Section::Notifications,
@@ -77,6 +78,7 @@ impl Section {
         Section::Agents,
         Section::Team,
         Section::Integrations,
+        Section::Memory,
         Section::Remote,
         Section::Data,
         Section::Archived,
@@ -86,7 +88,7 @@ impl Section {
     /// The navigation, grouped by spacing (no headers), as in Zeron.
     const GROUPS: [&'static [Section]; 3] = [
         &[Section::General, Section::Appearance, Section::Notifications, Section::Voice, Section::Shortcuts],
-        &[Section::Agents, Section::Team, Section::Integrations, Section::Remote],
+        &[Section::Agents, Section::Team, Section::Integrations, Section::Memory, Section::Remote],
         &[Section::Data, Section::Archived, Section::About],
     ];
 
@@ -100,6 +102,7 @@ impl Section {
             Section::Agents => "Agents",
             Section::Team => "Team",
             Section::Integrations => "Integrations",
+            Section::Memory => "Memory",
             Section::Remote => "Remote",
             Section::Data => "Data & Storage",
             Section::Archived => "Archived",
@@ -117,6 +120,7 @@ impl Section {
             Section::Agents => icons::WIDGET,
             Section::Team => icons::USERS_GROUP,
             Section::Integrations => icons::WIDGET_ADD,
+            Section::Memory => icons::STAR,
             Section::Remote => icons::SMARTPHONE,
             Section::Data => icons::HARD_DRIVE,
             Section::Archived => icons::ARCHIVE_MINIMALISTIC,
@@ -134,6 +138,7 @@ impl Section {
             Section::Agents => "agents",
             Section::Team => "team",
             Section::Integrations => "integrations",
+            Section::Memory => "memory",
             Section::Remote => "remote",
             Section::Data => "data",
             Section::Archived => "archived",
@@ -153,6 +158,7 @@ impl Section {
             "agents" | "providers" | "harnesses" => Section::Agents,
             "team" | "crew" => Section::Team,
             "integrations" => Section::Integrations,
+            "memory" | "supermemory" => Section::Memory,
             "remote" | "devices" => Section::Remote,
             "data" | "storage" => Section::Data,
             "archived" => Section::Archived,
@@ -257,6 +263,12 @@ const INDEX: &[Entry] = &[
         "Integrations",
         "integrations mcp chrome extension composio paper computer use cua",
     ),
+    e(
+        Section::Memory,
+        "memory",
+        "Memory",
+        "memory supermemory recall remember forget capture corrections learn profile never send",
+    ),
     e(Section::Remote, "remote_enabled", "Remote control", "remote phone mobile companion woozlit account"),
     e(Section::Data, "data_size", "Storage", "data storage disk size folder"),
     e(Section::Data, "data_path", "Storage location", "dove_home path location folder"),
@@ -322,6 +334,7 @@ pub struct SettingsPage {
     devices: Vec<(String, String)>,
     data_size: Option<u64>,
     integrations: Entity<crate::pages::integrations::IntegrationsView>,
+    memory: Entity<crate::pages::memory_settings::MemoryView>,
     focus: FocusHandle,
     nav_focus: FocusHandle,
     scroll: ScrollHandle,
@@ -409,6 +422,11 @@ impl SettingsPage {
             engine.store.setting("settings_section").and_then(|s| Section::from_id(&s)).unwrap_or(Section::General);
         let integrations = cx.new(|cx| crate::pages::integrations::IntegrationsView::new(window, cx));
         subs.push(cx.observe(&integrations, |_, _, cx| cx.notify()));
+        let memory = {
+            let (engine, integrations) = (engine.clone(), integrations.clone());
+            cx.new(|cx| crate::pages::memory_settings::MemoryView::new(engine, integrations, window, cx))
+        };
+        subs.push(cx.observe(&memory, |_, _, cx| cx.notify()));
         Self {
             engine,
             section,
@@ -420,6 +438,7 @@ impl SettingsPage {
             devices: Vec::new(),
             data_size: None,
             integrations,
+            memory,
             focus: cx.focus_handle(),
             nav_focus: cx.focus_handle(),
             scroll: ScrollHandle::new(),
@@ -905,6 +924,7 @@ impl SettingsPage {
             Section::Team => {
                 Some(self.engine.store.personas().map(|v| v.len()).unwrap_or(0)).filter(|n| *n > 0).map(count)
             }
+            Section::Memory => dove_core::memory::backend().map(|_| ui::dot(t.success, 6.0).into_any_element()),
             Section::Voice => VoiceModel::global(cx)
                 .is_some_and(|m| matches!(m.read(cx).state, InstallState::Installed))
                 .then(|| ui::dot(t.success, 6.0).into_any_element()),
@@ -952,6 +972,7 @@ impl SettingsPage {
                 self.team(&t, cx),
             ),
             Section::Integrations => (None, self.integrations_section(&t)),
+            Section::Memory => (None, self.memory_section(&t)),
             Section::Remote => (None, self.remote(&t, cx)),
             Section::Data => (None, self.data(&t, cx)),
             Section::About => (None, self.about(&t, cx)),
@@ -2134,6 +2155,18 @@ impl SettingsPage {
             .flex_col()
             .child(page::page_subtitle(t, "Extra tools every agent gets through Dove's MCP server."))
             .child(div().relative().child(self.anchor("integrations")).child(self.integrations.clone()))
+            .into_any_element()
+    }
+
+    fn memory_section(&self, t: &Theme) -> AnyElement {
+        div()
+            .flex()
+            .flex_col()
+            .child(page::page_subtitle(
+                t,
+                "Every agent remembers you and each project across sessions and harnesses, through Supermemory.",
+            ))
+            .child(div().relative().child(self.anchor("memory")).child(self.memory.clone()))
             .into_any_element()
     }
 

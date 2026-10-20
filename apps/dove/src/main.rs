@@ -22,6 +22,7 @@ mod math;
 mod mcp_browser;
 mod mcp_oauth;
 mod memory;
+mod supermemory;
 mod motion;
 mod notify;
 mod office;
@@ -305,6 +306,27 @@ fn main() {
     // Office skills for every harness (and Dove's own terminal sessions).
     dove_core::office_skills::set_enabled(engine.store.setting("agent_office_skills").as_deref() != Some("false"));
     std::thread::spawn(dove_core::office_skills::ensure_installed);
+    // Memory for every harness: recall and capture through Supermemory once
+    // the user has signed in to it.
+    {
+        let store = engine.store.clone();
+        std::thread::spawn(move || {
+            supermemory::refresh(store.root());
+            // The weekly consolidation, well after launch so it never slows it.
+            std::thread::sleep(std::time::Duration::from_secs(180));
+            if dove_core::memory::backend().is_some() && dove_core::memory::consolidation_due(&store) {
+                match dove_core::memory::consolidate(&store) {
+                    Ok(r) => tracing::info!(
+                        "memory consolidation: {} scanned, {} duplicates, {} skill ideas",
+                        r.scanned,
+                        r.duplicate_count(),
+                        r.skills.len()
+                    ),
+                    Err(e) => tracing::info!("memory consolidation skipped: {e}"),
+                }
+            }
+        });
+    }
     let browser_on = engine.store.setting("agent_browser").as_deref() != Some("false");
     if !browser_on {
         // Integrations (MCP servers, Composio, Paper, computer use) still

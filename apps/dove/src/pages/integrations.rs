@@ -465,6 +465,9 @@ impl IntegrationsView {
         // The first integration turned on with the agent browser off still
         // needs Dove's server registered for the agents started next.
         crate::mcp_browser::register_without_browser(&data_root());
+        // Supermemory connected or removed: memory recall and capture follow.
+        let root = data_root();
+        cx.background_spawn(async move { crate::supermemory::refresh(&root) }).detach();
         cx.notify();
     }
 

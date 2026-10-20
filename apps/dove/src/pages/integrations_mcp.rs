@@ -774,3 +774,59 @@ mod tests {
         assert_eq!(split_args(&quote_args(&args)), args);
     }
 }
+
+impl IntegrationsView {
+    /// Sign in to a catalog server from another page (Settings › Memory):
+    /// adds it when missing, else signs in again.
+    pub fn sign_in_catalog(&mut self, catalog: &str, cx: &mut Context<Self>) {
+        let Some(entry) = crate::integrations_catalog::get(catalog) else { return };
+        if let Some(s) = self.config.servers.iter_mut().find(|s| s.catalog.as_deref() == Some(catalog)) {
+            s.enabled = true;
+            if let Transport::Http { url, .. } = &s.transport {
+                let (id, url) = (s.id.clone(), url.clone());
+                self.sign_in(id, url, cx);
+            } else {
+                self.persist(cx);
+            }
+            return;
+        }
+        let id = super::unique_id(entry.id, &self.config.ids());
+        self.add_server(entry.server(id, None), cx);
+    }
+
+    /// Sign out of a catalog server (its token is dropped; the entry stays).
+    pub fn sign_out_catalog(&mut self, catalog: &str, cx: &mut Context<Self>) {
+        let ids: Vec<String> =
+            self.config.servers.iter().filter(|s| s.catalog.as_deref() == Some(catalog)).map(|s| s.id.clone()).collect();
+        for id in ids {
+            crate::mcp_oauth::sign_out(&id);
+            self.server_status.remove(&id);
+        }
+        self.persist(cx);
+    }
+
+    /// Changes whenever a catalog server is added, removed, switched or
+    /// its sign-in state moves (for pages that follow it).
+    pub fn catalog_key(&self, catalog: &str) -> String {
+        let Some(s) = self.config.servers.iter().find(|s| s.catalog.as_deref() == Some(catalog)) else {
+            return String::new();
+        };
+        let status = match self.server_status.get(&s.id) {
+            Some(Status::Busy(t)) => format!("busy:{t}"),
+            Some(Status::Ok(t)) => format!("ok:{t}"),
+            Some(Status::Failed(e)) => format!("failed:{e}"),
+            None => String::new(),
+        };
+        format!("{}|{}|{:?}|{status}", s.id, s.enabled, s.transport)
+    }
+
+    /// A catalog server's live state, for other pages: `(failed, text)`.
+    pub fn catalog_status(&self, catalog: &str) -> Option<(bool, String)> {
+        let s = self.config.servers.iter().find(|s| s.catalog.as_deref() == Some(catalog))?;
+        match self.server_status.get(&s.id)? {
+            Status::Busy(text) => Some((false, (*text).to_string())),
+            Status::Failed(e) => Some((true, e.clone())),
+            Status::Ok(_) => None,
+        }
+    }
+}

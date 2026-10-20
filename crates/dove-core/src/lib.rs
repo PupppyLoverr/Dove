@@ -20,6 +20,7 @@ use dove_store::{Automation, Project, Store, Task};
 use parking_lot::RwLock;
 
 pub mod automation;
+pub mod memory;
 pub mod mirror;
 
 pub use dove_git as git;
@@ -166,8 +167,10 @@ pub fn persona_preamble(p: &dove_store::Persona, notes: Option<&std::path::Path>
     out
 }
 
-/// A prompt without its teammate brief, as the user wrote it.
+/// A prompt without its teammate brief (or recalled memories), as the user
+/// wrote it.
 pub fn strip_persona(text: &str) -> &str {
+    let text = memory::strip(text);
     let trimmed = text.trim_start();
     if let Some(rest) = trimmed.strip_prefix(PERSONA_OPEN)
         && let Some(end) = rest.find(PERSONA_CLOSE)
@@ -383,6 +386,10 @@ impl Engine {
             prompt: Some(prompt),
             fork: false,
         };
+        if memory::recalls(&self.store, project.id) {
+            let live = self.launch_deferred(&task, spec)?;
+            return Ok((task, live));
+        }
         // A matching pre-started session takes the prompt straight away.
         if let Some(handle) = self.take_warm(&spec)
             && let Some(prompt) = spec.prompt.clone()
@@ -474,6 +481,9 @@ impl Engine {
         run: RunSettings,
     ) -> Result<LiveSession> {
         let spec = self.resume_spec(task, project, prompt, &run)?;
+        if spec.prompt.is_some() && memory::recalls(&self.store, project.id) {
+            return self.launch_deferred(task, spec);
+        }
         if let Some(handle) = self.take_warm(&spec)
             && let Some(prompt) = spec.prompt.clone()
             && handle.send(Command::Send(prompt))
@@ -892,6 +902,7 @@ impl Engine {
             status: TaskStatus::Idle,
             shared: self.shared.clone(),
             drivers: self.drivers.clone(),
+            memory: self.memory_session(task),
         };
         let mut writer = self.store.transcript_writer(task.id).ok();
         let parser = mirror::LineParser::new(kind).since(since);
@@ -921,6 +932,22 @@ impl Engine {
         Ok(self.record(task, handle))
     }
 
+    /// Start (or adopt a pre-started session for) `task` without its first
+    /// prompt, then send that prompt through the session like any other, so
+    /// memory recall runs on it in the recorder instead of blocking here.
+    /// Every driver waits for its first `Send` when it has no prompt.
+    fn launch_deferred(&self, task: &Task, mut spec: SessionSpec) -> Result<LiveSession> {
+        let prompt = spec.prompt.take();
+        let live = match self.take_warm(&spec) {
+            Some(handle) => self.attach(task, handle)?,
+            None => self.launch(task, spec)?,
+        };
+        if let Some(p) = prompt {
+            live.send(Command::Send(p));
+        }
+        Ok(live)
+    }
+
     /// Adopt an already running (pre-started) session for `task`.
     fn attach(&self, task: &Task, handle: SessionHandle) -> Result<LiveSession> {
         {
@@ -946,9 +973,21 @@ impl Engine {
             status: TaskStatus::Running,
             shared: self.shared.clone(),
             drivers: self.drivers.clone(),
+            memory: self.memory_session(task),
         };
         self.rt.spawn(recorder.run(handle, tx, cmd_rx));
         LiveSession { task: task.id, events: rx, commands: cmd_tx, capabilities }
+    }
+
+    fn memory_session(&self, task: &Task) -> memory::Shared {
+        let cwd = task.worktree.clone().unwrap_or_else(|| {
+            self.store
+                .projects()
+                .ok()
+                .and_then(|ps| ps.into_iter().find(|p| p.id == task.project_id).map(|p| p.path))
+                .unwrap_or_default()
+        });
+        memory::Session::new(self.store.clone(), task.id, task.project_id, task.harness, cwd)
     }
 }
 
@@ -961,6 +1000,8 @@ struct Recorder {
     status: TaskStatus,
     shared: Arc<RwLock<Shared>>,
     drivers: Arc<parking_lot::Mutex<HashMap<TaskId, Driver>>>,
+    /// Memory recall/capture for this session.
+    memory: memory::Shared,
 }
 
 impl Recorder {
@@ -972,6 +1013,26 @@ impl Recorder {
                 None
             }
         };
+        // UI commands pass through memory on their way to the agent: recall
+        // is prepended to sends, denied permissions are learned from. In
+        // order, so a send never overtakes an earlier one.
+        let (fwd_tx, fwd_rx) = flume::unbounded::<Command>();
+        let mem = self.memory.clone();
+        tokio::spawn(async move {
+            while let Ok(cmd) = commands.recv_async().await {
+                let cmd = match cmd {
+                    Command::Send(text) => Command::Send(memory::before_send(&mem, text).await),
+                    Command::Permission { request_id, decision } => {
+                        mem.lock().decided(&request_id, decision);
+                        Command::Permission { request_id, decision }
+                    }
+                    other => other,
+                };
+                if fwd_tx.send(cmd).is_err() {
+                    break;
+                }
+            }
+        });
         let mut ui_open = true;
         loop {
             tokio::select! {
@@ -990,7 +1051,7 @@ impl Recorder {
                     }
                     if exited { break; }
                 }
-                cmd = commands.recv_async(), if ui_open => match cmd {
+                cmd = fwd_rx.recv_async(), if ui_open => match cmd {
                     Ok(c) => { handle.send(c); }
                     // The UI dropped its session: let the agent finish the turn
                     // in the background rather than killing it mid-edit.
@@ -1012,6 +1073,7 @@ impl Recorder {
     }
 
     fn record(&mut self, ev: &AgentEvent, writer: Option<&mut dove_store::TranscriptWriter>) {
+        self.memory.lock().observe(ev);
         if let Some(w) = writer {
             if let Err(e) = w.append(ev) {
                 tracing::warn!("transcript append failed: {e:#}");
