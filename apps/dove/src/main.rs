@@ -23,6 +23,8 @@ mod mcp_browser;
 mod mcp_oauth;
 mod memory;
 mod supermemory;
+#[cfg(test)]
+mod memory_bench;
 mod motion;
 mod notify;
 mod office;

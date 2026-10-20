@@ -40,16 +40,19 @@ use sha2::Digest as _;
 // ------------------------------------------------------------------ backend
 
 /// One memory as a backend returns it.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Memory {
     pub id: Option<String>,
     pub text: String,
     pub score: Option<f32>,
+    /// When it was saved (RFC 3339), so newer facts can win over older ones.
+    #[serde(default)]
+    pub at: Option<String>,
 }
 
 impl Memory {
     pub fn new(text: impl Into<String>) -> Self {
-        Self { id: None, text: text.into(), score: None }
+        Self { text: text.into(), ..Default::default() }
     }
 }
 
@@ -116,6 +119,12 @@ impl Doc {
 pub trait Backend: Send + Sync {
     /// Hybrid search within one scope.
     fn search(&self, query: &str, scope: &Scope, limit: usize) -> Result<Vec<Memory>, String>;
+    /// The scope's standing rules (saved corrections and stated rules or
+    /// preferences), newest first, whatever the prompt is about.
+    fn standing(&self, scope: &Scope, query: &str, limit: usize) -> Result<Vec<Memory>, String> {
+        let _ = (scope, query, limit);
+        Ok(Vec::new())
+    }
     /// The profile summary for a scope (static + dynamic facts).
     fn profile(&self, scope: &Scope) -> Result<Vec<Memory>, String>;
     fn add(&self, doc: &Doc) -> Result<(), String>;
@@ -503,14 +512,32 @@ fn one_line(text: &str, max: usize) -> String {
 /// The fenced block for `profile` and `found`, within `budget` characters.
 /// `None` when there is nothing to add.
 pub fn render_block(profile: &[Memory], found: &[Memory], budget: usize) -> Option<(String, usize)> {
-    let head = "Memories Dove recalled for this task from earlier sessions (any agent). Use what helps; they may be out of date, and the user's current request wins.";
+    render_block_with(&[], profile, found, budget)
+}
+
+/// `[2026-10-20 19:14] ` from an RFC 3339 time, or nothing.
+fn stamp(at: Option<&str>) -> String {
+    match at {
+        Some(t) if t.len() >= 16 && t.as_bytes()[10] == b'T' => format!("[{} {}] ", &t[..10], &t[11..16]),
+        _ => String::new(),
+    }
+}
+
+/// [`render_block`] with standing rules first.
+pub fn render_block_with(
+    standing: &[Memory],
+    profile: &[Memory],
+    found: &[Memory],
+    budget: usize,
+) -> Option<(String, usize)> {
+    let head = "Memories Dove recalled for this task from earlier sessions (any agent). Standing rules are the user's own instructions for this project: follow them. Use the rest where it helps. When two memories disagree, the newer one wins; the user's current request wins over all of them.";
     let mut body = String::new();
     let mut count = 0;
     let mut used = head.len() + OPEN.len() + CLOSE.len() + 40;
-    for (title, list) in [("Profile", profile), ("Relevant", found)] {
+    for (title, list) in [("Standing rules", standing), ("Profile", profile), ("Relevant", found)] {
         let mut section = String::new();
         for m in list {
-            let line = format!("- {}\n", one_line(&m.text, ITEM_CHARS));
+            let line = format!("- {}{}\n", stamp(m.at.as_deref()), one_line(&m.text, ITEM_CHARS));
             if line.trim().len() <= 2 || used + section.len() + line.len() > budget {
                 continue;
             }
@@ -548,8 +575,18 @@ pub fn recalled(text: &str) -> Option<Vec<String>> {
         return None;
     }
     let end = trimmed.find(CLOSE)?;
-    let items: Vec<String> =
-        trimmed[..end].lines().filter_map(|l| l.strip_prefix("- ")).map(|l| l.trim().to_string()).collect();
+    let items: Vec<String> = trimmed[..end]
+        .lines()
+        .filter_map(|l| l.strip_prefix("- "))
+        .map(|l| {
+            let l = l.trim();
+            // Drop a leading `[date time] ` stamp.
+            match l.strip_prefix('[').and_then(|r| r.split_once("] ")) {
+                Some((d, rest)) if d.len() == 16 && d.as_bytes()[4] == b'-' => rest.to_string(),
+                _ => l.to_string(),
+            }
+        })
+        .collect();
     (!items.is_empty()).then_some(items)
 }
 
@@ -744,6 +781,22 @@ pub fn correction(prompt: &str, prev_prompt: &str, prev_answer: &str) -> Option<
     ))
 }
 
+/// Whether a prompt states a standing rule or preference ("always…",
+/// "never…", "my preference…", "from now on…") or corrects what was known
+/// before ("no, that's out of date…", "X changed from A to B"), saved as
+/// `kind: rule` so every later session gets it whatever it is about.
+pub fn is_rule(prompt: &str) -> bool {
+    let p = prompt.trim().to_lowercase();
+    let states = [
+        "always ", "never ", "my preference", "i prefer", "from now on", "every answer", "every time", "convention",
+        "rule:", "rule for this", "must be", "must always", "don't ever", "do not ever", "make sure to", "remember to",
+        "remember that", "remember this",
+    ];
+    let corrects = ["out of date", "no longer", "is retired", "was deleted", "changed from", "is now `", "moved from"];
+    let leads = ["no,", "no.", "no —", "no -", "no:", "correction", "actually,", "update:"];
+    states.iter().chain(corrects.iter()).any(|k| p.contains(k)) || leads.iter().any(|l| p.starts_with(l))
+}
+
 /// Word-set overlap (Jaccard) of two texts, 0–1.
 fn similarity(a: &str, b: &str) -> f32 {
     let words = |s: &str| -> HashSet<String> {
@@ -912,7 +965,7 @@ impl Session {
         Some(Doc {
             content: redact(&content),
             scope: Scope::Project(String::new()),
-            metadata: self.metadata("turn"),
+            metadata: self.metadata(if is_rule(prompt) { "rule" } else { "turn" }),
             custom_id: Some(format!("dove_{}_{}", self.task, self.turns)),
             at: dove_store::now_ms(),
         })
@@ -1004,7 +1057,7 @@ pub async fn before_send(session: &Shared, prompt: String) -> String {
         let scopes = shared.lock().scopes();
         // The profile and every scope's search at once: recall has a few
         // seconds at most.
-        let (profile, mut found) = std::thread::scope(|t| {
+        let (standing, profile, mut found) = std::thread::scope(|t| {
             let profile = t.spawn(|| match scopes.first().filter(|_| first).map(|p| b.profile(p)) {
                 Some(Ok(p)) => p,
                 Some(Err(e)) => {
@@ -1013,6 +1066,15 @@ pub async fn before_send(session: &Shared, prompt: String) -> String {
                 }
                 None => Vec::new(),
             });
+            // Standing rules once per session, from every scope.
+            let standing: Vec<_> = scopes
+                .iter()
+                .filter(|_| first)
+                .map(|scope| {
+                    let (b, query) = (&b, &query);
+                    t.spawn(move || b.standing(scope, query, 12).unwrap_or_default())
+                })
+                .collect();
             let searches: Vec<_> = scopes
                 .iter()
                 .map(|scope| {
@@ -1027,20 +1089,23 @@ pub async fn before_send(session: &Shared, prompt: String) -> String {
                 })
                 .collect();
             let found: Vec<Memory> = searches.into_iter().flat_map(|h| h.join().unwrap_or_default()).collect();
-            (profile.join().unwrap_or_default(), found)
+            let mut standing: Vec<Memory> = standing.into_iter().flat_map(|h| h.join().unwrap_or_default()).collect();
+            standing.sort_by(|a, b| b.at.cmp(&a.at));
+            (standing, profile.join().unwrap_or_default(), found)
         });
         found.sort_by(|a, b| b.score.unwrap_or(0.0).total_cmp(&a.score.unwrap_or(0.0)));
-        (profile, found)
+        (standing, profile, found)
     });
-    let Ok(Ok((profile, found))) = tokio::time::timeout(RECALL_TIMEOUT, job).await else {
+    let Ok(Ok((standing, profile, found))) = tokio::time::timeout(RECALL_TIMEOUT, job).await else {
         tracing::debug!("memory recall skipped (slow or failed)");
         return prompt;
     };
     let mut s = session.lock();
     s.profiled = true;
+    let standing = s.dedupe.fresh(standing);
     let profile = s.dedupe.fresh(profile);
     let found = s.dedupe.fresh(found);
-    match render_block(&profile, &found, BUDGET_CHARS) {
+    match render_block_with(&standing, &profile, &found, BUDGET_CHARS) {
         Some((block, _)) => augment(&prompt, &block),
         None => prompt,
     }
@@ -1473,6 +1538,23 @@ mod tests {
         // Persona and memory both stripped.
         let p = format!("{block}<dove-persona>\nYou are Ava\n</dove-persona>\n\nHi");
         assert_eq!(crate::strip_persona(&p), "Hi");
+    }
+
+    #[test]
+    fn standing_rules_lead_with_dates() {
+        let rule = Memory { text: "Start answers with ORB:".into(), at: Some("2026-10-20T19:14:05.000Z".into()), ..Default::default() };
+        let (block, n) = render_block_with(&[rule], &[], &[Memory::new("Port is 4317")], BUDGET_CHARS).unwrap();
+        assert_eq!(n, 2);
+        assert!(block.contains("Standing rules:\n- [2026-10-20 19:14] Start answers with ORB:"));
+        assert!(block.find("Standing rules").unwrap() < block.find("Relevant").unwrap());
+        assert_eq!(recalled(&block).unwrap(), vec!["Start answers with ORB:", "Port is 4317"]);
+        assert!(is_rule("My preference: always use tabs"));
+        assert!(is_rule("From now on run cargo fmt first"));
+        assert!(!is_rule("What is a mutex?"));
+        assert!(is_rule("No, that's out of date: the dev server port changed from 4100 to 4317."));
+        assert!(is_rule("Correction: staging is orbit-stg now"));
+        assert!(!is_rule("Nothing to add, thanks"));
+        assert!(!is_rule("Add the dayjs package"));
     }
 
     #[test]
