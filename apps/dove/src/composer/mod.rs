@@ -110,9 +110,21 @@ struct MentionItem {
     label: String,
     detail: String,
     insert: String,
+    /// For a `#` skill that is off or not installed yet: what picking it
+    /// does first.
+    skill: Option<SkillPick>,
 }
 
-/// An open `@` (files) or `/` (commands) completion.
+/// What picking a skill in the `#` menu does besides inserting `#name`.
+#[derive(Clone, Debug, PartialEq)]
+enum SkillPick {
+    /// Turn an installed skill on.
+    Enable(String),
+    /// Install a recommended skill from GitHub.
+    Install { repo: String, path: String },
+}
+
+/// An open `@` (files), `/` (commands) or `#` (skills) completion.
 struct Mention {
     trigger: char,
     /// Byte offset of the trigger character.
@@ -551,6 +563,9 @@ impl Composer {
         if text.is_empty() && self.attachments.is_empty() {
             return;
         }
+        if let Some(block) = skills_block(&text) {
+            text = format!("{text}\n\n{block}");
+        }
         if !self.attachments.is_empty() {
             let list = self.attachments.iter().map(|p| format!("- {}", p.display())).collect::<Vec<_>>().join("\n");
             text = format!("{text}\n\n{ATTACH_HEADER}\n{list}").trim().to_string();
@@ -794,6 +809,7 @@ impl Composer {
                         label: f.rsplit('/').next().unwrap_or(f).to_string(),
                         detail: f.clone(),
                         insert: format!("@{f}"),
+                        skill: None,
                     })
                     .collect();
                 Some(Mention { trigger: '@', start, items, highlight: 0 })
@@ -809,20 +825,28 @@ impl Composer {
                         insert: format!("/{}", c.name),
                         label: format!("/{}", c.name),
                         detail: c.description,
+                        skill: None,
                     })
                     .collect();
                 items.extend(TEMPLATES.iter().map(|(name, detail, body)| MentionItem {
                     label: format!("/{name}"),
                     detail: detail.to_string(),
                     insert: body.to_string(),
+                    skill: None,
                 }));
                 items.retain(|i| q.is_empty() || i.label[1..].to_ascii_lowercase().starts_with(&q));
                 items.truncate(MAX_MENTIONS);
                 Some(Mention { trigger: '/', start, items, highlight: 0 })
             }
+            // Skills: `#` alone lists them; `#12` with no match stays text.
+            Some('#') => {
+                let q = token[1..].to_ascii_lowercase();
+                let items = skill_items(&q);
+                (!items.is_empty() || q.is_empty()).then_some(Mention { trigger: '#', start, items, highlight: 0 })
+            }
             _ => None,
         };
-        self.mention = mention.filter(|m| !m.items.is_empty() || m.trigger == '@');
+        self.mention = mention.filter(|m| !m.items.is_empty() || m.trigger == '@' || m.trigger == '#');
     }
 
     fn ensure_files(&mut self, cx: &mut Context<Self>) {
@@ -846,6 +870,19 @@ impl Composer {
     fn accept_mention(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(m) = self.mention.take() else { return };
         let Some(item) = m.items.get(m.highlight).cloned() else { return };
+        if let Some(pick) = item.skill.clone() {
+            // Turn the skill on (or install it) before the message goes.
+            cx.background_spawn(async move {
+                let done = match pick {
+                    SkillPick::Enable(name) => dove_core::skills::set_skill_enabled(&name, true),
+                    SkillPick::Install { repo, path } => dove_core::skills::install(&repo, &path).map(|_| ()),
+                };
+                if let Err(e) = done {
+                    tracing::warn!("could not prepare the skill: {e}");
+                }
+            })
+            .detach();
+        }
         self.input.update(cx, |s, cx| {
             let cursor = s.cursor();
             s.set_selected_range(m.start..cursor, cx);
@@ -1614,7 +1651,11 @@ impl Composer {
                     .pb(px(4.0))
                     .text_size(ty::MICRO)
                     .text_color(t.text_faint)
-                    .child(if m.trigger == '@' { "Files" } else { "Commands" }),
+                    .child(match m.trigger {
+                        '@' => "Files",
+                        '#' => "Skills",
+                        _ => "Commands",
+                    }),
             )
             .when(empty, |d| {
                 d.child(
@@ -1623,7 +1664,13 @@ impl Composer {
                         .py(px(8.0))
                         .text_size(ty::BODY)
                         .text_color(t.text_faint)
-                        .child(if self.files.is_empty() { "Loading files…" } else { "No matching files" }),
+                        .child(if m.trigger == '#' {
+                            "No skills yet. Add some in Settings › Skills."
+                        } else if self.files.is_empty() {
+                            "Loading files…"
+                        } else {
+                            "No matching files"
+                        }),
                 )
             })
             .children(m.items.iter().enumerate().map(|(i, item)| {
@@ -1641,7 +1688,11 @@ impl Composer {
                     .when(selected, |d| d.bg(t.wash(0.10)))
                     .hover(|s| s.bg(t.wash(0.08)))
                     .child(
-                        icon(if m.trigger == '@' { icons::DOCUMENT } else { icons::COMMAND })
+                        icon(match m.trigger {
+                            '@' => icons::DOCUMENT,
+                            '#' => icons::MAGIC_STICK_3,
+                            _ => icons::COMMAND,
+                        })
                             .size(px(14.0))
                             .text_color(t.text_faint),
                     )
@@ -1773,8 +1824,12 @@ pub const ATTACH_HEADER: &str = "Attached files (read them as needed):";
 /// A sent message's own text and the files it carried (see
 /// [`ATTACH_HEADER`]). Text without the block comes back whole.
 pub fn split_attachments(text: &str) -> (String, Vec<PathBuf>) {
-    let Some(at) = text.find(ATTACH_HEADER) else { return (text.to_string(), Vec::new()) };
-    let body = text[..at].trim_end().to_string();
+    let strip = |body: &str| match body.find(SKILLS_HEADER) {
+        Some(s) => body[..s].trim_end().to_string(),
+        None => body.to_string(),
+    };
+    let Some(at) = text.find(ATTACH_HEADER) else { return (strip(text), Vec::new()) };
+    let body = strip(text[..at].trim_end());
     let files = text[at + ATTACH_HEADER.len()..]
         .lines()
         .filter_map(|line| line.trim().strip_prefix("- "))
@@ -1782,6 +1837,93 @@ pub fn split_attachments(text: &str) -> (String, Vec<PathBuf>) {
         .map(|p| PathBuf::from(p.trim()))
         .collect();
     (body, files)
+}
+
+/// The block a sent message carries for the skills it names with `#`: the
+/// agent loads each one, and the transcript leaves the block out.
+pub const SKILLS_HEADER: &str = "Skills to use for this message (read each SKILL.md and follow it):";
+
+/// The `#` menu for query `q`: installed skills that are on, then ones that
+/// are off (picking turns them on), then recommended ones not installed yet
+/// (picking installs them).
+fn skill_items(q: &str) -> Vec<MentionItem> {
+    use dove_core::skills::{self, Source};
+    let reg = skills::load();
+    let hit = |name: &str, detail: &str| {
+        q.is_empty() || name.contains(q) || detail.to_ascii_lowercase().contains(q)
+    };
+    let mut on = Vec::new();
+    let mut off = Vec::new();
+    for s in &reg.skills {
+        if !hit(&s.name, &s.description) {
+            continue;
+        }
+        let from = match &s.source {
+            Source::Bundled => String::new(),
+            Source::Git { repo, .. } => format!(" · {repo}"),
+        };
+        let item = |detail: String, skill| MentionItem {
+            label: format!("#{}", s.name),
+            detail,
+            insert: format!("#{}", s.name),
+            skill,
+        };
+        if s.enabled {
+            on.push(item(format!("{}{from}", s.description), None));
+        } else {
+            off.push(item(format!("Off, turns on when picked · {}", s.description), Some(SkillPick::Enable(s.name.clone()))));
+        }
+    }
+    let recommended = skills::RECOMMENDED.iter().filter_map(|(repo, path, name, blurb)| {
+        (reg.get(name).is_none() && hit(name, blurb)).then(|| MentionItem {
+            label: format!("#{name}"),
+            detail: format!("Recommended, installs when picked · {blurb}"),
+            insert: format!("#{name}"),
+            skill: Some(SkillPick::Install { repo: repo.to_string(), path: path.to_string() }),
+        })
+    });
+    on.into_iter().chain(off).chain(recommended).take(MAX_SKILL_MENTIONS).collect()
+}
+
+const MAX_SKILL_MENTIONS: usize = 12;
+
+/// The skills a message names as `#name` (installed and on), as the block
+/// that tells the agent to load them.
+fn skills_block(text: &str) -> Option<String> {
+    let names = skill_tags(text);
+    if names.is_empty() {
+        return None;
+    }
+    let reg = dove_core::skills::load();
+    let root = dove_core::skills::root();
+    let lines: Vec<String> = names
+        .iter()
+        // A recommended skill picked a moment ago may still be installing;
+        // its folder is where it will land.
+        .filter(|n| {
+            reg.get(n).map_or_else(
+                || dove_core::skills::RECOMMENDED.iter().any(|(_, _, name, _)| *name == n.as_str()),
+                |s| s.enabled,
+            )
+        })
+        .map(|n| format!("- {n}: {}", root.join(n).join("SKILL.md").display()))
+        .collect();
+    (!lines.is_empty()).then(|| format!("{SKILLS_HEADER}\n{}", lines.join("\n")))
+}
+
+/// Every distinct `#name` in `text` (skill-name characters only).
+fn skill_tags(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for word in text.split_whitespace() {
+        let Some(tag) = word.strip_prefix('#') else { continue };
+        let tag: String =
+            tag.chars().take_while(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '-').collect();
+        let tag = tag.trim_end_matches('-').to_string();
+        if !tag.is_empty() && !out.contains(&tag) {
+            out.push(tag);
+        }
+    }
+    out
 }
 
 /// Whether `path` is an image Dove can show as a thumbnail.
@@ -2702,6 +2844,13 @@ mod tests {
         assert_eq!(body, "look at these");
         assert_eq!(files, vec![PathBuf::from("C:/a/shot.png"), PathBuf::from("C:/b/Cargo.toml")]);
         // Files alone, and plain text, both come back sensibly.
+        let with_skills = format!("#pdf make it\n\n{SKILLS_HEADER}\n- pdf: /s/pdf/SKILL.md\n\n{ATTACH_HEADER}\n- /a.png");
+        let (body, files) = split_attachments(&with_skills);
+        assert_eq!(body, "#pdf make it");
+        assert_eq!(files, vec![PathBuf::from("/a.png")]);
+        let (body, _) = split_attachments(&format!("hi #x\n\n{SKILLS_HEADER}\n- x: /x"));
+        assert_eq!(body, "hi #x");
+        assert_eq!(skill_tags("use #pdf, #web-app-testing. and #pdf #1 #"), vec!["pdf", "web-app-testing", "1"]);
         let (body, files) = split_attachments(&format!("{ATTACH_HEADER}\n- /tmp/x.jpg"));
         assert!(body.is_empty());
         assert_eq!(files.len(), 1);

@@ -2,8 +2,9 @@
 //!
 //! Installed lists the bundled skills and the ones added from GitHub, each
 //! with a switch that installs it into (or removes it from) every harness's
-//! skills folder. Discover lists the skills of curated repositories and of
-//! any repository the user adds. The work happens in
+//! skills folder. Discover lists the skills of curated libraries and of any
+//! repository the user adds. Both filter by category; in a chat, `#` picks
+//! a skill for one message (see the composer). The work happens in
 //! `dove_core::skills` on background threads; this view keeps a copy of
 //! the registry and the listings it fetched.
 
@@ -19,7 +20,7 @@ use gpui_base::input::{InputEvent, InputState};
 
 use crate::assets::{icon, icons};
 use crate::design::{radius, space, ty};
-use crate::kit::controls::{self as ctl, Segment, Tone};
+use crate::kit::controls::{self as ctl, Segment, SelectOption, SelectState, Tone};
 use crate::kit::page;
 use crate::theme::Theme;
 use crate::ui;
@@ -44,6 +45,9 @@ pub struct SkillsView {
     query: String,
     /// Discover's source filter; `None` shows every repository.
     source: Option<String>,
+    sel_source: SelectState,
+    /// The category filter; `None` shows every category.
+    category: Option<&'static str>,
     listings: HashMap<String, Fetch>,
     /// Work in flight: `install:<repo>/<path>`, `remove:<name>`, `update`.
     busy: HashSet<String>,
@@ -86,6 +90,8 @@ impl SkillsView {
             search,
             query: String::new(),
             source: None,
+            sel_source: SelectState::default(),
+            category: None,
             listings: HashMap::new(),
             busy: HashSet::new(),
             adding: false,
@@ -249,11 +255,36 @@ impl SkillsView {
         self.act(format!("drop-repo:{repo}"), move || skills::remove_repo(&repo).map(|_| String::new()), cx);
     }
 
-    fn matches(&self, name: &str, description: &str) -> bool {
-        self.query.is_empty()
+    fn matches(&self, category: &str, name: &str, description: &str) -> bool {
+        self.category.is_none_or(|c| c == category)
+            && (self.query.is_empty()
             || self.query.split_whitespace().all(|w| {
                 name.to_ascii_lowercase().contains(w) || description.to_ascii_lowercase().contains(w)
-            })
+            }))
+    }
+
+    /// The category chips: All, then every category.
+    fn categories(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let mut chips: Vec<AnyElement> = vec![
+            chip("skills-cat-all".into(), "All".into(), self.category.is_none(), t)
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.category = None;
+                    cx.notify();
+                }))
+                .into_any_element(),
+        ];
+        for c in skills::CATEGORIES {
+            let on = self.category == Some(*c);
+            chips.push(
+                chip(format!("skills-cat-{c}").into(), c.to_string(), on, t)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.category = if on { None } else { Some(*c) };
+                        cx.notify();
+                    }))
+                    .into_any_element(),
+            );
+        }
+        div().mt(px(space::MD)).px(px(page::LABEL_INSET)).flex().flex_wrap().gap(px(6.0)).children(chips).into_any_element()
     }
 }
 
@@ -376,11 +407,16 @@ impl SkillsView {
     }
 
     fn installed(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
-        let shown: Vec<Installed> =
-            self.registry.skills.iter().filter(|s| self.matches(&s.name, &s.description)).cloned().collect();
+        let shown: Vec<Installed> = self
+            .registry
+            .skills
+            .iter()
+            .filter(|s| self.matches(skills::installed_category(s), &s.name, &s.description))
+            .cloned()
+            .collect();
         let (bundled, git): (Vec<Installed>, Vec<Installed>) =
             shown.into_iter().partition(|s| s.source == Source::Bundled);
-        let mut out = div().flex().flex_col();
+        let mut out = div().flex().flex_col().child(self.categories(t, cx));
         if !bundled.is_empty() {
             let rows: Vec<AnyElement> =
                 bundled.iter().enumerate().map(|(i, s)| self.installed_row(t, s, i == 0, cx)).collect();
@@ -392,7 +428,7 @@ impl SkillsView {
             page::empty_state(
                 t,
                 icons::MAGIC_STICK_3,
-                if self.query.is_empty() { "No skills from GitHub yet" } else { "No matching skills" },
+                if self.query.is_empty() && self.category.is_none() { "No skills from GitHub yet" } else { "No matching skills" },
                 if self.query.is_empty() { "Find skills in Discover and install them for every agent." } else { "" },
                 self.query.is_empty().then(|| {
                     ctl::button_sm(t, "skills-go-discover", "Discover skills", Tone::Filled)
@@ -445,29 +481,27 @@ impl SkillsView {
 
     fn discover(&self, t: &Theme, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let repos = self.repos();
-        let mut chips: Vec<AnyElement> = vec![
-            chip("skills-src-all".into(), "All".into(), self.source.is_none(), t)
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.source = None;
-                    cx.notify();
-                }))
-                .into_any_element(),
-        ];
-        for repo in &repos {
-            let r = repo.clone();
-            chips.push(
-                chip(format!("skills-src-{repo}").into(), repo_label(repo), self.source.as_deref() == Some(repo), t)
-                    .tooltip(ui::tip(repo.clone()))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.source = Some(r.clone());
-                        cx.notify();
-                    }))
-                    .into_any_element(),
-            );
-        }
+        let picked = self.source.as_ref().and_then(|s| repos.iter().position(|r| r == s)).map_or(0, |i| i + 1);
+        let options = std::iter::once(SelectOption::new("All libraries").detail(format!("{} sources", repos.len())))
+            .chain(repos.iter().map(|r| SelectOption::new(repo_label(r)).detail(r.clone())));
+        let menu_repos = repos.clone();
+        let library = ctl::select::<Self>("skills-source", "Library", |s| &mut s.sel_source)
+            .options(options, picked)
+            .width(190.0)
+            .menu_width(320.0)
+            .on_select(move |this, i, _, cx| {
+                this.source = i.checked_sub(1).and_then(|i| menu_repos.get(i).cloned());
+                cx.notify();
+            })
+            .render(t, &self.sel_source, cx);
         let add_focused = self.repo_input.read(cx).focus_handle(cx).is_focused(window);
         let mut out = div().flex().flex_col().child(
-            div().mt(px(space::LG)).px(px(page::LABEL_INSET)).flex().flex_wrap().gap(px(6.0)).children(chips),
+            div()
+                .flex()
+                .items_start()
+                .gap(px(space::MD))
+                .child(div().flex_1().min_w_0().child(self.categories(t, cx)))
+                .child(div().mt(px(space::MD)).flex_none().child(library)),
         );
         if self.adding {
             out = out.child(
@@ -514,8 +548,15 @@ impl SkillsView {
                 None | Some(Fetch::Loading) => div().px(px(space::LG)).py(px(space::MD)).child(page::skeleton_lines(t, 3)).into_any_element(),
                 Some(Fetch::Failed(e)) => page::error_strip(t, e.clone()).into_any_element(),
                 Some(Fetch::Ready(listing)) => {
-                    let shown: Vec<&Available> =
-                        listing.skills.iter().filter(|a| self.matches(&a.name, &a.description)).collect();
+                    let shown: Vec<&Available> = listing
+                        .skills
+                        .iter()
+                        .filter(|a| self.matches(skills::category(Some(repo), &a.name, &a.description), &a.name, &a.description))
+                        .collect();
+                    // Filtering: libraries with nothing to show step aside.
+                    if shown.is_empty() && (self.category.is_some() || !self.query.is_empty()) && self.source.is_none() {
+                        continue;
+                    }
                     if shown.is_empty() {
                         page::info_strip(
                             t,
@@ -634,6 +675,13 @@ impl Render for SkillsView {
                     .px(px(page::LABEL_INSET))
                     .text_size(ty::META)
                     .text_color(t.text_faint)
+                    .flex()
+                    .flex_col()
+                    .gap(px(space::XS))
+                    .child(
+                        "Agents pick up skills that are on by themselves. To ask for one, type # in a chat and \
+                         choose it: Dove tells the agent to load that skill for the message.",
+                    )
                     .child(
                         "Skills are copied into ~/.claude/skills, ~/.agents/skills and the skill folders of OpenCode, \
                          Gemini CLI and Pi. Folders you made yourself are never changed.",

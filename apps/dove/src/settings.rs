@@ -50,6 +50,7 @@ pub enum Section {
     Agents,
     Team,
     Integrations,
+    Connectors,
     Skills,
     Remote,
     Data,
@@ -69,7 +70,7 @@ pub enum SettingsEvent {
 
 impl Section {
     #[cfg(test)]
-    pub const ALL: [Section; 13] = [
+    pub const ALL: [Section; 14] = [
         Section::General,
         Section::Appearance,
         Section::Notifications,
@@ -78,6 +79,7 @@ impl Section {
         Section::Agents,
         Section::Team,
         Section::Integrations,
+        Section::Connectors,
         Section::Skills,
         Section::Remote,
         Section::Data,
@@ -88,7 +90,7 @@ impl Section {
     /// The navigation, grouped by spacing (no headers), as in Zeron.
     const GROUPS: [&'static [Section]; 3] = [
         &[Section::General, Section::Appearance, Section::Notifications, Section::Voice, Section::Shortcuts],
-        &[Section::Agents, Section::Team, Section::Integrations, Section::Skills, Section::Remote],
+        &[Section::Agents, Section::Team, Section::Skills, Section::Connectors, Section::Integrations, Section::Remote],
         &[Section::Data, Section::Archived, Section::About],
     ];
 
@@ -102,6 +104,7 @@ impl Section {
             Section::Agents => "Agents",
             Section::Team => "Team",
             Section::Integrations => "Integrations",
+            Section::Connectors => "Connectors",
             Section::Skills => "Skills",
             Section::Remote => "Remote",
             Section::Data => "Data & Storage",
@@ -120,6 +123,7 @@ impl Section {
             Section::Agents => icons::WIDGET,
             Section::Team => icons::USERS_GROUP,
             Section::Integrations => icons::WIDGET_ADD,
+            Section::Connectors => icons::CLOUD,
             Section::Skills => icons::MAGIC_STICK_3,
             Section::Remote => icons::SMARTPHONE,
             Section::Data => icons::HARD_DRIVE,
@@ -138,6 +142,7 @@ impl Section {
             Section::Agents => "agents",
             Section::Team => "team",
             Section::Integrations => "integrations",
+            Section::Connectors => "connectors",
             Section::Skills => "skills",
             Section::Remote => "remote",
             Section::Data => "data",
@@ -157,7 +162,8 @@ impl Section {
             "keyboard" | "shortcuts" => Section::Shortcuts,
             "agents" | "providers" | "harnesses" => Section::Agents,
             "team" | "crew" => Section::Team,
-            "integrations" => Section::Integrations,
+            "integrations" | "mcp" => Section::Integrations,
+            "connectors" | "composio" => Section::Connectors,
             "skills" | "skill" => Section::Skills,
             "remote" | "devices" => Section::Remote,
             "data" | "storage" => Section::Data,
@@ -260,7 +266,13 @@ const INDEX: &[Entry] = &[
         Section::Integrations,
         "integrations",
         "Integrations",
-        "integrations mcp chrome extension composio paper computer use cua",
+        "integrations mcp servers chrome extension paper computer use cua github cli",
+    ),
+    e(
+        Section::Connectors,
+        "connectors",
+        "Connectors",
+        "connectors composio apps gmail slack notion github linear calendar toolkits connect",
     ),
     e(
         Section::Skills,
@@ -967,7 +979,8 @@ impl SettingsPage {
                 ),
                 self.team(&t, cx),
             ),
-            Section::Integrations => (None, self.integrations_section(&t)),
+            Section::Integrations => (None, self.integrations_section(&t, cx)),
+            Section::Connectors => (None, self.connectors_section(&t, cx)),
             Section::Skills => (None, self.skills_section(&t)),
             Section::Remote => (None, self.remote(&t, cx)),
             Section::Data => (None, self.data(&t, cx)),
@@ -2132,12 +2145,28 @@ impl SettingsPage {
             .into_any_element()
     }
 
-    fn integrations_section(&self, t: &Theme) -> AnyElement {
+    fn integrations_section(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        use crate::pages::integrations::Scope;
+        self.integrations.update(cx, |v, cx| v.set_scope(Scope::Integrations, cx));
         div()
             .flex()
             .flex_col()
-            .child(page::page_subtitle(t, "Extra tools every agent gets through Dove's MCP server."))
+            .child(page::page_subtitle(t, "MCP servers and local tools every agent gets through Dove's MCP server."))
             .child(div().relative().child(self.anchor("integrations")).child(self.integrations.clone()))
+            .into_any_element()
+    }
+
+    fn connectors_section(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        use crate::pages::integrations::Scope;
+        self.integrations.update(cx, |v, cx| v.set_scope(Scope::Connectors, cx));
+        div()
+            .flex()
+            .flex_col()
+            .child(page::page_subtitle(
+                t,
+                "Your apps (Gmail, Slack, Notion, GitHub, Linear and hundreds more) through Composio, for every agent.",
+            ))
+            .child(div().relative().child(self.anchor("connectors")).child(self.integrations.clone()))
             .into_any_element()
     }
 
@@ -2459,6 +2488,7 @@ mod tests {
         assert_eq!(Section::from_id("composer"), Some(Section::General));
         assert_eq!(Section::from_id("shortcuts"), Some(Section::Shortcuts));
         assert_eq!(Section::from_id("skills"), Some(Section::Skills));
+        assert_eq!(Section::from_id("composio"), Some(Section::Connectors));
         assert_eq!(Section::from_id("nope"), None);
     }
 

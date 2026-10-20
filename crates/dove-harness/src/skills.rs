@@ -338,6 +338,17 @@ fn frontmatter(md: &str) -> Option<BTreeMap<String, String>> {
 /// frontmatter with a `name` of 1–64 `[a-z0-9-]` equal to the folder name,
 /// and a `description` of at most 1024 characters.
 pub fn validate(folder: &str, md: &str) -> Result<Meta, String> {
+    let meta = parse_meta(md)?;
+    if meta.name != folder {
+        return Err(format!("skill name {:?} does not match its folder {folder:?}", meta.name));
+    }
+    Ok(meta)
+}
+
+/// [`validate`] without the folder rule. Many libraries keep a skill in a
+/// folder named differently from the skill; Dove installs it under its own
+/// name, which satisfies the rule in every harness folder.
+pub fn parse_meta(md: &str) -> Result<Meta, String> {
     let fm = frontmatter(md).ok_or("SKILL.md has no frontmatter (--- name/description ---)")?;
     let name = fm.get("name").map(String::as_str).unwrap_or_default();
     if name.is_empty() {
@@ -345,9 +356,6 @@ pub fn validate(folder: &str, md: &str) -> Result<Meta, String> {
     }
     if name.len() > 64 || !name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') {
         return Err(format!("skill name {name:?} must be 1-64 lowercase letters, digits and hyphens"));
-    }
-    if name != folder {
-        return Err(format!("skill name {name:?} does not match its folder {folder:?}"));
     }
     let description = fm.get("description").map(String::as_str).unwrap_or_default();
     if description.is_empty() {
@@ -622,21 +630,151 @@ pub struct Curated {
     pub under: Option<&'static str>,
     /// Skill names not offered (Dove bundles its own).
     pub skip: &'static [&'static str],
+    /// The category of every skill here, when the library is about one
+    /// thing; otherwise each skill is sorted by its words ([`category`]).
+    pub category: Option<&'static str>,
 }
 
+const fn lib(repo: &'static str, label: &'static str, under: Option<&'static str>) -> Curated {
+    Curated { repo, label, under, skip: &[], category: None }
+}
+
+/// The libraries Discover offers: the most used skill collections on GitHub,
+/// chosen to cover every category, official ones first.
 pub const CURATED: &[Curated] = &[
-    Curated { repo: "obra/superpowers", label: "Superpowers", under: Some("skills"), skip: &[] },
+    lib("obra/superpowers", "Superpowers", Some("skills")),
+    Curated { skip: &["docx", "pdf", "pptx", "xlsx"], ..lib("anthropics/skills", "Anthropic", Some("skills")) },
+    lib("openai/skills", "OpenAI", Some("skills/.curated")),
+    lib("addyosmani/agent-skills", "Addy Osmani", Some("skills")),
+    lib("vercel-labs/agent-skills", "Vercel", Some("skills")),
+    Curated { category: Some("Design"), ..lib("Leonxlnx/taste-skill", "Taste", Some("skills")) },
+    Curated { category: Some("Design"), ..lib("cathrynlavery/diagram-design", "Diagram Design", Some("skills")) },
+    Curated { category: Some("Design"), ..lib("google-labs-code/stitch-skills", "Google Stitch", None) },
+    Curated { category: Some("Writing"), ..lib("blader/humanizer", "Humanizer", None) },
+    Curated { category: Some("Marketing"), ..lib("coreyhaines31/marketingskills", "Marketing", Some("skills")) },
+    Curated { category: Some("Finance"), ..lib("anthropics/financial-services", "Financial services", None) },
     Curated {
-        repo: "anthropics/skills",
-        label: "Anthropic",
-        under: Some("skills"),
-        skip: &["docx", "pdf", "pptx", "xlsx"],
+        category: Some("Data & science"),
+        ..lib("K-Dense-AI/scientific-agent-skills", "Scientific", Some("skills"))
     },
-    // Only the skills in the repository itself; the rest of its list links
-    // elsewhere, and `composio-skills/` is hundreds of generated toolkits.
-    Curated { repo: "ComposioHQ/awesome-claude-skills", label: "Composio", under: Some(""), skip: &[] },
-    Curated { repo: "CitroLabs/ego-lite", label: "ego(lite)", under: Some("skills"), skip: &[] },
+    // Only the skills in the repository itself: the rest of its list links
+    // elsewhere, `composio-skills/` is hundreds of generated toolkits, and
+    // connect/connect-apps set up MCP connections (Settings › Connectors).
+    Curated {
+        skip: &["connect", "connect-apps"],
+        ..lib("ComposioHQ/awesome-claude-skills", "Composio", Some(""))
+    },
+    Curated { category: Some("Web & browser"), ..lib("CitroLabs/ego-lite", "ego(lite)", Some("skills")) },
 ];
+
+/// Skills the `#` menu suggests until they are installed:
+/// `(repo, folder, skill name, what it does)`. Picking one installs it.
+pub const RECOMMENDED: &[(&str, &str, &str, &str)] = &[
+    ("obra/superpowers", "skills/brainstorming", "brainstorming", "Turn a rough idea into a design before coding"),
+    ("obra/superpowers", "skills/systematic-debugging", "systematic-debugging", "Find the root cause before fixing a bug"),
+    ("obra/superpowers", "skills/test-driven-development", "test-driven-development", "Write the failing test first"),
+    ("obra/superpowers", "skills/writing-plans", "writing-plans", "Write a step-by-step implementation plan"),
+    ("anthropics/skills", "skills/frontend-design", "frontend-design", "Distinctive, production-grade interfaces"),
+    ("anthropics/skills", "skills/webapp-testing", "webapp-testing", "Test web apps with Playwright"),
+    ("anthropics/skills", "skills/skill-creator", "skill-creator", "Create and improve skills"),
+    ("Leonxlnx/taste-skill", "skills/taste-skill", "design-taste-frontend", "Design with taste: layout, type and colour"),
+    ("cathrynlavery/diagram-design", "skills/diagram-design", "diagram-design", "Clear, good-looking diagrams"),
+    ("blader/humanizer", "", "humanizer", "Make AI-written text read naturally"),
+    ("coreyhaines31/marketingskills", "skills/copywriting", "copywriting", "Marketing copy that converts"),
+    (
+        "anthropics/financial-services",
+        "plugins/agent-plugins/market-researcher/skills/comps-analysis",
+        "comps-analysis",
+        "Comparable-company analysis",
+    ),
+    ("CitroLabs/ego-lite", "skills/ego-browser", "ego-browser", "Use websites in your own browser"),
+];
+
+/// Skill categories, in the order filters show them.
+pub const CATEGORIES: &[&str] = &[
+    "Engineering",
+    "Design",
+    "Work",
+    "Writing",
+    "Documents",
+    "Data & science",
+    "Finance",
+    "Marketing",
+    "Web & browser",
+    "Other",
+];
+
+/// Words that place a skill in a category, checked in this order. A
+/// trailing `*` matches any word starting with the stem.
+const CATEGORY_WORDS: &[(&str, &[&str])] = &[
+    ("Documents", &["docx", "pdf", "pptx", "xlsx", "word", "powerpoint", "excel", "spreadsheet*", "slide*", "deck*"]),
+    (
+        "Finance",
+        &["financ*", "invoice*", "accounting", "budget*", "stock*", "trading", "tax*", "expense*", "earnings", "valuation", "portfolio*", "kyc", "ledger"],
+    ),
+    (
+        "Design",
+        &["design*", "ui", "ux", "figma", "canvas", "art", "algorithmic", "brand*", "theme*", "visual*", "css", "frontend", "image*", "gif", "color*", "illustrat*", "diagram*", "taste", "typography", "animation*"],
+    ),
+    (
+        "Web & browser",
+        &["browser*", "website*", "scrap*", "playwright", "chrome", "crawl*", "devtools", "web"],
+    ),
+    (
+        "Marketing",
+        &["marketing", "seo", "ads", "ad", "social", "twitter", "lead*", "campaign*", "growth", "competitive", "pricing", "launch*", "copywriting", "cro", "email*"],
+    ),
+    (
+        "Writing",
+        &["writ*", "blog*", "content", "copy", "comms", "newsletter*", "resume", "coauthor*", "humaniz*", "editing", "prose", "article*"],
+    ),
+    (
+        "Data & science",
+        &["data", "dataset*", "analytics", "sql", "csv", "chart*", "research*", "analysis", "scientific", "science", "statistic*", "bio*", "chem*", "genom*", "protein*"],
+    ),
+    (
+        "Engineering",
+        &["code", "coding", "debug*", "test*", "tdd", "git", "branch*", "review*", "plan*", "mcp", "api*", "deploy*", "refactor*", "develop*", "react", "performance", "ci", "cli", "build*", "server*", "subagent*", "security", "architecture", "aspnet", "cloudflare", "vercel"],
+    ),
+    (
+        "Work",
+        &["meeting*", "calendar", "slack", "task*", "organiz*", "file*", "project*", "productivity", "notes", "brainstorm*", "workflow*", "automation*", "invoice*", "career", "internal"],
+    ),
+];
+
+/// The category of a skill: its library's, else the first whose words
+/// appear in the name or description.
+pub fn category(repo: Option<&str>, name: &str, description: &str) -> &'static str {
+    if let Some(c) = repo.and_then(|r| CURATED.iter().find(|c| c.repo.eq_ignore_ascii_case(r))).and_then(|c| c.category)
+    {
+        return c;
+    }
+    let text = format!("{name} {description}").to_ascii_lowercase();
+    let words: Vec<&str> = text.split(|c: char| !c.is_ascii_alphanumeric()).filter(|w| !w.is_empty()).collect();
+    // The name counts first: "pdf" decides before a passing "design".
+    let name = name.to_ascii_lowercase();
+    let name_words: Vec<&str> = name.split(|c: char| !c.is_ascii_alphanumeric()).filter(|w| !w.is_empty()).collect();
+    let hit = |list: &[&str], ws: &[&str]| {
+        list.iter().any(|k| match k.strip_suffix('*') {
+            Some(stem) => ws.iter().any(|w| w.starts_with(stem)),
+            None => ws.contains(k),
+        })
+    };
+    CATEGORY_WORDS
+        .iter()
+        .find(|(_, list)| hit(list, &name_words))
+        .or_else(|| CATEGORY_WORDS.iter().find(|(_, list)| hit(list, &words)))
+        .map(|(c, _)| *c)
+        .unwrap_or("Other")
+}
+
+/// The category of an installed skill (bundled ones are documents).
+pub fn installed_category(s: &Installed) -> &'static str {
+    match &s.source {
+        Source::Bundled => category(None, &s.name, &s.description),
+        Source::Git { repo, .. } => category(Some(repo), &s.name, &s.description),
+    }
+}
 
 /// A skill a repository offers.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -781,7 +919,13 @@ fn skill_folders(repo: &str, tree: &Tree, rule: Option<&Curated>) -> Vec<(String
         .iter()
         .filter(|e| e.kind == "blob" && (e.path == "SKILL.md" || e.path.ends_with("/SKILL.md")))
         .map(|e| e.path.strip_suffix("SKILL.md").unwrap_or("").trim_end_matches('/').to_string())
-        .filter(|folder| !folder.split('/').any(|seg| seg.starts_with('.')))
+        .filter(|folder| {
+            let below = match rule.and_then(|r| r.under) {
+                Some(dir) if !dir.is_empty() => folder.strip_prefix(dir).unwrap_or(folder),
+                _ => folder,
+            };
+            !below.split('/').any(|seg| seg.starts_with('.'))
+        })
         .filter(|folder| match rule.and_then(|r| r.under) {
             Some("") => !folder.is_empty() && !folder.contains('/'),
             Some(dir) => folder
@@ -814,6 +958,9 @@ fn skill_folders(repo: &str, tree: &Tree, rule: Option<&Curated>) -> Vec<(String
         }
         f.is_empty() || !all.contains("")
     });
+    // The same skill copied into several plugins: list it once.
+    let mut names = HashSet::new();
+    found.retain(|(f, _)| names.insert(folder_name(repo, f).to_string()));
     found.truncate(MAX_LISTED);
     found
 }
@@ -868,14 +1015,13 @@ fn fetch_listing(repo: &str) -> Result<Listing, String> {
                 .iter()
                 .map(|(path, sha)| {
                     s.spawn(move || {
-                        let name = folder_name(repo, path).to_string();
                         let md_path = if path.is_empty() { "SKILL.md".to_string() } else { format!("{path}/SKILL.md") };
                         let checked = raw(repo, &md_path)
                             .and_then(|b| String::from_utf8(b).map_err(|_| "SKILL.md is not UTF-8".to_string()))
-                            .and_then(|md| validate(&name, &md));
-                        let (description, problem) = match checked {
-                            Ok(meta) => (meta.description, None),
-                            Err(e) => (String::new(), Some(e)),
+                            .and_then(|md| parse_meta(&md));
+                        let (name, description, problem) = match checked {
+                            Ok(meta) => (meta.name, meta.description, None),
+                            Err(e) => (folder_name(repo, path).to_string(), String::new(), Some(e)),
                         };
                         Available { name, description, path: path.clone(), sha: sha.clone(), problem }
                     })
@@ -894,7 +1040,10 @@ fn fetch_listing(repo: &str) -> Result<Listing, String> {
 /// already installed.
 fn install_from(repo: &str, tree: &Tree, path: &str) -> Result<Installed, String> {
     let path = path.trim_matches('/');
-    let name = folder_name(repo, path).to_string();
+    let prefix = if path.is_empty() { String::new() } else { format!("{path}/") };
+    let md = raw(repo, &format!("{prefix}SKILL.md"))?;
+    let meta = parse_meta(&String::from_utf8_lossy(&md))?;
+    let name = meta.name.clone();
     if office_skills::find(&name).is_some() || name == CACHE {
         return Err(format!("{name} is a name Dove reserves for its own skills"));
     }
@@ -912,7 +1061,6 @@ fn install_from(repo: &str, tree: &Tree, path: &str) -> Result<Installed, String
     {
         return Err(format!("a skill named {name} is already installed from {}", existing.source.label()));
     }
-    let prefix = if path.is_empty() { String::new() } else { format!("{path}/") };
     let files: Vec<&TreeEntry> = tree
         .tree
         .iter()
@@ -926,8 +1074,6 @@ fn install_from(repo: &str, tree: &Tree, path: &str) -> Result<Installed, String
     if total > MAX_SKILL_BYTES || files.iter().any(|e| e.size.unwrap_or(0) > MAX_FILE_BYTES) {
         return Err(format!("{name} is too large to install"));
     }
-    let md = raw(repo, &format!("{prefix}SKILL.md"))?;
-    let meta = validate(&name, &String::from_utf8_lossy(&md))?;
 
     let root = root();
     let staging = root.join(format!(".staging-{name}-{}", std::process::id()));
@@ -1052,6 +1198,7 @@ mod tests {
 
         assert!(validate("my-skill", "# no frontmatter").is_err());
         assert!(validate("other", ok).unwrap_err().contains("does not match"));
+        assert_eq!(parse_meta(ok).unwrap().name, "my-skill");
         assert!(validate("My_Skill", "---\nname: My_Skill\ndescription: d\n---\n").is_err());
         assert!(validate("a", "---\nname: a\n---\n").unwrap_err().contains("description"));
         let long = format!("---\nname: a\ndescription: {}\n---\n", "x".repeat(1025));
@@ -1216,12 +1363,45 @@ mod tests {
                 entry("b/SKILL.md", "blob"),
             ],
         };
-        let rule = Curated { repo: "o/r", label: "", under: Some("skills"), skip: &["docx"] };
+        let rule = Curated { skip: &["docx"], ..lib("o/r", "", Some("skills")) };
         let found = skill_folders("o/r", &tree, Some(&rule));
         assert_eq!(found, vec![("skills/a".to_string(), "sha:skills/a".to_string())]);
-        let top = Curated { repo: "o/r", label: "", under: Some(""), skip: &[] };
+        let top = lib("o/r", "", Some(""));
         assert_eq!(skill_folders("o/r", &tree, Some(&top)).len(), 1);
         let any: Vec<String> = skill_folders("o/r", &tree, None).into_iter().map(|(p, _)| p).collect();
         assert_eq!(any, vec!["b", "skills/a", "skills/docx"]);
+
+        let dotted = Tree {
+            sha: "root".into(),
+            tree: vec![
+                entry("skills/.curated/x", "tree"),
+                entry("skills/.curated/x/SKILL.md", "blob"),
+                entry("plugins/p/skills/x", "tree"),
+                entry("plugins/p/skills/x/SKILL.md", "blob"),
+                entry("plugins/q/skills/x", "tree"),
+                entry("plugins/q/skills/x/SKILL.md", "blob"),
+            ],
+        };
+        let curated = lib("o/r", "", Some("skills/.curated"));
+        assert_eq!(skill_folders("o/r", &dotted, Some(&curated)).len(), 1);
+        // Copies of one skill in several plugins list once.
+        assert_eq!(skill_folders("o/r", &dotted, Some(&lib("o/r", "", None))).len(), 1);
+    }
+
+    #[test]
+    fn categorizes_skills() {
+        assert_eq!(category(None, "pdf", "Create PDFs, merge and split"), "Documents");
+        assert_eq!(category(None, "frontend-design", "Build distinctive interfaces"), "Design");
+        assert_eq!(category(None, "systematic-debugging", "Use when a test fails"), "Engineering");
+        assert_eq!(category(None, "ego-browser", "Operate websites"), "Web & browser");
+        assert_eq!(category(Some("coreyhaines31/marketingskills"), "ab-testing", "Run tests"), "Marketing");
+        assert_eq!(category(None, "zzz", "nothing known"), "Other");
+        assert!(CATEGORIES.contains(&category(None, "meeting-insights-analyzer", "Analyze meeting transcripts")));
+        for c in CURATED {
+            assert!(c.category.is_none_or(|c| CATEGORIES.contains(&c)), "{}", c.repo);
+        }
+        for (cat, _) in CATEGORY_WORDS {
+            assert!(CATEGORIES.contains(cat));
+        }
     }
 }

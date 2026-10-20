@@ -1,5 +1,7 @@
-//! Settings → Integrations: Dove for Chrome pairing, Composio (BYOK), Paper,
-//! and computer use through the open-source `cua-driver`.
+//! Settings → Integrations (GitHub CLI, Dove for Chrome, Paper, computer use
+//! through the open-source `cua-driver`) and Settings → Connectors
+//! (Composio). One view draws both pages, so they share one copy of the
+//! config and never overwrite each other's changes.
 //!
 //! The choices live in `<dove data>/integrations.json` (mode 0600, since it
 //! holds the user's Composio key). `dove --mcp-browser` reads that file when
@@ -190,7 +192,18 @@ enum GhStep {
     Failed(String),
 }
 
+/// Which Settings page the view is drawing.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Scope {
+    /// MCP servers and local tools.
+    #[default]
+    Integrations,
+    /// App connections through Composio.
+    Connectors,
+}
+
 pub struct IntegrationsView {
+    scope: Scope,
     config: Config,
     api_key: Entity<InputState>,
     toolkits: Entity<InputState>,
@@ -248,6 +261,7 @@ impl IntegrationsView {
             }),
         ];
         let mut view = Self {
+            scope: Scope::default(),
             config,
             api_key,
             toolkits,
@@ -270,6 +284,14 @@ impl IntegrationsView {
         })
         .detach();
         view
+    }
+
+    /// Draw the Integrations or the Connectors page.
+    pub fn set_scope(&mut self, scope: Scope, cx: &mut Context<Self>) {
+        if self.scope != scope {
+            self.scope = scope;
+            cx.notify();
+        }
     }
 
     fn persist(&mut self, cx: &mut Context<Self>) {
@@ -770,11 +792,10 @@ impl Render for IntegrationsView {
             .flex()
             .flex_col()
             .gap(px(space::MD))
-            .child(github)
-            .child(chrome)
-            .child(composio)
-            .child(paper)
-            .child(computer)
+            .map(|d| match self.scope {
+                Scope::Integrations => d.child(github).child(chrome).child(paper).child(computer),
+                Scope::Connectors => d.child(composio),
+            })
             .child(
                 div()
                     .px(px(page::LABEL_INSET))
