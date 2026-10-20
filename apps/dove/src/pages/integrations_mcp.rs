@@ -422,8 +422,9 @@ impl IntegrationsView {
 
     // ----------------------------------------------------------------- render
 
-    /// The MCP section: search, connected servers and the catalog.
-    pub(super) fn render_mcp(&mut self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+    /// The MCP section (search and connected servers) and, separately, the
+    /// catalog, which the page puts last because it is long.
+    pub(super) fn render_mcp(&mut self, t: &Theme, cx: &mut Context<Self>) -> (AnyElement, Option<AnyElement>) {
         let query = self.search.read(cx).value().trim().to_lowercase();
         let matches = |name: &str, blurb: &str| {
             query.is_empty() || name.to_lowercase().contains(&query) || blurb.to_lowercase().contains(&query)
@@ -482,14 +483,14 @@ impl IntegrationsView {
             }))
         });
 
-        div()
+        let head = div()
             .flex()
             .flex_col()
             .gap(px(space::MD))
             .child(toolbar)
             .when_some(connected_card, |d, card| d.child(page::section(t, "Connected", card)))
-            .when_some(discover_card, |d, card| d.child(page::section(t, "Discover", card)))
-            .into_any_element()
+            .into_any_element();
+        (head, discover_card.map(|card| page::section(t, "Discover", card).into_any_element()))
     }
 
     fn server_row(&self, t: &Theme, first: bool, s: McpServer, cx: &mut Context<Self>) -> gpui::Div {

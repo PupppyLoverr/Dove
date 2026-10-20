@@ -1205,7 +1205,7 @@ impl Render for IntegrationsView {
                 ))
             });
 
-        let mcp = self.render_mcp(&t, cx);
+        let (mcp, discover) = self.render_mcp(&t, cx);
         let dialog = self.render_dialog(&t, window, cx);
         // ego lite: the agents' browser
         let choice = self.config.browser;
@@ -1284,7 +1284,9 @@ impl Render for IntegrationsView {
             .gap(px(space::MD))
             .map(|d| match self.scope {
                 Scope::Integrations => {
-                    d.child(page::section(&t, "MCP servers", mcp)).child(page::section(&t, "Built in", built_in))
+                    d.child(page::section(&t, "MCP servers", mcp))
+                        .child(page::section(&t, "Built in", built_in))
+                        .children(discover)
                 }
                 Scope::Connectors => d.child(composio),
             })
