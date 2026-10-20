@@ -739,6 +739,9 @@ struct LocalEntry {
 
 /// Newest entries kept.
 const LOCAL_CAP: usize = 4000;
+/// The least share of a query's (rarity-weighted) words an entry must
+/// cover to be recalled.
+const LOCAL_MIN_SCORE: f32 = 0.15;
 
 fn local_lock() -> &'static Mutex<()> {
     static LOCK: Mutex<()> = Mutex::new(());
@@ -838,23 +841,35 @@ impl LocalIndex {
     }
 
     /// Entries of `scope` sharing enough words with `query`, best first.
-    /// Scores are the share of the query's words found (0–1).
+    /// The score is the query's word weight an entry covers (0–1), each word
+    /// weighted by how rare it is in the scope, so a multi-part question
+    /// still finds the memory that answers one part of it.
     pub fn search(&self, scope: &Scope, query: &str, limit: usize) -> Vec<Memory> {
         let q: HashSet<String> = terms(query).into_iter().collect();
         if q.is_empty() {
             return Vec::new();
         }
         let tag = scope_tag(scope);
-        let need = if q.len() <= 2 { 1 } else { 2 };
-        let mut hits: Vec<(f32, LocalEntry)> = self
+        let entries: Vec<(HashSet<String>, LocalEntry)> = self
             .entries()
             .into_iter()
             .filter(|e| e.tag == tag)
-            .filter_map(|e| {
-                let words: HashSet<String> = terms(&e.text).into_iter().collect();
-                let matched = q.iter().filter(|t| words.contains(*t)).count();
-                let share = matched as f32 / q.len() as f32;
-                (matched >= need && share >= 0.25).then_some((share, e))
+            .map(|e| (terms(&e.text).into_iter().collect(), e))
+            .collect();
+        let n = entries.len() as f32;
+        let idf = |t: &String| {
+            let df = entries.iter().filter(|(w, _)| w.contains(t)).count() as f32;
+            (1.0 + n / (1.0 + df)).ln()
+        };
+        let weights: Vec<(&String, f32)> = q.iter().map(|t| (t, idf(t))).collect();
+        let total: f32 = weights.iter().map(|(_, w)| w).sum::<f32>().max(f32::EPSILON);
+        let need = if q.len() <= 2 { 1 } else { 2 };
+        let mut hits: Vec<(f32, LocalEntry)> = entries
+            .into_iter()
+            .filter_map(|(words, e)| {
+                let matched: Vec<f32> = weights.iter().filter(|(t, _)| words.contains(*t)).map(|(_, w)| *w).collect();
+                let score = matched.iter().sum::<f32>() / total;
+                (matched.len() >= need && score >= LOCAL_MIN_SCORE).then_some((score, e))
             })
             .collect();
         // Best match first; the newer of two equal matches first.
@@ -863,6 +878,14 @@ impl LocalIndex {
             .take(limit)
             .map(|(score, e)| Memory { id: None, text: e.text, score: Some(score), at: rfc3339(e.at) })
             .collect()
+    }
+
+    /// The scope's entries, newest first.
+    pub fn recent(&self, scope: &Scope, limit: usize) -> Vec<Memory> {
+        let tag = scope_tag(scope);
+        let mut list: Vec<LocalEntry> = self.entries().into_iter().filter(|e| e.tag == tag).collect();
+        list.sort_by(|a, b| b.at.cmp(&a.at));
+        list.into_iter().take(limit).map(|e| Memory { id: None, text: e.text, score: None, at: rfc3339(e.at) }).collect()
     }
 
     /// The scope's rules and corrections, newest first.
@@ -1477,7 +1500,7 @@ pub fn consolidate(store: &Store) -> Result<Report, String> {
     scopes.push(Scope::User);
     scopes.dedup();
     let mut report = Report { at: dove_store::now_ms(), ..Default::default() };
-    let mut all = Vec::new();
+    let local = LocalIndex::at(store.root());
     for scope in scopes {
         let mut list = Vec::new();
         for page in 1..=4 {
@@ -1496,15 +1519,22 @@ pub fn consolidate(store: &Store) -> Result<Report, String> {
                 }
             }
         }
+        // What this machine saved, plus what only the service has (other
+        // machines, Supermemory's own plugins).
+        let list = merge_unique(local.recent(&scope, 200), list);
         report.scanned += list.len();
         for group in duplicates(&list, 0.85) {
             let keep = list[group[0]].clone();
             let copies = group[1..].iter().map(|&i| list[i].clone()).collect();
             report.duplicates.push((scope.clone(), keep, copies));
         }
-        all.extend(list);
+        // Workflows are per project: name each draft after its repository.
+        for mut skill in propose_skills(&list, 3) {
+            skill.name = format!("{}-{}", scope_short_name(&scope), skill.name.trim_start_matches("project-"));
+            report.skills.push(skill);
+        }
     }
-    report.skills = propose_skills(&all, 3);
+    report.skills.sort_by(|a, b| b.seen.cmp(&a.seen));
     let root = store.root();
     let dir = suggested_skills_dir(root);
     for s in &report.skills {
@@ -1518,6 +1548,15 @@ pub fn consolidate(store: &Store) -> Result<Report, String> {
     let _ = std::fs::write(Report::path(root), serde_json::to_string_pretty(&report).unwrap_or_default());
     let _ = store.set_setting(CONSOLIDATED_AT, &report.at.to_string());
     Ok(report)
+}
+
+/// A scope as a short slug: the repository name of `repo_<name>__<hash>`.
+pub fn scope_short_name(scope: &Scope) -> String {
+    match scope {
+        Scope::Project(t) => t.strip_prefix("repo_").unwrap_or(t).split("__").next().unwrap_or(t).to_string(),
+        Scope::Team(t) => t.clone(),
+        Scope::User => "user".into(),
+    }
 }
 
 /// Whether the weekly consolidation is due.
@@ -1810,7 +1849,12 @@ mod tests {
         idx.add(&Doc { scope: Scope::Project(String::new()), ..doc("placeholder scope is skipped", "turn", 6_000) });
         idx.add(&Doc { scope: Scope::Project("other".into()), ..doc("Other repo: locking with Redis", "turn", 7_000) });
 
-        let hits = idx.search(&project, "Which locking mechanism should the nightly job use, and how do I deploy to staging?", 6);
+        let hits = idx.search(
+            &project,
+            "I'm adding a nightly cleanup job to this project. Which locking mechanism should it use here, and what \
+             exact command deploys it to staging? Two short lines. Do not look at files.",
+            6,
+        );
         let texts: Vec<&str> = hits.iter().map(|m| m.text.as_str()).collect();
         assert!(texts.iter().any(|t| t.contains("advisory")), "{texts:?}");
         assert!(texts.iter().any(|t| t.contains("orbit-stg")), "{texts:?}");
@@ -1930,6 +1974,8 @@ mod tests {
         assert_eq!(skills[0].name, "project-cargo-workflow");
         assert_eq!(skills[0].steps[0], "cargo test -j 2");
         assert!(skills[0].skill_md().starts_with("---\nname: project-cargo-workflow\n"));
+        assert_eq!(scope_short_name(&Scope::Project("repo_dove__ab12".into())), "dove");
+        assert_eq!(scope_short_name(&Scope::User), "user");
     }
 
     #[test]

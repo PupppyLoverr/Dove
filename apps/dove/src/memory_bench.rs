@@ -545,12 +545,63 @@ fn memory_bench() {
         );
     }
 
+    // ------------------------------------------------------ self-advancing
+    // The same release workflow comes up in three sessions with two agents;
+    // the weekly consolidation should turn it into a skill draft.
+    let skills_project = if run("skills") || run("consolidate") {
+        b.say("\n== SELF-ADVANCING: a workflow repeated across sessions becomes a skill draft".to_string());
+        let p = b.repo("skills", &format!("git@github.com:dove-bench/skills{n}.git"), &[("Cargo.toml", "[package]\nname = \"skills\"\n")]);
+        b.teach(
+            &p,
+            oc,
+            &format!("How we release: first `cargo test --workspace -j 2`, then `cargo build --release --features r{n}`. Acknowledge in one line."),
+            &format!("r{n}"),
+        );
+        b.teach(
+            &p,
+            ag,
+            &format!(
+                "Release, part two: after the build we publish with `gh release create v{n} --generate-notes`, and we always \
+                 run `cargo test --workspace -j 2` before it. Acknowledge in one line."
+            ),
+            &format!("v{n}"),
+        );
+        b.teach(
+            &p,
+            oc,
+            &format!(
+                "Release checklist reminder: `cargo test --workspace -j 2`, `cargo build --release --features r{n}`, then \
+                 `gh release create v{n} --generate-notes`. Acknowledge in one line."
+            ),
+            "checklist",
+        );
+        Some(p)
+    } else {
+        None
+    };
+
     // ------------------------------------------------------- consolidation
     let mut extra = String::new();
-    if run("consolidate") || only.is_empty() {
+    if run("consolidate") || run("skills") || only.is_empty() {
         b.say("\n== CONSOLIDATION: duplicates and skill drafts from what was captured".to_string());
         match memory::consolidate(&b.engine.store) {
             Ok(r) => {
+                if skills_project.is_some() {
+                    let draft = memory::suggested_skills_dir(b.engine.store.root()).join(format!("skills{n}-cargo-workflow")).join("SKILL.md");
+                    let text = std::fs::read_to_string(&draft).unwrap_or_default();
+                    let ok = text.contains("cargo test --workspace -j 2") && text.contains(&format!("--features r{n}"));
+                    b.say(format!("  => Self-advancing · skill draft: {}", if ok { "PASS" } else { "fail" }));
+                    if ok {
+                        b.say(format!("  draft:\n{}", text.lines().map(|l| format!("    {l}")).collect::<Vec<_>>().join("\n")));
+                    }
+                    b.rows.push(format!(
+                        "| Self-advancing · workflow seen 3 times → skill draft | Dove consolidation | **{}** | n/a | n/a | n/a |",
+                        if ok { "PASS" } else { "fail" }
+                    ));
+                    if !ok {
+                        b.failures.push("Self-advancing · skill draft".into());
+                    }
+                }
                 b.say(format!(
                     "  scanned {} memories/documents, {} duplicates, {} skill drafts: {:?}",
                     r.scanned,

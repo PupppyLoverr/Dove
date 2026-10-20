@@ -117,6 +117,19 @@ struct Conn {
 
 /// Supermemory's REST API.
 const API: &str = "https://api.supermemory.ai";
+
+/// An error with its causes (reqwest's own message hides whether it was a
+/// timeout, DNS or TLS).
+fn chain(e: &dyn std::error::Error) -> String {
+    let mut out = e.to_string();
+    let mut cause = e.source();
+    while let Some(c) = cause {
+        out.push_str(": ");
+        out.push_str(&c.to_string());
+        cause = c.source();
+    }
+    out
+}
 /// The account's default space: where the MCP tools put memories saved
 /// without a namespace, so the user scope over REST.
 const DEFAULT_SPACE: &str = "sm_project_default";
@@ -189,7 +202,7 @@ impl Rest {
             }
             let rt = self.rt.as_ref().ok_or("no runtime for Supermemory calls")?;
             let (status, text) = rt.block_on(async {
-                let resp = req.send().await.map_err(|e| format!("could not reach Supermemory: {e}"))?;
+                let resp = req.send().await.map_err(|e| format!("could not reach Supermemory: {}", chain(&e)))?;
                 let status = resp.status();
                 Ok::<_, String>((status, resp.text().await.unwrap_or_default()))
             })?;
