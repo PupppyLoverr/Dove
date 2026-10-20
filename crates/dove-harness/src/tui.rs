@@ -20,6 +20,8 @@ pub struct TuiCommand {
     /// True when the TUI reopens the chat's conversation; false when it
     /// starts fresh (the agent has no resume flag Dove can use).
     pub resumes: bool,
+    /// Extra environment for the program (OpenCode's inline config).
+    pub env: Vec<(String, String)>,
 }
 
 /// What the TUI needs to know about the session.
@@ -77,7 +79,7 @@ pub fn shell_command(cwd: &Path) -> TuiCommand {
         let program = std::env::var("SHELL").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from("/bin/bash"));
         (program, vec!["-l".into()])
     };
-    TuiCommand { program, args, cwd: cwd.to_path_buf(), resumes: true }
+    TuiCommand { program, args, cwd: cwd.to_path_buf(), resumes: true, env: Vec::new() }
 }
 
 /// Build the TUI command for `kind`, whose CLI lives at `program`.
@@ -251,7 +253,43 @@ pub fn command(kind: HarnessKind, program: &Path, cwd: &Path, spec: &TuiSpec) ->
     {
         args.splice(0..0, codex_mcp_overrides(&server));
     }
-    TuiCommand { program: program.to_path_buf(), args, cwd: cwd.to_path_buf(), resumes: resumed }
+    // OpenCode reads inline config from OPENCODE_CONFIG_CONTENT and merges
+    // it over the user's own files, so Dove's server rides beside theirs.
+    let mut env = Vec::new();
+    if kind == HarnessKind::OpenCode
+        && let Some(server) = crate::tool_server(cwd)
+    {
+        let existing = std::env::var("OPENCODE_CONFIG_CONTENT").ok();
+        env.push(("OPENCODE_CONFIG_CONTENT".to_string(), opencode_config_content(&server, existing.as_deref())));
+    }
+    TuiCommand { program: program.to_path_buf(), args, cwd: cwd.to_path_buf(), resumes: resumed, env }
+}
+
+/// OpenCode inline config adding `server` as a local MCP server, merged
+/// into `existing` (an inline config already in Dove's environment) when
+/// that is a JSON object.
+fn opencode_config_content(server: &crate::ToolServer, existing: Option<&str>) -> String {
+    use serde_json::{Value, json};
+    let mut config = existing
+        .and_then(|s| serde_json::from_str::<Value>(s).ok())
+        .filter(Value::is_object)
+        .unwrap_or_else(|| json!({}));
+    let command: Vec<&str> = std::iter::once(server.command.as_str()).chain(server.args.iter().map(String::as_str)).collect();
+    let environment: serde_json::Map<String, Value> =
+        server.env.iter().map(|(k, v)| (k.clone(), Value::String(v.clone()))).collect();
+    if !config.get("mcp").is_some_and(Value::is_object) {
+        config["mcp"] = json!({});
+    }
+    config["mcp"][server.name.as_str()] = json!({
+        "type": "local",
+        "command": command,
+        "environment": environment,
+        "enabled": true,
+        // Dove's server starts the user's integrations before it lists
+        // tools; OpenCode's 5 s default would give up on a slow one.
+        "timeout": 60000,
+    });
+    config.to_string()
 }
 
 /// What to type into a TUI to leave it cleanly.
@@ -409,6 +447,29 @@ mod tests {
         assert_eq!(o[1], r"mcp_servers.dove.command='C:\Program Files\Dove\dove.exe'");
         assert_eq!(o[3], "mcp_servers.dove.args=['--mcp-browser']");
         assert_eq!(o[5], r#"mcp_servers.dove.env={DOVE_CWD='C:\w',Q="it's"}"#);
+    }
+
+    #[test]
+    fn opencode_config_adds_dove_beside_existing() {
+        let server = crate::ToolServer {
+            name: "dove".into(),
+            command: r"C:\Program Files\Dove\dove.exe".into(),
+            args: vec!["--mcp-browser".into()],
+            env: vec![("DOVE_DATA".into(), r"C:\d".into())],
+        };
+        let v: serde_json::Value = serde_json::from_str(&opencode_config_content(&server, None)).unwrap();
+        assert_eq!(v["mcp"]["dove"]["type"], "local");
+        assert_eq!(v["mcp"]["dove"]["command"], serde_json::json!([r"C:\Program Files\Dove\dove.exe", "--mcp-browser"]));
+        assert_eq!(v["mcp"]["dove"]["environment"]["DOVE_DATA"], r"C:\d");
+        // An inline config already set keeps its own keys and servers.
+        let existing = r#"{"model":"x/y","mcp":{"mine":{"type":"remote","url":"https://m"}}}"#;
+        let v: serde_json::Value = serde_json::from_str(&opencode_config_content(&server, Some(existing))).unwrap();
+        assert_eq!(v["model"], "x/y");
+        assert_eq!(v["mcp"]["mine"]["url"], "https://m");
+        assert_eq!(v["mcp"]["dove"]["enabled"], true);
+        // Garbage is replaced, not merged.
+        let v: serde_json::Value = serde_json::from_str(&opencode_config_content(&server, Some("nope"))).unwrap();
+        assert!(v["mcp"]["dove"].is_object());
     }
 
     fn spec(id: Option<&str>, mode: PermissionMode) -> TuiSpec<'_> {

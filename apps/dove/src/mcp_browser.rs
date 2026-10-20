@@ -785,10 +785,15 @@ mod upstream {
                 specs.push(("composio".into(), Some(Box::new(move || composio(&c)))));
             }
             if config.paper.enabled {
-                specs.push((
-                    "paper".into(),
-                    Some(Box::new(|| Server::http("paper", cfg::PAPER_MCP_URL.into(), Vec::new(), None))),
-                ));
+                // The Paper CLI's stdio relay works even while Desktop is
+                // closed; Desktop's own HTTP endpoint is the fallback.
+                let make: Make = match cfg::paper_cli() {
+                    Some(cli) => Box::new(move || {
+                        Server::stdio("paper", &cli.display().to_string(), &["mcp".into()], &BTreeMap::new(), None)
+                    }),
+                    None => Box::new(|| Server::http("paper", cfg::PAPER_MCP_URL.into(), Vec::new(), None)),
+                };
+                specs.push(("paper".into(), Some(make)));
             }
             if config.computer.enabled
                 && let Some(bin) = cfg::cua_driver()

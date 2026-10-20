@@ -31,6 +31,8 @@ pub enum Program {
     Command {
         program: PathBuf,
         args: Vec<String>,
+        /// Extra environment for the program.
+        env: Vec<(String, String)>,
     },
 }
 
@@ -68,7 +70,18 @@ impl TerminalView {
 
     /// Run an agent's TUI instead of a shell.
     pub fn for_command(cwd: PathBuf, program: PathBuf, args: Vec<String>, cx: &mut Context<Self>) -> Self {
-        Self::with_program(cwd, Program::Command { program, args }, cx)
+        Self::for_command_env(cwd, program, args, Vec::new(), cx)
+    }
+
+    /// [`TerminalView::for_command`] with extra environment variables.
+    pub fn for_command_env(
+        cwd: PathBuf,
+        program: PathBuf,
+        args: Vec<String>,
+        env: Vec<(String, String)>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self::with_program(cwd, Program::Command { program, args, env }, cx)
     }
 
     fn with_program(cwd: PathBuf, program: Program, cx: &mut Context<Self>) -> Self {
@@ -92,7 +105,9 @@ impl TerminalView {
         let (cols, rows) = (self.emu.cols() as u16, self.emu.rows() as u16);
         let spawned = match &self.program {
             Program::Shell => Pty::spawn(&self.cwd, cols, rows),
-            Program::Command { program, args } => Pty::spawn_command(program, args, &self.cwd, cols, rows),
+            Program::Command { program, args, env } => {
+                Pty::spawn_command_env(program, args, env, &self.cwd, cols, rows)
+            }
         };
         match spawned {
             Ok(pty) => {
