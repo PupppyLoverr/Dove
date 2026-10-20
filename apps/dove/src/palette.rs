@@ -32,6 +32,8 @@ pub enum PaletteItem {
     File(String),
     /// One setting: (row id, title, section label).
     Setting(&'static str, &'static str, &'static str),
+    /// Rehearse a taught skill: (name, status label).
+    Taught(String, &'static str),
 }
 
 impl PaletteItem {
@@ -43,6 +45,7 @@ impl PaletteItem {
             PaletteItem::Agent(k) => format!("New thread with {}", k.label()),
             PaletteItem::File(p) => p.clone(),
             PaletteItem::Setting(_, title, section) => format!("{section}: {title}"),
+            PaletteItem::Taught(name, status) => format!("Rehearse skill: {name} ({status})"),
         }
     }
 
@@ -54,6 +57,7 @@ impl PaletteItem {
             PaletteItem::Agent(..) => "Agent",
             PaletteItem::File(..) => "File",
             PaletteItem::Setting(..) => "Setting",
+            PaletteItem::Taught(..) => "Skill",
         }
     }
 }
@@ -206,6 +210,9 @@ impl Palette {
             PaletteItem::File(_) => icon(icons::DOCUMENT).size(px(15.0)).text_color(t.text_muted).into_any_element(),
             PaletteItem::Setting(..) => {
                 icon(icons::SETTINGS).size(px(15.0)).text_color(t.text_muted).into_any_element()
+            }
+            PaletteItem::Taught(..) => {
+                icon(icons::CHECKLIST).size(px(15.0)).text_color(t.text_muted).into_any_element()
             }
         }
     }

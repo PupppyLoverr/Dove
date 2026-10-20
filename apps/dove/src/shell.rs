@@ -825,6 +825,12 @@ impl Shell {
         self.navigate(Route::Home, window, cx);
     }
 
+    /// A new thread with `text` waiting in the composer for the user to finish and send.
+    fn new_session_with(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.new_session(window, cx);
+        crate::composer::set_text(&self.composer, text, window, cx);
+    }
+
     pub fn open_task(&mut self, id: TaskId, window: &mut Window, cx: &mut Context<Self>) {
         if self.task(id).is_some_and(|t| t.status == TaskStatus::Draft) {
             self.navigate(Route::Kanban, window, cx);
@@ -1644,6 +1650,7 @@ impl Shell {
             P::Action("Toggle side panel", icons::SPLIT_COLUMNS, "panel"),
             P::Action("Add project…", icons::DOCUMENT_ADD, "add_project"),
             P::Action("Switch theme (light / dark)", icons::MOON, "theme"),
+            P::Action("Teach Dove a skill…", icons::MAGIC_STICK_3, "teach"),
         ];
         if self.active_task().is_some() {
             items.extend([
@@ -1663,6 +1670,7 @@ impl Shell {
                 .filter(|t| t.status != TaskStatus::Draft)
                 .map(|t| P::Thread(t.id, t.title.clone(), t.status)),
         );
+        items.extend(dove_core::teach::list().into_iter().map(|t| P::Taught(t.name, t.status.label())));
         items.extend(self.projects.iter().map(|p| P::Project(p.id, p.name.clone())));
         items.extend(self.installed.iter().filter(|i| dove_core::harness_supported(i.kind)).map(|i| P::Agent(i.kind)));
         items.extend(
@@ -1689,6 +1697,11 @@ impl Shell {
                 self.panel.update(cx, |p, cx| p.open_path(&path, None, window, cx));
             }
             PaletteItem::Setting(row, _, _) => self.reveal_setting(row, window, cx),
+            PaletteItem::Taught(name, _) => {
+                if let Some(t) = dove_core::teach::list().into_iter().find(|t| t.name == name) {
+                    self.new_session_with(&dove_core::teach::rehearse_prompt(&t), window, cx);
+                }
+            }
             PaletteItem::Action(_, _, id) => match id {
                 "new" => self.new_session(window, cx),
                 "threads" => self.navigate(Route::Threads, window, cx),
@@ -1731,6 +1744,7 @@ impl Shell {
                     }
                 }
                 "side_chat" => self.side_chat(window, cx),
+                "teach" => self.new_session_with(&dove_core::teach::teach_prompt(), window, cx),
                 _ => {}
             },
         }

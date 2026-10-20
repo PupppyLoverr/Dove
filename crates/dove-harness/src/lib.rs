@@ -16,6 +16,7 @@ pub mod office_skills;
 pub mod process;
 mod rpc;
 pub mod skills;
+pub mod teach;
 pub mod title;
 pub mod tui;
 pub mod walkthrough;

@@ -31,6 +31,7 @@ pub use dove_harness::models;
 pub use dove_harness::office_skills;
 pub use dove_harness::process as harness_process;
 pub use dove_harness::skills;
+pub use dove_harness::teach;
 pub use dove_harness::tui;
 pub use dove_harness::walkthrough;
 pub use dove_harness::{ToolServer, is_dove_tool, set_tool_server, tool_server};

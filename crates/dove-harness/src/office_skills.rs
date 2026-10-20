@@ -1,7 +1,8 @@
 //! The skills Dove bundles (`skills/` in the repo), in the Agent Skills
 //! format (a folder per skill with `SKILL.md` and optional `scripts/`):
 //! the office skills pdf, pptx, xlsx and docx, plus dove-browser (ego lite
-//! playbook) and dove-memory (Supermemory).
+//! playbook), dove-memory (Supermemory) and teach (skills the user teaches
+//! Dove, see [`crate::teach`]).
 //!
 //! The files are compiled into the binary; [`crate::skills`] writes them to
 //! `$DOVE_HOME/skills/<name>` and mirrors them, with every skill installed
@@ -66,6 +67,11 @@ pub const SKILLS: &[Skill] = &[
         "dove-memory",
         "Long-term memory across sessions and harnesses (Supermemory): what to search, save and never save.",
         []
+    ),
+    skill!(
+        "teach",
+        "Teach Dove a reusable skill: interview the user, write it, rehearse it, publish it to every agent.",
+        ["scripts/teach_tool.py"]
     ),
 ];
 
