@@ -220,6 +220,9 @@ pub struct Config {
     pub ego: Toggle,
     /// Which browser agents use.
     pub browser: BrowserChoice,
+    /// Let agents run `ego-browser` without a prompt, through each
+    /// harness's own allow rules (off by default).
+    pub ego_allow: bool,
 }
 
 /// The agents' browser (Settings → Integrations → ego lite).
@@ -239,6 +242,12 @@ pub enum BrowserChoice {
 impl Config {
     pub fn ids(&self) -> Vec<String> {
         self.servers.iter().map(|s| s.id.clone()).collect()
+    }
+
+    /// Whether agents may run `ego-browser` without asking: the switch,
+    /// unless agents are not pointed at ego lite at all.
+    pub fn ego_allowed(&self) -> bool {
+        self.ego_allow && self.browser != BrowserChoice::Dove
     }
 
     /// Whether anything here needs Dove's MCP server running.
@@ -371,7 +380,16 @@ pub fn ego_browser() -> Option<PathBuf> {
     dove_core::harness_process::resolve("ego-browser")
 }
 
-/// Whether Paper Desktop's MCP server is listening.
+/// The Paper CLI, which Paper Desktop installs to `~/.paper/bin` when it
+/// first opens. `paper mcp` relays MCP over stdio, even while Desktop is
+/// closed, so Dove prefers it to Desktop's HTTP endpoint.
+pub fn paper_cli() -> Option<PathBuf> {
+    let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from)?;
+    let bin = home.join(".paper").join("bin").join(if cfg!(windows) { "paper.exe" } else { "paper" });
+    bin.is_file().then_some(bin)
+}
+
+/// Whether Paper Desktop's (legacy) HTTP MCP server is listening.
 pub fn paper_running() -> bool {
     std::net::TcpStream::connect_timeout(&([127, 0, 0, 1], 29979).into(), Duration::from_millis(250)).is_ok()
 }
@@ -385,6 +403,8 @@ struct Probe {
     /// The driver's own `health_report` summary, after "Check permissions".
     cua_health: Option<String>,
     paper: bool,
+    /// The Paper CLI (`paper mcp`), when Paper Desktop installed it.
+    paper_cli: Option<PathBuf>,
     /// ego lite's `ego-browser` command.
     ego: Option<PathBuf>,
     /// The GitHub CLI, and the account it is signed in to.
@@ -539,6 +559,7 @@ impl IntegrationsView {
 
     fn persist(&mut self, cx: &mut Context<Self>) {
         let _ = save(&self.config);
+        dove_core::set_allow_ego_browser(self.config.ego_allowed());
         // The first integration turned on with the agent browser off still
         // needs Dove's server registered for the agents started next.
         crate::mcp_browser::register_without_browser(&data_root());
@@ -560,6 +581,7 @@ impl IntegrationsView {
                 cua_version,
                 cua_health: None,
                 paper: paper_running(),
+                paper_cli: paper_cli(),
                 ego: ego_browser(),
                 gh,
                 gh_user,
@@ -1042,19 +1064,26 @@ impl Render for IntegrationsView {
             });
 
         // Paper
+        let paper_cli = self.probe.paper_cli.is_some();
         let (left, switch) = toggle(
             paper_on,
-            Some((self.probe.paper, if self.probe.paper { "Running" } else { "Not running" })),
+            Some(match (paper_cli, self.probe.paper) {
+                (true, _) => (true, "Paper CLI"),
+                (false, true) => (true, "Running"),
+                (false, false) => (false, "Not running"),
+            }),
             "int-paper",
             &t,
         );
         let paper = plate(&t).child(head(
             icons::PEN,
             "Paper",
-            if self.probe.paper {
+            if paper_cli {
+                "Agents read and edit the file open in Paper Desktop through the Paper CLI"
+            } else if self.probe.paper {
                 "Agents can read and edit the design open in Paper Desktop"
             } else {
-                "Open Paper Desktop (paper.design) so agents can read and edit designs"
+                "Open Paper Desktop (paper.design) once; it installs the CLI agents use to read and edit designs"
             },
             left.child(ctl::on_toggle(switch, cx, move |this, _, cx| {
                 this.config.paper.enabled = !paper_on;
@@ -1252,6 +1281,19 @@ impl Render for IntegrationsView {
                 ),
                 &t,
             ))
+            .when(choice != BrowserChoice::Dove, |d| {
+                let on = self.config.ego_allow;
+                d.child(line(
+                    "Run without asking",
+                    "Claude Code runs ego-browser without a prompt; a command chained to it still asks. \
+                     Codex keeps asking, and OpenCode follows its own permission rules",
+                    ctl::on_toggle(ctl::toggle(&t, "int-ego-allow", on), cx, move |this, _, cx| {
+                        this.config.ego_allow = !on;
+                        this.persist(cx);
+                    }),
+                    &t,
+                ))
+            })
             .when(!ego_found, |d| {
                 d.child(line(
                     "Install",
@@ -1361,6 +1403,17 @@ mod tests {
         // `enabled` defaults to on for hand-written entries.
         let c = parse(r#"{"servers":[{"id":"x","name":"X","type":"stdio","command":"x"}]}"#).unwrap();
         assert!(c.servers[0].enabled);
+    }
+
+    #[test]
+    fn ego_allow_is_off_by_default_and_saved() {
+        assert!(!parse("{}").unwrap().ego_allow);
+        let c = parse(r#"{"browser":"ego","ego_allow":true}"#).unwrap();
+        assert!(c.ego_allow && c.ego_allowed());
+        assert_eq!(parse(&serde_json::to_string(&c).unwrap()).unwrap(), c);
+        // Agents not pointed at ego lite get no rule for it.
+        let c = parse(r#"{"browser":"dove","ego_allow":true}"#).unwrap();
+        assert!(c.ego_allow && !c.ego_allowed());
     }
 
     #[test]

@@ -4,7 +4,7 @@ Settings → Integrations (MCP servers, GitHub CLI, ego lite, Dove for Chrome, P
 
 Changes apply to agents started after the change. Every integration rides on Dove's own MCP server (`dove --mcp-browser`), which Dove injects into every harness it starts (Claude Code, Codex, OpenCode, Cursor, Pi and ACP agents), so there is nothing to configure per harness. That server is on while **Agent browser** is on, or while any integration below is on.
 
-In terminal mode Claude Code (`--mcp-config`) and Codex (`-c mcp_servers.dove.*` overrides) get the same server; OpenCode's terminal mode does not yet.
+In terminal mode Claude Code (`--mcp-config`), Codex (`-c mcp_servers.dove.*` overrides) and OpenCode (`OPENCODE_CONFIG_CONTENT`, merged over your own config and any inline config already set) get the same server.
 
 ## Dove for Chrome
 
@@ -45,6 +45,13 @@ Read-only Supermemory tools (`search_memory`, `get_profile`, `list_*`) are appro
 
 [ego lite](https://lite.ego.app/) is a Chromium browser built for agents: each task gets its own space inside your own browser profile (your sign-ins), which you can watch and take over. Dove detects its `ego-browser` command and ships the **dove-browser** skill (`skills/dove-browser/`), installed for every harness next to the office skills. The skill loads ego's version-matched guide (`ego-browser skill`) and adds Dove's playbook: one task space per goal, observe-act-verify rounds, ref-first selectors, waits, compact extraction, PowerShell-safe script files, safety rules (no credentials, ask before irreversible actions, hand off at sign-in walls and CAPTCHAs) and per-site learnings saved to memory. Without ego lite the skill falls back to Dove's `browser_*` tools. **Agents browse with** picks the agents' browser: **ego lite** (Dove's own `browser_*` tools are hidden, so agents always use ego), **Dove browser** (agents are not pointed at ego lite) or **Both** (the default: ego first, Dove's browser as a fallback). Dove never downloads ego lite; **Get ego lite** opens its site.
 
+**Run without asking** (off by default, saved as `ego_allow` in `integrations.json`, hidden and ignored while agents browse with Dove's browser) lets agents run `ego-browser` without a permission prompt in sessions started afterwards. Dove never matches shell text itself; each harness gets its own allow rule and parses the command on its own terms, so `ego-browser x; rm -rf ~` still asks:
+
+- **Claude Code**, chat and terminal: `--allowedTools Bash(ego-browser:*)` (skipped in Bypass, which already allows everything). Claude splits chained commands before matching.
+- **Codex** keeps asking. Its command rules (`prefix_rule` in `.rules` files) load only from `~/.codex/rules` and other config folders, with no launch flag, and Dove does not edit your Codex config.
+- **OpenCode** is left alone. Its chat driver already answers each permission ask, and its default bash rule is allow. A `permission.bash` rule in `OPENCODE_CONFIG_CONTENT` would be deep-merged over your files and replace a string `"ask"` policy, loosening it.
+- Other harnesses (Cursor, Pi, ACP agents) keep their normal prompts.
+
 ## Composio (Settings → Connectors)
 
 [Composio](https://composio.dev) gives agents GitHub, Gmail, Slack, Notion and 1000+ other apps. Sign in with your Composio account, or paste your own key, and turn it on.
@@ -58,7 +65,7 @@ Tools appear to agents as `composio__<TOOL>`. The key is stored in `~/.dove/inte
 
 ## Paper
 
-[Paper](https://paper.design) Desktop runs a local MCP server at `http://127.0.0.1:29979/mcp` while it is open. Turn on **Paper design files** and agents get `paper__*` tools to read and edit the open file, along with an instruction to check the design before building UI and to write back when asked to iterate. Settings shows whether Paper Desktop is running.
+[Paper](https://paper.design) Desktop installs the Paper CLI to `~/.paper/bin` the first time it opens. When that CLI is there, Dove runs `paper mcp`, its stdio relay, which connects even while Desktop is closed (reads and writes reach the open file once Desktop runs). Without it, Dove falls back to Desktop's legacy HTTP server at `http://127.0.0.1:29979/mcp`, which answers only while a file is open. Turn on **Paper** and agents get `paper__*` tools to read and edit the open file, along with an instruction to check the design before building UI and to write back when asked to iterate. Settings shows whether the CLI was found or Desktop is running.
 
 ## Dove Computer Use
 

@@ -34,7 +34,7 @@ pub use dove_harness::skills;
 pub use dove_harness::teach;
 pub use dove_harness::tui;
 pub use dove_harness::walkthrough;
-pub use dove_harness::{ToolServer, is_dove_tool, set_tool_server, tool_server};
+pub use dove_harness::{ToolServer, allow_ego_browser, is_dove_tool, set_allow_ego_browser, set_tool_server, tool_server};
 pub use dove_proto as proto;
 pub use dove_store as store;
 

@@ -328,6 +328,8 @@ fn main() {
             }
         });
     }
+    // Settings → Integrations → ego lite: run `ego-browser` without asking.
+    dove_core::set_allow_ego_browser(pages::integrations::load().ego_allowed());
     let browser_on = engine.store.setting("agent_browser").as_deref() != Some("false");
     if !browser_on {
         // Integrations (MCP servers, Composio, Paper, computer use) still
