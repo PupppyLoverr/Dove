@@ -71,6 +71,25 @@ pub fn tool_server(cwd: &std::path::Path) -> Option<ToolServer> {
     Some(server)
 }
 
+static ALLOW_EGO_BROWSER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Let sessions started from now on run ego lite's `ego-browser` command
+/// without a prompt (Settings → Integrations → ego lite). Each harness
+/// applies it through its own allow rules, which parse the shell command
+/// themselves; Dove never matches shell text. Harnesses with no safe
+/// launch-time rule keep asking.
+pub fn set_allow_ego_browser(on: bool) {
+    ALLOW_EGO_BROWSER.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn allow_ego_browser() -> bool {
+    ALLOW_EGO_BROWSER.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Claude Code's allow rule for `ego-browser`. Claude splits compound
+/// commands itself, so `ego-browser x; rm -rf ~` still asks.
+pub(crate) const CLAUDE_EGO_RULE: &str = "Bash(ego-browser:*)";
+
 /// Whether a tool name is one of Dove's own browser tools, however the
 /// harness spells MCP names (`mcp__dove__browser_click`, `dove/browser_click`,
 /// `dove.browser_click`). These drive Dove's sandboxed in-app browser and

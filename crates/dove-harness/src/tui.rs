@@ -85,6 +85,11 @@ pub fn shell_command(cwd: &Path) -> TuiCommand {
 /// Build the TUI command for `kind`, whose CLI lives at `program`.
 pub fn command(kind: HarnessKind, program: &Path, cwd: &Path, spec: &TuiSpec) -> TuiCommand {
     crate::office_skills::ensure_installed();
+    command_with(kind, program, cwd, spec, crate::allow_ego_browser())
+}
+
+/// [`command`], with the "run ego-browser without asking" choice passed in.
+fn command_with(kind: HarnessKind, program: &Path, cwd: &Path, spec: &TuiSpec, allow_ego: bool) -> TuiCommand {
     let mut args: Vec<String> = Vec::new();
     let mut push = |a: &str| args.push(a.to_string());
     let id = spec.native_session_id.filter(|s| !s.is_empty());
@@ -121,11 +126,19 @@ pub fn command(kind: HarnessKind, program: &Path, cwd: &Path, spec: &TuiSpec) ->
             }
             // Dove's browser tools ride beside the user's own MCP servers.
             // A file path, not inline JSON: quoting survives cmd.exe.
+            let mut allowed = Vec::new();
             if let Some(path) = crate::tool_server(cwd).and_then(|s| write_claude_mcp_config(&s)) {
                 push("--mcp-config");
                 push(&path.display().to_string());
+                allowed.push("mcp__dove");
+            }
+            // Claude's own rule; its parser keeps `ego-browser x; rm …` asking.
+            if allow_ego && spec.mode != PermissionMode::Bypass {
+                allowed.push(crate::CLAUDE_EGO_RULE);
+            }
+            for tool in allowed {
                 push("--allowedTools");
-                push("mcp__dove");
+                push(tool);
             }
             id.is_some()
         }
@@ -478,11 +491,12 @@ mod tests {
 
     #[test]
     fn claude_resumes_with_model_and_mode() {
-        let c = command(
+        let c = command_with(
             HarnessKind::ClaudeCode,
             Path::new("claude"),
             Path::new("/w"),
             &spec(Some("abc"), PermissionMode::AcceptEdits),
+            false,
         );
         assert_eq!(c.args, ["--resume", "abc", "--model", "opus", "--permission-mode", "acceptEdits"]);
         let ask = command(
@@ -500,6 +514,29 @@ mod tests {
             &spec(None, PermissionMode::Default),
         );
         assert!(!fresh.resumes);
+    }
+
+    #[test]
+    fn ego_browser_allow_rule_rides_each_harness_natively() {
+        let w = Path::new("/w");
+        let rule = |c: &TuiCommand| c.args.windows(2).any(|a| a == ["--allowedTools", "Bash(ego-browser:*)"]);
+        let off =
+            command_with(HarnessKind::ClaudeCode, Path::new("claude"), w, &spec(None, PermissionMode::Default), false);
+        assert!(!rule(&off), "{:?}", off.args);
+        let on =
+            command_with(HarnessKind::ClaudeCode, Path::new("claude"), w, &spec(None, PermissionMode::Default), true);
+        assert!(rule(&on), "{:?}", on.args);
+        // Bypass already runs everything.
+        let bypass =
+            command_with(HarnessKind::ClaudeCode, Path::new("claude"), w, &spec(None, PermissionMode::Bypass), true);
+        assert!(!rule(&bypass));
+        // Codex reads rules only from files and OpenCode's inline config
+        // would replace the user's own bash policy: both are left as they were.
+        for kind in [HarnessKind::Codex, HarnessKind::OpenCode] {
+            let on = command_with(kind, Path::new("agent"), w, &spec(None, PermissionMode::Default), true);
+            let off = command_with(kind, Path::new("agent"), w, &spec(None, PermissionMode::Default), false);
+            assert_eq!((on.args, on.env), (off.args, off.env), "{}", kind.label());
+        }
     }
 
     #[test]

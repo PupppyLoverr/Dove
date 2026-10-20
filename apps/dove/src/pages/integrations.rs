@@ -220,6 +220,9 @@ pub struct Config {
     pub ego: Toggle,
     /// Which browser agents use.
     pub browser: BrowserChoice,
+    /// Let agents run `ego-browser` without a prompt, through each
+    /// harness's own allow rules (off by default).
+    pub ego_allow: bool,
 }
 
 /// The agents' browser (Settings → Integrations → ego lite).
@@ -239,6 +242,12 @@ pub enum BrowserChoice {
 impl Config {
     pub fn ids(&self) -> Vec<String> {
         self.servers.iter().map(|s| s.id.clone()).collect()
+    }
+
+    /// Whether agents may run `ego-browser` without asking: the switch,
+    /// unless agents are not pointed at ego lite at all.
+    pub fn ego_allowed(&self) -> bool {
+        self.ego_allow && self.browser != BrowserChoice::Dove
     }
 
     /// Whether anything here needs Dove's MCP server running.
@@ -550,6 +559,7 @@ impl IntegrationsView {
 
     fn persist(&mut self, cx: &mut Context<Self>) {
         let _ = save(&self.config);
+        dove_core::set_allow_ego_browser(self.config.ego_allowed());
         // The first integration turned on with the agent browser off still
         // needs Dove's server registered for the agents started next.
         crate::mcp_browser::register_without_browser(&data_root());
@@ -1268,6 +1278,18 @@ impl Render for IntegrationsView {
                 ),
                 &t,
             ))
+            .when(choice != BrowserChoice::Dove, |d| {
+                let on = self.config.ego_allow;
+                d.child(line(
+                    "Run without asking",
+                    "Claude Code runs ego-browser without a prompt; a command chained to it still asks.                      Codex keeps asking, and OpenCode follows its own permission rules",
+                    ctl::on_toggle(ctl::toggle(&t, "int-ego-allow", on), cx, move |this, _, cx| {
+                        this.config.ego_allow = !on;
+                        this.persist(cx);
+                    }),
+                    &t,
+                ))
+            })
             .when(!ego_found, |d| {
                 d.child(line(
                     "Install",
@@ -1377,6 +1399,17 @@ mod tests {
         // `enabled` defaults to on for hand-written entries.
         let c = parse(r#"{"servers":[{"id":"x","name":"X","type":"stdio","command":"x"}]}"#).unwrap();
         assert!(c.servers[0].enabled);
+    }
+
+    #[test]
+    fn ego_allow_is_off_by_default_and_saved() {
+        assert!(!parse("{}").unwrap().ego_allow);
+        let c = parse(r#"{"browser":"ego","ego_allow":true}"#).unwrap();
+        assert!(c.ego_allow && c.ego_allowed());
+        assert_eq!(parse(&serde_json::to_string(&c).unwrap()).unwrap(), c);
+        // Agents not pointed at ego lite get no rule for it.
+        let c = parse(r#"{"browser":"dove","ego_allow":true}"#).unwrap();
+        assert!(c.ego_allow && !c.ego_allowed());
     }
 
     #[test]

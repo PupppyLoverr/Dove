@@ -98,7 +98,7 @@ pub async fn run(spec: SessionSpec, ev_tx: flume::Sender<AgentEvent>, cmd_rx: fl
         } else {
             zeron_harness::opencode::defer_prompt(&token)
         };
-        let mut request = run_request(&spec, String::new());
+        let mut request = run_request(&spec, String::new(), crate::allow_ego_browser());
         request.model_options.insert("dove.deferPrompt".into(), Value::String(token));
         started = harness.run(request, controls).await;
         prompt = loop {
@@ -128,7 +128,7 @@ pub async fn run(spec: SessionSpec, ev_tx: flume::Sender<AgentEvent>, cmd_rx: fl
                 }
             },
         };
-        started = harness.run(run_request(&spec, prompt.clone()), controls).await;
+        started = harness.run(run_request(&spec, prompt.clone(), crate::allow_ego_browser()), controls).await;
     }
 
     // The SDK shim needs Node and its own login. When that cannot even
@@ -334,7 +334,7 @@ fn auto_allows(mode: PermissionMode, header: &str) -> bool {
     }
 }
 
-fn run_request(spec: &SessionSpec, prompt: String) -> RunRequest {
+fn run_request(spec: &SessionSpec, prompt: String, allow_ego: bool) -> RunRequest {
     let (sandbox, auto_approve) = match spec.permission_mode {
         PermissionMode::Plan => (SandboxLevel::ReadOnly, false),
         PermissionMode::Bypass => (SandboxLevel::DangerFullAccess, true),
@@ -350,6 +350,12 @@ fn run_request(spec: &SessionSpec, prompt: String) -> RunRequest {
         _ => "default",
     };
     model_options.insert("dove.permissionMode".into(), Value::String(cli_mode.into()));
+    // The harness's own allow rules, one per line. Only Claude has one Dove
+    // can pass at launch that parses the command itself; Codex reads rules
+    // only from files, and OpenCode already answers every ask in chat.
+    if allow_ego && spec.kind == HarnessKind::ClaudeCode && !auto_approve {
+        model_options.insert("dove.allowedTools".into(), Value::String(crate::CLAUDE_EGO_RULE.into()));
+    }
     RunRequest {
         prompt,
         harness: harness_id(spec.kind),
@@ -724,6 +730,33 @@ mod tests {
         assert!(!auto_allows(PermissionMode::Default, "Approve Edit"));
         assert!(is_approval("Approve command"));
         assert!(!is_approval("Which approach?"));
+    }
+
+    #[test]
+    fn ego_browser_allow_rule_reaches_only_claude() {
+        let spec = |kind, permission_mode| SessionSpec {
+            kind,
+            program: "agent".into(),
+            cwd: "/w".into(),
+            model: None,
+            reasoning: None,
+            model_options: Vec::new(),
+            permission_mode,
+            resume: None,
+            prompt: None,
+            fork: false,
+        };
+        let rule = |r: &RunRequest| r.model_options.get("dove.allowedTools").and_then(Value::as_str).map(str::to_owned);
+        let claude = spec(HarnessKind::ClaudeCode, PermissionMode::Default);
+        assert_eq!(rule(&run_request(&claude, String::new(), true)).as_deref(), Some("Bash(ego-browser:*)"));
+        assert_eq!(rule(&run_request(&claude, String::new(), false)), None);
+        assert_eq!(
+            rule(&run_request(&spec(HarnessKind::ClaudeCode, PermissionMode::Bypass), String::new(), true)),
+            None
+        );
+        for kind in [HarnessKind::Codex, HarnessKind::OpenCode, HarnessKind::Cursor] {
+            assert_eq!(rule(&run_request(&spec(kind, PermissionMode::Default), String::new(), true)), None);
+        }
     }
 
     #[test]

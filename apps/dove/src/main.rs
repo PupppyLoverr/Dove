@@ -306,6 +306,8 @@ fn main() {
     // Office skills for every harness (and Dove's own terminal sessions).
     dove_core::office_skills::set_enabled(engine.store.setting("agent_office_skills").as_deref() != Some("false"));
     std::thread::spawn(dove_core::office_skills::ensure_installed);
+    // Settings → Integrations → ego lite: run `ego-browser` without asking.
+    dove_core::set_allow_ego_browser(pages::integrations::load().ego_allowed());
     let browser_on = engine.store.setting("agent_browser").as_deref() != Some("false");
     if !browser_on {
         // Integrations (MCP servers, Composio, Paper, computer use) still

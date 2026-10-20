@@ -45,6 +45,13 @@ Read-only Supermemory tools (`search_memory`, `get_profile`, `list_*`) are appro
 
 [ego lite](https://lite.ego.app/) is a Chromium browser built for agents: each task gets its own space inside your own browser profile (your sign-ins), which you can watch and take over. Dove detects its `ego-browser` command and ships the **dove-browser** skill (`skills/dove-browser/`), installed for every harness next to the office skills. The skill loads ego's version-matched guide (`ego-browser skill`) and adds Dove's playbook: one task space per goal, observe-act-verify rounds, ref-first selectors, waits, compact extraction, PowerShell-safe script files, safety rules (no credentials, ask before irreversible actions, hand off at sign-in walls and CAPTCHAs) and per-site learnings saved to memory. Without ego lite the skill falls back to Dove's `browser_*` tools. **Agents browse with** picks the agents' browser: **ego lite** (Dove's own `browser_*` tools are hidden, so agents always use ego), **Dove browser** (agents are not pointed at ego lite) or **Both** (the default: ego first, Dove's browser as a fallback). Dove never downloads ego lite; **Get ego lite** opens its site.
 
+**Run without asking** (off by default, saved as `ego_allow` in `integrations.json`, hidden and ignored while agents browse with Dove's browser) lets agents run `ego-browser` without a permission prompt in sessions started afterwards. Dove never matches shell text itself; each harness gets its own allow rule and parses the command on its own terms, so `ego-browser x; rm -rf ~` still asks:
+
+- **Claude Code**, chat and terminal: `--allowedTools Bash(ego-browser:*)` (skipped in Bypass, which already allows everything). Claude splits chained commands before matching.
+- **Codex** keeps asking. Its command rules (`prefix_rule` in `.rules` files) load only from `~/.codex/rules` and other config folders, with no launch flag, and Dove does not edit your Codex config.
+- **OpenCode** is left alone. Its chat driver already answers each permission ask, and its default bash rule is allow. A `permission.bash` rule in `OPENCODE_CONFIG_CONTENT` would be deep-merged over your files and replace a string `"ask"` policy, loosening it.
+- Other harnesses (Cursor, Pi, ACP agents) keep their normal prompts.
+
 ## Composio (Settings → Connectors)
 
 [Composio](https://composio.dev) gives agents GitHub, Gmail, Slack, Notion and 1000+ other apps. Sign in with your Composio account, or paste your own key, and turn it on.
