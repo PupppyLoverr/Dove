@@ -53,8 +53,6 @@ pub mod ty {
     pub const PAGE: Rems = rem(20.0);
     /// Hero headings.
     pub const H1: Rems = rem(22.0);
-    /// Display text.
-    pub const DISPLAY: Rems = rem(26.0);
 
     /// Line heights that pair with the roles above.
     pub mod lh {
