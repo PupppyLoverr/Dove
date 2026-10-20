@@ -4,7 +4,7 @@ Settings → Integrations (MCP servers, GitHub CLI, ego lite, Dove for Chrome, P
 
 Changes apply to agents started after the change. Every integration rides on Dove's own MCP server (`dove --mcp-browser`), which Dove injects into every harness it starts (Claude Code, Codex, OpenCode, Cursor, Pi and ACP agents), so there is nothing to configure per harness. That server is on while **Agent browser** is on, or while any integration below is on.
 
-In terminal mode Claude Code (`--mcp-config`) and Codex (`-c mcp_servers.dove.*` overrides) get the same server; OpenCode's terminal mode does not yet.
+In terminal mode Claude Code (`--mcp-config`), Codex (`-c mcp_servers.dove.*` overrides) and OpenCode (`OPENCODE_CONFIG_CONTENT`, merged over your own config and any inline config already set) get the same server.
 
 ## Dove for Chrome
 
@@ -58,7 +58,7 @@ Tools appear to agents as `composio__<TOOL>`. The key is stored in `~/.dove/inte
 
 ## Paper
 
-[Paper](https://paper.design) Desktop runs a local MCP server at `http://127.0.0.1:29979/mcp` while it is open. Turn on **Paper design files** and agents get `paper__*` tools to read and edit the open file, along with an instruction to check the design before building UI and to write back when asked to iterate. Settings shows whether Paper Desktop is running.
+[Paper](https://paper.design) Desktop installs the Paper CLI to `~/.paper/bin` the first time it opens. When that CLI is there, Dove runs `paper mcp`, its stdio relay, which connects even while Desktop is closed (reads and writes reach the open file once Desktop runs). Without it, Dove falls back to Desktop's legacy HTTP server at `http://127.0.0.1:29979/mcp`, which answers only while a file is open. Turn on **Paper** and agents get `paper__*` tools to read and edit the open file, along with an instruction to check the design before building UI and to write back when asked to iterate. Settings shows whether the CLI was found or Desktop is running.
 
 ## Dove Computer Use
 

@@ -372,7 +372,16 @@ pub fn ego_browser() -> Option<PathBuf> {
     dove_core::harness_process::resolve("ego-browser")
 }
 
-/// Whether Paper Desktop's MCP server is listening.
+/// The Paper CLI, which Paper Desktop installs to `~/.paper/bin` when it
+/// first opens. `paper mcp` relays MCP over stdio, even while Desktop is
+/// closed, so Dove prefers it to Desktop's HTTP endpoint.
+pub fn paper_cli() -> Option<PathBuf> {
+    let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from)?;
+    let bin = home.join(".paper").join("bin").join(if cfg!(windows) { "paper.exe" } else { "paper" });
+    bin.is_file().then_some(bin)
+}
+
+/// Whether Paper Desktop's (legacy) HTTP MCP server is listening.
 pub fn paper_running() -> bool {
     std::net::TcpStream::connect_timeout(&([127, 0, 0, 1], 29979).into(), Duration::from_millis(250)).is_ok()
 }
@@ -384,6 +393,8 @@ struct Probe {
     cu_plugin: Option<crate::computer_plugin::Installed>,
     cua_version: Option<String>,
     paper: bool,
+    /// The Paper CLI (`paper mcp`), when Paper Desktop installed it.
+    paper_cli: Option<PathBuf>,
     /// ego lite's `ego-browser` command.
     ego: Option<PathBuf>,
     /// The GitHub CLI, and the account it is signed in to.
@@ -547,6 +558,7 @@ impl IntegrationsView {
                 cu_plugin: crate::computer_plugin::installed(),
                 cua_version,
                 paper: paper_running(),
+                paper_cli: paper_cli(),
                 ego: ego_browser(),
                 gh,
                 gh_user,
@@ -981,19 +993,26 @@ impl Render for IntegrationsView {
             });
 
         // Paper
+        let paper_cli = self.probe.paper_cli.is_some();
         let (left, switch) = toggle(
             paper_on,
-            Some((self.probe.paper, if self.probe.paper { "Running" } else { "Not running" })),
+            Some(match (paper_cli, self.probe.paper) {
+                (true, _) => (true, "Paper CLI"),
+                (false, true) => (true, "Running"),
+                (false, false) => (false, "Not running"),
+            }),
             "int-paper",
             &t,
         );
         let paper = plate(&t).child(head(
             icons::PEN,
             "Paper",
-            if self.probe.paper {
+            if paper_cli {
+                "Agents read and edit the file open in Paper Desktop through the Paper CLI"
+            } else if self.probe.paper {
                 "Agents can read and edit the design open in Paper Desktop"
             } else {
-                "Open Paper Desktop (paper.design) so agents can read and edit designs"
+                "Open Paper Desktop (paper.design) once; it installs the CLI agents use to read and edit designs"
             },
             left.child(ctl::on_toggle(switch, cx, move |this, _, cx| {
                 this.config.paper.enabled = !paper_on;

@@ -77,7 +77,24 @@ impl Pty {
 
     /// Any program (an agent's TUI) in `cwd`.
     pub fn spawn_command(program: &Path, args: &[String], cwd: &Path, cols: u16, rows: u16) -> Result<Self> {
-        Self::spawn_with(program_command(program, args), cwd, cols, rows)
+        Self::spawn_command_env(program, args, &[], cwd, cols, rows)
+    }
+
+    /// [`Pty::spawn_command`] with extra environment variables for the
+    /// program (for example the config Dove hands an agent's TUI).
+    pub fn spawn_command_env(
+        program: &Path,
+        args: &[String],
+        env: &[(String, String)],
+        cwd: &Path,
+        cols: u16,
+        rows: u16,
+    ) -> Result<Self> {
+        let mut cmd = program_command(program, args);
+        for (k, v) in env {
+            cmd.env(k, v);
+        }
+        Self::spawn_with(cmd, cwd, cols, rows)
     }
 
     fn spawn_with(mut cmd: CommandBuilder, cwd: &Path, cols: u16, rows: u16) -> Result<Self> {

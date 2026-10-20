@@ -346,7 +346,9 @@ impl ThreadView {
 
     /// The terminal view for `cmd`, already claimed as this session's driver.
     fn attach_terminal(&mut self, cmd: dove_core::tui::TuiCommand, window: &mut Window, cx: &mut Context<Self>) {
-        let term = cx.new(|cx| TerminalView::for_command(cmd.cwd.clone(), cmd.program.clone(), cmd.args.clone(), cx));
+        let term = cx.new(|cx| {
+            TerminalView::for_command_env(cmd.cwd.clone(), cmd.program.clone(), cmd.args.clone(), cmd.env.clone(), cx)
+        });
         let sub = cx.subscribe_in(&term, window, |v, _, ev: &TerminalEvent, window, cx| match ev {
             TerminalEvent::Exited => {
                 if v.driver == ViewMode::Terminal {
