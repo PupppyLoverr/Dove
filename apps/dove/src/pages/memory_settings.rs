@@ -15,7 +15,7 @@ use dove_core::memory::{self, Memory, Report, Scope};
 use dove_core::store::Project;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
+    AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render, SharedString,
     StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, px,
 };
 use gpui_base::input::{Input, InputEvent, InputState};
