@@ -84,6 +84,22 @@ pub fn gh_user() -> Option<String> {
     (out.status.success() && !login.is_empty()).then_some(login)
 }
 
+/// The signed-in account's token (`gh auth token`), for services that take
+/// a GitHub token, such as GitHub's MCP server. `None` when signed out.
+pub fn gh_token() -> Option<String> {
+    let gh = which_gh()?;
+    let mut cmd = Command::new(gh);
+    cmd.env("GH_PROMPT_DISABLED", "1").args(["auth", "token"]);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000);
+    }
+    let out = cmd.output().ok()?;
+    let token = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (out.status.success() && !token.is_empty()).then_some(token)
+}
+
 /// Install the GitHub CLI with the platform's package manager: winget on
 /// Windows (it may ask for admin rights), Homebrew on macOS. Blocks until
 /// the installer exits.

@@ -25,7 +25,7 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 mermaid-rs-renderer = "0.3.1"
 dove-term = { workspace = true }
 dove-store.workspace = true
-uuid = { workspace = true }
+uuid = { workspace = true, features = ["v4"] }
 zeron-syntax = { path = "../../vendor/zeron-syntax" }
 zeron-markdown = { path = "../../vendor/zeron-markdown" }
 zeron-voice = { path = "../../vendor/zeron-voice" }

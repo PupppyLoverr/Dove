@@ -244,6 +244,13 @@ pub fn command(kind: HarnessKind, program: &Path, cwd: &Path, spec: &TuiSpec) ->
         HarnessKind::Shell => true,
         HarnessKind::Antigravity => false,
     };
+    // Dove's tools (browser, integrations, MCP servers) for Codex's own UI,
+    // as root overrides ahead of any subcommand.
+    if kind == HarnessKind::Codex
+        && let Some(server) = crate::tool_server(cwd)
+    {
+        args.splice(0..0, codex_mcp_overrides(&server));
+    }
     TuiCommand { program: program.to_path_buf(), args, cwd: cwd.to_path_buf(), resumes: resumed }
 }
 
@@ -333,6 +340,40 @@ fn find_codex_rollout(sessions: &Path, id: &str) -> Option<PathBuf> {
     best.map(|(_, p)| p)
 }
 
+/// Codex `-c` overrides that add `server` beside the user's own MCP servers
+/// (`mcp_servers.<name>.{command,args,env}`), as TOML values.
+fn codex_mcp_overrides(server: &crate::ToolServer) -> Vec<String> {
+    let name = &server.name;
+    let args = server.args.iter().map(|a| toml_str(a)).collect::<Vec<_>>().join(",");
+    let env = server.env.iter().map(|(k, v)| format!("{k}={}", toml_str(v))).collect::<Vec<_>>().join(",");
+    vec![
+        "-c".into(),
+        format!("mcp_servers.{name}.command={}", toml_str(&server.command)),
+        "-c".into(),
+        format!("mcp_servers.{name}.args=[{args}]"),
+        "-c".into(),
+        format!("mcp_servers.{name}.env={{{env}}}"),
+    ]
+}
+
+/// A TOML string: a literal `'…'` (no escapes, so Windows paths survive)
+/// unless the text holds a single quote.
+fn toml_str(s: &str) -> String {
+    if !s.contains('\'') && !s.contains('\n') {
+        return format!("'{s}'");
+    }
+    let escaped: String = s
+        .chars()
+        .flat_map(|c| match c {
+            '\\' => vec!['\\', '\\'],
+            '"' => vec!['\\', '"'],
+            '\n' => vec!['\\', 'n'],
+            c => vec![c],
+        })
+        .collect();
+    format!("\"{escaped}\"")
+}
+
 /// Write a Claude `--mcp-config` file for `server` (one per launch config,
 /// reused while unchanged).
 fn write_claude_mcp_config(server: &crate::ToolServer) -> Option<std::path::PathBuf> {
@@ -355,6 +396,20 @@ fn write_claude_mcp_config(server: &crate::ToolServer) -> Option<std::path::Path
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codex_overrides_are_toml() {
+        let server = crate::ToolServer {
+            name: "dove".into(),
+            command: r"C:\Program Files\Dove\dove.exe".into(),
+            args: vec!["--mcp-browser".into()],
+            env: vec![("DOVE_CWD".into(), r"C:\w".into()), ("Q".into(), "it's".into())],
+        };
+        let o = codex_mcp_overrides(&server);
+        assert_eq!(o[1], r"mcp_servers.dove.command='C:\Program Files\Dove\dove.exe'");
+        assert_eq!(o[3], "mcp_servers.dove.args=['--mcp-browser']");
+        assert_eq!(o[5], r#"mcp_servers.dove.env={DOVE_CWD='C:\w',Q="it's"}"#);
+    }
 
     fn spec(id: Option<&str>, mode: PermissionMode) -> TuiSpec<'_> {
         TuiSpec { native_session_id: id, model: Some("opus"), mode, add_dirs: &[] }

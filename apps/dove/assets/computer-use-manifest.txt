@@ -1,0 +1,7 @@
+# SHA-256 of the dove-driver release assets Dove installs as the Dove
+# Computer Use plugin (computer_plugin.rs, VERSION). `sha256sum` format:
+#   <sha256>  dove-driver-<os>-<arch>[.exe]
+# The assets are published on PupppyLoverr/Dove under the tag
+# dove-driver-v<VERSION>. Regenerate with `sha256sum dove-driver-*` in the
+# release folder when VERSION changes. A platform with no line here shows
+# "no release for this platform yet" in Settings and installs nothing.

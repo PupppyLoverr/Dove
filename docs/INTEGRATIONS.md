@@ -1,8 +1,10 @@
 # Integrations
 
-Settings → Integrations holds everything that gives Dove's agents reach beyond the project folder. All of it is off until you turn it on, and all of it is bring-your-own: no Dove account, no hosted relay.
+Settings → Integrations (MCP servers, GitHub CLI, ego lite, Dove for Chrome, Paper, Dove Computer Use) and Settings → Connectors (Composio) hold everything that gives Dove's agents reach beyond the project folder. All of it is off until you turn it on, and all of it is bring-your-own: no Dove account, no hosted relay.
 
-Changes apply to agents started after the change. Every integration rides on Dove's own MCP server (`dove --mcp-browser`), which Dove injects into every harness it starts (Claude Code, Codex, OpenCode, Cursor, Pi and ACP agents), so there is nothing to configure per harness. That server is on while **Agent browser** is on.
+Changes apply to agents started after the change. Every integration rides on Dove's own MCP server (`dove --mcp-browser`), which Dove injects into every harness it starts (Claude Code, Codex, OpenCode, Cursor, Pi and ACP agents), so there is nothing to configure per harness. That server is on while **Agent browser** is on, or while any integration below is on.
+
+In terminal mode Claude Code (`--mcp-config`) and Codex (`-c mcp_servers.dove.*` overrides) get the same server; OpenCode's terminal mode does not yet.
 
 ## Dove for Chrome
 
@@ -27,9 +29,27 @@ A Manifest V3 extension (`apps/extension/`) that lets agents work in your own Ch
 
 The existing `browser_*` tools are unchanged and still drive Dove's in-app browser.
 
-## Composio
+## MCP servers
 
-[Composio](https://composio.dev) gives agents GitHub, Gmail, Slack, Notion and 1000+ other apps. Paste your own key and turn it on.
+Any MCP server, added once, reaches every harness. Its tools appear to agents as `<id>__<tool>` on Dove's server (names longer than Claude's and Codex's 64-character limit are shortened with a stable hash; Dove maps them back).
+
+**Catalog.** One-click entries for Figma, GitHub, Linear, Notion, Sentry, Supabase, Stripe, Vercel, Atlassian, Cloudflare, Neon, PostHog, Context7, Exa, Firecrawl, Playwright, Chrome DevTools and Supermemory (`apps/dove/src/integrations_catalog.rs`). Remote servers connect over streamable HTTP; Playwright and Chrome DevTools run locally with `npx` (Node.js required).
+
+**Sign-in.** Servers that support MCP authorization use Dove's own OAuth (`apps/dove/src/mcp_oauth.rs`): Dove reads the server's Protected Resource Metadata (RFC 9728) and its authorization server's metadata (RFC 8414 / OpenID discovery), registers itself as a public client (RFC 7591), and opens your browser for an authorization-code + PKCE (S256) sign-in that returns to a one-shot `127.0.0.1` port. Tokens are stored in `~/.dove/mcp_auth.json` (mode 0600 on macOS and Linux) and refreshed on expiry or a 401. You sign in once, in Dove; no harness runs its own OAuth. Servers that take a key instead get it as a header (`Authorization: Bearer …` or the server's own header).
+
+**Custom servers.** **Add server** takes a local command (command, arguments, `KEY=value` environment lines), a remote URL (headers, optional browser sign-in), or a pasted JSON block in Claude Code / Cursor / Gemini (`mcpServers`), OpenCode (`mcp`) or VS Code (`servers`) shape. **Test** starts the server, lists its tools and reports the count. On Windows, `npx`/`.cmd` shims are started through `cmd.exe` without a console window.
+
+Read-only Supermemory tools (`search_memory`, `get_profile`, `list_*`) are approved automatically; every other proxied tool goes through the harness's normal permission prompt.
+
+## ego lite
+
+[ego lite](https://lite.ego.app/) is a Chromium browser built for agents: each task gets its own space inside your own browser profile (your sign-ins), which you can watch and take over. Dove detects its `ego-browser` command and ships the **dove-browser** skill (`skills/dove-browser/`), installed for every harness next to the office skills. The skill loads ego's version-matched guide (`ego-browser skill`) and adds Dove's playbook: one task space per goal, observe-act-verify rounds, ref-first selectors, waits, compact extraction, PowerShell-safe script files, safety rules (no credentials, ask before irreversible actions, hand off at sign-in walls and CAPTCHAs) and per-site learnings saved to memory. Without ego lite the skill falls back to Dove's `browser_*` tools. **Agents browse with** picks the agents' browser: **ego lite** (Dove's own `browser_*` tools are hidden, so agents always use ego), **Dove browser** (agents are not pointed at ego lite) or **Both** (the default: ego first, Dove's browser as a fallback). Dove never downloads ego lite; **Get ego lite** opens its site.
+
+## Composio (Settings → Connectors)
+
+[Composio](https://composio.dev) gives agents GitHub, Gmail, Slack, Notion and 1000+ other apps. Sign in with your Composio account, or paste your own key, and turn it on.
+
+- **Composio account**: Dove signs in to Composio Connect (`https://connect.composio.dev/mcp`) with the MCP OAuth flow above. Agents get Composio's search, link and execute tools, so any app you link in Composio is usable.
 
 - **Connect key** (from the AI Clients setup in the Composio dashboard): Dove uses Composio Connect at `https://connect.composio.dev/mcp` with the key in the `x-consumer-api-key` header. Agents search for tools and authorize apps on demand; the toolkit picks don't apply.
 - **Project key** (`ak_…`, header `x-api-key`) or **user key** (`uak_…`, header `x-user-api-key`): when an agent starts, Dove creates a session with `POST https://backend.composio.dev/api/v3.1/tool_router/session`, limited to the toolkits you picked (`{"toolkits": {"enable": [...]}}`; none picked means unrestricted), and connects to the MCP URL and headers that session returns. Dove refuses to send the key to a host outside `composio.dev`.
@@ -40,14 +60,17 @@ Tools appear to agents as `composio__<TOOL>`. The key is stored in `~/.dove/inte
 
 [Paper](https://paper.design) Desktop runs a local MCP server at `http://127.0.0.1:29979/mcp` while it is open. Turn on **Paper design files** and agents get `paper__*` tools to read and edit the open file, along with an instruction to check the design before building UI and to write back when asked to iterate. Settings shows whether Paper Desktop is running.
 
-## Computer use
+## Dove Computer Use
 
-Dove uses the open-source [`cua-driver`](https://github.com/trycua/cua) (MIT) running on your machine, the same driver Cosmos pins (`0.34.0`). There is no Cua Cloud and no shell or AppleScript fallback: without the driver there is no computer use.
+Computer use is a plugin you install from the **Dove Computer Use** plate: `dove-driver`, Dove's fork of the open-source [`cua-driver`](https://github.com/trycua/cua) (MIT), which works in the background through each window's accessibility tree (UIA on Windows, AX on macOS, AT-SPI on Linux). There is no Cua Cloud and no shell or AppleScript fallback: without the driver there is no computer use.
 
-Install it from [cua.ai/docs/cua-driver](https://cua.ai/docs/cua-driver). Dove finds `cua-driver` on `PATH`, in `~/.local/bin`, `~/.cua/bin`, `~/.cargo/bin`, `/opt/homebrew/bin`, `/usr/local/bin` or inside `/Applications/CuaDriver.app`. Settings shows the version and path. **Check** runs the driver's own `health_report` and shows its permission state. On macOS, grant Accessibility and Screen Recording to CuaDriver.app (see the driver's README on process identity).
+- **Install** downloads the `dove-driver-<os>-<arch>` asset of the pinned release (`computer_plugin::VERSION`) from Dove's own GitHub releases (tag `dove-driver-v<version>`), and installs it only if its SHA-256 matches the manifest compiled into Dove (`apps/dove/assets/computer-use-manifest.txt`). It lands in `~/.dove/plugins/computer-use/<version>/`. Nothing is downloaded until you click Install. A platform with no manifest line says so and offers no Install button.
+- **Update** appears when the installed version differs from the pinned one and replaces it; **Uninstall** removes the folder, which removes the `computer__*` tools.
+- A `dove-driver` or `cua-driver` you installed yourself (on `PATH`, `~/.local/bin`, `~/.cua/bin`, `~/.cargo/bin`, `/opt/homebrew/bin`, `/usr/local/bin` or `/Applications/CuaDriver.app`) is used when the plugin is not installed, as a developer override.
+- **Check** runs the driver's `health_report`. On macOS the plate links to the Accessibility and Screen Recording panes of System Settings.
 
-When it's on, agents get the driver's tools as `computer__*` (`cua-driver mcp` over stdio).
+When it's on, agents get the driver's tools as `computer__*` (`dove-driver mcp` over stdio), with instructions to work from the tree (query-scoped `get_window_state`, element tokens, `run_steps`, `verify_state`) and take screenshots only when the tree is empty.
 
 ## Status
 
-Tested on this build: the extension loads unpacked in Chrome, pairs, and an agent drove a real tab through `chrome_*` (see the PR). Composio, Paper and cua-driver are wired and their status shows in Settings, but they were not exercised end to end here: there was no Composio key, Paper Desktop or cua-driver install on the test machine.
+Tested on this build: the extension loads unpacked in Chrome, pairs, and an agent drove a real tab through `chrome_*` (see the PR). Composio, Paper and the computer-use driver are wired and their status shows in Settings, but they were not exercised end to end here: there was no Composio key, Paper Desktop or cua-driver install on the test machine.

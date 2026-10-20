@@ -1,6 +1,7 @@
 //! The skills Dove bundles (`skills/` in the repo), in the Agent Skills
 //! format (a folder per skill with `SKILL.md` and optional `scripts/`):
-//! today the office skills pdf, pptx, xlsx and docx.
+//! the office skills pdf, pptx, xlsx and docx, plus dove-browser (ego lite
+//! playbook) and dove-memory (Supermemory).
 //!
 //! The files are compiled into the binary; [`crate::skills`] writes them to
 //! `$DOVE_HOME/skills/<name>` and mirrors them, with every skill installed
@@ -55,6 +56,16 @@ pub const SKILLS: &[Skill] = &[
         "docx",
         "Create Word documents with styles, lists, tables and images; edit text.",
         ["scripts/docx_tool.py"]
+    ),
+    skill!(
+        "dove-browser",
+        "Browser playbook: ego lite (the user's own Chromium) or Dove's browser, with Dove's safety and hand-off rules.",
+        ["reference/recipes.md", "reference/troubleshooting.md", "evals/tasks.md"]
+    ),
+    skill!(
+        "dove-memory",
+        "Long-term memory across sessions and harnesses (Supermemory): what to search, save and never save.",
+        []
     ),
 ];
 

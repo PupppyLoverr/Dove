@@ -266,7 +266,7 @@ const INDEX: &[Entry] = &[
         Section::Integrations,
         "integrations",
         "Integrations",
-        "integrations mcp servers chrome extension paper computer use cua github cli",
+        "integrations mcp servers custom oauth sign in catalog figma linear notion chrome extension paper ego lite browser computer use dove-driver plugin github cli",
     ),
     e(
         Section::Connectors,

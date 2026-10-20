@@ -5,12 +5,14 @@ mod assets;
 mod browser;
 mod changes;
 mod composer;
+mod computer_plugin;
 mod design;
 mod diff_list;
 mod file_icons;
 mod files_panel;
 mod history;
 mod home;
+mod integrations_catalog;
 mod intro;
 mod keymap;
 mod kit;
@@ -19,6 +21,7 @@ mod markdown;
 mod markdown_extra;
 mod math;
 mod mcp_browser;
+mod mcp_oauth;
 mod memory;
 mod motion;
 mod notify;
@@ -303,7 +306,13 @@ fn main() {
     // Office skills for every harness (and Dove's own terminal sessions).
     dove_core::office_skills::set_enabled(engine.store.setting("agent_office_skills").as_deref() != Some("false"));
     std::thread::spawn(dove_core::office_skills::ensure_installed);
-    if engine.store.setting("agent_browser").as_deref() != Some("false")
+    let browser_on = engine.store.setting("agent_browser").as_deref() != Some("false");
+    if !browser_on {
+        // Integrations (MCP servers, Composio, Paper, computer use) still
+        // reach every harness through Dove's server, without the browser.
+        mcp_browser::register_without_browser(engine.store.root());
+    }
+    if browser_on
         && let (Some(endpoint), Ok(exe)) = (browser::control::start(&engine.runtime()), std::env::current_exe())
     {
         // For tests and external tooling: where to reach this instance.

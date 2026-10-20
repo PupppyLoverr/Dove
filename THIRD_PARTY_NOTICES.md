@@ -155,3 +155,12 @@ Copyright 2015 The Great Vibes Pro Project Authors
 the handwritten "Dove" wordmark in the first-launch intro
 (`media/intro/src/build-assets.mjs`); the font file itself is not shipped in
 the app. See `media/intro/src/fonts/GreatVibes-OFL.txt`.
+
+## Simple Icons (CC0 1.0)
+
+https://github.com/simple-icons/simple-icons. The monochrome brand marks in
+`apps/dove/assets/icons/brand-*.svg` (Figma, GitHub, Linear, Notion, Sentry,
+Supabase, Stripe, Vercel, Atlassian, Cloudflare, PostHog, Google Chrome,
+Slack) come from Simple Icons, dedicated to the public domain under CC0 1.0.
+The marks remain trademarks of their owners and are used only to identify
+their services.

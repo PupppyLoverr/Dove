@@ -81,7 +81,27 @@ pub fn is_dove_tool(name: &str) -> bool {
     ["mcp__dove__", "dove/", "dove.", "dove__", "dove:"].iter().any(|p| {
         n.starts_with(p)
             && (n[p.len()..].starts_with("browser_")
-                || matches!(&n[p.len()..], "show_ui" | "show_canvas" | "dove_skills"))
+                || matches!(&n[p.len()..], "show_ui" | "show_canvas" | "dove_skills")
+                || is_memory_read(&n[p.len()..]))
+    })
+}
+
+/// Supermemory's read-only tools, proxied through Dove's server: recalling
+/// memories never needs a prompt (saving and forgetting still ask).
+fn is_memory_read(tool: &str) -> bool {
+    tool.strip_prefix("supermemory__").is_some_and(|t| {
+        matches!(
+            t,
+            "search_memory"
+                | "get_profile"
+                | "list_memories"
+                | "list_documents"
+                | "get_document"
+                | "list_spaces"
+                | "listspaces"
+                | "who_am_i"
+                | "whoami"
+        )
     })
 }
 
@@ -179,6 +199,9 @@ mod tool_server_tests {
         assert!(!is_dove_tool("mcp__other__browser_click"));
         assert!(!is_dove_tool("mcp__dove__something_else"));
         assert!(!is_dove_tool("Bash"));
+        assert!(is_dove_tool("mcp__dove__supermemory__search_memory"));
+        assert!(!is_dove_tool("mcp__dove__supermemory__add_memory"));
+        assert!(!is_dove_tool("mcp__dove__linear__list_issues"));
     }
 
     #[test]

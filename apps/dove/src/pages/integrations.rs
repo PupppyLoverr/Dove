@@ -1,6 +1,6 @@
-//! Settings → Integrations (GitHub CLI, Dove for Chrome, Paper, computer use
-//! through the open-source `cua-driver`) and Settings → Connectors
-//! (Composio). One view draws both pages, so they share one copy of the
+//! Settings → Integrations (MCP servers from the catalog or added by hand,
+//! GitHub CLI, ego lite, Dove for Chrome, Paper, and the Dove Computer Use
+//! plugin) and Settings → Connectors (Composio). One view draws both pages, so they share one copy of the
 //! config and never overwrite each other's changes.
 //!
 //! The choices live in `<dove data>/integrations.json` (mode 0600, since it
@@ -9,6 +9,7 @@
 //! MCP server, so every harness Dove starts gets them without per-harness
 //! config.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -33,8 +34,6 @@ pub const COMPOSIO_CONNECT_URL: &str = "https://connect.composio.dev/mcp";
 pub const COMPOSIO_SESSION_URL: &str = "https://backend.composio.dev/api/v3.1/tool_router/session";
 /// Paper Desktop serves MCP here while it is open.
 pub const PAPER_MCP_URL: &str = "http://127.0.0.1:29979/mcp";
-/// The cua-driver release Dove is written against (same pin as Cosmos).
-pub const CUA_VERSION: &str = "0.34.0";
 
 /// Toolkits offered as one-click picks; any other slug can be typed.
 const TOOLKITS: [(&str, &str); 10] = [
@@ -57,6 +56,149 @@ pub struct Composio {
     pub api_key: String,
     /// Toolkit slugs to allow; empty means Composio's unrestricted default.
     pub toolkits: Vec<String>,
+    /// Signed in with a Composio account (OAuth to Composio Connect)
+    /// instead of a pasted key.
+    pub account: bool,
+}
+
+/// An MCP server the user added from the catalog or by hand. Its tools reach
+/// every harness as `<id>__<tool>` through Dove's own MCP server.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct McpServer {
+    /// Tool prefix and OAuth token key: `[a-z0-9-]`, unique.
+    pub id: String,
+    pub name: String,
+    /// The catalog entry it came from, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catalog: Option<String>,
+    #[serde(default = "yes")]
+    pub enabled: bool,
+    #[serde(flatten)]
+    pub transport: Transport,
+}
+
+fn yes() -> bool {
+    true
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum Transport {
+    /// A local command speaking MCP on stdin/stdout.
+    Stdio {
+        command: String,
+        #[serde(default)]
+        args: Vec<String>,
+        #[serde(default)]
+        env: BTreeMap<String, String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
+    },
+    /// A remote streamable-HTTP server. Keys go in `headers`
+    /// (`Authorization: Bearer …`); `oauth` uses the token Dove signed in for.
+    Http {
+        url: String,
+        #[serde(default)]
+        headers: BTreeMap<String, String>,
+        #[serde(default)]
+        oauth: bool,
+    },
+}
+
+impl McpServer {
+    pub fn is_remote(&self) -> bool {
+        matches!(self.transport, Transport::Http { .. })
+    }
+
+    pub fn uses_oauth(&self) -> bool {
+        matches!(self.transport, Transport::Http { oauth: true, .. })
+    }
+}
+
+/// A tool prefix from a display name: lowercase `[a-z0-9-]`, at most 24
+/// characters, never empty.
+pub fn slug(name: &str) -> String {
+    let mut out = String::new();
+    for c in name.trim().chars().flat_map(char::to_lowercase) {
+        if c.is_ascii_alphanumeric() {
+            out.push(c);
+        } else if !out.is_empty() && !out.ends_with('-') {
+            out.push('-');
+        }
+        if out.len() >= 24 {
+            break;
+        }
+    }
+    let out = out.trim_end_matches('-').to_string();
+    if out.is_empty() { "server".into() } else { out }
+}
+
+/// Ids Dove's own server already uses as tool prefixes.
+const RESERVED: [&str; 5] = ["composio", "paper", "computer", "browser", "chrome"];
+
+/// `base`, or `base-2`, `base-3`… so it is unique among `taken` and never
+/// collides with Dove's own prefixes.
+pub fn unique_id(base: &str, taken: &[String]) -> String {
+    let base = slug(base);
+    let free = |id: &str| !RESERVED.contains(&id) && !taken.iter().any(|t| t == id);
+    if free(&base) {
+        return base;
+    }
+    (2..).map(|n| format!("{base}-{n}")).find(|id| free(id)).unwrap_or(base)
+}
+
+/// Read a pasted `{"mcpServers": {…}}` block (Claude Code / Cursor / Gemini
+/// shape), or a bare `{name: {…}}` map, or one server object with a name.
+pub fn parse_pasted(json: &str, taken: &[String]) -> Result<Vec<McpServer>, String> {
+    let v: serde_json::Value = serde_json::from_str(json.trim()).map_err(|e| format!("Not valid JSON: {e}"))?;
+    let map = v.get("mcpServers").or_else(|| v.get("mcp")).or_else(|| v.get("servers")).unwrap_or(&v);
+    let map = map.as_object().ok_or("Expected an object of servers")?;
+    let mut taken = taken.to_vec();
+    let mut out = Vec::new();
+    for (name, spec) in map {
+        let str_map = |key: &str| -> BTreeMap<String, String> {
+            spec.get(key)
+                .and_then(|m| m.as_object())
+                .map(|m| m.iter().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string()))).collect())
+                .unwrap_or_default()
+        };
+        let url = spec.get("url").or_else(|| spec.get("httpUrl")).or_else(|| spec.get("serverUrl")).and_then(|u| u.as_str());
+        let transport = if let Some(url) = url {
+            let mut headers = str_map("headers");
+            headers.extend(str_map("http_headers"));
+            Transport::Http { url: url.to_string(), headers, oauth: false }
+        } else {
+            // OpenCode writes `command` as one array; everyone else splits it.
+            let (command, mut args) = match spec.get("command") {
+                Some(serde_json::Value::Array(parts)) => {
+                    let mut parts = parts.iter().filter_map(|p| p.as_str().map(str::to_string));
+                    (parts.next().unwrap_or_default(), parts.collect::<Vec<_>>())
+                }
+                Some(c) => (c.as_str().unwrap_or_default().to_string(), Vec::new()),
+                None => (String::new(), Vec::new()),
+            };
+            if command.is_empty() {
+                return Err(format!("{name}: needs a command or a url"));
+            }
+            args.extend(
+                spec.get("args")
+                    .and_then(|a| a.as_array())
+                    .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect::<Vec<_>>())
+                    .unwrap_or_default(),
+            );
+            let mut env = str_map("env");
+            env.extend(str_map("environment"));
+            let cwd = spec.get("cwd").and_then(|c| c.as_str()).map(str::to_string);
+            Transport::Stdio { command, args, env, cwd }
+        };
+        let id = unique_id(name, &taken);
+        taken.push(id.clone());
+        out.push(McpServer { id, name: name.clone(), catalog: None, enabled: true, transport });
+    }
+    if out.is_empty() {
+        return Err("No servers found".into());
+    }
+    Ok(out)
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -71,6 +213,38 @@ pub struct Config {
     pub composio: Composio,
     pub paper: Toggle,
     pub computer: Toggle,
+    /// Catalog and custom MCP servers, in the order the user added them.
+    pub servers: Vec<McpServer>,
+    /// Older builds' "Use ego lite only" switch, read once into `browser`
+    /// and kept in step with it so they still read the same choice.
+    pub ego: Toggle,
+    /// Which browser agents use.
+    pub browser: BrowserChoice,
+}
+
+/// The agents' browser (Settings → Integrations → ego lite).
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum BrowserChoice {
+    /// ego lite first, Dove's browser tools kept as a fallback.
+    #[default]
+    Both,
+    /// ego lite only: Dove's `browser_*` tools are hidden so agents use the
+    /// `ego-browser` command (dove-browser skill).
+    Ego,
+    /// Dove's own browser; agents are not pointed at ego lite.
+    Dove,
+}
+
+impl Config {
+    pub fn ids(&self) -> Vec<String> {
+        self.servers.iter().map(|s| s.id.clone()).collect()
+    }
+
+    /// Whether anything here needs Dove's MCP server running.
+    pub fn any_enabled(&self) -> bool {
+        self.composio.enabled || self.paper.enabled || self.computer.enabled || self.servers.iter().any(|s| s.enabled)
+    }
 }
 
 /// Which credential the user pasted, by Composio's documented prefixes.
@@ -115,7 +289,28 @@ pub fn config_path() -> PathBuf {
 }
 
 pub fn load() -> Config {
-    std::fs::read_to_string(config_path()).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+    std::fs::read_to_string(config_path()).ok().and_then(|s| parse(&s)).unwrap_or_default()
+}
+
+/// Read `integrations.json`, filling in what older versions did not write.
+pub fn parse(text: &str) -> Option<Config> {
+    let raw: serde_json::Value = serde_json::from_str(text).ok()?;
+    let mut config: Config = serde_json::from_value(raw.clone()).ok()?;
+    // Before the three-way choice, "Use ego lite only" was `ego.enabled`.
+    if raw.get("browser").is_none() && config.ego.enabled {
+        config.browser = BrowserChoice::Ego;
+    }
+    config.ego.enabled = config.browser == BrowserChoice::Ego;
+    // Ids are tool prefixes: drop duplicates and Dove's own prefixes that a
+    // hand-edited file may carry, keeping the first of each.
+    let mut taken: Vec<String> = Vec::new();
+    for s in &mut config.servers {
+        if taken.contains(&s.id) || RESERVED.contains(&s.id.as_str()) || slug(&s.id) != s.id {
+            s.id = unique_id(&s.id, &taken);
+        }
+        taken.push(s.id.clone());
+    }
+    Some(config)
 }
 
 pub fn save(config: &Config) -> std::io::Result<()> {
@@ -140,10 +335,17 @@ pub fn save(config: &Config) -> std::io::Result<()> {
     }
 }
 
-/// The installed `cua-driver` binary, if any: `PATH` first, then the
-/// locations its installers use.
+/// The computer-use driver: the installed Dove Computer Use plugin first,
+/// then a `dove-driver` or `cua-driver` on `PATH` or where their installers
+/// put it (a developer override).
 pub fn cua_driver() -> Option<PathBuf> {
-    let exe = if cfg!(windows) { "cua-driver.exe" } else { "cua-driver" };
+    crate::computer_plugin::installed().map(|i| i.bin).or_else(dev_driver)
+}
+
+/// A driver the user installed themselves, outside Dove's plugin folder.
+pub fn dev_driver() -> Option<PathBuf> {
+    let exes: &[&str] =
+        if cfg!(windows) { &["dove-driver.exe", "cua-driver.exe"] } else { &["dove-driver", "cua-driver"] };
     let mut dirs: Vec<PathBuf> =
         std::env::var_os("PATH").map(|p| std::env::split_paths(&p).collect()).unwrap_or_default();
     if let Some(home) = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from) {
@@ -154,7 +356,7 @@ pub fn cua_driver() -> Option<PathBuf> {
     dirs.extend(
         ["/opt/homebrew/bin", "/usr/local/bin", "/Applications/CuaDriver.app/Contents/MacOS"].map(PathBuf::from),
     );
-    dirs.into_iter().map(|d| d.join(exe)).find(|p| p.is_file())
+    exes.iter().find_map(|exe| dirs.iter().map(|d| d.join(exe)).find(|p| p.is_file()))
 }
 
 /// `cua-driver --version`, trimmed.
@@ -162,6 +364,11 @@ pub fn cua_version(bin: &std::path::Path) -> Option<String> {
     let out = std::process::Command::new(bin).arg("--version").output().ok()?;
     let v = String::from_utf8_lossy(&out.stdout).trim().to_string();
     (!v.is_empty()).then_some(v)
+}
+
+/// The `ego-browser` command ego lite registers on onboarding, if found.
+pub fn ego_browser() -> Option<PathBuf> {
+    dove_core::harness_process::resolve("ego-browser")
 }
 
 /// Whether Paper Desktop's MCP server is listening.
@@ -172,13 +379,26 @@ pub fn paper_running() -> bool {
 #[derive(Clone, Default)]
 struct Probe {
     cua: Option<PathBuf>,
+    /// The Dove Computer Use plugin, when installed.
+    cu_plugin: Option<crate::computer_plugin::Installed>,
     cua_version: Option<String>,
     /// The driver's own `health_report` summary, after "Check permissions".
     cua_health: Option<String>,
     paper: bool,
+    /// ego lite's `ego-browser` command.
+    ego: Option<PathBuf>,
     /// The GitHub CLI, and the account it is signed in to.
     gh: Option<PathBuf>,
     gh_user: Option<String>,
+}
+
+/// Installing, updating or removing the Dove Computer Use plugin.
+#[derive(Clone, Default)]
+enum CuStep {
+    #[default]
+    Idle,
+    Working(&'static str),
+    Failed(String),
 }
 
 /// The GitHub CLI's setup, while Dove installs it or opens its sign-in.
@@ -202,15 +422,24 @@ pub enum Scope {
     Connectors,
 }
 
+#[path = "integrations_mcp.rs"]
+mod mcp;
+
 pub struct IntegrationsView {
     scope: Scope,
     config: Config,
     api_key: Entity<InputState>,
     toolkits: Entity<InputState>,
+    /// Filters connected servers and the catalog.
+    search: Entity<InputState>,
+    /// Live per-server state (signing in, tested, failed), by id.
+    server_status: std::collections::HashMap<String, mcp::Status>,
+    dialog: Option<mcp::Dialog>,
     probe: Probe,
     checking: bool,
     copied: bool,
     gh_step: GhStep,
+    cu_step: CuStep,
     _subs: Vec<Subscription>,
 }
 
@@ -233,7 +462,17 @@ impl IntegrationsView {
             s.set_value(custom, window, cx);
             s
         });
+        let search = cx.new(|cx| {
+            let mut s = InputState::new(window, cx).placeholder("Search servers");
+            s.set_editor_style(ui::input_style(Theme::of(cx)));
+            s
+        });
         let subs = vec![
+            cx.subscribe(&search, |_, _, ev: &InputEvent, cx| {
+                if matches!(ev, InputEvent::Change) {
+                    cx.notify();
+                }
+            }),
             cx.subscribe(&api_key, |this, s, ev: &InputEvent, cx| {
                 if matches!(ev, InputEvent::Change | InputEvent::Blur) {
                     this.config.composio.api_key = s.read(cx).value().trim().to_string();
@@ -265,10 +504,14 @@ impl IntegrationsView {
             config,
             api_key,
             toolkits,
+            search,
+            server_status: Default::default(),
+            dialog: None,
             probe: Probe::default(),
             checking: false,
             copied: false,
             gh_step: GhStep::Idle,
+            cu_step: CuStep::Idle,
             _subs: subs,
         };
         view.refresh(cx);
@@ -296,6 +539,9 @@ impl IntegrationsView {
 
     fn persist(&mut self, cx: &mut Context<Self>) {
         let _ = save(&self.config);
+        // The first integration turned on with the agent browser off still
+        // needs Dove's server registered for the agents started next.
+        crate::mcp_browser::register_without_browser(&data_root());
         cx.notify();
     }
 
@@ -305,7 +551,16 @@ impl IntegrationsView {
             let cua_version = cua.as_deref().and_then(cua_version);
             let gh = dove_core::git::github::gh_path();
             let gh_user = gh.as_ref().and_then(|_| dove_core::git::github::gh_user());
-            Probe { cua, cua_version, cua_health: None, paper: paper_running(), gh, gh_user }
+            Probe {
+                cua,
+                cu_plugin: crate::computer_plugin::installed(),
+                cua_version,
+                cua_health: None,
+                paper: paper_running(),
+                ego: ego_browser(),
+                gh,
+                gh_user,
+            }
         });
         cx.spawn(async move |this, cx| {
             let probe = task.await;
@@ -345,6 +600,36 @@ impl IntegrationsView {
             Ok(()) => GhStep::SigningIn,
             Err(e) => GhStep::Failed(format!("{e:#}")),
         };
+        cx.notify();
+    }
+
+    /// Install or update the Dove Computer Use plugin (`install`), or remove
+    /// it. Only ever started from the plate's buttons.
+    fn run_cu(&mut self, install: bool, cx: &mut Context<Self>) {
+        if matches!(self.cu_step, CuStep::Working(_)) {
+            return;
+        }
+        self.cu_step = CuStep::Working(if install { "Downloading…" } else { "Removing…" });
+        let task = cx.background_spawn(async move {
+            if install { crate::computer_plugin::install().map(|_| ()) } else { crate::computer_plugin::uninstall() }
+        });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |v, cx| {
+                match result {
+                    Ok(()) => {
+                        v.cu_step = CuStep::Idle;
+                        // Installing turns it on; removing takes the tools away.
+                        v.config.computer.enabled = install;
+                        v.probe.cua_health = None;
+                        v.persist(cx);
+                    }
+                    Err(e) => v.cu_step = CuStep::Failed(e),
+                }
+                v.refresh(cx);
+            });
+        })
+        .detach();
         cx.notify();
     }
 
@@ -442,7 +727,12 @@ fn pick(id: SharedString, label: &'static str, on: bool, t: &Theme) -> gpui::Sta
         .child(label)
 }
 
-fn small_icon(id: &'static str, glyph: &'static str, label: &'static str, t: &Theme) -> gpui::Stateful<gpui::Div> {
+fn small_icon(
+    id: impl Into<gpui::ElementId>,
+    glyph: &'static str,
+    label: &'static str,
+    t: &Theme,
+) -> gpui::Stateful<gpui::Div> {
     let hover = t.wash(0.08);
     div()
         .id(id)
@@ -475,7 +765,7 @@ fn field(input: &Entity<InputState>, w: f32, t: &Theme) -> impl IntoElement {
 }
 
 impl Render for IntegrationsView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::perf_trace::count_render("IntegrationsView");
         let t = Theme::of(cx).clone();
         let browser = crate::browser::control::connected_browser();
@@ -644,6 +934,61 @@ impl Render for IntegrationsView {
                 &t,
             ))
             .when(composio_on, |d| {
+                let this = cx.entity().downgrade();
+                let account = c.account;
+                let signed_in = crate::mcp_oauth::signed_in("composio");
+                let state = self.server_status.get("composio").cloned();
+                d.child(line(
+                    "Connect with",
+                    "Sign in with your Composio account, or paste a key",
+                    ctl::segmented(
+                        &t,
+                        "int-composio-mode",
+                        vec![ctl::Segment::new("API key"), ctl::Segment::new("Composio account")],
+                        usize::from(account),
+                        move |i, _, cx| {
+                            let _ = this.update(cx, |v, cx| {
+                                v.config.composio.account = i == 1;
+                                v.persist(cx);
+                            });
+                        },
+                    ),
+                    &t,
+                ))
+                .when(account, |d| {
+                    let (ok, label) = match &state {
+                        Some(mcp::Status::Busy(m)) => (false, (*m).to_string()),
+                        Some(mcp::Status::Failed(e)) => (false, e.chars().take(90).collect()),
+                        _ if signed_in => (true, "Signed in. Agents can use every app you link in Composio".into()),
+                        _ => (false, "Not signed in".to_string()),
+                    };
+                    d.child(line(
+                        "Composio account",
+                        label.clone(),
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(8.0))
+                            .child(status(ok, if ok { "Connected" } else { "Not connected" }, &t))
+                            .child(if signed_in {
+                                ctl::button_sm(&t, "int-composio-signout", "Sign out", Tone::Quiet)
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        crate::mcp_oauth::sign_out("composio");
+                                        this.server_status.remove("composio");
+                                        cx.notify();
+                                    }))
+                            } else {
+                                ctl::button_sm(&t, "int-composio-signin", "Sign in", Tone::Filled).on_click(
+                                    cx.listener(|this, _, _, cx| {
+                                        this.sign_in("composio".into(), COMPOSIO_CONNECT_URL.into(), cx)
+                                    }),
+                                )
+                            }),
+                        &t,
+                    ))
+                })
+            })
+            .when(composio_on && !c.account, |d| {
                 d.child(line(
                     "API key",
                     match (c.api_key.is_empty(), key_kind) {
@@ -716,42 +1061,137 @@ impl Render for IntegrationsView {
             &t,
         ));
 
-        // Computer use
+        // Computer use: the Dove Computer Use plugin (dove-driver)
+        let plugin = self.probe.cu_plugin.clone();
+        let cu_busy = matches!(self.cu_step, CuStep::Working(_));
+        let cu_available = crate::computer_plugin::available();
         let (left, switch) = toggle(
             cua_on,
-            Some((cua_installed, if cua_installed { "Installed" } else { "Not installed" })),
+            Some(match (&plugin, cua_installed) {
+                (Some(p), _) => (true, if p.outdated() { "Update available" } else { "Installed" }),
+                (None, true) => (true, "Developer build"),
+                (None, false) => (false, "Not installed"),
+            }),
             "int-cua",
             &t,
         );
+        let cu_hint: SharedString = match (&self.cu_step, &plugin, &self.probe.cua_version) {
+            (CuStep::Working(m), _, _) => (*m).into(),
+            (CuStep::Failed(e), _, _) => format!("Could not finish: {e}").into(),
+            (_, Some(p), _) => format!("Agents see and use your desktop apps through dove-driver {}", p.version).into(),
+            (_, None, Some(v)) => format!("Agents see and use your desktop apps through {v}").into(),
+            _ => "Agents see and use your desktop apps by reading each window's accessibility tree".into(),
+        };
+        let install_hint = if cu_available {
+            format!(
+                "Downloads dove-driver {} from Dove's GitHub releases and checks it against the SHA-256 built into Dove",
+                crate::computer_plugin::VERSION
+            )
+        } else {
+            format!("dove-driver {} is not published for this platform yet", crate::computer_plugin::VERSION)
+        };
         let computer = plate(&t)
             .child(head(
                 icons::MONITOR,
-                "Computer use",
-                match (&self.probe.cua, &self.probe.cua_version) {
-                    (Some(_), Some(v)) => format!("Agents see and use your desktop apps through {v}"),
-                    (Some(_), None) => "Agents see and use your desktop apps through cua-driver".to_string(),
-                    (None, _) => format!("Uses the open-source cua-driver {CUA_VERSION} or later, running locally"),
-                },
-                left.child(ctl::on_toggle(switch, cx, move |this, _, cx| {
-                    this.config.computer.enabled = !cua_on;
-                    this.persist(cx);
-                })),
+                "Dove Computer Use",
+                cu_hint,
+                left.when(cua_installed, |d| {
+                    d.child(ctl::on_toggle(switch, cx, move |this, _, cx| {
+                        this.config.computer.enabled = !cua_on;
+                        this.persist(cx);
+                    }))
+                }),
                 &t,
             ))
-            .child(if let Some(path) = self.probe.cua.clone() {
-                line(
-                    "Permissions",
-                    self.probe.cua_health.clone().unwrap_or_else(|| {
-                        if cfg!(target_os = "macos") {
-                            "Needs Accessibility and Screen Recording in System Settings".into()
-                        } else {
-                            format!("{}", path.display())
-                        }
-                    }),
+            .child(match &plugin {
+                None => line(
+                    "Install",
+                    install_hint,
                     div()
                         .flex()
                         .items_center()
                         .gap(px(4.0))
+                        .when(cu_available, |d| {
+                            d.child(
+                                ctl::button_sm(
+                                    &t,
+                                    "int-cu-install",
+                                    if cu_busy { "Installing…" } else { "Install" },
+                                    Tone::Filled,
+                                )
+                                .on_click(cx.listener(|this, _, _, cx| this.run_cu(true, cx))),
+                            )
+                        })
+                        .child(
+                            small_icon("int-refresh", icons::REFRESH, "Detect again", &t)
+                                .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
+                        ),
+                    &t,
+                ),
+                Some(p) => line(
+                    "Plugin",
+                    if p.outdated() {
+                        format!("dove-driver {} installed; {} is available", p.version, crate::computer_plugin::VERSION)
+                    } else {
+                        format!("dove-driver {} in {}", p.version, p.bin.parent().unwrap_or(&p.bin).display())
+                    },
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(4.0))
+                        .when(p.outdated() && cu_available, |d| {
+                            d.child(
+                                ctl::button_sm(
+                                    &t,
+                                    "int-cu-update",
+                                    if cu_busy { "Updating…" } else { "Update" },
+                                    Tone::Filled,
+                                )
+                                .on_click(cx.listener(|this, _, _, cx| this.run_cu(true, cx))),
+                            )
+                        })
+                        .child(
+                            ctl::button_sm(&t, "int-cu-remove", "Uninstall", Tone::Quiet)
+                                .on_click(cx.listener(|this, _, _, cx| this.run_cu(false, cx))),
+                        ),
+                    &t,
+                ),
+            })
+            .when_some(self.probe.cua.clone(), |d, path| {
+                let hint = self.probe.cua_health.clone().unwrap_or_else(|| {
+                    if plugin.is_none() {
+                        format!("Using {} (developer override)", path.display())
+                    } else if cfg!(target_os = "macos") {
+                        "Needs Accessibility and Screen Recording in System Settings".into()
+                    } else if cfg!(windows) {
+                        "Runs as you, so it cannot control apps started as administrator".into()
+                    } else {
+                        "Needs the AT-SPI accessibility bus (on by default in GNOME and KDE)".into()
+                    }
+                });
+                d.child(line(
+                    "Permissions",
+                    hint,
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(4.0))
+                        .when(cfg!(target_os = "macos"), |d| {
+                            d.child(ctl::button_sm(&t, "int-cu-ax", "Accessibility", Tone::Quiet).on_click(
+                                cx.listener(|_, _, _, cx| {
+                                    cx.open_url(
+                                        "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
+                                    )
+                                }),
+                            ))
+                            .child(ctl::button_sm(&t, "int-cu-sr", "Screen Recording", Tone::Quiet).on_click(
+                                cx.listener(|_, _, _, cx| {
+                                    cx.open_url(
+                                        "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
+                                    )
+                                }),
+                            ))
+                        })
                         .child(
                             ctl::button_sm(
                                 &t,
@@ -760,42 +1200,95 @@ impl Render for IntegrationsView {
                                 Tone::Filled,
                             )
                             .on_click(cx.listener(|this, _, _, cx| this.check_cua(cx))),
-                        )
-                        .child(
-                            small_icon("int-refresh", icons::REFRESH, "Detect again", &t)
-                                .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
                         ),
                     &t,
-                )
-            } else {
-                line(
+                ))
+            });
+
+        let mcp = self.render_mcp(&t, cx);
+        let dialog = self.render_dialog(&t, window, cx);
+        // ego lite: the agents' browser
+        let choice = self.config.browser;
+        let ego_found = self.probe.ego.is_some();
+        let this = cx.entity().downgrade();
+        let ego = plate(&t)
+            .child(head(
+                icons::GLOBAL,
+                "ego lite",
+                if ego_found {
+                    "Agents browse in your own Chromium with your sign-ins, each task in its own space you can watch"
+                } else {
+                    "A browser built for agents. Install it and every harness uses it through the dove-browser skill"
+                },
+                status(ego_found, if ego_found { "Installed" } else { "Not installed" }, &t),
+                &t,
+            ))
+            .child(line(
+                "Agents browse with",
+                match choice {
+                    BrowserChoice::Ego => "ego lite only. Dove's own browser tools are hidden from agents",
+                    BrowserChoice::Both => "ego lite first, with Dove's browser as a fallback",
+                    BrowserChoice::Dove => "Dove's browser in the side panel; agents are not pointed at ego lite",
+                },
+                ctl::segmented(
+                    &t,
+                    "int-ego-choice",
+                    vec![ctl::Segment::new("ego lite"), ctl::Segment::new("Dove browser"), ctl::Segment::new("Both")],
+                    match choice {
+                        BrowserChoice::Ego => 0,
+                        BrowserChoice::Dove => 1,
+                        BrowserChoice::Both => 2,
+                    },
+                    move |i, _, cx| {
+                        let _ = this.update(cx, |v, cx| {
+                            v.config.browser = [BrowserChoice::Ego, BrowserChoice::Dove, BrowserChoice::Both][i.min(2)];
+                            v.config.ego.enabled = v.config.browser == BrowserChoice::Ego;
+                            v.persist(cx);
+                        });
+                    },
+                ),
+                &t,
+            ))
+            .when(!ego_found, |d| {
+                d.child(line(
                     "Install",
-                    "Install cua-driver from github.com/trycua/cua, then detect again",
+                    "Download ego lite, finish its onboarding, then detect again. Dove never downloads it for you",
                     div()
                         .flex()
                         .items_center()
                         .gap(px(4.0))
                         .child(
-                            small_icon("int-cua-docs", icons::ARROW_UP_RIGHT, "Open install guide", &t)
-                                .on_click(cx.listener(|_, _, _, cx| cx.open_url("https://github.com/trycua/cua"))),
+                            ctl::button_sm(&t, "int-ego-get", "Get ego lite", Tone::Filled)
+                                .on_click(cx.listener(|_, _, _, cx| cx.open_url("https://lite.ego.app/"))),
                         )
                         .child(
-                            small_icon("int-refresh", icons::REFRESH, "Detect again", &t)
+                            small_icon("int-ego-refresh", icons::REFRESH, "Detect again", &t)
                                 .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
                         ),
                     &t,
-                )
+                ))
             });
-
+        let built_in = div()
+            .flex()
+            .flex_col()
+            .gap(px(space::MD))
+            .child(github)
+            .child(ego)
+            .child(chrome)
+            .child(paper)
+            .child(computer);
         div()
             .pt(px(space::LG))
             .flex()
             .flex_col()
             .gap(px(space::MD))
             .map(|d| match self.scope {
-                Scope::Integrations => d.child(github).child(chrome).child(paper).child(computer),
+                Scope::Integrations => {
+                    d.child(page::section(&t, "MCP servers", mcp)).child(page::section(&t, "Built in", built_in))
+                }
                 Scope::Connectors => d.child(composio),
             })
+            .children(dialog)
             .child(
                 div()
                     .px(px(page::LABEL_INSET))
@@ -805,5 +1298,111 @@ impl Render for IntegrationsView {
                     .child("Changes apply to agents started from now on."),
             )
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn old_files_load_and_migrate() {
+        // Before MCP servers: Composio, Paper and computer use only, plus the
+        // "Use ego lite only" switch.
+        let old = r#"{"composio":{"enabled":true,"api_key":"ak_x","toolkits":["github"]},
+                      "paper":{"enabled":true},"computer":{"enabled":false},"ego":{"enabled":true}}"#;
+        let c = parse(old).unwrap();
+        assert!(c.composio.enabled && !c.composio.account);
+        assert_eq!(c.composio.toolkits, ["github"]);
+        assert!(c.paper.enabled && !c.computer.enabled);
+        assert!(c.servers.is_empty());
+        assert_eq!(c.browser, BrowserChoice::Ego);
+        assert_eq!(parse("{}").unwrap(), Config::default());
+        assert_eq!(parse("{}").unwrap().browser, BrowserChoice::Both);
+        // A saved choice wins over the old switch.
+        let c = parse(r#"{"ego":{"enabled":true},"browser":"dove"}"#).unwrap();
+        assert_eq!(c.browser, BrowserChoice::Dove);
+        assert!(!c.ego.enabled);
+        assert!(parse("not json").is_none());
+    }
+
+    #[test]
+    fn servers_round_trip() {
+        let mut c = Config::default();
+        c.servers.push(McpServer {
+            id: "linear".into(),
+            name: "Linear".into(),
+            catalog: Some("linear".into()),
+            enabled: true,
+            transport: Transport::Http { url: "https://mcp.linear.app/mcp".into(), headers: BTreeMap::new(), oauth: true },
+        });
+        c.servers.push(McpServer {
+            id: "local".into(),
+            name: "Local".into(),
+            catalog: None,
+            enabled: false,
+            transport: Transport::Stdio {
+                command: "npx".into(),
+                args: vec!["-y".into(), "pkg".into()],
+                env: BTreeMap::from([("TOKEN".into(), "t".into())]),
+                cwd: Some("/tmp".into()),
+            },
+        });
+        c.browser = BrowserChoice::Dove;
+        let text = serde_json::to_string_pretty(&c).unwrap();
+        assert!(text.contains("\"type\": \"http\"") && text.contains("\"type\": \"stdio\""));
+        assert_eq!(parse(&text).unwrap(), c);
+        assert!(c.any_enabled());
+        // `enabled` defaults to on for hand-written entries.
+        let c = parse(r#"{"servers":[{"id":"x","name":"X","type":"stdio","command":"x"}]}"#).unwrap();
+        assert!(c.servers[0].enabled);
+    }
+
+    #[test]
+    fn bad_ids_are_fixed_on_load() {
+        let c = parse(
+            r#"{"servers":[{"id":"a","name":"A","type":"stdio","command":"a"},
+                           {"id":"a","name":"A2","type":"stdio","command":"a"},
+                           {"id":"composio","name":"C","type":"stdio","command":"c"},
+                           {"id":"Bad Id","name":"B","type":"stdio","command":"b"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(c.ids(), ["a", "a-2", "composio-2", "bad-id"]);
+    }
+
+    #[test]
+    fn pasted_json_shapes() {
+        let claude = r#"{"mcpServers":{"Linear":{"url":"https://mcp.linear.app/mcp","headers":{"Authorization":"Bearer k"}},
+                         "pw":{"command":"npx","args":["-y","@playwright/mcp"],"env":{"A":"1"}}}}"#;
+        let got = parse_pasted(claude, &["linear".into()]).unwrap();
+        assert_eq!(got.len(), 2);
+        let linear = got.iter().find(|s| s.name == "Linear").unwrap();
+        assert_eq!(linear.id, "linear-2");
+        assert!(matches!(&linear.transport, Transport::Http { headers, .. } if headers["Authorization"] == "Bearer k"));
+        let pw = got.iter().find(|s| s.name == "pw").unwrap();
+        assert!(matches!(&pw.transport, Transport::Stdio { command, args, env, .. }
+            if command == "npx" && args == &["-y", "@playwright/mcp"] && env["A"] == "1"));
+        // OpenCode writes the command as one array.
+        let oc = r#"{"mcp":{"x":{"type":"local","command":["node","s.js"],"environment":{"B":"2"}}}}"#;
+        let got = parse_pasted(oc, &[]).unwrap();
+        assert!(matches!(&got[0].transport, Transport::Stdio { command, args, env, .. }
+            if command == "node" && args == &["s.js"] && env["B"] == "2"));
+        assert!(parse_pasted("{}", &[]).is_err());
+        assert!(parse_pasted(r#"{"mcpServers":{"x":{}}}"#, &[]).is_err());
+    }
+
+    #[test]
+    fn ids_are_slugs_and_unique() {
+        assert_eq!(slug("  My Server! v2 "), "my-server-v2");
+        assert_eq!(slug("***"), "server");
+        assert_eq!(unique_id("Paper", &[]), "paper-2");
+        assert_eq!(unique_id("figma", &["figma".into(), "figma-2".into()]), "figma-3");
+    }
+
+    #[test]
+    fn composio_key_kinds() {
+        assert_eq!(ComposioKey::of("ak_1").header(), "x-api-key");
+        assert_eq!(ComposioKey::of("uak_1").header(), "x-user-api-key");
+        assert_eq!(ComposioKey::of("ck_1").header(), "x-consumer-api-key");
     }
 }
