@@ -287,7 +287,8 @@ fn opencode_config_content(server: &crate::ToolServer, existing: Option<&str>) -
         .and_then(|s| serde_json::from_str::<Value>(s).ok())
         .filter(Value::is_object)
         .unwrap_or_else(|| json!({}));
-    let command: Vec<&str> = std::iter::once(server.command.as_str()).chain(server.args.iter().map(String::as_str)).collect();
+    let command: Vec<&str> =
+        std::iter::once(server.command.as_str()).chain(server.args.iter().map(String::as_str)).collect();
     let environment: serde_json::Map<String, Value> =
         server.env.iter().map(|(k, v)| (k.clone(), Value::String(v.clone()))).collect();
     if !config.get("mcp").is_some_and(Value::is_object) {
@@ -472,7 +473,10 @@ mod tests {
         };
         let v: serde_json::Value = serde_json::from_str(&opencode_config_content(&server, None)).unwrap();
         assert_eq!(v["mcp"]["dove"]["type"], "local");
-        assert_eq!(v["mcp"]["dove"]["command"], serde_json::json!([r"C:\Program Files\Dove\dove.exe", "--mcp-browser"]));
+        assert_eq!(
+            v["mcp"]["dove"]["command"],
+            serde_json::json!([r"C:\Program Files\Dove\dove.exe", "--mcp-browser"])
+        );
         assert_eq!(v["mcp"]["dove"]["environment"]["DOVE_DATA"], r"C:\d");
         // An inline config already set keeps its own keys and servers.
         let existing = r#"{"model":"x/y","mcp":{"mine":{"type":"remote","url":"https://m"}}}"#;

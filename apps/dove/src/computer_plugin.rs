@@ -36,39 +36,22 @@ const STATE_DIR: &str = "state";
 const GROUNDER_DIR: &str = "grounder";
 
 /// Settings › Integrations › Computer use, stored in `integrations.json` as
-/// `computer`. Older files carry only `enabled`.
+/// `computer`. Older files carry only `enabled`; unknown fields are ignored.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct Settings {
     pub enabled: bool,
-    /// How much the driver may do without asking (`DOVE_DRIVER_PERMISSION_MODE`).
-    pub permission_mode: PermissionMode,
     /// Use the local grounder for `intent` steps (downloads its weights).
     pub grounder: bool,
     /// The permissions walkthrough was finished or dismissed.
     pub walkthrough_done: bool,
 }
 
-/// The driver's own permission modes. `unrestricted` needs a separate
-/// risk acknowledgement and is not offered in Settings.
-#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum PermissionMode {
-    /// The driver asks before acting on an app the first time.
-    #[default]
-    Standard,
-    /// Agents act within the driver's capability manifest without asking.
-    Bounded,
-}
-
-impl PermissionMode {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Standard => "standard",
-            Self::Bounded => "bounded",
-        }
-    }
-}
+/// The driver's permission mode (`DOVE_DRIVER_PERMISSION_MODE`): it asks
+/// before an agent acts on an app the first time. `bounded` refuses to
+/// start without a `--capability-manifest` and `unrestricted` needs a
+/// separate risk acknowledgement, so Dove offers neither yet.
+pub const PERMISSION_MODE: &str = "standard";
 
 // ---------------------------------------------------------------- manifest
 
@@ -394,7 +377,7 @@ pub fn launch_env(settings: &Settings) -> BTreeMap<String, String> {
 fn launch_env_in(root: &Path, settings: &Settings, grounder: Option<PathBuf>) -> BTreeMap<String, String> {
     let mut env = BTreeMap::new();
     env.insert("DOVE_DRIVER_HOME".into(), root.join(STATE_DIR).display().to_string());
-    env.insert("DOVE_DRIVER_PERMISSION_MODE".into(), settings.permission_mode.as_str().into());
+    env.insert("DOVE_DRIVER_PERMISSION_MODE".into(), PERMISSION_MODE.into());
     env.insert("DOVE_TOOL_DISCLOSURE".into(), "lazy".into());
     if let Some(model) = grounder.filter(|_| settings.grounder) {
         env.insert("DOVE_DRIVER_GROUNDER_MODEL".into(), model.display().to_string());
@@ -1045,20 +1028,19 @@ mod tests {
     #[test]
     fn launch_env_sets_home_mode_and_lazy_tools() {
         let root = PathBuf::from("plugins").join("computer-use");
-        let env =
-            launch_env_in(&root, &Settings { permission_mode: PermissionMode::Bounded, ..Settings::default() }, None);
+        let env = launch_env_in(&root, &Settings { enabled: true, ..Settings::default() }, None);
         assert_eq!(env["DOVE_DRIVER_HOME"], root.join(STATE_DIR).display().to_string());
-        assert_eq!(env["DOVE_DRIVER_PERMISSION_MODE"], "bounded");
+        assert_eq!(env["DOVE_DRIVER_PERMISSION_MODE"], "standard");
         assert_eq!(env["DOVE_TOOL_DISCLOSURE"], "lazy");
     }
 
     #[test]
     fn settings_read_older_files() {
         let s: Settings = serde_json::from_str(r#"{"enabled":true}"#).unwrap();
-        assert!(s.enabled && !s.grounder && s.permission_mode == PermissionMode::Standard);
+        assert!(s.enabled && !s.grounder);
         let s: Settings =
             serde_json::from_str(r#"{"enabled":true,"permission_mode":"bounded","grounder":true}"#).unwrap();
-        assert_eq!(s.permission_mode, PermissionMode::Bounded);
+        assert!(s.enabled && s.grounder, "a stray permission_mode is ignored");
     }
 
     #[test]
@@ -1093,5 +1075,21 @@ mod tests {
     fn every_os_has_a_walkthrough() {
         assert!(!walkthrough().is_empty());
         assert!(walkthrough().iter().all(|s| !s.title.is_empty() && !s.body.is_empty()));
+    }
+
+    /// QA against a fake release served locally: installs the release that
+    /// `DOVE_COMPUTER_USE_MANIFEST` describes from `DOVE_COMPUTER_USE_RELEASE_BASE`
+    /// into `DOVE_CU_QA_ROOT`, then runs the pre-launch check. Run with
+    /// `--ignored qa_fake_release` and those three variables set.
+    #[test]
+    #[ignore]
+    fn qa_fake_release() {
+        let root = PathBuf::from(std::env::var("DOVE_CU_QA_ROOT").expect("DOVE_CU_QA_ROOT"));
+        let m = manifest();
+        assert!(available(), "no release for this platform in the QA manifest");
+        let i = install_in(&root, m).unwrap();
+        verify_installed(&i).unwrap();
+        install_grounder_in(&root, m).unwrap();
+        eprintln!("installed {} at {}", i.version, i.bin.display());
     }
 }

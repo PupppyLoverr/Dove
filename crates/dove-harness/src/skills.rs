@@ -150,8 +150,7 @@ impl Registry {
 fn load_in(root: &Path) -> Registry {
     let path = root.join(REGISTRY);
     let existed = path.is_file();
-    let mut reg: Registry =
-        std::fs::read(&path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+    let mut reg: Registry = std::fs::read(&path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
     reg.skills.retain(|s| s.source != Source::Bundled || office_skills::find(&s.name).is_some());
     let mut bundled = Vec::new();
     for b in office_skills::SKILLS {
@@ -257,10 +256,8 @@ pub fn remove_repo(repo: &str) -> Result<(), String> {
 /// SSH clone URL, or a link into the repository.
 pub fn parse_repo(input: &str) -> Option<String> {
     let s = input.trim().trim_end_matches('/');
-    let s = s
-        .strip_prefix("git@github.com:")
-        .or_else(|| s.split_once("github.com/").map(|(_, rest)| rest))
-        .unwrap_or(s);
+    let s =
+        s.strip_prefix("git@github.com:").or_else(|| s.split_once("github.com/").map(|(_, rest)| rest)).unwrap_or(s);
     let mut parts = s.split('/');
     let owner = parts.next()?;
     let repo = parts.next()?.trim_end_matches(".git");
@@ -660,10 +657,7 @@ pub const CURATED: &[Curated] = &[
     // Only the skills in the repository itself: the rest of its list links
     // elsewhere, `composio-skills/` is hundreds of generated toolkits, and
     // connect/connect-apps set up MCP connections (Settings › Connectors).
-    Curated {
-        skip: &["connect", "connect-apps"],
-        ..lib("ComposioHQ/awesome-claude-skills", "Composio", Some(""))
-    },
+    Curated { skip: &["connect", "connect-apps"], ..lib("ComposioHQ/awesome-claude-skills", "Composio", Some("")) },
     Curated { category: Some("Web & browser"), ..lib("CitroLabs/ego-lite", "ego(lite)", Some("skills")) },
 ];
 
@@ -671,13 +665,23 @@ pub const CURATED: &[Curated] = &[
 /// `(repo, folder, skill name, what it does)`. Picking one installs it.
 pub const RECOMMENDED: &[(&str, &str, &str, &str)] = &[
     ("obra/superpowers", "skills/brainstorming", "brainstorming", "Turn a rough idea into a design before coding"),
-    ("obra/superpowers", "skills/systematic-debugging", "systematic-debugging", "Find the root cause before fixing a bug"),
+    (
+        "obra/superpowers",
+        "skills/systematic-debugging",
+        "systematic-debugging",
+        "Find the root cause before fixing a bug",
+    ),
     ("obra/superpowers", "skills/test-driven-development", "test-driven-development", "Write the failing test first"),
     ("obra/superpowers", "skills/writing-plans", "writing-plans", "Write a step-by-step implementation plan"),
     ("anthropics/skills", "skills/frontend-design", "frontend-design", "Distinctive, production-grade interfaces"),
     ("anthropics/skills", "skills/webapp-testing", "webapp-testing", "Test web apps with Playwright"),
     ("anthropics/skills", "skills/skill-creator", "skill-creator", "Create and improve skills"),
-    ("Leonxlnx/taste-skill", "skills/taste-skill", "design-taste-frontend", "Design with taste: layout, type and colour"),
+    (
+        "Leonxlnx/taste-skill",
+        "skills/taste-skill",
+        "design-taste-frontend",
+        "Design with taste: layout, type and colour",
+    ),
     ("cathrynlavery/diagram-design", "skills/diagram-design", "diagram-design", "Clear, good-looking diagrams"),
     ("blader/humanizer", "", "humanizer", "Make AI-written text read naturally"),
     ("coreyhaines31/marketingskills", "skills/copywriting", "copywriting", "Marketing copy that converts"),
@@ -710,35 +714,155 @@ const CATEGORY_WORDS: &[(&str, &[&str])] = &[
     ("Documents", &["docx", "pdf", "pptx", "xlsx", "word", "powerpoint", "excel", "spreadsheet*", "slide*", "deck*"]),
     (
         "Finance",
-        &["financ*", "invoice*", "accounting", "budget*", "stock*", "trading", "tax*", "expense*", "earnings", "valuation", "portfolio*", "kyc", "ledger"],
+        &[
+            "financ*",
+            "invoice*",
+            "accounting",
+            "budget*",
+            "stock*",
+            "trading",
+            "tax*",
+            "expense*",
+            "earnings",
+            "valuation",
+            "portfolio*",
+            "kyc",
+            "ledger",
+        ],
     ),
     (
         "Design",
-        &["design*", "ui", "ux", "figma", "canvas", "art", "algorithmic", "brand*", "theme*", "visual*", "css", "frontend", "image*", "gif", "color*", "illustrat*", "diagram*", "taste", "typography", "animation*"],
+        &[
+            "design*",
+            "ui",
+            "ux",
+            "figma",
+            "canvas",
+            "art",
+            "algorithmic",
+            "brand*",
+            "theme*",
+            "visual*",
+            "css",
+            "frontend",
+            "image*",
+            "gif",
+            "color*",
+            "illustrat*",
+            "diagram*",
+            "taste",
+            "typography",
+            "animation*",
+        ],
     ),
-    (
-        "Web & browser",
-        &["browser*", "website*", "scrap*", "playwright", "chrome", "crawl*", "devtools", "web"],
-    ),
+    ("Web & browser", &["browser*", "website*", "scrap*", "playwright", "chrome", "crawl*", "devtools", "web"]),
     (
         "Marketing",
-        &["marketing", "seo", "ads", "ad", "social", "twitter", "lead*", "campaign*", "growth", "competitive", "pricing", "launch*", "copywriting", "cro", "email*"],
+        &[
+            "marketing",
+            "seo",
+            "ads",
+            "ad",
+            "social",
+            "twitter",
+            "lead*",
+            "campaign*",
+            "growth",
+            "competitive",
+            "pricing",
+            "launch*",
+            "copywriting",
+            "cro",
+            "email*",
+        ],
     ),
     (
         "Writing",
-        &["writ*", "blog*", "content", "copy", "comms", "newsletter*", "resume", "coauthor*", "humaniz*", "editing", "prose", "article*"],
+        &[
+            "writ*",
+            "blog*",
+            "content",
+            "copy",
+            "comms",
+            "newsletter*",
+            "resume",
+            "coauthor*",
+            "humaniz*",
+            "editing",
+            "prose",
+            "article*",
+        ],
     ),
     (
         "Data & science",
-        &["data", "dataset*", "analytics", "sql", "csv", "chart*", "research*", "analysis", "scientific", "science", "statistic*", "bio*", "chem*", "genom*", "protein*"],
+        &[
+            "data",
+            "dataset*",
+            "analytics",
+            "sql",
+            "csv",
+            "chart*",
+            "research*",
+            "analysis",
+            "scientific",
+            "science",
+            "statistic*",
+            "bio*",
+            "chem*",
+            "genom*",
+            "protein*",
+        ],
     ),
     (
         "Engineering",
-        &["code", "coding", "debug*", "test*", "tdd", "git", "branch*", "review*", "plan*", "mcp", "api*", "deploy*", "refactor*", "develop*", "react", "performance", "ci", "cli", "build*", "server*", "subagent*", "security", "architecture", "aspnet", "cloudflare", "vercel"],
+        &[
+            "code",
+            "coding",
+            "debug*",
+            "test*",
+            "tdd",
+            "git",
+            "branch*",
+            "review*",
+            "plan*",
+            "mcp",
+            "api*",
+            "deploy*",
+            "refactor*",
+            "develop*",
+            "react",
+            "performance",
+            "ci",
+            "cli",
+            "build*",
+            "server*",
+            "subagent*",
+            "security",
+            "architecture",
+            "aspnet",
+            "cloudflare",
+            "vercel",
+        ],
     ),
     (
         "Work",
-        &["meeting*", "calendar", "slack", "task*", "organiz*", "file*", "project*", "productivity", "notes", "brainstorm*", "workflow*", "automation*", "invoice*", "career", "internal"],
+        &[
+            "meeting*",
+            "calendar",
+            "slack",
+            "task*",
+            "organiz*",
+            "file*",
+            "project*",
+            "productivity",
+            "notes",
+            "brainstorm*",
+            "workflow*",
+            "automation*",
+            "invoice*",
+            "career",
+            "internal",
+        ],
     ),
 ];
 
@@ -1225,7 +1349,11 @@ mod tests {
         reg.skills.push(Installed {
             name: "brainstorming".into(),
             description: "Ideas.".into(),
-            source: Source::Git { repo: "obra/superpowers".into(), path: "skills/brainstorming".into(), sha: "abc".into() },
+            source: Source::Git {
+                repo: "obra/superpowers".into(),
+                path: "skills/brainstorming".into(),
+                sha: "abc".into(),
+            },
             enabled: false,
         });
         reg.get_mut("pdf").unwrap().enabled = false;
@@ -1325,7 +1453,12 @@ mod tests {
             let l = listing(c.repo, true).unwrap_or_else(|e| panic!("{}: {e}", c.repo));
             assert!(!l.skills.is_empty(), "{} lists no skills", c.repo);
             assert!(l.skills.iter().all(|a| !c.skip.contains(&a.name.as_str())));
-            eprintln!("{}: {} skills, {} invalid", c.repo, l.skills.len(), l.skills.iter().filter(|a| a.problem.is_some()).count());
+            eprintln!(
+                "{}: {} skills, {} invalid",
+                c.repo,
+                l.skills.len(),
+                l.skills.iter().filter(|a| a.problem.is_some()).count()
+            );
         }
         assert!(cached_listing("obra/superpowers").is_some());
         let l = listing("obra/superpowers", false).unwrap();
@@ -1346,7 +1479,12 @@ mod tests {
 
     #[test]
     fn finds_skill_folders_by_rule() {
-        let entry = |path: &str, kind: &str| TreeEntry { path: path.into(), kind: kind.into(), sha: format!("sha:{path}"), size: Some(1) };
+        let entry = |path: &str, kind: &str| TreeEntry {
+            path: path.into(),
+            kind: kind.into(),
+            sha: format!("sha:{path}"),
+            size: Some(1),
+        };
         let tree = Tree {
             sha: "root".into(),
             tree: vec![

@@ -13,7 +13,7 @@ use gpui::{
 
 use super::{IntegrationsView, head, line, plate, small_icon, status, toggle};
 use crate::assets::icons;
-use crate::computer_plugin::{self as plugin, Health, PermissionMode, StepAction};
+use crate::computer_plugin::{self as plugin, Health, StepAction};
 use crate::design::ty;
 use crate::kit::controls::{self as ctl, Tone};
 use crate::kit::page;
@@ -370,31 +370,11 @@ impl IntegrationsView {
             );
         }
 
-        // Approval mode: the driver's own permission modes.
-        let mode = self.config.computer.permission_mode;
-        let this = cx.entity().downgrade();
+        // Approvals: the driver's standard mode (computer_plugin::PERMISSION_MODE).
         card = card.child(line(
             "Approvals",
-            match mode {
-                PermissionMode::Standard => "dove-driver asks before an agent acts on an app the first time",
-                PermissionMode::Bounded => "Agents act within the driver's capability manifest without asking",
-            },
-            ctl::segmented(
-                t,
-                "int-cu-mode",
-                vec![ctl::Segment::new("Ask first"), ctl::Segment::new("Bounded")],
-                match mode {
-                    PermissionMode::Standard => 0,
-                    PermissionMode::Bounded => 1,
-                },
-                move |i, _, cx| {
-                    let _ = this.update(cx, |v, cx| {
-                        v.config.computer.permission_mode =
-                            if i == 0 { PermissionMode::Standard } else { PermissionMode::Bounded };
-                        v.persist(cx);
-                    });
-                },
-            ),
+            "dove-driver asks before an agent acts on an app the first time, and never types into password fields",
+            status(true, "Ask first", t),
             t,
         ));
 

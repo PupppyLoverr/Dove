@@ -13,8 +13,9 @@ use std::collections::{HashMap, HashSet};
 use dove_core::skills::{self, Available, Installed, Listing, Registry, Source};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, AppContext as _, Context, Entity, Focusable as _, InteractiveElement as _, IntoElement, ParentElement as _, Render,
-    SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, px,
+    AnyElement, AppContext as _, Context, Entity, Focusable as _, InteractiveElement as _, IntoElement,
+    ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window, div,
+    px,
 };
 use gpui_base::input::{InputEvent, InputState};
 
@@ -258,9 +259,10 @@ impl SkillsView {
     fn matches(&self, category: &str, name: &str, description: &str) -> bool {
         self.category.is_none_or(|c| c == category)
             && (self.query.is_empty()
-            || self.query.split_whitespace().all(|w| {
-                name.to_ascii_lowercase().contains(w) || description.to_ascii_lowercase().contains(w)
-            }))
+                || self
+                    .query
+                    .split_whitespace()
+                    .all(|w| name.to_ascii_lowercase().contains(w) || description.to_ascii_lowercase().contains(w)))
     }
 
     /// The category chips: All, then every category.
@@ -284,7 +286,14 @@ impl SkillsView {
                     .into_any_element(),
             );
         }
-        div().mt(px(space::MD)).px(px(page::LABEL_INSET)).flex().flex_wrap().gap(px(6.0)).children(chips).into_any_element()
+        div()
+            .mt(px(space::MD))
+            .px(px(page::LABEL_INSET))
+            .flex()
+            .flex_wrap()
+            .gap(px(6.0))
+            .children(chips)
+            .into_any_element()
     }
 }
 
@@ -384,9 +393,14 @@ impl SkillsView {
             let removing = self.busy.contains(&format!("remove:{name}"));
             let n = name.clone();
             controls.push(
-                ctl::button_sm(t, format!("skill-rm-{name}"), if removing { "Removing…" } else { "Remove" }, Tone::Quiet)
-                    .on_click(cx.listener(move |this, _, _, cx| this.remove(n.clone(), cx)))
-                    .into_any_element(),
+                ctl::button_sm(
+                    t,
+                    format!("skill-rm-{name}"),
+                    if removing { "Removing…" } else { "Remove" },
+                    Tone::Quiet,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| this.remove(n.clone(), cx)))
+                .into_any_element(),
             );
         }
         controls.push(
@@ -428,7 +442,11 @@ impl SkillsView {
             page::empty_state(
                 t,
                 icons::MAGIC_STICK_3,
-                if self.query.is_empty() && self.category.is_none() { "No skills from GitHub yet" } else { "No matching skills" },
+                if self.query.is_empty() && self.category.is_none() {
+                    "No skills from GitHub yet"
+                } else {
+                    "No matching skills"
+                },
                 if self.query.is_empty() { "Find skills in Discover and install them for every agent." } else { "" },
                 self.query.is_empty().then(|| {
                     ctl::button_sm(t, "skills-go-discover", "Discover skills", Tone::Filled)
@@ -445,7 +463,8 @@ impl SkillsView {
 
     fn discover_row(&self, t: &Theme, repo: &str, a: &Available, first: bool, cx: &mut Context<Self>) -> AnyElement {
         let installed = self.registry.get(&a.name);
-        let mine = installed.is_some_and(|s| matches!(&s.source, Source::Git { repo: r, path, .. } if r == repo && *path == a.path));
+        let mine = installed
+            .is_some_and(|s| matches!(&s.source, Source::Git { repo: r, path, .. } if r == repo && *path == a.path));
         let busy = self.busy.contains(&format!("install:{repo}/{}", a.path));
         let control: AnyElement = if mine {
             page::badge_tone("Installed", t.success).into_any_element()
@@ -471,7 +490,8 @@ impl SkillsView {
                 .on_click(cx.listener(move |this, _, _, cx| this.install(repo.clone(), &skill, cx)))
                 .into_any_element()
         };
-        let description = if a.description.is_empty() { a.problem.clone().unwrap_or_default() } else { a.description.clone() };
+        let description =
+            if a.description.is_empty() { a.problem.clone().unwrap_or_default() } else { a.description.clone() };
         page::row(t, first)
             .child(page::row_tile(t, icons::MAGIC_STICK_3, None))
             .child(skill_text(t, a.name.clone(), description))
@@ -545,22 +565,31 @@ impl SkillsView {
                 );
             }
             let block: AnyElement = match self.listings.get(repo) {
-                None | Some(Fetch::Loading) => div().px(px(space::LG)).py(px(space::MD)).child(page::skeleton_lines(t, 3)).into_any_element(),
+                None | Some(Fetch::Loading) => {
+                    div().px(px(space::LG)).py(px(space::MD)).child(page::skeleton_lines(t, 3)).into_any_element()
+                }
                 Some(Fetch::Failed(e)) => page::error_strip(t, e.clone()).into_any_element(),
                 Some(Fetch::Ready(listing)) => {
                     let shown: Vec<&Available> = listing
                         .skills
                         .iter()
-                        .filter(|a| self.matches(skills::category(Some(repo), &a.name, &a.description), &a.name, &a.description))
+                        .filter(|a| {
+                            self.matches(skills::category(Some(repo), &a.name, &a.description), &a.name, &a.description)
+                        })
                         .collect();
                     // Filtering: libraries with nothing to show step aside.
-                    if shown.is_empty() && (self.category.is_some() || !self.query.is_empty()) && self.source.is_none() {
+                    if shown.is_empty() && (self.category.is_some() || !self.query.is_empty()) && self.source.is_none()
+                    {
                         continue;
                     }
                     if shown.is_empty() {
                         page::info_strip(
                             t,
-                            if listing.skills.is_empty() { "No skills found in this repository" } else { "No matching skills" },
+                            if listing.skills.is_empty() {
+                                "No skills found in this repository"
+                            } else {
+                                "No matching skills"
+                            },
                         )
                         .into_any_element()
                     } else {
@@ -576,9 +605,18 @@ impl SkillsView {
                 .items_center()
                 .gap(px(space::SM))
                 .child(page::section_label(t, repo_label(repo)).px(px(0.0)))
-                .child(div().flex_1().min_w_0().truncate().text_size(ty::META).text_color(t.text_faint).child(repo.clone()))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_size(ty::META)
+                        .text_color(t.text_faint)
+                        .child(repo.clone()),
+                )
                 .children(actions);
-            out = out.child(div().mt(px(page::SECTION_GAP)).flex().flex_col().gap(px(space::SM)).child(head).child(block));
+            out = out
+                .child(div().mt(px(page::SECTION_GAP)).flex().flex_col().gap(px(space::SM)).child(head).child(block));
         }
         out.into_any_element()
     }
@@ -606,7 +644,12 @@ impl Render for SkillsView {
             Tab::Installed => {
                 let updating = self.busy.contains("update");
                 let has_git = self.registry.skills.iter().any(|s| matches!(s.source, Source::Git { .. }));
-                let b = ctl::button_sm(&t, "skills-update", if updating { "Updating…" } else { "Update all" }, Tone::Outlined);
+                let b = ctl::button_sm(
+                    &t,
+                    "skills-update",
+                    if updating { "Updating…" } else { "Update all" },
+                    Tone::Outlined,
+                );
                 if has_git && !updating {
                     b.on_click(cx.listener(|this, _, _, cx| this.update_all(cx))).into_any_element()
                 } else {
@@ -645,47 +688,36 @@ impl Render for SkillsView {
                 Ok(m) => page::info_strip(&t, m),
                 Err(e) => page::error_strip(&t, e),
             };
-            div()
-                .mt(px(space::MD))
-                .flex()
-                .items_start()
-                .child(strip.flex_1())
-                .child(
-                    icon_button("skills-notice-close".into(), icons::CLOSE, "Dismiss", &t).on_click(cx.listener(
-                        |this, _, _, cx| {
-                            this.notice = None;
-                            cx.notify();
-                        },
-                    )),
-                )
+            div().mt(px(space::MD)).flex().items_start().child(strip.flex_1()).child(
+                icon_button("skills-notice-close".into(), icons::CLOSE, "Dismiss", &t).on_click(cx.listener(
+                    |this, _, _, cx| {
+                        this.notice = None;
+                        cx.notify();
+                    },
+                )),
+            )
         });
         let body = match tab {
             Tab::Installed => self.installed(&t, cx),
             Tab::Discover => self.discover(&t, window, cx),
         };
-        div()
-            .flex()
-            .flex_col()
-            .child(toolbar)
-            .children(notice)
-            .child(body)
-            .child(
-                div()
-                    .mt(px(space::LG))
-                    .px(px(page::LABEL_INSET))
-                    .text_size(ty::META)
-                    .text_color(t.text_faint)
-                    .flex()
-                    .flex_col()
-                    .gap(px(space::XS))
-                    .child(
-                        "Agents pick up skills that are on by themselves. To ask for one, type # in a chat and \
+        div().flex().flex_col().child(toolbar).children(notice).child(body).child(
+            div()
+                .mt(px(space::LG))
+                .px(px(page::LABEL_INSET))
+                .text_size(ty::META)
+                .text_color(t.text_faint)
+                .flex()
+                .flex_col()
+                .gap(px(space::XS))
+                .child(
+                    "Agents pick up skills that are on by themselves. To ask for one, type # in a chat and \
                          choose it: Dove tells the agent to load that skill for the message.",
-                    )
-                    .child(
-                        "Skills are copied into ~/.claude/skills, ~/.agents/skills and the skill folders of OpenCode, \
+                )
+                .child(
+                    "Skills are copied into ~/.claude/skills, ~/.agents/skills and the skill folders of OpenCode, \
                          Gemini CLI and Pi. Folders you made yourself are never changed.",
-                    ),
-            )
+                ),
+        )
     }
 }

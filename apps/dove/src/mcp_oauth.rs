@@ -369,7 +369,9 @@ fn get_json(url: &str) -> Option<Value> {
 }
 
 fn post_form(url: &str, form: &[(&str, String)]) -> Result<Value, String> {
-    let body = url::form_urlencoded::Serializer::new(String::new()).extend_pairs(form.iter().map(|(k, v)| (*k, v.as_str()))).finish();
+    let body = url::form_urlencoded::Serializer::new(String::new())
+        .extend_pairs(form.iter().map(|(k, v)| (*k, v.as_str())))
+        .finish();
     runtime().block_on(async {
         let resp = client()
             .post(url)
@@ -560,7 +562,10 @@ mod tests {
             Some("https://mcp.example.com/.well-known/oauth-protected-resource")
         );
         assert_eq!(resource_metadata_hint("Bearer realm=x").as_deref(), None);
-        assert_eq!(resource_metadata_hint("Bearer resource_metadata=https://a.b/m, x=y").as_deref(), Some("https://a.b/m"));
+        assert_eq!(
+            resource_metadata_hint("Bearer resource_metadata=https://a.b/m, x=y").as_deref(),
+            Some("https://a.b/m")
+        );
     }
 
     #[test]

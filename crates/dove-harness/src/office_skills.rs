@@ -53,11 +53,7 @@ pub const SKILLS: &[Skill] = &[
         "Create Excel workbooks with formulas, formats and charts; dump and edit cells.",
         ["scripts/xlsx_tool.py"]
     ),
-    skill!(
-        "docx",
-        "Create Word documents with styles, lists, tables and images; edit text.",
-        ["scripts/docx_tool.py"]
-    ),
+    skill!("docx", "Create Word documents with styles, lists, tables and images; edit text.", ["scripts/docx_tool.py"]),
     skill!(
         "dove-browser",
         "Browser playbook: ego lite (the user's own Chromium) or Dove's browser, with Dove's safety and hand-off rules.",

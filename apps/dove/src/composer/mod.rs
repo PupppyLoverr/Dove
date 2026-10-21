@@ -1644,34 +1644,23 @@ impl Composer {
             .w(px(420.0))
             .flex()
             .flex_col()
-            .child(
-                div()
-                    .px(px(14.0))
-                    .pt(px(6.0))
-                    .pb(px(4.0))
-                    .text_size(ty::MICRO)
-                    .text_color(t.text_faint)
-                    .child(match m.trigger {
-                        '@' => "Files",
-                        '#' => "Skills",
-                        _ => "Commands",
-                    }),
-            )
+            .child(div().px(px(14.0)).pt(px(6.0)).pb(px(4.0)).text_size(ty::MICRO).text_color(t.text_faint).child(
+                match m.trigger {
+                    '@' => "Files",
+                    '#' => "Skills",
+                    _ => "Commands",
+                },
+            ))
             .when(empty, |d| {
-                d.child(
-                    div()
-                        .px(px(14.0))
-                        .py(px(8.0))
-                        .text_size(ty::BODY)
-                        .text_color(t.text_faint)
-                        .child(if m.trigger == '#' {
-                            "No skills yet. Add some in Settings › Skills."
-                        } else if self.files.is_empty() {
-                            "Loading files…"
-                        } else {
-                            "No matching files"
-                        }),
-                )
+                d.child(div().px(px(14.0)).py(px(8.0)).text_size(ty::BODY).text_color(t.text_faint).child(
+                    if m.trigger == '#' {
+                        "No skills yet. Add some in Settings › Skills."
+                    } else if self.files.is_empty() {
+                        "Loading files…"
+                    } else {
+                        "No matching files"
+                    },
+                ))
             })
             .children(m.items.iter().enumerate().map(|(i, item)| {
                 let selected = i == m.highlight;
@@ -1693,8 +1682,8 @@ impl Composer {
                             '#' => icons::MAGIC_STICK_3,
                             _ => icons::COMMAND,
                         })
-                            .size(px(14.0))
-                            .text_color(t.text_faint),
+                        .size(px(14.0))
+                        .text_color(t.text_faint),
                     )
                     .child(div().flex_none().text_size(ty::BODY).text_color(t.text).child(item.label.clone()))
                     .child(
@@ -1849,9 +1838,7 @@ pub const SKILLS_HEADER: &str = "Skills to use for this message (read each SKILL
 fn skill_items(q: &str) -> Vec<MentionItem> {
     use dove_core::skills::{self, Source};
     let reg = skills::load();
-    let hit = |name: &str, detail: &str| {
-        q.is_empty() || name.contains(q) || detail.to_ascii_lowercase().contains(q)
-    };
+    let hit = |name: &str, detail: &str| q.is_empty() || name.contains(q) || detail.to_ascii_lowercase().contains(q);
     let mut on = Vec::new();
     let mut off = Vec::new();
     for s in &reg.skills {
@@ -1871,7 +1858,10 @@ fn skill_items(q: &str) -> Vec<MentionItem> {
         if s.enabled {
             on.push(item(format!("{}{from}", s.description), None));
         } else {
-            off.push(item(format!("Off, turns on when picked · {}", s.description), Some(SkillPick::Enable(s.name.clone()))));
+            off.push(item(
+                format!("Off, turns on when picked · {}", s.description),
+                Some(SkillPick::Enable(s.name.clone())),
+            ));
         }
     }
     let recommended = skills::RECOMMENDED.iter().filter_map(|(repo, path, name, blurb)| {
@@ -2844,7 +2834,8 @@ mod tests {
         assert_eq!(body, "look at these");
         assert_eq!(files, vec![PathBuf::from("C:/a/shot.png"), PathBuf::from("C:/b/Cargo.toml")]);
         // Files alone, and plain text, both come back sensibly.
-        let with_skills = format!("#pdf make it\n\n{SKILLS_HEADER}\n- pdf: /s/pdf/SKILL.md\n\n{ATTACH_HEADER}\n- /a.png");
+        let with_skills =
+            format!("#pdf make it\n\n{SKILLS_HEADER}\n- pdf: /s/pdf/SKILL.md\n\n{ATTACH_HEADER}\n- /a.png");
         let (body, files) = split_attachments(&with_skills);
         assert_eq!(body, "#pdf make it");
         assert_eq!(files, vec![PathBuf::from("/a.png")]);

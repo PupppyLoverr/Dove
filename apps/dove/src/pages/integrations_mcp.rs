@@ -246,7 +246,11 @@ impl IntegrationsView {
                 s
             })
         };
-        let area = |placeholder: &'static str, value: String, rows: (usize, usize), window: &mut Window, cx: &mut Context<Self>| {
+        let area = |placeholder: &'static str,
+                    value: String,
+                    rows: (usize, usize),
+                    window: &mut Window,
+                    cx: &mut Context<Self>| {
             cx.new(|cx| {
                 let mut s = TextareaState::new(window, cx).auto_grow(rows.0, rows.1).placeholder(placeholder);
                 s.set_value(value, window, cx);
@@ -254,20 +258,29 @@ impl IntegrationsView {
             })
         };
         let (mode, target, args, lines, oauth) = match existing.as_ref().map(|s| &s.transport) {
-            Some(Transport::Http { url, headers, oauth }) => (1, url.clone(), String::new(), join_lines(headers, ": "), *oauth),
+            Some(Transport::Http { url, headers, oauth }) => {
+                (1, url.clone(), String::new(), join_lines(headers, ": "), *oauth)
+            }
             Some(Transport::Stdio { command, args, env, .. }) => {
                 (0, command.clone(), quote_args(args), join_lines(env, "="), false)
             }
             None => (0, String::new(), String::new(), String::new(), false),
         };
-        let name = input("Name, e.g. My server", existing.as_ref().map(|s| s.name.clone()).unwrap_or_default(), window, cx);
+        let name =
+            input("Name, e.g. My server", existing.as_ref().map(|s| s.name.clone()).unwrap_or_default(), window, cx);
         let form = CustomForm {
             editing,
             mode,
             target: input("npx, uvx, docker, or a path", target, window, cx),
             args: input("Arguments, e.g. -y @scope/server", args, window, cx),
             lines: area("KEY=value, one per line", lines, (2, 6), window, cx),
-            paste: area("{\"mcpServers\": {\"name\": {\"command\": \"npx\", \"args\": [...]}}}", String::new(), (5, 14), window, cx),
+            paste: area(
+                "{\"mcpServers\": {\"name\": {\"command\": \"npx\", \"args\": [...]}}}",
+                String::new(),
+                (5, 14),
+                window,
+                cx,
+            ),
             name: name.clone(),
             oauth,
             error: None,
@@ -303,8 +316,7 @@ impl IntegrationsView {
                 cwd: None,
             }
         };
-        let taken: Vec<String> =
-            self.config.ids().into_iter().filter(|id| Some(id) != form.editing.as_ref()).collect();
+        let taken: Vec<String> = self.config.ids().into_iter().filter(|id| Some(id) != form.editing.as_ref()).collect();
         let id = form.editing.clone().unwrap_or_else(|| super::unique_id(&name, &taken));
         let catalog = form
             .editing
@@ -455,10 +467,8 @@ impl IntegrationsView {
         });
 
         let added: Vec<String> = self.config.servers.iter().filter_map(|s| s.catalog.clone()).collect();
-        let discover: Vec<&'static Entry> = catalog::CATALOG
-            .iter()
-            .filter(|e| !added.iter().any(|a| a == e.id) && matches(e.name, e.blurb))
-            .collect();
+        let discover: Vec<&'static Entry> =
+            catalog::CATALOG.iter().filter(|e| !added.iter().any(|a| a == e.id) && matches(e.name, e.blurb)).collect();
         let discover_card = (!discover.is_empty()).then(|| {
             page::card(t).children(discover.into_iter().enumerate().map(|(i, e)| {
                 let meta = format!("{} · {}", e.blurb, if e.is_remote() { "Remote" } else { "Local" });
@@ -466,19 +476,29 @@ impl IntegrationsView {
                     .child(page::row_tile(t, e.icon, None))
                     .child(page::row_text(t, e.name, meta))
                     .child(
-                        div().flex_none().flex().items_center().gap(px(4.0)).child(
-                            small_icon(
-                                SharedString::from(format!("mcp-docs-{}", e.id)),
-                                icons::ARROW_UP_RIGHT,
-                                "Open docs",
-                                t,
+                        div()
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .gap(px(4.0))
+                            .child(
+                                small_icon(
+                                    SharedString::from(format!("mcp-docs-{}", e.id)),
+                                    icons::ARROW_UP_RIGHT,
+                                    "Open docs",
+                                    t,
+                                )
+                                .on_click(cx.listener(move |_, _, _, cx| cx.open_url(e.docs))),
                             )
-                            .on_click(cx.listener(move |_, _, _, cx| cx.open_url(e.docs))),
-                        )
-                        .child(
-                            ctl::button_sm(t, SharedString::from(format!("mcp-connect-{}", e.id)), "Connect", Tone::Quiet)
+                            .child(
+                                ctl::button_sm(
+                                    t,
+                                    SharedString::from(format!("mcp-connect-{}", e.id)),
+                                    "Connect",
+                                    Tone::Quiet,
+                                )
                                 .on_click(cx.listener(move |this, _, window, cx| this.connect(e, window, cx))),
-                        ),
+                            ),
                     )
             }))
         });
@@ -574,7 +594,12 @@ impl IntegrationsView {
     }
 
     /// The open dialog, as a window-wide modal layer.
-    pub(super) fn render_dialog(&mut self, t: &Theme, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+    pub(super) fn render_dialog(
+        &mut self,
+        t: &Theme,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
         let close = {
             let this = cx.entity().downgrade();
             move |_: &mut Window, cx: &mut gpui::App| {
@@ -627,12 +652,12 @@ impl IntegrationsView {
             )
             .child(
                 popover::dialog_actions()
-                    .child(
-                        ctl::button_sm(t, "mcp-key-cancel", "Cancel", Tone::Quiet).on_click(cx.listener(|this, _, _, cx| {
+                    .child(ctl::button_sm(t, "mcp-key-cancel", "Cancel", Tone::Quiet).on_click(cx.listener(
+                        |this, _, _, cx| {
                             this.dialog = None;
                             cx.notify();
-                        })),
-                    )
+                        },
+                    )))
                     .when(entry.id == "github" && self.probe.gh_user.is_some(), |d| {
                         d.child(
                             ctl::button_sm(t, "mcp-key-gh", "Use GitHub CLI token", Tone::Quiet)
@@ -709,12 +734,16 @@ impl IntegrationsView {
                                 "Sign in with browser",
                                 "For servers that use MCP sign-in (OAuth) instead of a key",
                             ))
-                            .child(ctl::on_toggle(ctl::toggle(t, "mcp-custom-oauth", oauth), cx, move |this, _, cx| {
-                                if let Some(Dialog::Custom(f)) = &mut this.dialog {
-                                    f.oauth = !oauth;
-                                }
-                                cx.notify();
-                            })),
+                            .child(ctl::on_toggle(
+                                ctl::toggle(t, "mcp-custom-oauth", oauth),
+                                cx,
+                                move |this, _, cx| {
+                                    if let Some(Dialog::Custom(f)) = &mut this.dialog {
+                                        f.oauth = !oauth;
+                                    }
+                                    cx.notify();
+                                },
+                            )),
                     )
                 }),
         };
@@ -753,14 +782,12 @@ impl IntegrationsView {
             )
             .child(
                 popover::dialog_actions()
-                    .child(
-                        ctl::button_sm(t, "mcp-custom-cancel", "Cancel", Tone::Quiet).on_click(cx.listener(
-                            |this, _, _, cx| {
-                                this.dialog = None;
-                                cx.notify();
-                            },
-                        )),
-                    )
+                    .child(ctl::button_sm(t, "mcp-custom-cancel", "Cancel", Tone::Quiet).on_click(cx.listener(
+                        |this, _, _, cx| {
+                            this.dialog = None;
+                            cx.notify();
+                        },
+                    )))
                     .when(form.mode != 2, |d| {
                         d.child(
                             ctl::button_sm(t, "mcp-custom-test", "Test", Tone::Quiet)
@@ -776,14 +803,16 @@ impl IntegrationsView {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn splits_quoted_args() {
-        assert_eq!(split_args(r#"-y @scope/srv --dir "C:\My Files" ''"#), vec!["-y", "@scope/srv", "--dir", r"C:\My Files", ""]);
+        assert_eq!(
+            split_args(r#"-y @scope/srv --dir "C:\My Files" ''"#),
+            vec!["-y", "@scope/srv", "--dir", r"C:\My Files", ""]
+        );
         assert!(split_args("   ").is_empty());
     }
 
