@@ -17,7 +17,7 @@ from pathlib import Path
 NAME_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 # Dove's bundled skills; a taught skill may not shadow them (nor any skill
 # in Dove's skills registry, see installed_names).
-RESERVED = {"pdf", "pptx", "xlsx", "docx", "dove-browser", "dove-memory", "teach"}
+RESERVED = {"pdf", "pptx", "xlsx", "docx", "dove-browser", "dove-memory", "dove-computer", "teach"}
 SECTIONS = ["## Inputs", "## Steps", "## Rules", "## Done when", "## Guardrails"]
 TRUST_AFTER = 2
 MARKER = ".dove-skill"
