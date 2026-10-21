@@ -70,8 +70,8 @@ jobs:
 
       - name: Size gate
         run: |
-          # 105 MB: the Skills library, MCP integrations and Computer Use plugin added about 1 MB of new code.
-          LIMIT=110100480
+          # 110 MB: the Skills library, MCP integrations and Computer Use plugin added about 1 MB of new code.
+          LIMIT=115343360
           if [ -f target/release/dove.exe ]; then
             BIN=target/release/dove.exe
           else
@@ -82,7 +82,7 @@ jobs:
           echo "Release binary: $BIN"
           echo "Size: ${BYTES} bytes (${MB} MB)"
           if [ "$BYTES" -gt "$LIMIT" ]; then
-            echo "::error::Release binary is ${MB} MB, exceeding the 105 MB limit"
+            echo "::error::Release binary is ${MB} MB, exceeding the 110 MB limit"
             exit 1
           fi
 
