@@ -30,6 +30,8 @@ const MANIFEST: &str = include_str!("../assets/computer-use-release.json");
 const MAX_BYTES: u64 = 512 * 1024 * 1024;
 /// The installer's record in each version folder.
 const RECORD: &str = "plugin.json";
+/// The manifest a local `dev-install.py` install keeps beside its files.
+const DEV_MANIFEST: &str = "dove-driver-manifest.json";
 /// Driver state (`DOVE_DRIVER_HOME`) and the grounder live next to the
 /// version folders, so an update keeps them.
 const STATE_DIR: &str = "state";
@@ -396,7 +398,27 @@ struct Record {
 }
 
 fn record_in(dir: &Path) -> Option<Record> {
-    serde_json::from_slice(&std::fs::read(dir.join(RECORD)).ok()?).ok()
+    if let Some(r) = std::fs::read(dir.join(RECORD)).ok().and_then(|b| serde_json::from_slice(&b).ok()) {
+        return Some(r);
+    }
+    record_from_manifest(dir)
+}
+
+/// The record of a local install made by dove-driver's
+/// `scripts/dove/dev-install.py`, which leaves the release manifest it
+/// verified (every file's SHA-256) beside the files instead of `plugin.json`.
+fn record_from_manifest(dir: &Path) -> Option<Record> {
+    let text = std::fs::read_to_string(dir.join(DEV_MANIFEST)).ok()?;
+    let m = Manifest::parse(&text).ok()?;
+    let p = m.platform(platform_key()?)?;
+    Some(Record {
+        name: "dove-driver".into(),
+        version: m.version.clone(),
+        asset: p.name.clone(),
+        sha256: p.sha256.to_ascii_lowercase(),
+        entrypoint: p.entrypoint.clone(),
+        launch_files: p.launch_files(),
+    })
 }
 
 /// The newest installed version under `root`, if its binary is there.
@@ -420,9 +442,18 @@ fn installed_in(root: &Path) -> Option<Installed> {
     best.map(|(_, i)| i)
 }
 
+/// Numeric parts plus a final 1 for a release or 0 for a pre-release
+/// (`0.37.0-dev`), so a local build ranks below the same released version.
 fn parse_version(v: &str) -> Option<Vec<u64>> {
-    let parts: Option<Vec<u64>> = v.split('.').map(|p| p.parse().ok()).collect();
-    parts.filter(|p| !p.is_empty())
+    let (core, pre) = match v.split_once('-') {
+        Some((core, tag)) if !tag.is_empty() => (core, true),
+        Some(_) => return None,
+        None => (v, false),
+    };
+    let parts: Option<Vec<u64>> = core.split('.').map(|p| p.parse().ok()).collect();
+    let mut parts = parts.filter(|p| !p.is_empty())?;
+    parts.push(u64::from(!pre));
+    Some(parts)
 }
 
 pub fn installed() -> Option<Installed> {
@@ -1179,6 +1210,9 @@ mod tests {
     fn newest_version_wins() {
         assert!(parse_version("0.37.0") > parse_version("0.9.12"));
         assert_eq!(parse_version("latest"), None);
+        assert!(parse_version("0.37.0") > parse_version("0.37.0-dev"));
+        assert!(parse_version("0.37.0-dev") > parse_version("0.36.9"));
+        assert_eq!(parse_version("0.37.0-"), None);
         assert_eq!(parse_version(STATE_DIR), None);
         assert_eq!(parse_version(GROUNDER_DIR), None);
         let i = Installed { version: "0.1.0".into(), bin: PathBuf::from(EXE) };
@@ -1189,6 +1223,36 @@ mod tests {
     fn every_os_has_a_walkthrough() {
         assert!(!walkthrough().is_empty());
         assert!(walkthrough().iter().all(|s| !s.title.is_empty() && !s.body.is_empty()));
+    }
+
+    /// A `dev-install.py` install (no `plugin.json`, the verified manifest
+    /// beside the files, a `-dev` version) is found, checks out, and is
+    /// refused once a driver file changes.
+    #[test]
+    fn finds_and_verifies_a_dev_install() {
+        let root = scratch("dev-install");
+        let dir = root.join("0.37.0-dev");
+        std::fs::create_dir_all(&dir).unwrap();
+        let (p, _) = release();
+        std::fs::write(dir.join(EXE), b"driver").unwrap();
+        std::fs::write(dir.join(UIA), b"uia").unwrap();
+        std::fs::write(dir.join("LICENSE"), b"MIT").unwrap();
+        let key = platform_key().expect("a supported platform");
+        let manifest = serde_json::json!({
+            "manifest_version": 1, "name": "dove-driver", "version": "0.37.0-dev",
+            "tag": "dove-driver-v0.37.0-dev", "repository": "o/r", "min_dove_version": "0.1.0",
+            "platforms": {key: {
+                "name": p.name, "url": p.url, "sha256": p.sha256, "size": p.size, "archive": p.archive,
+                "root": p.root, "entrypoint": p.entrypoint, "files": p.files,
+            }},
+        });
+        std::fs::write(dir.join(DEV_MANIFEST), manifest.to_string()).unwrap();
+        let i = installed_in(&root).expect("dev install found");
+        assert_eq!(i.version, "0.37.0-dev");
+        verify_installed(&i).unwrap();
+        std::fs::write(dir.join(EXE), b"tampered").unwrap();
+        assert!(verify_installed(&i).is_err());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// QA against a fake release served locally: installs the release that

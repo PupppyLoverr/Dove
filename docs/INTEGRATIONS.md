@@ -81,6 +81,8 @@ Computer use is a plugin you install from the **Dove Computer Use** plate: `dove
 
 When it's on, the hub starts the driver as the `computer` upstream (`dove-driver mcp` over stdio) with `DOVE_DRIVER_HOME=~/.dove/plugins/computer-use/state`, `DOVE_DRIVER_PERMISSION_MODE=standard`, `DOVE_TOOL_DISCLOSURE=lazy` (a small tool list; the rest through `describe_tools`) and, with the grounder on, `DOVE_DRIVER_GROUNDER_MODEL`. Agents get its tools as `computer__*`, and the hub's instructions point them to the bundled **dove-computer** skill (installed to every harness by Settings › Skills): `list_windows`, a query-scoped `get_window_state`, `run_steps` with element tokens or `intent` steps, `verify_state` at checkpoints, screenshots only when the tree is empty or pixels are needed.
 
+**Local builds.** Until a signed release is published, dove-driver's `scripts/dove/dev-install.py --dove-home <DOVE_HOME>` packages a local build the way the release pipeline does (every file's SHA-256 in `dove-driver-manifest.json`, unsigned) into `plugins/computer-use/<version>-dev/`. Dove finds it like a downloaded release, ranks it below the same released version, and re-hashes its files before every launch.
+
 **Never control.** The Computer use plate takes a list of apps (process or app names, such as `1Password, KeePass`). Dove's MCP server refuses any `computer__*` call whose `app`, `app_name`, `process_name`, `bundle_id` or `pid` (resolved to its process name) matches, including inside `run_steps` batches, and tells the agent to ask the user to do that step.
 
 For QA against a fake release, debug builds read `DOVE_COMPUTER_USE_MANIFEST` (a manifest file) and `DOVE_COMPUTER_USE_RELEASE_BASE` (a URL that serves the assets). Release builds ignore both.
