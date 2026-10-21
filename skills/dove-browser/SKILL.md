@@ -176,5 +176,7 @@ Without ego lite, use Dove's `browser_*` tools with the same loop:
 → `browser_screenshot` only for visuals. Use `chrome_*` only when the task
 needs the user's own signed-in Chrome and they have allowed the site.
 
-More: `reference/recipes.md` (ready-made round scripts for common jobs) and
+More: `reference/helpers.md` (the whole API on one page, for when you know
+what you want and need the exact call), `reference/recipes.md` (ready-made
+round scripts for common jobs) and
 `reference/troubleshooting.md` (stale refs, stuck pages, Windows quoting).

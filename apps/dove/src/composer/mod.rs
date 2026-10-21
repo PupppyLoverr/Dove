@@ -1848,6 +1848,7 @@ fn skill_items(q: &str) -> Vec<MentionItem> {
         let from = match &s.source {
             Source::Bundled => String::new(),
             Source::Git { repo, .. } => format!(" · {repo}"),
+            Source::Local { .. } => " · yours".to_string(),
         };
         let item = |detail: String, skill| MentionItem {
             label: format!("#{}", s.name),

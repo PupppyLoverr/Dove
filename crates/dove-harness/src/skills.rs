@@ -100,6 +100,9 @@ pub enum Source {
     /// A folder of a GitHub repository; `sha` is the folder's tree hash, so
     /// an update is a changed hash.
     Git { repo: String, path: String, sha: String },
+    /// A folder on this machine the user approved: a draft from memory's
+    /// consolidation, or a skill they wrote themselves.
+    Local { path: String },
 }
 
 impl Source {
@@ -108,6 +111,7 @@ impl Source {
         match self {
             Source::Bundled => "Dove",
             Source::Git { repo, .. } => repo,
+            Source::Local { .. } => "You",
         }
     }
 }
@@ -897,6 +901,7 @@ pub fn installed_category(s: &Installed) -> &'static str {
     match &s.source {
         Source::Bundled => category(None, &s.name, &s.description),
         Source::Git { repo, .. } => category(Some(repo), &s.name, &s.description),
+        Source::Local { .. } => category(None, &s.name, &s.description),
     }
 }
 
@@ -1251,6 +1256,97 @@ fn install_from(repo: &str, tree: &Tree, path: &str) -> Result<Installed, String
     })
 }
 
+/// Install the skill folder `dir` from this machine (a suggested draft, or
+/// a skill the user wrote) and turn it on for every harness. The folder is
+/// copied, so later edits to the draft need another install.
+pub fn install_local(dir: &Path) -> Result<Installed, String> {
+    let md = std::fs::read(dir.join("SKILL.md")).map_err(|e| format!("{} has no SKILL.md: {e}", dir.display()))?;
+    let meta = parse_meta(&String::from_utf8_lossy(&md))?;
+    let name = meta.name.clone();
+    if office_skills::find(&name).is_some() || name == CACHE {
+        return Err(format!("{name} is a name Dove reserves for its own skills"));
+    }
+    if let Some(existing) = load().get(&name)
+        && !matches!(&existing.source, Source::Local { .. })
+    {
+        return Err(format!("a skill named {name} is already installed from {}", existing.source.label()));
+    }
+    let mut files = Vec::new();
+    collect_files(dir, dir, &mut files).map_err(|e| format!("could not read {}: {e}", dir.display()))?;
+    if files.len() > MAX_FILES {
+        return Err(format!("{name} has more than {MAX_FILES} files"));
+    }
+    let total: u64 = files.iter().filter_map(|f| std::fs::metadata(dir.join(f)).ok()).map(|m| m.len()).sum();
+    if total > MAX_SKILL_BYTES {
+        return Err(format!("{name} is too large to install"));
+    }
+
+    let root = root();
+    let staging = root.join(format!(".staging-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&staging);
+    let written = (|| -> std::io::Result<()> {
+        for rel in &files {
+            let dest = staging.join(rel);
+            if let Some(parent) = dest.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::copy(dir.join(rel), &dest)?;
+            let rel = rel.to_string_lossy();
+            if rel.ends_with(".sh") || rel.ends_with(".py") || rel.starts_with("scripts") {
+                make_executable(&dest);
+            }
+        }
+        let stamp = dir_stamp(&staging)?;
+        std::fs::write(staging.join(MARKER), stamp)
+    })();
+    if let Err(e) = written {
+        let _ = std::fs::remove_dir_all(&staging);
+        return Err(format!("could not copy {name}: {e}"));
+    }
+
+    update(|reg| {
+        let dest = root.join(&name);
+        if std::fs::symlink_metadata(&dest).is_ok() {
+            if !ours(&dest) {
+                let _ = std::fs::remove_dir_all(&staging);
+                return Err(format!("{} already has a {name} folder Dove did not make", root.display()));
+            }
+            std::fs::remove_dir_all(&dest).map_err(|e| format!("could not replace {}: {e}", dest.display()))?;
+        }
+        std::fs::rename(&staging, &dest).map_err(|e| format!("could not install {name}: {e}"))?;
+        let installed = Installed {
+            name: name.clone(),
+            description: meta.description.clone(),
+            source: Source::Local { path: dir.display().to_string() },
+            enabled: reg.get(&name).is_none_or(|s| s.enabled),
+        };
+        match reg.get_mut(&name) {
+            Some(s) => *s = installed.clone(),
+            None => reg.skills.push(installed.clone()),
+        }
+        Ok(installed)
+    })
+}
+
+/// Every regular file under `dir`, relative to `base`, skipping `.git` and
+/// Dove's marker; symlinks are not followed.
+fn collect_files(base: &Path, dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        if name == ".git" || name == MARKER {
+            continue;
+        }
+        let kind = entry.file_type()?;
+        if kind.is_dir() {
+            collect_files(base, &entry.path(), out)?;
+        } else if kind.is_file() {
+            out.push(entry.path().strip_prefix(base).map(Path::to_path_buf).unwrap_or_default());
+        }
+    }
+    Ok(())
+}
+
 /// Install the skill in folder `path` of the GitHub repository `repo`
 /// (`owner/repo`) and turn it on for every harness.
 pub fn install(repo: &str, path: &str) -> Result<Installed, String> {
@@ -1301,6 +1397,24 @@ pub fn update_all() -> Result<Vec<String>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn collects_skill_files_without_git_or_marker() {
+        let dir = std::env::temp_dir().join(format!("dove-local-skill-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("scripts")).unwrap();
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
+        std::fs::write(dir.join("SKILL.md"), "---\nname: x\ndescription: y\n---\n").unwrap();
+        std::fs::write(dir.join("scripts/run.py"), "print(1)").unwrap();
+        std::fs::write(dir.join(".git/HEAD"), "ref").unwrap();
+        std::fs::write(dir.join(MARKER), "stamp").unwrap();
+        let mut files = Vec::new();
+        collect_files(&dir, &dir, &mut files).unwrap();
+        files.sort();
+        assert_eq!(files, vec![PathBuf::from("SKILL.md"), PathBuf::from("scripts").join("run.py")]);
+        assert_eq!(Source::Local { path: "x".into() }.label(), "You");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     fn scratch(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("dove-skills-{tag}-{}", std::process::id()));

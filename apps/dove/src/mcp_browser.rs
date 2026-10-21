@@ -744,6 +744,8 @@ pub(crate) mod upstream {
         specs: Vec<(String, Option<Make>)>,
         live: Vec<Live>,
         started: bool,
+        /// Apps `computer__*` calls may never target.
+        denied_apps: Vec<String>,
     }
 
     /// A server definition the user entered, as a constructor.
@@ -797,7 +799,7 @@ pub(crate) mod upstream {
                 }
                 specs.push((s.id.clone(), Some(make(&s.id, &s.transport))));
             }
-            Self { specs, live: Vec::new(), started: false }
+            Self { specs, live: Vec::new(), started: false, denied_apps: config.computer.denied_apps.clone() }
         }
 
         pub fn has(&self, name: &str) -> bool {
@@ -863,6 +865,11 @@ pub(crate) mod upstream {
         pub fn call(&mut self, tool: &str, args: Value) -> Value {
             self.start();
             let Some((prefix, _)) = tool.split_once("__") else { return error("Unknown tool") };
+            if prefix == "computer"
+                && let Some(why) = crate::computer_plugin::refusal(&args, &self.denied_apps)
+            {
+                return error(&why);
+            }
             let Some(live) = self.live.iter_mut().find(|l| l.server.name == prefix) else {
                 return error(&format!(
                     "The {prefix} integration is not connected. Check Dove → Settings → Integrations."

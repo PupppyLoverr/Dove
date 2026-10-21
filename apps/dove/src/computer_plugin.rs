@@ -45,6 +45,105 @@ pub struct Settings {
     pub grounder: bool,
     /// The permissions walkthrough was finished or dismissed.
     pub walkthrough_done: bool,
+    /// Apps agents may never control (process or app names, any case);
+    /// Dove's MCP server refuses `computer__*` calls that target them.
+    pub denied_apps: Vec<String>,
+}
+
+/// Whether `app` (a process name, path or app name) is on the user's
+/// never-control list. Matches the file stem without `.exe`, any case.
+pub fn denied(app: &str, list: &[String]) -> bool {
+    let stem = app.trim().rsplit(['/', '\\']).next().unwrap_or("").to_lowercase();
+    let stem = stem.trim_end_matches(".exe");
+    if stem.is_empty() {
+        return false;
+    }
+    list.iter()
+        .map(|d| d.trim().to_lowercase())
+        .map(|d| d.trim_end_matches(".exe").to_string())
+        .filter(|d| !d.is_empty())
+        .any(|d| stem == d || stem.contains(&d))
+}
+
+/// Every app name or pid a driver call targets, including the steps of a
+/// `run_steps` batch: `app`, `app_name`, `process_name`, `bundle_id` and
+/// `pid` keys, at any depth.
+pub fn targets(args: &serde_json::Value) -> (Vec<String>, Vec<u32>) {
+    let mut names = Vec::new();
+    let mut pids = Vec::new();
+    let mut stack = vec![args];
+    while let Some(v) = stack.pop() {
+        match v {
+            serde_json::Value::Object(map) => {
+                for (k, v) in map {
+                    match (k.as_str(), v) {
+                        ("app" | "app_name" | "process_name" | "bundle_id", serde_json::Value::String(s)) => names.push(s.clone()),
+                        ("pid", v) => {
+                            if let Some(p) = v.as_u64().and_then(|p| u32::try_from(p).ok()) {
+                                pids.push(p);
+                            }
+                        }
+                        _ => stack.push(v),
+                    }
+                }
+            }
+            serde_json::Value::Array(a) => stack.extend(a.iter()),
+            _ => {}
+        }
+    }
+    (names, pids)
+}
+
+/// The executable name of process `pid`, if it is still running.
+pub fn process_name(pid: u32) -> Option<String> {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
+        };
+        // SAFETY: plain Win32 calls on a handle we open and close here.
+        unsafe {
+            let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if h.is_null() {
+                return None;
+            }
+            let mut buf = [0u16; 1024];
+            let mut len = buf.len() as u32;
+            let ok = QueryFullProcessImageNameW(h, PROCESS_NAME_WIN32, buf.as_mut_ptr(), &mut len);
+            CloseHandle(h);
+            if ok == 0 {
+                return None;
+            }
+            Some(String::from_utf16_lossy(&buf[..len as usize]))
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::fs::read_to_string(format!("/proc/{pid}/comm")).ok().map(|s| s.trim().to_string())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let out = std::process::Command::new("ps").args(["-p", &pid.to_string(), "-o", "comm="]).output().ok()?;
+        let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        (!s.is_empty()).then_some(s)
+    }
+}
+
+/// Why a driver call must be refused, if it targets a never-control app.
+pub fn refusal(args: &serde_json::Value, list: &[String]) -> Option<String> {
+    if list.is_empty() {
+        return None;
+    }
+    let (names, pids) = targets(args);
+    let hit = names
+        .into_iter()
+        .chain(pids.into_iter().filter_map(process_name))
+        .find(|n| denied(n, list))?;
+    let app = hit.rsplit(['/', '\\']).next().unwrap_or(&hit).to_string();
+    Some(format!(
+        "The user does not let agents control {app}. It is on the never-control list in Dove → Settings → Integrations → Computer use. Ask the user to do this step themselves."
+    ))
 }
 
 /// The driver's permission mode (`DOVE_DRIVER_PERMISSION_MODE`): it asks
@@ -800,6 +899,21 @@ pub fn enable_at_spi() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn never_control_list() {
+        let list = vec!["1Password".to_string(), "keepass.exe".to_string()];
+        assert!(denied(r"C:\Program Files\1Password\1Password.exe", &list));
+        assert!(denied("KeePass", &list));
+        assert!(!denied("notepad.exe", &list));
+        assert!(!denied("", &list));
+        let args = serde_json::json!({"steps": [{"tool": "click", "args": {"app": "1Password"}}]});
+        assert!(refusal(&args, &list).is_some());
+        assert!(refusal(&serde_json::json!({"app": "Notepad"}), &list).is_none());
+        assert!(refusal(&args, &[]).is_none());
+        let (names, pids) = targets(&serde_json::json!({"pid": 42, "x": {"app_name": "Mail"}}));
+        assert_eq!((names, pids), (vec!["Mail".to_string()], vec![42]));
+    }
     use std::io::Write as _;
 
     const EXE: &str = if cfg!(windows) { "dove-driver.exe" } else { "dove-driver" };

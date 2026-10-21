@@ -1615,6 +1615,23 @@ impl Report {
 }
 
 /// Where proposed skills are drafted for the user to review.
+/// Supermemory's own app, where the user's memory graph lives.
+pub const GRAPH_URL: &str = "https://app.supermemory.ai";
+
+/// A timeline heading for a memory saved at `at` (RFC 3339): "Today",
+/// "Yesterday", or the date; "Undated" when unknown.
+pub fn day_label(at: Option<&str>) -> String {
+    let Some(day) = at.and_then(|a| chrono::DateTime::parse_from_rfc3339(a).ok()).map(|d| d.with_timezone(&chrono::Local).date_naive()) else {
+        return "Undated".into();
+    };
+    let today = chrono::Local::now().date_naive();
+    match (today - day).num_days() {
+        0 => "Today".into(),
+        1 => "Yesterday".into(),
+        _ => day.format("%-d %B %Y").to_string(),
+    }
+}
+
 pub fn suggested_skills_dir(root: &Path) -> PathBuf {
     root.join("memory").join("suggested-skills")
 }
@@ -1961,6 +1978,15 @@ pub fn ingest(root: &Path, docs: &[Doc]) -> (usize, usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn day_labels() {
+        assert_eq!(day_label(None), "Undated");
+        assert_eq!(day_label(Some("not a date")), "Undated");
+        let now = chrono::Local::now().to_rfc3339();
+        assert_eq!(day_label(Some(&now)), "Today");
+        assert_eq!(day_label(Some("2026-03-04T12:00:00Z")), "4 March 2026");
+    }
 
     #[test]
     fn remotes_normalize_like_supermemory() {

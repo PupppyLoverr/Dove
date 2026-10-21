@@ -81,6 +81,8 @@ Computer use is a plugin you install from the **Dove Computer Use** plate: `dove
 
 When it's on, the hub starts the driver as the `computer` upstream (`dove-driver mcp` over stdio) with `DOVE_DRIVER_HOME=~/.dove/plugins/computer-use/state`, `DOVE_DRIVER_PERMISSION_MODE=standard`, `DOVE_TOOL_DISCLOSURE=lazy` (a small tool list; the rest through `describe_tools`) and, with the grounder on, `DOVE_DRIVER_GROUNDER_MODEL`. Agents get its tools as `computer__*`, and the hub's instructions point them to the bundled **dove-computer** skill (installed to every harness by Settings › Skills): `list_windows`, a query-scoped `get_window_state`, `run_steps` with element tokens or `intent` steps, `verify_state` at checkpoints, screenshots only when the tree is empty or pixels are needed.
 
+**Never control.** The Computer use plate takes a list of apps (process or app names, such as `1Password, KeePass`). Dove's MCP server refuses any `computer__*` call whose `app`, `app_name`, `process_name`, `bundle_id` or `pid` (resolved to its process name) matches, including inside `run_steps` batches, and tells the agent to ask the user to do that step.
+
 For QA against a fake release, debug builds read `DOVE_COMPUTER_USE_MANIFEST` (a manifest file) and `DOVE_COMPUTER_USE_RELEASE_BASE` (a URL that serves the assets). Release builds ignore both.
 
 ## Status
@@ -98,7 +100,8 @@ Settings › Memory signs in to Supermemory (the same catalog server and OAuth t
 - **Capture.** On each turn end the prompt, final answer and edited files are redacted (`[REDACTED]` for keys, tokens, passwords, private keys, URL credentials, `<private>` spans) and saved with `{source: "dove", harness, project, task}`. Paths matching the never-send globs are left out. Failed saves queue in `$DOVE_HOME/memory/outbox.jsonl` and retry on the next save, sign-in or launch.
 - **Corrections.** A prompt that corrects or re-asks the last turn, and a denied permission, become high-priority `feedback` memories.
 - **Scopes.** The project container is `repo_<name>__<sha256(normalized origin remote)[..16]>` (resolved path without a remote), honouring `.claude/.supermemory-claude/config.json` `repoContainerTag` and `SUPERMEMORY_REPO_TAG`, exactly as Supermemory's Claude/Codex/OpenCode plugins derive it, so memories are shared with them. The user scope is the account's default space; teammates get `team_<id>`.
-- **Warm-up and consolidation.** "Warm up" imports past Dove threads, project READMEs / ARCHITECTURE / CLAUDE.md / AGENTS.md and recent merged PRs. A weekly consolidation lists each scope, finds duplicates (forgotten only when you click) and drafts `SKILL.md` files for repeated command workflows in `$DOVE_HOME/memory/suggested-skills/`.
+- **Warm-up and consolidation.** "Warm up" imports past Dove threads, project READMEs / ARCHITECTURE / CLAUDE.md / AGENTS.md and recent merged PRs. A weekly consolidation lists each scope, finds duplicates (forgotten only when you click) and drafts `SKILL.md` files for repeated command workflows in `$DOVE_HOME/memory/suggested-skills/`. Each draft has **Review draft** (opens it) and **Install**, which installs it for every harness like a GitHub skill (source "You" in Settings › Skills).
+- **Browse.** Settings › Memory searches any scope, ranked or as a **Timeline** grouped by day; **Graph** opens your memory graph in Supermemory's app; **Export** writes a JSON file.
 
 End-to-end check against a signed-in account (scratch home with `mcp_auth.json`; strip any `CLAUDE*`/`ANTHROPIC*` variables when running from inside an agent):
 

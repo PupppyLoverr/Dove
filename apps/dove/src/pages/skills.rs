@@ -387,9 +387,10 @@ impl SkillsView {
         let detail = match &s.source {
             Source::Bundled => format!("{} · Dove", s.description),
             Source::Git { repo, .. } => format!("{} · {repo}", s.description),
+            Source::Local { .. } => format!("{} · Yours", s.description),
         };
         let mut controls: Vec<AnyElement> = Vec::new();
-        if matches!(s.source, Source::Git { .. }) {
+        if s.source != Source::Bundled {
             let removing = self.busy.contains(&format!("remove:{name}"));
             let n = name.clone();
             controls.push(

@@ -57,7 +57,7 @@ pub const SKILLS: &[Skill] = &[
     skill!(
         "dove-browser",
         "Browser playbook: ego lite (the user's own Chromium) or Dove's browser, with Dove's safety and hand-off rules.",
-        ["reference/recipes.md", "reference/troubleshooting.md", "evals/tasks.md"]
+        ["reference/helpers.md", "reference/recipes.md", "reference/troubleshooting.md", "evals/tasks.md"]
     ),
     skill!(
         "dove-memory",

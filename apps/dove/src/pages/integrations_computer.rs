@@ -378,6 +378,18 @@ impl IntegrationsView {
             t,
         ));
 
+        // Never control: Dove's MCP server refuses calls that target these.
+        card = card.child(line(
+            "Never control",
+            if self.config.computer.denied_apps.is_empty() {
+                "Apps agents may never touch, such as password managers. Comma separated"
+            } else {
+                "Agents are refused any action on these apps, in every harness"
+            },
+            super::field(&self.cu_denied, 260.0, t),
+            t,
+        ));
+
         // Local grounder: resolves `intent` steps on the device.
         let grounder = m.grounder();
         let g_on = self.config.computer.grounder && self.cu.grounder.is_some();

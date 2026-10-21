@@ -453,6 +453,8 @@ pub struct IntegrationsView {
     gh_step: GhStep,
     /// The Computer use plate's jobs, health report and walkthrough.
     cu: computer::State,
+    /// Computer use: apps agents may never control, comma separated.
+    cu_denied: Entity<InputState>,
     _subs: Vec<Subscription>,
 }
 
@@ -480,7 +482,28 @@ impl IntegrationsView {
             s.set_editor_style(ui::input_style(Theme::of(cx)));
             s
         });
+        let cu_denied = cx.new(|cx| {
+            let mut s = InputState::new(window, cx).placeholder("e.g. 1Password, KeePass, Bitwarden");
+            s.set_editor_style(ui::input_style(Theme::of(cx)));
+            s.set_value(config.computer.denied_apps.join(", "), window, cx);
+            s
+        });
         let subs = vec![
+            cx.subscribe(&cu_denied, |this, s, ev: &InputEvent, cx| {
+                if matches!(ev, InputEvent::Change | InputEvent::Blur) {
+                    let list: Vec<String> = s
+                        .read(cx)
+                        .value()
+                        .split([',', '\n', ';'])
+                        .map(|a| a.trim().to_string())
+                        .filter(|a| !a.is_empty())
+                        .collect();
+                    if list != this.config.computer.denied_apps {
+                        this.config.computer.denied_apps = list;
+                        this.persist(cx);
+                    }
+                }
+            }),
             cx.subscribe(&search, |_, _, ev: &InputEvent, cx| {
                 if matches!(ev, InputEvent::Change) {
                     cx.notify();
@@ -524,6 +547,7 @@ impl IntegrationsView {
             copied: false,
             gh_step: GhStep::Idle,
             cu: computer::State::default(),
+            cu_denied,
             _subs: subs,
         };
         view.refresh(cx);

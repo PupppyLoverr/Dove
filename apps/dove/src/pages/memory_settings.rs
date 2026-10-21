@@ -16,7 +16,7 @@ use dove_core::memory::{self, Memory, Report, Scope};
 use dove_core::store::Project;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render, SharedString,
+    AnyElement, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render, SharedString,
     StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, px,
 };
 use gpui_base::input::{Input, InputEvent, InputState};
@@ -44,6 +44,8 @@ pub struct MemoryView {
     sel_scope: SelectState,
     results: Option<Result<Vec<Memory>, String>>,
     searching: bool,
+    /// Show the results grouped by day, newest first, instead of by rank.
+    timeline: bool,
     /// A long job (warm-up, consolidation) and what it last said.
     busy: Option<&'static str>,
     note: Option<String>,
@@ -121,6 +123,7 @@ impl MemoryView {
             scope: 0,
             sel_scope: SelectState::default(),
             results: None,
+            timeline: false,
             searching: false,
             busy: None,
             note: None,
@@ -258,6 +261,28 @@ impl MemoryView {
 
     /// Write every memory of the chosen scope to a JSON file the user picks
     /// (`$DOVE_HOME/memory/export-<date>.json` when no picker opens).
+    /// Approve a suggested skill: install the draft for every harness.
+    fn install_skill(&mut self, path: std::path::PathBuf, cx: &mut Context<Self>) {
+        if self.busy.is_some() {
+            return;
+        }
+        self.busy = Some("Installing the skill for every agent…");
+        cx.notify();
+        let task = cx.background_spawn(async move { dove_core::skills::install_local(&path) });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |v, cx| {
+                v.busy = None;
+                v.note = Some(match result {
+                    Ok(s) => format!("Installed {} for every agent. It is listed in Settings › Skills.", s.name),
+                    Err(e) => format!("Could not install the skill: {e}"),
+                });
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     fn export(&mut self, cx: &mut Context<Self>) {
         if self.busy.is_some() {
             return;
@@ -571,6 +596,19 @@ impl MemoryView {
                     .on_click(cx.listener(|this, _, _, cx| this.search(cx))),
             )
             .child(
+                ctl::button_sm(t, "mem-view", if self.timeline { "By rank" } else { "Timeline" }, Tone::Quiet)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.timeline = !this.timeline;
+                        cx.notify();
+                    })),
+            )
+            .child(
+                ctl::button_sm(t, "mem-graph", "Graph", Tone::Quiet)
+                    .child(icon(icons::ARROW_UP_RIGHT).size(px(12.0)))
+                    .tooltip(ui::tip("Open your memory graph in Supermemory"))
+                    .on_click(cx.listener(|_, _, _, cx| cx.open_url(memory::GRAPH_URL))),
+            )
+            .child(
                 ctl::button_sm(t, "mem-export", "Export", Tone::Quiet)
                     .on_click(cx.listener(|this, _, _, cx| this.export(cx))),
             );
@@ -590,26 +628,55 @@ impl MemoryView {
                 .text_color(t.text_muted)
                 .child("Nothing here yet.")
                 .into_any_element(),
-            Some(Ok(list)) => div()
-                .flex()
-                .flex_col()
-                .children(list.iter().enumerate().map(|(i, m)| {
-                    page::row(t, i == 0)
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w(px(180.0))
-                                .text_size(ty::BODY)
-                                .text_color(t.text)
-                                .child(m.text.chars().take(600).collect::<String>()),
-                        )
-                        .when_some(m.score, |d, s| d.child(page::badge(t, format!("{:.0}%", s * 100.0))))
-                        .child(
-                            ctl::button_sm(t, SharedString::from(format!("mem-forget-{i}")), "Forget", Tone::Quiet)
-                                .on_click(cx.listener(move |this, _, _, cx| this.forget(i, cx))),
-                        )
-                }))
-                .into_any_element(),
+            Some(Ok(list)) => {
+                let mut order: Vec<usize> = (0..list.len()).collect();
+                if self.timeline {
+                    // Newest first; undated memories last.
+                    order.sort_by(|&a, &b| list[b].at.cmp(&list[a].at));
+                }
+                let mut rows: Vec<AnyElement> = Vec::new();
+                let mut day: Option<String> = None;
+                for (n, &i) in order.iter().enumerate() {
+                    let m = &list[i];
+                    if self.timeline {
+                        let this_day = memory::day_label(m.at.as_deref());
+                        if day.as_deref() != Some(this_day.as_str()) {
+                            rows.push(
+                                div()
+                                    .px(px(space::LG))
+                                    .pt(px(if n == 0 { 0.0 } else { space::MD }))
+                                    .pb(px(space::XS))
+                                    .text_size(ty::META)
+                                    .font_weight(gpui::FontWeight::MEDIUM)
+                                    .text_color(t.text_muted)
+                                    .child(this_day.clone())
+                                    .into_any_element(),
+                            );
+                            day = Some(this_day);
+                        }
+                    }
+                    rows.push(
+                        page::row(t, n == 0)
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(180.0))
+                                    .text_size(ty::BODY)
+                                    .text_color(t.text)
+                                    .child(m.text.chars().take(600).collect::<String>()),
+                            )
+                            .when_some(m.score.filter(|_| !self.timeline), |d, s| {
+                                d.child(page::badge(t, format!("{:.0}%", s * 100.0)))
+                            })
+                            .child(
+                                ctl::button_sm(t, SharedString::from(format!("mem-forget-{i}")), "Forget", Tone::Quiet)
+                                    .on_click(cx.listener(move |this, _, _, cx| this.forget(i, cx))),
+                            )
+                            .into_any_element(),
+                    );
+                }
+                div().flex().flex_col().children(rows).into_any_element()
+            }
         };
         page::card(t).child(head).child(body)
     }
@@ -664,9 +731,20 @@ impl MemoryView {
                     false,
                     format!("Suggested skill: {}", s.name),
                     format!("Seen in {} memories: {}", s.seen, s.steps.join(" · ")),
-                    ctl::button_sm(t, SharedString::from(format!("mem-skill-{i}")), "Review draft", Tone::Outlined)
-                        .child(icon(icons::ARROW_UP_RIGHT).size(px(12.0)))
-                        .on_click(cx.listener(move |_, _, _, cx| cx.open_with_system(&path))),
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.0))
+                        .child({
+                            let path = path.clone();
+                            ctl::button_sm(t, SharedString::from(format!("mem-skill-{i}")), "Review draft", Tone::Outlined)
+                                .child(icon(icons::ARROW_UP_RIGHT).size(px(12.0)))
+                                .on_click(cx.listener(move |_, _, _, cx| cx.open_with_system(&path)))
+                        })
+                        .child(
+                            ctl::button_sm(t, SharedString::from(format!("mem-skill-install-{i}")), "Install", Tone::Filled)
+                                .on_click(cx.listener(move |this, _, _, cx| this.install_skill(path.clone(), cx))),
+                        ),
                 ));
             }
         }
