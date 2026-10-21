@@ -114,7 +114,20 @@ agent ─tools/call─▶ dove --mcp-browser (stdio) ─JSON line over 127.0.0.1
 2. `browser/control.rs` checks the random per-launch token (which only reaches agents through the MCP server's environment) and routes the request to the browser of the thread whose working directory matches the agent's `cwd`.
 3. `browser/agent.rs` snapshots the page into an outline with stable refs (`[ref=e12]`), moves a visible cursor and performs the action. On Windows input goes through the DevTools protocol so pages receive trusted events; elsewhere it falls back to `page_api.js`. Screenshots return as base64 PNG the model can see.
 
-The Chrome-extension path reuses this protocol: the extension connects to the same loopback control endpoint and executes actions in the user's own Chrome tab instead of the in-app web view.
+The Chrome-extension path reuses this protocol: `chrome_*` calls go from `browser/control.rs` over a second loopback listener (a minimal RFC 6455 WebSocket) to the Dove for Chrome extension (`apps/extension`), which executes them in the user's own browser tab instead of the in-app web view.
+
+```text
+dove --mcp-browser ─chrome_*─▶ browser::control ─ws://127.0.0.1/extension─▶ background.js ─▶ page.js (isolated world)
+                                 │ token + pinned extension origin             │ validates every message
+                                 │ upload paths must be inside the thread cwd  │ reviews in review.html (extension origin)
+```
+
+- **Who may connect.** Only `chrome-extension://` origins that present the pairing token (64 hex characters from the OS CSPRNG via `uuid` v4). After the first pairing the extension's origin is pinned in `~/.dove/extension.json`; Settings › Integrations › New pairing code rotates the token and forgets it. Frames are capped at 16 MB.
+- **What the extension accepts.** `lib/policy.js` checks every message from Dove (type, tool, the tool's own arguments, 1 MB cap) and every message from inside the browser (only the extension's own pages may pair, resume or decide; injected page scripts may only Stop).
+- **Consent.** Host access is optional and granted per site from a click in the extension's review window. Consequential clicks (submit, buy, send, delete, …), Enter in a form and every upload wait in `lib/review.js` for **Allow once**. Password, payment, identity and one-time-code fields are refused. Page text is returned framed as untrusted data.
+- **Stop.** Bumps an epoch that every in-flight call checks while it waits; pending reviews are denied. Measured: an in-flight call fails 35 ms after Stop.
+
+Which browser agents use is a setting (Settings › Integrations › Browser for agents): ego lite (default when installed), Dove's browser, or both. ego lite is a CLI agents run themselves through the `dove-browser` skill; Dove for Chrome is for work that needs the user's own signed-in browser. The extension never touches ego lite's Spaces.
 
 ## Store (`crates/dove-store`)
 
@@ -153,9 +166,36 @@ On the desktop, `apps/dove/src/remote.rs` spawns `dove-mesh-host` and talks to i
 - **What leaves the machine.** Session events and command frames only. Repositories, worktrees and files stay local unless an agent puts their content into its own output.
 - **Cost.** The edge runs on Cloudflare's free tier for individual use. Enterprises can deploy the same Worker into their own Cloudflare account.
 
-## Dictation (`apps/dove/src/voice.rs`)
+## Voice: dictation and Voice Mode
 
-Dictation is speech to text only; Dove does not speak replies. It runs NVIDIA Parakeet TDT 0.6B v3 through the vendored `zeron-voice` crate, the same model Zeron uses. The model is not linked into `dove`, so the binary stays in the 50–100 MB range: Settings › Voice downloads it on demand into `~/.dove/voice` and verifies every file by SHA-256. Hold the mic in the composer or terminal to talk, or click to toggle; the text is inserted, never sent.
+**Dictation** (`apps/dove/src/voice.rs`) is speech to text into the composer: NVIDIA Parakeet TDT 0.6B v3 through the vendored `zeron-voice` crate, downloaded on demand from Settings › Voice into `~/.dove/voice` and verified file by file (SHA-256). Hold the mic to talk, or click to toggle; text is inserted, never sent.
+
+**Voice Mode** is a hands-free call with every thread (`crates/dove-voice`, wired in by `apps/dove/src/voice_call.rs`). It sits above the harness boundary: it reads Dove's own state and acts through the same calls a click makes, so it works with every agent without per-harness code.
+
+```text
+ mic ─cpal─▶ voice-call thread ───────────────────────────────────────────────▶ Event::Turn(text)
+            resample 16 kHz → NLMS echo cancel (speaker reference) → Silero VAD           │
+            → Listener: start / barge-in / pause → Smart Turn v3 (is the turn over?)       ▼
+            → speculate at 128 ms of pause ─▶ voice-stt thread (Moonshine | Parakeet)   Conductor
+                                                                                       │ fastpath grammar
+ speaker ◀─cpal─ voice-speaker thread ◀─ voice-tts thread (system voice) ◀─ clauses ◀──┤ rules router
+                 (play / stop in one buffer; feeds the echo canceller)                 │ intent schema + validate
+                                                                                       │ safety (destructive?)
+                                                                                       ▼
+ Shell (voice_call.rs): TaskView::submit · interrupt · decide_from_outside · open_task · Engine::start_task
+```
+
+- **Engines are traits** (`engines.rs`): `SpeechToText`, `TextToSpeech`, `TurnDetector`, `EchoCanceller`, `Vad`. Local defaults: Moonshine base (MIT, 67 MB) for recognition, with Parakeet as the accurate option; Silero VAD v5 (MIT, 2 MB) behind an energy gate; Smart Turn v3.2 (BSD-2-Clause, 9 MB) with a pause fallback; the operating system's voice for speech; an NLMS echo canceller. Optional OpenAI-compatible speech-to-text and text-to-speech are off by default, and Settings says what each would upload. Every model is pinned to a Hugging Face revision and SHA-256 (`models.rs`) and re-hashed before ONNX Runtime loads it. Nothing downloads without a click.
+- **Threads.** Audio never touches the UI thread: `voice-call` (devices, VAD, turn logic, controls), `voice-stt`, `voice-tts`, `voice-speaker`. The app polls the call's event channel every 30 ms while a call runs.
+- **Latency tricks.** The pause is transcribed speculatively after 128 ms, so the text is usually ready when the turn detector decides; a speculation is discarded if speech resumes. Replies are spoken clause by clause (`speakable.rs`) as the agent streams. Code blocks, diffs and tables are summarised, never read out.
+- **Barge-in.** Talking over Dove (stricter VAD thresholds while it speaks, so echo residue does not count) clears the speaker queue, cancels the clause being rendered and drops every queued clause of the old generation.
+- **Conductor** (`conductor.rs`). One utterance in, effects out. Order: an armed confirmation phrase, the deterministic `fastpath` grammar (whole-utterance commands only: "stop", "approve", "what's happening", "take me back", "end call"…), the `rules` router ("Claude, how's the auth fix?", "tell Codex to stop", "start a Gemini task on … in a new worktree"), an optional model router (a configured OpenAI-compatible endpoint, answers validated against the strict `intent` schema), else the words go to the current thread as a message. Status answers come from the `Snapshot` (status, current activity, todos, `git diff --shortstat`, pending requests, last error), never from asking the agent or guessing.
+- **Approvals.** Voice answers the same `PermissionRequest` a click answers and never widens a thread's mode. `safety.rs` classifies requests; a destructive one (recursive delete, force push, history rewrite, `curl | sh`, secrets, paths outside the thread's folder) is never approved by voice: the user says a confirmation phrase and then clicks Approve in the chat, and a changed request drops the confirmation. The shell re-checks the classification before acting.
+- **Transcript.** Spoken turns are sent like typed ones, so they land in each thread's JSONL transcript in order. `~/.dove/voice/calls.jsonl` adds what the transcript format has no place for: that a turn was spoken, which call it belonged to, Dove's own spoken lines, and call duration. No audio is stored.
+- **Memory.** Nothing is loaded until a call starts; engines stay cached for five minutes after a call (a warm restart) and are then dropped. Dictation's cached Parakeet is unloaded when a call starts so the model is never resident twice.
+- **Remote-ready.** A call's input can be `Input::Stream`: mono samples pushed by someone else. That is how a phone remote can stream its microphone into the desktop conductor, and how `tests/call.rs` drives the real pipeline without a microphone.
+
+Measurements and methodology: [docs/VOICE.md](docs/VOICE.md).
 
 ## Principles
 

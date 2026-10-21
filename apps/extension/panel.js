@@ -1,3 +1,5 @@
+import { card } from './review.js';
+
 const $ = (id) => document.getElementById(id);
 const send = (msg) => chrome.runtime.sendMessage(msg);
 const LABEL = { connected: 'Connected to Dove', connecting: 'Connecting…', offline: 'Dove isn\u2019t running', unpaired: 'Not paired', rejected: 'Pairing code not accepted' };
@@ -29,6 +31,11 @@ function describe(e) {
     case 'select': return ['Chose an option', a.value ? quote(a.value) : ''];
     case 'wait': return ['Waited', a.text ? `for ${quote(a.text)}` : a.selector ? `for ${a.selector}` : 'for the page to load'];
     case 'release': return ['Handed the browser back', ''];
+    case 'context': return ['Looked at the page', ''];
+    case 'find': return ['Searched the page', a.text ? quote(a.text) : (a.role || '')];
+    case 'extract': return ['Pulled data from the page', a.kind || ''];
+    case 'upload': return ['Attached files', (a.paths || []).join(', ')];
+    case 'review': return [e.ok ? 'You allowed' : 'Not allowed', String(e.args || '')];
     case 'stop': return ['Stopped by you', ''];
     default: return [String(e.tool || '').replace(/_/g, ' '), ''];
   }
@@ -52,7 +59,8 @@ async function currentTab() {
 
 async function render() {
   await currentTab();
-  const { status = { state: 'unpaired' }, log = [] } = await chrome.storage.session.get(['status', 'log']);
+  const { status = { state: 'unpaired' }, log = [], reviews = [] } = await chrome.storage.session.get(['status', 'log', 'reviews']);
+  $('reviews').replaceChildren(...reviews.map((r) => card(r, (id, allow) => send({ type: 'review-decision', id, allow }).then(render))));
   const { pairing, allowed = {}, paused } = await chrome.storage.local.get({ pairing: null, allowed: {}, paused: false });
   const st = pairing ? status.state : 'unpaired';
   $('status').classList.toggle('on', st === 'connected');
@@ -84,6 +92,7 @@ async function render() {
     t.title = new Date(e.at).toLocaleString();
     const a = document.createElement('span'); a.className = 'a'; a.textContent = e.ok ? detail : (e.error || detail);
     li.append(n, t, a);
+    if (e.who) { const w = document.createElement('span'); w.className = 'w'; w.textContent = String(e.who).slice(0, 60); li.append(w); }
     return li;
   }));
 }
@@ -98,7 +107,14 @@ $('code').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('pair-bt
 $('allow').onchange = async (e) => {
   if (!origin) return;
   const { allowed = {} } = await chrome.storage.local.get({ allowed: {} });
-  if (e.target.checked) allowed[origin] = true; else delete allowed[origin];
+  if (e.target.checked) {
+    const granted = await chrome.permissions.request({ origins: [`${origin}/*`] }).catch(() => false);
+    if (!granted) { e.target.checked = false; return render(); }
+    allowed[origin] = true;
+  } else {
+    delete allowed[origin];
+    await chrome.permissions.remove({ origins: [`${origin}/*`] }).catch(() => {});
+  }
   await chrome.storage.local.set({ allowed });
   if (!e.target.checked && tabId != null) await send({ type: 'stop' }).then(() => send({ type: 'resume' }));
   render();

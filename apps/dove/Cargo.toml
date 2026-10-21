@@ -29,6 +29,7 @@ uuid = { workspace = true, features = ["v4"] }
 zeron-syntax = { path = "../../vendor/zeron-syntax" }
 zeron-markdown = { path = "../../vendor/zeron-markdown" }
 zeron-voice = { path = "../../vendor/zeron-voice" }
+dove-voice = { path = "../../crates/dove-voice" }
 zeron-visual = { path = "../../vendor/zeron-visual" }
 zeron-visual-gpu = { path = "../../vendor/zeron-visual-gpu" }
 similar = "2"

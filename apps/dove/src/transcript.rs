@@ -102,6 +102,25 @@ pub enum TaskViewEvent {
     DriveBrowser(crate::browser::Drive),
     /// The agent opened this pull request.
     PullRequest(String),
+    /// Reply text streamed while a voice call listens to this thread.
+    VoiceText(Arc<str>),
+    /// The turn a voice call listens to ended.
+    VoiceTurnEnded {
+        failed: bool,
+    },
+}
+
+/// What Voice Mode needs to know about a thread, read from state the chat
+/// already holds (nothing is fetched from the agent).
+#[derive(Debug, Clone, Default)]
+pub struct VoiceState {
+    pub live: bool,
+    pub capabilities: dove_core::proto::Capabilities,
+    /// Undecided permission requests and questions, oldest first.
+    pub pending: Vec<dove_core::proto::PermissionRequest>,
+    pub todos: Vec<dove_core::proto::TodoItem>,
+    pub status_text: Option<String>,
+    pub last_error: Option<String>,
 }
 
 // ------------------------------------------------------------------ model
@@ -1606,6 +1625,8 @@ pub struct TaskView {
     /// The teammate this thread runs as, for its replies' header.
     persona: Option<dove_core::store::Persona>,
     pub status: TaskStatus,
+    /// A voice call is reading this thread's replies aloud.
+    voice_tap: bool,
     /// Inline `show_visual` frames, keyed by the tool call id.
     visuals: HashMap<String, Entity<crate::visuals::VisualFrame>>,
     todos_open: bool,
@@ -1833,6 +1854,7 @@ impl TaskView {
             ai_titling: false,
             ai_titles: true,
             status: task.status,
+            voice_tap: false,
             task,
             project,
             live: None,
@@ -2127,6 +2149,16 @@ impl TaskView {
             merged.push(AgentEvent::TextDelta { text: text.into() });
         }
         for ev in merged {
+            if self.voice_tap {
+                match &ev {
+                    AgentEvent::TextDelta { text } => cx.emit(TaskViewEvent::VoiceText(text.clone())),
+                    AgentEvent::TurnEnded { is_error, .. } => {
+                        cx.emit(TaskViewEvent::VoiceTurnEnded { failed: *is_error })
+                    }
+                    AgentEvent::Exited { .. } => cx.emit(TaskViewEvent::VoiceTurnEnded { failed: true }),
+                    _ => {}
+                }
+            }
             if let AgentEvent::ToolCall { name, input, .. } = &ev {
                 // Dove's own browser tools already act on the page.
                 if dove_core::is_dove_tool(name) {
@@ -2331,6 +2363,36 @@ impl TaskView {
             l.send(Command::Interrupt);
         }
         cx.notify();
+    }
+
+    /// Let a voice call hear this thread's replies (or stop).
+    pub fn set_voice_tap(&mut self, on: bool) {
+        self.voice_tap = on;
+    }
+
+    /// The thread as Voice Mode sees it.
+    pub fn voice_state(&self) -> VoiceState {
+        let pending = self
+            .chat
+            .permissions
+            .iter()
+            .filter_map(|&i| match self.chat.rows.get(i) {
+                Some(Row::Permission { req, decided: None }) => Some(req.clone()),
+                _ => None,
+            })
+            .collect();
+        let last_error = self.chat.rows.iter().rev().take(12).find_map(|r| match r {
+            Row::Error(e) => Some(e.to_string()),
+            _ => None,
+        });
+        VoiceState {
+            live: self.live.is_some(),
+            capabilities: self.live.as_ref().map(|l| l.capabilities).unwrap_or_default(),
+            pending,
+            todos: self.chat.todos.clone(),
+            status_text: self.chat.status_text.as_ref().map(|s| s.to_string()),
+            last_error,
+        }
     }
 
     /// Answer an approval from outside the chat (the sidebar's Needs you).

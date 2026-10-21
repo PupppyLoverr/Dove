@@ -224,6 +224,17 @@ impl Render for ChipDrag {
     }
 }
 
+/// What "take a look at this" can point at in the browser tab.
+impl SidePanel {
+    /// The title and URL of the shown thread's browser, if it has one.
+    pub fn browser_context(&self, cx: &gpui::App) -> Option<(String, String)> {
+        let panel = self.panels.get(&self.thread?)?;
+        let (b, _) = panel.browsers.values().next()?;
+        let page = &b.read(cx).page;
+        Some((page.label(), page.url.clone()?))
+    }
+}
+
 pub struct SidePanel {
     pub changes: Entity<Changes>,
     pub files: Entity<FilesPanel>,

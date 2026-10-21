@@ -195,6 +195,9 @@ pub struct Shell {
     back: Vec<Route>,
     forward: Vec<Route>,
     pub threads: HashMap<TaskId, Entity<ThreadView>>,
+    /// The voice call, while one runs (Voice Mode; see `voice_call.rs`).
+    pub voice_call: Option<Entity<crate::voice_call::VoiceCall>>,
+    pub(crate) voice_sub: Option<Subscription>,
     /// Open thread tabs, in order.
     pub tabs: Vec<TaskId>,
     pub sidebar_open: bool,
@@ -401,6 +404,8 @@ impl Shell {
             back: Vec::new(),
             forward: Vec::new(),
             threads: HashMap::new(),
+            voice_call: None,
+            voice_sub: None,
             tabs: store
                 .setting("open_tabs")
                 .filter(|_| store.setting("restore_tabs").as_deref() != Some("false"))
@@ -903,7 +908,7 @@ impl Shell {
         cx.notify();
     }
 
-    fn make_thread(
+    pub(crate) fn make_thread(
         &mut self,
         task: Task,
         project: Project,
@@ -1603,7 +1608,7 @@ impl Shell {
         cx.notify();
     }
 
-    fn toggle_view_mode(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn toggle_view_mode(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(v) = self.active_thread().cloned() {
             v.update(cx, |v, cx| v.toggle(window, cx));
         }
@@ -3183,6 +3188,7 @@ impl Render for Shell {
                 cx.listener(|this, _: &actions::OpenSettings, window, cx| this.navigate(Route::Settings, window, cx)),
             )
             .on_action(cx.listener(|this, _: &actions::ToggleTerminal, window, cx| this.toggle_view_mode(window, cx)))
+            .on_action(cx.listener(|this, _: &actions::ToggleVoiceCall, window, cx| this.toggle_voice_call(window, cx)))
             .on_action(cx.listener(|this, _: &actions::CommandPalette, window, cx| this.open_palette(window, cx)))
             .on_action(
                 cx.listener(|this, _: &actions::OpenThreads, window, cx| this.navigate(Route::Threads, window, cx)),
@@ -3232,6 +3238,18 @@ impl Render for Shell {
                 cx.notify();
             }))
             .on_key_down(cx.listener(|this, e: &gpui::KeyDownEvent, window, cx| {
+                // Hold Space to talk while a call is muted, only when nothing
+                // that takes text has focus (the shell itself does).
+                if e.keystroke.key == "space"
+                    && !e.is_held
+                    && this.focus.is_focused(window)
+                    && let Some(call) = this.voice_call.clone()
+                    && call.read(cx).muted
+                {
+                    call.update(cx, |v, _| v.push_to_talk(true));
+                    cx.stop_propagation();
+                    return;
+                }
                 if e.keystroke.key == "escape" {
                     let menu = this.close_menus();
                     let open = menu || this.info_open || this.palette.is_some();
@@ -3244,6 +3262,13 @@ impl Render for Shell {
                         this.close_settings(window, cx);
                         cx.stop_propagation();
                     }
+                }
+            }))
+            .on_key_up(cx.listener(|this, e: &gpui::KeyUpEvent, _, cx| {
+                if e.keystroke.key == "space"
+                    && let Some(call) = this.voice_call.clone()
+                {
+                    call.update(cx, |v, _| v.push_to_talk(false));
                 }
             }))
             .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, window, cx| {
@@ -3320,6 +3345,7 @@ impl Render for Shell {
             // A page's confirmation (Threads, Archived, Kanban, Automations,
             // Team): drawn here so it stays modal whichever route is showing.
             .children(self.render_page_dialog(window, cx))
+            .children(self.render_voice_bar(cx))
             .children((self.info_open && in_thread && !expanded).then(|| self.active_task().cloned()).flatten().map(
                 |task| {
                     let right = if panel_open { panel_w + 14.0 } else { 14.0 };

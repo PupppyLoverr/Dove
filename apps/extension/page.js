@@ -47,11 +47,13 @@ export function pageSnapshot(scopeRef, full) {
   };
   const actionable = new Set(['link', 'button', 'textbox', 'searchbox', 'combobox', 'checkbox', 'radio', 'slider', 'menuitem', 'tab', 'option', 'switch']);
   const walk = (el, depth) => {
-    if (lines.length >= limit || !(el instanceof Element)) return;
+    // nodeType, not instanceof: frames have their own Element class.
+    if (lines.length >= limit || !el || el.nodeType !== 1) return;
     if (['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE', 'SVG'].includes(el.tagName.toUpperCase())) return;
     if (el.id === 'dove-control-indicator') return;
     if (!visible(el)) return;
-    const r = role(el);
+    // Frames are containers, whatever their tabindex says.
+    const r = el.tagName === 'IFRAME' ? null : role(el);
     if (r) {
       let ref = el.getAttribute(ATTR);
       if (actionable.has(r) || r === 'heading' || r === 'img') {
@@ -76,6 +78,13 @@ export function pageSnapshot(scopeRef, full) {
     if (text.length > 1) lines.push(`${'  '.repeat(Math.min(depth, 8))}- text "${text.slice(0, full ? 400 : 140)}"`);
     for (const c of el.children) walk(c, depth + (text ? 1 : 0));
     if (el.shadowRoot) for (const c of el.shadowRoot.children) walk(c, depth);
+    if (el.tagName === 'IFRAME') {
+      let doc = null;
+      try { doc = el.contentDocument; } catch (_) { doc = null; }
+      const pad = '  '.repeat(Math.min(depth, 8));
+      if (doc?.body) { lines.push(`${pad}- frame "${el.title || el.name || el.src || ''}"`); for (const c of doc.body.children) walk(c, depth + 1); }
+      else lines.push(`${pad}- frame (cross-origin, not readable) src=${(el.src || '').slice(0, 120)}`);
+    }
   };
   walk(root, 0);
   document.documentElement.setAttribute('data-dove-next', String(next));
@@ -85,19 +94,171 @@ export function pageSnapshot(scopeRef, full) {
 
 /** Scroll an element into view and return its viewport center. */
 export function pageLocate(target) {
-  let el = null;
-  if (/^e\d+$/.test(target)) el = document.querySelector(`[data-dove-ref="${target}"]`);
-  if (!el) { try { el = document.querySelector(target); } catch (_) { el = null; } }
-  if (!el) {
+  // Search the document, open shadow roots and same-origin frames; add each
+  // frame's offset so the click lands in the right place.
+  const deep = (root, sel) => {
+    let hit = null;
+    try { hit = root.querySelector(sel); } catch (_) { return null; }
+    if (hit) return { el: hit, dx: 0, dy: 0 };
+    for (const host of root.querySelectorAll('*')) {
+      if (host.shadowRoot) { const r = deep(host.shadowRoot, sel); if (r) return r; }
+      if (host.tagName === 'IFRAME') {
+        let doc = null; try { doc = host.contentDocument; } catch (_) { doc = null; }
+        if (doc) { const r = deep(doc, sel); if (r) { const b = host.getBoundingClientRect(); return { el: r.el, dx: r.dx + b.left, dy: r.dy + b.top }; } }
+      }
+    }
+    return null;
+  };
+  let found = null;
+  if (/^e\d+$/.test(target)) {
+    found = deep(document, `[data-dove-ref="${target}"]`);
+    if (!found) return { error: `STALE_REF: ${target} is not on the page any more (it navigated or re-rendered). Take a new chrome_snapshot and use its refs.` };
+  }
+  if (!found) found = deep(document, target);
+  if (!found) {
     const want = target.trim().toLowerCase();
     const all = document.querySelectorAll('a,button,input,textarea,select,[role],label,summary,[contenteditable]');
-    el = [...all].find((e) => (e.innerText || e.value || e.getAttribute('aria-label') || '').trim().toLowerCase() === want)
+    const el = [...all].find((e) => (e.innerText || e.value || e.getAttribute('aria-label') || '').trim().toLowerCase() === want)
       || [...all].find((e) => (e.innerText || e.getAttribute('aria-label') || '').toLowerCase().includes(want));
+    if (el) found = { el, dx: 0, dy: 0 };
   }
-  if (!el) return { error: `Nothing matches "${target}". Take a new chrome_snapshot and use its refs.` };
+  if (!found) return { error: `Nothing matches "${target}". Take a new chrome_snapshot and use its refs.` };
+  const { el, dx, dy } = found;
   el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
   const r = el.getBoundingClientRect();
-  return { x: r.left + r.width / 2, y: r.top + r.height / 2, tag: el.tagName.toLowerCase() };
+  if (r.width === 0 && r.height === 0) return { error: `${target} is hidden (zero size). Take a new chrome_snapshot.` };
+  return { x: dx + r.left + r.width / 2, y: dy + r.top + r.height / 2, tag: el.tagName.toLowerCase() };
+}
+
+/** What an element is, for safety checks: tag, type, visible text, form context. */
+export function pageDescribe(target, enter) {
+  const byRef = (root) => {
+    let hit = null;
+    try { hit = root.querySelector(`[data-dove-ref="${target}"]`) || root.querySelector(target); } catch (_) { hit = null; }
+    if (hit) return hit;
+    for (const host of root.querySelectorAll('*')) {
+      if (host.shadowRoot) { const r = byRef(host.shadowRoot); if (r) return r; }
+      if (host.tagName === 'IFRAME') {
+        let d = null; try { d = host.contentDocument; } catch (_) { d = null; }
+        if (d) { const r = byRef(d); if (r) return r; }
+      }
+    }
+    return null;
+  };
+  const el = target ? byRef(document) : document.activeElement;
+  if (!el) return null;
+  const label = el.getAttribute('aria-label') || (el.labels && el.labels.length ? [...el.labels].map((l) => l.innerText.trim()).join(' ') : '');
+  return {
+    tag: el.tagName.toLowerCase(),
+    type: (el.getAttribute('type') || '').toLowerCase(),
+    text: (el.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 120),
+    value: el.tagName === 'INPUT' && ['submit', 'button'].includes((el.type || '').toLowerCase()) ? el.value : '',
+    label,
+    title: el.getAttribute('title') || '',
+    name: el.getAttribute('name') || '',
+    id: el.id || '',
+    placeholder: el.getAttribute('placeholder') || '',
+    autocomplete: el.getAttribute('autocomplete') || '',
+    inForm: !!el.closest('form'),
+    enter: !!enter,
+    origin: location.origin,
+  };
+}
+
+/** A compact picture of the page: what it is, its landmarks, forms and counts. */
+export function pageContext() {
+  const text = (e) => (e?.innerText || e?.textContent || '').replace(/\s+/g, ' ').trim();
+  const headings = [...document.querySelectorAll('h1,h2,h3')].slice(0, 12).map((h) => `${h.tagName.toLowerCase()} ${text(h).slice(0, 90)}`);
+  const forms = [...document.forms].slice(0, 6).map((f, i) => {
+    const fields = [...f.elements].filter((e) => e.name || e.id).slice(0, 15)
+      .map((e) => `${e.tagName.toLowerCase()}${e.type ? ':' + e.type : ''} ${e.name || e.id}${e.required ? '*' : ''}`);
+    const label = f.getAttribute('aria-label');
+    return `form ${i + 1}${label ? ` "${label}"` : ''}${f.action ? ' -> ' + f.action.slice(0, 100) : ''}: ${fields.join(', ')}`;
+  });
+  const dialogs = [...document.querySelectorAll('dialog[open],[role=dialog],[aria-modal=true]')]
+    .filter((d) => d.getBoundingClientRect().height > 0).map((d) => text(d).slice(0, 120));
+  return {
+    title: document.title,
+    url: location.href,
+    lang: document.documentElement.lang || '',
+    selection: String(getSelection() || '').slice(0, 500),
+    headings,
+    forms,
+    dialogs,
+    counts: {
+      links: document.links.length,
+      buttons: document.querySelectorAll('button,[role=button],input[type=submit]').length,
+      inputs: document.querySelectorAll('input,textarea,select').length,
+      iframes: document.querySelectorAll('iframe').length,
+      tables: document.querySelectorAll('table').length,
+    },
+    scroll: { y: Math.round(scrollY), max: Math.round(document.documentElement.scrollHeight - innerHeight) },
+  };
+}
+
+/** Elements whose name or text matches `query` (optionally of one role), with refs. */
+export function pageFind(query, role, limit) {
+  const ATTR = 'data-dove-ref';
+  let next = Number(document.documentElement.getAttribute('data-dove-next') || '1');
+  const want = String(query || '').trim().toLowerCase();
+  const tags = { a: 'link', button: 'button', select: 'combobox', textarea: 'textbox', summary: 'button' };
+  const roleOf = (el) => el.getAttribute('role') || tags[el.tagName.toLowerCase()]
+    || (el.tagName === 'INPUT' ? (['button', 'submit', 'reset'].includes(el.type) ? 'button' : el.type === 'checkbox' ? 'checkbox' : el.type === 'radio' ? 'radio' : 'textbox') : null);
+  const name = (el) => (el.getAttribute('aria-label') || (el.labels && el.labels[0]?.innerText) || el.placeholder || el.innerText || el.value || el.title || '').replace(/\s+/g, ' ').trim();
+  const out = [];
+  for (const el of document.querySelectorAll('a,button,input,textarea,select,summary,[role],[contenteditable=true],[tabindex]')) {
+    const r = el.getBoundingClientRect();
+    if (r.width === 0 || r.height === 0) continue;
+    const n = name(el);
+    const ro = roleOf(el) || 'element';
+    if (role && ro !== role) continue;
+    if (want && !n.toLowerCase().includes(want)) continue;
+    let ref = el.getAttribute(ATTR);
+    if (!ref) { ref = `e${next++}`; el.setAttribute(ATTR, ref); }
+    out.push(`- ${ro} "${n.slice(0, 80)}" [ref=${ref}]`);
+    if (out.length >= (limit || 20)) break;
+  }
+  document.documentElement.setAttribute('data-dove-next', String(next));
+  return { text: out.length ? out.join('\n') : `Nothing visible matches "${query || role}".` };
+}
+
+/** Structured data: tables as rows, links, headings, form fields, or one selector's text. */
+export function pageExtract(kind, selector, limit) {
+  const max = Math.min(Number(limit) || 50, 500);
+  const clean = (s) => String(s || '').replace(/\s+/g, ' ').trim();
+  switch (kind) {
+    case 'tables':
+      return [...document.querySelectorAll('table')].slice(0, 10).map((t) => {
+        const rows = [...t.rows].map((r) => [...r.cells].map((c) => clean(c.innerText).slice(0, 200)));
+        const head = t.tHead ? rows.shift() : null;
+        return { caption: clean(t.caption?.innerText), head, rows: rows.slice(0, max) };
+      });
+    case 'links':
+      return [...document.links].map((a) => ({ text: clean(a.innerText).slice(0, 120), href: a.href })).filter((l) => l.text || l.href).slice(0, max);
+    case 'headings':
+      return [...document.querySelectorAll('h1,h2,h3,h4')].map((h) => ({ level: Number(h.tagName[1]), text: clean(h.innerText).slice(0, 200) })).slice(0, max);
+    case 'forms':
+      return [...document.forms].map((f) => ({
+        action: f.action,
+        method: (f.method || 'get').toLowerCase(),
+        fields: [...f.elements].filter((e) => e.name || e.id).map((e) => ({
+          name: e.name || e.id,
+          tag: e.tagName.toLowerCase(),
+          type: e.type || '',
+          required: !!e.required,
+          label: clean(e.labels?.[0]?.innerText),
+          value: e.type === 'password' ? (e.value ? '•••' : '') : String(e.value || '').slice(0, 200),
+        })),
+      }));
+    case 'selector': {
+      if (!selector) return { error: 'extract kind "selector" needs a selector.' };
+      let els;
+      try { els = [...document.querySelectorAll(selector)]; } catch (e) { return { error: `Bad selector: ${e.message}` }; }
+      return els.slice(0, max).map((e) => clean(e.innerText || e.textContent).slice(0, 1000));
+    }
+    default:
+      return { error: `Unknown extract kind "${kind}". Use tables, links, headings, forms or selector.` };
+  }
 }
 
 export function pageFocusClear(target, clear) {
@@ -179,31 +340,4 @@ export function pageIndicator(on, label) {
   const t = host._root?.querySelector('.t');
   if (t) t.textContent = label || 'Dove is controlling this tab';
   return true;
-}
-
-/** Ask the user, inside the page, whether Dove may act on this site. */
-export function pageAskAllow(origin) {
-  return new Promise((resolve) => {
-    const host = document.createElement('div');
-    host.style.cssText = 'all:initial;position:fixed;inset:0;z-index:2147483647;';
-    const root = host.attachShadow({ mode: 'closed' });
-    const dark = matchMedia('(prefers-color-scheme: dark)').matches;
-    const fg = dark ? '#f5f5f5' : '#111', bg = dark ? 'rgba(24,24,24,.9)' : 'rgba(255,255,255,.92)';
-    root.innerHTML = `<style>
-      .card{position:fixed;right:20px;top:20px;width:320px;font:13px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:${fg};
-        background:${bg};backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border-radius:14px;padding:16px;
-        border:1px solid ${dark ? 'rgba(255,255,255,.12)' : 'rgba(0,0,0,.1)'};box-shadow:0 12px 40px rgba(0,0,0,.18)}
-      h1{all:unset;display:block;font-weight:600;font-size:13px;margin-bottom:4px}
-      p{margin:0 0 14px;opacity:.7} .row{display:flex;gap:8px;justify-content:flex-end}
-      button{all:unset;cursor:pointer;padding:6px 12px;border-radius:8px;border:1px solid ${dark ? 'rgba(255,255,255,.18)' : 'rgba(0,0,0,.14)'}}
-      .primary{background:${fg};color:${dark ? '#111' : '#fff'};border-color:transparent}
-    </style><div class="card"><h1>Allow Dove on this site?</h1><p></p>
-      <div class="row"><button class="deny">Not now</button><button class="primary allow">Allow</button></div></div>`;
-    root.querySelector('p').textContent = `An agent in Dove wants to read and act on ${origin} using your session here.`;
-    const done = (v) => { host.remove(); resolve(v); };
-    root.querySelector('.allow').addEventListener('click', () => done(true));
-    root.querySelector('.deny').addEventListener('click', () => done(false));
-    setTimeout(() => done(false), 120000);
-    document.documentElement.appendChild(host);
-  });
 }

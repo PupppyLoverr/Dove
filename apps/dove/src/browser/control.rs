@@ -9,8 +9,12 @@
 //! extension (apps/extension) over a second loopback listener that speaks
 //! WebSocket. That port and its pairing token persist in
 //! `~/.dove/extension.json`, so the extension pairs once.
+//!
+//! Who may connect: only a `chrome-extension://` origin (web pages can open
+//! loopback sockets too) that presents the pairing token, and after the
+//! first pairing only that same extension. Settings › Integrations › New
+//! pairing code rotates the token and forgets the paired extension.
 
-use std::hash::{BuildHasher, Hasher};
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
@@ -19,7 +23,7 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt as _, AsyncWriteExt, BufReader};
 
 use super::agent::Outcome;
 
-pub use extension::{connected_browser, connection_watch, pairing_code};
+pub use extension::{connected_browser, connection_watch, new_pairing_code, pairing_code};
 
 pub struct Request {
     /// The agent's working directory: which thread is asking.
@@ -42,15 +46,44 @@ pub fn take_requests() -> Option<flume::Receiver<Request>> {
     REQUESTS.get()?.lock().ok()?.take()
 }
 
+/// 64 hex characters (244 random bits) from the operating system's CSPRNG.
 fn token() -> String {
-    let mut out = String::new();
-    for _ in 0..4 {
-        let mut h = std::collections::hash_map::RandomState::new().build_hasher();
-        h.write_u128(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos()));
-        h.write_u32(std::process::id());
-        out.push_str(&format!("{:016x}", h.finish()));
+    format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple())
+}
+
+/// A short label for the thread asking ("dove" for `C:/src/dove`), shown in
+/// the extension's activity log so the user sees which agent acted.
+fn thread_label(cwd: Option<&str>) -> Option<String> {
+    let name = std::path::Path::new(cwd?).file_name()?.to_string_lossy().to_string();
+    (!name.is_empty()).then(|| name.chars().take(60).collect())
+}
+
+/// Files an agent may hand to `chrome_upload`: existing files inside its
+/// own working folder. Anything else (a path outside the project, a folder,
+/// a missing file) is refused before the browser sees it.
+pub fn check_upload_paths(cwd: Option<&std::path::Path>, paths: &[String]) -> Result<Vec<String>, String> {
+    let root = cwd
+        .and_then(|c| c.canonicalize().ok())
+        .ok_or("chrome_upload needs the thread's working folder; upload files from inside the project.")?;
+    if paths.is_empty() || paths.len() > 10 {
+        return Err("chrome_upload takes 1 to 10 file paths.".into());
     }
-    out
+    paths
+        .iter()
+        .map(|p| {
+            let path = std::path::Path::new(p);
+            let full = if path.is_absolute() { path.to_path_buf() } else { root.join(path) };
+            let full = full.canonicalize().map_err(|_| format!("{p} does not exist."))?;
+            if !full.starts_with(&root) {
+                return Err(format!("{p} is outside this thread's folder; Dove only uploads project files."));
+            }
+            if !full.is_file() {
+                return Err(format!("{p} is not a file."));
+            }
+            // The browser wants a plain path (no \\?\ prefix on Windows).
+            Ok(full.display().to_string().trim_start_matches(r"\\?\").to_string())
+        })
+        .collect()
 }
 
 /// Bind 127.0.0.1 on a free port and start serving on `rt`.
@@ -79,7 +112,27 @@ pub fn start(rt: &tokio::runtime::Handle) -> Option<Endpoint> {
                             && req.get("tool").and_then(Value::as_str).is_some_and(|t| t.starts_with("chrome_")) =>
                     {
                         let tool = req.get("tool").and_then(Value::as_str).unwrap_or_default();
-                        extension::call(&tool["chrome_".len()..], req.get("args").cloned().unwrap_or(json!({}))).await
+                        let cwd = req.get("cwd").and_then(Value::as_str).filter(|s| !s.is_empty());
+                        let mut args = req.get("args").cloned().filter(Value::is_object).unwrap_or(json!({}));
+                        if let Some(label) = thread_label(cwd) {
+                            args["context"] = json!(label);
+                        }
+                        let checked = if tool == "chrome_upload" {
+                            let paths: Vec<String> = args
+                                .get("paths")
+                                .and_then(Value::as_array)
+                                .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
+                                .unwrap_or_default();
+                            check_upload_paths(cwd.map(std::path::Path::new), &paths).map(|ok| {
+                                args["paths"] = json!(ok);
+                            })
+                        } else {
+                            Ok(())
+                        };
+                        match checked {
+                            Ok(()) => extension::call(&tool["chrome_".len()..], args).await,
+                            Err(e) => Outcome::err(e),
+                        }
                     }
                     Ok(req) if req.get("token").and_then(Value::as_str) == Some(want.as_str()) => {
                         let (rtx, rrx) = tokio::sync::oneshot::channel();
@@ -139,7 +192,12 @@ mod extension {
         conn: Option<Conn>,
         pending: HashMap<u64, oneshot::Sender<Value>>,
         pairing: Option<(u16, String)>,
+        /// The extension origin that paired first; others are refused.
+        paired_origin: Option<String>,
     }
+
+    /// Largest message accepted from the extension (a screenshot is a few MB).
+    const MAX_MESSAGE: u64 = 16 * 1024 * 1024;
 
     static STATE: OnceLock<Mutex<State>> = OnceLock::new();
     static NEXT: AtomicU64 = AtomicU64::new(1);
@@ -177,9 +235,50 @@ mod extension {
         dove_core::store::default_root().join("extension.json")
     }
 
+    fn save(port: u16, token: &str, origin: Option<&str>) {
+        let path = config_path();
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let mut body = json!({"port": port, "token": token, "protocol": 1});
+        if let Some(o) = origin {
+            body["origin"] = json!(o);
+        }
+        if std::fs::write(&path, body.to_string()).is_ok() {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt as _;
+                let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+            }
+        }
+    }
+
+    /// Settings › Integrations › New pairing code: a fresh token, the paired
+    /// extension forgotten, and the current connection dropped.
+    pub fn new_pairing_code() -> Option<String> {
+        let mut st = state();
+        let (port, _) = st.pairing.clone()?;
+        let token = super::token();
+        st.pairing = Some((port, token.clone()));
+        st.paired_origin = None;
+        if let Some(conn) = st.conn.take() {
+            drop(conn.tx);
+        }
+        st.pending.clear();
+        drop(st);
+        save(port, &token, None);
+        connection_changed();
+        pairing_code()
+    }
+
     fn bind() -> Option<(std::net::TcpListener, String)> {
         let saved: Value =
             std::fs::read_to_string(config_path()).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+        state().paired_origin = saved
+            .get("origin")
+            .and_then(Value::as_str)
+            .filter(|o| o.starts_with("chrome-extension://"))
+            .map(str::to_string);
         let token = saved
             .get("token")
             .and_then(Value::as_str)
@@ -191,18 +290,8 @@ mod extension {
             .and_then(|p| std::net::TcpListener::bind(("127.0.0.1", p)).ok())
             .or_else(|| std::net::TcpListener::bind(("127.0.0.1", 0)).ok())?;
         let port = listener.local_addr().ok()?.port();
-        let path = config_path();
-        if let Some(dir) = path.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        let body = json!({"port": port, "token": token, "protocol": 1}).to_string();
-        if std::fs::write(&path, body).is_ok() {
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt as _;
-                let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
-            }
-        }
+        let origin = state().paired_origin.clone();
+        save(port, &token, origin.as_deref());
         Some((listener, token))
     }
 
@@ -330,13 +419,26 @@ mod extension {
             let Ok(msg) = serde_json::from_str::<Value>(&text) else { continue };
             match msg.get("type").and_then(Value::as_str) {
                 Some("hello") if !paired => {
-                    if msg.get("token").and_then(Value::as_str) != Some(token) {
+                    let current = state().pairing.as_ref().map(|(_, t)| t.clone()).unwrap_or_else(|| token.to_string());
+                    let pinned = state().paired_origin.clone();
+                    if pinned.as_deref().is_some_and(|p| p != origin) {
+                        let _ = tx.send(json!({"type": "rejected", "reason": "This Dove is paired with a different browser extension. To switch, choose New pairing code in Dove → Settings → Integrations."}).to_string());
+                        let _ = ctl_tx.send((8, Vec::new()));
+                        break;
+                    }
+                    if msg.get("token").and_then(Value::as_str) != Some(current.as_str()) {
                         let _ = tx.send(json!({"type": "rejected", "reason": "Pairing code does not match this Dove. Copy it again from Settings → Integrations."}).to_string());
                         let _ = ctl_tx.send((8, Vec::new()));
                         break;
                     }
                     paired = true;
                     let browser = msg.get("agent").and_then(Value::as_str).unwrap_or("Chromium").to_string();
+                    if pinned.is_none() {
+                        state().paired_origin = Some(origin.clone());
+                        if let Some((port, t)) = state().pairing.clone() {
+                            save(port, &t, Some(&origin));
+                        }
+                    }
                     let mut st = state();
                     // A newer connection (another profile, a reload) replaces the old one.
                     st.conn = Some(Conn { generation, tx: tx.clone(), browser });
@@ -382,7 +484,7 @@ mod extension {
         } else if len == 127 {
             len = read.read_u64().await?;
         }
-        if len > 64 * 1024 * 1024 {
+        if len > MAX_MESSAGE {
             return Ok(None);
         }
         let mut mask = [0u8; 4];
@@ -476,6 +578,39 @@ mod extension {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn pairing_tokens_are_long_random_and_alphanumeric() {
+        let (a, b) = (super::token(), super::token());
+        assert_eq!(a.len(), 64);
+        assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn uploads_are_limited_to_files_in_the_thread_folder() {
+        let dir = std::env::temp_dir().join(format!("dove-upload-check-{}", std::process::id()));
+        let project = dir.join("project");
+        std::fs::create_dir_all(project.join("docs")).unwrap();
+        std::fs::write(project.join("docs/cv.pdf"), b"pdf").unwrap();
+        std::fs::write(dir.join("secret.txt"), b"no").unwrap();
+        let ok = super::check_upload_paths(Some(&project), &["docs/cv.pdf".into()]).unwrap();
+        assert!(ok[0].ends_with("cv.pdf") && !ok[0].starts_with(r"\\?\"), "{ok:?}");
+        for bad in
+            [dir.join("secret.txt").display().to_string(), "../secret.txt".into(), "docs".into(), "missing.pdf".into()]
+        {
+            assert!(super::check_upload_paths(Some(&project), std::slice::from_ref(&bad)).is_err(), "{bad}");
+        }
+        assert!(super::check_upload_paths(None, &["docs/cv.pdf".into()]).is_err());
+        assert!(super::check_upload_paths(Some(&project), &[]).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn thread_labels_are_the_folder_name() {
+        assert_eq!(super::thread_label(Some("C:/src/dove")).as_deref(), Some("dove"));
+        assert_eq!(super::thread_label(None), None);
+    }
+
     #[test]
     fn websocket_accept_matches_rfc6455() {
         // The example handshake from RFC 6455 §1.3.

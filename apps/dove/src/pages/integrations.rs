@@ -860,7 +860,7 @@ impl Render for IntegrationsView {
             .child(line(
                 "Pairing code",
                 if browser.is_some() {
-                    "Paired. Copy it again only to pair another browser"
+                    "Paired. To switch browsers or extensions, make a new code"
                 } else {
                     "Open the Dove side panel in Chrome and paste this once"
                 },
@@ -905,6 +905,19 @@ impl Render for IntegrationsView {
                                     });
                                 })
                                 .detach();
+                                cx.notify();
+                            })),
+                        )
+                        .child(
+                            small_icon(
+                                "int-new-pairing",
+                                icons::REFRESH,
+                                "New pairing code (unpairs the current browser)",
+                                &t,
+                            )
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                crate::browser::control::new_pairing_code();
+                                this.copied = false;
                                 cx.notify();
                             })),
                         )

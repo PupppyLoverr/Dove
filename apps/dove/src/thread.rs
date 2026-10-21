@@ -133,6 +133,8 @@ impl ThreadView {
                 TaskViewEvent::AiTitle(t) => TaskViewEventKind::AiTitle(t.clone()),
                 TaskViewEvent::DriveBrowser(d) => TaskViewEventKind::DriveBrowser(d.clone()),
                 TaskViewEvent::PullRequest(url) => TaskViewEventKind::PullRequest(url.clone()),
+                // Voice Mode subscribes to the chat directly.
+                TaskViewEvent::VoiceText(_) | TaskViewEvent::VoiceTurnEnded { .. } => return,
                 TaskViewEvent::SwitchToChat => {
                     this.request(ViewMode::Chat, window, cx);
                     return;

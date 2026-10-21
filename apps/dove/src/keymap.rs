@@ -38,6 +38,7 @@ pub fn shortcuts() -> Vec<Shortcut> {
         sc!("settings", "Settings", "secondary-,", OpenSettings),
         sc!("add_project", "Add project", "secondary-o", AddProject),
         sc!("focus_composer", "Focus the composer", "secondary-l", FocusComposer),
+        sc!("voice_call", "Start or end a voice call", "secondary-shift-space", ToggleVoiceCall),
         sc!("quit", "Quit", "secondary-q", Quit),
     ]
 }
@@ -96,6 +97,7 @@ pub fn pretty(key: &str) -> String {
             "left" => "←".into(),
             "right" => "→".into(),
             "tab" => "Tab".into(),
+            "space" => "Space".into(),
             "\\" => "\\".into(),
             other => other.to_uppercase(),
         })
@@ -143,5 +145,6 @@ mod tests {
         assert_eq!(ids.len(), all.len());
         assert!(pretty("secondary-shift-k").ends_with("Shift K"));
         assert_eq!(pretty("alt-left").split(' ').next_back(), Some("←"));
+        assert!(pretty("secondary-shift-space").ends_with("Shift Space"));
     }
 }

@@ -272,6 +272,29 @@ const INDEX: &[Entry] = &[
     ),
     e(Section::Voice, "voice_model", "Dictation model", "voice dictation parakeet nvidia model download speech"),
     e(Section::Voice, "voice_device", "Microphone", "microphone input device audio voice"),
+    e(
+        Section::Voice,
+        "voice_call_mode",
+        "Voice Mode",
+        "voice mode call hands free talk conversation listening push to talk",
+    ),
+    e(Section::Voice, "voice_name", "Voice", "voice speech tts speaker system voice"),
+    e(Section::Voice, "voice_rate", "Speaking rate", "voice speed rate faster slower"),
+    e(
+        Section::Voice,
+        "voice_echo_cancel",
+        "Echo cancellation",
+        "echo cancellation speakers headphones barge in interrupt",
+    ),
+    e(
+        Section::Voice,
+        "voice_announce",
+        "Announce thread updates",
+        "voice announce notifications finished failed approval",
+    ),
+    e(Section::Voice, "voice_call_models", "Voice Mode models", "silero vad smart turn detection model download"),
+    e(Section::Voice, "voice_cloud", "Cloud speech recognition", "cloud openai whisper groq speech api upload audio"),
+    e(Section::Voice, "voice_router_url", "Command router", "router llama llm intent model voice commands"),
     e(Section::Shortcuts, "shortcuts", "Keyboard shortcuts", "keyboard shortcuts keybindings hotkeys rebind keys"),
     e(Section::Agents, "agents", "Agents", "agents harness claude codex cursor gemini opencode cli binary enable hide"),
     e(Section::Team, "team_roster", "Teammates", "team teammates personas roster specialists"),
@@ -391,6 +414,13 @@ pub struct SettingsPage {
     sel_scrollback: SelectState,
     sel_home_input: SelectState,
     sel_mic: SelectState,
+    sel_voice: SelectState,
+    /// System voices (loaded off-thread when Voice opens).
+    voices: Vec<String>,
+    /// Voice Mode model downloads: in flight (None) or failed (Some).
+    voice_dl: HashMap<&'static str, Option<String>>,
+    voice_cloud_url: Entity<InputState>,
+    voice_router_url: Entity<InputState>,
     width_slider: SliderState,
     save_gen: HashMap<&'static str, u64>,
     _subs: Vec<Subscription>,
@@ -429,8 +459,22 @@ impl SettingsPage {
             s.set_value(clone_value, window, cx);
             s
         });
+        let text_field = |placeholder: &'static str, key: &str, window: &mut Window, cx: &mut Context<Self>| {
+            let value = engine.store.setting(key).unwrap_or_default();
+            let style = style.clone();
+            cx.new(|cx| {
+                let mut s = InputState::new(window, cx).placeholder(placeholder);
+                s.set_editor_style(style);
+                s.set_value(value, window, cx);
+                s
+            })
+        };
+        let voice_cloud_url = text_field("https://api.openai.com/v1", "voice_cloud_url", window, cx);
+        let voice_router_url = text_field("http://127.0.0.1:8080/v1 (off)", "voice_router_url", window, cx);
         let mut subs = vec![search_sub];
-        for (input, key) in [(&clone_dir, "clone_dir")] {
+        for (input, key) in
+            [(&clone_dir, "clone_dir"), (&voice_cloud_url, "voice_cloud_url"), (&voice_router_url, "voice_router_url")]
+        {
             subs.push(cx.subscribe(input, move |this, s, ev: &InputEvent, cx| match ev {
                 InputEvent::Change => {
                     let value = s.read(cx).value().trim().to_string();
@@ -495,6 +539,11 @@ impl SettingsPage {
             sel_scrollback: SelectState::default(),
             sel_home_input: SelectState::default(),
             sel_mic: SelectState::default(),
+            sel_voice: SelectState::default(),
+            voices: Vec::new(),
+            voice_dl: HashMap::new(),
+            voice_cloud_url,
+            voice_router_url,
             width_slider: SliderState::default(),
             save_gen: HashMap::new(),
             _subs: subs,
@@ -536,11 +585,15 @@ impl SettingsPage {
         let _ = self.engine.store.set_setting("settings_section", s.id());
         match s {
             Section::Voice if self.devices.is_empty() => {
-                let load = cx.background_spawn(async move { crate::voice::input_devices() });
+                let load = cx.background_spawn(async move {
+                    use dove_voice::engines::TextToSpeech as _;
+                    (crate::voice::input_devices(), dove_voice::tts::System::new().voices())
+                });
                 cx.spawn(async move |this, cx| {
-                    let devices = load.await;
+                    let (devices, voices) = load.await;
                     let _ = this.update(cx, |p, cx| {
                         p.devices = devices;
+                        p.voices = voices;
                         cx.notify();
                     });
                 })
@@ -1913,7 +1966,314 @@ impl SettingsPage {
                     "Hold the mic in the composer or a terminal to talk, or click it to toggle. Text is inserted, never sent.",
                 )),
             );
-        page::section(t, "Dictation", card).into_any_element()
+        div()
+            .flex()
+            .flex_col()
+            .child(page::section(t, "Dictation", card))
+            .child(self.voice_mode(t, cx))
+            .into_any_element()
+    }
+
+    /// Settings › Voice › Voice Mode: the hands-free call.
+    fn voice_mode(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let this = cx.entity().downgrade();
+        let push = self.get("voice_mode").as_deref() == Some("push");
+        let listening = ctl::segmented(
+            t,
+            "set-voice-mode",
+            vec![ctl::Segment::new("Always listening"), ctl::Segment::new("Push to talk")],
+            usize::from(push),
+            {
+                let this = this.clone();
+                move |i, _, cx| {
+                    let _ = this.update(cx, |p, cx| p.set("voice_mode", if i == 1 { "push" } else { "always" }, cx));
+                }
+            },
+        );
+        let rate: f32 = self.get("voice_rate").and_then(|r| r.parse().ok()).unwrap_or(1.0);
+        let rates = ctl::segmented(
+            t,
+            "set-voice-rate",
+            vec![ctl::Segment::new("Slower"), ctl::Segment::new("Normal"), ctl::Segment::new("Faster")],
+            if rate < 0.95 {
+                0
+            } else if rate > 1.1 {
+                2
+            } else {
+                1
+            },
+            move |i, _, cx| {
+                let _ = this.update(cx, |p, cx| p.set("voice_rate", ["0.85", "1.0", "1.25"][i.min(2)], cx));
+            },
+        );
+        let current = self.get("voice_name").unwrap_or_default();
+        let mut names: Vec<SelectOption> = vec![SelectOption::new("System default")];
+        names.extend(self.voices.iter().map(|v| SelectOption::new(v.clone())));
+        let selected = self.voices.iter().position(|v| *v == current).map(|i| i + 1).unwrap_or(0);
+        let voices = self.voices.clone();
+        let voice = ctl::select::<Self>("set-voice-name", "Voice", |s| &mut s.sel_voice)
+            .options(names, selected)
+            .width(220.0)
+            .menu_width(300.0)
+            .on_select(move |this, i, _, cx| {
+                let v = if i == 0 { String::new() } else { voices.get(i - 1).cloned().unwrap_or_default() };
+                this.set("voice_name", &v, cx);
+            })
+            .render(t, &self.sel_voice, cx);
+        let echo = self.flag("voice_echo_cancel", true);
+        let announce = self.flag("voice_announce", true);
+        let cloud = self.flag("voice_cloud", false);
+        let cloud_tts = self.flag("voice_cloud_tts", false);
+        let shortcut = crate::keymap::shortcuts()
+            .into_iter()
+            .find(|s| s.id == "voice_call")
+            .map(|s| crate::keymap::pretty(&crate::keymap::binding(&self.engine.store, &s)))
+            .unwrap_or_default();
+        let call = page::card(t)
+            .child(self.srow(
+                t,
+                true,
+                "voice_call_mode",
+                "Listening",
+                format!(
+                    "Start a call with the phone button beside the mic, or {shortcut}. Push to talk: hold the orb (or Space) to speak."
+                ),
+                listening,
+            ))
+            .child(self.srow(t, false, "voice_name", "Voice", "Your operating system's voices. No download.", voice))
+            .child(self.srow(t, false, "voice_rate", "Speaking rate", "Or say \"talk faster\" during a call.", rates))
+            .child(self.srow(
+                t,
+                false,
+                "voice_echo_cancel",
+                "Echo cancellation",
+                "Lets you use speakers instead of headphones, and talk over Dove to interrupt it.",
+                ctl::on_toggle(ctl::toggle(t, "set-voice-echo", echo), cx, move |this, _, cx| {
+                    this.set_flag("voice_echo_cancel", !echo, cx)
+                }),
+            ))
+            .child(self.srow(
+                t,
+                false,
+                "voice_announce",
+                "Announce thread updates",
+                "Say when a thread finishes, fails or needs your approval.",
+                ctl::on_toggle(ctl::toggle(t, "set-voice-announce", announce), cx, move |this, _, cx| {
+                    this.set_flag("voice_announce", !announce, cx)
+                }),
+            ))
+            .child(
+                page::row(t, false).child(page::row_text(
+                    t,
+                    "What you can say",
+                    "\"What's happening?\", \"Stop\", \"Approve\" or \"Deny\", \"Talk to the tests thread\", \"Tell Codex to also run clippy\", \"Start a Claude task on the login page in a new worktree\", \"Take me back\", \"Show the diff\", \"End call\". Anything else goes to the thread you're talking to. Voice never approves deletions, force pushes or work outside the thread's folder: those need your click.",
+                )),
+            );
+        let models = page::card(t)
+            .child(self.voice_stt_row(t, cx))
+            .child(self.voice_model_row(t, &dove_voice::models::SILERO, cx))
+            .child(self.voice_model_row(t, &dove_voice::models::SMART_TURN, cx));
+        let cloud_card = page::card(t)
+            .child(self.srow(
+                t,
+                true,
+                "voice_cloud",
+                "Cloud speech recognition",
+                if cloud {
+                    "On: your spoken audio is uploaded to the endpoint below for transcription."
+                } else {
+                    "Off: audio never leaves this computer."
+                },
+                ctl::on_toggle(ctl::toggle(t, "set-voice-cloud", cloud), cx, move |this, _, cx| {
+                    this.set_flag("voice_cloud", !cloud, cx)
+                }),
+            ))
+            .child(self.srow(
+                t,
+                false,
+                "voice_cloud_tts",
+                "Cloud voice",
+                if cloud_tts {
+                    "On: what Dove says (including agents' replies) is uploaded to the endpoint for speech."
+                } else {
+                    "Off: Dove speaks with your system's voice."
+                },
+                ctl::on_toggle(ctl::toggle(t, "set-voice-cloud-tts", cloud_tts), cx, move |this, _, cx| {
+                    this.set_flag("voice_cloud_tts", !cloud_tts, cx)
+                }),
+            ))
+            .child(self.srow(
+                t,
+                false,
+                "voice_cloud_url",
+                "Speech endpoint",
+                "An OpenAI-compatible /v1 URL (OpenAI, Groq, a local whisper server). The key is read from DOVE_VOICE_API_KEY.",
+                div().w(px(260.0)).child(gpui_base::input::Input::new(&self.voice_cloud_url)),
+            ))
+            .child(self.srow(
+                t,
+                false,
+                "voice_router_url",
+                "Command router",
+                "Optional: an OpenAI-compatible /v1 URL (a local llama.cpp server works) that routes requests Dove's rules don't recognise. The request and thread titles are sent to it.",
+                div().w(px(260.0)).child(gpui_base::input::Input::new(&self.voice_router_url)),
+            ));
+        div()
+            .flex()
+            .flex_col()
+            .child(page::section(t, "Voice Mode", call))
+            .child(page::section(t, "Voice Mode models", models))
+            .child(page::section(t, "Cloud (optional)", cloud_card))
+            .into_any_element()
+    }
+
+    /// Which local recognizer a call uses, and the Moonshine download.
+    fn voice_stt_row(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        use dove_voice::models::MoonshineSize;
+        let root = self.engine.store.root().to_path_buf();
+        let moon = dove_voice::stt::Moonshine::installed(&root, MoonshineSize::Base);
+        let parakeet = VoiceModel::global(cx).is_some_and(|m| m.read(cx).state == InstallState::Installed);
+        let choice = self.get("voice_stt").unwrap_or_default();
+        let use_parakeet = choice == "parakeet" && parakeet;
+        let state = self.voice_dl.get("moonshine").cloned();
+        let size_mb: u64 = MoonshineSize::Base.files().iter().map(|m| m.size).sum::<u64>() / 1_000_000;
+        let detail = format!(
+            "Moonshine base: fast, about 160 MB in use, {size_mb} MB download, MIT. Parakeet (the dictation model above): more accurate, about 700 MB in use, CC-BY-4.0.{}",
+            match &state {
+                Some(Some(e)) => format!(" {e}"),
+                _ => String::new(),
+            }
+        );
+        let this = cx.entity().downgrade();
+        let control: AnyElement = if matches!(state, Some(None)) {
+            page::badge(t, "Downloading…").into_any_element()
+        } else if !moon {
+            ctl::button_sm(t, "voice-dl-moonshine", format!("Download Moonshine ({size_mb} MB)"), Tone::Solid)
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.voice_dl.insert("moonshine", None);
+                    let root = this.engine.store.root().to_path_buf();
+                    let work = cx.background_spawn(async move {
+                        for m in MoonshineSize::Base.files() {
+                            if !dove_voice::models::installed(&root, &m) {
+                                dove_voice::models::download(
+                                    &root,
+                                    &m,
+                                    &std::sync::atomic::AtomicBool::new(false),
+                                    |_| {},
+                                )
+                                .map_err(|e| format!("{e:#}"))?;
+                            }
+                        }
+                        Ok::<(), String>(())
+                    });
+                    cx.spawn(async move |this, cx| {
+                        let result = work.await;
+                        let _ = this.update(cx, |p, cx| {
+                            match result {
+                                Ok(()) => {
+                                    p.voice_dl.remove("moonshine");
+                                }
+                                Err(e) => {
+                                    p.voice_dl.insert("moonshine", Some(e));
+                                }
+                            }
+                            cx.notify();
+                        });
+                    })
+                    .detach();
+                    cx.notify();
+                }))
+                .into_any_element()
+        } else {
+            ctl::segmented(
+                t,
+                "set-voice-stt",
+                vec![ctl::Segment::new("Moonshine (fast)"), ctl::Segment::new("Parakeet (accurate)")],
+                usize::from(use_parakeet),
+                move |i, _, cx| {
+                    let _ = this
+                        .update(cx, |p, cx| p.set("voice_stt", if i == 1 { "parakeet" } else { "moonshine-base" }, cx));
+                },
+            )
+        };
+        self.srow(t, true, "voice_call_stt", "Speech recognition", detail, control)
+    }
+
+    /// One downloadable Voice Mode model: what it does, size, licence.
+    fn voice_model_row(
+        &self,
+        t: &Theme,
+        m: &'static dove_voice::models::ModelFile,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let root = self.engine.store.root().to_path_buf();
+        let installed = dove_voice::models::installed(&root, m);
+        let state = self.voice_dl.get(m.id).cloned();
+        let size = format!("{:.1} MB", m.size as f64 / 1e6);
+        let detail = format!(
+            "{}. {} · {}{}",
+            m.purpose,
+            size,
+            m.licence,
+            match &state {
+                Some(Some(e)) => format!(" · {e}"),
+                _ => String::new(),
+            }
+        );
+        let control = match (installed, &state) {
+            (_, Some(None)) => page::badge(t, "Downloading…").into_any_element(),
+            (true, _) => div()
+                .flex()
+                .items_center()
+                .gap(px(8.0))
+                .child(page::badge_tone("Installed", t.success))
+                .child(
+                    ctl::button_sm(t, SharedString::from(format!("voice-rm-{}", m.id)), "Remove", Tone::Quiet)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            dove_voice::pipeline::unload();
+                            dove_voice::models::remove(this.engine.store.root(), m);
+                            cx.notify();
+                        })),
+                )
+                .into_any_element(),
+            (false, _) => ctl::button_sm(
+                t,
+                SharedString::from(format!("voice-dl-{}", m.id)),
+                format!("Download ({size})"),
+                Tone::Solid,
+            )
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.voice_dl.insert(m.id, None);
+                let root = this.engine.store.root().to_path_buf();
+                let work = cx.background_spawn(async move {
+                    dove_voice::models::download(&root, m, &std::sync::atomic::AtomicBool::new(false), |_| {})
+                        .map_err(|e| format!("{e:#}"))
+                });
+                cx.spawn(async move |this, cx| {
+                    let result = work.await;
+                    let _ = this.update(cx, |p, cx| {
+                        match result {
+                            Ok(()) => {
+                                p.voice_dl.remove(m.id);
+                            }
+                            Err(e) => {
+                                p.voice_dl.insert(m.id, Some(e));
+                            }
+                        }
+                        cx.notify();
+                    });
+                })
+                .detach();
+                cx.notify();
+            }))
+            .into_any_element(),
+        };
+        let name = match m.id {
+            "silero-vad" => "Voice activity (Silero VAD)",
+            "smart-turn" => "Turn detection (Smart Turn v3.2)",
+            other => other,
+        };
+        self.srow(t, false, "voice_call_models", name, detail, control)
     }
 
     fn shortcuts_action(&self, t: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -1944,7 +2304,7 @@ impl SettingsPage {
                 &["new_thread", "close_tab", "next_tab", "prev_tab", "rename", "focus_composer", "toggle_terminal"],
             ),
             ("Panels", &["toggle_sidebar", "toggle_panel"]),
-            ("App", &["add_project", "quit"]),
+            ("App", &["add_project", "voice_call", "quit"]),
         ];
         let mut out = div()
             .flex()

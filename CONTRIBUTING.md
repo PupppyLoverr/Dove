@@ -35,6 +35,19 @@ cargo test --workspace --exclude dove
 CARGO_INCREMENTAL=0 cargo build -p dove --release
 ```
 
+Voice Mode and the browser extension have their own checks:
+
+```sh
+cargo test -p dove-voice                                   # grammar, intents, safety, conductor, DSP, listener
+cargo run -p dove-voice --release --example voice_bench -- --root /tmp/dove-voice-models
+DOVE_VOICE_MODELS=/tmp/dove-voice-models cargo test -p dove-voice --release --test call -- --ignored
+cd apps/extension && node --test "test/*.test.mjs" && node test/e2e/run.mjs
+```
+
+`voice_bench` downloads the pinned Voice Mode models (about 80 MB) into `--root`, plays a few short clips on the default speaker, and prints every measurement with its target (add `--parakeet <dir>` to compare Parakeet, `--live-mic` to include the microphone). `tests/call.rs` runs the whole call pipeline on its real threads with pushed audio. The extension's `e2e` suite needs Chrome, Edge or Brave installed and runs them headless.
+
+Harness tests copy bundled skills into the real `~/.claude/skills`; run them with a scratch `USERPROFILE`/`HOME` (keep `CARGO_HOME` and `RUSTUP_HOME` pointing at your real ones).
+
 The release binary has a size gate of 100 MB. Today `Dove.app` is 91 MB: `dove` is 80 MB and `dove-mesh-host` is 9.3 MB. If your change adds a dependency, say why in the PR and check the size.
 
 For UI changes, launch the build and look at it in both light and dark themes. Attach a screenshot or short recording to the PR.
@@ -48,6 +61,8 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the full map. Common starting points:
 | Support a new agent CLI | `crates/dove-harness` (`acp.rs` for ACP agents, `detect.rs`, `models.rs`) and `HarnessKind` in `crates/dove-proto` |
 | Change how a transcript renders | `apps/dove/src/transcript.rs`, `markdown.rs`, `widget.rs` |
 | Add a tool every agent can call | `apps/dove/src/mcp_browser.rs` and the app-side handler |
+| Change what Voice Mode understands or does | `crates/dove-voice` (`fastpath.rs`, `rules.rs`, `intent.rs`, `conductor.rs`) and `apps/dove/src/voice_call.rs` |
+| Change the browser extension | `apps/extension` (`lib/policy.js` for rules, `page.js` for page code, `test/`) |
 | Change worktree or diff behaviour | `crates/dove-git` |
 | Add a stored field | `crates/dove-store` (add a migration, never edit the base schema in place) |
 | Change the website | `apps/landing` (plain HTML/CSS/JS) |

@@ -144,6 +144,29 @@ Agent brand marks (Claude, OpenAI, Cursor, Devin, Grok, OpenCode, Pi, Hermes,
 Antigravity) identify the respective products and remain the property of their
 owners.
 
+## Voice Mode models (downloaded on demand, not shipped)
+
+Settings › Voice downloads these from Hugging Face at pinned revisions and
+checks each file's SHA-256 before use. They are not part of the Dove binary.
+
+- **Moonshine** base and tiny (English), Useful Sensors, MIT. ONNX exports by
+  onnx-community: `onnx-community/moonshine-base-ONNX` at `b1e9b6a`,
+  `onnx-community/moonshine-tiny-ONNX` at `a6da124`.
+- **Silero VAD** v5, Silero Team, MIT. ONNX export `onnx-community/silero-vad`
+  at `e71cae9`.
+- **Smart Turn v3.2** (CPU build), Daily / Pipecat, BSD-2-Clause.
+  `pipecat-ai/smart-turn-v3` at `f766f81`. Dove computes the Whisper log-mel
+  features it expects (`crates/dove-voice/src/turn.rs`), following
+  `WhisperFeatureExtractor` from Hugging Face Transformers (Apache-2.0).
+- **NVIDIA Parakeet TDT 0.6B v3**, NVIDIA, CC-BY-4.0, as an ONNX export by
+  istupakov (`istupakov/parakeet-tdt-0.6b-v3-onnx`), shared with dictation.
+
+Spoken output uses the operating system's own voices (Windows speech
+synthesis, macOS `say`, Linux `espeak-ng`); Dove does not ship voices.
+
+The phone glyph (`apps/dove/assets/icons/phone.svg`) is drawn by Dove in the
+Solar style.
+
 ## Geist and Geist Mono (SIL OFL 1.1)
 
 Copyright Vercel. See `apps/dove/assets/fonts/Geist-OFL.txt`.

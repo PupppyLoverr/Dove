@@ -1425,7 +1425,32 @@ impl Composer {
                 );
             self.popover(Anchor::BottomLeft, ui::menu_card(t, rows), cx)
         });
-        div().relative().child(mic).children(menu).into_any_element()
+        div()
+            .relative()
+            .flex()
+            .items_center()
+            .gap(px(2.0))
+            .child(self.call_button(size, t, cx))
+            .child(mic)
+            .children(menu)
+            .into_any_element()
+    }
+
+    /// Start (or end) a Voice Mode call with every thread.
+    fn call_button(&self, size: f32, t: &Theme, _cx: &mut Context<Self>) -> AnyElement {
+        ui::round_button_sized(
+            "composer-call",
+            "Voice call: talk with your agents hands-free (Ctrl Shift Space)",
+            size,
+            t,
+        )
+        .child(
+            icon(icons::PHONE)
+                .size(px(if size < ui::ROUND_BUTTON { 14.0 } else { ui::ICON_LG - 1.0 }))
+                .text_color(t.text_muted),
+        )
+        .on_click(|_, window, cx| window.dispatch_action(Box::new(crate::actions::ToggleVoiceCall), cx))
+        .into_any_element()
     }
 
     fn action_button(&self, has_text: bool, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
@@ -1865,14 +1890,15 @@ fn skill_items(q: &str) -> Vec<MentionItem> {
             ));
         }
     }
-    let recommended = skills::RECOMMENDED.iter().filter_map(|(repo, path, name, blurb)| {
-        (reg.get(name).is_none() && hit(name, blurb)).then(|| MentionItem {
+    let recommended = skills::RECOMMENDED
+        .iter()
+        .filter(|&(_repo, _path, name, blurb)| reg.get(name).is_none() && hit(name, blurb))
+        .map(|(repo, path, name, blurb)| MentionItem {
             label: format!("#{name}"),
             detail: format!("Recommended, installs when picked · {blurb}"),
             insert: format!("#{name}"),
             skill: Some(SkillPick::Install { repo: repo.to_string(), path: path.to_string() }),
-        })
-    });
+        });
     on.into_iter().chain(off).chain(recommended).take(MAX_SKILL_MENTIONS).collect()
 }
 
@@ -1939,6 +1965,17 @@ pub fn set_text(composer: &Entity<Composer>, text: &str, window: &mut Window, cx
     let input = composer.read(cx).input.clone();
     let text = text.to_string();
     input.update(cx, |s, cx| s.set_value(text, window, cx));
+}
+
+/// The composer's text, cleared from it (None when it is empty).
+pub fn take_text(composer: &Entity<Composer>, window: &mut Window, cx: &mut App) -> Option<String> {
+    let input = composer.read(cx).input.clone();
+    let text = input.read(cx).value().to_string();
+    if text.trim().is_empty() {
+        return None;
+    }
+    input.update(cx, |s, cx| s.set_value(String::new(), window, cx));
+    Some(text)
 }
 
 pub fn is_empty(composer: &Entity<Composer>, cx: &App) -> bool {
@@ -2816,7 +2853,7 @@ fn grouped(n: u64) -> String {
     let digits = n.to_string();
     let mut out = String::with_capacity(digits.len() + digits.len() / 3);
     for (index, digit) in digits.chars().enumerate() {
-        if index > 0 && (digits.len() - index) % 3 == 0 {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
             out.push(',');
         }
         out.push(digit);

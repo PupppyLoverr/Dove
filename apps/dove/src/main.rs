@@ -55,6 +55,7 @@ mod ui;
 mod updates;
 mod visuals;
 mod voice;
+mod voice_call;
 mod wallpaper;
 
 use std::sync::Arc;
@@ -92,7 +93,8 @@ pub mod actions {
             RenameThread,
             OpenThreads,
             OpenKanban,
-            FocusComposer
+            FocusComposer,
+            ToggleVoiceCall
         ]
     );
 
