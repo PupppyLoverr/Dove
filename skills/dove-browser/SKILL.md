@@ -45,14 +45,20 @@ Each `ego-browser nodejs` call is one *round*: a fresh Node.js process. Task
 spaces, tabs and page labels persist between rounds; JavaScript variables do
 not.
 
-- **bash / zsh / Git Bash**: heredoc `ego-browser nodejs <<'EOF' … EOF`.
+Always close stdin. ego-browser 0.6.0.16 waits forever while stdin is an
+open pipe, even with `-e`, and harness shells (Antigravity's `run_command`,
+others) leave it open. With stdin closed a round returns in about a second.
+Every form below closes it.
+
+- **bash / zsh / Git Bash**: heredoc `ego-browser nodejs <<'EOF' … EOF`
+  (the heredoc is stdin). For a one-line `-e`, append `< /dev/null`.
 - **PowerShell** (Windows harnesses often use it): never pass a multi-line or
   double-quoted script to `-e`. Write a UTF-8 `.mjs` file with your file tool
   (not `Set-Content`/`Out-File`), then run
-  `ego-browser nodejs -e "await import('file:///C:/Users/<you>/ego/<goal>/round-01.mjs')"`.
+  `$null | ego-browser nodejs -e "await import('file:///C:/Users/<you>/ego/<goal>/round-01.mjs')"`.
   One new file per round (`round-01.mjs`, `round-02.mjs`, …) in a folder named
   for the goal and time; never edit and re-run an old round.
-- **cmd**: `ego-browser nodejs < C:\path\round-01.mjs`.
+- **cmd**: `ego-browser nodejs < C:\path\round-01.mjs` (the file is stdin).
 - A `SyntaxError: await is only valid…` means the shell mangled the script.
   Switch to the `.mjs` file form; do not wrap the code in an async IIFE.
 

@@ -8,6 +8,7 @@
 | Navigation race (snapshot shows the old page) | Waited for nothing | Arm `waitForURL` / `waitForSelector` for the expected state in the same round, then snapshot |
 | Popup or new tab "missing" | Wait started after the click | Start `page.waitForEvent("popup")` before the click, or read `receipt.popups` |
 | A JavaScript `alert`/`confirm`/`prompt` blocks the page | Synchronous dialog | `page.acceptDialog()` / `page.dismissDialog()` (ask the user if it confirms something irreversible) |
+| `ego-browser nodejs -e …` never returns | ego-browser 0.6.0.16 waits on an open stdin even with `-e`; harness shells keep it open | Close stdin: `$null \| ego-browser …` in PowerShell, `… < /dev/null` in bash |
 | `SyntaxError: await is only valid…` | The shell mangled the script | Use the `.mjs` file + `import('file:///…')` form; do not wrap in an IIFE |
 | Non-ASCII text arrives garbled on Windows | PowerShell 5.1 encoding | Keep the text inside a UTF-8 `.mjs` written with your file tool; never in `-e` or piped via `Get-Content` |
 | Paths fail on Windows | Backslashes are escapes in JS strings | Use forward slashes: `C:/Users/me/file.pdf` |
