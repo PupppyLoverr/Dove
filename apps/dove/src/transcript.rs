@@ -1585,6 +1585,12 @@ pub struct TaskView {
     flash: Option<usize>,
     /// User rows whose recalled-memories chip is open.
     recall_open: std::collections::HashSet<usize>,
+    /// The row whose "Remember this" asks: this project or just me.
+    remember_open: Option<usize>,
+    /// What memory last said about a row (remembered, forgot, failed).
+    memory_notes: HashMap<usize, SharedString>,
+    /// Recalled-chip items forgotten: (row, item).
+    forgotten: std::collections::HashSet<(usize, usize)>,
     glide: Option<gpui::Task<()>>,
     pub composer: Entity<Composer>,
     /// Height of the composer dock floating over the transcript's bottom
@@ -1842,6 +1848,9 @@ impl TaskView {
             info_reserve: false,
             flash: None,
             recall_open: Default::default(),
+            remember_open: None,
+            memory_notes: HashMap::new(),
+            forgotten: Default::default(),
             glide: None,
             composer,
             dock_height: std::rc::Rc::new(std::cell::Cell::new(DOCK_GUESS)),
@@ -2937,6 +2946,8 @@ impl TaskView {
         let (body, files) = composer::split_attachments(text);
         let strip = (!files.is_empty()).then(|| sent_attachments(i, &files, t));
         let chip = recalled.map(|items| self.recall_chip(i, items, weak, t));
+        let remember = self.remember_button(i, weak, t);
+        let memory = self.memory_strip(i, weak, t);
         div()
             .group("user-msg")
             .w_full()
@@ -2985,9 +2996,62 @@ impl TaskView {
                     .text_color(t.text_faint)
                     .child(div().mr(px(4.0)).child(when))
                     .when(self.mirror.is_none(), |d| d.child(edit))
+                    .children(remember)
                     .child(copy_button(SharedString::from(format!("copy-user-{i}")), copy, t)),
             )
+            .children(memory)
             .into_any_element()
+    }
+
+    /// "Remember this" on row `i`, shown while Supermemory is signed in.
+    fn remember_button(&self, i: usize, weak: &WeakEntity<Self>, t: &Theme) -> Option<AnyElement> {
+        dove_core::memory::backend()?;
+        let weak = weak.clone();
+        Some(
+            action_button(SharedString::from(format!("remember-{i}")), icons::PIN, "Remember this", t)
+                .on_click(move |_, _, cx| {
+                    let _ = weak.update(cx, |v, cx| {
+                        v.remember_open = if v.remember_open == Some(i) { None } else { Some(i) };
+                        cx.notify();
+                    });
+                })
+                .into_any_element(),
+        )
+    }
+
+    /// Under row `i`: where "Remember this" should pin it, or what memory
+    /// last said about the row.
+    fn memory_strip(&self, i: usize, weak: &WeakEntity<Self>, t: &Theme) -> Option<AnyElement> {
+        let line = div().flex().items_center().gap(px(6.0)).text_size(ty::META).text_color(t.text_muted);
+        if self.remember_open == Some(i) {
+            let choice = |id: &str, label: &'static str, personal: bool| {
+                let weak = weak.clone();
+                ctl::button_sm(t, SharedString::from(format!("{id}-{i}")), label, Tone::Outlined).on_click(
+                    move |_, _, cx| {
+                        let _ = weak.update(cx, |v, cx| v.remember(i, personal, cx));
+                    },
+                )
+            };
+            let cancel = {
+                let weak = weak.clone();
+                action_button(SharedString::from(format!("remember-cancel-{i}")), icons::CLOSE, "Cancel", t)
+                    .on_click(move |_, _, cx| {
+                        let _ = weak.update(cx, |v, cx| {
+                            v.remember_open = None;
+                            cx.notify();
+                        });
+                    })
+            };
+            return Some(
+                line.child("Remember for")
+                    .child(choice("remember-project", "This project", false))
+                    .child(choice("remember-user", "Just me, everywhere", true))
+                    .child(cancel)
+                    .into_any_element(),
+            );
+        }
+        let note = self.memory_notes.get(&i)?;
+        Some(line.child(icon(icons::PIN).size(px(11.0))).child(note.clone()).into_any_element())
     }
 
     /// "Recalled N memories": what Dove's memory added to a prompt, folded
@@ -3045,7 +3109,37 @@ impl TaskView {
                         .border_color(t.wash(0.08))
                         .text_size(ty::SMALL)
                         .text_color(t.text_muted)
-                        .children(items.iter().map(|m| div().child(format!("• {m}")))),
+                        .children(items.iter().enumerate().map(|(k, m)| {
+                            let gone = self.forgotten.contains(&(i, k));
+                            let text = div().flex_1().min_w_0().child(format!("• {m}"));
+                            let row = div().group("recall-item").flex().items_start().gap(px(6.0));
+                            if gone {
+                                return row
+                                    .text_color(t.text_faint)
+                                    .child(text.line_through())
+                                    .child(div().flex_none().text_size(ty::META).child("Forgotten"));
+                            }
+                            let weak = weak.clone();
+                            let shown = m.clone();
+                            row.child(text).child(
+                                div()
+                                    .flex_none()
+                                    .invisible()
+                                    .group_hover("recall-item", |s| s.visible())
+                                    .child(
+                                        action_button(
+                                            SharedString::from(format!("recall-forget-{i}-{k}")),
+                                            icons::TRASH_BIN_MINIMALISTIC,
+                                            "Forget this memory",
+                                            t,
+                                        )
+                                        .on_click(move |_, _, cx| {
+                                            let _ = weak
+                                                .update(cx, |v, cx| v.forget_recalled(i, k, shown.clone(), cx));
+                                        }),
+                                    ),
+                            )
+                        })),
                 )
             })
             .into_any_element()
@@ -3870,11 +3964,92 @@ impl TaskView {
         crate::motion::fade_quick(SharedString::from(format!("permit-{}", req.request_id)), row).into_any_element()
     }
 
-    /// Copy the answer text of the turn ending at row `i`. The chat keeps
-    /// no second copy of the source; it is read back from the transcript
-    /// (the recorder flushes it at every turn end). Without one, the
-    /// rendered blocks' plain text is copied.
+    /// Copy the answer text of the turn ending at row `i`.
     fn copy_turn(&self, i: usize, cx: &mut Context<Self>) {
+        let read = self.turn_answer(i, cx);
+        cx.spawn(async move |this, cx| {
+            let text = read.await;
+            if !text.is_empty() {
+                let _ = this.update(cx, |_, cx| cx.write_to_clipboard(ClipboardItem::new_string(text)));
+            }
+        })
+        .detach();
+    }
+
+    /// "Remember this" on row `i` (a message, or the turn ending there):
+    /// pin its words to this project's memory or the user's, redacted and
+    /// queued when offline.
+    fn remember(&mut self, i: usize, personal: bool, cx: &mut Context<Self>) {
+        use dove_core::memory::{self, Scope};
+        self.remember_open = None;
+        cx.notify();
+        let read = match &self.chat.rows[i] {
+            Row::User { text, .. } => gpui::Task::ready(composer::split_attachments(text).0),
+            _ => self.turn_answer(i, cx),
+        };
+        let root = self.engine.store.root().to_path_buf();
+        let cwd = self.task.worktree.clone().unwrap_or_else(|| self.project.path.clone());
+        let project = self.project.name.clone();
+        cx.spawn(async move |this, cx| {
+            let text = read.await;
+            let saved = cx
+                .background_spawn(async move {
+                    let scope = if personal { Scope::User } else { Scope::Project(memory::project_tag(&cwd)) };
+                    let doc = memory::pin_doc(&text, scope, Some(&project), dove_core::store::now_ms())?;
+                    memory::save_or_queue(&root, doc);
+                    Some(())
+                })
+                .await;
+            let note = match saved {
+                Some(()) if personal => "Remembered for you, in every project",
+                Some(()) => "Remembered for this project",
+                None => "Nothing to remember here",
+            };
+            let _ = this.update(cx, |v, cx| {
+                v.memory_notes.insert(i, note.into());
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// "Forget" on item `k` of row `i`'s recalled chip. The chip only has the
+    /// memory's words, so it is found by content (project, then user).
+    fn forget_recalled(&mut self, i: usize, k: usize, shown: SharedString, cx: &mut Context<Self>) {
+        use dove_core::memory::{self, Scope};
+        let Some(b) = memory::backend() else {
+            self.memory_notes.insert(i, "Sign in to Supermemory in Settings › Memory first".into());
+            cx.notify();
+            return;
+        };
+        let cwd = self.task.worktree.clone().unwrap_or_else(|| self.project.path.clone());
+        let root = self.engine.store.root().to_path_buf();
+        let task = cx.background_spawn(async move {
+            let scopes = [Scope::Project(memory::project_tag(&cwd)), Scope::User];
+            memory::forget_recalled(&*b, Some(&memory::LocalIndex::at(&root)), &shown, &scopes)
+        });
+        cx.spawn(async move |this, cx| {
+            let r = task.await;
+            let _ = this.update(cx, |v, cx| {
+                match r {
+                    Ok(_) => {
+                        v.forgotten.insert((i, k));
+                    }
+                    Err(e) => {
+                        v.memory_notes.insert(i, format!("Could not forget it: {e}").into());
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// The answer text of the turn ending at row `i`. The chat keeps no
+    /// second copy of the source; it is read back from the transcript (the
+    /// recorder flushes it at every turn end). Without one, the rendered
+    /// blocks' plain text stands in.
+    fn turn_answer(&self, i: usize, cx: &mut Context<Self>) -> gpui::Task<String> {
         use dove_store::transcript::Kind;
         let from_end = self.chat.rows[i + 1..].iter().filter(|r| matches!(r, Row::TurnEnd { .. })).count();
         let start = self.chat.rows[..i]
@@ -3891,7 +4066,7 @@ impl TaskView {
             .join("\n\n");
         let (store, task) = (self.engine.store.clone(), self.task.id);
         let call = self.mirror.as_ref().map(|m| m.call.clone());
-        let read = cx.background_spawn(async move {
+        cx.background_spawn(async move {
             let text = match call {
                 Some(call) => turn_text(&store.subagent_events(task, &call), from_end),
                 None => {
@@ -3910,14 +4085,7 @@ impl TaskView {
                 }
             };
             if text.is_empty() { fallback } else { text }
-        });
-        cx.spawn(async move |this, cx| {
-            let text = read.await;
-            if !text.is_empty() {
-                let _ = this.update(cx, |_, cx| cx.write_to_clipboard(ClipboardItem::new_string(text)));
-            }
         })
-        .detach();
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -3975,12 +4143,17 @@ impl TaskView {
                     },
                 ))
             })
+            .when(has_text, |d| d.children(self.remember_button(i, weak, t)))
             .when_some(elapsed.filter(|_| !failed), |d, e| {
                 d.child(div().ml(px(6.0)).child(format!("Worked for {}", duration(e))))
             });
+        let row = match self.memory_strip(i, weak, t) {
+            Some(strip) => div().flex().flex_col().gap(px(4.0)).child(row).child(strip).into_any_element(),
+            None => row.into_any_element(),
+        };
         match failure {
             Some(strip) => div().flex().flex_col().gap(px(4.0)).pt(px(4.0)).child(strip).child(row).into_any_element(),
-            None => row.into_any_element(),
+            None => row,
         }
     }
 

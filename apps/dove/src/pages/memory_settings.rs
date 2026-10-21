@@ -3,10 +3,11 @@
 //! Sign-in (through the Integrations catalog entry, so the hub and the
 //! recall/capture path share one token), the switches `dove_core::memory`
 //! reads (memory, auto-recall, auto-capture, learn from corrections, per
-//! project), never-send path globs, and the memories themselves: browse,
-//! search and forget per scope. Also the first-sign-in warm-up (past
-//! threads, project docs, merged PRs) and the weekly consolidation, which
-//! finds duplicates and drafts skills from repeated workflows.
+//! project, isolate worktrees), never-send path globs, and the memories
+//! themselves: browse, search, forget and export per scope. Also the
+//! first-sign-in warm-up (past threads, project docs, merged PRs) and the
+//! weekly consolidation, which finds duplicates and drafts skills from
+//! repeated workflows.
 
 use std::sync::Arc;
 
@@ -213,7 +214,12 @@ impl MemoryView {
         let (Some(b), Some(scope)) = (memory::backend(), self.current_scope()) else { return };
         let Some(Ok(list)) = &self.results else { return };
         let Some(m) = list.get(i).cloned() else { return };
-        let task = cx.background_spawn(async move { b.forget(&m, &scope) });
+        let root = self.engine.store.root().to_path_buf();
+        let task = cx.background_spawn(async move {
+            // Also from this machine's index, or recall would bring it back.
+            memory::LocalIndex::at(&root).forget(&m.text);
+            b.forget(&m, &scope)
+        });
         cx.spawn(async move |this, cx| {
             let r = task.await;
             let _ = this.update(cx, |v, cx| {
@@ -236,6 +242,66 @@ impl MemoryView {
     fn set_flag(&mut self, key: &str, on: bool, cx: &mut Context<Self>) {
         let _ = self.engine.store.set_setting(key, if on { "true" } else { "false" });
         cx.notify();
+    }
+
+    /// Worktrees share their repository's memory, or each gets its own.
+    /// Project tags change with it, so they are worked out again.
+    fn set_isolate(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.set_flag(memory::ISOLATE_WORKTREES, on, cx);
+        memory::set_isolate_worktrees(on);
+        for (_, tag) in &mut self.projects {
+            *tag = None;
+        }
+        self.results = None;
+        self.load_tags(cx);
+    }
+
+    /// Write every memory of the chosen scope to a JSON file the user picks
+    /// (`$DOVE_HOME/memory/export-<date>.json` when no picker opens).
+    fn export(&mut self, cx: &mut Context<Self>) {
+        if self.busy.is_some() {
+            return;
+        }
+        let (Some(b), Some(scope)) = (memory::backend(), self.current_scope()) else {
+            self.note = Some("Sign in to Supermemory first.".into());
+            cx.notify();
+            return;
+        };
+        let dir = memory::export_dir(self.engine.store.root());
+        let _ = std::fs::create_dir_all(&dir);
+        let name = memory::export_name(dove_core::store::now_ms());
+        let pick = cx.prompt_for_new_path(&dir, Some(&name));
+        self.busy = Some("Exporting memories…");
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let (path, picked) = match pick.await {
+                Ok(Ok(Some(path))) => (path, true),
+                Ok(Ok(None)) => {
+                    let _ = this.update(cx, |v, cx| {
+                        v.busy = None;
+                        cx.notify();
+                    });
+                    return;
+                }
+                _ => (dir.join(name), false),
+            };
+            let out = path.clone();
+            let r = cx.background_spawn(async move { memory::export(&*b, &scope, &out) }).await;
+            let _ = this.update(cx, |v, cx| {
+                v.busy = None;
+                v.note = Some(match r {
+                    Ok(n) => {
+                        if !picked {
+                            cx.reveal_path(&path);
+                        }
+                        format!("Exported {n} memories to {}.", path.display())
+                    }
+                    Err(e) => format!("Could not export: {e}"),
+                });
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// Ingest past threads, project docs and merged PRs.
@@ -309,8 +375,14 @@ impl MemoryView {
         let root = self.engine.store.root().to_path_buf();
         let task = cx.background_spawn(async move {
             let mut done = 0;
-            for (scope, _, copies) in &report.duplicates {
+            let norm = |t: &str| t.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase();
+            for (scope, keep, copies) in &report.duplicates {
                 for m in copies {
+                    // The local index matches by text: an exact copy of the
+                    // kept memory must not take the kept one with it.
+                    if norm(&m.text) != norm(&keep.text) {
+                        memory::LocalIndex::at(&root).forget(&m.text);
+                    }
                     if b.forget(m, scope).is_ok() {
                         done += 1;
                     }
@@ -412,7 +484,18 @@ impl MemoryView {
             let toggle = if enabled { toggle } else { ctl::disabled(toggle, "Memory is off") };
             card = card.child(page::setting_row(t, i == 0, title, detail, toggle));
         }
-        card
+        let isolate = store.flag(memory::ISOLATE_WORKTREES, false);
+        let toggle = ctl::on_toggle(ctl::toggle(t, "mem-isolate", isolate), cx, move |this, _, cx| {
+            this.set_isolate(!isolate, cx)
+        });
+        let toggle = if on { toggle } else { ctl::disabled(toggle, "Memory is off") };
+        card.child(page::setting_row(
+            t,
+            false,
+            "Isolate worktrees",
+            "Give each git worktree its own project memory instead of sharing the repository's. Applies to agents started afterwards.",
+            toggle,
+        ))
     }
 
     fn projects_card(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
@@ -486,6 +569,10 @@ impl MemoryView {
             .child(
                 ctl::button_sm(t, "mem-search", if self.searching { "Searching…" } else { "Search" }, Tone::Filled)
                     .on_click(cx.listener(|this, _, _, cx| this.search(cx))),
+            )
+            .child(
+                ctl::button_sm(t, "mem-export", "Export", Tone::Quiet)
+                    .on_click(cx.listener(|this, _, _, cx| this.export(cx))),
             );
         let body = match &self.results {
             None => div()

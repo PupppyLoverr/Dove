@@ -27,6 +27,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::hash::{Hash as _, Hasher as _};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -40,16 +41,19 @@ use sha2::Digest as _;
 // ------------------------------------------------------------------ backend
 
 /// One memory as a backend returns it.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Memory {
     pub id: Option<String>,
     pub text: String,
     pub score: Option<f32>,
+    /// When it was saved (RFC 3339), so newer facts can win over older ones.
+    #[serde(default)]
+    pub at: Option<String>,
 }
 
 impl Memory {
     pub fn new(text: impl Into<String>) -> Self {
-        Self { id: None, text: text.into(), score: None }
+        Self { text: text.into(), ..Default::default() }
     }
 }
 
@@ -116,6 +120,12 @@ impl Doc {
 pub trait Backend: Send + Sync {
     /// Hybrid search within one scope.
     fn search(&self, query: &str, scope: &Scope, limit: usize) -> Result<Vec<Memory>, String>;
+    /// The scope's standing rules (saved corrections and stated rules or
+    /// preferences), newest first, whatever the prompt is about.
+    fn standing(&self, scope: &Scope, query: &str, limit: usize) -> Result<Vec<Memory>, String> {
+        let _ = (scope, query, limit);
+        Ok(Vec::new())
+    }
     /// The profile summary for a scope (static + dynamic facts).
     fn profile(&self, scope: &Scope) -> Result<Vec<Memory>, String>;
     fn add(&self, doc: &Doc) -> Result<(), String>;
@@ -340,10 +350,37 @@ fn git(dir: &Path, args: &[&str]) -> Option<String> {
     out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string()).filter(|s| !s.is_empty())
 }
 
+/// Settings key: each worktree gets its own project memory (Supermemory's
+/// `SUPERMEMORY_ISOLATE_WORKTREES`). Off by default.
+pub const ISOLATE_WORKTREES: &str = "memory_isolate_worktrees";
+
+static ISOLATE: AtomicBool = AtomicBool::new(false);
+
+/// Apply the [`ISOLATE_WORKTREES`] setting (app start and when it changes);
+/// [`project_tag`] has no store to read it from.
+pub fn set_isolate_worktrees(on: bool) {
+    ISOLATE.store(on, Ordering::Relaxed);
+}
+
+/// The Dove setting or `SUPERMEMORY_ISOLATE_WORKTREES=true` (which
+/// Supermemory's own plugins read, so the two can agree).
+pub fn isolate_worktrees() -> bool {
+    isolating(ISOLATE.load(Ordering::Relaxed), std::env::var("SUPERMEMORY_ISOLATE_WORKTREES").ok().as_deref())
+}
+
+fn isolating(setting: bool, env: Option<&str>) -> bool {
+    setting || env == Some("true")
+}
+
+/// Read the memory settings that live outside [`Prefs`] into the process.
+pub fn apply_settings(store: &Store) {
+    set_isolate_worktrees(store.flag(ISOLATE_WORKTREES, false));
+}
+
 /// The repository root every worktree of it shares (its main checkout), or
 /// the folder itself outside git.
 pub fn project_base(dir: &Path) -> PathBuf {
-    let isolate = std::env::var("SUPERMEMORY_ISOLATE_WORKTREES").as_deref() == Ok("true");
+    let isolate = isolate_worktrees();
     let toplevel = || git(dir, &["rev-parse", "--show-toplevel"]).map(PathBuf::from);
     let root = if isolate {
         toplevel()
@@ -387,7 +424,7 @@ pub fn project_tag(dir: &Path) -> String {
     }
     let remote = git(&base, &["remote", "get-url", "origin"]);
     let normalized = remote.as_deref().and_then(normalize_remote);
-    let isolate = std::env::var("SUPERMEMORY_ISOLATE_WORKTREES").as_deref() == Ok("true");
+    let isolate = isolate_worktrees();
     let identity = match normalized {
         Some(n) if !isolate => n,
         _ => {
@@ -435,23 +472,68 @@ pub fn redact(text: &str) -> String {
             (r"\beyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}", "[REDACTED]"),
             (r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._\-~+/]{16,}=*", "${1} [REDACTED]"),
             // `API_KEY=…`, `"password": "…"`, `client_secret: …`.
-            (
-                r#"(?i)\b([A-Za-z0-9_\-]*(?:api[_\-]?key|secret|token|password|passwd|pwd|access[_\-]?key|private[_\-]?key|credential)[A-Za-z0-9_\-]*)(["']?\s*[:=]\s*)(["']?)([^\s"',;]{6,})"#,
-                "${1}${2}${3}[REDACTED]",
-            ),
+            (KEY_VALUE, "${1}${2}${3}[REDACTED]"),
         ]
         .into_iter()
         .map(|(re, with)| (Regex::new(re).expect("redaction rule"), with))
         .collect()
     });
+    // Values found next to a credential word anywhere in the text are
+    // scrubbed everywhere: an agent repeating "password is X" back must not
+    // carry X into memory.
+    static VALUES: OnceLock<[(Regex, usize); 3]> = OnceLock::new();
+    let values = VALUES.get_or_init(|| {
+        [
+            (Regex::new(KEY_VALUE).expect("rule"), 4),
+            (Regex::new(SAID).expect("rule"), 3),
+            (Regex::new(r"(?i)\b[a-z][a-z0-9+.\-]*://[^/\s:@]+:([^/\s@]+)@").expect("rule"), 1),
+        ]
+    });
+    let mut secrets: Vec<String> = values
+        .iter()
+        .flat_map(|(re, group)| {
+            let said = *group == 3;
+            re.captures_iter(text).filter_map(move |c| {
+                let v = c.get(*group)?.as_str().trim_end_matches(['.', '!', '?', ')']);
+                // "the token is valid" is prose; "password is hunter9" is not.
+                (!said || secret_like(v)).then(|| v.to_string())
+            })
+        })
+        .filter(|v| v.len() >= 6 && v != "[REDACTED]")
+        .collect();
+    secrets.sort_by_key(|v| std::cmp::Reverse(v.len()));
+    secrets.dedup();
     let mut out = text.to_string();
     for (re, with) in rules {
         if re.is_match(&out) {
             out = re.replace_all(&out, *with).into_owned();
         }
     }
+    // Plain English: "the password is …", "my api key was …".
+    let said = &values[1].0;
+    out = said
+        .replace_all(&out, |c: &regex::Captures| {
+            let v = c[3].trim_end_matches(['.', '!', '?', ')']);
+            if secret_like(v) { format!("{}{}[REDACTED]{}", &c[1], &c[2], &c[3][v.len()..]) } else { c[0].to_string() }
+        })
+        .into_owned();
+    for v in secrets {
+        out = out.replace(&v, "[REDACTED]");
+    }
     out
 }
+
+/// Whether a word after "password is" looks like a credential rather than
+/// prose: a digit, a symbol, or a capital after the first letter.
+fn secret_like(v: &str) -> bool {
+    v.len() >= 6
+        && (v.chars().any(|c| c.is_ascii_digit())
+            || v.chars().any(|c| !c.is_alphanumeric() && c != '-')
+            || v.chars().skip(1).any(|c| c.is_uppercase()))
+}
+
+const KEY_VALUE: &str = r#"(?i)\b([A-Za-z0-9_\-]*(?:api[_\-]?key|secret|token|password|passwd|pwd|access[_\-]?key|private[_\-]?key|credential)[A-Za-z0-9_\-]*)(["']?\s*[:=]\s*)(["']?)([^\s"',;]{6,})"#;
+const SAID: &str = r#"(?i)\b((?:password|passwd|passphrase|secret|token|api[_\- ]?key|access[_\- ]?key)s?)(\s+(?:is|was|are|were)\s+["'`]?)([^\s"'`,;]{6,})"#;
 
 /// Whether `path` matches a never-send glob (`*`, `?`, `**`). A pattern
 /// without `/` also matches the file name alone.
@@ -490,6 +572,8 @@ pub const BUDGET_CHARS: usize = 6000;
 const ITEM_CHARS: usize = 600;
 /// How long a prompt may wait for recall before going without.
 pub const RECALL_TIMEOUT: Duration = Duration::from_secs(4);
+/// Lookups that answer within this go in; the rest are dropped.
+const RECALL_COLLECT: Duration = Duration::from_millis(3500);
 
 fn one_line(text: &str, max: usize) -> String {
     let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -503,14 +587,34 @@ fn one_line(text: &str, max: usize) -> String {
 /// The fenced block for `profile` and `found`, within `budget` characters.
 /// `None` when there is nothing to add.
 pub fn render_block(profile: &[Memory], found: &[Memory], budget: usize) -> Option<(String, usize)> {
-    let head = "Memories Dove recalled for this task from earlier sessions (any agent). Use what helps; they may be out of date, and the user's current request wins.";
+    render_block_with(&[], profile, found, budget)
+}
+
+/// `[2026-10-20 19:14] ` from an RFC 3339 time, or nothing.
+fn stamp(at: Option<&str>) -> String {
+    match at {
+        Some(t) if t.len() >= 16 && t.as_bytes()[10] == b'T' => format!("[{} {}] ", &t[..10], &t[11..16]),
+        _ => String::new(),
+    }
+}
+
+/// [`render_block`] with standing rules first.
+pub fn render_block_with(
+    standing: &[Memory],
+    profile: &[Memory],
+    found: &[Memory],
+    budget: usize,
+) -> Option<(String, usize)> {
+    let head = "Memories Dove recalled for this task from earlier sessions (any agent). Standing rules are the user's own instructions for this project: follow them. Use the rest where it helps. When two memories disagree, the newer one wins; the user's current request wins over all of them.";
     let mut body = String::new();
     let mut count = 0;
     let mut used = head.len() + OPEN.len() + CLOSE.len() + 40;
-    for (title, list) in [("Profile", profile), ("Relevant", found)] {
+    for (title, list) in [("Standing rules", standing), ("Profile", profile), ("Relevant", found)] {
         let mut section = String::new();
         for m in list {
-            let line = format!("- {}\n", one_line(&m.text, ITEM_CHARS));
+            // Redacted again on the way out: anything saved before a rule
+            // existed (or by another tool) must not reach an agent either.
+            let line = format!("- {}{}\n", stamp(m.at.as_deref()), one_line(&redact(&m.text), ITEM_CHARS));
             if line.trim().len() <= 2 || used + section.len() + line.len() > budget {
                 continue;
             }
@@ -523,6 +627,48 @@ pub fn render_block(profile: &[Memory], found: &[Memory], budget: usize) -> Opti
         }
     }
     (count > 0).then(|| (format!("{OPEN} count=\"{count}\">\n{head}\n{body}{CLOSE}\n\n"), count))
+}
+
+/// `text` cut to about `max` characters around what `query` asks: its most
+/// matching sentences, in their original order, joined with `…`. Short
+/// texts come back whole.
+pub fn excerpt(text: &str, query: &str, max: usize) -> String {
+    let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.chars().count() <= max {
+        return flat;
+    }
+    let q: HashSet<String> = terms(query).into_iter().collect();
+    // Sentences, keeping their end marks.
+    let mut sentences: Vec<&str> = Vec::new();
+    let mut start = 0;
+    for (i, c) in flat.char_indices() {
+        if matches!(c, '.' | '?' | '!') && flat[i + c.len_utf8()..].starts_with(' ') {
+            sentences.push(flat[start..=i].trim());
+            start = i + c.len_utf8();
+        }
+    }
+    if start < flat.len() {
+        sentences.push(flat[start..].trim());
+    }
+    let score = |s: &str| terms(s).into_iter().filter(|t| q.contains(t)).collect::<HashSet<_>>().len();
+    let mut order: Vec<usize> = (0..sentences.len()).filter(|&i| score(sentences[i]) > 0).collect();
+    if order.is_empty() {
+        return one_line(&flat, max);
+    }
+    order.sort_by(|&a, &b| score(sentences[b]).cmp(&score(sentences[a])).then(a.cmp(&b)));
+    let mut keep: Vec<usize> = Vec::new();
+    let mut used = 0;
+    for i in order {
+        let len = sentences[i].chars().count() + 3;
+        if used + len > max && !keep.is_empty() {
+            continue;
+        }
+        keep.push(i);
+        used += len;
+    }
+    keep.sort_unstable();
+    let joined = keep.iter().map(|&i| sentences[i]).collect::<Vec<_>>().join(" … ");
+    one_line(&joined, max)
 }
 
 /// `prompt` with `block` in front.
@@ -548,8 +694,18 @@ pub fn recalled(text: &str) -> Option<Vec<String>> {
         return None;
     }
     let end = trimmed.find(CLOSE)?;
-    let items: Vec<String> =
-        trimmed[..end].lines().filter_map(|l| l.strip_prefix("- ")).map(|l| l.trim().to_string()).collect();
+    let items: Vec<String> = trimmed[..end]
+        .lines()
+        .filter_map(|l| l.strip_prefix("- "))
+        .map(|l| {
+            let l = l.trim();
+            // Drop a leading `[date time] ` stamp.
+            match l.strip_prefix('[').and_then(|r| r.split_once("] ")) {
+                Some((d, rest)) if d.len() == 16 && d.as_bytes()[4] == b'-' => rest.to_string(),
+                _ => l.to_string(),
+            }
+        })
+        .collect();
     (!items.is_empty()).then_some(items)
 }
 
@@ -678,10 +834,232 @@ impl Outbox {
     }
 }
 
+// ------------------------------------------------------------- local index
+
+/// Everything Dove saved to memory on this machine (already redacted), so
+/// recall answers at once and offline, whatever the service's latency.
+/// Supermemory stays the source of truth across machines and its own
+/// plugins; its results are merged in when they arrive in time.
+pub struct LocalIndex {
+    path: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LocalEntry {
+    /// The scope's container, `user` for the user scope.
+    tag: String,
+    kind: String,
+    text: String,
+    /// Unix ms.
+    at: i64,
+}
+
+/// Newest entries kept.
+const LOCAL_CAP: usize = 4000;
+/// The least share of a query's (rarity-weighted) words an entry must
+/// cover to be recalled.
+const LOCAL_MIN_SCORE: f32 = 0.15;
+
+fn local_lock() -> &'static Mutex<()> {
+    static LOCK: Mutex<()> = Mutex::new(());
+    &LOCK
+}
+
+fn scope_tag(scope: &Scope) -> &str {
+    scope.container().unwrap_or("user")
+}
+
+/// Words that say nothing about what a memory is about.
+const STOP: &[&str] = &[
+    "a", "an", "the", "and", "or", "but", "if", "then", "so", "to", "of", "in", "on", "at", "by", "for", "with",
+    "from", "into", "is", "are", "was", "were", "be", "been", "it", "its", "this", "that", "these", "those", "i",
+    "me", "my", "we", "our", "you", "your", "he", "she", "they", "them", "do", "does", "did", "how", "what",
+    "which", "who", "when", "where", "why", "can", "could", "should", "would", "will", "just", "only", "please",
+    "reply", "answer", "say", "tell", "give", "use", "using", "here", "there", "now", "also", "any", "all", "some",
+    "one", "two", "short", "line", "lines", "exact", "nothing", "else", "not", "don", "t", "look", "files", "file",
+    "user", "agent", "acknowledge", "acknowledged", "noted", "got", "ok", "okay", "thanks", "briefly", "project",
+    "repo", "repository",
+];
+
+/// Lowercase word stems, without stop words: `locking` and `locks` both
+/// become `lock`.
+fn terms(text: &str) -> Vec<String> {
+    text.split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
+        .flat_map(|w| w.split('-'))
+        .map(str::to_lowercase)
+        .filter(|w| w.len() > 1 && !STOP.contains(&w.as_str()))
+        .map(|w| {
+            for suffix in ["ing", "es", "ed", "s"] {
+                if w.len() > suffix.len() + 2
+                    && let Some(stem) = w.strip_suffix(suffix)
+                {
+                    return stem.to_string();
+                }
+            }
+            w
+        })
+        .collect()
+}
+
+fn rfc3339(ms: i64) -> Option<String> {
+    chrono::DateTime::from_timestamp_millis(ms).map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+}
+
+impl LocalIndex {
+    /// `<root>/memory/local.jsonl`.
+    pub fn at(root: &Path) -> Self {
+        Self { path: root.join("memory").join("local.jsonl") }
+    }
+
+    fn entries(&self) -> Vec<LocalEntry> {
+        std::fs::read_to_string(&self.path)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| serde_json::from_str(l).ok())
+            .collect()
+    }
+
+    fn write(&self, entries: &[LocalEntry]) -> std::io::Result<()> {
+        let tmp = self.path.with_extension("jsonl.tmp");
+        let mut f = std::fs::File::create(&tmp)?;
+        for e in entries {
+            writeln!(f, "{}", serde_json::to_string(e).unwrap_or_default())?;
+        }
+        f.flush()?;
+        drop(f);
+        std::fs::rename(tmp, &self.path)
+    }
+
+    /// Remember `doc` (a resolved scope; the project placeholder is skipped).
+    pub fn add(&self, doc: &Doc) {
+        if matches!(&doc.scope, Scope::Project(t) if t.is_empty()) || doc.content.trim().is_empty() {
+            return;
+        }
+        let _g = local_lock().lock();
+        if let Some(dir) = self.path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let entry = LocalEntry {
+            tag: scope_tag(&doc.scope).to_string(),
+            kind: doc.metadata.get("kind").cloned().unwrap_or_else(|| "turn".into()),
+            text: doc.content.trim().to_string(),
+            at: if doc.at > 0 { doc.at } else { dove_store::now_ms() },
+        };
+        let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&self.path) else { return };
+        let _ = writeln!(f, "{}", serde_json::to_string(&entry).unwrap_or_default());
+        drop(f);
+        // Trim now and then, not on every save.
+        if std::fs::metadata(&self.path).is_ok_and(|m| m.len() > 8 * 1024 * 1024) {
+            let all = self.entries();
+            if all.len() > LOCAL_CAP {
+                let _ = self.write(&all[all.len() - LOCAL_CAP..]);
+            }
+        }
+    }
+
+    /// Entries of `scope` sharing enough words with `query`, best first.
+    /// The score is the query's word weight an entry covers (0–1), each word
+    /// weighted by how rare it is in the scope, so a multi-part question
+    /// still finds the memory that answers one part of it.
+    pub fn search(&self, scope: &Scope, query: &str, limit: usize) -> Vec<Memory> {
+        let q: HashSet<String> = terms(query).into_iter().collect();
+        if q.is_empty() {
+            return Vec::new();
+        }
+        let tag = scope_tag(scope);
+        let entries: Vec<(HashSet<String>, LocalEntry)> = self
+            .entries()
+            .into_iter()
+            .filter(|e| e.tag == tag)
+            .map(|e| (terms(&e.text).into_iter().collect(), e))
+            .collect();
+        let n = entries.len() as f32;
+        let idf = |t: &String| {
+            let df = entries.iter().filter(|(w, _)| w.contains(t)).count() as f32;
+            (1.0 + n / (1.0 + df)).ln()
+        };
+        let weights: Vec<(&String, f32)> = q.iter().map(|t| (t, idf(t))).collect();
+        let total: f32 = weights.iter().map(|(_, w)| w).sum::<f32>().max(f32::EPSILON);
+        let need = if q.len() <= 2 { 1 } else { 2 };
+        let mut hits: Vec<(f32, LocalEntry)> = entries
+            .into_iter()
+            .filter_map(|(words, e)| {
+                let matched: Vec<f32> = weights.iter().filter(|(t, _)| words.contains(*t)).map(|(_, w)| *w).collect();
+                let score = matched.iter().sum::<f32>() / total;
+                (matched.len() >= need && score >= LOCAL_MIN_SCORE).then_some((score, e))
+            })
+            .collect();
+        // Best match first; the newer of two equal matches first.
+        hits.sort_by(|a, b| b.0.total_cmp(&a.0).then(b.1.at.cmp(&a.1.at)));
+        hits.into_iter()
+            .take(limit)
+            .map(|(score, e)| Memory { id: None, text: e.text, score: Some(score), at: rfc3339(e.at) })
+            .collect()
+    }
+
+    /// The scope's entries, newest first.
+    pub fn recent(&self, scope: &Scope, limit: usize) -> Vec<Memory> {
+        let tag = scope_tag(scope);
+        let mut list: Vec<LocalEntry> = self.entries().into_iter().filter(|e| e.tag == tag).collect();
+        list.sort_by(|a, b| b.at.cmp(&a.at));
+        list.into_iter().take(limit).map(|e| Memory { id: None, text: e.text, score: None, at: rfc3339(e.at) }).collect()
+    }
+
+    /// The scope's rules and corrections, newest first.
+    pub fn standing(&self, scope: &Scope, limit: usize) -> Vec<Memory> {
+        let tag = scope_tag(scope);
+        let mut list: Vec<LocalEntry> =
+            self.entries().into_iter().filter(|e| e.tag == tag && matches!(e.kind.as_str(), "rule" | "feedback")).collect();
+        list.sort_by(|a, b| b.at.cmp(&a.at));
+        list.into_iter().take(limit).map(|e| Memory { id: None, text: e.text, score: None, at: rfc3339(e.at) }).collect()
+    }
+
+    /// Drop entries whose text is `text` (the user forgot a memory).
+    pub fn forget(&self, text: &str) {
+        let _g = local_lock().lock();
+        let norm = |t: &str| t.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase();
+        let target = norm(text);
+        let all = self.entries();
+        let kept: Vec<LocalEntry> = all.iter().filter(|e| norm(&e.text) != target).cloned().collect();
+        if kept.len() != all.len() {
+            let _ = self.write(&kept);
+        }
+    }
+
+    /// Drop entries a recalled chip line shows ([`same_memory`]: the chip
+    /// holds them flattened and maybe clipped). Returns how many went.
+    pub fn forget_shown(&self, shown: &str) -> usize {
+        let _g = local_lock().lock();
+        let all = self.entries();
+        let kept: Vec<LocalEntry> = all.iter().filter(|e| !same_memory(shown, &e.text)).cloned().collect();
+        let gone = all.len() - kept.len();
+        if gone > 0 {
+            let _ = self.write(&kept);
+        }
+        gone
+    }
+}
+
+/// `local` followed by the `remote` items that are not the same memory (a
+/// remote document chunk is often a piece of a local entry).
+fn merge_unique(local: Vec<Memory>, remote: Vec<Memory>) -> Vec<Memory> {
+    let norm = |t: &str| t.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase();
+    let seen: Vec<String> = local.iter().map(|m| norm(&m.text)).collect();
+    let mut out = local;
+    for m in remote {
+        let n = norm(&m.text);
+        if !n.is_empty() && !seen.iter().any(|s| s.contains(&n) || n.contains(s.as_str())) {
+            out.push(m);
+        }
+    }
+    out
+}
+
 /// Save `doc` now, or queue it. Also flushes anything already queued once a
 /// save gets through.
 pub fn save_or_queue(root: &Path, doc: Doc) {
     let Some(b) = backend() else { return };
+    LocalIndex::at(root).add(&doc);
     let root = root.to_path_buf();
     drop(blocking(move || {
         let outbox = Outbox::at(&root);
@@ -742,6 +1120,22 @@ pub fn correction(prompt: &str, prev_prompt: &str, prev_answer: &str) -> Option<
         one_line(p, 500),
         one_line(prev_answer, 300)
     ))
+}
+
+/// Whether a prompt states a standing rule or preference ("always…",
+/// "never…", "my preference…", "from now on…") or corrects what was known
+/// before ("no, that's out of date…", "X changed from A to B"), saved as
+/// `kind: rule` so every later session gets it whatever it is about.
+pub fn is_rule(prompt: &str) -> bool {
+    let p = prompt.trim().to_lowercase();
+    let states = [
+        "always ", "never ", "my preference", "i prefer", "from now on", "every answer", "every time", "convention",
+        "rule:", "rule for this", "must be", "must always", "don't ever", "do not ever", "make sure to", "remember to",
+        "remember that", "remember this",
+    ];
+    let corrects = ["out of date", "no longer", "is retired", "was deleted", "changed from", "is now `", "moved from"];
+    let leads = ["no,", "no.", "no —", "no -", "no:", "correction", "actually,", "update:"];
+    states.iter().chain(corrects.iter()).any(|k| p.contains(k)) || leads.iter().any(|l| p.starts_with(l))
 }
 
 /// Word-set overlap (Jaccard) of two texts, 0–1.
@@ -912,7 +1306,7 @@ impl Session {
         Some(Doc {
             content: redact(&content),
             scope: Scope::Project(String::new()),
-            metadata: self.metadata("turn"),
+            metadata: self.metadata(if is_rule(prompt) { "rule" } else { "turn" }),
             custom_id: Some(format!("dove_{}_{}", self.task, self.turns)),
             at: dove_store::now_ms(),
         })
@@ -1000,47 +1394,108 @@ pub async fn before_send(session: &Shared, prompt: String) -> String {
     }
     let shared = session.clone();
     let query = redact(&clip(&query, 1000));
+    let started = std::time::Instant::now();
     let job = blocking(move || {
-        let scopes = shared.lock().scopes();
-        // The profile and every scope's search at once: recall has a few
-        // seconds at most.
-        let (profile, mut found) = std::thread::scope(|t| {
-            let profile = t.spawn(|| match scopes.first().filter(|_| first).map(|p| b.profile(p)) {
-                Some(Ok(p)) => p,
-                Some(Err(e)) => {
-                    tracing::debug!("memory profile: {e}");
-                    Vec::new()
+        let (scopes, root) = {
+            let s = shared.lock();
+            (s.scopes(), s.store.root().to_path_buf())
+        };
+        // What this machine saved, at once; the service's results join below.
+        let local = LocalIndex::at(&root);
+        let local_found: Vec<Memory> = scopes.iter().flat_map(|s| local.search(s, &query, 6)).collect();
+        let local_standing: Vec<Memory> =
+            if first { scopes.iter().flat_map(|s| local.standing(s, 12)).collect() } else { Vec::new() };
+        // The profile, each scope's standing rules and each scope's search
+        // all at once; whatever has arrived by the deadline goes in, so one
+        // slow call never costs the prompt the others.
+        let deadline = started + RECALL_COLLECT;
+        let (tx, rx) = std::sync::mpsc::channel::<(u8, Vec<Memory>)>();
+        let mut jobs = 0;
+        let mut spawn = |part: u8, f: Box<dyn FnOnce() -> Result<Vec<Memory>, String> + Send>| {
+            let tx = tx.clone();
+            jobs += 1;
+            let _ = std::thread::Builder::new().name("dove-recall".into()).spawn(move || {
+                match f() {
+                    Ok(list) => {
+                        let _ = tx.send((part, list));
+                    }
+                    Err(e) => {
+                        tracing::debug!("memory recall part {part}: {e}");
+                        let _ = tx.send((part, Vec::new()));
+                    }
                 }
-                None => Vec::new(),
             });
-            let searches: Vec<_> = scopes
-                .iter()
-                .map(|scope| {
-                    let (b, query) = (&b, &query);
-                    t.spawn(move || match b.search(query, scope, 6) {
-                        Ok(list) => list,
-                        Err(e) => {
-                            tracing::debug!("memory search ({}): {e}", scope.label());
-                            Vec::new()
-                        }
-                    })
-                })
-                .collect();
-            let found: Vec<Memory> = searches.into_iter().flat_map(|h| h.join().unwrap_or_default()).collect();
-            (profile.join().unwrap_or_default(), found)
-        });
+        };
+        if first {
+            if let Some(project) = scopes.first().cloned() {
+                let b = b.clone();
+                spawn(1, Box::new(move || b.profile(&project)));
+            }
+            for scope in scopes.iter().cloned() {
+                let (b, q) = (b.clone(), query.clone());
+                spawn(0, Box::new(move || b.standing(&scope, &q, 12)));
+            }
+        }
+        for scope in scopes.iter().cloned() {
+            let (b, q) = (b.clone(), query.clone());
+            spawn(2, Box::new(move || b.search(&q, &scope, 6)));
+        }
+        drop(tx);
+        let (mut standing, mut profile, mut found) = (Vec::new(), Vec::new(), Vec::new());
+        let mut got = 0;
+        while got < jobs {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            match rx.recv_timeout(left) {
+                Ok((part, list)) => {
+                    got += 1;
+                    match part {
+                        0 => standing.extend(list),
+                        1 => profile.extend(list),
+                        _ => found.extend(list),
+                    }
+                }
+                Err(_) => {
+                    tracing::info!("memory recall: {} of {jobs} lookups answered in time", got);
+                    break;
+                }
+            }
+        }
+        standing.sort_by(|a, b| b.at.cmp(&a.at));
         found.sort_by(|a, b| b.score.unwrap_or(0.0).total_cmp(&a.score.unwrap_or(0.0)));
-        (profile, found)
+        let standing = merge_unique(local_standing, standing);
+        // A rule already shown as standing is not repeated as a match.
+        let found = merge_unique(local_found, found);
+        let found: Vec<Memory> =
+            found.into_iter().filter(|m| !standing.iter().any(|s| s.text == m.text)).collect();
+        // A long memory shows the part that answers this prompt, not its
+        // opening (the one sentence that matters is often in the middle).
+        let focus = |list: Vec<Memory>| -> Vec<Memory> {
+            list.into_iter().map(|m| Memory { text: excerpt(&m.text, &query, ITEM_CHARS), ..m }).collect()
+        };
+        (focus(standing), profile, focus(found))
     });
-    let Ok(Ok((profile, found))) = tokio::time::timeout(RECALL_TIMEOUT, job).await else {
-        tracing::debug!("memory recall skipped (slow or failed)");
+    let Ok(Ok((standing, profile, found))) = tokio::time::timeout(RECALL_TIMEOUT, job).await else {
+        tracing::info!("memory recall skipped after {} ms (slow or failed)", started.elapsed().as_millis());
         return prompt;
     };
     let mut s = session.lock();
     s.profiled = true;
+    let counts = (standing.len(), profile.len(), found.len());
+    let standing = s.dedupe.fresh(standing);
     let profile = s.dedupe.fresh(profile);
     let found = s.dedupe.fresh(found);
-    match render_block(&profile, &found, BUDGET_CHARS) {
+    let block = render_block_with(&standing, &profile, &found, BUDGET_CHARS);
+    tracing::info!(
+        "memory recall for {} in {} ms: {} standing, {} profile, {} found; {} new, {} sent",
+        s.task,
+        started.elapsed().as_millis(),
+        counts.0,
+        counts.1,
+        counts.2,
+        standing.len() + profile.len() + found.len(),
+        block.as_ref().map_or(0, |(_, n)| *n)
+    );
+    match block {
         Some((block, _)) => augment(&prompt, &block),
         None => prompt,
     }
@@ -1180,7 +1635,7 @@ pub fn consolidate(store: &Store) -> Result<Report, String> {
     scopes.push(Scope::User);
     scopes.dedup();
     let mut report = Report { at: dove_store::now_ms(), ..Default::default() };
-    let mut all = Vec::new();
+    let local = LocalIndex::at(store.root());
     for scope in scopes {
         let mut list = Vec::new();
         for page in 1..=4 {
@@ -1199,15 +1654,22 @@ pub fn consolidate(store: &Store) -> Result<Report, String> {
                 }
             }
         }
+        // What this machine saved, plus what only the service has (other
+        // machines, Supermemory's own plugins).
+        let list = merge_unique(local.recent(&scope, 200), list);
         report.scanned += list.len();
         for group in duplicates(&list, 0.85) {
             let keep = list[group[0]].clone();
             let copies = group[1..].iter().map(|&i| list[i].clone()).collect();
             report.duplicates.push((scope.clone(), keep, copies));
         }
-        all.extend(list);
+        // Workflows are per project: name each draft after its repository.
+        for mut skill in propose_skills(&list, 3) {
+            skill.name = format!("{}-{}", scope_short_name(&scope), skill.name.trim_start_matches("project-"));
+            report.skills.push(skill);
+        }
     }
-    report.skills = propose_skills(&all, 3);
+    report.skills.sort_by(|a, b| b.seen.cmp(&a.seen));
     let root = store.root();
     let dir = suggested_skills_dir(root);
     for s in &report.skills {
@@ -1223,11 +1685,142 @@ pub fn consolidate(store: &Store) -> Result<Report, String> {
     Ok(report)
 }
 
+/// A scope as a short slug: the repository name of `repo_<name>__<hash>`.
+pub fn scope_short_name(scope: &Scope) -> String {
+    match scope {
+        Scope::Project(t) => t.strip_prefix("repo_").unwrap_or(t).split("__").next().unwrap_or(t).to_string(),
+        Scope::Team(t) => t.clone(),
+        Scope::User => "user".into(),
+    }
+}
+
 /// Whether the weekly consolidation is due.
 pub fn consolidation_due(store: &Store) -> bool {
     const WEEK_MS: i64 = 7 * 24 * 60 * 60 * 1000;
     let last: i64 = store.setting(CONSOLIDATED_AT).and_then(|s| s.parse().ok()).unwrap_or(0);
     dove_store::now_ms() - last > WEEK_MS
+}
+
+// ------------------------------------------------------------- user actions
+
+/// `kind` of a memory the user pinned with "Remember this".
+pub const PINNED: &str = "pinned";
+/// Longest pinned message.
+const PIN_CHARS: usize = 8000;
+
+/// The memory "Remember this" saves for a chat message: its words without
+/// the recalled block or persona, redacted, `None` when nothing is left.
+/// Pinning the same words to the same scope twice keeps one copy.
+pub fn pin_doc(text: &str, scope: Scope, project: Option<&str>, at: i64) -> Option<Doc> {
+    let text = crate::strip_persona(text).trim();
+    if text.is_empty() {
+        return None;
+    }
+    let content = redact(&clip(text, PIN_CHARS));
+    let mut metadata: BTreeMap<String, String> =
+        [("source", "dove"), ("kind", PINNED)].into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+    if let Some(p) = project.filter(|p| !p.is_empty()) {
+        metadata.insert("project".into(), p.to_string());
+    }
+    let custom_id = Some(format!("dove_pin_{}", sha16(&format!("{}\n{content}", scope_key(&scope)))));
+    Some(Doc { content, scope, metadata, custom_id, at })
+}
+
+/// Whether `stored` is the memory a recalled chip line shows. The chip
+/// holds the text flattened to one line and clipped with `…`.
+pub fn same_memory(shown: &str, stored: &str) -> bool {
+    let flat = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase();
+    let shown = shown.trim();
+    let clipped = shown.ends_with('…');
+    let shown = flat(shown.trim_end_matches('…'));
+    let stored = flat(stored);
+    !shown.is_empty() && (stored == shown || (clipped && stored.starts_with(&shown)))
+}
+
+/// The memory in `scope` a chip line shows: a search with its words, then
+/// the newest few pages.
+fn find_shown(b: &dyn Backend, shown: &str, scope: &Scope) -> Option<Memory> {
+    let query = clip(shown.trim_end_matches('…').trim(), 1000);
+    let hit = b.search(&query, scope, 10).unwrap_or_default().into_iter().find(|m| same_memory(shown, &m.text));
+    if hit.is_some() {
+        return hit;
+    }
+    list_all(b, scope, 4).ok()?.into_iter().find(|m| same_memory(shown, &m.text))
+}
+
+/// "Forget" on a recalled memory: the chat only kept its text, so find it
+/// by content in each of `scopes` (project first) and forget it there.
+/// When no scope lists it yet, the first scope's service is asked to forget
+/// by content. Dove's own copy in `local` goes too, so recall stops
+/// offering it. Returns the scope it went from. Blocking.
+pub fn forget_recalled(
+    b: &dyn Backend,
+    local: Option<&LocalIndex>,
+    shown: &str,
+    scopes: &[Scope],
+) -> Result<Scope, String> {
+    let first = scopes.first().ok_or("no memory scope")?;
+    if let Some(local) = local {
+        local.forget_shown(shown);
+    }
+    for scope in scopes {
+        if let Some(m) = find_shown(b, shown, scope) {
+            b.forget(&m, scope)?;
+            return Ok(scope.clone());
+        }
+    }
+    b.forget(&Memory::new(shown.trim_end_matches('…').trim()), first)?;
+    Ok(first.clone())
+}
+
+/// Up to `max_pages` pages (50 each) of a scope's memories, newest first.
+pub fn list_all(b: &dyn Backend, scope: &Scope, max_pages: usize) -> Result<Vec<Memory>, String> {
+    const PAGE: usize = 50;
+    let mut all = Vec::new();
+    for page in 1..=max_pages {
+        let list = b.list(scope, page, PAGE)?;
+        let short = list.len() < PAGE;
+        all.extend(list);
+        if short {
+            break;
+        }
+    }
+    Ok(all)
+}
+
+/// The export file's default name, `export-<YYYY-MM-DD>.json` (UTC).
+pub fn export_name(at: i64) -> String {
+    let date = chrono::DateTime::from_timestamp_millis(at).unwrap_or_default().format("%Y-%m-%d");
+    format!("export-{date}.json")
+}
+
+/// Where exports go unless the user picks a file: `<root>/memory`.
+pub fn export_dir(root: &Path) -> PathBuf {
+    root.join("memory")
+}
+
+/// One scope's memories as the export file's JSON.
+pub fn export_json(scope: &Scope, memories: &[Memory], at: i64) -> String {
+    let value = serde_json::json!({
+        "source": "dove",
+        "exported_at": chrono::DateTime::from_timestamp_millis(at).unwrap_or_default().to_rfc3339(),
+        "scope": scope.label(),
+        "container": scope.container(),
+        "count": memories.len(),
+        "memories": memories,
+    });
+    serde_json::to_string_pretty(&value).unwrap_or_default()
+}
+
+/// Export every memory of `scope` (up to 40 pages) to `path`. Returns how
+/// many were written. Blocking.
+pub fn export(b: &dyn Backend, scope: &Scope, path: &Path) -> Result<usize, String> {
+    let list = list_all(b, scope, 40)?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(path, export_json(scope, &list, dove_store::now_ms())).map_err(|e| e.to_string())?;
+    Ok(list.len())
 }
 
 // ------------------------------------------------------------------ backfill
@@ -1354,7 +1947,9 @@ fn merged_prs(dir: &Path) -> Option<Vec<(u64, String, String)>> {
 /// Queue `docs` and send what can be sent now. Returns `(sent, waiting)`.
 pub fn ingest(root: &Path, docs: &[Doc]) -> (usize, usize) {
     let outbox = Outbox::at(root);
+    let local = LocalIndex::at(root);
     for d in docs {
+        local.add(d);
         let _ = outbox.push(d);
     }
     match backend() {
@@ -1437,6 +2032,14 @@ mod tests {
         // Ordinary prose survives.
         let plain = "Run cargo test -p dove-core, then open the token picker.";
         assert_eq!(redact(plain), plain);
+        // An agent echoing a secret back in plain words is scrubbed too.
+        let turn = "User: the db password=hunter9xyzSECRET\nAgent: Acknowledged: the DB password is hunter9xyzSECRET.";
+        let out = redact(turn);
+        assert!(!out.contains("hunter9xyzSECRET"), "{out}");
+        assert!(redact("My API key is abc123def456ghi").contains("API key is [REDACTED]"));
+        assert_eq!(redact("The token is valid."), "The token is valid.");
+        assert_eq!(redact("The password is required here."), "The password is required here.");
+        assert_eq!(redact("The password is Hunter2x."), "The password is [REDACTED].");
     }
 
     #[test]
@@ -1473,6 +2076,92 @@ mod tests {
         // Persona and memory both stripped.
         let p = format!("{block}<dove-persona>\nYou are Ava\n</dove-persona>\n\nHi");
         assert_eq!(crate::strip_persona(&p), "Hi");
+    }
+
+    #[test]
+    fn long_memories_show_the_part_that_answers() {
+        let filler = "The team discussed onboarding, CI caching and the docs site. ".repeat(20);
+        let text = format!("User: Long design note. {filler}Our feature flag service is called `lumen7`. {filler}");
+        let out = excerpt(&text, "Which feature flag service do we use?", ITEM_CHARS);
+        assert!(out.contains("lumen7"), "{out}");
+        assert!(out.chars().count() <= ITEM_CHARS);
+        assert_eq!(excerpt("Short memory.", "anything", ITEM_CHARS), "Short memory.");
+        // Nothing matches: the opening, as before.
+        assert!(excerpt(&text, "zzz qqq", 50).starts_with("User: Long design note."));
+    }
+
+    #[test]
+    fn recall_redacts_old_memories_on_the_way_out() {
+        let leaked = Memory::new("Agent: Acknowledged: local test DB password is hunter7xyzSECRET.");
+        let (block, _) = render_block(&[], &[leaked], BUDGET_CHARS).unwrap();
+        assert!(!block.contains("hunter7xyzSECRET"), "{block}");
+    }
+
+    #[test]
+    fn standing_rules_lead_with_dates() {
+        let rule = Memory { text: "Start answers with ORB:".into(), at: Some("2026-10-20T19:14:05.000Z".into()), ..Default::default() };
+        let (block, n) = render_block_with(&[rule], &[], &[Memory::new("Port is 4317")], BUDGET_CHARS).unwrap();
+        assert_eq!(n, 2);
+        assert!(block.contains("Standing rules:\n- [2026-10-20 19:14] Start answers with ORB:"));
+        assert!(block.find("Standing rules").unwrap() < block.find("Relevant").unwrap());
+        assert_eq!(recalled(&block).unwrap(), vec!["Start answers with ORB:", "Port is 4317"]);
+        assert!(is_rule("My preference: always use tabs"));
+        assert!(is_rule("From now on run cargo fmt first"));
+        assert!(!is_rule("What is a mutex?"));
+        assert!(is_rule("No, that's out of date: the dev server port changed from 4100 to 4317."));
+        assert!(is_rule("Correction: staging is orbit-stg now"));
+        assert!(!is_rule("Nothing to add, thanks"));
+        assert!(!is_rule("Add the dayjs package"));
+    }
+
+    #[test]
+    fn local_index_finds_rules_and_matches() {
+        let dir = tempfile::tempdir().unwrap();
+        let idx = LocalIndex::at(dir.path());
+        let project = Scope::Project("repo_x__1".into());
+        let doc = |text: &str, kind: &str, at: i64| Doc {
+            content: text.into(),
+            scope: project.clone(),
+            metadata: [("kind".to_string(), kind.to_string())].into(),
+            custom_id: None,
+            at,
+        };
+        idx.add(&doc("User: Background jobs take locks with Postgres advisory locks. Agent: Noted.", "turn", 1_000));
+        idx.add(&doc("User: Staging deploys with fly deploy --app orbit-stg. Agent: OK.", "turn", 2_000));
+        idx.add(&doc("User: No, the dev server port changed from 4100 to 41020.", "rule", 3_000));
+        idx.add(&doc("User: Start every answer with ORB:", "rule", 4_000));
+        idx.add(&Doc { scope: Scope::Project(String::new()), ..doc("placeholder scope is skipped", "turn", 6_000) });
+        idx.add(&Doc { scope: Scope::Project("other".into()), ..doc("Other repo: locking with Redis", "turn", 7_000) });
+
+        let hits = idx.search(
+            &project,
+            "I'm adding a nightly cleanup job to this project. Which locking mechanism should it use here, and what \
+             exact command deploys it to staging? Two short lines. Do not look at files.",
+            6,
+        );
+        let texts: Vec<&str> = hits.iter().map(|m| m.text.as_str()).collect();
+        assert!(texts.iter().any(|t| t.contains("advisory")), "{texts:?}");
+        assert!(texts.iter().any(|t| t.contains("orbit-stg")), "{texts:?}");
+        assert!(texts.iter().all(|t| !t.contains("Redis")), "other scope leaked: {texts:?}");
+        assert!(idx.search(&project, "What is a mutex?", 6).is_empty());
+
+        let rules = idx.standing(&project, 10);
+        assert_eq!(rules.len(), 2);
+        assert!(rules[0].text.contains("ORB:"), "newest first");
+        assert!(rules[0].at.as_deref().is_some_and(|t| t.starts_with("1970-01-01T00:00:04")));
+
+        idx.forget("User: Start every answer with ORB:");
+        assert_eq!(idx.standing(&project, 10).len(), 1);
+    }
+
+    #[test]
+    fn merge_drops_remote_copies_of_local_memories() {
+        let local = vec![Memory::new("User: build with just build-1. Agent: Noted: build with just build-1.")];
+        let remote = vec![Memory::new("build with just build-1."), Memory::new("Deploys go through staging")];
+        let merged = merge_unique(local, remote);
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged[1].text, "Deploys go through staging");
+        assert_eq!(terms("Locking the jobs"), vec!["lock", "job"]);
     }
 
     #[test]
@@ -1569,6 +2258,129 @@ mod tests {
         assert_eq!(skills[0].name, "project-cargo-workflow");
         assert_eq!(skills[0].steps[0], "cargo test -j 2");
         assert!(skills[0].skill_md().starts_with("---\nname: project-cargo-workflow\n"));
+        assert_eq!(scope_short_name(&Scope::Project("repo_dove__ab12".into())), "dove");
+        assert_eq!(scope_short_name(&Scope::User), "user");
+    }
+
+    /// Memories per scope; records what was forgotten.
+    #[derive(Default)]
+    struct Fake {
+        mem: Mutex<Vec<(Scope, Memory)>>,
+        forgot: Mutex<Vec<(Scope, Memory)>>,
+    }
+
+    impl Backend for Fake {
+        fn search(&self, query: &str, scope: &Scope, limit: usize) -> Result<Vec<Memory>, String> {
+            let word = query.split_whitespace().next().unwrap_or_default().to_lowercase();
+            Ok(self
+                .mem
+                .lock()
+                .iter()
+                .filter(|(s, m)| s == scope && m.text.to_lowercase().contains(&word))
+                .map(|(_, m)| m.clone())
+                .take(limit)
+                .collect())
+        }
+        fn profile(&self, _: &Scope) -> Result<Vec<Memory>, String> {
+            Ok(Vec::new())
+        }
+        fn add(&self, _: &Doc) -> Result<(), String> {
+            Ok(())
+        }
+        fn list(&self, scope: &Scope, page: usize, limit: usize) -> Result<Vec<Memory>, String> {
+            let all: Vec<Memory> = self.mem.lock().iter().filter(|(s, _)| s == scope).map(|(_, m)| m.clone()).collect();
+            Ok(all.into_iter().skip((page - 1) * limit).take(limit).collect())
+        }
+        fn forget(&self, memory: &Memory, scope: &Scope) -> Result<(), String> {
+            self.forgot.lock().push((scope.clone(), memory.clone()));
+            Ok(())
+        }
+        fn who_am_i(&self) -> Result<String, String> {
+            Ok("test".into())
+        }
+    }
+
+    #[test]
+    fn pinned_messages_are_clean_and_idempotent() {
+        let project = Scope::Project("repo_x__1".into());
+        let block = render_block(&[], &[Memory::new("old fact")], BUDGET_CHARS).unwrap().0;
+        let text = format!("{block}Always use pnpm. token=abcdef123456");
+        let d = pin_doc(&text, project.clone(), Some("Widget"), 7).unwrap();
+        assert_eq!(d.content, "Always use pnpm. token=[REDACTED]");
+        assert_eq!(d.metadata["kind"], PINNED);
+        assert_eq!(d.metadata["project"], "Widget");
+        assert_eq!(d.scope, project);
+        assert_eq!(d.custom_id, pin_doc(&text, project.clone(), None, 9).unwrap().custom_id);
+        assert_ne!(d.custom_id, pin_doc(&text, Scope::User, None, 7).unwrap().custom_id);
+        assert!(!pin_doc(&text, Scope::User, None, 7).unwrap().metadata.contains_key("project"));
+        assert!(pin_doc("   ", Scope::User, None, 0).is_none());
+        assert!(pin_doc(&block, Scope::User, None, 0).is_none());
+    }
+
+    #[test]
+    fn recalled_lines_match_their_memory() {
+        assert!(same_memory("Uses pnpm", "uses\n  pnpm"));
+        assert!(same_memory("Run tests with cargo…", "Run tests with cargo test -j 2"));
+        assert!(!same_memory("Run tests with cargo", "Run tests with cargo test -j 2"));
+        assert!(!same_memory("…", "anything"));
+        // The chip's own rendering round-trips.
+        let long = format!("Deploy {}", "step ".repeat(200));
+        let block = render_block(&[], &[Memory::new(long.clone())], BUDGET_CHARS).unwrap().0;
+        let shown = &recalled(&block).unwrap()[0];
+        assert!(same_memory(shown, &long));
+    }
+
+    #[test]
+    fn forget_recalled_finds_by_content() {
+        let project = Scope::Project("repo_x__1".into());
+        let fake = Fake::default();
+        fake.mem.lock().push((Scope::User, Memory { id: Some("u1".into()), ..Memory::new("Prefers dark mode") }));
+        fake.mem.lock().push((project.clone(), Memory { id: Some("p1".into()), ..Memory::new("Uses pnpm") }));
+        let scopes = [project.clone(), Scope::User];
+        let dir = tempfile::tempdir().unwrap();
+        let local = LocalIndex::at(dir.path());
+        let pinned = pin_doc("Unknown fact that runs on and on", project.clone(), None, 1).unwrap();
+        local.add(&pinned);
+        assert_eq!(local.search(&project, "unknown fact runs", 5).len(), 1);
+        assert_eq!(forget_recalled(&fake, None, "Prefers dark mode", &scopes).unwrap(), Scope::User);
+        assert_eq!(forget_recalled(&fake, Some(&local), "uses pnpm", &scopes).unwrap(), project);
+        // Not listed anywhere: the project scope is asked to forget the words,
+        // and Dove's own clipped copy goes too.
+        assert_eq!(forget_recalled(&fake, Some(&local), "Unknown fact…", &scopes).unwrap(), project);
+        assert!(local.search(&project, "unknown fact runs", 5).is_empty());
+        let forgot = fake.forgot.lock();
+        assert_eq!(forgot[0].1.id.as_deref(), Some("u1"));
+        assert_eq!(forgot[1].1.id.as_deref(), Some("p1"));
+        assert_eq!(forgot[2].1, Memory::new("Unknown fact"));
+        assert!(forget_recalled(&fake, None, "x", &[]).is_err());
+    }
+
+    #[test]
+    fn export_pages_and_names() {
+        let fake = Fake::default();
+        for i in 0..120 {
+            fake.mem.lock().push((Scope::User, Memory::new(format!("m{i}"))));
+        }
+        assert_eq!(list_all(&fake, &Scope::User, 40).unwrap().len(), 120);
+        assert_eq!(list_all(&fake, &Scope::User, 2).unwrap().len(), 100);
+        // 2026-10-20T00:00:00Z
+        assert_eq!(export_name(1_792_454_400_000), "export-2026-10-20.json");
+        let dir = tempfile::tempdir().unwrap();
+        let path = export_dir(dir.path()).join("out.json");
+        assert_eq!(export(&fake, &Scope::User, &path).unwrap(), 120);
+        let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(v["count"], 120);
+        assert_eq!(v["scope"], "user");
+        assert!(v["container"].is_null());
+        assert_eq!(v["memories"][0]["text"], "m0");
+    }
+
+    #[test]
+    fn isolate_worktrees_setting_or_env() {
+        assert!(!isolating(false, None));
+        assert!(!isolating(false, Some("1")));
+        assert!(isolating(false, Some("true")));
+        assert!(isolating(true, None));
     }
 
     #[test]

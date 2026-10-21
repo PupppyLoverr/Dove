@@ -76,6 +76,32 @@ pub struct Supermemory {
 struct Rest {
     def: McpServer,
     http: reqwest::Client,
+    /// One runtime for every REST call: pooled connections belong to the
+    /// runtime that opened them, so a runtime per call left the pool full of
+    /// dead connections ("error sending request" on the next call).
+    rt: Option<tokio::runtime::Runtime>,
+}
+
+impl Rest {
+    fn new(def: McpServer) -> Self {
+        let http = reqwest::Client::builder().timeout(Duration::from_secs(20)).build().unwrap_or_default();
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .thread_name("dove-supermemory-http")
+            .enable_all()
+            .build()
+            .ok();
+        Self { def, http, rt }
+    }
+}
+
+impl Drop for Rest {
+    fn drop(&mut self) {
+        // Never blocks, so the last handle may go anywhere.
+        if let Some(rt) = self.rt.take() {
+            rt.shutdown_background();
+        }
+    }
 }
 
 /// The live connection and what its tools accept.
@@ -91,18 +117,34 @@ struct Conn {
 
 /// Supermemory's REST API.
 const API: &str = "https://api.supermemory.ai";
+
+/// An error with its causes (reqwest's own message hides whether it was a
+/// timeout, DNS or TLS).
+fn chain(e: &dyn std::error::Error) -> String {
+    let mut out = e.to_string();
+    let mut cause = e.source();
+    while let Some(c) = cause {
+        out.push_str(": ");
+        out.push_str(&c.to_string());
+        cause = c.source();
+    }
+    out
+}
 /// The account's default space: where the MCP tools put memories saved
 /// without a namespace, so the user scope over REST.
 const DEFAULT_SPACE: &str = "sm_project_default";
 
 /// How long one call may take.
 const CALL_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long recall waits for the MCP side (extracted memories, profile).
+/// Calls share one connection and queue, so a slow one must not cost the
+/// prompt its REST results: recall as a whole has a few seconds.
+const RECALL_MCP_WAIT: Duration = Duration::from_millis(2500);
 
 impl Supermemory {
     fn start(def: McpServer) -> Self {
         let (jobs, rx) = mpsc::channel::<Job>();
-        let http = reqwest::Client::builder().timeout(Duration::from_secs(20)).build().unwrap_or_default();
-        let rest = Arc::new(Rest { def: def.clone(), http });
+        let rest = Arc::new(Rest::new(def.clone()));
         let _ = std::thread::Builder::new().name("dove-supermemory".into()).spawn(move || {
             let mut conn = Conn { def, server: None, tools: Vec::new(), conversation: None };
             while let Ok(job) = rx.recv() {
@@ -113,13 +155,23 @@ impl Supermemory {
     }
 
     fn run<T: Send + 'static>(&self, f: impl FnOnce(&mut Conn) -> Result<T, String> + Send + 'static) -> Result<T, String> {
+        self.run_for(CALL_TIMEOUT, f)
+    }
+
+    /// [`Self::run`], waiting at most `wait` (the call itself still finishes
+    /// on the worker; its answer is dropped).
+    fn run_for<T: Send + 'static>(
+        &self,
+        wait: Duration,
+        f: impl FnOnce(&mut Conn) -> Result<T, String> + Send + 'static,
+    ) -> Result<T, String> {
         let (tx, rx) = mpsc::channel();
         self.jobs
             .send(Box::new(move |c| {
                 let _ = tx.send(f(c));
             }))
             .map_err(|_| "the Supermemory connection stopped".to_string())?;
-        rx.recv_timeout(CALL_TIMEOUT).unwrap_or_else(|_| Err("Supermemory did not answer in time".into()))
+        rx.recv_timeout(wait).unwrap_or_else(|_| Err("Supermemory did not answer in time".into()))
     }
 }
 
@@ -138,12 +190,19 @@ impl Rest {
 
     /// POST `body` to `path` on the REST API. Refreshes the sign-in once on 401.
     fn post(&self, path: &str, body: Value) -> Result<Value, String> {
+        self.send(reqwest::Method::POST, path, Some(body))
+    }
+
+    fn send(&self, method: reqwest::Method, path: &str, body: Option<Value>) -> Result<Value, String> {
         let mut token = self.bearer().ok_or("no Supermemory credential")?;
         for attempt in 0..2 {
-            let req = self.http.post(format!("{API}{path}")).bearer_auth(&token).json(&body);
-            let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| e.to_string())?;
+            let mut req = self.http.request(method.clone(), format!("{API}{path}")).bearer_auth(&token);
+            if let Some(b) = &body {
+                req = req.json(b);
+            }
+            let rt = self.rt.as_ref().ok_or("no runtime for Supermemory calls")?;
             let (status, text) = rt.block_on(async {
-                let resp = req.send().await.map_err(|e| format!("could not reach Supermemory: {e}"))?;
+                let resp = req.send().await.map_err(|e| format!("could not reach Supermemory: {}", chain(&e)))?;
                 let status = resp.status();
                 Ok::<_, String>((status, resp.text().await.unwrap_or_default()))
             })?;
@@ -157,9 +216,41 @@ impl Rest {
             if !status.is_success() {
                 return Err(format!("Supermemory {path} answered {status}: {}", text.chars().take(200).collect::<String>()));
             }
+            if text.trim().is_empty() {
+                return Ok(Value::Null);
+            }
             return serde_json::from_str(&text).map_err(|e| format!("Supermemory {path}: {e}"));
         }
         Err("Supermemory refused the credentials".into())
+    }
+
+    /// One page of a container's documents with their text (newest first).
+    /// Memory extraction lags behind saves, so listing falls back to this.
+    fn documents(&self, tag: &str, page: usize, limit: usize) -> Result<Vec<Memory>, String> {
+        let list = self.post("/v3/documents/list", json!({"containerTags": [tag], "page": page, "limit": limit}))?;
+        let ids: Vec<String> = list
+            .get("memories")
+            .or_else(|| list.get("documents"))
+            .and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(|d| d.get("id")?.as_str().map(str::to_string)).collect())
+            .unwrap_or_default();
+        let mut out = Vec::new();
+        for id in ids {
+            let doc = self.send(reqwest::Method::GET, &format!("/v3/documents/{id}"), None)?;
+            let text = ["content", "raw", "summary", "title"]
+                .iter()
+                .find_map(|k| doc.get(*k)?.as_str().filter(|t| !t.trim().is_empty()))
+                .unwrap_or_default();
+            if !text.is_empty() {
+                let at = doc.get("createdAt").and_then(Value::as_str).map(str::to_string);
+                out.push(Memory { id: Some(id), text: text.trim().to_string(), score: None, at });
+            }
+        }
+        Ok(out)
+    }
+
+    fn delete_document(&self, id: &str) -> Result<(), String> {
+        self.send(reqwest::Method::DELETE, &format!("/v3/documents/{id}"), None).map(|_| ())
     }
 
 }
@@ -252,8 +343,8 @@ impl memory::Backend for Supermemory {
         let tag = scope.container().unwrap_or(DEFAULT_SPACE);
         let body = json!({"q": query, "limit": limit, "onlyMatchingChunks": true, "containerTags": [tag]});
         let rest = self.rest.clone();
-        let documents = std::thread::spawn(move || rest.post("/v3/search", body).map(|r| documents_of(&r)));
-        let memories = self.run(move |c| {
+        let documents = std::thread::spawn(move || rest.post("/v3/search", body).map(|r| relevant_documents(&r)));
+        let memories = self.run_for(RECALL_MCP_WAIT, move |c| {
             c.call(&["search_memory", "recall", "search"], |props| {
                 let mut a = serde_json::Map::new();
                 put(&mut a, props, &["query", "q", "informationToGet"], json!(query));
@@ -287,9 +378,25 @@ impl memory::Backend for Supermemory {
         }
     }
 
+    fn standing(&self, scope: &Scope, query: &str, limit: usize) -> Result<Vec<Memory>, String> {
+        let tag = scope.container().unwrap_or(DEFAULT_SPACE);
+        // Every saved correction and stated rule, ranked by the prompt but
+        // never dropped for scoring low: they apply to everything.
+        let body = json!({
+            "q": if query.trim().is_empty() { "rules" } else { query },
+            "limit": limit,
+            "onlyMatchingChunks": false,
+            "containerTags": [tag],
+            "filters": {"OR": [{"key": "kind", "value": "feedback"}, {"key": "kind", "value": "rule"}]},
+        });
+        let mut out = documents_of(&self.rest.post("/v3/search", body)?);
+        out.sort_by(|a, b| b.at.cmp(&a.at));
+        Ok(out)
+    }
+
     fn profile(&self, scope: &Scope) -> Result<Vec<Memory>, String> {
         let scope = scope.clone();
-        self.run(move |c| {
+        self.run_for(RECALL_MCP_WAIT, move |c| {
             let r = c.call(&["get_profile", "profile"], |props| {
                 let mut a = serde_json::Map::new();
                 with_scope(&mut a, props, &scope, false);
@@ -326,9 +433,10 @@ impl memory::Backend for Supermemory {
     }
 
     fn list(&self, scope: &Scope, page: usize, limit: usize) -> Result<Vec<Memory>, String> {
+        let tag = scope.container().unwrap_or(DEFAULT_SPACE).to_string();
         let scope = scope.clone();
-        self.run(move |c| {
-            let r = c.call(&["list_memories", "list_documents"], |props| {
+        let memories = self.run(move |c| {
+            let r = c.call(&["list_memories"], |props| {
                 let mut a = serde_json::Map::new();
                 put(&mut a, props, &["page"], json!(page));
                 put(&mut a, props, &["limit"], json!(limit.min(50)));
@@ -336,18 +444,34 @@ impl memory::Backend for Supermemory {
                 Value::Object(a)
             })?;
             Ok(memories_of(&r))
-        })
+        });
+        match memories {
+            Ok(list) if !list.is_empty() => Ok(list),
+            // Nothing extracted yet: the saved documents themselves.
+            other => self.rest.documents(&tag, page, limit.min(50)).or_else(|e| other.map_err(|m| format!("{m}; {e}"))),
+        }
     }
 
     fn forget(&self, m: &Memory, scope: &Scope) -> Result<(), String> {
+        // A document (from document search or listing) is deleted outright;
+        // an extracted memory goes through `forget_memory`.
+        if let Some(id) = &m.id
+            && self.rest.delete_document(id).is_ok()
+        {
+            return Ok(());
+        }
         let (m, scope) = (m.clone(), scope.clone());
         self.run(move |c| {
             c.call(&["forget_memory", "memory"], |props| {
                 let mut a = serde_json::Map::new();
-                put(&mut a, props, &["content", "thingToForget", "memory", "text"], json!(m.text));
-                put(&mut a, props, &["action"], json!("forget"));
-                if let Some(id) = &m.id {
-                    put(&mut a, props, &["memoryId", "id"], json!(id));
+                match &m.id {
+                    Some(id) if props.iter().any(|p| p == "ids") => {
+                        a.insert("ids".into(), json!([id]));
+                    }
+                    _ => put(&mut a, props, &["content", "thingToForget", "memory", "text"], json!(m.text)),
+                }
+                if !props.iter().any(|p| p == "ids") {
+                    put(&mut a, props, &["action"], json!("forget"));
                 }
                 with_scope(&mut a, props, &scope, true);
                 Value::Object(a)
@@ -411,10 +535,16 @@ fn documents_of(reply: &Value) -> Vec<Memory> {
                 id: r.get("documentId").and_then(Value::as_str).map(str::to_string),
                 text: text.trim().to_string(),
                 score: r.get("score").and_then(Value::as_f64).map(|s| s as f32),
+                at: r.get("createdAt").and_then(Value::as_str).map(str::to_string),
             })
         })
-        .filter(|m| !m.text.is_empty() && m.score.is_none_or(|s| s >= MIN_DOC_SCORE))
+        .filter(|m| !m.text.is_empty())
         .collect()
+}
+
+/// [`documents_of`] without the noise: hits under [`MIN_DOC_SCORE`] dropped.
+fn relevant_documents(reply: &Value) -> Vec<Memory> {
+    documents_of(reply).into_iter().filter(|m| m.score.is_none_or(|s| s >= MIN_DOC_SCORE)).collect()
 }
 
 /// Document hits below this hybrid score are noise for recall: unrelated
@@ -496,6 +626,9 @@ fn collect(v: &Value, out: &mut Vec<Memory>, depth: usize) {
                         let text = TEXT_KEYS.iter().find_map(|k| o.get(*k)?.as_str().filter(|s| !s.trim().is_empty()));
                         match text {
                             Some(t) => out.push(Memory {
+                                at: ["createdAt", "updatedAt"]
+                                    .iter()
+                                    .find_map(|k| o.get(*k)?.as_str().map(str::to_string)),
                                 id: ["id", "memoryId", "documentId", "customId"]
                                     .iter()
                                     .find_map(|k| o.get(*k)?.as_str().map(str::to_string)),
@@ -608,8 +741,9 @@ mod tests {
             {"documentId": "d2", "score": 0.7, "title": "Only a title", "chunks": []},
             {"documentId": "d3", "score": 0.52, "title": "Unrelated", "chunks": []}
         ], "total": 2});
-        let m = documents_of(&r);
+        let m = relevant_documents(&r);
         assert_eq!(m.len(), 2);
+        assert_eq!(documents_of(&r).len(), 3);
         assert_eq!(m[0].text, "build with just build-1");
         assert_eq!(m[0].id.as_deref(), Some("d1"));
         assert_eq!(m[1].text, "Only a title");
@@ -686,6 +820,35 @@ mod e2e {
         }
         println!("timed out waiting for {what}");
         false
+    }
+
+    /// Pooled connections must survive between calls (a runtime per call
+    /// used to leave dead ones behind).
+    #[test]
+    #[ignore]
+    fn rest_calls_in_a_row() {
+        let def = server(&cfg::load()).unwrap();
+        let rest = Rest::new(def);
+        for i in 0..12 {
+            let started = Instant::now();
+            let r = rest.post("/v3/search", json!({"q": "build command", "limit": 1, "containerTags": [DEFAULT_SPACE]}));
+            println!("call {i}: {:?} in {:?}", r.as_ref().map(|_| "ok"), started.elapsed());
+            assert!(r.is_ok(), "call {i}: {r:?}");
+            if i % 4 == 3 {
+                std::thread::sleep(Duration::from_secs(5));
+            }
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn rest_probe() {
+        let def = server(&cfg::load()).unwrap();
+        let rest = Rest::new(def);
+        let path = std::env::var("PROBE_PATH").unwrap_or_else(|_| "/v3/documents/list".into());
+        let body: Value = serde_json::from_str(&std::env::var("PROBE_BODY").unwrap_or_else(|_| "{}".into())).unwrap();
+        let r = rest.post(&path, body);
+        println!("{}", r.map(|v| serde_json::to_string_pretty(&v).unwrap()).unwrap_or_else(|e| e).chars().take(4000).collect::<String>());
     }
 
     #[test]
