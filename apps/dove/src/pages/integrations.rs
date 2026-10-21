@@ -162,7 +162,8 @@ pub fn parse_pasted(json: &str, taken: &[String]) -> Result<Vec<McpServer>, Stri
                 .map(|m| m.iter().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string()))).collect())
                 .unwrap_or_default()
         };
-        let url = spec.get("url").or_else(|| spec.get("httpUrl")).or_else(|| spec.get("serverUrl")).and_then(|u| u.as_str());
+        let url =
+            spec.get("url").or_else(|| spec.get("httpUrl")).or_else(|| spec.get("serverUrl")).and_then(|u| u.as_str());
         let transport = if let Some(url) = url {
             let mut headers = str_map("headers");
             headers.extend(str_map("http_headers"));
@@ -925,12 +926,13 @@ impl Render for IntegrationsView {
                             .gap(px(8.0))
                             .child(status(ok, if ok { "Connected" } else { "Not connected" }, &t))
                             .child(if signed_in {
-                                ctl::button_sm(&t, "int-composio-signout", "Sign out", Tone::Quiet)
-                                    .on_click(cx.listener(|this, _, _, cx| {
+                                ctl::button_sm(&t, "int-composio-signout", "Sign out", Tone::Quiet).on_click(
+                                    cx.listener(|this, _, _, cx| {
                                         crate::mcp_oauth::sign_out("composio");
                                         this.server_status.remove("composio");
                                         cx.notify();
-                                    }))
+                                    }),
+                                )
                             } else {
                                 ctl::button_sm(&t, "int-composio-signin", "Sign in", Tone::Filled).on_click(
                                     cx.listener(|this, _, _, cx| {
@@ -1103,11 +1105,10 @@ impl Render for IntegrationsView {
             .flex_col()
             .gap(px(space::MD))
             .map(|d| match self.scope {
-                Scope::Integrations => {
-                    d.child(page::section(&t, "MCP servers", mcp))
-                        .child(page::section(&t, "Built in", built_in))
-                        .children(discover)
-                }
+                Scope::Integrations => d
+                    .child(page::section(&t, "MCP servers", mcp))
+                    .child(page::section(&t, "Built in", built_in))
+                    .children(discover),
                 Scope::Connectors => d.child(composio),
             })
             .children(dialog)
@@ -1156,7 +1157,11 @@ mod tests {
             name: "Linear".into(),
             catalog: Some("linear".into()),
             enabled: true,
-            transport: Transport::Http { url: "https://mcp.linear.app/mcp".into(), headers: BTreeMap::new(), oauth: true },
+            transport: Transport::Http {
+                url: "https://mcp.linear.app/mcp".into(),
+                headers: BTreeMap::new(),
+                oauth: true,
+            },
         });
         c.servers.push(McpServer {
             id: "local".into(),

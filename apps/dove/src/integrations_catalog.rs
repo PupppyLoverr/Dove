@@ -306,6 +306,8 @@ mod tests {
         }
         assert!(linear.server("linear".into(), None).uses_oauth());
         let exa = get("exa").unwrap().server("exa".into(), Some("k"));
-        assert!(matches!(exa.transport, Transport::Http { ref headers, .. } if headers.get("x-api-key").map(String::as_str) == Some("k")));
+        assert!(
+            matches!(exa.transport, Transport::Http { ref headers, .. } if headers.get("x-api-key").map(String::as_str) == Some("k"))
+        );
     }
 }

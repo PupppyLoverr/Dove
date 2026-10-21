@@ -638,13 +638,16 @@ mod upstream {
                         None => None,
                     };
                     for attempt in 0..2 {
-                        let reply = runtime().block_on(post(client, url, headers, session, bearer.as_deref(), &msg, want))?;
+                        let reply =
+                            runtime().block_on(post(client, url, headers, session, bearer.as_deref(), &msg, want))?;
                         match reply {
                             Reply::Done(v) => return Ok(v),
                             Reply::Unauthorized if attempt == 0 && oauth.is_some() => {
                                 let id = oauth.as_deref().unwrap_or_default();
                                 bearer = Some(crate::mcp_oauth::refresh(id).map_err(|_| {
-                                    format!("{name} signed Dove out. Sign in again from Dove → Settings → Integrations.")
+                                    format!(
+                                        "{name} signed Dove out. Sign in again from Dove → Settings → Integrations."
+                                    )
                                 })?);
                             }
                             Reply::Unauthorized => {
@@ -899,7 +902,8 @@ mod upstream {
             return full;
         }
         // FNV-1a of the original keeps shortened names stable and distinct.
-        let hash = tool.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3));
+        let hash =
+            tool.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3));
         let suffix = format!("_{:06x}", hash & 0xff_ffff);
         let keep = MAX_TOOL_NAME - suffix.len();
         format!("{}{suffix}", &full[..keep])
@@ -988,12 +992,7 @@ mod upstream {
                 name: id.into(),
                 catalog: None,
                 enabled,
-                transport: Transport::Stdio {
-                    command: "x".into(),
-                    args: Vec::new(),
-                    env: BTreeMap::new(),
-                    cwd: None,
-                },
+                transport: Transport::Stdio { command: "x".into(), args: Vec::new(), env: BTreeMap::new(), cwd: None },
             };
             let config = Config { servers: vec![server("linear", true), server("off", false)], ..Config::default() };
             let hub = Hub::new(&config);
