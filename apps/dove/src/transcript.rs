@@ -3034,13 +3034,14 @@ impl TaskView {
             };
             let cancel = {
                 let weak = weak.clone();
-                action_button(SharedString::from(format!("remember-cancel-{i}")), icons::CLOSE, "Cancel", t)
-                    .on_click(move |_, _, cx| {
+                action_button(SharedString::from(format!("remember-cancel-{i}")), icons::CLOSE, "Cancel", t).on_click(
+                    move |_, _, cx| {
                         let _ = weak.update(cx, |v, cx| {
                             v.remember_open = None;
                             cx.notify();
                         });
-                    })
+                    },
+                )
             };
             return Some(
                 line.child("Remember for")
@@ -3122,22 +3123,17 @@ impl TaskView {
                             let weak = weak.clone();
                             let shown = m.clone();
                             row.child(text).child(
-                                div()
-                                    .flex_none()
-                                    .invisible()
-                                    .group_hover("recall-item", |s| s.visible())
-                                    .child(
-                                        action_button(
-                                            SharedString::from(format!("recall-forget-{i}-{k}")),
-                                            icons::TRASH_BIN_MINIMALISTIC,
-                                            "Forget this memory",
-                                            t,
-                                        )
-                                        .on_click(move |_, _, cx| {
-                                            let _ = weak
-                                                .update(cx, |v, cx| v.forget_recalled(i, k, shown.clone(), cx));
-                                        }),
-                                    ),
+                                div().flex_none().invisible().group_hover("recall-item", |s| s.visible()).child(
+                                    action_button(
+                                        SharedString::from(format!("recall-forget-{i}-{k}")),
+                                        icons::TRASH_BIN_MINIMALISTIC,
+                                        "Forget this memory",
+                                        t,
+                                    )
+                                    .on_click(move |_, _, cx| {
+                                        let _ = weak.update(cx, |v, cx| v.forget_recalled(i, k, shown.clone(), cx));
+                                    }),
+                                ),
                             )
                         })),
                 )

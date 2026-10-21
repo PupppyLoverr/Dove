@@ -853,8 +853,13 @@ impl IntegrationsView {
 
     /// Sign out of a catalog server (its token is dropped; the entry stays).
     pub fn sign_out_catalog(&mut self, catalog: &str, cx: &mut Context<Self>) {
-        let ids: Vec<String> =
-            self.config.servers.iter().filter(|s| s.catalog.as_deref() == Some(catalog)).map(|s| s.id.clone()).collect();
+        let ids: Vec<String> = self
+            .config
+            .servers
+            .iter()
+            .filter(|s| s.catalog.as_deref() == Some(catalog))
+            .map(|s| s.id.clone())
+            .collect();
         for id in ids {
             crate::mcp_oauth::sign_out(&id);
             self.server_status.remove(&id);

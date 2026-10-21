@@ -79,7 +79,9 @@ pub fn targets(args: &serde_json::Value) -> (Vec<String>, Vec<u32>) {
             serde_json::Value::Object(map) => {
                 for (k, v) in map {
                     match (k.as_str(), v) {
-                        ("app" | "app_name" | "process_name" | "bundle_id", serde_json::Value::String(s)) => names.push(s.clone()),
+                        ("app" | "app_name" | "process_name" | "bundle_id", serde_json::Value::String(s)) => {
+                            names.push(s.clone())
+                        }
                         ("pid", v) => {
                             if let Some(p) = v.as_u64().and_then(|p| u32::try_from(p).ok()) {
                                 pids.push(p);
@@ -138,10 +140,7 @@ pub fn refusal(args: &serde_json::Value, list: &[String]) -> Option<String> {
         return None;
     }
     let (names, pids) = targets(args);
-    let hit = names
-        .into_iter()
-        .chain(pids.into_iter().filter_map(process_name))
-        .find(|n| denied(n, list))?;
+    let hit = names.into_iter().chain(pids.into_iter().filter_map(process_name)).find(|n| denied(n, list))?;
     let app = hit.rsplit(['/', '\\']).next().unwrap_or(&hit).to_string();
     Some(format!(
         "The user does not let agents control {app}. It is on the never-control list in Dove → Settings → Integrations → Computer use. Ask the user to do this step themselves."

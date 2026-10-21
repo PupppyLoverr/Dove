@@ -39,7 +39,9 @@ impl Agent {
 
     fn model(self) -> String {
         match self {
-            Agent::OpenCode => std::env::var("BENCH_OPENCODE_MODEL").unwrap_or("opencode/deepseek-v4.1-flash-free".into()),
+            Agent::OpenCode => {
+                std::env::var("BENCH_OPENCODE_MODEL").unwrap_or("opencode/deepseek-v4.1-flash-free".into())
+            }
             Agent::Antigravity => std::env::var("BENCH_AGY_MODEL").unwrap_or("gemini-3.8-flash-medium".into()),
         }
     }
@@ -70,8 +72,23 @@ struct Turn {
 /// replaced ("`train9` replaced the deleted `rel-old9`" is a right answer).
 fn as_current(answer: &str, old: &str) -> bool {
     const RETIRED: &[&str] = &[
-        "deleted", "replac", "retired", "no longer", "instead of", "never", "not use", "don't use", "do not use",
-        "previous", "out of date", "superseded", "changed from", "moved from", "formerly", "older", "outdated",
+        "deleted",
+        "replac",
+        "retired",
+        "no longer",
+        "instead of",
+        "never",
+        "not use",
+        "don't use",
+        "do not use",
+        "previous",
+        "out of date",
+        "superseded",
+        "changed from",
+        "moved from",
+        "formerly",
+        "older",
+        "outdated",
         "removed",
     ];
     let a = answer.to_lowercase();
@@ -284,16 +301,15 @@ impl Bench {
             }
         }
         live.send(Command::Kill);
-        let turn =
-            Turn {
-                sent,
-                answer: answer.trim().to_string(),
-                secs: started.elapsed().as_secs_f32(),
-                tools,
-                peeked,
-                errored,
-                infra: false,
-            };
+        let turn = Turn {
+            sent,
+            answer: answer.trim().to_string(),
+            secs: started.elapsed().as_secs_f32(),
+            tools,
+            peeked,
+            errored,
+            infra: false,
+        };
         let short: String = turn.answer.chars().take(300).collect::<String>().replace('\n', " ⏎ ");
         self.say(format!(
             "    {} ({:.0}s, {} tool calls{}, recalled {}): {short}",
@@ -473,7 +489,8 @@ fn memory_bench() {
     // -------------------------------------------------------------- medium
     if run("medium") {
         b.say(format!("\n== MEDIUM: two facts from two agents, noise, an indirect question"));
-        let p = b.repo("medium", &format!("https://github.com/dove-bench/medium{n}.git"), &[("README.md", "# medium\n")]);
+        let p =
+            b.repo("medium", &format!("https://github.com/dove-bench/medium{n}.git"), &[("README.md", "# medium\n")]);
         b.teach(
             &p,
             ag,
@@ -513,7 +530,10 @@ fn memory_bench() {
         let p = b.repo(
             "hard",
             &format!("git@github.com:dove-bench/hard{n}.git"),
-            &[("src/utils.ts", "export function add(a: number, b: number) {\n  return a + b;\n}\n"), ("package.json", "{\"name\":\"hard\"}\n")],
+            &[
+                ("src/utils.ts", "export function add(a: number, b: number) {\n  return a + b;\n}\n"),
+                ("package.json", "{\"name\":\"hard\"}\n"),
+            ],
         );
         b.teach(&p, oc, "Project note: the dev server runs on port 4100. Acknowledge in one line.", "4100");
         b.teach(
@@ -556,8 +576,16 @@ fn memory_bench() {
             "\n== STRESS: buried fact, superseded fact, a secret, an answer-style preference, taught in one clone and asked in \
              another clone (different folder, SSH vs HTTPS remote) by the other agent"
         ));
-        let a = b.repo("stress-clone-a", &format!("git@github.com:Dove-Bench/Stress{n}.git"), &[("README.md", "# stress\n")]);
-        let c = b.repo("stress-clone-b", &format!("https://github.com/dove-bench/stress{n}"), &[("README.md", "# stress\n")]);
+        let a = b.repo(
+            "stress-clone-a",
+            &format!("git@github.com:Dove-Bench/Stress{n}.git"),
+            &[("README.md", "# stress\n")],
+        );
+        let c = b.repo(
+            "stress-clone-b",
+            &format!("https://github.com/dove-bench/stress{n}"),
+            &[("README.md", "# stress\n")],
+        );
         assert_eq!(uses(&a.path), uses(&c.path), "clones of one repo must share a container");
         let filler = "The team discussed onboarding, CI caching, flaky snapshot tests, the docs site rebuild, and whether \
                       to adopt a monorepo tool. Nothing was decided on most of it. ";
@@ -572,7 +600,12 @@ fn memory_bench() {
             ),
             &format!("lumen{n}"),
         );
-        b.teach(&a, oc, &format!("Release branch for this repo is `rel-old{n}`. Acknowledge in one line."), &format!("rel-old{n}"));
+        b.teach(
+            &a,
+            oc,
+            &format!("Release branch for this repo is `rel-old{n}`. Acknowledge in one line."),
+            &format!("rel-old{n}"),
+        );
         b.teach(
             &a,
             ag,
@@ -582,7 +615,9 @@ fn memory_bench() {
         b.teach(
             &a,
             oc,
-            &format!("For local testing the database password is password=hunter{n}xyzSECRET. Acknowledge in one line."),
+            &format!(
+                "For local testing the database password is password=hunter{n}xyzSECRET. Acknowledge in one line."
+            ),
             "database password",
         );
         b.teach(
@@ -608,8 +643,16 @@ fn memory_bench() {
     // ------------------------------------------------------ self-improving
     if run("learn") {
         b.say(format!("\n== SELF-IMPROVING: a correction in one agent changes what the other agent does"));
-        let p = b.repo("learn", &format!("git@github.com:dove-bench/learn{n}.git"), &[("package.json", "{\"name\":\"learn\"}\n")]);
-        b.ask(&p, oc, "Add the `zod` package to this project. Reply with the exact install command you'd run (don't run it).");
+        let p = b.repo(
+            "learn",
+            &format!("git@github.com:dove-bench/learn{n}.git"),
+            &[("package.json", "{\"name\":\"learn\"}\n")],
+        );
+        b.ask(
+            &p,
+            oc,
+            "Add the `zod` package to this project. Reply with the exact install command you'd run (don't run it).",
+        );
         b.teach(
             &p,
             oc,
@@ -634,7 +677,11 @@ fn memory_bench() {
     // the weekly consolidation should turn it into a skill draft.
     let skills_project = if run("skills") || run("consolidate") {
         b.say("\n== SELF-ADVANCING: a workflow repeated across sessions becomes a skill draft".to_string());
-        let p = b.repo("skills", &format!("git@github.com:dove-bench/skills{n}.git"), &[("Cargo.toml", "[package]\nname = \"skills\"\n")]);
+        let p = b.repo(
+            "skills",
+            &format!("git@github.com:dove-bench/skills{n}.git"),
+            &[("Cargo.toml", "[package]\nname = \"skills\"\n")],
+        );
         b.teach(
             &p,
             oc,
@@ -671,12 +718,17 @@ fn memory_bench() {
         match memory::consolidate(&b.engine.store) {
             Ok(r) => {
                 if skills_project.is_some() {
-                    let draft = memory::suggested_skills_dir(b.engine.store.root()).join(format!("skills{n}-cargo-workflow")).join("SKILL.md");
+                    let draft = memory::suggested_skills_dir(b.engine.store.root())
+                        .join(format!("skills{n}-cargo-workflow"))
+                        .join("SKILL.md");
                     let text = std::fs::read_to_string(&draft).unwrap_or_default();
                     let ok = text.contains("cargo test --workspace -j 2") && text.contains(&format!("--features r{n}"));
                     b.say(format!("  => Self-advancing · skill draft: {}", if ok { "PASS" } else { "fail" }));
                     if ok {
-                        b.say(format!("  draft:\n{}", text.lines().map(|l| format!("    {l}")).collect::<Vec<_>>().join("\n")));
+                        b.say(format!(
+                            "  draft:\n{}",
+                            text.lines().map(|l| format!("    {l}")).collect::<Vec<_>>().join("\n")
+                        ));
                     }
                     let infra = std::mem::take(&mut b.infra_hit);
                     let verdict = match (ok, infra) {
@@ -704,7 +756,11 @@ fn memory_bench() {
                     "\n\nConsolidation: scanned {}, {} duplicates, skill drafts: {}.",
                     r.scanned,
                     r.duplicate_count(),
-                    if r.skills.is_empty() { "none".into() } else { r.skills.iter().map(|s| s.name.clone()).collect::<Vec<_>>().join(", ") }
+                    if r.skills.is_empty() {
+                        "none".into()
+                    } else {
+                        r.skills.iter().map(|s| s.name.clone()).collect::<Vec<_>>().join(", ")
+                    }
                 );
             }
             Err(e) => b.say(format!("  consolidation failed: {e}")),
@@ -733,7 +789,8 @@ fn superseded_values_only_fail_when_given_as_current() {
 fn flags_tool_calls_outside_the_repo() {
     let repo = Path::new("C:/dvw/mem-bench/1/easy");
     let inside = serde_json::json!({"tool_info": {"parameters": {"Path": r"C:\dvw\mem-bench\1\easy\README.md"}}});
-    let parent = serde_json::json!({"tool_info": {"parameters": {"CommandLine": r#"Get-ChildItem -Path "C:\dvw\mem-e2e""#}}});
+    let parent =
+        serde_json::json!({"tool_info": {"parameters": {"CommandLine": r#"Get-ChildItem -Path "C:\dvw\mem-e2e""#}}});
     let relative = serde_json::json!({"command": "ls src"});
     assert!(!outside(&inside, repo));
     assert!(outside(&parent, repo));

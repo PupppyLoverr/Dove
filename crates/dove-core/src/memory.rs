@@ -180,7 +180,8 @@ pub const CONSOLIDATED_AT: &str = "memory_consolidated_at";
 /// Set once the first-sign-in backfill was offered (or done).
 pub const BACKFILL_OFFERED: &str = "memory_backfill_offered";
 
-pub const DEFAULT_NEVER_SEND: &str = ".env*\n**/.env*\nsecrets/**\n**/secrets/**\n*.pem\n*.key\n*.p12\nid_rsa*\nid_ed25519*";
+pub const DEFAULT_NEVER_SEND: &str =
+    ".env*\n**/.env*\nsecrets/**\n**/secrets/**\n*.pem\n*.key\n*.p12\nid_rsa*\nid_ed25519*";
 
 /// The per-project switch (`"false"` turns memory off for that project).
 pub fn project_key(project: ProjectId) -> String {
@@ -577,11 +578,7 @@ const RECALL_COLLECT: Duration = Duration::from_millis(3500);
 
 fn one_line(text: &str, max: usize) -> String {
     let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    if flat.chars().count() <= max {
-        flat
-    } else {
-        format!("{}…", flat.chars().take(max - 1).collect::<String>())
-    }
+    if flat.chars().count() <= max { flat } else { format!("{}…", flat.chars().take(max - 1).collect::<String>()) }
 }
 
 /// The fenced block for `profile` and `found`, within `budget` characters.
@@ -871,14 +868,107 @@ fn scope_tag(scope: &Scope) -> &str {
 
 /// Words that say nothing about what a memory is about.
 const STOP: &[&str] = &[
-    "a", "an", "the", "and", "or", "but", "if", "then", "so", "to", "of", "in", "on", "at", "by", "for", "with",
-    "from", "into", "is", "are", "was", "were", "be", "been", "it", "its", "this", "that", "these", "those", "i",
-    "me", "my", "we", "our", "you", "your", "he", "she", "they", "them", "do", "does", "did", "how", "what",
-    "which", "who", "when", "where", "why", "can", "could", "should", "would", "will", "just", "only", "please",
-    "reply", "answer", "say", "tell", "give", "use", "using", "here", "there", "now", "also", "any", "all", "some",
-    "one", "two", "short", "line", "lines", "exact", "nothing", "else", "not", "don", "t", "look", "files", "file",
-    "user", "agent", "acknowledge", "acknowledged", "noted", "got", "ok", "okay", "thanks", "briefly", "project",
-    "repo", "repository",
+    "a",
+    "an",
+    "the",
+    "and",
+    "or",
+    "but",
+    "if",
+    "then",
+    "so",
+    "to",
+    "of",
+    "in",
+    "on",
+    "at",
+    "by",
+    "for",
+    "with",
+    "from",
+    "into",
+    "is",
+    "are",
+    "was",
+    "were",
+    "be",
+    "been",
+    "it",
+    "its",
+    "this",
+    "that",
+    "these",
+    "those",
+    "i",
+    "me",
+    "my",
+    "we",
+    "our",
+    "you",
+    "your",
+    "he",
+    "she",
+    "they",
+    "them",
+    "do",
+    "does",
+    "did",
+    "how",
+    "what",
+    "which",
+    "who",
+    "when",
+    "where",
+    "why",
+    "can",
+    "could",
+    "should",
+    "would",
+    "will",
+    "just",
+    "only",
+    "please",
+    "reply",
+    "answer",
+    "say",
+    "tell",
+    "give",
+    "use",
+    "using",
+    "here",
+    "there",
+    "now",
+    "also",
+    "any",
+    "all",
+    "some",
+    "one",
+    "two",
+    "short",
+    "line",
+    "lines",
+    "exact",
+    "nothing",
+    "else",
+    "not",
+    "don",
+    "t",
+    "look",
+    "files",
+    "file",
+    "user",
+    "agent",
+    "acknowledge",
+    "acknowledged",
+    "noted",
+    "got",
+    "ok",
+    "okay",
+    "thanks",
+    "briefly",
+    "project",
+    "repo",
+    "repository",
 ];
 
 /// Lowercase word stems, without stop words: `locking` and `locks` both
@@ -1002,16 +1092,25 @@ impl LocalIndex {
         let tag = scope_tag(scope);
         let mut list: Vec<LocalEntry> = self.entries().into_iter().filter(|e| e.tag == tag).collect();
         list.sort_by(|a, b| b.at.cmp(&a.at));
-        list.into_iter().take(limit).map(|e| Memory { id: None, text: e.text, score: None, at: rfc3339(e.at) }).collect()
+        list.into_iter()
+            .take(limit)
+            .map(|e| Memory { id: None, text: e.text, score: None, at: rfc3339(e.at) })
+            .collect()
     }
 
     /// The scope's rules and corrections, newest first.
     pub fn standing(&self, scope: &Scope, limit: usize) -> Vec<Memory> {
         let tag = scope_tag(scope);
-        let mut list: Vec<LocalEntry> =
-            self.entries().into_iter().filter(|e| e.tag == tag && matches!(e.kind.as_str(), "rule" | "feedback")).collect();
+        let mut list: Vec<LocalEntry> = self
+            .entries()
+            .into_iter()
+            .filter(|e| e.tag == tag && matches!(e.kind.as_str(), "rule" | "feedback"))
+            .collect();
         list.sort_by(|a, b| b.at.cmp(&a.at));
-        list.into_iter().take(limit).map(|e| Memory { id: None, text: e.text, score: None, at: rfc3339(e.at) }).collect()
+        list.into_iter()
+            .take(limit)
+            .map(|e| Memory { id: None, text: e.text, score: None, at: rfc3339(e.at) })
+            .collect()
     }
 
     /// Drop entries whose text is `text` (the user forgot a memory).
@@ -1100,14 +1199,51 @@ pub fn correction(prompt: &str, prev_prompt: &str, prev_answer: &str) -> Option<
     }
     let lower = p.to_lowercase();
     let lead = [
-        "no,", "no.", "no!", "no ", "nope", "don't", "dont ", "do not", "stop", "wrong", "that's wrong", "thats wrong",
-        "that's not", "that is not", "not what i", "i said", "i told you", "actually,", "instead,", "never ",
-        "please don't", "please do not", "why did you", "you should have", "you shouldn't", "revert", "undo",
+        "no,",
+        "no.",
+        "no!",
+        "no ",
+        "nope",
+        "don't",
+        "dont ",
+        "do not",
+        "stop",
+        "wrong",
+        "that's wrong",
+        "thats wrong",
+        "that's not",
+        "that is not",
+        "not what i",
+        "i said",
+        "i told you",
+        "actually,",
+        "instead,",
+        "never ",
+        "please don't",
+        "please do not",
+        "why did you",
+        "you should have",
+        "you shouldn't",
+        "revert",
+        "undo",
     ];
     let anywhere = [
-        "not what i asked", "i told you", "i already said", "you should have", "please don't", "stop doing",
-        "don't ever", "never do", "that's wrong", "that is wrong", "revert that", "undo that", "use it instead",
-        "instead of that", "you ignored", "you forgot",
+        "not what i asked",
+        "i told you",
+        "i already said",
+        "you should have",
+        "please don't",
+        "stop doing",
+        "don't ever",
+        "never do",
+        "that's wrong",
+        "that is wrong",
+        "revert that",
+        "undo that",
+        "use it instead",
+        "instead of that",
+        "you ignored",
+        "you forgot",
     ];
     let redirect = lead.iter().any(|l| lower.starts_with(l)) || anywhere.iter().any(|a| lower.contains(a));
     let reasked = !prev_prompt.trim().is_empty() && similarity(p, prev_prompt) >= 0.75;
@@ -1129,9 +1265,24 @@ pub fn correction(prompt: &str, prev_prompt: &str, prev_answer: &str) -> Option<
 pub fn is_rule(prompt: &str) -> bool {
     let p = prompt.trim().to_lowercase();
     let states = [
-        "always ", "never ", "my preference", "i prefer", "from now on", "every answer", "every time", "convention",
-        "rule:", "rule for this", "must be", "must always", "don't ever", "do not ever", "make sure to", "remember to",
-        "remember that", "remember this",
+        "always ",
+        "never ",
+        "my preference",
+        "i prefer",
+        "from now on",
+        "every answer",
+        "every time",
+        "convention",
+        "rule:",
+        "rule for this",
+        "must be",
+        "must always",
+        "don't ever",
+        "do not ever",
+        "make sure to",
+        "remember to",
+        "remember that",
+        "remember this",
     ];
     let corrects = ["out of date", "no longer", "is retired", "was deleted", "changed from", "is now `", "moved from"];
     let leads = ["no,", "no.", "no —", "no -", "no:", "correction", "actually,", "update:"];
@@ -1351,7 +1502,13 @@ impl Session {
         ));
         let mut meta = self.metadata("feedback");
         meta.insert("priority".into(), "high".into());
-        self.save(Doc { content, scope: Scope::Project(String::new()), metadata: meta, custom_id: None, at: dove_store::now_ms() });
+        self.save(Doc {
+            content,
+            scope: Scope::Project(String::new()),
+            metadata: meta,
+            custom_id: None,
+            at: dove_store::now_ms(),
+        });
     }
 }
 
@@ -1414,15 +1571,13 @@ pub async fn before_send(session: &Shared, prompt: String) -> String {
         let mut spawn = |part: u8, f: Box<dyn FnOnce() -> Result<Vec<Memory>, String> + Send>| {
             let tx = tx.clone();
             jobs += 1;
-            let _ = std::thread::Builder::new().name("dove-recall".into()).spawn(move || {
-                match f() {
-                    Ok(list) => {
-                        let _ = tx.send((part, list));
-                    }
-                    Err(e) => {
-                        tracing::debug!("memory recall part {part}: {e}");
-                        let _ = tx.send((part, Vec::new()));
-                    }
+            let _ = std::thread::Builder::new().name("dove-recall".into()).spawn(move || match f() {
+                Ok(list) => {
+                    let _ = tx.send((part, list));
+                }
+                Err(e) => {
+                    tracing::debug!("memory recall part {part}: {e}");
+                    let _ = tx.send((part, Vec::new()));
                 }
             });
         };
@@ -1465,8 +1620,7 @@ pub async fn before_send(session: &Shared, prompt: String) -> String {
         let standing = merge_unique(local_standing, standing);
         // A rule already shown as standing is not repeated as a match.
         let found = merge_unique(local_found, found);
-        let found: Vec<Memory> =
-            found.into_iter().filter(|m| !standing.iter().any(|s| s.text == m.text)).collect();
+        let found: Vec<Memory> = found.into_iter().filter(|m| !standing.iter().any(|s| s.text == m.text)).collect();
         // A long memory shows the part that answers this prompt, not its
         // opening (the one sentence that matters is often in the middle).
         let focus = |list: Vec<Memory>| -> Vec<Memory> {
@@ -1541,7 +1695,8 @@ pub struct SkillProposal {
 impl SkillProposal {
     /// A SKILL.md draft for the user to review before installing.
     pub fn skill_md(&self) -> String {
-        let steps = self.steps.iter().enumerate().map(|(i, s)| format!("{}. `{s}`", i + 1)).collect::<Vec<_>>().join("\n");
+        let steps =
+            self.steps.iter().enumerate().map(|(i, s)| format!("{}. `{s}`", i + 1)).collect::<Vec<_>>().join("\n");
         format!(
             "---\nname: {}\ndescription: {}\n---\n\n# {}\n\nDove proposed this skill after seeing the same workflow in {} memories. Review and edit before installing.\n\n## Steps\n\n{steps}\n",
             self.name, self.description, self.name, self.seen
@@ -1556,8 +1711,26 @@ pub fn propose_skills(list: &[Memory], min: usize) -> Vec<SkillProposal> {
     static CMD: OnceLock<Regex> = OnceLock::new();
     let re = CMD.get_or_init(|| Regex::new(r"(?:`([^`\n]{4,120})`|\$ ([^\n]{4,120}))").unwrap());
     const TOOLS: &[&str] = &[
-        "cargo", "npm", "pnpm", "yarn", "bun", "npx", "gh", "git", "make", "docker", "pytest", "uv", "python", "go",
-        "just", "dotnet", "mvn", "gradle", "kubectl", "terraform",
+        "cargo",
+        "npm",
+        "pnpm",
+        "yarn",
+        "bun",
+        "npx",
+        "gh",
+        "git",
+        "make",
+        "docker",
+        "pytest",
+        "uv",
+        "python",
+        "go",
+        "just",
+        "dotnet",
+        "mvn",
+        "gradle",
+        "kubectl",
+        "terraform",
     ];
     // tool → command → memories mentioning it
     let mut by_tool: BTreeMap<String, BTreeMap<String, HashSet<usize>>> = BTreeMap::new();
@@ -1580,7 +1753,9 @@ pub fn propose_skills(list: &[Memory], min: usize) -> Vec<SkillProposal> {
         steps.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
         out.push(SkillProposal {
             name: format!("project-{tool}-workflow"),
-            description: format!("How this project runs its {tool} workflow (build, test, release), learned from memory."),
+            description: format!(
+                "How this project runs its {tool} workflow (build, test, release), learned from memory."
+            ),
             steps: steps.into_iter().take(8).map(|(c, _)| c).collect(),
             seen: seen.len(),
         });
@@ -1621,7 +1796,10 @@ pub const GRAPH_URL: &str = "https://app.supermemory.ai";
 /// A timeline heading for a memory saved at `at` (RFC 3339): "Today",
 /// "Yesterday", or the date; "Undated" when unknown.
 pub fn day_label(at: Option<&str>) -> String {
-    let Some(day) = at.and_then(|a| chrono::DateTime::parse_from_rfc3339(a).ok()).map(|d| d.with_timezone(&chrono::Local).date_naive()) else {
+    let Some(day) = at
+        .and_then(|a| chrono::DateTime::parse_from_rfc3339(a).ok())
+        .map(|d| d.with_timezone(&chrono::Local).date_naive())
+    else {
         return "Undated".into();
     };
     let today = chrono::Local::now().date_naive();
@@ -1918,7 +2096,11 @@ pub fn backfill_docs(store: &Store, with_prs: bool) -> Vec<Doc> {
         if with_prs && let Some(prs) = merged_prs(&project.path) {
             for (number, title, body) in prs {
                 out.push(Doc {
-                    content: redact(&format!("Merged PR #{number} in {}: {title}\n{}", project.name, clip(&body, 3000))),
+                    content: redact(&format!(
+                        "Merged PR #{number} in {}: {title}\n{}",
+                        project.name,
+                        clip(&body, 3000)
+                    )),
                     scope: scope.clone(),
                     metadata: meta("pull_request"),
                     custom_id: Some(format!("dove_pr_{}_{number}", sha16(&scope_key(&scope)))),
@@ -1990,8 +2172,14 @@ mod tests {
 
     #[test]
     fn remotes_normalize_like_supermemory() {
-        assert_eq!(normalize_remote("https://github.com/SupermemoryAI/mono.git").as_deref(), Some("github.com/supermemoryai/mono"));
-        assert_eq!(normalize_remote("git@github.com:SupermemoryAI/mono.git").as_deref(), Some("github.com/supermemoryai/mono"));
+        assert_eq!(
+            normalize_remote("https://github.com/SupermemoryAI/mono.git").as_deref(),
+            Some("github.com/supermemoryai/mono")
+        );
+        assert_eq!(
+            normalize_remote("git@github.com:SupermemoryAI/mono.git").as_deref(),
+            Some("github.com/supermemoryai/mono")
+        );
         assert_eq!(normalize_remote("ssh://git@github.com/a/b.git/").as_deref(), Some("github.com/a/b"));
         assert_eq!(normalize_remote("https://user:pw@GitLab.com:443/G/R?x=1").as_deref(), Some("gitlab.com/g/r"));
         assert_eq!(normalize_remote("https://host:8443/x/y").as_deref(), Some("host:8443/x/y"));
@@ -2125,7 +2313,11 @@ mod tests {
 
     #[test]
     fn standing_rules_lead_with_dates() {
-        let rule = Memory { text: "Start answers with ORB:".into(), at: Some("2026-10-20T19:14:05.000Z".into()), ..Default::default() };
+        let rule = Memory {
+            text: "Start answers with ORB:".into(),
+            at: Some("2026-10-20T19:14:05.000Z".into()),
+            ..Default::default()
+        };
         let (block, n) = render_block_with(&[rule], &[], &[Memory::new("Port is 4317")], BUDGET_CHARS).unwrap();
         assert_eq!(n, 2);
         assert!(block.contains("Standing rules:\n- [2026-10-20 19:14] Start answers with ORB:"));

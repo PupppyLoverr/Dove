@@ -201,7 +201,9 @@ impl MemoryView {
         self.searching = true;
         cx.notify();
         let task =
-            cx.background_spawn(async move { if q.is_empty() { b.list(&scope, 1, 30) } else { b.search(&q, &scope, 20) } });
+            cx.background_spawn(
+                async move { if q.is_empty() { b.list(&scope, 1, 30) } else { b.search(&q, &scope, 20) } },
+            );
         cx.spawn(async move |this, cx| {
             let r = task.await;
             let _ = this.update(cx, |v, cx| {
@@ -434,8 +436,13 @@ impl MemoryView {
     fn connection(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let status = self.integrations.read(cx).catalog_status(crate::supermemory::CATALOG_ID);
         let (title, detail) = match (&self.who, self.connected()) {
-            (_, false) => ("Not connected".to_string(), "Sign in so every agent Dove runs remembers you and this project.".to_string()),
-            (Some(Ok(who)), true) => (format!("Signed in as {who}"), "Recall and capture run through your Supermemory account.".into()),
+            (_, false) => (
+                "Not connected".to_string(),
+                "Sign in so every agent Dove runs remembers you and this project.".to_string(),
+            ),
+            (Some(Ok(who)), true) => {
+                (format!("Signed in as {who}"), "Recall and capture run through your Supermemory account.".into())
+            }
             (Some(Err(e)), true) => ("Supermemory is not answering".into(), e.clone()),
             (None, true) => ("Connected".into(), "Checking the account…".into()),
         };
@@ -454,8 +461,7 @@ impl MemoryView {
                 )
                 .child(ctl::button_sm(t, "mem-sign-out", "Sign out", Tone::Quiet).on_click(cx.listener(
                     |this, _, _, cx| {
-                        this.integrations
-                            .update(cx, |v, cx| v.sign_out_catalog(crate::supermemory::CATALOG_ID, cx));
+                        this.integrations.update(cx, |v, cx| v.sign_out_catalog(crate::supermemory::CATALOG_ID, cx));
                         this.who = None;
                         cx.notify();
                     },
@@ -503,9 +509,11 @@ impl MemoryView {
         let mut card = page::card(t);
         for (i, (key, title, detail, value)) in rows.into_iter().enumerate() {
             let enabled = i == 0 || on;
-            let toggle = ctl::on_toggle(ctl::toggle(t, SharedString::from(format!("mem-{key}")), value), cx, move |this, _, cx| {
-                this.set_flag(key, !value, cx)
-            });
+            let toggle = ctl::on_toggle(
+                ctl::toggle(t, SharedString::from(format!("mem-{key}")), value),
+                cx,
+                move |this, _, cx| this.set_flag(key, !value, cx),
+            );
             let toggle = if enabled { toggle } else { ctl::disabled(toggle, "Memory is off") };
             card = card.child(page::setting_row(t, i == 0, title, detail, toggle));
         }
@@ -737,13 +745,23 @@ impl MemoryView {
                         .gap(px(6.0))
                         .child({
                             let path = path.clone();
-                            ctl::button_sm(t, SharedString::from(format!("mem-skill-{i}")), "Review draft", Tone::Outlined)
-                                .child(icon(icons::ARROW_UP_RIGHT).size(px(12.0)))
-                                .on_click(cx.listener(move |_, _, _, cx| cx.open_with_system(&path)))
+                            ctl::button_sm(
+                                t,
+                                SharedString::from(format!("mem-skill-{i}")),
+                                "Review draft",
+                                Tone::Outlined,
+                            )
+                            .child(icon(icons::ARROW_UP_RIGHT).size(px(12.0)))
+                            .on_click(cx.listener(move |_, _, _, cx| cx.open_with_system(&path)))
                         })
                         .child(
-                            ctl::button_sm(t, SharedString::from(format!("mem-skill-install-{i}")), "Install", Tone::Filled)
-                                .on_click(cx.listener(move |this, _, _, cx| this.install_skill(path.clone(), cx))),
+                            ctl::button_sm(
+                                t,
+                                SharedString::from(format!("mem-skill-install-{i}")),
+                                "Install",
+                                Tone::Filled,
+                            )
+                            .on_click(cx.listener(move |this, _, _, cx| this.install_skill(path.clone(), cx))),
                         ),
                 ));
             }

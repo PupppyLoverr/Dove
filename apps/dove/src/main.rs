@@ -23,7 +23,6 @@ mod math;
 mod mcp_browser;
 mod mcp_oauth;
 mod memory;
-mod supermemory;
 #[cfg(test)]
 mod memory_bench;
 mod motion;
@@ -43,6 +42,7 @@ mod shell_menu;
 mod side_chat;
 mod side_panel;
 mod sidebar;
+mod supermemory;
 mod surface_chrome;
 mod team;
 mod terminal;

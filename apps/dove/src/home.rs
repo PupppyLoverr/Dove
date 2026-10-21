@@ -88,16 +88,7 @@ impl Shell {
         let mut page = div().relative().size_full().flex().flex_col().items_center().child(div().h(px(spacer)));
         if dock {
             page = page
-                .child(
-                    div()
-                        .w_full()
-                        .max_w(px(bar_max))
-                        .px(px(32.0))
-                        .flex()
-                        .flex_col()
-                        .gap(px(8.0))
-                        .children(join),
-                )
+                .child(div().w_full().max_w(px(bar_max)).px(px(32.0)).flex().flex_col().gap(px(8.0)).children(join))
                 .child(div().flex_1())
                 .child(
                     div()

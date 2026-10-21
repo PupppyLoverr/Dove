@@ -143,7 +143,10 @@ mod tests {
         let root = std::env::temp_dir().join(format!("dove-teach-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         write(&root.join("b-draft"), r#"{"goal":"g","rehearsals":[]}"#);
-        write(&root.join("a-trusted"), r#"{"published":true,"rehearsals":[{"passed":false},{"passed":true},{"passed":true}]}"#);
+        write(
+            &root.join("a-trusted"),
+            r#"{"published":true,"rehearsals":[{"passed":false},{"passed":true},{"passed":true}]}"#,
+        );
         write(&root.join("c-failing"), r#"{"rehearsals":[{"passed":true},{"passed":true},{"passed":false}]}"#);
         std::fs::create_dir_all(root.join("not-a-skill")).unwrap();
         let all = list_in(&root);

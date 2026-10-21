@@ -154,7 +154,10 @@ impl Supermemory {
         Self { jobs, rest }
     }
 
-    fn run<T: Send + 'static>(&self, f: impl FnOnce(&mut Conn) -> Result<T, String> + Send + 'static) -> Result<T, String> {
+    fn run<T: Send + 'static>(
+        &self,
+        f: impl FnOnce(&mut Conn) -> Result<T, String> + Send + 'static,
+    ) -> Result<T, String> {
         self.run_for(CALL_TIMEOUT, f)
     }
 
@@ -214,7 +217,10 @@ impl Rest {
                 continue;
             }
             if !status.is_success() {
-                return Err(format!("Supermemory {path} answered {status}: {}", text.chars().take(200).collect::<String>()));
+                return Err(format!(
+                    "Supermemory {path} answered {status}: {}",
+                    text.chars().take(200).collect::<String>()
+                ));
             }
             if text.trim().is_empty() {
                 return Ok(Value::Null);
@@ -252,7 +258,6 @@ impl Rest {
     fn delete_document(&self, id: &str) -> Result<(), String> {
         self.send(reqwest::Method::DELETE, &format!("/v3/documents/{id}"), None).map(|_| ())
     }
-
 }
 
 impl Conn {
@@ -502,12 +507,7 @@ fn conversation_part(text: &str) -> Option<String> {
 }
 
 fn conversation_of(result: &Value) -> Option<String> {
-    result
-        .get("content")?
-        .as_array()?
-        .iter()
-        .filter_map(|c| c.get("text")?.as_str())
-        .find_map(conversation_part)
+    result.get("content")?.as_array()?.iter().filter_map(|c| c.get("text")?.as_str()).find_map(conversation_part)
 }
 
 /// Document hits from `/v3/search`: the matching chunks (or the title).
@@ -661,10 +661,13 @@ fn collect(v: &Value, out: &mut Vec<Memory>, depth: usize) {
 pub fn memories_in_text(text: &str) -> Vec<Memory> {
     let bullet = |l: &str| -> Option<String> {
         let l = l.trim();
-        let rest = l.strip_prefix("- ").or_else(|| l.strip_prefix("* ")).or_else(|| l.strip_prefix("• ")).or_else(|| {
-            let digits = l.chars().take_while(char::is_ascii_digit).count();
-            (digits > 0).then(|| l[digits..].strip_prefix(". ").or_else(|| l[digits..].strip_prefix(") "))).flatten()
-        })?;
+        let rest =
+            l.strip_prefix("- ").or_else(|| l.strip_prefix("* ")).or_else(|| l.strip_prefix("• ")).or_else(|| {
+                let digits = l.chars().take_while(char::is_ascii_digit).count();
+                (digits > 0)
+                    .then(|| l[digits..].strip_prefix(". ").or_else(|| l[digits..].strip_prefix(") ")))
+                    .flatten()
+            })?;
         Some(rest.trim().to_string()).filter(|s| !s.is_empty())
     };
     let items: Vec<Memory> = text.lines().filter_map(bullet).map(Memory::new).collect();
@@ -695,13 +698,15 @@ mod tests {
 
     #[test]
     fn parses_json_results() {
-        let r = text(r#"{"results":[{"id":"m1","memory":"Uses pnpm","similarity":0.9},{"content":"Tabs","score":0.4}]}"#);
+        let r =
+            text(r#"{"results":[{"id":"m1","memory":"Uses pnpm","similarity":0.9},{"content":"Tabs","score":0.4}]}"#);
         let m = memories_of(&r);
         assert_eq!(m.len(), 2);
         assert_eq!(m[0].id.as_deref(), Some("m1"));
         assert_eq!(m[0].score, Some(0.9));
         assert_eq!(m[1].text, "Tabs");
-        let profile = json!({"structuredContent": {"profile": {"static": ["Name is Sam"], "dynamic": ["Working on Dove"]}}});
+        let profile =
+            json!({"structuredContent": {"profile": {"static": ["Name is Sam"], "dynamic": ["Working on Dove"]}}});
         assert_eq!(memories_of(&profile).len(), 2);
     }
 
@@ -831,7 +836,8 @@ mod e2e {
         let rest = Rest::new(def);
         for i in 0..12 {
             let started = Instant::now();
-            let r = rest.post("/v3/search", json!({"q": "build command", "limit": 1, "containerTags": [DEFAULT_SPACE]}));
+            let r =
+                rest.post("/v3/search", json!({"q": "build command", "limit": 1, "containerTags": [DEFAULT_SPACE]}));
             println!("call {i}: {:?} in {:?}", r.as_ref().map(|_| "ok"), started.elapsed());
             assert!(r.is_ok(), "call {i}: {r:?}");
             if i % 4 == 3 {
@@ -848,7 +854,14 @@ mod e2e {
         let path = std::env::var("PROBE_PATH").unwrap_or_else(|_| "/v3/documents/list".into());
         let body: Value = serde_json::from_str(&std::env::var("PROBE_BODY").unwrap_or_else(|_| "{}".into())).unwrap();
         let r = rest.post(&path, body);
-        println!("{}", r.map(|v| serde_json::to_string_pretty(&v).unwrap()).unwrap_or_else(|e| e).chars().take(4000).collect::<String>());
+        println!(
+            "{}",
+            r.map(|v| serde_json::to_string_pretty(&v).unwrap())
+                .unwrap_or_else(|e| e)
+                .chars()
+                .take(4000)
+                .collect::<String>()
+        );
     }
 
     #[test]
@@ -860,14 +873,20 @@ mod e2e {
         for t in s.list_tools().unwrap() {
             let name = t["name"].as_str().unwrap_or_default().to_string();
             if ["search_memory", "get_profile", "list_memories", "list_documents"].contains(&name.as_str()) {
-                println!("TOOL {name} {}", t.pointer("/inputSchema/properties").map(|p| p.to_string()).unwrap_or_default());
+                println!(
+                    "TOOL {name} {}",
+                    t.pointer("/inputSchema/properties").map(|p| p.to_string()).unwrap_or_default()
+                );
             }
         }
         let n = nonce();
         let mut call = |name: &str, args: Value| {
             let r = s.request("tools/call", json!({"name": name, "arguments": args}));
-            println!("== {name} {args}
-{}", serde_json::to_string_pretty(&r).unwrap_or_default());
+            println!(
+                "== {name} {args}
+{}",
+                serde_json::to_string_pretty(&r).unwrap_or_default()
+            );
         };
         if let Ok(tag) = std::env::var("PROBE_TAG") {
             let q = std::env::var("PROBE_Q").unwrap_or_default();
@@ -878,7 +897,10 @@ mod e2e {
         }
         call("list_spaces", json!({}));
         let tag = format!("repo_dove_probe__{n}");
-        call("add_memory", json!({"content": format!("Dove probe {n}: deploys go through the staging-{n} pipeline"), "namespace": tag}));
+        call(
+            "add_memory",
+            json!({"content": format!("Dove probe {n}: deploys go through the staging-{n} pipeline"), "namespace": tag}),
+        );
         call("add_memory", json!({"content": format!("Dove probe default {n}: prefers staging-{n} reviews")}));
         std::thread::sleep(Duration::from_secs(45));
         call("search_memory", json!({"query": format!("staging-{n} pipeline"), "namespace": tag}));
@@ -952,8 +974,18 @@ mod e2e {
         for ev in [
             AgentEvent::UserMessage { text: sent.clone().into() },
             AgentEvent::TextDelta { text: format!("Noted: build with `just build-{n}`.").into() },
-            AgentEvent::ToolDiff { call_id: "1".into(), path: repo.join(".env").display().to_string(), old_text: None, new_text: "X=1".into() },
-            AgentEvent::ToolDiff { call_id: "2".into(), path: repo.join("src/main.rs").display().to_string(), old_text: None, new_text: "fn main(){}".into() },
+            AgentEvent::ToolDiff {
+                call_id: "1".into(),
+                path: repo.join(".env").display().to_string(),
+                old_text: None,
+                new_text: "X=1".into(),
+            },
+            AgentEvent::ToolDiff {
+                call_id: "2".into(),
+                path: repo.join("src/main.rs").display().to_string(),
+                old_text: None,
+                new_text: "fn main(){}".into(),
+            },
             AgentEvent::TurnEnded { usage: None, is_error: false },
         ] {
             claude.lock().observe(&ev);
@@ -994,14 +1026,24 @@ mod e2e {
         // Offline: a save fails into the outbox, then drains once back.
         let def = server(&cfg::load()).unwrap();
         let offline = McpServer {
-            transport: Transport::Http { url: "http://127.0.0.1:9/mcp".into(), headers: Default::default(), oauth: false },
+            transport: Transport::Http {
+                url: "http://127.0.0.1:9/mcp".into(),
+                headers: Default::default(),
+                oauth: false,
+            },
             ..def
         };
         memory::set_backend(Some(Arc::new(Supermemory::start(offline))));
         let outbox = memory::Outbox::at(store.root());
         memory::save_or_queue(
             store.root(),
-            Doc { content: format!("Dove e2e offline {n}"), scope: scope.clone(), metadata: Default::default(), custom_id: None, at: 0 },
+            Doc {
+                content: format!("Dove e2e offline {n}"),
+                scope: scope.clone(),
+                metadata: Default::default(),
+                custom_id: None,
+                at: 0,
+            },
         );
         assert!(wait_for("the outbox to fill", 60, || outbox.len() == 1));
         memory::set_backend(Some(b.clone()));

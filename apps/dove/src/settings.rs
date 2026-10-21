@@ -92,7 +92,15 @@ impl Section {
     /// The navigation, grouped by spacing (no headers), as in Zeron.
     const GROUPS: [&'static [Section]; 3] = [
         &[Section::General, Section::Appearance, Section::Notifications, Section::Voice, Section::Shortcuts],
-        &[Section::Agents, Section::Team, Section::Skills, Section::Connectors, Section::Integrations, Section::Memory, Section::Remote],
+        &[
+            Section::Agents,
+            Section::Team,
+            Section::Skills,
+            Section::Connectors,
+            Section::Integrations,
+            Section::Memory,
+            Section::Remote,
+        ],
         &[Section::Data, Section::Archived, Section::About],
     ];
 
