@@ -24,9 +24,10 @@ use dove_voice::intent::{Action, Panel, Scope};
 use dove_voice::pipeline::{self, Call, CallConfig, Event, State, SttChoice, TtsChoice};
 use dove_voice::snapshot::{self, DiffStat, Snapshot, ThreadStatus};
 use dove_voice::speakable::Chunker;
+use gpui::prelude::FluentBuilder as _;
 use gpui::{
     App, AppContext as _, Context, Entity, EventEmitter, InteractiveElement as _, IntoElement, ParentElement as _,
-    SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, px,
+    Render, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, px,
 };
 
 use crate::assets::{icon, icons};
@@ -84,11 +85,41 @@ pub struct VoiceCall {
     pub attach: Option<String>,
     /// A destructive request confirmed by voice, awaiting the user's click.
     pub awaiting_click: Option<(TaskId, String)>,
+    /// Who the call talks to, for the strip: a thread's title, or the agent
+    /// a new thread would start on.
+    pub target: Option<SharedString>,
+    /// No thread yet: the first request starts one with the picker's agent.
+    pub new_thread: bool,
     router: Option<Router>,
     _pump: gpui::Task<()>,
 }
 
 impl EventEmitter<VoiceCallEvent> for VoiceCall {}
+
+/// The call while one runs. The views that own an input (a thread's dock,
+/// home) draw its strip right above it.
+#[derive(Default)]
+pub struct ActiveCall(pub Option<Entity<VoiceCall>>);
+
+impl gpui::Global for ActiveCall {}
+
+/// The running call's strip, for a view to place above its input.
+pub fn strip(cx: &App) -> Option<Entity<VoiceCall>> {
+    cx.try_global::<ActiveCall>().and_then(|a| a.0.clone())
+}
+
+/// `DOVE_VOICE_INPUT`: `silence`, or a WAV file played in place of the
+/// microphone (QA and demos; the mic is never opened). The file starts
+/// `DOVE_VOICE_INPUT_DELAY_MS` (default 8 s) after the call does: audio from
+/// before the models are ready is dropped, as a real microphone's is.
+fn qa_input() -> Option<pipeline::Input> {
+    let spec = std::env::var("DOVE_VOICE_INPUT").ok().filter(|s| !s.is_empty())?;
+    let path = (spec != "silence").then(|| std::path::PathBuf::from(&spec));
+    let delay = std::env::var("DOVE_VOICE_INPUT_DELAY_MS").ok().and_then(|d| d.parse().ok()).unwrap_or(8000);
+    pipeline::Input::from_file(path.as_deref(), Duration::from_millis(delay))
+        .map_err(|e| tracing::warn!("DOVE_VOICE_INPUT {spec}: {e:#}"))
+        .ok()
+}
 
 /// Routes requests the rules do not recognise (Settings › Voice ›
 /// Command router). Off by default: such requests go to the current thread.
@@ -215,8 +246,14 @@ pub fn config(engine: &Engine) -> CallConfig {
     };
     CallConfig {
         root: engine.store.root().to_path_buf(),
-        input: pipeline::Input::Device(s.setting("voice_device").filter(|d| !d.is_empty())),
-        output: pipeline::Output::Device(None),
+        input: qa_input()
+            .unwrap_or_else(|| pipeline::Input::Device(s.setting("voice_device").filter(|d| !d.is_empty()))),
+        // QA with `DOVE_VOICE_INPUT`: `DOVE_VOICE_OUTPUT=silent` keeps replies off the speaker.
+        output: if std::env::var("DOVE_VOICE_OUTPUT").as_deref() == Ok("silent") {
+            pipeline::Output::Silent
+        } else {
+            pipeline::Output::Device(None)
+        },
         push_to_talk: s.setting("voice_mode").as_deref() == Some("push"),
         echo_cancel: s.flag("voice_echo_cancel", true),
         rate: s.setting("voice_rate").and_then(|r| r.parse().ok()).unwrap_or(1.0),
@@ -262,7 +299,7 @@ impl VoiceCall {
             conductor,
             state: State::Loading,
             partial: None,
-            caption: Some("Starting…".into()),
+            caption: None,
             error: None,
             muted: false,
             level: 0.0,
@@ -280,6 +317,8 @@ impl VoiceCall {
             diff_at: None,
             attach: None,
             awaiting_click: None,
+            target: None,
+            new_thread: false,
             router,
             _pump: pump,
         }
@@ -299,7 +338,6 @@ impl VoiceCall {
                 Event::State(s) => self.state = s,
                 Event::Ready { startup_ms, warm, stt, tts, vad, turn, echo_cancel } => {
                     self.startup_ms = Some(startup_ms);
-                    self.caption = Some("Listening".into());
                     let engines = format!(
                         "{stt} · {tts} · {vad} VAD · {turn} turns{}{}",
                         if echo_cancel { " · echo cancel" } else { "" },
@@ -434,12 +472,17 @@ impl VoiceCall {
                     this.call.reply_text_started();
                 }
                 for clause in this.chunker.push(t) {
+                    // The strip shows the reply as it is read.
+                    this.caption = Some(clause.clone().into());
                     this.call.say(clause);
+                    cx.notify();
                 }
             }
             TaskViewEvent::VoiceTurnEnded { failed } => {
                 for clause in this.chunker.finish() {
+                    this.caption = Some(clause.clone().into());
                     this.call.say(clause);
+                    cx.notify();
                 }
                 if *failed {
                     this.call.say("That turn ended with an error.");
@@ -449,6 +492,7 @@ impl VoiceCall {
             _ => {}
         });
         self.reading = Some((id, sub));
+        self.conductor.reading_reply(&id.to_string());
         self.reply_started = false;
         self.chunker = Chunker::new();
         if !self.touched.contains(&id) {
@@ -576,17 +620,23 @@ impl Shell {
             self.open_settings_section("voice", window, cx);
             return;
         }
-        // Text already in the composer goes out first, as the user wrote it.
-        let draft = match self.active_thread() {
+        // Text already in the composer goes out first, as the user wrote it:
+        // to the open thread, or (from home) as a new thread with the
+        // picker's agent, model and mode, which the call then talks to.
+        match self.active_thread().cloned() {
             Some(v) => {
-                let composer = v.read(cx).chat.read(cx).composer.clone();
-                crate::composer::take_text(&composer, window, cx)
+                let chat = v.read(cx).chat.clone();
+                let composer = chat.read(cx).composer.clone();
+                if let Some(text) = crate::composer::take_text(&composer, window, cx) {
+                    chat.update(cx, |c, cx| c.submit(text, window, cx));
+                }
             }
-            None => None,
-        };
-        if let (Some(text), Some(v)) = (draft.filter(|t| !t.trim().is_empty()), self.active_thread().cloned()) {
-            let chat = v.read(cx).chat.clone();
-            chat.update(cx, |c, cx| c.submit(text, window, cx));
+            None if matches!(self.route, Route::Home) => {
+                if let Some(text) = crate::composer::take_text(&self.composer, window, cx) {
+                    self.start(text, window, cx);
+                }
+            }
+            None => {}
         }
         let current = match self.route {
             Route::Thread(id) => Some(id),
@@ -611,12 +661,54 @@ impl Shell {
                 }
                 this.voice_call = None;
                 this.voice_sub = None;
+                cx.set_global(ActiveCall(None));
+                this.voice_redraw_docks(cx);
+            }
+        });
+        cx.set_global(ActiveCall(Some(call.clone())));
+        self.voice_call = Some(call.clone());
+        self.voice_sub = Some(sub);
+        self.voice_target(&call, cx);
+        self.voice_redraw_docks(cx);
+    }
+
+    /// Thread views are cached: redraw them so their docks show (or drop)
+    /// the call strip.
+    fn voice_redraw_docks(&mut self, cx: &mut Context<Self>) {
+        for v in self.threads.values() {
+            let chat = v.read(cx).chat.clone();
+            let composer = chat.read(cx).composer.clone();
+            composer.update(cx, |_, cx| cx.notify());
+            chat.update(cx, |_, cx| cx.notify());
+            v.update(cx, |_, cx| cx.notify());
+        }
+        self.composer.update(cx, |_, cx| cx.notify());
+        cx.notify();
+    }
+
+    /// Name who the call talks to on its strip: the thread, or the agent a
+    /// new thread would start on.
+    fn voice_target(&self, call: &Entity<VoiceCall>, cx: &mut Context<Self>) {
+        let current = match self.route {
+            Route::Thread(id) => Some(id),
+            _ => call.read(cx).current,
+        };
+        let task = current.and_then(|id| self.task(id));
+        let working =
+            |id: TaskId| self.threads.get(&id).is_some_and(|v| v.read(cx).chat.read(cx).status == TaskStatus::Running);
+        let target: SharedString = match task {
+            Some(task) if working(task.id) => format!("{} · {} is working", task.title, task.harness.label()).into(),
+            Some(task) => format!("{} · {}", task.title, task.harness.label()).into(),
+            None => format!("New thread · {}", self.composer.read(cx).harness(cx).label()).into(),
+        };
+        let new_thread = task.is_none();
+        call.update(cx, |v, cx| {
+            if v.target.as_ref() != Some(&target) || v.new_thread != new_thread {
+                v.target = Some(target);
+                v.new_thread = new_thread;
                 cx.notify();
             }
         });
-        self.voice_call = Some(call);
-        self.voice_sub = Some(sub);
-        cx.notify();
     }
 
     /// What the conductor sees: every open thread, from state Dove holds.
@@ -670,8 +762,15 @@ impl Shell {
             Route::Thread(id) => Some(id),
             _ => call.current,
         };
-        let default_project =
-            current.and_then(|id| self.task(id)).map(|t| t.project_id).or(self.home_project).map(|p| p.to_string());
+        // A new thread goes where the home composer would start it.
+        let composer = self.composer.read(cx);
+        let default_project = current
+            .and_then(|id| self.task(id))
+            .map(|t| t.project_id)
+            .or(composer.project.as_ref().map(|p| p.id))
+            .or(self.home_project)
+            .map(|p| p.to_string());
+        let default_agent = Some(composer.harness(cx).id().to_string());
         Snapshot {
             threads,
             current: current.map(|c| c.to_string()),
@@ -686,6 +785,7 @@ impl Shell {
                 .map(|p| snapshot::Project { id: p.id.to_string(), name: p.name.clone() })
                 .collect(),
             default_project,
+            default_agent,
             showing: if self.panel_open {
                 match self.panel.read(cx).active() {
                     Some(crate::side_panel::Surface::Browser(_)) => Some(dove_voice::intent::LookTarget::Browser),
@@ -717,6 +817,7 @@ impl Shell {
             })
             .collect();
         call.update(cx, |v, cx| v.refresh_diffs(folders, cx));
+        self.voice_target(&call, cx);
         let snap = self.voice_snapshot(call.read(cx), cx);
         let effects = call.update(cx, |v, _| v.conductor.observe(&snap));
         call.update(cx, |v, cx| {
@@ -789,6 +890,7 @@ impl Shell {
         if let Some(text) = utterance {
             call.update(cx, |v, _| v.note_user(&text, acted_on));
         }
+        self.voice_target(&call, cx);
         cx.notify();
     }
 
@@ -883,13 +985,19 @@ impl Shell {
                 } else {
                     None
                 };
+                // On the picked agent, the picker's model, effort, mode and
+                // teammate apply, as they do for a typed new thread.
+                let (run, persona) = {
+                    let c = self.composer.read(cx);
+                    if c.harness(cx) == kind { (c.run_settings(cx), c.persona.clone()) } else { Default::default() }
+                };
                 let new = dove_core::NewTask {
                     title: crate::ui::title_from_prompt(&prompt),
                     prompt,
                     harness: kind,
-                    run: Default::default(),
+                    run,
                     join,
-                    persona: None,
+                    persona,
                 };
                 match self.engine.start_task(&project, new) {
                     Ok((task, live)) => {
@@ -965,118 +1073,160 @@ impl Shell {
         }
     }
 
-    /// The floating call bar, shown on every page while a call runs.
-    pub fn render_voice_bar(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+    /// The call strip on pages without an input of their own (Settings,
+    /// Threads, Kanban…), floating at the foot of the content area. A thread
+    /// and home draw it right above their composer instead.
+    pub fn render_voice_bar(&self, _cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
         let call = self.voice_call.clone()?;
-        let t = Theme::of(cx).clone();
-        let v = call.read(cx);
-        let (label, color) = match (v.state, v.muted) {
-            (_, true) => ("Muted · hold the orb to talk", t.text_muted),
-            (State::Loading, _) => ("Loading voice models…", t.text_muted),
-            (State::Listening, _) => ("Listening", t.accent),
-            (State::Hearing, _) => ("Hearing you", t.accent),
-            (State::Thinking, _) => ("Thinking", t.text_muted),
-            (State::Speaking, _) => ("Speaking · talk to interrupt", t.text),
-            (State::Muted, _) => ("Muted", t.text_muted),
-        };
-        let line: SharedString =
-            v.error.clone().or_else(|| v.partial.clone()).or_else(|| v.caption.clone()).unwrap_or_default();
-        let awaiting = v.awaiting_click.is_some();
-        let level = v.level.clamp(0.0, 0.3) / 0.3;
-        let orb = 26.0 + 10.0 * level;
-        let muted = v.muted;
-        let (c1, c2, c3, c4) = (call.clone(), call.clone(), call.clone(), call.clone());
+        if matches!(self.route, Route::Home | Route::Thread(_)) && !self.projects.is_empty() {
+            return None;
+        }
+        let left = if self.sidebar_shown() { self.sidebar_w } else { 0.0 };
         Some(
             div()
                 .absolute()
                 .bottom(px(20.0))
-                .left_0()
+                .left(px(left))
                 .right_0()
+                .px(px(24.0))
                 .flex()
                 .justify_center()
-                .child(
-                    div()
-                        .id("voice-bar")
-                        .occlude()
-                        .flex()
-                        .items_center()
-                        .gap(px(10.0))
-                        .px(px(10.0))
-                        .py(px(8.0))
-                        .max_w(px(560.0))
-                        .rounded_full()
-                        .bg(t.glass())
-                        .border_1()
-                        .border_color(t.wash(0.10))
-                        .shadow_lg()
-                        .child(
-                            // The orb: its size follows the voice level. Holding it
-                            // talks while muted (push-to-talk).
-                            div()
-                                .id("voice-orb")
-                                .size(px(36.0))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .cursor_pointer()
-                                .child(div().size(px(orb)).rounded_full().bg(color.opacity(if muted {
-                                    0.25
-                                } else {
-                                    0.85
-                                })))
-                                .on_mouse_down(gpui::MouseButton::Left, move |_, _, cx| {
-                                    c1.update(cx, |v, _| v.push_to_talk(true));
-                                })
-                                .on_mouse_up(gpui::MouseButton::Left, move |_, _, cx| {
-                                    c2.update(cx, |v, _| v.push_to_talk(false));
-                                }),
-                        )
-                        .child(
-                            div()
-                                .flex()
-                                .flex_col()
-                                .min_w(px(160.0))
-                                .max_w(px(360.0))
-                                .child(div().text_size(ty::META).text_color(t.text_muted).child(if awaiting {
-                                    "Waiting for your click on Approve in the chat"
-                                } else {
-                                    label
-                                }))
-                                .child(div().text_size(ty::BODY).text_color(t.text).truncate().child(line)),
-                        )
-                        .child(
-                            crate::ui::round_button_sized(
-                                "voice-mute",
-                                if muted { "Unmute microphone" } else { "Mute microphone" },
-                                28.0,
-                                &t,
-                            )
-                            .child(
-                                icon(if muted { icons::MICROPHONE_OFF } else { icons::MICROPHONE })
-                                    .size(px(14.0))
-                                    .text_color(if muted { t.danger } else { t.text_muted }),
-                            )
-                            .on_click(move |_, _, cx| c3.update(cx, |v, cx| v.set_muted(!muted, cx))),
-                        )
-                        .child(
-                            crate::ui::round_button_sized(
-                                "voice-silence",
-                                "Stop speaking (agent keeps working)",
-                                28.0,
-                                &t,
-                            )
-                            .child(icon(icons::STOP).size(px(12.0)).text_color(t.text_muted))
-                            .on_click(move |_, _, cx| c4.update(cx, |v, cx| v.silence(cx))),
-                        )
-                        .child(
-                            crate::ui::round_button_sized("voice-end", "End call", 28.0, &t)
-                                .bg(t.danger.opacity(0.14))
-                                .child(icon(icons::PHONE_HANG_UP).size(px(14.0)).text_color(t.danger))
-                                .on_click(move |_, _, cx| call.update(cx, |v, cx| v.end(cx))),
-                        ),
-                )
+                .child(div().w_full().max_w(px(STRIP_MAX_W)).child(call))
                 .into_any_element(),
         )
+    }
+}
+
+/// The floating strip's width; above a composer it takes the composer's.
+const STRIP_MAX_W: f32 = 560.0;
+const STRIP_H: f32 = 48.0;
+const ORB: f32 = 32.0;
+
+impl Render for VoiceCall {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = Theme::of(cx).clone();
+        let awaiting = self.awaiting_click.is_some();
+        let loading = self.state == State::Loading;
+        let (label, tint): (&str, _) = if awaiting {
+            ("Click Approve in the chat to run it", t.warning)
+        } else if self.muted {
+            ("Muted · hold the orb or Space to talk", t.text_muted)
+        } else {
+            match self.state {
+                State::Loading => ("Starting the call…", t.text_muted),
+                State::Listening => ("Listening", t.accent),
+                State::Hearing => ("Hearing you", t.accent),
+                State::Thinking => ("Working on it", t.text_muted),
+                State::Speaking => ("Speaking · talk to interrupt", t.text),
+                State::Muted => ("Muted", t.text_muted),
+            }
+        };
+        // What was just heard or said; a live partial while the user talks.
+        let (line, line_color): (SharedString, _) = match (&self.error, &self.partial, &self.caption) {
+            (Some(e), _, _) => (e.clone(), t.danger),
+            (None, Some(p), _) => (format!("{p}…").into(), t.text_muted),
+            (None, None, Some(c)) => (c.clone(), t.text),
+            // Nothing said yet: what talking does from here.
+            (None, None, None) if loading => (SharedString::default(), t.text),
+            (None, None, None) if self.new_thread => {
+                ("Say what you'd like done. A new thread starts on your picked model.".into(), t.text_faint)
+            }
+            (None, None, None) => ("Talk to this thread. Ask what's happening, or say stop.".into(), t.text_faint),
+        };
+        let level = if self.muted { 0.0 } else { self.level.clamp(0.0, 0.3) / 0.3 };
+        let speaking = self.state == State::Speaking && !self.muted;
+        let muted = self.muted;
+
+        // The orb follows the voice level; holding it talks while muted.
+        let orb = div()
+            .id("voice-orb")
+            .size(px(ORB))
+            .flex_none()
+            .rounded_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(tint.opacity(0.14))
+            .cursor_pointer()
+            .tooltip(crate::ui::tip("Hold to talk"))
+            .child(if muted {
+                icon(icons::MICROPHONE_OFF).size(px(14.0)).text_color(t.text_muted).into_any_element()
+            } else {
+                div()
+                    .size(px(10.0 + 14.0 * level))
+                    .rounded_full()
+                    .bg(tint.opacity(if loading { 0.35 } else { 0.9 }))
+                    .into_any_element()
+            })
+            .on_mouse_down(gpui::MouseButton::Left, cx.listener(|v, _, _, _| v.push_to_talk(true)))
+            .on_mouse_up(gpui::MouseButton::Left, cx.listener(|v, _, _, _| v.push_to_talk(false)));
+
+        let text = div()
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.0))
+                    .min_w_0()
+                    .text_size(ty::META)
+                    .child(div().flex_none().text_color(tint).font_weight(gpui::FontWeight::MEDIUM).child(label))
+                    .children(self.target.clone().map(|target| {
+                        div().min_w_0().truncate().text_color(t.text_faint).child(format!("· {target}"))
+                    })),
+            )
+            .when(!line.is_empty(), |d| {
+                d.child(div().min_w_0().truncate().text_size(ty::BODY).text_color(line_color).child(line))
+            });
+
+        div()
+            .id("voice-strip")
+            .occlude()
+            .w_full()
+            .h(px(STRIP_H))
+            .px(px((STRIP_H - ORB) / 2.0))
+            .flex()
+            .items_center()
+            .gap(px(10.0))
+            .rounded(px(STRIP_H / 2.0))
+            // The composer's own surface: it reads as part of the input, and
+            // stays legible where it floats over a page.
+            .bg(t.composer_bg())
+            .border_1()
+            .border_color(if awaiting { t.warning.opacity(0.5) } else { t.composer_border() })
+            .shadow(t.composer_shadows(false))
+            .child(orb)
+            .child(text)
+            .when(speaking, |d| {
+                d.child(
+                    crate::ui::round_button_sized("voice-silence", "Stop speaking (the agent keeps working)", 30.0, &t)
+                        .child(icon(icons::STOP).size(px(12.0)).text_color(t.text_muted))
+                        .on_click(cx.listener(|v, _, _, cx| v.silence(cx))),
+                )
+            })
+            .child(
+                crate::ui::round_button_sized(
+                    "voice-mute",
+                    if muted { "Unmute microphone" } else { "Mute microphone" },
+                    30.0,
+                    &t,
+                )
+                .child(
+                    icon(if muted { icons::MICROPHONE_OFF } else { icons::MICROPHONE })
+                        .size(px(14.0))
+                        .text_color(if muted { t.danger } else { t.text_muted }),
+                )
+                .on_click(cx.listener(move |v, _, _, cx| v.set_muted(!muted, cx))),
+            )
+            .child(
+                crate::ui::round_button_sized("voice-end", "End call", 30.0, &t)
+                    .bg(t.danger.opacity(0.16))
+                    .child(icon(icons::PHONE_HANG_UP).size(px(14.0)).text_color(t.danger))
+                    .on_click(cx.listener(|v, _, _, cx| v.end(cx))),
+            )
     }
 }
 

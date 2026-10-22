@@ -248,6 +248,22 @@ pub fn validate(intent: Intent, snap: &Snapshot) -> Result<Action, Rejection> {
             };
             Action::StartTask { agent: a.id.clone(), project, prompt, worktree }
         }
+        // Nothing open yet: the request starts a thread on the picked agent.
+        Intent::Send { thread: None, text } | Intent::Steer { thread: None, text }
+            if snap.current_thread().is_none() =>
+        {
+            let prompt = text.trim().to_string();
+            if prompt.is_empty() {
+                return Err(Rejection::Empty);
+            }
+            let agent = snap
+                .default_agent
+                .as_ref()
+                .and_then(|id| snap.agents.iter().find(|a| &a.id == id))
+                .ok_or(Rejection::NoThread)?;
+            let project = snap.default_project.clone().ok_or(Rejection::NoThread)?;
+            Action::StartTask { agent: agent.id.clone(), project, prompt, worktree: false }
+        }
         Intent::Send { thread, text } | Intent::Steer { thread, text } => {
             let t = thread_of(snap, &thread)?;
             let text = text.trim().to_string();
@@ -426,6 +442,34 @@ mod tests {
         ));
         s.current = None;
         assert_eq!(validate(Intent::Interrupt { thread: None }, &s), Err(Rejection::NoThread));
+    }
+
+    #[test]
+    fn with_no_thread_open_a_request_starts_one_on_the_picked_agent() {
+        let mut s = snapshot();
+        s.current = None;
+        assert_eq!(
+            validate(Intent::Send { thread: None, text: " Fix the login redirect. ".into() }, &s),
+            Ok(Action::StartTask {
+                agent: "claude".into(),
+                project: "p1".into(),
+                prompt: "Fix the login redirect.".into(),
+                worktree: false
+            })
+        );
+        // A named thread is still that thread, open or not.
+        assert!(matches!(
+            validate(Intent::Send { thread: Some("codex".into()), text: "also run clippy".into() }, &s),
+            Ok(Action::Send { .. })
+        ));
+        // No picked agent (or one that is not installed): nothing starts.
+        s.default_agent = Some("cursor".into());
+        assert_eq!(validate(Intent::Send { thread: None, text: "hi".into() }, &s), Err(Rejection::NoThread));
+        s.default_agent = None;
+        assert_eq!(validate(Intent::Send { thread: None, text: "hi".into() }, &s), Err(Rejection::NoThread));
+        // With a thread open, the words go to it, as before.
+        s.current = Some("t1".into());
+        assert!(matches!(validate(Intent::Send { thread: None, text: "hi".into() }, &s), Ok(Action::Send { .. })));
     }
 
     #[test]

@@ -368,6 +368,7 @@ fn main() -> anyhow::Result<()> {
         agents: vec![Agent { id: "codex".into(), label: "Codex".into() }],
         projects: vec![Project { id: "p".into(), name: "dove".into() }],
         default_project: Some("p".into()),
+        default_agent: None,
         showing: None,
     };
     let mut fast_total = Vec::new();

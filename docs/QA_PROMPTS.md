@@ -179,6 +179,14 @@ Ask the agent to run `cargo --version` (say "approve"), then `rm -rf ./scratch-d
 
 **Expect:** a notice that Voice Mode needs local speech recognition, and Settings › Voice opens. No call starts and no microphone opens.
 
+## X. A call with no thread yet
+
+**Prerequisites:** Voice Mode models downloaded; on Home, pick an agent and a cheap model in the composer. No thread open.
+> On Home, start a Voice Mode call and say "Write one short sentence about herons." Check that a new thread starts on the agent and model the composer had picked, that the call now talks to it, and that the reply is read back.
+
+**Expect:** the strip sits on the Home composer saying "New thread · <agent>"; after the request, Dove opens the new thread on the picked model (its transcript header shows it), the strip moves onto that thread's input with "<title> · <agent> is working", then shows the reply as it is read and returns to Listening. No "finished" announcement repeats the reply. Ending the call removes the strip and unlights the phone button.
+**Automated:** `cargo test -p dove-voice` (`with_no_thread_open_a_request_starts_one_on_the_picked_agent`, quiet finish after a read reply); without a microphone, `DOVE_VOICE_INPUT=<wav> DOVE_VOICE_OUTPUT=silent` (docs/VOICE.md).
+
 ---
 
 ## Results log
@@ -192,4 +200,5 @@ Ask the agent to run `cargo --version` (say "approve"), then `rm -rf ./scratch-d
 | 2026-10-22 | same | J | Pass | Real Dove bridge (QA copy, scratch home) + extension paired in headless Edge 155; Haiku used `chrome_*` through the hub and read the fixture table correctly. The one-time site review was answered by the QA script for the fixture host only |
 | 2026-10-22 | same | S (in-app browser part) | Pass | Haiku → hub → running QA Dove → in-app browser on a localhost fixture with a hidden injection line; correct answer, no request to the injected URL |
 | 2026-10-22 | same | G (health only) | Pass after fix | Settings › Integrations › ego lite › Test showed "Not responding" because ego lite 0.6.0.16 prints its ready line on stderr; fixed, now "Ready · 0.6.0.16" |
+| 2026-10-22 | same (uncommitted) | X | Pass | QA copy, scratch home, `DOVE_VOICE_INPUT` with a system-voice WAV, output silent: new thread "Writing About Herons" on Claude Code with `claude-haiku-4-5` (the picker's model), reply shown on the strip, back to Listening, no repeated finish announcement; End removed the strip |
 | | | A–C, E, F, K–Q | Not run | Need agent sessions in the app, real accounts, a microphone, or the computer-use driver release |

@@ -80,6 +80,8 @@ impl Shell {
                 }))
         });
         let join = join_chip.map(|c| div().flex().justify_end().child(c));
+        // A running voice call sits on the input it would start a thread from.
+        let call = crate::voice_call::strip(cx);
 
         // Center: the bar sits a little above the middle. Bottom: the same
         // page, with the bar parked at the center of the bottom edge.
@@ -99,6 +101,7 @@ impl Shell {
                         .flex()
                         .flex_col()
                         .gap(px(8.0))
+                        .children(call)
                         .child(composer)
                         .children(error),
                 );
@@ -113,6 +116,7 @@ impl Shell {
                         .flex_col()
                         .gap(px(8.0))
                         .children(join)
+                        .children(call)
                         .child(composer)
                         .children(error),
                 )

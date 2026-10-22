@@ -14,10 +14,18 @@ A hands-free call with every thread in Dove. Architecture:
    while another app is in front (Settings › Voice › Shortcut outside Dove;
    if another app already owns the keys, Settings says so). Text already in
    the composer is sent first.
-3. Talk. The call bar at the bottom shows Listening / Hearing you / Thinking /
-   Speaking, the live caption, and buttons to mute the mic, stop Dove talking
-   (the agent keeps working) and end the call. Calls continue while you move
-   around Dove.
+3. Talk. The call strip sits on the input you are talking into (a thread's,
+   or the new-thread composer on Home; on other pages it floats at the foot
+   of the page). It shows Listening / Hearing you / Working on it / Speaking,
+   who the call talks to, the live caption or the reply being read, and
+   buttons to mute the mic, stop Dove talking (the agent keeps working) and
+   end the call. The phone button stays lit while a call runs. Calls continue
+   while you move around Dove.
+
+**No thread yet?** Start a call from Home and say what you want done. The
+first request starts a new thread on the agent, model, effort, permission
+mode and project picked in the composer, exactly as typing it and pressing
+Send would, and the call then talks to that thread.
 
 | Say | Does |
 | --- | --- |
@@ -33,7 +41,7 @@ A hands-free call with every thread in Dove. Architecture:
 | "Show the diff" | Opens the Changes panel |
 | "Take a look at this" / "Look at the page" / "Look at the diff" | Attaches what you see to your next message: the open browser page or diff, or (Windows) a capture of the last other app's window you were in |
 | "Talk faster" / "slower" · "Mute" · "Be quiet" · "Repeat that" · "End call" | Call controls |
-| Anything else | Sent to the current thread as your message |
+| Anything else | Sent to the current thread as your message (with no thread open, starts one on the picked agent and model) |
 
 Push-to-talk (Settings › Voice › Listening): hold the orb, or hold Space when
 the call is muted and no text field has focus.
@@ -168,6 +176,17 @@ Not measured here: macOS and Linux (no machines), real microphones and
 human voices at scale, accuracy beyond the four fixtures, and the live
 microphone's CPU and start-up time (`--live-mic` exists but was not run, so as
 not to open this machine's microphone unattended).
+
+## Testing without a microphone
+
+`DOVE_VOICE_INPUT=silence` (or a path to a WAV file) feeds a call in place of
+the microphone, which is then never opened; the file starts
+`DOVE_VOICE_INPUT_DELAY_MS` (default 8000) after the call does, since audio
+from before the models are ready is dropped. `DOVE_VOICE_OUTPUT=silent` keeps
+replies off the speaker. With both, a scratch `DOVE_HOME` and the models in
+`<DOVE_HOME>/voice/call`, a spoken request recorded with the system voice
+runs the whole path: recognition, the conductor, a new thread on the
+picker's model, and the reply on the strip.
 
 ## Troubleshooting
 

@@ -61,13 +61,24 @@ pub struct Conductor {
     armed: Option<Armed>,
     last_spoken: Option<String>,
     seen: HashMap<String, Seen>,
+    /// Threads whose reply is being read aloud: their finishing is the
+    /// reply itself, so it is not announced again.
+    reading: std::collections::HashSet<String>,
     /// Speak when a thread finishes, fails or needs you.
     pub announce: bool,
 }
 
 impl Default for Conductor {
     fn default() -> Self {
-        Self { rate: 1.0, previous: None, armed: None, last_spoken: None, seen: HashMap::new(), announce: true }
+        Self {
+            rate: 1.0,
+            previous: None,
+            armed: None,
+            last_spoken: None,
+            seen: HashMap::new(),
+            reading: Default::default(),
+            announce: true,
+        }
     }
 }
 
@@ -164,6 +175,11 @@ fn lower_first(s: &str) -> String {
 impl Conductor {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// `thread`'s next reply is read aloud; don't also announce it finished.
+    pub fn reading_reply(&mut self, thread: &str) {
+        self.reading.insert(thread.to_string());
     }
 
     fn say(&mut self, out: &mut Vec<Effect>, text: impl Into<String>) {
@@ -411,6 +427,7 @@ impl Conductor {
                 self.say(&mut out, text);
             } else if now.status != before.status {
                 match now.status {
+                    ThreadStatus::Done if self.reading.remove(&t.id) => {}
                     ThreadStatus::Done => self.say(&mut out, format!("{} finished.", label(t))),
                     ThreadStatus::Failed => self.say(&mut out, format!("{} stopped with an error.", label(t))),
                     _ => {}
@@ -577,6 +594,14 @@ mod tests {
         assert!(c.observe(&s).is_empty(), "nothing changed");
         s.threads[1].status = ThreadStatus::Done;
         assert_eq!(c.observe(&s), vec![Effect::Speak("Codex on Make the tests pass on Windows finished.".into())]);
+        // A thread whose reply was read aloud finishes quietly, once.
+        c.reading_reply("t1");
+        s.threads[0].status = ThreadStatus::Done;
+        assert!(c.observe(&s).is_empty(), "the reply already said it");
+        s.threads[0].status = ThreadStatus::Running;
+        c.observe(&s);
+        s.threads[0].status = ThreadStatus::Done;
+        assert_eq!(c.observe(&s).len(), 1, "later finishes are announced again");
         s.threads[0].pending.push(bash("p1", "cargo build"));
         s.threads[0].status = ThreadStatus::NeedsInput;
         let e = c.observe(&s);

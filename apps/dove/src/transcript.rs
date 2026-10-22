@@ -4629,6 +4629,8 @@ impl TaskView {
                     .flex_col()
                     .gap(px(6.0))
                     .children(self.render_todos(cx))
+                    // A running voice call sits on the input it talks into.
+                    .children(crate::voice_call::strip(cx))
                     .child(input)
                     .child(
                         canvas(

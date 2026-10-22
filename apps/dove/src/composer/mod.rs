@@ -1437,17 +1437,19 @@ impl Composer {
     }
 
     /// Start (or end) a Voice Mode call with every thread.
-    fn call_button(&self, size: f32, t: &Theme, _cx: &mut Context<Self>) -> AnyElement {
+    fn call_button(&self, size: f32, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let live = crate::voice_call::strip(cx).is_some();
         ui::round_button_sized(
             "composer-call",
-            "Voice call: talk with your agents hands-free (Ctrl Shift Space)",
+            if live { "End the voice call" } else { "Voice call: talk with your agents hands-free (Ctrl Shift Space)" },
             size,
             t,
         )
+        .when(live, |b| b.bg(t.accent.opacity(0.16)))
         .child(
             icon(icons::PHONE)
                 .size(px(if size < ui::ROUND_BUTTON { 14.0 } else { ui::ICON_LG - 1.0 }))
-                .text_color(t.text_muted),
+                .text_color(if live { t.accent } else { t.text_muted }),
         )
         .on_click(|_, window, cx| window.dispatch_action(Box::new(crate::actions::ToggleVoiceCall), cx))
         .into_any_element()

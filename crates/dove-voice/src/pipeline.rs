@@ -299,6 +299,46 @@ pub enum Input {
     Stream { rate: u32, samples: Receiver<Vec<f32>> },
 }
 
+impl Input {
+    /// A WAV file played in real time after `lead` of silence, then silence
+    /// for the rest of the call (or silence only, with no file). For QA of
+    /// the app without opening a microphone; the feeder stops with the call.
+    pub fn from_file(path: Option<&std::path::Path>, lead: Duration) -> Result<Input> {
+        let (samples, rate) = match path {
+            Some(p) => {
+                let mut r = hound::WavReader::open(p).with_context(|| format!("open {}", p.display()))?;
+                let spec = r.spec();
+                let data: Vec<f32> = match spec.sample_format {
+                    hound::SampleFormat::Int => {
+                        let scale = (1u64 << (spec.bits_per_sample - 1)) as f32;
+                        r.samples::<i32>().map(|s| s.map(|v| v as f32 / scale)).collect::<Result<_, _>>()?
+                    }
+                    hound::SampleFormat::Float => r.samples::<f32>().collect::<Result<_, _>>()?,
+                };
+                let ch = usize::from(spec.channels.max(1));
+                (data.chunks(ch).map(|c| c.iter().sum::<f32>() / ch as f32).collect::<Vec<f32>>(), spec.sample_rate)
+            }
+            None => (Vec::new(), crate::RATE),
+        };
+        let (tx, rx) = unbounded();
+        let chunk = (rate as usize * 32 / 1000).max(1);
+        let lead_chunks = (lead.as_millis() / 32) as usize;
+        std::thread::Builder::new().name("voice-file-input".into()).spawn(move || {
+            let silent = vec![0.0f32; chunk];
+            let audio = std::iter::repeat_n(silent.clone(), lead_chunks)
+                .chain(samples.chunks(chunk).map(<[f32]>::to_vec))
+                .chain(std::iter::repeat(silent));
+            for piece in audio {
+                if tx.send(piece).is_err() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(32));
+            }
+        })?;
+        Ok(Input::Stream { rate, samples: rx })
+    }
+}
+
 /// Where a call's speech goes.
 pub enum Output {
     /// A speaker (`None`: the system default).
@@ -860,6 +900,11 @@ fn run(config: CallConfig, ctl: Receiver<Ctl>, ev: Sender<Event>, ended: Arc<Ato
         }
         // Rendered speech.
         while let Ok((gen_, pcm, _)) = pcm_rx.try_recv() {
+            // No speaker (replies shown, not spoken): a reply is done with
+            // as soon as it is rendered, so the call goes back to listening.
+            if gen_ == generation.load(Ordering::Acquire) && speaker.is_none() && state == State::Thinking {
+                set_state(if muted { State::Muted } else { State::Listening }, &mut state);
+            }
             if gen_ == generation.load(Ordering::Acquire)
                 && let Some(s) = &speaker
             {

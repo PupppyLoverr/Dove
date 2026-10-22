@@ -1183,7 +1183,7 @@ impl Shell {
 
     // ------------------------------------------------------------ actions
 
-    fn start(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn start(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
         let (project, run, harness, persona) = {
             let c = self.composer.read(cx);
             (c.project.clone(), c.run_settings(cx), c.harness(cx), c.persona.clone())
