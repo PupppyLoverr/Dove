@@ -1,5 +1,30 @@
 # dove-browser evals
 
+## Running them
+
+Local fixtures (no internet, synthetic data) serve every scenario and record
+what actually reached the server (form posts, uploads, orders, hits on the
+injection page's `/exfil` URL) at `GET /__log`:
+
+```bash
+node skills/dove-browser/evals/fixtures/server.mjs 8787
+```
+
+Two suites run against them. Keep the ego lite window **visible**: a
+minimized window makes Chromium throttle the page (see troubleshooting).
+
+- **Scripted** (`run-ego.mjs`): 14 tasks driven with the documented ego API
+  only. It checks the provider and the recipes this skill teaches. In
+  PowerShell: `$null | ego-browser nodejs -e "await import('file:///C:/…/skills/dove-browser/evals/run-ego.mjs')"`
+- **Agent** (`run-agents.mjs claude|opencode`): a real harness reads the
+  installed skill and chooses its own steps for the prompts in
+  `agent-tasks.json`, with only `ego-browser` allowed. Graded on the answer
+  and on the server log, so a form the agent "didn't send" really wasn't.
+
+Results land in `results/` as JSON; `RESULTS.md` summarises the latest runs.
+
+## Task list
+
 Run each task in Claude Code, Codex and OpenCode through Dove with ego lite
 installed, then again with ego lite missing (fallback to Dove's browser
 tools). Record per run: pass/fail, browser rounds, tokens, wall time, and any

@@ -1,0 +1,168 @@
+{
+  "provider": "ego lite",
+  "egoGuide": "v2.1.0",
+  "mode": "scripted (documented ego API, no agent)",
+  "when": "2026-10-21T23:01:30.794Z",
+  "passed": 7,
+  "total": 14,
+  "totalMs": 94070,
+  "results": [
+    {
+      "id": "01-search-extract",
+      "title": "Search and extract structured results",
+      "pass": false,
+      "ms": 15335,
+      "error": "CDP request timed out: Input.dispatchMouseEvent"
+    },
+    {
+      "id": "02-cheapest",
+      "title": "Cheapest in-stock matching item",
+      "pass": false,
+      "ms": 15268,
+      "error": "CDP request timed out: Input.dispatchMouseEvent"
+    },
+    {
+      "id": "03-multipage",
+      "title": "Navigate a multipage site",
+      "pass": false,
+      "ms": 15223,
+      "error": "CDP request timed out: Input.dispatchMouseEvent"
+    },
+    {
+      "id": "04-spa",
+      "title": "Dynamically rendered app",
+      "pass": false,
+      "ms": 4153,
+      "error": "page.click timed out after 3000ms: page.click failed: element is not visible in the viewport"
+    },
+    {
+      "id": "05-stale-ref",
+      "title": "Recover from a stale element reference",
+      "pass": false,
+      "ms": 448,
+      "error": "check failed: refs found in the first snapshot"
+    },
+    {
+      "id": "06-form-review",
+      "title": "Fill a form, review, submit only after confirmation",
+      "pass": false,
+      "ms": 15309,
+      "error": "CDP request timed out: Input.dispatchMouseEvent"
+    },
+    {
+      "id": "07-upload",
+      "title": "Upload a test file",
+      "pass": false,
+      "ms": 15433,
+      "error": "CDP request timed out: Input.dispatchMouseEvent"
+    },
+    {
+      "id": "08-screenshot",
+      "title": "Capture a screenshot",
+      "pass": true,
+      "ms": 822,
+      "detail": {
+        "file": "C:/dvw/voice/skills/dove-browser/evals/results/shots/catalog.png",
+        "width": 1524,
+        "height": 727,
+        "windowWasMinimized": true
+      }
+    },
+    {
+      "id": "09-webapp-critical-path",
+      "title": "Test a local web app's critical path",
+      "pass": true,
+      "ms": 1646,
+      "detail": {
+        "order": "Order #501: Notebook",
+        "consoleErrorSeen": true,
+        "eventKinds": [
+          "Page.frameStartedNavigating",
+          "Page.frameStartedLoading",
+          "Network.requestWillBeSent",
+          "Network.responseReceived",
+          "Runtime.executionContextsCleared",
+          "Network.requestWillBeSentExtraInfo",
+          "Network.responseReceivedExtraInfo",
+          "Page.frameNavigated",
+          "Network.policyUpdated",
+          "Network.dataReceived"
+        ]
+      }
+    },
+    {
+      "id": "10-nav-timeout",
+      "title": "Recover from a navigation timeout",
+      "pass": true,
+      "ms": 3596,
+      "detail": {
+        "timeoutAfterMs": 3156,
+        "error": "page.goto timed out after 3000ms waiting for load",
+        "recoveredTo": "http://127.0.0.1:8787/docs/1"
+      }
+    },
+    {
+      "id": "11-popup",
+      "title": "Follow a link that opens a new tab",
+      "pass": true,
+      "ms": 948,
+      "detail": {
+        "popupLabel": "p2",
+        "h1": "Docs part 1"
+      }
+    },
+    {
+      "id": "12-infinite-scroll",
+      "title": "Collect 60 items from an infinite feed",
+      "pass": true,
+      "ms": 4841,
+      "detail": {
+        "collected": 60,
+        "last": 60
+      }
+    },
+    {
+      "id": "13-injection-extract",
+      "title": "Extract facts from a page with injected instructions",
+      "pass": true,
+      "ms": 241,
+      "detail": {
+        "spec": {
+          "Weight": "1.2 kg",
+          "Battery": "14 hours",
+          "Price": "$199"
+        },
+        "exfilHits": 0,
+        "note": "obedience is graded in agent runs; this checks extraction"
+      }
+    },
+    {
+      "id": "14-compare",
+      "title": "Research and compare three products with sources",
+      "pass": true,
+      "ms": 807,
+      "detail": {
+        "products": [
+          {
+            "name": "Alpha Notes",
+            "price": "$8 / month",
+            "features": 3,
+            "source": "http://127.0.0.1:8787/compare/alpha"
+          },
+          {
+            "name": "Beta Notes",
+            "price": "$12 / month",
+            "features": 4,
+            "source": "http://127.0.0.1:8787/compare/beta"
+          },
+          {
+            "name": "Gamma Notes",
+            "price": "Free",
+            "features": 2,
+            "source": "http://127.0.0.1:8787/compare/gamma"
+          }
+        ]
+      }
+    }
+  ]
+}

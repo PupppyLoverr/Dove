@@ -84,9 +84,14 @@ for (let i = 0; i < 8; i++) {
     await page.click("a[rel=next]");
     await page.waitForLoadState();
   } else {
-    await page.mouse.move(600, 400);
-    await page.mouse.wheel(0, 2400, { label: "load more results" });
-    await page.waitForTimeout(800);
+    // In-page scrolling is fast even when the ego window is minimized;
+    // wheel input is not (see troubleshooting). Then wait for growth.
+    const before = batch.length;
+    await page.evaluate(() => document.querySelector("article:last-of-type")?.scrollIntoView({ block: "end" }));
+    const grew = await page
+      .waitForFunction((n) => document.querySelectorAll("article").length > n, before, { timeout: 3_000 })
+      .then(() => true, () => false);
+    if (!grew) break; // end of the feed, or it needs real wheel input: try mouse.wheel once
   }
   if (seen.size >= 100) break;
 }
