@@ -23,7 +23,17 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt as _, AsyncWriteExt, BufReader};
 
 use super::agent::Outcome;
 
-pub use extension::{connected_browser, connection_watch, new_pairing_code, pairing_code};
+pub use extension::{chrome_tabs, connected_browser, connection_watch, new_pairing_code, pairing_code};
+
+/// One line of the extension's tab list, `[id] (active) Title — url`, as
+/// (title, url).
+pub fn parse_tab_line(line: &str) -> Option<(String, String)> {
+    let rest = line.trim().strip_prefix('[')?.split_once(']')?.1;
+    let rest = rest.trim_start().trim_start_matches("(active)").trim_start().trim_start_matches("(Dove)").trim_start();
+    let (title, url) = rest.rsplit_once(" — ")?;
+    let url = url.trim();
+    (url.starts_with("http") || url.starts_with("file:")).then(|| (title.trim().to_string(), url.to_string()))
+}
 
 pub struct Request {
     /// The agent's working directory: which thread is asking.
@@ -214,6 +224,19 @@ mod extension {
     /// The connected browser's user agent, when the extension is paired and live.
     pub fn connected_browser() -> Option<String> {
         state().conn.as_ref().map(|c| c.browser.clone())
+    }
+
+    /// The paired browser's open web tabs, as (title, url). Empty when no
+    /// browser is paired (nothing is sent then).
+    pub async fn chrome_tabs() -> Vec<(String, String)> {
+        if connected_browser().is_none() {
+            return Vec::new();
+        }
+        let out = call("tabs", serde_json::json!({})).await;
+        if out.is_error {
+            return Vec::new();
+        }
+        out.text.lines().filter_map(super::parse_tab_line).collect()
     }
 
     fn changes() -> &'static tokio::sync::watch::Sender<u64> {
@@ -578,6 +601,16 @@ mod extension {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn tab_lines_parse_to_title_and_url() {
+        assert_eq!(
+            super::parse_tab_line("[12] (active) (Dove) Docs — Rust — https://doc.rust-lang.org/"),
+            Some(("Docs — Rust".into(), "https://doc.rust-lang.org/".into()))
+        );
+        assert_eq!(super::parse_tab_line("[3] New Tab — chrome://newtab/"), None, "browser pages are not mentionable");
+        assert_eq!(super::parse_tab_line("No tabs."), None);
+    }
+
     #[test]
     fn pairing_tokens_are_long_random_and_alphanumeric() {
         let (a, b) = (super::token(), super::token());

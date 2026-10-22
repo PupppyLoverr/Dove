@@ -7,9 +7,16 @@
 //! Every thread keeps its own tabs; browsers and terminals live as long as
 //! their thread (scrollback and page state survive switching away) and are
 //! closed with it.
+//!
+//! The panel splits freely into panes ([`crate::workspace`]): each pane
+//! shows one of the tabs, so a browser, a terminal and a side chat can sit
+//! side by side next to the conversation. Tab clicks and the pickers act on
+//! the focused pane.
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::rc::Rc;
 
 use dove_core::Engine;
 use dove_core::proto::{TaskId, TaskStatus, TodoItem, TodoStatus};
@@ -18,7 +25,7 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable as _, InteractiveElement as _,
     IntoElement, MouseButton, ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _,
-    Subscription, Window, anchored, deferred, div, px,
+    Subscription, Window, anchored, canvas, deferred, div, px, relative,
 };
 use std::sync::Arc;
 
@@ -36,9 +43,23 @@ use crate::terminal::TerminalView;
 use crate::theme::{Theme, ink};
 use crate::transcript::{Subagent, TaskView};
 use crate::ui;
+use crate::workspace::{self, Axis, Dir, Node, PaneId, SplitPath};
 
 /// Fixed chip width, as in Zeron, so drag reordering is uniform.
 const CHIP_W: f32 = 112.0;
+
+/// Web views live at once; a browser pane beyond these pauses (each
+/// WebView2 costs tens of megabytes) until it is clicked.
+const MAX_LIVE_BROWSERS: usize = 3;
+
+/// What the pane shortcuts ask of the panel.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PaneCommand {
+    Split(Axis),
+    Close,
+    Maximize,
+    Focus(Dir),
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub enum Surface {
@@ -188,14 +209,125 @@ pub struct SideChatInfo {
     pub updated_at: i64,
 }
 
-#[derive(Default)]
 struct ThreadPanel {
     tabs: Vec<Surface>,
-    active: Option<Surface>,
+    /// The panes, and the tab each shows (a pane missing here shows the
+    /// picker). A tab is on screen in one pane at most.
+    layout: Node,
+    shown: HashMap<PaneId, Surface>,
+    /// The pane tab clicks and keys act on, and the panes by recency (most
+    /// recent first) for folding squeezed panes and pausing browsers.
+    focus: PaneId,
+    recent: Vec<PaneId>,
+    maximized: Option<PaneId>,
+    next_pane: PaneId,
     browsers: HashMap<u64, (Entity<BrowserSurface>, Subscription)>,
     terminals: HashMap<u64, Entity<TerminalView>>,
     chats: HashMap<u64, (Entity<SideChat>, Subscription)>,
     subagents: HashMap<u64, (Entity<TaskView>, Subscription)>,
+}
+
+impl Default for ThreadPanel {
+    fn default() -> Self {
+        Self {
+            tabs: Vec::new(),
+            layout: Node::Leaf(0),
+            shown: HashMap::new(),
+            focus: 0,
+            recent: vec![0],
+            maximized: None,
+            next_pane: 1,
+            browsers: HashMap::new(),
+            terminals: HashMap::new(),
+            chats: HashMap::new(),
+            subagents: HashMap::new(),
+        }
+    }
+}
+
+impl ThreadPanel {
+    /// The focused pane's tab.
+    fn active(&self) -> Option<Surface> {
+        self.shown.get(&self.focus).copied()
+    }
+
+    fn pane_of(&self, s: Surface) -> Option<PaneId> {
+        self.shown.iter().find(|(_, x)| **x == s).map(|(id, _)| *id)
+    }
+
+    fn focus_pane(&mut self, id: PaneId) {
+        self.focus = id;
+        self.recent.retain(|x| *x != id);
+        self.recent.insert(0, id);
+    }
+
+    /// Show `s`: focus the pane already showing it, else show it in the
+    /// focused pane.
+    fn set_active(&mut self, s: Surface) {
+        match self.pane_of(s) {
+            Some(p) => {
+                self.focus_pane(p);
+                if self.maximized.is_some() {
+                    self.maximized = Some(p);
+                }
+            }
+            None => {
+                self.shown.insert(self.focus, s);
+            }
+        }
+    }
+
+    /// Put `s` in `pane`; a pane already showing it takes this pane's old
+    /// tab (the two swap).
+    fn place(&mut self, pane: PaneId, s: Surface) {
+        let old = self.shown.insert(pane, s);
+        if let Some(q) = self.shown.iter().find(|(id, x)| **id != pane && **x == s).map(|(id, _)| *id) {
+            match old {
+                Some(o) => self.shown.insert(q, o),
+                None => self.shown.remove(&q),
+            };
+        }
+        self.focus_pane(pane);
+    }
+
+    /// `s` left the tabs (it was at `ix`): a pane showing it shows the
+    /// nearest tab that is not on screen, or the picker.
+    fn drop_surface(&mut self, s: Surface, ix: usize) {
+        let Some(pane) = self.pane_of(s) else { return };
+        self.shown.remove(&pane);
+        let n = self.tabs.len();
+        let next = (ix..n).chain((0..ix.min(n)).rev()).map(|i| self.tabs[i]).find(|t| self.pane_of(*t).is_none());
+        if let Some(t) = next {
+            self.shown.insert(pane, t);
+        }
+    }
+
+    fn close_pane(&mut self, id: PaneId) {
+        if !self.layout.remove(id) {
+            return;
+        }
+        self.shown.remove(&id);
+        self.recent.retain(|x| *x != id);
+        if self.maximized == Some(id) {
+            self.maximized = None;
+        }
+        if self.focus == id {
+            let next = self.recent.first().copied().unwrap_or_else(|| self.layout.leaves()[0]);
+            self.focus_pane(next);
+        }
+    }
+}
+
+/// The payload of a divider being dragged.
+#[derive(Clone)]
+struct DividerDrag {
+    path: SplitPath,
+}
+
+impl Render for DividerDrag {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+    }
 }
 
 #[derive(Clone)]
@@ -222,6 +354,27 @@ impl Render for ChipDrag {
             .text_size(ty::META)
             .child(self.title.clone())
     }
+}
+
+/// The side panel, for views that list its browser tabs (`@` mentions).
+pub struct PanelHandle(pub gpui::WeakEntity<SidePanel>);
+
+impl gpui::Global for PanelHandle {}
+
+/// Every in-app browser tab across threads, as (title, url).
+pub fn browser_tabs(cx: &gpui::App) -> Vec<(String, String)> {
+    let Some(panel) = cx.try_global::<PanelHandle>().and_then(|h| h.0.upgrade()) else { return Vec::new() };
+    let p = panel.read(cx);
+    let mut out: Vec<(String, String)> = Vec::new();
+    for tp in p.panels.values() {
+        for (b, _) in tp.browsers.values() {
+            let page = &b.read(cx).page;
+            if let Some(url) = page.url.clone().filter(|u| !out.iter().any(|(_, x)| x == u)) {
+                out.push((page.label().to_string(), url));
+            }
+        }
+    }
+    out
 }
 
 /// What "take a look at this" can point at in the browser tab.
@@ -261,6 +414,8 @@ pub struct SidePanel {
     browser_context: BrowserContext,
     /// Whether the shell is showing the panel (drives native browser views).
     visible: bool,
+    /// The panel's size last frame, for what fits when splitting.
+    bounds: Rc<Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
     focus: FocusHandle,
     _subs: Vec<Subscription>,
 }
@@ -322,6 +477,7 @@ impl SidePanel {
             next_id: 1,
             browser_context: BrowserContext::default(),
             visible: false,
+            bounds: Rc::new(Cell::new(None)),
             focus: cx.focus_handle(),
             _subs: subs,
         }
@@ -337,7 +493,138 @@ impl SidePanel {
     }
 
     pub fn active(&self) -> Option<Surface> {
-        self.panel_ref().and_then(|p| p.active)
+        self.panel_ref().and_then(|p| p.active())
+    }
+
+    /// The panel's area as the layout sees it (roomy until first drawn).
+    fn dock_rect(&self) -> workspace::Rect {
+        match self.bounds.get() {
+            Some(b) => workspace::Rect::new(0.0, 0.0, f32::from(b.size.width), f32::from(b.size.height)),
+            None => workspace::Rect::new(0.0, 0.0, 1200.0, 900.0),
+        }
+    }
+
+    /// Panes the dock may hold: the chat column counts as one unless the
+    /// panel has taken over the window.
+    fn max_panes(&self) -> usize {
+        if self.expanded { workspace::MAX_PANES } else { workspace::MAX_PANES - 1 }
+    }
+
+    /// The panes on screen: the maximized one, or every pane that fits.
+    fn visible_layout(&self, p: &ThreadPanel) -> Node {
+        match p.maximized.filter(|m| p.layout.contains(*m)) {
+            Some(m) => Node::Leaf(m),
+            None => workspace::fit(&p.layout, self.dock_rect(), &p.recent),
+        }
+    }
+
+    /// The tabs on screen, one per visible pane.
+    fn on_screen(&self) -> Vec<Surface> {
+        let Some(p) = self.panel_ref() else { return Vec::new() };
+        self.visible_layout(p).leaves().iter().filter_map(|id| p.shown.get(id).copied()).collect()
+    }
+
+    /// Whether `s` is on screen in some pane.
+    pub fn showing(&self, s: Surface) -> bool {
+        self.on_screen().contains(&s)
+    }
+
+    /// The browsers that get a live web view: those on screen, most
+    /// recently focused first, at most [`MAX_LIVE_BROWSERS`].
+    fn live_browsers(&self) -> Vec<u64> {
+        let Some(p) = self.panel_ref() else { return Vec::new() };
+        let on = self.visible_layout(p).leaves();
+        let mut order: Vec<PaneId> = p.recent.iter().copied().filter(|x| on.contains(x)).collect();
+        order.extend(on.iter().copied().filter(|x| !p.recent.contains(x)));
+        order
+            .iter()
+            .filter_map(|pane| match p.shown.get(pane) {
+                Some(Surface::Browser(id)) => Some(*id),
+                _ => None,
+            })
+            .take(MAX_LIVE_BROWSERS)
+            .collect()
+    }
+
+    /// Whether `pane` (the focused one when None) can split along `axis`.
+    fn can_split(&self, pane: Option<PaneId>, axis: Axis) -> bool {
+        let Some(p) = self.panel_ref() else { return false };
+        workspace::can_split(&p.layout, pane.unwrap_or(p.focus), axis, self.dock_rect(), self.max_panes())
+    }
+
+    /// Split a pane (the focused one when None); the new pane opens on the
+    /// picker and takes focus.
+    pub fn split(&mut self, pane: Option<PaneId>, axis: Axis, cx: &mut Context<Self>) -> bool {
+        if !self.can_split(pane, axis) {
+            return false;
+        }
+        let Some(p) = self.panel() else { return false };
+        let at = pane.unwrap_or(p.focus);
+        let new = p.next_pane;
+        p.next_pane += 1;
+        p.layout.split(at, axis, new);
+        p.maximized = None;
+        p.focus_pane(new);
+        self.plus_open = false;
+        cx.notify();
+        true
+    }
+
+    fn close_pane(&mut self, pane: PaneId, cx: &mut Context<Self>) {
+        if let Some(p) = self.panel() {
+            p.close_pane(pane);
+        }
+        cx.notify();
+    }
+
+    fn toggle_maximize(&mut self, pane: PaneId, cx: &mut Context<Self>) {
+        if let Some(p) = self.panel() {
+            p.maximized = if p.maximized == Some(pane) { None } else { Some(pane) };
+            p.focus_pane(pane);
+        }
+        cx.notify();
+    }
+
+    fn focus_pane(&mut self, pane: PaneId, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(p) = self.panel() else { return };
+        if p.focus == pane {
+            return;
+        }
+        p.focus_pane(pane);
+        if let Some(Surface::Terminal(id)) = p.shown.get(&pane).copied()
+            && let Some(t) = p.terminals.get(&id).cloned()
+        {
+            let f = t.read(cx).focus_handle(cx);
+            window.focus(&f, cx);
+        }
+        cx.notify();
+    }
+
+    fn set_divider(&mut self, path: SplitPath, ratio: f32, cx: &mut Context<Self>) {
+        if let Some(p) = self.panel() {
+            p.layout.set_ratio(path, ratio);
+        }
+        cx.notify();
+    }
+
+    /// A pane shortcut (split, close, maximize, move focus).
+    pub fn command(&mut self, cmd: PaneCommand, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(focus) = self.panel_ref().map(|p| p.focus) else { return };
+        match cmd {
+            PaneCommand::Split(axis) => {
+                self.split(None, axis, cx);
+            }
+            PaneCommand::Close => self.close_pane(focus, cx),
+            PaneCommand::Maximize => self.toggle_maximize(focus, cx),
+            PaneCommand::Focus(dir) => {
+                let rect = self.dock_rect();
+                let next =
+                    self.panel_ref().and_then(|p| workspace::neighbor(&self.visible_layout(p), focus, dir, rect));
+                if let Some(n) = next {
+                    self.focus_pane(n, window, cx);
+                }
+            }
+        }
     }
 
     /// Point the panel at a thread.
@@ -399,9 +686,9 @@ impl SidePanel {
                 self.prs.insert(thread, target);
             }
             None => {
-                panel.tabs.retain(|s| *s != Surface::PullRequest);
-                if panel.active == Some(Surface::PullRequest) {
-                    panel.active = panel.tabs.last().copied();
+                if let Some(ix) = panel.tabs.iter().position(|s| *s == Surface::PullRequest) {
+                    panel.tabs.remove(ix);
+                    panel.drop_surface(Surface::PullRequest, ix);
                 }
                 self.prs.remove(&thread);
             }
@@ -567,8 +854,23 @@ impl SidePanel {
 
     fn activate(&mut self, surface: Surface, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(p) = self.panel() {
-            p.active = Some(surface);
+            p.set_active(surface);
         }
+        self.shown(surface, window, cx);
+    }
+
+    /// Show `surface` in the focused pane even when another pane has it
+    /// (the two swap): what a picker in an empty pane means.
+    fn place_here(&mut self, surface: Surface, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(p) = self.panel() {
+            let focus = p.focus;
+            p.place(focus, surface);
+        }
+        self.shown(surface, window, cx);
+    }
+
+    /// A surface came on screen: refresh what goes stale, focus shells.
+    fn shown(&mut self, surface: Surface, window: &mut Window, cx: &mut Context<Self>) {
         match surface {
             Surface::Changes => self.changes.update(cx, |c, cx| c.refresh(cx)),
             Surface::History => self.git_history.update(cx, |h, cx| h.refresh(cx)),
@@ -606,9 +908,7 @@ impl SidePanel {
             }
             _ => {}
         }
-        if p.active == Some(surface) {
-            p.active = p.tabs.get(ix).or_else(|| p.tabs.get(ix.saturating_sub(1))).copied();
-        }
+        p.drop_surface(surface, ix);
         cx.notify();
     }
 
@@ -712,13 +1012,14 @@ impl SidePanel {
     /// browser of the visible panel is live. Call every shell frame.
     pub fn sync(&mut self, visible: bool, dragging: bool, cx: &mut Context<Self>) {
         self.visible = visible;
-        let active = self.active();
+        let dragging = dragging || cx.has_active_drag();
+        let live_ids = if visible { self.live_browsers() } else { Vec::new() };
         let urls = self.detected_urls(cx);
         let current = self.thread;
         let combos: Vec<String> = crate::keymap::shortcuts().iter().map(|s| s.default.to_string()).collect();
         for (thread, p) in &self.panels {
             for (id, (b, _)) in &p.browsers {
-                let live = visible && Some(*thread) == current && active == Some(Surface::Browser(*id));
+                let live = Some(*thread) == current && live_ids.contains(id);
                 let presentation = crate::browser::model::presentation(live, dragging);
                 let urls = urls.clone();
                 let combos = combos.clone();
@@ -744,7 +1045,7 @@ impl SidePanel {
         cx: &mut Context<Self>,
     ) -> Entity<BrowserSurface> {
         let existing = self.panels.get(&thread).and_then(|p| {
-            let pick = match p.active {
+            let pick = match p.active() {
                 Some(Surface::Browser(id)) => Some(id),
                 _ => p.tabs.iter().rev().find_map(|s| match s {
                     Surface::Browser(id) => Some(*id),
@@ -761,7 +1062,7 @@ impl SidePanel {
         browser.update(cx, |b, cx| b.wake(window, cx));
         if reveal {
             if let Some(p) = self.panels.get_mut(&thread) {
-                p.active = Some(Surface::Browser(id));
+                p.set_active(Surface::Browser(id));
             }
             cx.notify();
         }
@@ -786,7 +1087,7 @@ impl SidePanel {
         let p = self.panels.entry(thread).or_default();
         p.browsers.insert(id, (browser.clone(), sub));
         p.tabs.push(Surface::Browser(id));
-        p.active = Some(Surface::Browser(id));
+        p.set_active(Surface::Browser(id));
         cx.notify();
         (id, browser)
     }
@@ -810,7 +1111,7 @@ impl SidePanel {
                 let b = b.read(cx);
                 out.push(format!(
                     "{i}: {}{} — {}",
-                    if p.active == Some(*s) { "* " } else { "" },
+                    if p.active() == Some(*s) { "* " } else { "" },
                     b.title(),
                     b.page.url.clone().unwrap_or_else(|| "(blank)".into())
                 ));
@@ -845,7 +1146,7 @@ impl SidePanel {
                 let id = *browser_ids.get(i).ok_or_else(|| format!("No browser tab {i}"))?;
                 if action == "select" {
                     if let Some(p) = self.panels.get_mut(&thread) {
-                        p.active = Some(Surface::Browser(id));
+                        p.set_active(Surface::Browser(id));
                     }
                     cx.notify();
                 } else {
@@ -953,12 +1254,13 @@ impl SidePanel {
     pub fn render_strip(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let t = Theme::of(cx).clone();
         let tabs = self.panel_ref().map(|p| p.tabs.clone()).unwrap_or_default();
-        let active = self.active();
+        let on_screen = self.on_screen();
+        let single = self.panel_ref().is_none_or(|p| p.layout.count() == 1);
 
         let mut strip =
             div().id("panel-strip").flex().items_center().gap(px(4.0)).min_w_0().overflow_x_scroll().occlude();
         for (ix, s) in tabs.iter().copied().enumerate() {
-            let selected = Some(s) == active;
+            let selected = on_screen.contains(&s);
             let title = self.surface_title(s, cx);
             let group = SharedString::from(format!("panel-chip-{ix}"));
             let loading = match s {
@@ -1087,6 +1389,15 @@ impl SidePanel {
             .px(px(8.0))
             .child(div().flex_1().min_w_0().child(strip))
             .when(!tabs.is_empty(), |d| d.child(plus))
+            .when(!tabs.is_empty() && single, |d| {
+                d.child(self.split_button("panel-split-right", None, Axis::Row, &t, cx)).child(self.split_button(
+                    "panel-split-down",
+                    None,
+                    Axis::Column,
+                    &t,
+                    cx,
+                ))
+            })
             .child(
                 surface_chrome::toolbar_button(
                     "panel-expand",
@@ -1110,11 +1421,39 @@ impl SidePanel {
     /// Open a surface picked from a picker: browsers, terminals and side
     /// chats always open a new one; the rest show the existing surface.
     fn pick(&mut self, k: Tab, window: &mut Window, cx: &mut Context<Self>) {
-        if matches!(k, Tab::Browser | Tab::Terminal | Tab::SideChat) {
-            self.open(k, None, window, cx);
-        } else {
-            self.show(k, window, cx);
+        let existing = self
+            .panel_ref()
+            .and_then(|p| p.tabs.iter().copied().find(|s| s.kind() == k && !matches!(s, Surface::Subagent(_))));
+        match existing {
+            Some(s) if !matches!(k, Tab::Browser | Tab::Terminal | Tab::SideChat) => self.place_here(s, window, cx),
+            _ => self.open(k, None, window, cx),
         }
+    }
+
+    /// A split button (the strip's, or a pane header's), quiet when there
+    /// is no room.
+    fn split_button(
+        &self,
+        id: impl Into<gpui::ElementId>,
+        pane: Option<PaneId>,
+        axis: Axis,
+        t: &Theme,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let room = self.can_split(pane, axis);
+        let (glyph, tip) = match (axis, room) {
+            (Axis::Row, true) => (icons::SPLIT_COLUMNS, "Split right"),
+            (Axis::Row, false) => (icons::SPLIT_COLUMNS, "No room to split right: widen the panel or close a pane"),
+            (Axis::Column, true) => (icons::SPLIT_ROWS, "Split down"),
+            (Axis::Column, false) => (icons::SPLIT_ROWS, "No room to split down: close a pane first"),
+        };
+        surface_chrome::toolbar_button(id, tip)
+            .child(icon(glyph).size(px(12.5)).text_color(if room { t.text_muted } else { t.text_faint.opacity(0.5) }))
+            .when(room, |d| {
+                d.on_click(cx.listener(move |this, _, _, cx| {
+                    this.split(pane, axis, cx);
+                }))
+            })
     }
 
     /// The `+` surface picker: a two-column grid of cards (glyph, name and
@@ -1715,11 +2054,11 @@ pub fn find_local_urls(line: &str) -> Vec<String> {
     out
 }
 
-impl Render for SidePanel {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        crate::perf_trace::count_render("SidePanel");
-        let t = Theme::of(cx).clone();
-        let body: AnyElement = match self.active() {
+impl SidePanel {
+    /// One surface's body (the picker when the pane is empty).
+    fn render_surface(&mut self, surface: Option<Surface>, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let t = t.clone();
+        match surface {
             None => self.render_picker(&t, cx),
             Some(Surface::Subagents) => self.render_subagents(&t, cx),
             Some(Surface::Subagent(id)) => match self.subagent_view(id) {
@@ -1817,13 +2156,221 @@ impl Render for SidePanel {
                 Some((c, _)) => c.clone().into_any_element(),
                 None => self.render_picker(&t, cx),
             },
+        }
+    }
+
+    /// A layout node: a pane, or two halves around a draggable divider.
+    /// Dividers drag only when every pane is on screen (folded or maximized
+    /// layouts have other paths).
+    fn render_node(
+        &mut self,
+        node: &Node,
+        path: SplitPath,
+        multi: bool,
+        draggable: bool,
+        t: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let Node::Split { axis, ratio, a, b } = node else {
+            let Node::Leaf(pane) = node else { unreachable!() };
+            return self.render_pane(*pane, multi, t, cx);
         };
+        let (axis, ratio) = (*axis, *ratio);
+        let row = axis == Axis::Row;
+        let first = self.render_node(a, Node::child_path(path, false), multi, draggable, t, cx);
+        let second = self.render_node(b, Node::child_path(path, true), multi, draggable, t, cx);
+        let line = div().bg(t.border).when(row, |d| d.w(px(1.0)).h_full()).when(!row, |d| d.h(px(1.0)).w_full());
+        let divider = div()
+            .id(("pane-divider", path as usize))
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_center()
+            .when(row, |d| d.w(px(5.0)).h_full())
+            .when(!row, |d| d.h(px(5.0)).w_full())
+            .child(line)
+            .when(draggable, |d| {
+                d.when(row, |d| d.cursor_col_resize())
+                    .when(!row, |d| d.cursor_row_resize())
+                    .hover(|s| s.bg(t.wash(0.08)))
+                    .on_drag(DividerDrag { path }, |d, _, _, cx| cx.new(|_| d.clone()))
+            });
+        div()
+            .id(("pane-split", path as usize))
+            .size_full()
+            .min_w_0()
+            .min_h_0()
+            .flex()
+            .when(row, |d| d.flex_row())
+            .when(!row, |d| d.flex_col())
+            .on_drag_move(cx.listener(move |this, e: &gpui::DragMoveEvent<DividerDrag>, _, cx| {
+                if e.drag(cx).path != path {
+                    return;
+                }
+                let b = e.bounds;
+                let r = match axis {
+                    Axis::Row => workspace::drag_ratio(
+                        f32::from(e.event.position.x),
+                        f32::from(b.origin.x),
+                        f32::from(b.size.width),
+                        workspace::MIN_W,
+                    ),
+                    Axis::Column => workspace::drag_ratio(
+                        f32::from(e.event.position.y),
+                        f32::from(b.origin.y),
+                        f32::from(b.size.height),
+                        workspace::MIN_H,
+                    ),
+                };
+                this.set_divider(path, r, cx);
+            }))
+            .child(
+                div()
+                    .flex_none()
+                    .overflow_hidden()
+                    .when(row, |d| d.h_full().w(relative(ratio)))
+                    .when(!row, |d| d.w_full().h(relative(ratio)))
+                    .child(first),
+            )
+            .child(divider)
+            .child(div().flex_1().min_w_0().min_h_0().overflow_hidden().child(second))
+            .into_any_element()
+    }
+
+    /// One pane: its tab's body under a slim header when the panel is split
+    /// (name, split right/down, maximize, close). A click anywhere focuses
+    /// it; a tab chip dropped on it shows there.
+    fn render_pane(&mut self, pane: PaneId, multi: bool, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let surface = self.panel_ref().and_then(|p| p.shown.get(&pane).copied());
+        let focused = self.panel_ref().is_some_and(|p| p.focus == pane);
+        let maximized = self.panel_ref().is_some_and(|p| p.maximized == Some(pane));
+        let paused = match surface {
+            Some(Surface::Browser(id)) => self.visible && !self.live_browsers().contains(&id),
+            _ => false,
+        };
+        let body = self.render_surface(surface, t, cx);
+        let ix = pane as usize;
+        let header = multi.then(|| {
+            let title: SharedString = surface.map(|s| self.surface_title(s, cx)).unwrap_or_else(|| "New pane".into());
+            let glyph = surface.map(|s| s.kind().glyph()).unwrap_or(icons::WIDGET_ADD);
+            let ink_on = if focused { t.text } else { t.text_muted };
+            div()
+                .h(px(30.0))
+                .flex_none()
+                .px(px(8.0))
+                .flex()
+                .items_center()
+                .gap(px(6.0))
+                .border_b_1()
+                .border_color(t.border)
+                .when(focused, |d| d.bg(t.wash(0.035)))
+                .child(icon(glyph).size(px(12.5)).flex_none().text_color(ink_on))
+                .child(div().flex_1().min_w_0().truncate().text_size(ty::CAPTION).text_color(ink_on).child(title))
+                .when(!maximized, |d| {
+                    d.child(self.split_button(("pane-split-right", ix), Some(pane), Axis::Row, t, cx))
+                        .child(self.split_button(("pane-split-down", ix), Some(pane), Axis::Column, t, cx))
+                })
+                .child(
+                    surface_chrome::toolbar_button(
+                        ("pane-max", ix),
+                        if maximized { "Restore the panes" } else { "Maximize this pane" },
+                    )
+                    .child(
+                        icon(if maximized { icons::WINDOW_RESTORE } else { icons::WINDOW_MAXIMIZE })
+                            .size(px(12.5))
+                            .text_color(t.text_muted),
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| this.toggle_maximize(pane, cx))),
+                )
+                .when(!maximized, |d| {
+                    d.child(
+                        surface_chrome::toolbar_button(("pane-close", ix), "Close pane (its tab stays in the strip)")
+                            .child(icon(icons::CLOSE).size(px(12.0)).text_color(t.text_muted))
+                            .on_click(cx.listener(move |this, _, _, cx| this.close_pane(pane, cx))),
+                    )
+                })
+        });
+        let tabs = self.panel_ref().map(|p| p.tabs.clone()).unwrap_or_default();
+        div()
+            .id(("pane", ix))
+            .relative()
+            .size_full()
+            .min_w_0()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .capture_any_mouse_down(cx.listener(move |this, _, window, cx| this.focus_pane(pane, window, cx)))
+            .drag_over::<ChipDrag>(|st, _, _, _| st.bg(ink(0.04)))
+            .on_drop(cx.listener(move |this, d: &ChipDrag, window, cx| {
+                if let Some(s) = tabs.get(d.from).copied() {
+                    if let Some(p) = this.panel() {
+                        p.place(pane, s);
+                    }
+                    this.shown(s, window, cx);
+                }
+            }))
+            .children(header)
+            .child(div().flex_1().min_h_0().child(body))
+            .when(paused, |d| {
+                d.child(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .right_0()
+                        .bottom_0()
+                        .top(px(if multi { 30.0 } else { 0.0 }))
+                        .bg(t.bg)
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .justify_center()
+                        .gap(px(6.0))
+                        .child(icon(icons::GLOBE).size(px(18.0)).text_color(t.text_faint))
+                        .child(div().text_size(ty::SMALL).text_color(t.text_muted).child("Paused to save memory"))
+                        .child(div().text_size(ty::CAPTION).text_color(t.text_faint).child("Click to show this page")),
+                )
+            })
+            .into_any_element()
+    }
+}
+
+impl Render for SidePanel {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::perf_trace::count_render("SidePanel");
+        let t = Theme::of(cx).clone();
+        let (shown, whole) = match self.panel_ref() {
+            Some(p) => {
+                let shown = self.visible_layout(p);
+                let whole = shown == p.layout;
+                let multi = p.layout.count() > 1;
+                (shown, whole && multi)
+            }
+            None => (Node::Leaf(0), false),
+        };
+        let multi = self.panel_ref().is_some_and(|p| p.layout.count() > 1);
+        let body = self.render_node(&shown, workspace::ROOT, multi, whole, &t, cx);
+        // Measure the panel for what fits; a new size redraws once.
+        let cell = self.bounds.clone();
+        let me = cx.entity().downgrade();
+        let probe = canvas(
+            move |b, _, cx| {
+                if cell.get().map(|o| o.size) != Some(b.size) {
+                    cell.set(Some(b));
+                    let _ = me.update(cx, |_, cx| cx.notify());
+                }
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .inset_0();
         div()
             .id("side-panel")
             .track_focus(&self.focus)
+            .relative()
             .size_full()
             .flex()
             .flex_col()
+            .child(probe)
             .child(div().flex_1().min_h_0().child(body))
     }
 }

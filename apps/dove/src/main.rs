@@ -7,6 +7,7 @@ mod changes;
 mod composer;
 mod computer_plugin;
 mod design;
+mod device;
 mod diff_list;
 mod ego;
 mod file_icons;
@@ -59,7 +60,9 @@ mod updates;
 mod visuals;
 mod voice;
 mod voice_call;
+mod voice_view;
 mod wallpaper;
+mod workspace;
 
 use std::sync::Arc;
 
@@ -97,7 +100,16 @@ pub mod actions {
             OpenThreads,
             OpenKanban,
             FocusComposer,
-            ToggleVoiceCall
+            ToggleVoiceCall,
+            SplitPaneRight,
+            SplitPaneDown,
+            ClosePane,
+            MaximizePane,
+            FocusPaneLeft,
+            FocusPaneRight,
+            FocusPaneUp,
+            FocusPaneDown,
+            ShowCallView
         ]
     );
 

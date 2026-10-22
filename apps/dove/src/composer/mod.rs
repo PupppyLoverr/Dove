@@ -15,6 +15,7 @@
 //! read-only chips). The agent · model · effort picker is its own entity
 //! (`picker.rs`).
 
+pub mod mentions;
 pub mod picker;
 
 use std::cell::Cell;
@@ -105,7 +106,7 @@ pub fn home_input_is_dock(value: Option<&str>) -> bool {
     value == Some("dock")
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 struct MentionItem {
     label: String,
     detail: String,
@@ -113,6 +114,16 @@ struct MentionItem {
     /// For a `#` skill that is off or not installed yet: what picking it
     /// does first.
     skill: Option<SkillPick>,
+    /// Picking it adds this card instead of inserting text.
+    card: Option<mentions::Card>,
+    /// The menu section it is listed under ("Files", "Threads", …).
+    section: &'static str,
+}
+
+impl MentionItem {
+    fn card(section: &'static str, card: mentions::Card) -> Self {
+        Self { label: card.label(), detail: card.detail(), card: Some(card), section, ..Default::default() }
+    }
 }
 
 /// What picking a skill in the `#` menu does besides inserting `#name`.
@@ -207,6 +218,12 @@ pub struct Composer {
     projects: Vec<Project>,
     pub add_dirs: Vec<PathBuf>,
     attachments: Vec<PathBuf>,
+    /// Mentioned threads, folders, windows and tabs, shown as cards.
+    cards: Vec<mentions::Card>,
+    /// Threads the `@` menu offers: (id, title, agent), read when it opens.
+    mention_threads: Vec<(String, String, String)>,
+    /// The paired browser's tabs, fetched when the `@` menu opens.
+    chrome_tabs: Vec<(String, String)>,
     running: bool,
     queue: Vec<String>,
     context: (Option<u64>, Option<u64>),
@@ -328,6 +345,9 @@ impl Composer {
             projects: Vec::new(),
             add_dirs: Vec::new(),
             attachments: Vec::new(),
+            cards: Vec::new(),
+            mention_threads: Vec::new(),
+            chrome_tabs: Vec::new(),
             running: false,
             queue: Vec::new(),
             context: (None, None),
@@ -428,6 +448,8 @@ impl Composer {
     fn restore_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let key = self.draft_key();
         if let Some(d) = self.engine.store.setting(&key).filter(|d| !d.is_empty()) {
+            let (d, cards) = d.split_once("\n\u{2}\n").unwrap_or((d.as_str(), ""));
+            self.cards = mentions::from_json(cards);
             let mut lines = d.splitn(2, "\n\u{1}\n");
             let text = lines.next().unwrap_or_default().to_string();
             if let Some(files) = lines.next() {
@@ -449,7 +471,10 @@ impl Composer {
                 }
                 let text = c.input.read(cx).value().to_string();
                 let files = c.attachments.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join("\n");
-                let value = if files.is_empty() { text } else { format!("{text}\n\u{1}\n{files}") };
+                let mut value = if files.is_empty() { text } else { format!("{text}\n\u{1}\n{files}") };
+                if !c.cards.is_empty() {
+                    value = format!("{value}\n\u{2}\n{}", mentions::to_json(&c.cards));
+                }
                 let _ = c.engine.store.set_setting(&c.draft_key(), &value);
             });
         })
@@ -571,11 +596,18 @@ impl Composer {
 
     pub(crate) fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let mut text = self.input.read(cx).value().trim().to_string();
-        if text.is_empty() && self.attachments.is_empty() {
+        if text.is_empty() && self.attachments.is_empty() && self.cards.is_empty() {
             return;
         }
         if let Some(block) = skills_block(&text) {
             text = format!("{text}\n\n{block}");
+        }
+        if !self.cards.is_empty() {
+            let computer_use = crate::pages::integrations::load().computer.enabled;
+            if let Some(block) = mentions::block(&self.cards, &self.engine.store, computer_use) {
+                text = format!("{text}\n\n{block}").trim().to_string();
+            }
+            self.cards.clear();
         }
         if !self.attachments.is_empty() {
             let list = self.attachments.iter().map(|p| format!("- {}", p.display())).collect::<Vec<_>>().join("\n");
@@ -809,21 +841,12 @@ impl Composer {
         let trigger = token.chars().next();
         let mention = match trigger {
             Some('@') => {
+                if self.mention.as_ref().is_none_or(|m| m.trigger != '@') {
+                    self.load_mention_sources(cx);
+                }
                 self.ensure_files(cx);
                 let q = token[1..].to_ascii_lowercase();
-                let items: Vec<MentionItem> = self
-                    .files
-                    .iter()
-                    .filter(|f| q.is_empty() || f.to_ascii_lowercase().contains(&q))
-                    .take(MAX_MENTIONS)
-                    .map(|f| MentionItem {
-                        label: f.rsplit('/').next().unwrap_or(f).to_string(),
-                        detail: f.clone(),
-                        insert: format!("@{f}"),
-                        skill: None,
-                    })
-                    .collect();
-                Some(Mention { trigger: '@', start, items, highlight: 0 })
+                Some(Mention { trigger: '@', start, items: self.at_items(&q, cx), highlight: 0 })
             }
             // Slash commands only at the start of the message.
             Some('/') if start == 0 => {
@@ -836,14 +859,14 @@ impl Composer {
                         insert: format!("/{}", c.name),
                         label: format!("/{}", c.name),
                         detail: c.description,
-                        skill: None,
+                        ..Default::default()
                     })
                     .collect();
                 items.extend(TEMPLATES.iter().map(|(name, detail, body)| MentionItem {
                     label: format!("/{name}"),
                     detail: detail.to_string(),
                     insert: body.to_string(),
-                    skill: None,
+                    ..Default::default()
                 }));
                 items.retain(|i| q.is_empty() || i.label[1..].to_ascii_lowercase().starts_with(&q));
                 items.truncate(MAX_MENTIONS);
@@ -852,12 +875,119 @@ impl Composer {
             // Skills: `#` alone lists them; `#12` with no match stays text.
             Some('#') => {
                 let q = token[1..].to_ascii_lowercase();
-                let items = skill_items(&q);
+                let mut items = skill_items(&q);
+                // Apps and tabs can be mentioned with # too.
+                items.extend(self.app_and_tab_items(&q, 3, cx));
                 (!items.is_empty() || q.is_empty()).then_some(Mention { trigger: '#', start, items, highlight: 0 })
             }
             _ => None,
         };
         self.mention = mention.filter(|m| !m.items.is_empty() || m.trigger == '@' || m.trigger == '#');
+    }
+
+    /// Read what the `@` menu lists besides files: threads now, the paired
+    /// browser's tabs in the background.
+    fn load_mention_sources(&mut self, cx: &mut Context<Self>) {
+        let own = self.thread.as_ref().map(|(t, _)| t.id);
+        self.mention_threads = self
+            .engine
+            .store
+            .all_tasks()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|t| Some(t.id) != own)
+            .map(|t| (t.id.to_string(), t.title.clone(), t.harness.label().to_string()))
+            .collect();
+        if crate::browser::control::connected_browser().is_some() {
+            let rt = self.engine.runtime();
+            let tabs = cx.background_spawn(async move {
+                rt.spawn(crate::browser::control::chrome_tabs()).await.unwrap_or_default()
+            });
+            cx.spawn(async move |this, cx| {
+                let tabs = tabs.await;
+                let _ = this.update(cx, |c, cx| {
+                    c.chrome_tabs = tabs;
+                    if c.mention.is_some() {
+                        c.update_mention(cx);
+                        cx.notify();
+                    }
+                });
+            })
+            .detach();
+        }
+    }
+
+    /// The `@` menu: files and folders, threads, apps' windows and tabs.
+    fn at_items(&self, q: &str, cx: &App) -> Vec<MentionItem> {
+        let hit = |s: &str| q.is_empty() || s.to_ascii_lowercase().contains(q);
+        let mut items = Vec::new();
+        if let Some(root) = self.root() {
+            items.extend(
+                self.files
+                    .iter()
+                    .filter(|f| hit(f))
+                    .take(5)
+                    .map(|f| MentionItem::card("Files", mentions::Card::File { path: root.join(f) })),
+            );
+            let mut dirs: Vec<&str> = Vec::new();
+            for f in self.files.iter() {
+                if let Some((d, _)) = f.rsplit_once('/')
+                    && hit(d)
+                    && !dirs.contains(&d)
+                {
+                    dirs.push(d);
+                    if dirs.len() == 3 {
+                        break;
+                    }
+                }
+            }
+            items.extend(
+                dirs.into_iter().map(|d| MentionItem::card("Folders", mentions::Card::Folder { path: root.join(d) })),
+            );
+        }
+        items.extend(self.mention_threads.iter().filter(|(_, title, agent)| hit(title) || hit(agent)).take(4).map(
+            |(id, title, agent)| {
+                MentionItem::card(
+                    "Threads",
+                    mentions::Card::Thread { id: id.clone(), title: title.clone(), agent: agent.clone() },
+                )
+            },
+        ));
+        items.extend(self.app_and_tab_items(q, 4, cx));
+        items
+    }
+
+    /// Apps' windows and browser tabs matching `q`, at most `each` of each.
+    fn app_and_tab_items(&self, q: &str, each: usize, cx: &App) -> Vec<MentionItem> {
+        let hit = |s: &str| q.is_empty() || s.to_ascii_lowercase().contains(q);
+        let windows =
+            crate::device::windows_cached().into_iter().filter(|w| hit(&w.app) || hit(&w.title)).take(each).map(|w| {
+                MentionItem::card(
+                    "Apps & windows",
+                    mentions::Card::Window { app: w.app, title: w.title, pid: w.pid, id: w.id },
+                )
+            });
+        let in_app = crate::side_panel::browser_tabs(cx).into_iter().map(|(title, url)| mentions::Card::Tab {
+            chrome: false,
+            title,
+            url,
+        });
+        let chrome =
+            self.chrome_tabs.iter().cloned().map(|(title, url)| mentions::Card::Tab { chrome: true, title, url });
+        let tabs = in_app
+            .chain(chrome)
+            .filter(|c| matches!(c, mentions::Card::Tab { title, url, .. } if hit(title) || hit(url)))
+            .take(each)
+            .map(|c| MentionItem::card("Browser tabs", c));
+        windows.chain(tabs).collect()
+    }
+
+    fn remove_card(&mut self, i: usize, cx: &mut Context<Self>) {
+        if i < self.cards.len() {
+            self.cards.remove(i);
+            self.save_draft(cx);
+            cx.notify();
+        }
     }
 
     fn ensure_files(&mut self, cx: &mut Context<Self>) {
@@ -881,6 +1011,22 @@ impl Composer {
     fn accept_mention(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(m) = self.mention.take() else { return };
         let Some(item) = m.items.get(m.highlight).cloned() else { return };
+        // A card replaces the typed `@query`.
+        if let Some(card) = item.card {
+            self.input.update(cx, |s, cx| {
+                let cursor = s.cursor();
+                s.set_selected_range(m.start..cursor, cx);
+                s.replace("", window, cx);
+            });
+            if !self.cards.iter().any(|c| c.same(&card)) {
+                self.cards.push(card);
+            }
+            self.save_draft(cx);
+            // A click in the menu took focus: keep typing where you were.
+            focus_input(&self.input, window, cx);
+            cx.notify();
+            return;
+        }
         if let Some(pick) = item.skill.clone() {
             // Turn the skill on (or install it) before the message goes.
             cx.background_spawn(async move {
@@ -899,6 +1045,7 @@ impl Composer {
             s.set_selected_range(m.start..cursor, cx);
             s.replace(format!("{} ", item.insert), window, cx);
         });
+        focus_input(&self.input, window, cx);
         cx.notify();
     }
 
@@ -934,6 +1081,17 @@ impl Composer {
                 }
                 _ => {}
             }
+        }
+        if key == "backspace"
+            && self.mention.is_none()
+            && !self.cards.is_empty()
+            && self.input.read(cx).value().is_empty()
+        {
+            self.cards.pop();
+            self.save_draft(cx);
+            cx.stop_propagation();
+            cx.notify();
+            return;
         }
         if key == "v" && (k.modifiers.control || k.modifiers.platform) && self.paste_image(cx) {
             cx.stop_propagation();
@@ -1494,7 +1652,7 @@ impl Composer {
             SendState::Queue => (icons::QUEUE_SEND, "Queue: send when this turn ends (Enter)", Some("Queue")),
             _ => (icons::ARROW_UP, "Send (Enter)", None),
         };
-        let enabled = has_text || !self.attachments.is_empty();
+        let enabled = has_text || !self.attachments.is_empty() || !self.cards.is_empty();
         div()
             .id("composer-send")
             .h(px(ui::ROUND_BUTTON))
@@ -1675,34 +1833,91 @@ impl Composer {
         )
     }
 
+    /// Mentioned threads, folders, windows and tabs as Codex-style cards
+    /// above the input: glyph and name, a remove button on hover.
+    fn render_cards(&self, t: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if self.cards.is_empty() {
+            return None;
+        }
+        Some(
+            div()
+                .flex()
+                .flex_wrap()
+                .gap(px(6.0))
+                .children(self.cards.iter().enumerate().map(|(i, c)| {
+                    let group = SharedString::from(format!("card-g-{i}"));
+                    div()
+                        .id(SharedString::from(format!("card-{i}")))
+                        .group(group.clone())
+                        .h(px(28.0))
+                        .max_w(px(260.0))
+                        .pl(px(8.0))
+                        .pr(px(4.0))
+                        .flex()
+                        .items_center()
+                        .gap(px(6.0))
+                        .rounded(px(8.0))
+                        .bg(t.wash(0.07))
+                        .tooltip(ui::tip(c.detail()))
+                        .child(icon(c.glyph()).size(px(13.0)).flex_none().text_color(t.accent))
+                        .child(div().min_w_0().truncate().text_size(ty::SMALL).text_color(t.text).child(c.label()))
+                        .child(
+                            div()
+                                .id(SharedString::from(format!("card-x-{i}")))
+                                .size(px(18.0))
+                                .flex_none()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .rounded(px(5.0))
+                                .cursor_pointer()
+                                .opacity(0.0)
+                                .group_hover(group, |s| s.opacity(1.0))
+                                .hover(|s| s.bg(t.wash(0.10)))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    cx.stop_propagation();
+                                    this.remove_card(i, cx);
+                                }))
+                                .child(icon(icons::CLOSE).size(px(10.0)).text_color(t.text_muted)),
+                        )
+                }))
+                .into_any_element(),
+        )
+    }
+
     fn render_mention(&self, t: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
         let m = self.mention.as_ref()?;
         let empty = m.items.is_empty();
+        let heading = |label: &'static str| {
+            div().px(px(14.0)).pt(px(6.0)).pb(px(4.0)).text_size(ty::MICRO).text_color(t.text_faint).child(label)
+        };
         let list = div()
-            .w(px(420.0))
+            .w(px(440.0))
             .flex()
             .flex_col()
-            .child(div().px(px(14.0)).pt(px(6.0)).pb(px(4.0)).text_size(ty::MICRO).text_color(t.text_faint).child(
-                match m.trigger {
-                    '@' => "Files",
+            .when(empty || m.items.first().is_some_and(|i| i.section.is_empty()), |d| {
+                d.child(heading(match m.trigger {
+                    '@' => "Files, threads, apps and tabs",
                     '#' => "Skills",
                     _ => "Commands",
-                },
-            ))
+                }))
+            })
             .when(empty, |d| {
                 d.child(div().px(px(14.0)).py(px(8.0)).text_size(ty::BODY).text_color(t.text_faint).child(
                     if m.trigger == '#' {
                         "No skills yet. Add some in Settings › Plugins › Skills."
-                    } else if self.files.is_empty() {
+                    } else if self.files.is_empty() && self.root().is_some() {
                         "Loading files…"
                     } else {
-                        "No matching files"
+                        "Nothing matches"
                     },
                 ))
             })
             .children(m.items.iter().enumerate().map(|(i, item)| {
                 let selected = i == m.highlight;
-                div()
+                let new_section = !item.section.is_empty()
+                    && (i == 0 || m.items.get(i - 1).is_none_or(|p| p.section != item.section));
+                let row = div()
                     .id(SharedString::from(format!("mention-{i}")))
                     .mx(px(4.0))
                     .px(px(10.0))
@@ -1715,9 +1930,10 @@ impl Composer {
                     .when(selected, |d| d.bg(t.wash(0.10)))
                     .hover(|s| s.bg(t.wash(0.08)))
                     .child(
-                        icon(match m.trigger {
-                            '@' => icons::DOCUMENT,
-                            '#' => icons::MAGIC_STICK_3,
+                        icon(match (&item.card, m.trigger) {
+                            (Some(c), _) => c.glyph(),
+                            (None, '@') => icons::DOCUMENT,
+                            (None, '#') => icons::MAGIC_STICK_3,
                             _ => icons::COMMAND,
                         })
                         .size(px(14.0))
@@ -1738,7 +1954,8 @@ impl Composer {
                             m.highlight = i;
                         }
                         this.accept_mention(window, cx);
-                    }))
+                    }));
+                div().flex().flex_col().when(new_section, |d| d.child(heading(item.section))).child(row)
             }));
         Some(self.popover(Anchor::BottomLeft, ui::menu_card(t, list), cx))
     }
@@ -1889,9 +2106,12 @@ pub const ATTACH_HEADER: &str = "Attached files (read them as needed):";
 /// A sent message's own text and the files it carried (see
 /// [`ATTACH_HEADER`]). Text without the block comes back whole.
 pub fn split_attachments(text: &str) -> (String, Vec<PathBuf>) {
-    let strip = |body: &str| match body.find(SKILLS_HEADER) {
-        Some(s) => body[..s].trim_end().to_string(),
-        None => body.to_string(),
+    let strip = |body: &str| {
+        let cut = [body.find(SKILLS_HEADER), body.find(mentions::MENTIONS_HEADER)].into_iter().flatten().min();
+        match cut {
+            Some(s) => body[..s].trim_end().to_string(),
+            None => body.to_string(),
+        }
     };
     let Some(at) = text.find(ATTACH_HEADER) else { return (strip(text), Vec::new()) };
     let body = strip(text[..at].trim_end());
@@ -1931,6 +2151,8 @@ fn skill_items(q: &str) -> Vec<MentionItem> {
             detail,
             insert: format!("#{}", s.name),
             skill,
+            section: "Skills",
+            ..Default::default()
         };
         if s.enabled {
             on.push(item(format!("{}{from}", s.description), None));
@@ -1949,6 +2171,8 @@ fn skill_items(q: &str) -> Vec<MentionItem> {
             detail: format!("Recommended, installs when picked · {blurb}"),
             insert: format!("#{name}"),
             skill: Some(SkillPick::Install { repo: repo.to_string(), path: path.to_string() }),
+            section: "Skills",
+            ..Default::default()
         });
     on.into_iter().chain(off).chain(recommended).take(MAX_SKILL_MENTIONS).collect()
 }
@@ -2510,12 +2734,13 @@ impl Composer {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let bypass = self.mode == PermissionMode::Bypass;
-        let staged = self.queue.len() + self.attachments.len() > 0;
+        let staged = self.queue.len() + self.attachments.len() + self.cards.len() > 0;
         // A squircle: large corners, with a straight run along the top and bottom.
         let radius = radius::plate(DOCK_H);
         let edge = t.composer_border();
         let busy = has_text
             || !self.attachments.is_empty()
+            || !self.cards.is_empty()
             || !self.queue.is_empty()
             || self.running
             || focused
@@ -2567,8 +2792,9 @@ impl Composer {
                 }))
                 .into_any_element();
         }
+        // Bypass shows in the mode chip's red label; the plate only tints.
         let border = if bypass {
-            t.danger.opacity(0.55)
+            t.danger.opacity(if focused { 0.32 } else { 0.2 })
         } else if self.dragging_files {
             t.accent
         } else if focused {
@@ -2609,8 +2835,9 @@ impl Composer {
             .flex_col()
             .gap(px(8.0))
             .children(self.render_queue(t, cx))
+            .children(self.render_cards(t, cx))
             .children(self.render_attachments(t, cx));
-        let show_send = has_text || self.running || !self.attachments.is_empty();
+        let show_send = has_text || self.running || !self.attachments.is_empty() || !self.cards.is_empty();
         // The row fills the bar inside its border, so its content is centred
         // on the bar itself (equal room above and below).
         let bar = surface.when(staged, |d| d.child(staged_rows.px(px(12.0)).pt(px(12.0)).pb(px(2.0)))).child(
@@ -2724,13 +2951,14 @@ impl Composer {
         }
 
         let hero = self.variant == Variant::Hero;
-        let staged = self.queue.len() + self.attachments.len() > 0;
+        let staged = self.queue.len() + self.attachments.len() + self.cards.len() > 0;
         // Both are Zeron's 26 px plate; the hero's corner is also concentric
         // with its send disc (14 + 12).
         let radius = crate::design::radius::COMPOSER;
         let edge = t.composer_border();
+        // Bypass shows in the mode chip's red label; the plate only tints.
         let border = if bypass {
-            t.danger.opacity(0.55)
+            t.danger.opacity(if focused { 0.32 } else { 0.2 })
         } else if self.dragging_files {
             t.accent
         } else if focused {
@@ -2766,6 +2994,7 @@ impl Composer {
             .flex_col()
             .gap(px(8.0))
             .children(self.render_queue(t, cx))
+            .children(self.render_cards(t, cx))
             .children(self.render_attachments(t, cx));
 
         let box_ = if hero {

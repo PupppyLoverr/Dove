@@ -117,7 +117,6 @@ fn toolkit_icon(slug: &str) -> &'static str {
 }
 
 const TILE: f32 = 40.0;
-const CARD_RADIUS: f32 = 12.0;
 
 /// A plugin's icon on a soft square.
 fn tile(t: &Theme, glyph: &'static str) -> gpui::Div {
@@ -128,10 +127,8 @@ fn tile(t: &Theme, glyph: &'static str) -> gpui::Div {
         .items_center()
         .justify_center()
         .rounded(px(10.0))
-        .bg(t.wash(0.08))
-        .border_1()
-        .border_color(t.border)
-        .child(icon(glyph).size(px(20.0)).text_color(t.text))
+        .bg(t.wash(0.06))
+        .child(icon(glyph).size(px(19.0)).text_color(t.text))
 }
 
 /// Name over a one-line description.
@@ -153,9 +150,20 @@ fn name_block(t: &Theme, title: impl Into<SharedString>, blurb: impl Into<Shared
         .child(div().text_size(ty::META).text_color(t.text_muted).truncate().child(blurb.into()))
 }
 
-/// The bordered card every list row sits on.
+/// What a plugin's settings sit on: Settings' own flat card.
 fn row_card(t: &Theme) -> gpui::Div {
-    div().w_full().rounded(px(CARD_RADIUS)).bg(t.wash(0.045)).border_1().border_color(t.border)
+    page::card(t)
+}
+
+/// Rows in Settings' look: flat, inset, a hairline between each.
+fn hairlines(t: &Theme, rows: Vec<AnyElement>) -> AnyElement {
+    page::card(t)
+        .children(
+            rows.into_iter()
+                .enumerate()
+                .map(|(i, r)| div().mx(px(space::LG)).when(i > 0, |d| d.border_t_1().border_color(t.border)).child(r)),
+        )
+        .into_any_element()
 }
 
 impl IntegrationsView {
@@ -255,39 +263,39 @@ impl IntegrationsView {
             .flex_wrap()
             .items_center()
             .gap(px(space::MD))
-            .child(div().flex().items_center().gap(px(4.0)).children(tabs.into_iter().zip(counts).map(
+            .border_b_1()
+            .border_color(t.border)
+            .child(div().flex().items_end().gap(px(4.0)).children(tabs.into_iter().zip(counts).map(
                 |((tab, label), n)| {
+                    // Underline tabs, as in Settings: the text carries the
+                    // state, a 2px bar marks the open one.
                     let on = self.plugins.tab == tab;
-                    let hover = t.wash(0.06);
+                    let (ink_on, faint) = (t.text, t.text_faint);
                     div()
                         .id(SharedString::from(format!("plugins-tab-{label}")))
                         .role(gpui::Role::Tab)
                         .aria_selected(on)
                         .aria_label(label)
-                        .h(px(30.0))
-                        .px(px(10.0))
+                        .h(px(34.0))
+                        .px(px(8.0))
                         .flex()
-                        .items_center()
-                        .gap(px(6.0))
-                        .rounded(px(8.0))
+                        .flex_col()
+                        .justify_between()
                         .cursor_pointer()
                         .text_size(ty::BODY)
-                        .map(|d| {
-                            if on {
-                                d.bg(t.wash(0.08))
-                                    .border_1()
-                                    .border_color(t.accent.opacity(0.85))
-                                    .text_color(t.text)
-                                    .font_weight(gpui::FontWeight::MEDIUM)
-                            } else {
-                                d.border_1()
-                                    .border_color(t.wash(0.0))
-                                    .text_color(t.text_muted)
-                                    .hover(move |s| s.bg(hover))
-                            }
-                        })
-                        .child(label)
-                        .child(div().text_color(t.text_faint).child(n.to_string()))
+                        .child(
+                            div()
+                                .flex_1()
+                                .flex()
+                                .items_center()
+                                .gap(px(6.0))
+                                .text_color(if on { t.text } else { t.text_muted })
+                                .when(on, |d| d.font_weight(gpui::FontWeight::MEDIUM))
+                                .when(!on, |d| d.hover(move |s| s.text_color(ink_on)))
+                                .child(label)
+                                .child(div().text_size(ty::META).text_color(faint).child(n.to_string())),
+                        )
+                        .child(div().h(px(2.0)).w_full().rounded_full().when(on, |d| d.bg(t.accent)))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.plugins.tab = tab;
                             cx.notify();
@@ -295,15 +303,7 @@ impl IntegrationsView {
                 },
             )))
             .child(div().flex_1())
-            .child(
-                page::search_field(t, &self.search)
-                    .w(px(260.0))
-                    .max_w_full()
-                    .rounded(px(8.0))
-                    .bg(t.wash(0.06))
-                    .border_1()
-                    .border_color(t.border),
-            )
+            .child(page::search_field(t, &self.search).w(px(260.0)).max_w_full())
     }
 
     /// One plugin: icon, name and status; its switch or status on the
@@ -333,9 +333,9 @@ impl IntegrationsView {
             .when_some(item, |d, item| {
                 d.cursor_pointer().on_click(cx.listener(move |this, _, _, cx| this.show(item, cx)))
             });
-        row_card(t)
-            .min_h(px(68.0))
-            .px(px(16.0))
+        div()
+            .w_full()
+            .min_h(px(64.0))
             .py(px(12.0))
             .flex()
             .items_center()
@@ -378,7 +378,7 @@ impl IntegrationsView {
                 if rows.is_empty() {
                     page::info_strip(t, "No built-in plugins match").into_any_element()
                 } else {
-                    div().flex().flex_col().gap(px(space::SM)).children(rows).into_any_element()
+                    hairlines(t, rows)
                 }
             }
             Tab::Apps => self.render_apps(query, t, cx),
@@ -590,8 +590,7 @@ impl IntegrationsView {
             .flex()
             .flex_col()
             .gap(px(space::SM))
-            .child(composio)
-            .children(rows)
+            .child(hairlines(t, std::iter::once(composio).chain(rows).collect()))
             .child(div().px(px(page::LABEL_INSET)).text_size(ty::META).text_color(t.text_faint).child(hint))
             .into_any_element()
     }
@@ -806,15 +805,7 @@ impl IntegrationsView {
                 .gap(px(space::MD))
                 .child(self.back_bar("Directory", t, cx))
                 .child(div().flex_1())
-                .child(
-                    page::search_field(t, &self.search)
-                        .w(px(260.0))
-                        .max_w_full()
-                        .rounded(px(8.0))
-                        .bg(t.wash(0.06))
-                        .border_1()
-                        .border_color(t.border),
-                ),
+                .child(page::search_field(t, &self.search).w(px(260.0)).max_w_full()),
         );
         let heading = |label: &'static str| {
             div()

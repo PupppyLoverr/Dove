@@ -57,8 +57,16 @@ impl Column {
     }
 }
 
-/// A board column's width.
+/// A board column's width, and the narrowest it shrinks to before the
+/// board scrolls sideways.
 const COLUMN_W: f32 = 240.0;
+const COLUMN_MIN: f32 = 148.0;
+/// A column's width for `room` pixels of page: five columns and their
+/// gaps fill it, between COLUMN_MIN and COLUMN_W each.
+fn column_width(room: f32) -> f32 {
+    ((room - 4.0 * space::MD) / 5.0).clamp(COLUMN_MIN, COLUMN_W)
+}
+
 /// The board's measure: five columns and their gaps, plus the page inset.
 const BOARD_MAX: f32 = 5.0 * COLUMN_W + 4.0 * space::MD + 2.0 * crate::design::size::PAGE_PAD_X;
 
@@ -498,8 +506,15 @@ impl Shell {
             .into_any_element()
     }
 
-    pub fn render_kanban(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    pub fn render_kanban(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let t = Theme::of(cx).clone();
+        // Columns share the page's width (down to COLUMN_MIN each), so all
+        // five show on a laptop screen; narrower than that, the board
+        // scrolls sideways.
+        let room = f32::from(window.viewport_size().width)
+            - if self.sidebar_shown() { self.sidebar_w } else { 0.0 }
+            - 2.0 * crate::design::size::PAGE_PAD_X;
+        let col_w = column_width(room);
         let mut by_col: Vec<(Column, Vec<Task>)> = Column::ALL.iter().map(|c| (*c, Vec::new())).collect();
         for task in &self.tasks {
             let c = self.column_of(task);
@@ -563,7 +578,7 @@ impl Shell {
             let accent = t.accent;
             div()
                 .id(SharedString::from(format!("col-{col:?}")))
-                .w(px(COLUMN_W))
+                .w(px(col_w))
                 .flex_none()
                 .min_h(px(240.0))
                 .p(px(space::SM))
@@ -644,5 +659,19 @@ impl Shell {
                     .child(div().id("kanban-scroll").overflow_x_scroll().pb(px(space::XS)).child(columns)),
             ))
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn columns_fill_the_page_between_their_limits() {
+        assert_eq!(column_width(4000.0), COLUMN_W);
+        assert_eq!(column_width(300.0), COLUMN_MIN);
+        let w = column_width(1050.0);
+        assert!(w > COLUMN_MIN && w < COLUMN_W);
+        assert!((5.0 * w + 4.0 * space::MD - 1050.0).abs() < 0.01, "five columns fill the room");
     }
 }

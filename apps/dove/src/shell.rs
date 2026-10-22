@@ -31,10 +31,11 @@ use crate::palette::{Palette, PaletteEvent, PaletteItem};
 use crate::pr_view::PrTarget;
 use crate::pull_requests::{PrEvent, PullRequestsPage};
 use crate::remote::{Remote, RemoteCommand, RemoteEvent};
-use crate::side_panel::{SidePanel, SidePanelEvent, Tab};
+use crate::side_panel::{PaneCommand, SidePanel, SidePanelEvent, Tab};
 use crate::theme::Theme;
 use crate::thread::{TaskViewEventKind, ThreadEvent, ThreadView, ViewMode};
 use crate::transcript::TaskView;
+use crate::workspace::{Axis, Dir};
 use crate::{actions, notify, ui};
 
 pub const SIDEBAR_W: f32 = 264.0;
@@ -198,6 +199,10 @@ pub struct Shell {
     /// The voice call, while one runs (Voice Mode; see `voice_call.rs`).
     pub voice_call: Option<Entity<crate::voice_call::VoiceCall>>,
     pub(crate) voice_sub: Option<Subscription>,
+    /// The full-window call view, and whether it shows (else the chat).
+    pub(crate) call_view: Option<Entity<crate::voice_view::CallView>>,
+    pub(crate) call_view_sub: Option<Subscription>,
+    pub(crate) call_view_shown: bool,
     /// Open thread tabs, in order.
     pub tabs: Vec<TaskId>,
     pub sidebar_open: bool,
@@ -273,6 +278,8 @@ impl Shell {
             p.expanded = engine.store.setting("panel_expanded").as_deref() == Some("true");
             p
         });
+        // Composers list the in-app browser's tabs for `@` mentions.
+        cx.set_global(crate::side_panel::PanelHandle(panel.downgrade()));
         let prs = cx.new(|cx| PullRequestsPage::new(engine.clone(), window, cx));
         let settings = cx.new(|cx| crate::settings::SettingsPage::new(engine.clone(), window, cx));
         let style = ui::input_style(Theme::of(cx));
@@ -409,6 +416,9 @@ impl Shell {
             threads: HashMap::new(),
             voice_call: None,
             voice_sub: None,
+            call_view: None,
+            call_view_sub: None,
+            call_view_shown: false,
             tabs: store
                 .setting("open_tabs")
                 .filter(|_| store.setting("restore_tabs").as_deref() != Some("false"))
@@ -1388,6 +1398,21 @@ impl Shell {
         cx.notify();
     }
 
+    /// A pane shortcut, in a thread. Splitting with the panel closed opens
+    /// it first; the other commands need it open.
+    fn pane_command(&mut self, cmd: PaneCommand, window: &mut Window, cx: &mut Context<Self>) {
+        if !matches!(self.route, Route::Thread(_)) {
+            return;
+        }
+        if !self.panel_open {
+            if !matches!(cmd, PaneCommand::Split(_)) {
+                return;
+            }
+            self.toggle_panel(cx);
+        }
+        self.panel.update(cx, |p, cx| p.command(cmd, window, cx));
+    }
+
     /// The titlebar's Pull request button, while the open thread has one:
     /// the PR glyph in its state's colour; it opens (or closes) the tab.
     fn render_pr_button(&self, t: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -1396,7 +1421,7 @@ impl Shell {
             return None;
         }
         let (target, detail) = self.panel.read(cx).pr(cx)?;
-        let showing = self.panel_open && self.panel.read(cx).active() == Some(crate::side_panel::Surface::PullRequest);
+        let showing = self.panel_open && self.panel.read(cx).showing(crate::side_panel::Surface::PullRequest);
         let color = match &detail {
             Some(d) => crate::pr_view::status_style(d, t).1,
             None => crate::motion::hover_blend("tb-pr", t.text_muted, t.text),
@@ -2035,7 +2060,7 @@ impl Shell {
             + if panel_open { panel_w } else { ui::caption_reserve() };
         let room = f32::from(window.viewport_size().width) - cluster_w - tools_w;
         let tabs = if tabs_on { self.render_tabs(room, &t, cx) } else { self.render_bar_title(&t, cx) };
-        let files_on = panel_open && matches!(self.panel.read(cx).active(), Some(crate::side_panel::Surface::Files));
+        let files_on = panel_open && self.panel.read(cx).showing(crate::side_panel::Surface::Files);
         let right_tools = div()
             .flex()
             .flex_none()
@@ -2990,7 +3015,9 @@ impl Render for Shell {
         let expanded = panel_open && wants_expand;
         let sidebar_shown = self.sidebar_shown();
         self.sync_thread_dock(sidebar_shown, cx);
-        self.panel.update(cx, |p, cx| p.sync(panel_open, self.resize.is_some(), cx));
+        // Web views are native windows: the call view hides them.
+        let panel_live = panel_open && !self.call_view_shown;
+        self.panel.update(cx, |p, cx| p.sync(panel_live, self.resize.is_some(), cx));
         let topbar = (!bare).then(|| self.render_topbar(window, cx));
         // With no title bar, the sidebar starts below the floating window
         // controls instead of running under them.
@@ -3184,6 +3211,32 @@ impl Render for Shell {
             .on_action(cx.listener(|this, _: &actions::AddProject, _, cx| this.add_project_dialog(cx)))
             .on_action(cx.listener(|this, _: &actions::ToggleSidebar, _, cx| this.toggle_sidebar(cx)))
             .on_action(cx.listener(|this, _: &actions::ToggleRightPanel, _, cx| this.toggle_panel(cx)))
+            .on_action(cx.listener(|this, _: &actions::SplitPaneRight, window, cx| {
+                this.pane_command(PaneCommand::Split(Axis::Row), window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &actions::SplitPaneDown, window, cx| {
+                this.pane_command(PaneCommand::Split(Axis::Column), window, cx)
+            }))
+            .on_action(
+                cx.listener(|this, _: &actions::ClosePane, window, cx| {
+                    this.pane_command(PaneCommand::Close, window, cx)
+                }),
+            )
+            .on_action(cx.listener(|this, _: &actions::MaximizePane, window, cx| {
+                this.pane_command(PaneCommand::Maximize, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &actions::FocusPaneLeft, window, cx| {
+                this.pane_command(PaneCommand::Focus(Dir::Left), window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &actions::FocusPaneRight, window, cx| {
+                this.pane_command(PaneCommand::Focus(Dir::Right), window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &actions::FocusPaneUp, window, cx| {
+                this.pane_command(PaneCommand::Focus(Dir::Up), window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &actions::FocusPaneDown, window, cx| {
+                this.pane_command(PaneCommand::Focus(Dir::Down), window, cx)
+            }))
             .on_action(cx.listener(|this, _: &actions::GoBack, window, cx| this.go_back(window, cx)))
             .on_action(cx.listener(|this, _: &actions::GoForward, window, cx| this.go_forward(window, cx)))
             .on_action(
@@ -3191,6 +3244,7 @@ impl Render for Shell {
             )
             .on_action(cx.listener(|this, _: &actions::ToggleTerminal, window, cx| this.toggle_view_mode(window, cx)))
             .on_action(cx.listener(|this, _: &actions::ToggleVoiceCall, window, cx| this.toggle_voice_call(window, cx)))
+            .on_action(cx.listener(|this, _: &actions::ShowCallView, window, cx| this.show_call_view(true, window, cx)))
             .on_action(cx.listener(|this, _: &actions::CommandPalette, window, cx| this.open_palette(window, cx)))
             .on_action(
                 cx.listener(|this, _: &actions::OpenThreads, window, cx| this.navigate(Route::Threads, window, cx)),
@@ -3350,6 +3404,7 @@ impl Render for Shell {
             // An agent's sign-in or update terminal, over any page.
             .children(self.render_agent_sheet(&t, window, cx))
             .children(self.render_voice_bar(cx))
+            .children(self.render_call_view())
             .children((self.info_open && in_thread && !expanded).then(|| self.active_task().cloned()).flatten().map(
                 |task| {
                     let right = if panel_open { panel_w + 14.0 } else { 14.0 };

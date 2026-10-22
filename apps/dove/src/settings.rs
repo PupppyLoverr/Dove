@@ -2138,6 +2138,12 @@ impl SettingsPage {
             .child(self.voice_stt_row(t, cx))
             .child(self.voice_model_row(t, &dove_voice::models::SILERO, cx))
             .child(self.voice_model_row(t, &dove_voice::models::SMART_TURN, cx));
+        // Each service's details show once it is on.
+        let router_endpoint = {
+            let has_url = self.get("voice_router_url").is_some_and(|u| !u.trim().is_empty());
+            self.get("voice_router").unwrap_or_else(|| if has_url { "endpoint".into() } else { "off".into() })
+                == "endpoint"
+        };
         let cloud_card = page::card(t)
             .child(self.srow(
                 t,
@@ -2173,7 +2179,7 @@ impl SettingsPage {
                     this.set_flag("voice_cloud_tts", !cloud_tts, cx)
                 }),
             ))
-            .child({
+            .when(cloud, |d| d.child({
                 let this = cx.entity().downgrade();
                 let stt_provider = usize::from(self.get("voice_cloud_stt_provider").as_deref() == Some("deepgram"));
                 self.srow(
@@ -2194,8 +2200,8 @@ impl SettingsPage {
                         },
                     ),
                 )
-            })
-            .child({
+            }))
+            .when(cloud_tts, |d| d.child({
                 let current = self.get("voice_cloud_tts_provider").unwrap_or_else(|| "openai".into());
                 let selected = TTS_SERVICES.iter().position(|s| s.id == current).unwrap_or(TTS_SERVICES.len() - 1);
                 let service = &TTS_SERVICES[selected];
@@ -2211,8 +2217,8 @@ impl SettingsPage {
                     })
                     .render(t, &self.sel_tts_provider, cx);
                 self.srow(t, false, "voice_cloud_tts_provider", "Voice service", service.blurb, picker)
-            })
-            .child({
+            }))
+            .when(cloud_tts, |d| d.child({
                 let current = self.get("voice_cloud_tts_provider").unwrap_or_else(|| "openai".into());
                 let service = TTS_SERVICES.iter().find(|s| s.id == current).unwrap_or(&TTS_SERVICES[TTS_SERVICES.len() - 1]);
                 let key_set = service.key_vars.iter().any(|v| std::env::var(v).is_ok_and(|k| !k.trim().is_empty()));
@@ -2233,15 +2239,15 @@ impl SettingsPage {
                     detail,
                     div().w(px(260.0)).child(gpui_base::input::Input::new(&self.voice_tts_voice)),
                 )
-            })
-            .child(self.srow(
+            }))
+            .when(cloud || cloud_tts, |d| d.child(self.srow(
                 t,
                 false,
                 "voice_cloud_url",
                 "Speech endpoint",
                 "An OpenAI-compatible /v1 URL (OpenAI, Groq, a local whisper server). The key is read from DOVE_VOICE_API_KEY.",
                 div().w(px(260.0)).child(gpui_base::input::Input::new(&self.voice_cloud_url)),
-            ))
+            )))
             .child({
                 let this = cx.entity().downgrade();
                 let has_url = self.get("voice_router_url").is_some_and(|u| !u.trim().is_empty());
@@ -2272,14 +2278,14 @@ impl SettingsPage {
                     ),
                 )
             })
-            .child(self.srow(
+            .when(router_endpoint, |d| d.child(self.srow(
                 t,
                 false,
                 "voice_router_url",
                 "Router endpoint",
                 "For the Endpoint router: an OpenAI-compatible /v1 URL (a local llama.cpp server works). The key is read from DOVE_VOICE_API_KEY.",
                 div().w(px(260.0)).child(gpui_base::input::Input::new(&self.voice_router_url)),
-            ));
+            )));
         div()
             .flex()
             .flex_col()
@@ -2824,12 +2830,12 @@ impl SettingsPage {
                         .gap(px(8.0))
                         .child(
                             div()
-                                .max_w(px(260.0))
-                                .truncate()
+                                .id("data-path")
                                 .font_family(t.font_mono.clone())
                                 .text_size(ty::META)
                                 .text_color(t.text_muted)
-                                .child(root_str),
+                                .tooltip(ui::tip(root_str.clone()))
+                                .child(ui::middle_ellipsis(&root_str, 34)),
                         )
                         .child(ctl::button_sm(t, "copy-data-path", "Copy", Tone::Quiet).on_click(cx.listener(
                             move |_, _, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(root_copy.clone())),

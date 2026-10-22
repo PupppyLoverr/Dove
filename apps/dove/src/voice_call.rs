@@ -26,8 +26,9 @@ use dove_voice::snapshot::{self, DiffStat, Snapshot, ThreadStatus};
 use dove_voice::speakable::Chunker;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    App, AppContext as _, Context, Entity, EventEmitter, InteractiveElement as _, IntoElement, ParentElement as _,
-    Render, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, px,
+    App, AppContext as _, Context, Entity, EventEmitter, Focusable as _, InteractiveElement as _, IntoElement,
+    ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window, div,
+    px,
 };
 
 use crate::assets::{icon, icons};
@@ -52,7 +53,20 @@ pub enum VoiceCallEvent {
         json: String,
     },
     Ended,
+    /// The strip asked for the full call view.
+    ShowView,
 }
+
+/// One line of the call's conversation, for the call view.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CallLine {
+    /// Said by the user (else by Dove or the agent's reply).
+    pub you: bool,
+    pub text: String,
+}
+
+/// Lines the call keeps for its view.
+const LINES_KEPT: usize = 8;
 
 pub struct VoiceCall {
     engine: Arc<Engine>,
@@ -92,6 +106,10 @@ pub struct VoiceCall {
     pub target: Option<SharedString>,
     /// No thread yet: the first request starts one with the picker's agent.
     pub new_thread: bool,
+    /// The conversation so far (the last few lines).
+    pub lines: Vec<CallLine>,
+    /// The reply being read joins the last line instead of adding one.
+    reply_line: bool,
     router: Option<Router>,
     _pump: gpui::Task<()>,
 }
@@ -331,6 +349,8 @@ impl VoiceCall {
             awaiting_click: None,
             target: None,
             new_thread: false,
+            lines: Vec::new(),
+            reply_line: false,
             router,
             _pump: pump,
         }
@@ -338,6 +358,32 @@ impl VoiceCall {
 
     pub fn has_router(&self) -> bool {
         self.router.is_some()
+    }
+
+    /// When the call started.
+    pub fn started(&self) -> Instant {
+        self.started
+    }
+
+    /// Add to the conversation: a new line, or more of the reply being read.
+    fn push_line(&mut self, you: bool, text: &str, joins_reply: bool) {
+        let text = text.trim();
+        if text.is_empty() {
+            return;
+        }
+        match self.lines.last_mut() {
+            Some(last) if joins_reply && self.reply_line && !last.you => {
+                last.text.push(' ');
+                last.text.push_str(text);
+            }
+            _ => {
+                self.lines.push(CallLine { you, text: text.to_string() });
+                if self.lines.len() > LINES_KEPT {
+                    self.lines.remove(0);
+                }
+            }
+        }
+        self.reply_line = joins_reply;
     }
 
     /// Drain pipeline events; true once the call has ended.
@@ -387,6 +433,7 @@ impl VoiceCall {
                     );
                     self.partial = None;
                     self.caption = Some(text.clone().into());
+                    self.push_line(true, &text, false);
                     cx.emit(VoiceCallEvent::Heard(text));
                 }
                 Event::BargeIn { .. } => {
@@ -455,6 +502,7 @@ impl VoiceCall {
             },
         );
         self.caption = Some(text.to_string().into());
+        self.push_line(false, text, false);
         let mut c = Chunker::new();
         let mut clauses = c.push(text);
         clauses.extend(c.finish());
@@ -502,6 +550,7 @@ impl VoiceCall {
                 for clause in this.chunker.push(t) {
                     // The strip shows the reply as it is read.
                     this.caption = Some(clause.clone().into());
+                    this.push_line(false, &clause, true);
                     this.call.say(clause);
                     cx.notify();
                 }
@@ -509,6 +558,7 @@ impl VoiceCall {
             TaskViewEvent::VoiceTurnEnded { failed } => {
                 for clause in this.chunker.finish() {
                     this.caption = Some(clause.clone().into());
+                    this.push_line(false, &clause, true);
                     this.call.say(clause);
                     cx.notify();
                 }
@@ -530,6 +580,7 @@ impl VoiceCall {
 
     fn stop_reading(&mut self, _cx: &mut Context<Self>) {
         self.reading = None;
+        self.reply_line = false;
         self.chunker = Chunker::new();
         self.reply_started = false;
     }
@@ -672,9 +723,19 @@ impl Shell {
         };
         let engine = self.engine.clone();
         let call = cx.new(|cx| VoiceCall::start(engine, current, cx));
+        let view = cx.new(|cx| crate::voice_view::CallView::new(call.clone(), cx));
+        self.call_view_sub = Some(cx.subscribe_in(&view, window, |this, _, ev, window, cx| match ev {
+            crate::voice_view::CallViewEvent::ShowChat => this.show_call_view(false, window, cx),
+            crate::voice_view::CallViewEvent::OpenThread(id) => {
+                this.open_task(*id, window, cx);
+                this.show_call_view(false, window, cx);
+            }
+        }));
+        self.call_view = Some(view);
         let sub = cx.subscribe_in(&call, window, |this, call, ev: &VoiceCallEvent, window, cx| match ev {
             VoiceCallEvent::Heard(text) => this.voice_heard(call.clone(), text.clone(), window, cx),
             VoiceCallEvent::Observe => this.voice_observe(call.clone(), cx),
+            VoiceCallEvent::ShowView => this.show_call_view(true, window, cx),
             VoiceCallEvent::Routed { utterance, json } => {
                 let snap = this.voice_snapshot(call.read(cx), cx);
                 let effects = call.update(cx, |v, _| v.conductor.routed(utterance, json, &snap));
@@ -689,6 +750,11 @@ impl Shell {
                 }
                 this.voice_call = None;
                 this.voice_sub = None;
+                if let Some(v) = this.call_view.take() {
+                    v.update(cx, |v, cx| v.set_visible(false, cx));
+                }
+                this.call_view_sub = None;
+                this.call_view_shown = false;
                 cx.set_global(ActiveCall(None));
                 this.voice_redraw_docks(cx);
             }
@@ -698,6 +764,45 @@ impl Shell {
         self.voice_sub = Some(sub);
         self.voice_target(&call, cx);
         self.voice_redraw_docks(cx);
+        self.show_call_view(true, window, cx);
+    }
+
+    /// Show the call view over the window, or flip back to the chat (the
+    /// strip above the composer keeps the call in view there).
+    pub fn show_call_view(&mut self, on: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(view) = self.call_view.clone() else { return };
+        self.call_view_shown = on;
+        view.update(cx, |v, cx| v.set_visible(on, cx));
+        if on {
+            let f = view.read(cx).focus_handle(cx);
+            window.focus(&f, cx);
+        } else {
+            // Hand focus to the input the user flips back to, so keys and
+            // the strip's buttons reach the window again.
+            match self.active_thread() {
+                Some(v) => {
+                    let composer = v.read(cx).chat.read(cx).composer.clone();
+                    crate::composer::focus(&composer, window, cx);
+                }
+                None => crate::composer::focus(&self.composer, window, cx),
+            }
+        }
+        self.voice_redraw_docks(cx);
+    }
+
+    /// The call view, while it shows: over everything below the titlebar.
+    pub fn render_call_view(&self) -> Option<gpui::AnyElement> {
+        let view = self.call_view.clone().filter(|_| self.call_view_shown)?;
+        Some(
+            div()
+                .absolute()
+                .top(px(Theme::TITLEBAR_HEIGHT))
+                .left_0()
+                .right_0()
+                .bottom_0()
+                .child(view)
+                .into_any_element(),
+        )
     }
 
     /// Thread views are cached: redraw them so their docks show (or drop)
@@ -818,6 +923,9 @@ impl Shell {
                 match self.panel.read(cx).active() {
                     Some(crate::side_panel::Surface::Browser(_)) => Some(dove_voice::intent::LookTarget::Browser),
                     Some(crate::side_panel::Surface::Changes) => Some(dove_voice::intent::LookTarget::Diff),
+                    _ if self.panel.read(cx).showing(crate::side_panel::Surface::Changes) => {
+                        Some(dove_voice::intent::LookTarget::Diff)
+                    }
                     _ => None,
                 }
             } else {
@@ -847,6 +955,10 @@ impl Shell {
         call.update(cx, |v, cx| v.refresh_diffs(folders, cx));
         self.voice_target(&call, cx);
         let snap = self.voice_snapshot(call.read(cx), cx);
+        if let Some(view) = self.call_view.clone() {
+            let rail = crate::voice_view::rail(&snap);
+            view.update(cx, |v, cx| v.set_rail(rail, cx));
+        }
         let effects = call.update(cx, |v, _| v.conductor.observe(&snap));
         call.update(cx, |v, cx| {
             for e in effects {
@@ -1269,6 +1381,11 @@ impl Render for VoiceCall {
                         .text_color(if muted { t.danger } else { t.text_muted }),
                 )
                 .on_click(cx.listener(move |v, _, _, cx| v.set_muted(!muted, cx))),
+            )
+            .child(
+                crate::ui::round_button_sized("voice-open-view", "Open the call view", 30.0, &t)
+                    .child(icon(icons::EXPAND_ARROWS).size(px(13.0)).text_color(t.text_muted))
+                    .on_click(cx.listener(|_, _, _, cx| cx.emit(VoiceCallEvent::ShowView))),
             )
             .child(
                 crate::ui::round_button_sized("voice-end", "End call", 30.0, &t)

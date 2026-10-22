@@ -31,7 +31,8 @@ use crate::theme::{self, Theme};
 pub enum Tone {
     /// The page's one primary action: a solid plate.
     Solid,
-    /// A bordered secondary action.
+    /// A secondary action. Drawn as a soft wash like [`Tone::Filled`]: one
+    /// surface language, no bordered pills beside flat rows.
     Outlined,
     /// A filled wash, for actions inside cards.
     Filled,
@@ -49,12 +50,12 @@ pub fn button(
     tone: Tone,
 ) -> gpui::Stateful<Div> {
     let label: SharedString = label.into();
-    let (bg, fg, hover, border) = match tone {
-        Tone::Solid => (t.solid, t.on_solid, t.solid.opacity(0.88), None),
-        Tone::Outlined => (theme::wash(0.0), t.text, t.wash(0.07), Some(t.border_strong)),
-        Tone::Filled => (t.wash(0.07), t.text, t.wash(0.11), None),
-        Tone::Quiet => (theme::wash(0.0), t.text_muted, t.wash(0.08), None),
-        Tone::Danger => (t.danger.opacity(0.12), t.danger, t.danger.opacity(0.18), None),
+    let (bg, fg, hover) = match tone {
+        Tone::Solid => (t.solid, t.on_solid, t.solid.opacity(0.88)),
+        Tone::Outlined => (t.wash(0.055), t.text, t.wash(0.1)),
+        Tone::Filled => (t.wash(0.07), t.text, t.wash(0.11)),
+        Tone::Quiet => (theme::wash(0.0), t.text_muted, t.wash(0.08)),
+        Tone::Danger => (t.danger.opacity(0.12), t.danger, t.danger.opacity(0.18)),
     };
     let pressed = match tone {
         Tone::Solid => t.solid.opacity(0.78),
@@ -75,7 +76,6 @@ pub fn button(
         .gap(px(6.0))
         .rounded(px(radius::SELECT))
         .bg(bg)
-        .when_some(border, |d, b| d.border_1().border_color(b))
         .text_size(ty::SMALL)
         .font_weight(gpui::FontWeight::MEDIUM)
         .text_color(fg)

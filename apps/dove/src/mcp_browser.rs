@@ -454,28 +454,43 @@ pub fn cua_health(
     settings: &crate::computer_plugin::Settings,
 ) -> crate::computer_plugin::Health {
     use crate::computer_plugin::Health;
-    let bin = bin.to_path_buf();
-    let env = crate::computer_plugin::launch_env(settings);
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let result = (|| {
-            let mut server =
-                upstream::Server::stdio("computer", &bin.display().to_string(), &["mcp".into()], &env, None)?;
-            server.initialize()?;
-            server.request("tools/call", json!({"name": "health_report", "arguments": {}}))
-        })();
-        let _ = tx.send(result);
-    });
-    let result = match rx.recv_timeout(Duration::from_secs(20)) {
-        Ok(Ok(v)) => v,
-        Ok(Err(e)) => return Health::failed(format!("Driver check failed: {e}")),
-        Err(_) => return Health::failed("The driver did not answer within 20 s"),
+    let result = match driver_call(bin, settings, "health_report", json!({}), Duration::from_secs(20)) {
+        Ok(v) => v,
+        Err(e) => return Health::failed(format!("Driver check failed: {e}")),
     };
     let report = result.get("structuredContent").cloned().or_else(|| {
         let text = result.pointer("/content/0/text").and_then(Value::as_str)?;
         serde_json::from_str::<Value>(text).ok()
     });
     Health::from_report(&report.unwrap_or(Value::Null))
+}
+
+/// Start Dove Computer Use's driver, call one tool and stop it again (the
+/// Settings health check; listing windows for `@` mentions off Windows).
+pub fn driver_call(
+    bin: &std::path::Path,
+    settings: &crate::computer_plugin::Settings,
+    tool: &str,
+    args: Value,
+    timeout: Duration,
+) -> Result<Value, String> {
+    let bin = bin.to_path_buf();
+    let env = crate::computer_plugin::launch_env(settings);
+    let tool = tool.to_string();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let result = (|| {
+            let mut server =
+                upstream::Server::stdio("computer", &bin.display().to_string(), &["mcp".into()], &env, None)?;
+            server.initialize()?;
+            server.request("tools/call", json!({"name": tool, "arguments": args}))
+        })();
+        let _ = tx.send(result);
+    });
+    match rx.recv_timeout(timeout) {
+        Ok(r) => r,
+        Err(_) => Err(format!("the driver did not answer within {} s", timeout.as_secs())),
+    }
 }
 
 pub(crate) mod upstream {

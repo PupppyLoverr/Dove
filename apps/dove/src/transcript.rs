@@ -3007,6 +3007,9 @@ impl TaskView {
         // and file pills above the bubble; the bubble keeps only the words.
         let (body, files) = composer::split_attachments(text);
         let strip = (!files.is_empty()).then(|| sent_attachments(i, &files, t));
+        // Mentioned threads, folders, windows and tabs, as the cards they were.
+        let cards = composer::mentions::split_mentions(text);
+        let cards = (!cards.is_empty()).then(|| sent_cards(i, &cards, t));
         let chip = recalled.map(|items| self.recall_chip(i, items, weak, t));
         let remember = self.remember_button(i, weak, t);
         let memory = self.memory_strip(i, weak, t);
@@ -3028,6 +3031,7 @@ impl TaskView {
                         .child("Sent to this subagent"),
                 )
             })
+            .children(cards)
             .children(strip)
             .children(chip)
             .when(!body.is_empty(), |d| {
@@ -4820,6 +4824,32 @@ fn copy_button(id: SharedString, text: String, t: &Theme) -> impl IntoElement {
 /// A sent message's files, right-aligned above its bubble (Zeron's strip):
 /// images as 112 × 80 thumbnails, other files as pills with their type icon.
 /// A click opens the file in its own app.
+/// A sent message's mention cards, right-aligned above its bubble.
+fn sent_cards(row: usize, cards: &[composer::mentions::Card], t: &Theme) -> AnyElement {
+    div()
+        .flex()
+        .flex_wrap()
+        .justify_end()
+        .gap(px(6.0))
+        .pb(px(4.0))
+        .children(cards.iter().enumerate().map(|(i, c)| {
+            div()
+                .id(SharedString::from(format!("sent-card-{row}-{i}")))
+                .h(px(26.0))
+                .max_w(px(260.0))
+                .px(px(8.0))
+                .flex()
+                .items_center()
+                .gap(px(6.0))
+                .rounded(px(8.0))
+                .bg(t.wash(0.07))
+                .tooltip(ui::tip(c.detail()))
+                .child(icon(c.glyph()).size(px(13.0)).flex_none().text_color(t.accent))
+                .child(div().min_w_0().truncate().text_size(ty::SMALL).text_color(t.text).child(c.label()))
+        }))
+        .into_any_element()
+}
+
 fn sent_attachments(row: usize, files: &[std::path::PathBuf], t: &Theme) -> AnyElement {
     const THUMB_W: f32 = 112.0;
     const THUMB_H: f32 = 80.0;

@@ -20,6 +20,7 @@ use dove_store::{Automation, Project, Store, Task};
 use parking_lot::RwLock;
 
 pub mod automation;
+pub mod digest;
 pub mod memory;
 pub mod mirror;
 

@@ -278,6 +278,16 @@ impl Render for PullRequestsPage {
                 }
             },
         );
+        // The count reads as part of the filter it counts; refresh sits at
+        // the row's end with the search it refreshes.
+        let count = match &self.state {
+            Load::Ready(_) if self.repo.is_some() => Some(match self.count() {
+                0 => "None open".to_string(),
+                1 => "1 open".to_string(),
+                n => format!("{n} open"),
+            }),
+            _ => None,
+        };
         let toolbar = div()
             .mt(px(24.0))
             .flex()
@@ -285,15 +295,24 @@ impl Render for PullRequestsPage {
             .items_center()
             .gap(px(space::SM))
             .child(tabs)
-            .child(page::search_field(&t, &self.search).flex_1().min_w(px(220.0)));
+            .children(count.map(|c| div().text_size(ty::META).text_color(t.text_faint).child(c)))
+            .child(page::search_field(&t, &self.search).flex_1().min_w(px(220.0)))
+            .when(self.repo.is_some(), |d| {
+                d.child(ui::icon_button("pr-refresh", icons::REFRESH, "Refresh", &t, {
+                    let weak = cx.weak_entity();
+                    move |_, _, cx| {
+                        let _ = weak.update(cx, |p, cx| p.load(cx));
+                    }
+                }))
+            });
 
         let body: AnyElement = match &self.state {
             _ if self.repo.is_none() => page::card(&t)
                 .child(page::empty_state(
                     &t,
                     icons::PULL_REQUEST,
-                    "Choose a repository",
-                    "No GitHub repository was found for this project. Choose one to load its open pull requests.",
+                    "Add a project first",
+                    "Pull requests come from your projects' GitHub repositories. Add a project from the sidebar, then pick it here.",
                     None,
                 ))
                 .into_any_element(),
@@ -371,6 +390,20 @@ impl Render for PullRequestsPage {
                     ))
                     .into_any_element()
             }
+            // A project without a GitHub remote is a setup step, not an error.
+            Load::Failed(e) if no_remote(e) => page::card(&t)
+                .child(page::empty_state(
+                    &t,
+                    icons::PULL_REQUEST,
+                    "No GitHub repository here",
+                    "This project has no GitHub remote yet. Pick another project above, or connect this one with: git remote add origin https://github.com/<you>/<repo>.git, then check again.",
+                    Some(
+                        ctl::button(&t, "pr-recheck", "Check again", Tone::Outlined)
+                            .on_click(cx.listener(|this, _, _, cx| this.load(cx)))
+                            .into_any_element(),
+                    ),
+                ))
+                .into_any_element(),
             Load::Failed(e) => page::card(&t)
                 .child(page::error_state(
                     &t,
@@ -410,19 +443,7 @@ impl Render for PullRequestsPage {
             }
         };
 
-        let trailing = div()
-            .flex()
-            .items_center()
-            .gap(px(space::SM))
-            .child(page::badge(&t, self.count().to_string()))
-            .child(ui::icon_button("pr-refresh", icons::REFRESH, "Refresh", &t, {
-                let weak = cx.weak_entity();
-                move |_, _, cx| {
-                    let _ = weak.update(cx, |p, cx| p.load(cx));
-                }
-            }))
-            .child(picker)
-            .into_any_element();
+        let trailing = picker.into_any_element();
 
         page::page_scroll("pr-page")
             .child(crate::motion::fade_in(
@@ -439,4 +460,10 @@ impl Render for PullRequestsPage {
             ))
             .into_any_element()
     }
+}
+
+/// gh's complaint for a folder with no GitHub remote.
+fn no_remote(e: &str) -> bool {
+    let e = e.to_ascii_lowercase();
+    e.contains("no git remotes") || e.contains("none of the git remotes") || e.contains("not a git repository")
 }

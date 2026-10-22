@@ -49,17 +49,24 @@ pub fn note_foreground() {}
 /// the window's title.
 #[cfg(windows)]
 pub fn capture_last(dir: &Path) -> Result<(PathBuf, String), String> {
+    let (raw, title) = LAST
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+        .ok_or("No other window has been in front during this call.")?;
+    capture_window(raw, &title, dir).map(|p| (p, title))
+}
+
+/// Capture one window (an HWND) into a PNG under `dir`, drawn by the
+/// window itself, so whatever overlaps it is left out.
+#[cfg(windows)]
+pub fn capture_window(raw: isize, title: &str, dir: &Path) -> Result<PathBuf, String> {
     use windows_sys::Win32::Graphics::Gdi::{
         BI_RGB, BITMAPINFO, BITMAPINFOHEADER, CreateCompatibleBitmap, CreateCompatibleDC, DIB_RGB_COLORS, DeleteDC,
         DeleteObject, GetDC, GetDIBits, ReleaseDC, SelectObject,
     };
     use windows_sys::Win32::Storage::Xps::{PW_CLIENTONLY, PrintWindow};
     use windows_sys::Win32::UI::WindowsAndMessaging::{GetWindowRect, IsWindow};
-    let (raw, title) = LAST
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .clone()
-        .ok_or("No other window has been in front during this call.")?;
     let hwnd = raw as windows_sys::Win32::Foundation::HWND;
     unsafe {
         if IsWindow(hwnd) == 0 {
@@ -106,13 +113,18 @@ pub fn capture_last(dir: &Path) -> Result<(PathBuf, String), String> {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         let path = dir.join(format!("look-{}.png", dove_core::store::now_ms()));
         img.save(&path).map_err(|e| e.to_string())?;
-        Ok((path, title))
+        Ok(path)
     }
 }
 
 #[cfg(not(windows))]
 pub fn capture_last(_dir: &Path) -> Result<(PathBuf, String), String> {
     Err("Capturing another app's window is available on Windows; on this system, open the diff or the browser panel instead.".into())
+}
+
+#[cfg(not(windows))]
+pub fn capture_window(_raw: isize, _title: &str, _dir: &Path) -> Result<PathBuf, String> {
+    Err("Window pictures are taken on Windows; here, Computer use reads the window.".into())
 }
 
 #[cfg(test)]
