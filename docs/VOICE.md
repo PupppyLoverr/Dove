@@ -4,6 +4,18 @@ A hands-free call with every thread in Dove. Architecture:
 [ARCHITECTURE.md › Voice](../ARCHITECTURE.md#voice-dictation-and-voice-mode). Code:
 `crates/dove-voice` (no UI) and `apps/dove/src/voice_call.rs` (the app side).
 
+## Dictation
+
+Hold the mic in the composer (or click to toggle). With a local speech model
+installed (Settings › Voice), **live dictation** is on: words appear in the
+composer while you talk, the phrase you're saying updates in place, and each
+pause (about 0.65 s) commits it. Text is inserted, never sent. Stopping
+commits the last phrase; Escape cancels the phrase in progress. Live
+dictation uses the Voice Mode model (Moonshine base unless Parakeet is
+chosen) and shares its loaded copy with calls. Turn it off in Settings ›
+Voice › Live dictation to get the older behaviour (Parakeet transcribes after
+you stop).
+
 ## Using it
 
 1. Settings › Voice › Voice Mode models: download Moonshine (66 MB), Silero VAD
@@ -77,9 +89,14 @@ each sends:
 - **Cloud speech recognition** uploads your spoken audio: to an
   OpenAI-compatible endpoint (`DOVE_VOICE_API_KEY`) or Deepgram
   (`DEEPGRAM_API_KEY`, model `nova-3` unless set).
-- **Cloud voice** uploads what Dove says, which includes agents' replies: to an
-  OpenAI-compatible endpoint or ElevenLabs (`ELEVENLABS_API_KEY`, Flash v2.5,
-  16 kHz PCM).
+- **Cloud voice** uploads what Dove says, which includes agents' replies, to
+  the service you pick: Fish Audio (`FISH_AUDIO_API_KEY`; the free
+  `s2.1-pro-free` model by default), Deepgram Aura-2 (`DEEPGRAM_API_KEY`),
+  Cartesia Sonic (`CARTESIA_API_KEY`), Inworld (`INWORLD_API_KEY`),
+  ElevenLabs (`ELEVENLABS_API_KEY`, Flash v2.5) or an OpenAI-compatible
+  endpoint. All but the last stream 16 kHz PCM, so speech starts on the first
+  chunk. If the service fails, Dove says so once and uses the system voice.
+  Prices, free tiers and startup programs: [VOICE_PROVIDERS.md](VOICE_PROVIDERS.md).
 - **Command router** sends the request and your threads' titles to the agent
   or endpoint you chose.
 - **Look at this window** writes a PNG to `~/.dove/voice/look/` and gives the
@@ -96,6 +113,7 @@ Keys are read from the environment, never stored in Dove's database.
 | Silero VAD v5 | Voice activity | 2.2 MB | MIT | `onnx-community/silero-vad` `e71cae9` |
 | Smart Turn v3.2 (CPU) | End of turn | 8.7 MB | BSD-2-Clause | `pipecat-ai/smart-turn-v3` `f766f81` |
 | System voice | Speech | 0 | OS | Windows speech synthesis, macOS `say`, Linux `espeak-ng` |
+| Cloud voices (optional) | Speech | 0 | Provider terms | Fish Audio, Deepgram, Cartesia, Inworld, ElevenLabs; see [VOICE_PROVIDERS.md](VOICE_PROVIDERS.md) |
 
 Choices made from measurements on this project's test machine:
 - **Moonshine base over Parakeet by default:** 162 MB against 668 MB resident,
@@ -178,6 +196,27 @@ Not measured here: macOS and Linux (no machines), real microphones and
 human voices at scale, accuracy beyond the four fixtures, and the live
 microphone's CPU and start-up time (`--live-mic` exists but was not run, so as
 not to open this machine's microphone unattended).
+
+### Live dictation
+
+`cargo run -p dove-voice --release --example dictation_bench -- --root <models dir>`
+renders three sentences with the Windows voice and streams them in real time
+(1.2 s pauses) into live dictation with Moonshine base. Same machine,
+2026-10-22:
+
+| Phrase | First live text after the phrase starts | Committed after the clip ends |
+| --- | --- | --- |
+| 1 | 866 ms | 408 ms |
+| 2 | 741 ms | 440 ms |
+| 3 | 828 ms | 305 ms |
+
+Live text refreshed about every 0.5 s (22 updates for three sentences); the
+model was ready 1.45 s after a cold start. "Committed" is measured from the
+end of each rendered clip, which includes the synthetic voice's trailing
+silence, so the gap after the last word is longer by that amount (the commit
+waits for a 0.65 s pause). All three sentences were transcribed correctly
+except "pull request" (live) committing as "poll request": the final pass on
+the trimmed phrase can differ slightly from the last live text.
 
 ## Testing without a microphone
 

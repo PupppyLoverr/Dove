@@ -114,7 +114,7 @@ pub fn strip(cx: &App) -> Option<Entity<VoiceCall>> {
 /// microphone (QA and demos; the mic is never opened). The file starts
 /// `DOVE_VOICE_INPUT_DELAY_MS` (default 8 s) after the call does: audio from
 /// before the models are ready is dropped, as a real microphone's is.
-fn qa_input() -> Option<pipeline::Input> {
+pub(crate) fn qa_input() -> Option<pipeline::Input> {
     let spec = std::env::var("DOVE_VOICE_INPUT").ok().filter(|s| !s.is_empty())?;
     let path = (spec != "silence").then(|| std::path::PathBuf::from(&spec));
     let delay = std::env::var("DOVE_VOICE_INPUT_DELAY_MS").ok().and_then(|d| d.parse().ok()).unwrap_or(8000);
@@ -229,19 +229,28 @@ pub fn config(engine: &Engine) -> CallConfig {
         local_stt(engine)
     };
     let tts = if s.flag("voice_cloud_tts", false) {
-        match (s.setting("voice_cloud_tts_provider").as_deref(), &cloud_url) {
-            (Some("elevenlabs"), _) => TtsChoice::ElevenLabs {
+        let provider = s.setting("voice_cloud_tts_provider").unwrap_or_default();
+        // Fish Audio, Deepgram, Cartesia and Inworld stream; each keeps its
+        // own model and voice (`voice_tts_model.<id>`, `voice_tts_voice.<id>`).
+        let streaming = dove_voice::tts_stream::Provider::from_env(
+            &provider,
+            &s.setting(&format!("voice_tts_model.{provider}")).unwrap_or_default(),
+            &s.setting(&format!("voice_tts_voice.{provider}")).unwrap_or_default(),
+        );
+        match (provider.as_str(), &cloud_url, streaming) {
+            (_, _, Some(p)) => TtsChoice::Stream(p),
+            ("elevenlabs", _, None) => TtsChoice::ElevenLabs {
                 api_key: env("ELEVENLABS_API_KEY"),
                 voice: s.setting("voice_elevenlabs_voice").unwrap_or_default(),
                 model: s.setting("voice_elevenlabs_model").unwrap_or_default(),
             },
-            (_, Some(url)) => TtsChoice::Cloud {
+            (_, Some(url), None) => TtsChoice::Cloud {
                 base_url: url.clone(),
                 api_key: env("DOVE_VOICE_API_KEY"),
                 model: s.setting("voice_cloud_tts_model").unwrap_or_else(|| "tts-1".into()),
                 voice: s.setting("voice_cloud_voice").unwrap_or_else(|| "alloy".into()),
             },
-            (_, None) => TtsChoice::System,
+            (_, None, None) => TtsChoice::System,
         }
     } else {
         TtsChoice::System
@@ -1313,6 +1322,17 @@ mod tests {
         assert!(matches!(config(&engine).tts, TtsChoice::Cloud { .. }));
         engine.store.set_setting("voice_cloud_tts_provider", "elevenlabs").unwrap();
         assert!(matches!(config(&engine).tts, TtsChoice::ElevenLabs { .. }));
+        engine.store.set_setting("voice_cloud_tts_provider", "fish").unwrap();
+        engine.store.set_setting("voice_tts_voice.fish", "abc123").unwrap();
+        match config(&engine).tts {
+            TtsChoice::Stream(dove_voice::tts_stream::Provider::FishAudio { voice, model, .. }) => {
+                assert_eq!(voice, "abc123");
+                assert_eq!(model, "", "empty model: the free S2.1 Pro");
+            }
+            _ => panic!("Fish Audio should stream"),
+        }
+        engine.store.set_setting("voice_cloud_tts_provider", "deepgram").unwrap();
+        assert!(matches!(config(&engine).tts, TtsChoice::Stream(dove_voice::tts_stream::Provider::Deepgram { .. })));
         engine.store.set_setting("voice_cloud", "false").unwrap();
         assert!(
             !matches!(config(&engine).stt, SttChoice::Deepgram { .. } | SttChoice::Cloud { .. }),

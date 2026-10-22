@@ -150,12 +150,17 @@ impl ThreadView {
             cx.emit(ThreadEvent::Chat(kind));
         })];
         subs.push(cx.subscribe(&voice, |this, _, ev: &DictationEvent, cx| match ev {
-            DictationEvent::Text(text) => {
-                if let Some(t) = &this.terminal {
+            // Text typed into a terminal can't be revised in place, so live
+            // dictation types only its final text there.
+            DictationEvent::Text(text) | DictationEvent::LiveDone(text) => {
+                if let Some(t) = &this.terminal
+                    && !text.is_empty()
+                {
                     let text = text.clone();
                     t.update(cx, |t, cx| t.type_text(&text, cx));
                 }
             }
+            DictationEvent::Live(_) => {}
             DictationEvent::Changed => cx.notify(),
         }));
         Self {

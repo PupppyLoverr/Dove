@@ -22,6 +22,7 @@ crossbeam-channel = "0.5"
 sha2 = "0.10"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "blocking", "multipart"] }
 hound = "3.5"
+base64 = "0.22"
 realfft = "3.5"
 zeron-voice = { path = "../../vendor/zeron-voice", optional = true }
 # Same pin as zeron-voice so VAD and STT share one ONNX Runtime.

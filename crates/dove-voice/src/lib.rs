@@ -20,6 +20,7 @@
 pub mod aec;
 pub mod calls;
 pub mod conductor;
+pub mod dictation;
 pub mod engines;
 pub mod fastpath;
 pub mod intent;
@@ -34,6 +35,7 @@ pub mod snapshot;
 pub mod speakable;
 pub mod stt;
 pub mod tts;
+pub mod tts_stream;
 pub mod turn;
 pub mod vad;
 

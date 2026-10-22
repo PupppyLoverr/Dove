@@ -79,6 +79,23 @@ pub trait TextToSpeech: Send {
     fn name(&self) -> String;
     /// Speak one clause. Returns early (with what it has) when `cancel` is set.
     fn synthesize(&mut self, text: &str, opts: &SpeechOptions, cancel: &AtomicBool) -> anyhow::Result<Pcm>;
+    /// Speak one clause, handing audio to `out` as it arrives so playback
+    /// starts on the first chunk. `out` returns false to stop early (the
+    /// reply was interrupted). Engines that render a clause in one piece
+    /// keep this default.
+    fn synthesize_stream(
+        &mut self,
+        text: &str,
+        opts: &SpeechOptions,
+        cancel: &AtomicBool,
+        out: &mut dyn FnMut(Pcm) -> bool,
+    ) -> anyhow::Result<()> {
+        let pcm = self.synthesize(text, opts, cancel)?;
+        if !pcm.samples.is_empty() {
+            out(pcm);
+        }
+        Ok(())
+    }
     fn voices(&self) -> Vec<String> {
         Vec::new()
     }

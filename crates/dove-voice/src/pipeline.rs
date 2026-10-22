@@ -27,7 +27,7 @@ use parking_lot::Mutex;
 use crate::engines::{EchoCanceller, SpeechOptions, SpeechToText, TextToSpeech, TurnDecision, TurnDetector, Vad};
 use crate::metrics::TurnTimings;
 
-const FRAME_MS: u32 = (crate::FRAME as u32 * 1000) / crate::RATE;
+pub(crate) const FRAME_MS: u32 = (crate::FRAME as u32 * 1000) / crate::RATE;
 
 #[derive(Debug, Clone)]
 pub struct ListenerConfig {
@@ -286,8 +286,19 @@ pub enum SttChoice {
 
 pub enum TtsChoice {
     System,
-    Cloud { base_url: String, api_key: String, model: String, voice: String },
-    ElevenLabs { api_key: String, voice: String, model: String },
+    Cloud {
+        base_url: String,
+        api_key: String,
+        model: String,
+        voice: String,
+    },
+    ElevenLabs {
+        api_key: String,
+        voice: String,
+        model: String,
+    },
+    /// A streaming cloud voice (Fish Audio, Deepgram, Cartesia, Inworld).
+    Stream(crate::tts_stream::Provider),
 }
 
 /// Where a call's audio comes from.
@@ -434,6 +445,39 @@ pub fn unload() {
     WARM.lock().take();
 }
 
+/// The cached engine for `key` and the cached VAD, leaving the rest (the
+/// turn detector) for the next call. Dictation and calls share one cache.
+/// A cached recognizer and VAD, either of which may be missing.
+pub(crate) type WarmPair = (Option<Box<dyn SpeechToText>>, Option<Box<dyn Vad>>);
+
+pub(crate) fn take_warm(key: &str) -> WarmPair {
+    let mut w = WARM.lock();
+    let Some(warm) = w.as_mut() else { return (None, None) };
+    let stt = match warm.stt.take() {
+        Some((k, e)) if k == key => Some(e),
+        other => {
+            warm.stt = other;
+            None
+        }
+    };
+    (stt, warm.vad.take())
+}
+
+/// Return engines to the cache for the next call or dictation.
+pub(crate) fn park_warm(key: String, stt: Option<Box<dyn SpeechToText>>, vad: Option<Box<dyn Vad>>) {
+    let mut w = WARM.lock();
+    let warm = w.get_or_insert_with(|| Warm { stt: None, vad: None, turn: None, at: Instant::now() });
+    if let Some(e) = stt {
+        warm.stt = Some((key, e));
+    }
+    if vad.is_some() {
+        warm.vad = vad;
+    }
+    warm.at = Instant::now();
+    drop(w);
+    reap_later();
+}
+
 fn reap_later() {
     std::thread::Builder::new()
         .name("voice-reaper".into())
@@ -447,7 +491,7 @@ fn reap_later() {
         .ok();
 }
 
-fn stt_key(c: &SttChoice) -> String {
+pub(crate) fn stt_key(c: &SttChoice) -> String {
     match c {
         #[cfg(feature = "local")]
         SttChoice::Moonshine(root, size) => format!("{}:{}", size.id(), root.display()),
@@ -458,7 +502,7 @@ fn stt_key(c: &SttChoice) -> String {
     }
 }
 
-fn load_stt(c: &SttChoice) -> Result<Box<dyn SpeechToText>> {
+pub(crate) fn load_stt(c: &SttChoice) -> Result<Box<dyn SpeechToText>> {
     Ok(match c {
         #[cfg(feature = "local")]
         SttChoice::Moonshine(root, size) => Box::new(crate::stt::Moonshine::load(root, *size)?),
@@ -471,7 +515,7 @@ fn load_stt(c: &SttChoice) -> Result<Box<dyn SpeechToText>> {
     })
 }
 
-fn load_vad(root: &std::path::Path) -> Box<dyn Vad> {
+pub(crate) fn load_vad(root: &std::path::Path) -> Box<dyn Vad> {
     #[cfg(feature = "local")]
     if crate::models::installed(root, &crate::models::SILERO) {
         match crate::vad::SileroVad::load(&crate::models::path(root, &crate::models::SILERO)) {
@@ -560,13 +604,14 @@ impl Drop for Call {
 }
 
 /// Microphone samples, written by the device callback, read by `voice-call`.
-struct Mic {
-    buf: Mutex<Vec<f32>>,
-    dropped: AtomicU64,
-    failed: AtomicBool,
+#[derive(Default)]
+pub(crate) struct Mic {
+    pub(crate) buf: Mutex<Vec<f32>>,
+    pub(crate) dropped: AtomicU64,
+    pub(crate) failed: AtomicBool,
 }
 
-fn open_mic(device: Option<&str>, mic: Arc<Mic>) -> Result<(cpal::Stream, u32)> {
+pub(crate) fn open_mic(device: Option<&str>, mic: Arc<Mic>) -> Result<(cpal::Stream, u32)> {
     let host = cpal::default_host();
     let device = device
         .and_then(|id| id.parse::<cpal::DeviceId>().ok())
@@ -711,13 +756,28 @@ fn run(config: CallConfig, ctl: Receiver<Ctl>, ev: Sender<Event>, ended: Arc<Ato
     let cancel = Arc::new(Mutex::new(Arc::new(AtomicBool::new(false))));
     let (tts_tx, tts_rx) = unbounded::<(u64, String, SpeechOptions)>();
     let (pcm_tx, pcm_rx) = unbounded::<(u64, crate::engines::Pcm, Instant)>();
-    let mut tts: Box<dyn TextToSpeech> = match &config.tts {
-        TtsChoice::System => Box::new(crate::tts::System::new()),
+    let cloud: Option<Box<dyn TextToSpeech>> = match &config.tts {
+        TtsChoice::System => None,
         TtsChoice::Cloud { base_url, api_key, model, voice } => {
-            Box::new(crate::tts::OpenAiCompatible::new(base_url, api_key, model, voice)?)
+            Some(Box::new(crate::tts::OpenAiCompatible::new(base_url, api_key, model, voice)?))
         }
         TtsChoice::ElevenLabs { api_key, voice, model } => {
-            Box::new(crate::tts::ElevenLabs::new(api_key, voice, model)?)
+            Some(Box::new(crate::tts::ElevenLabs::new(api_key, voice, model)?))
+        }
+        TtsChoice::Stream(provider) => Some(provider.build()?),
+    };
+    // A cloud voice that fails mid-call (offline, out of credits) hands the
+    // clause to the system voice and says so once, so the call never goes mute.
+    let mut tts: Box<dyn TextToSpeech> = match cloud {
+        None => Box::new(crate::tts::System::new()),
+        Some(primary) => {
+            let ev_tts = ev.clone();
+            Box::new(crate::tts_stream::WithFallback::new(
+                primary,
+                Box::new(move |msg| {
+                    let _ = ev_tts.send(Event::Error(msg));
+                }),
+            ))
         }
     };
     let tts_name = tts.name();
@@ -729,12 +789,13 @@ fn run(config: CallConfig, ctl: Receiver<Ctl>, ev: Sender<Event>, ended: Arc<Ato
             }
             let flag = c2.lock().clone();
             let t = Instant::now();
-            match tts.synthesize(&text, &opts, &flag) {
-                Ok(pcm) if !pcm.samples.is_empty() && gen_ == g2.load(Ordering::Acquire) => {
-                    let _ = pcm_tx.send((gen_, pcm, t));
-                }
-                Ok(_) => {}
-                Err(e) => tracing::warn!("speech failed: {e:#}"),
+            // Each chunk goes to the speaker as it arrives; a barge-in
+            // (new generation) stops reading the rest of the clause.
+            let result = tts.synthesize_stream(&text, &opts, &flag, &mut |pcm| {
+                gen_ == g2.load(Ordering::Acquire) && pcm_tx.send((gen_, pcm, t)).is_ok()
+            });
+            if let Err(e) = result {
+                tracing::warn!("speech failed: {e:#}");
             }
         }
     })?;

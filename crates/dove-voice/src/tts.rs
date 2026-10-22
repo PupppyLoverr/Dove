@@ -168,7 +168,10 @@ impl ElevenLabs {
         if api_key.trim().is_empty() {
             bail!("Set ELEVENLABS_API_KEY to use ElevenLabs.");
         }
-        let client = reqwest::blocking::Client::builder().timeout(Duration::from_secs(30)).build()?;
+        let client = reqwest::blocking::Client::builder()
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(60))
+            .build()?;
         let pick = |v: &str, d: &str| if v.trim().is_empty() { d.to_string() } else { v.trim().to_string() };
         Ok(Self {
             api_key: api_key.trim().to_string(),
@@ -192,10 +195,27 @@ impl TextToSpeech for ElevenLabs {
     }
 
     fn synthesize(&mut self, text: &str, opts: &SpeechOptions, cancel: &AtomicBool) -> Result<Pcm> {
+        let mut all = Pcm { samples: Vec::new(), rate: crate::RATE };
+        self.synthesize_stream(text, opts, cancel, &mut |p| {
+            all.samples.extend_from_slice(&p.samples);
+            true
+        })?;
+        Ok(if all.samples.is_empty() { Pcm::default() } else { all })
+    }
+
+    /// `/stream`: audio arrives while the rest of the clause renders.
+    fn synthesize_stream(
+        &mut self,
+        text: &str,
+        opts: &SpeechOptions,
+        cancel: &AtomicBool,
+        out: &mut dyn FnMut(Pcm) -> bool,
+    ) -> Result<()> {
         if cancel.load(Ordering::Acquire) || text.trim().is_empty() {
-            return Ok(Pcm::default());
+            return Ok(());
         }
-        let voice = opts.voice.clone().filter(|v| !v.trim().is_empty()).unwrap_or_else(|| self.voice_id.clone());
+        // The configured voice id; a system voice name is never sent here.
+        let voice = &self.voice_id;
         let body = serde_json::json!({
             "text": text,
             "model_id": self.model,
@@ -203,20 +223,14 @@ impl TextToSpeech for ElevenLabs {
         });
         let resp = self
             .client
-            .post(format!("{}/v1/text-to-speech/{}?output_format=pcm_16000", self.base_url, voice))
+            .post(format!("{}/v1/text-to-speech/{}/stream?output_format=pcm_16000", self.base_url, voice))
             .header("xi-api-key", &self.api_key)
             .json(&body)
             .send()
             .context("ElevenLabs request")?;
-        let status = resp.status();
-        if !status.is_success() {
-            bail!("ElevenLabs answered {status}.");
-        }
-        let bytes = resp.bytes()?;
-        if cancel.load(Ordering::Acquire) {
-            return Ok(Pcm::default());
-        }
-        Ok(Self::pcm16(&bytes))
+        let resp = crate::tts_stream::checked("ElevenLabs", resp)?;
+        crate::tts_stream::stream_pcm16(resp, crate::RATE, cancel, out)?;
+        Ok(())
     }
 
     fn remote(&self) -> bool {
@@ -303,6 +317,27 @@ mod tests {
             Pcm::default(),
             "nothing to say sends nothing"
         );
+    }
+
+    #[test]
+    fn elevenlabs_streams_from_the_stream_endpoint() {
+        use crate::tts_stream::mock::{serve, tone};
+        let (url, seen) = serve(200, vec![tone(1600), tone(1600)], Duration::from_millis(30));
+        let mut e = ElevenLabs::new("xi_test", "", "").unwrap();
+        e.base_url = url;
+        let mut chunks = 0;
+        e.synthesize_stream("Hi.", &SpeechOptions::default(), &AtomicBool::new(false), &mut |_| {
+            chunks += 1;
+            true
+        })
+        .unwrap();
+        assert!(chunks >= 1);
+        let req = seen.recv().unwrap();
+        assert_eq!(
+            req.request_line,
+            format!("POST /v1/text-to-speech/{}/stream?output_format=pcm_16000 HTTP/1.1", ElevenLabs::DEFAULT_VOICE)
+        );
+        assert_eq!(req.header("xi-api-key"), Some("xi_test"));
     }
 
     #[test]

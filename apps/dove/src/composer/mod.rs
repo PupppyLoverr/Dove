@@ -197,6 +197,9 @@ pub struct Composer {
     pub input: Entity<TextareaState>,
     pub picker: Entity<Picker>,
     pub voice: Entity<Dictation>,
+    /// Where live dictation's text sits in the input (byte range), so each
+    /// update replaces it in place and the rest of the draft is untouched.
+    live_dictation: Option<std::ops::Range<usize>>,
     pub mode: PermissionMode,
     /// Set for a thread's composer.
     thread: Option<(Task, Project)>,
@@ -300,6 +303,13 @@ impl Composer {
                 });
                 focus_input(&this.input, window, cx);
             }
+            DictationEvent::Live(text) => {
+                this.place_live_dictation(text, false, window, cx);
+            }
+            DictationEvent::LiveDone(text) => {
+                this.place_live_dictation(text, true, window, cx);
+                focus_input(&this.input, window, cx);
+            }
             DictationEvent::Changed => cx.notify(),
         }));
         let mode = engine.store.setting("permission_mode").map(|m| mode_from_id(&m)).unwrap_or_default();
@@ -311,6 +321,7 @@ impl Composer {
             input,
             picker,
             voice,
+            live_dictation: None,
             mode,
             thread: None,
             project: None,
@@ -1776,6 +1787,44 @@ impl SendState {
             Self::Queue => "queue",
             Self::Stop => "stop",
         }
+    }
+}
+
+impl Composer {
+    /// Put live dictation's `text` into the input: the first time at the
+    /// cursor (after a space when needed), then over the same span each time
+    /// it changes. `done` ends the span.
+    fn place_live_dictation(&mut self, text: &str, done: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let range = self.live_dictation.clone();
+        let text = text.trim().to_string();
+        let new_range = self.input.update(cx, |s, cx| {
+            let value = s.value().to_string();
+            match range
+                .filter(|r| r.end <= value.len() && value.is_char_boundary(r.start) && value.is_char_boundary(r.end))
+            {
+                Some(r) => {
+                    // Keep the separating space only while there is text after it.
+                    let lead = if value[r.clone()].starts_with(' ') && !text.is_empty() { " " } else { "" };
+                    let piece = format!("{lead}{text}");
+                    s.set_selected_range(r.clone(), cx);
+                    s.replace(piece.clone(), window, cx);
+                    r.start..r.start + piece.len()
+                }
+                None => {
+                    if text.is_empty() {
+                        return 0..0;
+                    }
+                    let at = s.cursor().min(value.len());
+                    let before = &value[..at];
+                    let sep = if before.is_empty() || before.ends_with(char::is_whitespace) { "" } else { " " };
+                    let piece = format!("{sep}{text}");
+                    s.insert(piece.clone(), window, cx);
+                    at..at + piece.len()
+                }
+            }
+        });
+        self.live_dictation = if done || new_range.is_empty() && text.is_empty() { None } else { Some(new_range) };
+        cx.notify();
     }
 }
 

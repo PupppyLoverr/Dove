@@ -1,5 +1,10 @@
-//! Local dictation: Parakeet TDT 0.6B v3 on this device (Zeron's voice
-//! crate). Nothing leaves the machine and no audio is stored.
+//! Local dictation on this device. Nothing leaves the machine and no audio
+//! is stored.
+//!
+//! Live dictation (the default when a local recognizer is installed) writes
+//! words into the composer while you talk: the phrase being spoken updates in
+//! place and each pause commits it ([`dove_voice::dictation`]). Without it,
+//! Parakeet TDT 0.6B v3 (Zeron's voice crate) transcribes after you stop.
 //!
 //! The model (≈670 MB) is installed from Settings › Voice, verified file by
 //! file against pinned SHA-256 sums, into `~/.dove/voice/parakeet-v3`.
@@ -136,6 +141,11 @@ impl VoiceModel {
 pub enum DictationEvent {
     /// Final text to insert.
     Text(String),
+    /// Live dictation: everything dictated so far this time (it replaces the
+    /// previous `Live` text in place).
+    Live(String),
+    /// Live dictation ended with this text (empty: nothing was said).
+    LiveDone(String),
     /// Recording state or level changed.
     Changed,
 }
@@ -157,6 +167,12 @@ pub struct Dictation {
     toggled: bool,
     pub level: f32,
     pub error: Option<String>,
+    /// The running live dictation, when live mode is on.
+    live: Option<dove_voice::dictation::LiveDictation>,
+    /// The recognizer live dictation reported, for the status line.
+    live_model: Option<String>,
+    /// Phrases live dictation has committed so far (kept if it's cancelled).
+    live_committed: String,
     _poll: Option<gpui::Task<()>>,
 }
 
@@ -172,12 +188,20 @@ impl Dictation {
             toggled: false,
             level: 0.0,
             error: None,
+            live: None,
+            live_model: None,
+            live_committed: String::new(),
             _poll: None,
         }
     }
 
     pub fn is_ready(&self) -> bool {
-        zeron_voice::installed(&model_dir(&self.engine))
+        zeron_voice::installed(&model_dir(&self.engine)) || self.live_available()
+    }
+
+    /// Live dictation is on (Settings › Voice) and a local recognizer is installed.
+    pub fn live_available(&self) -> bool {
+        self.engine.store.flag("dictation_live", true) && crate::voice_call::local_stt_ready(&self.engine)
     }
 
     pub fn is_recording(&self) -> bool {
@@ -192,7 +216,12 @@ impl Dictation {
         if let Some(e) = &self.error {
             return e.clone();
         }
-        if self.is_ready() {
+        if self.live_available() {
+            match &self.live_model {
+                Some(m) => format!("Live dictation · {m} · runs on this device"),
+                None => "Live dictation · words appear as you talk · runs on this device".into(),
+            }
+        } else if self.is_ready() {
             "Parakeet v3 · runs on this device · ready".into()
         } else {
             format!("Local voice is not installed ({} MB download)", zeron_voice::download_size() / 1_000_000)
@@ -216,6 +245,10 @@ impl Dictation {
             return;
         }
         let device = self.engine.store.setting("voice_device").filter(|d| !d.is_empty());
+        if self.live_available() {
+            self.start_live(device, cx);
+            return;
+        }
         match zeron_voice::Session::start(model_dir(&self.engine), device) {
             Ok(session) => {
                 self.session = Some(session);
@@ -245,6 +278,9 @@ impl Dictation {
     }
 
     pub fn stop(&mut self, cx: &mut Context<Self>) {
+        if let Some(l) = &self.live {
+            l.stop();
+        }
         if let Some(s) = self.session.as_mut() {
             s.finish();
         }
@@ -254,6 +290,11 @@ impl Dictation {
     }
 
     pub fn cancel(&mut self, cx: &mut Context<Self>) {
+        if let Some(l) = self.live.take() {
+            l.cancel();
+            // Only the phrase in progress is dropped; committed ones stay.
+            cx.emit(DictationEvent::LiveDone(std::mem::take(&mut self.live_committed)));
+        }
         self.session = None;
         self.state = State::Idle;
         self._poll = None;
@@ -289,6 +330,76 @@ impl Dictation {
                         }
                         if done {
                             d.session = None;
+                            d.state = State::Idle;
+                        }
+                        cx.emit(DictationEvent::Changed);
+                        cx.notify();
+                        done
+                    })
+                    .unwrap_or(true);
+                if done {
+                    break;
+                }
+            }
+        }));
+    }
+}
+
+impl Dictation {
+    fn start_live(&mut self, device: Option<String>, cx: &mut Context<Self>) {
+        // Batch dictation's cached Parakeet would only sit in memory.
+        zeron_voice::unload();
+        let stt = crate::voice_call::local_stt(&self.engine);
+        let cfg = dove_voice::dictation::DictationConfig::new(
+            self.engine.store.root().to_path_buf(),
+            stt,
+            // `DOVE_VOICE_INPUT` (a WAV file) stands in for the microphone in QA.
+            crate::voice_call::qa_input().unwrap_or(dove_voice::pipeline::Input::Device(device)),
+        );
+        self.live = Some(dove_voice::dictation::LiveDictation::start(cfg));
+        self.live_committed.clear();
+        self.state = State::Listening;
+        self.error = None;
+        self.pressed_at = Some(Instant::now());
+        self.toggled = false;
+        self.poll_live(cx);
+        cx.emit(DictationEvent::Changed);
+        cx.notify();
+    }
+
+    fn poll_live(&mut self, cx: &mut Context<Self>) {
+        use dove_voice::dictation::Event;
+        self._poll = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(POLL).await;
+                let done = this
+                    .update(cx, |d, cx| {
+                        let Some(live) = d.live.as_ref() else { return true };
+                        let mut done = false;
+                        let mut text = None;
+                        while let Ok(ev) = live.events.try_recv() {
+                            match ev {
+                                Event::Ready { stt, .. } => d.live_model = Some(stt),
+                                Event::Text { committed, live } => {
+                                    text = Some(Event::joined(&committed, &live));
+                                    d.live_committed = committed;
+                                }
+                                Event::Level(l) => d.level = l,
+                                Event::Error(e) => d.error = Some(e),
+                                Event::Ended { text: t } => {
+                                    cx.emit(DictationEvent::LiveDone(t));
+                                    done = true;
+                                    text = None;
+                                    break;
+                                }
+                            }
+                        }
+                        // Only the newest text matters; earlier ones were replaced.
+                        if let Some(t) = text {
+                            cx.emit(DictationEvent::Live(t));
+                        }
+                        if done {
+                            d.live = None;
                             d.state = State::Idle;
                         }
                         cx.emit(DictationEvent::Changed);

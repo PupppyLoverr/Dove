@@ -252,6 +252,7 @@ const INDEX: &[Entry] = &[
     ),
     e(Section::Voice, "voice_model", "Dictation model", "voice dictation parakeet nvidia model download speech"),
     e(Section::Voice, "voice_device", "Microphone", "microphone input device audio voice"),
+    e(Section::Voice, "dictation_live", "Live dictation", "live dictation realtime streaming words appear as you talk"),
     e(
         Section::Voice,
         "voice_call_mode",
@@ -276,6 +277,12 @@ const INDEX: &[Entry] = &[
     e(Section::Voice, "voice_earcons", "Sounds", "voice chime earcon sound cue ready heard beep"),
     e(Section::Voice, "voice_call_models", "Voice Mode models", "silero vad smart turn detection model download"),
     e(Section::Voice, "voice_cloud", "Cloud speech recognition", "cloud openai whisper groq speech api upload audio"),
+    e(
+        Section::Voice,
+        "voice_cloud_tts_provider",
+        "Voice service",
+        "cloud voice tts fish audio free deepgram aura cartesia sonic inworld elevenlabs natural voice",
+    ),
     e(Section::Voice, "voice_router_url", "Command router", "router llama llm intent model voice commands"),
     e(Section::Shortcuts, "shortcuts", "Keyboard shortcuts", "keyboard shortcuts keybindings hotkeys rebind keys"),
     e(Section::Agents, "agents", "Agents", "agents harness claude codex cursor gemini opencode cli binary enable hide"),
@@ -398,6 +405,9 @@ pub struct SettingsPage {
     sel_home_input: SelectState,
     sel_mic: SelectState,
     sel_voice: SelectState,
+    sel_tts_provider: SelectState,
+    /// The voice id for the selected cloud voice service (saved per service).
+    voice_tts_voice: Entity<InputState>,
     /// System voices (loaded off-thread when Voice opens).
     voices: Vec<String>,
     /// Voice Mode model downloads: in flight (None) or failed (Some).
@@ -454,7 +464,17 @@ impl SettingsPage {
         };
         let voice_cloud_url = text_field("https://api.openai.com/v1", "voice_cloud_url", window, cx);
         let voice_router_url = text_field("http://127.0.0.1:8080/v1 (off)", "voice_router_url", window, cx);
+        let provider = engine.store.setting("voice_cloud_tts_provider").unwrap_or_default();
+        let voice_tts_voice = text_field("Default voice", &tts_voice_key(&provider), window, cx);
         let mut subs = vec![search_sub];
+        // Saved under the service picked now, so each keeps its own voice.
+        subs.push(cx.subscribe(&voice_tts_voice, |this, s, ev: &InputEvent, cx| {
+            if matches!(ev, InputEvent::Change | InputEvent::Blur) {
+                let value = s.read(cx).value().trim().to_string();
+                let key = tts_voice_key(&this.get("voice_cloud_tts_provider").unwrap_or_default());
+                let _ = this.engine.store.set_setting(&key, &value);
+            }
+        }));
         for (input, key) in
             [(&clone_dir, "clone_dir"), (&voice_cloud_url, "voice_cloud_url"), (&voice_router_url, "voice_router_url")]
         {
@@ -524,6 +544,8 @@ impl SettingsPage {
             sel_home_input: SelectState::default(),
             sel_mic: SelectState::default(),
             sel_voice: SelectState::default(),
+            sel_tts_provider: SelectState::default(),
+            voice_tts_voice,
             voices: Vec::new(),
             voice_dl: HashMap::new(),
             voice_cloud_url,
@@ -1946,6 +1968,24 @@ impl SettingsPage {
         let card = page::card(t)
             .child(self.srow(t, true, "voice_model", "Dictation model", status, control))
             .child(self.srow(t, false, "voice_device", "Microphone", "", mic))
+            .child({
+                let live = self.flag("dictation_live", true);
+                let ready = crate::voice_call::local_stt_ready(&self.engine);
+                self.srow(
+                    t,
+                    false,
+                    "dictation_live",
+                    "Live dictation",
+                    match (live, ready) {
+                        (true, true) => "Words appear as you talk; each pause commits a phrase. Uses the Voice Mode speech model below.",
+                        (true, false) => "Download a speech model below (Moonshine is quickest) to see words as you talk.",
+                        (false, _) => "Off: text is inserted when you stop talking.",
+                    },
+                    ctl::on_toggle(ctl::toggle(t, "set-dictation-live", live), cx, move |this, _, cx| {
+                        this.set_flag("dictation_live", !live, cx)
+                    }),
+                )
+            })
             .child(
                 page::row(t, false).child(page::row_text(
                     t,
@@ -2114,12 +2154,14 @@ impl SettingsPage {
                 false,
                 "voice_cloud_tts",
                 "Cloud voice",
-                if cloud_tts && self.get("voice_cloud_tts_provider").as_deref() == Some("elevenlabs") {
-                    "On: what Dove says (including agents' replies) is uploaded to ElevenLabs for speech."
-                } else if cloud_tts {
-                    "On: what Dove says (including agents' replies) is uploaded to the endpoint for speech."
+                if cloud_tts {
+                    let id = self.get("voice_cloud_tts_provider").unwrap_or_else(|| "openai".into());
+                    let label = TTS_SERVICES.iter().find(|s| s.id == id).map_or("the endpoint below", |s| s.label);
+                    SharedString::from(format!(
+                        "On: what Dove says (including agents' replies) is sent to {label} for speech. If it fails, Dove uses your system's voice."
+                    ))
                 } else {
-                    "Off: Dove speaks with your system's voice."
+                    SharedString::from("Off: Dove speaks with your system's voice.")
                 },
                 ctl::on_toggle(ctl::toggle(t, "set-voice-cloud-tts", cloud_tts), cx, move |this, _, cx| {
                     this.set_flag("voice_cloud_tts", !cloud_tts, cx)
@@ -2148,25 +2190,42 @@ impl SettingsPage {
                 )
             })
             .child({
-                let this = cx.entity().downgrade();
-                let tts_provider = usize::from(self.get("voice_cloud_tts_provider").as_deref() == Some("elevenlabs"));
+                let current = self.get("voice_cloud_tts_provider").unwrap_or_else(|| "openai".into());
+                let selected = TTS_SERVICES.iter().position(|s| s.id == current).unwrap_or(TTS_SERVICES.len() - 1);
+                let service = &TTS_SERVICES[selected];
+                let picker = ctl::select::<Self>("set-voice-tts-provider", "Voice service", |s| &mut s.sel_tts_provider)
+                    .options(TTS_SERVICES.iter().map(|s| SelectOption::new(s.label)), selected)
+                    .width(220.0)
+                    .menu_width(300.0)
+                    .on_select(|this, i, window, cx| {
+                        let Some(service) = TTS_SERVICES.get(i) else { return };
+                        this.set("voice_cloud_tts_provider", service.id, cx);
+                        let voice = this.get(&tts_voice_key(service.id)).unwrap_or_default();
+                        this.voice_tts_voice.update(cx, |s, cx| s.set_value(voice, window, cx));
+                    })
+                    .render(t, &self.sel_tts_provider, cx);
+                self.srow(t, false, "voice_cloud_tts_provider", "Voice service", service.blurb, picker)
+            })
+            .child({
+                let current = self.get("voice_cloud_tts_provider").unwrap_or_else(|| "openai".into());
+                let service = TTS_SERVICES.iter().find(|s| s.id == current).unwrap_or(&TTS_SERVICES[TTS_SERVICES.len() - 1]);
+                let key_set = service.key_vars.iter().any(|v| std::env::var(v).is_ok_and(|k| !k.trim().is_empty()));
+                let detail: SharedString = if key_set {
+                    format!("{} is set. {}", service.key_vars[0], service.voice_hint).into()
+                } else {
+                    format!(
+                        "Set {} in your environment, then restart Dove. {}",
+                        service.key_vars[0], service.voice_hint
+                    )
+                    .into()
+                };
                 self.srow(
                     t,
                     false,
-                    "voice_cloud_tts_provider",
-                    "Voice service",
-                    "OpenAI-compatible uses the endpoint below. ElevenLabs uses ELEVENLABS_API_KEY.",
-                    ctl::segmented(
-                        t,
-                        "set-voice-tts-provider",
-                        vec![ctl::Segment::new("OpenAI-compatible"), ctl::Segment::new("ElevenLabs")],
-                        tts_provider,
-                        move |i, _, cx| {
-                            let _ = this.update(cx, |p, cx| {
-                                p.set("voice_cloud_tts_provider", if i == 1 { "elevenlabs" } else { "openai" }, cx)
-                            });
-                        },
-                    ),
+                    "voice_tts_voice",
+                    "Service voice",
+                    detail,
+                    div().w(px(260.0)).child(gpui_base::input::Input::new(&self.voice_tts_voice)),
                 )
             })
             .child(self.srow(
@@ -2955,8 +3014,82 @@ fn motion_inventory(t: &Theme, reduced: bool, has_wall: bool, animate: bool, eff
         .into_any_element()
 }
 
+/// A cloud voice service in Settings › Voice.
+struct TtsService {
+    id: &'static str,
+    label: &'static str,
+    blurb: &'static str,
+    key_vars: &'static [&'static str],
+    voice_hint: &'static str,
+}
+
+/// Streaming services first, cheapest to try first.
+const TTS_SERVICES: &[TtsService] = &[
+    TtsService {
+        id: "fish",
+        label: "Fish Audio (free model)",
+        blurb: "Fish Audio's S2.1 Pro, free for developers through the API. Streams, so Dove starts speaking on the first chunk.",
+        key_vars: &["FISH_AUDIO_API_KEY", "FISH_API_KEY"],
+        voice_hint: "Voice: a Fish Audio voice model id (reference id); empty uses their default.",
+    },
+    TtsService {
+        id: "deepgram",
+        label: "Deepgram Aura-2",
+        blurb: "Very low latency, $0.030 per 1,000 characters; new accounts get $200 of credit.",
+        key_vars: &["DEEPGRAM_API_KEY"],
+        voice_hint: "Voice: an Aura model such as aura-2-thalia-en (the default).",
+    },
+    TtsService {
+        id: "cartesia",
+        label: "Cartesia Sonic",
+        blurb: "Built for real-time agents. The free plan's 20,000 credits a month are for non-commercial use.",
+        key_vars: &["CARTESIA_API_KEY"],
+        voice_hint: "Voice: a Cartesia voice id; empty uses Dove's default.",
+    },
+    TtsService {
+        id: "inworld",
+        label: "Inworld",
+        blurb: "Natural voices at a low price per character; streams.",
+        key_vars: &["INWORLD_API_KEY"],
+        voice_hint: "Voice: an Inworld voice name such as Ashley (the default).",
+    },
+    TtsService {
+        id: "elevenlabs",
+        label: "ElevenLabs",
+        blurb: "Flash v2.5, streamed. Startups can apply for ElevenLabs' grant program.",
+        key_vars: &["ELEVENLABS_API_KEY"],
+        voice_hint: "Voice: an ElevenLabs voice id; empty uses Rachel.",
+    },
+    TtsService {
+        id: "openai",
+        label: "OpenAI-compatible",
+        blurb: "Any /v1/audio/speech endpoint (the Speech endpoint below). Renders a clause at a time.",
+        key_vars: &["DOVE_VOICE_API_KEY"],
+        voice_hint: "Voice: the endpoint's voice name, such as alloy.",
+    },
+];
+
+/// Where a service's voice id is saved.
+fn tts_voice_key(service: &str) -> String {
+    match service {
+        "elevenlabs" => "voice_elevenlabs_voice".into(),
+        "openai" | "" => "voice_cloud_voice".into(),
+        other => format!("voice_tts_voice.{other}"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn every_streaming_voice_service_is_listed_with_the_engine_key_names() {
+        for (id, _) in dove_voice::tts_stream::Provider::IDS {
+            let service = super::TTS_SERVICES.iter().find(|s| s.id == *id).expect("listed in Settings");
+            assert_eq!(service.key_vars, dove_voice::tts_stream::Provider::key_vars(id));
+        }
+        assert_eq!(super::tts_voice_key("fish"), "voice_tts_voice.fish");
+        assert_eq!(super::tts_voice_key("elevenlabs"), "voice_elevenlabs_voice");
+    }
+
     use super::*;
 
     #[test]
