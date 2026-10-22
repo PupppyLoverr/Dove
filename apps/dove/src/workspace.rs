@@ -14,7 +14,7 @@ pub const MIN_W: f32 = 320.0;
 pub const MIN_H: f32 = 220.0;
 
 /// How a split lays out its two halves.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Axis {
     /// Side by side ("split right").
     Row,
@@ -62,7 +62,7 @@ impl Rect {
 }
 
 /// The layout: a pane, or a split of two layouts.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Node {
     Leaf(PaneId),
     Split { axis: Axis, ratio: f32, a: Box<Node>, b: Box<Node> },
@@ -352,6 +352,13 @@ mod tests {
         assert_eq!(shown.leaves(), vec![0, 3], "1 and 2 folded, the recent ones stay");
         let tiny = Rect::new(0.0, 0.0, 100.0, 100.0);
         assert_eq!(fit(&n, tiny, &[2]).leaves(), vec![2], "the focused pane always shows");
+    }
+
+    #[test]
+    fn layouts_round_trip_through_json() {
+        let n = four();
+        let back: Node = serde_json::from_str(&serde_json::to_string(&n).unwrap()).unwrap();
+        assert_eq!(back, n);
     }
 
     #[test]

@@ -318,6 +318,57 @@ impl ThreadPanel {
     }
 }
 
+/// A thread's panes as saved in settings (`layout.<thread>`): the tree,
+/// the focused pane, and what each pane shows. Side chats and subagent
+/// chats are conversations of their own, so their panes come back empty.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SavedLayout {
+    tree: Node,
+    focus: PaneId,
+    panes: Vec<(PaneId, String)>,
+}
+
+/// A surface as saved: its kind, and a browser's address.
+fn surface_spec(s: Surface, p: &ThreadPanel, cx: &gpui::App) -> Option<String> {
+    Some(match s {
+        Surface::Changes => "changes".into(),
+        Surface::History => "history".into(),
+        Surface::Files => "files".into(),
+        Surface::Plan => "plan".into(),
+        Surface::Subagents => "subagents".into(),
+        Surface::Chats => "chats".into(),
+        Surface::PullRequest => "pull-request".into(),
+        Surface::Terminal(_) => "terminal".into(),
+        Surface::Browser(id) => match p.browsers.get(&id)?.0.read(cx).page.url.clone() {
+            Some(url) => format!("browser:{url}"),
+            None => "browser".into(),
+        },
+        Surface::SideChat(_) | Surface::Subagent(_) => return None,
+    })
+}
+
+/// The kind (and a browser's address) for a saved surface.
+fn spec_tab(spec: &str) -> Option<(Tab, Option<String>)> {
+    if let Some(url) = spec.strip_prefix("browser:") {
+        return Some((Tab::Browser, Some(url.to_string())));
+    }
+    Some((
+        match spec {
+            "changes" => Tab::Changes,
+            "history" => Tab::History,
+            "files" => Tab::Files,
+            "plan" => Tab::Plan,
+            "subagents" => Tab::Subagents,
+            "chats" => Tab::Chats,
+            "pull-request" => Tab::PullRequest,
+            "terminal" => Tab::Terminal,
+            "browser" => Tab::Browser,
+            _ => return None,
+        },
+        None,
+    ))
+}
+
 /// The payload of a divider being dragged.
 #[derive(Clone)]
 struct DividerDrag {
@@ -416,6 +467,8 @@ pub struct SidePanel {
     visible: bool,
     /// The panel's size last frame, for what fits when splitting.
     bounds: Rc<Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
+    /// The shown thread's panes changed since they were last saved.
+    layout_dirty: bool,
     focus: FocusHandle,
     _subs: Vec<Subscription>,
 }
@@ -478,6 +531,7 @@ impl SidePanel {
             browser_context: BrowserContext::default(),
             visible: false,
             bounds: Rc::new(Cell::new(None)),
+            layout_dirty: false,
             focus: cx.focus_handle(),
             _subs: subs,
         }
@@ -546,6 +600,54 @@ impl SidePanel {
             .collect()
     }
 
+    /// Save the shown thread's panes (`layout.<thread>`).
+    fn save_layout(&mut self, cx: &gpui::App) {
+        self.layout_dirty = false;
+        let Some(thread) = self.thread else { return };
+        let Some(p) = self.panels.get(&thread) else { return };
+        let mut panes: Vec<(PaneId, String)> =
+            p.shown.iter().filter_map(|(id, s)| Some((*id, surface_spec(*s, p, cx)?))).collect();
+        panes.sort();
+        let saved = SavedLayout { tree: p.layout.clone(), focus: p.focus, panes };
+        if let Ok(json) = serde_json::to_string(&saved) {
+            let _ = self.engine.store.set_setting(&format!("layout.{thread}"), &json);
+        }
+    }
+
+    /// Rebuild a thread's saved panes the first time it is shown.
+    fn restore_layout(&mut self, thread: TaskId, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(saved) = self
+            .engine
+            .store
+            .setting(&format!("layout.{thread}"))
+            .and_then(|j| serde_json::from_str::<SavedLayout>(&j).ok())
+        else {
+            return;
+        };
+        let leaves = saved.tree.leaves();
+        let Some(&top) = leaves.iter().max() else { return };
+        if leaves.len() > workspace::MAX_PANES {
+            return;
+        }
+        {
+            let p = self.panels.entry(thread).or_default();
+            p.layout = saved.tree;
+            p.next_pane = top + 1;
+            p.recent = leaves.clone();
+        }
+        for (pane, spec) in saved.panes {
+            let Some((kind, url)) = spec_tab(&spec).filter(|_| leaves.contains(&pane)) else { continue };
+            if let Some(p) = self.panels.get_mut(&thread) {
+                p.focus = pane;
+            }
+            self.open(kind, url, window, cx);
+        }
+        if let Some(p) = self.panels.get_mut(&thread) {
+            p.focus_pane(if leaves.contains(&saved.focus) { saved.focus } else { leaves[0] });
+        }
+        self.layout_dirty = false;
+    }
+
     /// Whether `pane` (the focused one when None) can split along `axis`.
     fn can_split(&self, pane: Option<PaneId>, axis: Axis) -> bool {
         let Some(p) = self.panel_ref() else { return false };
@@ -566,6 +668,7 @@ impl SidePanel {
         p.maximized = None;
         p.focus_pane(new);
         self.plus_open = false;
+        self.layout_dirty = true;
         cx.notify();
         true
     }
@@ -574,6 +677,7 @@ impl SidePanel {
         if let Some(p) = self.panel() {
             p.close_pane(pane);
         }
+        self.layout_dirty = true;
         cx.notify();
     }
 
@@ -604,6 +708,7 @@ impl SidePanel {
         if let Some(p) = self.panel() {
             p.layout.set_ratio(path, ratio);
         }
+        self.layout_dirty = true;
         cx.notify();
     }
 
@@ -637,10 +742,17 @@ impl SidePanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.layout_dirty {
+            self.save_layout(cx);
+        }
         self.thread = thread;
         self.dir = dir.clone();
         self.plus_open = false;
+        let fresh = thread.is_some_and(|id| !self.panels.contains_key(&id));
         let _ = self.panel();
+        if let Some(id) = thread.filter(|_| fresh) {
+            self.restore_layout(id, window, cx);
+        }
         self.changes.update(cx, |c, cx| c.set_target(dir.clone(), base, title, window, cx));
         self.files.update(cx, |f, cx| f.set_root(dir.clone(), cx));
         self.git_history.update(cx, |h, cx| h.set_root(dir, cx));
@@ -871,6 +983,7 @@ impl SidePanel {
 
     /// A surface came on screen: refresh what goes stale, focus shells.
     fn shown(&mut self, surface: Surface, window: &mut Window, cx: &mut Context<Self>) {
+        self.layout_dirty = true;
         match surface {
             Surface::Changes => self.changes.update(cx, |c, cx| c.refresh(cx)),
             Surface::History => self.git_history.update(cx, |h, cx| h.refresh(cx)),
@@ -909,6 +1022,7 @@ impl SidePanel {
             _ => {}
         }
         p.drop_surface(surface, ix);
+        self.layout_dirty = true;
         cx.notify();
     }
 
@@ -1013,6 +1127,9 @@ impl SidePanel {
     pub fn sync(&mut self, visible: bool, dragging: bool, cx: &mut Context<Self>) {
         self.visible = visible;
         let dragging = dragging || cx.has_active_drag();
+        if self.layout_dirty && !dragging {
+            self.save_layout(cx);
+        }
         let live_ids = if visible { self.live_browsers() } else { Vec::new() };
         let urls = self.detected_urls(cx);
         let current = self.thread;
