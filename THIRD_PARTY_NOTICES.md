@@ -132,13 +132,17 @@ manifest `apps/dove/src/file-icons.json` are copied, through Zeron, from
 `vscode-symbols` at commit `296ef1b62287fb2315cb5651e552e09e8c8e1de8`. The full
 license is kept beside the assets in `apps/dove/assets/file-icons/LICENSE.symbols`.
 
-## Solar Icons (CC BY 4.0)
+## Lucide (ISC; some icons MIT)
 
-The interface icons in `apps/dove/assets/icons` are Zeron's icon set: mostly
-"Solar Icons" (Linear) by 480 Design, licensed under CC BY 4.0
-(https://creativecommons.org/licenses/by/4.0/), plus glyphs Zeron draws in the
-same style (MIT, see above). A few Dove-only glyphs are Solar Icons, or are
-drawn by Dove to match.
+Copyright (c) 2026 Lucide Icons and Contributors. Icons derived from Feather are
+Copyright (c) 2013-present Cole Bemis (MIT).
+
+The interface icons in `apps/dove/assets/icons` are Lucide icons from
+`lucide-static` 1.52.0 (https://lucide.dev), modified by Dove: stroke width
+1.75, larger corner radii, and a single SVG format. `stop` and the window
+controls are drawn by Dove in the same style. `scripts/icons/dove_lucide.py`
+produces them. The full license is kept beside the icons in
+`apps/dove/assets/icons/LICENSE.lucide`.
 
 Agent brand marks (Claude, OpenAI, Cursor, Devin, Grok, OpenCode, Pi, Hermes,
 Antigravity) identify the respective products and remain the property of their

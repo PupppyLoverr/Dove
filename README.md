@@ -142,4 +142,4 @@ Issues and pull requests are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.
 
 ## License
 
-Apache-2.0. See [LICENSE](LICENSE). Third-party notices (Zeron, zui, gpui-component, Solar Icons, Geist) are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Apache-2.0. See [LICENSE](LICENSE). Third-party notices (Zeron, zui, gpui-component, Lucide, Geist) are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

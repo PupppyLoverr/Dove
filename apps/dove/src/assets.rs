@@ -1,10 +1,9 @@
 //! Embedded icons and fonts, served to GPUI.
 //!
-//! The control set is Zeron's: Solar Icons (Linear, CC BY 4.0, 480 Design)
-//! plus the hand-drawn glyphs Zeron uses for the terminal, git family, and
-//! window chrome. They are served as drawn — stroke, fill, and viewBox stay
-//! in the file. Agent brand marks keep their own art. GPUI tints `currentColor`
-//! with the element's text color.
+//! The control set is Lucide (ISC), reshaped by `scripts/icons/dove_lucide.py`
+//! to a 1.75 stroke with softer corners. They are served as drawn — stroke,
+//! fill, and viewBox stay in the file. Agent brand marks keep their own art.
+//! GPUI tints `currentColor` with the element's text color.
 
 use std::borrow::Cow;
 
