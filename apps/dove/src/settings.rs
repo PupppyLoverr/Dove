@@ -62,8 +62,10 @@ pub enum Section {
 pub enum SettingsEvent {
     /// Open the Team page (optionally its editor for a new teammate).
     OpenTeam { new: bool },
-    /// Open the Agents page (sign-in terminals, binary paths).
-    OpenAgents,
+    /// Run an agent's own sign-in in a terminal sheet.
+    SignIn(HarnessKind),
+    /// Look for agent CLIs on PATH again.
+    Rescan,
     /// Leave Settings (Back, or Escape).
     Close,
 }
@@ -387,6 +389,8 @@ pub struct SettingsPage {
     /// The row to bring into view on the next paint.
     pending_scroll: Rc<Cell<Option<&'static str>>>,
     flash: Option<(&'static str, Instant)>,
+    /// Agents: the custom binary path being edited.
+    agent_path_edit: Option<(HarnessKind, Entity<InputState>)>,
     /// Live value of the conversation-width slider while it is dragged.
     width_drag: Option<f32>,
     sel_mode: SelectState,
@@ -528,6 +532,7 @@ impl SettingsPage {
             scroll: ScrollHandle::new(),
             pending_scroll: Rc::default(),
             flash: None,
+            agent_path_edit: None,
             width_drag: None,
             sel_mode: SelectState::default(),
             sel_surface: SelectState::default(),
@@ -1058,11 +1063,12 @@ impl SettingsPage {
             Section::Shortcuts => (self.shortcuts_action(&t, cx), self.shortcuts(&t, cx)),
             Section::Agents => (
                 Some(
-                    ctl::button_sm(&t, "set-configure-agents", "Sign-in & paths", Tone::Outlined)
-                        .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::OpenAgents)))
+                    ctl::button_sm(&t, "set-agents-rescan", "Rescan", Tone::Quiet)
+                        .tooltip(ui::tip("Look for agent CLIs on PATH again"))
+                        .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::Rescan)))
                         .into_any_element(),
                 ),
-                self.agents(&t, cx),
+                self.agents(&t, window, cx),
             ),
             Section::Team => (
                 Some(
@@ -2559,27 +2565,84 @@ impl SettingsPage {
         out.child(page::section(t, "Built in", fixed_card)).into_any_element()
     }
 
-    fn agents(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+    /// Edit an agent's binary path (empty = find it on PATH).
+    fn edit_agent_path(&mut self, kind: HarnessKind, window: &mut Window, cx: &mut Context<Self>) {
+        let current = self.get(&format!("agent_path.{}", kind.id())).unwrap_or_default();
+        let field = cx.new(|cx| {
+            let mut s = InputState::new(window, cx).placeholder("Full path to the binary (empty = find on PATH)");
+            s.set_editor_style(ui::input_style(Theme::of(cx)));
+            s.set_value(current, window, cx);
+            s
+        });
+        field.update(cx, |s, cx| s.focus(window, cx));
+        cx.subscribe(&field, move |this, f, ev: &InputEvent, cx| match ev {
+            InputEvent::PressEnter { .. } | InputEvent::Blur => {
+                let v = f.read(cx).value().trim().to_string();
+                this.set(&format!("agent_path.{}", kind.id()), &v, cx);
+                this.agent_path_edit = None;
+                cx.emit(SettingsEvent::Rescan);
+                cx.notify();
+            }
+            _ => {}
+        })
+        .detach();
+        self.agent_path_edit = Some((kind, field));
+        cx.notify();
+    }
+
+    /// Every agent CLI Dove knows: version and path (click to override),
+    /// signing in with the agent's own login, and whether the composer
+    /// offers it.
+    fn agents(&self, t: &Theme, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let installed = self.engine.installed();
-        let supported: Vec<HarnessKind> = HarnessKind::ALL
-            .iter()
-            .copied()
-            .filter(|k| *k != HarnessKind::Shell && dove_core::harness_supported(*k))
-            .collect();
-        let found_count = supported.iter().filter(|k| installed.iter().any(|i| i.kind == **k)).count();
+        let kinds: Vec<HarnessKind> = HarnessKind::ALL.iter().copied().filter(|k| *k != HarnessKind::Shell).collect();
+        let found_count = kinds.iter().filter(|k| installed.iter().any(|i| i.kind == **k)).count();
         let mut card = page::card(t);
-        for (i, kind) in supported.into_iter().enumerate() {
+        for (i, kind) in kinds.into_iter().enumerate() {
             let found = installed.iter().find(|x| x.kind == kind);
+            let supported = dove_core::harness_supported(kind);
             let enabled = crate::pages::agent_enabled(&self.engine.store, kind);
             let key = format!("agent_disabled.{}", kind.id());
             let version = self
                 .get(&format!("agent_version.{}", kind.id()))
                 .and_then(|v| v.rsplit_once('|').map(|(_, ver)| ver.to_string()))
                 .filter(|v| !v.is_empty());
-            let meta: SharedString = match (found, version) {
-                (Some(_), Some(v)) => format!("v{v}").into(),
-                (Some(f), None) => f.program.display().to_string().into(),
-                (None, _) => "Not installed".into(),
+            let path = self.engine.program_for(kind).map(|p| p.display().to_string());
+            let editing = self.agent_path_edit.as_ref().filter(|(k, _)| *k == kind).map(|(_, f)| f.clone());
+            let title = div()
+                .flex()
+                .items_center()
+                .gap(px(6.0))
+                .child(
+                    div()
+                        .text_size(ty::BODY)
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .text_color(t.text)
+                        .child(kind.label()),
+                )
+                .when_some(version.filter(|_| found.is_some()), |d, v| d.child(page::badge(t, format!("v{v}"))))
+                .when(!supported, |d| d.child(page::badge(t, "terminal only")));
+            let path_line: AnyElement = match editing {
+                Some(f) => {
+                    let focused = f.read(cx).focus_handle(cx).is_focused(window);
+                    ctl::text_field(&f, Some(360.0), focused, t).h(px(28.0)).text_size(ty::SMALL).into_any_element()
+                }
+                None => div()
+                    .id(SharedString::from(format!("set-agent-path-{}", kind.id())))
+                    .max_w(px(420.0))
+                    .text_size(ty::META)
+                    .font_family(t.font_mono.clone())
+                    .text_color(t.text_faint)
+                    .truncate()
+                    .cursor_pointer()
+                    .hover(|s| s.text_color(t.text_muted))
+                    .tooltip(ui::tip("Click to set a custom path"))
+                    .child(match (&path, found) {
+                        (Some(p), _) => ui::middle_ellipsis(p, 60),
+                        (None, _) => "Not installed · click to set a path".into(),
+                    })
+                    .on_click(cx.listener(move |this, _, window, cx| this.edit_agent_path(kind, window, cx)))
+                    .into_any_element(),
             };
             let control: AnyElement = if found.is_some() {
                 div()
@@ -2587,18 +2650,9 @@ impl SettingsPage {
                     .items_center()
                     .gap(px(10.0))
                     .child(
-                        div()
-                            .id(SharedString::from(format!("agent-more-{}", kind.id())))
-                            .size(px(26.0))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .rounded(px(design::radius::RADIUS))
-                            .cursor_pointer()
-                            .hover(|s| s.bg(t.wash(0.08)))
-                            .tooltip(ui::tip("Sign-in, binary path and updates"))
-                            .child(icon(icons::ALT_ARROW_RIGHT).size(px(14.0)).text_color(t.text_faint))
-                            .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::OpenAgents))),
+                        ctl::button_sm(t, format!("set-agent-login-{}", kind.id()), "Sign in", Tone::Quiet)
+                            .tooltip(ui::tip(format!("Run {}'s own sign-in in a terminal", kind.label())))
+                            .on_click(cx.listener(move |_, _, _, cx| cx.emit(SettingsEvent::SignIn(kind)))),
                     )
                     .child(ctl::on_toggle(
                         ctl::toggle(t, format!("set-agent-{}", kind.id()), enabled).tooltip(ui::tip(if enabled {
@@ -2611,13 +2665,22 @@ impl SettingsPage {
                     ))
                     .into_any_element()
             } else {
-                page::badge(t, "Not installed").into_any_element()
+                div().text_size(ty::META).text_color(t.text_faint).child("Not installed").into_any_element()
             };
             card = card.child(
                 page::row(t, i == 0)
-                    .when(found.is_none(), |d| d.opacity(0.6))
                     .child(page::row_tile(t, ui::harness_icon(kind), Some(ui::harness_tint(kind, t, t.text_muted))))
-                    .child(page::row_text(t, kind.label(), meta))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(220.0))
+                            .flex()
+                            .flex_col()
+                            .gap(px(3.0))
+                            .when(found.is_none(), |d| d.opacity(0.6))
+                            .child(title)
+                            .child(path_line),
+                    )
                     .child(control),
             );
         }
@@ -2626,7 +2689,9 @@ impl SettingsPage {
             .flex_col()
             .child(page::page_subtitle(
                 t,
-                format!("{found_count} agent CLIs found on this machine. Hidden agents stay installed but leave the composer."),
+                format!(
+                    "{found_count} agent CLIs found on this machine. Sign in with each agent's own login; hidden agents stay installed but leave the composer."
+                ),
             ))
             .child(page::section(t, "", card.relative().child(self.anchor("agents"))))
             .into_any_element()

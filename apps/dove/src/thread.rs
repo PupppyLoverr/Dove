@@ -289,6 +289,10 @@ impl ThreadView {
 
     fn switch_to_terminal_now(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (task, project) = self.session_task(cx);
+        // A pre-started copy of this session would write the same file.
+        if let Some(native) = task.native_session_id.as_deref() {
+            self.engine.cool_session(native);
+        }
         let run = self.chat.read(cx).composer.read(cx).run_settings(cx);
         let cmd = match self.engine.tui_command(&task, &project, &run) {
             Ok(c) => c,
@@ -309,6 +313,11 @@ impl ThreadView {
         self.view = ViewMode::Terminal;
         let engine = self.engine.clone();
         let id = task.id;
+        // The view let go of its session but the agent still runs it in the
+        // background: stop it there.
+        if live.is_none() {
+            engine.stop_chat(id);
+        }
         cx.spawn_in(window, async move |this, cx| {
             if let Some(live) = live {
                 live.send(dove_core::Command::Kill);
@@ -326,15 +335,19 @@ impl ThreadView {
                     }
                 }
             }
-            // The recorder drops the chat driver before it forwards Exited.
+            // The recorder drops the chat driver when the agent exits; give
+            // a slow exit (flushing its session file) up to three seconds.
+            let deadline = std::time::Instant::now() + Duration::from_secs(3);
             let mut claimed = engine.claim_terminal(id);
-            for _ in 0..8 {
-                if claimed.is_ok() {
-                    break;
-                }
-                cx.background_executor().timer(Duration::from_millis(15)).await;
+            while claimed.is_err() && std::time::Instant::now() < deadline {
+                cx.background_executor().timer(Duration::from_millis(25)).await;
                 claimed = engine.claim_terminal(id);
             }
+            let claimed = claimed.map_err(|_| {
+                anyhow::anyhow!(
+                    "The chat session didn't stop in time, so the terminal didn't open. Try again in a moment."
+                )
+            });
             let _ = this.update_in(cx, |v, window, cx| {
                 v.busy = None;
                 if let Err(e) = claimed {
@@ -382,7 +395,8 @@ impl ThreadView {
     }
 
     fn start_mirror(&mut self, cx: &mut Context<Self>) {
-        let (task, project) = self.task(cx);
+        // The store may know the native session id this view missed.
+        let (task, project) = self.session_task(cx);
         let Some(mirror) = self.engine.mirror(&task, &project) else { return };
         let rx = mirror.events.clone();
         self.mirror = Some(mirror);
@@ -571,12 +585,14 @@ impl ThreadView {
         ))
     }
 
-    /// Chat | Terminal segment. The title bar no longer shows it; Ctrl+`
-    /// and the command palette still flip the view.
-    #[allow(dead_code)]
+    /// Chat | Terminal segment in the thread's title bar (Ctrl+` and the
+    /// command palette flip it too). Agents with no terminal UI get a
+    /// switch that says so instead of failing.
     pub fn view_switch(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let mode = self.view;
         let armed = self.armed.is_some();
+        let harness = self.chat.read(cx).task.harness;
+        let has_terminal = self.engine.has_terminal_ui(harness);
         // The selection plate slides between the two slots (the shell draws
         // this switch, so its frames carry the glide).
         let slot = crate::motion::state_t(
@@ -629,7 +645,21 @@ impl ThreadView {
             .gap(px(1.0))
             .child(plate)
             .child(item("view-chat", icons::CHAT_ROUND_LINE, "Chat (Ctrl+`)", ViewMode::Chat, cx))
-            .child(item("view-terminal", icons::TERMINAL, "Terminal (Ctrl+`)", ViewMode::Terminal, cx))
+            .child(if has_terminal || mode == ViewMode::Terminal {
+                item("view-terminal", icons::TERMINAL, "Terminal (Ctrl+`)", ViewMode::Terminal, cx).into_any_element()
+            } else {
+                div()
+                    .id("view-terminal-off")
+                    .h(px(22.0))
+                    .w(px(26.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .opacity(0.4)
+                    .tooltip(ui::tip(format!("{} has no terminal UI Dove can open", harness.label())))
+                    .child(icon(icons::TERMINAL).size(px(13.5)).text_color(t.text_faint))
+                    .into_any_element()
+            })
             .into_any_element()
     }
 

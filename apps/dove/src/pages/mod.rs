@@ -133,7 +133,6 @@ pub struct PageState {
     pub usage_note: Option<String>,
     // Agents
     pub agent_terminal: Option<(HarnessKind, Entity<TerminalView>)>,
-    pub agent_path_edit: Option<(HarnessKind, Entity<InputState>)>,
     // Archived
     pub archived_q: String,
     pub archived_search: Entity<InputState>,
@@ -229,7 +228,6 @@ impl PageState {
             usage_days: 30,
             usage_note: None,
             agent_terminal: None,
-            agent_path_edit: None,
             archived_q: String::new(),
             archived_search,
             team_focus: None,

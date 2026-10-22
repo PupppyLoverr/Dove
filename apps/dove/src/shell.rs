@@ -333,7 +333,8 @@ impl Shell {
             |this, _, ev: &crate::settings::SettingsEvent, window, cx| match ev {
                 crate::settings::SettingsEvent::OpenTeam { new: true } => this.edit_teammate(None, window, cx),
                 crate::settings::SettingsEvent::OpenTeam { new: false } => this.open_teammate(None, window, cx),
-                crate::settings::SettingsEvent::OpenAgents => this.navigate(Route::Agents, window, cx),
+                crate::settings::SettingsEvent::SignIn(kind) => this.sign_in(*kind, cx),
+                crate::settings::SettingsEvent::Rescan => this.rescan(cx),
                 crate::settings::SettingsEvent::Close => this.close_settings(window, cx),
             },
         ));
@@ -614,7 +615,9 @@ impl Shell {
         self.pages.agent_terminal = Some((kind, term));
         self.updates.retain(|u| u.kind != kind);
         self.agents_open = false;
-        self.navigate(Route::Agents, window, cx);
+        // The update runs in the sign-in sheet, over whatever page is open.
+        cx.notify();
+        let _ = window;
     }
 
     /// Start or end a call from the system-wide shortcut (Settings › Voice).
@@ -777,6 +780,11 @@ impl Shell {
     // ------------------------------------------------------------ routing
 
     pub fn navigate(&mut self, route: Route, window: &mut Window, cx: &mut Context<Self>) {
+        // Agents live in Settings › Agents (one place for them).
+        if route == Route::Agents {
+            self.open_settings_section("agents", window, cx);
+            return;
+        }
         if route == self.route {
             return;
         }
@@ -1883,33 +1891,9 @@ impl Shell {
     }
 
     /// The slim bar's middle: the open chat's mark and title (double-click
-    /// to rename), or the page's name.
+    /// to rename). Pages leave it empty: each one titles itself.
     fn render_bar_title(&mut self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
-        let page = |name: &'static str| {
-            div()
-                .px(px(6.0))
-                .min_w_0()
-                .truncate()
-                .text_size(ty::BODY)
-                .font_weight(gpui::FontWeight::MEDIUM)
-                .text_color(t.text)
-                .child(name)
-                .into_any_element()
-        };
-        let id = match self.route {
-            Route::Thread(id) => id,
-            Route::Home => return div().into_any_element(),
-            Route::Threads => return page("Threads"),
-            Route::Kanban => return page("Kanban"),
-            Route::Automations => return page("Automations"),
-            Route::PullRequests => return page("Pull requests"),
-            Route::Agents => return page("Agents"),
-            Route::Usage => return page("Usage"),
-            Route::Archived => return page("Archived"),
-            Route::Settings => return page("Settings"),
-            Route::Help => return page("Help & shortcuts"),
-            Route::Team => return page("Team"),
-        };
+        let Route::Thread(id) = self.route else { return div().into_any_element() };
         let Some(task) = self.task(id).cloned() else { return div().into_any_element() };
         let mark = match self.persona_for(id) {
             Some(p) => crate::team::avatar(p, 15.0, t).into_any_element(),
@@ -2059,15 +2043,17 @@ impl Shell {
             .gap(px(4.0))
             .pl(px(8.0))
             .pr(px(if panel_open { 8.0 } else { ui::caption_reserve() + 8.0 }))
-            // Thread tools sit in the bar: info, then the panel toggle.
-            // Chat and terminal flip with Ctrl+`.
+            // Thread tools sit in the bar: Chat | Terminal (Ctrl+`), info,
+            // then the panel toggle.
             .when(in_thread, |d| {
+                let switch = self.active_thread().cloned().map(|v| v.update(cx, |v, cx| v.view_switch(&t, cx)));
                 d.child(
                     div()
                         .h(px(28.0))
                         .flex()
                         .items_center()
                         .gap(px(2.0))
+                        .children(switch)
                         .child(self.render_info_button(cx))
                         .when_some(self.render_pr_button(&t, cx), |d, b| d.child(b))
                         // The slim bar also opens the files straight away.
@@ -2877,10 +2863,9 @@ impl Shell {
             Route::Kanban => self.render_kanban(window, cx),
             Route::Automations => self.render_automations(window, cx),
             Route::PullRequests => self.prs.clone().into_any_element(),
-            Route::Agents => self.render_agents_page(window, cx),
             Route::Usage => self.render_usage_page(cx),
             Route::Archived => self.render_archived_page(cx),
-            Route::Settings => match self.settings.update(cx, |s, cx| s.render_content(window, cx)) {
+            Route::Settings | Route::Agents => match self.settings.update(cx, |s, cx| s.render_content(window, cx)) {
                 Some(content) => content,
                 // Settings › Archived is the Archived page itself.
                 None => self.render_archived_page(cx),
@@ -3362,6 +3347,8 @@ impl Render for Shell {
             // A page's confirmation (Threads, Archived, Kanban, Automations,
             // Team): drawn here so it stays modal whichever route is showing.
             .children(self.render_page_dialog(window, cx))
+            // An agent's sign-in or update terminal, over any page.
+            .children(self.render_agent_sheet(&t, window, cx))
             .children(self.render_voice_bar(cx))
             .children((self.info_open && in_thread && !expanded).then(|| self.active_task().cloned()).flatten().map(
                 |task| {

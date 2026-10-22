@@ -737,6 +737,21 @@ pub fn auto_title(prompt: &str) -> String {
     t.trim_end_matches(['.', ',', ':', ';']).to_string()
 }
 
+/// `text` in at most `max` characters, the middle replaced by "…" so a
+/// path keeps its drive and its file name.
+pub fn middle_ellipsis(text: &str, max: usize) -> String {
+    let n = text.chars().count();
+    if n <= max || max < 5 {
+        return text.to_string();
+    }
+    let keep = max - 1;
+    let head = keep / 2;
+    let tail = keep - head;
+    let start: String = text.chars().take(head).collect();
+    let end: String = text.chars().skip(n - tail).collect();
+    format!("{start}…{end}")
+}
+
 pub fn title_from_prompt(prompt: &str) -> String {
     let line = prompt.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("New session");
     let mut t: String = line.chars().take(60).collect();
@@ -763,4 +778,18 @@ pub fn host_name() -> String {
         .or_else(|_| std::env::var("HOSTNAME"))
         .unwrap_or_else(|_| "This device".into())
         .to_uppercase()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn long_paths_keep_both_ends() {
+        assert_eq!(middle_ellipsis("C:/short", 60), "C:/short");
+        let p = "C:/Users/someone/AppData/Local/Programs/agent/bin/agent.exe";
+        let cut = middle_ellipsis(p, 20);
+        assert_eq!(cut.chars().count(), 20);
+        assert!(cut.starts_with("C:/Users/") && cut.ends_with("agent.exe") && cut.contains('…'));
+    }
 }

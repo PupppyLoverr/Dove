@@ -47,6 +47,9 @@ pub struct Engine {
     shared: Arc<RwLock<Shared>>,
     /// Which driver owns each task's live session right now.
     drivers: Arc<parking_lot::Mutex<HashMap<TaskId, Driver>>>,
+    /// Stops each chat session, even one its view let go of (it keeps
+    /// recording in the background until the agent exits).
+    stops: Arc<parking_lot::Mutex<HashMap<TaskId, flume::Sender<()>>>>,
     /// Live model catalogs; see [`Engine::models`].
     live_models: Arc<LiveModels>,
     /// One pre-started session, adopted by the next matching start.
@@ -264,6 +267,7 @@ impl Engine {
             installed: RwLock::new(Vec::new()),
             shared: Default::default(),
             drivers: Default::default(),
+            stops: Default::default(),
             live_models: Default::default(),
             warm: Default::default(),
         }))
@@ -467,6 +471,27 @@ impl Engine {
     /// Stop any pre-started session (settings changed, app quitting).
     pub fn cool(&self) {
         *self.warm.lock() = None;
+    }
+
+    /// Stop a pre-started session that resumed `native`, so another driver
+    /// (the agent's terminal UI) can open that session file.
+    pub fn cool_session(&self, native: &str) {
+        let mut warm = self.warm.lock();
+        if warm.as_ref().is_some_and(|w| w.key.resume.as_deref() == Some(native)) {
+            *warm = None;
+        }
+    }
+
+    /// Ask `task`'s chat session to stop, including one no view holds any
+    /// more. Returns whether a session was there to ask.
+    pub fn stop_chat(&self, task: TaskId) -> bool {
+        self.stops.lock().get(&task).is_some_and(|s| s.send(()).is_ok())
+    }
+
+    /// Whether `kind` has a terminal UI Dove can hand a thread to.
+    pub fn has_terminal_ui(&self, kind: HarnessKind) -> bool {
+        kind == HarnessKind::Shell
+            || self.program(kind).ok().is_some_and(|p| tui::interactive_program(kind, &p).is_some())
     }
 
     fn take_warm(&self, spec: &SessionSpec) -> Option<SessionHandle> {
@@ -1000,6 +1025,8 @@ impl Engine {
         let capabilities = handle.capabilities;
         let (tx, rx) = flume::unbounded();
         let (cmd_tx, cmd_rx) = flume::unbounded::<Command>();
+        let (stop_tx, stop_rx) = flume::bounded::<()>(1);
+        self.stops.lock().insert(task.id, stop_tx.clone());
         let recorder = Recorder {
             store: self.store.clone(),
             task: task.id,
@@ -1011,7 +1038,16 @@ impl Engine {
             drivers: self.drivers.clone(),
             memory: self.memory_session(task),
         };
-        self.rt.spawn(recorder.run(handle, tx, cmd_rx));
+        let stops = self.stops.clone();
+        let id = task.id;
+        self.rt.spawn(async move {
+            recorder.run(handle, tx, cmd_rx, stop_rx).await;
+            // A newer session for the same task keeps its own handle.
+            let mut s = stops.lock();
+            if s.get(&id).is_some_and(|t| t.same_channel(&stop_tx)) {
+                s.remove(&id);
+            }
+        });
         LiveSession { task: task.id, events: rx, commands: cmd_tx, capabilities }
     }
 
@@ -1041,7 +1077,13 @@ struct Recorder {
 }
 
 impl Recorder {
-    async fn run(mut self, handle: SessionHandle, out: flume::Sender<AgentEvent>, commands: flume::Receiver<Command>) {
+    async fn run(
+        mut self,
+        handle: SessionHandle,
+        out: flume::Sender<AgentEvent>,
+        commands: flume::Receiver<Command>,
+        stop: flume::Receiver<()>,
+    ) {
         let mut writer = match self.store.transcript_writer(self.task) {
             Ok(w) => Some(w),
             Err(e) => {
@@ -1070,8 +1112,14 @@ impl Recorder {
             }
         });
         let mut ui_open = true;
+        let mut stop_open = true;
         loop {
             tokio::select! {
+                // Stop from outside the view (the terminal is taking over).
+                asked = stop.recv_async(), if stop_open => match asked {
+                    Ok(()) => { handle.send(Command::Kill); }
+                    Err(_) => stop_open = false,
+                },
                 ev = handle.events.recv_async() => {
                     let Ok(ev) = ev else { break };
                     self.record(&ev, writer.as_mut());
