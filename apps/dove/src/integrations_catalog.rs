@@ -11,6 +11,7 @@ use crate::assets::icons;
 use crate::pages::integrations::{McpServer, Transport};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(clippy::enum_variant_names)] // `OAuth` is the scheme's name
 pub enum Auth {
     /// Nothing to sign in to (local servers).
     None,

@@ -770,6 +770,37 @@ impl Engine {
         rx
     }
 
+    /// A short answer from a restricted, tool-less run on `kind` (or the
+    /// first installed agent that has one), on its cheapest model. Voice
+    /// Mode's command router uses it; `None` when no agent could answer.
+    pub fn complete_restricted(
+        &self,
+        kind: Option<HarnessKind>,
+        prompt: String,
+    ) -> tokio::sync::oneshot::Receiver<Option<String>> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let installed: Vec<HarnessKind> = self.installed.read().iter().map(|i| i.kind).collect();
+        let pick = kind
+            .into_iter()
+            .chain(installed)
+            .filter(|k| dove_harness::title::supports(*k))
+            .find_map(|k| self.program(k).ok().map(|p| (k, p)));
+        let Some((kind, program)) = pick else {
+            let _ = tx.send(None);
+            return rx;
+        };
+        let model = dove_harness::title::cheapest_model(&self.models(kind));
+        self.rt.spawn(async move {
+            let answer =
+                dove_harness::title::complete(kind, &program, &prompt, model, std::time::Duration::from_secs(25))
+                    .await
+                    .map_err(|e| tracing::info!("{} router run failed: {e:#}", kind.label()))
+                    .ok();
+            let _ = tx.send(answer);
+        });
+        rx
+    }
+
     /// A plain-language walkthrough of a pull request, on the same agent
     /// pick as [`Self::generate_title`]. With `cache_key` (see
     /// [`walkthrough_cache_key`]) a cached AI walkthrough is sent at once and

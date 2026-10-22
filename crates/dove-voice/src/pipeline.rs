@@ -278,11 +278,16 @@ pub enum SttChoice {
         api_key: String,
         model: String,
     },
+    Deepgram {
+        api_key: String,
+        model: String,
+    },
 }
 
 pub enum TtsChoice {
     System,
     Cloud { base_url: String, api_key: String, model: String, voice: String },
+    ElevenLabs { api_key: String, voice: String, model: String },
 }
 
 /// Where a call's audio comes from.
@@ -409,6 +414,7 @@ fn stt_key(c: &SttChoice) -> String {
         #[cfg(feature = "local")]
         SttChoice::Parakeet(dir) => format!("parakeet:{}", dir.display()),
         SttChoice::Cloud { base_url, model, .. } => format!("cloud:{base_url}:{model}"),
+        SttChoice::Deepgram { model, .. } => format!("deepgram:{model}"),
     }
 }
 
@@ -421,6 +427,7 @@ fn load_stt(c: &SttChoice) -> Result<Box<dyn SpeechToText>> {
         SttChoice::Cloud { base_url, api_key, model } => {
             Box::new(crate::stt::OpenAiCompatible::new(base_url, api_key, model)?)
         }
+        SttChoice::Deepgram { api_key, model } => Box::new(crate::stt::Deepgram::new(api_key, model)?),
     })
 }
 
@@ -668,6 +675,9 @@ fn run(config: CallConfig, ctl: Receiver<Ctl>, ev: Sender<Event>, ended: Arc<Ato
         TtsChoice::System => Box::new(crate::tts::System::new()),
         TtsChoice::Cloud { base_url, api_key, model, voice } => {
             Box::new(crate::tts::OpenAiCompatible::new(base_url, api_key, model, voice)?)
+        }
+        TtsChoice::ElevenLabs { api_key, voice, model } => {
+            Box::new(crate::tts::ElevenLabs::new(api_key, voice, model)?)
         }
     };
     let tts_name = tts.name();

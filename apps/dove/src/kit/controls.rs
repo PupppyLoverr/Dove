@@ -237,11 +237,6 @@ impl Segment {
     pub fn new(label: impl Into<SharedString>) -> Self {
         Self { label: label.into(), glyph: None }
     }
-
-    pub fn glyph(mut self, glyph: &'static str) -> Self {
-        self.glyph = Some(glyph);
-        self
-    }
 }
 
 /// Mutually exclusive choices in equal-width slots, with a selection plate

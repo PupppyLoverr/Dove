@@ -279,6 +279,7 @@ const INDEX: &[Entry] = &[
         "voice mode call hands free talk conversation listening push to talk",
     ),
     e(Section::Voice, "voice_name", "Voice", "voice speech tts speaker system voice"),
+    e(Section::Voice, "voice_global_hotkey", "Shortcut outside Dove", "global hotkey shortcut voice call system wide"),
     e(Section::Voice, "voice_rate", "Speaking rate", "voice speed rate faster slower"),
     e(
         Section::Voice,
@@ -2040,6 +2041,27 @@ impl SettingsPage {
                 ),
                 listening,
             ))
+            .child({
+                let global = self.flag("voice_global_hotkey", true);
+                let detail: SharedString = match (global, crate::hotkey::last_error()) {
+                    (true, Some(e)) => format!("The shortcut couldn't be registered: {e}. Pick another in Shortcuts.").into(),
+                    (true, None) if cfg!(windows) => format!("{shortcut} starts or ends a call from any app.").into(),
+                    (true, None) => "Available on Windows; elsewhere the shortcut works inside Dove.".into(),
+                    (false, _) => "Off: the shortcut works only while Dove is in front.".into(),
+                };
+                self.srow(
+                    t,
+                    false,
+                    "voice_global_hotkey",
+                    "Shortcut outside Dove",
+                    detail,
+                    ctl::on_toggle(ctl::toggle(t, "set-voice-global", global), cx, move |this, _, cx| {
+                        this.set_flag("voice_global_hotkey", !global, cx);
+                        crate::hotkey::apply(&this.engine.store);
+                        cx.notify();
+                    }),
+                )
+            })
             .child(self.srow(t, false, "voice_name", "Voice", "Your operating system's voices. No download.", voice))
             .child(self.srow(t, false, "voice_rate", "Speaking rate", "Or say \"talk faster\" during a call.", rates))
             .child(self.srow(
@@ -2079,7 +2101,9 @@ impl SettingsPage {
                 true,
                 "voice_cloud",
                 "Cloud speech recognition",
-                if cloud {
+                if cloud && self.get("voice_cloud_stt_provider").as_deref() == Some("deepgram") {
+                    "On: your spoken audio is uploaded to Deepgram for transcription."
+                } else if cloud {
                     "On: your spoken audio is uploaded to the endpoint below for transcription."
                 } else {
                     "Off: audio never leaves this computer."
@@ -2093,7 +2117,9 @@ impl SettingsPage {
                 false,
                 "voice_cloud_tts",
                 "Cloud voice",
-                if cloud_tts {
+                if cloud_tts && self.get("voice_cloud_tts_provider").as_deref() == Some("elevenlabs") {
+                    "On: what Dove says (including agents' replies) is uploaded to ElevenLabs for speech."
+                } else if cloud_tts {
                     "On: what Dove says (including agents' replies) is uploaded to the endpoint for speech."
                 } else {
                     "Off: Dove speaks with your system's voice."
@@ -2102,6 +2128,50 @@ impl SettingsPage {
                     this.set_flag("voice_cloud_tts", !cloud_tts, cx)
                 }),
             ))
+            .child({
+                let this = cx.entity().downgrade();
+                let stt_provider = usize::from(self.get("voice_cloud_stt_provider").as_deref() == Some("deepgram"));
+                self.srow(
+                    t,
+                    false,
+                    "voice_cloud_stt_provider",
+                    "Speech recognition service",
+                    "OpenAI-compatible uses the endpoint below and DOVE_VOICE_API_KEY. Deepgram uses DEEPGRAM_API_KEY.",
+                    ctl::segmented(
+                        t,
+                        "set-voice-stt-provider",
+                        vec![ctl::Segment::new("OpenAI-compatible"), ctl::Segment::new("Deepgram")],
+                        stt_provider,
+                        move |i, _, cx| {
+                            let _ = this.update(cx, |p, cx| {
+                                p.set("voice_cloud_stt_provider", if i == 1 { "deepgram" } else { "openai" }, cx)
+                            });
+                        },
+                    ),
+                )
+            })
+            .child({
+                let this = cx.entity().downgrade();
+                let tts_provider = usize::from(self.get("voice_cloud_tts_provider").as_deref() == Some("elevenlabs"));
+                self.srow(
+                    t,
+                    false,
+                    "voice_cloud_tts_provider",
+                    "Voice service",
+                    "OpenAI-compatible uses the endpoint below. ElevenLabs uses ELEVENLABS_API_KEY.",
+                    ctl::segmented(
+                        t,
+                        "set-voice-tts-provider",
+                        vec![ctl::Segment::new("OpenAI-compatible"), ctl::Segment::new("ElevenLabs")],
+                        tts_provider,
+                        move |i, _, cx| {
+                            let _ = this.update(cx, |p, cx| {
+                                p.set("voice_cloud_tts_provider", if i == 1 { "elevenlabs" } else { "openai" }, cx)
+                            });
+                        },
+                    ),
+                )
+            })
             .child(self.srow(
                 t,
                 false,
@@ -2110,12 +2180,42 @@ impl SettingsPage {
                 "An OpenAI-compatible /v1 URL (OpenAI, Groq, a local whisper server). The key is read from DOVE_VOICE_API_KEY.",
                 div().w(px(260.0)).child(gpui_base::input::Input::new(&self.voice_cloud_url)),
             ))
+            .child({
+                let this = cx.entity().downgrade();
+                let has_url = self.get("voice_router_url").is_some_and(|u| !u.trim().is_empty());
+                let mode = self.get("voice_router").unwrap_or_else(|| if has_url { "endpoint".into() } else { "off".into() });
+                let selected = match mode.as_str() {
+                    "agent" => 1,
+                    "endpoint" => 2,
+                    _ => 0,
+                };
+                self.srow(
+                    t,
+                    false,
+                    "voice_router",
+                    "Command router",
+                    match selected {
+                        1 => "Requests Dove's rules don't recognise are routed by a tool-less run of the current thread's agent on its cheapest model (a few seconds). The request and thread titles go to that agent.",
+                        2 => "Requests Dove's rules don't recognise are routed by the endpoint below. The request and thread titles are sent to it.",
+                        _ => "Off: requests Dove's rules don't recognise go to the thread you're talking to, as you said them.",
+                    },
+                    ctl::segmented(
+                        t,
+                        "set-voice-router",
+                        vec![ctl::Segment::new("Off"), ctl::Segment::new("An agent"), ctl::Segment::new("Endpoint")],
+                        selected,
+                        move |i, _, cx| {
+                            let _ = this.update(cx, |p, cx| p.set("voice_router", ["off", "agent", "endpoint"][i.min(2)], cx));
+                        },
+                    ),
+                )
+            })
             .child(self.srow(
                 t,
                 false,
                 "voice_router_url",
-                "Command router",
-                "Optional: an OpenAI-compatible /v1 URL (a local llama.cpp server works) that routes requests Dove's rules don't recognise. The request and thread titles are sent to it.",
+                "Router endpoint",
+                "For the Endpoint router: an OpenAI-compatible /v1 URL (a local llama.cpp server works). The key is read from DOVE_VOICE_API_KEY.",
                 div().w(px(260.0)).child(gpui_base::input::Input::new(&self.voice_router_url)),
             ));
         div()

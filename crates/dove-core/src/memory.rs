@@ -1091,7 +1091,7 @@ impl LocalIndex {
     pub fn recent(&self, scope: &Scope, limit: usize) -> Vec<Memory> {
         let tag = scope_tag(scope);
         let mut list: Vec<LocalEntry> = self.entries().into_iter().filter(|e| e.tag == tag).collect();
-        list.sort_by(|a, b| b.at.cmp(&a.at));
+        list.sort_by_key(|m| std::cmp::Reverse(m.at));
         list.into_iter()
             .take(limit)
             .map(|e| Memory { id: None, text: e.text, score: None, at: rfc3339(e.at) })
@@ -1106,7 +1106,7 @@ impl LocalIndex {
             .into_iter()
             .filter(|e| e.tag == tag && matches!(e.kind.as_str(), "rule" | "feedback"))
             .collect();
-        list.sort_by(|a, b| b.at.cmp(&a.at));
+        list.sort_by_key(|m| std::cmp::Reverse(m.at));
         list.into_iter()
             .take(limit)
             .map(|e| Memory { id: None, text: e.text, score: None, at: rfc3339(e.at) })
@@ -1586,12 +1586,12 @@ pub async fn before_send(session: &Shared, prompt: String) -> String {
                 let b = b.clone();
                 spawn(1, Box::new(move || b.profile(&project)));
             }
-            for scope in scopes.iter().cloned() {
+            for scope in scopes.clone() {
                 let (b, q) = (b.clone(), query.clone());
                 spawn(0, Box::new(move || b.standing(&scope, &q, 12)));
             }
         }
-        for scope in scopes.iter().cloned() {
+        for scope in scopes.clone() {
             let (b, q) = (b.clone(), query.clone());
             spawn(2, Box::new(move || b.search(&q, &scope, 6)));
         }
@@ -1760,7 +1760,7 @@ pub fn propose_skills(list: &[Memory], min: usize) -> Vec<SkillProposal> {
             seen: seen.len(),
         });
     }
-    out.sort_by(|a, b| b.seen.cmp(&a.seen));
+    out.sort_by_key(|w| std::cmp::Reverse(w.seen));
     out
 }
 
@@ -1864,7 +1864,7 @@ pub fn consolidate(store: &Store) -> Result<Report, String> {
             report.skills.push(skill);
         }
     }
-    report.skills.sort_by(|a, b| b.seen.cmp(&a.seen));
+    report.skills.sort_by_key(|w| std::cmp::Reverse(w.seen));
     let root = store.root();
     let dir = suggested_skills_dir(root);
     for s in &report.skills {
@@ -2057,7 +2057,7 @@ pub fn backfill_docs(store: &Store, with_prs: bool) -> Vec<Doc> {
             });
         }
         let mut tasks = store.tasks(project.id).unwrap_or_default();
-        tasks.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        tasks.sort_by_key(|t| std::cmp::Reverse(t.updated_at));
         for task in tasks.into_iter().take(30) {
             let events = store.read_transcript(task.id);
             let prompt = events.iter().find_map(|e| match e {

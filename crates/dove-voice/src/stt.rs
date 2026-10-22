@@ -326,6 +326,69 @@ pub fn collapse_doubles(text: &str) -> String {
     out.join(" ")
 }
 
+/// Deepgram's pre-recorded transcription API (`/v1/listen`). Off by
+/// default; the turn's audio is uploaded.
+pub struct Deepgram {
+    pub api_key: String,
+    pub model: String,
+    pub base_url: String,
+    client: reqwest::blocking::Client,
+}
+
+impl Deepgram {
+    pub fn new(api_key: &str, model: &str) -> Result<Self> {
+        if api_key.trim().is_empty() {
+            bail!("Set DEEPGRAM_API_KEY to use Deepgram.");
+        }
+        let client = reqwest::blocking::Client::builder().timeout(Duration::from_secs(30)).build()?;
+        Ok(Self {
+            api_key: api_key.trim().to_string(),
+            model: if model.trim().is_empty() { "nova-3".into() } else { model.trim().to_string() },
+            base_url: "https://api.deepgram.com".into(),
+            client,
+        })
+    }
+
+    /// The transcript in a `/v1/listen` response.
+    pub fn transcript(body: &serde_json::Value) -> String {
+        body.pointer("/results/channels/0/alternatives/0/transcript")
+            .and_then(|t| t.as_str())
+            .unwrap_or_default()
+            .trim()
+            .to_string()
+    }
+}
+
+impl SpeechToText for Deepgram {
+    fn name(&self) -> String {
+        format!("Deepgram {} (cloud)", self.model)
+    }
+
+    fn partial(&mut self, _audio: &[f32]) -> Result<String> {
+        Ok(String::new())
+    }
+
+    fn finish(&mut self, audio: &[f32]) -> Result<String> {
+        let resp = self
+            .client
+            .post(format!("{}/v1/listen?model={}&smart_format=true", self.base_url, self.model))
+            .header("Authorization", format!("Token {}", self.api_key))
+            .header("Content-Type", "audio/wav")
+            .body(wav_bytes(audio, crate::RATE))
+            .send()
+            .context("Deepgram request")?;
+        let status = resp.status();
+        if !status.is_success() {
+            bail!("Deepgram answered {status}.");
+        }
+        Ok(Self::transcript(&resp.json()?))
+    }
+
+    fn remote(&self) -> bool {
+        true
+    }
+}
+
 /// A user-configured OpenAI-compatible transcription endpoint.
 pub struct OpenAiCompatible {
     pub base_url: String,
@@ -394,6 +457,15 @@ mod tests {
         assert_eq!(pcm.rate, 16_000);
         assert_eq!(pcm.samples.len(), s.len());
         assert!(pcm.samples.iter().zip(&s).all(|(a, b)| (a - b).abs() < 1e-3));
+    }
+
+    #[test]
+    fn deepgram_responses_parse_and_keys_are_required() {
+        let body = serde_json::json!({"results": {"channels": [{"alternatives": [{"transcript": " Stop the build. ", "confidence": 0.98}]}]}});
+        assert_eq!(Deepgram::transcript(&body), "Stop the build.");
+        assert_eq!(Deepgram::transcript(&serde_json::json!({})), "");
+        assert!(Deepgram::new(" ", "nova-3").is_err());
+        assert_eq!(Deepgram::new("k", "").unwrap().model, "nova-3");
     }
 
     #[test]

@@ -344,12 +344,6 @@ pub fn row_button(
         .child(icon(path).size(px(ICON_SM)).text_color(theme.text_muted))
 }
 
-/// The composer's round button (attach, voice…): [`ROUND_BUTTON`] px with
-/// the same washes as the square ones. Callers add the glyph ([`ICON_LG`]).
-pub fn round_button(id: impl Into<SharedString>, label: &'static str, theme: &Theme) -> gpui::Stateful<Div> {
-    round_button_sized(id, label, ROUND_BUTTON, theme)
-}
-
 /// [`round_button`] at a chosen diameter. The bottom-center composer uses a
 /// smaller hit target so the field stays a single slim row.
 pub fn round_button_sized(

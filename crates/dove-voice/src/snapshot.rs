@@ -105,6 +105,10 @@ pub struct Snapshot {
     pub projects: Vec<Project>,
     /// The project new tasks go to when the user names none.
     pub default_project: Option<String>,
+    /// What Dove shows beside the thread (the side panel's open tab), which
+    /// "take a look at this" points at. `None` means another app's window.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub showing: Option<crate::intent::LookTarget>,
 }
 
 impl Snapshot {
@@ -213,6 +217,7 @@ pub(crate) mod fixtures {
             ],
             projects: vec![Project { id: "p1".into(), name: "dove".into() }],
             default_project: Some("p1".into()),
+            showing: None,
         }
     }
 }

@@ -258,6 +258,8 @@ pub struct Shell {
     _subs: Vec<Subscription>,
     _scheduler: Option<gpui::Task<()>>,
     _browser_control: Option<gpui::Task<()>>,
+    /// Presses of Voice Mode's system-wide shortcut.
+    _voice_hotkey: Option<gpui::Task<()>>,
 }
 
 impl Shell {
@@ -448,12 +450,14 @@ impl Shell {
             _subs: subs,
             _scheduler: None,
             _browser_control: None,
+            _voice_hotkey: None,
         };
         this.reload(cx);
         this.tabs.retain(|id| this.tasks.iter().any(|t| t.id == *id));
         this.scan_harnesses(cx);
         this.start_scheduler(cx);
         this.start_browser_control(window, cx);
+        this.start_voice_hotkey(window, cx);
         crate::composer::focus(&this.composer, window, cx);
         // `DOVE_OPEN_THREAD=<id>`: start on a thread (QA and scripting).
         if let Some(id) = std::env::var("DOVE_OPEN_THREAD").ok().and_then(|s| uuid_task(&s)) {
@@ -611,6 +615,19 @@ impl Shell {
         self.updates.retain(|u| u.kind != kind);
         self.agents_open = false;
         self.navigate(Route::Agents, window, cx);
+    }
+
+    /// Start or end a call from the system-wide shortcut (Settings › Voice).
+    fn start_voice_hotkey(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        crate::hotkey::apply(&self.engine.store);
+        let presses = crate::hotkey::events();
+        self._voice_hotkey = Some(cx.spawn_in(window, async move |this, cx| {
+            while presses.recv_async().await.is_ok() {
+                if this.update_in(cx, |s, window, cx| s.toggle_voice_call(window, cx)).is_err() {
+                    break;
+                }
+            }
+        }));
     }
 
     /// Serve agents' browser tool calls (`dove --mcp-browser`): route each

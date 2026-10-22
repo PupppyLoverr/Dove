@@ -6,8 +6,35 @@
 //! the words to the current thread (or asks a model router, when one is
 //! configured).
 
-use crate::intent::Intent;
+use crate::intent::{Intent, LookTarget};
 use crate::snapshot::{self, Snapshot};
+
+/// "take a look at this", "look at the page", "check out this window": what
+/// to attach to the next message. A bare "this" means what Dove shows beside
+/// the thread, or else the last other app's window.
+fn look(n: &str, snap: &Snapshot) -> Option<Intent> {
+    const LEADS: &[&str] =
+        &["take a look at", "have a look at", "look at", "check out", "can you see", "do you see", "see", "check"];
+    let rest = LEADS.iter().find_map(|l| after(n, l))?;
+    let rest = rest.trim_end_matches(" please").trim_end_matches(" here").trim_end_matches(" now");
+    if matches!(rest, "this" | "that" | "it" | "this one" | "what i'm looking at" | "what i see") {
+        return Some(Intent::LookAt { target: snap.showing.unwrap_or(LookTarget::Window) });
+    }
+    // Only a pointer at one thing ("the page", "my screen"): "check the
+    // screen size handling" is a request for the agent, not a capture.
+    let thing = ["this ", "that ", "the ", "my ", "our ", "the current ", "my current "]
+        .iter()
+        .rev()
+        .find_map(|d| rest.strip_prefix(d))
+        .unwrap_or(rest);
+    let target = match thing {
+        "diff" | "changes" | "change" => LookTarget::Diff,
+        "page" | "site" | "website" | "browser" | "tab" | "browser tab" | "web page" => LookTarget::Browser,
+        "window" | "app" | "screen" | "editor" => LookTarget::Window,
+        _ => return None,
+    };
+    Some(Intent::LookAt { target })
+}
 
 const STOP_WORDS: &[&str] = &["stop", "halt", "cancel", "abort", "stop it", "stop working", "quit", "pause", "hold on"];
 
@@ -159,6 +186,10 @@ pub fn route(text: &str, snap: &Snapshot) -> Option<Intent> {
         }
     }
 
+    if let Some(intent) = look(&n, snap) {
+        return Some(intent);
+    }
+
     // "how's the tests thread doing?"
     if status_question(&n) {
         let topic = LEADS_STRIP.iter().find_map(|l| after(&n, l)).unwrap_or_default();
@@ -182,6 +213,26 @@ mod tests {
     fn act(text: &str) -> Option<Action> {
         let s = snapshot();
         route(text, &s).map(|i| validate(i, &s).unwrap_or_else(|e| panic!("{text}: {e:?}")))
+    }
+
+    #[test]
+    fn pointing_phrases_attach_what_the_user_sees() {
+        let look = |text: &str, showing| {
+            let mut s = snapshot();
+            s.showing = showing;
+            route(text, &s)
+        };
+        let at = |target| Some(Intent::LookAt { target });
+        assert_eq!(look("Take a look at this.", None), at(LookTarget::Window));
+        assert_eq!(look("Take a look at this", Some(LookTarget::Browser)), at(LookTarget::Browser));
+        assert_eq!(look("Look at the diff", Some(LookTarget::Browser)), at(LookTarget::Diff));
+        assert_eq!(look("Check out this page.", None), at(LookTarget::Browser));
+        assert_eq!(look("Can you see my screen?", None), at(LookTarget::Window));
+        assert_eq!(look("Look at this window please", None), at(LookTarget::Window));
+        // Requests about code are the agent's, not captures.
+        assert_eq!(look("Check the screen size handling", None), None);
+        assert_eq!(look("Look at the tests and fix them", None), None);
+        assert_eq!(look("Check out the main branch", None), None);
     }
 
     #[test]

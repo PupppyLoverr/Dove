@@ -346,6 +346,7 @@ impl Bench {
 
     /// The final question with memory on, then off; graded on what the
     /// answer must and must not contain.
+    #[allow(clippy::too_many_arguments)]
     fn check(
         &mut self,
         scenario: &str,
@@ -466,7 +467,7 @@ fn memory_bench() {
 
     // ---------------------------------------------------------------- easy
     if run("easy") {
-        b.say(format!("\n== EASY: one fact, one hop (OpenCode teaches, Antigravity answers)"));
+        b.say("\n== EASY: one fact, one hop (OpenCode teaches, Antigravity answers)");
         let p = b.repo("easy", &format!("git@github.com:dove-bench/easy{n}.git"), &[("README.md", "# easy\n")]);
         b.teach(
             &p,
@@ -488,7 +489,7 @@ fn memory_bench() {
 
     // -------------------------------------------------------------- medium
     if run("medium") {
-        b.say(format!("\n== MEDIUM: two facts from two agents, noise, an indirect question"));
+        b.say("\n== MEDIUM: two facts from two agents, noise, an indirect question");
         let p =
             b.repo("medium", &format!("https://github.com/dove-bench/medium{n}.git"), &[("README.md", "# medium\n")]);
         b.teach(
@@ -525,7 +526,7 @@ fn memory_bench() {
 
     // ---------------------------------------------------------------- hard
     if run("hard") {
-        b.say(format!("\n== HARD: a superseded fact, a code convention, noise, and a real edit"));
+        b.say("\n== HARD: a superseded fact, a code convention, noise, and a real edit");
         let port = 40000 + n.parse::<u64>().unwrap_or(0) % 9000;
         let p = b.repo(
             "hard",
@@ -572,10 +573,10 @@ fn memory_bench() {
 
     // -------------------------------------------------------------- stress
     if run("stress") {
-        b.say(format!(
+        b.say(
             "\n== STRESS: buried fact, superseded fact, a secret, an answer-style preference, taught in one clone and asked in \
-             another clone (different folder, SSH vs HTTPS remote) by the other agent"
-        ));
+             another clone (different folder, SSH vs HTTPS remote) by the other agent",
+        );
         let a = b.repo(
             "stress-clone-a",
             &format!("git@github.com:Dove-Bench/Stress{n}.git"),
@@ -642,7 +643,7 @@ fn memory_bench() {
 
     // ------------------------------------------------------ self-improving
     if run("learn") {
-        b.say(format!("\n== SELF-IMPROVING: a correction in one agent changes what the other agent does"));
+        b.say("\n== SELF-IMPROVING: a correction in one agent changes what the other agent does");
         let p = b.repo(
             "learn",
             &format!("git@github.com:dove-bench/learn{n}.git"),
@@ -676,7 +677,7 @@ fn memory_bench() {
     // The same release workflow comes up in three sessions with two agents;
     // the weekly consolidation should turn it into a skill draft.
     let skills_project = if run("skills") || run("consolidate") {
-        b.say("\n== SELF-ADVANCING: a workflow repeated across sessions becomes a skill draft".to_string());
+        b.say("\n== SELF-ADVANCING: a workflow repeated across sessions becomes a skill draft");
         let p = b.repo(
             "skills",
             &format!("git@github.com:dove-bench/skills{n}.git"),
@@ -714,7 +715,7 @@ fn memory_bench() {
     // ------------------------------------------------------- consolidation
     let mut extra = String::new();
     if run("consolidate") || run("skills") || only.is_empty() {
-        b.say("\n== CONSOLIDATION: duplicates and skill drafts from what was captured".to_string());
+        b.say("\n== CONSOLIDATION: duplicates and skill drafts from what was captured");
         match memory::consolidate(&b.engine.store) {
             Ok(r) => {
                 if skills_project.is_some() {

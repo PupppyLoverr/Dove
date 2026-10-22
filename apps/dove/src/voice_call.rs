@@ -90,35 +90,58 @@ pub struct VoiceCall {
 
 impl EventEmitter<VoiceCallEvent> for VoiceCall {}
 
-/// A model router over an OpenAI-compatible chat endpoint (a local
-/// llama.cpp server or a cloud model), when the user configured one.
+/// Routes requests the rules do not recognise (Settings › Voice ›
+/// Command router). Off by default: such requests go to the current thread.
 #[derive(Clone)]
-struct Router {
-    url: String,
-    model: String,
-    key: Option<String>,
+enum Router {
+    /// An OpenAI-compatible chat endpoint (a local llama.cpp server, or a
+    /// cloud model).
+    Endpoint { url: String, model: String, key: Option<String> },
+    /// A restricted, tool-less run on an installed agent (its cheapest
+    /// model): no extra service, but a cold start of a few seconds.
+    Agent { engine: Arc<Engine>, kind: Option<HarnessKind> },
 }
 
 impl Router {
-    fn from_settings(engine: &Engine) -> Option<Self> {
-        let url = engine.store.setting("voice_router_url").filter(|u| !u.trim().is_empty())?;
-        let model = engine.store.setting("voice_router_model").unwrap_or_else(|| "default".into());
-        Some(Self { url: url.trim_end_matches('/').to_string(), model, key: std::env::var("DOVE_VOICE_API_KEY").ok() })
+    fn from_settings(engine: &Arc<Engine>, current: Option<HarnessKind>) -> Option<Self> {
+        let s = &engine.store;
+        let url = s.setting("voice_router_url").filter(|u| !u.trim().is_empty());
+        let mode =
+            s.setting("voice_router").unwrap_or_else(|| if url.is_some() { "endpoint".into() } else { "off".into() });
+        match mode.as_str() {
+            "endpoint" => Some(Self::Endpoint {
+                url: url?.trim_end_matches('/').to_string(),
+                model: s.setting("voice_router_model").unwrap_or_else(|| "default".into()),
+                key: std::env::var("DOVE_VOICE_API_KEY").ok(),
+            }),
+            "agent" => Some(Self::Agent { engine: engine.clone(), kind: current }),
+            _ => None,
+        }
     }
 
-    fn ask(&self, prompt: String) -> anyhow::Result<String> {
-        let client = reqwest::blocking::Client::builder().timeout(Duration::from_secs(8)).build()?;
-        let mut req = client.post(format!("{}/chat/completions", self.url)).json(&serde_json::json!({
-            "model": self.model,
-            "temperature": 0,
-            "max_tokens": 200,
-            "messages": [{"role": "user", "content": prompt}],
-        }));
-        if let Some(k) = &self.key {
-            req = req.bearer_auth(k);
+    async fn ask(self, prompt: String) -> anyhow::Result<String> {
+        match self {
+            Self::Endpoint { url, model, key } => {
+                let client = reqwest::Client::builder().timeout(Duration::from_secs(8)).build()?;
+                let mut req = client.post(format!("{url}/chat/completions")).json(&serde_json::json!({
+                    "model": model,
+                    "temperature": 0,
+                    "max_tokens": 200,
+                    "messages": [{"role": "user", "content": prompt}],
+                }));
+                if let Some(k) = &key {
+                    req = req.bearer_auth(k);
+                }
+                let v: serde_json::Value = req.send().await?.error_for_status()?.json().await?;
+                Ok(v.pointer("/choices/0/message/content").and_then(|c| c.as_str()).unwrap_or_default().to_string())
+            }
+            Self::Agent { engine, kind } => engine
+                .complete_restricted(kind, prompt)
+                .await
+                .ok()
+                .flatten()
+                .ok_or_else(|| anyhow::anyhow!("no agent could route the request")),
         }
-        let v: serde_json::Value = req.send()?.error_for_status()?.json()?;
-        Ok(v.pointer("/choices/0/message/content").and_then(|c| c.as_str()).unwrap_or_default().to_string())
     }
 }
 
@@ -152,25 +175,43 @@ pub fn local_stt_ready(engine: &Engine) -> bool {
 /// The call's configuration, from Settings › Voice.
 pub fn config(engine: &Engine) -> CallConfig {
     let s = &engine.store;
+    let env = |k: &str| std::env::var(k).unwrap_or_default();
     let cloud_url = s.setting("voice_cloud_url").filter(|u| !u.trim().is_empty());
-    let key = std::env::var("DOVE_VOICE_API_KEY").unwrap_or_default();
-    let cloud = s.flag("voice_cloud", false) && cloud_url.is_some();
-    let stt = match (&cloud_url, cloud) {
-        (Some(url), true) => SttChoice::Cloud {
-            base_url: url.clone(),
-            api_key: key.clone(),
-            model: s.setting("voice_cloud_stt_model").unwrap_or_else(|| "whisper-1".into()),
-        },
-        _ => local_stt(engine),
+    // Each cloud service is its own opt-in, and keys come from the
+    // environment, never from Dove's database.
+    let stt = if s.flag("voice_cloud", false) {
+        match (s.setting("voice_cloud_stt_provider").as_deref(), &cloud_url) {
+            (Some("deepgram"), _) => SttChoice::Deepgram {
+                api_key: env("DEEPGRAM_API_KEY"),
+                model: s.setting("voice_deepgram_model").unwrap_or_default(),
+            },
+            (_, Some(url)) => SttChoice::Cloud {
+                base_url: url.clone(),
+                api_key: env("DOVE_VOICE_API_KEY"),
+                model: s.setting("voice_cloud_stt_model").unwrap_or_else(|| "whisper-1".into()),
+            },
+            (_, None) => local_stt(engine),
+        }
+    } else {
+        local_stt(engine)
     };
-    let tts = match (&cloud_url, cloud && s.flag("voice_cloud_tts", false)) {
-        (Some(url), true) => TtsChoice::Cloud {
-            base_url: url.clone(),
-            api_key: key,
-            model: s.setting("voice_cloud_tts_model").unwrap_or_else(|| "tts-1".into()),
-            voice: s.setting("voice_cloud_voice").unwrap_or_else(|| "alloy".into()),
-        },
-        _ => TtsChoice::System,
+    let tts = if s.flag("voice_cloud_tts", false) {
+        match (s.setting("voice_cloud_tts_provider").as_deref(), &cloud_url) {
+            (Some("elevenlabs"), _) => TtsChoice::ElevenLabs {
+                api_key: env("ELEVENLABS_API_KEY"),
+                voice: s.setting("voice_elevenlabs_voice").unwrap_or_default(),
+                model: s.setting("voice_elevenlabs_model").unwrap_or_default(),
+            },
+            (_, Some(url)) => TtsChoice::Cloud {
+                base_url: url.clone(),
+                api_key: env("DOVE_VOICE_API_KEY"),
+                model: s.setting("voice_cloud_tts_model").unwrap_or_else(|| "tts-1".into()),
+                voice: s.setting("voice_cloud_voice").unwrap_or_else(|| "alloy".into()),
+            },
+            (_, None) => TtsChoice::System,
+        }
+    } else {
+        TtsChoice::System
     };
     CallConfig {
         root: engine.store.root().to_path_buf(),
@@ -213,7 +254,8 @@ impl VoiceCall {
                 }
             }
         });
-        let router = Router::from_settings(&engine);
+        // The agent router picks the current thread's agent per request.
+        let router = Router::from_settings(&engine, None);
         Self {
             engine,
             call,
@@ -445,11 +487,17 @@ impl VoiceCall {
         .detach();
     }
 
-    /// Ask the model router, off the UI thread.
+    /// Ask the router, off the UI thread. The agent router prefers the
+    /// current thread's agent.
     pub fn route(&mut self, utterance: String, snap: &Snapshot, cx: &mut Context<Self>) {
-        let Some(router) = self.router.clone() else { return };
+        let Some(mut router) = self.router.clone() else { return };
+        if let Router::Agent { kind, .. } = &mut router {
+            *kind = snap.current_thread().and_then(|t| HarnessKind::from_id(&t.agent_id));
+        }
         let prompt = dove_voice::intent::router_prompt(&utterance, snap);
-        let work = cx.background_spawn(async move { router.ask(prompt) });
+        // The endpoint client and the agent run are tokio futures.
+        let rt = self.engine.runtime();
+        let work = cx.background_spawn(async move { rt.spawn(router.ask(prompt)).await.map_err(anyhow::Error::from)? });
         cx.spawn(async move |this, cx| {
             let json = work.await.unwrap_or_default();
             let _ = this.update(cx, |_, cx| cx.emit(VoiceCallEvent::Routed { utterance, json }));
@@ -638,6 +686,15 @@ impl Shell {
                 .map(|p| snapshot::Project { id: p.id.to_string(), name: p.name.clone() })
                 .collect(),
             default_project,
+            showing: if self.panel_open {
+                match self.panel.read(cx).active() {
+                    Some(crate::side_panel::Surface::Browser(_)) => Some(dove_voice::intent::LookTarget::Browser),
+                    Some(crate::side_panel::Surface::Changes) => Some(dove_voice::intent::LookTarget::Diff),
+                    _ => None,
+                }
+            } else {
+                None
+            },
         }
     }
 
@@ -649,6 +706,7 @@ impl Shell {
     }
 
     fn voice_observe(&mut self, call: Entity<VoiceCall>, cx: &mut Context<Self>) {
+        crate::look::note_foreground();
         let folders: Vec<(TaskId, std::path::PathBuf)> = self
             .threads
             .keys()
@@ -884,7 +942,18 @@ impl Shell {
                             )
                         })
                     }
-                    dove_voice::intent::LookTarget::Window => None,
+                    dove_voice::intent::LookTarget::Window => {
+                        match crate::look::capture_last(&self.engine.store.root().join("voice").join("look")) {
+                            Ok((path, title)) => Some(format!(
+                                "(From the voice call: a screenshot of the window \"{title}\" the user is looking at is at {}. Open it to see what they mean.)",
+                                path.display()
+                            )),
+                            Err(e) => {
+                                call.update(cx, |v, cx| v.say(&e, cx));
+                                return None;
+                            }
+                        }
+                    }
                 };
                 call.update(cx, |v, cx| match note {
                     Some(n) => v.attach = Some(n),
@@ -1048,6 +1117,17 @@ mod tests {
         engine.store.set_setting("voice_cloud", "true").unwrap();
         assert!(matches!(config(&engine).stt, SttChoice::Cloud { .. }));
         assert!(matches!(config(&engine).tts, TtsChoice::System), "cloud speech output is a second, separate opt-in");
+        engine.store.set_setting("voice_cloud_stt_provider", "deepgram").unwrap();
+        assert!(matches!(config(&engine).stt, SttChoice::Deepgram { .. }));
+        engine.store.set_setting("voice_cloud_tts", "true").unwrap();
+        assert!(matches!(config(&engine).tts, TtsChoice::Cloud { .. }));
+        engine.store.set_setting("voice_cloud_tts_provider", "elevenlabs").unwrap();
+        assert!(matches!(config(&engine).tts, TtsChoice::ElevenLabs { .. }));
+        engine.store.set_setting("voice_cloud", "false").unwrap();
+        assert!(
+            !matches!(config(&engine).stt, SttChoice::Deepgram { .. } | SttChoice::Cloud { .. }),
+            "off means local"
+        );
         drop(engine);
         let _ = std::fs::remove_dir_all(dir);
     }

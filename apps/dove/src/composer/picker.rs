@@ -365,15 +365,6 @@ impl Picker {
         self.text_trigger = on;
     }
 
-    /// Model name, and the effort when the model has one.
-    pub fn summary(&self) -> String {
-        let name = self.chip_name();
-        match self.current_model().as_ref().and_then(|m| self.effort_label(m)) {
-            Some(effort) => format!("{name} · {effort}"),
-            None => name,
-        }
-    }
-
     fn chip_name(&self) -> String {
         self.current_model()
             .map(|m| m.label)

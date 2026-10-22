@@ -149,6 +149,81 @@ impl TextToSpeech for System {
     }
 }
 
+/// ElevenLabs text-to-speech (`/v1/text-to-speech/{voice}`), asking for raw
+/// 16 kHz PCM so nothing needs decoding. Off by default; the text is
+/// uploaded.
+pub struct ElevenLabs {
+    pub api_key: String,
+    pub voice_id: String,
+    pub model: String,
+    pub base_url: String,
+    client: reqwest::blocking::Client,
+}
+
+impl ElevenLabs {
+    /// "Rachel", one of ElevenLabs' default voices.
+    pub const DEFAULT_VOICE: &'static str = "21m00Tcm4TlvDq8ikWAM";
+
+    pub fn new(api_key: &str, voice_id: &str, model: &str) -> Result<Self> {
+        if api_key.trim().is_empty() {
+            bail!("Set ELEVENLABS_API_KEY to use ElevenLabs.");
+        }
+        let client = reqwest::blocking::Client::builder().timeout(Duration::from_secs(30)).build()?;
+        let pick = |v: &str, d: &str| if v.trim().is_empty() { d.to_string() } else { v.trim().to_string() };
+        Ok(Self {
+            api_key: api_key.trim().to_string(),
+            voice_id: pick(voice_id, Self::DEFAULT_VOICE),
+            model: pick(model, "eleven_flash_v2_5"),
+            base_url: "https://api.elevenlabs.io".into(),
+            client,
+        })
+    }
+
+    /// Little-endian 16-bit mono PCM to samples.
+    pub fn pcm16(bytes: &[u8]) -> Pcm {
+        let samples = bytes.chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0).collect();
+        Pcm { samples, rate: crate::RATE }
+    }
+}
+
+impl TextToSpeech for ElevenLabs {
+    fn name(&self) -> String {
+        format!("ElevenLabs {} (cloud)", self.model)
+    }
+
+    fn synthesize(&mut self, text: &str, opts: &SpeechOptions, cancel: &AtomicBool) -> Result<Pcm> {
+        if cancel.load(Ordering::Acquire) || text.trim().is_empty() {
+            return Ok(Pcm::default());
+        }
+        let voice = opts.voice.clone().filter(|v| !v.trim().is_empty()).unwrap_or_else(|| self.voice_id.clone());
+        let body = serde_json::json!({
+            "text": text,
+            "model_id": self.model,
+            "voice_settings": { "speed": opts.rate.clamp(0.7, 1.2) },
+        });
+        let resp = self
+            .client
+            .post(format!("{}/v1/text-to-speech/{}?output_format=pcm_16000", self.base_url, voice))
+            .header("xi-api-key", &self.api_key)
+            .json(&body)
+            .send()
+            .context("ElevenLabs request")?;
+        let status = resp.status();
+        if !status.is_success() {
+            bail!("ElevenLabs answered {status}.");
+        }
+        let bytes = resp.bytes()?;
+        if cancel.load(Ordering::Acquire) {
+            return Ok(Pcm::default());
+        }
+        Ok(Self::pcm16(&bytes))
+    }
+
+    fn remote(&self) -> bool {
+        true
+    }
+}
+
 /// A user-configured OpenAI-compatible speech endpoint.
 pub struct OpenAiCompatible {
     pub base_url: String,
@@ -214,6 +289,21 @@ impl TextToSpeech for OpenAiCompatible {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn elevenlabs_pcm_decodes_and_needs_a_key() {
+        let pcm = ElevenLabs::pcm16(&[0x00, 0x40, 0x00, 0xC0, 0xFF]);
+        assert_eq!(pcm.rate, 16_000);
+        assert_eq!(pcm.samples, vec![0.5, -0.5]);
+        assert!(ElevenLabs::new("", "", "").is_err());
+        let mut e = ElevenLabs::new("k", "", "").unwrap();
+        assert_eq!(e.voice_id, ElevenLabs::DEFAULT_VOICE);
+        assert_eq!(
+            e.synthesize("", &SpeechOptions::default(), &AtomicBool::new(false)).unwrap(),
+            Pcm::default(),
+            "nothing to say sends nothing"
+        );
+    }
 
     #[test]
     fn cancelled_or_empty_text_renders_nothing() {

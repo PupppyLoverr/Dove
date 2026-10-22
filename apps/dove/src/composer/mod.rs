@@ -2848,19 +2848,6 @@ impl Composer {
     }
 }
 
-/// "12,400" — thousands separators for the usage cards.
-fn grouped(n: u64) -> String {
-    let digits = n.to_string();
-    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
-    for (index, digit) in digits.chars().enumerate() {
-        if index > 0 && (digits.len() - index).is_multiple_of(3) {
-            out.push(',');
-        }
-        out.push(digit);
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2917,13 +2904,5 @@ mod tests {
         assert!(!home_input_is_dock(Some("center")));
         assert!(!home_input_is_dock(Some("")));
         assert!(home_input_is_dock(Some("dock")));
-    }
-
-    #[test]
-    fn usage_counts_are_grouped_by_thousands() {
-        assert_eq!(grouped(0), "0");
-        assert_eq!(grouped(999), "999");
-        assert_eq!(grouped(5417), "5,417");
-        assert_eq!(grouped(1_048_576), "1,048,576");
     }
 }

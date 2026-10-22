@@ -10,8 +10,10 @@ A hands-free call with every thread in Dove. Architecture:
    (2.2 MB) and Smart Turn (8.7 MB). Or use Parakeet from Dictation instead of
    Moonshine (more accurate, about 700 MB of memory while a call runs).
 2. Click the phone button beside the mic, or press Ctrl/Cmd+Shift+Space
-   (Settings › Shortcuts can change it). Text already in the composer is sent
-   first.
+   (Settings › Shortcuts can change it). On Windows the shortcut also works
+   while another app is in front (Settings › Voice › Shortcut outside Dove;
+   if another app already owns the keys, Settings says so). Text already in
+   the composer is sent first.
 3. Talk. The call bar at the bottom shows Listening / Hearing you / Thinking /
    Speaking, the live caption, and buttons to mute the mic, stop Dove talking
    (the agent keeps working) and end the call. Calls continue while you move
@@ -29,7 +31,7 @@ A hands-free call with every thread in Dove. Architecture:
 | "Tell Codex to also run clippy" | Steer (or send to) a named thread |
 | "Start a Gemini task on the landing page in a new worktree" | A new thread, in a new worktree |
 | "Show the diff" | Opens the Changes panel |
-| "Take a look at this" (with the diff or browser open) | Attaches what you see to your next message |
+| "Take a look at this" / "Look at the page" / "Look at the diff" | Attaches what you see to your next message: the open browser page or diff, or (Windows) a capture of the last other app's window you were in |
 | "Talk faster" / "slower" · "Mute" · "Be quiet" · "Repeat that" · "End call" | Call controls |
 | Anything else | Sent to the current thread as your message |
 
@@ -46,8 +48,10 @@ the call is muted and no text field has focus.
   the thread's folder. Dove says why, asks you to say a confirmation phrase
   ("confirm delete"), and then waits for your click on Approve in the chat. If
   the request changes before you click, the confirmation is dropped.
-- A model router, when configured, only proposes; every intent is checked
+- A command router, when turned on, only proposes; every intent is checked
   against a strict schema and Dove's current state before anything runs.
+  It can be an installed agent (a tool-less, read-only run in an empty
+  scratch folder on its cheapest model) or an OpenAI-compatible endpoint.
 - Dove never reports progress it has not seen: statuses come from the
   thread's events, todos, current activity and `git diff --shortstat`.
 
@@ -60,10 +64,17 @@ can be reviewed; delete it any time.
 
 Optional cloud features are off until you turn them on, and Settings says what
 each sends:
-- **Cloud speech recognition** uploads your spoken audio to the endpoint.
-- **Cloud voice** uploads what Dove says, which includes agents' replies.
-- **Command router** sends the request and your threads' titles.
-Keys are read from `DOVE_VOICE_API_KEY`, not stored in Dove's database.
+- **Cloud speech recognition** uploads your spoken audio: to an
+  OpenAI-compatible endpoint (`DOVE_VOICE_API_KEY`) or Deepgram
+  (`DEEPGRAM_API_KEY`, model `nova-3` unless set).
+- **Cloud voice** uploads what Dove says, which includes agents' replies: to an
+  OpenAI-compatible endpoint or ElevenLabs (`ELEVENLABS_API_KEY`, Flash v2.5,
+  16 kHz PCM).
+- **Command router** sends the request and your threads' titles to the agent
+  or endpoint you chose.
+- **Look at this window** writes a PNG to `~/.dove/voice/look/` and gives the
+  agent its path; the agent's own provider sees it as it would any attachment.
+Keys are read from the environment, never stored in Dove's database.
 
 ## Models
 
@@ -132,9 +143,11 @@ Playback timings use the real speaker. The microphone is not opened unless
 - *Transcript after the decision (250 ms):* Moonshine base spends about 60 ms
   per second of audio in its encoder and 17–18 ms per decoded token on this
   CPU. Speculation starts recognition 128 ms into a pause, which hides part of
-  it. Next steps: the split (non-merged) decoder export, which avoids the
-  `If` node on every step, and an encoder pass over the audio while the user
-  is still talking.
+  it. The split (non-merged) decoder export was measured (same int8
+  weights, same machine, 15 steps): 34.8 ms against 38.4 ms per step in
+  ONNX Runtime from Python, about 10% faster, but it loads a second copy of
+  the decoder weights (about 80 MB more resident), so it was not adopted.
+  Next step: an encoder pass over the audio while the user is still talking.
 - *LLM-turn overhead (446 ms):* mostly the pause before a turn ends (p50 224 ms
   of audio) plus the transcript. A shorter pause cuts people off; Smart Turn
   lets it be short when the sentence sounds finished.

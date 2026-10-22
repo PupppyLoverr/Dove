@@ -803,35 +803,6 @@ impl IntegrationsView {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn splits_quoted_args() {
-        assert_eq!(
-            split_args(r#"-y @scope/srv --dir "C:\My Files" ''"#),
-            vec!["-y", "@scope/srv", "--dir", r"C:\My Files", ""]
-        );
-        assert!(split_args("   ").is_empty());
-    }
-
-    #[test]
-    fn parses_env_and_header_lines() {
-        let env = parse_lines("A=1\n# note\n\nB = two=2", '=').unwrap();
-        assert_eq!(env.get("B").map(String::as_str), Some("two=2"));
-        let h = parse_lines("Authorization: Bearer x", ':').unwrap();
-        assert_eq!(h.get("Authorization").map(String::as_str), Some("Bearer x"));
-        assert!(parse_lines("nope", '=').is_err());
-    }
-
-    #[test]
-    fn args_round_trip() {
-        let args = vec!["-y".to_string(), "a b".to_string(), "c".to_string()];
-        assert_eq!(split_args(&quote_args(&args)), args);
-    }
-}
-
 impl IntegrationsView {
     /// Sign in to a catalog server from another page (Settings › Memory):
     /// adds it when missing, else signs in again.
@@ -890,5 +861,34 @@ impl IntegrationsView {
             Status::Failed(e) => Some((true, e.clone())),
             Status::Ok(_) => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn splits_quoted_args() {
+        assert_eq!(
+            split_args(r#"-y @scope/srv --dir "C:\My Files" ''"#),
+            vec!["-y", "@scope/srv", "--dir", r"C:\My Files", ""]
+        );
+        assert!(split_args("   ").is_empty());
+    }
+
+    #[test]
+    fn parses_env_and_header_lines() {
+        let env = parse_lines("A=1\n# note\n\nB = two=2", '=').unwrap();
+        assert_eq!(env.get("B").map(String::as_str), Some("two=2"));
+        let h = parse_lines("Authorization: Bearer x", ':').unwrap();
+        assert_eq!(h.get("Authorization").map(String::as_str), Some("Bearer x"));
+        assert!(parse_lines("nope", '=').is_err());
+    }
+
+    #[test]
+    fn args_round_trip() {
+        let args = vec!["-y".to_string(), "a b".to_string(), "c".to_string()];
+        assert_eq!(split_args(&quote_args(&args)), args);
     }
 }

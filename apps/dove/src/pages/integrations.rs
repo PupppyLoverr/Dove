@@ -379,7 +379,7 @@ pub fn cua_version(bin: &std::path::Path) -> Option<String> {
 
 /// The `ego-browser` command ego lite registers on onboarding, if found.
 pub fn ego_browser() -> Option<PathBuf> {
-    dove_core::harness_process::resolve("ego-browser")
+    crate::ego::detect().cli
 }
 
 /// The Paper CLI, which Paper Desktop installs to `~/.paper/bin` when it
@@ -405,8 +405,8 @@ struct Probe {
     paper: bool,
     /// The Paper CLI (`paper mcp`), when Paper Desktop installed it.
     paper_cli: Option<PathBuf>,
-    /// ego lite's `ego-browser` command.
-    ego: Option<PathBuf>,
+    /// ego lite: the app, its version and the `ego-browser` command.
+    ego: crate::ego::Status,
     /// The GitHub CLI, and the account it is signed in to.
     gh: Option<PathBuf>,
     gh_user: Option<String>,
@@ -450,6 +450,9 @@ pub struct IntegrationsView {
     dialog: Option<mcp::Dialog>,
     probe: Probe,
     copied: bool,
+    /// The last ego lite runtime check, and whether one is running.
+    ego_health: Option<crate::ego::Health>,
+    ego_testing: bool,
     gh_step: GhStep,
     /// The Computer use plate's jobs, health report and walkthrough.
     cu: computer::State,
@@ -545,6 +548,8 @@ impl IntegrationsView {
             dialog: None,
             probe: Probe::default(),
             copied: false,
+            ego_health: None,
+            ego_testing: false,
             gh_step: GhStep::Idle,
             cu: computer::State::default(),
             cu_denied,
@@ -597,7 +602,7 @@ impl IntegrationsView {
                 cua_version,
                 paper: paper_running(),
                 paper_cli: paper_cli(),
-                ego: ego_browser(),
+                ego: crate::ego::detect(),
                 gh,
                 gh_user,
             }
@@ -611,6 +616,26 @@ impl IntegrationsView {
             });
         })
         .detach();
+    }
+
+    /// Run ego lite's own runtime check (it may start ego lite).
+    fn test_ego(&mut self, cx: &mut Context<Self>) {
+        let Some(cli) = self.probe.ego.cli.clone() else { return };
+        if self.ego_testing {
+            return;
+        }
+        self.ego_testing = true;
+        let task = cx.background_spawn(async move { crate::ego::health(&cli, Duration::from_secs(30)) });
+        cx.spawn(async move |this, cx| {
+            let health = task.await;
+            let _ = this.update(cx, |v, cx| {
+                v.ego_health = Some(health);
+                v.ego_testing = false;
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
     }
 
     /// Install the GitHub CLI with the system package manager, then detect.
@@ -1081,7 +1106,23 @@ impl Render for IntegrationsView {
         let dialog = self.render_dialog(&t, window, cx);
         // ego lite: the agents' browser
         let choice = self.config.browser;
-        let ego_found = self.probe.ego.is_some();
+        let ego_found = self.probe.ego.cli.is_some();
+        let ego_app = self.probe.ego.app.clone();
+        let ego_version = self.probe.ego.version().map(str::to_string);
+        let ego_stale = self.probe.ego.stale.clone();
+        let ego_state: SharedString = match (&self.probe.ego.cli, &ego_app, &self.ego_health) {
+            (Some(_), _, Some(crate::ego::Health::Ready)) => {
+                format!("Ready{}", ego_version.as_deref().map(|v| format!(" · {v}")).unwrap_or_default()).into()
+            }
+            (Some(_), _, Some(crate::ego::Health::Failed(_))) => "Not responding".into(),
+            (Some(_), _, None) => {
+                format!("Installed{}", ego_version.as_deref().map(|v| format!(" · {v}")).unwrap_or_default()).into()
+            }
+            (None, Some(_), _) => "Finish onboarding".into(),
+            (None, None, _) if ego_stale.is_some() => "Removed".into(),
+            _ => "Not installed".into(),
+        };
+        let ego_ok = ego_found && !matches!(self.ego_health, Some(crate::ego::Health::Failed(_)));
         let this = cx.entity().downgrade();
         let ego = plate(&t)
             .child(head(
@@ -1092,9 +1133,40 @@ impl Render for IntegrationsView {
                 } else {
                     "A browser built for agents. Install it and every harness uses it through the dove-browser skill"
                 },
-                status(ego_found, if ego_found { "Installed" } else { "Not installed" }, &t),
+                status(ego_ok, ego_state, &t),
                 &t,
             ))
+            .when(ego_found, |d| {
+                let testing = self.ego_testing;
+                let detail: SharedString = match &self.ego_health {
+                    Some(crate::ego::Health::Ready) => "ego-browser answered: the runtime is ready".into(),
+                    Some(crate::ego::Health::Failed(e)) => {
+                        format!("ego-browser did not answer ({e}). Open ego lite, then test again").into()
+                    }
+                    None => "Runs ego lite's own check (it may start ego lite)".into(),
+                };
+                d.child(line(
+                    "Health",
+                    detail,
+                    ctl::button_sm(&t, "int-ego-test", if testing { "Testing…" } else { "Test" }, Tone::Quiet)
+                        .on_click(cx.listener(|this, _, _, cx| this.test_ego(cx))),
+                    &t,
+                ))
+            })
+            .when(!ego_found && ego_app.is_some(), |d| {
+                let app = ego_app.clone().unwrap();
+                d.child(line(
+                    "Onboarding",
+                    format!(
+                        "ego lite{} is installed at {}, but its ego-browser command is not registered yet. Open ego lite, finish onboarding, then detect again",
+                        app.version.as_deref().map(|v| format!(" {v}")).unwrap_or_default(),
+                        app.path.display()
+                    ),
+                    small_icon("int-ego-redetect", icons::REFRESH, "Detect again", &t)
+                        .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
+                    &t,
+                ))
+            })
             .child(line(
                 "Agents browse with",
                 match choice {
@@ -1134,10 +1206,14 @@ impl Render for IntegrationsView {
                     &t,
                 ))
             })
-            .when(!ego_found, |d| {
+            .when(!ego_found && ego_app.is_none(), |d| {
                 d.child(line(
                     "Install",
-                    "Download ego lite, finish its onboarding, then detect again. Dove never downloads it for you",
+                    if ego_stale.is_some() {
+                        "ego lite was removed from this computer (its last version folder is gone). Install it again, finish onboarding, then detect again. Dove never downloads it for you"
+                    } else {
+                        "Download ego lite, finish its onboarding, then detect again. Dove never downloads it for you"
+                    },
                     div()
                         .flex()
                         .items_center()

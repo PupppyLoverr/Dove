@@ -83,6 +83,9 @@ pub fn rebind(store: &Store, id: &str, key: &str, cx: &mut App) {
     }
     bindings.extend(load(key, (s.build)()));
     cx.bind_keys(bindings);
+    if id == "voice_call" {
+        crate::hotkey::apply(store);
+    }
 }
 
 /// "secondary-k" → "Ctrl K" (or "⌘ K" on macOS).

@@ -47,8 +47,6 @@ pub mod ty {
     pub const TITLE: Rems = rem(15.0);
     /// Section headings.
     pub const HEADING: Rems = rem(16.0);
-    /// Large headings.
-    pub const H2: Rems = rem(18.0);
     /// Page titles.
     pub const PAGE: Rems = rem(20.0);
     /// Hero headings.
