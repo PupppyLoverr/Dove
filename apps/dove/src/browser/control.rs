@@ -12,7 +12,7 @@
 //!
 //! Who may connect: only a `chrome-extension://` origin (web pages can open
 //! loopback sockets too) that presents the pairing token, and after the
-//! first pairing only that same extension. Settings › Integrations › New
+//! first pairing only that same extension. Settings › Plugins › New
 //! pairing code rotates the token and forgets the paired extension.
 
 use std::path::PathBuf;
@@ -253,7 +253,7 @@ mod extension {
         }
     }
 
-    /// Settings › Integrations › New pairing code: a fresh token, the paired
+    /// Settings › Plugins › Dove for Chrome › New pairing code: a fresh token, the paired
     /// extension forgotten, and the current connection dropped.
     pub fn new_pairing_code() -> Option<String> {
         let mut st = state();
@@ -323,7 +323,7 @@ mod extension {
             let Some(conn) = st.conn.as_ref() else {
                 return Outcome::err(
                     "Dove for Chrome is not connected. Ask the user to install the extension and pair it in \
-                     Dove → Settings → Integrations, or use the in-app browser_* tools instead.",
+                     Dove → Settings → Plugins, or use the in-app browser_* tools instead.",
                 );
             };
             let msg = json!({"type": "call", "id": id, "tool": tool, "args": args}).to_string();
@@ -422,12 +422,12 @@ mod extension {
                     let current = state().pairing.as_ref().map(|(_, t)| t.clone()).unwrap_or_else(|| token.to_string());
                     let pinned = state().paired_origin.clone();
                     if pinned.as_deref().is_some_and(|p| p != origin) {
-                        let _ = tx.send(json!({"type": "rejected", "reason": "This Dove is paired with a different browser extension. To switch, choose New pairing code in Dove → Settings → Integrations."}).to_string());
+                        let _ = tx.send(json!({"type": "rejected", "reason": "This Dove is paired with a different browser extension. To switch, choose New pairing code in Dove → Settings → Plugins."}).to_string());
                         let _ = ctl_tx.send((8, Vec::new()));
                         break;
                     }
                     if msg.get("token").and_then(Value::as_str) != Some(current.as_str()) {
-                        let _ = tx.send(json!({"type": "rejected", "reason": "Pairing code does not match this Dove. Copy it again from Settings → Integrations."}).to_string());
+                        let _ = tx.send(json!({"type": "rejected", "reason": "Pairing code does not match this Dove. Copy it again from Settings → Plugins."}).to_string());
                         let _ = ctl_tx.send((8, Vec::new()));
                         break;
                     }

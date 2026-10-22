@@ -1,4 +1,4 @@
-//! Settings → Integrations → Dove Computer Use: the plugin's plate.
+//! Settings → Plugins → Computer use: the plugin's plate.
 //!
 //! Install, Update and Uninstall of the pinned dove-driver release, the
 //! driver's own `health_report`, the per-OS permissions walkthrough (shown

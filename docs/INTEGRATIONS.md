@@ -1,6 +1,6 @@
 # Integrations
 
-Settings → Integrations (MCP servers, GitHub CLI, ego lite, Dove for Chrome, Paper, Dove Computer Use) and Settings → Connectors (Composio) hold everything that gives Dove's agents reach beyond the project folder. All of it is off until you turn it on, and all of it is bring-your-own: no Dove account, no hosted relay.
+Settings → Plugins (MCP servers, GitHub CLI, ego lite, Dove for Chrome, Paper, Dove Computer Use) and Settings → Plugins → Apps (Composio) hold everything that gives Dove's agents reach beyond the project folder. All of it is off until you turn it on, and all of it is bring-your-own: no Dove account, no hosted relay.
 
 Changes apply to agents started after the change. Every integration rides on Dove's own MCP server (`dove --mcp-browser`), which Dove injects into every harness it starts (Claude Code, Codex, OpenCode, Cursor, Pi and ACP agents), so there is nothing to configure per harness. That server is on while **Agent browser** is on, or while any integration below is on.
 
@@ -12,7 +12,7 @@ A Manifest V3 extension (`apps/extension/`) that lets agents work in your own Ch
 
 **Install (unpacked):** open `chrome://extensions`, turn on Developer mode, click **Load unpacked** and choose `apps/extension`. Pin it and click the Dove icon to open the side panel.
 
-**Pair:** in Dove open Settings → Integrations → Pairing code → **Copy**, paste it into the side panel and click **Pair**. The panel shows *Connected* while Dove runs. You pair once: Dove keeps the port and token in `~/.dove/extension.json` (mode 0600) and reuses them on every launch. The extension source contains no secrets; the code lives only in the browser profile's extension storage.
+**Pair:** in Dove open Settings → Plugins → Dove for Chrome → Pairing code → **Copy**, paste it into the side panel and click **Pair**. The panel shows *Connected* while Dove runs. You pair once: Dove keeps the port and token in `~/.dove/extension.json` (mode 0600) and reuses them on every launch. The extension source contains no secrets; the code lives only in the browser profile's extension storage.
 
 **How it connects:** Dove listens on `127.0.0.1` (a random port picked on first run) for a WebSocket at `/extension`. It only upgrades connections whose `Origin` is a `chrome-extension://` URL, and the first message has to carry the pairing token. Agents call `chrome_*` tools on Dove's MCP server; Dove forwards each call over that socket and returns the result.
 
@@ -52,7 +52,7 @@ Read-only Supermemory tools (`search_memory`, `get_profile`, `list_*`) are appro
 - **OpenCode** is left alone. Its chat driver already answers each permission ask, and its default bash rule is allow. A `permission.bash` rule in `OPENCODE_CONFIG_CONTENT` would be deep-merged over your files and replace a string `"ask"` policy, loosening it.
 - Other harnesses (Cursor, Pi, ACP agents) keep their normal prompts.
 
-## Composio (Settings → Connectors)
+## Composio (Settings → Plugins → Apps)
 
 [Composio](https://composio.dev) gives agents GitHub, Gmail, Slack, Notion and 1000+ other apps. Sign in with your Composio account, or paste your own key, and turn it on.
 
@@ -79,7 +79,7 @@ Computer use is a plugin you install from the **Dove Computer Use** plate: `dove
 - **Local grounder** (optional): downloads the grounder weights (`optional_assets.grounder`, about 3 MB) from the same manifest, size- and SHA-256-checked, into `plugins/computer-use/grounder/`, so `intent` steps and the `act` tool resolve on the device. Turning it off deletes the weights.
 - A `dove-driver` or `cua-driver` you installed yourself (on `PATH`, `~/.local/bin`, `~/.cua/bin`, `~/.cargo/bin`, `/opt/homebrew/bin`, `/usr/local/bin` or `/Applications/CuaDriver.app`) is used when the plugin is not installed, as a developer override.
 
-When it's on, the hub starts the driver as the `computer` upstream (`dove-driver mcp` over stdio) with `DOVE_DRIVER_HOME=~/.dove/plugins/computer-use/state`, `DOVE_DRIVER_PERMISSION_MODE=standard`, `DOVE_TOOL_DISCLOSURE=lazy` (a small tool list; the rest through `describe_tools`) and, with the grounder on, `DOVE_DRIVER_GROUNDER_MODEL`. Agents get its tools as `computer__*`, and the hub's instructions point them to the bundled **dove-computer** skill (installed to every harness by Settings › Skills): `list_windows`, a query-scoped `get_window_state`, `run_steps` with element tokens or `intent` steps, `verify_state` at checkpoints, screenshots only when the tree is empty or pixels are needed.
+When it's on, the hub starts the driver as the `computer` upstream (`dove-driver mcp` over stdio) with `DOVE_DRIVER_HOME=~/.dove/plugins/computer-use/state`, `DOVE_DRIVER_PERMISSION_MODE=standard`, `DOVE_TOOL_DISCLOSURE=lazy` (a small tool list; the rest through `describe_tools`) and, with the grounder on, `DOVE_DRIVER_GROUNDER_MODEL`. Agents get its tools as `computer__*`, and the hub's instructions point them to the bundled **dove-computer** skill (installed to every harness by Settings › Plugins › Skills): `list_windows`, a query-scoped `get_window_state`, `run_steps` with element tokens or `intent` steps, `verify_state` at checkpoints, screenshots only when the tree is empty or pixels are needed.
 
 **Local builds.** Until a signed release is published, dove-driver's `scripts/dove/dev-install.py --dove-home <DOVE_HOME>` packages a local build the way the release pipeline does (every file's SHA-256 in `dove-driver-manifest.json`, unsigned) into `plugins/computer-use/<version>-dev/`. Dove finds it like a downloaded release, ranks it below the same released version, and re-hashes its files before every launch.
 
@@ -93,7 +93,7 @@ Tested on this build: the extension loads unpacked in Chrome, pairs, and an agen
 
 ## Memory (Supermemory)
 
-Settings › Memory signs in to Supermemory (the same catalog server and OAuth token the hub uses) and turns Dove itself into every harness's memory layer (`crates/dove-core/src/memory.rs`, backend in `apps/dove/src/supermemory.rs`):
+Settings › Plugins › Memory signs in to Supermemory (the same catalog server and OAuth token the hub uses) and turns Dove itself into every harness's memory layer (`crates/dove-core/src/memory.rs`, backend in `apps/dove/src/supermemory.rs`):
 
 - **Two surfaces, one sign-in.** Supermemory's MCP server serves extracted memories, profile, listing, forgetting and `who_am_i`; its REST API (`/v3/documents`, `/v3/search`) takes saves with real metadata and an idempotent `customId`, and searches documents. Both accept the OAuth token Dove signed in with. Supermemory extracts memories from documents later on its side (minutes or more), so recall searches documents too and a turn captured a moment ago is found on the next prompt. Document hits under a 0.6 hybrid score are dropped.
 - **Recall.** Every prompt Dove hands an agent (first turn, resumed turn, live send, automations, teammates) passes through the session recorder, which searches memory with it (plus the profile on a session's first turn) across the project, user and teammate scopes, drops what the session already saw, and prepends a `<memory source="dove-recall">` block of about 1.5k tokens. It waits at most 4 s. The chat shows a "Recalled N memories" chip instead of the block.
@@ -102,8 +102,8 @@ Settings › Memory signs in to Supermemory (the same catalog server and OAuth t
 - **Capture.** On each turn end the prompt, final answer and edited files are redacted (`[REDACTED]` for keys, tokens, passwords, private keys, URL credentials, `<private>` spans) and saved with `{source: "dove", harness, project, task}`. Paths matching the never-send globs are left out. Failed saves queue in `$DOVE_HOME/memory/outbox.jsonl` and retry on the next save, sign-in or launch.
 - **Corrections.** A prompt that corrects or re-asks the last turn, and a denied permission, become high-priority `feedback` memories.
 - **Scopes.** The project container is `repo_<name>__<sha256(normalized origin remote)[..16]>` (resolved path without a remote), honouring `.claude/.supermemory-claude/config.json` `repoContainerTag` and `SUPERMEMORY_REPO_TAG`, exactly as Supermemory's Claude/Codex/OpenCode plugins derive it, so memories are shared with them. The user scope is the account's default space; teammates get `team_<id>`.
-- **Warm-up and consolidation.** "Warm up" imports past Dove threads, project READMEs / ARCHITECTURE / CLAUDE.md / AGENTS.md and recent merged PRs. A weekly consolidation lists each scope, finds duplicates (forgotten only when you click) and drafts `SKILL.md` files for repeated command workflows in `$DOVE_HOME/memory/suggested-skills/`. Each draft has **Review draft** (opens it) and **Install**, which installs it for every harness like a GitHub skill (source "You" in Settings › Skills).
-- **Browse.** Settings › Memory searches any scope, ranked or as a **Timeline** grouped by day; **Graph** opens your memory graph in Supermemory's app; **Export** writes a JSON file.
+- **Warm-up and consolidation.** "Warm up" imports past Dove threads, project READMEs / ARCHITECTURE / CLAUDE.md / AGENTS.md and recent merged PRs. A weekly consolidation lists each scope, finds duplicates (forgotten only when you click) and drafts `SKILL.md` files for repeated command workflows in `$DOVE_HOME/memory/suggested-skills/`. Each draft has **Review draft** (opens it) and **Install**, which installs it for every harness like a GitHub skill (source "You" in Settings › Plugins › Skills).
+- **Browse.** Settings › Plugins › Memory searches any scope, ranked or as a **Timeline** grouped by day; **Graph** opens your memory graph in Supermemory's app; **Export** writes a JSON file.
 
 End-to-end check against a signed-in account (scratch home with `mcp_auth.json`; strip any `CLAUDE*`/`ANTHROPIC*` variables when running from inside an agent):
 

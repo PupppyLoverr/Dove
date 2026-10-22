@@ -9,7 +9,7 @@ It is one of three ways agents browse in Dove:
 | Path | What it is | When agents use it |
 | --- | --- | --- |
 | **ego lite** (`ego-browser`) | Your Chromium with an isolated Space per task | Default for web tasks when installed and healthy (the `dove-browser` skill) |
-| **Dove's browser** (`browser_*` tools) | The in-app browser in the side panel | Local dev servers, or when you choose it in Settings › Integrations |
+| **Dove's browser** (`browser_*` tools) | The in-app browser in the side panel | Local dev servers, or when you choose it in Settings › Plugins |
 | **Dove for Chrome** (`chrome_*` tools) | This extension, in the browser you already use | Tasks that need your signed-in session in that browser |
 
 The extension never takes over ego lite's Spaces, never opens windows on its
@@ -48,7 +48,7 @@ agent takes a fresh snapshot instead of clicking the wrong thing.
   must carry the pairing token (64 hex characters from the OS CSPRNG), and
   Dove accepts only `chrome-extension://` origins. After the first pairing Dove
   remembers that extension and refuses any other until you choose **New
-  pairing code** in Dove › Settings › Integrations.
+  pairing code** in Dove › Settings › Plugins.
 - **Messages from Dove** are validated before anything runs: known message
   types, known tools, only that tool's arguments, plain-object arguments, at
   most 1 MB. Anything else gets an error reply.

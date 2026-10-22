@@ -1,4 +1,4 @@
-//! Settings → Skills: the skills every agent Dove starts can use.
+//! Settings → Plugins → Skills: the skills every agent Dove starts can use.
 //!
 //! Installed lists the bundled skills and the ones added from GitHub, each
 //! with a switch that installs it into (or removes it from) every harness's
@@ -56,6 +56,9 @@ pub struct SkillsView {
     repo_input: Entity<InputState>,
     /// The last action's outcome.
     notice: Option<Result<String, String>>,
+    /// Inside Settings › Plugins, which has the tabs, search and Add menu:
+    /// no toolbar of its own.
+    embedded: bool,
     _subs: Vec<Subscription>,
 }
 
@@ -98,6 +101,7 @@ impl SkillsView {
             adding: false,
             repo_input,
             notice: None,
+            embedded: false,
             _subs: subs,
         };
         view.reload(cx);
@@ -123,6 +127,51 @@ impl SkillsView {
             });
         })
         .detach();
+    }
+
+    pub fn set_embedded(&mut self, on: bool, cx: &mut Context<Self>) {
+        if self.embedded != on {
+            self.embedded = on;
+            cx.notify();
+        }
+    }
+
+    /// The search, when Plugins drives it.
+    pub fn set_query(&mut self, query: &str, cx: &mut Context<Self>) {
+        let query = query.trim().to_ascii_lowercase();
+        if self.query != query {
+            self.query = query;
+            cx.notify();
+        }
+    }
+
+    /// Discover (the libraries) instead of the installed skills.
+    pub fn set_discover(&mut self, on: bool, cx: &mut Context<Self>) {
+        let tab = if on { Tab::Discover } else { Tab::Installed };
+        if self.tab != tab {
+            self.show(tab, cx);
+        }
+    }
+
+    /// Open the "Add a repository" field (Plugins › Add).
+    pub fn add_repository(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.show(Tab::Discover, cx);
+        self.adding = true;
+        self.repo_input.update(cx, |s, cx| s.focus(window, cx));
+        cx.notify();
+    }
+
+    /// Installed skills, for the Plugins tab count.
+    pub fn count(&self) -> usize {
+        self.registry.skills.len()
+    }
+
+    pub fn updating(&self) -> bool {
+        self.busy.contains("update")
+    }
+
+    pub fn has_git(&self) -> bool {
+        self.registry.skills.iter().any(|s| matches!(s.source, Source::Git { .. }))
     }
 
     /// Every repository Discover shows: the curated ones, then the user's.
@@ -212,7 +261,7 @@ impl SkillsView {
         self.act(format!("remove:{name}"), move || skills::remove(&name).map(|_| format!("Removed {name}")), cx);
     }
 
-    fn update_all(&mut self, cx: &mut Context<Self>) {
+    pub fn update_all(&mut self, cx: &mut Context<Self>) {
         self.act(
             "update".into(),
             || {
@@ -702,23 +751,33 @@ impl Render for SkillsView {
             Tab::Installed => self.installed(&t, cx),
             Tab::Discover => self.discover(&t, window, cx),
         };
-        div().flex().flex_col().child(toolbar).children(notice).child(body).child(
-            div()
-                .mt(px(space::LG))
-                .px(px(page::LABEL_INSET))
-                .text_size(ty::META)
-                .text_color(t.text_faint)
-                .flex()
-                .flex_col()
-                .gap(px(space::XS))
-                .child(
-                    "Agents pick up skills that are on by themselves. To ask for one, type # in a chat and \
+        if self.embedded {
+            return div().flex().flex_col().children(notice).child(body).into_any_element();
+        }
+        div()
+            .flex()
+            .flex_col()
+            .child(toolbar)
+            .children(notice)
+            .child(body)
+            .child(
+                div()
+                    .mt(px(space::LG))
+                    .px(px(page::LABEL_INSET))
+                    .text_size(ty::META)
+                    .text_color(t.text_faint)
+                    .flex()
+                    .flex_col()
+                    .gap(px(space::XS))
+                    .child(
+                        "Agents pick up skills that are on by themselves. To ask for one, type # in a chat and \
                          choose it: Dove tells the agent to load that skill for the message.",
-                )
-                .child(
-                    "Skills are copied into ~/.claude/skills, ~/.agents/skills and the skill folders of OpenCode, \
+                    )
+                    .child(
+                        "Skills are copied into ~/.claude/skills, ~/.agents/skills and the skill folders of OpenCode, \
                          Gemini CLI and Pi. Folders you made yourself are never changed.",
-                ),
-        )
+                    ),
+            )
+            .into_any_element()
     }
 }

@@ -1,4 +1,4 @@
-//! Settings → Integrations, MCP servers: the user's connected servers, the
+//! Settings → Plugins → MCPs: the user's connected servers, the
 //! catalog of popular ones, and the dialog for adding any server by command,
 //! URL or pasted JSON. Sign-in for remote servers is Dove's own OAuth
 //! (`mcp_oauth`); every server reaches every harness through Dove's MCP
@@ -214,7 +214,7 @@ impl IntegrationsView {
     }
 
     /// "Connect" on a catalog entry.
-    fn connect(&mut self, entry: &'static Entry, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn connect(&mut self, entry: &'static Entry, window: &mut Window, cx: &mut Context<Self>) {
         match entry.auth {
             Auth::None | Auth::OAuth => {
                 let id = super::unique_id(entry.id, &self.config.ids());
@@ -434,23 +434,13 @@ impl IntegrationsView {
 
     // ----------------------------------------------------------------- render
 
-    /// The MCP section (search and connected servers) and, separately, the
-    /// catalog, which the page puts last because it is long.
-    pub(super) fn render_mcp(&mut self, t: &Theme, cx: &mut Context<Self>) -> (AnyElement, Option<AnyElement>) {
+    /// The connected servers, filtered by the Plugins search (the catalog
+    /// is in the Plugins directory).
+    pub(super) fn render_mcp(&mut self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let query = self.search.read(cx).value().trim().to_lowercase();
         let matches = |name: &str, blurb: &str| {
             query.is_empty() || name.to_lowercase().contains(&query) || blurb.to_lowercase().contains(&query)
         };
-
-        let toolbar = div()
-            .flex()
-            .items_center()
-            .gap(px(space::SM))
-            .child(div().flex_1().min_w_0().child(page::search_field(t, &self.search)))
-            .child(
-                ctl::button_sm(t, "mcp-add-custom", "Add server", Tone::Filled)
-                    .on_click(cx.listener(|this, _, window, cx| this.open_custom(None, window, cx))),
-            );
 
         let connected: Vec<McpServer> = self
             .config
@@ -466,51 +456,21 @@ impl IntegrationsView {
             page::card(t).children(connected.into_iter().enumerate().map(|(i, s)| self.server_row(t, i == 0, s, cx)))
         });
 
-        let added: Vec<String> = self.config.servers.iter().filter_map(|s| s.catalog.clone()).collect();
-        let discover: Vec<&'static Entry> =
-            catalog::CATALOG.iter().filter(|e| !added.iter().any(|a| a == e.id) && matches(e.name, e.blurb)).collect();
-        let discover_card = (!discover.is_empty()).then(|| {
-            page::card(t).children(discover.into_iter().enumerate().map(|(i, e)| {
-                let meta = format!("{} · {}", e.blurb, if e.is_remote() { "Remote" } else { "Local" });
-                page::row(t, i == 0)
-                    .child(page::row_tile(t, e.icon, None))
-                    .child(page::row_text(t, e.name, meta))
-                    .child(
-                        div()
-                            .flex_none()
-                            .flex()
-                            .items_center()
-                            .gap(px(4.0))
-                            .child(
-                                small_icon(
-                                    SharedString::from(format!("mcp-docs-{}", e.id)),
-                                    icons::ARROW_UP_RIGHT,
-                                    "Open docs",
-                                    t,
-                                )
-                                .on_click(cx.listener(move |_, _, _, cx| cx.open_url(e.docs))),
-                            )
-                            .child(
-                                ctl::button_sm(
-                                    t,
-                                    SharedString::from(format!("mcp-connect-{}", e.id)),
-                                    "Connect",
-                                    Tone::Quiet,
-                                )
-                                .on_click(cx.listener(move |this, _, window, cx| this.connect(e, window, cx))),
-                            ),
-                    )
-            }))
-        });
-
-        let head = div()
-            .flex()
-            .flex_col()
-            .gap(px(space::MD))
-            .child(toolbar)
-            .when_some(connected_card, |d, card| d.child(page::section(t, "Connected", card)))
-            .into_any_element();
-        (head, discover_card.map(|card| page::section(t, "Discover", card).into_any_element()))
+        match connected_card {
+            Some(card) => card.into_any_element(),
+            None => page::empty_state(
+                t,
+                icons::WIDGET_ADD,
+                if query.is_empty() { "No MCP servers yet" } else { "No matching servers" },
+                if query.is_empty() { "Add one from the directory, or a custom server by command or URL." } else { "" },
+                query.is_empty().then(|| {
+                    ctl::button_sm(t, "mcp-add-custom", "Add server", Tone::Filled)
+                        .on_click(cx.listener(|this, _, window, cx| this.open_custom(None, window, cx)))
+                        .into_any_element()
+                }),
+            )
+            .into_any_element(),
+        }
     }
 
     fn server_row(&self, t: &Theme, first: bool, s: McpServer, cx: &mut Context<Self>) -> gpui::Div {
@@ -804,7 +764,7 @@ impl IntegrationsView {
 }
 
 impl IntegrationsView {
-    /// Sign in to a catalog server from another page (Settings › Memory):
+    /// Sign in to a catalog server from another page (Settings › Plugins › Memory):
     /// adds it when missing, else signs in again.
     pub fn sign_in_catalog(&mut self, catalog: &str, cx: &mut Context<Self>) {
         let Some(entry) = crate::integrations_catalog::get(catalog) else { return };

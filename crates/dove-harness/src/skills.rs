@@ -581,7 +581,7 @@ fn describe_in(root: &Path, reg: &Registry, name: Option<&str>) -> Result<String
                 "Skills Dove installed for agents. Call dove_skills with {\"name\": ...} for the full instructions.\n\n",
             );
             if on.is_empty() {
-                out.push_str("(none are turned on; the user manages them in Dove → Settings → Skills)\n");
+                out.push_str("(none are turned on; the user manages them in Dove → Settings → Plugins → Skills)\n");
             }
             for s in on {
                 out.push_str(&format!("- {}: {} (folder: {})\n", s.name, s.description, root.join(&s.name).display()));
@@ -660,7 +660,7 @@ pub const CURATED: &[Curated] = &[
     },
     // Only the skills in the repository itself: the rest of its list links
     // elsewhere, `composio-skills/` is hundreds of generated toolkits, and
-    // connect/connect-apps set up MCP connections (Settings › Connectors).
+    // connect/connect-apps set up MCP connections (Settings › Plugins › Apps).
     Curated { skip: &["connect", "connect-apps"], ..lib("ComposioHQ/awesome-claude-skills", "Composio", Some("")) },
     Curated { category: Some("Web & browser"), ..lib("CitroLabs/ego-lite", "ego(lite)", Some("skills")) },
 ];

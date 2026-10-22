@@ -1,4 +1,4 @@
-//! Settings → Memory: Supermemory as every agent's long-term memory.
+//! Settings → Plugins → Memory: Supermemory as every agent's long-term memory.
 //!
 //! Sign-in (through the Integrations catalog entry, so the hub and the
 //! recall/capture path share one token), the switches `dove_core::memory`
@@ -276,7 +276,9 @@ impl MemoryView {
             let _ = this.update(cx, |v, cx| {
                 v.busy = None;
                 v.note = Some(match result {
-                    Ok(s) => format!("Installed {} for every agent. It is listed in Settings › Skills.", s.name),
+                    Ok(s) => {
+                        format!("Installed {} for every agent. It is listed in Settings › Plugins › Skills.", s.name)
+                    }
                     Err(e) => format!("Could not install the skill: {e}"),
                 });
                 cx.notify();

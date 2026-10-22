@@ -17,9 +17,11 @@ A hands-free call with every thread in Dove. Architecture:
 3. Talk. The call strip sits on the input you are talking into (a thread's,
    or the new-thread composer on Home; on other pages it floats at the foot
    of the page). It shows Listening / Hearing you / Working on it / Speaking,
-   who the call talks to, the live caption or the reply being read, and
-   buttons to mute the mic, stop Dove talking (the agent keeps working) and
-   end the call. The phone button stays lit while a call runs. Calls continue
+   who the call talks to, a live waveform and the call's length, the live
+   caption or the reply being read, and buttons to mute the mic, stop Dove
+   talking (the agent keeps working) and end the call. The phone button stays
+   lit while a call runs. A soft chime marks when the call starts listening
+   and when Dove has heard you (Settings › Voice › Sounds). Calls continue
    while you move around Dove.
 
 **No thread yet?** Start a call from Home and say what you want done. The

@@ -49,10 +49,9 @@ pub enum Section {
     Shortcuts,
     Agents,
     Team,
-    Integrations,
-    Connectors,
-    Skills,
-    Memory,
+    /// Built-in tools, apps (Composio), MCP servers, skills and memory on
+    /// one page (`pages/plugins.rs`).
+    Plugins,
     Remote,
     Data,
     Archived,
@@ -71,7 +70,7 @@ pub enum SettingsEvent {
 
 impl Section {
     #[cfg(test)]
-    pub const ALL: [Section; 15] = [
+    pub const ALL: [Section; 12] = [
         Section::General,
         Section::Appearance,
         Section::Notifications,
@@ -79,10 +78,7 @@ impl Section {
         Section::Shortcuts,
         Section::Agents,
         Section::Team,
-        Section::Integrations,
-        Section::Connectors,
-        Section::Skills,
-        Section::Memory,
+        Section::Plugins,
         Section::Remote,
         Section::Data,
         Section::Archived,
@@ -92,15 +88,7 @@ impl Section {
     /// The navigation, grouped by spacing (no headers), as in Zeron.
     const GROUPS: [&'static [Section]; 3] = [
         &[Section::General, Section::Appearance, Section::Notifications, Section::Voice, Section::Shortcuts],
-        &[
-            Section::Agents,
-            Section::Team,
-            Section::Skills,
-            Section::Connectors,
-            Section::Integrations,
-            Section::Memory,
-            Section::Remote,
-        ],
+        &[Section::Agents, Section::Team, Section::Plugins, Section::Remote],
         &[Section::Data, Section::Archived, Section::About],
     ];
 
@@ -113,10 +101,7 @@ impl Section {
             Section::Shortcuts => "Shortcuts",
             Section::Agents => "Agents",
             Section::Team => "Team",
-            Section::Integrations => "Integrations",
-            Section::Connectors => "Connectors",
-            Section::Skills => "Skills",
-            Section::Memory => "Memory",
+            Section::Plugins => "Plugins",
             Section::Remote => "Remote",
             Section::Data => "Data & Storage",
             Section::Archived => "Archived",
@@ -133,10 +118,7 @@ impl Section {
             Section::Shortcuts => icons::KEYBOARD,
             Section::Agents => icons::WIDGET,
             Section::Team => icons::USERS_GROUP,
-            Section::Integrations => icons::WIDGET_ADD,
-            Section::Connectors => icons::CLOUD,
-            Section::Skills => icons::MAGIC_STICK_3,
-            Section::Memory => icons::STAR,
+            Section::Plugins => icons::WIDGET_ADD,
             Section::Remote => icons::SMARTPHONE,
             Section::Data => icons::HARD_DRIVE,
             Section::Archived => icons::ARCHIVE_MINIMALISTIC,
@@ -153,10 +135,7 @@ impl Section {
             Section::Shortcuts => "keyboard",
             Section::Agents => "agents",
             Section::Team => "team",
-            Section::Integrations => "integrations",
-            Section::Connectors => "connectors",
-            Section::Skills => "skills",
-            Section::Memory => "memory",
+            Section::Plugins => "plugins",
             Section::Remote => "remote",
             Section::Data => "data",
             Section::Archived => "archived",
@@ -175,10 +154,11 @@ impl Section {
             "keyboard" | "shortcuts" => Section::Shortcuts,
             "agents" | "providers" | "harnesses" => Section::Agents,
             "team" | "crew" => Section::Team,
-            "integrations" | "mcp" => Section::Integrations,
-            "connectors" | "composio" => Section::Connectors,
-            "skills" | "skill" => Section::Skills,
-            "memory" | "supermemory" => Section::Memory,
+            // The four pages Plugins replaced open their tab of it.
+            "plugins" | "integrations" | "mcp" | "connectors" | "composio" | "apps" | "skills" | "skill" | "memory"
+            | "supermemory" | "directory" | "computer" | "computer_use" | "ego" | "chrome" | "extension" | "github" => {
+                Section::Plugins
+            }
             "remote" | "devices" => Section::Remote,
             "data" | "storage" => Section::Data,
             "archived" => Section::Archived,
@@ -293,6 +273,7 @@ const INDEX: &[Entry] = &[
         "Announce thread updates",
         "voice announce notifications finished failed approval",
     ),
+    e(Section::Voice, "voice_earcons", "Sounds", "voice chime earcon sound cue ready heard beep"),
     e(Section::Voice, "voice_call_models", "Voice Mode models", "silero vad smart turn detection model download"),
     e(Section::Voice, "voice_cloud", "Cloud speech recognition", "cloud openai whisper groq speech api upload audio"),
     e(Section::Voice, "voice_router_url", "Command router", "router llama llm intent model voice commands"),
@@ -301,28 +282,28 @@ const INDEX: &[Entry] = &[
     e(Section::Team, "team_roster", "Teammates", "team teammates personas roster specialists"),
     e(Section::Team, "team_notes", "Persistent teammate notes", "team notes memory learn"),
     e(
-        Section::Integrations,
+        Section::Plugins,
         "integrations",
-        "Integrations",
+        "Plugins: built in and MCP servers",
         "integrations mcp servers custom oauth sign in catalog figma linear notion chrome extension paper ego lite browser computer use dove-driver plugin github cli",
     ),
     e(
-        Section::Connectors,
+        Section::Plugins,
         "connectors",
-        "Connectors",
+        "Plugins: apps through Composio",
         "connectors composio apps gmail slack notion github linear calendar toolkits connect",
     ),
     e(
-        Section::Skills,
+        Section::Plugins,
         "skills",
-        "Skills",
+        "Plugins: skills",
         "skills agent skills library install github superpowers anthropic composio ego browser discover update",
     ),
-    e(Section::Skills, "agent_office_skills", "Office document skills", "office docx pptx xlsx pdf skills agents"),
+    e(Section::Plugins, "agent_office_skills", "Office document skills", "office docx pptx xlsx pdf skills agents"),
     e(
-        Section::Memory,
+        Section::Plugins,
         "memory",
-        "Memory",
+        "Plugins: memory",
         "memory supermemory recall remember forget capture corrections learn profile never send",
     ),
     e(Section::Remote, "remote_enabled", "Remote control", "remote phone mobile companion woozlit account"),
@@ -390,8 +371,9 @@ pub struct SettingsPage {
     devices: Vec<(String, String)>,
     data_size: Option<u64>,
     integrations: Entity<crate::pages::integrations::IntegrationsView>,
-    skills: Entity<crate::pages::skills::SkillsView>,
-    memory: Entity<crate::pages::memory_settings::MemoryView>,
+    /// Held here; Plugins (the integrations view) draws them.
+    _skills: Entity<crate::pages::skills::SkillsView>,
+    _memory: Entity<crate::pages::memory_settings::MemoryView>,
     focus: FocusHandle,
     nav_focus: FocusHandle,
     scroll: ScrollHandle,
@@ -507,6 +489,7 @@ impl SettingsPage {
             cx.new(|cx| crate::pages::memory_settings::MemoryView::new(engine, integrations, window, cx))
         };
         subs.push(cx.observe(&memory, |_, _, cx| cx.notify()));
+        integrations.update(cx, |v, _| v.embed(&skills, &memory));
         Self {
             engine,
             section,
@@ -518,8 +501,8 @@ impl SettingsPage {
             devices: Vec::new(),
             data_size: None,
             integrations,
-            skills,
-            memory,
+            _skills: skills,
+            _memory: memory,
             focus: cx.focus_handle(),
             nav_focus: cx.focus_handle(),
             scroll: ScrollHandle::new(),
@@ -552,9 +535,13 @@ impl SettingsPage {
     }
 
     /// Open a section by id (deep links); unknown ids keep the current one.
+    /// Plugins' old page ids open their tab of it.
     pub fn show_section(&mut self, id: &str, cx: &mut Context<Self>) {
         if let Some(s) = Section::from_id(id) {
             self.select(s, cx);
+            if s == Section::Plugins {
+                self.integrations.update(cx, |v, cx| v.open(id, cx));
+            }
         }
     }
 
@@ -567,6 +554,9 @@ impl SettingsPage {
 
     fn reveal_entry(&mut self, e: &'static Entry, cx: &mut Context<Self>) {
         self.select(e.section, cx);
+        if e.section == Section::Plugins {
+            self.integrations.update(cx, |v, cx| v.open(e.row, cx));
+        }
         self.pending_scroll.set(Some(e.row));
         self.flash = Some((e.row, Instant::now()));
         cx.notify();
@@ -1014,7 +1004,6 @@ impl SettingsPage {
             Section::Team => {
                 Some(self.engine.store.personas().map(|v| v.len()).unwrap_or(0)).filter(|n| *n > 0).map(count)
             }
-            Section::Memory => dove_core::memory::backend().map(|_| ui::dot(t.success, 6.0).into_any_element()),
             Section::Voice => VoiceModel::global(cx)
                 .is_some_and(|m| matches!(m.read(cx).state, InstallState::Installed))
                 .then(|| ui::dot(t.success, 6.0).into_any_element()),
@@ -1061,10 +1050,7 @@ impl SettingsPage {
                 ),
                 self.team(&t, cx),
             ),
-            Section::Integrations => (None, self.integrations_section(&t, cx)),
-            Section::Connectors => (None, self.connectors_section(&t, cx)),
-            Section::Skills => (None, self.skills_section(&t)),
-            Section::Memory => (None, self.memory_section(&t)),
+            Section::Plugins => (Some(self.plugins_actions(&t)), self.plugins_section(&t)),
             Section::Remote => (None, self.remote(&t, cx)),
             Section::Data => (None, self.data(&t, cx)),
             Section::About => (None, self.about(&t, cx)),
@@ -2023,6 +2009,7 @@ impl SettingsPage {
             .render(t, &self.sel_voice, cx);
         let echo = self.flag("voice_echo_cancel", true);
         let announce = self.flag("voice_announce", true);
+        let earcons = self.flag("voice_earcons", true);
         let cloud = self.flag("voice_cloud", false);
         let cloud_tts = self.flag("voice_cloud_tts", false);
         let shortcut = crate::keymap::shortcuts()
@@ -2082,6 +2069,16 @@ impl SettingsPage {
                 "Say when a thread finishes, fails or needs your approval.",
                 ctl::on_toggle(ctl::toggle(t, "set-voice-announce", announce), cx, move |this, _, cx| {
                     this.set_flag("voice_announce", !announce, cx)
+                }),
+            ))
+            .child(self.srow(
+                t,
+                false,
+                "voice_earcons",
+                "Sounds",
+                "A soft chime when the call starts listening and when Dove has heard you.",
+                ctl::on_toggle(ctl::toggle(t, "set-voice-earcons", earcons), cx, move |this, _, cx| {
+                    this.set_flag("voice_earcons", !earcons, cx)
                 }),
             ))
             .child(
@@ -2634,58 +2631,39 @@ impl SettingsPage {
             .into_any_element()
     }
 
-    fn integrations_section(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
-        use crate::pages::integrations::Scope;
-        self.integrations.update(cx, |v, cx| v.set_scope(Scope::Integrations, cx));
+    fn plugins_section(&self, t: &Theme) -> AnyElement {
         div()
             .flex()
             .flex_col()
-            .child(page::page_subtitle(t, "MCP servers and local tools every agent gets through Dove's MCP server."))
-            .child(div().relative().child(self.anchor("integrations")).child(self.integrations.clone()))
-            .into_any_element()
-    }
-
-    fn connectors_section(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
-        use crate::pages::integrations::Scope;
-        self.integrations.update(cx, |v, cx| v.set_scope(Scope::Connectors, cx));
-        div()
-            .flex()
-            .flex_col()
-            .child(page::page_subtitle(
-                t,
-                "Your apps (Gmail, Slack, Notion, GitHub, Linear and hundreds more) through Composio, for every agent.",
-            ))
-            .child(div().relative().child(self.anchor("connectors")).child(self.integrations.clone()))
-            .into_any_element()
-    }
-
-    fn skills_section(&self, t: &Theme) -> AnyElement {
-        div()
-            .flex()
-            .flex_col()
-            .child(page::page_subtitle(
-                t,
-                "Instructions and scripts every agent Dove starts can use, from Dove and from GitHub.",
-            ))
+            .child(page::page_subtitle(t, "Built-in tools, apps, MCP servers and skills for every agent Dove starts."))
             .child(
                 div()
                     .relative()
+                    .child(self.anchor("integrations"))
+                    .child(self.anchor("connectors"))
                     .child(self.anchor("skills"))
                     .child(self.anchor("agent_office_skills"))
-                    .child(self.skills.clone()),
+                    .child(self.anchor("memory"))
+                    .child(self.integrations.clone()),
             )
             .into_any_element()
     }
 
-    fn memory_section(&self, t: &Theme) -> AnyElement {
+    /// Plugins' header: the directory and the Add menu (the view draws it).
+    fn plugins_actions(&self, t: &Theme) -> AnyElement {
+        let (browse, add) = (self.integrations.clone(), self.integrations.clone());
         div()
             .flex()
-            .flex_col()
-            .child(page::page_subtitle(
-                t,
-                "Every agent remembers you and each project across sessions and harnesses, through Supermemory.",
-            ))
-            .child(div().relative().child(self.anchor("memory")).child(self.memory.clone()))
+            .items_center()
+            .gap(px(8.0))
+            .child(
+                ctl::button_sm(t, "plugins-browse", "Browse directory", Tone::Outlined)
+                    .on_click(move |_, _, cx| browse.update(cx, |v, cx| v.browse(cx))),
+            )
+            .child(
+                ctl::button_sm(t, "plugins-add", "Add", Tone::Solid)
+                    .on_click(move |_, _, cx| add.update(cx, |v, cx| v.toggle_add(cx))),
+            )
             .into_any_element()
     }
 
@@ -2988,8 +2966,9 @@ mod tests {
         }
         assert_eq!(Section::from_id("composer"), Some(Section::General));
         assert_eq!(Section::from_id("shortcuts"), Some(Section::Shortcuts));
-        assert_eq!(Section::from_id("skills"), Some(Section::Skills));
-        assert_eq!(Section::from_id("composio"), Some(Section::Connectors));
+        assert_eq!(Section::from_id("skills"), Some(Section::Plugins));
+        assert_eq!(Section::from_id("composio"), Some(Section::Plugins));
+        assert_eq!(Section::from_id("memory"), Some(Section::Plugins));
         assert_eq!(Section::from_id("nope"), None);
     }
 
@@ -3006,7 +2985,7 @@ mod tests {
         assert_eq!(find_settings("reduce motion").first().map(|e| e.row), Some("reduce_motion"));
         assert!(find_settings("clone").iter().any(|e| e.row == "clone_dir"));
         assert!(find_settings("parakeet").iter().any(|e| e.row == "voice_model"));
-        assert!(find_settings("superpowers").iter().any(|e| e.section == Section::Skills));
+        assert!(find_settings("superpowers").iter().any(|e| e.section == Section::Plugins && e.row == "skills"));
         assert!(find_settings("").is_empty());
     }
 

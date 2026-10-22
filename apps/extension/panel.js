@@ -3,7 +3,7 @@ import { card } from './review.js';
 const $ = (id) => document.getElementById(id);
 const send = (msg) => chrome.runtime.sendMessage(msg);
 const LABEL = { connected: 'Connected to Dove', connecting: 'Connecting…', offline: 'Dove isn\u2019t running', unpaired: 'Not paired', rejected: 'Pairing code not accepted' };
-const DETAIL = { offline: 'Open the Dove app; this reconnects on its own.', rejected: 'Copy a fresh code from Dove → Settings → Integrations.' };
+const DETAIL = { offline: 'Open the Dove app; this reconnects on its own.', rejected: 'Copy a fresh code from Dove → Settings → Plugins.' };
 
 const host = (u) => { try { return new URL(u).host.replace(/^www\./, ''); } catch (_) { return u || ''; } };
 const quote = (s, n = 48) => `\u201c${String(s).length > n ? String(s).slice(0, n - 1) + '\u2026' : s}\u201d`;

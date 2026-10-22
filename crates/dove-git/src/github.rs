@@ -36,7 +36,7 @@ pub fn gh_available() -> bool {
 
 /// Where `gh` lives, if anywhere: PATH first, then the folders its
 /// installers use. Dove's PATH is fixed at launch, so a `gh` installed
-/// since (from Settings › Integrations, say) is only found there.
+/// since (from Settings › Plugins, say) is only found there.
 pub fn gh_path() -> Option<std::path::PathBuf> {
     which_gh()
 }

@@ -877,6 +877,12 @@ fn run(config: CallConfig, ctl: Receiver<Ctl>, ev: Sender<Event>, ended: Arc<Ato
                         echo_cancel: aec_name.is_some(),
                     });
                     set_state(if muted { State::Muted } else { State::Listening }, &mut state);
+                    // A soft cue: the call is listening (hands-free, eyes elsewhere).
+                    if config.earcons
+                        && let Some(s) = &speaker
+                    {
+                        s.earcon();
+                    }
                 }
                 SttOut::Failed(e) => {
                     let _ = ev.send(Event::Error(e));
@@ -894,6 +900,12 @@ fn run(config: CallConfig, ctl: Receiver<Ctl>, ev: Sender<Event>, ended: Arc<Ato
                     } else {
                         set_state(State::Thinking, &mut state);
                         let _ = ev.send(Event::Turn { text, timings });
+                        // "I heard you": the turn is in, before any reply.
+                        if config.earcons
+                            && let Some(s) = &speaker
+                        {
+                            s.earcon();
+                        }
                     }
                 }
             }

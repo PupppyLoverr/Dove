@@ -123,7 +123,7 @@ Speech to text is optional and is not inside the Dove binary. **Parakeet** (NVID
 
 ## Dove for Chrome
 
-`apps/extension` is a Manifest V3 extension for Chrome, Edge and Brave. Load it unpacked, open its side panel and paste the pairing code from Settings › Integrations. Agents then get `chrome_*` tools for your own browser, only on sites you allow, with a review window before consequential actions. See [apps/extension/README.md](apps/extension/README.md).
+`apps/extension` is a Manifest V3 extension for Chrome, Edge and Brave. Load it unpacked, open its side panel and paste the pairing code from Settings › Plugins. Agents then get `chrome_*` tools for your own browser, only on sites you allow, with a review window before consequential actions. See [apps/extension/README.md](apps/extension/README.md).
 
 ## Keyboard shortcuts
 

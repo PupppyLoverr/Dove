@@ -4076,7 +4076,7 @@ impl TaskView {
     fn forget_recalled(&mut self, i: usize, k: usize, shown: SharedString, cx: &mut Context<Self>) {
         use dove_core::memory::{self, Scope};
         let Some(b) = memory::backend() else {
-            self.memory_notes.insert(i, "Sign in to Supermemory in Settings › Memory first".into());
+            self.memory_notes.insert(i, "Sign in to Supermemory in Settings › Plugins › Memory first".into());
             cx.notify();
             return;
         };

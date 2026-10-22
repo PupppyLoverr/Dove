@@ -1,6 +1,6 @@
 //! Dove Computer Use: the `dove-driver` plugin (Dove's fork of the
 //! open-source cua-driver), installed only when the user clicks Install in
-//! Settings → Integrations.
+//! Settings → Plugins.
 //!
 //! The driver comes from the dove-driver GitHub releases, at the version
 //! pinned in the release manifest compiled into Dove
@@ -37,7 +37,7 @@ const DEV_MANIFEST: &str = "dove-driver-manifest.json";
 const STATE_DIR: &str = "state";
 const GROUNDER_DIR: &str = "grounder";
 
-/// Settings › Integrations › Computer use, stored in `integrations.json` as
+/// Settings › Plugins › Computer use, stored in `integrations.json` as
 /// `computer`. Older files carry only `enabled`; unknown fields are ignored.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
@@ -143,7 +143,7 @@ pub fn refusal(args: &serde_json::Value, list: &[String]) -> Option<String> {
     let hit = names.into_iter().chain(pids.into_iter().filter_map(process_name)).find(|n| denied(n, list))?;
     let app = hit.rsplit(['/', '\\']).next().unwrap_or(&hit).to_string();
     Some(format!(
-        "The user does not let agents control {app}. It is on the never-control list in Dove → Settings → Integrations → Computer use. Ask the user to do this step themselves."
+        "The user does not let agents control {app}. It is on the never-control list in Dove → Settings → Plugins → Computer use. Ask the user to do this step themselves."
     ))
 }
 

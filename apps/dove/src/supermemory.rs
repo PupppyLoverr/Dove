@@ -1,6 +1,6 @@
 //! Supermemory as Dove's memory service ([`dove_core::memory::Backend`]).
 //!
-//! It uses the token Dove signed in for (Settings › Integrations or ›
+//! It uses the token Dove signed in for (Settings › Plugins or ›
 //! Memory), so no separate API key is needed; a pasted `sm_…` key in the
 //! server's headers works the same. Two surfaces, one credential:
 //!

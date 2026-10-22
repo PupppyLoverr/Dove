@@ -122,12 +122,12 @@ dove --mcp-browser ─chrome_*─▶ browser::control ─ws://127.0.0.1/extensio
                                  │ upload paths must be inside the thread cwd  │ reviews in review.html (extension origin)
 ```
 
-- **Who may connect.** Only `chrome-extension://` origins that present the pairing token (64 hex characters from the OS CSPRNG via `uuid` v4). After the first pairing the extension's origin is pinned in `~/.dove/extension.json`; Settings › Integrations › New pairing code rotates the token and forgets it. Frames are capped at 16 MB.
+- **Who may connect.** Only `chrome-extension://` origins that present the pairing token (64 hex characters from the OS CSPRNG via `uuid` v4). After the first pairing the extension's origin is pinned in `~/.dove/extension.json`; Settings › Plugins › Dove for Chrome › New pairing code rotates the token and forgets it. Frames are capped at 16 MB.
 - **What the extension accepts.** `lib/policy.js` checks every message from Dove (type, tool, the tool's own arguments, 1 MB cap) and every message from inside the browser (only the extension's own pages may pair, resume or decide; injected page scripts may only Stop).
 - **Consent.** Host access is optional and granted per site from a click in the extension's review window. Consequential clicks (submit, buy, send, delete, …), Enter in a form and every upload wait in `lib/review.js` for **Allow once**. Password, payment, identity and one-time-code fields are refused. Page text is returned framed as untrusted data.
 - **Stop.** Bumps an epoch that every in-flight call checks while it waits; pending reviews are denied. Measured: an in-flight call fails 35 ms after Stop.
 
-Which browser agents use is a setting (Settings › Integrations › Browser for agents): ego lite (default when installed), Dove's browser, or both. ego lite is a CLI agents run themselves through the `dove-browser` skill; Dove for Chrome is for work that needs the user's own signed-in browser. The extension never touches ego lite's Spaces.
+Which browser agents use is a setting (Settings › Plugins › ego lite › Agents browse with): ego lite (default when installed), Dove's browser, or both. ego lite is a CLI agents run themselves through the `dove-browser` skill; Dove for Chrome is for work that needs the user's own signed-in browser. The extension never touches ego lite's Spaces.
 
 ## Store (`crates/dove-store`)
 

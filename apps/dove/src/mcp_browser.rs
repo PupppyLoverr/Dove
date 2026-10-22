@@ -7,7 +7,7 @@
 //! whose working directory matches. `chrome_*` tools take the same path and
 //! the app hands them to the Dove for Chrome extension instead.
 //!
-//! It also fronts the optional integrations (Settings → Integrations and
+//! It also fronts the optional integrations (Settings → Plugins and
 //! Connectors): Composio, Paper, the Dove Computer Use plugin and every
 //! catalog or custom MCP server run as upstreams whose tools are re-exported
 //! here as `<id>__<tool>` (`composio__*`, `paper__*`, `computer__*`,
@@ -29,13 +29,13 @@ snapshot; browser_screenshot shows you the pixels. Dove's chat also renders ```m
 Visuals: call show_visual with a Luau script that returns a ui.* tree. ui.shader runs Shadertoy-style GLSL \
 (void mainImage) on the GPU, including buffer passes. The visual appears inline in the chat; don't restate it.\n\
 Skills: dove_skills lists the skills the user turned on in Dove (office documents plus any they added in \
-Settings › Skills). For .pdf, .pptx, .xlsx or .docx work, call dove_skills with \
+Settings › Plugins › Skills). For .pdf, .pptx, .xlsx or .docx work, call dove_skills with \
 {\"name\": \"pdf\"|\"pptx\"|\"xlsx\"|\"docx\"} first. Each office skill ships a ready script (python-docx, python-pptx, openpyxl, reportlab, pypdf) you run with \
 `uv run <script>`; it gives real layouts, styles, formulas and charts. The user previews and edits the result \
 in Dove's file panel.
 Web tasks: before browsing, call dove_skills with {\"name\": \"dove-browser\"} (or read the dove-browser skill) and follow it; it prefers ego lite, the user's own browser, when installed.";
 
-/// `dove_skills`: every skill that is on in Settings › Skills (the bundled
+/// `dove_skills`: every skill that is on in Settings › Plugins › Skills (the bundled
 /// office, dove-browser and dove-memory skills plus any the user installed
 /// from GitHub), read from the registry each time the tools are listed.
 fn skills_tool() -> Value {
@@ -49,7 +49,7 @@ fn skills_tool_for(on: &[&str]) -> Value {
     json!({
         "name": "dove_skills",
         "description": format!(
-            "Skills the user turned on in Dove (Settings › Skills): {names}. These can be Dove's office skills \
+            "Skills the user turned on in Dove (Settings › Plugins › Skills): {names}. These can be Dove's office skills \
              (pdf, pptx, xlsx, docx), dove-browser (the playbook for any web task), dove-memory, and any skill the \
              user installed from GitHub. Without a name it lists every skill that is on, with its description and \
              folder; with a name it returns that skill's full instructions and its folder."
@@ -194,7 +194,7 @@ pub fn run() {
     // Without the app's browser endpoint (agent browser off), Dove's server
     // still carries the integrations, just not the browser tools.
     let browser = std::env::var_os("DOVE_BROWSER_PORT").is_some();
-    // Settings → Integrations → ego lite: which browser agents use.
+    // Settings → Plugins → ego lite: which browser agents use.
     use crate::pages::integrations::BrowserChoice;
     let ego_found = crate::pages::integrations::ego_browser().is_some();
     let ego_only = config.browser == BrowserChoice::Ego && ego_found;
@@ -666,7 +666,7 @@ pub(crate) mod upstream {
                 Link::Http { client, url, headers, session, oauth } => {
                     let mut bearer = match oauth.as_deref() {
                         Some(id) => Some(crate::mcp_oauth::token(id).ok_or_else(|| {
-                            format!("Not signed in to {name}. Sign in from Dove → Settings → Integrations.")
+                            format!("Not signed in to {name}. Sign in from Dove → Settings → Plugins.")
                         })?),
                         None => None,
                     };
@@ -678,14 +678,12 @@ pub(crate) mod upstream {
                             Reply::Unauthorized if attempt == 0 && oauth.is_some() => {
                                 let id = oauth.as_deref().unwrap_or_default();
                                 bearer = Some(crate::mcp_oauth::refresh(id).map_err(|_| {
-                                    format!(
-                                        "{name} signed Dove out. Sign in again from Dove → Settings → Integrations."
-                                    )
+                                    format!("{name} signed Dove out. Sign in again from Dove → Settings → Plugins.")
                                 })?);
                             }
                             Reply::Unauthorized => {
                                 return Err(format!(
-                                    "{name} refused the credentials. Check them in Dove → Settings → Integrations."
+                                    "{name} refused the credentials. Check them in Dove → Settings → Plugins."
                                 ));
                             }
                         }
@@ -771,6 +769,9 @@ pub(crate) mod upstream {
         tools: Vec<Value>,
         /// Exposed name → upstream name, for the shortened ones.
         renamed: HashMap<String, String>,
+        /// Upstream name → its full input schema, fetched with
+        /// `describe_tools` when the server lists schemas lazily.
+        schemas: HashMap<String, Value>,
     }
 
     pub struct Hub {
@@ -873,7 +874,7 @@ pub(crate) mod upstream {
                     Ok((_, Ok((server, tools)))) => {
                         pending -= 1;
                         let (tools, renamed) = expose(&server.name, tools);
-                        self.live.push(Live { server, tools, renamed });
+                        self.live.push(Live { server, tools, renamed, schemas: HashMap::new() });
                     }
                     Ok((name, Err(e))) => {
                         pending -= 1;
@@ -904,17 +905,91 @@ pub(crate) mod upstream {
                 return error(&why);
             }
             let Some(live) = self.live.iter_mut().find(|l| l.server.name == prefix) else {
-                return error(&format!(
-                    "The {prefix} integration is not connected. Check Dove → Settings → Integrations."
-                ));
+                return error(&format!("The {prefix} integration is not connected. Check Dove → Settings → Plugins."));
             };
             let name = live
                 .renamed
                 .get(tool)
                 .cloned()
                 .unwrap_or_else(|| tool.split_once("__").map(|(_, n)| n.to_string()).unwrap_or_default());
+            // Without a schema (lazy disclosure) agents send arrays, objects
+            // and numbers as strings: type them as the tool declares.
+            let args = match live.schema(tool, &name) {
+                Some(schema) => coerce(args, &schema),
+                None => args,
+            };
             live.server.request("tools/call", json!({"name": name, "arguments": args})).unwrap_or_else(|e| error(&e))
         }
+    }
+
+    impl Live {
+        /// `name`'s input schema: as listed, or (when the server withholds
+        /// schemas) once from its `describe_tools`, then cached.
+        fn schema(&mut self, exposed: &str, name: &str) -> Option<Value> {
+            let listed = self
+                .tools
+                .iter()
+                .find(|t| t.get("name").and_then(Value::as_str) == Some(exposed))
+                .and_then(|t| t.get("inputSchema"))
+                .filter(|s| s.get("properties").is_some())
+                .cloned();
+            if listed.is_some() {
+                return listed;
+            }
+            if let Some(s) = self.schemas.get(name) {
+                return Some(s.clone());
+            }
+            let has_describe = self
+                .tools
+                .iter()
+                .any(|t| t.get("name").and_then(Value::as_str).is_some_and(|n| n.ends_with("__describe_tools")));
+            if !has_describe {
+                return None;
+            }
+            let reply = self
+                .server
+                .request("tools/call", json!({"name": "describe_tools", "arguments": {"names": [name]}}))
+                .ok()?;
+            let schema = reply
+                .pointer("/structuredContent/tools")
+                .and_then(Value::as_array)?
+                .iter()
+                .find(|t| t.get("name").and_then(Value::as_str) == Some(name))?
+                .get("inputSchema")?
+                .clone();
+            self.schemas.insert(name.to_string(), schema.clone());
+            Some(schema)
+        }
+    }
+
+    /// Give each top-level argument the type `schema` declares when the
+    /// agent sent it as a string: JSON arrays and objects, numbers, booleans.
+    /// Anything that does not parse to the declared type is left alone, so
+    /// the server still reports its own error.
+    pub fn coerce(args: Value, schema: &Value) -> Value {
+        let Value::Object(mut map) = args else { return args };
+        let Some(props) = schema.get("properties").and_then(Value::as_object) else { return Value::Object(map) };
+        for (key, value) in map.iter_mut() {
+            let Value::String(text) = value else { continue };
+            let want = props.get(key).and_then(|p| p.get("type")).and_then(Value::as_str).unwrap_or("");
+            let parsed: Option<Value> = match want {
+                "array" | "object" => serde_json::from_str::<Value>(text.trim())
+                    .ok()
+                    .filter(|v| (want == "array" && v.is_array()) || (want == "object" && v.is_object())),
+                "integer" => text.trim().parse::<i64>().ok().map(Value::from),
+                "number" => text.trim().parse::<f64>().ok().and_then(serde_json::Number::from_f64).map(Value::Number),
+                "boolean" => match text.trim() {
+                    "true" => Some(Value::Bool(true)),
+                    "false" => Some(Value::Bool(false)),
+                    _ => None,
+                },
+                _ => None,
+            };
+            if let Some(v) = parsed {
+                *value = v;
+            }
+        }
+        Value::Object(map)
     }
 
     /// Prefix each tool with its server and keep names within
@@ -1008,6 +1083,27 @@ pub(crate) mod upstream {
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        #[test]
+        fn stringly_arguments_get_the_declared_types() {
+            let schema = json!({"type": "object", "properties": {
+                "pid": {"type": "integer"}, "window_id": {"type": "integer"}, "steps": {"type": "array"},
+                "observe": {"type": "object"}, "foreground_fallback": {"type": "boolean"}, "app": {"type": "string"},
+                "delay": {"type": "number"}}});
+            let sent = json!({"pid": "31612", "window_id": "53610236",
+                "steps": "[{\"tool\":\"type_text\",\"args\":{\"text\":\"hi\"}}]", "observe": "{}",
+                "foreground_fallback": "true", "app": "42", "delay": "1.5"});
+            assert_eq!(
+                coerce(sent, &schema),
+                json!({"pid": 31612, "window_id": 53610236,
+                    "steps": [{"tool": "type_text", "args": {"text": "hi"}}], "observe": {},
+                    "foreground_fallback": true, "app": "42", "delay": 1.5})
+            );
+            // Already typed, or not parseable as the declared type: unchanged.
+            let ok = json!({"pid": 7, "steps": [], "observe": "not json"});
+            assert_eq!(coerce(ok.clone(), &schema), ok);
+            assert_eq!(coerce(json!({"steps": "{}"}), &schema), json!({"steps": "{}"}), "an object is not an array");
+        }
 
         #[test]
         fn short_names_pass_through() {

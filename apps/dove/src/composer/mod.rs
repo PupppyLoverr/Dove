@@ -1681,7 +1681,7 @@ impl Composer {
             .when(empty, |d| {
                 d.child(div().px(px(14.0)).py(px(8.0)).text_size(ty::BODY).text_color(t.text_faint).child(
                     if m.trigger == '#' {
-                        "No skills yet. Add some in Settings › Skills."
+                        "No skills yet. Add some in Settings › Plugins › Skills."
                     } else if self.files.is_empty() {
                         "Loading files…"
                     } else {

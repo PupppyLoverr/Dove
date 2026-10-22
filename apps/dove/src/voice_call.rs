@@ -65,6 +65,8 @@ pub struct VoiceCall {
     pub error: Option<SharedString>,
     pub muted: bool,
     pub level: f32,
+    /// The elapsed second the strip last drew.
+    shown_second: u64,
     pub engines: Option<SharedString>,
     pub startup_ms: Option<u32>,
     /// The thread the call talks to.
@@ -260,7 +262,7 @@ pub fn config(engine: &Engine) -> CallConfig {
         voice: s.setting("voice_name").filter(|v| !v.is_empty()),
         stt,
         tts,
-        earcons: false,
+        earcons: s.flag("voice_earcons", true),
     }
 }
 
@@ -303,6 +305,7 @@ impl VoiceCall {
             error: None,
             muted: false,
             level: 0.0,
+            shown_second: 0,
             engines: None,
             startup_ms: None,
             current,
@@ -333,6 +336,16 @@ impl VoiceCall {
         let mut changed = false;
         let mut ended = false;
         while let Ok(ev) = self.call.events.try_recv() {
+            // Levels arrive every 50 ms: redraw only when the waveform's
+            // visible height changes (the strip's views are ancestors' too).
+            if let Event::Level { mic, speaker } = ev {
+                let level = mic.max(speaker);
+                if level_step(level) != level_step(self.level) {
+                    changed = true;
+                }
+                self.level = level;
+                continue;
+            }
             changed = true;
             match ev {
                 Event::State(s) => self.state = s,
@@ -374,12 +387,18 @@ impl VoiceCall {
                 Event::ReplyAudio { text_to_audio_ms } => {
                     tracing::info!("voice reply: first audio {text_to_audio_ms:.0} ms after first text");
                 }
-                Event::Level { mic, speaker } => self.level = mic.max(speaker),
+                Event::Level { .. } => {}
                 Event::Error(e) => {
                     self.error = Some(e.into());
                 }
                 Event::Ended => ended = true,
             }
+        }
+        // The strip's timer ticks once a second.
+        let second = self.started.elapsed().as_secs();
+        if second != self.shown_second {
+            self.shown_second = second;
+            changed = true;
         }
         if ended {
             self.finish_log();
@@ -1100,6 +1119,13 @@ impl Shell {
 /// The floating strip's width; above a composer it takes the composer's.
 const STRIP_MAX_W: f32 = 560.0;
 const STRIP_H: f32 = 48.0;
+/// The level as the waveform draws it: eight steps.
+fn level_step(level: f32) -> u8 {
+    (level.clamp(0.0, 0.3) / 0.3 * 8.0).round() as u8
+}
+
+/// The waveform bars' share of the level, left to right.
+const WAVE: [f32; 4] = [0.55, 1.0, 0.8, 0.45];
 const ORB: f32 = 32.0;
 
 impl Render for VoiceCall {
@@ -1138,28 +1164,34 @@ impl Render for VoiceCall {
         let muted = self.muted;
 
         // The orb follows the voice level; holding it talks while muted.
-        let orb = div()
-            .id("voice-orb")
-            .size(px(ORB))
-            .flex_none()
-            .rounded_full()
-            .flex()
-            .items_center()
-            .justify_center()
-            .bg(tint.opacity(0.14))
-            .cursor_pointer()
-            .tooltip(crate::ui::tip("Hold to talk"))
-            .child(if muted {
-                icon(icons::MICROPHONE_OFF).size(px(14.0)).text_color(t.text_muted).into_any_element()
-            } else {
-                div()
-                    .size(px(10.0 + 14.0 * level))
-                    .rounded_full()
-                    .bg(tint.opacity(if loading { 0.35 } else { 0.9 }))
-                    .into_any_element()
-            })
-            .on_mouse_down(gpui::MouseButton::Left, cx.listener(|v, _, _, _| v.push_to_talk(true)))
-            .on_mouse_up(gpui::MouseButton::Left, cx.listener(|v, _, _, _| v.push_to_talk(false)));
+        let orb =
+            div()
+                .id("voice-orb")
+                .size(px(ORB))
+                .flex_none()
+                .rounded_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(tint.opacity(0.14))
+                .cursor_pointer()
+                .tooltip(crate::ui::tip("Hold to talk"))
+                .child(if muted {
+                    icon(icons::MICROPHONE_OFF).size(px(14.0)).text_color(t.text_muted).into_any_element()
+                } else {
+                    // A small live waveform: four bars that follow the level.
+                    let alpha = if loading { 0.35 } else { 0.9 };
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(2.0))
+                        .children(WAVE.iter().map(|k| {
+                            div().w(px(3.0)).h(px(4.0 + 12.0 * level * k)).rounded_full().bg(tint.opacity(alpha))
+                        }))
+                        .into_any_element()
+                })
+                .on_mouse_down(gpui::MouseButton::Left, cx.listener(|v, _, _, _| v.push_to_talk(true)))
+                .on_mouse_up(gpui::MouseButton::Left, cx.listener(|v, _, _, _| v.push_to_talk(false)));
 
         let text = div()
             .flex_1()
@@ -1200,6 +1232,14 @@ impl Render for VoiceCall {
             .shadow(t.composer_shadows(false))
             .child(orb)
             .child(text)
+            .when(!loading, |d| {
+                let secs = self.started.elapsed().as_secs();
+                d.child(div().flex_none().text_size(ty::META).text_color(t.text_faint).child(format!(
+                    "{}:{:02}",
+                    secs / 60,
+                    secs % 60
+                )))
+            })
             .when(speaking, |d| {
                 d.child(
                     crate::ui::round_button_sized("voice-silence", "Stop speaking (the agent keeps working)", 30.0, &t)

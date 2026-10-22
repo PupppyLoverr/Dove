@@ -109,7 +109,7 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
     if (!senderMayRequest(sender, chrome.runtime.id, OWN_ORIGIN, type)) return respond({ error: 'not allowed' });
     if (type === 'pair') {
       const p = parsePairingCode(msg.code);
-      if (!p) return respond({ error: 'That is not a Dove pairing code. Copy it from Dove → Settings → Integrations.' });
+      if (!p) return respond({ error: 'That is not a Dove pairing code. Copy it from Dove → Settings → Plugins.' });
       await chrome.storage.local.set({ pairing: p });
       ws?.close(); ws = null; await connect();
       return respond({ ok: true });

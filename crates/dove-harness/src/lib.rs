@@ -75,7 +75,7 @@ pub fn tool_server(cwd: &std::path::Path) -> Option<ToolServer> {
 static ALLOW_EGO_BROWSER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Let sessions started from now on run ego lite's `ego-browser` command
-/// without a prompt (Settings → Integrations → ego lite). Each harness
+/// without a prompt (Settings → Plugins → ego lite). Each harness
 /// applies it through its own allow rules, which parse the shell command
 /// themselves; Dove never matches shell text. Harnesses with no safe
 /// launch-time rule keep asking.

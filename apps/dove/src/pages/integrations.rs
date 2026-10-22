@@ -1,7 +1,8 @@
-//! Settings → Integrations (MCP servers from the catalog or added by hand,
-//! GitHub CLI, ego lite, Dove for Chrome, Paper, and the Dove Computer Use
-//! plugin) and Settings → Connectors (Composio). One view draws both pages, so they share one copy of the
-//! config and never overwrite each other's changes.
+//! Settings → Plugins: MCP servers (from the catalog or added by hand), the
+//! built-in tools (GitHub CLI, ego lite, Dove for Chrome, Paper, the Dove
+//! Computer Use plugin) and apps through Composio. One view draws every tab
+//! (`plugins.rs` lays the page out), so they share one copy of the config
+//! and never overwrite each other's changes.
 //!
 //! The choices live in `<dove data>/integrations.json` (mode 0600, since it
 //! holds the user's Composio key). `dove --mcp-browser` reads that file when
@@ -227,7 +228,7 @@ pub struct Config {
     pub ego_allow: bool,
 }
 
-/// The agents' browser (Settings → Integrations → ego lite).
+/// The agents' browser (Settings → Plugins → ego lite).
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum BrowserChoice {
@@ -423,23 +424,19 @@ enum GhStep {
     Failed(String),
 }
 
-/// Which Settings page the view is drawing.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub enum Scope {
-    /// MCP servers and local tools.
-    #[default]
-    Integrations,
-    /// App connections through Composio.
-    Connectors,
-}
-
 #[path = "integrations_computer.rs"]
 mod computer;
 #[path = "integrations_mcp.rs"]
 mod mcp;
+#[path = "plugins.rs"]
+pub mod plugins;
 
 pub struct IntegrationsView {
-    scope: Scope,
+    /// Settings › Plugins: the tab, list / directory / detail, the Add menu.
+    plugins: plugins::State,
+    /// The views Plugins shows for skills and memory (owned by Settings).
+    skills: Option<gpui::WeakEntity<crate::pages::skills::SkillsView>>,
+    memory: Option<gpui::WeakEntity<crate::pages::memory_settings::MemoryView>>,
     config: Config,
     api_key: Entity<InputState>,
     toolkits: Entity<InputState>,
@@ -481,7 +478,7 @@ impl IntegrationsView {
             s
         });
         let search = cx.new(|cx| {
-            let mut s = InputState::new(window, cx).placeholder("Search servers");
+            let mut s = InputState::new(window, cx).placeholder("Search plugins");
             s.set_editor_style(ui::input_style(Theme::of(cx)));
             s
         });
@@ -539,7 +536,9 @@ impl IntegrationsView {
             }),
         ];
         let mut view = Self {
-            scope: Scope::default(),
+            plugins: plugins::State::default(),
+            skills: None,
+            memory: None,
             config,
             api_key,
             toolkits,
@@ -570,12 +569,15 @@ impl IntegrationsView {
         view
     }
 
-    /// Draw the Integrations or the Connectors page.
-    pub fn set_scope(&mut self, scope: Scope, cx: &mut Context<Self>) {
-        if self.scope != scope {
-            self.scope = scope;
-            cx.notify();
-        }
+    /// The Skills and Memory views Plugins shows in its Skills tab and
+    /// Memory details.
+    pub fn embed(
+        &mut self,
+        skills: &Entity<crate::pages::skills::SkillsView>,
+        memory: &Entity<crate::pages::memory_settings::MemoryView>,
+    ) {
+        self.skills = Some(skills.downgrade());
+        self.memory = Some(memory.downgrade());
     }
 
     fn persist(&mut self, cx: &mut Context<Self>) {
@@ -1102,7 +1104,7 @@ impl Render for IntegrationsView {
         // Computer use: the Dove Computer Use plugin (integrations_computer.rs)
         let computer = self.render_computer(&t, cx);
 
-        let (mcp, discover) = self.render_mcp(&t, cx);
+        let mcp = self.render_mcp(&t, cx);
         let dialog = self.render_dialog(&t, window, cx);
         // ego lite: the agents' browser
         let choice = self.config.browser;
@@ -1229,32 +1231,16 @@ impl Render for IntegrationsView {
                     &t,
                 ))
             });
-        let built_in = div()
-            .flex()
-            .flex_col()
-            .gap(px(space::MD))
-            .child(github)
-            .child(ego)
-            .child(chrome)
-            .child(paper)
-            .child(computer);
+        let plates = plugins::Plates { github, ego, chrome, paper, computer, composio, mcp };
         div()
-            .pt(px(space::LG))
             .flex()
             .flex_col()
-            .gap(px(space::MD))
-            .map(|d| match self.scope {
-                Scope::Integrations => d
-                    .child(page::section(&t, "MCP servers", mcp))
-                    .child(page::section(&t, "Built in", built_in))
-                    .children(discover),
-                Scope::Connectors => d.child(composio),
-            })
+            .child(self.render_plugins(plates, window, cx))
             .children(dialog)
             .child(
                 div()
                     .px(px(page::LABEL_INSET))
-                    .pt(px(space::XXS))
+                    .pt(px(space::LG))
                     .text_size(ty::META)
                     .text_color(t.text_faint)
                     .child("Changes apply to agents started from now on."),
