@@ -407,7 +407,8 @@ fn worker() -> &'static std::sync::mpsc::SyncSender<Command> {
         std::thread::spawn(move || {
             let mut cached: Option<(std::path::PathBuf, Recognizer)> = None;
             loop {
-                let (job, _admission) = match rx.recv_timeout(std::time::Duration::from_secs(600)) {
+                // Two idle minutes drop the model (~700 MB) until the next use.
+                let (job, _admission) = match rx.recv_timeout(std::time::Duration::from_secs(120)) {
                     Ok(Command::Transcribe(j, admission)) => (j, admission),
                     Ok(Command::Warm(dir)) => {
                         if cached.as_ref().is_none_or(|(path, _)| *path != dir) {

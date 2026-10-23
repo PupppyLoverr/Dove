@@ -49,7 +49,10 @@ impl VoiceModel {
     pub fn init(engine: Arc<Engine>, cx: &mut App) -> Entity<VoiceModel> {
         let dir = model_dir(&engine);
         let state = if zeron_voice::installed(&dir) { InstallState::Installed } else { InstallState::Missing };
-        if matches!(state, InstallState::Installed) {
+        // Batch dictation answers faster with Parakeet already loaded; live
+        // dictation (the default) uses a different recognizer, so loading
+        // it would only hold ~700 MB for nothing.
+        if matches!(state, InstallState::Installed) && batch_dictation(&engine) {
             zeron_voice::warm(dir);
         }
         let e = cx.new(|_| VoiceModel { engine, state, cancel: None });
@@ -108,7 +111,9 @@ impl VoiceModel {
                 m.cancel = None;
                 m.state = match result {
                     Ok(()) => {
-                        zeron_voice::warm(model_dir(&m.engine));
+                        if batch_dictation(&m.engine) {
+                            zeron_voice::warm(model_dir(&m.engine));
+                        }
                         InstallState::Installed
                     }
                     Err(e) if e.contains("cancelled") => InstallState::Missing,
@@ -343,6 +348,12 @@ impl Dictation {
             }
         }));
     }
+}
+
+/// Dictation records, then transcribes with Parakeet (live dictation is
+/// off, or no streaming recognizer is installed).
+fn batch_dictation(engine: &Engine) -> bool {
+    !(engine.store.flag("dictation_live", true) && crate::voice_call::local_stt_ready(engine))
 }
 
 impl Dictation {
