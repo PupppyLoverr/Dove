@@ -31,6 +31,8 @@ pub struct TuiSpec<'a> {
     pub model: Option<&'a str>,
     pub mode: PermissionMode,
     pub add_dirs: &'a [PathBuf],
+    /// Dove's session key for the thread (see `SessionSpec::session`).
+    pub session: &'a str,
 }
 
 /// Whether the TUI can reopen a chat session for `kind` once that session
@@ -127,7 +129,7 @@ fn command_with(kind: HarnessKind, program: &Path, cwd: &Path, spec: &TuiSpec, a
             // Dove's browser tools ride beside the user's own MCP servers.
             // A file path, not inline JSON: quoting survives cmd.exe.
             let mut allowed = Vec::new();
-            if let Some(path) = crate::tool_server(cwd).and_then(|s| write_claude_mcp_config(&s)) {
+            if let Some(path) = crate::tool_server(cwd, spec.session).and_then(|s| write_claude_mcp_config(&s)) {
                 push("--mcp-config");
                 push(&path.display().to_string());
                 allowed.push("mcp__dove");
@@ -262,7 +264,7 @@ fn command_with(kind: HarnessKind, program: &Path, cwd: &Path, spec: &TuiSpec, a
     // Dove's tools (browser, integrations, MCP servers) for Codex's own UI,
     // as root overrides ahead of any subcommand.
     if kind == HarnessKind::Codex
-        && let Some(server) = crate::tool_server(cwd)
+        && let Some(server) = crate::tool_server(cwd, spec.session)
     {
         args.splice(0..0, codex_mcp_overrides(&server));
     }
@@ -270,7 +272,7 @@ fn command_with(kind: HarnessKind, program: &Path, cwd: &Path, spec: &TuiSpec, a
     // it over the user's own files, so Dove's server rides beside theirs.
     let mut env = Vec::new();
     if kind == HarnessKind::OpenCode
-        && let Some(server) = crate::tool_server(cwd)
+        && let Some(server) = crate::tool_server(cwd, spec.session)
     {
         let existing = std::env::var("OPENCODE_CONFIG_CONTENT").ok();
         env.push(("OPENCODE_CONFIG_CONTENT".to_string(), opencode_config_content(&server, existing.as_deref())));
@@ -393,7 +395,8 @@ fn find_codex_rollout(sessions: &Path, id: &str) -> Option<PathBuf> {
 }
 
 /// Codex `-c` overrides that add `server` beside the user's own MCP servers
-/// (`mcp_servers.<name>.{command,args,env}`), as TOML values.
+/// (`mcp_servers.<name>.{command,args,env,tool_timeout_sec}`), as TOML
+/// values. Team tools may wait on other agents for up to half an hour.
 fn codex_mcp_overrides(server: &crate::ToolServer) -> Vec<String> {
     let name = &server.name;
     let args = server.args.iter().map(|a| toml_str(a)).collect::<Vec<_>>().join(",");
@@ -405,6 +408,8 @@ fn codex_mcp_overrides(server: &crate::ToolServer) -> Vec<String> {
         format!("mcp_servers.{name}.args=[{args}]"),
         "-c".into(),
         format!("mcp_servers.{name}.env={{{env}}}"),
+        "-c".into(),
+        format!("mcp_servers.{name}.tool_timeout_sec=1900"),
     ]
 }
 
@@ -461,6 +466,7 @@ mod tests {
         assert_eq!(o[1], r"mcp_servers.dove.command='C:\Program Files\Dove\dove.exe'");
         assert_eq!(o[3], "mcp_servers.dove.args=['--mcp-browser']");
         assert_eq!(o[5], r#"mcp_servers.dove.env={DOVE_CWD='C:\w',Q="it's"}"#);
+        assert_eq!(o[7], "mcp_servers.dove.tool_timeout_sec=1900");
     }
 
     #[test]
@@ -490,7 +496,7 @@ mod tests {
     }
 
     fn spec(id: Option<&str>, mode: PermissionMode) -> TuiSpec<'_> {
-        TuiSpec { native_session_id: id, model: Some("opus"), mode, add_dirs: &[] }
+        TuiSpec { native_session_id: id, model: Some("opus"), mode, add_dirs: &[], session: "" }
     }
 
     #[test]

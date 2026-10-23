@@ -111,10 +111,16 @@ fn plain_executable(path: PathBuf) -> PathBuf {
 }
 
 /// Dotted `thread/start` config overrides that add an injected MCP server
-/// to the user's `mcp_servers` table.
+/// to the user's `mcp_servers` table. Its tools may wait on other agents
+/// for up to half an hour, past Codex's 60 s default tool timeout.
 fn codex_mcp_overrides(mcp: &zeron_proto::McpServer) -> Vec<(String, Value)> {
     let key = |field: &str| format!("mcp_servers.{}.{field}", mcp.name);
-    vec![(key("command"), mcp.command.clone().into()), (key("args"), json!(mcp.args)), (key("env"), json!(mcp.env))]
+    vec![
+        (key("command"), mcp.command.clone().into()),
+        (key("args"), json!(mcp.args)),
+        (key("env"), json!(mcp.env)),
+        (key("tool_timeout_sec"), json!(1900)),
+    ]
 }
 
 /// A ready-to-spawn `codex login` command for the engine's account flow.

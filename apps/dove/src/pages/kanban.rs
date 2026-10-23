@@ -222,7 +222,7 @@ impl Shell {
             return;
         };
         let persona = self.pages.draft_persona.clone().and_then(|id| self.persona(&id).cloned());
-        let harness = persona.as_ref().map(|p| p.harness).unwrap_or_else(|| self.composer.read(cx).harness(cx));
+        let harness = persona.as_ref().and_then(|p| p.harness).unwrap_or_else(|| self.composer.read(cx).harness(cx));
         let title = if title.is_empty() { ui::title_from_prompt(&prompt) } else { title };
         match self.pages.editing_draft.take() {
             Some(id) => {
@@ -230,7 +230,7 @@ impl Shell {
                     t.title = title;
                     t.prompt = Some(prompt);
                     if let Some(p) = &persona {
-                        t.harness = p.harness;
+                        t.harness = p.harness.unwrap_or(t.harness);
                         let _ = self.engine.store.assign_persona(id, &p.id);
                     }
                     let _ = self.engine.store.update_task(&t);

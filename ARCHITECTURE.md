@@ -129,6 +129,26 @@ dove --mcp-browser ─chrome_*─▶ browser::control ─ws://127.0.0.1/extensio
 
 Which browser agents use is a setting (Settings › Plugins › ego lite › Agents browse with): ego lite (default when installed), Dove's browser, or both. ego lite is a CLI agents run themselves through the `dove-browser` skill; Dove for Chrome is for work that needs the user's own signed-in browser. The extension never touches ego lite's Spaces.
 
+## Team and orchestration
+
+Any thread can hand work to any agent and model, talk to teammates, and read, steer, wait on or stop other threads. User guide: [docs/TEAM.md](docs/TEAM.md).
+
+```text
+agent ─tools/call─▶ dove --mcp-browser ─{token, cwd, session, tool, args}─▶ browser::control ─▶ Shell::route_team_call
+                                                                                                  │ caller = Engine::task_for_session(session)
+          child thread ◀─ Engine::start_task (as a teammate, own worktree, capped permission) ◀───┤
+          any thread   ◀─ TaskView::submit (steer / queue / start a turn)  ◀──────────────────────┘
+parent ◀─ team update (batched 1.5 s) ◀─ Shell::team_tick ◀─ status changes + store sweep (task_links)
+```
+
+- **Identity.** Every `SessionSpec` carries a fresh `session` key (`dove_harness::new_session_key`). The tool server's environment gets it as `DOVE_SESSION`; the hub forwards it with each call; `Engine` maps it to the thread (also for adopted warm sessions and terminal-mode sessions). A call without a known key falls back to the one working thread in its folder.
+- **The endpoint always runs.** `main.rs` starts `browser::control` even with the agent browser off; `DOVE_AGENT_BROWSER=0` then hides only the browser tools, not the team tools.
+- **Rules** (`dove-core/src/orchestra.rs`, no UI): agent resolution and `pick_agent`, `cap_mode` (never broader than the parent), depth (3) and fan-out (6) limits, the framing a child or teammate receives (`<dove-task>`, `<dove-message>`, `<dove-team-update>`), `final_answer` and `timeline` over a transcript.
+- **Lineage** (`dove-store`, table `task_links`): child → parent, kind (delegate or message), whether to deliver, status, the result summary, whether it was delivered, and an idempotency key. It survives restarts, so a result that lands while Dove is closed is delivered on the next launch's sweep.
+- **App side** (`apps/dove/src/orchestra.rs`): performs each tool with the same paths a click uses (`Engine::start_task` + `make_thread` for a new thread, `TaskView::submit` for a message, `TaskView::interrupt` for Stop). Waits poll every 0.4 s off the UI thread. `team_on_status` (from each view's status events) and a 0.7 s sweep (for threads without an open view) settle links; due batches are sent to the parent as one message.
+- **UI.** The transcript draws framed messages as cards (`render_team_text`). The sidebar's Team section lists teammates with their threads as ordinary thread rows; Settings › Team is the roster, workspace and editor (`team.rs`). A teammate's agent and model are optional (`Persona.harness: Option<HarnessKind>`).
+- **Agent timeouts.** Codex is given `tool_timeout_sec = 1900` for the `dove` server so a 30-minute wait isn't cut at its 60 s default.
+
 ## Store (`crates/dove-store`)
 
 Everything lives under `~/.dove` (override with `DOVE_HOME`):

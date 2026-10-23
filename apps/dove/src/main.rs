@@ -32,6 +32,7 @@ mod memory_bench;
 mod motion;
 mod notify;
 mod office;
+mod orchestra;
 mod pages;
 mod palette;
 mod perf_trace;
@@ -49,6 +50,7 @@ mod sidebar;
 mod supermemory;
 mod surface_chrome;
 mod team;
+mod team_tools;
 mod terminal;
 mod theme;
 mod themes;
@@ -350,14 +352,16 @@ fn main() {
     // Settings → Plugins → ego lite: run `ego-browser` without asking.
     dove_core::set_allow_ego_browser(pages::integrations::load().ego_allowed());
     let browser_on = engine.store.setting("agent_browser").as_deref() != Some("false");
-    if !browser_on {
+    // The app's endpoint always runs: it carries the team tools (delegation,
+    // teammates, threads) for every harness, and the browser tools when the
+    // agent browser is on (`DOVE_AGENT_BROWSER`).
+    let endpoint = browser::control::start(&engine.runtime());
+    if endpoint.is_none() {
         // Integrations (MCP servers, Composio, Paper, computer use) still
-        // reach every harness through Dove's server, without the browser.
+        // reach every harness through Dove's server.
         mcp_browser::register_without_browser(engine.store.root());
     }
-    if browser_on
-        && let (Some(endpoint), Ok(exe)) = (browser::control::start(&engine.runtime()), std::env::current_exe())
-    {
+    if let (Some(endpoint), Ok(exe)) = (endpoint, std::env::current_exe()) {
         // For tests and external tooling: where to reach this instance.
         if let Some(path) = std::env::var_os("DOVE_BROWSER_ENDPOINT_FILE") {
             let _ = std::fs::write(path, format!("{} {}", endpoint.port, endpoint.token));
@@ -369,6 +373,7 @@ fn main() {
             env: vec![
                 ("DOVE_BROWSER_PORT".into(), endpoint.port.to_string()),
                 ("DOVE_BROWSER_TOKEN".into(), endpoint.token),
+                ("DOVE_AGENT_BROWSER".into(), if browser_on { "1" } else { "0" }.into()),
                 ("DOVE_DATA".into(), engine.store.root().display().to_string()),
             ],
         }));

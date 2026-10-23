@@ -30,6 +30,7 @@ fn main() -> anyhow::Result<()> {
         resume: None,
         prompt: Some(prompt),
         fork: false,
+        session: String::new(),
     };
     let handle = spawn(rt.handle(), spec)?;
     let start = std::time::Instant::now();

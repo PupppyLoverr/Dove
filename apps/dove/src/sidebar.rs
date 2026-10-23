@@ -840,7 +840,7 @@ impl Shell {
             .into_any_element()
     }
 
-    fn render_row(&self, task: &Task, compact: bool, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn render_row(&self, task: &Task, compact: bool, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let id = task.id;
         let selected = self.route == Route::Thread(id);
         let archived = task.status == TaskStatus::Archived;

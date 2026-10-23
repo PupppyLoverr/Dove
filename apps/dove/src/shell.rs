@@ -265,6 +265,8 @@ pub struct Shell {
     _browser_control: Option<gpui::Task<()>>,
     /// Presses of Voice Mode's system-wide shortcut.
     _voice_hotkey: Option<gpui::Task<()>>,
+    /// Delegation and teammate messaging between threads (`orchestra.rs`).
+    pub(crate) team: crate::orchestra::TeamState,
 }
 
 impl Shell {
@@ -338,8 +340,6 @@ impl Shell {
             &settings,
             window,
             |this, _, ev: &crate::settings::SettingsEvent, window, cx| match ev {
-                crate::settings::SettingsEvent::OpenTeam { new: true } => this.edit_teammate(None, window, cx),
-                crate::settings::SettingsEvent::OpenTeam { new: false } => this.open_teammate(None, window, cx),
                 crate::settings::SettingsEvent::SignIn(kind) => this.sign_in(*kind, cx),
                 crate::settings::SettingsEvent::Rescan => this.rescan(cx),
                 crate::settings::SettingsEvent::Close => this.close_settings(window, cx),
@@ -462,12 +462,14 @@ impl Shell {
             _scheduler: None,
             _browser_control: None,
             _voice_hotkey: None,
+            team: Default::default(),
         };
         this.reload(cx);
         this.tabs.retain(|id| this.tasks.iter().any(|t| t.id == *id));
         this.scan_harnesses(cx);
         this.start_scheduler(cx);
         this.start_browser_control(window, cx);
+        this.start_team_sweep(window, cx);
         this.start_voice_hotkey(window, cx);
         crate::composer::focus(&this.composer, window, cx);
         // `DOVE_OPEN_THREAD=<id>`: start on a thread (QA and scripting).
@@ -494,6 +496,30 @@ impl Shell {
                 None => this.composer.clone(),
             };
             crate::composer::attach_paths(&composer, paths, cx);
+        }
+        // `DOVE_SEED_TEAM=1`: add the starter team (QA of Team).
+        if std::env::var("DOVE_SEED_TEAM").is_ok_and(|v| v == "1") {
+            this.seed_starter_team(cx);
+        }
+        // `DOVE_PROMPT=<text>`: start a thread from Home on launch, on
+        // `DOVE_PROMPT_AGENT` / `DOVE_PROMPT_MODEL` in `DOVE_PROMPT_MODE`
+        // (QA of agent-driven features, like the team tools).
+        if let Ok(prompt) = std::env::var("DOVE_PROMPT")
+            && !prompt.trim().is_empty()
+        {
+            let agent = std::env::var("DOVE_PROMPT_AGENT").ok().and_then(|a| HarnessKind::from_id(&a));
+            let model = std::env::var("DOVE_PROMPT_MODEL").ok().filter(|m| !m.is_empty());
+            let mode = std::env::var("DOVE_PROMPT_MODE").ok().map(|m| crate::composer::mode_from_id(&m));
+            this.composer.update(cx, |c, cx| {
+                if let Some(kind) = agent {
+                    c.use_harness(kind, model, cx);
+                }
+                if let Some(mode) = mode {
+                    c.set_mode(mode, cx);
+                }
+            });
+            crate::composer::set_text(&this.composer, &prompt, window, cx);
+            this.composer.update(cx, |c, cx| c.submit(window, cx));
         }
         // `DOVE_INFO=1`: open the thread's info card (QA).
         if std::env::var("DOVE_INFO").is_ok_and(|v| v == "1") {
@@ -649,6 +675,24 @@ impl Shell {
         let Some(requests) = crate::browser::control::take_requests() else { return };
         self._browser_control = Some(cx.spawn_in(window, async move |this, cx| {
             while let Ok(req) = requests.recv_async().await {
+                if crate::team_tools::is_team_tool(&req.tool) {
+                    let reply = this.update_in(cx, |s, window, cx| s.route_team_call(&req, window, cx));
+                    match reply {
+                        Ok(crate::orchestra::TeamReply::Now(outcome)) => {
+                            let _ = req.reply.send(outcome);
+                        }
+                        Ok(crate::orchestra::TeamReply::Wait(waiter)) => {
+                            let weak = this.clone();
+                            cx.spawn(async move |cx| {
+                                let outcome = crate::orchestra::wait(weak, waiter, cx).await;
+                                let _ = req.reply.send(outcome);
+                            })
+                            .detach();
+                        }
+                        Err(_) => break,
+                    }
+                    continue;
+                }
                 let routed = this.update_in(cx, |s, window, cx| s.route_browser_call(&req, window, cx));
                 match routed {
                     Ok(Ok(BrowserCall::Done(outcome))) => {
@@ -1030,6 +1074,7 @@ impl Shell {
                 t.unread = true;
             }
         }
+        self.team_on_status(id, s);
         let title = self.task(id).map(|t| t.title.clone()).unwrap_or_default();
         if matches!(s, TaskStatus::Done | TaskStatus::NeedsInput | TaskStatus::Failed) {
             let (headline, tone) = match s {
@@ -1760,10 +1805,7 @@ impl Shell {
             PaletteItem::Action(_, _, id) => match id {
                 "new" => self.new_session(window, cx),
                 "threads" => self.navigate(Route::Threads, window, cx),
-                "team" => {
-                    self.pages.team_focus = None;
-                    self.navigate(Route::Team, window, cx);
-                }
+                "team" => self.open_teammate(None, window, cx),
                 "kanban" => self.navigate(Route::Kanban, window, cx),
                 "automations" => self.navigate(Route::Automations, window, cx),
                 "prs" => self.navigate(Route::PullRequests, window, cx),
@@ -2892,11 +2934,16 @@ impl Shell {
             Route::Archived => self.render_archived_page(cx),
             Route::Settings | Route::Agents => match self.settings.update(cx, |s, cx| s.render_content(window, cx)) {
                 Some(content) => content,
+                // Settings › Team is the Team page, with Settings' options.
+                None if self.settings.read(cx).section == crate::settings::Section::Team => {
+                    let options = self.settings.update(cx, |s, cx| s.team_options(cx));
+                    self.render_team_page(Some(options), cx)
+                }
                 // Settings › Archived is the Archived page itself.
                 None => self.render_archived_page(cx),
             },
             Route::Help => self.render_help_page(cx),
-            Route::Team => self.render_team_page(cx),
+            Route::Team => self.render_team_page(None, cx),
         }
     }
 }

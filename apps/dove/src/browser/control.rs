@@ -38,6 +38,9 @@ pub fn parse_tab_line(line: &str) -> Option<(String, String)> {
 pub struct Request {
     /// The agent's working directory: which thread is asking.
     pub cwd: Option<PathBuf>,
+    /// The calling session's key (`DOVE_SESSION`), which names its thread
+    /// exactly even when several threads share a folder. Empty when unknown.
+    pub session: String,
     pub tool: String,
     pub args: Value,
     pub reply: tokio::sync::oneshot::Sender<Outcome>,
@@ -148,6 +151,7 @@ pub fn start(rt: &tokio::runtime::Handle) -> Option<Endpoint> {
                         let (rtx, rrx) = tokio::sync::oneshot::channel();
                         let request = Request {
                             cwd: req.get("cwd").and_then(Value::as_str).filter(|s| !s.is_empty()).map(PathBuf::from),
+                            session: req.get("session").and_then(Value::as_str).unwrap_or_default().to_string(),
                             tool: req.get("tool").and_then(Value::as_str).unwrap_or_default().to_string(),
                             args: req.get("args").cloned().unwrap_or(json!({})),
                             reply: rtx,

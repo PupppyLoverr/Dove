@@ -125,11 +125,100 @@ pub struct Persona {
     pub avatar: String,
     /// Tile hue, 0..1.
     pub hue: f32,
-    pub harness: HarnessKind,
+    /// The agent this teammate prefers. `None`: any agent, whichever the
+    /// thread is started on (the default for new teammates).
+    pub harness: Option<HarnessKind>,
+    /// The model it prefers on `harness`.
     pub model: Option<String>,
     /// How it works: tone, standards, what to always or never do.
     pub instructions: String,
     pub created_at: i64,
+}
+
+/// How one thread came to work for another.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinkKind {
+    /// `delegate_task`: a child thread started for a task.
+    Delegate,
+    /// `team_message` / `thread_send` with a reply: an existing thread asked
+    /// something by another.
+    Message,
+}
+
+impl LinkKind {
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Delegate => "delegate",
+            Self::Message => "message",
+        }
+    }
+    pub fn from_id(s: &str) -> Self {
+        if s == "message" { Self::Message } else { Self::Delegate }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinkStatus {
+    Running,
+    Completed,
+    Failed,
+    Cancelled,
+    /// Waiting on the user (an approval or a question).
+    NeedsInput,
+}
+
+impl LinkStatus {
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+            Self::NeedsInput => "needs_input",
+        }
+    }
+    pub fn from_id(s: &str) -> Self {
+        match s {
+            "completed" => Self::Completed,
+            "failed" => Self::Failed,
+            "cancelled" => Self::Cancelled,
+            "needs_input" => Self::NeedsInput,
+            _ => Self::Running,
+        }
+    }
+    pub fn terminal(self) -> bool {
+        matches!(self, Self::Completed | Self::Failed | Self::Cancelled)
+    }
+}
+
+/// One thread working for another.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TaskLink {
+    pub child: TaskId,
+    pub parent: TaskId,
+    pub kind: LinkKind,
+    /// Send the child's result to the parent when it finishes.
+    pub deliver: bool,
+    pub status: LinkStatus,
+    /// The child's final answer (or error), once its turn ended.
+    pub summary: Option<String>,
+    pub delivered: bool,
+    pub created_at: i64,
+    pub finished_at: Option<i64>,
+}
+
+fn link_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<TaskLink> {
+    Ok(TaskLink {
+        child: TaskId(parse_uuid(r.get(0)?)),
+        parent: TaskId(parse_uuid(r.get(1)?)),
+        kind: LinkKind::from_id(&r.get::<_, String>(2)?),
+        deliver: r.get(3)?,
+        status: LinkStatus::from_id(&r.get::<_, String>(4)?),
+        summary: r.get(5)?,
+        delivered: r.get(6)?,
+        created_at: r.get(7)?,
+        finished_at: r.get(8)?,
+    })
 }
 
 pub struct Store {
@@ -216,8 +305,24 @@ fn migrate(conn: &Connection) -> Result<()> {
          CREATE TABLE IF NOT EXISTS task_prs (
              task_id TEXT PRIMARY KEY,
              url TEXT NOT NULL
-         );",
+         );
+         CREATE TABLE IF NOT EXISTS task_links (
+             child TEXT PRIMARY KEY,
+             parent TEXT NOT NULL,
+             kind TEXT NOT NULL,
+             deliver INTEGER NOT NULL DEFAULT 1,
+             status TEXT NOT NULL DEFAULT 'running',
+             summary TEXT,
+             delivered INTEGER NOT NULL DEFAULT 0,
+             request_key TEXT,
+             created_at INTEGER NOT NULL,
+             finished_at INTEGER
+         );
+         CREATE INDEX IF NOT EXISTS task_links_by_parent ON task_links(parent);",
     )?;
+    if !has_column(conn, "task_links", "request_key")? {
+        conn.execute_batch("ALTER TABLE task_links ADD COLUMN request_key TEXT;")?;
+    }
     Ok(())
 }
 
@@ -623,7 +728,7 @@ impl Store {
                 p.role,
                 p.avatar,
                 p.hue as f64,
-                p.harness.id(),
+                p.harness.map(|h| h.id()).unwrap_or(""),
                 p.model,
                 p.instructions,
                 p.created_at
@@ -639,7 +744,8 @@ impl Store {
              FROM personas ORDER BY created_at",
         )?;
         let rows = st.query_map([], |r| {
-            let Some(harness) = HarnessKind::from_id(&r.get::<_, String>(5)?) else { return Ok(None) };
+            // "" (or an agent this build no longer knows) means any agent.
+            let harness = HarnessKind::from_id(&r.get::<_, String>(5)?);
             Ok(Some(Persona {
                 id: r.get(0)?,
                 name: r.get(1)?,
@@ -683,6 +789,119 @@ impl Store {
     /// A teammate's working notes, carried between its threads.
     pub fn persona_notes_path(&self, id: &str) -> PathBuf {
         self.root.join("team").join(id).join("NOTES.md")
+    }
+
+    // ---- lineage: work one thread handed to another ----
+
+    /// Record that `parent` started (or messaged) `child`. `deliver`: the
+    /// child's result goes back to the parent when its turn ends.
+    pub fn link_task(&self, child: TaskId, parent: TaskId, kind: LinkKind, deliver: bool) -> Result<()> {
+        self.conn.lock().execute(
+            "INSERT INTO task_links (child, parent, kind, deliver, status, summary, delivered, created_at)
+             VALUES (?1, ?2, ?3, ?4, 'running', NULL, 0, ?5)
+             ON CONFLICT(child) DO UPDATE SET parent = excluded.parent, kind = excluded.kind,
+                deliver = excluded.deliver, status = 'running', summary = NULL, delivered = 0, finished_at = NULL",
+            params![child.0.to_string(), parent.0.to_string(), kind.id(), deliver, now_ms()],
+        )?;
+        Ok(())
+    }
+
+    pub fn task_link(&self, child: TaskId) -> Option<TaskLink> {
+        let conn = self.conn.lock();
+        let mut st = conn
+            .prepare_cached(
+                "SELECT child, parent, kind, deliver, status, summary, delivered, created_at, finished_at
+                 FROM task_links WHERE child = ?1",
+            )
+            .ok()?;
+        st.query_row([child.0.to_string()], link_row).ok()
+    }
+
+    /// Everything `parent` started or messaged, oldest first.
+    pub fn task_children(&self, parent: TaskId) -> Vec<TaskLink> {
+        let conn = self.conn.lock();
+        let Ok(mut st) = conn.prepare_cached(
+            "SELECT child, parent, kind, deliver, status, summary, delivered, created_at, finished_at
+             FROM task_links WHERE parent = ?1 ORDER BY created_at",
+        ) else {
+            return Vec::new();
+        };
+        st.query_map([parent.0.to_string()], link_row).map(|r| r.filter_map(|x| x.ok()).collect()).unwrap_or_default()
+    }
+
+    /// Every link (the UI keeps them in memory).
+    pub fn task_links(&self) -> Vec<TaskLink> {
+        let conn = self.conn.lock();
+        let Ok(mut st) = conn.prepare_cached(
+            "SELECT child, parent, kind, deliver, status, summary, delivered, created_at, finished_at
+             FROM task_links ORDER BY created_at",
+        ) else {
+            return Vec::new();
+        };
+        st.query_map([], link_row).map(|r| r.filter_map(|x| x.ok()).collect()).unwrap_or_default()
+    }
+
+    /// Links still working, or finished with a result not yet delivered:
+    /// what the app's delivery sweep watches.
+    pub fn open_task_links(&self) -> Vec<TaskLink> {
+        let conn = self.conn.lock();
+        let Ok(mut st) = conn.prepare_cached(
+            "SELECT child, parent, kind, deliver, status, summary, delivered, created_at, finished_at
+             FROM task_links WHERE status IN ('running', 'needs_input') OR (deliver = 1 AND delivered = 0)
+             ORDER BY created_at",
+        ) else {
+            return Vec::new();
+        };
+        st.query_map([], link_row).map(|r| r.filter_map(|x| x.ok()).collect()).unwrap_or_default()
+    }
+
+    /// The child's turn ended: what it reported, and how.
+    pub fn set_link_result(&self, child: TaskId, status: LinkStatus, summary: Option<&str>) -> Result<()> {
+        self.conn.lock().execute(
+            "UPDATE task_links SET status = ?2, summary = ?3, finished_at = ?4 WHERE child = ?1",
+            params![child.0.to_string(), status.id(), summary, now_ms()],
+        )?;
+        Ok(())
+    }
+
+    /// The child is working again (a follow-up was sent).
+    pub fn reopen_link(&self, child: TaskId, deliver: bool) -> Result<()> {
+        self.conn.lock().execute(
+            "UPDATE task_links SET status = 'running', delivered = 0, deliver = ?2, finished_at = NULL WHERE child = ?1",
+            params![child.0.to_string(), deliver],
+        )?;
+        Ok(())
+    }
+
+    pub fn mark_link_delivered(&self, child: TaskId) -> Result<()> {
+        self.conn.lock().execute("UPDATE task_links SET delivered = 1 WHERE child = ?1", [child.0.to_string()])?;
+        Ok(())
+    }
+
+    /// Stop delivering the child's results (cancelled, or the parent read them).
+    pub fn mute_link(&self, child: TaskId) -> Result<()> {
+        self.conn.lock().execute("UPDATE task_links SET deliver = 0 WHERE child = ?1", [child.0.to_string()])?;
+        Ok(())
+    }
+
+    /// Tag a link with the caller's retry key, so a repeated request with
+    /// the same key finds the work it already started.
+    pub fn set_link_request_key(&self, child: TaskId, key: &str) -> Result<()> {
+        self.conn
+            .lock()
+            .execute("UPDATE task_links SET request_key = ?2 WHERE child = ?1", params![child.0.to_string(), key])?;
+        Ok(())
+    }
+
+    /// The child `parent` started under retry key `key`, if any.
+    pub fn link_by_request(&self, parent: TaskId, key: &str) -> Option<TaskId> {
+        let conn = self.conn.lock();
+        conn.query_row(
+            "SELECT child FROM task_links WHERE parent = ?1 AND request_key = ?2",
+            [parent.0.to_string(), key.to_string()],
+            |r| Ok(TaskId(parse_uuid(r.get(0)?))),
+        )
+        .ok()
     }
 
     // ---- settings ----
@@ -945,7 +1164,7 @@ mod tests {
             role: "Frontend lead".into(),
             avatar: "🦊".into(),
             hue: 0.08,
-            harness: HarnessKind::ClaudeCode,
+            harness: Some(HarnessKind::ClaudeCode),
             model: Some("opus".into()),
             instructions: "Ship small, tested changes.".into(),
             created_at: 1,
@@ -960,6 +1179,55 @@ mod tests {
         s.delete_persona("ava").unwrap();
         assert!(s.personas().unwrap().is_empty());
         assert!(s.persona_assignments().unwrap().is_empty());
+        // A teammate without an agent: any agent runs it.
+        let any = Persona { id: "kai".into(), harness: None, model: None, ..ava };
+        s.save_persona(&any).unwrap();
+        assert_eq!(s.personas().unwrap()[0].harness, None);
+    }
+
+    #[test]
+    fn lineage_links_record_results_and_delivery() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(dir.path()).unwrap();
+        let (parent, a, b) = (TaskId::new(), TaskId::new(), TaskId::new());
+        s.link_task(a, parent, LinkKind::Delegate, true).unwrap();
+        s.link_task(b, parent, LinkKind::Message, false).unwrap();
+        let kids = s.task_children(parent);
+        assert_eq!(kids.len(), 2);
+        assert_eq!(kids[0].child, a);
+        assert_eq!(kids[0].status, LinkStatus::Running);
+        assert!(kids[0].deliver && !kids[1].deliver);
+        assert_eq!(kids[1].kind, LinkKind::Message);
+        s.set_link_result(a, LinkStatus::Completed, Some("Done: 3 files changed")).unwrap();
+        let l = s.task_link(a).unwrap();
+        assert_eq!(l.status, LinkStatus::Completed);
+        assert_eq!(l.summary.as_deref(), Some("Done: 3 files changed"));
+        assert!(l.finished_at.is_some() && !l.delivered);
+        s.mark_link_delivered(a).unwrap();
+        assert!(s.task_link(a).unwrap().delivered);
+        // A follow-up reopens it for another delivery.
+        s.reopen_link(a, true).unwrap();
+        let l = s.task_link(a).unwrap();
+        assert_eq!(l.status, LinkStatus::Running);
+        assert!(!l.delivered && l.finished_at.is_none());
+        s.mute_link(a).unwrap();
+        assert!(!s.task_link(a).unwrap().deliver);
+        // Retry keys find the work a request already started.
+        s.set_link_request_key(a, "round-1").unwrap();
+        assert_eq!(s.link_by_request(parent, "round-1"), Some(a));
+        assert_eq!(s.link_by_request(parent, "round-2"), None);
+        assert_eq!(s.link_by_request(TaskId::new(), "round-1"), None);
+        assert_eq!(s.task_links().len(), 2);
+        assert!(s.task_link(TaskId::new()).is_none());
+        // The sweep watches what's working or owed a delivery, nothing else.
+        assert_eq!(s.open_task_links().len(), 2);
+        s.set_link_result(b, LinkStatus::Completed, None).unwrap();
+        assert_eq!(s.open_task_links().iter().map(|l| l.child).collect::<Vec<_>>(), vec![a]);
+        s.reopen_link(a, true).unwrap();
+        s.set_link_result(a, LinkStatus::Completed, Some("ok")).unwrap();
+        assert_eq!(s.open_task_links().len(), 1);
+        s.mark_link_delivered(a).unwrap();
+        assert!(s.open_task_links().is_empty());
     }
 
     #[test]

@@ -368,7 +368,7 @@ fn run_request(spec: &SessionSpec, prompt: String, allow_ego: bool) -> RunReques
         resume: spec.resume.clone(),
         attachments: Vec::new(),
         worktree: None,
-        mcp: crate::tool_server(&spec.cwd).map(|s| zeron_proto::McpServer {
+        mcp: crate::tool_server(&spec.cwd, &spec.session).map(|s| zeron_proto::McpServer {
             name: s.name,
             command: s.command,
             args: s.args,
@@ -745,6 +745,7 @@ mod tests {
             resume: None,
             prompt: None,
             fork: false,
+            session: String::new(),
         };
         let rule = |r: &RunRequest| r.model_options.get("dove.allowedTools").and_then(Value::as_str).map(str::to_owned);
         let claude = spec(HarnessKind::ClaudeCode, PermissionMode::Default);

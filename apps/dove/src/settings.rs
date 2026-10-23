@@ -60,8 +60,6 @@ pub enum Section {
 
 /// What the settings page asks the shell to do.
 pub enum SettingsEvent {
-    /// Open the Team page (optionally its editor for a new teammate).
-    OpenTeam { new: bool },
     /// Run an agent's own sign-in in a terminal sheet.
     SignIn(HarnessKind),
     /// Look for agent CLIs on PATH again.
@@ -1070,14 +1068,9 @@ impl SettingsPage {
                 ),
                 self.agents(&t, window, cx),
             ),
-            Section::Team => (
-                Some(
-                    ctl::button_sm(&t, "set-team-new", "New teammate", Tone::Solid)
-                        .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::OpenTeam { new: true })))
-                        .into_any_element(),
-                ),
-                self.team(&t, cx),
-            ),
+            // The shell draws Team (roster, workspace, editor) with
+            // [`Self::team_options`] under it.
+            Section::Team => return None,
             Section::Plugins => (Some(self.plugins_actions(&t)), self.plugins_section(&t)),
             Section::Remote => (None, self.remote(&t, cx)),
             Section::Data => (None, self.data(&t, cx)),
@@ -2703,60 +2696,24 @@ impl SettingsPage {
             .into_any_element()
     }
 
-    fn team(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
-        let team = self.engine.store.personas().unwrap_or_default();
+    /// Settings › Team's own options, shown under the shell's team page.
+    pub fn team_options(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let t = Theme::of(cx).clone();
+        let t = &t;
         let notes = self.flag("team_notes", true);
-        let roster: gpui::Div = if team.is_empty() {
-            page::card(t).child(page::empty_state(
-                t,
-                icons::USERS_GROUP,
-                "No teammates yet",
-                "Give an agent a name, a role and a standing brief.",
-                Some(
-                    ctl::button_sm(t, "set-team-create", "New teammate", Tone::Solid)
-                        .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::OpenTeam { new: true })))
-                        .into_any_element(),
-                ),
-            ))
-        } else {
-            let mut card = page::card(t);
-            for (i, p) in team.iter().enumerate() {
-                let role = if p.role.is_empty() { "Teammate".to_string() } else { p.role.clone() };
-                card = card.child(
-                    page::row(t, i == 0)
-                        .child(crate::team::avatar(p, 30.0, t))
-                        .child(page::row_text(t, p.name.clone(), crate::team::subtitle(p)))
-                        .child(page::badge(t, role)),
-                );
-            }
-            card
-        };
-        let behavior = page::card(t)
-            .child(self.srow(
-                t,
-                true,
-                "team_notes",
-                "Persistent teammate notes",
-                "Each teammate reads its notes when a thread starts and updates them as it learns.",
-                ctl::on_toggle(ctl::toggle(t, "set-team-notes", notes), cx, move |this, _, cx| {
-                    this.set_flag("team_notes", !notes, cx)
-                }),
-            ))
-            .child(
-                self.srow(
-                    t,
-                    false,
-                    "team_page",
-                    "Team page",
-                    "Create and brief teammates, or start a thread with one.",
-                    ctl::button_sm(t, "set-open-team", "Open Team page", Tone::Filled)
-                        .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::OpenTeam { new: false }))),
-                ),
-            );
+        let behavior = page::card(t).child(self.srow(
+            t,
+            true,
+            "team_notes",
+            "Persistent teammate notes",
+            "Each teammate reads its notes when a thread starts and updates them as it learns.",
+            ctl::on_toggle(ctl::toggle(t, "set-team-notes", notes), cx, move |this, _, cx| {
+                this.set_flag("team_notes", !notes, cx)
+            }),
+        ));
         div()
-            .flex()
-            .flex_col()
-            .child(page::section(t, "Teammates", roster.relative().child(self.anchor("team_roster"))))
+            .relative()
+            .child(self.anchor("team_roster"))
             .child(page::section(t, "Memory and behavior", behavior))
             .into_any_element()
     }

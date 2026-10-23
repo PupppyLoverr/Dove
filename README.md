@@ -17,6 +17,7 @@ Dove is written in Rust on [GPUI](https://github.com/zeronsh/zui). There is no E
 ## Features
 
 - **Many agents, one window.** Threads from every agent share the same projects, review tools and attention-sorted sidebar (needs you, working, unread, failed).
+- **Team and orchestration.** Teammates with a name, a role, a brief and notes they keep, on any agent and model. Any thread can hand work to any agent or teammate (in its folder or its own worktree), message teammates, and read, steer, wait on or stop other threads; results come back on their own as one batched update. Children never get broader permissions than their parent. Details: [docs/TEAM.md](docs/TEAM.md).
 - **Worktrees by default.** A task can run on its own branch so two agents can edit the same repo without overwriting each other. Commit, push, open and merge PRs from the thread.
 - **Chat ⇄ terminal.** Chat is the rich view: approvals, steering, queued messages, usage. Terminal hands the same session to the agent's own TUI and mirrors it back.
 - **Side panel.** Diffs, git history, a file viewer and editor, an in-app browser, a terminal and a side chat stay attached to each thread. `path:line` links open in place.
