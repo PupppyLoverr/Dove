@@ -681,10 +681,50 @@ fn status_of(s: TaskStatus) -> ThreadStatus {
 }
 
 impl Shell {
-    /// Start a call, or end the one running.
+    /// Who the call talks to: the thread it was pointed at (by voice, the
+    /// shortcut or opening a thread), else the open one.
+    pub(crate) fn call_thread(&self, call: &VoiceCall) -> Option<TaskId> {
+        call.current.filter(|id| self.task(*id).is_some()).or(match self.route {
+            Route::Thread(id) => Some(id),
+            _ => None,
+        })
+    }
+
+    /// The thread the keyboard is in: a pane's thread beside the open one,
+    /// or the open thread.
+    pub fn focused_thread(&self, window: &Window, cx: &App) -> Option<TaskId> {
+        self.threads
+            .iter()
+            .find(|(_, v)| v.read(cx).focus_handle(cx).contains_focused(window, cx))
+            .map(|(id, _)| *id)
+            .or(match self.route {
+                Route::Thread(id) => Some(id),
+                _ => None,
+            })
+    }
+
+    /// Start a call on the thread the keyboard is in, or end the one
+    /// running. While a call runs, the shortcut in another thread (a pane
+    /// beside, a terminal) moves the call there instead of ending it.
     pub fn toggle_voice_call(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let here = self.focused_thread(window, cx);
         if let Some(v) = self.voice_call.clone() {
-            v.update(cx, |v, cx| v.end(cx));
+            match here.filter(|id| v.read(cx).current != Some(*id)) {
+                Some(id) => {
+                    let name =
+                        self.task(id).map(|t| format!("{} on {}", t.harness.label(), t.title)).unwrap_or_default();
+                    let chat = self.threads.get(&id).map(|t| t.read(cx).chat.clone());
+                    v.update(cx, |v, cx| {
+                        v.current = Some(id);
+                        if let Some(chat) = &chat {
+                            v.read_replies(id, chat, cx);
+                        }
+                        v.say(&format!("Talking to {name}."), cx);
+                    });
+                    self.voice_target(&v, cx);
+                }
+                None => v.update(cx, |v, cx| v.end(cx)),
+            }
             return;
         }
         if !local_stt_ready(&self.engine) && !self.engine.store.flag("voice_cloud", false) {
@@ -716,10 +756,7 @@ impl Shell {
             }
             None => {}
         }
-        let current = match self.route {
-            Route::Thread(id) => Some(id),
-            _ => None,
-        };
+        let current = here;
         let engine = self.engine.clone();
         let call = cx.new(|cx| VoiceCall::start(engine, current, cx));
         let view = cx.new(|cx| crate::voice_view::CallView::new(call.clone(), cx));
@@ -728,6 +765,18 @@ impl Shell {
             crate::voice_view::CallViewEvent::OpenThread(id) => {
                 this.open_task(*id, window, cx);
                 this.show_call_view(false, window, cx);
+            }
+            crate::voice_view::CallViewEvent::TalkTo(id) => {
+                if let Some(call) = this.voice_call.clone() {
+                    let snap = this.voice_snapshot(call.read(cx), cx);
+                    let effects = call.update(cx, |v, _| v.conductor.talk_to(&id.to_string(), &snap));
+                    this.voice_apply(call, effects, None, window, cx);
+                }
+            }
+            crate::voice_view::CallViewEvent::Say(word) => {
+                if let Some(call) = this.voice_call.clone() {
+                    this.voice_heard(call, word.to_string(), window, cx);
+                }
             }
         }));
         self.call_view = Some(view);
@@ -821,10 +870,7 @@ impl Shell {
     /// Name who the call talks to on its strip: the thread, or the agent a
     /// new thread would start on.
     fn voice_target(&self, call: &Entity<VoiceCall>, cx: &mut Context<Self>) {
-        let current = match self.route {
-            Route::Thread(id) => Some(id),
-            _ => call.read(cx).current,
-        };
+        let current = self.call_thread(call.read(cx));
         let task = current.and_then(|id| self.task(id));
         let working =
             |id: TaskId| self.threads.get(&id).is_some_and(|v| v.read(cx).chat.read(cx).status == TaskStatus::Running);
@@ -888,12 +934,14 @@ impl Shell {
                 diff: call.diffs.get(&task.id).copied(),
                 cwd: task.worktree.clone().or_else(|| project.map(|p| p.path.clone())).map(|p| p.display().to_string()),
                 error: state.last_error,
+                teammate: self.persona_for(task.id).map(|p| p.name.clone()),
+                terminal: self
+                    .threads
+                    .get(&task.id)
+                    .is_some_and(|v| v.read(cx).view == crate::thread::ViewMode::Terminal),
             });
         }
-        let current = match self.route {
-            Route::Thread(id) => Some(id),
-            _ => call.current,
-        };
+        let current = self.call_thread(call);
         // A new thread goes where the home composer would start it.
         let composer = self.composer.read(cx);
         let default_project = current
@@ -930,6 +978,11 @@ impl Shell {
             } else {
                 None
             },
+            teammates: self
+                .personas
+                .iter()
+                .map(|p| snapshot::Teammate { id: p.id.clone(), name: p.name.clone(), role: p.role.clone() })
+                .collect(),
         }
     }
 
@@ -1208,7 +1261,213 @@ impl Shell {
                 });
                 None
             }
-            Action::Status { .. } | Action::SetVoiceStyle { .. } | Action::SwitchBack | Action::EndCall => None,
+            Action::Launch { project, items } => self.voice_launch(call, &project, items, window, cx),
+            Action::AskTeammate { teammate, text } => {
+                let id = self.ask_teammate(&teammate, &text, window, cx)?;
+                if let Some(chat) = self.threads.get(&id).map(|v| v.read(cx).chat.clone()) {
+                    call.update(cx, |v, cx| v.read_replies(id, &chat, cx));
+                }
+                Some(id)
+            }
+            Action::Draft { thread, text } => {
+                let id = self.task_by_str(&thread)?;
+                let view = self.thread_view_for(id, window, cx)?;
+                // The draft shows where the user can see it.
+                match self.route {
+                    Route::Thread(main) if main == id => {}
+                    Route::Thread(_) => self.open_beside(id, None, window, cx),
+                    _ => self.open_task(id, window, cx),
+                }
+                view.update(cx, |v, cx| v.draft(&text, window, cx));
+                Some(id)
+            }
+            Action::SendDraft { thread } => {
+                let id = self.task_by_str(&thread)?;
+                let view = self.threads.get(&id)?.clone();
+                let chat = view.read(cx).chat.clone();
+                if view.update(cx, |v, cx| v.send_draft(window, cx)) {
+                    call.update(cx, |v, cx| {
+                        v.current = Some(id);
+                        v.read_replies(id, &chat, cx);
+                    });
+                } else {
+                    call.update(cx, |v, cx| v.say("The box was empty, so nothing went out.", cx));
+                }
+                Some(id)
+            }
+            Action::ClearDraft { thread } => {
+                let id = self.task_by_str(&thread)?;
+                let view = self.threads.get(&id)?.clone();
+                view.update(cx, |v, cx| v.clear_draft(window, cx));
+                Some(id)
+            }
+            Action::OpenBeside { thread } => {
+                let id = self.task_by_str(&thread)?;
+                self.open_beside(id, None, window, cx);
+                Some(id)
+            }
+            Action::Status { .. }
+            | Action::TeamStatus { .. }
+            | Action::SetVoiceStyle { .. }
+            | Action::SwitchBack
+            | Action::EndCall => None,
+        }
+    }
+
+    /// Open every thread a spoken launch asked for, in chat or the agent's
+    /// terminal UI. The first becomes the open thread and the rest sit in
+    /// panes beside it, so the user sees them all start.
+    fn voice_launch(
+        &mut self,
+        call: &Entity<VoiceCall>,
+        project: &str,
+        items: Vec<dove_voice::intent::LaunchItem>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<TaskId> {
+        let project = self.projects.iter().find(|p| p.id.to_string() == project)?.clone();
+        let mut opened: Vec<TaskId> = Vec::new();
+        let mut failed = Vec::new();
+        for item in items {
+            let Some(kind) = HarnessKind::from_id(&item.agent) else { continue };
+            let persona = item.teammate.as_deref().and_then(|id| self.persona(id)).cloned();
+            let prompt = item.prompt.clone().unwrap_or_default();
+            let title = if prompt.is_empty() {
+                format!("{} terminal", persona.as_ref().map_or(kind.label(), |p| p.name.as_str()))
+            } else {
+                crate::ui::title_from_prompt(&prompt)
+            };
+            let join = if item.worktree {
+                match dove_core::git::create_worktree(&project.path, &dove_core::git::slug(&title), "dove/") {
+                    Ok(w) => {
+                        Some(dove_core::Joined { worktree: Some(w.path), branch: Some(w.branch), base: Some(w.base) })
+                    }
+                    Err(e) => {
+                        failed.push(format!("a worktree couldn't be made: {e}"));
+                        continue;
+                    }
+                }
+            } else {
+                None
+            };
+            let run = {
+                let c = self.composer.read(cx);
+                if c.harness(cx) == kind { c.run_settings(cx) } else { Default::default() }
+            };
+            let new = dove_core::NewTask { title, prompt, harness: kind, run, join, persona: persona.clone() };
+            if item.terminal {
+                match self.engine.create_thread(&project, new) {
+                    Ok((task, first)) => {
+                        let id = task.id;
+                        if let Some(p) = &persona {
+                            self.persona_of.insert(id, p.id.clone());
+                        }
+                        self.tasks.insert(0, task.clone());
+                        let view = self.make_thread(task, project.clone(), None, window, cx);
+                        view.update(cx, |v, cx| v.open_terminal(Some(first), window, cx));
+                        opened.push(id);
+                    }
+                    Err(e) => failed.push(format!("{e:#}")),
+                }
+            } else {
+                match self.engine.start_task(&project, new) {
+                    Ok((task, live)) => {
+                        let id = task.id;
+                        if let Some(p) = &persona {
+                            self.persona_of.insert(id, p.id.clone());
+                        }
+                        self.tasks.insert(0, task.clone());
+                        self.make_thread(task, project.clone(), Some(live), window, cx);
+                        opened.push(id);
+                    }
+                    Err(e) => failed.push(format!("{e:#}")),
+                }
+            }
+        }
+        let first = *opened.first()?;
+        self.navigate(Route::Thread(first), window, cx);
+        for id in opened.iter().skip(1) {
+            self.open_beside(*id, None, window, cx);
+        }
+        if let Some(chat) = self.threads.get(&first).map(|v| v.read(cx).chat.clone()) {
+            call.update(cx, |v, cx| {
+                v.current = Some(first);
+                v.read_replies(first, &chat, cx);
+            });
+        }
+        if !failed.is_empty() {
+            let n = failed.len();
+            call.update(cx, |v, cx| {
+                v.say(&format!("{n} didn't start: {}.", failed.join("; ")), cx);
+            });
+        }
+        cx.notify();
+        Some(first)
+    }
+
+    /// Ask teammate `id` something as the user: their latest thread in the
+    /// open project gets it (steering it if it's working), or a new thread
+    /// starts as them. Returns the thread.
+    pub(crate) fn ask_teammate(
+        &mut self,
+        id: &str,
+        text: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<TaskId> {
+        let mate = self.persona(id).cloned()?;
+        let project_id = match self.route {
+            Route::Thread(t) => self.task(t).map(|t| t.project_id),
+            _ => None,
+        }
+        .or(self.composer.read(cx).project.as_ref().map(|p| p.id))
+        .or(self.home_project)?;
+        let latest = self
+            .tasks
+            .iter()
+            .filter(|t| t.project_id == project_id && t.status != TaskStatus::Draft)
+            .filter(|t| self.persona_of.get(&t.id).is_some_and(|p| *p == mate.id))
+            .max_by_key(|t| t.updated_at)
+            .map(|t| t.id);
+        if let Some(tid) = latest {
+            let chat = self.chat_of(tid, window, cx)?;
+            let text = text.to_string();
+            chat.update(cx, |c, cx| c.submit(text, window, cx));
+            return Some(tid);
+        }
+        let project = self.project(project_id)?.clone();
+        let kind = mate.harness.unwrap_or_else(|| self.composer.read(cx).harness(cx));
+        let run = dove_core::RunSettings {
+            model: mate.model.clone().filter(|_| mate.harness.is_some()),
+            ..Default::default()
+        };
+        let new = dove_core::NewTask {
+            title: crate::ui::title_from_prompt(text),
+            prompt: text.to_string(),
+            harness: kind,
+            run,
+            join: None,
+            persona: Some(mate.clone()),
+        };
+        match self.engine.start_task(&project, new) {
+            Ok((task, live)) => {
+                let tid = task.id;
+                self.persona_of.insert(tid, mate.id.clone());
+                self.tasks.insert(0, task.clone());
+                self.make_thread(task, project, Some(live), window, cx);
+                cx.notify();
+                Some(tid)
+            }
+            Err(e) => {
+                crate::kit::Toasts::push(
+                    cx,
+                    format!("{} couldn't start", mate.name),
+                    Some(format!("{e:#}")),
+                    crate::kit::Tone::Danger,
+                    None,
+                );
+                None
+            }
         }
     }
 

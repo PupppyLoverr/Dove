@@ -363,6 +363,8 @@ fn main() -> anyhow::Result<()> {
             diff: None,
             cwd: None,
             error: None,
+            teammate: None,
+            terminal: false,
         }],
         current: Some("t1".into()),
         agents: vec![Agent { id: "codex".into(), label: "Codex".into() }],
@@ -370,6 +372,7 @@ fn main() -> anyhow::Result<()> {
         default_project: Some("p".into()),
         default_agent: None,
         showing: None,
+        teammates: Vec::new(),
     };
     let mut fast_total = Vec::new();
     let mut route_us = Vec::new();

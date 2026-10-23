@@ -6,9 +6,9 @@ use dove_core::proto::{PermissionDecision, TaskId, TaskStatus};
 use dove_core::store::Task;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    Anchor, AnimationExt as _, AnyElement, App, Context, Entity, Hsla, InteractiveElement as _, IntoElement,
-    MouseButton, MouseDownEvent, ParentElement as _, Render, SharedString, StatefulInteractiveElement as _,
-    Styled as _, Subscription, WeakEntity, Window, anchored, deferred, div, hsla, px,
+    Anchor, AnimationExt as _, AnyElement, App, AppContext as _, Context, Entity, Hsla, InteractiveElement as _,
+    IntoElement, MouseButton, MouseDownEvent, ParentElement as _, Render, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Subscription, WeakEntity, Window, anchored, deferred, div, hsla, px,
 };
 use gpui_base::input::Input;
 
@@ -890,6 +890,7 @@ impl Shell {
             }
         };
         let two_line = !compact && renaming.is_none();
+        let renaming_now = renaming.is_some();
         let row = div()
             .id(SharedString::from(format!("row-{id}")))
             .group(group.clone())
@@ -982,6 +983,12 @@ impl Shell {
                             .child(archive_btn),
                     ),
             )
+            // Drag a thread onto the conversation or a pane to open it beside.
+            .when(!archived && !renaming_now, |d| {
+                d.on_drag(crate::side_panel::ThreadDrag { id, title: task.title.clone().into() }, |d, _, _, cx| {
+                    cx.new(|_| d.clone())
+                })
+            })
             .on_click(cx.listener(move |this, e: &gpui::ClickEvent, window, cx| {
                 if e.click_count() == 2 {
                     this.begin_rename(id, window, cx);

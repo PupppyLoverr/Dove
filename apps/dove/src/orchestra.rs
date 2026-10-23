@@ -123,6 +123,7 @@ impl Shell {
         let result = match req.tool.as_str() {
             "team_capabilities" => Ok(TeamReply::Now(self.team_capabilities(caller, &a, cx))),
             "delegate_task" => self.team_delegate(caller, &a, window, cx),
+            "delegate_tasks" => self.team_delegate_many(caller, &req.args, window, cx).map(TeamReply::Now),
             "task_status" => self.team_task_status(caller, &a).map(TeamReply::Now),
             "task_cancel" => self.team_task_cancel(caller, &a, cx).map(TeamReply::Now),
             "team_message" => self.team_message(caller, &a, window, cx),
@@ -453,6 +454,58 @@ impl Shell {
         out["status"] = json!("running");
         out["note"] = json!("Started. End your turn when you have nothing else to do: Dove wakes you with the result.");
         Ok(TeamReply::Now(json_out(out)))
+    }
+
+    /// Several delegations in one call: each task's own fields over the
+    /// shared defaults, all async. One that can't start reports why; the
+    /// others still start.
+    fn team_delegate_many(
+        &mut self,
+        caller: TaskId,
+        args: &Value,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<Outcome, String> {
+        let tasks = args.get("tasks").and_then(Value::as_array).cloned().unwrap_or_default();
+        if tasks.is_empty() {
+            return Err("Give at least one task in \"tasks\".".into());
+        }
+        if tasks.len() > orc::MAX_ACTIVE_CHILDREN {
+            return Err(format!("At most {} tasks at once.", orc::MAX_ACTIVE_CHILDREN));
+        }
+        let mut results = Vec::new();
+        for (i, t) in tasks.iter().enumerate() {
+            let mut merged = serde_json::Map::new();
+            for key in ["teammate", "agent", "model", "isolation", "permission", "reasoning"] {
+                if let Some(v) = args.get(key) {
+                    merged.insert(key.into(), v.clone());
+                }
+            }
+            match t {
+                Value::Object(own) => merged.extend(own.clone()),
+                Value::String(s) => {
+                    merged.insert("task".into(), json!(s));
+                }
+                _ => {}
+            }
+            merged.insert("mode".into(), json!("async"));
+            let one = Value::Object(merged);
+            let res = match self.team_delegate(caller, &Args(&one), window, cx) {
+                Ok(TeamReply::Now(out)) if !out.is_error => {
+                    serde_json::from_str::<Value>(&out.text).unwrap_or_else(|_| json!({"note": out.text}))
+                }
+                Ok(TeamReply::Now(out)) => json!({"error": out.text}),
+                Ok(TeamReply::Wait(_)) => json!({"error": "unexpected wait"}),
+                Err(e) => json!({"error": e}),
+            };
+            results.push(json!({"index": i, "result": res}));
+        }
+        let started = results.iter().filter(|r| r["result"].get("task_id").is_some()).count();
+        Ok(json_out(json!({
+            "started": started,
+            "tasks": results,
+            "note": "Started tasks report back in team updates; end your turn when you have nothing else to do.",
+        })))
     }
 
     fn team_task_status(&mut self, caller: TaskId, a: &Args) -> Result<Outcome, String> {

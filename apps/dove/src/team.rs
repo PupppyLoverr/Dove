@@ -11,7 +11,7 @@ use dove_core::proto::{HarnessKind, TaskStatus};
 use dove_core::store::{Persona, Task};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, Context, Div, InteractiveElement as _, IntoElement, ParentElement as _, SharedString,
+    AnyElement, AppContext as _, Context, Div, InteractiveElement as _, IntoElement, ParentElement as _, SharedString,
     StatefulInteractiveElement as _, Styled as _, Window, div, px,
 };
 use gpui_base::input::{Input, InputState, Textarea, TextareaState};
@@ -517,7 +517,22 @@ impl Shell {
                     .text_size(ty::BODY)
                     .when(selected, |d| d.bg(ui::selected_bg(t)).text_color(t.text))
                     .when(!selected, |d| d.text_color(t.text_muted).hover(|s| s.text_color(t.text)))
-                    .tooltip(ui::tip(subtitle(p)))
+                    .tooltip(ui::tip({
+                        // What they're on right now, when they're working.
+                        let busy = self
+                            .persona_tasks(&p.id)
+                            .into_iter()
+                            .find(|t| t.status == TaskStatus::Running)
+                            .map(|t| format!("\nWorking on {}", t.title));
+                        format!("{}{}", subtitle(p), busy.unwrap_or_default())
+                    }))
+                    // Dragging a teammate drags their latest thread.
+                    .when_some(self.persona_tasks(&p.id).into_iter().max_by_key(|t| t.updated_at), |d, last| {
+                        d.on_drag(
+                            crate::side_panel::ThreadDrag { id: last.id, title: last.title.clone().into() },
+                            |d, _, _, cx| cx.new(|_| d.clone()),
+                        )
+                    })
                     .child(avatar(p, 19.0, t))
                     .child(
                         div()
@@ -1029,10 +1044,73 @@ impl Shell {
                 .child(div().mt(px(space::LG)).child(dispatch_bar))
                 .child(div().mt(px(space::MD)).child(stats))
                 .child(page::section(t, "Threads", threads))
+                .children(self.render_collaboration(&p, t, cx).map(|c| page::section(t, "Working with the team", c)))
                 .child(page::section(t, "Standing instructions (Brief)", brief))
                 .child(notes)
                 .into_any_element(),
         )
+    }
+
+    /// Work this teammate handed to others or got from them (delegations
+    /// and messages between threads), newest first.
+    fn render_collaboration(&self, p: &Persona, t: &Theme, cx: &mut Context<Self>) -> Option<Div> {
+        use dove_core::store::{LinkKind, LinkStatus};
+        let mine = |id: dove_core::proto::TaskId| self.persona_of.get(&id).is_some_and(|x| *x == p.id);
+        let mut links: Vec<_> =
+            self.engine.store.task_links().into_iter().filter(|l| mine(l.child) || mine(l.parent)).collect();
+        if links.is_empty() {
+            return None;
+        }
+        links.sort_by_key(|l| std::cmp::Reverse(l.created_at));
+        let who = |id: dove_core::proto::TaskId| -> String {
+            let task = self.task(id);
+            match (self.persona_for(id), task) {
+                (Some(m), Some(t)) => format!("{} on {}", m.name, t.harness.label()),
+                (None, Some(t)) => t.harness.label().to_string(),
+                _ => "a thread".into(),
+            }
+        };
+        let rows = links.into_iter().take(8).enumerate().map(|(i, l)| {
+            let outgoing = mine(l.parent);
+            let other = if outgoing { l.child } else { l.parent };
+            let title = self.task(l.child).map(|t| t.title.clone()).unwrap_or_else(|| "A deleted thread".into());
+            let verb = match (outgoing, l.kind) {
+                (true, LinkKind::Delegate) => format!("Handed to {}", who(other)),
+                (true, LinkKind::Message) => format!("Asked {}", who(other)),
+                (false, LinkKind::Delegate) => format!("From {}", who(other)),
+                (false, LinkKind::Message) => format!("Question from {}", who(other)),
+            };
+            let (status, tint) = match l.status {
+                LinkStatus::Running => ("Working", t.busy),
+                LinkStatus::NeedsInput => ("Needs you", t.warning),
+                LinkStatus::Completed => ("Done", t.success),
+                LinkStatus::Failed => ("Failed", t.danger),
+                LinkStatus::Cancelled => ("Cancelled", t.text_faint),
+            };
+            let child = l.child;
+            page::row_hover(t, page::table_row(t, i == 0).id(SharedString::from(format!("tm-link-{child}"))), false)
+                .child(
+                    icon(if outgoing { icons::ARROW_UP_RIGHT } else { icons::ARROW_LEFT })
+                        .size(px(12.0))
+                        .flex_none()
+                        .text_color(t.text_faint),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .child(div().truncate().text_size(ty::BODY).text_color(t.text).child(title))
+                        .child(div().truncate().text_size(ty::CAPTION).text_color(t.text_faint).child(verb)),
+                )
+                .child(div().flex_none().text_size(ty::CAPTION).text_color(tint).child(status))
+                .when_some(l.summary.filter(|s| !s.trim().is_empty()), |d, s| {
+                    d.tooltip(ui::tip(dove_core::orchestra::clip(&s, 300)))
+                })
+                .on_click(cx.listener(move |this, _, window, cx| this.open_task(child, window, cx)))
+        });
+        Some(page::card(t).children(rows))
     }
 
     fn render_team_editor(&self, ed: &TeamEditor, t: &Theme, cx: &mut Context<Self>) -> AnyElement {

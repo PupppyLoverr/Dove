@@ -360,6 +360,48 @@ impl Engine {
         self.start_task_with(project, new, None, None)
     }
 
+    /// A thread that starts in the agent's own terminal UI rather than in
+    /// chat: recorded (idle, with its folder and teammate) but not run.
+    /// Returns it with the first message to type into the terminal (the
+    /// teammate's brief and the prompt), empty when there is no prompt.
+    pub fn create_thread(&self, project: &Project, new: NewTask) -> Result<(Task, String)> {
+        self.program(new.harness)?;
+        let (worktree, branch, base) = match new.join.clone() {
+            Some(j) => (j.worktree, j.branch, j.base),
+            None => (None, dove_git::current_branch(&project.path).ok(), dove_git::head_sha(&project.path).ok()),
+        };
+        let task = Task {
+            id: TaskId::new(),
+            project_id: project.id,
+            title: new.title,
+            harness: new.harness,
+            model: new.run.model.clone(),
+            status: TaskStatus::Idle,
+            worktree,
+            branch,
+            native_session_id: None,
+            base,
+            pinned: false,
+            updated_at: dove_store::now_ms(),
+            prompt: None,
+            unread: false,
+            automation: None,
+        };
+        self.store.insert_task(&task)?;
+        self.save_add_dirs(task.id, &new.run.add_dirs);
+        let first = match &new.persona {
+            Some(p) => {
+                self.store.assign_persona(task.id, &p.id)?;
+                let notes = self.store.persona_notes_path(&p.id);
+                let keep = self.store.setting("team_notes").as_deref() != Some("false");
+                let team = self.store.personas().unwrap_or_default();
+                format!("{}{}", persona_preamble(p, keep.then_some(notes.as_path()), &team), new.prompt)
+            }
+            None => new.prompt,
+        };
+        Ok((task, first.trim().to_string()))
+    }
+
     fn start_task_with(
         &self,
         project: &Project,

@@ -81,6 +81,21 @@ pub struct Thread {
     /// Last error the thread reported.
     #[serde(default)]
     pub error: Option<String>,
+    /// The teammate running it, by name.
+    #[serde(default)]
+    pub teammate: Option<String>,
+    /// It shows the agent's own terminal UI (drafts go to its prompt line).
+    #[serde(default)]
+    pub terminal: bool,
+}
+
+/// One of the user's teammates.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Teammate {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub role: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -113,6 +128,8 @@ pub struct Snapshot {
     /// "take a look at this" points at. `None` means another app's window.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub showing: Option<crate::intent::LookTarget>,
+    #[serde(default)]
+    pub teammates: Vec<Teammate>,
 }
 
 impl Snapshot {
@@ -122,6 +139,30 @@ impl Snapshot {
 
     pub fn current_thread(&self) -> Option<&Thread> {
         self.current.as_deref().and_then(|id| self.thread(id))
+    }
+
+    /// The teammate a spoken name means (exact, then a unique prefix).
+    pub fn teammate(&self, name: &str) -> Option<&Teammate> {
+        let n = crate::fastpath::normalize(name);
+        let n = n.trim_start_matches("the ").trim();
+        if n.is_empty() {
+            return None;
+        }
+        let exact = self.teammates.iter().find(|t| {
+            crate::fastpath::normalize(&t.name) == n || t.id == name || crate::fastpath::normalize(&t.role) == n
+        });
+        exact.or_else(|| {
+            let mut hits = self.teammates.iter().filter(|t| crate::fastpath::normalize(&t.name).starts_with(n));
+            match (hits.next(), hits.next()) {
+                (Some(t), None) if n.len() >= 3 => Some(t),
+                _ => None,
+            }
+        })
+    }
+
+    /// A teammate's threads, newest first as the snapshot lists them.
+    pub fn threads_of(&self, teammate: &Teammate) -> Vec<&Thread> {
+        self.threads.iter().filter(|t| t.teammate.as_deref() == Some(teammate.name.as_str())).collect()
     }
 
     /// Threads waiting on the user, current one first.
@@ -144,9 +185,13 @@ fn score(thread: &Thread, query: &str) -> u32 {
     }
     let title = crate::fastpath::normalize(&thread.title);
     let agent = crate::fastpath::normalize(&thread.agent);
+    let mate = thread.teammate.as_deref().map(crate::fastpath::normalize).unwrap_or_default();
     let mut s = 0;
     for w in &words {
         if agent.split(' ').any(|a| a == *w) || thread.agent_id == *w {
+            s += 3;
+        }
+        if !mate.is_empty() && mate.split(' ').any(|m| m == *w) {
             s += 3;
         }
         if title.split(' ').any(|t| t == *w || (w.len() >= 4 && t.starts_with(w))) {
@@ -203,6 +248,8 @@ pub(crate) mod fixtures {
             diff: None,
             cwd: Some("/work/dove".into()),
             error: None,
+            teammate: None,
+            terminal: false,
         }
     }
 
@@ -223,6 +270,10 @@ pub(crate) mod fixtures {
             default_project: Some("p1".into()),
             default_agent: Some("claude".into()),
             showing: None,
+            teammates: vec![
+                Teammate { id: "m1".into(), name: "Reviewer".into(), role: "Code & security auditor".into() },
+                Teammate { id: "m2".into(), name: "Builder".into(), role: "Full-stack engineer".into() },
+            ],
         }
     }
 }

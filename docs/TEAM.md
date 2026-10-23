@@ -33,6 +33,14 @@ sidebar section and Settings › Team).
    under the teammate if one runs it). Its first message is a **Task from …**
    card. Replies come back to the thread that asked, as a **Team update**
    card. A message between teammates is a **Message from …** card.
+5. To watch several at once, drag any thread (a sidebar row, a teammate's
+   thread, or a teammate, which drags their latest thread) onto the
+   conversation: it opens in a pane beside it, with its own composer and
+   Chat/Terminal switch. Drop it on a pane's edge to split that side, or its
+   middle to replace what the pane shows. The thread's panes are saved with
+   it and come back when you reopen it.
+6. A teammate's page in Settings › Team lists **Working with the team**:
+   what they handed to whom, what they were asked, and how each stands.
 
 ## The tools
 
@@ -43,6 +51,7 @@ browser tools (they stay available with the agent browser turned off).
 |---|---|
 | `team_capabilities` | Your own thread (id, agent, model, teammate, permission, depth, children), the installed agents with their models and reasoning levels, the teammates (preferred agent, recent threads) and the limits. |
 | `delegate_task` | Start a child thread on any agent and model, optionally as a teammate, in your folder or its own git worktree, with a permission mode no broader than yours. `mode: "async"` (default) returns at once and Dove wakes you with the result; `mode: "wait"` returns the result in the call. `request_key` makes retries idempotent. |
+| `delegate_tasks` | Fan out: several children in one call, each with its own task (and optionally its own teammate, agent, model or isolation), all reporting back together. |
 | `task_status` | How a delegated task stands, with its result once finished. |
 | `task_cancel` | Stop a delegated task and everything it delegated in turn. |
 | `team_message` | Message a teammate: their most recent thread in this project, or a new thread as them. Their reply comes back to you (or in the call with `mode: "wait"`). |

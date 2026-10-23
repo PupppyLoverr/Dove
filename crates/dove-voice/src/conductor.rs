@@ -66,6 +66,10 @@ pub struct Conductor {
     reading: std::collections::HashSet<String>,
     /// Speak when a thread finishes, fails or needs you.
     pub announce: bool,
+    /// A launch of several threads, waiting for "yes".
+    plan: Option<Action>,
+    /// A draft sitting in a thread's input, waiting for "send" or a change.
+    draft: Option<(String, String)>,
 }
 
 impl Default for Conductor {
@@ -78,7 +82,85 @@ impl Default for Conductor {
             seen: HashMap::new(),
             reading: Default::default(),
             announce: true,
+            plan: None,
+            draft: None,
         }
+    }
+}
+
+/// Answers that accept a proposed launch or send a draft.
+const YES: &[&str] = &[
+    "yes",
+    "yeah",
+    "yep",
+    "yes please",
+    "sure",
+    "ok",
+    "okay",
+    "go",
+    "go ahead",
+    "do it",
+    "send",
+    "send it",
+    "send that",
+    "yes send it",
+    "launch them",
+    "start them",
+    "open them",
+    "go for it",
+    "sounds good",
+];
+/// Answers that drop a proposed launch or a draft.
+const NO: &[&str] =
+    &["no", "nope", "cancel", "never mind", "nevermind", "don't", "dont", "scrap that", "clear it", "forget it"];
+
+/// What every teammate (or one) is doing, from observed state only.
+pub fn team_status(snap: &Snapshot, only: Option<&str>) -> String {
+    let mates: Vec<&crate::snapshot::Teammate> =
+        snap.teammates.iter().filter(|m| only.is_none_or(|id| m.id == id)).collect();
+    let mut lines = Vec::new();
+    for m in mates {
+        let threads = snap.threads_of(m);
+        let working: Vec<&&Thread> = threads.iter().filter(|t| t.status == ThreadStatus::Running).collect();
+        let waiting = threads.iter().filter(|t| t.status == ThreadStatus::NeedsInput).count();
+        let mut s = match working.as_slice() {
+            [] if threads.is_empty() => format!("{} hasn't started anything.", m.name),
+            [] => format!("{} is idle; last on {}.", m.name, threads[0].title),
+            [t] => {
+                let doing = t
+                    .activity
+                    .as_deref()
+                    .map(|a| format!(", {}", lower_first(a.trim_end_matches('.'))))
+                    .unwrap_or_default();
+                format!("{} is working on {} with {}{doing}.", m.name, t.title, t.agent)
+            }
+            many => format!("{} is working on {} threads, including {}.", m.name, many.len(), many[0].title),
+        };
+        if waiting > 0 {
+            s.push_str(&format!(
+                " {} waiting for you.",
+                if waiting == 1 { "One is".to_string() } else { format!("{waiting} are") }
+            ));
+        }
+        lines.push(s);
+    }
+    if lines.is_empty() { "You don't have any teammates yet.".into() } else { lines.join(" ") }
+}
+
+/// "3 Claude Code chats" / "a Codex terminal".
+fn launch_phrase(items: &[intent::LaunchItem], snap: &Snapshot) -> String {
+    let first = &items[0];
+    let agent = snap.agents.iter().find(|a| a.id == first.agent).map(|a| a.label.clone()).unwrap_or_default();
+    let kind = if first.terminal { "terminal" } else { "chat" };
+    let who = first
+        .teammate
+        .as_deref()
+        .and_then(|id| snap.teammates.iter().find(|m| m.id == id))
+        .map(|m| format!(" as {}", m.name))
+        .unwrap_or_default();
+    match items.len() {
+        1 => format!("a {agent} {kind}{who}"),
+        n => format!("{n} {agent} {kind}s{who}"),
     }
 }
 
@@ -162,6 +244,32 @@ pub fn overall_status(snap: &Snapshot) -> String {
     s
 }
 
+/// A spoken change to a draft: "change it to X" replaces it, "add X"
+/// appends, "make it say X" replaces. None when `said` isn't a change.
+pub fn revise(said: &str, current: &str) -> Option<String> {
+    let raw = said.trim().trim_end_matches(['.', '!']);
+    let lower = raw.to_lowercase();
+    for lead in
+        ["change it to ", "replace it with ", "make it say ", "make it ", "instead say ", "rewrite it as ", "say "]
+    {
+        if lower.starts_with(lead) {
+            let rest = raw[lead.len()..].trim();
+            return (!rest.is_empty()).then(|| rest.to_string());
+        }
+    }
+    for lead in ["add ", "also add ", "and also ", "append ", "also "] {
+        if lower.starts_with(lead) {
+            let rest = raw[lead.len()..].trim();
+            if rest.is_empty() {
+                return None;
+            }
+            let sep = if current.trim_end().ends_with(['.', '!', '?']) { " " } else { ". " };
+            return Some(format!("{}{sep}{rest}", current.trim_end()));
+        }
+    }
+    None
+}
+
 fn lower_first(s: &str) -> String {
     let mut c = s.trim().chars();
     match c.next() {
@@ -175,6 +283,24 @@ fn lower_first(s: &str) -> String {
 impl Conductor {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Point the call at thread `id` (a click in the call view), exactly as
+    /// "talk to …" would.
+    pub fn talk_to(&mut self, id: &str, snap: &Snapshot) -> Vec<Effect> {
+        let mut out = Vec::new();
+        self.intent(Intent::TalkTo { thread: id.to_string() }, snap, &mut out);
+        out
+    }
+
+    /// A launch waiting for the user's yes (for the call view's card).
+    pub fn pending_plan(&self) -> Option<&Action> {
+        self.plan.as_ref()
+    }
+
+    /// The draft waiting in a thread's input: (thread id, text).
+    pub fn pending_draft(&self) -> Option<(&str, &str)> {
+        self.draft.as_ref().map(|(t, x)| (t.as_str(), x.as_str()))
     }
 
     /// `thread`'s next reply is read aloud; don't also announce it finished.
@@ -194,6 +320,42 @@ impl Conductor {
         let n = fastpath::normalize(text);
         if n.is_empty() {
             return out;
+        }
+        // A launch waiting for an answer.
+        if let Some(plan) = self.plan.take() {
+            if YES.contains(&n.as_str()) {
+                out.push(Effect::Act(plan));
+                self.say(&mut out, "Starting them.");
+                return out;
+            }
+            if NO.contains(&n.as_str()) {
+                self.say(&mut out, "Okay, I won't open them.");
+                return out;
+            }
+            // Anything else is a new request; the plan is dropped.
+        }
+        // A draft in a thread's input: send it, change it, or take it back.
+        if let Some((thread, text_now)) = self.draft.clone() {
+            if YES.contains(&n.as_str()) {
+                self.draft = None;
+                out.push(Effect::Act(Action::SendDraft { thread }));
+                self.say(&mut out, "Sent.");
+                return out;
+            }
+            if NO.contains(&n.as_str()) {
+                self.draft = None;
+                out.push(Effect::Act(Action::ClearDraft { thread }));
+                self.say(&mut out, "Cleared it.");
+                return out;
+            }
+            if let Some(new) = revise(text, &text_now) {
+                self.draft = Some((thread.clone(), new.clone()));
+                out.push(Effect::Act(Action::Draft { thread, text: new.clone() }));
+                self.say(&mut out, format!("Now it says: {new}. Send it?"));
+                return out;
+            }
+            // Something else: the draft stays in the input, unsent.
+            self.draft = None;
         }
         // The confirmation phrase for an armed destructive request.
         if let Some(armed) = self.armed.clone()
@@ -385,6 +547,48 @@ impl Conductor {
                 out.push(Effect::EndCall);
             }
             Action::SwitchBack => {}
+            Action::Launch { ref items, .. } => {
+                let what = launch_phrase(items, snap);
+                if items.len() == 1 {
+                    out.push(Effect::Act(action.clone()));
+                    self.say(out, format!("Opening {what}."));
+                } else {
+                    // Several at once is worth a yes first.
+                    let tasks: Vec<&str> = items.iter().filter_map(|i| i.prompt.as_deref()).collect();
+                    let detail = match tasks.as_slice() {
+                        [] => String::new(),
+                        [one, rest @ ..] if rest.iter().all(|p| p == one) => format!(", each on: {one}"),
+                        many => format!(": {}", many.join("; ")),
+                    };
+                    self.plan = Some(action.clone());
+                    self.say(out, format!("I'll open {what}{detail}. Should I?"));
+                }
+            }
+            Action::TeamStatus { ref teammate } => {
+                let text = team_status(snap, teammate.as_deref());
+                self.say(out, text);
+            }
+            Action::AskTeammate { ref teammate, .. } => {
+                let name =
+                    snap.teammates.iter().find(|m| &m.id == teammate).map(|m| m.name.clone()).unwrap_or_default();
+                out.push(Effect::Act(action.clone()));
+                self.say(out, format!("Asking {name}. I'll tell you when they answer."));
+            }
+            Action::Draft { ref thread, ref text } => {
+                let t = snap.thread(thread).expect("validated");
+                let place = if t.terminal { "terminal" } else { "box" };
+                self.draft = Some((thread.clone(), text.clone()));
+                out.push(Effect::Act(action.clone()));
+                self.say(out, format!("It's in the {} {place}: {text}. Send it, or tell me what to change.", label(t)));
+            }
+            Action::OpenBeside { ref thread } => {
+                let t = snap.thread(thread).expect("validated");
+                let text = format!("Opening {} beside this one.", label(t));
+                out.push(Effect::Act(action.clone()));
+                self.say(out, text);
+            }
+            // Only the conductor's own answers produce these.
+            Action::SendDraft { .. } | Action::ClearDraft { .. } => out.push(Effect::Act(action)),
         }
     }
 
@@ -639,5 +843,57 @@ mod tests {
         c.utterance("status", &snapshot(), false);
         let e = c.utterance("say that again", &snapshot(), false);
         assert!(matches!(&e[0], Effect::Speak(t) if t.starts_with("Claude Code on")));
+    }
+
+    #[test]
+    fn several_threads_wait_for_a_yes() {
+        let s = snapshot();
+        let mut c = Conductor::new();
+        let e = c.utterance("launch three codex chats to fix the flaky tests", &s, false);
+        assert!(acts(&e).is_empty(), "nothing opens before the user agrees");
+        assert!(matches!(&e[0], Effect::Speak(t) if t.contains("3 Codex chats") && t.ends_with("Should I?")));
+        let e = c.utterance("yes", &s, false);
+        assert!(matches!(acts(&e)[..], [Action::Launch { items, .. }] if items.len() == 3));
+        // "No" drops it; anything else is a fresh request.
+        c.utterance("open two codex terminals", &s, false);
+        let e = c.utterance("no", &s, false);
+        assert!(acts(&e).is_empty());
+        c.utterance("open two codex terminals", &s, false);
+        let e = c.utterance("how's codex doing", &s, false);
+        assert!(acts(&e).is_empty() && matches!(&e[0], Effect::Speak(t) if t.starts_with("Codex on")));
+        let e = c.utterance("yes", &s, false);
+        assert!(!acts(&e).iter().any(|a| matches!(a, Action::Launch { .. })), "the plan was dropped");
+    }
+
+    #[test]
+    fn drafts_are_sent_changed_or_cleared() {
+        let s = snapshot();
+        let mut c = Conductor::new();
+        let e = c.utterance("Draft for Codex: run clippy", &s, false);
+        assert_eq!(acts(&e), vec![&Action::Draft { thread: "t2".into(), text: "run clippy".into() }]);
+        let e = c.utterance("add fix every warning", &s, false);
+        assert_eq!(
+            acts(&e),
+            vec![&Action::Draft { thread: "t2".into(), text: "run clippy. fix every warning".into() }]
+        );
+        let e = c.utterance("change it to run clippy with all features", &s, false);
+        assert_eq!(acts(&e), vec![&Action::Draft { thread: "t2".into(), text: "run clippy with all features".into() }]);
+        let e = c.utterance("send it", &s, false);
+        assert_eq!(acts(&e), vec![&Action::SendDraft { thread: "t2".into() }]);
+        c.utterance("draft for codex: wrong idea", &s, false);
+        assert_eq!(acts(&c.utterance("never mind", &s, false)), vec![&Action::ClearDraft { thread: "t2".into() }]);
+        assert_eq!(revise("make it say hello", "x").as_deref(), Some("hello"));
+        assert_eq!(revise("what time is it", "x"), None);
+    }
+
+    #[test]
+    fn team_status_comes_from_observed_threads() {
+        let mut s = snapshot();
+        s.threads[1].teammate = Some("Reviewer".into());
+        s.threads[1].activity = Some("Running cargo test".into());
+        let text = team_status(&s, None);
+        assert!(text.contains("Reviewer is working on Make the tests pass on Windows with Codex, running cargo test."));
+        assert!(text.contains("Builder hasn't started anything."));
+        assert_eq!(team_status(&s, Some("m2")), "Builder hasn't started anything.");
     }
 }

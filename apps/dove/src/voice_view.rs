@@ -33,7 +33,7 @@ use crate::voice_call::VoiceCall;
 /// breathes, which is slow enough at 15 frames a second.
 const FRAME: Duration = Duration::from_millis(33);
 /// Threads on the rail at most.
-const RAIL_MAX: usize = 4;
+const RAIL_MAX: usize = 6;
 
 /// A thread on the rail.
 #[derive(Clone, Debug, PartialEq)]
@@ -48,6 +48,8 @@ pub struct RailItem {
     pub pending: Option<String>,
     /// The thread the call talks to.
     pub current: bool,
+    /// The teammate running it.
+    pub teammate: Option<String>,
 }
 
 /// The threads worth a glance during a call: those waiting on the user
@@ -79,6 +81,7 @@ pub fn rail(snap: &Snapshot) -> Vec<RailItem> {
                     doing: t.activity.clone().filter(|a| !a.trim().is_empty()),
                     pending,
                     current: is_current,
+                    teammate: t.teammate.clone(),
                 },
             ))
         })
@@ -110,6 +113,10 @@ pub enum CallViewEvent {
     ShowChat,
     /// Open a thread in the chat (to approve something there).
     OpenThread(TaskId),
+    /// Point the call at a thread (a rail row was clicked).
+    TalkTo(TaskId),
+    /// Answer the call as if spoken ("yes", "send it", "never mind").
+    Say(&'static str),
 }
 
 pub struct CallView {
@@ -235,6 +242,14 @@ impl CallView {
                 .rounded(px(12.0))
                 .bg(t.wash(if waiting { 0.06 } else { 0.035 }))
                 .when(waiting, |d| d.border_1().border_color(t.warning.opacity(0.35)))
+                .when(item.current, |d| d.border_1().border_color(t.accent.opacity(0.35)))
+                // Any other thread: click to talk to it instead.
+                .when_some(id.filter(|_| !item.current), |d, id| {
+                    d.cursor_pointer()
+                        .hover(|s| s.bg(t.wash(0.07)))
+                        .tooltip(crate::ui::tip("Talk to this thread"))
+                        .on_click(cx.listener(move |_, _, _, cx| cx.emit(CallViewEvent::TalkTo(id))))
+                })
                 .child(div().size(px(16.0)).flex_none().flex().items_center().justify_center().child(glyph))
                 .child(
                     div()
@@ -257,13 +272,13 @@ impl CallView {
                                         .text_color(t.text)
                                         .child(item.title.clone()),
                                 )
-                                .child(div().flex_none().text_size(ty::CAPTION).text_color(t.text_faint).child(
-                                    if item.current {
-                                        format!("{} · talking to", item.agent)
-                                    } else {
-                                        item.agent.clone()
-                                    },
-                                )),
+                                .child(div().flex_none().text_size(ty::CAPTION).text_color(t.text_faint).child({
+                                    let who = match &item.teammate {
+                                        Some(m) => format!("{m} · {}", item.agent),
+                                        None => item.agent.clone(),
+                                    };
+                                    if item.current { format!("{who} · talking to") } else { who }
+                                })),
                         )
                         .child(div().min_w_0().truncate().text_size(ty::CAPTION).text_color(tint).child(line)),
                 )
@@ -284,11 +299,101 @@ impl CallView {
                             .cursor_pointer()
                             .hover(|s| s.bg(t.warning.opacity(0.24)))
                             .child("Approve in chat")
-                            .on_click(cx.listener(move |_, _, _, cx| cx.emit(CallViewEvent::OpenThread(id)))),
+                            .on_click(cx.listener(move |_, _, _, cx| {
+                                cx.stop_propagation();
+                                cx.emit(CallViewEvent::OpenThread(id))
+                            })),
                     )
                 })
         });
         Some(div().w_full().max_w(px(520.0)).flex().flex_col().gap(px(6.0)).children(rows).into_any_element())
+    }
+
+    /// What the call is waiting on an answer for: several threads to open,
+    /// or a draft sitting in an input. Its buttons answer as speech would.
+    fn render_pending(&self, t: &Theme, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        let call = self.call.read(cx);
+        let (glyph, head, lines, yes, no): (&'static str, String, Vec<String>, &'static str, &'static str) =
+            if let Some(dove_voice::intent::Action::Launch { items, .. }) = call.conductor.pending_plan() {
+                let first = items.first()?;
+                let agent = dove_core::proto::HarnessKind::from_id(&first.agent).map(|k| k.label()).unwrap_or("agent");
+                let kind = if first.terminal { "terminals" } else { "chats" };
+                let lines = items.iter().filter_map(|i| i.prompt.clone()).collect::<Vec<_>>();
+                let mut lines = lines;
+                lines.dedup();
+                (icons::WIDGET_ADD, format!("Open {} {agent} {kind}?", items.len()), lines, "Open them", "Not now")
+            } else if let Some((thread, text)) = call.conductor.pending_draft() {
+                let title = self.rail.iter().find(|r| r.id == thread).map(|r| r.title.clone());
+                let head = match title {
+                    Some(t) => format!("Draft in {t}"),
+                    None => "Draft".to_string(),
+                };
+                (icons::PEN, head, vec![text.to_string()], "Send it", "Clear")
+            } else {
+                return None;
+            };
+        let button = |id: &'static str, label: &'static str, primary: bool| {
+            div()
+                .id(id)
+                .h(px(30.0))
+                .px(px(14.0))
+                .flex()
+                .items_center()
+                .rounded_full()
+                .cursor_pointer()
+                .text_size(ty::SMALL)
+                .font_weight(gpui::FontWeight::MEDIUM)
+                .when(primary, |d| d.bg(t.accent).text_color(gpui::white()).hover(|s| s.opacity(0.9)))
+                .when(!primary, |d| d.bg(t.wash(0.07)).text_color(t.text).hover(|s| s.bg(t.wash(0.11))))
+                .child(label)
+        };
+        Some(
+            div()
+                .w_full()
+                .max_w(px(520.0))
+                .p(px(14.0))
+                .flex()
+                .flex_col()
+                .gap(px(10.0))
+                .rounded(px(16.0))
+                .bg(t.wash(0.05))
+                .border_1()
+                .border_color(t.accent.opacity(0.35))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.0))
+                        .child(icon(glyph).size(px(14.0)).text_color(t.accent))
+                        .child(
+                            div()
+                                .text_size(ty::BODY)
+                                .font_weight(gpui::FontWeight::MEDIUM)
+                                .text_color(t.text)
+                                .child(head),
+                        ),
+                )
+                .children(lines.into_iter().take(4).map(|l| {
+                    div().text_size(ty::SMALL).line_height(ty::lh::BODY).text_color(t.text_muted).line_clamp(2).child(l)
+                }))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.0))
+                        .child(
+                            button("call-pending-yes", yes, true)
+                                .on_click(cx.listener(|_, _, _, cx| cx.emit(CallViewEvent::Say("yes")))),
+                        )
+                        .child(
+                            button("call-pending-no", no, false)
+                                .on_click(cx.listener(|_, _, _, cx| cx.emit(CallViewEvent::Say("no")))),
+                        )
+                        .child(div().flex_1())
+                        .child(div().text_size(ty::CAPTION).text_color(t.text_faint).child("or just say it")),
+                )
+                .into_any_element(),
+        )
     }
 }
 
@@ -379,7 +484,13 @@ impl Render for CallView {
             (None, None, None) if call.new_thread => {
                 (Some("Say what you'd like done. A new thread starts on your picked agent.".into()), t.text_faint)
             }
-            (None, None, None) => (Some("Ask what's happening, give the next step, or say stop.".into()), t.text_faint),
+            (None, None, None) => (
+                Some(
+                    "Ask what's happening, give the next step, check on the team, open a few chats at once, or draft into any thread."
+                        .into(),
+                ),
+                t.text_faint,
+            ),
         };
         let history: Vec<(bool, String)> = {
             let n = call.lines.len();
@@ -531,6 +642,7 @@ impl Render for CallView {
                     )
                     .child(words_block),
             )
+            .children(self.render_pending(&t, cx).map(|p| div().w_full().flex().justify_center().pb(px(12.0)).child(p)))
             .children(self.render_rail(&t, cx).map(|r| div().w_full().flex().justify_center().pb(px(18.0)).child(r)))
             .child(controls)
     }
@@ -564,6 +676,8 @@ mod tests {
             diff: None,
             cwd: None,
             error: None,
+            teammate: None,
+            terminal: false,
         }
     }
 

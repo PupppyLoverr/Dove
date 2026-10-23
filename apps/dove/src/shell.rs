@@ -31,10 +31,11 @@ use crate::palette::{Palette, PaletteEvent, PaletteItem};
 use crate::pr_view::PrTarget;
 use crate::pull_requests::{PrEvent, PullRequestsPage};
 use crate::remote::{Remote, RemoteCommand, RemoteEvent};
-use crate::side_panel::{PaneCommand, SidePanel, SidePanelEvent, Tab};
+use crate::side_panel::{PaneCommand, SidePanel, SidePanelEvent, Tab, ThreadDrag};
 use crate::theme::Theme;
 use crate::thread::{TaskViewEventKind, ThreadEvent, ThreadView, ViewMode};
 use crate::transcript::TaskView;
+use crate::workspace::Zone;
 use crate::workspace::{Axis, Dir};
 use crate::{actions, notify, ui};
 
@@ -335,6 +336,7 @@ impl Shell {
                 this.checkout_pr(project.clone(), *number, title.clone(), window, cx)
             }
             SidePanelEvent::PrChanged => cx.notify(),
+            SidePanelEvent::DropThread { id, pane, zone } => this.open_beside(*id, Some((*pane, *zone)), window, cx),
         }));
         subs.push(cx.subscribe_in(
             &settings,
@@ -475,6 +477,17 @@ impl Shell {
         // `DOVE_OPEN_THREAD=<id>`: start on a thread (QA and scripting).
         if let Some(id) = std::env::var("DOVE_OPEN_THREAD").ok().and_then(|s| uuid_task(&s)) {
             this.open_task(id, window, cx);
+            // `DOVE_TERMINAL=1`: show it in the agent's terminal UI.
+            if std::env::var("DOVE_TERMINAL").is_ok_and(|v| v == "1") {
+                this.toggle_view_mode(window, cx);
+            }
+        }
+        // `DOVE_BESIDE=<id>[,<id>…]`: open threads beside the open one, as a
+        // drop on the conversation would (QA of split view).
+        if let Ok(list) = std::env::var("DOVE_BESIDE") {
+            for id in list.split(',').filter_map(uuid_task) {
+                this.open_beside(id, None, window, cx);
+            }
         }
         // `DOVE_ROUTE=<page>`: start on a page (QA and scripting).
         if let Some(route) = std::env::var("DOVE_ROUTE").ok().and_then(|r| Route::from_id(&r)) {
@@ -927,6 +940,10 @@ impl Shell {
         let Some(task) = self.task(id).cloned() else { return };
         let Some(project) = self.project(task.project_id).cloned() else { return };
         crate::memory::tab_opened(id, cx);
+        // A call follows the user to the thread they open.
+        if let Some(call) = self.voice_call.clone() {
+            call.update(cx, |v, _| v.current = Some(id));
+        }
         if !self.tabs.contains(&id) {
             self.tabs.push(id);
             self.save_tabs();
@@ -943,10 +960,17 @@ impl Shell {
         }
         let dir = task.worktree.clone().unwrap_or_else(|| project.path.clone());
         let base = task.base.clone().or_else(|| Some("HEAD".into()));
-        self.panel.update(cx, |p, cx| {
+        let wanted = self.panel.update(cx, |p, cx| {
             p.set_thread(Some(id), Some(dir), base, &task.title, window, cx);
             p.set_parent(task.clone(), project.clone());
+            p.take_wanted()
         });
+        // Threads saved in this thread's panes come back beside it.
+        for (pane, other) in wanted {
+            if let Some(view) = self.thread_view_for(other, window, cx) {
+                self.panel.update(cx, |p, cx| p.place_thread(other, view, Some((pane, Zone::Center)), window, cx));
+            }
+        }
         self.sync_panel(cx);
         if let Some(v) = self.threads.get(&id)
             && v.read(cx).view == ViewMode::Chat
@@ -984,6 +1008,56 @@ impl Shell {
             RemoteCommand::Interrupt => view.update(cx, |v, cx| v.interrupt(cx)),
         }
         remote.read(cx).command_done(&chat, id, true, None);
+        cx.notify();
+    }
+
+    /// Whether thread `id`'s view must stay: its tab is open, it is the
+    /// open thread, or a pane shows it beside another.
+    pub(crate) fn keeps_thread(&self, id: TaskId, cx: &gpui::App) -> bool {
+        self.tabs.contains(&id) || self.route == Route::Thread(id) || self.panel.read(cx).holds_thread(id)
+    }
+
+    /// Thread `id`'s view, made (without starting anything) if it is not
+    /// open yet. None for drafts and unknown threads.
+    pub(crate) fn thread_view_for(
+        &mut self,
+        id: TaskId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Entity<ThreadView>> {
+        if let Some(v) = self.threads.get(&id) {
+            return Some(v.clone());
+        }
+        let task = self.task(id).cloned().filter(|t| t.status != TaskStatus::Draft)?;
+        let project = self.project(task.project_id).cloned()?;
+        crate::memory::tab_opened(id, cx);
+        Some(self.make_thread(task, project, None, window, cx))
+    }
+
+    /// Show thread `id` beside the open one: in a pane of the side panel,
+    /// dropped on `at` or (None) next to the conversation. The panel opens
+    /// if it was closed. Dropping the open thread on itself does nothing.
+    pub(crate) fn open_beside(
+        &mut self,
+        id: TaskId,
+        at: Option<(crate::workspace::PaneId, Zone)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Route::Thread(main) = self.route else {
+            // Nothing open to sit beside: open it.
+            self.open_task(id, window, cx);
+            return;
+        };
+        if main == id {
+            return;
+        }
+        let Some(view) = self.thread_view_for(id, window, cx) else { return };
+        if !self.panel_open {
+            self.panel_open = true;
+            let _ = self.engine.store.set_setting("panel_open", "true");
+        }
+        self.panel.update(cx, |p, cx| p.place_thread(id, view, at, window, cx));
         cx.notify();
     }
 
@@ -2922,8 +2996,54 @@ impl Shell {
                 // the composer (which GPUI could not reuse under a cached
                 // view that re-renders), so it is drawn directly; a
                 // terminal is cached whole.
-                Some(v) if v.read(cx).view == ViewMode::Chat => v.clone().into_any_element(),
-                Some(v) => AnyView::from(v.clone()).cached(StyleRefinement::default().size_full()).into_any_element(),
+                Some(v) => {
+                    let body = if v.read(cx).view == ViewMode::Chat {
+                        v.clone().into_any_element()
+                    } else {
+                        AnyView::from(v.clone()).cached(StyleRefinement::default().size_full()).into_any_element()
+                    };
+                    // Another thread dragged onto the conversation opens
+                    // beside it (the layer exists only while dragging).
+                    let t = Theme::of(cx).clone();
+                    let layer =
+                        cx.has_active_drag().then(|| {
+                            div()
+                                .id("beside-drop")
+                                .group("beside-drop")
+                                .absolute()
+                                .inset_0()
+                                .p(px(10.0))
+                                .on_drop(cx.listener(|this, d: &ThreadDrag, window, cx| {
+                                    this.open_beside(d.id, None, window, cx)
+                                }))
+                                .child(
+                                    div()
+                                        .size_full()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .rounded(px(radius::CARD))
+                                        .border_1()
+                                        .border_color(gpui::transparent_black())
+                                        .group_drag_over::<ThreadDrag>("beside-drop", |s| {
+                                            s.border_color(t.accent.opacity(0.6)).bg(t.accent.opacity(0.08))
+                                        })
+                                        .child(
+                                            div()
+                                                .px(px(12.0))
+                                                .py(px(6.0))
+                                                .rounded(px(radius::fit(28.0)))
+                                                .bg(t.surface_raised)
+                                                .text_size(ty::SMALL)
+                                                .text_color(t.text)
+                                                .invisible()
+                                                .group_drag_over::<ThreadDrag>("beside-drop", |s| s.visible())
+                                                .child("Open beside this thread"),
+                                        ),
+                                )
+                        });
+                    div().relative().size_full().child(body).children(layer).into_any_element()
+                }
                 None => div().into_any_element(),
             },
             Route::Threads => self.render_threads_page(window, cx),

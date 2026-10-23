@@ -128,6 +128,21 @@ impl Node {
         }
     }
 
+    /// Split pane `at`, putting `new` on side `dir` of it (a tab dropped on
+    /// a pane's left edge opens to its left).
+    pub fn split_side(&mut self, at: PaneId, dir: Dir, new: PaneId) -> bool {
+        match self {
+            Node::Leaf(id) if *id == at => {
+                let axis = if matches!(dir, Dir::Left | Dir::Right) { Axis::Row } else { Axis::Column };
+                let (a, b) = if matches!(dir, Dir::Left | Dir::Up) { (new, at) } else { (at, new) };
+                *self = Node::Split { axis, ratio: 0.5, a: Box::new(Node::Leaf(a)), b: Box::new(Node::Leaf(b)) };
+                true
+            }
+            Node::Leaf(_) => false,
+            Node::Split { a, b, .. } => a.split_side(at, dir, new) || b.split_side(at, dir, new),
+        }
+    }
+
     /// Close pane `id`: its sibling takes the split's place. The last pane
     /// stays.
     pub fn remove(&mut self, id: PaneId) -> bool {
@@ -280,6 +295,46 @@ pub fn neighbor(layout: &Node, from: PaneId, dir: Dir, bounds: Rect) -> Option<P
         .map(|(id, _)| id)
 }
 
+/// Where something dragged over a pane lands: in the pane, or in a new
+/// pane on one of its sides.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Zone {
+    Center,
+    Side(Dir),
+}
+
+impl Zone {
+    /// The part of `pane` the drop preview covers.
+    pub fn preview(self, pane: Rect) -> Rect {
+        let (hw, hh) = (pane.w / 2.0, pane.h / 2.0);
+        match self {
+            Zone::Center => pane,
+            Zone::Side(Dir::Left) => Rect::new(pane.x, pane.y, hw, pane.h),
+            Zone::Side(Dir::Right) => Rect::new(pane.x + hw, pane.y, hw, pane.h),
+            Zone::Side(Dir::Up) => Rect::new(pane.x, pane.y, pane.w, hh),
+            Zone::Side(Dir::Down) => Rect::new(pane.x, pane.y + hh, pane.w, hh),
+        }
+    }
+}
+
+/// The drop zone under `(x, y)` in `pane`: the outer quarter on each side
+/// splits that way, the middle replaces the pane's tab. Sides that have no
+/// room for two panes count as the middle.
+pub fn zone_at(pane: Rect, x: f32, y: f32) -> Zone {
+    if pane.w <= 0.0 || pane.h <= 0.0 {
+        return Zone::Center;
+    }
+    let (fx, fy) = ((x - pane.x) / pane.w, (y - pane.y) / pane.h);
+    // The nearest edge wins, inside the outer quarter.
+    let edges = [(fx, Dir::Left), (1.0 - fx, Dir::Right), (fy, Dir::Up), (1.0 - fy, Dir::Down)];
+    let (d, dir) = edges.into_iter().min_by(|a, b| a.0.total_cmp(&b.0)).unwrap_or((1.0, Dir::Left));
+    let room = match dir {
+        Dir::Left | Dir::Right => pane.w / 2.0 >= MIN_W,
+        Dir::Up | Dir::Down => pane.h / 2.0 >= MIN_H,
+    };
+    if d < 0.25 && room { Zone::Side(dir) } else { Zone::Center }
+}
+
 /// The ratio for a divider dragged to `pos` along a split of `extent`
 /// pixels starting at `start`, keeping both halves at least `min` where
 /// the split is big enough.
@@ -359,6 +414,31 @@ mod tests {
         let n = four();
         let back: Node = serde_json::from_str(&serde_json::to_string(&n).unwrap()).unwrap();
         assert_eq!(back, n);
+    }
+
+    #[test]
+    fn splits_land_on_the_chosen_side() {
+        let mut n = Node::Leaf(0);
+        assert!(n.split_side(0, Dir::Left, 1));
+        assert_eq!(n.leaves(), vec![1, 0], "the new pane is first when it goes left");
+        assert!(n.split_side(0, Dir::Down, 2));
+        assert_eq!(n.leaves(), vec![1, 0, 2]);
+        let r = n.rects(Rect::new(0.0, 0.0, 1000.0, 800.0));
+        assert_eq!(r[2], (2, Rect::new(500.0, 400.0, 500.0, 400.0)));
+        assert!(!n.split_side(9, Dir::Up, 3));
+    }
+
+    #[test]
+    fn drop_zones_follow_the_nearest_edge() {
+        let pane = Rect::new(100.0, 0.0, 1000.0, 800.0);
+        assert_eq!(zone_at(pane, 120.0, 400.0), Zone::Side(Dir::Left));
+        assert_eq!(zone_at(pane, 1090.0, 400.0), Zone::Side(Dir::Right));
+        assert_eq!(zone_at(pane, 600.0, 10.0), Zone::Side(Dir::Up));
+        assert_eq!(zone_at(pane, 600.0, 790.0), Zone::Side(Dir::Down));
+        assert_eq!(zone_at(pane, 600.0, 400.0), Zone::Center);
+        // Too narrow to halve: the left edge is the middle.
+        assert_eq!(zone_at(Rect::new(0.0, 0.0, 500.0, 800.0), 10.0, 400.0), Zone::Center);
+        assert_eq!(Zone::Side(Dir::Right).preview(pane), Rect::new(600.0, 0.0, 500.0, 800.0));
     }
 
     #[test]

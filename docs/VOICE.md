@@ -52,6 +52,11 @@ Send would, and the call then talks to that thread.
 | "Claude, how's the auth fix?" | Status of a named thread |
 | "Tell Codex to also run clippy" | Steer (or send to) a named thread |
 | "Start a Gemini task on the landing page in a new worktree" | A new thread, in a new worktree |
+| "Launch three Claude chats to review the auth code" / "Open two Codex terminals" / "Spin up a terminal as the Builder" | Several threads at once, in chat or the agent's own terminal UI (up to 8). Dove says what it will open and waits for "yes" (or the card's **Open them**); the first becomes the open thread and the rest open in panes beside it |
+| "What's the team doing?" / "How's the Reviewer doing?" | What each teammate is working on, from their threads |
+| "Ask the Reviewer to look at the login diff" / "Tell Builder the API changed" | Goes to the teammate's latest thread in the project (or a new one as them); their answer is read to you |
+| "Draft for Codex: run the tests on Windows" / "Type cargo test into the codex terminal" | Puts the words in that thread's input (its composer, or the terminal's prompt line) without sending. Then "send it", "change it to …", "add …" or "never mind" (the call view shows the draft with Send and Clear) |
+| "Open the tests thread beside this" / "Split with Codex" | Shows that thread in a pane next to the open one |
 | "Show the diff" | Opens the Changes panel |
 | "Take a look at this" / "Look at the page" / "Look at the diff" | Attaches what you see to your next message: the open browser page or diff, or (Windows) a capture of the last other app's window you were in |
 | "Talk faster" / "slower" · "Mute" · "Be quiet" · "Repeat that" · "End call" | Call controls |
@@ -59,6 +64,13 @@ Send would, and the call then talks to that thread.
 
 Push-to-talk (Settings › Voice › Listening): hold the orb, or hold Space when
 the call is muted and no text field has focus.
+
+**Talking to one thread among many.** The call shortcut (Ctrl/Cmd+Shift+Space)
+starts a call on the thread you're in, including a thread in a pane beside
+the open one or a terminal. While a call runs, pressing it in another thread
+moves the call there ("Talking to Codex on …") instead of ending it; press it
+again in the same thread to hang up. Opening a thread moves the call too, and
+in the call view a click on any thread in the list talks to it.
 
 ## Safety
 

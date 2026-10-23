@@ -2683,9 +2683,9 @@ impl Composer {
             .rounded(px(radius::fit(24.0)))
             .cursor_pointer()
             .text_size(ty::BODY)
-            .text_color(if bypass { t.danger } else { t.text.opacity(0.62) })
+            .text_color(t.text.opacity(0.62))
             .when(open, |d| d.bg(t.element_hover))
-            .hover(|s| s.bg(t.element_hover).text_color(if bypass { t.danger } else { t.text.opacity(0.9) }))
+            .hover(|s| s.bg(t.element_hover).text_color(t.text.opacity(0.9)))
             .tooltip(ui::tip("Permission level"))
             .child(label)
             .on_click(cx.listener(|this, _, _, cx| this.toggle_menu(Menu::Mode, cx)));
@@ -2742,7 +2742,6 @@ impl Composer {
         focused: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let bypass = self.mode == PermissionMode::Bypass;
         let staged = self.queue.len() + self.attachments.len() + self.cards.len() > 0;
         // A squircle: large corners, with a straight run along the top and bottom.
         let radius = radius::plate(DOCK_H);
@@ -2801,10 +2800,9 @@ impl Composer {
                 }))
                 .into_any_element();
         }
-        // Bypass shows in the mode chip's red label; the plate only tints.
-        let border = if bypass {
-            t.danger.opacity(if focused { 0.32 } else { 0.2 })
-        } else if self.dragging_files {
+        // The plate looks the same in every permission mode; the mode chip
+        // under it says which one is on.
+        let border = if self.dragging_files {
             t.accent
         } else if focused {
             edge.opacity((edge.a * 2.0).min(1.0))
@@ -2952,7 +2950,6 @@ impl Composer {
         let theme = Theme::of(cx).clone();
         let t = &theme;
         let has_text = !self.input.read(cx).value().trim().is_empty();
-        let bypass = self.mode == PermissionMode::Bypass;
         let focused = self.input.read(cx).focus_handle(cx).is_focused(window);
         let home = self.thread.is_none();
         if self.docked() {
@@ -2965,10 +2962,9 @@ impl Composer {
         // with its send disc (14 + 12).
         let radius = crate::design::radius::COMPOSER;
         let edge = t.composer_border();
-        // Bypass shows in the mode chip's red label; the plate only tints.
-        let border = if bypass {
-            t.danger.opacity(if focused { 0.32 } else { 0.2 })
-        } else if self.dragging_files {
+        // The plate looks the same in every permission mode; the mode chip
+        // under it says which one is on.
+        let border = if self.dragging_files {
             t.accent
         } else if focused {
             edge.opacity((edge.a * 2.0).min(1.0))

@@ -12,6 +12,7 @@ pub const MAX_WAIT_SECS: u64 = 1800;
 pub const NAMES: &[&str] = &[
     "team_capabilities",
     "delegate_task",
+    "delegate_tasks",
     "task_status",
     "task_cancel",
     "team_message",
@@ -29,7 +30,8 @@ pub fn is_team_tool(name: &str) -> bool {
 pub const INSTRUCTIONS: &str = "\n\nTeam: you can work with other agents and the user's teammates in Dove. \
 `team_capabilities` lists the installed agents (Claude Code, Codex, Gemini, OpenCode, Cursor and others), their \
 models, the user's teammates and your own thread. `delegate_task` hands one task to a new child thread on any agent \
-and model, or to a teammate; the child gets only your task text, so make it self-contained. Use mode \"async\" for \
+and model, or to a teammate (`delegate_tasks` starts several at once); the child gets only your task text, so make \
+it self-contained. Use mode \"async\" for \
 longer work and end your turn: when children finish, Dove wakes you with their results in one team update. Use \
 mode \"wait\" only for short tasks you need right away. isolation \"worktree\" gives the child its own git worktree \
 (for edits that would collide with yours). `task_status`/`task_cancel` track and stop what you delegated. \
@@ -74,6 +76,28 @@ pub fn tools() -> Vec<Value> {
                 "request_key": {"type": "string", "description": "A key that makes retries return the same child."}
             }), &["task"]),
             "annotations": {"title": "Delegate a task", "destructiveHint": false, "openWorldHint": true}
+        }),
+        json!({
+            "name": "delegate_tasks",
+            "description": "Fan out: start several child threads in one call, each with its own task (and optionally its own teammate, agent, model or isolation; the top-level fields are the defaults). They run in parallel and report back together in team updates, like delegate_task with mode async. Use it for independent pieces: a review on two models, tests while another child refactors, research on several options.",
+            "inputSchema": obj(json!({
+                "tasks": {"type": "array", "minItems": 1, "maxItems": 6, "items": obj(json!({
+                    "task": {"type": "string"},
+                    "title": {"type": "string"},
+                    "teammate": {"type": "string"},
+                    "agent": {"type": "string"},
+                    "model": {"type": "string"},
+                    "reasoning": {"type": "string"},
+                    "isolation": {"type": "string", "enum": ["shared", "worktree"]},
+                    "request_key": {"type": "string"}
+                }), &["task"])},
+                "teammate": {"type": "string", "description": "Default teammate for every task."},
+                "agent": {"type": "string", "description": "Default agent for every task."},
+                "model": {"type": "string", "description": "Default model for every task."},
+                "isolation": {"type": "string", "enum": ["shared", "worktree"], "description": "Default isolation (worktree is safer when several children edit at once)."},
+                "permission": {"type": "string", "enum": ["plan", "default", "accept_edits", "bypass"]}
+            }), &["tasks"]),
+            "annotations": {"title": "Delegate several tasks", "destructiveHint": false, "openWorldHint": true}
         }),
         json!({
             "name": "task_status",

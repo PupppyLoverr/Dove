@@ -12,6 +12,11 @@
 //! shows one of the tabs, so a browser, a terminal and a side chat can sit
 //! side by side next to the conversation. Tab clicks and the pickers act on
 //! the focused pane.
+//!
+//! Tabs drag anywhere: onto a pane's middle to show there, onto one of its
+//! edges to split that way. Other threads (a teammate's, any chat in the
+//! sidebar) drag in the same way and run in a pane of their own, composer
+//! and all, beside the conversation.
 
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -41,12 +46,17 @@ use crate::side_chat::{SideChat, SideChatEvent};
 use crate::surface_chrome;
 use crate::terminal::TerminalView;
 use crate::theme::{Theme, ink};
+use crate::thread::ThreadView;
 use crate::transcript::{Subagent, TaskView};
 use crate::ui;
-use crate::workspace::{self, Axis, Dir, Node, PaneId, SplitPath};
+use crate::workspace::{self, Axis, Dir, Node, PaneId, SplitPath, Zone};
 
-/// Fixed chip width, as in Zeron, so drag reordering is uniform.
-const CHIP_W: f32 = 112.0;
+/// A chip's widest; chips shrink toward [`CHIP_MIN`] so more tabs fit
+/// before the strip scrolls.
+const CHIP_W: f32 = 132.0;
+const CHIP_MIN: f32 = 76.0;
+/// A pane header's height (split panes, and every thread pane).
+const PANE_HEAD: f32 = 34.0;
 
 /// Web views live at once; a browser pane beyond these pauses (each
 /// WebView2 costs tens of megabytes) until it is clicked.
@@ -76,6 +86,38 @@ pub enum Surface {
     Chats,
     /// The thread's pull request.
     PullRequest,
+    /// Another thread, whole (chat or terminal, with its composer).
+    Thread(TaskId),
+}
+
+/// A thread being dragged (from the sidebar, the Team section, a tab):
+/// dropped on the conversation or a pane, it opens beside them.
+#[derive(Clone)]
+pub struct ThreadDrag {
+    pub id: TaskId,
+    pub title: SharedString,
+}
+
+impl Render for ThreadDrag {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::perf_trace::count_render("ThreadDrag");
+        let t = Theme::of(cx);
+        div()
+            .h(px(28.0))
+            .max_w(px(260.0))
+            .px(px(10.0))
+            .flex()
+            .items_center()
+            .gap(px(7.0))
+            .rounded(px(radius::fit(28.0)))
+            .bg(t.surface_raised)
+            .border_1()
+            .border_color(t.border_strong)
+            .shadow_md()
+            .text_size(ty::SMALL)
+            .child(icon(icons::CHAT_ROUND_LINE).size(px(13.0)).text_color(t.text_muted))
+            .child(div().truncate().child(self.title.clone()))
+    }
 }
 
 /// The kinds the `+` menu and the empty state offer.
@@ -92,6 +134,8 @@ pub enum Tab {
     Chats,
     /// Offered only while the thread has a pull request.
     PullRequest,
+    /// Another thread (dragged in; never offered by the pickers).
+    Thread,
 }
 
 impl Tab {
@@ -124,6 +168,7 @@ impl Tab {
             Tab::Subagents => "Subagents",
             Tab::Chats => "Chats",
             Tab::PullRequest => "Pull request",
+            Tab::Thread => "Thread",
         }
     }
 
@@ -140,6 +185,7 @@ impl Tab {
             Tab::Chats => "Side conversations in this thread",
             Tab::SideChat => "Ask something without derailing",
             Tab::PullRequest => "This thread's pull request, explained",
+            Tab::Thread => "Another thread, beside this one",
         }
     }
 
@@ -155,6 +201,7 @@ impl Tab {
             Tab::Subagents => icons::FORK,
             Tab::Chats => icons::BOT,
             Tab::PullRequest => icons::PULL_REQUEST,
+            Tab::Thread => icons::CHAT_ROUND_LINE,
         }
     }
 }
@@ -172,6 +219,7 @@ impl Surface {
             Surface::Subagents | Surface::Subagent(_) => Tab::Subagents,
             Surface::Chats => Tab::Chats,
             Surface::PullRequest => Tab::PullRequest,
+            Surface::Thread(_) => Tab::Thread,
         }
     }
 }
@@ -197,6 +245,13 @@ pub enum SidePanelEvent {
     RevealRow(usize),
     /// Open another thread (a side chat).
     OpenThread(TaskId),
+    /// A thread was dropped on a pane: the shell supplies its view and
+    /// calls [`SidePanel::place_thread`].
+    DropThread {
+        id: TaskId,
+        pane: PaneId,
+        zone: Zone,
+    },
 }
 
 /// A side chat sharing this thread's branch.
@@ -225,6 +280,9 @@ struct ThreadPanel {
     terminals: HashMap<u64, Entity<TerminalView>>,
     chats: HashMap<u64, (Entity<SideChat>, Subscription)>,
     subagents: HashMap<u64, (Entity<TaskView>, Subscription)>,
+    /// Other threads shown in panes, and saved ones waiting for their view.
+    threads: HashMap<TaskId, Entity<ThreadView>>,
+    wanted: Vec<(PaneId, TaskId)>,
 }
 
 impl Default for ThreadPanel {
@@ -241,6 +299,8 @@ impl Default for ThreadPanel {
             terminals: HashMap::new(),
             chats: HashMap::new(),
             subagents: HashMap::new(),
+            threads: HashMap::new(),
+            wanted: Vec::new(),
         }
     }
 }
@@ -343,6 +403,7 @@ fn surface_spec(s: Surface, p: &ThreadPanel, cx: &gpui::App) -> Option<String> {
             Some(url) => format!("browser:{url}"),
             None => "browser".into(),
         },
+        Surface::Thread(id) => format!("thread:{id}"),
         Surface::SideChat(_) | Surface::Subagent(_) => return None,
     })
 }
@@ -469,6 +530,8 @@ pub struct SidePanel {
     bounds: Rc<Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
     /// The shown thread's panes changed since they were last saved.
     layout_dirty: bool,
+    /// Where a tab or thread being dragged would land.
+    drop_hint: Option<(PaneId, Zone)>,
     focus: FocusHandle,
     _subs: Vec<Subscription>,
 }
@@ -532,6 +595,7 @@ impl SidePanel {
             visible: false,
             bounds: Rc::new(Cell::new(None)),
             layout_dirty: false,
+            drop_hint: None,
             focus: cx.focus_handle(),
             _subs: subs,
         }
@@ -636,6 +700,15 @@ impl SidePanel {
             p.recent = leaves.clone();
         }
         for (pane, spec) in saved.panes {
+            // Threads come back once the shell hands over their views.
+            if let Some(id) = spec.strip_prefix("thread:").and_then(TaskId::parse)
+                && leaves.contains(&pane)
+            {
+                if let Some(p) = self.panels.get_mut(&thread) {
+                    p.wanted.push((pane, id));
+                }
+                continue;
+            }
             let Some((kind, url)) = spec_tab(&spec).filter(|_| leaves.contains(&pane)) else { continue };
             if let Some(p) = self.panels.get_mut(&thread) {
                 p.focus = pane;
@@ -702,6 +775,131 @@ impl SidePanel {
             window.focus(&f, cx);
         }
         cx.notify();
+    }
+
+    /// A new pane on side `dir` of `pane`, focused; None when there is no
+    /// room (the cap, or a pane too small to halve).
+    fn split_toward(&mut self, pane: PaneId, dir: Dir) -> Option<PaneId> {
+        let axis = if matches!(dir, Dir::Left | Dir::Right) { Axis::Row } else { Axis::Column };
+        if !self.can_split(Some(pane), axis) {
+            return None;
+        }
+        let p = self.panel()?;
+        let new = p.next_pane;
+        p.next_pane += 1;
+        if !p.layout.split_side(pane, dir, new) {
+            return None;
+        }
+        p.maximized = None;
+        p.focus_pane(new);
+        Some(new)
+    }
+
+    /// Where a drop on `pane` with `zone` shows its content: the pane, or a
+    /// new one beside it (the pane itself when the split has no room).
+    fn drop_target(&mut self, pane: PaneId, zone: Zone) -> PaneId {
+        match zone {
+            Zone::Center => pane,
+            Zone::Side(dir) => self.split_toward(pane, dir).unwrap_or(pane),
+        }
+    }
+
+    /// Track the drop zone under a drag over `pane` (drawn as a preview).
+    fn hover_drop(&mut self, pane: PaneId, bounds: gpui::Bounds<gpui::Pixels>, pos: gpui::Point<gpui::Pixels>) -> bool {
+        let rect = workspace::Rect::new(
+            f32::from(bounds.origin.x),
+            f32::from(bounds.origin.y),
+            f32::from(bounds.size.width),
+            f32::from(bounds.size.height),
+        );
+        let (x, y) = (f32::from(pos.x), f32::from(pos.y));
+        if x < rect.x || y < rect.y || x > rect.x + rect.w || y > rect.y + rect.h {
+            return false;
+        }
+        let hint = Some((pane, workspace::zone_at(rect, x, y)));
+        if self.drop_hint != hint {
+            self.drop_hint = hint;
+            return true;
+        }
+        false
+    }
+
+    /// A tab chip dropped on `pane`: shown there, or in a new pane on the
+    /// side it was dropped on.
+    fn drop_tab(&mut self, from: usize, pane: PaneId, window: &mut Window, cx: &mut Context<Self>) {
+        let zone = self.drop_hint.take().filter(|(p, _)| *p == pane).map_or(Zone::Center, |(_, z)| z);
+        let Some(s) = self.panel_ref().and_then(|p| p.tabs.get(from).copied()) else { return };
+        // Dropping a pane's own tab on its own middle does nothing.
+        if zone == Zone::Center && self.panel_ref().and_then(|p| p.shown.get(&pane)) == Some(&s) {
+            cx.notify();
+            return;
+        }
+        let target = self.drop_target(pane, zone);
+        if let Some(p) = self.panel() {
+            // A tab moving to a new pane leaves its old one.
+            if zone != Zone::Center
+                && let Some(old) = p.pane_of(s)
+            {
+                p.shown.remove(&old);
+                if p.layout.count() > 1 {
+                    p.close_pane(old);
+                }
+            }
+            p.place(target, s);
+        }
+        self.shown(s, window, cx);
+    }
+
+    /// Show thread `id` (its view is `view`) in a pane: dropped on `pane`
+    /// with `zone`, or (None) beside the conversation, splitting the panel's
+    /// leftmost pane unless it is empty. A thread already in a pane moves.
+    pub fn place_thread(
+        &mut self,
+        id: TaskId,
+        view: Entity<ThreadView>,
+        at: Option<(PaneId, Zone)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.thread == Some(id) {
+            return;
+        }
+        self.drop_hint = None;
+        let s = Surface::Thread(id);
+        let target = match at {
+            Some((pane, zone)) => self.drop_target(pane, zone),
+            None => {
+                let Some(p) = self.panel_ref() else { return };
+                let first = p.layout.leaves()[0];
+                let empty = p.tabs.is_empty() || !p.shown.contains_key(&first);
+                if empty { first } else { self.split_toward(first, Dir::Left).unwrap_or(first) }
+            }
+        };
+        view.update(cx, |v, cx| v.set_shown(true, cx));
+        if let Some(p) = self.panel() {
+            if let Some(old) = p.pane_of(s).filter(|o| *o != target) {
+                p.shown.remove(&old);
+                if p.layout.count() > 1 {
+                    p.close_pane(old);
+                }
+            }
+            p.threads.insert(id, view);
+            if !p.tabs.contains(&s) {
+                p.tabs.push(s);
+            }
+            p.place(target, s);
+        }
+        self.shown(s, window, cx);
+    }
+
+    /// Saved thread panes of the shown thread still waiting for a view.
+    pub fn take_wanted(&mut self) -> Vec<(PaneId, TaskId)> {
+        self.panel().map(|p| std::mem::take(&mut p.wanted)).unwrap_or_default()
+    }
+
+    /// Every thread shown in some thread's panes (they don't hibernate).
+    pub fn holds_thread(&self, id: TaskId) -> bool {
+        self.panels.values().any(|p| p.threads.contains_key(&id))
     }
 
     fn set_divider(&mut self, path: SplitPath, ratio: f32, cx: &mut Context<Self>) {
@@ -889,6 +1087,8 @@ impl SidePanel {
     pub fn open(&mut self, kind: Tab, url: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
         self.plus_open = false;
         let surface = match kind {
+            // Threads come in by drag, with their view (`place_thread`).
+            Tab::Thread => return,
             Tab::Changes => Surface::Changes,
             Tab::History => Surface::History,
             Tab::Files => Surface::Files,
@@ -1019,8 +1219,14 @@ impl SidePanel {
             Surface::Subagent(id) => {
                 p.subagents.remove(&id);
             }
+            Surface::Thread(id) => {
+                if let Some(v) = p.threads.remove(&id) {
+                    v.update(cx, |v, cx| v.set_shown(false, cx));
+                }
+            }
             _ => {}
         }
+        let Some(p) = self.panel() else { return };
         p.drop_surface(surface, ix);
         self.layout_dirty = true;
         cx.notify();
@@ -1099,6 +1305,17 @@ impl SidePanel {
             }
             let _ = p.chats;
         }
+        // Panes showing it beside other threads let it go.
+        let s = Surface::Thread(thread);
+        for p in self.panels.values_mut() {
+            if p.threads.remove(&thread).is_some()
+                && let Some(ix) = p.tabs.iter().position(|x| *x == s)
+            {
+                p.tabs.remove(ix);
+                p.drop_surface(s, ix);
+            }
+        }
+        cx.notify();
     }
 
     /// Drop the native web views of thread `id`'s browser tabs (its tab is
@@ -1348,6 +1565,11 @@ impl SidePanel {
                 .and_then(|v| v.read(cx).mirrored().and_then(|(_, info)| info.map(|i| i.title.clone())))
                 .unwrap_or_else(|| "Subagent".into())
                 .into(),
+            Surface::Thread(id) => self
+                .panel_ref()
+                .and_then(|p| p.threads.get(&id))
+                .map(|v| SharedString::from(v.read(cx).chat.read(cx).task.title.clone()))
+                .unwrap_or_else(|| "Thread".into()),
             Surface::Subagents if !self.subagents.is_empty() => format!("Subagents · {}", self.subagents.len()).into(),
             Surface::Chats if !self.side_chats.is_empty() => format!("Chats · {}", self.side_chats.len()).into(),
             Surface::PullRequest => match self.thread.and_then(|id| self.prs.get(&id)) {
@@ -1399,6 +1621,14 @@ impl SidePanel {
                 kit::spinner(SharedString::from(format!("chip-spin-{ix}")), 12.0, t.text_muted).into_any_element()
             } else if let Some(img) = favicon {
                 gpui::img(img).size(px(12.0)).into_any_element()
+            } else if let Surface::Thread(id) = s
+                && let Some(kind) =
+                    self.panel_ref().and_then(|p| p.threads.get(&id)).map(|v| v.read(cx).chat.read(cx).task.harness)
+            {
+                icon(ui::harness_icon(kind))
+                    .size(px(12.0))
+                    .text_color(ui::harness_tint(kind, &t, t.text_muted))
+                    .into_any_element()
             } else {
                 icon(s.kind().glyph())
                     .size(px(12.0))
@@ -1409,8 +1639,9 @@ impl SidePanel {
                 surface_chrome::tab(("panel-chip", ix), selected, &t)
                     .group(group.clone())
                     .h(px(24.0))
-                    .w(px(CHIP_W))
-                    .flex_none()
+                    .flex_1()
+                    .min_w(px(CHIP_MIN))
+                    .max_w(px(CHIP_W))
                     .px(px(4.0))
                     .rounded(px(radius::RADIUS))
                     .gap(px(3.0))
@@ -2273,6 +2504,16 @@ impl SidePanel {
                 Some((c, _)) => c.clone().into_any_element(),
                 None => self.render_picker(&t, cx),
             },
+            Some(Surface::Thread(id)) => match self.panel_ref().and_then(|p| p.threads.get(&id)) {
+                Some(v) => v.clone().into_any_element(),
+                None => div()
+                    .size_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(kit::spinner(SharedString::from(format!("pane-thread-{id}")), 16.0, t.text_muted))
+                    .into_any_element(),
+            },
         }
     }
 
@@ -2367,47 +2608,124 @@ impl SidePanel {
         };
         let body = self.render_surface(surface, t, cx);
         let ix = pane as usize;
-        let header = multi.then(|| {
+        let thread = match surface {
+            Some(Surface::Thread(id)) => self.panel_ref().and_then(|p| p.threads.get(&id)).cloned(),
+            _ => None,
+        };
+        let header = (multi || thread.is_some()).then(|| {
             let title: SharedString = surface.map(|s| self.surface_title(s, cx)).unwrap_or_else(|| "New pane".into());
             let glyph = surface.map(|s| s.kind().glyph()).unwrap_or(icons::WIDGET_ADD);
             let ink_on = if focused { t.text } else { t.text_muted };
+            // A thread pane leads with its agent and status, and carries its
+            // own Chat/Terminal switch and a way to make it the main thread.
+            let (lead, switch, open_main): (AnyElement, Option<AnyElement>, Option<AnyElement>) = match &thread {
+                Some(view) => {
+                    let task = view.read(cx).chat.read(cx).task.clone();
+                    let status = match task.status {
+                        TaskStatus::Running => Some(t.busy),
+                        TaskStatus::NeedsInput => Some(t.warning),
+                        TaskStatus::Failed => Some(t.danger),
+                        _ => None,
+                    };
+                    let lead = div()
+                        .relative()
+                        .flex_none()
+                        .child(icon(ui::harness_icon(task.harness)).size(px(14.0)).text_color(ui::harness_tint(
+                            task.harness,
+                            t,
+                            ink_on,
+                        )))
+                        .children(
+                            status.map(|c| div().absolute().right(px(-3.0)).bottom(px(-2.0)).child(ui::dot(c, 6.0))),
+                        )
+                        .into_any_element();
+                    let switch = view.update(cx, |v, cx| v.view_switch(t, cx));
+                    let id = task.id;
+                    let open = surface_chrome::toolbar_button(("pane-open-main", ix), "Open as the main thread")
+                        .child(icon(icons::ARROW_UP_RIGHT).size(px(12.5)).text_color(t.text_muted))
+                        .on_click(cx.listener(move |_, _, _, cx| cx.emit(SidePanelEvent::OpenThread(id))))
+                        .into_any_element();
+                    (lead, Some(switch), Some(open))
+                }
+                None => (icon(glyph).size(px(12.5)).flex_none().text_color(ink_on).into_any_element(), None, None),
+            };
             div()
-                .h(px(30.0))
+                .id(("pane-head", ix))
+                .h(px(PANE_HEAD))
                 .flex_none()
-                .px(px(8.0))
+                .pl(px(10.0))
+                .pr(px(6.0))
                 .flex()
                 .items_center()
-                .gap(px(6.0))
+                .gap(px(7.0))
                 .border_b_1()
                 .border_color(t.border)
-                .when(focused, |d| d.bg(t.wash(0.035)))
-                .child(icon(glyph).size(px(12.5)).flex_none().text_color(ink_on))
-                .child(div().flex_1().min_w_0().truncate().text_size(ty::CAPTION).text_color(ink_on).child(title))
-                .when(!maximized, |d| {
+                .when(focused && multi, |d| d.bg(t.wash(0.035)))
+                .when_some(surface, |d, s| {
+                    // The header drags the pane's tab, like its chip.
+                    let from = self.panel_ref().and_then(|p| p.tabs.iter().position(|x| *x == s));
+                    d.when_some(from, |d, from| {
+                        d.on_drag(ChipDrag { from, title: title.clone() }, |d, _, _, cx| cx.new(|_| d.clone()))
+                    })
+                })
+                .child(lead)
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_size(ty::SMALL)
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .text_color(ink_on)
+                        .child(title),
+                )
+                .children(switch)
+                .children(open_main)
+                .when(!maximized && multi, |d| {
                     d.child(self.split_button(("pane-split-right", ix), Some(pane), Axis::Row, t, cx))
                         .child(self.split_button(("pane-split-down", ix), Some(pane), Axis::Column, t, cx))
                 })
-                .child(
-                    surface_chrome::toolbar_button(
-                        ("pane-max", ix),
-                        if maximized { "Restore the panes" } else { "Maximize this pane" },
-                    )
-                    .child(
-                        icon(if maximized { icons::WINDOW_RESTORE } else { icons::WINDOW_MAXIMIZE })
-                            .size(px(12.5))
-                            .text_color(t.text_muted),
-                    )
-                    .on_click(cx.listener(move |this, _, _, cx| this.toggle_maximize(pane, cx))),
-                )
-                .when(!maximized, |d| {
+                .when(multi, |d| {
                     d.child(
+                        surface_chrome::toolbar_button(
+                            ("pane-max", ix),
+                            if maximized { "Restore the panes" } else { "Maximize this pane" },
+                        )
+                        .child(
+                            icon(if maximized { icons::WINDOW_RESTORE } else { icons::WINDOW_MAXIMIZE })
+                                .size(px(12.5))
+                                .text_color(t.text_muted),
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| this.toggle_maximize(pane, cx))),
+                    )
+                })
+                .when(!maximized, |d| match surface.filter(|_| !multi) {
+                    // A lone thread pane closes its tab; split panes close.
+                    Some(s) => d.child(
+                        surface_chrome::toolbar_button(("pane-close-tab", ix), "Close")
+                            .child(icon(icons::CLOSE).size(px(12.0)).text_color(t.text_muted))
+                            .on_click(cx.listener(move |this, _, window, cx| this.close(s, window, cx))),
+                    ),
+                    None => d.child(
                         surface_chrome::toolbar_button(("pane-close", ix), "Close pane (its tab stays in the strip)")
                             .child(icon(icons::CLOSE).size(px(12.0)).text_color(t.text_muted))
                             .on_click(cx.listener(move |this, _, _, cx| this.close_pane(pane, cx))),
-                    )
+                    ),
                 })
         });
-        let tabs = self.panel_ref().map(|p| p.tabs.clone()).unwrap_or_default();
+        // While a tab or thread is dragged over this pane: where it lands.
+        let preview = self.drop_hint.filter(|(p, _)| *p == pane && cx.has_active_drag()).map(|(_, zone)| {
+            let full = workspace::Rect::new(0.0, 0.0, 1.0, 1.0);
+            let r = zone.preview(full);
+            div().absolute().left(relative(r.x)).top(relative(r.y)).w(relative(r.w)).h(relative(r.h)).p(px(6.0)).child(
+                div()
+                    .size_full()
+                    .rounded(px(radius::CARD))
+                    .border_1()
+                    .border_color(t.accent.opacity(0.6))
+                    .bg(t.accent.opacity(0.10)),
+            )
+        });
         div()
             .id(("pane", ix))
             .relative()
@@ -2417,17 +2735,25 @@ impl SidePanel {
             .flex()
             .flex_col()
             .capture_any_mouse_down(cx.listener(move |this, _, window, cx| this.focus_pane(pane, window, cx)))
-            .drag_over::<ChipDrag>(|st, _, _, _| st.bg(ink(0.04)))
-            .on_drop(cx.listener(move |this, d: &ChipDrag, window, cx| {
-                if let Some(s) = tabs.get(d.from).copied() {
-                    if let Some(p) = this.panel() {
-                        p.place(pane, s);
-                    }
-                    this.shown(s, window, cx);
+            .on_drag_move(cx.listener(move |this, e: &gpui::DragMoveEvent<ChipDrag>, _, cx| {
+                if this.hover_drop(pane, e.bounds, e.event.position) {
+                    cx.notify();
                 }
+            }))
+            .on_drag_move(cx.listener(move |this, e: &gpui::DragMoveEvent<ThreadDrag>, _, cx| {
+                if this.hover_drop(pane, e.bounds, e.event.position) {
+                    cx.notify();
+                }
+            }))
+            .on_drop(cx.listener(move |this, d: &ChipDrag, window, cx| this.drop_tab(d.from, pane, window, cx)))
+            .on_drop(cx.listener(move |this, d: &ThreadDrag, _, cx| {
+                let zone = this.drop_hint.take().filter(|(p, _)| *p == pane).map_or(Zone::Center, |(_, z)| z);
+                cx.emit(SidePanelEvent::DropThread { id: d.id, pane, zone });
+                cx.notify();
             }))
             .children(header)
             .child(div().flex_1().min_h_0().child(body))
+            .children(preview)
             .when(paused, |d| {
                 d.child(
                     div()
@@ -2435,7 +2761,7 @@ impl SidePanel {
                         .left_0()
                         .right_0()
                         .bottom_0()
-                        .top(px(if multi { 30.0 } else { 0.0 }))
+                        .top(px(if multi { PANE_HEAD } else { 0.0 }))
                         .bg(t.bg)
                         .flex()
                         .flex_col()
