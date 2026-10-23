@@ -428,8 +428,9 @@ enum Ctl {
     End,
 }
 
-/// Engines kept loaded between calls, dropped after five idle minutes, so a
-/// second call starts warm and an idle Dove holds no voice models.
+/// Engines kept loaded between calls, dropped after a minute, so calling
+/// straight back starts warm and an idle Dove holds no voice models (they
+/// take several hundred megabytes).
 struct Warm {
     stt: Option<(String, Box<dyn SpeechToText>)>,
     vad: Option<Box<dyn Vad>>,
@@ -438,7 +439,7 @@ struct Warm {
 }
 
 static WARM: Mutex<Option<Warm>> = Mutex::new(None);
-const WARM_TTL: Duration = Duration::from_secs(300);
+const WARM_TTL: Duration = Duration::from_secs(60);
 
 /// Drop cached engines now (Settings › Voice › remove, or memory pressure).
 pub fn unload() {

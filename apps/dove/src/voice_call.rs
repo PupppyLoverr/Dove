@@ -10,8 +10,7 @@
 //! click in the chat.
 //!
 //! The call lives on the shell, not on a view: navigating anywhere in Dove
-//! keeps it going. Ending the call (or five idle minutes after it) unloads
-//! the voice models.
+//! keeps it going. A minute after the call ends, its voice models unload.
 
 use std::collections::HashMap;
 use std::sync::Arc;
