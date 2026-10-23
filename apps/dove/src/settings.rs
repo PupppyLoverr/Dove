@@ -187,6 +187,12 @@ const INDEX: &[Entry] = &[
     e(Section::General, "restore_tabs", "Reopen thread tabs on launch", "restore startup tabs session"),
     e(Section::General, "topbar_tabs", "Show thread tabs in the title bar", "tabs title bar top bar strip slim"),
     e(Section::General, "prewarm", "Prewarm agent while typing", "prewarm faster first token harness start"),
+    e(
+        Section::General,
+        "agents_open_panels",
+        "Agents can open the side panel",
+        "panel show finished work browser diff",
+    ),
     e(Section::General, "ai_titles", "Name threads with AI", "ai auto title name rename sidebar thread summary"),
     e(
         Section::General,
@@ -1098,6 +1104,7 @@ impl SettingsPage {
         let restore = self.flag("restore_tabs", true);
         let tabs = self.flag("topbar_tabs", false);
         let prewarm = self.flag("prewarm", true);
+        let agent_panels = self.flag("agents_open_panels", true);
         let ai_titles = self.flag("ai_titles", true);
         let grouped = self.get("sidebar_group").as_deref() == Some("project");
         let compact = self.get("sidebar_density").as_deref() == Some("compact");
@@ -1123,6 +1130,16 @@ impl SettingsPage {
                 "Off: a slim bar with the open chat's title. The sidebar lists every thread; Ctrl+Tab and Ctrl+1–9 still switch between open ones.",
                 ctl::on_toggle(ctl::toggle(t, "set-topbar-tabs", tabs), cx, move |this, _, cx| {
                     this.set_flag("topbar_tabs", !tabs, cx)
+                }),
+            ))
+            .child(self.srow(
+                t,
+                false,
+                "agents_open_panels",
+                "Agents can open the side panel",
+                "When an agent finishes something you can look at, it opens it beside the chat: the page, the files or the diff.",
+                ctl::on_toggle(ctl::toggle(t, "set-agent-panels", agent_panels), cx, move |this, _, cx| {
+                    this.set_flag("agents_open_panels", !agent_panels, cx)
                 }),
             ))
             .child(self.srow(

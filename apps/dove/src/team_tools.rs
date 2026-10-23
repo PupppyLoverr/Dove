@@ -28,6 +28,10 @@ pub fn is_team_tool(name: &str) -> bool {
 }
 
 pub const INSTRUCTIONS: &str = "\n\nTeam: you can work with other agents and the user's teammates in Dove. \
+Starting agents (delegate_task, delegate_tasks, a teammate's new thread) needs the user's /orchestrator in your \
+thread: while it is off those calls say so and you work alone. With it on, each agent you start may first appear to \
+the user as a card they approve and may edit (task, agent, model, effort, permission); the call then answers \
+awaiting_approval and you end your turn until Dove tells you what started. \
 `team_capabilities` lists the installed agents (Claude Code, Codex, Gemini, OpenCode, Cursor and others), their \
 models, the user's teammates and your own thread. `delegate_task` hands one task to a new child thread on any agent \
 and model, or to a teammate (`delegate_tasks` starts several at once); the child gets only your task text, so make \

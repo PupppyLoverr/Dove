@@ -19,11 +19,12 @@ use dove_core::orchestra as orc;
 use dove_core::proto::{HarnessKind, PermissionMode, ReasoningLevel, TaskId, TaskStatus};
 use dove_core::store::{LinkKind, LinkStatus, Persona, Task};
 use dove_core::{Joined, NewTask, RunSettings};
-use gpui::{AsyncWindowContext, Context, WeakEntity, Window};
+use gpui::{AppContext as _, AsyncWindowContext, Context, WeakEntity, Window};
 use serde_json::{Value, json};
 
 use crate::browser::agent::Outcome;
 use crate::browser::control::Request;
+use crate::orchestrate::{self as ask, Orchestrate, Proposal, ProposalCard, ProposalEvent};
 use crate::shell::Shell;
 use crate::team_tools::{Args, parse_thread};
 
@@ -45,6 +46,12 @@ pub struct TeamState {
     /// the answer to it.
     queued: HashSet<TaskId>,
     sweep: Option<gpui::Task<()>>,
+    /// Cards waiting for the user (`/orchestrator` in Ask), by id.
+    proposals: HashMap<u64, (gpui::Entity<ProposalCard>, gpui::Subscription)>,
+    next_proposal: u64,
+    /// What the user decided on each parent's cards, and whether it differs
+    /// from what the parent asked (then the parent hears about it).
+    decisions: HashMap<TaskId, (Vec<String>, bool)>,
 }
 
 /// What a team call answers: now, or after waiting on a thread.
@@ -139,7 +146,7 @@ impl Shell {
 
     /// The thread a call comes from: its session key, else the one thread
     /// working in its folder.
-    fn team_caller(&self, req: &Request) -> Result<TaskId, String> {
+    pub(crate) fn team_caller(&self, req: &Request) -> Result<TaskId, String> {
         if let Some(id) = self.engine.task_for_session(&req.session)
             && self.task(id).is_some()
         {
@@ -169,6 +176,241 @@ impl Shell {
         Err("Dove couldn't tell which thread this call comes from (start a new thread so its session is \
              registered, then try again)."
             .into())
+    }
+
+    /// `/orchestrator` for the thread that started `id`'s tree of agents.
+    pub(crate) fn orchestrate_of(&self, id: TaskId) -> Orchestrate {
+        let parents = self.parent_map();
+        let mut root = id;
+        for _ in 0..16 {
+            match parents.get(&root) {
+                Some(p) => root = *p,
+                None => break,
+            }
+        }
+        ask::get(&self.engine.store, Some(root))
+    }
+
+    /// Put a spawn in front of the user as a card above `parent`'s input.
+    #[allow(clippy::too_many_arguments)]
+    fn propose(
+        &mut self,
+        parent: TaskId,
+        kind: LinkKind,
+        task: String,
+        title: String,
+        teammate: Option<Persona>,
+        pick: orc::Pick,
+        reasoning: Option<ReasoningLevel>,
+        mode: PermissionMode,
+        isolate: bool,
+        request_key: Option<String>,
+        wants_reply: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Outcome {
+        let id = self.team.next_proposal;
+        self.team.next_proposal += 1;
+        let ceiling = self.mode_of(parent, cx);
+        let proposal = Proposal { id, parent, kind, title: title.clone(), teammate, ceiling, request_key, wants_reply };
+        let engine = self.engine.clone();
+        let agents = self.installed_kinds();
+        let card = cx.new(|cx| {
+            ProposalCard::new(
+                proposal,
+                engine,
+                agents,
+                task,
+                (pick.harness, pick.model.clone()),
+                reasoning,
+                mode,
+                isolate,
+                window,
+                cx,
+            )
+        });
+        let sub = cx.subscribe_in(&card, window, move |this, card, ev: &ProposalEvent, window, cx| match ev {
+            ProposalEvent::Approve => this.approve_proposal(card.clone(), window, cx),
+            ProposalEvent::Skip => this.skip_proposal(card.clone(), window, cx),
+            ProposalEvent::ApproveAll => {
+                let parent = card.read(cx).proposal.parent;
+                let root = {
+                    let parents = this.parent_map();
+                    let mut r = parent;
+                    while let Some(p) = parents.get(&r) {
+                        r = *p;
+                    }
+                    r
+                };
+                ask::set(&this.engine.store, Some(root), Orchestrate::Auto);
+                let all: Vec<gpui::Entity<ProposalCard>> = this
+                    .team
+                    .proposals
+                    .values()
+                    .map(|(c, _)| c.clone())
+                    .filter(|c| c.read(cx).proposal.parent == parent)
+                    .collect();
+                for c in all {
+                    this.approve_proposal(c, window, cx);
+                }
+            }
+        });
+        self.team.proposals.insert(id, (card, sub));
+        self.sync_waiting(cx);
+        // The user sees the card where the thread is; take them there if
+        // they are looking at it already, and let the sidebar mark it.
+        if let Some(v) = self.threads.get(&parent) {
+            let chat = v.read(cx).chat.clone();
+            chat.update(cx, |_, cx| cx.notify());
+        }
+        crate::kit::Toasts::push(
+            cx,
+            "An agent is waiting for your approval",
+            Some(format!("\"{title}\" — review it above the input in its thread.")),
+            crate::kit::Tone::Info,
+            None,
+        );
+        json_out(json!({
+            "status": "awaiting_approval",
+            "proposal_id": id,
+            "title": title,
+            "note": "The user reviews it in Dove and may change the task, agent, model, effort or permission. End \
+                     your turn when you have nothing else to do: Dove tells you what was started or skipped, and \
+                     started agents report back when they finish.",
+        }))
+    }
+
+    /// Publish the waiting cards for the chats to draw.
+    fn sync_waiting(&mut self, cx: &mut Context<Self>) {
+        let mut cards: Vec<(u64, gpui::Entity<ProposalCard>)> =
+            self.team.proposals.iter().map(|(id, (c, _))| (*id, c.clone())).collect();
+        cards.sort_by_key(|(id, _)| *id);
+        let parents: HashSet<TaskId> = cards.iter().map(|(_, c)| c.read(cx).proposal.parent).collect();
+        cx.set_global(ask::Waiting(cards.into_iter().map(|(_, c)| c).collect()));
+        for p in parents.into_iter().chain(self.team.decisions.keys().copied().collect::<Vec<_>>()) {
+            if let Some(v) = self.threads.get(&p) {
+                let chat = v.read(cx).chat.clone();
+                chat.update(cx, |_, cx| cx.notify());
+            }
+        }
+        cx.notify();
+    }
+
+    fn approve_proposal(&mut self, card: gpui::Entity<ProposalCard>, window: &mut Window, cx: &mut Context<Self>) {
+        let (id, parent, kind, teammate, key, wants_reply) = {
+            let p = &card.read(cx).proposal;
+            (p.id, p.parent, p.kind, p.teammate.clone(), p.request_key.clone(), p.wants_reply)
+        };
+        let choice = card.read(cx).choice(cx);
+        let title = card.read(cx).title(cx);
+        match self.start_proposal(parent, kind, &choice, title.clone(), teammate, key, wants_reply, window, cx) {
+            Ok(child) => {
+                self.team.proposals.remove(&id);
+                let line = format!(
+                    "\"{title}\" was approved{} and started on {} (task_id {}).",
+                    if choice.edited { " with the user's changes" } else { "" },
+                    choice.agent.label(),
+                    child.0
+                );
+                self.decided(parent, line, choice.edited, window, cx);
+            }
+            Err(e) => {
+                card.update(cx, |c, cx| {
+                    c.error = Some(e.into());
+                    cx.notify();
+                });
+            }
+        }
+    }
+
+    fn skip_proposal(&mut self, card: gpui::Entity<ProposalCard>, window: &mut Window, cx: &mut Context<Self>) {
+        let (id, parent) = {
+            let p = &card.read(cx).proposal;
+            (p.id, p.parent)
+        };
+        let title = card.read(cx).title(cx);
+        self.team.proposals.remove(&id);
+        self.decided(
+            parent,
+            format!("\"{title}\" was skipped by the user; don't start it again unless they ask."),
+            true,
+            window,
+            cx,
+        );
+    }
+
+    /// Record a decision; once a parent has none left waiting, tell it what
+    /// differed from its request.
+    fn decided(&mut self, parent: TaskId, line: String, differs: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let entry = self.team.decisions.entry(parent).or_default();
+        entry.0.push(line);
+        entry.1 |= differs;
+        let left = self.team.proposals.values().any(|(c, _)| c.read(cx).proposal.parent == parent);
+        if !left
+            && let Some((lines, true)) = self.team.decisions.remove(&parent)
+            && let Err(e) = self.deliver_text(parent, &ask::decisions_note(&lines), window, cx)
+        {
+            tracing::warn!("decision note for {parent:?} not delivered: {e}");
+        }
+        self.sync_waiting(cx);
+    }
+
+    /// Start an approved spawn, checking the limits again (time has passed).
+    #[allow(clippy::too_many_arguments)]
+    fn start_proposal(
+        &mut self,
+        parent: TaskId,
+        kind: LinkKind,
+        choice: &ask::Choice,
+        title: String,
+        teammate: Option<Persona>,
+        key: Option<String>,
+        wants_reply: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<TaskId, String> {
+        if choice.task.is_empty() {
+            return Err("Give the agent a task.".into());
+        }
+        if kind == LinkKind::Delegate {
+            let active = self
+                .engine
+                .store
+                .task_children(parent)
+                .iter()
+                .filter(|l| l.kind == LinkKind::Delegate && !l.status.terminal())
+                .count();
+            if active >= orc::MAX_ACTIVE_CHILDREN {
+                return Err(format!(
+                    "{active} agents from this thread are already working (the limit is {}).",
+                    orc::MAX_ACTIVE_CHILDREN
+                ));
+            }
+        }
+        let caller_task = self.task(parent).cloned().ok_or("Its thread is gone.")?;
+        let pick = orc::pick_agent(
+            Some(choice.agent.id()),
+            choice.model.as_deref(),
+            teammate.as_ref(),
+            caller_task.harness,
+            &self.installed_kinds(),
+        )?;
+        let mode = orc::cap_mode(self.mode_of(parent, cx), Some(choice.mode));
+        let from = self.sender(parent);
+        let prompt = match kind {
+            LinkKind::Message => orc::message_prompt(&from, &choice.task, wants_reply),
+            _ => orc::delegation_prompt(&from, &choice.task, choice.isolate),
+        };
+        let run = RunSettings { mode, model: pick.model.clone(), reasoning: choice.reasoning, ..Default::default() };
+        let child = self.start_child(parent, prompt, title, teammate, pick, run, choice.isolate, window, cx)?;
+        let store = &self.engine.store;
+        if kind == LinkKind::Delegate || wants_reply {
+            store.link_task(child.id, parent, kind, true).map_err(|e| e.to_string())?;
+        }
+        if let Some(k) = &key {
+            let _ = store.set_link_request_key(child.id, k);
+        }
+        Ok(child.id)
     }
 
     fn installed_kinds(&self) -> Vec<HarnessKind> {
@@ -419,6 +661,35 @@ impl Shell {
         let from = self.sender(caller);
         let prompt = orc::delegation_prompt(&from, &task_text, isolate);
         let wait = a.str("mode").as_deref() == Some("wait");
+        match self.orchestrate_of(caller) {
+            Orchestrate::Off => return Err(ask::OFF.into()),
+            Orchestrate::Ask => {
+                if let Some(k) = &key
+                    && let Some(id) = self.team.proposals.iter().find_map(|(id, (c, _))| {
+                        (c.read(cx).proposal.request_key.as_deref() == Some(k.as_str())).then_some(*id)
+                    })
+                {
+                    return Ok(TeamReply::Now(json_out(json!({"status": "awaiting_approval", "proposal_id": id}))));
+                }
+                let _ = prompt;
+                return Ok(TeamReply::Now(self.propose(
+                    caller,
+                    LinkKind::Delegate,
+                    task_text,
+                    title,
+                    teammate,
+                    pick,
+                    reasoning,
+                    mode,
+                    isolate,
+                    key,
+                    false,
+                    window,
+                    cx,
+                )));
+            }
+            Orchestrate::Auto => {}
+        }
         let run = RunSettings { mode, model: pick.model.clone(), reasoning, ..Default::default() };
         let child =
             self.start_child(caller, prompt, title, teammate.clone(), pick.clone(), run, isolate, window, cx)?;
@@ -501,8 +772,10 @@ impl Shell {
             results.push(json!({"index": i, "result": res}));
         }
         let started = results.iter().filter(|r| r["result"].get("task_id").is_some()).count();
+        let proposed = results.iter().filter(|r| r["result"].get("proposal_id").is_some()).count();
         Ok(json_out(json!({
             "started": started,
+            "awaiting_approval": proposed,
             "tasks": results,
             "note": "Started tasks report back in team updates; end your turn when you have nothing else to do.",
         })))
@@ -641,6 +914,28 @@ impl Shell {
                     &self.installed_kinds(),
                 )?;
                 let mode = self.mode_of(caller, cx);
+                match self.orchestrate_of(caller) {
+                    Orchestrate::Off => return Err(ask::OFF.into()),
+                    Orchestrate::Ask => {
+                        let title = crate::ui::title_from_prompt(&message);
+                        return Ok(TeamReply::Now(self.propose(
+                            caller,
+                            LinkKind::Message,
+                            message,
+                            title,
+                            Some(mate),
+                            pick,
+                            None,
+                            mode,
+                            false,
+                            None,
+                            wants_reply || wait,
+                            window,
+                            cx,
+                        )));
+                    }
+                    Orchestrate::Auto => {}
+                }
                 let run = RunSettings { mode, model: pick.model.clone(), ..Default::default() };
                 let title = crate::ui::title_from_prompt(&message);
                 self.start_child(caller, text, title, Some(mate.clone()), pick, run, false, window, cx)?.id

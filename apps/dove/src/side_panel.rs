@@ -468,6 +468,32 @@ impl Render for ChipDrag {
     }
 }
 
+/// One thing an agent asked the panel to show (`panel_open`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct PanelAsk {
+    pub kind: Tab,
+    pub path: Option<String>,
+    pub line: Option<u32>,
+    pub url: Option<String>,
+}
+
+impl PanelAsk {
+    pub fn of(kind: Tab) -> Self {
+        Self { kind, path: None, line: None, url: None }
+    }
+}
+
+/// How several asked-for surfaces are arranged.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PanelLayout {
+    /// Tabs of the focused pane.
+    Tabs,
+    /// Each in a new pane to the right.
+    Right,
+    /// Each in a new pane below.
+    Down,
+}
+
 /// The side panel, for views that list its browser tabs (`@` mentions).
 pub struct PanelHandle(pub gpui::WeakEntity<SidePanel>);
 
@@ -530,6 +556,9 @@ pub struct SidePanel {
     bounds: Rc<Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
     /// The shown thread's panes changed since they were last saved.
     layout_dirty: bool,
+    /// What agents asked to show in threads the user isn't looking at;
+    /// opened when the thread is shown.
+    pending_asks: HashMap<TaskId, Vec<(Vec<PanelAsk>, PanelLayout)>>,
     /// Where a tab or thread being dragged would land.
     drop_hint: Option<(PaneId, Zone)>,
     focus: FocusHandle,
@@ -595,6 +624,7 @@ impl SidePanel {
             visible: false,
             bounds: Rc::new(Cell::new(None)),
             layout_dirty: false,
+            pending_asks: HashMap::new(),
             drop_hint: None,
             focus: cx.focus_handle(),
             _subs: subs,
@@ -930,6 +960,114 @@ impl SidePanel {
         }
     }
 
+    /// `panel_open` from an agent in `thread`: shown now when the user is
+    /// looking at that thread, else when they open it.
+    pub fn agent_open(
+        &mut self,
+        thread: TaskId,
+        asks: Vec<PanelAsk>,
+        layout: PanelLayout,
+        on_screen: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> String {
+        if !on_screen || self.thread != Some(thread) {
+            self.pending_asks.entry(thread).or_default().push((asks, layout));
+            return "The user is looking at something else; these open in your thread's side panel when they come back to it.".into();
+        }
+        let opened = self.apply_asks(asks, layout, window, cx);
+        format!("Opened in the side panel: {}.", opened.join(", "))
+    }
+
+    /// Open what an agent asked for, splitting panes for each after the
+    /// first when the layout says so (tabs when there is no room).
+    fn apply_asks(
+        &mut self,
+        asks: Vec<PanelAsk>,
+        layout: PanelLayout,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<String> {
+        let mut opened = Vec::new();
+        for (i, ask) in asks.into_iter().enumerate() {
+            if i > 0 && layout != PanelLayout::Tabs {
+                let axis = if layout == PanelLayout::Right { Axis::Row } else { Axis::Column };
+                self.split(None, axis, cx);
+            }
+            let what = match (&ask.kind, &ask.path, &ask.url) {
+                (Tab::Files, Some(p), _) => p.clone(),
+                (Tab::Browser, _, Some(u)) => u.clone(),
+                (k, _, _) => k.label().to_string(),
+            };
+            self.put(ask, window, cx);
+            opened.push(what);
+        }
+        cx.notify();
+        opened
+    }
+
+    /// Show one asked-for surface in the focused pane: a new browser or
+    /// terminal, else the thread's own (moved here if another pane has it).
+    fn put(&mut self, ask: PanelAsk, window: &mut Window, cx: &mut Context<Self>) {
+        let k = ask.kind;
+        if matches!(k, Tab::Browser | Tab::Terminal) {
+            self.open(k, ask.url, window, cx);
+            return;
+        }
+        let existing = self
+            .panel_ref()
+            .and_then(|p| p.tabs.iter().copied().find(|s| s.kind() == k && !matches!(s, Surface::Subagent(_))));
+        match existing {
+            Some(s) => self.place_here(s, window, cx),
+            None => self.open(k, None, window, cx),
+        }
+        if let (Tab::Files, Some(path)) = (k, ask.path.as_deref()) {
+            self.files.update(cx, |f, cx| f.open_path(path, ask.line, cx));
+        }
+    }
+
+    /// `panel_state` for an agent in the shown thread.
+    pub fn agent_state(&self, thread: TaskId, visible: bool, cx: &gpui::App) -> serde_json::Value {
+        let Some(p) = self.panels.get(&thread) else {
+            return serde_json::json!({"visible": false, "tabs": []});
+        };
+        let on = if self.thread == Some(thread) { self.on_screen() } else { Vec::new() };
+        let tabs: Vec<serde_json::Value> = p
+            .tabs
+            .iter()
+            .enumerate()
+            .map(|(i, s)| {
+                let title = if self.thread == Some(thread) {
+                    self.surface_title(*s, cx).to_string()
+                } else {
+                    s.kind().label().to_string()
+                };
+                serde_json::json!({"index": i, "kind": s.kind().label(), "title": title, "on_screen": on.contains(s)})
+            })
+            .collect();
+        serde_json::json!({"visible": visible && self.thread == Some(thread), "panes": p.layout.count(), "tabs": tabs})
+    }
+
+    /// `panel_close` with an index: close that tab of the shown thread.
+    pub fn agent_close(
+        &mut self,
+        thread: TaskId,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<String, String> {
+        if self.thread != Some(thread) {
+            return Err("The user is looking at another thread; close tabs when yours is shown.".into());
+        }
+        let s = self
+            .panel_ref()
+            .and_then(|p| p.tabs.get(index).copied())
+            .ok_or("No tab with that index (panel_state lists them).")?;
+        let title = self.surface_title(s, cx).to_string();
+        self.close(s, window, cx);
+        Ok(format!("Closed {title}."))
+    }
+
     /// Point the panel at a thread.
     pub fn set_thread(
         &mut self,
@@ -954,6 +1092,11 @@ impl SidePanel {
         self.changes.update(cx, |c, cx| c.set_target(dir.clone(), base, title, window, cx));
         self.files.update(cx, |f, cx| f.set_root(dir.clone(), cx));
         self.git_history.update(cx, |h, cx| h.set_root(dir, cx));
+        if let Some(asks) = thread.and_then(|id| self.pending_asks.remove(&id)) {
+            for (asks, layout) in asks {
+                self.apply_asks(asks, layout, window, cx);
+            }
+        }
         if let Some(target) = thread.and_then(|id| self.prs.get(&id)).cloned() {
             let harness = self.parent.as_ref().map(|(task, _)| task.harness);
             self.pr_view.update(cx, |v, cx| {

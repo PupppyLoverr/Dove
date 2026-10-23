@@ -688,6 +688,16 @@ impl Shell {
         let Some(requests) = crate::browser::control::take_requests() else { return };
         self._browser_control = Some(cx.spawn_in(window, async move |this, cx| {
             while let Ok(req) = requests.recv_async().await {
+                if crate::panel_tools::is_panel_tool(&req.tool) {
+                    let reply = this.update_in(cx, |s, window, cx| s.route_panel_call(&req, window, cx));
+                    match reply {
+                        Ok(outcome) => {
+                            let _ = req.reply.send(outcome);
+                        }
+                        Err(_) => break,
+                    }
+                    continue;
+                }
                 if crate::team_tools::is_team_tool(&req.tool) {
                     let reply = this.update_in(cx, |s, window, cx| s.route_team_call(&req, window, cx));
                     match reply {
@@ -729,6 +739,66 @@ impl Shell {
                 }
             }
         }));
+    }
+
+    /// `panel_*` from an agent: its thread's side panel.
+    fn route_panel_call(
+        &mut self,
+        req: &crate::browser::control::Request,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> crate::browser::agent::Outcome {
+        use crate::browser::agent::Outcome;
+        let visible = match self.route {
+            Route::Thread(id) => Some(id),
+            _ => None,
+        };
+        let Some(thread) = self.team_caller(req).ok().or(visible) else {
+            return Outcome::err("Dove couldn't tell which thread this call comes from.");
+        };
+        let shown = Some(thread) == visible;
+        match req.tool.as_str() {
+            "panel_open" => {
+                if !self.engine.store.flag("agents_open_panels", true) {
+                    return Outcome::err(
+                        "The user turned off agents opening the side panel (Settings › General). Tell them what to look at instead.",
+                    );
+                }
+                let (asks, layout) = match crate::panel_tools::parse_open(&req.args) {
+                    Ok(v) => v,
+                    Err(e) => return Outcome::err(e),
+                };
+                if shown {
+                    self.panel_open = true;
+                    let _ = self.engine.store.set_setting("panel_open", "true");
+                }
+                let text = self.panel.update(cx, |p, cx| p.agent_open(thread, asks, layout, shown, window, cx));
+                cx.notify();
+                Outcome::ok(text)
+            }
+            "panel_state" => {
+                let open = self.panel_open;
+                let state = self.panel.read(cx).agent_state(thread, open && shown, cx);
+                Outcome::ok(serde_json::to_string_pretty(&state).unwrap_or_default())
+            }
+            "panel_close" => {
+                if req.args.get("all").and_then(serde_json::Value::as_bool) == Some(true) {
+                    if shown {
+                        self.panel_open = false;
+                        cx.notify();
+                    }
+                    return Outcome::ok("The side panel is hidden.");
+                }
+                let Some(index) = req.args.get("index").and_then(serde_json::Value::as_u64) else {
+                    return Outcome::err("Give a tab \"index\" from panel_state, or all: true.");
+                };
+                match self.panel.update(cx, |p, cx| p.agent_close(thread, index as usize, window, cx)) {
+                    Ok(t) => Outcome::ok(t),
+                    Err(e) => Outcome::err(e),
+                }
+            }
+            other => Outcome::err(format!("Unknown panel tool {other}.")),
+        }
     }
 
     fn route_browser_call(
@@ -1343,6 +1413,12 @@ impl Shell {
                 self.error = None;
                 self.join = None;
                 let id = task.id;
+                // `/orchestrator` typed on the new-thread composer goes with it.
+                let o = crate::orchestrate::get(&self.engine.store, None);
+                if o != crate::orchestrate::Orchestrate::Off {
+                    crate::orchestrate::set(&self.engine.store, Some(id), o);
+                    crate::orchestrate::set(&self.engine.store, None, crate::orchestrate::Orchestrate::Off);
+                }
                 self.tasks.insert(0, task.clone());
                 self.make_thread(task, project, Some(live), window, cx);
                 self.navigate(Route::Thread(id), window, cx);
@@ -2228,7 +2304,8 @@ impl Shell {
                         }),
                 )
             });
-        let strip = panel_open.then(|| self.panel.update(cx, |p, cx| p.render_strip(cx)));
+        // The call view covers the panel: its strip (and buttons) goes too.
+        let strip = (panel_open && !self.call_view_shown).then(|| self.panel.update(cx, |p, cx| p.render_strip(cx)));
 
         // Over artwork the strip stays clear: the picture (and, in a thread,
         // its frost) is already painted for this column, so the tabs sit on

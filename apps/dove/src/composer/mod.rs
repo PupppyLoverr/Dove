@@ -201,6 +201,8 @@ pub enum Variant {
 
 pub struct Composer {
     engine: Arc<Engine>,
+    /// `/orchestrator` for this thread (or the next new one).
+    orchestrate: crate::orchestrate::Orchestrate,
     variant: Variant,
     /// The teammate a new thread runs as (new-thread composer only).
     pub persona: Option<Persona>,
@@ -331,6 +333,7 @@ impl Composer {
         }));
         let mode = engine.store.setting("permission_mode").map(|m| mode_from_id(&m)).unwrap_or_default();
         Self {
+            orchestrate: Default::default(),
             engine,
             variant: Variant::Pill,
             persona: None,
@@ -446,6 +449,7 @@ impl Composer {
     }
 
     fn restore_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.orchestrate = crate::orchestrate::get(&self.engine.store, self.thread.as_ref().map(|(t, _)| t.id));
         let key = self.draft_key();
         if let Some(d) = self.engine.store.setting(&key).filter(|d| !d.is_empty()) {
             let (d, cards) = d.split_once("\n\u{2}\n").unwrap_or((d.as_str(), ""));
@@ -605,6 +609,13 @@ impl Composer {
 
     pub(crate) fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let mut text = self.input.read(cx).value().trim().to_string();
+        // `/orchestrator [off|auto]` is Dove's own: it isn't sent.
+        if let Some(o) = crate::orchestrate::command(&text) {
+            self.set_orchestrate(o, cx);
+            self.input.update(cx, |s, cx| s.set_value("", window, cx));
+            self.mention = None;
+            return;
+        }
         if text.is_empty() && self.attachments.is_empty() && self.cards.is_empty() {
             return;
         }
@@ -871,6 +882,18 @@ impl Composer {
                         ..Default::default()
                     })
                     .collect();
+                items.push(MentionItem {
+                    label: "/orchestrator".into(),
+                    detail: match self.orchestrate {
+                        crate::orchestrate::Orchestrate::Off => {
+                            "Let this thread start other agents (you approve each one)".into()
+                        }
+                        _ => "On · /orchestrator off stops it, /orchestrator auto skips approvals".into(),
+                    },
+                    insert: "/orchestrator".into(),
+                    section: "Dove",
+                    ..Default::default()
+                });
                 items.extend(TEMPLATES.iter().map(|(name, detail, body)| MentionItem {
                     label: format!("/{name}"),
                     detail: detail.to_string(),
@@ -1020,6 +1043,15 @@ impl Composer {
     fn accept_mention(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(m) = self.mention.take() else { return };
         let Some(item) = m.items.get(m.highlight).cloned() else { return };
+        // Dove's own `/orchestrator` acts at once instead of inserting text.
+        if m.trigger == '/'
+            && let Some(o) = crate::orchestrate::command(&item.insert)
+        {
+            self.input.update(cx, |s, cx| s.set_value("", window, cx));
+            let next = if self.orchestrate == crate::orchestrate::Orchestrate::Off { o } else { self.orchestrate };
+            self.set_orchestrate(next, cx);
+            return;
+        }
         // A card replaces the typed `@query`.
         if let Some(card) = item.card {
             self.input.update(cx, |s, cx| {
@@ -2668,6 +2700,47 @@ impl Composer {
         div().relative().child(trigger).children(card).into_any_element()
     }
 
+    fn set_orchestrate(&mut self, o: crate::orchestrate::Orchestrate, cx: &mut Context<Self>) {
+        self.orchestrate = o;
+        crate::orchestrate::set(&self.engine.store, self.thread.as_ref().map(|(t, _)| t.id), o);
+        let (title, body) = match o {
+            crate::orchestrate::Orchestrate::Off => ("Orchestrator off", "This thread works alone."),
+            crate::orchestrate::Orchestrate::Ask => (
+                "Orchestrator on",
+                "The agent can propose other agents; you review and approve each one above the input.",
+            ),
+            crate::orchestrate::Orchestrate::Auto => {
+                ("Orchestrator on · auto", "The agent starts other agents without asking.")
+            }
+        };
+        crate::kit::Toasts::push(cx, title, Some(body.to_string()), crate::kit::Tone::Info, None);
+        cx.notify();
+    }
+
+    /// The `/orchestrator` chip while it is on; a click cycles ask, auto, off.
+    fn orchestrate_chip(&self, t: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let o = self.orchestrate;
+        (o != crate::orchestrate::Orchestrate::Off).then(|| {
+            div()
+                .id("composer-orchestrate")
+                .h(px(24.0))
+                .px(px(6.0))
+                .flex()
+                .items_center()
+                .gap(px(4.0))
+                .rounded(px(radius::fit(24.0)))
+                .cursor_pointer()
+                .text_size(ty::BODY)
+                .text_color(t.accent)
+                .hover(|s| s.bg(t.element_hover))
+                .tooltip(ui::tip("Orchestrator: ask approves each agent, auto starts them. Click to change"))
+                .child(icon(icons::FORK).size(px(13.0)).text_color(t.accent))
+                .child(if o == crate::orchestrate::Orchestrate::Auto { "Auto" } else { "Orchestrator" })
+                .on_click(cx.listener(move |this, _, _, cx| this.set_orchestrate(o.next(), cx)))
+                .into_any_element()
+        })
+    }
+
     /// Permission level. The dock, the thread composer, and the centered
     /// home composer all draw this chip. The stored default stays Ask.
     fn dock_mode(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
@@ -2876,6 +2949,7 @@ impl Composer {
             .child(self.place_chip(t, cx))
             .child(div().w(px(1.0)).h(px(10.0)).mx(px(6.0)).bg(t.border))
             .child(self.dock_mode(t, cx))
+            .children(self.orchestrate_chip(t, cx))
             .child(div().flex_1())
             .child(div().flex_none().max_w(px(240.0)).child(self.picker.clone()))
             .child(self.meter_chip(Meter::Plan, t, cx));
@@ -3034,6 +3108,7 @@ impl Composer {
                         .gap(px(2.0))
                         .child(self.attach_button(icons::PAPERCLIP, ui::ROUND_BUTTON, t, cx))
                         .child(div().flex_none().child(self.dock_mode(t, cx)))
+                        .children(self.orchestrate_chip(t, cx).map(|c| div().flex_none().child(c)))
                         .child(div().flex_1())
                         .child(div().min_w_0().max_w(px(240.0)).overflow_hidden().child(self.picker.clone()))
                         .child(self.mic_button(ui::ROUND_BUTTON, t, cx))

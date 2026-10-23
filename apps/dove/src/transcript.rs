@@ -4638,6 +4638,8 @@ impl TaskView {
                     .children(self.render_todos(cx))
                     // A running voice call sits on the input it talks into.
                     .children(crate::voice_call::strip(cx))
+                    // Agents this thread wants to start, for the user to approve.
+                    .children(crate::orchestrate::cards_for(self.task.id, cx))
                     .child(input)
                     .child(
                         canvas(

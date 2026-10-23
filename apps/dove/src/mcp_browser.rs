@@ -221,6 +221,7 @@ pub fn run() {
     if app {
         instructions.push_str(crate::team_tools::INSTRUCTIONS);
     }
+    instructions.push_str(crate::panel_tools::GUIDE);
     let stdin = std::io::stdin();
     let mut out = std::io::stdout().lock();
     for line in stdin.lock().lines() {
@@ -259,6 +260,7 @@ pub fn run() {
                     list.push(skills_tool());
                     if app {
                         list.extend(crate::team_tools::tools());
+                        list.extend(crate::panel_tools::tools());
                     }
                 }
                 Ok(json!({"tools": tools}))
