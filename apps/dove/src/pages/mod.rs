@@ -139,7 +139,10 @@ pub struct PageState {
     pub archived_search: Entity<InputState>,
     // Team
     pub team_focus: Option<String>,
-    pub team_expanded: Option<String>,
+    /// Teammates whose threads the sidebar shows, and those showing all of
+    /// them rather than the latest few.
+    pub team_expanded: HashSet<String>,
+    pub team_all: HashSet<String>,
     pub team_edit: Option<crate::team::TeamEditor>,
     /// The focused teammate's notes, read when focus changes.
     pub team_notes: Option<String>,
@@ -233,7 +236,8 @@ impl PageState {
             archived_q: String::new(),
             archived_search,
             team_focus: None,
-            team_expanded: None,
+            team_expanded: HashSet::new(),
+            team_all: HashSet::new(),
             team_edit: None,
             team_notes: None,
             team_notes_edit: None,

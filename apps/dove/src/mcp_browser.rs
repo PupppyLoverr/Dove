@@ -147,7 +147,7 @@ are named the same way. Dove checks the script before showing it and returns the
 /// With the agent browser off, register Dove's server for the integrations
 /// alone, once any is on. Called at startup and whenever Settings saves.
 pub fn register_without_browser(data: &std::path::Path) {
-    if dove_core::tool_server(data).is_some() || !crate::pages::integrations::load().any_enabled() {
+    if dove_core::tool_server(data, "").is_some() || !crate::pages::integrations::load().any_enabled() {
         return;
     }
     let Ok(exe) = std::env::current_exe() else { return };
@@ -191,9 +191,11 @@ fn server_instructions(config: &crate::pages::integrations::Config, upstream: &u
 pub fn run() {
     let config = crate::pages::integrations::load();
     let mut upstream = upstream::Hub::new(&config);
-    // Without the app's browser endpoint (agent browser off), Dove's server
-    // still carries the integrations, just not the browser tools.
-    let browser = std::env::var_os("DOVE_BROWSER_PORT").is_some();
+    // The app's endpoint carries the team tools (and the browser tools when
+    // the agent browser is on). Without it, Dove's server still carries the
+    // integrations.
+    let app = std::env::var_os("DOVE_BROWSER_PORT").is_some();
+    let browser = app && std::env::var("DOVE_AGENT_BROWSER").as_deref() != Ok("0");
     // Settings → Plugins → ego lite: which browser agents use.
     use crate::pages::integrations::BrowserChoice;
     let ego_found = crate::pages::integrations::ego_browser().is_some();
@@ -216,6 +218,9 @@ pub fn run() {
         }
     }
     instructions.push_str(&server_instructions(&config, &upstream));
+    if app {
+        instructions.push_str(crate::team_tools::INSTRUCTIONS);
+    }
     let stdin = std::io::stdin();
     let mut out = std::io::stdout().lock();
     for line in stdin.lock().lines() {
@@ -252,6 +257,9 @@ pub fn run() {
                     }
                     list.extend(upstream.tools());
                     list.push(skills_tool());
+                    if app {
+                        list.extend(crate::team_tools::tools());
+                    }
                 }
                 Ok(json!({"tools": tools}))
             }
@@ -324,10 +332,14 @@ fn forward(tool: &str, args: Value) -> Result<Value, String> {
         .ok()
         .or_else(|| std::env::current_dir().ok().map(|d| d.display().to_string()))
         .unwrap_or_default();
+    // Which thread is calling (team tools need it; see `Engine::task_for_session`).
+    let session = std::env::var("DOVE_SESSION").unwrap_or_default();
     let mut stream = TcpStream::connect(("127.0.0.1", port))
         .map_err(|_| "Dove is not running, so its browser is unavailable.".to_string())?;
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(150)));
-    let request = json!({"token": token, "cwd": cwd, "tool": tool, "args": args});
+    // Team tools can wait on other agents for a long while.
+    let wait = if crate::team_tools::is_team_tool(tool) { crate::team_tools::MAX_WAIT_SECS + 60 } else { 150 };
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(wait)));
+    let request = json!({"token": token, "cwd": cwd, "session": session, "tool": tool, "args": args});
     stream.write_all(format!("{request}\n").as_bytes()).map_err(|e| e.to_string())?;
     let mut line = String::new();
     BufReader::new(stream.take(64 * 1024 * 1024)).read_line(&mut line).map_err(|e| e.to_string())?;

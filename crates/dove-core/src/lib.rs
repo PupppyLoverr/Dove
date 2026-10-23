@@ -22,6 +22,7 @@ use parking_lot::RwLock;
 pub mod automation;
 pub mod memory;
 pub mod mirror;
+pub mod orchestra;
 
 pub use dove_git as git;
 pub use dove_harness::Command;
@@ -51,6 +52,9 @@ pub struct Engine {
     live_models: Arc<LiveModels>,
     /// One pre-started session, adopted by the next matching start.
     warm: Arc<parking_lot::Mutex<Option<Warm>>>,
+    /// Session key (`DOVE_SESSION` in a session's tool server) to the
+    /// thread that session belongs to, so tool calls know their caller.
+    sessions: Arc<parking_lot::Mutex<HashMap<String, TaskId>>>,
 }
 
 /// How long a pre-started session waits for its first message.
@@ -85,6 +89,8 @@ impl WarmKey {
 struct Warm {
     key: WarmKey,
     handle: SessionHandle,
+    /// Its session key: registered to the thread that adopts it.
+    session: String,
     at: std::time::Instant,
 }
 
@@ -149,8 +155,13 @@ const PERSONA_OPEN: &str = "<dove-persona>";
 const PERSONA_CLOSE: &str = "</dove-persona>";
 
 /// The brief that leads a teammate's first turn: who it is, how it works,
-/// and the notes it keeps between threads. Tagged so the chat can hide it.
-pub fn persona_preamble(p: &dove_store::Persona, notes: Option<&std::path::Path>) -> String {
+/// who else is on the team and how to reach them, and the notes it keeps
+/// between threads. Tagged so the chat can hide it.
+pub fn persona_preamble(
+    p: &dove_store::Persona,
+    notes: Option<&std::path::Path>,
+    team: &[dove_store::Persona],
+) -> String {
     let role = if p.role.trim().is_empty() { String::new() } else { format!(", {}", p.role.trim()) };
     let name = p.name.trim();
     let mut out = format!(
@@ -158,6 +169,23 @@ pub fn persona_preamble(p: &dove_store::Persona, notes: Option<&std::path::Path>
     );
     if !p.instructions.trim().is_empty() {
         out.push_str(&format!("\nHow you work:\n{}\n", p.instructions.trim()));
+    }
+    let others: Vec<String> = team
+        .iter()
+        .filter(|t| t.id != p.id)
+        .map(|t| match t.role.trim() {
+            "" => format!("- {}", t.name.trim()),
+            r => format!("- {} ({r})", t.name.trim()),
+        })
+        .collect();
+    if !others.is_empty() {
+        out.push_str(&format!(
+            "\nYour teammates:\n{}\nWork with them through Dove's tools (the `dove` MCP server): `team_message` asks a \
+             teammate something and their reply comes back to you, `delegate_task` hands a teammate (or any agent \
+             and model) a task, and `thread_read` reads what they did. Ask a teammate when their role fits the work \
+             better than yours.\n",
+            others.join("\n")
+        ));
     }
     if let Some(notes) = notes {
         out.push_str(&format!(
@@ -266,6 +294,7 @@ impl Engine {
             drivers: Default::default(),
             live_models: Default::default(),
             warm: Default::default(),
+            sessions: Default::default(),
         }))
     }
 
@@ -375,7 +404,8 @@ impl Engine {
                     let _ = std::fs::create_dir_all(dir);
                 }
                 let keep = self.store.setting("team_notes").as_deref() != Some("false");
-                format!("{}{}", persona_preamble(p, keep.then_some(notes.as_path())), new.prompt)
+                let team = self.store.personas().unwrap_or_default();
+                format!("{}{}", persona_preamble(p, keep.then_some(notes.as_path()), &team), new.prompt)
             }
             None => new.prompt,
         };
@@ -390,17 +420,18 @@ impl Engine {
             resume: None,
             prompt: Some(prompt),
             fork: false,
+            session: dove_harness::new_session_key(),
         };
         if memory::recalls(&self.store, project.id) {
             let live = self.launch_deferred(&task, spec)?;
             return Ok((task, live));
         }
         // A matching pre-started session takes the prompt straight away.
-        if let Some(handle) = self.take_warm(&spec)
+        if let Some((handle, session)) = self.take_warm(&spec)
             && let Some(prompt) = spec.prompt.clone()
             && handle.send(Command::Send(prompt))
         {
-            let live = self.attach(&task, handle)?;
+            let live = self.attach(&task, handle, session)?;
             return Ok((task, live));
         }
         let live = self.launch(&task, spec)?;
@@ -424,6 +455,7 @@ impl Engine {
             resume: None,
             prompt: None,
             fork: false,
+            session: dove_harness::new_session_key(),
         });
     }
 
@@ -449,9 +481,10 @@ impl Engine {
         }
         // Dropping the old handle kills its process.
         *warm = None;
+        let session = spec.session.clone();
         let Ok(handle) = dove_harness::spawn(self.rt.handle(), spec) else { return };
         let at = std::time::Instant::now();
-        *warm = Some(Warm { key, handle, at });
+        *warm = Some(Warm { key, handle, session, at });
         drop(warm);
         // Expire it if nobody sends.
         let slot = self.warm.clone();
@@ -469,12 +502,27 @@ impl Engine {
         *self.warm.lock() = None;
     }
 
-    fn take_warm(&self, spec: &SessionSpec) -> Option<SessionHandle> {
+    /// The pre-started session matching `spec`, with its session key.
+    fn take_warm(&self, spec: &SessionSpec) -> Option<(SessionHandle, String)> {
         let mut warm = self.warm.lock();
         let ok = warm.as_ref().is_some_and(|w| {
             w.key == WarmKey::of(spec) && w.at.elapsed() < WARM_TTL && w.handle.is_alive() && w.handle.events.is_empty()
         });
-        if ok { warm.take().map(|w| w.handle) } else { None }
+        if ok { warm.take().map(|w| (w.handle, w.session)) } else { None }
+    }
+
+    /// The thread a tool call with session key `key` comes from.
+    pub fn task_for_session(&self, key: &str) -> Option<TaskId> {
+        if key.is_empty() {
+            return None;
+        }
+        self.sessions.lock().get(key).copied()
+    }
+
+    fn register_session(&self, key: &str, task: TaskId) {
+        if !key.is_empty() {
+            self.sessions.lock().insert(key.to_string(), task);
+        }
     }
 
     /// Re-attach to a task's harness session, optionally with a new message.
@@ -489,11 +537,11 @@ impl Engine {
         if spec.prompt.is_some() && memory::recalls(&self.store, project.id) {
             return self.launch_deferred(task, spec);
         }
-        if let Some(handle) = self.take_warm(&spec)
+        if let Some((handle, session)) = self.take_warm(&spec)
             && let Some(prompt) = spec.prompt.clone()
             && handle.send(Command::Send(prompt))
         {
-            return self.attach(task, handle);
+            return self.attach(task, handle, session);
         }
         self.launch(task, spec)
     }
@@ -516,6 +564,7 @@ impl Engine {
             resume: task.native_session_id.clone(),
             prompt,
             fork: false,
+            session: dove_harness::new_session_key(),
         })
     }
 
@@ -661,9 +710,15 @@ impl Engine {
         let new = NewTask {
             title: format!("{} · {stamp}", a.name),
             prompt,
-            harness: persona.as_ref().map(|p| p.harness).unwrap_or(a.harness),
+            // A teammate with a preferred agent brings it (and its model);
+            // one without runs on the automation's agent.
+            harness: persona.as_ref().and_then(|p| p.harness).unwrap_or(a.harness),
             run: RunSettings {
-                model: persona.as_ref().and_then(|p| p.model.clone()).or_else(|| a.model.clone()),
+                model: persona
+                    .as_ref()
+                    .filter(|p| p.harness.is_some())
+                    .and_then(|p| p.model.clone())
+                    .or_else(|| a.model.clone()),
                 ..Default::default()
             },
             join: None,
@@ -725,6 +780,7 @@ impl Engine {
             resume: Some(native),
             prompt: None,
             fork: true,
+            session: dove_harness::new_session_key(),
         };
         let live = self.launch(&forked, spec)?;
         Ok((forked, live))
@@ -887,11 +943,16 @@ impl Engine {
         let Some(program) = tui::interactive_program(task.harness, &program) else {
             anyhow::bail!("{} has no terminal UI for this session", task.harness.label());
         };
+        // The terminal's agent gets its own key, so its tool calls know
+        // their thread like a chat session's do.
+        let session = dove_harness::new_session_key();
+        self.register_session(&session, task.id);
         let spec = tui::TuiSpec {
             native_session_id: task.native_session_id.as_deref(),
             model: run.model.as_deref().or(task.model.as_deref()),
             mode: run.mode,
             add_dirs: &run.add_dirs,
+            session: &session,
         };
         Ok(tui::command(task.harness, &program, &cwd, &spec))
     }
@@ -958,6 +1019,7 @@ impl Engine {
             }
             d.insert(task.id, Driver::Chat);
         }
+        self.register_session(&spec.session, task.id);
         let handle = match dove_harness::spawn(self.rt.handle(), spec) {
             Ok(h) => h,
             Err(e) => {
@@ -975,7 +1037,7 @@ impl Engine {
     fn launch_deferred(&self, task: &Task, mut spec: SessionSpec) -> Result<LiveSession> {
         let prompt = spec.prompt.take();
         let live = match self.take_warm(&spec) {
-            Some(handle) => self.attach(task, handle)?,
+            Some((handle, session)) => self.attach(task, handle, session)?,
             None => self.launch(task, spec)?,
         };
         if let Some(p) = prompt {
@@ -984,8 +1046,9 @@ impl Engine {
         Ok(live)
     }
 
-    /// Adopt an already running (pre-started) session for `task`.
-    fn attach(&self, task: &Task, handle: SessionHandle) -> Result<LiveSession> {
+    /// Adopt an already running (pre-started) session for `task`; its
+    /// session key now names `task`.
+    fn attach(&self, task: &Task, handle: SessionHandle, session: String) -> Result<LiveSession> {
         {
             let mut d = self.drivers.lock();
             if d.get(&task.id) == Some(&Driver::Terminal) {
@@ -993,6 +1056,7 @@ impl Engine {
             }
             d.insert(task.id, Driver::Chat);
         }
+        self.register_session(&session, task.id);
         Ok(self.record(task, handle))
     }
 
@@ -1399,14 +1463,23 @@ mod persona_tests {
             role: "Reviewer".into(),
             avatar: "A".into(),
             hue: 0.5,
-            harness: dove_proto::HarnessKind::ClaudeCode,
+            harness: None,
             model: None,
             instructions: "Be terse.".into(),
             created_at: 0,
         };
-        let sent = format!("{}Fix the login bug", persona_preamble(&p, Some(std::path::Path::new("/n/NOTES.md"))));
+        let team = vec![
+            p.clone(),
+            dove_store::Persona { id: "kai".into(), name: "Kai".into(), role: "Builder".into(), ..p.clone() },
+        ];
+        let sent =
+            format!("{}Fix the login bug", persona_preamble(&p, Some(std::path::Path::new("/n/NOTES.md")), &team));
         assert!(sent.contains("NOTES.md"));
-        assert!(!persona_preamble(&p, None).contains("notes file"));
+        assert!(!persona_preamble(&p, None, &[]).contains("notes file"));
+        assert!(sent.contains("- Kai (Builder)"), "the roster lists the others");
+        assert!(!sent.contains("- Ava"), "but not the teammate itself");
+        assert!(sent.contains("team_message"));
+        assert!(!persona_preamble(&p, None, std::slice::from_ref(&p)).contains("Your teammates"), "alone: no roster");
         assert!(sent.contains("You are Ava, Reviewer"));
         assert!(sent.contains("Be terse."));
         assert_eq!(strip_persona(&sent), "Fix the login bug");

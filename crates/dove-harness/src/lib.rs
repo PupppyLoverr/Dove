@@ -44,6 +44,15 @@ pub struct SessionSpec {
     pub prompt: Option<String>,
     /// With `resume`: branch a new session from it instead of continuing it.
     pub fork: bool,
+    /// Dove's key for this session, handed to its tool server as
+    /// `DOVE_SESSION`: how a tool call says which thread it comes from (many
+    /// threads can share one folder). Empty: no key.
+    pub session: String,
+}
+
+/// A fresh session key for [`SessionSpec::session`].
+pub fn new_session_key() -> String {
+    uuid::Uuid::now_v7().simple().to_string()
 }
 
 /// An MCP server Dove offers every agent it starts (its in-app browser).
@@ -64,11 +73,14 @@ pub fn set_tool_server(server: Option<ToolServer>) {
     }
 }
 
-/// The tool server for a session in `cwd` (which tells Dove which thread a
-/// call comes from).
-pub fn tool_server(cwd: &std::path::Path) -> Option<ToolServer> {
+/// The tool server for a session in `cwd` with key `session` (together they
+/// tell Dove which thread a call comes from).
+pub fn tool_server(cwd: &std::path::Path, session: &str) -> Option<ToolServer> {
     let mut server = TOOL_SERVER.read().ok()?.clone()?;
     server.env.push(("DOVE_CWD".into(), cwd.display().to_string()));
+    if !session.is_empty() {
+        server.env.push(("DOVE_SESSION".into(), session.to_string()));
+    }
     Some(server)
 }
 
@@ -102,8 +114,16 @@ pub fn is_dove_tool(name: &str) -> bool {
         n.starts_with(p)
             && (n[p.len()..].starts_with("browser_")
                 || matches!(&n[p.len()..], "show_ui" | "show_canvas" | "dove_skills")
-                || is_memory_read(&n[p.len()..]))
+                || is_memory_read(&n[p.len()..])
+                || is_team_read(&n[p.len()..]))
     })
+}
+
+/// Dove's team tools that only look: who is on the team, what threads say,
+/// how delegated work stands. Starting, messaging and stopping work still
+/// goes through the harness's own approvals.
+fn is_team_read(tool: &str) -> bool {
+    matches!(tool, "team_capabilities" | "thread_list" | "thread_read" | "thread_wait" | "task_status")
 }
 
 /// Supermemory's read-only tools, proxied through Dove's server: recalling
@@ -125,9 +145,9 @@ fn is_memory_read(tool: &str) -> bool {
     })
 }
 
-/// ACP `mcpServers` for a session in `cwd`.
-pub fn acp_mcp_servers(cwd: &std::path::Path) -> serde_json::Value {
-    match tool_server(cwd) {
+/// ACP `mcpServers` for a session in `cwd` with key `session`.
+pub fn acp_mcp_servers(cwd: &std::path::Path, session: &str) -> serde_json::Value {
+    match tool_server(cwd, session) {
         Some(s) => serde_json::json!([{
             "name": s.name,
             "command": s.command,
@@ -225,10 +245,24 @@ mod tool_server_tests {
     }
 
     #[test]
-    fn tool_server_carries_cwd() {
+    fn tool_server_carries_cwd_and_session() {
         set_tool_server(Some(ToolServer { name: "dove".into(), command: "dove".into(), args: vec![], env: vec![] }));
-        let s = tool_server(std::path::Path::new("/tmp/x")).unwrap();
+        let s = tool_server(std::path::Path::new("/tmp/x"), "abc").unwrap();
         assert!(s.env.iter().any(|(k, _)| k == "DOVE_CWD"));
+        assert!(s.env.iter().any(|(k, v)| k == "DOVE_SESSION" && v == "abc"));
+        let s = tool_server(std::path::Path::new("/tmp/x"), "").unwrap();
+        assert!(!s.env.iter().any(|(k, _)| k == "DOVE_SESSION"), "no key, no variable");
         set_tool_server(None);
+    }
+
+    #[test]
+    fn read_only_team_tools_need_no_approval() {
+        assert!(is_dove_tool("mcp__dove__team_capabilities"));
+        assert!(is_dove_tool("dove/thread_read"));
+        assert!(is_dove_tool("mcp__dove__task_status"));
+        assert!(!is_dove_tool("mcp__dove__delegate_task"));
+        assert!(!is_dove_tool("mcp__dove__team_message"));
+        assert!(!is_dove_tool("mcp__dove__thread_send"));
+        assert!(!is_dove_tool("mcp__dove__task_cancel"));
     }
 }

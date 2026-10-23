@@ -2991,6 +2991,9 @@ impl TaskView {
         weak: &WeakEntity<Self>,
         t: &Theme,
     ) -> AnyElement {
+        if let Some(team) = dove_core::orchestra::parse_team_text(text) {
+            return render_team_text(i, team, text.to_string(), at, t);
+        }
         let copy = text.to_string();
         let when = if at > 0 { ui::relative_time(at) } else { String::new() };
         let edit = {
@@ -4817,6 +4820,112 @@ fn copy_button(id: SharedString, text: String, t: &Theme) -> impl IntoElement {
         .on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(text.clone())))
 }
 
+/// A team update's reports ("## Who did what\nThread …\n\nresult" each), as
+/// (headline, rest).
+fn update_sections(body: &str) -> Vec<(Option<String>, String)> {
+    body.split("\n## ")
+        .map(|s| s.trim().trim_start_matches("## ").trim())
+        .filter(|s| !s.is_empty())
+        .map(|s| match s.split_once('\n') {
+            Some((head, rest)) => (Some(head.trim().to_string()), rest.trim().to_string()),
+            None => (Some(s.to_string()), String::new()),
+        })
+        .collect()
+}
+
+/// A message one agent sent another (a handed-off task, a teammate's
+/// message, or results delivered back), as a card rather than a bubble: the
+/// user didn't type it, and the framing tags stay out of sight.
+fn render_team_text(i: usize, team: dove_core::orchestra::TeamText, raw: String, at: i64, t: &Theme) -> AnyElement {
+    use dove_core::orchestra::TeamText;
+    let (glyph, title, sections): (&'static str, String, Vec<(Option<String>, String)>) = match team {
+        TeamText::Task { from, body } => (icons::FORK, format!("Task from {from}"), vec![(None, body)]),
+        TeamText::Message { from, body } => {
+            (icons::CHAT_ROUND_LINE, format!("Message from {from}"), vec![(None, body)])
+        }
+        TeamText::Update { body } => {
+            let parts = update_sections(&body);
+            let n = parts.len();
+            let title = if n == 1 { "Team update".to_string() } else { format!("Team update · {n} results") };
+            (icons::USERS_GROUP, title, parts)
+        }
+    };
+    let when = if at > 0 { ui::relative_time(at) } else { String::new() };
+    let section = |head: Option<String>, body: String| {
+        // Each report's first line names its thread; the rest is the result.
+        let (thread, text) = match body.split_once('\n') {
+            Some((first, rest)) if first.starts_with("Thread \"") => (Some(first.to_string()), rest.trim().to_string()),
+            _ if body.starts_with("Thread \"") => (Some(body.clone()), String::new()),
+            _ => (None, body),
+        };
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(3.0))
+            .children(
+                head.map(|h| {
+                    div().text_size(ty::BODY).font_weight(gpui::FontWeight::MEDIUM).text_color(t.text).child(h)
+                }),
+            )
+            .children(thread.map(|l| div().text_size(ty::CAPTION).text_color(t.text_faint).child(l)))
+            .when(!text.is_empty(), |d| {
+                d.child(
+                    div()
+                        .text_size(ty::BODY)
+                        .line_height(ty::lh::BODY)
+                        .text_color(t.text_muted)
+                        .whitespace_normal()
+                        .child(text),
+                )
+            })
+    };
+    div()
+        .group("team-msg")
+        .w_full()
+        .pt(px(10.0))
+        .flex()
+        .flex_col()
+        .gap(px(2.0))
+        .child(
+            div()
+                .w_full()
+                .px(px(14.0))
+                .py(px(10.0))
+                .flex()
+                .flex_col()
+                .gap(px(8.0))
+                .rounded(px(Theme::BUBBLE_RADIUS))
+                .border_1()
+                .border_color(t.border)
+                .bg(t.wash(0.03))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.0))
+                        .text_size(ty::META)
+                        .text_color(t.text_faint)
+                        .child(icon(glyph).size(px(13.0)).text_color(t.accent))
+                        .child(div().flex_1().min_w_0().truncate().child(title)),
+                )
+                .children(sections.into_iter().map(|(h, b)| section(h, b))),
+        )
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(2.0))
+                .h(px(24.0))
+                .invisible()
+                .group_hover("team-msg", |s| s.visible())
+                .text_size(ty::META)
+                .text_color(t.text_faint)
+                .child(div().mr(px(4.0)).child(when))
+                .child(copy_button(SharedString::from(format!("copy-team-{i}")), raw, t)),
+        )
+        .into_any_element()
+}
+
 /// A sent message's files, right-aligned above its bubble (Zeron's strip):
 /// images as 112 × 80 thumbnails, other files as pills with their type icon.
 /// A click opens the file in its own app.
@@ -5605,6 +5714,33 @@ fn more_chip(i: usize, j: usize, label: String, weak: &WeakEntity<TaskView>, t: 
 mod tests {
     use super::*;
     use dove_core::proto::Question;
+
+    #[test]
+    fn team_update_cards_split_per_report() {
+        use dove_core::orchestra::{Report, TeamText, parse_team_text, team_update};
+        use dove_core::proto::TaskId;
+        use dove_core::store::LinkStatus;
+        let report = |who: &str, status, summary: Option<&str>| Report {
+            thread: TaskId::new(),
+            title: format!("{who}'s task"),
+            who: who.into(),
+            status,
+            summary: summary.map(str::to_string),
+            delegated: true,
+        };
+        let msg = team_update(&[
+            report("Codex", LinkStatus::Completed, Some("Added tests.\n\nAll pass.")),
+            report("Kai (Builder) on Claude Code", LinkStatus::NeedsInput, None),
+        ]);
+        let Some(TeamText::Update { body }) = parse_team_text(&msg) else { panic!("not an update") };
+        let parts = update_sections(&body);
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0].0.as_deref(), Some("Codex finished the task you handed over"));
+        assert!(parts[0].1.starts_with("Thread \"Codex's task\"") && parts[0].1.ends_with("All pass."));
+        assert!(parts[1].0.as_deref().unwrap().starts_with("Kai (Builder) on Claude Code is waiting for the user"));
+        // The note to the agent after the tag isn't part of the card.
+        assert!(!body.contains("automatic update"));
+    }
 
     fn text(s: &str) -> AgentEvent {
         AgentEvent::TextDelta { text: s.into() }

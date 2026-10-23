@@ -482,11 +482,13 @@ impl Composer {
         cx.notify();
     }
 
-    /// Run the next thread as `persona` (or as no one): its agent and model
-    /// come with it.
+    /// Run the next thread as `persona` (or as no one). A teammate with a
+    /// preferred agent brings it; one without keeps the current pick.
     pub fn use_persona(&mut self, persona: Option<Persona>, cx: &mut Context<Self>) {
-        if let Some(p) = &persona {
-            self.use_harness(p.harness, p.model.clone(), cx);
+        if let Some(p) = &persona
+            && let Some(h) = p.harness
+        {
+            self.use_harness(h, p.model.clone(), cx);
         }
         self.persona = persona;
         self.menu = None;
@@ -551,6 +553,13 @@ impl Composer {
         }
     }
 
+    /// Send `text` once the running turn ends (another agent's message to
+    /// a thread whose agent can't be steered).
+    pub fn enqueue(&mut self, text: String, cx: &mut Context<Self>) {
+        self.queue.push(text);
+        cx.notify();
+    }
+
     /// The next queued message, sent once the running turn ends.
     pub fn take_queued(&mut self, cx: &mut Context<Self>) -> Option<String> {
         if self.queue.is_empty() {
@@ -594,7 +603,7 @@ impl Composer {
         cx.emit(ComposerEvent::Submit(text));
     }
 
-    fn set_mode(&mut self, mode: PermissionMode, cx: &mut Context<Self>) {
+    pub(crate) fn set_mode(&mut self, mode: PermissionMode, cx: &mut Context<Self>) {
         self.mode = mode;
         self.menu = None;
         let key = match &self.thread {

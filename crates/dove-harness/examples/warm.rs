@@ -43,6 +43,7 @@ fn main() -> anyhow::Result<()> {
         resume: None,
         prompt,
         fork: false,
+        session: String::new(),
     };
 
     let start = Instant::now();
