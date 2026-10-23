@@ -42,6 +42,8 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 sha2 = "0.10"
 # Office previews: the same zip the vendored harness already links.
 zip = { version = "7.2", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+# File icons are embedded deflated (build.rs) and inflated on first use.
+flate2 = "1"
 
 [target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
 tray-icon = "0.24"
@@ -77,5 +79,6 @@ libc = "0.2"
 browser-fixture = []
 
 [build-dependencies]
+flate2 = "1"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "ico"] }
 winresource = "0.1"

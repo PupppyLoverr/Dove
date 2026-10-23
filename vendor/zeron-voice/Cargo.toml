@@ -7,17 +7,25 @@ publish = false
 
 [dependencies]
 anyhow = "1"
-parakeet-rs = "=0.3.8"
+# load-dynamic: ONNX Runtime is a verified download (src/runtime.rs), not
+# linked into the app. Default features would link it statically (~50 MB).
+parakeet-rs = { version = "=0.3.8", default-features = false, features = ["cpu", "load-dynamic", "api-28"] }
 cpal = "=0.17.3"
 rubato = "=0.16.2"
 # parakeet-rs 0.3.8 is built against this ort release (as in Zeron's lockfile).
-ort = "=2.0.0-rc.13"
+ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "ndarray", "load-dynamic", "api-28"] }
 ort-sys = "=2.0.0-rc.13"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream", "system-proxy"] }
 tokio = { version = "1", features = ["full"] }
 sha2 = "0.10"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+[target.'cfg(windows)'.dependencies]
+zip = { version = "7.2", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+
+[target.'cfg(not(windows))'.dependencies]
+flate2 = "1"
 
 [dev-dependencies]
 hound = "3.5"

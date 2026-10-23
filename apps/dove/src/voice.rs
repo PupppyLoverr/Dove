@@ -42,16 +42,19 @@ pub struct VoiceModel {
     cancel: Option<Arc<AtomicBool>>,
 }
 
+/// Where [VoiceModel::init] found the model, for [VoiceModel::download_size].
+static MODEL_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
 struct VoiceModelGlobal(Entity<VoiceModel>);
 impl Global for VoiceModelGlobal {}
 
 impl VoiceModel {
     pub fn init(engine: Arc<Engine>, cx: &mut App) -> Entity<VoiceModel> {
         let dir = model_dir(&engine);
+        // No warm-up here: Parakeet holds about 670 MB once loaded, and a
+        // dictation loads it while the microphone records anyway.
         let state = if zeron_voice::installed(&dir) { InstallState::Installed } else { InstallState::Missing };
-        if matches!(state, InstallState::Installed) {
-            zeron_voice::warm(dir);
-        }
+        let _ = MODEL_DIR.set(dir);
         let e = cx.new(|_| VoiceModel { engine, state, cancel: None });
         cx.set_global(VoiceModelGlobal(e.clone()));
         e
@@ -61,8 +64,9 @@ impl VoiceModel {
         cx.try_global::<VoiceModelGlobal>().map(|g| g.0.clone())
     }
 
+    /// The model plus ONNX Runtime while that is missing.
     pub fn download_size() -> u64 {
-        zeron_voice::download_size()
+        MODEL_DIR.get().map_or_else(zeron_voice::download_size, |d| zeron_voice::download_size_with_runtime(d))
     }
 
     /// Download and verify the model on a worker thread.
@@ -70,7 +74,7 @@ impl VoiceModel {
         if matches!(self.state, InstallState::Downloading { .. } | InstallState::Installed) {
             return;
         }
-        let total = zeron_voice::download_size();
+        let total = Self::download_size();
         self.state = InstallState::Downloading { done: 0, total };
         let cancel = Arc::new(AtomicBool::new(false));
         self.cancel = Some(cancel.clone());
@@ -133,6 +137,9 @@ impl VoiceModel {
         zeron_voice::unload();
         let dir = model_dir(&self.engine);
         let _ = std::fs::remove_dir_all(&dir);
+        if let Some(voice_root) = dir.parent() {
+            zeron_voice::runtime::remove_if_unused(voice_root);
+        }
         self.state = InstallState::Missing;
         cx.notify();
     }
@@ -224,7 +231,7 @@ impl Dictation {
         } else if self.is_ready() {
             "Parakeet v3 · runs on this device · ready".into()
         } else {
-            format!("Local voice is not installed ({} MB download)", zeron_voice::download_size() / 1_000_000)
+            format!("Local voice is not installed ({} MB download)", VoiceModel::download_size() / 1_000_000)
         }
     }
 

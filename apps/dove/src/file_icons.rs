@@ -50,12 +50,17 @@ pub(crate) fn well_bg(theme: &Theme) -> gpui::Hsla {
 
 include!(concat!(env!("OUT_DIR"), "/file_icons_gen.rs"));
 
-/// The embedded SVGs, by `files/x.svg` / `folders/x.svg`.
+/// The embedded SVGs, by `files/x.svg` / `folders/x.svg`. `build.rs`
+/// stores each one deflated (about a quarter of the size); an icon is
+/// inflated only when GPUI first asks for it.
 struct EmbeddedFileIcons;
 
 impl EmbeddedFileIcons {
     fn get(path: &str) -> Option<Embedded> {
-        file_icon_bytes(path).map(|data| Embedded { data: Cow::Borrowed(data) })
+        use std::io::Read as _;
+        let mut data = Vec::new();
+        flate2::read::DeflateDecoder::new(file_icon_bytes(path)?).read_to_end(&mut data).ok()?;
+        Some(Embedded { data: Cow::Owned(data) })
     }
 
     fn iter() -> impl Iterator<Item = &'static str> {
