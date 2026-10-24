@@ -45,8 +45,10 @@ fn main() {
 }
 
 /// Zeron's polychrome file-type icons (vscode-symbols) under
-/// `assets/file-icons/{files,folders}`: a lookup from `files/x.svg` to bytes.
+/// `assets/file-icons/{files,folders}`: a lookup from `files/x.svg` to the
+/// SVG, deflated (1.4 MB of SVG embeds as about 0.4 MB).
 fn file_icons() {
+    use std::io::Write as _;
     let root = Path::new("assets/file-icons");
     println!("cargo:rerun-if-changed=assets/file-icons");
     let mut paths: Vec<String> = Vec::new();
@@ -61,9 +63,15 @@ fn file_icons() {
     paths.sort();
     let mut out =
         String::from("pub(crate) fn file_icon_bytes(path: &str) -> Option<&'static [u8]> {\n    match path {\n");
+    let packed = Path::new(&std::env::var("OUT_DIR").unwrap()).join("file-icons");
     for p in &paths {
-        let abs = std::fs::canonicalize(root.join(p)).unwrap();
-        let abs = abs.to_string_lossy().replace('\\', "/");
+        let svg = std::fs::read(root.join(p)).unwrap();
+        let mut z = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::best());
+        z.write_all(&svg).unwrap();
+        let dest = packed.join(format!("{p}.deflate"));
+        std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
+        std::fs::write(&dest, z.finish().unwrap()).unwrap();
+        let abs = dest.to_string_lossy().replace('\\', "/");
         let abs = abs.strip_prefix("//?/").unwrap_or(&abs).to_string();
         writeln!(out, "        \"{p}\" => Some(include_bytes!(\"{abs}\")),").unwrap();
     }

@@ -25,8 +25,9 @@ hound = "3.5"
 base64 = "0.22"
 realfft = "3.5"
 zeron-voice = { path = "../../vendor/zeron-voice", optional = true }
-# Same pin as zeron-voice so VAD and STT share one ONNX Runtime.
-ort = { version = "=2.0.0-rc.13", optional = true }
+# Same pin and features as zeron-voice so VAD and STT share one ONNX Runtime,
+# loaded from the verified download (zeron_voice::runtime), never linked in.
+ort = { version = "=2.0.0-rc.13", optional = true, default-features = false, features = ["std", "load-dynamic", "api-28"] }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.61", features = ["Foundation", "Media_Core", "Media_SpeechSynthesis", "Storage_Streams"] }

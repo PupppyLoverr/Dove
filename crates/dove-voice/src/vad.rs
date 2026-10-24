@@ -78,6 +78,8 @@ pub fn onnx_session_tuned(path: &std::path::Path, t: OnnxTuning) -> anyhow::Resu
         2 => L::Level2,
         _ => L::Level3,
     };
+    // Models live in `<voice root>/call`; the runtime sits beside that folder.
+    zeron_voice::runtime::load(&zeron_voice::runtime::beside(path.parent().unwrap_or(path)))?;
     ort::session::Session::builder()?
         .with_optimization_level(level)
         .map_err(e)?

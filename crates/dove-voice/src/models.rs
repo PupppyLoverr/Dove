@@ -180,8 +180,23 @@ pub fn path(root: &Path, m: &ModelFile) -> PathBuf {
     dir(root).join(m.name)
 }
 
-/// Size matches and a sidecar records the verified hash. Cheap: no hashing.
+/// The ONNX Runtime folder every local model runs on.
+#[cfg(feature = "local")]
+pub fn runtime_dir(root: &Path) -> PathBuf {
+    zeron_voice::runtime::dir(&root.join("voice"))
+}
+
+/// The file is in place and ONNX Runtime with it. Cheap: no hashing.
 pub fn installed(root: &Path, m: &ModelFile) -> bool {
+    #[cfg(feature = "local")]
+    if !zeron_voice::runtime::installed(&runtime_dir(root)) {
+        return false;
+    }
+    file_installed(root, m)
+}
+
+/// Size matches and a sidecar records the verified hash.
+fn file_installed(root: &Path, m: &ModelFile) -> bool {
     let p = path(root, m);
     std::fs::metadata(&p).is_ok_and(|md| md.len() == m.size)
         && std::fs::read_to_string(p.with_extension("verified")).is_ok_and(|s| s.trim() == m.sha256)
@@ -205,7 +220,16 @@ pub fn verify(p: &Path, m: &ModelFile) -> Result<()> {
 
 /// Download `m` into `root`, verifying size and hash before it is renamed
 /// into place. A cancelled or failed download leaves nothing behind.
+///
+/// ONNX Runtime comes first when it is missing (it is part of choosing a
+/// local model, never fetched on its own); `progress` then counts only the
+/// model's bytes. A model already in place is not fetched again.
 pub fn download(root: &Path, m: &ModelFile, cancel: &AtomicBool, mut progress: impl FnMut(u64)) -> Result<()> {
+    #[cfg(feature = "local")]
+    zeron_voice::runtime::download(&runtime_dir(root), cancel, |_| {})?;
+    if file_installed(root, m) {
+        return Ok(());
+    }
     let dest = path(root, m);
     std::fs::create_dir_all(dest.parent().unwrap())?;
     let part = dest.with_extension("part");
@@ -257,6 +281,8 @@ pub fn remove(root: &Path, m: &ModelFile) {
     let p = path(root, m);
     let _ = std::fs::remove_file(p.with_extension("verified"));
     let _ = std::fs::remove_file(&p);
+    #[cfg(feature = "local")]
+    zeron_voice::runtime::remove_if_unused(&root.join("voice"));
 }
 
 #[cfg(test)]
