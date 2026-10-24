@@ -1002,7 +1002,11 @@ impl Workspace {
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::perf_trace::count_render("Workspace");
-        self.ensure_started(window, cx);
+        // Spawning panes and moving focus mid-frame trips GPUI's window
+        // borrow; start after this frame instead.
+        if !self.started {
+            cx.defer_in(window, |this, window, cx| this.ensure_started(window, cx));
+        }
         let t = Theme::of(cx).clone();
         let body = match self.tabs.get(self.active) {
             Some(tab) => {
