@@ -10,8 +10,8 @@
 //!
 //! "Chat" flips back to the thread (the compact strip above the composer
 //! keeps the call in view there, with a button to come back). The matrix
-//! animates only while the view is on screen, at 30 frames a second while
-//! the call is active and 15 while it only breathes; a flipped or ended
+//! animates only while the view is on screen, at 20 frames a second while
+//! the call is active and 10 while it only breathes; a flipped or ended
 //! call draws nothing.
 
 use std::time::{Duration, Instant};
@@ -31,10 +31,11 @@ use crate::design::ty;
 use crate::theme::Theme;
 use crate::voice_call::VoiceCall;
 
-/// One frame every 33 ms while the view is on screen and the call is
+/// One frame every 50 ms while the view is on screen and the call is
 /// active (hearing, working, speaking); every other one while it only
-/// breathes, which is slow enough at 15 frames a second.
-const FRAME: Duration = Duration::from_millis(33);
+/// breathes. The dots change brightness, not place, so 20 and 10 frames a
+/// second read as smooth, at about half the processor time of 30.
+const FRAME: Duration = Duration::from_millis(50);
 /// Threads on the rail at most.
 const RAIL_MAX: usize = 6;
 
