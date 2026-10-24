@@ -90,8 +90,8 @@ pub struct ThreadView {
     busy: Option<&'static str>,
     note: Option<SharedString>,
     voice: Entity<Dictation>,
-    /// The terminal's side pill is open (hovered or keyboard-toggled).
-    pill_open: bool,
+    /// The terminal's side pill.
+    pill: crate::term_pill::PillState,
     /// Text typed into the terminal as a draft (not yet entered), so it can
     /// be replaced or cleared.
     term_draft: Option<String>,
@@ -180,7 +180,7 @@ impl ThreadView {
             busy: None,
             note: None,
             voice,
-            pill_open: false,
+            pill: Default::default(),
             term_draft: None,
             mirror: None,
             focus: cx.focus_handle(),
@@ -788,186 +788,82 @@ impl ThreadView {
         let ready = voice.is_ready();
         let (press, release) = (self.voice.clone(), self.voice.clone());
 
-        let open = self.pill_open;
-        let tint = ui::harness_tint(task.harness, t, t.text_muted);
-        let status = if running { t.success } else { t.text_faint };
-
-        // The terminal gets every row: what used to be a header bar is a
-        // capsule on its right edge, the agent's mark and a status dot.
-        // Hovering opens it into a card with the thread, the way back to
-        // chat, dictation and the terminal's own actions.
-        let pill: AnyElement = if !open {
-            div()
-                .id("term-pill")
-                .w(px(30.0))
-                .py(px(8.0))
-                .flex()
-                .flex_col()
-                .items_center()
-                .gap(px(7.0))
-                .rounded(px(15.0))
-                .bg(t.surface_raised)
-                .border_1()
-                .border_color(t.border)
-                .shadow_md()
-                .cursor_pointer()
-                .aria_label(format!("{} session: hover for actions", task.harness.label()))
-                .child(ui::dot(status, 6.0))
-                .child(icon(ui::harness_icon(task.harness)).size(px(14.0)).text_color(tint))
-                .when(recording, |d| d.child(ui::dot(t.danger, 6.0)))
-                .child(icon(icons::ALT_ARROW_LEFT).size(px(10.0)).text_color(t.text_faint))
-                .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                    if *hovered && !this.pill_open {
-                        this.pill_open = true;
-                        cx.notify();
-                    }
-                }))
-                .into_any_element()
+        // The terminal gets every row: what used to be a header bar is the
+        // side pill (see `term_pill`), opening into the thread, the way back
+        // to chat, dictation, a voice call and the terminal's own actions.
+        use crate::term_pill::{self, Item, Pill};
+        let me = cx.entity().downgrade();
+        let to_chat = me.clone();
+        let mut items = vec![
+            Item::new("term-to-chat", icons::CHAT_ROUND_LINE, "Back to chat", move |window, cx| {
+                let _ = to_chat.update(cx, |v, cx| v.request(ViewMode::Chat, window, cx));
+            })
+            .hint("Ctrl+`"),
+        ];
+        items.push(if ready {
+            let item = Item::hold(
+                "term-mic",
+                icons::MICROPHONE,
+                if busy {
+                    "Transcribing…"
+                } else if recording {
+                    "Listening… release to type"
+                } else {
+                    "Hold to dictate"
+                },
+                move |_, cx| press.update(cx, |v, cx| v.press(cx)),
+                move |_, cx| release.update(cx, |v, cx| v.release(cx)),
+            );
+            if recording { item.tone(t.danger) } else { item }
         } else {
-            let action = |id: &'static str, glyph: &'static str, tip: &'static str| {
-                div()
-                    .id(id)
-                    .size(px(28.0))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded(px(radius::fit(28.0)))
-                    .cursor_pointer()
-                    .hover(|s| s.bg(t.wash(0.08)))
-                    .tooltip(ui::tip(tip))
-                    .child(icon(glyph).size(px(14.0)).text_color(t.text_muted))
-            };
-            let mic = div()
-                .id("term-mic")
-                .h(px(28.0))
-                .px(px(10.0))
-                .flex()
-                .items_center()
-                .gap(px(6.0))
-                .rounded(px(radius::fit(28.0)))
-                .bg(if recording { t.danger.opacity(0.16) } else { t.wash(0.06) })
-                .cursor_pointer()
-                .text_size(ty::CAPTION)
-                .text_color(if recording { t.danger } else { t.text_muted })
-                .tooltip(ui::tip(if ready {
-                    "Hold or click to dictate into the terminal"
-                } else {
-                    "Install local voice in Settings › Voice"
-                }))
-                .child(if busy {
-                    kit::spinner("term-mic-busy", 12.0, t.text_muted).into_any_element()
-                } else {
-                    icon(icons::MICROPHONE)
-                        .size(px(13.0))
-                        .text_color(if recording { t.danger } else { t.text_muted })
-                        .into_any_element()
+            Item::new("term-mic", icons::MICROPHONE, "Set up dictation in Settings › Voice", |window, cx| {
+                window.dispatch_action(Box::new(crate::actions::OpenSettings), cx)
+            })
+        });
+        items.push(
+            Item::new("term-call", icons::PHONE, "Voice call with this thread", |window, cx| {
+                window.dispatch_action(Box::new(crate::actions::ToggleVoiceCall), cx)
+            })
+            .hint("Ctrl+Shift+Space"),
+        );
+        items.push(Item::new("term-copy", icons::COPY, "Copy selection or screen", move |_, cx| {
+            term_copy.update(cx, |v, cx| v.copy_selection_or_screen(cx));
+        }));
+        items.push(Item::new("term-clear", icons::REFRESH, "Clear screen", move |_, cx| {
+            term_clear.update(cx, |v, cx| v.clear(cx));
+        }));
+        if !running {
+            items.push(
+                Item::new("term-restart", icons::RESTART, "Restart", move |_, cx| {
+                    term_restart.update(cx, |v, cx| v.restart(cx));
                 })
-                .child(if recording { "Listening…" } else { "Dictate" })
-                .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                    cx.stop_propagation();
-                    press.update(cx, |v, cx| v.press(cx));
-                })
-                .on_mouse_up(MouseButton::Left, move |_, _, cx| release.update(cx, |v, cx| v.release(cx)));
-            let to_chat = div()
-                .id("term-to-chat")
-                .h(px(28.0))
-                .px(px(10.0))
-                .flex()
-                .items_center()
-                .gap(px(6.0))
-                .rounded(px(radius::fit(28.0)))
-                .bg(t.wash(0.06))
-                .cursor_pointer()
-                .hover(|s| s.bg(t.wash(0.11)))
-                .text_size(ty::CAPTION)
-                .text_color(t.text)
-                .tooltip(ui::tip("Back to chat (Ctrl+`)"))
-                .child(icon(icons::CHAT_ROUND_LINE).size(px(13.0)).text_color(t.text_muted))
-                .child("Chat")
-                .on_click(cx.listener(|this, _, window, cx| this.request(ViewMode::Chat, window, cx)));
-            div()
-                .id("term-pill-card")
-                .w(px(300.0))
-                .p(px(10.0))
-                .flex()
-                .flex_col()
-                .gap(px(8.0))
-                .rounded(px(16.0))
-                .bg(t.surface_raised)
-                .border_1()
-                .border_color(t.border)
-                .shadow_lg()
-                .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                    if !*hovered && this.pill_open {
-                        this.pill_open = false;
-                        cx.notify();
-                    }
-                }))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(8.0))
-                        .child(ui::dot(status, 6.5))
-                        .child(icon(ui::harness_icon(task.harness)).size(px(14.0)).text_color(tint))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .flex()
-                                .flex_col()
-                                .child(
-                                    div()
-                                        .truncate()
-                                        .text_size(ty::BODY)
-                                        .font_weight(gpui::FontWeight::MEDIUM)
-                                        .text_color(t.text)
-                                        .child(task.title.clone()),
-                                )
-                                .child(div().truncate().text_size(ty::CAPTION).text_color(t.text_faint).child(
-                                    match &task.branch {
-                                        Some(b) => format!("{} · {} · {b}", task.harness.label(), project.name),
-                                        None => format!("{} · {}", task.harness.label(), project.name),
-                                    },
-                                )),
-                        ),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(4.0))
-                        .child(to_chat)
-                        .child(mic)
-                        .child(div().flex_1())
-                        .child(action("term-copy", icons::COPY, "Copy selection or screen").on_click(
-                            move |_, _, cx| {
-                                term_copy.update(cx, |v, cx| v.copy_selection_or_screen(cx));
-                            },
-                        ))
-                        .child(action("term-clear", icons::REFRESH, "Clear screen").on_click(move |_, _, cx| {
-                            term_clear.update(cx, |v, cx| v.clear(cx));
-                        }))
-                        .when(!running, |d| {
-                            d.child(action("term-restart", icons::RESTART, "Restart").on_click(move |_, _, cx| {
-                                term_restart.update(cx, |v, cx| v.restart(cx));
-                            }))
-                        })
-                        .child(
-                            action("term-ext", icons::ARROW_UP_RIGHT, "Open in system terminal")
-                                .on_click(move |_, _, _| crate::terminal::open_system_terminal(&cwd_for_ext)),
-                        ),
-                )
-                .into_any_element()
+                .tone(t.warning),
+            );
+        }
+        items.push(Item::new("term-ext", icons::ARROW_UP_RIGHT, "Open in system terminal", move |_, _| {
+            crate::terminal::open_system_terminal(&cwd_for_ext)
+        }));
+        let detail = match &task.branch {
+            Some(b) => format!("{} · {} · {b}", task.harness.label(), project.name),
+            None => format!("{} · {}", task.harness.label(), project.name),
         };
+        let pill = term_pill::render(
+            Pill {
+                id: "term-pill".into(),
+                open: self.pill.open,
+                live: running,
+                glyph: ui::harness_icon(task.harness),
+                tint: ui::harness_tint(task.harness, t, t.text_muted),
+                title: task.title.clone().into(),
+                detail: detail.into(),
+                recording,
+            },
+            items,
+            cx.listener(|this, hovered: &bool, _, cx| term_pill::hover(this, *hovered, |v: &mut Self| &mut v.pill, cx)),
+            t,
+        );
 
-        div()
-            .relative()
-            .size_full()
-            .child(term.clone())
-            // Only as wide as the pill, so the terminal keeps its clicks.
-            .child(div().absolute().top_0().bottom_0().right(px(10.0)).flex().items_center().child(pill))
-            .into_any_element()
+        div().relative().size_full().child(term.clone()).child(term_pill::overlay(pill)).into_any_element()
     }
 }
 

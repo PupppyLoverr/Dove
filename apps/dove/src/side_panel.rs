@@ -532,6 +532,8 @@ pub struct SidePanel {
     layout_dirty: bool,
     /// Where a tab or thread being dragged would land.
     drop_hint: Option<(PaneId, Zone)>,
+    /// Each dock terminal's side pill.
+    pills: HashMap<u64, crate::term_pill::PillState>,
     focus: FocusHandle,
     _subs: Vec<Subscription>,
 }
@@ -596,6 +598,7 @@ impl SidePanel {
             bounds: Rc::new(Cell::new(None)),
             layout_dirty: false,
             drop_hint: None,
+            pills: HashMap::new(),
             focus: cx.focus_handle(),
             _subs: subs,
         }
@@ -2440,63 +2443,52 @@ impl SidePanel {
                     let term_copy = term.clone();
                     let term_clear = term.clone();
                     let term_restart = term.clone();
-                    let header = surface_chrome::toolbar(&t)
-                        .px(px(12.0))
-                        .gap(px(8.0))
-                        .child(ui::dot(if running { t.success } else { t.text_faint }, 6.0))
-                        .child(icon(icons::TERMINAL).size(px(12.5)).text_color(t.text_muted))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .truncate()
-                                .font_family(t.font_mono.clone())
-                                .text_size(ty::CAPTION)
-                                .text_color(t.text)
-                                .child(cwd_name),
-                        )
-                        .child(
-                            surface_chrome::toolbar_button("dock-term-copy", "Copy selection or screen")
-                                .child(icon(icons::COPY).size(px(12.5)).text_color(t.text_muted))
-                                .on_click(move |_, _, cx| {
-                                    term_copy.update(cx, |v, cx| v.copy_selection_or_screen(cx));
-                                }),
-                        )
-                        .child(
-                            surface_chrome::toolbar_button("dock-term-clear", "Clear screen")
-                                .child(icon(icons::REFRESH).size(px(12.5)).text_color(t.text_muted))
-                                .on_click(move |_, _, cx| {
-                                    term_clear.update(cx, |v, cx| v.clear(cx));
-                                }),
-                        )
-                        .when(!running, |d| {
-                            d.child(
-                                surface_chrome::toolbar_button("dock-term-restart", "Restart shell")
-                                    .child(icon(icons::RESTART).size(px(12.5)).text_color(t.warning))
-                                    .on_click(move |_, _, cx| {
-                                        term_restart.update(cx, |v, cx| v.restart(cx));
-                                    }),
-                            )
-                        })
-                        .child(
-                            surface_chrome::toolbar_button("dock-term-ext", "Open in system terminal")
-                                .child(icon(icons::ARROW_UP_RIGHT).size(px(12.5)).text_color(t.text_muted))
-                                .on_click(move |_, _, _| crate::terminal::open_system_terminal(&cwd_ext)),
-                        )
-                        .child(
-                            surface_chrome::toolbar_button("dock-term-new", "New shell tab")
-                                .child(icon(icons::PLUS).size(px(13.0)).text_color(t.text_muted))
-                                .on_click(
-                                    cx.listener(|this, _, window, cx| this.open(Tab::Terminal, None, window, cx)),
-                                ),
-                        );
-                    div()
-                        .size_full()
-                        .flex()
-                        .flex_col()
-                        .child(header)
-                        .child(div().flex_1().min_h_0().child(term))
-                        .into_any_element()
+                    // The same side pill as a thread's terminal: the shell
+                    // gets every row, its actions open on hover.
+                    use crate::term_pill::{self, Item, Pill};
+                    let me = cx.entity().downgrade();
+                    let key = |s: &str| format!("dock-term-{s}-{id}");
+                    let mut items = vec![
+                        Item::new(key("new"), icons::PLUS, "New shell tab", move |window, cx| {
+                            let _ = me.update(cx, |this, cx| this.open(Tab::Terminal, None, window, cx));
+                        }),
+                        Item::new(key("copy"), icons::COPY, "Copy selection or screen", move |_, cx| {
+                            term_copy.update(cx, |v, cx| v.copy_selection_or_screen(cx));
+                        }),
+                        Item::new(key("clear"), icons::REFRESH, "Clear screen", move |_, cx| {
+                            term_clear.update(cx, |v, cx| v.clear(cx));
+                        }),
+                    ];
+                    if !running {
+                        let restart = Item::new(key("restart"), icons::RESTART, "Restart shell", move |_, cx| {
+                            term_restart.update(cx, |v, cx| v.restart(cx));
+                        });
+                        items.push(restart.tone(t.warning));
+                    }
+                    items.push(Item::new(
+                        format!("dock-term-ext-{id}"),
+                        icons::ARROW_UP_RIGHT,
+                        "Open in system terminal",
+                        move |_, _| crate::terminal::open_system_terminal(&cwd_ext),
+                    ));
+                    let pill = term_pill::render(
+                        Pill {
+                            id: SharedString::from(format!("dock-term-pill-{id}")),
+                            open: self.pills.get(&id).is_some_and(|p| p.open),
+                            live: running,
+                            glyph: icons::TERMINAL,
+                            tint: t.text_muted,
+                            title: cwd_name.into(),
+                            detail: cwd.display().to_string().into(),
+                            recording: false,
+                        },
+                        items,
+                        cx.listener(move |this, hovered: &bool, _, cx| {
+                            term_pill::hover(this, *hovered, move |p: &mut Self| p.pills.entry(id).or_default(), cx)
+                        }),
+                        &t,
+                    );
+                    div().relative().size_full().child(term).child(term_pill::overlay(pill)).into_any_element()
                 }
                 None => self.render_picker(&t, cx),
             },

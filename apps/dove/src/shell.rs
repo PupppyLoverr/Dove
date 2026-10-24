@@ -31,7 +31,7 @@ use crate::palette::{Palette, PaletteEvent, PaletteItem};
 use crate::pr_view::PrTarget;
 use crate::pull_requests::{PrEvent, PullRequestsPage};
 use crate::remote::{Remote, RemoteCommand, RemoteEvent};
-use crate::side_panel::{PaneCommand, SidePanel, SidePanelEvent, Tab, ThreadDrag};
+use crate::side_panel::{PaneCommand, SidePanel, SidePanelEvent, Tab};
 use crate::theme::Theme;
 use crate::thread::{TaskViewEventKind, ThreadEvent, ThreadView, ViewMode};
 use crate::transcript::TaskView;
@@ -268,6 +268,8 @@ pub struct Shell {
     _voice_hotkey: Option<gpui::Task<()>>,
     /// Delegation and teammate messaging between threads (`orchestra.rs`).
     pub(crate) team: crate::orchestra::TeamState,
+    /// Threads beside each open thread in the chat area (`split.rs`).
+    pub(crate) companions: HashMap<TaskId, Vec<TaskId>>,
 }
 
 impl Shell {
@@ -465,6 +467,7 @@ impl Shell {
             _browser_control: None,
             _voice_hotkey: None,
             team: Default::default(),
+            companions: HashMap::new(),
         };
         this.reload(cx);
         this.tabs.retain(|id| this.tasks.iter().any(|t| t.id == *id));
@@ -486,7 +489,7 @@ impl Shell {
         // drop on the conversation would (QA of split view).
         if let Ok(list) = std::env::var("DOVE_BESIDE") {
             for id in list.split(',').filter_map(uuid_task) {
-                this.open_beside(id, None, window, cx);
+                this.split_with(id, window, cx);
             }
         }
         // `DOVE_ROUTE=<page>`: start on a page (QA and scripting).
@@ -1012,9 +1015,12 @@ impl Shell {
     }
 
     /// Whether thread `id`'s view must stay: its tab is open, it is the
-    /// open thread, or a pane shows it beside another.
+    /// open thread, or it shows beside another (a column or a pane).
     pub(crate) fn keeps_thread(&self, id: TaskId, cx: &gpui::App) -> bool {
-        self.tabs.contains(&id) || self.route == Route::Thread(id) || self.panel.read(cx).holds_thread(id)
+        self.tabs.contains(&id)
+            || self.route == Route::Thread(id)
+            || self.is_companion(id)
+            || self.panel.read(cx).holds_thread(id)
     }
 
     /// Thread `id`'s view, made (without starting anything) if it is not
@@ -1053,6 +1059,10 @@ impl Shell {
             return;
         }
         let Some(view) = self.thread_view_for(id, window, cx) else { return };
+        // A thread shows in one place: a column beside moves to the dock.
+        if self.companions.get(&main).is_some_and(|c| c.contains(&id)) {
+            self.close_companion(main, id, cx);
+        }
         if !self.panel_open {
             self.panel_open = true;
             let _ = self.engine.store.set_setting("panel_open", "true");
@@ -2996,53 +3006,10 @@ impl Shell {
                 // the composer (which GPUI could not reuse under a cached
                 // view that re-renders), so it is drawn directly; a
                 // terminal is cached whole.
+                // The thread, and any threads beside it (`split.rs`).
                 Some(v) => {
-                    let body = if v.read(cx).view == ViewMode::Chat {
-                        v.clone().into_any_element()
-                    } else {
-                        AnyView::from(v.clone()).cached(StyleRefinement::default().size_full()).into_any_element()
-                    };
-                    // Another thread dragged onto the conversation opens
-                    // beside it (the layer exists only while dragging).
-                    let t = Theme::of(cx).clone();
-                    let layer =
-                        cx.has_active_drag().then(|| {
-                            div()
-                                .id("beside-drop")
-                                .group("beside-drop")
-                                .absolute()
-                                .inset_0()
-                                .p(px(10.0))
-                                .on_drop(cx.listener(|this, d: &ThreadDrag, window, cx| {
-                                    this.open_beside(d.id, None, window, cx)
-                                }))
-                                .child(
-                                    div()
-                                        .size_full()
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .rounded(px(radius::CARD))
-                                        .border_1()
-                                        .border_color(gpui::transparent_black())
-                                        .group_drag_over::<ThreadDrag>("beside-drop", |s| {
-                                            s.border_color(t.accent.opacity(0.6)).bg(t.accent.opacity(0.08))
-                                        })
-                                        .child(
-                                            div()
-                                                .px(px(12.0))
-                                                .py(px(6.0))
-                                                .rounded(px(radius::fit(28.0)))
-                                                .bg(t.surface_raised)
-                                                .text_size(ty::SMALL)
-                                                .text_color(t.text)
-                                                .invisible()
-                                                .group_drag_over::<ThreadDrag>("beside-drop", |s| s.visible())
-                                                .child("Open beside this thread"),
-                                        ),
-                                )
-                        });
-                    div().relative().size_full().child(body).children(layer).into_any_element()
+                    let v = v.clone();
+                    self.render_split(id, v, window, cx)
                 }
                 None => div().into_any_element(),
             },
@@ -3603,7 +3570,7 @@ impl Shell {
     /// The dock's laid-out width: the saved width, narrowed so the chat
     /// column keeps `CENTER_MIN`. The titlebar strip and the dock both use
     /// it, so they stay one column.
-    fn panel_width(&self, window: &Window) -> f32 {
+    pub(crate) fn panel_width(&self, window: &Window) -> f32 {
         self.panel_w.min(self.panel_room(window)).max(PANEL_FLOOR)
     }
 

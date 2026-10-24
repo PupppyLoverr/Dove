@@ -54,6 +54,8 @@ pub enum VoiceCallEvent {
     Ended,
     /// The strip asked for the full call view.
     ShowView,
+    /// A button answered the call as if spoken ("yes", "no").
+    Answer(&'static str),
 }
 
 /// One line of the call's conversation, for the call view.
@@ -784,6 +786,7 @@ impl Shell {
             VoiceCallEvent::Heard(text) => this.voice_heard(call.clone(), text.clone(), window, cx),
             VoiceCallEvent::Observe => this.voice_observe(call.clone(), cx),
             VoiceCallEvent::ShowView => this.show_call_view(true, window, cx),
+            VoiceCallEvent::Answer(word) => this.voice_heard(call.clone(), word.to_string(), window, cx),
             VoiceCallEvent::Routed { utterance, json } => {
                 let snap = this.voice_snapshot(call.read(cx), cx);
                 let effects = call.update(cx, |v, _| v.conductor.routed(utterance, json, &snap));
@@ -1275,7 +1278,7 @@ impl Shell {
                 // The draft shows where the user can see it.
                 match self.route {
                     Route::Thread(main) if main == id => {}
-                    Route::Thread(_) => self.open_beside(id, None, window, cx),
+                    Route::Thread(_) => self.split_with(id, window, cx),
                     _ => self.open_task(id, window, cx),
                 }
                 view.update(cx, |v, cx| v.draft(&text, window, cx));
@@ -1303,7 +1306,7 @@ impl Shell {
             }
             Action::OpenBeside { thread } => {
                 let id = self.task_by_str(&thread)?;
-                self.open_beside(id, None, window, cx);
+                self.split_with(id, window, cx);
                 Some(id)
             }
             Action::Status { .. }
@@ -1387,7 +1390,7 @@ impl Shell {
         let first = *opened.first()?;
         self.navigate(Route::Thread(first), window, cx);
         for id in opened.iter().skip(1) {
-            self.open_beside(*id, None, window, cx);
+            self.split_with(*id, window, cx);
         }
         if let Some(chat) = self.threads.get(&first).map(|v| v.read(cx).chat.clone()) {
             call.update(cx, |v, cx| {
@@ -1541,6 +1544,19 @@ impl Render for VoiceCall {
         let level = if self.muted { 0.0 } else { self.level.clamp(0.0, 0.3) / 0.3 };
         let speaking = self.state == State::Speaking && !self.muted;
         let muted = self.muted;
+        // A question the call is waiting on: several threads to open, or a
+        // draft to send. It replaces the caption, with its two answers.
+        let pending: Option<(SharedString, &'static str, &'static str)> = match self.conductor.pending_plan() {
+            Some(Action::Launch { items, .. }) => {
+                let kind = if items.first().is_some_and(|i| i.terminal) { "terminals" } else { "chats" };
+                Some((format!("Open {} {kind}?", items.len()).into(), "Open", "Not now"))
+            }
+            _ => self.conductor.pending_draft().map(|(_, text)| (format!("Draft: {text}").into(), "Send", "Clear")),
+        };
+        let (line, line_color) = match &pending {
+            Some((q, _, _)) => (q.clone(), t.text),
+            None => (line, line_color),
+        };
 
         // The orb follows the voice level; holding it talks while muted.
         let orb =
@@ -1611,6 +1627,26 @@ impl Render for VoiceCall {
             .shadow(t.composer_shadows(false))
             .child(orb)
             .child(text)
+            .when_some(pending, |d, (_, yes, no)| {
+                let answer = |id: &'static str, label: &'static str, word: &'static str, primary: bool| {
+                    div()
+                        .id(id)
+                        .h(px(28.0))
+                        .px(px(12.0))
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .rounded_full()
+                        .cursor_pointer()
+                        .text_size(ty::META)
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .when(primary, |d| d.bg(t.accent).text_color(gpui::white()))
+                        .when(!primary, |d| d.bg(t.wash(0.07)).text_color(t.text).hover(|s| s.bg(t.wash(0.11))))
+                        .child(label)
+                        .on_click(cx.listener(move |_, _, _, cx| cx.emit(VoiceCallEvent::Answer(word))))
+                };
+                d.child(answer("voice-yes", yes, "yes", true)).child(answer("voice-no", no, "no", false))
+            })
             .when(!loading, |d| {
                 let secs = self.started.elapsed().as_secs();
                 d.child(div().flex_none().text_size(ty::META).text_color(t.text_faint).child(format!(

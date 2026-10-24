@@ -985,7 +985,11 @@ impl Shell {
             )
             // Drag a thread onto the conversation or a pane to open it beside.
             .when(!archived && !renaming_now, |d| {
-                d.on_drag(crate::side_panel::ThreadDrag { id, title: task.title.clone().into() }, |d, _, _, cx| {
+                // The sidebar is its own cached view: wake the shell so the
+                // conversation shows its drop target at once.
+                let shell = cx.entity().downgrade();
+                d.on_drag(crate::side_panel::ThreadDrag { id, title: task.title.clone().into() }, move |d, _, _, cx| {
+                    let _ = shell.update(cx, |_, cx| cx.notify());
                     cx.new(|_| d.clone())
                 })
             })
