@@ -285,6 +285,11 @@ impl Shell {
         subs.push(cx.subscribe(&workspace, |_, _, ev: &crate::workspace::WorkspaceEvent, cx| match ev {
             crate::workspace::WorkspaceEvent::AgentsChanged => cx.notify(),
         }));
+        subs.push(cx.observe(&workspace, |this, _, cx| {
+            if this.route == Route::Flock {
+                cx.notify();
+            }
+        }));
         subs.push(cx.subscribe_in(&composer, window, |this, _, ev: &ComposerEvent, window, cx| match ev {
             ComposerEvent::Submit(text) => this.start(text.clone(), window, cx),
             ComposerEvent::OpenUsage => this.navigate(Route::Usage, window, cx),
@@ -2017,7 +2022,8 @@ impl Shell {
             });
 
         let in_thread = matches!(self.route, Route::Thread(_));
-        let panel_open = in_thread && self.panel_shown();
+        let flock = self.route == Route::Flock;
+        let panel_open = (in_thread || flock) && self.panel_shown();
         let expanded = panel_open && self.panel.read(cx).expanded;
         let panel_w = self.panel_width(window);
         // What the tabs get: the bar minus the cluster, the tools beside the
@@ -2031,10 +2037,16 @@ impl Shell {
         let tools_w = 16.0
             + if in_thread { ui::BUTTON + 4.0 } else { 0.0 }
             + if in_thread && !tabs_on { ui::BUTTON + 2.0 } else { 0.0 }
-            + if in_thread && !panel_open { ui::BUTTON + 4.0 } else { 0.0 }
+            + if (in_thread || flock) && !panel_open { ui::BUTTON + 4.0 } else { 0.0 }
             + if panel_open { panel_w } else { ui::caption_reserve() };
         let room = f32::from(window.viewport_size().width) - cluster_w - tools_w;
-        let tabs = if tabs_on { self.render_tabs(room, &t, cx) } else { self.render_bar_title(&t, cx) };
+        let tabs = if flock {
+            self.workspace.update(cx, |w, cx| w.render_bar(cx))
+        } else if tabs_on {
+            self.render_tabs(room, &t, cx)
+        } else {
+            self.render_bar_title(&t, cx)
+        };
         let files_on = panel_open && matches!(self.panel.read(cx).active(), Some(crate::side_panel::Surface::Files));
         let right_tools = div()
             .flex()
@@ -2084,6 +2096,16 @@ impl Shell {
                             ))
                         }),
                 )
+            })
+            // Flock keeps only the panel toggle: no thread info to show.
+            .when(flock && !panel_open, |d| {
+                let color = crate::motion::hover_blend("tb-panel", t.text_muted, t.text);
+                d.child(quiet_bar_button(
+                    "tb-panel",
+                    "Side panel: browser, diffs, files… (Ctrl+\\)",
+                    ui::sidebar_glyph(0.0, true, 16.0, color),
+                    cx.listener(|this, _, _, cx| this.toggle_panel(cx)),
+                ))
             });
         let strip = panel_open.then(|| self.panel.update(cx, |p, cx| p.render_strip(cx)));
 
@@ -2897,7 +2919,9 @@ impl Shell {
             },
             Route::Help => self.render_help_page(cx),
             Route::Team => self.render_team_page(cx),
-            Route::Flock => self.workspace.clone().into_any_element(),
+            Route::Flock => {
+                AnyView::from(self.workspace.clone()).cached(StyleRefinement::default().size_full()).into_any_element()
+            }
         }
     }
 }
@@ -3003,6 +3027,8 @@ impl Render for Shell {
         frame_stats();
         let t = Theme::of(cx).clone();
         let in_thread = matches!(self.route, Route::Thread(_));
+        // Pages that carry the side panel.
+        let docked = in_thread || self.route == Route::Flock;
         // No open threads: the main page is the wallpaper and the composer.
         // The tab strip only exists once a thread is open.
         // The new-thread page draws only its floating window controls (the
@@ -3011,8 +3037,8 @@ impl Render for Shell {
         let bare = matches!(self.route, Route::Home)
             && (self.tabs.is_empty() || !self.engine.store.flag("topbar_tabs", false));
         let wants_expand = self.panel.read(cx).expanded;
-        self.update_fit(f32::from(window.viewport_size().width), in_thread, wants_expand);
-        let panel_open = in_thread && self.panel_shown();
+        self.update_fit(f32::from(window.viewport_size().width), docked, wants_expand);
+        let panel_open = docked && self.panel_shown();
         let expanded = panel_open && wants_expand;
         let sidebar_shown = self.sidebar_shown();
         self.sync_thread_dock(sidebar_shown, cx);
@@ -3045,7 +3071,7 @@ impl Render for Shell {
         let panel_w = self.panel_width(window);
         let now = Instant::now();
         self.slides.sidebar.step((!in_settings).then_some(sidebar_shown), self.sidebar_w, now);
-        self.slides.panel.step(in_thread.then_some(panel_open && !expanded), panel_w, now);
+        self.slides.panel.step(docked.then_some(panel_open && !expanded), panel_w, now);
         // A drag that reaches its limit nudges the column toward the drag
         // and lets it settle back.
         let bounce =

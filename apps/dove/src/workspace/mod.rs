@@ -37,8 +37,8 @@ use pane_tree::{Axis, Node, PaneId};
 
 /// Output within this long reads as the agent working.
 const WORKING_WINDOW: Duration = Duration::from_millis(1500);
-const GAP: f32 = 8.0;
-const SEAM: f32 = 8.0;
+const GAP: f32 = 6.0;
+const SEAM: f32 = 6.0;
 const SETTING: &str = "terminals_layout";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -183,6 +183,9 @@ pub struct Workspace {
     drag: Option<Drag>,
     /// The roster as last reported, to emit only on change.
     signature: Vec<(PaneId, AgentState)>,
+    /// The roster as of the last report; render reads this instead of
+    /// scanning every agent's screen.
+    roster: Vec<AgentRow>,
     _ticker: Option<gpui::Task<()>>,
 }
 
@@ -213,6 +216,7 @@ impl Workspace {
             menu: None,
             drag: None,
             signature: Vec::new(),
+            roster: Vec::new(),
             _ticker: None,
         }
     }
@@ -274,8 +278,12 @@ impl Workspace {
 
     /// Emit when the roster's shape or any agent's state changed.
     fn report(&mut self, cx: &mut Context<Self>) {
-        let sig: Vec<(PaneId, AgentState)> = self.agents(cx).iter().map(|a| (a.pane, a.state)).collect();
-        if sig != self.signature {
+        let roster = self.scan_agents(cx);
+        let sig: Vec<(PaneId, AgentState)> = roster.iter().map(|a| (a.pane, a.state)).collect();
+        let selection_moved = roster.iter().map(|a| a.selected).ne(self.roster.iter().map(|a| a.selected));
+        // Relative times move on their own; keep them fresh without a repaint.
+        self.roster = roster;
+        if sig != self.signature || selection_moved {
             self.signature = sig;
             cx.emit(WorkspaceEvent::AgentsChanged);
             cx.notify();
@@ -544,8 +552,13 @@ impl Workspace {
         }
     }
 
-    /// Every agent pane, in tab order.
-    pub fn agents(&self, cx: &App) -> Vec<AgentRow> {
+    /// Every agent pane, in tab order, as of the last report (at most half
+    /// a second old).
+    pub fn agents(&self) -> &[AgentRow] {
+        &self.roster
+    }
+
+    fn scan_agents(&self, cx: &App) -> Vec<AgentRow> {
         let now = Instant::now();
         let now_ms = dove_core::store::now_ms();
         let mut out = Vec::new();
@@ -602,7 +615,7 @@ impl Workspace {
 
     fn render_tabs(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let asking_tabs: HashSet<usize> =
-            self.agents(cx).into_iter().filter(|a| a.state == AgentState::NeedsInput).map(|a| a.tab).collect();
+            self.roster.iter().filter(|a| a.state == AgentState::NeedsInput).map(|a| a.tab).collect();
         let mut strip = div().id("ws-tabs").flex().items_center().gap(px(4.0)).min_w_0().overflow_x_scroll();
         for (ix, tab) in self.tabs.iter().enumerate() {
             let active = ix == self.active;
@@ -817,25 +830,26 @@ impl Workspace {
             .group(group.clone())
             .relative()
             .size_full()
-            .rounded(px(12.0))
+            .rounded(px(10.0))
             .overflow_hidden()
             .border_1()
             .border_color(if target {
                 t.warning.opacity(0.55)
             } else if focused && multi {
-                t.wash(0.16)
+                t.wash(0.14)
             } else {
-                t.wash(0.06)
+                t.wash(0.0)
             })
             .capture_any_mouse_down(cx.listener(move |this, _, _, cx| {
                 if let Some(tb) = this.tabs.get_mut(tab)
                     && tb.focused != id
                 {
                     tb.focused = id;
+                    this.report(cx);
                     cx.notify();
                 }
             }))
-            .child(ui::rounded_clip(12.0, div().size_full().child(p.term.clone())))
+            .child(ui::rounded_clip(10.0, div().size_full().child(p.term.clone())))
             .when(broadcast, |d| {
                 d.child(
                     div()
@@ -894,10 +908,10 @@ fn rekey(node: &mut Node, ids: &HashMap<PaneId, PaneId>) {
     }
 }
 
-impl Render for Workspace {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        crate::perf_trace::count_render("Workspace");
-        self.ensure_started(window, cx);
+impl Workspace {
+    /// Flock's tabs and tools, drawn in the window's title bar in place of
+    /// a page title, so the page has no second bar of its own.
+    pub fn render_bar(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let t = Theme::of(cx).clone();
         let split_right = icon(icons::SPLIT_COLUMNS).size(px(15.0)).text_color(t.text_muted).into_any_element();
         let split_down = icon(icons::SPLIT_COLUMNS)
@@ -905,10 +919,10 @@ impl Render for Workspace {
             .text_color(t.text_muted)
             .with_transformation(Transformation::rotate(gpui::radians(std::f32::consts::FRAC_PI_2)))
             .into_any_element();
-        let bar = div()
-            .h(px(40.0))
-            .flex_none()
-            .px(px(GAP))
+        div()
+            .h_full()
+            .flex_1()
+            .min_w_0()
             .flex()
             .items_center()
             .gap(px(4.0))
@@ -974,7 +988,16 @@ impl Render for Workspace {
                 &t,
                 |this, window, cx| this.split(Axis::Column, window, cx),
                 cx,
-            ));
+            ))
+            .into_any_element()
+    }
+}
+
+impl Render for Workspace {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::perf_trace::count_render("Workspace");
+        self.ensure_started(window, cx);
+        let t = Theme::of(cx).clone();
         let body = match self.tabs.get(self.active) {
             Some(tab) => {
                 let tree = tab.tree.clone();
@@ -1021,7 +1044,6 @@ impl Render for Workspace {
                     }
                 }),
             )
-            .child(bar)
-            .child(div().flex_1().min_h_0().px(px(GAP)).pb(px(GAP)).child(body))
+            .child(div().flex_1().min_h_0().p(px(GAP)).pt(px(2.0)).child(body))
     }
 }

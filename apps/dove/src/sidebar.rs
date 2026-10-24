@@ -1069,7 +1069,7 @@ impl Shell {
     /// and when it last printed. A row shows its pane.
     fn render_agents_section(&self, t: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
         use crate::workspace::AgentState;
-        let agents = self.workspace.read(cx).agents(cx);
+        let agents = self.workspace.read(cx).agents().to_vec();
         if agents.is_empty() {
             return None;
         }
