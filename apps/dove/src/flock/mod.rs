@@ -138,6 +138,9 @@ fn resume_args(kind: HarnessKind) -> Vec<String> {
 
 #[derive(Clone, Copy, PartialEq)]
 enum Menu {
+    /// The `+` beside the tabs: a new tab running a shell or an agent.
+    New,
+    /// The Split button: split, grid, or a new tab.
     Split,
 }
 
@@ -646,6 +649,7 @@ impl Workspace {
                 div()
                     .id(gpui::ElementId::Name(group.clone().into()))
                     .group(group.clone())
+                    .occlude()
                     .h(px(28.0))
                     .px(px(8.0))
                     .flex()
@@ -692,7 +696,7 @@ impl Workspace {
 
     /// The Split menu: split the focused pane, lay the tab out as a grid,
     /// or open a new tab running a shell or an agent.
-    fn render_menu(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+    fn render_menu(&self, menu: Menu, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let row = |id: String, glyph: AnyElement, label: String, hint: Option<&'static str>| {
             div()
                 .id(gpui::ElementId::Name(id.into()))
@@ -729,7 +733,8 @@ impl Workspace {
                 this.menu = None;
                 cx.notify();
             }));
-        if has_tab {
+        let split = menu == Menu::Split;
+        if has_tab && split {
             list = list
                 .child(section("Split the focused pane"))
                 .child(
@@ -775,7 +780,10 @@ impl Workspace {
                     .on_click(cx.listener(move |this, _, window, cx| this.grid(n, window, cx))),
             );
         }
-        list = list.child(section("Grid")).child(grids).child(section("New tab"));
+        if split {
+            list = list.child(section("Grid")).child(grids);
+        }
+        list = list.child(section("New tab"));
         list = list.child(
             row("ws-new-shell".into(), glyph(icons::TERMINAL), "Shell".into(), None)
                 .on_click(cx.listener(|this, _, window, cx| this.new_tab(None, window, cx))),
@@ -796,7 +804,7 @@ impl Workspace {
         }
         deferred(
             anchored()
-                .anchor(gpui::Anchor::TopRight)
+                .anchor(if split { gpui::Anchor::TopRight } else { gpui::Anchor::TopLeft })
                 .snap_to_window_with_margin(px(8.0))
                 .child(div().mt(px(32.0)).child(list)),
         )
@@ -951,7 +959,11 @@ impl Workspace {
     /// a page title, so the page has no second bar of its own.
     pub fn render_bar(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let t = Theme::of(cx).clone();
-        let open = self.menu.is_some();
+        let open = self.menu == Some(Menu::Split);
+        let new_open = self.menu == Some(Menu::New);
+        // Everything here sits in the window's title bar, which Windows
+        // treats as a drag handle: each control is occluded so a real click
+        // reaches it instead of starting a window drag.
         div()
             .h_full()
             .flex_1()
@@ -960,11 +972,37 @@ impl Workspace {
             .items_center()
             .gap(px(4.0))
             .child(self.render_tabs(&t, cx))
+            .child(
+                div()
+                    .relative()
+                    .flex_none()
+                    .child(
+                        div()
+                            .id("ws-new")
+                            .size(px(28.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(radius::RADIUS))
+                            .occlude()
+                            .cursor_pointer()
+                            .when(new_open, |d| d.bg(t.wash(0.08)))
+                            .hover(|s| s.bg(t.wash(0.06)))
+                            .tooltip(ui::tip("New tab: a shell or an agent"))
+                            .child(icon(icons::PLUS).size(px(15.0)).text_color(t.text_muted))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.menu = if this.menu == Some(Menu::New) { None } else { Some(Menu::New) };
+                                cx.notify();
+                            })),
+                    )
+                    .when(new_open, |d| d.child(self.render_menu(Menu::New, &t, cx))),
+            )
             .child(div().flex_1())
             .child({
                 let on = self.tabs.get(self.active).is_some_and(|tb| tb.broadcast);
                 div()
                     .id("ws-broadcast")
+                    .occlude()
                     .h(px(28.0))
                     .px(px(10.0))
                     .flex()
@@ -984,6 +1022,7 @@ impl Workspace {
                     .child(
                         div()
                             .id("ws-split")
+                            .occlude()
                             .h(px(28.0))
                             .px(px(8.0))
                             .flex()
@@ -998,11 +1037,11 @@ impl Workspace {
                             .child(icon(icons::SPLIT_COLUMNS).size(px(15.0)).text_color(t.text_muted))
                             .child(icon(icons::ALT_ARROW_DOWN).size(px(11.0)).text_color(t.text_faint))
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.menu = if this.menu.is_some() { None } else { Some(Menu::Split) };
+                                this.menu = if this.menu == Some(Menu::Split) { None } else { Some(Menu::Split) };
                                 cx.notify();
                             })),
                     )
-                    .when(open, |d| d.child(self.render_menu(&t, cx))),
+                    .when(open, |d| d.child(self.render_menu(Menu::Split, &t, cx))),
             )
             .into_any_element()
     }
@@ -1029,7 +1068,7 @@ impl Render for Workspace {
                 .justify_center()
                 .text_size(ty::BODY)
                 .text_color(t.text_faint)
-                .child("Your flock is empty. Open the split menu at the top right to start a shell or an agent.")
+                .child("Your flock is empty. Press + at the top to start a shell or an agent.")
                 .into_any_element(),
         };
         div()
