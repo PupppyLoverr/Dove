@@ -50,6 +50,7 @@ mod updates;
 mod visuals;
 mod voice;
 mod wallpaper;
+mod workspace;
 
 use std::sync::Arc;
 
@@ -86,7 +87,11 @@ pub mod actions {
             RenameThread,
             OpenThreads,
             OpenKanban,
-            FocusComposer
+            FocusComposer,
+            OpenFlock,
+            SplitRight,
+            SplitDown,
+            ClosePane
         ]
     );
 

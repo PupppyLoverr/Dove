@@ -50,6 +50,8 @@ pub struct TerminalView {
     focus: FocusHandle,
     error: Option<String>,
     selecting: bool,
+    /// Panes that receive a copy of everything typed here (Flock broadcast).
+    pub mirrors: Vec<gpui::WeakEntity<TerminalView>>,
     _pump: Option<gpui::Task<()>>,
 }
 
@@ -82,6 +84,7 @@ impl TerminalView {
             focus: cx.focus_handle(),
             error: None,
             selecting: false,
+            mirrors: Vec::new(),
             _pump: None,
         };
         this.start(cx);
@@ -212,6 +215,31 @@ impl TerminalView {
         cx.notify();
     }
 
+    /// The last `n` non-blank screen lines, for spotting a prompt.
+    pub fn tail_text(&self, n: usize) -> String {
+        let lines: Vec<String> = self
+            .emu
+            .lines()
+            .into_iter()
+            .map(|row| row.into_iter().map(|c| c.ch).collect::<String>().trim_end().to_string())
+            .filter(|l| !l.trim().is_empty())
+            .collect();
+        lines[lines.len().saturating_sub(n)..].join("
+")
+    }
+
+    /// Typed input: written here and copied to any mirrors.
+    fn input(&mut self, bytes: &[u8], cx: &mut Context<Self>) {
+        self.write(bytes);
+        self.mirrors.retain(|m| m.upgrade().is_some());
+        for m in self.mirrors.clone() {
+            let _ = m.update(cx, |v, cx| {
+                v.write(bytes);
+                cx.notify();
+            });
+        }
+    }
+
     fn write(&mut self, bytes: &[u8]) {
         if let Some(p) = self.pty.as_mut() {
             p.write(bytes);
@@ -233,7 +261,7 @@ impl TerminalView {
         if m.control && m.shift && ks.key == "v" {
             if let Some(text) = cx.read_from_clipboard().and_then(|c| c.text()) {
                 let bytes = paste_bytes(&text, self.emu.bracketed_paste_mode());
-                self.write(&bytes);
+                self.input(&bytes, cx);
             }
             cx.stop_propagation();
             return;
@@ -252,7 +280,7 @@ impl TerminalView {
         }
         if let Some(bytes) = keystroke_bytes(&ks.key, ks.key_char.as_deref(), m, self.emu.app_cursor_mode()) {
             self.emu.clear_selection();
-            self.write(&bytes);
+            self.input(&bytes, cx);
             cx.stop_propagation();
             cx.notify();
         }
@@ -368,7 +396,7 @@ impl EntityInputHandler for TerminalView {
             return;
         }
         self.emu.clear_selection();
-        self.write(text.as_bytes());
+        self.input(text.as_bytes(), cx);
         cx.notify();
     }
 

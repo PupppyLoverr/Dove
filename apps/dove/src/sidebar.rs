@@ -265,6 +265,7 @@ impl Shell {
                 self,
                 cx,
             ))
+            .child(nav_item("nav-flock", icons::TERMINAL, "Flock", Some(Route::Flock), None, self, cx))
             .child(nav_item(
                 "nav-automations",
                 icons::CLOCK_CIRCLE,
@@ -629,6 +630,7 @@ impl Shell {
                     .overflow_hidden()
                     .child(nav)
                     .child(div().pt(px(14.0)).child(self.render_team_section(&t, cx)))
+                    .children(self.render_agents_section(&t, cx))
                     .children(needs_section)
                     .child(header)
                     .child(list)
@@ -1059,5 +1061,103 @@ mod tests {
                 (false, TaskStatus::Idle),
             ]
         );
+    }
+}
+
+impl Shell {
+    /// Agents running as TUIs in Flock: harness, working or idle, where,
+    /// and when it last printed. A row shows its pane.
+    fn render_agents_section(&self, t: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+        use crate::workspace::AgentState;
+        let agents = self.workspace.read(cx).agents(cx);
+        if agents.is_empty() {
+            return None;
+        }
+        let on_page = self.route == Route::Flock;
+        let header = div()
+            .h(px(26.0))
+            .mx(px(8.0))
+            .px(px(8.0))
+            .flex()
+            .items_center()
+            .gap(px(6.0))
+            .text_size(ty::CAPTION)
+            .font_weight(gpui::FontWeight::MEDIUM)
+            .text_color(t.text_faint)
+            .child("Agents")
+            .child(div().text_size(ty::BADGE).child(agents.len().to_string()));
+        let mut list = div().flex().flex_col().gap(px(1.0)).pt(px(14.0)).child(header);
+        for a in agents {
+            let selected = on_page && a.selected;
+            let (dot, label) = match a.state {
+                AgentState::Working => (t.busy, a.state.label()),
+                AgentState::NeedsInput => (t.warning, a.state.label()),
+                AgentState::Idle => (t.text_faint, a.state.label()),
+                AgentState::Exited => (t.danger, a.state.label()),
+            };
+            let pane = a.pane;
+            list = list.child(
+                div()
+                    .id(gpui::ElementId::Name(format!("sb-agent-{pane}").into()))
+                    .mx(px(8.0))
+                    .px(px(8.0))
+                    .py(px(5.0))
+                    .flex()
+                    .items_center()
+                    .gap(px(9.0))
+                    .rounded(px(radius::RADIUS))
+                    .cursor_pointer()
+                    .when(selected, |d| d.bg(t.wash(0.08)))
+                    .when(!selected, |d| d.hover(|s| s.bg(t.wash(0.04))))
+                    .child(
+                        icon(ui::harness_icon(a.kind))
+                            .size(px(16.0))
+                            .text_color(ui::harness_tint(a.kind, t, t.text_muted)),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(6.0))
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .truncate()
+                                            .text_size(ty::BODY)
+                                            .text_color(t.text)
+                                            .child(a.kind.label()),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(ty::MICRO)
+                                            .text_color(t.text_faint)
+                                            .child(ui::relative_time(a.last_ms)),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(5.0))
+                                    .text_size(ty::MICRO)
+                                    .text_color(t.text_faint)
+                                    .child(ui::dot(dot, 6.0))
+                                    .child(div().truncate().child(format!("{label} · {}", a.place))),
+                            ),
+                    )
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.navigate(Route::Flock, window, cx);
+                        this.workspace.update(cx, |w, cx| w.focus_pane(pane, window, cx));
+                    })),
+            );
+        }
+        Some(list.into_any_element())
     }
 }
