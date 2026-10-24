@@ -12,6 +12,7 @@ mod diff_list;
 mod ego;
 mod file_icons;
 mod files_panel;
+mod flock;
 mod history;
 mod home;
 mod hotkey;
@@ -115,7 +116,11 @@ pub mod actions {
             FocusPaneRight,
             FocusPaneUp,
             FocusPaneDown,
-            ShowCallView
+            ShowCallView,
+            OpenFlock,
+            FlockSplitRight,
+            FlockSplitDown,
+            FlockClosePane
         ]
     );
 

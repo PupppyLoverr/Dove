@@ -141,6 +141,7 @@ pub enum Route {
     Settings,
     Help,
     Team,
+    Flock,
 }
 
 impl Route {
@@ -158,6 +159,7 @@ impl Route {
             "settings" => Route::Settings,
             "help" => Route::Help,
             "team" => Route::Team,
+            "flock" | "terminals" => Route::Flock,
             _ => return None,
         })
     }
@@ -221,6 +223,8 @@ pub struct Shell {
     /// The home composer's measured height, for embedding it cached.
     pub composer_height: std::rc::Rc<std::cell::Cell<f32>>,
     pub prs: Entity<PullRequestsPage>,
+    /// Flock: agents' TUIs and shells in split panes and grids.
+    pub workspace: Entity<crate::flock::Workspace>,
     /// Each thread's pull request URL (mirrors the store's `task_prs`).
     pr_links: HashMap<TaskId, String>,
     pub settings: Entity<crate::settings::SettingsPage>,
@@ -286,6 +290,7 @@ impl Shell {
         // Composers list the in-app browser's tabs for `@` mentions.
         cx.set_global(crate::side_panel::PanelHandle(panel.downgrade()));
         let prs = cx.new(|cx| PullRequestsPage::new(engine.clone(), window, cx));
+        let workspace = cx.new(|cx| crate::flock::Workspace::new(engine.clone(), cx));
         let settings = cx.new(|cx| crate::settings::SettingsPage::new(engine.clone(), window, cx));
         let style = ui::input_style(Theme::of(cx));
         let search = cx.new(|cx| {
@@ -294,6 +299,14 @@ impl Shell {
             s
         });
         let mut subs = Vec::new();
+        subs.push(cx.subscribe(&workspace, |_, _, ev: &crate::flock::WorkspaceEvent, cx| match ev {
+            crate::flock::WorkspaceEvent::AgentsChanged => cx.notify(),
+        }));
+        subs.push(cx.observe(&workspace, |this, _, cx| {
+            if this.route == Route::Flock {
+                cx.notify();
+            }
+        }));
         subs.push(cx.subscribe_in(&composer, window, |this, _, ev: &ComposerEvent, window, cx| match ev {
             ComposerEvent::Submit(text) => this.start(text.clone(), window, cx),
             ComposerEvent::OpenUsage => this.navigate(Route::Usage, window, cx),
@@ -433,6 +446,7 @@ impl Shell {
             composer_bounds: Default::default(),
             composer_height,
             prs,
+            workspace,
             pr_links: store.task_prs().unwrap_or_default().into_iter().collect(),
             settings,
             palette: None,
@@ -948,6 +962,15 @@ impl Shell {
             }
             Route::Automations => self.pages.refresh_automations(&self.engine),
             Route::Kanban => self.load_kanban_meta(cx),
+            Route::Flock => {
+                let cwd = self.home_project.and_then(|id| self.project(id)).map(|p| p.path.clone());
+                self.workspace.update(cx, |w, cx| {
+                    if let Some(cwd) = cwd.filter(|c| c.is_dir()) {
+                        w.default_cwd = cwd;
+                    }
+                    w.ensure_started(window, cx);
+                });
+            }
             Route::Usage => self.pages.refresh_usage(&self.engine, cx),
             _ => {}
         }
@@ -1967,6 +1990,7 @@ impl Shell {
                 "threads" => self.navigate(Route::Threads, window, cx),
                 "team" => self.open_teammate(None, window, cx),
                 "kanban" => self.navigate(Route::Kanban, window, cx),
+                "flock" => self.navigate(Route::Flock, window, cx),
                 "automations" => self.navigate(Route::Automations, window, cx),
                 "prs" => self.navigate(Route::PullRequests, window, cx),
                 "agents" => self.navigate(Route::Agents, window, cx),
@@ -2244,7 +2268,8 @@ impl Shell {
             });
 
         let in_thread = matches!(self.route, Route::Thread(_));
-        let panel_open = in_thread && self.panel_shown();
+        let flock = self.route == Route::Flock;
+        let panel_open = (in_thread || flock) && self.panel_shown();
         let expanded = panel_open && self.panel.read(cx).expanded;
         let panel_w = self.panel_width(window);
         // What the tabs get: the bar minus the cluster, the tools beside the
@@ -2258,10 +2283,16 @@ impl Shell {
         let tools_w = 16.0
             + if in_thread { ui::BUTTON + 4.0 } else { 0.0 }
             + if in_thread && !tabs_on { ui::BUTTON + 2.0 } else { 0.0 }
-            + if in_thread && !panel_open { ui::BUTTON + 4.0 } else { 0.0 }
+            + if (in_thread || flock) && !panel_open { ui::BUTTON + 4.0 } else { 0.0 }
             + if panel_open { panel_w } else { ui::caption_reserve() };
         let room = f32::from(window.viewport_size().width) - cluster_w - tools_w;
-        let tabs = if tabs_on { self.render_tabs(room, &t, cx) } else { self.render_bar_title(&t, cx) };
+        let tabs = if flock {
+            self.workspace.update(cx, |w, cx| w.render_bar(cx))
+        } else if tabs_on {
+            self.render_tabs(room, &t, cx)
+        } else {
+            self.render_bar_title(&t, cx)
+        };
         let files_on = panel_open && self.panel.read(cx).showing(crate::side_panel::Surface::Files);
         let right_tools = div()
             .flex()
@@ -2313,6 +2344,16 @@ impl Shell {
                             ))
                         }),
                 )
+            })
+            // Flock keeps only the panel toggle: no thread info to show.
+            .when(flock && !panel_open, |d| {
+                let color = crate::motion::hover_blend("tb-panel", t.text_muted, t.text);
+                d.child(quiet_bar_button(
+                    "tb-panel",
+                    "Side panel: browser, diffs, files… (Ctrl+\\)",
+                    ui::sidebar_glyph(0.0, true, 16.0, color),
+                    cx.listener(|this, _, _, cx| this.toggle_panel(cx)),
+                ))
             });
         // The call view covers the panel: its strip (and buttons) goes too.
         let strip = (panel_open && !self.call_view_shown).then(|| self.panel.update(cx, |p, cx| p.render_strip(cx)));
@@ -2321,7 +2362,7 @@ impl Shell {
         // its frost) is already painted for this column, so the tabs sit on
         // the same surface as the page. Everywhere else it is the solid bar.
         let home_art = matches!(self.route, Route::Home) && self.has_wallpaper();
-        let thread_art = matches!(self.route, Route::Thread(_)) && self.has_wallpaper();
+        let thread_art = self.full_art_route() && self.has_wallpaper();
         let surface = div()
             .flex_1()
             .min_w_0()
@@ -2992,6 +3033,31 @@ impl Shell {
         )
     }
 
+    /// Split the focused terminal, opening Flock first if elsewhere.
+    fn split_terminal(&mut self, axis: crate::flock::pane_tree::Axis, window: &mut Window, cx: &mut Context<Self>) {
+        if self.route != Route::Flock {
+            self.navigate(Route::Flock, window, cx);
+            return;
+        }
+        self.workspace.update(cx, |w, cx| w.split(axis, window, cx));
+    }
+
+    /// Run a Kanban draft as the agent's own TUI in a new Flock tab, typing
+    /// its prompt once the agent is ready.
+    pub fn dispatch_to_flock(&mut self, id: TaskId, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(task) = self.task(id).cloned() else { return };
+        let Some(cwd) = self.project(task.project_id).map(|p| p.path.clone()) else { return };
+        let prompt = task.prompt.clone().unwrap_or_else(|| task.title.clone());
+        self.navigate(Route::Flock, window, cx);
+        let kind = task.harness;
+        self.workspace.update(cx, |w, cx| w.dispatch(kind, cwd, prompt, window, cx));
+    }
+
+    /// Routes whose picture runs under the whole window as frosted glass.
+    fn full_art_route(&self) -> bool {
+        matches!(self.route, Route::Thread(_) | Route::Flock)
+    }
+
     fn has_wallpaper(&self) -> bool {
         self.wallpaper_path().is_some()
     }
@@ -3024,7 +3090,7 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let home = matches!(self.route, Route::Home);
-        let thread = matches!(self.route, Route::Thread(_));
+        let thread = self.full_art_route();
         if !home && !thread || width < 8.0 {
             return None;
         }
@@ -3108,6 +3174,9 @@ impl Shell {
             },
             Route::Help => self.render_help_page(cx),
             Route::Team => self.render_team_page(None, cx),
+            Route::Flock => {
+                AnyView::from(self.workspace.clone()).cached(StyleRefinement::default().size_full()).into_any_element()
+            }
         }
     }
 }
@@ -3213,6 +3282,8 @@ impl Render for Shell {
         frame_stats();
         let t = Theme::of(cx).clone();
         let in_thread = matches!(self.route, Route::Thread(_));
+        // Pages that carry the side panel.
+        let docked = in_thread || self.route == Route::Flock;
         // No open threads: the main page is the wallpaper and the composer.
         // The tab strip only exists once a thread is open.
         // The new-thread page draws only its floating window controls (the
@@ -3221,8 +3292,8 @@ impl Render for Shell {
         let bare = matches!(self.route, Route::Home)
             && (self.tabs.is_empty() || !self.engine.store.flag("topbar_tabs", false));
         let wants_expand = self.panel.read(cx).expanded;
-        self.update_fit(f32::from(window.viewport_size().width), in_thread, wants_expand);
-        let panel_open = in_thread && self.panel_shown();
+        self.update_fit(f32::from(window.viewport_size().width), docked, wants_expand);
+        let panel_open = docked && self.panel_shown();
         let expanded = panel_open && wants_expand;
         let sidebar_shown = self.sidebar_shown();
         self.sync_thread_dock(sidebar_shown, cx);
@@ -3257,7 +3328,7 @@ impl Render for Shell {
         let panel_w = self.panel_width(window);
         let now = Instant::now();
         self.slides.sidebar.step((!in_settings).then_some(sidebar_shown), self.sidebar_w, now);
-        self.slides.panel.step(in_thread.then_some(panel_open && !expanded), panel_w, now);
+        self.slides.panel.step(docked.then_some(panel_open && !expanded), panel_w, now);
         // A drag that reaches its limit nudges the column toward the drag
         // and lets it settle back.
         let bounce =
@@ -3341,7 +3412,7 @@ impl Render for Shell {
         });
 
         let home_art = matches!(self.route, Route::Home) && self.has_wallpaper();
-        let thread_art = in_thread && self.has_wallpaper();
+        let thread_art = self.full_art_route() && self.has_wallpaper();
         let info_gutter = self.info_open && in_thread && !expanded;
         if let Some(thread) = self.active_thread().cloned() {
             thread.update(cx, |view, cx| {
@@ -3463,6 +3534,18 @@ impl Render for Shell {
             .on_action(
                 cx.listener(|this, _: &actions::OpenKanban, window, cx| this.navigate(Route::Kanban, window, cx)),
             )
+            .on_action(cx.listener(|this, _: &actions::OpenFlock, window, cx| this.navigate(Route::Flock, window, cx)))
+            .on_action(cx.listener(|this, _: &actions::FlockSplitRight, window, cx| {
+                this.split_terminal(crate::flock::pane_tree::Axis::Row, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &actions::FlockSplitDown, window, cx| {
+                this.split_terminal(crate::flock::pane_tree::Axis::Column, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &actions::FlockClosePane, window, cx| {
+                if this.route == Route::Flock {
+                    this.workspace.update(cx, |w, cx| w.close_pane(window, cx));
+                }
+            }))
             .on_action(cx.listener(|this, _: &actions::NextTab, window, cx| this.cycle_tab(1, window, cx)))
             .on_action(cx.listener(|this, _: &actions::PrevTab, window, cx| this.cycle_tab(-1, window, cx)))
             .on_action(cx.listener(|this, a: &actions::GoToTab, window, cx| {

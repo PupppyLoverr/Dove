@@ -403,14 +403,25 @@ impl Shell {
             )
             .when(col == Column::Draft, |d| {
                 d.child(
-                    div().flex().child(
-                        ctl::button_sm(t, SharedString::from(format!("card-start-{id}")), "Start", Tone::Filled)
-                            .child(icon(icons::ACTION_PLAY).size(px(12.0)))
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                cx.stop_propagation();
-                                this.start_draft(id, window, cx);
-                            })),
-                    ),
+                    div()
+                        .flex()
+                        .gap(px(6.0))
+                        .child(
+                            ctl::button_sm(t, SharedString::from(format!("card-start-{id}")), "Start", Tone::Filled)
+                                .child(icon(icons::ACTION_PLAY).size(px(12.0)))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    cx.stop_propagation();
+                                    this.start_draft(id, window, cx);
+                                })),
+                        )
+                        .child(
+                            ctl::button_sm(t, SharedString::from(format!("card-flock-{id}")), "In Flock", Tone::Quiet)
+                                .child(icon(icons::TERMINAL).size(px(12.0)))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    cx.stop_propagation();
+                                    this.dispatch_to_flock(id, window, cx);
+                                })),
+                        ),
                 )
             })
             .into_any_element()
