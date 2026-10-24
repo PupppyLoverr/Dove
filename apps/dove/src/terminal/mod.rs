@@ -91,48 +91,72 @@ impl TerminalView {
         this
     }
 
+    /// Spawn on the background executor: on Windows, creating a ConPTY
+    /// pumps window messages (its hidden console host activating), and run
+    /// inside an app update those arrive while GPUI is borrowed and are
+    /// dropped with "RefCell already borrowed".
     fn start(&mut self, cx: &mut Context<Self>) {
         let (cols, rows) = (self.emu.cols() as u16, self.emu.rows() as u16);
-        let spawned = match &self.program {
-            Program::Shell => Pty::spawn(&self.cwd, cols, rows),
-            Program::Command { program, args } => Pty::spawn_command(program, args, &self.cwd, cols, rows),
-        };
-        match spawned {
-            Ok(pty) => {
-                let rx = pty.output.clone();
-                self.pty = Some(pty);
-                self.error = None;
-                self._pump = Some(cx.spawn(async move |this, cx| {
-                    while let Ok(first) = rx.recv_async().await {
-                        cx.background_executor().timer(FRAME).await;
-                        let mut bytes = first;
-                        for more in rx.try_iter() {
-                            bytes.extend(more);
-                        }
-                        let alive = this.update(cx, |v, cx| {
-                            v.last_output = Instant::now();
-                            let replies = v.emu.feed(&bytes);
-                            if !replies.is_empty()
-                                && let Some(p) = v.pty.as_mut()
-                            {
-                                p.write(&replies);
-                            }
-                            cx.notify();
-                        });
-                        if alive.is_err() {
-                            return;
-                        }
-                    }
-                    // The reader ended: the program exited.
+        let program = self.program.clone();
+        let cwd = self.cwd.clone();
+        let spawning = cx.background_executor().spawn(async move {
+            match &program {
+                Program::Shell => Pty::spawn(&cwd, cols, rows),
+                Program::Command { program, args } => Pty::spawn_command(program, args, &cwd, cols, rows),
+            }
+        });
+        self._pump = Some(cx.spawn(async move |this, cx| {
+            let pty = match spawning.await {
+                Ok(pty) => pty,
+                Err(e) => {
                     let _ = this.update(cx, |v, cx| {
-                        v.pty = None;
-                        cx.emit(TerminalEvent::Exited);
+                        v.error = Some(format!("{e:#}"));
                         cx.notify();
                     });
-                }));
+                    return;
+                }
+            };
+            let rx = pty.output.clone();
+            let attached = this.update(cx, |v, cx| {
+                // The grid may have been measured while the PTY started.
+                let g = v.geometry;
+                if g.cols > 0 && g.rows > 0 && (g.cols != cols || g.rows != rows) {
+                    pty.resize(g.cols, g.rows);
+                }
+                v.pty = Some(pty);
+                v.error = None;
+                cx.notify();
+            });
+            if attached.is_err() {
+                return;
             }
-            Err(e) => self.error = Some(format!("{e:#}")),
-        }
+            while let Ok(first) = rx.recv_async().await {
+                cx.background_executor().timer(FRAME).await;
+                let mut bytes = first;
+                for more in rx.try_iter() {
+                    bytes.extend(more);
+                }
+                let alive = this.update(cx, |v, cx| {
+                    v.last_output = Instant::now();
+                    let replies = v.emu.feed(&bytes);
+                    if !replies.is_empty()
+                        && let Some(p) = v.pty.as_mut()
+                    {
+                        p.write(&replies);
+                    }
+                    cx.notify();
+                });
+                if alive.is_err() {
+                    return;
+                }
+            }
+            // The reader ended: the program exited.
+            let _ = this.update(cx, |v, cx| {
+                v.pty = None;
+                cx.emit(TerminalEvent::Exited);
+                cx.notify();
+            });
+        }));
     }
 
     /// Called from prepaint with the measured grid. Resizes immediately; the
@@ -224,8 +248,10 @@ impl TerminalView {
             .map(|row| row.into_iter().map(|c| c.ch).collect::<String>().trim_end().to_string())
             .filter(|l| !l.trim().is_empty())
             .collect();
-        lines[lines.len().saturating_sub(n)..].join("
-")
+        lines[lines.len().saturating_sub(n)..].join(
+            "
+",
+        )
     }
 
     /// Typed input: written here and copied to any mirrors.
