@@ -132,17 +132,47 @@ manifest `apps/dove/src/file-icons.json` are copied, through Zeron, from
 `vscode-symbols` at commit `296ef1b62287fb2315cb5651e552e09e8c8e1de8`. The full
 license is kept beside the assets in `apps/dove/assets/file-icons/LICENSE.symbols`.
 
+## Hugeicons (MIT)
+
+Copyright (c) 2025 Hugeicons. https://hugeicons.com
+
+The interface icons in `apps/dove/assets/icons` are "Hugeicons" Stroke Rounded
+glyphs from the free set (`@hugeicons/core-free-icons` 4.3.5), converted to
+SVG under Dove's own file names. The full license is kept beside the assets in
+`apps/dove/assets/LICENSE.hugeicons.md`.
+
 ## Solar Icons (CC BY 4.0)
 
-The interface icons in `apps/dove/assets/icons` are Zeron's icon set: mostly
-"Solar Icons" (Linear) by 480 Design, licensed under CC BY 4.0
-(https://creativecommons.org/licenses/by/4.0/), plus glyphs Zeron draws in the
-same style (MIT, see above). A few Dove-only glyphs are Solar Icons, or are
-drawn by Dove to match.
+A few interface glyphs (`stop`, `star-bold`, `fast-tier`, `fast-tier-bold`
+and the composer's `queue-*` glyphs) remain from Zeron's icon set: "Solar
+Icons" (Linear) by 480 Design, licensed under CC BY 4.0
+(https://creativecommons.org/licenses/by/4.0/), or glyphs Zeron draws in the
+same style (MIT, see above).
 
 Agent brand marks (Claude, OpenAI, Cursor, Devin, Grok, OpenCode, Pi, Hermes,
 Antigravity) identify the respective products and remain the property of their
 owners.
+
+## Voice Mode models (downloaded on demand, not shipped)
+
+Settings › Voice downloads these from Hugging Face at pinned revisions and
+checks each file's SHA-256 before use. They are not part of the Dove binary.
+
+- **Moonshine** base and tiny (English), Useful Sensors, MIT. ONNX exports by
+  onnx-community: `onnx-community/moonshine-base-ONNX` at `b1e9b6a`,
+  `onnx-community/moonshine-tiny-ONNX` at `a6da124`.
+- **Silero VAD** v5, Silero Team, MIT. ONNX export `onnx-community/silero-vad`
+  at `e71cae9`.
+- **Smart Turn v3.2** (CPU build), Daily / Pipecat, BSD-2-Clause.
+  `pipecat-ai/smart-turn-v3` at `f766f81`. Dove computes the Whisper log-mel
+  features it expects (`crates/dove-voice/src/turn.rs`), following
+  `WhisperFeatureExtractor` from Hugging Face Transformers (Apache-2.0).
+- **NVIDIA Parakeet TDT 0.6B v3**, NVIDIA, CC-BY-4.0, as an ONNX export by
+  istupakov (`istupakov/parakeet-tdt-0.6b-v3-onnx`), shared with dictation.
+
+Spoken output uses the operating system's own voices (Windows speech
+synthesis, macOS `say`, Linux `espeak-ng`); Dove does not ship voices.
+
 
 ## Geist and Geist Mono (SIL OFL 1.1)
 
@@ -155,3 +185,12 @@ Copyright 2015 The Great Vibes Pro Project Authors
 the handwritten "Dove" wordmark in the first-launch intro
 (`media/intro/src/build-assets.mjs`); the font file itself is not shipped in
 the app. See `media/intro/src/fonts/GreatVibes-OFL.txt`.
+
+## Simple Icons (CC0 1.0)
+
+https://github.com/simple-icons/simple-icons. The monochrome brand marks in
+`apps/dove/assets/icons/brand-*.svg` (Figma, GitHub, Linear, Notion, Sentry,
+Supabase, Stripe, Vercel, Atlassian, Cloudflare, PostHog, Google Chrome,
+Slack) come from Simple Icons, dedicated to the public domain under CC0 1.0.
+The marks remain trademarks of their owners and are used only to identify
+their services.

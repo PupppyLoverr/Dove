@@ -20,7 +20,10 @@ use dove_store::{Automation, Project, Store, Task};
 use parking_lot::RwLock;
 
 pub mod automation;
+pub mod digest;
+pub mod memory;
 pub mod mirror;
+pub mod orchestra;
 
 pub use dove_git as git;
 pub use dove_harness::Command;
@@ -28,9 +31,14 @@ pub use dove_harness::detect as harness_detect;
 pub use dove_harness::is_supported as harness_supported;
 pub use dove_harness::models;
 pub use dove_harness::office_skills;
+pub use dove_harness::process as harness_process;
+pub use dove_harness::skills;
+pub use dove_harness::teach;
 pub use dove_harness::tui;
 pub use dove_harness::walkthrough;
-pub use dove_harness::{ToolServer, is_dove_tool, set_tool_server};
+pub use dove_harness::{
+    ToolServer, allow_ego_browser, is_dove_tool, set_allow_ego_browser, set_tool_server, tool_server,
+};
 pub use dove_proto as proto;
 pub use dove_store as store;
 
@@ -41,10 +49,16 @@ pub struct Engine {
     shared: Arc<RwLock<Shared>>,
     /// Which driver owns each task's live session right now.
     drivers: Arc<parking_lot::Mutex<HashMap<TaskId, Driver>>>,
+    /// Stops each chat session, even one its view let go of (it keeps
+    /// recording in the background until the agent exits).
+    stops: Arc<parking_lot::Mutex<HashMap<TaskId, flume::Sender<()>>>>,
     /// Live model catalogs; see [`Engine::models`].
     live_models: Arc<LiveModels>,
     /// One pre-started session, adopted by the next matching start.
     warm: Arc<parking_lot::Mutex<Option<Warm>>>,
+    /// Session key (`DOVE_SESSION` in a session's tool server) to the
+    /// thread that session belongs to, so tool calls know their caller.
+    sessions: Arc<parking_lot::Mutex<HashMap<String, TaskId>>>,
 }
 
 /// How long a pre-started session waits for its first message.
@@ -79,6 +93,8 @@ impl WarmKey {
 struct Warm {
     key: WarmKey,
     handle: SessionHandle,
+    /// Its session key: registered to the thread that adopts it.
+    session: String,
     at: std::time::Instant,
 }
 
@@ -143,8 +159,13 @@ const PERSONA_OPEN: &str = "<dove-persona>";
 const PERSONA_CLOSE: &str = "</dove-persona>";
 
 /// The brief that leads a teammate's first turn: who it is, how it works,
-/// and the notes it keeps between threads. Tagged so the chat can hide it.
-pub fn persona_preamble(p: &dove_store::Persona, notes: Option<&std::path::Path>) -> String {
+/// who else is on the team and how to reach them, and the notes it keeps
+/// between threads. Tagged so the chat can hide it.
+pub fn persona_preamble(
+    p: &dove_store::Persona,
+    notes: Option<&std::path::Path>,
+    team: &[dove_store::Persona],
+) -> String {
     let role = if p.role.trim().is_empty() { String::new() } else { format!(", {}", p.role.trim()) };
     let name = p.name.trim();
     let mut out = format!(
@@ -152,6 +173,23 @@ pub fn persona_preamble(p: &dove_store::Persona, notes: Option<&std::path::Path>
     );
     if !p.instructions.trim().is_empty() {
         out.push_str(&format!("\nHow you work:\n{}\n", p.instructions.trim()));
+    }
+    let others: Vec<String> = team
+        .iter()
+        .filter(|t| t.id != p.id)
+        .map(|t| match t.role.trim() {
+            "" => format!("- {}", t.name.trim()),
+            r => format!("- {} ({r})", t.name.trim()),
+        })
+        .collect();
+    if !others.is_empty() {
+        out.push_str(&format!(
+            "\nYour teammates:\n{}\nWork with them through Dove's tools (the `dove` MCP server): `team_message` asks a \
+             teammate something and their reply comes back to you, `delegate_task` hands a teammate (or any agent \
+             and model) a task, and `thread_read` reads what they did. Ask a teammate when their role fits the work \
+             better than yours.\n",
+            others.join("\n")
+        ));
     }
     if let Some(notes) = notes {
         out.push_str(&format!(
@@ -165,8 +203,10 @@ pub fn persona_preamble(p: &dove_store::Persona, notes: Option<&std::path::Path>
     out
 }
 
-/// A prompt without its teammate brief, as the user wrote it.
+/// A prompt without its teammate brief (or recalled memories), as the user
+/// wrote it.
 pub fn strip_persona(text: &str) -> &str {
+    let text = memory::strip(text);
     let trimmed = text.trim_start();
     if let Some(rest) = trimmed.strip_prefix(PERSONA_OPEN)
         && let Some(end) = rest.find(PERSONA_CLOSE)
@@ -243,6 +283,7 @@ pub fn next_status(event: &AgentEvent) -> Option<TaskStatus> {
 impl Engine {
     pub fn new(root: PathBuf) -> Result<Arc<Self>> {
         let store = Arc::new(Store::open(&root)?);
+        memory::apply_settings(&store);
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .thread_name("dove-io")
@@ -255,8 +296,10 @@ impl Engine {
             installed: RwLock::new(Vec::new()),
             shared: Default::default(),
             drivers: Default::default(),
+            stops: Default::default(),
             live_models: Default::default(),
             warm: Default::default(),
+            sessions: Default::default(),
         }))
     }
 
@@ -317,6 +360,48 @@ impl Engine {
         self.start_task_with(project, new, None, None)
     }
 
+    /// A thread that starts in the agent's own terminal UI rather than in
+    /// chat: recorded (idle, with its folder and teammate) but not run.
+    /// Returns it with the first message to type into the terminal (the
+    /// teammate's brief and the prompt), empty when there is no prompt.
+    pub fn create_thread(&self, project: &Project, new: NewTask) -> Result<(Task, String)> {
+        self.program(new.harness)?;
+        let (worktree, branch, base) = match new.join.clone() {
+            Some(j) => (j.worktree, j.branch, j.base),
+            None => (None, dove_git::current_branch(&project.path).ok(), dove_git::head_sha(&project.path).ok()),
+        };
+        let task = Task {
+            id: TaskId::new(),
+            project_id: project.id,
+            title: new.title,
+            harness: new.harness,
+            model: new.run.model.clone(),
+            status: TaskStatus::Idle,
+            worktree,
+            branch,
+            native_session_id: None,
+            base,
+            pinned: false,
+            updated_at: dove_store::now_ms(),
+            prompt: None,
+            unread: false,
+            automation: None,
+        };
+        self.store.insert_task(&task)?;
+        self.save_add_dirs(task.id, &new.run.add_dirs);
+        let first = match &new.persona {
+            Some(p) => {
+                self.store.assign_persona(task.id, &p.id)?;
+                let notes = self.store.persona_notes_path(&p.id);
+                let keep = self.store.setting("team_notes").as_deref() != Some("false");
+                let team = self.store.personas().unwrap_or_default();
+                format!("{}{}", persona_preamble(p, keep.then_some(notes.as_path()), &team), new.prompt)
+            }
+            None => new.prompt,
+        };
+        Ok((task, first.trim().to_string()))
+    }
+
     fn start_task_with(
         &self,
         project: &Project,
@@ -366,7 +451,8 @@ impl Engine {
                     let _ = std::fs::create_dir_all(dir);
                 }
                 let keep = self.store.setting("team_notes").as_deref() != Some("false");
-                format!("{}{}", persona_preamble(p, keep.then_some(notes.as_path())), new.prompt)
+                let team = self.store.personas().unwrap_or_default();
+                format!("{}{}", persona_preamble(p, keep.then_some(notes.as_path()), &team), new.prompt)
             }
             None => new.prompt,
         };
@@ -381,13 +467,18 @@ impl Engine {
             resume: None,
             prompt: Some(prompt),
             fork: false,
+            session: dove_harness::new_session_key(),
         };
+        if memory::recalls(&self.store, project.id) {
+            let live = self.launch_deferred(&task, spec)?;
+            return Ok((task, live));
+        }
         // A matching pre-started session takes the prompt straight away.
-        if let Some(handle) = self.take_warm(&spec)
+        if let Some((handle, session)) = self.take_warm(&spec)
             && let Some(prompt) = spec.prompt.clone()
             && handle.send(Command::Send(prompt))
         {
-            let live = self.attach(&task, handle)?;
+            let live = self.attach(&task, handle, session)?;
             return Ok((task, live));
         }
         let live = self.launch(&task, spec)?;
@@ -411,6 +502,7 @@ impl Engine {
             resume: None,
             prompt: None,
             fork: false,
+            session: dove_harness::new_session_key(),
         });
     }
 
@@ -436,9 +528,10 @@ impl Engine {
         }
         // Dropping the old handle kills its process.
         *warm = None;
+        let session = spec.session.clone();
         let Ok(handle) = dove_harness::spawn(self.rt.handle(), spec) else { return };
         let at = std::time::Instant::now();
-        *warm = Some(Warm { key, handle, at });
+        *warm = Some(Warm { key, handle, session, at });
         drop(warm);
         // Expire it if nobody sends.
         let slot = self.warm.clone();
@@ -456,12 +549,48 @@ impl Engine {
         *self.warm.lock() = None;
     }
 
-    fn take_warm(&self, spec: &SessionSpec) -> Option<SessionHandle> {
+    /// Stop a pre-started session that resumed `native`, so another driver
+    /// (the agent's terminal UI) can open that session file.
+    pub fn cool_session(&self, native: &str) {
+        let mut warm = self.warm.lock();
+        if warm.as_ref().is_some_and(|w| w.key.resume.as_deref() == Some(native)) {
+            *warm = None;
+        }
+    }
+
+    /// Ask `task`'s chat session to stop, including one no view holds any
+    /// more. Returns whether a session was there to ask.
+    pub fn stop_chat(&self, task: TaskId) -> bool {
+        self.stops.lock().get(&task).is_some_and(|s| s.send(()).is_ok())
+    }
+
+    /// Whether `kind` has a terminal UI Dove can hand a thread to.
+    pub fn has_terminal_ui(&self, kind: HarnessKind) -> bool {
+        kind == HarnessKind::Shell
+            || self.program(kind).ok().is_some_and(|p| tui::interactive_program(kind, &p).is_some())
+    }
+
+    /// The pre-started session matching `spec`, with its session key.
+    fn take_warm(&self, spec: &SessionSpec) -> Option<(SessionHandle, String)> {
         let mut warm = self.warm.lock();
         let ok = warm.as_ref().is_some_and(|w| {
             w.key == WarmKey::of(spec) && w.at.elapsed() < WARM_TTL && w.handle.is_alive() && w.handle.events.is_empty()
         });
-        if ok { warm.take().map(|w| w.handle) } else { None }
+        if ok { warm.take().map(|w| (w.handle, w.session)) } else { None }
+    }
+
+    /// The thread a tool call with session key `key` comes from.
+    pub fn task_for_session(&self, key: &str) -> Option<TaskId> {
+        if key.is_empty() {
+            return None;
+        }
+        self.sessions.lock().get(key).copied()
+    }
+
+    fn register_session(&self, key: &str, task: TaskId) {
+        if !key.is_empty() {
+            self.sessions.lock().insert(key.to_string(), task);
+        }
     }
 
     /// Re-attach to a task's harness session, optionally with a new message.
@@ -473,11 +602,14 @@ impl Engine {
         run: RunSettings,
     ) -> Result<LiveSession> {
         let spec = self.resume_spec(task, project, prompt, &run)?;
-        if let Some(handle) = self.take_warm(&spec)
+        if spec.prompt.is_some() && memory::recalls(&self.store, project.id) {
+            return self.launch_deferred(task, spec);
+        }
+        if let Some((handle, session)) = self.take_warm(&spec)
             && let Some(prompt) = spec.prompt.clone()
             && handle.send(Command::Send(prompt))
         {
-            return self.attach(task, handle);
+            return self.attach(task, handle, session);
         }
         self.launch(task, spec)
     }
@@ -500,6 +632,7 @@ impl Engine {
             resume: task.native_session_id.clone(),
             prompt,
             fork: false,
+            session: dove_harness::new_session_key(),
         })
     }
 
@@ -645,9 +778,15 @@ impl Engine {
         let new = NewTask {
             title: format!("{} · {stamp}", a.name),
             prompt,
-            harness: persona.as_ref().map(|p| p.harness).unwrap_or(a.harness),
+            // A teammate with a preferred agent brings it (and its model);
+            // one without runs on the automation's agent.
+            harness: persona.as_ref().and_then(|p| p.harness).unwrap_or(a.harness),
             run: RunSettings {
-                model: persona.as_ref().and_then(|p| p.model.clone()).or_else(|| a.model.clone()),
+                model: persona
+                    .as_ref()
+                    .filter(|p| p.harness.is_some())
+                    .and_then(|p| p.model.clone())
+                    .or_else(|| a.model.clone()),
                 ..Default::default()
             },
             join: None,
@@ -709,6 +848,7 @@ impl Engine {
             resume: Some(native),
             prompt: None,
             fork: true,
+            session: dove_harness::new_session_key(),
         };
         let live = self.launch(&forked, spec)?;
         Ok((forked, live))
@@ -750,6 +890,37 @@ impl Engine {
         self.rt.spawn(async move {
             let title = dove_harness::title::generate(kind, &program, &prompt, model).await;
             let _ = tx.send(title);
+        });
+        rx
+    }
+
+    /// A short answer from a restricted, tool-less run on `kind` (or the
+    /// first installed agent that has one), on its cheapest model. Voice
+    /// Mode's command router uses it; `None` when no agent could answer.
+    pub fn complete_restricted(
+        &self,
+        kind: Option<HarnessKind>,
+        prompt: String,
+    ) -> tokio::sync::oneshot::Receiver<Option<String>> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let installed: Vec<HarnessKind> = self.installed.read().iter().map(|i| i.kind).collect();
+        let pick = kind
+            .into_iter()
+            .chain(installed)
+            .filter(|k| dove_harness::title::supports(*k))
+            .find_map(|k| self.program(k).ok().map(|p| (k, p)));
+        let Some((kind, program)) = pick else {
+            let _ = tx.send(None);
+            return rx;
+        };
+        let model = dove_harness::title::cheapest_model(&self.models(kind));
+        self.rt.spawn(async move {
+            let answer =
+                dove_harness::title::complete(kind, &program, &prompt, model, std::time::Duration::from_secs(25))
+                    .await
+                    .map_err(|e| tracing::info!("{} router run failed: {e:#}", kind.label()))
+                    .ok();
+            let _ = tx.send(answer);
         });
         rx
     }
@@ -840,13 +1011,41 @@ impl Engine {
         let Some(program) = tui::interactive_program(task.harness, &program) else {
             anyhow::bail!("{} has no terminal UI for this session", task.harness.label());
         };
+        // The terminal's agent gets its own key, so its tool calls know
+        // their thread like a chat session's do.
+        let session = dove_harness::new_session_key();
+        self.register_session(&session, task.id);
         let spec = tui::TuiSpec {
             native_session_id: task.native_session_id.as_deref(),
             model: run.model.as_deref().or(task.model.as_deref()),
             mode: run.mode,
             add_dirs: &run.add_dirs,
+            session: &session,
         };
         Ok(tui::command(task.harness, &program, &cwd, &spec))
+    }
+
+    /// An agent's TUI for Flock: a fresh session in `cwd`, with Dove's tools
+    /// (browser, computer use, memory, integrations) where the agent can
+    /// load them at launch, and the composer's permission mode. It belongs
+    /// to no thread, so a tool that needs one uses the thread in view.
+    pub fn flock_command(&self, kind: HarnessKind, cwd: &std::path::Path) -> Result<tui::TuiCommand> {
+        if kind == HarnessKind::Shell {
+            return Ok(tui::shell_command(cwd));
+        }
+        let program = self.program(kind)?;
+        let Some(program) = tui::interactive_program(kind, &program) else {
+            anyhow::bail!("{} has no terminal UI", kind.label());
+        };
+        let session = dove_harness::new_session_key();
+        let mode = match self.store.setting("permission_mode").as_deref() {
+            Some("accept_edits") => PermissionMode::AcceptEdits,
+            Some("plan") => PermissionMode::Plan,
+            Some("bypass") => PermissionMode::Bypass,
+            _ => PermissionMode::Default,
+        };
+        let spec = tui::TuiSpec { native_session_id: None, model: None, mode, add_dirs: &[], session: &session };
+        Ok(tui::command(kind, &program, cwd, &spec))
     }
 
     /// Hand `task` to the terminal. Fails while the chat driver still runs
@@ -891,6 +1090,7 @@ impl Engine {
             status: TaskStatus::Idle,
             shared: self.shared.clone(),
             drivers: self.drivers.clone(),
+            memory: self.memory_session(task),
         };
         let mut writer = self.store.transcript_writer(task.id).ok();
         let parser = mirror::LineParser::new(kind).since(since);
@@ -910,6 +1110,7 @@ impl Engine {
             }
             d.insert(task.id, Driver::Chat);
         }
+        self.register_session(&spec.session, task.id);
         let handle = match dove_harness::spawn(self.rt.handle(), spec) {
             Ok(h) => h,
             Err(e) => {
@@ -920,8 +1121,25 @@ impl Engine {
         Ok(self.record(task, handle))
     }
 
-    /// Adopt an already running (pre-started) session for `task`.
-    fn attach(&self, task: &Task, handle: SessionHandle) -> Result<LiveSession> {
+    /// Start (or adopt a pre-started session for) `task` without its first
+    /// prompt, then send that prompt through the session like any other, so
+    /// memory recall runs on it in the recorder instead of blocking here.
+    /// Every driver waits for its first `Send` when it has no prompt.
+    fn launch_deferred(&self, task: &Task, mut spec: SessionSpec) -> Result<LiveSession> {
+        let prompt = spec.prompt.take();
+        let live = match self.take_warm(&spec) {
+            Some((handle, session)) => self.attach(task, handle, session)?,
+            None => self.launch(task, spec)?,
+        };
+        if let Some(p) = prompt {
+            live.send(Command::Send(p));
+        }
+        Ok(live)
+    }
+
+    /// Adopt an already running (pre-started) session for `task`; its
+    /// session key now names `task`.
+    fn attach(&self, task: &Task, handle: SessionHandle, session: String) -> Result<LiveSession> {
         {
             let mut d = self.drivers.lock();
             if d.get(&task.id) == Some(&Driver::Terminal) {
@@ -929,6 +1147,7 @@ impl Engine {
             }
             d.insert(task.id, Driver::Chat);
         }
+        self.register_session(&session, task.id);
         Ok(self.record(task, handle))
     }
 
@@ -936,6 +1155,8 @@ impl Engine {
         let capabilities = handle.capabilities;
         let (tx, rx) = flume::unbounded();
         let (cmd_tx, cmd_rx) = flume::unbounded::<Command>();
+        let (stop_tx, stop_rx) = flume::bounded::<()>(1);
+        self.stops.lock().insert(task.id, stop_tx.clone());
         let recorder = Recorder {
             store: self.store.clone(),
             task: task.id,
@@ -945,9 +1166,30 @@ impl Engine {
             status: TaskStatus::Running,
             shared: self.shared.clone(),
             drivers: self.drivers.clone(),
+            memory: self.memory_session(task),
         };
-        self.rt.spawn(recorder.run(handle, tx, cmd_rx));
+        let stops = self.stops.clone();
+        let id = task.id;
+        self.rt.spawn(async move {
+            recorder.run(handle, tx, cmd_rx, stop_rx).await;
+            // A newer session for the same task keeps its own handle.
+            let mut s = stops.lock();
+            if s.get(&id).is_some_and(|t| t.same_channel(&stop_tx)) {
+                s.remove(&id);
+            }
+        });
         LiveSession { task: task.id, events: rx, commands: cmd_tx, capabilities }
+    }
+
+    fn memory_session(&self, task: &Task) -> memory::Shared {
+        let cwd = task.worktree.clone().unwrap_or_else(|| {
+            self.store
+                .projects()
+                .ok()
+                .and_then(|ps| ps.into_iter().find(|p| p.id == task.project_id).map(|p| p.path))
+                .unwrap_or_default()
+        });
+        memory::Session::new(self.store.clone(), task.id, task.project_id, task.harness, cwd)
     }
 }
 
@@ -960,10 +1202,18 @@ struct Recorder {
     status: TaskStatus,
     shared: Arc<RwLock<Shared>>,
     drivers: Arc<parking_lot::Mutex<HashMap<TaskId, Driver>>>,
+    /// Memory recall/capture for this session.
+    memory: memory::Shared,
 }
 
 impl Recorder {
-    async fn run(mut self, handle: SessionHandle, out: flume::Sender<AgentEvent>, commands: flume::Receiver<Command>) {
+    async fn run(
+        mut self,
+        handle: SessionHandle,
+        out: flume::Sender<AgentEvent>,
+        commands: flume::Receiver<Command>,
+        stop: flume::Receiver<()>,
+    ) {
         let mut writer = match self.store.transcript_writer(self.task) {
             Ok(w) => Some(w),
             Err(e) => {
@@ -971,9 +1221,35 @@ impl Recorder {
                 None
             }
         };
+        // UI commands pass through memory on their way to the agent: recall
+        // is prepended to sends, denied permissions are learned from. In
+        // order, so a send never overtakes an earlier one.
+        let (fwd_tx, fwd_rx) = flume::unbounded::<Command>();
+        let mem = self.memory.clone();
+        tokio::spawn(async move {
+            while let Ok(cmd) = commands.recv_async().await {
+                let cmd = match cmd {
+                    Command::Send(text) => Command::Send(memory::before_send(&mem, text).await),
+                    Command::Permission { request_id, decision } => {
+                        mem.lock().decided(&request_id, decision);
+                        Command::Permission { request_id, decision }
+                    }
+                    other => other,
+                };
+                if fwd_tx.send(cmd).is_err() {
+                    break;
+                }
+            }
+        });
         let mut ui_open = true;
+        let mut stop_open = true;
         loop {
             tokio::select! {
+                // Stop from outside the view (the terminal is taking over).
+                asked = stop.recv_async(), if stop_open => match asked {
+                    Ok(()) => { handle.send(Command::Kill); }
+                    Err(_) => stop_open = false,
+                },
                 ev = handle.events.recv_async() => {
                     let Ok(ev) = ev else { break };
                     self.record(&ev, writer.as_mut());
@@ -989,7 +1265,7 @@ impl Recorder {
                     }
                     if exited { break; }
                 }
-                cmd = commands.recv_async(), if ui_open => match cmd {
+                cmd = fwd_rx.recv_async(), if ui_open => match cmd {
                     Ok(c) => { handle.send(c); }
                     // The UI dropped its session: let the agent finish the turn
                     // in the background rather than killing it mid-edit.
@@ -1011,6 +1287,7 @@ impl Recorder {
     }
 
     fn record(&mut self, ev: &AgentEvent, writer: Option<&mut dove_store::TranscriptWriter>) {
+        self.memory.lock().observe(ev);
         if let Some(w) = writer {
             if let Err(e) = w.append(ev) {
                 tracing::warn!("transcript append failed: {e:#}");
@@ -1300,14 +1577,23 @@ mod persona_tests {
             role: "Reviewer".into(),
             avatar: "A".into(),
             hue: 0.5,
-            harness: dove_proto::HarnessKind::ClaudeCode,
+            harness: None,
             model: None,
             instructions: "Be terse.".into(),
             created_at: 0,
         };
-        let sent = format!("{}Fix the login bug", persona_preamble(&p, Some(std::path::Path::new("/n/NOTES.md"))));
+        let team = vec![
+            p.clone(),
+            dove_store::Persona { id: "kai".into(), name: "Kai".into(), role: "Builder".into(), ..p.clone() },
+        ];
+        let sent =
+            format!("{}Fix the login bug", persona_preamble(&p, Some(std::path::Path::new("/n/NOTES.md")), &team));
         assert!(sent.contains("NOTES.md"));
-        assert!(!persona_preamble(&p, None).contains("notes file"));
+        assert!(!persona_preamble(&p, None, &[]).contains("notes file"));
+        assert!(sent.contains("- Kai (Builder)"), "the roster lists the others");
+        assert!(!sent.contains("- Ava"), "but not the teammate itself");
+        assert!(sent.contains("team_message"));
+        assert!(!persona_preamble(&p, None, std::slice::from_ref(&p)).contains("Your teammates"), "alone: no roster");
         assert!(sent.contains("You are Ava, Reviewer"));
         assert!(sent.contains("Be terse."));
         assert_eq!(strip_persona(&sent), "Fix the login bug");

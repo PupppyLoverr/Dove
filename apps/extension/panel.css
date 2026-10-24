@@ -107,3 +107,12 @@ footer { display: flex; justify-content: center; padding: 4px 0 2px; }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
 
 [hidden] { display: none !important; }
+
+/* Reviews */
+body.review { min-width: 0; }
+.wrap { white-space: normal; }
+.row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 10px; }
+.row .primary { padding: 6px 14px; }
+.row .pill { padding: 6px 12px; border-color: var(--line); }
+#reviews .card { border-color: color-mix(in srgb, var(--fg) 30%, transparent); }
+li .w { color: var(--faint); font-size: 11px; }

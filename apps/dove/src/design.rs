@@ -47,14 +47,10 @@ pub mod ty {
     pub const TITLE: Rems = rem(15.0);
     /// Section headings.
     pub const HEADING: Rems = rem(16.0);
-    /// Large headings.
-    pub const H2: Rems = rem(18.0);
     /// Page titles.
     pub const PAGE: Rems = rem(20.0);
     /// Hero headings.
     pub const H1: Rems = rem(22.0);
-    /// Display text.
-    pub const DISPLAY: Rems = rem(26.0);
 
     /// Line heights that pair with the roles above.
     pub mod lh {
@@ -72,7 +68,6 @@ pub mod ty {
 
 /// The 4 px spacing grid.
 pub mod space {
-    pub const XXS: f32 = 2.0;
     pub const XS: f32 = 4.0;
     pub const SM: f32 = 8.0;
     pub const MD: f32 = 12.0;

@@ -20,6 +20,8 @@ pub struct TuiCommand {
     /// True when the TUI reopens the chat's conversation; false when it
     /// starts fresh (the agent has no resume flag Dove can use).
     pub resumes: bool,
+    /// Extra environment for the program (OpenCode's inline config).
+    pub env: Vec<(String, String)>,
 }
 
 /// What the TUI needs to know about the session.
@@ -29,6 +31,8 @@ pub struct TuiSpec<'a> {
     pub model: Option<&'a str>,
     pub mode: PermissionMode,
     pub add_dirs: &'a [PathBuf],
+    /// Dove's session key for the thread (see `SessionSpec::session`).
+    pub session: &'a str,
 }
 
 /// Whether the TUI can reopen a chat session for `kind` once that session
@@ -77,12 +81,17 @@ pub fn shell_command(cwd: &Path) -> TuiCommand {
         let program = std::env::var("SHELL").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from("/bin/bash"));
         (program, vec!["-l".into()])
     };
-    TuiCommand { program, args, cwd: cwd.to_path_buf(), resumes: true }
+    TuiCommand { program, args, cwd: cwd.to_path_buf(), resumes: true, env: Vec::new() }
 }
 
 /// Build the TUI command for `kind`, whose CLI lives at `program`.
 pub fn command(kind: HarnessKind, program: &Path, cwd: &Path, spec: &TuiSpec) -> TuiCommand {
     crate::office_skills::ensure_installed();
+    command_with(kind, program, cwd, spec, crate::allow_ego_browser())
+}
+
+/// [`command`], with the "run ego-browser without asking" choice passed in.
+fn command_with(kind: HarnessKind, program: &Path, cwd: &Path, spec: &TuiSpec, allow_ego: bool) -> TuiCommand {
     let mut args: Vec<String> = Vec::new();
     let mut push = |a: &str| args.push(a.to_string());
     let id = spec.native_session_id.filter(|s| !s.is_empty());
@@ -119,11 +128,19 @@ pub fn command(kind: HarnessKind, program: &Path, cwd: &Path, spec: &TuiSpec) ->
             }
             // Dove's browser tools ride beside the user's own MCP servers.
             // A file path, not inline JSON: quoting survives cmd.exe.
-            if let Some(path) = crate::tool_server(cwd).and_then(|s| write_claude_mcp_config(&s)) {
+            let mut allowed = Vec::new();
+            if let Some(path) = crate::tool_server(cwd, spec.session).and_then(|s| write_claude_mcp_config(&s)) {
                 push("--mcp-config");
                 push(&path.display().to_string());
+                allowed.push("mcp__dove");
+            }
+            // Claude's own rule; its parser keeps `ego-browser x; rm …` asking.
+            if allow_ego && spec.mode != PermissionMode::Bypass {
+                allowed.push(crate::CLAUDE_EGO_RULE);
+            }
+            for tool in allowed {
                 push("--allowedTools");
-                push("mcp__dove");
+                push(tool);
             }
             id.is_some()
         }
@@ -244,7 +261,59 @@ pub fn command(kind: HarnessKind, program: &Path, cwd: &Path, spec: &TuiSpec) ->
         HarnessKind::Shell => true,
         HarnessKind::Antigravity => false,
     };
-    TuiCommand { program: program.to_path_buf(), args, cwd: cwd.to_path_buf(), resumes: resumed }
+    // Dove's tools (browser, integrations, MCP servers) for Codex's own UI,
+    // as root overrides ahead of any subcommand.
+    if kind == HarnessKind::Codex
+        && let Some(server) = crate::tool_server(cwd, spec.session)
+    {
+        args.splice(0..0, codex_mcp_overrides(&server));
+    }
+    // OpenCode reads inline config from OPENCODE_CONFIG_CONTENT and merges
+    // it over the user's own files, so Dove's server rides beside theirs.
+    let mut env = Vec::new();
+    if kind == HarnessKind::OpenCode
+        && let Some(server) = crate::tool_server(cwd, spec.session)
+    {
+        let existing = std::env::var("OPENCODE_CONFIG_CONTENT").ok();
+        env.push(("OPENCODE_CONFIG_CONTENT".to_string(), opencode_config_content(&server, existing.as_deref())));
+    }
+    // Amp merges `--mcp-config` with its own MCP settings. A file, as for
+    // Claude: quoting survives cmd.exe.
+    if kind == HarnessKind::Amp
+        && let Some(path) = crate::tool_server(cwd, spec.session).and_then(|s| write_amp_mcp_config(&s))
+    {
+        args.push("--mcp-config".to_string());
+        args.push(path.display().to_string());
+    }
+    TuiCommand { program: program.to_path_buf(), args, cwd: cwd.to_path_buf(), resumes: resumed, env }
+}
+
+/// OpenCode inline config adding `server` as a local MCP server, merged
+/// into `existing` (an inline config already in Dove's environment) when
+/// that is a JSON object.
+fn opencode_config_content(server: &crate::ToolServer, existing: Option<&str>) -> String {
+    use serde_json::{Value, json};
+    let mut config = existing
+        .and_then(|s| serde_json::from_str::<Value>(s).ok())
+        .filter(Value::is_object)
+        .unwrap_or_else(|| json!({}));
+    let command: Vec<&str> =
+        std::iter::once(server.command.as_str()).chain(server.args.iter().map(String::as_str)).collect();
+    let environment: serde_json::Map<String, Value> =
+        server.env.iter().map(|(k, v)| (k.clone(), Value::String(v.clone()))).collect();
+    if !config.get("mcp").is_some_and(Value::is_object) {
+        config["mcp"] = json!({});
+    }
+    config["mcp"][server.name.as_str()] = json!({
+        "type": "local",
+        "command": command,
+        "environment": environment,
+        "enabled": true,
+        // Dove's server starts the user's integrations before it lists
+        // tools; OpenCode's 5 s default would give up on a slow one.
+        "timeout": 60000,
+    });
+    config.to_string()
 }
 
 /// What to type into a TUI to leave it cleanly.
@@ -333,19 +402,69 @@ fn find_codex_rollout(sessions: &Path, id: &str) -> Option<PathBuf> {
     best.map(|(_, p)| p)
 }
 
+/// Codex `-c` overrides that add `server` beside the user's own MCP servers
+/// (`mcp_servers.<name>.{command,args,env,tool_timeout_sec}`), as TOML
+/// values. Team tools may wait on other agents for up to half an hour.
+fn codex_mcp_overrides(server: &crate::ToolServer) -> Vec<String> {
+    let name = &server.name;
+    let args = server.args.iter().map(|a| toml_str(a)).collect::<Vec<_>>().join(",");
+    let env = server.env.iter().map(|(k, v)| format!("{k}={}", toml_str(v))).collect::<Vec<_>>().join(",");
+    vec![
+        "-c".into(),
+        format!("mcp_servers.{name}.command={}", toml_str(&server.command)),
+        "-c".into(),
+        format!("mcp_servers.{name}.args=[{args}]"),
+        "-c".into(),
+        format!("mcp_servers.{name}.env={{{env}}}"),
+        "-c".into(),
+        format!("mcp_servers.{name}.tool_timeout_sec=1900"),
+    ]
+}
+
+/// A TOML string: a literal `'…'` (no escapes, so Windows paths survive)
+/// unless the text holds a single quote.
+fn toml_str(s: &str) -> String {
+    if !s.contains('\'') && !s.contains('\n') {
+        return format!("'{s}'");
+    }
+    let escaped: String = s
+        .chars()
+        .flat_map(|c| match c {
+            '\\' => vec!['\\', '\\'],
+            '"' => vec!['\\', '"'],
+            '\n' => vec!['\\', 'n'],
+            c => vec![c],
+        })
+        .collect();
+    format!("\"{escaped}\"")
+}
+
 /// Write a Claude `--mcp-config` file for `server` (one per launch config,
 /// reused while unchanged).
 fn write_claude_mcp_config(server: &crate::ToolServer) -> Option<std::path::PathBuf> {
+    let body = serde_json::json!({ "mcpServers": server_entry(server) }).to_string();
+    write_launch_config("dove-mcp", body)
+}
+
+/// Write an Amp `--mcp-config` file: servers by name, no wrapper.
+fn write_amp_mcp_config(server: &crate::ToolServer) -> Option<std::path::PathBuf> {
+    write_launch_config("dove-amp-mcp", server_entry(server).to_string())
+}
+
+/// `{ name: { command, args, env } }` for `server`.
+fn server_entry(server: &crate::ToolServer) -> serde_json::Value {
     let env: serde_json::Map<String, serde_json::Value> =
         server.env.iter().map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone()))).collect();
-    let body = serde_json::json!({
-        "mcpServers": { &server.name: { "command": server.command, "args": server.args, "env": env } }
-    })
-    .to_string();
+    serde_json::json!({ &server.name: { "command": server.command, "args": server.args, "env": env } })
+}
+
+/// A launch config in the temp folder, named by its content so repeated
+/// launches share it and differing ones never clash.
+fn write_launch_config(prefix: &str, body: String) -> Option<std::path::PathBuf> {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     body.hash(&mut h);
-    let path = std::env::temp_dir().join(format!("dove-mcp-{:016x}.json", h.finish()));
+    let path = std::env::temp_dir().join(format!("{prefix}-{:016x}.json", h.finish()));
     if std::fs::read_to_string(&path).ok().as_deref() != Some(body.as_str()) {
         std::fs::write(&path, body).ok()?;
     }
@@ -356,17 +475,79 @@ fn write_claude_mcp_config(server: &crate::ToolServer) -> Option<std::path::Path
 mod tests {
     use super::*;
 
+    #[test]
+    fn codex_overrides_are_toml() {
+        let server = crate::ToolServer {
+            name: "dove".into(),
+            command: r"C:\Program Files\Dove\dove.exe".into(),
+            args: vec!["--mcp-browser".into()],
+            env: vec![("DOVE_CWD".into(), r"C:\w".into()), ("Q".into(), "it's".into())],
+        };
+        let o = codex_mcp_overrides(&server);
+        assert_eq!(o[1], r"mcp_servers.dove.command='C:\Program Files\Dove\dove.exe'");
+        assert_eq!(o[3], "mcp_servers.dove.args=['--mcp-browser']");
+        assert_eq!(o[5], r#"mcp_servers.dove.env={DOVE_CWD='C:\w',Q="it's"}"#);
+        assert_eq!(o[7], "mcp_servers.dove.tool_timeout_sec=1900");
+    }
+
+    #[test]
+    fn amp_gets_doves_servers_as_a_file_of_servers_by_name() {
+        let server = crate::ToolServer {
+            name: "dove".into(),
+            command: r"C:\Program Files\Dove\dove.exe".into(),
+            args: vec!["--mcp-browser".into()],
+            env: vec![("DOVE_SESSION".into(), "k1".into())],
+        };
+        let path = write_amp_mcp_config(&server).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(v["dove"]["command"], r"C:\Program Files\Dove\dove.exe");
+        assert_eq!(v["dove"]["args"], serde_json::json!(["--mcp-browser"]));
+        assert_eq!(v["dove"]["env"]["DOVE_SESSION"], "k1");
+        assert!(v.get("mcpServers").is_none(), "Amp takes servers by name, unwrapped");
+        let claude = write_claude_mcp_config(&server).unwrap();
+        assert_ne!(path, claude);
+        let c: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&claude).unwrap()).unwrap();
+        assert_eq!(c["mcpServers"]["dove"]["command"], v["dove"]["command"]);
+    }
+
+    #[test]
+    fn opencode_config_adds_dove_beside_existing() {
+        let server = crate::ToolServer {
+            name: "dove".into(),
+            command: r"C:\Program Files\Dove\dove.exe".into(),
+            args: vec!["--mcp-browser".into()],
+            env: vec![("DOVE_DATA".into(), r"C:\d".into())],
+        };
+        let v: serde_json::Value = serde_json::from_str(&opencode_config_content(&server, None)).unwrap();
+        assert_eq!(v["mcp"]["dove"]["type"], "local");
+        assert_eq!(
+            v["mcp"]["dove"]["command"],
+            serde_json::json!([r"C:\Program Files\Dove\dove.exe", "--mcp-browser"])
+        );
+        assert_eq!(v["mcp"]["dove"]["environment"]["DOVE_DATA"], r"C:\d");
+        // An inline config already set keeps its own keys and servers.
+        let existing = r#"{"model":"x/y","mcp":{"mine":{"type":"remote","url":"https://m"}}}"#;
+        let v: serde_json::Value = serde_json::from_str(&opencode_config_content(&server, Some(existing))).unwrap();
+        assert_eq!(v["model"], "x/y");
+        assert_eq!(v["mcp"]["mine"]["url"], "https://m");
+        assert_eq!(v["mcp"]["dove"]["enabled"], true);
+        // Garbage is replaced, not merged.
+        let v: serde_json::Value = serde_json::from_str(&opencode_config_content(&server, Some("nope"))).unwrap();
+        assert!(v["mcp"]["dove"].is_object());
+    }
+
     fn spec(id: Option<&str>, mode: PermissionMode) -> TuiSpec<'_> {
-        TuiSpec { native_session_id: id, model: Some("opus"), mode, add_dirs: &[] }
+        TuiSpec { native_session_id: id, model: Some("opus"), mode, add_dirs: &[], session: "" }
     }
 
     #[test]
     fn claude_resumes_with_model_and_mode() {
-        let c = command(
+        let c = command_with(
             HarnessKind::ClaudeCode,
             Path::new("claude"),
             Path::new("/w"),
             &spec(Some("abc"), PermissionMode::AcceptEdits),
+            false,
         );
         assert_eq!(c.args, ["--resume", "abc", "--model", "opus", "--permission-mode", "acceptEdits"]);
         let ask = command(
@@ -384,6 +565,29 @@ mod tests {
             &spec(None, PermissionMode::Default),
         );
         assert!(!fresh.resumes);
+    }
+
+    #[test]
+    fn ego_browser_allow_rule_rides_each_harness_natively() {
+        let w = Path::new("/w");
+        let rule = |c: &TuiCommand| c.args.windows(2).any(|a| a == ["--allowedTools", "Bash(ego-browser:*)"]);
+        let off =
+            command_with(HarnessKind::ClaudeCode, Path::new("claude"), w, &spec(None, PermissionMode::Default), false);
+        assert!(!rule(&off), "{:?}", off.args);
+        let on =
+            command_with(HarnessKind::ClaudeCode, Path::new("claude"), w, &spec(None, PermissionMode::Default), true);
+        assert!(rule(&on), "{:?}", on.args);
+        // Bypass already runs everything.
+        let bypass =
+            command_with(HarnessKind::ClaudeCode, Path::new("claude"), w, &spec(None, PermissionMode::Bypass), true);
+        assert!(!rule(&bypass));
+        // Codex reads rules only from files and OpenCode's inline config
+        // would replace the user's own bash policy: both are left as they were.
+        for kind in [HarnessKind::Codex, HarnessKind::OpenCode] {
+            let on = command_with(kind, Path::new("agent"), w, &spec(None, PermissionMode::Default), true);
+            let off = command_with(kind, Path::new("agent"), w, &spec(None, PermissionMode::Default), false);
+            assert_eq!((on.args, on.env), (off.args, off.env), "{}", kind.label());
+        }
     }
 
     #[test]

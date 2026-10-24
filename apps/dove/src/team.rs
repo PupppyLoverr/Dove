@@ -1,15 +1,17 @@
 //! Team: teammate personas with a name, role, standing instructions,
 //! and persistent cross-thread memory (`~/.dove/team/<id>/NOTES.md`).
 //!
-//! Inspired by multi-agent teammate workflows (Lead, Builder, Reviewer,
-//! Designer, Verifier, Scribe), any installed harness can run under its own
-//! individual persona for all of its threads.
+//! A teammate is a person, not an agent: each thread it runs picks any
+//! installed agent and model, like any other thread (it may prefer one).
+//! Teammates message each other, delegate work and read each other's
+//! threads through the team tools (`orchestra.rs`). The sidebar lists them
+//! with their threads; Settings › Team is where they are created and briefed.
 
 use dove_core::proto::{HarnessKind, TaskStatus};
 use dove_core::store::{Persona, Task};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, Context, Div, InteractiveElement as _, IntoElement, ParentElement as _, SharedString,
+    AnyElement, AppContext as _, Context, Div, InteractiveElement as _, IntoElement, ParentElement as _, SharedString,
     StatefulInteractiveElement as _, Styled as _, Window, div, px,
 };
 use gpui_base::input::{Input, InputState, Textarea, TextareaState};
@@ -93,11 +95,24 @@ pub fn avatar(p: &Persona, size: f32, t: &Theme) -> Div {
     kit::avatar_tile(label, p.hue, size, t)
 }
 
+/// "Claude Code", or "Any agent" for a teammate without a preference.
+pub fn agent_label(p: &Persona) -> &'static str {
+    p.harness.map_or("Any agent", |h| h.label())
+}
+
 /// "Lead architect · Claude Code"
 pub fn subtitle(p: &Persona) -> String {
     match p.role.trim() {
-        "" => p.harness.label().to_string(),
-        role => format!("{role} · {}", p.harness.label()),
+        "" => agent_label(p).to_string(),
+        role => format!("{role} · {}", agent_label(p)),
+    }
+}
+
+/// The teammate's preferred agent's mark, or a neutral one.
+fn agent_mark(p: &Persona, size: f32, t: &Theme, rest: gpui::Hsla) -> crate::assets::Icon {
+    match p.harness {
+        Some(h) => icon(ui::harness_icon(h)).size(px(size)).text_color(ui::harness_tint(h, t, rest)),
+        None => icon(icons::BOT).size(px(size)).text_color(rest),
     }
 }
 
@@ -109,7 +124,8 @@ pub struct TeamEditor {
     pub instructions: gpui::Entity<TextareaState>,
     pub avatar: String,
     pub hue: f32,
-    pub harness: HarnessKind,
+    /// The agent it prefers; `None` runs on whatever the thread picks.
+    pub harness: Option<HarnessKind>,
     pub model: Option<String>,
     pub error: Option<String>,
     pub created_at: i64,
@@ -153,13 +169,26 @@ impl Shell {
         a
     }
 
-    /// Open the Team page on one teammate.
+    /// Open Settings › Team on one teammate.
     pub fn open_teammate(&mut self, id: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
         self.pages.team_edit = None;
         self.pages.team_notes_edit = None;
         self.pages.team_focus = id.or_else(|| self.personas.first().map(|p| p.id.clone()));
         self.load_team_notes();
-        self.navigate(Route::Team, window, cx);
+        self.show_team_settings(window, cx);
+    }
+
+    fn show_team_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.on_team_page(cx) {
+            self.open_settings_section("team", window, cx);
+        }
+        cx.notify();
+    }
+
+    /// Settings › Team (or the legacy Team route) is showing.
+    pub fn on_team_page(&self, cx: &gpui::App) -> bool {
+        self.route == Route::Team
+            || (self.route == Route::Settings && self.settings.read(cx).section == crate::settings::Section::Team)
     }
 
     fn load_team_notes(&mut self) {
@@ -203,28 +232,20 @@ impl Shell {
         cx.notify();
     }
 
-    /// Seed the default starter team (Lead, Builder, Reviewer, Designer)
-    /// bound to installed harnesses.
+    /// Seed the default starter team (Lead, Builder, Reviewer, Designer).
+    /// They run on any agent: each thread picks its own.
     pub fn seed_starter_team(&mut self, cx: &mut Context<Self>) {
-        let avail: Vec<HarnessKind> = self
-            .installed
-            .iter()
-            .map(|i| i.kind)
-            .filter(|k| *k != HarnessKind::Shell && dove_core::harness_supported(*k))
-            .collect();
-        let fallback = avail.first().copied().unwrap_or(HarnessKind::ClaudeCode);
         for (idx, (name, role, avatar, hue, brief)) in TEMPLATES.iter().take(4).enumerate() {
             if self.personas.iter().any(|p| p.name.eq_ignore_ascii_case(name)) {
                 continue;
             }
-            let harness = avail.get(idx % avail.len().max(1)).copied().unwrap_or(fallback);
             let p = Persona {
                 id: uuid::Uuid::now_v7().to_string(),
                 name: (*name).into(),
                 role: (*role).into(),
                 avatar: (*avatar).into(),
                 hue: *hue,
-                harness,
+                harness: None,
                 model: None,
                 instructions: (*brief).into(),
                 created_at: dove_core::store::now_ms() + idx as i64,
@@ -263,19 +284,16 @@ impl Shell {
 
     /// Open the editor: a blank teammate, a template, or an existing one.
     pub fn edit_teammate(&mut self, existing: Option<Persona>, window: &mut Window, cx: &mut Context<Self>) {
-        let template = existing.clone().unwrap_or_else(|| {
-            let harness = self.installed.first().map(|i| i.kind).unwrap_or(HarnessKind::ClaudeCode);
-            Persona {
-                id: String::new(),
-                name: String::new(),
-                role: String::new(),
-                avatar: String::new(),
-                hue: HUES[self.personas.len() % HUES.len()],
-                harness,
-                model: None,
-                instructions: String::new(),
-                created_at: dove_core::store::now_ms(),
-            }
+        let template = existing.clone().unwrap_or_else(|| Persona {
+            id: String::new(),
+            name: String::new(),
+            role: String::new(),
+            avatar: String::new(),
+            hue: HUES[self.personas.len() % HUES.len()],
+            harness: None,
+            model: None,
+            instructions: String::new(),
+            created_at: dove_core::store::now_ms(),
         });
         self.open_team_editor(template, existing.is_some(), window, cx);
     }
@@ -307,22 +325,18 @@ impl Shell {
             error: None,
             created_at: p.created_at,
         });
-        if self.route != Route::Team {
-            self.navigate(Route::Team, window, cx);
-        }
-        cx.notify();
+        self.show_team_settings(window, cx);
     }
 
     fn use_template(&mut self, i: usize, window: &mut Window, cx: &mut Context<Self>) {
         let (name, role, avatar, hue, brief) = TEMPLATES[i];
-        let harness = self.installed.first().map(|i| i.kind).unwrap_or(HarnessKind::ClaudeCode);
         let p = Persona {
             id: String::new(),
             name: name.into(),
             role: role.into(),
             avatar: avatar.into(),
             hue,
-            harness,
+            harness: None,
             model: None,
             instructions: brief.into(),
             created_at: dove_core::store::now_ms(),
@@ -366,9 +380,8 @@ impl Shell {
         let _ = self.engine.store.delete_persona(id);
         self.pages.team_edit = None;
         self.pages.team_focus = None;
-        if self.pages.team_expanded.as_deref() == Some(id) {
-            self.pages.team_expanded = None;
-        }
+        self.pages.team_expanded.remove(id);
+        self.pages.team_all.remove(id);
         self.reload(cx);
         self.pages.team_focus = self.personas.first().map(|p| p.id.clone());
         self.load_team_notes();
@@ -377,10 +390,13 @@ impl Shell {
 
     // ------------------------------------------------------------ sidebar
 
-    /// The left sidebar's Team section: each teammate persona with live status,
-    /// quick thread launch (`+`), and inline expandable thread list.
+    /// The left sidebar's Team section: each teammate with live status. A
+    /// click opens its threads below it (real thread rows: open, rename,
+    /// archive, right-click) or, with none yet, starts one; `+` starts a new
+    /// thread as it and the gear opens it in Settings › Team.
     pub fn render_team_section(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
-        let on_team = self.route == Route::Team;
+        let on_team = self.on_team_page(cx);
+        let compact = self.engine.store.setting("sidebar_density").as_deref() == Some("compact");
         let total = self.personas.len();
         let header = div()
             .group("team-head")
@@ -455,10 +471,10 @@ impl Shell {
         for p in &self.personas {
             let a = self.persona_activity(&p.id);
             let id = p.id.clone();
-            let id_expand = p.id.clone();
+            let id_settings = p.id.clone();
             let id_start = p.id.clone();
             let selected = on_team && self.pages.team_focus.as_deref() == Some(p.id.as_str());
-            let expanded = self.pages.team_expanded.as_deref() == Some(p.id.as_str());
+            let expanded = a.threads > 0 && self.pages.team_expanded.contains(&p.id);
             let row_group = SharedString::from(format!("team-row-{}", p.id));
             let state: AnyElement = if a.needs_you > 0 {
                 kit::badge(a.needs_you.to_string(), t.warning).into_any_element()
@@ -467,10 +483,24 @@ impl Shell {
             } else if a.threads > 0 {
                 div().text_size(ty::MICRO).text_color(t.text_faint).child(a.threads.to_string()).into_any_element()
             } else {
-                icon(ui::harness_icon(p.harness))
-                    .size(px(11.5))
-                    .text_color(ui::harness_tint(p.harness, t, t.text_faint))
-                    .into_any_element()
+                agent_mark(p, 11.5, t, t.text_faint).into_any_element()
+            };
+            let hover_button = |key: &str, glyph: &'static str, tip: String| {
+                let gid = SharedString::from(format!("team-{key}-{}", p.id));
+                div()
+                    .id(gid.clone())
+                    .group(gid.clone())
+                    .size(px(19.0))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .invisible()
+                    .group_hover(row_group.clone(), |s| s.visible())
+                    .tooltip(ui::tip(tip))
+                    .child(
+                        icon(glyph).size(px(11.5)).text_color(t.text_faint).group_hover(gid, |s| s.text_color(t.text)),
+                    )
             };
             list = list.child(
                 div()
@@ -487,7 +517,26 @@ impl Shell {
                     .text_size(ty::BODY)
                     .when(selected, |d| d.bg(ui::selected_bg(t)).text_color(t.text))
                     .when(!selected, |d| d.text_color(t.text_muted).hover(|s| s.text_color(t.text)))
-                    .tooltip(ui::tip(subtitle(p)))
+                    .tooltip(ui::tip({
+                        // What they're on right now, when they're working.
+                        let busy = self
+                            .persona_tasks(&p.id)
+                            .into_iter()
+                            .find(|t| t.status == TaskStatus::Running)
+                            .map(|t| format!("\nWorking on {}", t.title));
+                        format!("{}{}", subtitle(p), busy.unwrap_or_default())
+                    }))
+                    // Dragging a teammate drags their latest thread.
+                    .when_some(self.persona_tasks(&p.id).into_iter().max_by_key(|t| t.updated_at), |d, last| {
+                        let shell = cx.entity().downgrade();
+                        d.on_drag(
+                            crate::side_panel::ThreadDrag { id: last.id, title: last.title.clone().into() },
+                            move |d, _, _, cx| {
+                                let _ = shell.update(cx, |_, cx| cx.notify());
+                                cx.new(|_| d.clone())
+                            },
+                        )
+                    })
                     .child(avatar(p, 19.0, t))
                     .child(
                         div()
@@ -496,10 +545,12 @@ impl Shell {
                             .flex()
                             .items_center()
                             .gap(px(5.0))
-                            .child(div().truncate().child(p.name.clone()))
+                            // The role gives way before the name does.
+                            .child(div().flex_shrink_0().max_w(px(150.0)).truncate().child(p.name.clone()))
                             .when(!p.role.is_empty(), |d| {
                                 d.child(
                                     div()
+                                        .min_w_0()
                                         .truncate()
                                         .text_size(ty::MICRO)
                                         .text_color(t.text_faint)
@@ -507,103 +558,72 @@ impl Shell {
                                 )
                             }),
                     )
-                    .child(
-                        div()
-                            .id(SharedString::from(format!("team-new-{}", p.id)))
-                            .group(SharedString::from(format!("team-new-{}", p.id)))
-                            .size(px(19.0))
-                            .flex_none()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .invisible()
-                            .group_hover(row_group.clone(), |s| s.visible())
-                            .tooltip(ui::tip(format!("New thread as {}", p.name)))
-                            .child(
-                                icon(icons::PLUS)
-                                    .size(px(11.5))
-                                    .text_color(t.text_faint)
-                                    .group_hover(SharedString::from(format!("team-new-{}", p.id)), |s| {
-                                        s.text_color(t.text)
-                                    }),
-                            )
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                cx.stop_propagation();
-                                this.start_as(&id_start, window, cx);
-                            })),
-                    )
+                    .child(hover_button("settings", icons::SETTINGS, format!("{} in Settings", p.name)).on_click(
+                        cx.listener(move |this, _, window, cx| {
+                            cx.stop_propagation();
+                            this.open_teammate(Some(id_settings.clone()), window, cx);
+                        }),
+                    ))
+                    .child(hover_button("new", icons::PLUS, format!("New thread as {}", p.name)).on_click(cx.listener(
+                        move |this, _, window, cx| {
+                            cx.stop_propagation();
+                            this.start_as(&id_start, window, cx);
+                        },
+                    )))
                     .when(a.threads > 0, |d| {
                         d.child(
-                            div()
-                                .id(SharedString::from(format!("team-exp-{}", p.id)))
-                                .group(SharedString::from(format!("team-exp-{}", p.id)))
-                                .size(px(18.0))
+                            icon(if expanded { icons::ALT_ARROW_DOWN } else { icons::ALT_ARROW_RIGHT })
+                                .size(px(10.5))
                                 .flex_none()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .tooltip(ui::tip(if expanded { "Hide threads" } else { "Show threads" }))
-                                .child(
-                                    icon(if expanded { icons::ALT_ARROW_DOWN } else { icons::ALT_ARROW_RIGHT })
-                                        .size(px(10.5))
-                                        .text_color(t.text_faint)
-                                        .group_hover(SharedString::from(format!("team-exp-{}", p.id)), |s| {
-                                            s.text_color(t.text)
-                                        }),
-                                )
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    cx.stop_propagation();
-                                    if this.pages.team_expanded.as_deref() == Some(id_expand.as_str()) {
-                                        this.pages.team_expanded = None;
-                                    } else {
-                                        this.pages.team_expanded = Some(id_expand.clone());
-                                    }
-                                    cx.notify();
-                                })),
+                                .text_color(t.text_faint),
                         )
                     })
                     .child(state)
                     .on_click(cx.listener(move |this, _, window, cx| {
-                        if this.route == Route::Team && this.pages.team_focus.as_deref() == Some(id.as_str()) {
-                            if this.pages.team_expanded.as_deref() == Some(id.as_str()) {
-                                this.pages.team_expanded = None;
-                            } else {
-                                this.pages.team_expanded = Some(id.clone());
-                            }
-                            cx.notify();
-                        } else {
-                            this.open_teammate(Some(id.clone()), window, cx);
+                        if this.persona_activity(&id).threads == 0 {
+                            this.start_as(&id, window, cx);
+                        } else if !this.pages.team_expanded.remove(&id) {
+                            this.pages.team_expanded.insert(id.clone());
                         }
+                        cx.notify();
                     })),
             );
             if expanded {
+                const SHOWN: usize = 5;
                 let tasks = self.persona_tasks(&p.id);
-                for task in tasks.into_iter().take(6) {
-                    let tid = task.id;
-                    let active_task = self.route == Route::Thread(tid);
+                let all = self.pages.team_all.contains(&p.id);
+                let shown = if all { tasks.len() } else { SHOWN.min(tasks.len()) };
+                for task in &tasks[..shown] {
                     list = list.child(
                         div()
-                            .id(SharedString::from(format!("team-sub-{tid}")))
-                            .h(px(26.0))
-                            .ml(px(24.0))
+                            .id(SharedString::from(format!("team-thread-{}-{}", p.id, task.id)))
+                            .pl(px(14.0))
+                            .child(self.render_row(task, compact, None, t, cx)),
+                    );
+                }
+                if tasks.len() > SHOWN {
+                    let id_more = p.id.clone();
+                    list = list.child(
+                        div()
+                            .id(SharedString::from(format!("team-more-{}", p.id)))
+                            .h(px(24.0))
+                            .ml(px(30.0))
                             .mr(px(8.0))
                             .px(px(8.0))
                             .flex()
                             .items_center()
-                            .gap(px(6.0))
                             .rounded(px(radius::RADIUS))
                             .cursor_pointer()
-                            .text_size(ty::META)
-                            .when(active_task, |d| d.bg(ui::selected_bg(t)).text_color(t.text))
-                            .when(!active_task, |d| d.text_color(t.text_muted).hover(|s| s.text_color(t.text)))
-                            .child(kit::status_glyph(
-                                SharedString::from(format!("team-st-{tid}")),
-                                task.status,
-                                task.unread,
-                                t,
-                            ))
-                            .child(div().flex_1().min_w_0().truncate().child(task.title.clone()))
-                            .on_click(cx.listener(move |this, _, window, cx| this.open_task(tid, window, cx))),
+                            .text_size(ty::CAPTION)
+                            .text_color(t.text_faint)
+                            .hover(|s| s.text_color(t.text_muted))
+                            .child(if all { "Show fewer".to_string() } else { format!("Show all {}", tasks.len()) })
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if !this.pages.team_all.remove(&id_more) {
+                                    this.pages.team_all.insert(id_more.clone());
+                                }
+                                cx.notify();
+                            })),
                     );
                 }
             }
@@ -613,7 +633,9 @@ impl Shell {
 
     // ------------------------------------------------------------ page
 
-    pub fn render_team_page(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    /// Settings › Team: the roster, a teammate's workspace, or the editor,
+    /// with Settings' own team options (`extra`) underneath.
+    pub fn render_team_page(&mut self, extra: Option<AnyElement>, cx: &mut Context<Self>) -> AnyElement {
         let t = Theme::of(cx).clone();
         if self.pages.team_focus.is_none() && self.pages.team_edit.is_none() {
             self.pages.team_focus = self.personas.first().map(|p| p.id.clone());
@@ -648,12 +670,15 @@ impl Shell {
                 .child(div().flex_1().min_w_0().children(self.render_team_detail(&t, cx)))
                 .into_any_element()
         };
+        let body = div().flex().flex_col().child(body).children(extra);
         div()
             .size_full()
             .child(crate::pages::page_with(
                 "team-page",
                 "Team",
-                "Agents with a name, a role and a standing brief. Each runs on its own agent and keeps notes from one thread to the next.",
+                "People with a name, a role and a standing brief. A teammate runs on any agent and model, \
+                 keeps notes from one thread to the next, and works with the others: they message each \
+                 other, hand off tasks and read each other's threads.",
                 &t,
                 Some(header_right),
                 body,
@@ -668,7 +693,7 @@ impl Shell {
                 .child(page::row_text(
                     t,
                     "Assemble a team in one click",
-                    "Create Lead, Builder, Reviewer, and Designer personas pre-configured for your installed agents.",
+                    "Create a Lead, Builder, Reviewer and Designer who work together on any of your agents.",
                 ))
                 .child(
                     ctl::button(t, "team-seed-hero", "Add starter team", Tone::Solid)
@@ -766,13 +791,9 @@ impl Shell {
                                 .gap(px(4.0))
                                 .text_size(ty::CAPTION)
                                 .text_color(t.text_faint)
-                                .child(icon(ui::harness_icon(p.harness)).size(px(11.0)).text_color(ui::harness_tint(
-                                    p.harness,
-                                    t,
-                                    t.text_faint,
-                                )))
+                                .child(agent_mark(p, 11.0, t, t.text_faint))
                                 .child(div().truncate().child(if p.role.is_empty() {
-                                    p.harness.label().to_string()
+                                    agent_label(p).to_string()
                                 } else {
                                     p.role.clone()
                                 })),
@@ -817,7 +838,11 @@ impl Shell {
         let a = self.persona_activity(&p.id);
         let id = p.id.clone();
         let id_dispatch = p.id.clone();
-        let model = p.model.clone().unwrap_or_else(|| "Default model".into());
+        let model = match (&p.harness, &p.model) {
+            (None, _) => "any model".to_string(),
+            (Some(_), Some(m)) => m.clone(),
+            (Some(_), None) => "default model".to_string(),
+        };
         let head = div()
             .flex()
             .flex_wrap()
@@ -848,12 +873,8 @@ impl Shell {
                             .text_size(ty::SMALL)
                             .text_color(t.text_muted)
                             .when(!p.role.is_empty(), |d| d.child(p.role.clone()).child("·"))
-                            .child(icon(ui::harness_icon(p.harness)).size(px(12.0)).text_color(ui::harness_tint(
-                                p.harness,
-                                t,
-                                t.text_faint,
-                            )))
-                            .child(p.harness.label())
+                            .child(agent_mark(&p, 12.0, t, t.text_faint))
+                            .child(agent_label(&p))
                             .child("·")
                             .child(model),
                     ),
@@ -885,11 +906,7 @@ impl Shell {
             .border_1()
             .border_color(t.border)
             .text_size(ty::BODY)
-            .child(icon(ui::harness_icon(p.harness)).size(px(14.0)).text_color(ui::harness_tint(
-                p.harness,
-                t,
-                t.text_muted,
-            )))
+            .child(agent_mark(&p, 14.0, t, t.text_muted))
             .child(div().flex_1().min_w_0().child(Input::new(&self.pages.team_prompt)))
             .child(
                 ctl::button_sm(t, "tm-dispatch-go", format!("Ask {}", p.name), Tone::Solid)
@@ -1031,10 +1048,73 @@ impl Shell {
                 .child(div().mt(px(space::LG)).child(dispatch_bar))
                 .child(div().mt(px(space::MD)).child(stats))
                 .child(page::section(t, "Threads", threads))
+                .children(self.render_collaboration(&p, t, cx).map(|c| page::section(t, "Working with the team", c)))
                 .child(page::section(t, "Standing instructions (Brief)", brief))
                 .child(notes)
                 .into_any_element(),
         )
+    }
+
+    /// Work this teammate handed to others or got from them (delegations
+    /// and messages between threads), newest first.
+    fn render_collaboration(&self, p: &Persona, t: &Theme, cx: &mut Context<Self>) -> Option<Div> {
+        use dove_core::store::{LinkKind, LinkStatus};
+        let mine = |id: dove_core::proto::TaskId| self.persona_of.get(&id).is_some_and(|x| *x == p.id);
+        let mut links: Vec<_> =
+            self.engine.store.task_links().into_iter().filter(|l| mine(l.child) || mine(l.parent)).collect();
+        if links.is_empty() {
+            return None;
+        }
+        links.sort_by_key(|l| std::cmp::Reverse(l.created_at));
+        let who = |id: dove_core::proto::TaskId| -> String {
+            let task = self.task(id);
+            match (self.persona_for(id), task) {
+                (Some(m), Some(t)) => format!("{} on {}", m.name, t.harness.label()),
+                (None, Some(t)) => t.harness.label().to_string(),
+                _ => "a thread".into(),
+            }
+        };
+        let rows = links.into_iter().take(8).enumerate().map(|(i, l)| {
+            let outgoing = mine(l.parent);
+            let other = if outgoing { l.child } else { l.parent };
+            let title = self.task(l.child).map(|t| t.title.clone()).unwrap_or_else(|| "A deleted thread".into());
+            let verb = match (outgoing, l.kind) {
+                (true, LinkKind::Delegate) => format!("Handed to {}", who(other)),
+                (true, LinkKind::Message) => format!("Asked {}", who(other)),
+                (false, LinkKind::Delegate) => format!("From {}", who(other)),
+                (false, LinkKind::Message) => format!("Question from {}", who(other)),
+            };
+            let (status, tint) = match l.status {
+                LinkStatus::Running => ("Working", t.busy),
+                LinkStatus::NeedsInput => ("Needs you", t.warning),
+                LinkStatus::Completed => ("Done", t.success),
+                LinkStatus::Failed => ("Failed", t.danger),
+                LinkStatus::Cancelled => ("Cancelled", t.text_faint),
+            };
+            let child = l.child;
+            page::row_hover(t, page::table_row(t, i == 0).id(SharedString::from(format!("tm-link-{child}"))), false)
+                .child(
+                    icon(if outgoing { icons::ARROW_UP_RIGHT } else { icons::ARROW_LEFT })
+                        .size(px(12.0))
+                        .flex_none()
+                        .text_color(t.text_faint),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .child(div().truncate().text_size(ty::BODY).text_color(t.text).child(title))
+                        .child(div().truncate().text_size(ty::CAPTION).text_color(t.text_faint).child(verb)),
+                )
+                .child(div().flex_none().text_size(ty::CAPTION).text_color(tint).child(status))
+                .when_some(l.summary.filter(|s| !s.trim().is_empty()), |d, s| {
+                    d.tooltip(ui::tip(dove_core::orchestra::clip(&s, 300)))
+                })
+                .on_click(cx.listener(move |this, _, window, cx| this.open_task(child, window, cx)))
+        });
+        Some(page::card(t).children(rows))
     }
 
     fn render_team_editor(&self, ed: &TeamEditor, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
@@ -1096,39 +1176,63 @@ impl Shell {
             .map(|i| i.kind)
             .filter(|k| *k != HarnessKind::Shell && dove_core::harness_supported(*k))
             .collect();
-        if !agents.contains(&ed.harness) {
-            agents.insert(0, ed.harness);
+        if let Some(h) = ed.harness
+            && !agents.contains(&h)
+        {
+            agents.insert(0, h);
         }
         let picked = |on: bool, chip: gpui::Stateful<gpui::Div>| {
             chip.when(on, |d| d.border_color(t.accent).bg(t.accent.opacity(0.10)).text_color(t.text))
         };
-        let agent_picker = div().flex().flex_wrap().gap(px(6.0)).children(agents.into_iter().map(|k| {
-            picked(k == ed.harness, ui::chip(SharedString::from(format!("tm-agent-{}", k.id())), t))
-                .child(icon(ui::harness_icon(k)).size(px(13.0)).text_color(ui::harness_tint(k, t, t.text_muted)))
-                .child(k.label())
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    if let Some(ed) = this.pages.team_edit.as_mut()
-                        && ed.harness != k
-                    {
-                        ed.harness = k;
-                        ed.model = None;
-                    }
-                    cx.notify();
-                }))
-        }));
-        let models = dove_core::models::catalog(ed.harness);
+        let any_agent = picked(ed.harness.is_none(), ui::chip("tm-agent-any", t))
+            .child(icon(icons::BOT).size(px(13.0)).text_color(t.text_muted))
+            .child("Any agent")
+            .on_click(cx.listener(|this, _, _, cx| {
+                if let Some(ed) = this.pages.team_edit.as_mut() {
+                    ed.harness = None;
+                    ed.model = None;
+                }
+                cx.notify();
+            }));
+        let agent_picker =
+            div().flex().flex_wrap().gap(px(6.0)).child(any_agent).children(agents.into_iter().map(|k| {
+                picked(ed.harness == Some(k), ui::chip(SharedString::from(format!("tm-agent-{}", k.id())), t))
+                    .child(icon(ui::harness_icon(k)).size(px(13.0)).text_color(ui::harness_tint(k, t, t.text_muted)))
+                    .child(k.label())
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if let Some(ed) = this.pages.team_edit.as_mut()
+                            && ed.harness != Some(k)
+                        {
+                            ed.harness = Some(k);
+                            ed.model = None;
+                        }
+                        cx.notify();
+                    }))
+            }));
+        let models = ed.harness.map(dove_core::models::catalog).unwrap_or_default();
         let model_picker = div()
             .flex()
             .flex_wrap()
             .gap(px(6.0))
-            .child(picked(ed.model.is_none(), ui::chip("tm-model-default", t)).child("Agent default").on_click(
-                cx.listener(|this, _, _, cx| {
-                    if let Some(ed) = this.pages.team_edit.as_mut() {
-                        ed.model = None;
-                    }
-                    cx.notify();
-                }),
-            ))
+            .when(ed.harness.is_none(), |d| {
+                d.child(
+                    div()
+                        .text_size(ty::META)
+                        .line_height(ty::lh::META)
+                        .text_color(t.text_faint)
+                        .child("Each thread uses the agent and model it starts with: your pick in the composer, or the one a teammate asks for when it hands off work."),
+                )
+            })
+            .when(ed.harness.is_some(), |d| {
+                d.child(picked(ed.model.is_none(), ui::chip("tm-model-default", t)).child("Agent default").on_click(
+                    cx.listener(|this, _, _, cx| {
+                        if let Some(ed) = this.pages.team_edit.as_mut() {
+                            ed.model = None;
+                        }
+                        cx.notify();
+                    }),
+                ))
+            })
             .children(models.into_iter().take(10).map(|m| {
                 let on = ed.model.as_deref() == Some(m.id.as_str());
                 let mid = m.id.clone();
@@ -1203,12 +1307,14 @@ impl Shell {
                 "An emoji or the name's initial, on a hue.",
                 div().flex().flex_col().gap(px(10.0)).child(avatar_picker).child(hues).into_any_element(),
             ));
-        let runs = page::card(t).child(stacked(true, "Runs on", "", agent_picker.into_any_element())).child(stacked(
-            false,
-            "Model",
-            "",
-            model_picker.into_any_element(),
-        ));
+        let runs = page::card(t)
+            .child(stacked(
+                true,
+                "Prefers",
+                "Optional. A teammate can work on any agent; a preference only sets the default.",
+                agent_picker.into_any_element(),
+            ))
+            .child(stacked(false, "Model", "", model_picker.into_any_element()));
         let brief = page::card(t).child(stacked(
             true,
             "Standing instructions (Brief)",

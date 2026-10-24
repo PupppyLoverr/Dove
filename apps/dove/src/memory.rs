@@ -310,7 +310,7 @@ pub fn thread_event(shell: &Shell, id: TaskId, ev: &ThreadEvent, cx: &mut Contex
         ThreadEvent::Chat(TaskViewEventKind::Status(s)) => *s != TaskStatus::Running,
         ThreadEvent::Chat(_) => false,
     };
-    if idle && !shell.tabs.contains(&id) && shell.route != Route::Thread(id) && shell.threads.contains_key(&id) {
+    if idle && !shell.keeps_thread(id, cx) && shell.threads.contains_key(&id) {
         arm_thread(id, cx);
     }
 }
@@ -318,7 +318,7 @@ pub fn thread_event(shell: &Shell, id: TaskId, ev: &ThreadEvent, cx: &mut Contex
 /// Drop thread `id`'s view if its tab is still closed and nothing in it is
 /// live. Its web views are left to their own grace.
 fn hibernate_thread(shell: &mut Shell, id: TaskId, cx: &mut Context<Shell>) -> bool {
-    if shell.tabs.contains(&id) || shell.route == Route::Thread(id) {
+    if shell.keeps_thread(id, cx) {
         return false;
     }
     let Some(view) = shell.threads.get(&id) else { return false };
@@ -343,12 +343,7 @@ pub fn watchdog(shell: &mut Shell, window: Option<&mut Window>, cx: &mut Context
     }
     tracing::warn!("memory {} MB is over the {} MB ceiling; trimming", used >> 20, CEILING >> 20);
     shell.panel.update(cx, |p, cx| p.hibernate_hidden(cx));
-    let closed: Vec<TaskId> = shell
-        .threads
-        .keys()
-        .filter(|id| !shell.tabs.contains(id) && shell.route != Route::Thread(**id))
-        .copied()
-        .collect();
+    let closed: Vec<TaskId> = shell.threads.keys().filter(|id| !shell.keeps_thread(**id, cx)).copied().collect();
     for id in closed {
         hibernate_thread(shell, id, cx);
     }

@@ -1,0 +1,37 @@
+[package]
+name = "dove-voice"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Dove Voice Mode: a harness-neutral, local-first voice call over Dove's sessions"
+
+[features]
+default = ["local"]
+# Local engines: Parakeet STT and Silero VAD on the shared ONNX Runtime.
+local = ["dep:zeron-voice", "dep:ort"]
+
+[dependencies]
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+parking_lot = { workspace = true }
+cpal = "=0.17.3"
+rubato = "=0.16.2"
+crossbeam-channel = "0.5"
+sha2 = "0.10"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "blocking", "multipart"] }
+hound = "3.5"
+base64 = "0.22"
+realfft = "3.5"
+zeron-voice = { path = "../../vendor/zeron-voice", optional = true }
+# Same pin and features as zeron-voice so VAD and STT share one ONNX Runtime,
+# loaded from the verified download (zeron_voice::runtime), never linked in.
+ort = { version = "=2.0.0-rc.13", optional = true, default-features = false, features = ["std", "load-dynamic", "api-28"] }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61", features = ["Foundation", "Media_Core", "Media_SpeechSynthesis", "Storage_Streams"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_ProcessStatus", "Win32_System_Threading"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }

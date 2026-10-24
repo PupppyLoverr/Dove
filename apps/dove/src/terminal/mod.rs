@@ -31,6 +31,8 @@ pub enum Program {
     Command {
         program: PathBuf,
         args: Vec<String>,
+        /// Extra environment for the program.
+        env: Vec<(String, String)>,
     },
 }
 
@@ -50,6 +52,8 @@ pub struct TerminalView {
     focus: FocusHandle,
     error: Option<String>,
     selecting: bool,
+    /// Panes that receive a copy of everything typed here (Flock broadcast).
+    pub mirrors: Vec<gpui::WeakEntity<TerminalView>>,
     _pump: Option<gpui::Task<()>>,
 }
 
@@ -68,7 +72,18 @@ impl TerminalView {
 
     /// Run an agent's TUI instead of a shell.
     pub fn for_command(cwd: PathBuf, program: PathBuf, args: Vec<String>, cx: &mut Context<Self>) -> Self {
-        Self::with_program(cwd, Program::Command { program, args }, cx)
+        Self::for_command_env(cwd, program, args, Vec::new(), cx)
+    }
+
+    /// [`TerminalView::for_command`] with extra environment variables.
+    pub fn for_command_env(
+        cwd: PathBuf,
+        program: PathBuf,
+        args: Vec<String>,
+        env: Vec<(String, String)>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self::with_program(cwd, Program::Command { program, args, env }, cx)
     }
 
     fn with_program(cwd: PathBuf, program: Program, cx: &mut Context<Self>) -> Self {
@@ -82,54 +97,79 @@ impl TerminalView {
             focus: cx.focus_handle(),
             error: None,
             selecting: false,
+            mirrors: Vec::new(),
             _pump: None,
         };
         this.start(cx);
         this
     }
 
+    /// Spawn on the background executor: on Windows, creating a ConPTY
+    /// pumps window messages (its hidden console host activating), and run
+    /// inside an app update those arrive while GPUI is borrowed and are
+    /// dropped with "RefCell already borrowed".
     fn start(&mut self, cx: &mut Context<Self>) {
         let (cols, rows) = (self.emu.cols() as u16, self.emu.rows() as u16);
-        let spawned = match &self.program {
-            Program::Shell => Pty::spawn(&self.cwd, cols, rows),
-            Program::Command { program, args } => Pty::spawn_command(program, args, &self.cwd, cols, rows),
-        };
-        match spawned {
-            Ok(pty) => {
-                let rx = pty.output.clone();
-                self.pty = Some(pty);
-                self.error = None;
-                self._pump = Some(cx.spawn(async move |this, cx| {
-                    while let Ok(first) = rx.recv_async().await {
-                        cx.background_executor().timer(FRAME).await;
-                        let mut bytes = first;
-                        for more in rx.try_iter() {
-                            bytes.extend(more);
-                        }
-                        let alive = this.update(cx, |v, cx| {
-                            v.last_output = Instant::now();
-                            let replies = v.emu.feed(&bytes);
-                            if !replies.is_empty()
-                                && let Some(p) = v.pty.as_mut()
-                            {
-                                p.write(&replies);
-                            }
-                            cx.notify();
-                        });
-                        if alive.is_err() {
-                            return;
-                        }
-                    }
-                    // The reader ended: the program exited.
+        let program = self.program.clone();
+        let cwd = self.cwd.clone();
+        let spawning = cx.background_executor().spawn(async move {
+            match &program {
+                Program::Shell => Pty::spawn(&cwd, cols, rows),
+                Program::Command { program, args, env } => Pty::spawn_command_env(program, args, env, &cwd, cols, rows),
+            }
+        });
+        self._pump = Some(cx.spawn(async move |this, cx| {
+            let pty = match spawning.await {
+                Ok(pty) => pty,
+                Err(e) => {
                     let _ = this.update(cx, |v, cx| {
-                        v.pty = None;
-                        cx.emit(TerminalEvent::Exited);
+                        v.error = Some(format!("{e:#}"));
                         cx.notify();
                     });
-                }));
+                    return;
+                }
+            };
+            let rx = pty.output.clone();
+            let attached = this.update(cx, |v, cx| {
+                // The grid may have been measured while the PTY started.
+                let g = v.geometry;
+                if g.cols > 0 && g.rows > 0 && (g.cols != cols || g.rows != rows) {
+                    pty.resize(g.cols, g.rows);
+                }
+                v.pty = Some(pty);
+                v.error = None;
+                cx.notify();
+            });
+            if attached.is_err() {
+                return;
             }
-            Err(e) => self.error = Some(format!("{e:#}")),
-        }
+            while let Ok(first) = rx.recv_async().await {
+                cx.background_executor().timer(FRAME).await;
+                let mut bytes = first;
+                for more in rx.try_iter() {
+                    bytes.extend(more);
+                }
+                let alive = this.update(cx, |v, cx| {
+                    v.last_output = Instant::now();
+                    let replies = v.emu.feed(&bytes);
+                    if !replies.is_empty()
+                        && let Some(p) = v.pty.as_mut()
+                    {
+                        p.write(&replies);
+                    }
+                    cx.notify();
+                });
+                if alive.is_err() {
+                    return;
+                }
+            }
+            // The reader ended: the program exited.
+            let _ = this.update(cx, |v, cx| {
+                v.pty = None;
+                cx.emit(TerminalEvent::Exited);
+                cx.notify();
+            });
+        }));
     }
 
     /// Called from prepaint with the measured grid. Resizes immediately; the
@@ -212,6 +252,33 @@ impl TerminalView {
         cx.notify();
     }
 
+    /// The last `n` non-blank screen lines, for spotting a prompt.
+    pub fn tail_text(&self, n: usize) -> String {
+        let lines: Vec<String> = self
+            .emu
+            .lines()
+            .into_iter()
+            .map(|row| row.into_iter().map(|c| c.ch).collect::<String>().trim_end().to_string())
+            .filter(|l| !l.trim().is_empty())
+            .collect();
+        lines[lines.len().saturating_sub(n)..].join(
+            "
+",
+        )
+    }
+
+    /// Typed input: written here and copied to any mirrors.
+    fn input(&mut self, bytes: &[u8], cx: &mut Context<Self>) {
+        self.write(bytes);
+        self.mirrors.retain(|m| m.upgrade().is_some());
+        for m in self.mirrors.clone() {
+            let _ = m.update(cx, |v, cx| {
+                v.write(bytes);
+                cx.notify();
+            });
+        }
+    }
+
     fn write(&mut self, bytes: &[u8]) {
         if let Some(p) = self.pty.as_mut() {
             p.write(bytes);
@@ -233,7 +300,7 @@ impl TerminalView {
         if m.control && m.shift && ks.key == "v" {
             if let Some(text) = cx.read_from_clipboard().and_then(|c| c.text()) {
                 let bytes = paste_bytes(&text, self.emu.bracketed_paste_mode());
-                self.write(&bytes);
+                self.input(&bytes, cx);
             }
             cx.stop_propagation();
             return;
@@ -252,7 +319,7 @@ impl TerminalView {
         }
         if let Some(bytes) = keystroke_bytes(&ks.key, ks.key_char.as_deref(), m, self.emu.app_cursor_mode()) {
             self.emu.clear_selection();
-            self.write(&bytes);
+            self.input(&bytes, cx);
             cx.stop_propagation();
             cx.notify();
         }
@@ -368,7 +435,7 @@ impl EntityInputHandler for TerminalView {
             return;
         }
         self.emu.clear_selection();
-        self.write(text.as_bytes());
+        self.input(text.as_bytes(), cx);
         cx.notify();
     }
 

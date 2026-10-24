@@ -5,26 +5,39 @@ mod assets;
 mod browser;
 mod changes;
 mod composer;
+mod computer_plugin;
 mod design;
+mod device;
 mod diff_list;
+mod ego;
 mod file_icons;
 mod files_panel;
+mod flock;
 mod history;
 mod home;
+mod hotkey;
+mod integrations_catalog;
 mod intro;
 mod keymap;
 mod kit;
 mod loaders;
+mod look;
 mod markdown;
 mod markdown_extra;
 mod math;
 mod mcp_browser;
+mod mcp_oauth;
 mod memory;
+#[cfg(test)]
+mod memory_bench;
 mod motion;
 mod notify;
 mod office;
+mod orchestra;
+mod orchestrate;
 mod pages;
 mod palette;
+mod panel_tools;
 mod perf_trace;
 mod picker_memory;
 mod pr_view;
@@ -37,8 +50,12 @@ mod shell_menu;
 mod side_chat;
 mod side_panel;
 mod sidebar;
+mod split;
+mod supermemory;
 mod surface_chrome;
 mod team;
+mod team_tools;
+mod term_pill;
 mod terminal;
 mod theme;
 mod themes;
@@ -49,7 +66,10 @@ mod ui;
 mod updates;
 mod visuals;
 mod voice;
+mod voice_call;
+mod voice_view;
 mod wallpaper;
+mod workspace;
 
 use std::sync::Arc;
 
@@ -86,7 +106,21 @@ pub mod actions {
             RenameThread,
             OpenThreads,
             OpenKanban,
-            FocusComposer
+            FocusComposer,
+            ToggleVoiceCall,
+            SplitPaneRight,
+            SplitPaneDown,
+            ClosePane,
+            MaximizePane,
+            FocusPaneLeft,
+            FocusPaneRight,
+            FocusPaneUp,
+            FocusPaneDown,
+            ShowCallView,
+            OpenFlock,
+            FlockSplitRight,
+            FlockSplitDown,
+            FlockClosePane
         ]
     );
 
@@ -303,9 +337,40 @@ fn main() {
     // Office skills for every harness (and Dove's own terminal sessions).
     dove_core::office_skills::set_enabled(engine.store.setting("agent_office_skills").as_deref() != Some("false"));
     std::thread::spawn(dove_core::office_skills::ensure_installed);
-    if engine.store.setting("agent_browser").as_deref() != Some("false")
-        && let (Some(endpoint), Ok(exe)) = (browser::control::start(&engine.runtime()), std::env::current_exe())
+    // Memory for every harness: recall and capture through Supermemory once
+    // the user has signed in to it.
     {
+        let store = engine.store.clone();
+        std::thread::spawn(move || {
+            supermemory::refresh(store.root());
+            // The weekly consolidation, well after launch so it never slows it.
+            std::thread::sleep(std::time::Duration::from_secs(180));
+            if dove_core::memory::backend().is_some() && dove_core::memory::consolidation_due(&store) {
+                match dove_core::memory::consolidate(&store) {
+                    Ok(r) => tracing::info!(
+                        "memory consolidation: {} scanned, {} duplicates, {} skill ideas",
+                        r.scanned,
+                        r.duplicate_count(),
+                        r.skills.len()
+                    ),
+                    Err(e) => tracing::info!("memory consolidation skipped: {e}"),
+                }
+            }
+        });
+    }
+    // Settings → Plugins → ego lite: run `ego-browser` without asking.
+    dove_core::set_allow_ego_browser(pages::integrations::load().ego_allowed());
+    let browser_on = engine.store.setting("agent_browser").as_deref() != Some("false");
+    // The app's endpoint always runs: it carries the team tools (delegation,
+    // teammates, threads) for every harness, and the browser tools when the
+    // agent browser is on (`DOVE_AGENT_BROWSER`).
+    let endpoint = browser::control::start(&engine.runtime());
+    if endpoint.is_none() {
+        // Integrations (MCP servers, Composio, Paper, computer use) still
+        // reach every harness through Dove's server.
+        mcp_browser::register_without_browser(engine.store.root());
+    }
+    if let (Some(endpoint), Ok(exe)) = (endpoint, std::env::current_exe()) {
         // For tests and external tooling: where to reach this instance.
         if let Some(path) = std::env::var_os("DOVE_BROWSER_ENDPOINT_FILE") {
             let _ = std::fs::write(path, format!("{} {}", endpoint.port, endpoint.token));
@@ -317,6 +382,7 @@ fn main() {
             env: vec![
                 ("DOVE_BROWSER_PORT".into(), endpoint.port.to_string()),
                 ("DOVE_BROWSER_TOKEN".into(), endpoint.token),
+                ("DOVE_AGENT_BROWSER".into(), if browser_on { "1" } else { "0" }.into()),
                 ("DOVE_DATA".into(), engine.store.root().display().to_string()),
             ],
         }));

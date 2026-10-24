@@ -285,17 +285,6 @@ pub fn group(t: &Theme) -> Div {
         .overflow_hidden()
 }
 
-/// A section heading above a group: small, quiet, never shouting.
-pub fn section_label(text: impl Into<SharedString>, t: &Theme) -> Div {
-    div()
-        .px(px(2.0))
-        .pb(px(8.0))
-        .text_size(ty::META)
-        .font_weight(gpui::FontWeight::MEDIUM)
-        .text_color(t.text_faint)
-        .child(text.into())
-}
-
 /// A rounded tile with a letter or emoji on a tinted ground: teammates,
 /// projects, people.
 pub fn avatar_tile(label: impl Into<SharedString>, hue: f32, size: f32, t: &Theme) -> Div {

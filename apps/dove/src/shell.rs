@@ -31,10 +31,12 @@ use crate::palette::{Palette, PaletteEvent, PaletteItem};
 use crate::pr_view::PrTarget;
 use crate::pull_requests::{PrEvent, PullRequestsPage};
 use crate::remote::{Remote, RemoteCommand, RemoteEvent};
-use crate::side_panel::{SidePanel, SidePanelEvent, Tab};
+use crate::side_panel::{PaneCommand, SidePanel, SidePanelEvent, Tab};
 use crate::theme::Theme;
 use crate::thread::{TaskViewEventKind, ThreadEvent, ThreadView, ViewMode};
 use crate::transcript::TaskView;
+use crate::workspace::Zone;
+use crate::workspace::{Axis, Dir};
 use crate::{actions, notify, ui};
 
 pub const SIDEBAR_W: f32 = 264.0;
@@ -139,6 +141,7 @@ pub enum Route {
     Settings,
     Help,
     Team,
+    Flock,
 }
 
 impl Route {
@@ -156,6 +159,7 @@ impl Route {
             "settings" => Route::Settings,
             "help" => Route::Help,
             "team" => Route::Team,
+            "flock" | "terminals" => Route::Flock,
             _ => return None,
         })
     }
@@ -195,6 +199,13 @@ pub struct Shell {
     back: Vec<Route>,
     forward: Vec<Route>,
     pub threads: HashMap<TaskId, Entity<ThreadView>>,
+    /// The voice call, while one runs (Voice Mode; see `voice_call.rs`).
+    pub voice_call: Option<Entity<crate::voice_call::VoiceCall>>,
+    pub(crate) voice_sub: Option<Subscription>,
+    /// The full-window call view, and whether it shows (else the chat).
+    pub(crate) call_view: Option<Entity<crate::voice_view::CallView>>,
+    pub(crate) call_view_sub: Option<Subscription>,
+    pub(crate) call_view_shown: bool,
     /// Open thread tabs, in order.
     pub tabs: Vec<TaskId>,
     pub sidebar_open: bool,
@@ -212,6 +223,8 @@ pub struct Shell {
     /// The home composer's measured height, for embedding it cached.
     pub composer_height: std::rc::Rc<std::cell::Cell<f32>>,
     pub prs: Entity<PullRequestsPage>,
+    /// Flock: agents' TUIs and shells in split panes and grids.
+    pub workspace: Entity<crate::flock::Workspace>,
     /// Each thread's pull request URL (mirrors the store's `task_prs`).
     pr_links: HashMap<TaskId, String>,
     pub settings: Entity<crate::settings::SettingsPage>,
@@ -255,6 +268,12 @@ pub struct Shell {
     _subs: Vec<Subscription>,
     _scheduler: Option<gpui::Task<()>>,
     _browser_control: Option<gpui::Task<()>>,
+    /// Presses of Voice Mode's system-wide shortcut.
+    _voice_hotkey: Option<gpui::Task<()>>,
+    /// Delegation and teammate messaging between threads (`orchestra.rs`).
+    pub(crate) team: crate::orchestra::TeamState,
+    /// Threads beside each open thread in the chat area (`split.rs`).
+    pub(crate) companions: HashMap<TaskId, Vec<TaskId>>,
 }
 
 impl Shell {
@@ -268,7 +287,10 @@ impl Shell {
             p.expanded = engine.store.setting("panel_expanded").as_deref() == Some("true");
             p
         });
+        // Composers list the in-app browser's tabs for `@` mentions.
+        cx.set_global(crate::side_panel::PanelHandle(panel.downgrade()));
         let prs = cx.new(|cx| PullRequestsPage::new(engine.clone(), window, cx));
+        let workspace = cx.new(|cx| crate::flock::Workspace::new(engine.clone(), cx));
         let settings = cx.new(|cx| crate::settings::SettingsPage::new(engine.clone(), window, cx));
         let style = ui::input_style(Theme::of(cx));
         let search = cx.new(|cx| {
@@ -277,6 +299,14 @@ impl Shell {
             s
         });
         let mut subs = Vec::new();
+        subs.push(cx.subscribe(&workspace, |_, _, ev: &crate::flock::WorkspaceEvent, cx| match ev {
+            crate::flock::WorkspaceEvent::AgentsChanged => cx.notify(),
+        }));
+        subs.push(cx.observe(&workspace, |this, _, cx| {
+            if this.route == Route::Flock {
+                cx.notify();
+            }
+        }));
         subs.push(cx.subscribe_in(&composer, window, |this, _, ev: &ComposerEvent, window, cx| match ev {
             ComposerEvent::Submit(text) => this.start(text.clone(), window, cx),
             ComposerEvent::OpenUsage => this.navigate(Route::Usage, window, cx),
@@ -321,14 +351,14 @@ impl Shell {
                 this.checkout_pr(project.clone(), *number, title.clone(), window, cx)
             }
             SidePanelEvent::PrChanged => cx.notify(),
+            SidePanelEvent::DropThread { id, pane, zone } => this.open_beside(*id, Some((*pane, *zone)), window, cx),
         }));
         subs.push(cx.subscribe_in(
             &settings,
             window,
             |this, _, ev: &crate::settings::SettingsEvent, window, cx| match ev {
-                crate::settings::SettingsEvent::OpenTeam { new: true } => this.edit_teammate(None, window, cx),
-                crate::settings::SettingsEvent::OpenTeam { new: false } => this.open_teammate(None, window, cx),
-                crate::settings::SettingsEvent::OpenAgents => this.navigate(Route::Agents, window, cx),
+                crate::settings::SettingsEvent::SignIn(kind) => this.sign_in(*kind, cx),
+                crate::settings::SettingsEvent::Rescan => this.rescan(cx),
                 crate::settings::SettingsEvent::Close => this.close_settings(window, cx),
             },
         ));
@@ -401,6 +431,11 @@ impl Shell {
             back: Vec::new(),
             forward: Vec::new(),
             threads: HashMap::new(),
+            voice_call: None,
+            voice_sub: None,
+            call_view: None,
+            call_view_sub: None,
+            call_view_shown: false,
             tabs: store
                 .setting("open_tabs")
                 .filter(|_| store.setting("restore_tabs").as_deref() != Some("false"))
@@ -411,6 +446,7 @@ impl Shell {
             composer_bounds: Default::default(),
             composer_height,
             prs,
+            workspace,
             pr_links: store.task_prs().unwrap_or_default().into_iter().collect(),
             settings,
             palette: None,
@@ -443,16 +479,32 @@ impl Shell {
             _subs: subs,
             _scheduler: None,
             _browser_control: None,
+            _voice_hotkey: None,
+            team: Default::default(),
+            companions: HashMap::new(),
         };
         this.reload(cx);
         this.tabs.retain(|id| this.tasks.iter().any(|t| t.id == *id));
         this.scan_harnesses(cx);
         this.start_scheduler(cx);
         this.start_browser_control(window, cx);
+        this.start_team_sweep(window, cx);
+        this.start_voice_hotkey(window, cx);
         crate::composer::focus(&this.composer, window, cx);
         // `DOVE_OPEN_THREAD=<id>`: start on a thread (QA and scripting).
         if let Some(id) = std::env::var("DOVE_OPEN_THREAD").ok().and_then(|s| uuid_task(&s)) {
             this.open_task(id, window, cx);
+            // `DOVE_TERMINAL=1`: show it in the agent's terminal UI.
+            if std::env::var("DOVE_TERMINAL").is_ok_and(|v| v == "1") {
+                this.toggle_view_mode(window, cx);
+            }
+        }
+        // `DOVE_BESIDE=<id>[,<id>…]`: open threads beside the open one, as a
+        // drop on the conversation would (QA of split view).
+        if let Ok(list) = std::env::var("DOVE_BESIDE") {
+            for id in list.split(',').filter_map(uuid_task) {
+                this.split_with(id, window, cx);
+            }
         }
         // `DOVE_ROUTE=<page>`: start on a page (QA and scripting).
         if let Some(route) = std::env::var("DOVE_ROUTE").ok().and_then(|r| Route::from_id(&r)) {
@@ -474,6 +526,30 @@ impl Shell {
                 None => this.composer.clone(),
             };
             crate::composer::attach_paths(&composer, paths, cx);
+        }
+        // `DOVE_SEED_TEAM=1`: add the starter team (QA of Team).
+        if std::env::var("DOVE_SEED_TEAM").is_ok_and(|v| v == "1") {
+            this.seed_starter_team(cx);
+        }
+        // `DOVE_PROMPT=<text>`: start a thread from Home on launch, on
+        // `DOVE_PROMPT_AGENT` / `DOVE_PROMPT_MODEL` in `DOVE_PROMPT_MODE`
+        // (QA of agent-driven features, like the team tools).
+        if let Ok(prompt) = std::env::var("DOVE_PROMPT")
+            && !prompt.trim().is_empty()
+        {
+            let agent = std::env::var("DOVE_PROMPT_AGENT").ok().and_then(|a| HarnessKind::from_id(&a));
+            let model = std::env::var("DOVE_PROMPT_MODEL").ok().filter(|m| !m.is_empty());
+            let mode = std::env::var("DOVE_PROMPT_MODE").ok().map(|m| crate::composer::mode_from_id(&m));
+            this.composer.update(cx, |c, cx| {
+                if let Some(kind) = agent {
+                    c.use_harness(kind, model, cx);
+                }
+                if let Some(mode) = mode {
+                    c.set_mode(mode, cx);
+                }
+            });
+            crate::composer::set_text(&this.composer, &prompt, window, cx);
+            this.composer.update(cx, |c, cx| c.submit(window, cx));
         }
         // `DOVE_INFO=1`: open the thread's info card (QA).
         if std::env::var("DOVE_INFO").is_ok_and(|v| v == "1") {
@@ -605,7 +681,22 @@ impl Shell {
         self.pages.agent_terminal = Some((kind, term));
         self.updates.retain(|u| u.kind != kind);
         self.agents_open = false;
-        self.navigate(Route::Agents, window, cx);
+        // The update runs in the sign-in sheet, over whatever page is open.
+        cx.notify();
+        let _ = window;
+    }
+
+    /// Start or end a call from the system-wide shortcut (Settings › Voice).
+    fn start_voice_hotkey(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        crate::hotkey::apply(&self.engine.store);
+        let presses = crate::hotkey::events();
+        self._voice_hotkey = Some(cx.spawn_in(window, async move |this, cx| {
+            while presses.recv_async().await.is_ok() {
+                if this.update_in(cx, |s, window, cx| s.toggle_voice_call(window, cx)).is_err() {
+                    break;
+                }
+            }
+        }));
     }
 
     /// Serve agents' browser tool calls (`dove --mcp-browser`): route each
@@ -614,6 +705,34 @@ impl Shell {
         let Some(requests) = crate::browser::control::take_requests() else { return };
         self._browser_control = Some(cx.spawn_in(window, async move |this, cx| {
             while let Ok(req) = requests.recv_async().await {
+                if crate::panel_tools::is_panel_tool(&req.tool) {
+                    let reply = this.update_in(cx, |s, window, cx| s.route_panel_call(&req, window, cx));
+                    match reply {
+                        Ok(outcome) => {
+                            let _ = req.reply.send(outcome);
+                        }
+                        Err(_) => break,
+                    }
+                    continue;
+                }
+                if crate::team_tools::is_team_tool(&req.tool) {
+                    let reply = this.update_in(cx, |s, window, cx| s.route_team_call(&req, window, cx));
+                    match reply {
+                        Ok(crate::orchestra::TeamReply::Now(outcome)) => {
+                            let _ = req.reply.send(outcome);
+                        }
+                        Ok(crate::orchestra::TeamReply::Wait(waiter)) => {
+                            let weak = this.clone();
+                            cx.spawn(async move |cx| {
+                                let outcome = crate::orchestra::wait(weak, waiter, cx).await;
+                                let _ = req.reply.send(outcome);
+                            })
+                            .detach();
+                        }
+                        Err(_) => break,
+                    }
+                    continue;
+                }
                 let routed = this.update_in(cx, |s, window, cx| s.route_browser_call(&req, window, cx));
                 match routed {
                     Ok(Ok(BrowserCall::Done(outcome))) => {
@@ -637,6 +756,66 @@ impl Shell {
                 }
             }
         }));
+    }
+
+    /// `panel_*` from an agent: its thread's side panel.
+    fn route_panel_call(
+        &mut self,
+        req: &crate::browser::control::Request,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> crate::browser::agent::Outcome {
+        use crate::browser::agent::Outcome;
+        let visible = match self.route {
+            Route::Thread(id) => Some(id),
+            _ => None,
+        };
+        let Some(thread) = self.team_caller(req).ok().or(visible) else {
+            return Outcome::err("Dove couldn't tell which thread this call comes from.");
+        };
+        let shown = Some(thread) == visible;
+        match req.tool.as_str() {
+            "panel_open" => {
+                if !self.engine.store.flag("agents_open_panels", true) {
+                    return Outcome::err(
+                        "The user turned off agents opening the side panel (Settings › General). Tell them what to look at instead.",
+                    );
+                }
+                let (asks, layout) = match crate::panel_tools::parse_open(&req.args) {
+                    Ok(v) => v,
+                    Err(e) => return Outcome::err(e),
+                };
+                if shown {
+                    self.panel_open = true;
+                    let _ = self.engine.store.set_setting("panel_open", "true");
+                }
+                let text = self.panel.update(cx, |p, cx| p.agent_open(thread, asks, layout, shown, window, cx));
+                cx.notify();
+                Outcome::ok(text)
+            }
+            "panel_state" => {
+                let open = self.panel_open;
+                let state = self.panel.read(cx).agent_state(thread, open && shown, cx);
+                Outcome::ok(serde_json::to_string_pretty(&state).unwrap_or_default())
+            }
+            "panel_close" => {
+                if req.args.get("all").and_then(serde_json::Value::as_bool) == Some(true) {
+                    if shown {
+                        self.panel_open = false;
+                        cx.notify();
+                    }
+                    return Outcome::ok("The side panel is hidden.");
+                }
+                let Some(index) = req.args.get("index").and_then(serde_json::Value::as_u64) else {
+                    return Outcome::err("Give a tab \"index\" from panel_state, or all: true.");
+                };
+                match self.panel.update(cx, |p, cx| p.agent_close(thread, index as usize, window, cx)) {
+                    Ok(t) => Outcome::ok(t),
+                    Err(e) => Outcome::err(e),
+                }
+            }
+            other => Outcome::err(format!("Unknown panel tool {other}.")),
+        }
     }
 
     fn route_browser_call(
@@ -755,6 +934,11 @@ impl Shell {
     // ------------------------------------------------------------ routing
 
     pub fn navigate(&mut self, route: Route, window: &mut Window, cx: &mut Context<Self>) {
+        // Agents live in Settings › Agents (one place for them).
+        if route == Route::Agents {
+            self.open_settings_section("agents", window, cx);
+            return;
+        }
         if route == self.route {
             return;
         }
@@ -778,6 +962,15 @@ impl Shell {
             }
             Route::Automations => self.pages.refresh_automations(&self.engine),
             Route::Kanban => self.load_kanban_meta(cx),
+            Route::Flock => {
+                let cwd = self.home_project.and_then(|id| self.project(id)).map(|p| p.path.clone());
+                self.workspace.update(cx, |w, cx| {
+                    if let Some(cwd) = cwd.filter(|c| c.is_dir()) {
+                        w.default_cwd = cwd;
+                    }
+                    w.ensure_started(window, cx);
+                });
+            }
             Route::Usage => self.pages.refresh_usage(&self.engine, cx),
             _ => {}
         }
@@ -825,6 +1018,12 @@ impl Shell {
         self.navigate(Route::Home, window, cx);
     }
 
+    /// A new thread with `text` waiting in the composer for the user to finish and send.
+    fn new_session_with(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.new_session(window, cx);
+        crate::composer::set_text(&self.composer, text, window, cx);
+    }
+
     pub fn open_task(&mut self, id: TaskId, window: &mut Window, cx: &mut Context<Self>) {
         if self.task(id).is_some_and(|t| t.status == TaskStatus::Draft) {
             self.navigate(Route::Kanban, window, cx);
@@ -837,6 +1036,10 @@ impl Shell {
         let Some(task) = self.task(id).cloned() else { return };
         let Some(project) = self.project(task.project_id).cloned() else { return };
         crate::memory::tab_opened(id, cx);
+        // A call follows the user to the thread they open.
+        if let Some(call) = self.voice_call.clone() {
+            call.update(cx, |v, _| v.current = Some(id));
+        }
         if !self.tabs.contains(&id) {
             self.tabs.push(id);
             self.save_tabs();
@@ -853,10 +1056,17 @@ impl Shell {
         }
         let dir = task.worktree.clone().unwrap_or_else(|| project.path.clone());
         let base = task.base.clone().or_else(|| Some("HEAD".into()));
-        self.panel.update(cx, |p, cx| {
+        let wanted = self.panel.update(cx, |p, cx| {
             p.set_thread(Some(id), Some(dir), base, &task.title, window, cx);
             p.set_parent(task.clone(), project.clone());
+            p.take_wanted()
         });
+        // Threads saved in this thread's panes come back beside it.
+        for (pane, other) in wanted {
+            if let Some(view) = self.thread_view_for(other, window, cx) {
+                self.panel.update(cx, |p, cx| p.place_thread(other, view, Some((pane, Zone::Center)), window, cx));
+            }
+        }
         self.sync_panel(cx);
         if let Some(v) = self.threads.get(&id)
             && v.read(cx).view == ViewMode::Chat
@@ -897,7 +1107,64 @@ impl Shell {
         cx.notify();
     }
 
-    fn make_thread(
+    /// Whether thread `id`'s view must stay: its tab is open, it is the
+    /// open thread, or it shows beside another (a column or a pane).
+    pub(crate) fn keeps_thread(&self, id: TaskId, cx: &gpui::App) -> bool {
+        self.tabs.contains(&id)
+            || self.route == Route::Thread(id)
+            || self.is_companion(id)
+            || self.panel.read(cx).holds_thread(id)
+    }
+
+    /// Thread `id`'s view, made (without starting anything) if it is not
+    /// open yet. None for drafts and unknown threads.
+    pub(crate) fn thread_view_for(
+        &mut self,
+        id: TaskId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Entity<ThreadView>> {
+        if let Some(v) = self.threads.get(&id) {
+            return Some(v.clone());
+        }
+        let task = self.task(id).cloned().filter(|t| t.status != TaskStatus::Draft)?;
+        let project = self.project(task.project_id).cloned()?;
+        crate::memory::tab_opened(id, cx);
+        Some(self.make_thread(task, project, None, window, cx))
+    }
+
+    /// Show thread `id` beside the open one: in a pane of the side panel,
+    /// dropped on `at` or (None) next to the conversation. The panel opens
+    /// if it was closed. Dropping the open thread on itself does nothing.
+    pub(crate) fn open_beside(
+        &mut self,
+        id: TaskId,
+        at: Option<(crate::workspace::PaneId, Zone)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Route::Thread(main) = self.route else {
+            // Nothing open to sit beside: open it.
+            self.open_task(id, window, cx);
+            return;
+        };
+        if main == id {
+            return;
+        }
+        let Some(view) = self.thread_view_for(id, window, cx) else { return };
+        // A thread shows in one place: a column beside moves to the dock.
+        if self.companions.get(&main).is_some_and(|c| c.contains(&id)) {
+            self.close_companion(main, id, cx);
+        }
+        if !self.panel_open {
+            self.panel_open = true;
+            let _ = self.engine.store.set_setting("panel_open", "true");
+        }
+        self.panel.update(cx, |p, cx| p.place_thread(id, view, at, window, cx));
+        cx.notify();
+    }
+
+    pub(crate) fn make_thread(
         &mut self,
         task: Task,
         project: Project,
@@ -984,6 +1251,7 @@ impl Shell {
                 t.unread = true;
             }
         }
+        self.team_on_status(id, s);
         let title = self.task(id).map(|t| t.title.clone()).unwrap_or_default();
         if matches!(s, TaskStatus::Done | TaskStatus::NeedsInput | TaskStatus::Failed) {
             let (headline, tone) = match s {
@@ -1155,7 +1423,7 @@ impl Shell {
 
     // ------------------------------------------------------------ actions
 
-    fn start(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn start(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
         let (project, run, harness, persona) = {
             let c = self.composer.read(cx);
             (c.project.clone(), c.run_settings(cx), c.harness(cx), c.persona.clone())
@@ -1178,6 +1446,12 @@ impl Shell {
                 self.error = None;
                 self.join = None;
                 let id = task.id;
+                // `/orchestrator` typed on the new-thread composer goes with it.
+                let o = crate::orchestrate::get(&self.engine.store, None);
+                if o != crate::orchestrate::Orchestrate::Off {
+                    crate::orchestrate::set(&self.engine.store, Some(id), o);
+                    crate::orchestrate::set(&self.engine.store, None, crate::orchestrate::Orchestrate::Off);
+                }
                 self.tasks.insert(0, task.clone());
                 self.make_thread(task, project, Some(live), window, cx);
                 self.navigate(Route::Thread(id), window, cx);
@@ -1307,8 +1581,9 @@ impl Shell {
     }
 
     /// The dock is open and the window has room for it.
+    /// The side panel shows (it steps aside while the call view is up).
     fn panel_shown(&self) -> bool {
-        self.panel_open && self.fit.shown.1
+        self.panel_open && self.fit.shown.1 && !self.call_view_shown
     }
 
     /// Stamp columns that just opened and decide what fits this frame.
@@ -1352,6 +1627,21 @@ impl Shell {
         cx.notify();
     }
 
+    /// A pane shortcut, in a thread. Splitting with the panel closed opens
+    /// it first; the other commands need it open.
+    fn pane_command(&mut self, cmd: PaneCommand, window: &mut Window, cx: &mut Context<Self>) {
+        if !matches!(self.route, Route::Thread(_)) {
+            return;
+        }
+        if !self.panel_open {
+            if !matches!(cmd, PaneCommand::Split(_)) {
+                return;
+            }
+            self.toggle_panel(cx);
+        }
+        self.panel.update(cx, |p, cx| p.command(cmd, window, cx));
+    }
+
     /// The titlebar's Pull request button, while the open thread has one:
     /// the PR glyph in its state's colour; it opens (or closes) the tab.
     fn render_pr_button(&self, t: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -1360,7 +1650,7 @@ impl Shell {
             return None;
         }
         let (target, detail) = self.panel.read(cx).pr(cx)?;
-        let showing = self.panel_open && self.panel.read(cx).active() == Some(crate::side_panel::Surface::PullRequest);
+        let showing = self.panel_open && self.panel.read(cx).showing(crate::side_panel::Surface::PullRequest);
         let color = match &detail {
             Some(d) => crate::pr_view::status_style(d, t).1,
             None => crate::motion::hover_blend("tb-pr", t.text_muted, t.text),
@@ -1597,7 +1887,7 @@ impl Shell {
         cx.notify();
     }
 
-    fn toggle_view_mode(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn toggle_view_mode(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(v) = self.active_thread().cloned() {
             v.update(cx, |v, cx| v.toggle(window, cx));
         }
@@ -1644,6 +1934,7 @@ impl Shell {
             P::Action("Toggle side panel", icons::SPLIT_COLUMNS, "panel"),
             P::Action("Add project…", icons::DOCUMENT_ADD, "add_project"),
             P::Action("Switch theme (light / dark)", icons::MOON, "theme"),
+            P::Action("Teach Dove a skill…", icons::MAGIC_STICK_3, "teach"),
         ];
         if self.active_task().is_some() {
             items.extend([
@@ -1663,6 +1954,7 @@ impl Shell {
                 .filter(|t| t.status != TaskStatus::Draft)
                 .map(|t| P::Thread(t.id, t.title.clone(), t.status)),
         );
+        items.extend(dove_core::teach::list().into_iter().map(|t| P::Taught(t.name, t.status.label())));
         items.extend(self.projects.iter().map(|p| P::Project(p.id, p.name.clone())));
         items.extend(self.installed.iter().filter(|i| dove_core::harness_supported(i.kind)).map(|i| P::Agent(i.kind)));
         items.extend(
@@ -1689,14 +1981,17 @@ impl Shell {
                 self.panel.update(cx, |p, cx| p.open_path(&path, None, window, cx));
             }
             PaletteItem::Setting(row, _, _) => self.reveal_setting(row, window, cx),
+            PaletteItem::Taught(name, _) => {
+                if let Some(t) = dove_core::teach::list().into_iter().find(|t| t.name == name) {
+                    self.new_session_with(&dove_core::teach::rehearse_prompt(&t), window, cx);
+                }
+            }
             PaletteItem::Action(_, _, id) => match id {
                 "new" => self.new_session(window, cx),
                 "threads" => self.navigate(Route::Threads, window, cx),
-                "team" => {
-                    self.pages.team_focus = None;
-                    self.navigate(Route::Team, window, cx);
-                }
+                "team" => self.open_teammate(None, window, cx),
                 "kanban" => self.navigate(Route::Kanban, window, cx),
+                "flock" => self.navigate(Route::Flock, window, cx),
                 "automations" => self.navigate(Route::Automations, window, cx),
                 "prs" => self.navigate(Route::PullRequests, window, cx),
                 "agents" => self.navigate(Route::Agents, window, cx),
@@ -1731,6 +2026,7 @@ impl Shell {
                     }
                 }
                 "side_chat" => self.side_chat(window, cx),
+                "teach" => self.new_session_with(&dove_core::teach::teach_prompt(), window, cx),
                 _ => {}
             },
         }
@@ -1847,33 +2143,9 @@ impl Shell {
     }
 
     /// The slim bar's middle: the open chat's mark and title (double-click
-    /// to rename), or the page's name.
+    /// to rename). Pages leave it empty: each one titles itself.
     fn render_bar_title(&mut self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
-        let page = |name: &'static str| {
-            div()
-                .px(px(6.0))
-                .min_w_0()
-                .truncate()
-                .text_size(ty::BODY)
-                .font_weight(gpui::FontWeight::MEDIUM)
-                .text_color(t.text)
-                .child(name)
-                .into_any_element()
-        };
-        let id = match self.route {
-            Route::Thread(id) => id,
-            Route::Home => return div().into_any_element(),
-            Route::Threads => return page("Threads"),
-            Route::Kanban => return page("Kanban"),
-            Route::Automations => return page("Automations"),
-            Route::PullRequests => return page("Pull requests"),
-            Route::Agents => return page("Agents"),
-            Route::Usage => return page("Usage"),
-            Route::Archived => return page("Archived"),
-            Route::Settings => return page("Settings"),
-            Route::Help => return page("Help & shortcuts"),
-            Route::Team => return page("Team"),
-        };
+        let Route::Thread(id) = self.route else { return div().into_any_element() };
         let Some(task) = self.task(id).cloned() else { return div().into_any_element() };
         let mark = match self.persona_for(id) {
             Some(p) => crate::team::avatar(p, 15.0, t).into_any_element(),
@@ -1997,7 +2269,8 @@ impl Shell {
             });
 
         let in_thread = matches!(self.route, Route::Thread(_));
-        let panel_open = in_thread && self.panel_shown();
+        let flock = self.route == Route::Flock;
+        let panel_open = (in_thread || flock) && self.panel_shown();
         let expanded = panel_open && self.panel.read(cx).expanded;
         let panel_w = self.panel_width(window);
         // What the tabs get: the bar minus the cluster, the tools beside the
@@ -2011,11 +2284,17 @@ impl Shell {
         let tools_w = 16.0
             + if in_thread { ui::BUTTON + 4.0 } else { 0.0 }
             + if in_thread && !tabs_on { ui::BUTTON + 2.0 } else { 0.0 }
-            + if in_thread && !panel_open { ui::BUTTON + 4.0 } else { 0.0 }
+            + if (in_thread || flock) && !panel_open { ui::BUTTON + 4.0 } else { 0.0 }
             + if panel_open { panel_w } else { ui::caption_reserve() };
         let room = f32::from(window.viewport_size().width) - cluster_w - tools_w;
-        let tabs = if tabs_on { self.render_tabs(room, &t, cx) } else { self.render_bar_title(&t, cx) };
-        let files_on = panel_open && matches!(self.panel.read(cx).active(), Some(crate::side_panel::Surface::Files));
+        let tabs = if flock {
+            self.workspace.update(cx, |w, cx| w.render_bar(cx))
+        } else if tabs_on {
+            self.render_tabs(room, &t, cx)
+        } else {
+            self.render_bar_title(&t, cx)
+        };
+        let files_on = panel_open && self.panel.read(cx).showing(crate::side_panel::Surface::Files);
         let right_tools = div()
             .flex()
             .flex_none()
@@ -2023,15 +2302,17 @@ impl Shell {
             .gap(px(4.0))
             .pl(px(8.0))
             .pr(px(if panel_open { 8.0 } else { ui::caption_reserve() + 8.0 }))
-            // Thread tools sit in the bar: info, then the panel toggle.
-            // Chat and terminal flip with Ctrl+`.
+            // Thread tools sit in the bar: Chat | Terminal (Ctrl+`), info,
+            // then the panel toggle.
             .when(in_thread, |d| {
+                let switch = self.active_thread().cloned().map(|v| v.update(cx, |v, cx| v.view_switch(&t, cx)));
                 d.child(
                     div()
                         .h(px(28.0))
                         .flex()
                         .items_center()
                         .gap(px(2.0))
+                        .children(switch)
                         .child(self.render_info_button(cx))
                         .when_some(self.render_pr_button(&t, cx), |d, b| d.child(b))
                         // The slim bar also opens the files straight away.
@@ -2064,14 +2345,25 @@ impl Shell {
                             ))
                         }),
                 )
+            })
+            // Flock keeps only the panel toggle: no thread info to show.
+            .when(flock && !panel_open, |d| {
+                let color = crate::motion::hover_blend("tb-panel", t.text_muted, t.text);
+                d.child(quiet_bar_button(
+                    "tb-panel",
+                    "Side panel: browser, diffs, files… (Ctrl+\\)",
+                    ui::sidebar_glyph(0.0, true, 16.0, color),
+                    cx.listener(|this, _, _, cx| this.toggle_panel(cx)),
+                ))
             });
-        let strip = panel_open.then(|| self.panel.update(cx, |p, cx| p.render_strip(cx)));
+        // The call view covers the panel: its strip (and buttons) goes too.
+        let strip = (panel_open && !self.call_view_shown).then(|| self.panel.update(cx, |p, cx| p.render_strip(cx)));
 
         // Over artwork the strip stays clear: the picture (and, in a thread,
         // its frost) is already painted for this column, so the tabs sit on
         // the same surface as the page. Everywhere else it is the solid bar.
         let home_art = matches!(self.route, Route::Home) && self.has_wallpaper();
-        let thread_art = matches!(self.route, Route::Thread(_)) && self.has_wallpaper();
+        let thread_art = self.full_art_route() && self.has_wallpaper();
         let surface = div()
             .flex_1()
             .min_w_0()
@@ -2742,6 +3034,31 @@ impl Shell {
         )
     }
 
+    /// Split the focused terminal, opening Flock first if elsewhere.
+    fn split_terminal(&mut self, axis: crate::flock::pane_tree::Axis, window: &mut Window, cx: &mut Context<Self>) {
+        if self.route != Route::Flock {
+            self.navigate(Route::Flock, window, cx);
+            return;
+        }
+        self.workspace.update(cx, |w, cx| w.split(axis, window, cx));
+    }
+
+    /// Run a Kanban draft as the agent's own TUI in a new Flock tab, typing
+    /// its prompt once the agent is ready.
+    pub fn dispatch_to_flock(&mut self, id: TaskId, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(task) = self.task(id).cloned() else { return };
+        let Some(cwd) = self.project(task.project_id).map(|p| p.path.clone()) else { return };
+        let prompt = task.prompt.clone().unwrap_or_else(|| task.title.clone());
+        self.navigate(Route::Flock, window, cx);
+        let kind = task.harness;
+        self.workspace.update(cx, |w, cx| w.dispatch(kind, cwd, prompt, window, cx));
+    }
+
+    /// Routes whose picture runs under the whole window as frosted glass.
+    fn full_art_route(&self) -> bool {
+        matches!(self.route, Route::Thread(_) | Route::Flock) || self.call_view_shown
+    }
+
     fn has_wallpaper(&self) -> bool {
         self.wallpaper_path().is_some()
     }
@@ -2774,7 +3091,7 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let home = matches!(self.route, Route::Home);
-        let thread = matches!(self.route, Route::Thread(_));
+        let thread = self.full_art_route();
         if !home && !thread || width < 8.0 {
             return None;
         }
@@ -2786,9 +3103,9 @@ impl Shell {
         let effect =
             crate::wallpaper::Effect::from_id(&self.engine.store.setting("wallpaper_effect").unwrap_or_default());
         let animate = self.engine.store.setting("wallpaper_animate").as_deref() == Some("true");
-        // A still thread backdrop gets its frost baked into the raster; only
-        // a moving one needs the live blur.
-        let baked = thread && !animate;
+        // A thread backdrop always uses the live frost below: the baked
+        // raster blur (a quarter-size Gaussian under a flat tint) did not
+        // match its look.
         let props = crate::wallpaper::HeroProps {
             path: path.into(),
             effect,
@@ -2796,7 +3113,7 @@ impl Shell {
             target: (width * scale, height * scale),
             animate,
             frosted: t.is_frost(),
-            blur: if baked { (THREAD_ART_BLUR * scale / 2.0).round() as u32 } else { 0 },
+            blur: 0,
             fade: home,
             composer: if home { self.composer_bounds.clone() } else { std::rc::Rc::new(std::cell::Cell::new(None)) },
         };
@@ -2814,8 +3131,7 @@ impl Shell {
                 .overflow_hidden()
                 .bg(t.bg)
                 .child(div().absolute().top_0().left_0().right_0().h(px(height)).child(view))
-                .when(baked, |d| d.child(div().absolute().inset_0().bg(t.bg.opacity(THREAD_ART_TINT))))
-                .when(thread && !baked, |d| {
+                .when(thread, |d| {
                     d.child(div().absolute().inset_0().child(ui::frosted(
                         0.0,
                         THREAD_ART_BLUR,
@@ -2827,6 +3143,10 @@ impl Shell {
     }
 
     fn render_center(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        // A call shows in the chat's place, over the same frosted picture.
+        if let Some(call) = self.call_view.clone().filter(|_| self.call_view_shown) {
+            return div().size_full().child(call).into_any_element();
+        }
         match self.route {
             Route::Home => self.render_home(window, cx),
             Route::Thread(id) => match self.threads.get(&id) {
@@ -2834,24 +3154,34 @@ impl Shell {
                 // the composer (which GPUI could not reuse under a cached
                 // view that re-renders), so it is drawn directly; a
                 // terminal is cached whole.
-                Some(v) if v.read(cx).view == ViewMode::Chat => v.clone().into_any_element(),
-                Some(v) => AnyView::from(v.clone()).cached(StyleRefinement::default().size_full()).into_any_element(),
+                // The thread, and any threads beside it (`split.rs`).
+                Some(v) => {
+                    let v = v.clone();
+                    self.render_split(id, v, window, cx)
+                }
                 None => div().into_any_element(),
             },
             Route::Threads => self.render_threads_page(window, cx),
             Route::Kanban => self.render_kanban(window, cx),
             Route::Automations => self.render_automations(window, cx),
             Route::PullRequests => self.prs.clone().into_any_element(),
-            Route::Agents => self.render_agents_page(window, cx),
             Route::Usage => self.render_usage_page(cx),
             Route::Archived => self.render_archived_page(cx),
-            Route::Settings => match self.settings.update(cx, |s, cx| s.render_content(window, cx)) {
+            Route::Settings | Route::Agents => match self.settings.update(cx, |s, cx| s.render_content(window, cx)) {
                 Some(content) => content,
+                // Settings › Team is the Team page, with Settings' options.
+                None if self.settings.read(cx).section == crate::settings::Section::Team => {
+                    let options = self.settings.update(cx, |s, cx| s.team_options(cx));
+                    self.render_team_page(Some(options), cx)
+                }
                 // Settings › Archived is the Archived page itself.
                 None => self.render_archived_page(cx),
             },
             Route::Help => self.render_help_page(cx),
-            Route::Team => self.render_team_page(cx),
+            Route::Team => self.render_team_page(None, cx),
+            Route::Flock => {
+                AnyView::from(self.workspace.clone()).cached(StyleRefinement::default().size_full()).into_any_element()
+            }
         }
     }
 }
@@ -2957,6 +3287,8 @@ impl Render for Shell {
         frame_stats();
         let t = Theme::of(cx).clone();
         let in_thread = matches!(self.route, Route::Thread(_));
+        // Pages that carry the side panel.
+        let docked = in_thread || self.route == Route::Flock;
         // No open threads: the main page is the wallpaper and the composer.
         // The tab strip only exists once a thread is open.
         // The new-thread page draws only its floating window controls (the
@@ -2965,12 +3297,14 @@ impl Render for Shell {
         let bare = matches!(self.route, Route::Home)
             && (self.tabs.is_empty() || !self.engine.store.flag("topbar_tabs", false));
         let wants_expand = self.panel.read(cx).expanded;
-        self.update_fit(f32::from(window.viewport_size().width), in_thread, wants_expand);
-        let panel_open = in_thread && self.panel_shown();
+        self.update_fit(f32::from(window.viewport_size().width), docked, wants_expand);
+        let panel_open = docked && self.panel_shown();
         let expanded = panel_open && wants_expand;
         let sidebar_shown = self.sidebar_shown();
         self.sync_thread_dock(sidebar_shown, cx);
-        self.panel.update(cx, |p, cx| p.sync(panel_open, self.resize.is_some(), cx));
+        // Web views are native windows: the call view hides them.
+        let panel_live = panel_open && !self.call_view_shown;
+        self.panel.update(cx, |p, cx| p.sync(panel_live, self.resize.is_some(), cx));
         let topbar = (!bare).then(|| self.render_topbar(window, cx));
         // With no title bar, the sidebar starts below the floating window
         // controls instead of running under them.
@@ -2999,7 +3333,7 @@ impl Render for Shell {
         let panel_w = self.panel_width(window);
         let now = Instant::now();
         self.slides.sidebar.step((!in_settings).then_some(sidebar_shown), self.sidebar_w, now);
-        self.slides.panel.step(in_thread.then_some(panel_open && !expanded), panel_w, now);
+        self.slides.panel.step(docked.then_some(panel_open && !expanded), panel_w, now);
         // A drag that reaches its limit nudges the column toward the drag
         // and lets it settle back.
         let bounce =
@@ -3083,7 +3417,7 @@ impl Render for Shell {
         });
 
         let home_art = matches!(self.route, Route::Home) && self.has_wallpaper();
-        let thread_art = in_thread && self.has_wallpaper();
+        let thread_art = self.full_art_route() && self.has_wallpaper();
         let info_gutter = self.info_open && in_thread && !expanded;
         if let Some(thread) = self.active_thread().cloned() {
             thread.update(cx, |view, cx| {
@@ -3164,12 +3498,40 @@ impl Render for Shell {
             .on_action(cx.listener(|this, _: &actions::AddProject, _, cx| this.add_project_dialog(cx)))
             .on_action(cx.listener(|this, _: &actions::ToggleSidebar, _, cx| this.toggle_sidebar(cx)))
             .on_action(cx.listener(|this, _: &actions::ToggleRightPanel, _, cx| this.toggle_panel(cx)))
+            .on_action(cx.listener(|this, _: &actions::SplitPaneRight, window, cx| {
+                this.pane_command(PaneCommand::Split(Axis::Row), window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &actions::SplitPaneDown, window, cx| {
+                this.pane_command(PaneCommand::Split(Axis::Column), window, cx)
+            }))
+            .on_action(
+                cx.listener(|this, _: &actions::ClosePane, window, cx| {
+                    this.pane_command(PaneCommand::Close, window, cx)
+                }),
+            )
+            .on_action(cx.listener(|this, _: &actions::MaximizePane, window, cx| {
+                this.pane_command(PaneCommand::Maximize, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &actions::FocusPaneLeft, window, cx| {
+                this.pane_command(PaneCommand::Focus(Dir::Left), window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &actions::FocusPaneRight, window, cx| {
+                this.pane_command(PaneCommand::Focus(Dir::Right), window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &actions::FocusPaneUp, window, cx| {
+                this.pane_command(PaneCommand::Focus(Dir::Up), window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &actions::FocusPaneDown, window, cx| {
+                this.pane_command(PaneCommand::Focus(Dir::Down), window, cx)
+            }))
             .on_action(cx.listener(|this, _: &actions::GoBack, window, cx| this.go_back(window, cx)))
             .on_action(cx.listener(|this, _: &actions::GoForward, window, cx| this.go_forward(window, cx)))
             .on_action(
                 cx.listener(|this, _: &actions::OpenSettings, window, cx| this.navigate(Route::Settings, window, cx)),
             )
             .on_action(cx.listener(|this, _: &actions::ToggleTerminal, window, cx| this.toggle_view_mode(window, cx)))
+            .on_action(cx.listener(|this, _: &actions::ToggleVoiceCall, window, cx| this.toggle_voice_call(window, cx)))
+            .on_action(cx.listener(|this, _: &actions::ShowCallView, window, cx| this.show_call_view(true, window, cx)))
             .on_action(cx.listener(|this, _: &actions::CommandPalette, window, cx| this.open_palette(window, cx)))
             .on_action(
                 cx.listener(|this, _: &actions::OpenThreads, window, cx| this.navigate(Route::Threads, window, cx)),
@@ -3177,6 +3539,18 @@ impl Render for Shell {
             .on_action(
                 cx.listener(|this, _: &actions::OpenKanban, window, cx| this.navigate(Route::Kanban, window, cx)),
             )
+            .on_action(cx.listener(|this, _: &actions::OpenFlock, window, cx| this.navigate(Route::Flock, window, cx)))
+            .on_action(cx.listener(|this, _: &actions::FlockSplitRight, window, cx| {
+                this.split_terminal(crate::flock::pane_tree::Axis::Row, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &actions::FlockSplitDown, window, cx| {
+                this.split_terminal(crate::flock::pane_tree::Axis::Column, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &actions::FlockClosePane, window, cx| {
+                if this.route == Route::Flock {
+                    this.workspace.update(cx, |w, cx| w.close_pane(window, cx));
+                }
+            }))
             .on_action(cx.listener(|this, _: &actions::NextTab, window, cx| this.cycle_tab(1, window, cx)))
             .on_action(cx.listener(|this, _: &actions::PrevTab, window, cx| this.cycle_tab(-1, window, cx)))
             .on_action(cx.listener(|this, a: &actions::GoToTab, window, cx| {
@@ -3219,6 +3593,18 @@ impl Render for Shell {
                 cx.notify();
             }))
             .on_key_down(cx.listener(|this, e: &gpui::KeyDownEvent, window, cx| {
+                // Hold Space to talk while a call is muted, only when nothing
+                // that takes text has focus (the shell itself does).
+                if e.keystroke.key == "space"
+                    && !e.is_held
+                    && this.focus.is_focused(window)
+                    && let Some(call) = this.voice_call.clone()
+                    && call.read(cx).muted
+                {
+                    call.update(cx, |v, _| v.push_to_talk(true));
+                    cx.stop_propagation();
+                    return;
+                }
                 if e.keystroke.key == "escape" {
                     let menu = this.close_menus();
                     let open = menu || this.info_open || this.palette.is_some();
@@ -3231,6 +3617,13 @@ impl Render for Shell {
                         this.close_settings(window, cx);
                         cx.stop_propagation();
                     }
+                }
+            }))
+            .on_key_up(cx.listener(|this, e: &gpui::KeyUpEvent, _, cx| {
+                if e.keystroke.key == "space"
+                    && let Some(call) = this.voice_call.clone()
+                {
+                    call.update(cx, |v, _| v.push_to_talk(false));
                 }
             }))
             .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, window, cx| {
@@ -3307,6 +3700,9 @@ impl Render for Shell {
             // A page's confirmation (Threads, Archived, Kanban, Automations,
             // Team): drawn here so it stays modal whichever route is showing.
             .children(self.render_page_dialog(window, cx))
+            // An agent's sign-in or update terminal, over any page.
+            .children(self.render_agent_sheet(&t, window, cx))
+            .children(self.render_voice_bar(cx))
             .children((self.info_open && in_thread && !expanded).then(|| self.active_task().cloned()).flatten().map(
                 |task| {
                     let right = if panel_open { panel_w + 14.0 } else { 14.0 };
@@ -3338,7 +3734,7 @@ impl Shell {
     /// The dock's laid-out width: the saved width, narrowed so the chat
     /// column keeps `CENTER_MIN`. The titlebar strip and the dock both use
     /// it, so they stay one column.
-    fn panel_width(&self, window: &Window) -> f32 {
+    pub(crate) fn panel_width(&self, window: &Window) -> f32 {
         self.panel_w.min(self.panel_room(window)).max(PANEL_FLOOR)
     }
 

@@ -12,6 +12,8 @@ mod automations;
 mod help;
 pub mod integrations;
 mod kanban;
+pub mod memory_settings;
+pub mod skills;
 mod threads;
 mod usage;
 
@@ -131,13 +133,15 @@ pub struct PageState {
     pub usage_note: Option<String>,
     // Agents
     pub agent_terminal: Option<(HarnessKind, Entity<TerminalView>)>,
-    pub agent_path_edit: Option<(HarnessKind, Entity<InputState>)>,
     // Archived
     pub archived_q: String,
     pub archived_search: Entity<InputState>,
     // Team
     pub team_focus: Option<String>,
-    pub team_expanded: Option<String>,
+    /// Teammates whose threads the sidebar shows, and those showing all of
+    /// them rather than the latest few.
+    pub team_expanded: HashSet<String>,
+    pub team_all: HashSet<String>,
     pub team_edit: Option<crate::team::TeamEditor>,
     /// The focused teammate's notes, read when focus changes.
     pub team_notes: Option<String>,
@@ -227,11 +231,11 @@ impl PageState {
             usage_days: 30,
             usage_note: None,
             agent_terminal: None,
-            agent_path_edit: None,
             archived_q: String::new(),
             archived_search,
             team_focus: None,
-            team_expanded: None,
+            team_expanded: HashSet::new(),
+            team_all: HashSet::new(),
             team_edit: None,
             team_notes: None,
             team_notes_edit: None,

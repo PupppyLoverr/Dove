@@ -124,32 +124,62 @@ impl Shell {
             .child(page::stat(&t, "Cache reads", ui::compact(total.cache_read_tokens), None))
             .child(page::stat(&t, "Cost (reported)", cost(&total), None));
 
-        let chart = page::card(&t).child(
-            div()
-                .h(px(132.0))
-                .px(px(space::LG))
-                .pt(px(space::LG))
-                .pb(px(space::MD))
-                .flex()
-                .items_end()
-                .gap(px(3.0))
-                .children(by_day.iter().map(|(day, u)| {
-                    let h = (u.total_tokens() as f32 / max_day as f32 * 96.0).max(2.0);
-                    div()
-                        .id(("usage-bar", *day as usize))
-                        .flex_1()
-                        .h(px(h))
-                        .rounded_t(px(3.0))
-                        .bg(t.accent.opacity(0.6))
-                        .hover(|s| s.bg(t.accent))
-                        .tooltip(ui::tip(format!(
-                            "{} · {} tokens · {}",
-                            chrono_date(*day),
-                            ui::compact(u.total_tokens()),
-                            cost(u)
-                        )))
-                })),
-        );
+        // One slot per day of the range, so a day or two of data reads as
+        // a day or two (not one bar across the card); empty days show a stub.
+        let slots = day_slots(dove_core::store::now_ms(), days);
+        let active_days = by_day.values().filter(|u| u.total_tokens() > 0).count();
+        let chart = page::card(&t)
+            .child(
+                div()
+                    .h(px(132.0))
+                    .px(px(space::LG))
+                    .pt(px(space::LG))
+                    .pb(px(space::SM))
+                    .flex()
+                    .items_end()
+                    .justify_between()
+                    .gap(px(if days > 30 { 1.0 } else { 3.0 }))
+                    .children(slots.iter().map(|day| {
+                        let u = by_day.get(day).copied().unwrap_or_default();
+                        let used = u.total_tokens() > 0;
+                        let h = if used { (u.total_tokens() as f32 / max_day as f32 * 96.0).max(3.0) } else { 2.0 };
+                        div()
+                            .id(("usage-bar", *day as usize))
+                            .flex_1()
+                            .max_w(px(28.0))
+                            .h(px(h))
+                            .rounded_t(px(3.0))
+                            .bg(if used { t.accent.opacity(0.6) } else { t.wash(0.08) })
+                            .when(used, |d| d.hover(|s| s.bg(t.accent)))
+                            .tooltip(ui::tip(if used {
+                                format!(
+                                    "{} · {} tokens · {}",
+                                    chrono_date(*day),
+                                    ui::compact(u.total_tokens()),
+                                    cost(&u)
+                                )
+                            } else {
+                                format!("{} · no usage", chrono_date(*day))
+                            }))
+                    })),
+            )
+            .child(
+                div()
+                    .px(px(space::LG))
+                    .pb(px(space::MD))
+                    .flex()
+                    .justify_between()
+                    .text_size(ty::MICRO)
+                    .text_color(t.text_faint)
+                    .child(slots.first().map(|d| chrono_date(*d)).unwrap_or_default())
+                    .when(active_days < 3, |d| {
+                        d.child(format!(
+                            "{active_days} {} with usage so far: the chart fills in as you work",
+                            if active_days == 1 { "day" } else { "days" }
+                        ))
+                    })
+                    .child("Today"),
+            );
 
         let table = |data: &BTreeMap<String, Usage>| {
             let mut v: Vec<_> = data.iter().collect();
@@ -248,6 +278,12 @@ impl Shell {
     }
 }
 
+/// The UTC midnights of the last `days` days, oldest first, ending today.
+pub fn day_slots(now_ms: i64, days: u32) -> Vec<i64> {
+    let today = now_ms.div_euclid(86_400_000) * 86_400_000;
+    (0..days as i64).rev().map(|i| today - i * 86_400_000).collect()
+}
+
 /// "2026-10-12" for a UTC-midnight timestamp.
 pub fn chrono_date(ms: i64) -> String {
     let days = ms.div_euclid(86_400_000);
@@ -272,5 +308,14 @@ mod tests {
     fn dates_from_millis() {
         assert_eq!(chrono_date(0), "1970-01-01");
         assert_eq!(chrono_date(1_791_763_200_000), "2026-10-12");
+    }
+
+    #[test]
+    fn a_range_has_one_slot_per_day_ending_today() {
+        let noon = 1_791_763_200_000 + 12 * 3_600_000;
+        let slots = day_slots(noon, 7);
+        assert_eq!(slots.len(), 7);
+        assert_eq!(chrono_date(*slots.last().unwrap()), "2026-10-12");
+        assert_eq!(chrono_date(slots[0]), "2026-10-06");
     }
 }

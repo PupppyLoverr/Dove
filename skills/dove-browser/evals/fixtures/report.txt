@@ -1,0 +1,3 @@
+Dove eval upload fixture. Synthetic test data; safe to upload to the local fixture server only.
+Quarter: Q3
+Revenue: 1,234 (fictional)

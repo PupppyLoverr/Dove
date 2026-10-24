@@ -341,7 +341,11 @@ impl Shell {
             .flex()
             .items_center()
             .gap(px(space::MD))
-            .child(div().text_size(ty::BODY).text_color(t.text_muted).child(format!("{count} threads")))
+            .child(div().text_size(ty::BODY).text_color(t.text_muted).child(if count == 1 {
+                "1 thread".to_string()
+            } else {
+                format!("{count} threads")
+            }))
             .child(
                 ctl::button(&t, "threads-new", "New thread", Tone::Solid)
                     .on_click(cx.listener(|this, _, window, cx| this.new_session(window, cx))),

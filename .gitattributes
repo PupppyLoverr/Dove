@@ -2,3 +2,10 @@
 # YAML frontmatter that starts with a "---" line ending in LF: keep them LF
 # on every checkout, Windows (core.autocrlf) included.
 skills/** text eol=lf
+# Binaries in skill folders (eval screenshots, assets) are never converted.
+skills/**/*.png binary
+skills/**/*.jpg binary
+skills/**/*.jpeg binary
+skills/**/*.gif binary
+skills/**/*.webp binary
+skills/**/*.pdf binary

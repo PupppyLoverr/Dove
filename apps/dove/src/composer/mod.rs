@@ -15,6 +15,7 @@
 //! read-only chips). The agent · model · effort picker is its own entity
 //! (`picker.rs`).
 
+pub mod mentions;
 pub mod picker;
 
 use std::cell::Cell;
@@ -105,14 +106,36 @@ pub fn home_input_is_dock(value: Option<&str>) -> bool {
     value == Some("dock")
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 struct MentionItem {
     label: String,
     detail: String,
     insert: String,
+    /// For a `#` skill that is off or not installed yet: what picking it
+    /// does first.
+    skill: Option<SkillPick>,
+    /// Picking it adds this card instead of inserting text.
+    card: Option<mentions::Card>,
+    /// The menu section it is listed under ("Files", "Threads", …).
+    section: &'static str,
 }
 
-/// An open `@` (files) or `/` (commands) completion.
+impl MentionItem {
+    fn card(section: &'static str, card: mentions::Card) -> Self {
+        Self { label: card.label(), detail: card.detail(), card: Some(card), section, ..Default::default() }
+    }
+}
+
+/// What picking a skill in the `#` menu does besides inserting `#name`.
+#[derive(Clone, Debug, PartialEq)]
+enum SkillPick {
+    /// Turn an installed skill on.
+    Enable(String),
+    /// Install a recommended skill from GitHub.
+    Install { repo: String, path: String },
+}
+
+/// An open `@` (files), `/` (commands) or `#` (skills) completion.
 struct Mention {
     trigger: char,
     /// Byte offset of the trigger character.
@@ -178,6 +201,8 @@ pub enum Variant {
 
 pub struct Composer {
     engine: Arc<Engine>,
+    /// `/orchestrator` for this thread (or the next new one).
+    orchestrate: crate::orchestrate::Orchestrate,
     variant: Variant,
     /// The teammate a new thread runs as (new-thread composer only).
     pub persona: Option<Persona>,
@@ -185,6 +210,9 @@ pub struct Composer {
     pub input: Entity<TextareaState>,
     pub picker: Entity<Picker>,
     pub voice: Entity<Dictation>,
+    /// Where live dictation's text sits in the input (byte range), so each
+    /// update replaces it in place and the rest of the draft is untouched.
+    live_dictation: Option<std::ops::Range<usize>>,
     pub mode: PermissionMode,
     /// Set for a thread's composer.
     thread: Option<(Task, Project)>,
@@ -192,6 +220,12 @@ pub struct Composer {
     projects: Vec<Project>,
     pub add_dirs: Vec<PathBuf>,
     attachments: Vec<PathBuf>,
+    /// Mentioned threads, folders, windows and tabs, shown as cards.
+    cards: Vec<mentions::Card>,
+    /// Threads the `@` menu offers: (id, title, agent), read when it opens.
+    mention_threads: Vec<(String, String, String)>,
+    /// The paired browser's tabs, fetched when the `@` menu opens.
+    chrome_tabs: Vec<(String, String)>,
     running: bool,
     queue: Vec<String>,
     context: (Option<u64>, Option<u64>),
@@ -288,10 +322,18 @@ impl Composer {
                 });
                 focus_input(&this.input, window, cx);
             }
+            DictationEvent::Live(text) => {
+                this.place_live_dictation(text, false, window, cx);
+            }
+            DictationEvent::LiveDone(text) => {
+                this.place_live_dictation(text, true, window, cx);
+                focus_input(&this.input, window, cx);
+            }
             DictationEvent::Changed => cx.notify(),
         }));
         let mode = engine.store.setting("permission_mode").map(|m| mode_from_id(&m)).unwrap_or_default();
         Self {
+            orchestrate: Default::default(),
             engine,
             variant: Variant::Pill,
             persona: None,
@@ -299,12 +341,16 @@ impl Composer {
             input,
             picker,
             voice,
+            live_dictation: None,
             mode,
             thread: None,
             project: None,
             projects: Vec::new(),
             add_dirs: Vec::new(),
             attachments: Vec::new(),
+            cards: Vec::new(),
+            mention_threads: Vec::new(),
+            chrome_tabs: Vec::new(),
             running: false,
             queue: Vec::new(),
             context: (None, None),
@@ -403,8 +449,11 @@ impl Composer {
     }
 
     fn restore_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.orchestrate = crate::orchestrate::get(&self.engine.store, self.thread.as_ref().map(|(t, _)| t.id));
         let key = self.draft_key();
         if let Some(d) = self.engine.store.setting(&key).filter(|d| !d.is_empty()) {
+            let (d, cards) = d.split_once("\n\u{2}\n").unwrap_or((d.as_str(), ""));
+            self.cards = mentions::from_json(cards);
             let mut lines = d.splitn(2, "\n\u{1}\n");
             let text = lines.next().unwrap_or_default().to_string();
             if let Some(files) = lines.next() {
@@ -426,7 +475,10 @@ impl Composer {
                 }
                 let text = c.input.read(cx).value().to_string();
                 let files = c.attachments.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join("\n");
-                let value = if files.is_empty() { text } else { format!("{text}\n\u{1}\n{files}") };
+                let mut value = if files.is_empty() { text } else { format!("{text}\n\u{1}\n{files}") };
+                if !c.cards.is_empty() {
+                    value = format!("{value}\n\u{2}\n{}", mentions::to_json(&c.cards));
+                }
                 let _ = c.engine.store.set_setting(&c.draft_key(), &value);
             });
         })
@@ -459,11 +511,13 @@ impl Composer {
         cx.notify();
     }
 
-    /// Run the next thread as `persona` (or as no one): its agent and model
-    /// come with it.
+    /// Run the next thread as `persona` (or as no one). A teammate with a
+    /// preferred agent brings it; one without keeps the current pick.
     pub fn use_persona(&mut self, persona: Option<Persona>, cx: &mut Context<Self>) {
-        if let Some(p) = &persona {
-            self.use_harness(p.harness, p.model.clone(), cx);
+        if let Some(p) = &persona
+            && let Some(h) = p.harness
+        {
+            self.use_harness(h, p.model.clone(), cx);
         }
         self.persona = persona;
         self.menu = None;
@@ -528,6 +582,13 @@ impl Composer {
         }
     }
 
+    /// Send `text` once the running turn ends (another agent's message to
+    /// a thread whose agent can't be steered).
+    pub fn enqueue(&mut self, text: String, cx: &mut Context<Self>) {
+        self.queue.push(text);
+        cx.notify();
+    }
+
     /// The next queued message, sent once the running turn ends.
     pub fn take_queued(&mut self, cx: &mut Context<Self>) -> Option<String> {
         if self.queue.is_empty() {
@@ -548,8 +609,25 @@ impl Composer {
 
     pub(crate) fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let mut text = self.input.read(cx).value().trim().to_string();
-        if text.is_empty() && self.attachments.is_empty() {
+        // `/orchestrator [off|auto]` is Dove's own: it isn't sent.
+        if let Some(o) = crate::orchestrate::command(&text) {
+            self.set_orchestrate(o, cx);
+            self.input.update(cx, |s, cx| s.set_value("", window, cx));
+            self.mention = None;
             return;
+        }
+        if text.is_empty() && self.attachments.is_empty() && self.cards.is_empty() {
+            return;
+        }
+        if let Some(block) = skills_block(&text) {
+            text = format!("{text}\n\n{block}");
+        }
+        if !self.cards.is_empty() {
+            let computer_use = crate::pages::integrations::load().computer.enabled;
+            if let Some(block) = mentions::block(&self.cards, &self.engine.store, computer_use) {
+                text = format!("{text}\n\n{block}").trim().to_string();
+            }
+            self.cards.clear();
         }
         if !self.attachments.is_empty() {
             let list = self.attachments.iter().map(|p| format!("- {}", p.display())).collect::<Vec<_>>().join("\n");
@@ -568,7 +646,7 @@ impl Composer {
         cx.emit(ComposerEvent::Submit(text));
     }
 
-    fn set_mode(&mut self, mode: PermissionMode, cx: &mut Context<Self>) {
+    pub(crate) fn set_mode(&mut self, mode: PermissionMode, cx: &mut Context<Self>) {
         self.mode = mode;
         self.menu = None;
         let key = match &self.thread {
@@ -783,20 +861,12 @@ impl Composer {
         let trigger = token.chars().next();
         let mention = match trigger {
             Some('@') => {
+                if self.mention.as_ref().is_none_or(|m| m.trigger != '@') {
+                    self.load_mention_sources(cx);
+                }
                 self.ensure_files(cx);
                 let q = token[1..].to_ascii_lowercase();
-                let items: Vec<MentionItem> = self
-                    .files
-                    .iter()
-                    .filter(|f| q.is_empty() || f.to_ascii_lowercase().contains(&q))
-                    .take(MAX_MENTIONS)
-                    .map(|f| MentionItem {
-                        label: f.rsplit('/').next().unwrap_or(f).to_string(),
-                        detail: f.clone(),
-                        insert: format!("@{f}"),
-                    })
-                    .collect();
-                Some(Mention { trigger: '@', start, items, highlight: 0 })
+                Some(Mention { trigger: '@', start, items: self.at_items(&q, cx), highlight: 0 })
             }
             // Slash commands only at the start of the message.
             Some('/') if start == 0 => {
@@ -809,20 +879,147 @@ impl Composer {
                         insert: format!("/{}", c.name),
                         label: format!("/{}", c.name),
                         detail: c.description,
+                        ..Default::default()
                     })
                     .collect();
+                items.push(MentionItem {
+                    label: "/orchestrator".into(),
+                    detail: match self.orchestrate {
+                        crate::orchestrate::Orchestrate::Off => {
+                            "Let this thread start other agents (you approve each one)".into()
+                        }
+                        _ => "On · /orchestrator off stops it, /orchestrator auto skips approvals".into(),
+                    },
+                    insert: "/orchestrator".into(),
+                    section: "Dove",
+                    ..Default::default()
+                });
                 items.extend(TEMPLATES.iter().map(|(name, detail, body)| MentionItem {
                     label: format!("/{name}"),
                     detail: detail.to_string(),
                     insert: body.to_string(),
+                    ..Default::default()
                 }));
                 items.retain(|i| q.is_empty() || i.label[1..].to_ascii_lowercase().starts_with(&q));
                 items.truncate(MAX_MENTIONS);
                 Some(Mention { trigger: '/', start, items, highlight: 0 })
             }
+            // Skills: `#` alone lists them; `#12` with no match stays text.
+            Some('#') => {
+                let q = token[1..].to_ascii_lowercase();
+                let mut items = skill_items(&q);
+                // Apps and tabs can be mentioned with # too.
+                items.extend(self.app_and_tab_items(&q, 3, cx));
+                (!items.is_empty() || q.is_empty()).then_some(Mention { trigger: '#', start, items, highlight: 0 })
+            }
             _ => None,
         };
-        self.mention = mention.filter(|m| !m.items.is_empty() || m.trigger == '@');
+        self.mention = mention.filter(|m| !m.items.is_empty() || m.trigger == '@' || m.trigger == '#');
+    }
+
+    /// Read what the `@` menu lists besides files: threads now, the paired
+    /// browser's tabs in the background.
+    fn load_mention_sources(&mut self, cx: &mut Context<Self>) {
+        let own = self.thread.as_ref().map(|(t, _)| t.id);
+        self.mention_threads = self
+            .engine
+            .store
+            .all_tasks()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|t| Some(t.id) != own)
+            .map(|t| (t.id.to_string(), t.title.clone(), t.harness.label().to_string()))
+            .collect();
+        if crate::browser::control::connected_browser().is_some() {
+            let rt = self.engine.runtime();
+            let tabs = cx.background_spawn(async move {
+                rt.spawn(crate::browser::control::chrome_tabs()).await.unwrap_or_default()
+            });
+            cx.spawn(async move |this, cx| {
+                let tabs = tabs.await;
+                let _ = this.update(cx, |c, cx| {
+                    c.chrome_tabs = tabs;
+                    if c.mention.is_some() {
+                        c.update_mention(cx);
+                        cx.notify();
+                    }
+                });
+            })
+            .detach();
+        }
+    }
+
+    /// The `@` menu: files and folders, threads, apps' windows and tabs.
+    fn at_items(&self, q: &str, cx: &App) -> Vec<MentionItem> {
+        let hit = |s: &str| q.is_empty() || s.to_ascii_lowercase().contains(q);
+        let mut items = Vec::new();
+        if let Some(root) = self.root() {
+            items.extend(
+                self.files
+                    .iter()
+                    .filter(|f| hit(f))
+                    .take(5)
+                    .map(|f| MentionItem::card("Files", mentions::Card::File { path: root.join(f) })),
+            );
+            let mut dirs: Vec<&str> = Vec::new();
+            for f in self.files.iter() {
+                if let Some((d, _)) = f.rsplit_once('/')
+                    && hit(d)
+                    && !dirs.contains(&d)
+                {
+                    dirs.push(d);
+                    if dirs.len() == 3 {
+                        break;
+                    }
+                }
+            }
+            items.extend(
+                dirs.into_iter().map(|d| MentionItem::card("Folders", mentions::Card::Folder { path: root.join(d) })),
+            );
+        }
+        items.extend(self.mention_threads.iter().filter(|(_, title, agent)| hit(title) || hit(agent)).take(4).map(
+            |(id, title, agent)| {
+                MentionItem::card(
+                    "Threads",
+                    mentions::Card::Thread { id: id.clone(), title: title.clone(), agent: agent.clone() },
+                )
+            },
+        ));
+        items.extend(self.app_and_tab_items(q, 4, cx));
+        items
+    }
+
+    /// Apps' windows and browser tabs matching `q`, at most `each` of each.
+    fn app_and_tab_items(&self, q: &str, each: usize, cx: &App) -> Vec<MentionItem> {
+        let hit = |s: &str| q.is_empty() || s.to_ascii_lowercase().contains(q);
+        let windows =
+            crate::device::windows_cached().into_iter().filter(|w| hit(&w.app) || hit(&w.title)).take(each).map(|w| {
+                MentionItem::card(
+                    "Apps & windows",
+                    mentions::Card::Window { app: w.app, title: w.title, pid: w.pid, id: w.id },
+                )
+            });
+        let in_app = crate::side_panel::browser_tabs(cx).into_iter().map(|(title, url)| mentions::Card::Tab {
+            chrome: false,
+            title,
+            url,
+        });
+        let chrome =
+            self.chrome_tabs.iter().cloned().map(|(title, url)| mentions::Card::Tab { chrome: true, title, url });
+        let tabs = in_app
+            .chain(chrome)
+            .filter(|c| matches!(c, mentions::Card::Tab { title, url, .. } if hit(title) || hit(url)))
+            .take(each)
+            .map(|c| MentionItem::card("Browser tabs", c));
+        windows.chain(tabs).collect()
+    }
+
+    fn remove_card(&mut self, i: usize, cx: &mut Context<Self>) {
+        if i < self.cards.len() {
+            self.cards.remove(i);
+            self.save_draft(cx);
+            cx.notify();
+        }
     }
 
     fn ensure_files(&mut self, cx: &mut Context<Self>) {
@@ -846,11 +1043,50 @@ impl Composer {
     fn accept_mention(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(m) = self.mention.take() else { return };
         let Some(item) = m.items.get(m.highlight).cloned() else { return };
+        // Dove's own `/orchestrator` acts at once instead of inserting text.
+        if m.trigger == '/'
+            && let Some(o) = crate::orchestrate::command(&item.insert)
+        {
+            self.input.update(cx, |s, cx| s.set_value("", window, cx));
+            let next = if self.orchestrate == crate::orchestrate::Orchestrate::Off { o } else { self.orchestrate };
+            self.set_orchestrate(next, cx);
+            return;
+        }
+        // A card replaces the typed `@query`.
+        if let Some(card) = item.card {
+            self.input.update(cx, |s, cx| {
+                let cursor = s.cursor();
+                s.set_selected_range(m.start..cursor, cx);
+                s.replace("", window, cx);
+            });
+            if !self.cards.iter().any(|c| c.same(&card)) {
+                self.cards.push(card);
+            }
+            self.save_draft(cx);
+            // A click in the menu took focus: keep typing where you were.
+            focus_input(&self.input, window, cx);
+            cx.notify();
+            return;
+        }
+        if let Some(pick) = item.skill.clone() {
+            // Turn the skill on (or install it) before the message goes.
+            cx.background_spawn(async move {
+                let done = match pick {
+                    SkillPick::Enable(name) => dove_core::skills::set_skill_enabled(&name, true),
+                    SkillPick::Install { repo, path } => dove_core::skills::install(&repo, &path).map(|_| ()),
+                };
+                if let Err(e) = done {
+                    tracing::warn!("could not prepare the skill: {e}");
+                }
+            })
+            .detach();
+        }
         self.input.update(cx, |s, cx| {
             let cursor = s.cursor();
             s.set_selected_range(m.start..cursor, cx);
             s.replace(format!("{} ", item.insert), window, cx);
         });
+        focus_input(&self.input, window, cx);
         cx.notify();
     }
 
@@ -886,6 +1122,17 @@ impl Composer {
                 }
                 _ => {}
             }
+        }
+        if key == "backspace"
+            && self.mention.is_none()
+            && !self.cards.is_empty()
+            && self.input.read(cx).value().is_empty()
+        {
+            self.cards.pop();
+            self.save_draft(cx);
+            cx.stop_propagation();
+            cx.notify();
+            return;
         }
         if key == "v" && (k.modifiers.control || k.modifiers.platform) && self.paste_image(cx) {
             cx.stop_propagation();
@@ -1388,7 +1635,34 @@ impl Composer {
                 );
             self.popover(Anchor::BottomLeft, ui::menu_card(t, rows), cx)
         });
-        div().relative().child(mic).children(menu).into_any_element()
+        div()
+            .relative()
+            .flex()
+            .items_center()
+            .gap(px(2.0))
+            .child(self.call_button(size, t, cx))
+            .child(mic)
+            .children(menu)
+            .into_any_element()
+    }
+
+    /// Start (or end) a Voice Mode call with every thread.
+    fn call_button(&self, size: f32, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let live = crate::voice_call::strip(cx).is_some();
+        ui::round_button_sized(
+            "composer-call",
+            if live { "End the voice call" } else { "Voice call: talk with your agents hands-free (Ctrl Shift Space)" },
+            size,
+            t,
+        )
+        .when(live, |b| b.bg(t.accent.opacity(0.16)))
+        .child(
+            icon(icons::PHONE)
+                .size(px(if size < ui::ROUND_BUTTON { 14.0 } else { ui::ICON_LG - 1.0 }))
+                .text_color(if live { t.accent } else { t.text_muted }),
+        )
+        .on_click(|_, window, cx| window.dispatch_action(Box::new(crate::actions::ToggleVoiceCall), cx))
+        .into_any_element()
     }
 
     fn action_button(&self, has_text: bool, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
@@ -1419,7 +1693,7 @@ impl Composer {
             SendState::Queue => (icons::QUEUE_SEND, "Queue: send when this turn ends (Enter)", Some("Queue")),
             _ => (icons::ARROW_UP, "Send (Enter)", None),
         };
-        let enabled = has_text || !self.attachments.is_empty();
+        let enabled = has_text || !self.attachments.is_empty() || !self.cards.is_empty();
         div()
             .id("composer-send")
             .h(px(ui::ROUND_BUTTON))
@@ -1600,35 +1874,91 @@ impl Composer {
         )
     }
 
+    /// Mentioned threads, folders, windows and tabs as Codex-style cards
+    /// above the input: glyph and name, a remove button on hover.
+    fn render_cards(&self, t: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if self.cards.is_empty() {
+            return None;
+        }
+        Some(
+            div()
+                .flex()
+                .flex_wrap()
+                .gap(px(6.0))
+                .children(self.cards.iter().enumerate().map(|(i, c)| {
+                    let group = SharedString::from(format!("card-g-{i}"));
+                    div()
+                        .id(SharedString::from(format!("card-{i}")))
+                        .group(group.clone())
+                        .h(px(28.0))
+                        .max_w(px(260.0))
+                        .pl(px(8.0))
+                        .pr(px(4.0))
+                        .flex()
+                        .items_center()
+                        .gap(px(6.0))
+                        .rounded(px(8.0))
+                        .bg(t.wash(0.07))
+                        .tooltip(ui::tip(c.detail()))
+                        .child(icon(c.glyph()).size(px(13.0)).flex_none().text_color(t.accent))
+                        .child(div().min_w_0().truncate().text_size(ty::SMALL).text_color(t.text).child(c.label()))
+                        .child(
+                            div()
+                                .id(SharedString::from(format!("card-x-{i}")))
+                                .size(px(18.0))
+                                .flex_none()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .rounded(px(5.0))
+                                .cursor_pointer()
+                                .opacity(0.0)
+                                .group_hover(group, |s| s.opacity(1.0))
+                                .hover(|s| s.bg(t.wash(0.10)))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    cx.stop_propagation();
+                                    this.remove_card(i, cx);
+                                }))
+                                .child(icon(icons::CLOSE).size(px(10.0)).text_color(t.text_muted)),
+                        )
+                }))
+                .into_any_element(),
+        )
+    }
+
     fn render_mention(&self, t: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
         let m = self.mention.as_ref()?;
         let empty = m.items.is_empty();
+        let heading = |label: &'static str| {
+            div().px(px(14.0)).pt(px(6.0)).pb(px(4.0)).text_size(ty::MICRO).text_color(t.text_faint).child(label)
+        };
         let list = div()
-            .w(px(420.0))
+            .w(px(440.0))
             .flex()
             .flex_col()
-            .child(
-                div()
-                    .px(px(14.0))
-                    .pt(px(6.0))
-                    .pb(px(4.0))
-                    .text_size(ty::MICRO)
-                    .text_color(t.text_faint)
-                    .child(if m.trigger == '@' { "Files" } else { "Commands" }),
-            )
+            .when(empty || m.items.first().is_some_and(|i| i.section.is_empty()), |d| {
+                d.child(heading(match m.trigger {
+                    '@' => "Files, threads, apps and tabs",
+                    '#' => "Skills",
+                    _ => "Commands",
+                }))
+            })
             .when(empty, |d| {
-                d.child(
-                    div()
-                        .px(px(14.0))
-                        .py(px(8.0))
-                        .text_size(ty::BODY)
-                        .text_color(t.text_faint)
-                        .child(if self.files.is_empty() { "Loading files…" } else { "No matching files" }),
-                )
+                d.child(div().px(px(14.0)).py(px(8.0)).text_size(ty::BODY).text_color(t.text_faint).child(
+                    if m.trigger == '#' {
+                        "No skills yet. Add some in Settings › Plugins › Skills."
+                    } else if self.files.is_empty() && self.root().is_some() {
+                        "Loading files…"
+                    } else {
+                        "Nothing matches"
+                    },
+                ))
             })
             .children(m.items.iter().enumerate().map(|(i, item)| {
                 let selected = i == m.highlight;
-                div()
+                let new_section = !item.section.is_empty()
+                    && (i == 0 || m.items.get(i - 1).is_none_or(|p| p.section != item.section));
+                let row = div()
                     .id(SharedString::from(format!("mention-{i}")))
                     .mx(px(4.0))
                     .px(px(10.0))
@@ -1641,9 +1971,14 @@ impl Composer {
                     .when(selected, |d| d.bg(t.wash(0.10)))
                     .hover(|s| s.bg(t.wash(0.08)))
                     .child(
-                        icon(if m.trigger == '@' { icons::DOCUMENT } else { icons::COMMAND })
-                            .size(px(14.0))
-                            .text_color(t.text_faint),
+                        icon(match (&item.card, m.trigger) {
+                            (Some(c), _) => c.glyph(),
+                            (None, '@') => icons::DOCUMENT,
+                            (None, '#') => icons::MAGIC_STICK_3,
+                            _ => icons::COMMAND,
+                        })
+                        .size(px(14.0))
+                        .text_color(t.text_faint),
                     )
                     .child(div().flex_none().text_size(ty::BODY).text_color(t.text).child(item.label.clone()))
                     .child(
@@ -1660,7 +1995,8 @@ impl Composer {
                             m.highlight = i;
                         }
                         this.accept_mention(window, cx);
-                    }))
+                    }));
+                div().flex().flex_col().when(new_section, |d| d.child(heading(item.section))).child(row)
             }));
         Some(self.popover(Anchor::BottomLeft, ui::menu_card(t, list), cx))
     }
@@ -1709,6 +2045,44 @@ impl SendState {
             Self::Queue => "queue",
             Self::Stop => "stop",
         }
+    }
+}
+
+impl Composer {
+    /// Put live dictation's `text` into the input: the first time at the
+    /// cursor (after a space when needed), then over the same span each time
+    /// it changes. `done` ends the span.
+    fn place_live_dictation(&mut self, text: &str, done: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let range = self.live_dictation.clone();
+        let text = text.trim().to_string();
+        let new_range = self.input.update(cx, |s, cx| {
+            let value = s.value().to_string();
+            match range
+                .filter(|r| r.end <= value.len() && value.is_char_boundary(r.start) && value.is_char_boundary(r.end))
+            {
+                Some(r) => {
+                    // Keep the separating space only while there is text after it.
+                    let lead = if value[r.clone()].starts_with(' ') && !text.is_empty() { " " } else { "" };
+                    let piece = format!("{lead}{text}");
+                    s.set_selected_range(r.clone(), cx);
+                    s.replace(piece.clone(), window, cx);
+                    r.start..r.start + piece.len()
+                }
+                None => {
+                    if text.is_empty() {
+                        return 0..0;
+                    }
+                    let at = s.cursor().min(value.len());
+                    let before = &value[..at];
+                    let sep = if before.is_empty() || before.ends_with(char::is_whitespace) { "" } else { " " };
+                    let piece = format!("{sep}{text}");
+                    s.insert(piece.clone(), window, cx);
+                    at..at + piece.len()
+                }
+            }
+        });
+        self.live_dictation = if done || new_range.is_empty() && text.is_empty() { None } else { Some(new_range) };
+        cx.notify();
     }
 }
 
@@ -1773,8 +2147,15 @@ pub const ATTACH_HEADER: &str = "Attached files (read them as needed):";
 /// A sent message's own text and the files it carried (see
 /// [`ATTACH_HEADER`]). Text without the block comes back whole.
 pub fn split_attachments(text: &str) -> (String, Vec<PathBuf>) {
-    let Some(at) = text.find(ATTACH_HEADER) else { return (text.to_string(), Vec::new()) };
-    let body = text[..at].trim_end().to_string();
+    let strip = |body: &str| {
+        let cut = [body.find(SKILLS_HEADER), body.find(mentions::MENTIONS_HEADER)].into_iter().flatten().min();
+        match cut {
+            Some(s) => body[..s].trim_end().to_string(),
+            None => body.to_string(),
+        }
+    };
+    let Some(at) = text.find(ATTACH_HEADER) else { return (strip(text), Vec::new()) };
+    let body = strip(text[..at].trim_end());
     let files = text[at + ATTACH_HEADER.len()..]
         .lines()
         .filter_map(|line| line.trim().strip_prefix("- "))
@@ -1782,6 +2163,100 @@ pub fn split_attachments(text: &str) -> (String, Vec<PathBuf>) {
         .map(|p| PathBuf::from(p.trim()))
         .collect();
     (body, files)
+}
+
+/// The block a sent message carries for the skills it names with `#`: the
+/// agent loads each one, and the transcript leaves the block out.
+pub const SKILLS_HEADER: &str = "Skills to use for this message (read each SKILL.md and follow it):";
+
+/// The `#` menu for query `q`: installed skills that are on, then ones that
+/// are off (picking turns them on), then recommended ones not installed yet
+/// (picking installs them).
+fn skill_items(q: &str) -> Vec<MentionItem> {
+    use dove_core::skills::{self, Source};
+    let reg = skills::load();
+    let hit = |name: &str, detail: &str| q.is_empty() || name.contains(q) || detail.to_ascii_lowercase().contains(q);
+    let mut on = Vec::new();
+    let mut off = Vec::new();
+    for s in &reg.skills {
+        if !hit(&s.name, &s.description) {
+            continue;
+        }
+        let from = match &s.source {
+            Source::Bundled => String::new(),
+            Source::Git { repo, .. } => format!(" · {repo}"),
+            Source::Local { .. } => " · yours".to_string(),
+        };
+        let item = |detail: String, skill| MentionItem {
+            label: format!("#{}", s.name),
+            detail,
+            insert: format!("#{}", s.name),
+            skill,
+            section: "Skills",
+            ..Default::default()
+        };
+        if s.enabled {
+            on.push(item(format!("{}{from}", s.description), None));
+        } else {
+            off.push(item(
+                format!("Off, turns on when picked · {}", s.description),
+                Some(SkillPick::Enable(s.name.clone())),
+            ));
+        }
+    }
+    let recommended = skills::RECOMMENDED
+        .iter()
+        .filter(|&(_repo, _path, name, blurb)| reg.get(name).is_none() && hit(name, blurb))
+        .map(|(repo, path, name, blurb)| MentionItem {
+            label: format!("#{name}"),
+            detail: format!("Recommended, installs when picked · {blurb}"),
+            insert: format!("#{name}"),
+            skill: Some(SkillPick::Install { repo: repo.to_string(), path: path.to_string() }),
+            section: "Skills",
+            ..Default::default()
+        });
+    on.into_iter().chain(off).chain(recommended).take(MAX_SKILL_MENTIONS).collect()
+}
+
+const MAX_SKILL_MENTIONS: usize = 12;
+
+/// The skills a message names as `#name` (installed and on), as the block
+/// that tells the agent to load them.
+fn skills_block(text: &str) -> Option<String> {
+    let names = skill_tags(text);
+    if names.is_empty() {
+        return None;
+    }
+    let reg = dove_core::skills::load();
+    let root = dove_core::skills::root();
+    let lines: Vec<String> = names
+        .iter()
+        // A recommended skill picked a moment ago may still be installing;
+        // its folder is where it will land.
+        .filter(|n| {
+            reg.get(n).map_or_else(
+                || dove_core::skills::RECOMMENDED.iter().any(|(_, _, name, _)| *name == n.as_str()),
+                |s| s.enabled,
+            )
+        })
+        .map(|n| format!("- {n}: {}", root.join(n).join("SKILL.md").display()))
+        .collect();
+    (!lines.is_empty()).then(|| format!("{SKILLS_HEADER}\n{}", lines.join("\n")))
+}
+
+/// Every distinct `#name` in `text` (skill-name characters only).
+fn skill_tags(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for word in text.split_whitespace() {
+        let Some(tag) = word.strip_prefix('#') else { continue };
+        let tag: String =
+            tag.chars().take_while(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '-').collect();
+        let tag = tag.trim_end_matches('-').to_string();
+        if !tag.is_empty() && !out.contains(&tag) {
+            out.push(tag);
+        }
+    }
+    out
 }
 
 /// Whether `path` is an image Dove can show as a thumbnail.
@@ -1806,6 +2281,17 @@ pub fn set_text(composer: &Entity<Composer>, text: &str, window: &mut Window, cx
     let input = composer.read(cx).input.clone();
     let text = text.to_string();
     input.update(cx, |s, cx| s.set_value(text, window, cx));
+}
+
+/// The composer's text, cleared from it (None when it is empty).
+pub fn take_text(composer: &Entity<Composer>, window: &mut Window, cx: &mut App) -> Option<String> {
+    let input = composer.read(cx).input.clone();
+    let text = input.read(cx).value().to_string();
+    if text.trim().is_empty() {
+        return None;
+    }
+    input.update(cx, |s, cx| s.set_value(String::new(), window, cx));
+    Some(text)
 }
 
 pub fn is_empty(composer: &Entity<Composer>, cx: &App) -> bool {
@@ -2214,6 +2700,47 @@ impl Composer {
         div().relative().child(trigger).children(card).into_any_element()
     }
 
+    fn set_orchestrate(&mut self, o: crate::orchestrate::Orchestrate, cx: &mut Context<Self>) {
+        self.orchestrate = o;
+        crate::orchestrate::set(&self.engine.store, self.thread.as_ref().map(|(t, _)| t.id), o);
+        let (title, body) = match o {
+            crate::orchestrate::Orchestrate::Off => ("Orchestrator off", "This thread works alone."),
+            crate::orchestrate::Orchestrate::Ask => (
+                "Orchestrator on",
+                "The agent can propose other agents; you review and approve each one above the input.",
+            ),
+            crate::orchestrate::Orchestrate::Auto => {
+                ("Orchestrator on · auto", "The agent starts other agents without asking.")
+            }
+        };
+        crate::kit::Toasts::push(cx, title, Some(body.to_string()), crate::kit::Tone::Info, None);
+        cx.notify();
+    }
+
+    /// The `/orchestrator` chip while it is on; a click cycles ask, auto, off.
+    fn orchestrate_chip(&self, t: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let o = self.orchestrate;
+        (o != crate::orchestrate::Orchestrate::Off).then(|| {
+            div()
+                .id("composer-orchestrate")
+                .h(px(24.0))
+                .px(px(6.0))
+                .flex()
+                .items_center()
+                .gap(px(4.0))
+                .rounded(px(radius::fit(24.0)))
+                .cursor_pointer()
+                .text_size(ty::BODY)
+                .text_color(t.accent)
+                .hover(|s| s.bg(t.element_hover))
+                .tooltip(ui::tip("Orchestrator: ask approves each agent, auto starts them. Click to change"))
+                .child(icon(icons::FORK).size(px(13.0)).text_color(t.accent))
+                .child(if o == crate::orchestrate::Orchestrate::Auto { "Auto" } else { "Orchestrator" })
+                .on_click(cx.listener(move |this, _, _, cx| this.set_orchestrate(o.next(), cx)))
+                .into_any_element()
+        })
+    }
+
     /// Permission level. The dock, the thread composer, and the centered
     /// home composer all draw this chip. The stored default stays Ask.
     fn dock_mode(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
@@ -2229,9 +2756,9 @@ impl Composer {
             .rounded(px(radius::fit(24.0)))
             .cursor_pointer()
             .text_size(ty::BODY)
-            .text_color(if bypass { t.danger } else { t.text.opacity(0.62) })
+            .text_color(t.text.opacity(0.62))
             .when(open, |d| d.bg(t.element_hover))
-            .hover(|s| s.bg(t.element_hover).text_color(if bypass { t.danger } else { t.text.opacity(0.9) }))
+            .hover(|s| s.bg(t.element_hover).text_color(t.text.opacity(0.9)))
             .tooltip(ui::tip("Permission level"))
             .child(label)
             .on_click(cx.listener(|this, _, _, cx| this.toggle_menu(Menu::Mode, cx)));
@@ -2288,13 +2815,13 @@ impl Composer {
         focused: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let bypass = self.mode == PermissionMode::Bypass;
-        let staged = self.queue.len() + self.attachments.len() > 0;
+        let staged = self.queue.len() + self.attachments.len() + self.cards.len() > 0;
         // A squircle: large corners, with a straight run along the top and bottom.
         let radius = radius::plate(DOCK_H);
         let edge = t.composer_border();
         let busy = has_text
             || !self.attachments.is_empty()
+            || !self.cards.is_empty()
             || !self.queue.is_empty()
             || self.running
             || focused
@@ -2346,9 +2873,9 @@ impl Composer {
                 }))
                 .into_any_element();
         }
-        let border = if bypass {
-            t.danger.opacity(0.55)
-        } else if self.dragging_files {
+        // The plate looks the same in every permission mode; the mode chip
+        // under it says which one is on.
+        let border = if self.dragging_files {
             t.accent
         } else if focused {
             edge.opacity((edge.a * 2.0).min(1.0))
@@ -2388,8 +2915,9 @@ impl Composer {
             .flex_col()
             .gap(px(8.0))
             .children(self.render_queue(t, cx))
+            .children(self.render_cards(t, cx))
             .children(self.render_attachments(t, cx));
-        let show_send = has_text || self.running || !self.attachments.is_empty();
+        let show_send = has_text || self.running || !self.attachments.is_empty() || !self.cards.is_empty();
         // The row fills the bar inside its border, so its content is centred
         // on the bar itself (equal room above and below).
         let bar = surface.when(staged, |d| d.child(staged_rows.px(px(12.0)).pt(px(12.0)).pb(px(2.0)))).child(
@@ -2421,6 +2949,7 @@ impl Composer {
             .child(self.place_chip(t, cx))
             .child(div().w(px(1.0)).h(px(10.0)).mx(px(6.0)).bg(t.border))
             .child(self.dock_mode(t, cx))
+            .children(self.orchestrate_chip(t, cx))
             .child(div().flex_1())
             .child(div().flex_none().max_w(px(240.0)).child(self.picker.clone()))
             .child(self.meter_chip(Meter::Plan, t, cx));
@@ -2495,7 +3024,6 @@ impl Composer {
         let theme = Theme::of(cx).clone();
         let t = &theme;
         let has_text = !self.input.read(cx).value().trim().is_empty();
-        let bypass = self.mode == PermissionMode::Bypass;
         let focused = self.input.read(cx).focus_handle(cx).is_focused(window);
         let home = self.thread.is_none();
         if self.docked() {
@@ -2503,14 +3031,14 @@ impl Composer {
         }
 
         let hero = self.variant == Variant::Hero;
-        let staged = self.queue.len() + self.attachments.len() > 0;
+        let staged = self.queue.len() + self.attachments.len() + self.cards.len() > 0;
         // Both are Zeron's 26 px plate; the hero's corner is also concentric
         // with its send disc (14 + 12).
         let radius = crate::design::radius::COMPOSER;
         let edge = t.composer_border();
-        let border = if bypass {
-            t.danger.opacity(0.55)
-        } else if self.dragging_files {
+        // The plate looks the same in every permission mode; the mode chip
+        // under it says which one is on.
+        let border = if self.dragging_files {
             t.accent
         } else if focused {
             edge.opacity((edge.a * 2.0).min(1.0))
@@ -2545,6 +3073,7 @@ impl Composer {
             .flex_col()
             .gap(px(8.0))
             .children(self.render_queue(t, cx))
+            .children(self.render_cards(t, cx))
             .children(self.render_attachments(t, cx));
 
         let box_ = if hero {
@@ -2579,6 +3108,7 @@ impl Composer {
                         .gap(px(2.0))
                         .child(self.attach_button(icons::PAPERCLIP, ui::ROUND_BUTTON, t, cx))
                         .child(div().flex_none().child(self.dock_mode(t, cx)))
+                        .children(self.orchestrate_chip(t, cx).map(|c| div().flex_none().child(c)))
                         .child(div().flex_1())
                         .child(div().min_w_0().max_w(px(240.0)).overflow_hidden().child(self.picker.clone()))
                         .child(self.mic_button(ui::ROUND_BUTTON, t, cx))
@@ -2678,19 +3208,6 @@ impl Composer {
     }
 }
 
-/// "12,400" — thousands separators for the usage cards.
-fn grouped(n: u64) -> String {
-    let digits = n.to_string();
-    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
-    for (index, digit) in digits.chars().enumerate() {
-        if index > 0 && (digits.len() - index) % 3 == 0 {
-            out.push(',');
-        }
-        out.push(digit);
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2702,6 +3219,14 @@ mod tests {
         assert_eq!(body, "look at these");
         assert_eq!(files, vec![PathBuf::from("C:/a/shot.png"), PathBuf::from("C:/b/Cargo.toml")]);
         // Files alone, and plain text, both come back sensibly.
+        let with_skills =
+            format!("#pdf make it\n\n{SKILLS_HEADER}\n- pdf: /s/pdf/SKILL.md\n\n{ATTACH_HEADER}\n- /a.png");
+        let (body, files) = split_attachments(&with_skills);
+        assert_eq!(body, "#pdf make it");
+        assert_eq!(files, vec![PathBuf::from("/a.png")]);
+        let (body, _) = split_attachments(&format!("hi #x\n\n{SKILLS_HEADER}\n- x: /x"));
+        assert_eq!(body, "hi #x");
+        assert_eq!(skill_tags("use #pdf, #web-app-testing. and #pdf #1 #"), vec!["pdf", "web-app-testing", "1"]);
         let (body, files) = split_attachments(&format!("{ATTACH_HEADER}\n- /tmp/x.jpg"));
         assert!(body.is_empty());
         assert_eq!(files.len(), 1);
@@ -2739,13 +3264,5 @@ mod tests {
         assert!(!home_input_is_dock(Some("center")));
         assert!(!home_input_is_dock(Some("")));
         assert!(home_input_is_dock(Some("dock")));
-    }
-
-    #[test]
-    fn usage_counts_are_grouped_by_thousands() {
-        assert_eq!(grouped(0), "0");
-        assert_eq!(grouped(999), "999");
-        assert_eq!(grouped(5417), "5,417");
-        assert_eq!(grouped(1_048_576), "1,048,576");
     }
 }

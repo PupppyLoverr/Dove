@@ -49,7 +49,9 @@ pub enum Section {
     Shortcuts,
     Agents,
     Team,
-    Integrations,
+    /// Built-in tools, apps (Composio), MCP servers, skills and memory on
+    /// one page (`pages/plugins.rs`).
+    Plugins,
     Remote,
     Data,
     Archived,
@@ -58,10 +60,10 @@ pub enum Section {
 
 /// What the settings page asks the shell to do.
 pub enum SettingsEvent {
-    /// Open the Team page (optionally its editor for a new teammate).
-    OpenTeam { new: bool },
-    /// Open the Agents page (sign-in terminals, binary paths).
-    OpenAgents,
+    /// Run an agent's own sign-in in a terminal sheet.
+    SignIn(HarnessKind),
+    /// Look for agent CLIs on PATH again.
+    Rescan,
     /// Leave Settings (Back, or Escape).
     Close,
 }
@@ -76,7 +78,7 @@ impl Section {
         Section::Shortcuts,
         Section::Agents,
         Section::Team,
-        Section::Integrations,
+        Section::Plugins,
         Section::Remote,
         Section::Data,
         Section::Archived,
@@ -86,7 +88,7 @@ impl Section {
     /// The navigation, grouped by spacing (no headers), as in Zeron.
     const GROUPS: [&'static [Section]; 3] = [
         &[Section::General, Section::Appearance, Section::Notifications, Section::Voice, Section::Shortcuts],
-        &[Section::Agents, Section::Team, Section::Integrations, Section::Remote],
+        &[Section::Agents, Section::Team, Section::Plugins, Section::Remote],
         &[Section::Data, Section::Archived, Section::About],
     ];
 
@@ -99,7 +101,7 @@ impl Section {
             Section::Shortcuts => "Shortcuts",
             Section::Agents => "Agents",
             Section::Team => "Team",
-            Section::Integrations => "Integrations",
+            Section::Plugins => "Plugins",
             Section::Remote => "Remote",
             Section::Data => "Data & Storage",
             Section::Archived => "Archived",
@@ -116,7 +118,7 @@ impl Section {
             Section::Shortcuts => icons::KEYBOARD,
             Section::Agents => icons::WIDGET,
             Section::Team => icons::USERS_GROUP,
-            Section::Integrations => icons::WIDGET_ADD,
+            Section::Plugins => icons::WIDGET_ADD,
             Section::Remote => icons::SMARTPHONE,
             Section::Data => icons::HARD_DRIVE,
             Section::Archived => icons::ARCHIVE_MINIMALISTIC,
@@ -133,7 +135,7 @@ impl Section {
             Section::Shortcuts => "keyboard",
             Section::Agents => "agents",
             Section::Team => "team",
-            Section::Integrations => "integrations",
+            Section::Plugins => "plugins",
             Section::Remote => "remote",
             Section::Data => "data",
             Section::Archived => "archived",
@@ -152,7 +154,11 @@ impl Section {
             "keyboard" | "shortcuts" => Section::Shortcuts,
             "agents" | "providers" | "harnesses" => Section::Agents,
             "team" | "crew" => Section::Team,
-            "integrations" => Section::Integrations,
+            // The four pages Plugins replaced open their tab of it.
+            "plugins" | "integrations" | "mcp" | "connectors" | "composio" | "apps" | "skills" | "skill" | "memory"
+            | "supermemory" | "directory" | "computer" | "computer_use" | "ego" | "chrome" | "extension" | "github" => {
+                Section::Plugins
+            }
             "remote" | "devices" => Section::Remote,
             "data" | "storage" => Section::Data,
             "archived" => Section::Archived,
@@ -181,6 +187,12 @@ const INDEX: &[Entry] = &[
     e(Section::General, "restore_tabs", "Reopen thread tabs on launch", "restore startup tabs session"),
     e(Section::General, "topbar_tabs", "Show thread tabs in the title bar", "tabs title bar top bar strip slim"),
     e(Section::General, "prewarm", "Prewarm agent while typing", "prewarm faster first token harness start"),
+    e(
+        Section::General,
+        "agents_open_panels",
+        "Agents can open the side panel",
+        "panel show finished work browser diff",
+    ),
     e(Section::General, "ai_titles", "Name threads with AI", "ai auto title name rename sidebar thread summary"),
     e(
         Section::General,
@@ -194,7 +206,6 @@ const INDEX: &[Entry] = &[
     e(Section::General, "sidebar_density", "Compact thread rows", "sidebar density compact rows single line"),
     e(Section::General, "sidebar_archived", "Show archived threads in the sidebar", "sidebar archived show"),
     e(Section::General, "agent_browser", "Browser tools for agents", "agent browser mcp tools webview"),
-    e(Section::General, "agent_office_skills", "Office document skills", "office docx pptx xlsx pdf skills agents"),
     e(Section::Appearance, "appearance", "Color scheme", "theme dark light system mode appearance"),
     e(Section::Appearance, "accent", "Accent color", "accent color sky indigo orange green pink amber cyan blue"),
     e(
@@ -247,15 +258,66 @@ const INDEX: &[Entry] = &[
     ),
     e(Section::Voice, "voice_model", "Dictation model", "voice dictation parakeet nvidia model download speech"),
     e(Section::Voice, "voice_device", "Microphone", "microphone input device audio voice"),
+    e(Section::Voice, "dictation_live", "Live dictation", "live dictation realtime streaming words appear as you talk"),
+    e(
+        Section::Voice,
+        "voice_call_mode",
+        "Voice Mode",
+        "voice mode call hands free talk conversation listening push to talk",
+    ),
+    e(Section::Voice, "voice_name", "Voice", "voice speech tts speaker system voice"),
+    e(Section::Voice, "voice_global_hotkey", "Shortcut outside Dove", "global hotkey shortcut voice call system wide"),
+    e(Section::Voice, "voice_rate", "Speaking rate", "voice speed rate faster slower"),
+    e(
+        Section::Voice,
+        "voice_echo_cancel",
+        "Echo cancellation",
+        "echo cancellation speakers headphones barge in interrupt",
+    ),
+    e(
+        Section::Voice,
+        "voice_announce",
+        "Announce thread updates",
+        "voice announce notifications finished failed approval",
+    ),
+    e(Section::Voice, "voice_earcons", "Sounds", "voice chime earcon sound cue ready heard beep"),
+    e(Section::Voice, "voice_call_models", "Voice Mode models", "silero vad smart turn detection model download"),
+    e(Section::Voice, "voice_cloud", "Cloud speech recognition", "cloud openai whisper groq speech api upload audio"),
+    e(
+        Section::Voice,
+        "voice_cloud_tts_provider",
+        "Voice service",
+        "cloud voice tts fish audio free deepgram aura cartesia sonic inworld elevenlabs natural voice",
+    ),
+    e(Section::Voice, "voice_router_url", "Command router", "router llama llm intent model voice commands"),
     e(Section::Shortcuts, "shortcuts", "Keyboard shortcuts", "keyboard shortcuts keybindings hotkeys rebind keys"),
     e(Section::Agents, "agents", "Agents", "agents harness claude codex cursor gemini opencode cli binary enable hide"),
     e(Section::Team, "team_roster", "Teammates", "team teammates personas roster specialists"),
     e(Section::Team, "team_notes", "Persistent teammate notes", "team notes memory learn"),
     e(
-        Section::Integrations,
+        Section::Plugins,
         "integrations",
-        "Integrations",
-        "integrations mcp chrome extension composio paper computer use cua",
+        "Plugins: built in and MCP servers",
+        "integrations mcp servers custom oauth sign in catalog figma linear notion chrome extension paper ego lite browser computer use dove-driver plugin github cli",
+    ),
+    e(
+        Section::Plugins,
+        "connectors",
+        "Plugins: apps through Composio",
+        "connectors composio apps gmail slack notion github linear calendar toolkits connect",
+    ),
+    e(
+        Section::Plugins,
+        "skills",
+        "Plugins: skills",
+        "skills agent skills library install github superpowers anthropic composio ego browser discover update",
+    ),
+    e(Section::Plugins, "agent_office_skills", "Office document skills", "office docx pptx xlsx pdf skills agents"),
+    e(
+        Section::Plugins,
+        "memory",
+        "Plugins: memory",
+        "memory supermemory recall remember forget capture corrections learn profile never send",
     ),
     e(Section::Remote, "remote_enabled", "Remote control", "remote phone mobile companion woozlit account"),
     e(Section::Data, "data_size", "Storage", "data storage disk size folder"),
@@ -322,12 +384,17 @@ pub struct SettingsPage {
     devices: Vec<(String, String)>,
     data_size: Option<u64>,
     integrations: Entity<crate::pages::integrations::IntegrationsView>,
+    /// Held here; Plugins (the integrations view) draws them.
+    _skills: Entity<crate::pages::skills::SkillsView>,
+    _memory: Entity<crate::pages::memory_settings::MemoryView>,
     focus: FocusHandle,
     nav_focus: FocusHandle,
     scroll: ScrollHandle,
     /// The row to bring into view on the next paint.
     pending_scroll: Rc<Cell<Option<&'static str>>>,
     flash: Option<(&'static str, Instant)>,
+    /// Agents: the custom binary path being edited.
+    agent_path_edit: Option<(HarnessKind, Entity<InputState>)>,
     /// Live value of the conversation-width slider while it is dragged.
     width_drag: Option<f32>,
     sel_mode: SelectState,
@@ -345,6 +412,16 @@ pub struct SettingsPage {
     sel_scrollback: SelectState,
     sel_home_input: SelectState,
     sel_mic: SelectState,
+    sel_voice: SelectState,
+    sel_tts_provider: SelectState,
+    /// The voice id for the selected cloud voice service (saved per service).
+    voice_tts_voice: Entity<InputState>,
+    /// System voices (loaded off-thread when Voice opens).
+    voices: Vec<String>,
+    /// Voice Mode model downloads: in flight (None) or failed (Some).
+    voice_dl: HashMap<&'static str, Option<String>>,
+    voice_cloud_url: Entity<InputState>,
+    voice_router_url: Entity<InputState>,
     width_slider: SliderState,
     save_gen: HashMap<&'static str, u64>,
     _subs: Vec<Subscription>,
@@ -383,8 +460,32 @@ impl SettingsPage {
             s.set_value(clone_value, window, cx);
             s
         });
+        let text_field = |placeholder: &'static str, key: &str, window: &mut Window, cx: &mut Context<Self>| {
+            let value = engine.store.setting(key).unwrap_or_default();
+            let style = style.clone();
+            cx.new(|cx| {
+                let mut s = InputState::new(window, cx).placeholder(placeholder);
+                s.set_editor_style(style);
+                s.set_value(value, window, cx);
+                s
+            })
+        };
+        let voice_cloud_url = text_field("https://api.openai.com/v1", "voice_cloud_url", window, cx);
+        let voice_router_url = text_field("http://127.0.0.1:8080/v1 (off)", "voice_router_url", window, cx);
+        let provider = engine.store.setting("voice_cloud_tts_provider").unwrap_or_default();
+        let voice_tts_voice = text_field("Default voice", &tts_voice_key(&provider), window, cx);
         let mut subs = vec![search_sub];
-        for (input, key) in [(&clone_dir, "clone_dir")] {
+        // Saved under the service picked now, so each keeps its own voice.
+        subs.push(cx.subscribe(&voice_tts_voice, |this, s, ev: &InputEvent, cx| {
+            if matches!(ev, InputEvent::Change | InputEvent::Blur) {
+                let value = s.read(cx).value().trim().to_string();
+                let key = tts_voice_key(&this.get("voice_cloud_tts_provider").unwrap_or_default());
+                let _ = this.engine.store.set_setting(&key, &value);
+            }
+        }));
+        for (input, key) in
+            [(&clone_dir, "clone_dir"), (&voice_cloud_url, "voice_cloud_url"), (&voice_router_url, "voice_router_url")]
+        {
             subs.push(cx.subscribe(input, move |this, s, ev: &InputEvent, cx| match ev {
                 InputEvent::Change => {
                     let value = s.read(cx).value().trim().to_string();
@@ -409,6 +510,14 @@ impl SettingsPage {
             engine.store.setting("settings_section").and_then(|s| Section::from_id(&s)).unwrap_or(Section::General);
         let integrations = cx.new(|cx| crate::pages::integrations::IntegrationsView::new(window, cx));
         subs.push(cx.observe(&integrations, |_, _, cx| cx.notify()));
+        let skills = cx.new(|cx| crate::pages::skills::SkillsView::new(window, cx));
+        subs.push(cx.observe(&skills, |_, _, cx| cx.notify()));
+        let memory = {
+            let (engine, integrations) = (engine.clone(), integrations.clone());
+            cx.new(|cx| crate::pages::memory_settings::MemoryView::new(engine, integrations, window, cx))
+        };
+        subs.push(cx.observe(&memory, |_, _, cx| cx.notify()));
+        integrations.update(cx, |v, _| v.embed(&skills, &memory));
         Self {
             engine,
             section,
@@ -420,11 +529,14 @@ impl SettingsPage {
             devices: Vec::new(),
             data_size: None,
             integrations,
+            _skills: skills,
+            _memory: memory,
             focus: cx.focus_handle(),
             nav_focus: cx.focus_handle(),
             scroll: ScrollHandle::new(),
             pending_scroll: Rc::default(),
             flash: None,
+            agent_path_edit: None,
             width_drag: None,
             sel_mode: SelectState::default(),
             sel_surface: SelectState::default(),
@@ -440,6 +552,13 @@ impl SettingsPage {
             sel_scrollback: SelectState::default(),
             sel_home_input: SelectState::default(),
             sel_mic: SelectState::default(),
+            sel_voice: SelectState::default(),
+            sel_tts_provider: SelectState::default(),
+            voice_tts_voice,
+            voices: Vec::new(),
+            voice_dl: HashMap::new(),
+            voice_cloud_url,
+            voice_router_url,
             width_slider: SliderState::default(),
             save_gen: HashMap::new(),
             _subs: subs,
@@ -447,9 +566,13 @@ impl SettingsPage {
     }
 
     /// Open a section by id (deep links); unknown ids keep the current one.
+    /// Plugins' old page ids open their tab of it.
     pub fn show_section(&mut self, id: &str, cx: &mut Context<Self>) {
         if let Some(s) = Section::from_id(id) {
             self.select(s, cx);
+            if s == Section::Plugins {
+                self.integrations.update(cx, |v, cx| v.open(id, cx));
+            }
         }
     }
 
@@ -462,6 +585,9 @@ impl SettingsPage {
 
     fn reveal_entry(&mut self, e: &'static Entry, cx: &mut Context<Self>) {
         self.select(e.section, cx);
+        if e.section == Section::Plugins {
+            self.integrations.update(cx, |v, cx| v.open(e.row, cx));
+        }
         self.pending_scroll.set(Some(e.row));
         self.flash = Some((e.row, Instant::now()));
         cx.notify();
@@ -481,11 +607,15 @@ impl SettingsPage {
         let _ = self.engine.store.set_setting("settings_section", s.id());
         match s {
             Section::Voice if self.devices.is_empty() => {
-                let load = cx.background_spawn(async move { crate::voice::input_devices() });
+                let load = cx.background_spawn(async move {
+                    use dove_voice::engines::TextToSpeech as _;
+                    (crate::voice::input_devices(), dove_voice::tts::System::new().voices())
+                });
                 cx.spawn(async move |this, cx| {
-                    let devices = load.await;
+                    let (devices, voices) = load.await;
                     let _ = this.update(cx, |p, cx| {
                         p.devices = devices;
+                        p.voices = voices;
                         cx.notify();
                     });
                 })
@@ -937,21 +1067,17 @@ impl SettingsPage {
             Section::Shortcuts => (self.shortcuts_action(&t, cx), self.shortcuts(&t, cx)),
             Section::Agents => (
                 Some(
-                    ctl::button_sm(&t, "set-configure-agents", "Sign-in & paths", Tone::Outlined)
-                        .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::OpenAgents)))
+                    ctl::button_sm(&t, "set-agents-rescan", "Rescan", Tone::Quiet)
+                        .tooltip(ui::tip("Look for agent CLIs on PATH again"))
+                        .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::Rescan)))
                         .into_any_element(),
                 ),
-                self.agents(&t, cx),
+                self.agents(&t, window, cx),
             ),
-            Section::Team => (
-                Some(
-                    ctl::button_sm(&t, "set-team-new", "New teammate", Tone::Solid)
-                        .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::OpenTeam { new: true })))
-                        .into_any_element(),
-                ),
-                self.team(&t, cx),
-            ),
-            Section::Integrations => (None, self.integrations_section(&t)),
+            // The shell draws Team (roster, workspace, editor) with
+            // [`Self::team_options`] under it.
+            Section::Team => return None,
+            Section::Plugins => (Some(self.plugins_actions(&t)), self.plugins_section(&t)),
             Section::Remote => (None, self.remote(&t, cx)),
             Section::Data => (None, self.data(&t, cx)),
             Section::About => (None, self.about(&t, cx)),
@@ -978,12 +1104,12 @@ impl SettingsPage {
         let restore = self.flag("restore_tabs", true);
         let tabs = self.flag("topbar_tabs", false);
         let prewarm = self.flag("prewarm", true);
+        let agent_panels = self.flag("agents_open_panels", true);
         let ai_titles = self.flag("ai_titles", true);
         let grouped = self.get("sidebar_group").as_deref() == Some("project");
         let compact = self.get("sidebar_density").as_deref() == Some("compact");
         let archived = self.flag("sidebar_archived", false);
         let browser = self.flag("agent_browser", true);
-        let office = self.flag("agent_office_skills", true);
 
         let threads = page::card(t)
             .child(self.srow(
@@ -1004,6 +1130,16 @@ impl SettingsPage {
                 "Off: a slim bar with the open chat's title. The sidebar lists every thread; Ctrl+Tab and Ctrl+1–9 still switch between open ones.",
                 ctl::on_toggle(ctl::toggle(t, "set-topbar-tabs", tabs), cx, move |this, _, cx| {
                     this.set_flag("topbar_tabs", !tabs, cx)
+                }),
+            ))
+            .child(self.srow(
+                t,
+                false,
+                "agents_open_panels",
+                "Agents can open the side panel",
+                "When an agent finishes something you can look at, it opens it beside the chat: the page, the files or the diff.",
+                ctl::on_toggle(ctl::toggle(t, "set-agent-panels", agent_panels), cx, move |this, _, cx| {
+                    this.set_flag("agents_open_panels", !agent_panels, cx)
                 }),
             ))
             .child(self.srow(
@@ -1150,28 +1286,16 @@ impl SettingsPage {
                 }),
             ));
 
-        let tools = page::card(t)
-            .child(self.srow(
-                t,
-                true,
-                "agent_browser",
-                "Browser tools for agents",
-                "Agents can drive the in-app browser. Applies after Dove restarts.",
-                ctl::on_toggle(ctl::toggle(t, "set-agent-browser", browser), cx, move |this, _, cx| {
-                    this.set_flag("agent_browser", !browser, cx)
-                }),
-            ))
-            .child(self.srow(
-                t,
-                false,
-                "agent_office_skills",
-                "Office document skills",
-                "Agents can read and write Word, PowerPoint, Excel and PDF files.",
-                ctl::on_toggle(ctl::toggle(t, "set-agent-office", office), cx, move |this, _, cx| {
-                    dove_core::office_skills::set_enabled(!office);
-                    this.set_flag("agent_office_skills", !office, cx)
-                }),
-            ));
+        let tools = page::card(t).child(self.srow(
+            t,
+            true,
+            "agent_browser",
+            "Browser tools for agents",
+            "Agents can drive the in-app browser. Applies after Dove restarts.",
+            ctl::on_toggle(ctl::toggle(t, "set-agent-browser", browser), cx, move |this, _, cx| {
+                this.set_flag("agent_browser", !browser, cx)
+            }),
+        ));
 
         div()
             .flex()
@@ -1860,6 +1984,24 @@ impl SettingsPage {
         let card = page::card(t)
             .child(self.srow(t, true, "voice_model", "Dictation model", status, control))
             .child(self.srow(t, false, "voice_device", "Microphone", "", mic))
+            .child({
+                let live = self.flag("dictation_live", true);
+                let ready = crate::voice_call::local_stt_ready(&self.engine);
+                self.srow(
+                    t,
+                    false,
+                    "dictation_live",
+                    "Live dictation",
+                    match (live, ready) {
+                        (true, true) => "Words appear as you talk; each pause commits a phrase. Uses the Voice Mode speech model below.",
+                        (true, false) => "Download a speech model below (Moonshine is quickest) to see words as you talk.",
+                        (false, _) => "Off: text is inserted when you stop talking.",
+                    },
+                    ctl::on_toggle(ctl::toggle(t, "set-dictation-live", live), cx, move |this, _, cx| {
+                        this.set_flag("dictation_live", !live, cx)
+                    }),
+                )
+            })
             .child(
                 page::row(t, false).child(page::row_text(
                     t,
@@ -1867,7 +2009,449 @@ impl SettingsPage {
                     "Hold the mic in the composer or a terminal to talk, or click it to toggle. Text is inserted, never sent.",
                 )),
             );
-        page::section(t, "Dictation", card).into_any_element()
+        div()
+            .flex()
+            .flex_col()
+            .child(page::section(t, "Dictation", card))
+            .child(self.voice_mode(t, cx))
+            .into_any_element()
+    }
+
+    /// Settings › Voice › Voice Mode: the hands-free call.
+    fn voice_mode(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let this = cx.entity().downgrade();
+        let push = self.get("voice_mode").as_deref() == Some("push");
+        let listening = ctl::segmented(
+            t,
+            "set-voice-mode",
+            vec![ctl::Segment::new("Always listening"), ctl::Segment::new("Push to talk")],
+            usize::from(push),
+            {
+                let this = this.clone();
+                move |i, _, cx| {
+                    let _ = this.update(cx, |p, cx| p.set("voice_mode", if i == 1 { "push" } else { "always" }, cx));
+                }
+            },
+        );
+        let rate: f32 = self.get("voice_rate").and_then(|r| r.parse().ok()).unwrap_or(1.0);
+        let rates = ctl::segmented(
+            t,
+            "set-voice-rate",
+            vec![ctl::Segment::new("Slower"), ctl::Segment::new("Normal"), ctl::Segment::new("Faster")],
+            if rate < 0.95 {
+                0
+            } else if rate > 1.1 {
+                2
+            } else {
+                1
+            },
+            move |i, _, cx| {
+                let _ = this.update(cx, |p, cx| p.set("voice_rate", ["0.85", "1.0", "1.25"][i.min(2)], cx));
+            },
+        );
+        let current = self.get("voice_name").unwrap_or_default();
+        let mut names: Vec<SelectOption> = vec![SelectOption::new("System default")];
+        names.extend(self.voices.iter().map(|v| SelectOption::new(v.clone())));
+        let selected = self.voices.iter().position(|v| *v == current).map(|i| i + 1).unwrap_or(0);
+        let voices = self.voices.clone();
+        let voice = ctl::select::<Self>("set-voice-name", "Voice", |s| &mut s.sel_voice)
+            .options(names, selected)
+            .width(220.0)
+            .menu_width(300.0)
+            .on_select(move |this, i, _, cx| {
+                let v = if i == 0 { String::new() } else { voices.get(i - 1).cloned().unwrap_or_default() };
+                this.set("voice_name", &v, cx);
+            })
+            .render(t, &self.sel_voice, cx);
+        let echo = self.flag("voice_echo_cancel", true);
+        let announce = self.flag("voice_announce", true);
+        let earcons = self.flag("voice_earcons", true);
+        let cloud = self.flag("voice_cloud", false);
+        let cloud_tts = self.flag("voice_cloud_tts", false);
+        let shortcut = crate::keymap::shortcuts()
+            .into_iter()
+            .find(|s| s.id == "voice_call")
+            .map(|s| crate::keymap::pretty(&crate::keymap::binding(&self.engine.store, &s)))
+            .unwrap_or_default();
+        let call = page::card(t)
+            .child(self.srow(
+                t,
+                true,
+                "voice_call_mode",
+                "Listening",
+                format!(
+                    "Start a call with the phone button beside the mic, or {shortcut}. Push to talk: hold the orb (or Space) to speak."
+                ),
+                listening,
+            ))
+            .child({
+                let global = self.flag("voice_global_hotkey", true);
+                let detail: SharedString = match (global, crate::hotkey::last_error()) {
+                    (true, Some(e)) => format!("The shortcut couldn't be registered: {e}. Pick another in Shortcuts.").into(),
+                    (true, None) if cfg!(windows) => format!("{shortcut} starts or ends a call from any app.").into(),
+                    (true, None) => "Available on Windows; elsewhere the shortcut works inside Dove.".into(),
+                    (false, _) => "Off: the shortcut works only while Dove is in front.".into(),
+                };
+                self.srow(
+                    t,
+                    false,
+                    "voice_global_hotkey",
+                    "Shortcut outside Dove",
+                    detail,
+                    ctl::on_toggle(ctl::toggle(t, "set-voice-global", global), cx, move |this, _, cx| {
+                        this.set_flag("voice_global_hotkey", !global, cx);
+                        crate::hotkey::apply(&this.engine.store);
+                        cx.notify();
+                    }),
+                )
+            })
+            .child(self.srow(t, false, "voice_name", "Voice", "Your operating system's voices. No download.", voice))
+            .child(self.srow(t, false, "voice_rate", "Speaking rate", "Or say \"talk faster\" during a call.", rates))
+            .child(self.srow(
+                t,
+                false,
+                "voice_echo_cancel",
+                "Echo cancellation",
+                "Lets you use speakers instead of headphones, and talk over Dove to interrupt it.",
+                ctl::on_toggle(ctl::toggle(t, "set-voice-echo", echo), cx, move |this, _, cx| {
+                    this.set_flag("voice_echo_cancel", !echo, cx)
+                }),
+            ))
+            .child(self.srow(
+                t,
+                false,
+                "voice_announce",
+                "Announce thread updates",
+                "Say when a thread finishes, fails or needs your approval.",
+                ctl::on_toggle(ctl::toggle(t, "set-voice-announce", announce), cx, move |this, _, cx| {
+                    this.set_flag("voice_announce", !announce, cx)
+                }),
+            ))
+            .child(self.srow(
+                t,
+                false,
+                "voice_earcons",
+                "Sounds",
+                "A soft chime when the call starts listening and when Dove has heard you.",
+                ctl::on_toggle(ctl::toggle(t, "set-voice-earcons", earcons), cx, move |this, _, cx| {
+                    this.set_flag("voice_earcons", !earcons, cx)
+                }),
+            ))
+            .child(
+                page::row(t, false).child(page::row_text(
+                    t,
+                    "What you can say",
+                    "\"What's happening?\", \"Stop\", \"Approve\" or \"Deny\", \"Talk to the tests thread\", \"Tell Codex to also run clippy\", \"Start a Claude task on the login page in a new worktree\", \"Take me back\", \"Show the diff\", \"End call\". Anything else goes to the thread you're talking to. Voice never approves deletions, force pushes or work outside the thread's folder: those need your click.",
+                )),
+            );
+        let models = page::card(t)
+            .child(self.voice_stt_row(t, cx))
+            .child(self.voice_model_row(t, &dove_voice::models::SILERO, cx))
+            .child(self.voice_model_row(t, &dove_voice::models::SMART_TURN, cx));
+        // Each service's details show once it is on.
+        let router_endpoint = {
+            let has_url = self.get("voice_router_url").is_some_and(|u| !u.trim().is_empty());
+            self.get("voice_router").unwrap_or_else(|| if has_url { "endpoint".into() } else { "off".into() })
+                == "endpoint"
+        };
+        let cloud_card = page::card(t)
+            .child(self.srow(
+                t,
+                true,
+                "voice_cloud",
+                "Cloud speech recognition",
+                if cloud && self.get("voice_cloud_stt_provider").as_deref() == Some("deepgram") {
+                    "On: your spoken audio is uploaded to Deepgram for transcription."
+                } else if cloud {
+                    "On: your spoken audio is uploaded to the endpoint below for transcription."
+                } else {
+                    "Off: audio never leaves this computer."
+                },
+                ctl::on_toggle(ctl::toggle(t, "set-voice-cloud", cloud), cx, move |this, _, cx| {
+                    this.set_flag("voice_cloud", !cloud, cx)
+                }),
+            ))
+            .child(self.srow(
+                t,
+                false,
+                "voice_cloud_tts",
+                "Cloud voice",
+                if cloud_tts {
+                    let id = self.get("voice_cloud_tts_provider").unwrap_or_else(|| "openai".into());
+                    let label = TTS_SERVICES.iter().find(|s| s.id == id).map_or("the endpoint below", |s| s.label);
+                    SharedString::from(format!(
+                        "On: what Dove says (including agents' replies) is sent to {label} for speech. If it fails, Dove uses your system's voice."
+                    ))
+                } else {
+                    SharedString::from("Off: Dove speaks with your system's voice.")
+                },
+                ctl::on_toggle(ctl::toggle(t, "set-voice-cloud-tts", cloud_tts), cx, move |this, _, cx| {
+                    this.set_flag("voice_cloud_tts", !cloud_tts, cx)
+                }),
+            ))
+            .when(cloud, |d| d.child({
+                let this = cx.entity().downgrade();
+                let stt_provider = usize::from(self.get("voice_cloud_stt_provider").as_deref() == Some("deepgram"));
+                self.srow(
+                    t,
+                    false,
+                    "voice_cloud_stt_provider",
+                    "Speech recognition service",
+                    "OpenAI-compatible uses the endpoint below and DOVE_VOICE_API_KEY. Deepgram uses DEEPGRAM_API_KEY.",
+                    ctl::segmented(
+                        t,
+                        "set-voice-stt-provider",
+                        vec![ctl::Segment::new("OpenAI-compatible"), ctl::Segment::new("Deepgram")],
+                        stt_provider,
+                        move |i, _, cx| {
+                            let _ = this.update(cx, |p, cx| {
+                                p.set("voice_cloud_stt_provider", if i == 1 { "deepgram" } else { "openai" }, cx)
+                            });
+                        },
+                    ),
+                )
+            }))
+            .when(cloud_tts, |d| d.child({
+                let current = self.get("voice_cloud_tts_provider").unwrap_or_else(|| "openai".into());
+                let selected = TTS_SERVICES.iter().position(|s| s.id == current).unwrap_or(TTS_SERVICES.len() - 1);
+                let service = &TTS_SERVICES[selected];
+                let picker = ctl::select::<Self>("set-voice-tts-provider", "Voice service", |s| &mut s.sel_tts_provider)
+                    .options(TTS_SERVICES.iter().map(|s| SelectOption::new(s.label)), selected)
+                    .width(220.0)
+                    .menu_width(300.0)
+                    .on_select(|this, i, window, cx| {
+                        let Some(service) = TTS_SERVICES.get(i) else { return };
+                        this.set("voice_cloud_tts_provider", service.id, cx);
+                        let voice = this.get(&tts_voice_key(service.id)).unwrap_or_default();
+                        this.voice_tts_voice.update(cx, |s, cx| s.set_value(voice, window, cx));
+                    })
+                    .render(t, &self.sel_tts_provider, cx);
+                self.srow(t, false, "voice_cloud_tts_provider", "Voice service", service.blurb, picker)
+            }))
+            .when(cloud_tts, |d| d.child({
+                let current = self.get("voice_cloud_tts_provider").unwrap_or_else(|| "openai".into());
+                let service = TTS_SERVICES.iter().find(|s| s.id == current).unwrap_or(&TTS_SERVICES[TTS_SERVICES.len() - 1]);
+                let key_set = service.key_vars.iter().any(|v| std::env::var(v).is_ok_and(|k| !k.trim().is_empty()));
+                let detail: SharedString = if key_set {
+                    format!("{} is set. {}", service.key_vars[0], service.voice_hint).into()
+                } else {
+                    format!(
+                        "Set {} in your environment, then restart Dove. {}",
+                        service.key_vars[0], service.voice_hint
+                    )
+                    .into()
+                };
+                self.srow(
+                    t,
+                    false,
+                    "voice_tts_voice",
+                    "Service voice",
+                    detail,
+                    div().w(px(260.0)).child(gpui_base::input::Input::new(&self.voice_tts_voice)),
+                )
+            }))
+            .when(cloud || cloud_tts, |d| d.child(self.srow(
+                t,
+                false,
+                "voice_cloud_url",
+                "Speech endpoint",
+                "An OpenAI-compatible /v1 URL (OpenAI, Groq, a local whisper server). The key is read from DOVE_VOICE_API_KEY.",
+                div().w(px(260.0)).child(gpui_base::input::Input::new(&self.voice_cloud_url)),
+            )))
+            .child({
+                let this = cx.entity().downgrade();
+                let has_url = self.get("voice_router_url").is_some_and(|u| !u.trim().is_empty());
+                let mode = self.get("voice_router").unwrap_or_else(|| if has_url { "endpoint".into() } else { "off".into() });
+                let selected = match mode.as_str() {
+                    "agent" => 1,
+                    "endpoint" => 2,
+                    _ => 0,
+                };
+                self.srow(
+                    t,
+                    false,
+                    "voice_router",
+                    "Command router",
+                    match selected {
+                        1 => "Requests Dove's rules don't recognise are routed by a tool-less run of the current thread's agent on its cheapest model (a few seconds). The request and thread titles go to that agent.",
+                        2 => "Requests Dove's rules don't recognise are routed by the endpoint below. The request and thread titles are sent to it.",
+                        _ => "Off: requests Dove's rules don't recognise go to the thread you're talking to, as you said them.",
+                    },
+                    ctl::segmented(
+                        t,
+                        "set-voice-router",
+                        vec![ctl::Segment::new("Off"), ctl::Segment::new("An agent"), ctl::Segment::new("Endpoint")],
+                        selected,
+                        move |i, _, cx| {
+                            let _ = this.update(cx, |p, cx| p.set("voice_router", ["off", "agent", "endpoint"][i.min(2)], cx));
+                        },
+                    ),
+                )
+            })
+            .when(router_endpoint, |d| d.child(self.srow(
+                t,
+                false,
+                "voice_router_url",
+                "Router endpoint",
+                "For the Endpoint router: an OpenAI-compatible /v1 URL (a local llama.cpp server works). The key is read from DOVE_VOICE_API_KEY.",
+                div().w(px(260.0)).child(gpui_base::input::Input::new(&self.voice_router_url)),
+            )));
+        div()
+            .flex()
+            .flex_col()
+            .child(page::section(t, "Voice Mode", call))
+            .child(page::section(t, "Voice Mode models", models))
+            .child(page::section(t, "Cloud (optional)", cloud_card))
+            .into_any_element()
+    }
+
+    /// Which local recognizer a call uses, and the Moonshine download.
+    fn voice_stt_row(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        use dove_voice::models::MoonshineSize;
+        let root = self.engine.store.root().to_path_buf();
+        let moon = dove_voice::stt::Moonshine::installed(&root, MoonshineSize::Base);
+        let parakeet = VoiceModel::global(cx).is_some_and(|m| m.read(cx).state == InstallState::Installed);
+        let choice = self.get("voice_stt").unwrap_or_default();
+        let use_parakeet = choice == "parakeet" && parakeet;
+        let state = self.voice_dl.get("moonshine").cloned();
+        let size_mb: u64 = MoonshineSize::Base.files().iter().map(|m| m.size).sum::<u64>() / 1_000_000;
+        let detail = format!(
+            "Moonshine base: fast, about 160 MB in use, {size_mb} MB download, MIT. Parakeet (the dictation model above): more accurate, about 700 MB in use, CC-BY-4.0.{}",
+            match &state {
+                Some(Some(e)) => format!(" {e}"),
+                _ => String::new(),
+            }
+        );
+        let this = cx.entity().downgrade();
+        let control: AnyElement = if matches!(state, Some(None)) {
+            page::badge(t, "Downloading…").into_any_element()
+        } else if !moon {
+            ctl::button_sm(t, "voice-dl-moonshine", format!("Download Moonshine ({size_mb} MB)"), Tone::Solid)
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.voice_dl.insert("moonshine", None);
+                    let root = this.engine.store.root().to_path_buf();
+                    let work = cx.background_spawn(async move {
+                        for m in MoonshineSize::Base.files() {
+                            if !dove_voice::models::installed(&root, &m) {
+                                dove_voice::models::download(
+                                    &root,
+                                    &m,
+                                    &std::sync::atomic::AtomicBool::new(false),
+                                    |_| {},
+                                )
+                                .map_err(|e| format!("{e:#}"))?;
+                            }
+                        }
+                        Ok::<(), String>(())
+                    });
+                    cx.spawn(async move |this, cx| {
+                        let result = work.await;
+                        let _ = this.update(cx, |p, cx| {
+                            match result {
+                                Ok(()) => {
+                                    p.voice_dl.remove("moonshine");
+                                }
+                                Err(e) => {
+                                    p.voice_dl.insert("moonshine", Some(e));
+                                }
+                            }
+                            cx.notify();
+                        });
+                    })
+                    .detach();
+                    cx.notify();
+                }))
+                .into_any_element()
+        } else {
+            ctl::segmented(
+                t,
+                "set-voice-stt",
+                vec![ctl::Segment::new("Moonshine (fast)"), ctl::Segment::new("Parakeet (accurate)")],
+                usize::from(use_parakeet),
+                move |i, _, cx| {
+                    let _ = this
+                        .update(cx, |p, cx| p.set("voice_stt", if i == 1 { "parakeet" } else { "moonshine-base" }, cx));
+                },
+            )
+        };
+        self.srow(t, true, "voice_call_stt", "Speech recognition", detail, control)
+    }
+
+    /// One downloadable Voice Mode model: what it does, size, licence.
+    fn voice_model_row(
+        &self,
+        t: &Theme,
+        m: &'static dove_voice::models::ModelFile,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let root = self.engine.store.root().to_path_buf();
+        let installed = dove_voice::models::installed(&root, m);
+        let state = self.voice_dl.get(m.id).cloned();
+        let size = format!("{:.1} MB", m.size as f64 / 1e6);
+        let detail = format!(
+            "{}. {} · {}{}",
+            m.purpose,
+            size,
+            m.licence,
+            match &state {
+                Some(Some(e)) => format!(" · {e}"),
+                _ => String::new(),
+            }
+        );
+        let control = match (installed, &state) {
+            (_, Some(None)) => page::badge(t, "Downloading…").into_any_element(),
+            (true, _) => div()
+                .flex()
+                .items_center()
+                .gap(px(8.0))
+                .child(page::badge_tone("Installed", t.success))
+                .child(
+                    ctl::button_sm(t, SharedString::from(format!("voice-rm-{}", m.id)), "Remove", Tone::Quiet)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            dove_voice::pipeline::unload();
+                            dove_voice::models::remove(this.engine.store.root(), m);
+                            cx.notify();
+                        })),
+                )
+                .into_any_element(),
+            (false, _) => ctl::button_sm(
+                t,
+                SharedString::from(format!("voice-dl-{}", m.id)),
+                format!("Download ({size})"),
+                Tone::Solid,
+            )
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.voice_dl.insert(m.id, None);
+                let root = this.engine.store.root().to_path_buf();
+                let work = cx.background_spawn(async move {
+                    dove_voice::models::download(&root, m, &std::sync::atomic::AtomicBool::new(false), |_| {})
+                        .map_err(|e| format!("{e:#}"))
+                });
+                cx.spawn(async move |this, cx| {
+                    let result = work.await;
+                    let _ = this.update(cx, |p, cx| {
+                        match result {
+                            Ok(()) => {
+                                p.voice_dl.remove(m.id);
+                            }
+                            Err(e) => {
+                                p.voice_dl.insert(m.id, Some(e));
+                            }
+                        }
+                        cx.notify();
+                    });
+                })
+                .detach();
+                cx.notify();
+            }))
+            .into_any_element(),
+        };
+        let name = match m.id {
+            "silero-vad" => "Voice activity (Silero VAD)",
+            "smart-turn" => "Turn detection (Smart Turn v3.2)",
+            other => other,
+        };
+        self.srow(t, false, "voice_call_models", name, detail, control)
     }
 
     fn shortcuts_action(&self, t: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -1898,7 +2482,7 @@ impl SettingsPage {
                 &["new_thread", "close_tab", "next_tab", "prev_tab", "rename", "focus_composer", "toggle_terminal"],
             ),
             ("Panels", &["toggle_sidebar", "toggle_panel"]),
-            ("App", &["add_project", "quit"]),
+            ("App", &["add_project", "voice_call", "quit"]),
         ];
         let mut out = div()
             .flex()
@@ -1997,27 +2581,84 @@ impl SettingsPage {
         out.child(page::section(t, "Built in", fixed_card)).into_any_element()
     }
 
-    fn agents(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+    /// Edit an agent's binary path (empty = find it on PATH).
+    fn edit_agent_path(&mut self, kind: HarnessKind, window: &mut Window, cx: &mut Context<Self>) {
+        let current = self.get(&format!("agent_path.{}", kind.id())).unwrap_or_default();
+        let field = cx.new(|cx| {
+            let mut s = InputState::new(window, cx).placeholder("Full path to the binary (empty = find on PATH)");
+            s.set_editor_style(ui::input_style(Theme::of(cx)));
+            s.set_value(current, window, cx);
+            s
+        });
+        field.update(cx, |s, cx| s.focus(window, cx));
+        cx.subscribe(&field, move |this, f, ev: &InputEvent, cx| match ev {
+            InputEvent::PressEnter { .. } | InputEvent::Blur => {
+                let v = f.read(cx).value().trim().to_string();
+                this.set(&format!("agent_path.{}", kind.id()), &v, cx);
+                this.agent_path_edit = None;
+                cx.emit(SettingsEvent::Rescan);
+                cx.notify();
+            }
+            _ => {}
+        })
+        .detach();
+        self.agent_path_edit = Some((kind, field));
+        cx.notify();
+    }
+
+    /// Every agent CLI Dove knows: version and path (click to override),
+    /// signing in with the agent's own login, and whether the composer
+    /// offers it.
+    fn agents(&self, t: &Theme, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let installed = self.engine.installed();
-        let supported: Vec<HarnessKind> = HarnessKind::ALL
-            .iter()
-            .copied()
-            .filter(|k| *k != HarnessKind::Shell && dove_core::harness_supported(*k))
-            .collect();
-        let found_count = supported.iter().filter(|k| installed.iter().any(|i| i.kind == **k)).count();
+        let kinds: Vec<HarnessKind> = HarnessKind::ALL.iter().copied().filter(|k| *k != HarnessKind::Shell).collect();
+        let found_count = kinds.iter().filter(|k| installed.iter().any(|i| i.kind == **k)).count();
         let mut card = page::card(t);
-        for (i, kind) in supported.into_iter().enumerate() {
+        for (i, kind) in kinds.into_iter().enumerate() {
             let found = installed.iter().find(|x| x.kind == kind);
+            let supported = dove_core::harness_supported(kind);
             let enabled = crate::pages::agent_enabled(&self.engine.store, kind);
             let key = format!("agent_disabled.{}", kind.id());
             let version = self
                 .get(&format!("agent_version.{}", kind.id()))
                 .and_then(|v| v.rsplit_once('|').map(|(_, ver)| ver.to_string()))
                 .filter(|v| !v.is_empty());
-            let meta: SharedString = match (found, version) {
-                (Some(_), Some(v)) => format!("v{v}").into(),
-                (Some(f), None) => f.program.display().to_string().into(),
-                (None, _) => "Not installed".into(),
+            let path = self.engine.program_for(kind).map(|p| p.display().to_string());
+            let editing = self.agent_path_edit.as_ref().filter(|(k, _)| *k == kind).map(|(_, f)| f.clone());
+            let title = div()
+                .flex()
+                .items_center()
+                .gap(px(6.0))
+                .child(
+                    div()
+                        .text_size(ty::BODY)
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .text_color(t.text)
+                        .child(kind.label()),
+                )
+                .when_some(version.filter(|_| found.is_some()), |d, v| d.child(page::badge(t, format!("v{v}"))))
+                .when(!supported, |d| d.child(page::badge(t, "terminal only")));
+            let path_line: AnyElement = match editing {
+                Some(f) => {
+                    let focused = f.read(cx).focus_handle(cx).is_focused(window);
+                    ctl::text_field(&f, Some(360.0), focused, t).h(px(28.0)).text_size(ty::SMALL).into_any_element()
+                }
+                None => div()
+                    .id(SharedString::from(format!("set-agent-path-{}", kind.id())))
+                    .max_w(px(420.0))
+                    .text_size(ty::META)
+                    .font_family(t.font_mono.clone())
+                    .text_color(t.text_faint)
+                    .truncate()
+                    .cursor_pointer()
+                    .hover(|s| s.text_color(t.text_muted))
+                    .tooltip(ui::tip("Click to set a custom path"))
+                    .child(match (&path, found) {
+                        (Some(p), _) => ui::middle_ellipsis(p, 60),
+                        (None, _) => "Not installed · click to set a path".into(),
+                    })
+                    .on_click(cx.listener(move |this, _, window, cx| this.edit_agent_path(kind, window, cx)))
+                    .into_any_element(),
             };
             let control: AnyElement = if found.is_some() {
                 div()
@@ -2025,18 +2666,9 @@ impl SettingsPage {
                     .items_center()
                     .gap(px(10.0))
                     .child(
-                        div()
-                            .id(SharedString::from(format!("agent-more-{}", kind.id())))
-                            .size(px(26.0))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .rounded(px(design::radius::RADIUS))
-                            .cursor_pointer()
-                            .hover(|s| s.bg(t.wash(0.08)))
-                            .tooltip(ui::tip("Sign-in, binary path and updates"))
-                            .child(icon(icons::ALT_ARROW_RIGHT).size(px(14.0)).text_color(t.text_faint))
-                            .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::OpenAgents))),
+                        ctl::button_sm(t, format!("set-agent-login-{}", kind.id()), "Sign in", Tone::Quiet)
+                            .tooltip(ui::tip(format!("Run {}'s own sign-in in a terminal", kind.label())))
+                            .on_click(cx.listener(move |_, _, _, cx| cx.emit(SettingsEvent::SignIn(kind)))),
                     )
                     .child(ctl::on_toggle(
                         ctl::toggle(t, format!("set-agent-{}", kind.id()), enabled).tooltip(ui::tip(if enabled {
@@ -2049,13 +2681,22 @@ impl SettingsPage {
                     ))
                     .into_any_element()
             } else {
-                page::badge(t, "Not installed").into_any_element()
+                div().text_size(ty::META).text_color(t.text_faint).child("Not installed").into_any_element()
             };
             card = card.child(
                 page::row(t, i == 0)
-                    .when(found.is_none(), |d| d.opacity(0.6))
                     .child(page::row_tile(t, ui::harness_icon(kind), Some(ui::harness_tint(kind, t, t.text_muted))))
-                    .child(page::row_text(t, kind.label(), meta))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(220.0))
+                            .flex()
+                            .flex_col()
+                            .gap(px(3.0))
+                            .when(found.is_none(), |d| d.opacity(0.6))
+                            .child(title)
+                            .child(path_line),
+                    )
                     .child(control),
             );
         }
@@ -2064,76 +2705,69 @@ impl SettingsPage {
             .flex_col()
             .child(page::page_subtitle(
                 t,
-                format!("{found_count} agent CLIs found on this machine. Hidden agents stay installed but leave the composer."),
+                format!(
+                    "{found_count} agent CLIs found on this machine. Sign in with each agent's own login; hidden agents stay installed but leave the composer."
+                ),
             ))
             .child(page::section(t, "", card.relative().child(self.anchor("agents"))))
             .into_any_element()
     }
 
-    fn team(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
-        let team = self.engine.store.personas().unwrap_or_default();
+    /// Settings › Team's own options, shown under the shell's team page.
+    pub fn team_options(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let t = Theme::of(cx).clone();
+        let t = &t;
         let notes = self.flag("team_notes", true);
-        let roster: gpui::Div = if team.is_empty() {
-            page::card(t).child(page::empty_state(
-                t,
-                icons::USERS_GROUP,
-                "No teammates yet",
-                "Give an agent a name, a role and a standing brief.",
-                Some(
-                    ctl::button_sm(t, "set-team-create", "New teammate", Tone::Solid)
-                        .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::OpenTeam { new: true })))
-                        .into_any_element(),
-                ),
-            ))
-        } else {
-            let mut card = page::card(t);
-            for (i, p) in team.iter().enumerate() {
-                let role = if p.role.is_empty() { "Teammate".to_string() } else { p.role.clone() };
-                card = card.child(
-                    page::row(t, i == 0)
-                        .child(crate::team::avatar(p, 30.0, t))
-                        .child(page::row_text(t, p.name.clone(), crate::team::subtitle(p)))
-                        .child(page::badge(t, role)),
-                );
-            }
-            card
-        };
-        let behavior = page::card(t)
-            .child(self.srow(
-                t,
-                true,
-                "team_notes",
-                "Persistent teammate notes",
-                "Each teammate reads its notes when a thread starts and updates them as it learns.",
-                ctl::on_toggle(ctl::toggle(t, "set-team-notes", notes), cx, move |this, _, cx| {
-                    this.set_flag("team_notes", !notes, cx)
-                }),
-            ))
-            .child(
-                self.srow(
-                    t,
-                    false,
-                    "team_page",
-                    "Team page",
-                    "Create and brief teammates, or start a thread with one.",
-                    ctl::button_sm(t, "set-open-team", "Open Team page", Tone::Filled)
-                        .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::OpenTeam { new: false }))),
-                ),
-            );
+        let behavior = page::card(t).child(self.srow(
+            t,
+            true,
+            "team_notes",
+            "Persistent teammate notes",
+            "Each teammate reads its notes when a thread starts and updates them as it learns.",
+            ctl::on_toggle(ctl::toggle(t, "set-team-notes", notes), cx, move |this, _, cx| {
+                this.set_flag("team_notes", !notes, cx)
+            }),
+        ));
         div()
-            .flex()
-            .flex_col()
-            .child(page::section(t, "Teammates", roster.relative().child(self.anchor("team_roster"))))
+            .relative()
+            .child(self.anchor("team_roster"))
             .child(page::section(t, "Memory and behavior", behavior))
             .into_any_element()
     }
 
-    fn integrations_section(&self, t: &Theme) -> AnyElement {
+    fn plugins_section(&self, t: &Theme) -> AnyElement {
         div()
             .flex()
             .flex_col()
-            .child(page::page_subtitle(t, "Extra tools every agent gets through Dove's MCP server."))
-            .child(div().relative().child(self.anchor("integrations")).child(self.integrations.clone()))
+            .child(page::page_subtitle(t, "Built-in tools, apps, MCP servers and skills for every agent Dove starts."))
+            .child(
+                div()
+                    .relative()
+                    .child(self.anchor("integrations"))
+                    .child(self.anchor("connectors"))
+                    .child(self.anchor("skills"))
+                    .child(self.anchor("agent_office_skills"))
+                    .child(self.anchor("memory"))
+                    .child(self.integrations.clone()),
+            )
+            .into_any_element()
+    }
+
+    /// Plugins' header: the directory and the Add menu (the view draws it).
+    fn plugins_actions(&self, t: &Theme) -> AnyElement {
+        let (browse, add) = (self.integrations.clone(), self.integrations.clone());
+        div()
+            .flex()
+            .items_center()
+            .gap(px(8.0))
+            .child(
+                ctl::button_sm(t, "plugins-browse", "Browse directory", Tone::Outlined)
+                    .on_click(move |_, _, cx| browse.update(cx, |v, cx| v.browse(cx))),
+            )
+            .child(
+                ctl::button_sm(t, "plugins-add", "Add", Tone::Solid)
+                    .on_click(move |_, _, cx| add.update(cx, |v, cx| v.toggle_add(cx))),
+            )
             .into_any_element()
     }
 
@@ -2170,12 +2804,12 @@ impl SettingsPage {
                         .gap(px(8.0))
                         .child(
                             div()
-                                .max_w(px(260.0))
-                                .truncate()
+                                .id("data-path")
                                 .font_family(t.font_mono.clone())
                                 .text_size(ty::META)
                                 .text_color(t.text_muted)
-                                .child(root_str),
+                                .tooltip(ui::tip(root_str.clone()))
+                                .child(ui::middle_ellipsis(&root_str, 34)),
                         )
                         .child(ctl::button_sm(t, "copy-data-path", "Copy", Tone::Quiet).on_click(cx.listener(
                             move |_, _, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(root_copy.clone())),
@@ -2425,8 +3059,82 @@ fn motion_inventory(t: &Theme, reduced: bool, has_wall: bool, animate: bool, eff
         .into_any_element()
 }
 
+/// A cloud voice service in Settings › Voice.
+struct TtsService {
+    id: &'static str,
+    label: &'static str,
+    blurb: &'static str,
+    key_vars: &'static [&'static str],
+    voice_hint: &'static str,
+}
+
+/// Streaming services first, cheapest to try first.
+const TTS_SERVICES: &[TtsService] = &[
+    TtsService {
+        id: "fish",
+        label: "Fish Audio (free model)",
+        blurb: "Fish Audio's S2.1 Pro, free for developers through the API. Streams, so Dove starts speaking on the first chunk.",
+        key_vars: &["FISH_AUDIO_API_KEY", "FISH_API_KEY"],
+        voice_hint: "Voice: a Fish Audio voice model id (reference id); empty uses their default.",
+    },
+    TtsService {
+        id: "deepgram",
+        label: "Deepgram Aura-2",
+        blurb: "Very low latency, $0.030 per 1,000 characters; new accounts get $200 of credit.",
+        key_vars: &["DEEPGRAM_API_KEY"],
+        voice_hint: "Voice: an Aura model such as aura-2-thalia-en (the default).",
+    },
+    TtsService {
+        id: "cartesia",
+        label: "Cartesia Sonic",
+        blurb: "Built for real-time agents. The free plan's 20,000 credits a month are for non-commercial use.",
+        key_vars: &["CARTESIA_API_KEY"],
+        voice_hint: "Voice: a Cartesia voice id; empty uses Dove's default.",
+    },
+    TtsService {
+        id: "inworld",
+        label: "Inworld",
+        blurb: "Natural voices at a low price per character; streams.",
+        key_vars: &["INWORLD_API_KEY"],
+        voice_hint: "Voice: an Inworld voice name such as Ashley (the default).",
+    },
+    TtsService {
+        id: "elevenlabs",
+        label: "ElevenLabs",
+        blurb: "Flash v2.5, streamed. Startups can apply for ElevenLabs' grant program.",
+        key_vars: &["ELEVENLABS_API_KEY"],
+        voice_hint: "Voice: an ElevenLabs voice id; empty uses Rachel.",
+    },
+    TtsService {
+        id: "openai",
+        label: "OpenAI-compatible",
+        blurb: "Any /v1/audio/speech endpoint (the Speech endpoint below). Renders a clause at a time.",
+        key_vars: &["DOVE_VOICE_API_KEY"],
+        voice_hint: "Voice: the endpoint's voice name, such as alloy.",
+    },
+];
+
+/// Where a service's voice id is saved.
+fn tts_voice_key(service: &str) -> String {
+    match service {
+        "elevenlabs" => "voice_elevenlabs_voice".into(),
+        "openai" | "" => "voice_cloud_voice".into(),
+        other => format!("voice_tts_voice.{other}"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn every_streaming_voice_service_is_listed_with_the_engine_key_names() {
+        for (id, _) in dove_voice::tts_stream::Provider::IDS {
+            let service = super::TTS_SERVICES.iter().find(|s| s.id == *id).expect("listed in Settings");
+            assert_eq!(service.key_vars, dove_voice::tts_stream::Provider::key_vars(id));
+        }
+        assert_eq!(super::tts_voice_key("fish"), "voice_tts_voice.fish");
+        assert_eq!(super::tts_voice_key("elevenlabs"), "voice_elevenlabs_voice");
+    }
+
     use super::*;
 
     #[test]
@@ -2436,6 +3144,9 @@ mod tests {
         }
         assert_eq!(Section::from_id("composer"), Some(Section::General));
         assert_eq!(Section::from_id("shortcuts"), Some(Section::Shortcuts));
+        assert_eq!(Section::from_id("skills"), Some(Section::Plugins));
+        assert_eq!(Section::from_id("composio"), Some(Section::Plugins));
+        assert_eq!(Section::from_id("memory"), Some(Section::Plugins));
         assert_eq!(Section::from_id("nope"), None);
     }
 
@@ -2452,6 +3163,7 @@ mod tests {
         assert_eq!(find_settings("reduce motion").first().map(|e| e.row), Some("reduce_motion"));
         assert!(find_settings("clone").iter().any(|e| e.row == "clone_dir"));
         assert!(find_settings("parakeet").iter().any(|e| e.row == "voice_model"));
+        assert!(find_settings("superpowers").iter().any(|e| e.section == Section::Plugins && e.row == "skills"));
         assert!(find_settings("").is_empty());
     }
 

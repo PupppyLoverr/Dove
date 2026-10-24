@@ -266,6 +266,13 @@ impl ClaudeHarness {
                 args.extend(["--add-dir".into(), dir.to_owned()]);
             }
         }
+        // Dove: allow rules the CLI applies itself (`Bash(ego-browser:*)`),
+        // one per line.
+        if let Some(Value::String(tools)) = request.model_options.get("dove.allowedTools") {
+            for tool in tools.lines().map(str::trim).filter(|t| !t.is_empty()) {
+                args.extend(["--allowedTools".into(), tool.to_owned()]);
+            }
+        }
         let mut settings = serde_json::Map::new();
         if option_is_on(&request.model_options, "fastMode") {
             settings.insert("fastMode".into(), Value::Bool(true));
@@ -1507,5 +1514,20 @@ mod mcp_injection_tests {
         assert_eq!(parsed["mcpServers"]["zeron"]["command"], "/opt/zeron/zeron");
         assert_eq!(parsed["mcpServers"]["zeron"]["args"], serde_json::json!(["mcp"]));
         assert_eq!(parsed["mcpServers"]["zeron"]["env"]["ZERON_CHAT_ID"], "chat-1");
+    }
+
+    #[test]
+    fn dove_allow_rules_become_allowed_tools() {
+        let request = |options: Value| -> RunRequest {
+            serde_json::from_value(
+                serde_json::json!({"prompt": "x", "cwd": "", "sandbox": "workspace-write", "modelOptions": options}),
+            )
+            .unwrap()
+        };
+        let args =
+            ClaudeHarness::launch_args(&request(serde_json::json!({"dove.allowedTools": "Bash(ego-browser:*)\n"})));
+        assert!(args.windows(2).any(|w| w == ["--allowedTools", "Bash(ego-browser:*)"]), "{args:?}");
+        let args = ClaudeHarness::launch_args(&request(serde_json::json!({})));
+        assert!(!args.iter().any(|a| a == "--allowedTools"), "{args:?}");
     }
 }

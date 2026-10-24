@@ -110,6 +110,41 @@ pub async fn try_generate(
     Err(last_error)
 }
 
+/// One restricted run that answers `prompt` with text: the same tool-less,
+/// read-only, scratch-folder run as a title, for a short structured answer
+/// (Voice Mode's command router). One attempt, `timeout` long.
+pub async fn complete(
+    kind: HarnessKind,
+    program: &Path,
+    prompt: &str,
+    model: Option<String>,
+    timeout: Duration,
+) -> anyhow::Result<String> {
+    let id = crate::external::harness_id(kind)
+        .filter(|id| zeron_harness::supports_titles(*id))
+        .ok_or_else(|| anyhow::anyhow!("{} has no restricted run", kind.label()))?;
+    let harness =
+        crate::external::driver_for(kind, program).ok_or_else(|| anyhow::anyhow!("{} has no driver", kind.label()))?;
+    let scratch = Scratch::new().ok_or_else(|| anyhow::anyhow!("could not create a scratch folder"))?;
+    let request = RunRequest {
+        mcp: None,
+        prompt: prompt.to_string(),
+        harness: Some(id),
+        model,
+        reasoning: Some(ReasoningLevel::Minimal),
+        model_options: serde_json::Map::new(),
+        cwd: scratch.0.display().to_string(),
+        sandbox: SandboxLevel::ReadOnly,
+        auto_approve: false,
+        attachments: Vec::new(),
+        resume: None,
+        worktree: None,
+    };
+    tokio::time::timeout(timeout, collect_text(harness.as_ref(), request))
+        .await
+        .map_err(|_| anyhow::anyhow!("no answer within {} s", timeout.as_secs()))?
+}
+
 /// First line, stripped of quote and heading dressing, capped at 60 chars.
 pub fn clean_title(raw: &str) -> String {
     let first = raw.trim().lines().next().unwrap_or("");

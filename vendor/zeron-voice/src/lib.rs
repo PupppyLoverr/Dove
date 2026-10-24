@@ -15,6 +15,7 @@ use std::{
 };
 
 mod resample;
+pub mod runtime;
 
 pub const MAX_SECONDS: usize = 60;
 #[derive(serde::Deserialize)]
@@ -35,17 +36,38 @@ pub fn manifest() -> Manifest {
 pub fn download_size() -> u64 {
     manifest().files.iter().map(|f| f.size).sum()
 }
-pub fn installed(dir: &Path) -> bool {
+fn model_ready(dir: &Path) -> bool {
     manifest().files.iter().all(|f| std::fs::metadata(dir.join(&f.name)).is_ok_and(|m| m.len() == f.size))
         && std::fs::read_to_string(dir.join("verified")).is_ok_and(|r| r == manifest().revision)
 }
+/// The model and the ONNX Runtime it runs on (`runtime::beside(dir)`).
+pub fn installed(dir: &Path) -> bool {
+    runtime::installed(&runtime::beside(dir)) && model_ready(dir)
+}
+
+/// Bytes still to download: the model unless it is in place, plus ONNX
+/// Runtime while it is missing.
+pub fn download_size_with_runtime(dir: &Path) -> u64 {
+    let model = if model_ready(dir) { 0 } else { download_size() };
+    model + runtime::download_size(&runtime::beside(dir))
+}
 
 /// Called only on a worker. Temporary files never establish readiness.
+/// ONNX Runtime comes first when it is missing; files already verified are
+/// kept, so a model installed before the runtime split is not fetched again.
 pub fn download(dir: &Path, cancel: &AtomicBool, mut progress: impl FnMut(u64)) -> Result<()> {
+    let mut base = 0;
+    runtime::download(&runtime::beside(dir), cancel, |n| {
+        base = n;
+        progress(n)
+    })?;
+    if model_ready(dir) {
+        return Ok(());
+    }
     tokio::runtime::Builder::new_current_thread().enable_all().build()?.block_on(async {
         std::fs::create_dir_all(dir)?;
         let client = reqwest::Client::builder().connect_timeout(std::time::Duration::from_secs(20)).build()?;
-        let m=manifest(); let mut total=0;
+        let m=manifest(); let mut total=base;
         for file in m.files {
             if cancel.load(Ordering::Acquire) { bail!("Download cancelled") }
             let staging=dir.join(format!("{}.part",file.name));
@@ -82,6 +104,7 @@ async fn cancelled(cancel: &AtomicBool) {
 pub struct Recognizer(ParakeetTDT);
 impl Recognizer {
     pub fn load(dir: &Path) -> Result<Self> {
+        runtime::load(&runtime::beside(dir))?;
         // Verify before handing bytes to the native runtime, including after restart.
         for f in manifest().files {
             let mut input = std::fs::File::open(dir.join(&f.name))?;
@@ -407,7 +430,8 @@ fn worker() -> &'static std::sync::mpsc::SyncSender<Command> {
         std::thread::spawn(move || {
             let mut cached: Option<(std::path::PathBuf, Recognizer)> = None;
             loop {
-                let (job, _admission) = match rx.recv_timeout(std::time::Duration::from_secs(600)) {
+                // Two idle minutes drop the model (~700 MB) until the next use.
+                let (job, _admission) = match rx.recv_timeout(std::time::Duration::from_secs(120)) {
                     Ok(Command::Transcribe(j, admission)) => (j, admission),
                     Ok(Command::Warm(dir)) => {
                         if cached.as_ref().is_none_or(|(path, _)| *path != dir) {

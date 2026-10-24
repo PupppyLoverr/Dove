@@ -17,6 +17,7 @@ Dove is written in Rust on [GPUI](https://github.com/zeronsh/zui). There is no E
 ## Features
 
 - **Many agents, one window.** Threads from every agent share the same projects, review tools and attention-sorted sidebar (needs you, working, unread, failed).
+- **Team and orchestration.** Teammates with a name, a role, a brief and notes they keep, on any agent and model. Any thread can hand work to any agent or teammate (in its folder or its own worktree), message teammates, and read, steer, wait on or stop other threads; results come back on their own as one batched update. Children never get broader permissions than their parent. Details: [docs/TEAM.md](docs/TEAM.md).
 - **Worktrees by default.** A task can run on its own branch so two agents can edit the same repo without overwriting each other. Commit, push, open and merge PRs from the thread.
 - **Chat ⇄ terminal.** Chat is the rich view: approvals, steering, queued messages, usage. Terminal hands the same session to the agent's own TUI and mirrors it back.
 - **Side panel.** Diffs, git history, a file viewer and editor, an in-app browser, a terminal and a side chat stay attached to each thread. `path:line` links open in place.
@@ -25,6 +26,8 @@ Dove is written in Rust on [GPUI](https://github.com/zeronsh/zui). There is no E
 - **Office documents.** Create, preview and edit PDF, PPTX, XLSX and DOCX files in the side panel.
 - **Integrations.** Paper design canvases, Composio apps (GitHub, Linear, Slack, Notion and more, with your own key) and desktop computer use through the open-source cua-driver, all injected through the same MCP server.
 - **Dictation.** Hold the mic in the composer or terminal to talk; the text is inserted, never sent. Speech to text runs on your machine with NVIDIA Parakeet, downloaded on demand from Settings › Voice.
+- **Voice Mode.** A hands-free call with all your agents: ask "what's happening?", "tell Codex to also run clippy", "stop", "approve", "talk to the tests thread", "start a Claude task on the login page in a new worktree". Listening, turn detection and speech recognition run on your machine (Moonshine or Parakeet, Silero VAD, Smart Turn); Dove speaks with your system's voice and you can talk over it. Voice never approves deletions, force pushes or work outside a thread's folder.
+- **Dove for Chrome.** A browser extension that lets agents work in your own browser, on sites you allow, with a review window before anything that submits, buys, sends or deletes, and a Stop that takes effect immediately.
 - **Faster first reply.** Dove starts Claude Code while you type (process, settings and MCP servers) and hands it your message on send: 11.35 s → 2.87 s to first text in a local measurement.
 - **Mobile remote.** iOS and Android apps signed in with your Woozlit account show live transcripts and let you approve, steer and start runs. The agent keeps running on your desktop.
 - **Your own backdrop.** Put any image behind the new-thread page through Original, Dither, Halftone or Scanlines. Turn on **Animate backdrop** and each effect gets its own motion worked out from the image: a slow push, an aircraft with light trails crossing a Bayer-dithered scene, rippling halftone dots, or a rolling CRT scan.
@@ -113,9 +116,15 @@ Model lists refresh from each CLI's live catalog when it answers.
 
 The iOS app (`apps/ios`) and the Android app (`apps/android`) are remote controls for the desktop. To turn it on, open **Settings › Remote control** on the desktop, click **Sign in with Woozlit**, and sign in on the phone with the same account. The desktop publishes each session as a Loro CRDT document to the Cosmos edge (Cloudflare Workers + Durable Objects). The phone shows it live and sends commands back: send, steer, interrupt, approve and answer. When remote control is off, nothing leaves the machine. Code and files always stay on your machine.
 
-## Dictation
+## Dictation and Voice Mode
 
 Speech to text is optional and is not inside the Dove binary. **Parakeet** (NVIDIA Parakeet TDT 0.6B v3, the model Zeron uses) downloads on demand from Settings › Voice into `~/.dove/voice` and runs entirely on your machine.
+
+**Voice Mode** is a call: click the phone button beside the mic (or press Ctrl/Cmd+Shift+Space; on Windows it works from any app) and talk. Download its models once in Settings › Voice › Voice Mode models: Moonshine (66 MB, fast) or use Parakeet (more accurate, more memory), Silero VAD (2 MB) and Smart Turn (9 MB). Everything runs locally; cloud speech (an OpenAI-compatible endpoint, Deepgram or ElevenLabs) is off unless you turn it on, and Settings says what it would upload. "Take a look at this" attaches the open page, the diff, or (Windows) the window you were just in. Hold the orb (or Space) to talk while muted; talk over Dove to interrupt it. Measured on a 2020 laptop (i7-10810U, Windows 11): listening-ready in 1.4–1.8 s from cold, about 160 MB of memory while a call runs, under 1% of a core while you are silent, playback stops within 9 ms of you interrupting. Details and the targets it does not meet yet: [docs/VOICE.md](docs/VOICE.md).
+
+## Dove for Chrome
+
+`apps/extension` is a Manifest V3 extension for Chrome, Edge and Brave. Load it unpacked, open its side panel and paste the pairing code from Settings › Plugins. Agents then get `chrome_*` tools for your own browser, only on sites you allow, with a review window before consequential actions. See [apps/extension/README.md](apps/extension/README.md).
 
 ## Keyboard shortcuts
 
@@ -128,6 +137,7 @@ Speech to text is optional and is not inside the Dove binary. **Parakeet** (NVID
 | Toggle terminal | Ctrl+` |
 | Back / forward | Alt+Left / Alt+Right |
 | Settings | Ctrl/Cmd+, |
+| Start or end a voice call | Ctrl/Cmd+Shift+Space |
 | Send message | Enter |
 | Insert newline | Shift+Enter |
 | Terminal copy / paste | Ctrl+Shift+C / Ctrl+Shift+V |

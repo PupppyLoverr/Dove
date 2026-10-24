@@ -595,10 +595,10 @@ pub(crate) async fn run(spec: SessionSpec, events: flume::Sender<AgentEvent>, co
                                 (Some(sid), true) => {
                                     mapper.replaying = true;
                                     mapper.session_id = Some(sid.clone());
-                                    let _ = client.request("session/load", json!({"sessionId": sid, "cwd": cwd, "mcpServers": crate::acp_mcp_servers(&spec.cwd)}), Purpose::Session).await;
+                                    let _ = client.request("session/load", json!({"sessionId": sid, "cwd": cwd, "mcpServers": crate::acp_mcp_servers(&spec.cwd, &spec.session)}), Purpose::Session).await;
                                 }
                                 _ => {
-                                    let _ = client.request("session/new", json!({"cwd": cwd, "mcpServers": crate::acp_mcp_servers(&spec.cwd)}), Purpose::Session).await;
+                                    let _ = client.request("session/new", json!({"cwd": cwd, "mcpServers": crate::acp_mcp_servers(&spec.cwd, &spec.session)}), Purpose::Session).await;
                                 }
                             }
                         }
@@ -655,7 +655,7 @@ pub(crate) async fn run(spec: SessionSpec, events: flume::Sender<AgentEvent>, co
                                 Purpose::Session if spec.resume.is_some() && mapper.replaying => {
                                     // History could not be loaded: start fresh rather than fail.
                                     mapper.replaying = false;
-                                    let _ = client.request("session/new", json!({"cwd": cwd, "mcpServers": crate::acp_mcp_servers(&spec.cwd)}), Purpose::Session).await;
+                                    let _ = client.request("session/new", json!({"cwd": cwd, "mcpServers": crate::acp_mcp_servers(&spec.cwd, &spec.session)}), Purpose::Session).await;
                                 }
                                 _ => { let _ = child.start_kill(); }
                             }
@@ -808,6 +808,7 @@ pub(crate) async fn discover_models(kind: HarnessKind, program: &std::path::Path
         resume: None,
         prompt: None,
         fork: false,
+        session: String::new(),
     };
     let (exe, args) = launch_command(&spec).map_err(anyhow::Error::msg)?;
     let mut cmd = process::command(&exe, &args, &spec.cwd);
@@ -1050,6 +1051,7 @@ mod tests {
             resume: None,
             prompt: None,
             fork: false,
+            session: String::new(),
         };
         let steps = plan_setup(&spec, &session);
         assert_eq!(
@@ -1076,6 +1078,7 @@ mod tests {
             resume: None,
             prompt: None,
             fork: false,
+            session: String::new(),
         };
         assert_eq!(plan_setup(&spec, &session), vec![WireSetup::SetModel("grok-4.5".into())]);
         assert_eq!(launch_args(HarnessKind::Hermes), Some(&["acp"][..]));
@@ -1112,6 +1115,7 @@ mod tests {
             resume: None,
             prompt: None,
             fork: false,
+            session: String::new(),
         }
     }
 

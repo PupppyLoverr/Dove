@@ -1,14 +1,20 @@
 //! The sidebar: navigation, "Needs you", attention-sorted threads with
 //! search and options, and the device footer. Collapsible to zero (Ctrl+B)
 //! and resizable (208–400 px).
+//!
+//! Threads another thread started (delegated tasks, side chats) and the
+//! subagents a thread runs sit folded under it, one click from open.
+
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 
 use dove_core::proto::{PermissionDecision, TaskId, TaskStatus};
 use dove_core::store::Task;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    Anchor, AnimationExt as _, AnyElement, App, Context, Entity, Hsla, InteractiveElement as _, IntoElement,
-    MouseButton, MouseDownEvent, ParentElement as _, Render, SharedString, StatefulInteractiveElement as _,
-    Styled as _, Subscription, WeakEntity, Window, anchored, deferred, div, hsla, px,
+    Anchor, AnimationExt as _, AnyElement, App, AppContext as _, Context, Entity, Hsla, InteractiveElement as _,
+    IntoElement, MouseButton, MouseDownEvent, ParentElement as _, Render, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Subscription, WeakEntity, Window, anchored, deferred, div, hsla, px,
 };
 use gpui_base::input::Input;
 
@@ -18,6 +24,47 @@ use crate::kit;
 use crate::shell::{ChatMenu, Route, Shell};
 use crate::theme::Theme;
 use crate::ui;
+
+/// Each nested thread's parent: a delegated task under the thread that
+/// delegated it (`links`, child to parent), and a side chat (a thread
+/// sharing a worktree) under the first thread in that worktree. Ids are
+/// time-ordered, so the smallest is the first. A chain that loops back is
+/// cut, so every thread still shows once.
+pub fn nest(tasks: &[(TaskId, Option<PathBuf>)], links: &[(TaskId, TaskId)]) -> HashMap<TaskId, TaskId> {
+    let known: HashSet<TaskId> = tasks.iter().map(|(id, _)| *id).collect();
+    let mut parent: HashMap<TaskId, TaskId> = HashMap::new();
+    for (child, p) in links {
+        if child != p && known.contains(child) && known.contains(p) {
+            parent.entry(*child).or_insert(*p);
+        }
+    }
+    let mut first: HashMap<&PathBuf, TaskId> = HashMap::new();
+    for (id, wt) in tasks {
+        if let Some(wt) = wt {
+            first.entry(wt).and_modify(|f| *f = (*f).min(*id)).or_insert(*id);
+        }
+    }
+    for (id, wt) in tasks {
+        if let Some(owner) = wt.as_ref().and_then(|w| first.get(w)).copied().filter(|o| o != id) {
+            parent.entry(*id).or_insert(owner);
+        }
+    }
+    // Cut loops: walk up from each thread; one that comes back to itself
+    // keeps no parent.
+    let ids: Vec<TaskId> = parent.keys().copied().collect();
+    for id in ids {
+        let mut seen = HashSet::from([id]);
+        let mut at = id;
+        while let Some(p) = parent.get(&at).copied() {
+            if !seen.insert(p) {
+                parent.remove(&id);
+                break;
+            }
+            at = p;
+        }
+    }
+    parent
+}
 
 /// A stable tint per project name for its badge.
 pub fn project_hue(name: &str) -> f32 {
@@ -265,6 +312,7 @@ impl Shell {
                 self,
                 cx,
             ))
+            .child(nav_item("nav-flock", icons::TERMINAL, "Flock", Some(Route::Flock), None, self, cx))
             .child(nav_item(
                 "nav-automations",
                 icons::CLOCK_CIRCLE,
@@ -311,6 +359,17 @@ impl Shell {
             .cloned()
             .collect();
         attention_sort(&mut visible);
+        // Nested threads follow their parent; a parent not in the list
+        // (archived, or filtered out by the search) leaves them on top.
+        let parent_of = self.thread_family();
+        let shown: HashSet<TaskId> = visible.iter().map(|x| x.id).collect();
+        let mut kids: HashMap<TaskId, Vec<Task>> = HashMap::new();
+        for x in &visible {
+            if let Some(p) = parent_of.get(&x.id).filter(|p| shown.contains(p)) {
+                kids.entry(*p).or_default().push(x.clone());
+            }
+        }
+        visible.retain(|x| parent_of.get(&x.id).is_none_or(|p| !shown.contains(p)));
         let show_archived = self.engine.store.setting("sidebar_archived").as_deref() == Some("true");
 
         // "Threads" reads like the Team header above it: a quiet label and
@@ -448,7 +507,7 @@ impl Shell {
                         .child(p.name.clone()),
                 );
                 for task in in_project {
-                    list = list.child(self.render_row(task, compact, &t, cx));
+                    list = list.children(self.render_branch(task, 0, &kids, compact, &t, cx));
                 }
             }
         } else {
@@ -461,7 +520,7 @@ impl Shell {
                 if n == pinned && pinned > 0 {
                     list = list.child(div().h(px(6.0)).flex_none());
                 }
-                list = list.child(self.render_row(task, compact, &t, cx));
+                list = list.children(self.render_branch(task, 0, &kids, compact, &t, cx));
             }
         }
         // Archived threads sit on a shelf that folds away (Zeron's archive
@@ -512,7 +571,7 @@ impl Shell {
             if shelf_open {
                 let mut shelf = div().flex().flex_col().gap(px(1.0));
                 for task in self.archived.clone().iter().take(20) {
-                    shelf = shelf.child(self.render_row(task, compact, &t, cx));
+                    shelf = shelf.child(self.render_row(task, compact, None, &t, cx));
                 }
                 if self.archived.len() > 20 {
                     shelf = shelf.child(
@@ -629,6 +688,7 @@ impl Shell {
                     .overflow_hidden()
                     .child(nav)
                     .child(div().pt(px(14.0)).child(self.render_team_section(&t, cx)))
+                    .children(self.render_agents_section(&t, cx))
                     .children(needs_section)
                     .child(header)
                     .child(list)
@@ -840,7 +900,15 @@ impl Shell {
             .into_any_element()
     }
 
-    fn render_row(&self, task: &Task, compact: bool, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+    /// `fold`: this thread has nested ones (whether they show, and how many).
+    pub(crate) fn render_row(
+        &self,
+        task: &Task,
+        compact: bool,
+        fold: Option<(bool, usize)>,
+        t: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let id = task.id;
         let selected = self.route == Route::Thread(id);
         let archived = task.status == TaskStatus::Archived;
@@ -890,6 +958,7 @@ impl Shell {
             }
         };
         let two_line = !compact && renaming.is_none();
+        let renaming_now = renaming.is_some();
         let row = div()
             .id(SharedString::from(format!("row-{id}")))
             .group(group.clone())
@@ -967,6 +1036,43 @@ impl Shell {
                 }
             })
             .when(task.pinned, |d| d.child(icon(icons::PIN).size(px(12.0)).text_color(t.text_faint)))
+            .when_some(fold, |d, (open, n)| {
+                let turn = if open { std::f32::consts::FRAC_PI_2 } else { 0.0 };
+                d.child(
+                    div()
+                        .id(SharedString::from(format!("row-fold-{id}")))
+                        .h(px(20.0))
+                        .px(px(5.0))
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .gap(px(3.0))
+                        .rounded(px(radius::RADIUS))
+                        .text_size(ty::BADGE)
+                        .text_color(t.text_faint)
+                        .hover(|s| s.bg(t.wash(0.08)).text_color(t.text))
+                        .tooltip(ui::tip(if open {
+                            "Fold the threads it started"
+                        } else {
+                            "Show the threads it started"
+                        }))
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            let _ = this
+                                .engine
+                                .store
+                                .set_setting(&format!("sidebar_open.{id}"), if open { "0" } else { "1" });
+                            cx.notify();
+                        }))
+                        .child(n.to_string())
+                        .child(
+                            icon(icons::ALT_ARROW_RIGHT)
+                                .size(px(10.0))
+                                .with_transformation(gpui::Transformation::rotate(gpui::radians(turn))),
+                        ),
+                )
+            })
             .child(
                 div()
                     .flex_none()
@@ -982,6 +1088,16 @@ impl Shell {
                             .child(archive_btn),
                     ),
             )
+            // Drag a thread onto the conversation or a pane to open it beside.
+            .when(!archived && !renaming_now, |d| {
+                // The sidebar is its own cached view: wake the shell so the
+                // conversation shows its drop target at once.
+                let shell = cx.entity().downgrade();
+                d.on_drag(crate::side_panel::ThreadDrag { id, title: task.title.clone().into() }, move |d, _, _, cx| {
+                    let _ = shell.update(cx, |_, cx| cx.notify());
+                    cx.new(|_| d.clone())
+                })
+            })
             .on_click(cx.listener(move |this, e: &gpui::ClickEvent, window, cx| {
                 if e.click_count() == 2 {
                     this.begin_rename(id, window, cx);
@@ -1011,6 +1127,221 @@ impl Shell {
     }
 }
 
+impl Shell {
+    /// Every nested thread's parent (see [`nest`]).
+    fn thread_family(&self) -> HashMap<TaskId, TaskId> {
+        let tasks: Vec<(TaskId, Option<PathBuf>)> = self.tasks.iter().map(|t| (t.id, t.worktree.clone())).collect();
+        let links: Vec<(TaskId, TaskId)> = self
+            .engine
+            .store
+            .task_links()
+            .into_iter()
+            .filter(|l| l.kind == dove_core::store::LinkKind::Delegate)
+            .map(|l| (l.child, l.parent))
+            .collect();
+        nest(&tasks, &links)
+    }
+
+    /// A thread's row and, when unfolded, the threads it started and its
+    /// subagents beneath it. Unfolded by default while one of them works or
+    /// waits on you, or holds the open thread.
+    fn render_branch(
+        &self,
+        task: &Task,
+        depth: usize,
+        kids: &HashMap<TaskId, Vec<Task>>,
+        compact: bool,
+        t: &Theme,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        let children = kids.get(&task.id).cloned().unwrap_or_default();
+        let subs = self.threads.get(&task.id).map(|v| v.read(cx).chat.read(cx).subagents()).unwrap_or_default();
+        let count = children.len() + subs.len();
+        let open = count > 0
+            && match self.engine.store.setting(&format!("sidebar_open.{}", task.id)).as_deref() {
+                Some("1") => true,
+                Some("0") => false,
+                _ => {
+                    children.iter().any(|c| {
+                        matches!(c.status, TaskStatus::Running | TaskStatus::NeedsInput)
+                            || self.route == Route::Thread(c.id)
+                    }) || subs.iter().any(|s| s.running)
+                }
+            };
+        let row = self.render_row(task, compact, (count > 0).then_some((open, count)), t, cx);
+        let mut out = vec![div().pl(px(14.0 * depth as f32)).child(row).into_any_element()];
+        if open {
+            for c in &children {
+                out.extend(self.render_branch(c, depth + 1, kids, compact, t, cx));
+            }
+            for s in &subs {
+                out.push(self.render_subagent_row(task.id, s, depth + 1, t, cx));
+            }
+        }
+        out
+    }
+
+    /// A subagent under its thread: what it is, and whether it is working,
+    /// done or failed. A click opens it beside its thread.
+    fn render_subagent_row(
+        &self,
+        thread: TaskId,
+        s: &crate::transcript::Subagent,
+        depth: usize,
+        t: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let call = s.id.clone();
+        let mark: AnyElement = if s.running {
+            kit::spinner(SharedString::from(format!("sb-sub-spin-{call}")), 11.0, t.busy).into_any_element()
+        } else if s.error {
+            icon(icons::CLOSE_CIRCLE).size(px(12.0)).text_color(t.danger).into_any_element()
+        } else {
+            icon(icons::CHECK).size(px(12.0)).text_color(t.success).into_any_element()
+        };
+        let detail = if s.running { s.doing.clone().unwrap_or_else(|| "Working".into()) } else { s.kind.clone() };
+        div()
+            .pl(px(14.0 * depth as f32))
+            .child(
+                div()
+                    .id(SharedString::from(format!("sb-sub-{call}")))
+                    .h(px(30.0))
+                    .mx(px(8.0))
+                    .px(px(8.0))
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .rounded(px(radius::RADIUS))
+                    .cursor_pointer()
+                    .hover(|st| st.bg(t.wash(0.05)))
+                    .tooltip(ui::tip(if s.prompt.is_empty() { s.title.clone() } else { s.prompt.clone() }))
+                    .child(div().w(px(16.0)).flex_none().flex().justify_center().child(mark))
+                    .child(icon(icons::FORK).size(px(13.0)).flex_none().text_color(t.text_faint))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(ty::SMALL)
+                            .text_color(t.text_muted)
+                            .child(s.title.clone()),
+                    )
+                    .when(!detail.is_empty(), |d| {
+                        d.child(
+                            div()
+                                .flex_none()
+                                .max_w(px(90.0))
+                                .truncate()
+                                .text_size(ty::CAPTION)
+                                .text_color(t.text_faint)
+                                .child(detail),
+                        )
+                    })
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.open_task(thread, window, cx);
+                        window.dispatch_action(Box::new(crate::actions::OpenSubagent { call: call.clone() }), cx);
+                    })),
+            )
+            .into_any_element()
+    }
+
+    /// Agents running as TUIs in Flock: harness, working or idle, where,
+    /// and when it last printed. A row shows its pane.
+    fn render_agents_section(&self, t: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+        use crate::flock::AgentState;
+        let agents = self.workspace.read(cx).agents().to_vec();
+        if agents.is_empty() {
+            return None;
+        }
+        let on_page = self.route == Route::Flock;
+        let header = div()
+            .h(px(26.0))
+            .mx(px(8.0))
+            .px(px(8.0))
+            .flex()
+            .items_center()
+            .gap(px(6.0))
+            .text_size(ty::CAPTION)
+            .font_weight(gpui::FontWeight::MEDIUM)
+            .text_color(t.text_faint)
+            .child("Agents")
+            .child(div().text_size(ty::BADGE).child(agents.len().to_string()));
+        let mut list = div().flex().flex_col().gap(px(1.0)).pt(px(14.0)).child(header);
+        for a in agents {
+            let selected = on_page && a.selected;
+            let (dot, label) = match a.state {
+                AgentState::Working => (t.busy, a.state.label()),
+                AgentState::NeedsInput => (t.warning, a.state.label()),
+                AgentState::Idle => (t.text_faint, a.state.label()),
+                AgentState::Exited => (t.danger, a.state.label()),
+            };
+            let pane = a.pane;
+            list = list.child(
+                div()
+                    .id(gpui::ElementId::Name(format!("sb-agent-{pane}").into()))
+                    .mx(px(8.0))
+                    .px(px(8.0))
+                    .py(px(5.0))
+                    .flex()
+                    .items_center()
+                    .gap(px(9.0))
+                    .rounded(px(radius::RADIUS))
+                    .cursor_pointer()
+                    .when(selected, |d| d.bg(t.wash(0.08)))
+                    .when(!selected, |d| d.hover(|s| s.bg(t.wash(0.04))))
+                    .child(icon(ui::harness_icon(a.kind)).size(px(16.0)).text_color(ui::harness_tint(
+                        a.kind,
+                        t,
+                        t.text_muted,
+                    )))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(6.0))
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .truncate()
+                                            .text_size(ty::BODY)
+                                            .text_color(t.text)
+                                            .child(a.kind.label()),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(ty::MICRO)
+                                            .text_color(t.text_faint)
+                                            .child(ui::relative_time(a.last_ms)),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(5.0))
+                                    .text_size(ty::MICRO)
+                                    .text_color(t.text_faint)
+                                    .child(ui::dot(dot, 6.0))
+                                    .child(div().truncate().child(format!("{label} · {}", a.place))),
+                            ),
+                    )
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.navigate(Route::Flock, window, cx);
+                        this.workspace.update(cx, |w, cx| w.focus_pane(pane, window, cx));
+                    })),
+            );
+        }
+        Some(list.into_any_element())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1034,6 +1365,34 @@ mod tests {
             unread,
             automation: None,
         }
+    }
+
+    #[test]
+    fn nested_threads_find_their_parent() {
+        let id = |n: u128| TaskId(uuid::Uuid::from_u128(n));
+        let wt = |s: &str| Some(PathBuf::from(s));
+        let tasks = vec![
+            (id(1), wt("/w/a")),
+            (id(2), wt("/w/a")), // a side chat of 1
+            (id(3), None),       // delegated by 1
+            (id(4), None),       // delegated by 3
+            (id(5), wt("/w/b")),
+            (id(6), None),
+            (id(7), None),
+        ];
+        let links = vec![(id(3), id(1)), (id(4), id(3)), (id(6), id(7)), (id(7), id(6)), (id(9), id(1))];
+        let p = nest(&tasks, &links);
+        assert_eq!(p.get(&id(2)), Some(&id(1)));
+        assert_eq!(p.get(&id(3)), Some(&id(1)));
+        assert_eq!(p.get(&id(4)), Some(&id(3)));
+        assert!(!p.contains_key(&id(1)) && !p.contains_key(&id(5)));
+        // A loop is cut once: one of the two leads, the other sits under it.
+        assert_eq!(
+            [p.contains_key(&id(6)), p.contains_key(&id(7))].iter().filter(|x| **x).count(),
+            1,
+            "a loop keeps exactly one link"
+        );
+        assert!(!p.contains_key(&id(9)), "unknown threads are ignored");
     }
 
     #[test]

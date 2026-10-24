@@ -301,11 +301,12 @@ impl Shell {
             .render(t, &self.pages.auto_sel_agent, cx);
 
         let persona = (!self.personas.is_empty()).then(|| {
-            let people: Vec<(String, HarnessKind)> = self.personas.iter().map(|p| (p.id.clone(), p.harness)).collect();
+            let people: Vec<(String, Option<HarnessKind>)> =
+                self.personas.iter().map(|p| (p.id.clone(), p.harness)).collect();
             let ix = ed.persona.as_ref().and_then(|id| people.iter().position(|(p, _)| p == id)).map_or(0, |i| i + 1);
             let labels = std::iter::once(ctl::SelectOption::new("Anyone")).chain(self.personas.iter().map(|p| {
                 let mark = if p.avatar.trim().is_empty() { String::new() } else { format!("{} ", p.avatar) };
-                ctl::SelectOption::new(format!("{mark}{}", p.name)).detail(p.harness.label())
+                ctl::SelectOption::new(format!("{mark}{}", p.name)).detail(crate::team::agent_label(p))
             }));
             ctl::select("auto-persona", "Run as", |s: &mut Shell| &mut s.pages.auto_sel_persona)
                 .options(labels, ix)
@@ -316,7 +317,9 @@ impl Shell {
                         match i.checked_sub(1).and_then(|i| people.get(i)) {
                             Some((id, kind)) => {
                                 ed.persona = Some(id.clone());
-                                ed.harness = *kind;
+                                if let Some(kind) = kind {
+                                    ed.harness = *kind;
+                                }
                             }
                             None => ed.persona = None,
                         }

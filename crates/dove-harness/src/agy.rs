@@ -199,7 +199,7 @@ fn map_step(step: &Value) -> Vec<AgentEvent> {
     }
     match state {
         "ACTIVE" | "RUNNING" => {
-            vec![AgentEvent::ToolCall { call_id: id, name: name.into(), kind, title: title.into(), input }]
+            vec![AgentEvent::ToolCall { call_id: id, name, kind, title: title.into(), input }]
         }
         "DONE" | "FAILED" | "ERROR" => {
             vec![AgentEvent::ToolResult { call_id: id, output: text.into(), is_error: state != "DONE" }]

@@ -25,10 +25,11 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 mermaid-rs-renderer = "0.3.1"
 dove-term = { workspace = true }
 dove-store.workspace = true
-uuid = { workspace = true }
+uuid = { workspace = true, features = ["v4"] }
 zeron-syntax = { path = "../../vendor/zeron-syntax" }
 zeron-markdown = { path = "../../vendor/zeron-markdown" }
 zeron-voice = { path = "../../vendor/zeron-voice" }
+dove-voice = { path = "../../crates/dove-voice" }
 zeron-visual = { path = "../../vendor/zeron-visual" }
 zeron-visual-gpu = { path = "../../vendor/zeron-visual-gpu" }
 similar = "2"
@@ -41,6 +42,8 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 sha2 = "0.10"
 # Office previews: the same zip the vendored harness already links.
 zip = { version = "7.2", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+# File icons are embedded deflated (build.rs) and inflated on first use.
+flate2 = "1"
 
 [target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
 tray-icon = "0.24"
@@ -52,7 +55,7 @@ webview2-com = "0.38"
 windows = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Direct2D_Common", "Win32_Graphics_DirectComposition", "Win32_System_Com", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
 windows-core = "0.61"
 raw-window-handle = "0.6"
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_ProcessStatus", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_Security", "Win32_Storage_Xps", "Win32_System_ProcessStatus", "Win32_System_Threading", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = "0.2"
@@ -76,5 +79,6 @@ libc = "0.2"
 browser-fixture = []
 
 [build-dependencies]
+flate2 = "1"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "ico"] }
 winresource = "0.1"

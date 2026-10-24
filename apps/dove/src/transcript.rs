@@ -102,6 +102,25 @@ pub enum TaskViewEvent {
     DriveBrowser(crate::browser::Drive),
     /// The agent opened this pull request.
     PullRequest(String),
+    /// Reply text streamed while a voice call listens to this thread.
+    VoiceText(Arc<str>),
+    /// The turn a voice call listens to ended.
+    VoiceTurnEnded {
+        failed: bool,
+    },
+}
+
+/// What Voice Mode needs to know about a thread, read from state the chat
+/// already holds (nothing is fetched from the agent).
+#[derive(Debug, Clone, Default)]
+pub struct VoiceState {
+    pub live: bool,
+    pub capabilities: dove_core::proto::Capabilities,
+    /// Undecided permission requests and questions, oldest first.
+    pub pending: Vec<dove_core::proto::PermissionRequest>,
+    pub todos: Vec<dove_core::proto::TodoItem>,
+    pub status_text: Option<String>,
+    pub last_error: Option<String>,
 }
 
 // ------------------------------------------------------------------ model
@@ -334,6 +353,8 @@ pub enum Row {
     User {
         text: SharedString,
         at: i64,
+        /// Memories Dove recalled into this prompt (shown as a chip).
+        recalled: Option<Arc<Vec<SharedString>>>,
     },
     Activity(Activity),
     /// A finished top-level markdown block of assistant message `msg`.
@@ -905,11 +926,13 @@ impl Chat {
                 // Transcripts carry no timestamps; a replayed message shows none
                 // rather than the time it was reloaded.
                 let at = if live { dove_core::store::now_ms() } else { 0 };
+                let recalled = dove_core::memory::recalled(&text)
+                    .map(|items| Arc::new(items.into_iter().map(SharedString::from).collect::<Vec<_>>()));
                 let text: SharedString = dove_core::strip_persona(&text).to_string().into();
                 self.turn_prompt = Some(text.clone());
                 self.turn_started = live.then(Instant::now);
                 self.turn_text = false;
-                let i = self.push(Row::User { text, at });
+                let i = self.push(Row::User { text, at, recalled });
                 if live {
                     fx.runway = Some(i);
                 }
@@ -1579,6 +1602,14 @@ pub struct TaskView {
     pub(crate) info_reserve: bool,
     /// A user message just jumped to, briefly highlighted.
     flash: Option<usize>,
+    /// User rows whose recalled-memories chip is open.
+    recall_open: std::collections::HashSet<usize>,
+    /// The row whose "Remember this" asks: this project or just me.
+    remember_open: Option<usize>,
+    /// What memory last said about a row (remembered, forgot, failed).
+    memory_notes: HashMap<usize, SharedString>,
+    /// Recalled-chip items forgotten: (row, item).
+    forgotten: std::collections::HashSet<(usize, usize)>,
     glide: Option<gpui::Task<()>>,
     pub composer: Entity<Composer>,
     /// Height of the composer dock floating over the transcript's bottom
@@ -1594,6 +1625,8 @@ pub struct TaskView {
     /// The teammate this thread runs as, for its replies' header.
     persona: Option<dove_core::store::Persona>,
     pub status: TaskStatus,
+    /// A voice call is reading this thread's replies aloud.
+    voice_tap: bool,
     /// Inline `show_visual` frames, keyed by the tool call id.
     visuals: HashMap<String, Entity<crate::visuals::VisualFrame>>,
     todos_open: bool,
@@ -1821,6 +1854,7 @@ impl TaskView {
             ai_titling: false,
             ai_titles: true,
             status: task.status,
+            voice_tap: false,
             task,
             project,
             live: None,
@@ -1835,6 +1869,10 @@ impl TaskView {
             scroll_edge: false,
             info_reserve: false,
             flash: None,
+            recall_open: Default::default(),
+            remember_open: None,
+            memory_notes: HashMap::new(),
+            forgotten: Default::default(),
             glide: None,
             composer,
             dock_height: std::rc::Rc::new(std::cell::Cell::new(DOCK_GUESS)),
@@ -2111,6 +2149,16 @@ impl TaskView {
             merged.push(AgentEvent::TextDelta { text: text.into() });
         }
         for ev in merged {
+            if self.voice_tap {
+                match &ev {
+                    AgentEvent::TextDelta { text } => cx.emit(TaskViewEvent::VoiceText(text.clone())),
+                    AgentEvent::TurnEnded { is_error, .. } => {
+                        cx.emit(TaskViewEvent::VoiceTurnEnded { failed: *is_error })
+                    }
+                    AgentEvent::Exited { .. } => cx.emit(TaskViewEvent::VoiceTurnEnded { failed: true }),
+                    _ => {}
+                }
+            }
             if let AgentEvent::ToolCall { name, input, .. } = &ev {
                 // Dove's own browser tools already act on the page.
                 if dove_core::is_dove_tool(name) {
@@ -2315,6 +2363,36 @@ impl TaskView {
             l.send(Command::Interrupt);
         }
         cx.notify();
+    }
+
+    /// Let a voice call hear this thread's replies (or stop).
+    pub fn set_voice_tap(&mut self, on: bool) {
+        self.voice_tap = on;
+    }
+
+    /// The thread as Voice Mode sees it.
+    pub fn voice_state(&self) -> VoiceState {
+        let pending = self
+            .chat
+            .permissions
+            .iter()
+            .filter_map(|&i| match self.chat.rows.get(i) {
+                Some(Row::Permission { req, decided: None }) => Some(req.clone()),
+                _ => None,
+            })
+            .collect();
+        let last_error = self.chat.rows.iter().rev().take(12).find_map(|r| match r {
+            Row::Error(e) => Some(e.to_string()),
+            _ => None,
+        });
+        VoiceState {
+            live: self.live.is_some(),
+            capabilities: self.live.as_ref().map(|l| l.capabilities).unwrap_or_default(),
+            pending,
+            todos: self.chat.todos.clone(),
+            status_text: self.chat.status_text.as_ref().map(|s| s.to_string()),
+            last_error,
+        }
     }
 
     /// Answer an approval from outside the chat (the sidebar's Needs you).
@@ -2738,7 +2816,7 @@ impl TaskView {
     fn render_row(&self, i: usize, weak: &WeakEntity<Self>, window: &Window, cx: &App) -> AnyElement {
         let t = Theme::of(cx);
         let body: AnyElement = match &self.chat.rows[i] {
-            Row::User { text, at } => self.render_user(i, text, *at, weak, t),
+            Row::User { text, at, recalled } => self.render_user(i, text, *at, recalled.as_deref(), weak, t),
             Row::Activity(a) => self.render_activity(i, a, weak, t),
             Row::Block { block, msg } => {
                 let first = i == 0 || !matches!(&self.chat.rows[i - 1], Row::Block { msg: m, .. } if m == msg);
@@ -2904,7 +2982,18 @@ impl TaskView {
         )
     }
 
-    fn render_user(&self, i: usize, text: &SharedString, at: i64, weak: &WeakEntity<Self>, t: &Theme) -> AnyElement {
+    fn render_user(
+        &self,
+        i: usize,
+        text: &SharedString,
+        at: i64,
+        recalled: Option<&Vec<SharedString>>,
+        weak: &WeakEntity<Self>,
+        t: &Theme,
+    ) -> AnyElement {
+        if let Some(team) = dove_core::orchestra::parse_team_text(text) {
+            return render_team_text(i, team, text.to_string(), at, t);
+        }
         let copy = text.to_string();
         let when = if at > 0 { ui::relative_time(at) } else { String::new() };
         let edit = {
@@ -2921,6 +3010,12 @@ impl TaskView {
         // and file pills above the bubble; the bubble keeps only the words.
         let (body, files) = composer::split_attachments(text);
         let strip = (!files.is_empty()).then(|| sent_attachments(i, &files, t));
+        // Mentioned threads, folders, windows and tabs, as the cards they were.
+        let cards = composer::mentions::split_mentions(text);
+        let cards = (!cards.is_empty()).then(|| sent_cards(i, &cards, t));
+        let chip = recalled.map(|items| self.recall_chip(i, items, weak, t));
+        let remember = self.remember_button(i, weak, t);
+        let memory = self.memory_strip(i, weak, t);
         div()
             .group("user-msg")
             .w_full()
@@ -2939,7 +3034,9 @@ impl TaskView {
                         .child("Sent to this subagent"),
                 )
             })
+            .children(cards)
             .children(strip)
+            .children(chip)
             .when(!body.is_empty(), |d| {
                 d.child(
                     div()
@@ -2968,8 +3065,148 @@ impl TaskView {
                     .text_color(t.text_faint)
                     .child(div().mr(px(4.0)).child(when))
                     .when(self.mirror.is_none(), |d| d.child(edit))
+                    .children(remember)
                     .child(copy_button(SharedString::from(format!("copy-user-{i}")), copy, t)),
             )
+            .children(memory)
+            .into_any_element()
+    }
+
+    /// "Remember this" on row `i`, shown while Supermemory is signed in.
+    fn remember_button(&self, i: usize, weak: &WeakEntity<Self>, t: &Theme) -> Option<AnyElement> {
+        dove_core::memory::backend()?;
+        let weak = weak.clone();
+        Some(
+            action_button(SharedString::from(format!("remember-{i}")), icons::PIN, "Remember this", t)
+                .on_click(move |_, _, cx| {
+                    let _ = weak.update(cx, |v, cx| {
+                        v.remember_open = if v.remember_open == Some(i) { None } else { Some(i) };
+                        cx.notify();
+                    });
+                })
+                .into_any_element(),
+        )
+    }
+
+    /// Under row `i`: where "Remember this" should pin it, or what memory
+    /// last said about the row.
+    fn memory_strip(&self, i: usize, weak: &WeakEntity<Self>, t: &Theme) -> Option<AnyElement> {
+        let line = div().flex().items_center().gap(px(6.0)).text_size(ty::META).text_color(t.text_muted);
+        if self.remember_open == Some(i) {
+            let choice = |id: &str, label: &'static str, personal: bool| {
+                let weak = weak.clone();
+                ctl::button_sm(t, SharedString::from(format!("{id}-{i}")), label, Tone::Outlined).on_click(
+                    move |_, _, cx| {
+                        let _ = weak.update(cx, |v, cx| v.remember(i, personal, cx));
+                    },
+                )
+            };
+            let cancel = {
+                let weak = weak.clone();
+                action_button(SharedString::from(format!("remember-cancel-{i}")), icons::CLOSE, "Cancel", t).on_click(
+                    move |_, _, cx| {
+                        let _ = weak.update(cx, |v, cx| {
+                            v.remember_open = None;
+                            cx.notify();
+                        });
+                    },
+                )
+            };
+            return Some(
+                line.child("Remember for")
+                    .child(choice("remember-project", "This project", false))
+                    .child(choice("remember-user", "Just me, everywhere", true))
+                    .child(cancel)
+                    .into_any_element(),
+            );
+        }
+        let note = self.memory_notes.get(&i)?;
+        Some(line.child(icon(icons::PIN).size(px(11.0))).child(note.clone()).into_any_element())
+    }
+
+    /// "Recalled N memories": what Dove's memory added to a prompt, folded
+    /// by default; the agent saw them, the bubble shows only the words.
+    fn recall_chip(&self, i: usize, items: &[SharedString], weak: &WeakEntity<Self>, t: &Theme) -> AnyElement {
+        let open = self.recall_open.contains(&i);
+        let n = items.len();
+        let label = format!("Recalled {n} {}", if n == 1 { "memory" } else { "memories" });
+        let toggle = {
+            let weak = weak.clone();
+            move |_: &gpui::ClickEvent, _: &mut Window, cx: &mut App| {
+                let _ = weak.update(cx, |v, cx| {
+                    if !v.recall_open.remove(&i) {
+                        v.recall_open.insert(i);
+                    }
+                    cx.notify();
+                });
+            }
+        };
+        let head = div()
+            .id(SharedString::from(format!("recall-{i}")))
+            .flex()
+            .items_center()
+            .gap(px(5.0))
+            .px(px(8.0))
+            .h(px(22.0))
+            .rounded(px(11.0))
+            .cursor_pointer()
+            .text_size(ty::META)
+            .text_color(t.text_muted)
+            .bg(t.wash(0.05))
+            .hover(|s| s.bg(t.wash(0.09)))
+            .child(icon(icons::STAR).size(px(12.0)))
+            .child(label)
+            .child(icon(if open { icons::ALT_ARROW_DOWN } else { icons::ALT_ARROW_RIGHT }).size(px(10.0)))
+            .on_click(toggle);
+        div()
+            .flex()
+            .flex_col()
+            .items_end()
+            .gap(px(4.0))
+            .pb(px(2.0))
+            .child(head)
+            .when(open, |d| {
+                d.child(
+                    div()
+                        .max_w(px((crate::design::conversation_width() * 0.78).round()))
+                        .flex()
+                        .flex_col()
+                        .gap(px(4.0))
+                        .px(px(12.0))
+                        .py(px(8.0))
+                        .rounded(px(10.0))
+                        .border_1()
+                        .border_color(t.wash(0.08))
+                        .text_size(ty::SMALL)
+                        .text_color(t.text_muted)
+                        .children(items.iter().enumerate().map(|(k, m)| {
+                            let gone = self.forgotten.contains(&(i, k));
+                            let text = div().flex_1().min_w_0().child(format!("• {m}"));
+                            let row = div().group("recall-item").flex().items_start().gap(px(6.0));
+                            if gone {
+                                return row
+                                    .text_color(t.text_faint)
+                                    .child(text.line_through())
+                                    .child(div().flex_none().text_size(ty::META).child("Forgotten"));
+                            }
+                            let weak = weak.clone();
+                            let shown = m.clone();
+                            row.child(text).child(
+                                div().flex_none().invisible().group_hover("recall-item", |s| s.visible()).child(
+                                    action_button(
+                                        SharedString::from(format!("recall-forget-{i}-{k}")),
+                                        icons::TRASH_BIN_MINIMALISTIC,
+                                        "Forget this memory",
+                                        t,
+                                    )
+                                    .on_click(move |_, _, cx| {
+                                        let _ = weak.update(cx, |v, cx| v.forget_recalled(i, k, shown.clone(), cx));
+                                    }),
+                                ),
+                            )
+                        })),
+                )
+            })
             .into_any_element()
     }
 
@@ -3792,11 +4029,92 @@ impl TaskView {
         crate::motion::fade_quick(SharedString::from(format!("permit-{}", req.request_id)), row).into_any_element()
     }
 
-    /// Copy the answer text of the turn ending at row `i`. The chat keeps
-    /// no second copy of the source; it is read back from the transcript
-    /// (the recorder flushes it at every turn end). Without one, the
-    /// rendered blocks' plain text is copied.
+    /// Copy the answer text of the turn ending at row `i`.
     fn copy_turn(&self, i: usize, cx: &mut Context<Self>) {
+        let read = self.turn_answer(i, cx);
+        cx.spawn(async move |this, cx| {
+            let text = read.await;
+            if !text.is_empty() {
+                let _ = this.update(cx, |_, cx| cx.write_to_clipboard(ClipboardItem::new_string(text)));
+            }
+        })
+        .detach();
+    }
+
+    /// "Remember this" on row `i` (a message, or the turn ending there):
+    /// pin its words to this project's memory or the user's, redacted and
+    /// queued when offline.
+    fn remember(&mut self, i: usize, personal: bool, cx: &mut Context<Self>) {
+        use dove_core::memory::{self, Scope};
+        self.remember_open = None;
+        cx.notify();
+        let read = match &self.chat.rows[i] {
+            Row::User { text, .. } => gpui::Task::ready(composer::split_attachments(text).0),
+            _ => self.turn_answer(i, cx),
+        };
+        let root = self.engine.store.root().to_path_buf();
+        let cwd = self.task.worktree.clone().unwrap_or_else(|| self.project.path.clone());
+        let project = self.project.name.clone();
+        cx.spawn(async move |this, cx| {
+            let text = read.await;
+            let saved = cx
+                .background_spawn(async move {
+                    let scope = if personal { Scope::User } else { Scope::Project(memory::project_tag(&cwd)) };
+                    let doc = memory::pin_doc(&text, scope, Some(&project), dove_core::store::now_ms())?;
+                    memory::save_or_queue(&root, doc);
+                    Some(())
+                })
+                .await;
+            let note = match saved {
+                Some(()) if personal => "Remembered for you, in every project",
+                Some(()) => "Remembered for this project",
+                None => "Nothing to remember here",
+            };
+            let _ = this.update(cx, |v, cx| {
+                v.memory_notes.insert(i, note.into());
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// "Forget" on item `k` of row `i`'s recalled chip. The chip only has the
+    /// memory's words, so it is found by content (project, then user).
+    fn forget_recalled(&mut self, i: usize, k: usize, shown: SharedString, cx: &mut Context<Self>) {
+        use dove_core::memory::{self, Scope};
+        let Some(b) = memory::backend() else {
+            self.memory_notes.insert(i, "Sign in to Supermemory in Settings › Plugins › Memory first".into());
+            cx.notify();
+            return;
+        };
+        let cwd = self.task.worktree.clone().unwrap_or_else(|| self.project.path.clone());
+        let root = self.engine.store.root().to_path_buf();
+        let task = cx.background_spawn(async move {
+            let scopes = [Scope::Project(memory::project_tag(&cwd)), Scope::User];
+            memory::forget_recalled(&*b, Some(&memory::LocalIndex::at(&root)), &shown, &scopes)
+        });
+        cx.spawn(async move |this, cx| {
+            let r = task.await;
+            let _ = this.update(cx, |v, cx| {
+                match r {
+                    Ok(_) => {
+                        v.forgotten.insert((i, k));
+                    }
+                    Err(e) => {
+                        v.memory_notes.insert(i, format!("Could not forget it: {e}").into());
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// The answer text of the turn ending at row `i`. The chat keeps no
+    /// second copy of the source; it is read back from the transcript (the
+    /// recorder flushes it at every turn end). Without one, the rendered
+    /// blocks' plain text stands in.
+    fn turn_answer(&self, i: usize, cx: &mut Context<Self>) -> gpui::Task<String> {
         use dove_store::transcript::Kind;
         let from_end = self.chat.rows[i + 1..].iter().filter(|r| matches!(r, Row::TurnEnd { .. })).count();
         let start = self.chat.rows[..i]
@@ -3813,7 +4131,7 @@ impl TaskView {
             .join("\n\n");
         let (store, task) = (self.engine.store.clone(), self.task.id);
         let call = self.mirror.as_ref().map(|m| m.call.clone());
-        let read = cx.background_spawn(async move {
+        cx.background_spawn(async move {
             let text = match call {
                 Some(call) => turn_text(&store.subagent_events(task, &call), from_end),
                 None => {
@@ -3832,14 +4150,7 @@ impl TaskView {
                 }
             };
             if text.is_empty() { fallback } else { text }
-        });
-        cx.spawn(async move |this, cx| {
-            let text = read.await;
-            if !text.is_empty() {
-                let _ = this.update(cx, |_, cx| cx.write_to_clipboard(ClipboardItem::new_string(text)));
-            }
         })
-        .detach();
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -3897,12 +4208,17 @@ impl TaskView {
                     },
                 ))
             })
+            .when(has_text, |d| d.children(self.remember_button(i, weak, t)))
             .when_some(elapsed.filter(|_| !failed), |d, e| {
                 d.child(div().ml(px(6.0)).child(format!("Worked for {}", duration(e))))
             });
+        let row = match self.memory_strip(i, weak, t) {
+            Some(strip) => div().flex().flex_col().gap(px(4.0)).child(row).child(strip).into_any_element(),
+            None => row.into_any_element(),
+        };
         match failure {
             Some(strip) => div().flex().flex_col().gap(px(4.0)).pt(px(4.0)).child(strip).child(row).into_any_element(),
-            None => row.into_any_element(),
+            None => row,
         }
     }
 
@@ -4320,6 +4636,10 @@ impl TaskView {
                     .flex_col()
                     .gap(px(6.0))
                     .children(self.render_todos(cx))
+                    // A running voice call sits on the input it talks into.
+                    .children(crate::voice_call::strip(cx))
+                    // Agents this thread wants to start, for the user to approve.
+                    .children(crate::orchestrate::cards_for(self.task.id, cx))
                     .child(input)
                     .child(
                         canvas(
@@ -4506,9 +4826,141 @@ fn copy_button(id: SharedString, text: String, t: &Theme) -> impl IntoElement {
         .on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(text.clone())))
 }
 
+/// A team update's reports ("## Who did what\nThread …\n\nresult" each), as
+/// (headline, rest).
+fn update_sections(body: &str) -> Vec<(Option<String>, String)> {
+    body.split("\n## ")
+        .map(|s| s.trim().trim_start_matches("## ").trim())
+        .filter(|s| !s.is_empty())
+        .map(|s| match s.split_once('\n') {
+            Some((head, rest)) => (Some(head.trim().to_string()), rest.trim().to_string()),
+            None => (Some(s.to_string()), String::new()),
+        })
+        .collect()
+}
+
+/// A message one agent sent another (a handed-off task, a teammate's
+/// message, or results delivered back), as a card rather than a bubble: the
+/// user didn't type it, and the framing tags stay out of sight.
+fn render_team_text(i: usize, team: dove_core::orchestra::TeamText, raw: String, at: i64, t: &Theme) -> AnyElement {
+    use dove_core::orchestra::TeamText;
+    let (glyph, title, sections): (&'static str, String, Vec<(Option<String>, String)>) = match team {
+        TeamText::Task { from, body } => (icons::FORK, format!("Task from {from}"), vec![(None, body)]),
+        TeamText::Message { from, body } => {
+            (icons::CHAT_ROUND_LINE, format!("Message from {from}"), vec![(None, body)])
+        }
+        TeamText::Update { body } => {
+            let parts = update_sections(&body);
+            let n = parts.len();
+            let title = if n == 1 { "Team update".to_string() } else { format!("Team update · {n} results") };
+            (icons::USERS_GROUP, title, parts)
+        }
+    };
+    let when = if at > 0 { ui::relative_time(at) } else { String::new() };
+    let section = |head: Option<String>, body: String| {
+        // Each report's first line names its thread; the rest is the result.
+        let (thread, text) = match body.split_once('\n') {
+            Some((first, rest)) if first.starts_with("Thread \"") => (Some(first.to_string()), rest.trim().to_string()),
+            _ if body.starts_with("Thread \"") => (Some(body.clone()), String::new()),
+            _ => (None, body),
+        };
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(3.0))
+            .children(
+                head.map(|h| {
+                    div().text_size(ty::BODY).font_weight(gpui::FontWeight::MEDIUM).text_color(t.text).child(h)
+                }),
+            )
+            .children(thread.map(|l| div().text_size(ty::CAPTION).text_color(t.text_faint).child(l)))
+            .when(!text.is_empty(), |d| {
+                d.child(
+                    div()
+                        .text_size(ty::BODY)
+                        .line_height(ty::lh::BODY)
+                        .text_color(t.text_muted)
+                        .whitespace_normal()
+                        .child(text),
+                )
+            })
+    };
+    div()
+        .group("team-msg")
+        .w_full()
+        .pt(px(10.0))
+        .flex()
+        .flex_col()
+        .gap(px(2.0))
+        .child(
+            div()
+                .w_full()
+                .px(px(14.0))
+                .py(px(10.0))
+                .flex()
+                .flex_col()
+                .gap(px(8.0))
+                .rounded(px(Theme::BUBBLE_RADIUS))
+                .border_1()
+                .border_color(t.border)
+                .bg(t.wash(0.03))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.0))
+                        .text_size(ty::META)
+                        .text_color(t.text_faint)
+                        .child(icon(glyph).size(px(13.0)).text_color(t.accent))
+                        .child(div().flex_1().min_w_0().truncate().child(title)),
+                )
+                .children(sections.into_iter().map(|(h, b)| section(h, b))),
+        )
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(2.0))
+                .h(px(24.0))
+                .invisible()
+                .group_hover("team-msg", |s| s.visible())
+                .text_size(ty::META)
+                .text_color(t.text_faint)
+                .child(div().mr(px(4.0)).child(when))
+                .child(copy_button(SharedString::from(format!("copy-team-{i}")), raw, t)),
+        )
+        .into_any_element()
+}
+
 /// A sent message's files, right-aligned above its bubble (Zeron's strip):
 /// images as 112 × 80 thumbnails, other files as pills with their type icon.
 /// A click opens the file in its own app.
+/// A sent message's mention cards, right-aligned above its bubble.
+fn sent_cards(row: usize, cards: &[composer::mentions::Card], t: &Theme) -> AnyElement {
+    div()
+        .flex()
+        .flex_wrap()
+        .justify_end()
+        .gap(px(6.0))
+        .pb(px(4.0))
+        .children(cards.iter().enumerate().map(|(i, c)| {
+            div()
+                .id(SharedString::from(format!("sent-card-{row}-{i}")))
+                .h(px(26.0))
+                .max_w(px(260.0))
+                .px(px(8.0))
+                .flex()
+                .items_center()
+                .gap(px(6.0))
+                .rounded(px(8.0))
+                .bg(t.wash(0.07))
+                .tooltip(ui::tip(c.detail()))
+                .child(icon(c.glyph()).size(px(13.0)).flex_none().text_color(t.accent))
+                .child(div().min_w_0().truncate().text_size(ty::SMALL).text_color(t.text).child(c.label()))
+        }))
+        .into_any_element()
+}
+
 fn sent_attachments(row: usize, files: &[std::path::PathBuf], t: &Theme) -> AnyElement {
     const THUMB_W: f32 = 112.0;
     const THUMB_H: f32 = 80.0;
@@ -5294,6 +5746,33 @@ fn more_chip(i: usize, j: usize, label: String, weak: &WeakEntity<TaskView>, t: 
 mod tests {
     use super::*;
     use dove_core::proto::Question;
+
+    #[test]
+    fn team_update_cards_split_per_report() {
+        use dove_core::orchestra::{Report, TeamText, parse_team_text, team_update};
+        use dove_core::proto::TaskId;
+        use dove_core::store::LinkStatus;
+        let report = |who: &str, status, summary: Option<&str>| Report {
+            thread: TaskId::new(),
+            title: format!("{who}'s task"),
+            who: who.into(),
+            status,
+            summary: summary.map(str::to_string),
+            delegated: true,
+        };
+        let msg = team_update(&[
+            report("Codex", LinkStatus::Completed, Some("Added tests.\n\nAll pass.")),
+            report("Kai (Builder) on Claude Code", LinkStatus::NeedsInput, None),
+        ]);
+        let Some(TeamText::Update { body }) = parse_team_text(&msg) else { panic!("not an update") };
+        let parts = update_sections(&body);
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0].0.as_deref(), Some("Codex finished the task you handed over"));
+        assert!(parts[0].1.starts_with("Thread \"Codex's task\"") && parts[0].1.ends_with("All pass."));
+        assert!(parts[1].0.as_deref().unwrap().starts_with("Kai (Builder) on Claude Code is waiting for the user"));
+        // The note to the agent after the tag isn't part of the card.
+        assert!(!body.contains("automatic update"));
+    }
 
     fn text(s: &str) -> AgentEvent {
         AgentEvent::TextDelta { text: s.into() }

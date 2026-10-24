@@ -27,17 +27,30 @@ pub fn shortcuts() -> Vec<Shortcut> {
         sc!("toggle_sidebar", "Toggle sidebar", "secondary-b", ToggleSidebar),
         sc!("toggle_panel", "Toggle side panel", "secondary-\\", ToggleRightPanel),
         sc!("toggle_terminal", "Chat ⇄ Terminal", "ctrl-`", ToggleTerminal),
+        sc!("split_right", "Split pane right", "secondary-alt-\\", SplitPaneRight),
+        sc!("split_down", "Split pane down", "secondary-alt--", SplitPaneDown),
+        sc!("close_pane", "Close pane", "secondary-alt-w", ClosePane),
+        sc!("maximize_pane", "Maximize or restore pane", "secondary-alt-enter", MaximizePane),
+        sc!("pane_left", "Focus pane on the left", "secondary-alt-left", FocusPaneLeft),
+        sc!("pane_right", "Focus pane on the right", "secondary-alt-right", FocusPaneRight),
+        sc!("pane_up", "Focus pane above", "secondary-alt-up", FocusPaneUp),
+        sc!("pane_down", "Focus pane below", "secondary-alt-down", FocusPaneDown),
         sc!("close_tab", "Close thread tab", "secondary-w", CloseTab),
         sc!("next_tab", "Next thread tab", "ctrl-tab", NextTab),
         sc!("prev_tab", "Previous thread tab", "ctrl-shift-tab", PrevTab),
         sc!("rename", "Rename thread", "f2", RenameThread),
         sc!("threads", "All threads", "secondary-shift-t", OpenThreads),
         sc!("kanban", "Kanban", "secondary-shift-k", OpenKanban),
+        sc!("flock", "Flock", "secondary-shift-j", OpenFlock),
+        sc!("flock_split_right", "Flock: split terminal right", "secondary-shift-d", FlockSplitRight),
+        sc!("flock_split_down", "Flock: split terminal down", "secondary-shift-e", FlockSplitDown),
+        sc!("flock_close_pane", "Flock: close terminal pane", "secondary-shift-x", FlockClosePane),
         sc!("back", "Back", "alt-left", GoBack),
         sc!("forward", "Forward", "alt-right", GoForward),
         sc!("settings", "Settings", "secondary-,", OpenSettings),
         sc!("add_project", "Add project", "secondary-o", AddProject),
         sc!("focus_composer", "Focus the composer", "secondary-l", FocusComposer),
+        sc!("voice_call", "Start or end a voice call", "secondary-shift-space", ToggleVoiceCall),
         sc!("quit", "Quit", "secondary-q", Quit),
     ]
 }
@@ -82,6 +95,9 @@ pub fn rebind(store: &Store, id: &str, key: &str, cx: &mut App) {
     }
     bindings.extend(load(key, (s.build)()));
     cx.bind_keys(bindings);
+    if id == "voice_call" {
+        crate::hotkey::apply(store);
+    }
 }
 
 /// "secondary-k" → "Ctrl K" (or "⌘ K" on macOS).
@@ -96,6 +112,7 @@ pub fn pretty(key: &str) -> String {
             "left" => "←".into(),
             "right" => "→".into(),
             "tab" => "Tab".into(),
+            "space" => "Space".into(),
             "\\" => "\\".into(),
             other => other.to_uppercase(),
         })
@@ -143,5 +160,6 @@ mod tests {
         assert_eq!(ids.len(), all.len());
         assert!(pretty("secondary-shift-k").ends_with("Shift K"));
         assert_eq!(pretty("alt-left").split(' ').next_back(), Some("←"));
+        assert!(pretty("secondary-shift-space").ends_with("Shift Space"));
     }
 }

@@ -18,3 +18,5 @@ which = { workspace = true }
 uuid = { workspace = true }
 flume = "0.11"
 futures = "0.3"
+# Skills library: GitHub listings and downloads (blocking; runs off the UI thread).
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "blocking"] }

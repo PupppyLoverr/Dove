@@ -90,6 +90,11 @@ pub struct ThreadView {
     busy: Option<&'static str>,
     note: Option<SharedString>,
     voice: Entity<Dictation>,
+    /// The terminal's side pill.
+    pill: crate::term_pill::PillState,
+    /// Text typed into the terminal as a draft (not yet entered), so it can
+    /// be replaced or cleared.
+    term_draft: Option<String>,
     mirror: Option<dove_core::mirror::MirrorSession>,
     focus: FocusHandle,
     _mirror_pump: Option<gpui::Task<()>>,
@@ -133,6 +138,8 @@ impl ThreadView {
                 TaskViewEvent::AiTitle(t) => TaskViewEventKind::AiTitle(t.clone()),
                 TaskViewEvent::DriveBrowser(d) => TaskViewEventKind::DriveBrowser(d.clone()),
                 TaskViewEvent::PullRequest(url) => TaskViewEventKind::PullRequest(url.clone()),
+                // Voice Mode subscribes to the chat directly.
+                TaskViewEvent::VoiceText(_) | TaskViewEvent::VoiceTurnEnded { .. } => return,
                 TaskViewEvent::SwitchToChat => {
                     this.request(ViewMode::Chat, window, cx);
                     return;
@@ -148,12 +155,17 @@ impl ThreadView {
             cx.emit(ThreadEvent::Chat(kind));
         })];
         subs.push(cx.subscribe(&voice, |this, _, ev: &DictationEvent, cx| match ev {
-            DictationEvent::Text(text) => {
-                if let Some(t) = &this.terminal {
+            // Text typed into a terminal can't be revised in place, so live
+            // dictation types only its final text there.
+            DictationEvent::Text(text) | DictationEvent::LiveDone(text) => {
+                if let Some(t) = &this.terminal
+                    && !text.is_empty()
+                {
                     let text = text.clone();
                     t.update(cx, |t, cx| t.type_text(&text, cx));
                 }
             }
+            DictationEvent::Live(_) => {}
             DictationEvent::Changed => cx.notify(),
         }));
         Self {
@@ -168,11 +180,103 @@ impl ThreadView {
             busy: None,
             note: None,
             voice,
+            pill: Default::default(),
+            term_draft: None,
             mirror: None,
             focus: cx.focus_handle(),
             _mirror_pump: None,
             _watch: None,
             _subs: subs,
+        }
+    }
+
+    /// Open the agent's terminal UI for a thread that has not run yet, and
+    /// type `first` into it once the UI settles (a voice launch).
+    pub fn open_terminal(&mut self, first: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
+        self.request(ViewMode::Terminal, window, cx);
+        let Some(first) = first.filter(|f| !f.trim().is_empty()) else { return };
+        cx.spawn_in(window, async move |this, cx| {
+            // Wait for the UI to draw and go quiet (at most 20 s).
+            let start = std::time::Instant::now();
+            loop {
+                cx.background_executor().timer(Duration::from_millis(250)).await;
+                let ready = this
+                    .update(cx, |v, cx| {
+                        v.terminal.as_ref().is_some_and(|t| {
+                            let t = t.read(cx);
+                            t.is_running() && t.is_quiet(Duration::from_millis(1200))
+                        })
+                    })
+                    .unwrap_or(true);
+                if ready && start.elapsed() > Duration::from_millis(1500) || start.elapsed() > Duration::from_secs(20) {
+                    break;
+                }
+            }
+            let _ = this.update(cx, |v, cx| {
+                if let Some(t) = &v.terminal {
+                    t.update(cx, |t, cx| {
+                        t.type_text(&first, cx);
+                        t.send_raw("\r");
+                    });
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Put `text` in the thread's input without sending it: the composer
+    /// in chat, the agent's prompt line in the terminal (replacing an
+    /// earlier draft there).
+    pub fn draft(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        match (&self.terminal, self.view) {
+            (Some(term), ViewMode::Terminal) => {
+                let term = term.clone();
+                let old = self.term_draft.replace(text.to_string());
+                term.update(cx, |t, cx| {
+                    if let Some(old) = old {
+                        t.send_raw(&"\x7f".repeat(old.chars().count()));
+                    }
+                    t.type_text(text, cx);
+                });
+            }
+            _ => {
+                let composer = self.chat.read(cx).composer.clone();
+                crate::composer::set_text(&composer, text, window, cx);
+                crate::composer::focus(&composer, window, cx);
+            }
+        }
+        cx.notify();
+    }
+
+    /// Send what [`Self::draft`] put in the input.
+    pub fn send_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        match (&self.terminal, self.view) {
+            (Some(term), ViewMode::Terminal) => {
+                self.term_draft = None;
+                term.update(cx, |t, _| t.send_raw("\r"));
+                true
+            }
+            _ => {
+                let composer = self.chat.read(cx).composer.clone();
+                let Some(text) = crate::composer::take_text(&composer, window, cx) else { return false };
+                self.chat.update(cx, |c, cx| c.submit(text, window, cx));
+                true
+            }
+        }
+    }
+
+    /// Take back what [`Self::draft`] put in the input.
+    pub fn clear_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match (&self.terminal, self.view) {
+            (Some(term), ViewMode::Terminal) => {
+                if let Some(old) = self.term_draft.take() {
+                    term.update(cx, |t, _| t.send_raw(&"\x7f".repeat(old.chars().count())));
+                }
+            }
+            _ => {
+                let composer = self.chat.read(cx).composer.clone();
+                let _ = crate::composer::take_text(&composer, window, cx);
+            }
         }
     }
 
@@ -282,6 +386,10 @@ impl ThreadView {
 
     fn switch_to_terminal_now(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (task, project) = self.session_task(cx);
+        // A pre-started copy of this session would write the same file.
+        if let Some(native) = task.native_session_id.as_deref() {
+            self.engine.cool_session(native);
+        }
         let run = self.chat.read(cx).composer.read(cx).run_settings(cx);
         let cmd = match self.engine.tui_command(&task, &project, &run) {
             Ok(c) => c,
@@ -302,6 +410,11 @@ impl ThreadView {
         self.view = ViewMode::Terminal;
         let engine = self.engine.clone();
         let id = task.id;
+        // The view let go of its session but the agent still runs it in the
+        // background: stop it there.
+        if live.is_none() {
+            engine.stop_chat(id);
+        }
         cx.spawn_in(window, async move |this, cx| {
             if let Some(live) = live {
                 live.send(dove_core::Command::Kill);
@@ -319,15 +432,19 @@ impl ThreadView {
                     }
                 }
             }
-            // The recorder drops the chat driver before it forwards Exited.
+            // The recorder drops the chat driver when the agent exits; give
+            // a slow exit (flushing its session file) up to three seconds.
+            let deadline = std::time::Instant::now() + Duration::from_secs(3);
             let mut claimed = engine.claim_terminal(id);
-            for _ in 0..8 {
-                if claimed.is_ok() {
-                    break;
-                }
-                cx.background_executor().timer(Duration::from_millis(15)).await;
+            while claimed.is_err() && std::time::Instant::now() < deadline {
+                cx.background_executor().timer(Duration::from_millis(25)).await;
                 claimed = engine.claim_terminal(id);
             }
+            let claimed = claimed.map_err(|_| {
+                anyhow::anyhow!(
+                    "The chat session didn't stop in time, so the terminal didn't open. Try again in a moment."
+                )
+            });
             let _ = this.update_in(cx, |v, window, cx| {
                 v.busy = None;
                 if let Err(e) = claimed {
@@ -346,7 +463,9 @@ impl ThreadView {
 
     /// The terminal view for `cmd`, already claimed as this session's driver.
     fn attach_terminal(&mut self, cmd: dove_core::tui::TuiCommand, window: &mut Window, cx: &mut Context<Self>) {
-        let term = cx.new(|cx| TerminalView::for_command(cmd.cwd.clone(), cmd.program.clone(), cmd.args.clone(), cx));
+        let term = cx.new(|cx| {
+            TerminalView::for_command_env(cmd.cwd.clone(), cmd.program.clone(), cmd.args.clone(), cmd.env.clone(), cx)
+        });
         let sub = cx.subscribe_in(&term, window, |v, _, ev: &TerminalEvent, window, cx| match ev {
             TerminalEvent::Exited => {
                 if v.driver == ViewMode::Terminal {
@@ -373,7 +492,8 @@ impl ThreadView {
     }
 
     fn start_mirror(&mut self, cx: &mut Context<Self>) {
-        let (task, project) = self.task(cx);
+        // The store may know the native session id this view missed.
+        let (task, project) = self.session_task(cx);
         let Some(mirror) = self.engine.mirror(&task, &project) else { return };
         let rx = mirror.events.clone();
         self.mirror = Some(mirror);
@@ -562,12 +682,14 @@ impl ThreadView {
         ))
     }
 
-    /// Chat | Terminal segment. The title bar no longer shows it; Ctrl+`
-    /// and the command palette still flip the view.
-    #[allow(dead_code)]
+    /// Chat | Terminal segment in the thread's title bar (Ctrl+` and the
+    /// command palette flip it too). Agents with no terminal UI get a
+    /// switch that says so instead of failing.
     pub fn view_switch(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let mode = self.view;
         let armed = self.armed.is_some();
+        let harness = self.chat.read(cx).task.harness;
+        let has_terminal = self.engine.has_terminal_ui(harness);
         // The selection plate slides between the two slots (the shell draws
         // this switch, so its frames carry the glide).
         let slot = crate::motion::state_t(
@@ -620,7 +742,21 @@ impl ThreadView {
             .gap(px(1.0))
             .child(plate)
             .child(item("view-chat", icons::CHAT_ROUND_LINE, "Chat (Ctrl+`)", ViewMode::Chat, cx))
-            .child(item("view-terminal", icons::TERMINAL, "Terminal (Ctrl+`)", ViewMode::Terminal, cx))
+            .child(if has_terminal || mode == ViewMode::Terminal {
+                item("view-terminal", icons::TERMINAL, "Terminal (Ctrl+`)", ViewMode::Terminal, cx).into_any_element()
+            } else {
+                div()
+                    .id("view-terminal-off")
+                    .h(px(22.0))
+                    .w(px(26.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .opacity(0.4)
+                    .tooltip(ui::tip(format!("{} has no terminal UI Dove can open", harness.label())))
+                    .child(icon(icons::TERMINAL).size(px(13.5)).text_color(t.text_faint))
+                    .into_any_element()
+            })
             .into_any_element()
     }
 
@@ -652,110 +788,82 @@ impl ThreadView {
         let ready = voice.is_ready();
         let (press, release) = (self.voice.clone(), self.voice.clone());
 
-        let mic = div()
-            .id("term-mic")
-            .h(px(24.0))
-            .px(px(8.0))
-            .flex()
-            .items_center()
-            .gap(px(5.0))
-            .rounded(px(radius::fit(24.0)))
-            .border_1()
-            .border_color(if recording { t.danger.opacity(0.5) } else { t.border })
-            .bg(if recording { t.danger.opacity(0.16) } else { t.wash(0.05) })
-            .cursor_pointer()
-            .text_size(ty::CAPTION)
-            .text_color(if recording { t.danger } else { t.text_muted })
-            .tooltip(ui::tip(if ready {
-                "Hold or click to dictate into the terminal"
-            } else {
-                "Install local voice in Settings › Voice"
-            }))
-            .child(if busy {
-                kit::spinner("term-mic-busy", 12.0, t.text_muted).into_any_element()
-            } else {
-                icon(icons::MICROPHONE)
-                    .size(px(12.5))
-                    .text_color(if recording { t.danger } else { t.text_muted })
-                    .into_any_element()
+        // The terminal gets every row: what used to be a header bar is the
+        // side pill (see `term_pill`), opening into the thread, the way back
+        // to chat, dictation, a voice call and the terminal's own actions.
+        use crate::term_pill::{self, Item, Pill};
+        let me = cx.entity().downgrade();
+        let to_chat = me.clone();
+        let mut items = vec![
+            Item::new("term-to-chat", icons::CHAT_ROUND_LINE, "Back to chat", move |window, cx| {
+                let _ = to_chat.update(cx, |v, cx| v.request(ViewMode::Chat, window, cx));
             })
-            .child(if recording { "Listening…" } else { "Voice" })
-            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                cx.stop_propagation();
-                press.update(cx, |v, cx| v.press(cx));
-            })
-            .on_mouse_up(MouseButton::Left, move |_, _, cx| release.update(cx, |v, cx| v.release(cx)));
-
-        let header = div()
-            .h(px(34.0))
-            .px(px(12.0))
-            .flex_none()
-            .flex()
-            .items_center()
-            .gap(px(8.0))
-            .border_b_1()
-            .border_color(t.border)
-            .bg(t.wash(0.025))
-            .text_size(ty::META)
-            .child(ui::dot(if running { t.success } else { t.text_faint }, 6.5))
-            .child(icon(ui::harness_icon(task.harness)).size(px(13.0)).text_color(ui::harness_tint(
-                task.harness,
-                t,
-                t.text_muted,
-            )))
-            .child(
-                div()
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(t.text)
-                    .child(format!("{} TUI", task.harness.label())),
-            )
-            .child(div().text_color(t.text_faint).child("·"))
-            .child(div().text_color(t.text_muted).truncate().child(project.name))
-            .when_some(task.branch.clone(), |d, b| {
-                d.child(
-                    div()
-                        .h(px(20.0))
-                        .px(px(6.0))
-                        .flex()
-                        .items_center()
-                        .gap(px(4.0))
-                        .rounded(px(radius::fit(20.0)))
-                        .bg(t.wash(0.05))
-                        .font_family(t.font_mono.clone())
-                        .text_size(ty::MICRO)
-                        .text_color(t.text_muted)
-                        .child(icon(icons::GIT_BRANCH).size(px(10.5)).text_color(t.text_faint))
-                        .child(b),
-                )
-            })
-            .child(div().flex_1())
-            .child(mic)
-            .child(ui::row_button("term-copy", icons::COPY, "Copy selection or screen", t).on_click(move |_, _, cx| {
-                term_copy.update(cx, |v, cx| v.copy_selection_or_screen(cx));
-            }))
-            .child(ui::row_button("term-clear", icons::REFRESH, "Clear screen", t).on_click(move |_, _, cx| {
-                term_clear.update(cx, |v, cx| v.clear(cx));
-            }))
-            .when(!running, |d| {
-                d.child(ui::button_ghost("term-restart", "Restart", t).h(px(24.0)).text_size(ty::CAPTION).on_click(
-                    move |_, _, cx| {
-                        term_restart.update(cx, |v, cx| v.restart(cx));
-                    },
-                ))
-            })
-            .child(
-                ui::row_button("term-ext", icons::ARROW_UP_RIGHT, "Open in system terminal", t)
-                    .on_click(move |_, _, _| crate::terminal::open_system_terminal(&cwd_for_ext)),
+            .hint("Ctrl+`"),
+        ];
+        items.push(if ready {
+            let item = Item::hold(
+                "term-mic",
+                icons::MICROPHONE,
+                if busy {
+                    "Transcribing…"
+                } else if recording {
+                    "Listening… release to type"
+                } else {
+                    "Hold to dictate"
+                },
+                move |_, cx| press.update(cx, |v, cx| v.press(cx)),
+                move |_, cx| release.update(cx, |v, cx| v.release(cx)),
             );
+            if recording { item.tone(t.danger) } else { item }
+        } else {
+            Item::new("term-mic", icons::MICROPHONE, "Set up dictation in Settings › Voice", |window, cx| {
+                window.dispatch_action(Box::new(crate::actions::OpenSettings), cx)
+            })
+        });
+        items.push(
+            Item::new("term-call", icons::PHONE, "Voice call with this thread", |window, cx| {
+                window.dispatch_action(Box::new(crate::actions::ToggleVoiceCall), cx)
+            })
+            .hint("Ctrl+Shift+Space"),
+        );
+        items.push(Item::new("term-copy", icons::COPY, "Copy selection or screen", move |_, cx| {
+            term_copy.update(cx, |v, cx| v.copy_selection_or_screen(cx));
+        }));
+        items.push(Item::new("term-clear", icons::REFRESH, "Clear screen", move |_, cx| {
+            term_clear.update(cx, |v, cx| v.clear(cx));
+        }));
+        if !running {
+            items.push(
+                Item::new("term-restart", icons::RESTART, "Restart", move |_, cx| {
+                    term_restart.update(cx, |v, cx| v.restart(cx));
+                })
+                .tone(t.warning),
+            );
+        }
+        items.push(Item::new("term-ext", icons::ARROW_UP_RIGHT, "Open in system terminal", move |_, _| {
+            crate::terminal::open_system_terminal(&cwd_for_ext)
+        }));
+        let detail = match &task.branch {
+            Some(b) => format!("{} · {} · {b}", task.harness.label(), project.name),
+            None => format!("{} · {}", task.harness.label(), project.name),
+        };
+        let pill = term_pill::render(
+            Pill {
+                id: "term-pill".into(),
+                open: self.pill.open,
+                live: running,
+                glyph: ui::harness_icon(task.harness),
+                tint: ui::harness_tint(task.harness, t, t.text_muted),
+                title: task.title.clone().into(),
+                detail: detail.into(),
+                recording,
+            },
+            items,
+            cx.listener(|this, hovered: &bool, _, cx| term_pill::hover(this, *hovered, |v: &mut Self| &mut v.pill, cx)),
+            t,
+        );
 
-        div()
-            .relative()
-            .size_full()
-            .flex()
-            .flex_col()
-            .child(header)
-            .child(div().flex_1().min_h_0().child(term.clone()))
-            .into_any_element()
+        div().relative().size_full().child(term.clone()).child(term_pill::overlay(pill)).into_any_element()
     }
 }
 
