@@ -24,7 +24,7 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, AppContext as _, Bounds, Context, Entity, EventEmitter, Focusable as _, InteractiveElement as _,
     IntoElement, MouseButton, ParentElement as _, Pixels, Render, StatefulInteractiveElement as _, Styled as _,
-    Subscription, Transformation, Window, anchored, canvas, deferred, div, px, relative,
+    Subscription, Window, anchored, canvas, deferred, div, px, relative,
 };
 use serde::{Deserialize, Serialize};
 
@@ -138,8 +138,7 @@ fn resume_args(kind: HarnessKind) -> Vec<String> {
 
 #[derive(Clone, Copy, PartialEq)]
 enum Menu {
-    New,
-    Layout,
+    Split,
 }
 
 /// The saved layout: trees plus what each leaf runs.
@@ -321,10 +320,19 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> Option<PaneId> {
         let term = match kind {
+            // Each agent starts with Dove's tools, as a thread's terminal does.
             Some(k) => {
-                let program = self.engine.program_for(k)?;
+                let cmd = match self.engine.flock_command(k, &cwd) {
+                    Ok(cmd) => cmd,
+                    Err(e) => {
+                        tracing::warn!("Flock could not start {}: {e:#}", k.label());
+                        return None;
+                    }
+                };
+                let mut all = cmd.args;
+                all.extend(args);
                 let dir = cwd.clone();
-                cx.new(|cx| TerminalView::for_command(dir, program, args, cx))
+                cx.new(|cx| TerminalView::for_command_env(dir, cmd.program, all, cmd.env, cx))
             }
             None => {
                 let dir = cwd.clone();
@@ -594,8 +602,14 @@ impl Workspace {
 
     /// Agents that can run here: installed, and not the bare-shell kind.
     fn launchable(&self) -> Vec<HarnessKind> {
-        let mut kinds: Vec<HarnessKind> =
-            self.engine.installed().into_iter().map(|i| i.kind).filter(|k| *k != HarnessKind::Shell).collect();
+        // Only agents with a terminal UI of their own (not ACP-only ones).
+        let mut kinds: Vec<HarnessKind> = self
+            .engine
+            .installed()
+            .into_iter()
+            .map(|i| i.kind)
+            .filter(|k| *k != HarnessKind::Shell && self.engine.has_terminal_ui(*k))
+            .collect();
         kinds.dedup();
         kinds
     }
@@ -676,32 +690,10 @@ impl Workspace {
         strip.into_any_element()
     }
 
-    fn tool(
-        id: &'static str,
-        tip: &'static str,
-        glyph: gpui::AnyElement,
-        t: &Theme,
-        on: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        div()
-            .id(id)
-            .size(px(28.0))
-            .flex()
-            .flex_none()
-            .items_center()
-            .justify_center()
-            .rounded(px(radius::RADIUS))
-            .cursor_pointer()
-            .hover(|s| s.bg(t.wash(0.06)))
-            .tooltip(ui::tip(tip))
-            .child(glyph)
-            .on_click(cx.listener(move |this, _, window, cx| on(this, window, cx)))
-            .into_any_element()
-    }
-
-    fn render_menu(&self, menu: Menu, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
-        let row = |id: String, glyph: AnyElement, label: String| {
+    /// The Split menu: split the focused pane, lay the tab out as a grid,
+    /// or open a new tab running a shell or an agent.
+    fn render_menu(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let row = |id: String, glyph: AnyElement, label: String, hint: Option<&'static str>| {
             div()
                 .id(gpui::ElementId::Name(id.into()))
                 .h(px(30.0))
@@ -715,10 +707,16 @@ impl Workspace {
                 .text_color(t.text)
                 .hover(|s| s.bg(t.wash(0.06)))
                 .child(glyph)
-                .child(label)
+                .child(div().flex_1().min_w_0().truncate().child(label))
+                .children(hint.map(|h| div().text_size(ty::CAPTION).text_color(t.text_faint).child(h)))
         };
+        let section = |label: &'static str| {
+            div().px(px(10.0)).pt(px(8.0)).pb(px(2.0)).text_size(ty::MICRO).text_color(t.text_faint).child(label)
+        };
+        let glyph = |g: &'static str| icon(g).size(px(14.0)).text_color(t.text_muted).into_any_element();
+        let has_tab = self.tabs.get(self.active).is_some();
         let mut list = div()
-            .w(px(220.0))
+            .w(px(250.0))
             .p(px(4.0))
             .flex()
             .flex_col()
@@ -731,28 +729,56 @@ impl Workspace {
                 this.menu = None;
                 cx.notify();
             }));
-        if menu == Menu::Layout {
-            for n in GRIDS {
-                list = list.child(
+        if has_tab {
+            list = list
+                .child(section("Split the focused pane"))
+                .child(
                     row(
-                        format!("ws-grid-{n}"),
-                        icon(icons::SPLIT_COLUMNS).size(px(14.0)).text_color(t.text_muted).into_any_element(),
-                        format!("{n} panes"),
+                        "ws-split-right".into(),
+                        glyph(icons::SPLIT_COLUMNS),
+                        "Split right".into(),
+                        Some("Ctrl+Shift+D"),
                     )
-                    .on_click(cx.listener(move |this, _, window, cx| this.grid(n, window, cx))),
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.menu = None;
+                        this.split(Axis::Row, window, cx)
+                    })),
+                )
+                .child(
+                    row("ws-split-down".into(), glyph(icons::SPLIT_ROWS), "Split down".into(), Some("Ctrl+Shift+E"))
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.menu = None;
+                            this.split(Axis::Column, window, cx)
+                        })),
                 );
-            }
-            return deferred(anchored().snap_to_window_with_margin(px(8.0)).child(div().mt(px(32.0)).child(list)))
-                .with_priority(2)
-                .into_any_element();
         }
+        // Grids as a row of chips: 2 to 16 panes.
+        let mut grids = div().px(px(6.0)).pb(px(4.0)).flex().flex_wrap().gap(px(4.0));
+        for n in GRIDS {
+            grids = grids.child(
+                div()
+                    .id(gpui::ElementId::Name(format!("ws-grid-{n}").into()))
+                    .h(px(28.0))
+                    .min_w(px(40.0))
+                    .px(px(8.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(radius::RADIUS))
+                    .bg(t.wash(0.04))
+                    .cursor_pointer()
+                    .text_size(ty::SMALL)
+                    .text_color(t.text)
+                    .hover(|s| s.bg(t.wash(0.09)))
+                    .tooltip(ui::tip(format!("{n} panes in an even grid")))
+                    .child(n.to_string())
+                    .on_click(cx.listener(move |this, _, window, cx| this.grid(n, window, cx))),
+            );
+        }
+        list = list.child(section("Grid")).child(grids).child(section("New tab"));
         list = list.child(
-            row(
-                "ws-new-shell".into(),
-                icon(icons::TERMINAL).size(px(14.0)).text_color(t.text_muted).into_any_element(),
-                "Shell".into(),
-            )
-            .on_click(cx.listener(|this, _, window, cx| this.new_tab(None, window, cx))),
+            row("ws-new-shell".into(), glyph(icons::TERMINAL), "Shell".into(), None)
+                .on_click(cx.listener(|this, _, window, cx| this.new_tab(None, window, cx))),
         );
         for kind in self.launchable() {
             list = list.child(
@@ -763,13 +789,19 @@ impl Workspace {
                         .text_color(ui::harness_tint(kind, t, t.text_muted))
                         .into_any_element(),
                     kind.label().to_string(),
+                    None,
                 )
                 .on_click(cx.listener(move |this, _, window, cx| this.new_tab(Some(kind), window, cx))),
             );
         }
-        deferred(anchored().snap_to_window_with_margin(px(8.0)).child(div().mt(px(32.0)).child(list)))
-            .with_priority(2)
-            .into_any_element()
+        deferred(
+            anchored()
+                .anchor(gpui::Anchor::TopRight)
+                .snap_to_window_with_margin(px(8.0))
+                .child(div().mt(px(32.0)).child(list)),
+        )
+        .with_priority(2)
+        .into_any_element()
     }
 
     /// One node of the tree: a pane card, or two children around a seam.
@@ -919,12 +951,7 @@ impl Workspace {
     /// a page title, so the page has no second bar of its own.
     pub fn render_bar(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let t = Theme::of(cx).clone();
-        let split_right = icon(icons::SPLIT_COLUMNS).size(px(15.0)).text_color(t.text_muted).into_any_element();
-        let split_down = icon(icons::SPLIT_COLUMNS)
-            .size(px(15.0))
-            .text_color(t.text_muted)
-            .with_transformation(Transformation::rotate(gpui::radians(std::f32::consts::FRAC_PI_2)))
-            .into_any_element();
+        let open = self.menu.is_some();
         div()
             .h_full()
             .flex_1()
@@ -933,18 +960,6 @@ impl Workspace {
             .items_center()
             .gap(px(4.0))
             .child(self.render_tabs(&t, cx))
-            .child(Self::tool(
-                "ws-new",
-                "New tab: a shell or an agent",
-                icon(icons::PLUS).size(px(15.0)).text_color(t.text_muted).into_any_element(),
-                &t,
-                |this, _, cx| {
-                    this.menu = if this.menu == Some(Menu::New) { None } else { Some(Menu::New) };
-                    cx.notify();
-                },
-                cx,
-            ))
-            .when_some(self.menu.filter(|m| *m == Menu::New), |d, m| d.child(self.render_menu(m, &t, cx)))
             .child(div().flex_1())
             .child({
                 let on = self.tabs.get(self.active).is_some_and(|tb| tb.broadcast);
@@ -966,35 +981,29 @@ impl Workspace {
             .child(
                 div()
                     .relative()
-                    .child(Self::tool(
-                        "ws-layout",
-                        "Grid layout: 2 to 16 panes",
-                        icon(icons::SPLIT_COLUMNS).size(px(15.0)).text_color(t.text_muted).into_any_element(),
-                        &t,
-                        |this, _, cx| {
-                            this.menu = if this.menu == Some(Menu::Layout) { None } else { Some(Menu::Layout) };
-                            cx.notify();
-                        },
-                        cx,
-                    ))
-                    .when_some(self.menu.filter(|m| *m == Menu::Layout), |d, m| d.child(self.render_menu(m, &t, cx))),
+                    .child(
+                        div()
+                            .id("ws-split")
+                            .h(px(28.0))
+                            .px(px(8.0))
+                            .flex()
+                            .flex_none()
+                            .items_center()
+                            .gap(px(5.0))
+                            .rounded(px(radius::RADIUS))
+                            .cursor_pointer()
+                            .when(open, |d| d.bg(t.wash(0.08)))
+                            .hover(|s| s.bg(t.wash(0.06)))
+                            .tooltip(ui::tip("Split, grid or a new tab"))
+                            .child(icon(icons::SPLIT_COLUMNS).size(px(15.0)).text_color(t.text_muted))
+                            .child(icon(icons::ALT_ARROW_DOWN).size(px(11.0)).text_color(t.text_faint))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.menu = if this.menu.is_some() { None } else { Some(Menu::Split) };
+                                cx.notify();
+                            })),
+                    )
+                    .when(open, |d| d.child(self.render_menu(&t, cx))),
             )
-            .child(Self::tool(
-                "ws-split-right",
-                "Split right (Ctrl+Shift+D)",
-                split_right,
-                &t,
-                |this, window, cx| this.split(Axis::Row, window, cx),
-                cx,
-            ))
-            .child(Self::tool(
-                "ws-split-down",
-                "Split down (Ctrl+Shift+E)",
-                split_down,
-                &t,
-                |this, window, cx| this.split(Axis::Column, window, cx),
-                cx,
-            ))
             .into_any_element()
     }
 }
@@ -1020,7 +1029,7 @@ impl Render for Workspace {
                 .justify_center()
                 .text_size(ty::BODY)
                 .text_color(t.text_faint)
-                .child("Your flock is empty. Press + to start a shell or an agent.")
+                .child("Your flock is empty. Open the split menu at the top right to start a shell or an agent.")
                 .into_any_element(),
         };
         div()

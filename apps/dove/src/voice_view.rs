@@ -1,15 +1,18 @@
-//! The call view: while a voice call runs, the window becomes a quiet,
-//! living call screen. An orb in the middle breathes while Dove listens,
-//! swells with your voice, shimmers while the agent works and ripples while
-//! Dove speaks. Under it, the words: what you are saying as you say it, then
-//! the reply as it is read. A rail lists the threads the call touches (what
-//! each is doing, which one needs your approval), and a row of controls
-//! mutes, stops the reading, flips to the chat, or ends the call.
+//! The call view: while a voice call runs, the chat area becomes a calm,
+//! living call screen over the same frosted wallpaper as the chat. In the
+//! middle, a round matrix of soft dots: it breathes while Dove listens,
+//! follows your voice while it hears you, sweeps while the agent works and
+//! pulses outward while Dove speaks. Under it, the words: what you are
+//! saying as you say it, then the reply as it is read. A rail lists the
+//! threads the call touches (what each is doing, which one needs your
+//! approval), and a glass dock mutes, stops the reading, flips to the chat,
+//! or ends the call.
 //!
-//! "Chat" flips back to the normal window (the compact strip above the
-//! composer keeps the call in view there, with a button to come back). The
-//! orb animates at 30 frames a second only while the view is on screen; a
-//! flipped or ended call draws nothing.
+//! "Chat" flips back to the thread (the compact strip above the composer
+//! keeps the call in view there, with a button to come back). The matrix
+//! animates only while the view is on screen, at 30 frames a second while
+//! the call is active and 15 while it only breathes; a flipped or ended
+//! call draws nothing.
 
 use std::time::{Duration, Instant};
 
@@ -90,17 +93,42 @@ pub fn rail(snap: &Snapshot) -> Vec<RailItem> {
     items.into_iter().map(|(_, i)| i).take(RAIL_MAX).collect()
 }
 
-/// The orb's radius as a share of its base: a slow breath, plus the voice
-/// level while hearing or speaking.
-pub fn orb_scale(secs: f32, level: f32, state: State) -> f32 {
-    let breath = 0.035 * (secs * 1.6).sin();
-    let voice = match state {
-        State::Hearing | State::Speaking => 0.32 * level.clamp(0.0, 1.0),
-        State::Listening => 0.12 * level.clamp(0.0, 1.0),
-        _ => 0.0,
+/// Dots across the matrix (an odd count keeps one dot at the centre).
+pub const MATRIX: usize = 17;
+
+/// How lit a matrix dot is, 0 to 1, at grid position (`x`, `y`) (each -1
+/// to 1, the centre at 0), `secs` into the call, with the voice `level`
+/// (0 to 1) and the call's `state`.
+pub fn matrix_glow(x: f32, y: f32, secs: f32, level: f32, state: State) -> f32 {
+    use std::f32::consts::TAU;
+    let d = (x * x + y * y).sqrt().min(1.0);
+    let level = level.clamp(0.0, 1.0);
+    let wave = |speed: f32, k: f32| 0.5 + 0.5 * (secs * speed - d * k).sin();
+    let v = match state {
+        // A slow shimmer turning around the edge while engines load.
+        State::Loading => {
+            let a = y.atan2(x);
+            let sweep = (a - secs * 2.0).rem_euclid(TAU);
+            0.08 + 0.32 * (-(sweep - 1.0).powi(2) * 1.6).exp() * d
+        }
+        // A slow breath from the centre; your voice brightens it.
+        State::Listening => 0.14 + 0.2 * wave(1.6, 4.0) * (1.0 - 0.45 * d) + 0.45 * level * (1.0 - d),
+        // Your voice, from the centre out, with a quick ripple on top.
+        State::Hearing => 0.16 + level * (0.72 * (1.0 - 0.7 * d) + 0.2 * wave(9.0, 11.0)) + 0.1 * wave(3.0, 5.0),
+        // A comet sweeping around: the agent is working.
+        State::Thinking => {
+            let a = y.atan2(x);
+            let behind = (secs * 2.6 - a).rem_euclid(TAU);
+            0.1 + 0.78 * (-behind * 1.25).exp() * (0.35 + 0.65 * d)
+        }
+        // Rings travelling outward, stronger with the voice.
+        State::Speaking => {
+            let ring = (secs * 4.5 - d * 8.5).sin().max(0.0).powi(2);
+            0.12 + ring * (0.5 + 0.45 * level) * (1.0 - 0.25 * d) + 0.12 * (1.0 - d)
+        }
+        State::Muted => 0.07 + 0.04 * wave(0.8, 3.0),
     };
-    let rest = if state == State::Loading { 0.82 } else { 1.0 };
-    rest + breath + voice
+    v.clamp(0.0, 1.0)
 }
 
 /// "3:07" from seconds.
@@ -122,7 +150,7 @@ pub enum CallViewEvent {
 pub struct CallView {
     call: Entity<VoiceCall>,
     rail: Vec<RailItem>,
-    /// On screen: the orb animates only then.
+    /// On screen: the matrix animates only then.
     visible: bool,
     /// Ticks since shown, for the calm frame rate.
     ticks: u64,
@@ -242,14 +270,20 @@ impl CallView {
                 .flex()
                 .items_center()
                 .gap(px(10.0))
-                .rounded(px(12.0))
-                .bg(t.wash(if waiting { 0.06 } else { 0.035 }))
-                .when(waiting, |d| d.border_1().border_color(t.warning.opacity(0.35)))
-                .when(item.current, |d| d.border_1().border_color(t.accent.opacity(0.35)))
+                .rounded(px(14.0))
+                .bg(t.composer_bg())
+                .border_1()
+                .border_color(if waiting {
+                    t.warning.opacity(0.4)
+                } else if item.current {
+                    t.accent.opacity(0.4)
+                } else {
+                    t.composer_border()
+                })
                 // Any other thread: click to talk to it instead.
                 .when_some(id.filter(|_| !item.current), |d, id| {
                     d.cursor_pointer()
-                        .hover(|s| s.bg(t.wash(0.07)))
+                        .hover(|s| s.bg(t.glass_hover()))
                         .tooltip(crate::ui::tip("Talk to this thread"))
                         .on_click(cx.listener(move |_, _, _, cx| cx.emit(CallViewEvent::TalkTo(id))))
                 })
@@ -351,17 +385,14 @@ impl CallView {
                 .child(label)
         };
         Some(
-            div()
+            glass(t, 18.0)
+                .border_color(t.accent.opacity(0.4))
                 .w_full()
                 .max_w(px(520.0))
                 .p(px(14.0))
                 .flex()
                 .flex_col()
                 .gap(px(10.0))
-                .rounded(px(16.0))
-                .bg(t.wash(0.05))
-                .border_1()
-                .border_color(t.accent.opacity(0.35))
                 .child(
                     div()
                         .flex()
@@ -409,45 +440,41 @@ fn circle(window: &mut Window, c: (f32, f32), r: f32, color: Hsla) {
     window.paint_quad(gpui::fill(b, color).corner_radii(px(r)));
 }
 
-/// A ring of `width`.
-fn ring(window: &mut Window, c: (f32, f32), r: f32, width: f32, color: Hsla) {
-    if r <= 0.0 {
-        return;
-    }
-    let b = Bounds::new(point(px(c.0 - r), px(c.1 - r)), size(px(2.0 * r), px(2.0 * r)));
-    window.paint_quad(gpui::quad(b, px(r), gpui::transparent_black(), px(width), color, gpui::BorderStyle::default()));
-}
-
-/// The orb, drawn from wall time and the call's state.
-fn paint_orb(bounds: Bounds<Pixels>, secs: f32, level: f32, state: State, color: Hsla, window: &mut Window) {
+/// The matrix: rounded dots on a square grid, inside a circle, each lit by
+/// [`matrix_glow`]. Brighter dots also grow a little, so it reads as soft
+/// light rather than a chart.
+fn paint_matrix(bounds: Bounds<Pixels>, secs: f32, level: f32, state: State, color: Hsla, window: &mut Window) {
     let w = f32::from(bounds.size.width);
     let h = f32::from(bounds.size.height);
-    let c = (f32::from(bounds.origin.x) + w / 2.0, f32::from(bounds.origin.y) + h / 2.0);
-    let base = w.min(h) * 0.27;
-    let r = base * orb_scale(secs, level, state);
-    // A soft glow: three faint halos.
-    for (k, a) in [(1.62, 0.045), (1.36, 0.07), (1.16, 0.11)] {
-        circle(window, c, r * k, color.opacity(a));
-    }
-    // Speaking: rings travel outwards and fade.
-    if state == State::Speaking {
-        for i in 0..3 {
-            let p = (secs * 0.7 + i as f32 / 3.0).fract();
-            ring(window, c, r * (1.05 + 0.75 * p), 1.5, color.opacity(0.4 * (1.0 - p)));
+    let side = w.min(h);
+    let (cx, cy) = (f32::from(bounds.origin.x) + w / 2.0, f32::from(bounds.origin.y) + h / 2.0);
+    let step = side / MATRIX as f32;
+    let half = (MATRIX as f32 - 1.0) / 2.0;
+    // A soft halo behind the dots, brighter as the call gets busier.
+    let busy = matrix_glow(0.0, 0.0, secs, level, state);
+    circle(window, (cx, cy), side * 0.5, color.opacity(0.03 + 0.05 * busy));
+    circle(window, (cx, cy), side * 0.36, color.opacity(0.03 + 0.05 * busy));
+    for i in 0..MATRIX {
+        for j in 0..MATRIX {
+            let (x, y) = ((i as f32 - half) / half, (j as f32 - half) / half);
+            if x * x + y * y > 1.02 {
+                continue;
+            }
+            let g = matrix_glow(x, y, secs, level, state);
+            let r = step * (0.22 + 0.17 * g);
+            circle(window, (cx + x * half * step, cy + y * half * step), r, color.opacity(0.2 + 0.8 * g));
         }
     }
-    circle(window, c, r, color.opacity(0.92));
-    // A highlight, up and to the left, so it reads as a sphere.
-    circle(window, (c.0 - r * 0.22, c.1 - r * 0.26), r * 0.52, gpui::white().opacity(0.14));
-    circle(window, (c.0 - r * 0.3, c.1 - r * 0.34), r * 0.22, gpui::white().opacity(0.12));
-    // Working: three dots circle it.
-    if matches!(state, State::Thinking | State::Loading) {
-        for i in 0..3 {
-            let a = secs * 2.1 + i as f32 * std::f32::consts::TAU / 3.0;
-            let d = (c.0 + a.cos() * r * 1.3, c.1 + a.sin() * r * 1.3);
-            circle(window, d, (r * 0.07).max(2.5), color.opacity(0.75));
-        }
-    }
+}
+
+/// The surface the call view's cards sit on: the chat composer's glass.
+fn glass(t: &Theme, radius: f32) -> gpui::Div {
+    div()
+        .rounded(px(radius))
+        .bg(t.composer_bg())
+        .border_1()
+        .border_color(t.composer_border())
+        .shadow(t.composer_shadows(false))
 }
 
 impl Render for CallView {
@@ -469,10 +496,10 @@ impl Render for CallView {
                 State::Hearing => ("Hearing you", t.accent),
                 State::Thinking => ("Working on it", t.busy),
                 State::Speaking => ("Speaking · talk to interrupt", t.accent),
-                State::Muted => ("Muted · hold the orb or Space to talk", t.text_muted),
+                State::Muted => ("Muted · hold the dots or Space to talk", t.text_muted),
             }
         };
-        let orb_color = match state {
+        let dot_color = match state {
             State::Muted => t.text_faint,
             State::Thinking => t.busy,
             _ if awaiting => t.warning,
@@ -507,9 +534,10 @@ impl Render for CallView {
         let engines = call.engines.clone();
         let secs = self.born.elapsed().as_secs_f32();
 
-        let orb = div()
-            .id("call-orb")
-            .size(px(if wide { 260.0 } else { 220.0 }))
+        let matrix_px = if wide { 300.0 } else { 240.0 };
+        let matrix = div()
+            .id("call-matrix")
+            .size(px(matrix_px))
             .flex_none()
             .cursor_pointer()
             .tooltip(crate::ui::tip(if muted { "Hold to talk" } else { "Hold to talk while muted" }))
@@ -522,19 +550,13 @@ impl Render for CallView {
                 cx.listener(|v, _, _, cx| v.call.update(cx, |c, _| c.push_to_talk(false))),
             )
             .child(
-                canvas(|_, _, _| (), move |b, _, window, _| paint_orb(b, secs, level, state, orb_color, window))
+                canvas(|_, _, _| (), move |b, _, window, _| paint_matrix(b, secs, level, state, dot_color, window))
                     .size_full(),
             );
 
-        let top = div()
-            .id("call-top")
-            .flex()
-            .items_center()
-            .gap(px(8.0))
-            .h(px(32.0))
-            .px(px(14.0))
-            .rounded_full()
-            .bg(t.wash(0.05))
+        let chip =
+            |id: &'static str| glass(&t, 999.0).id(id).h(px(34.0)).px(px(14.0)).flex().items_center().gap(px(8.0));
+        let target_chip = chip("call-top")
             .text_size(ty::SMALL)
             .child(icon(icons::PHONE).size(px(13.0)).text_color(t.accent))
             .child(
@@ -548,17 +570,10 @@ impl Render for CallView {
                 d.child(div().text_color(t.text_faint).child("·")).child(div().text_color(t.text_muted).child(e))
             })
             .when_some(engines, |d, e| d.tooltip(crate::ui::tip(e)));
-        let help_toggle = div()
-            .id("call-help")
-            .h(px(32.0))
-            .px(px(12.0))
-            .flex()
-            .items_center()
-            .gap(px(6.0))
-            .rounded_full()
+        let help_toggle = chip("call-help")
             .cursor_pointer()
-            .bg(if help { t.accent.opacity(0.16) } else { t.wash(0.05) })
-            .hover(|s| s.bg(t.wash(0.09)))
+            .when(help, |d| d.border_color(t.accent.opacity(0.5)))
+            .hover(|s| s.bg(t.glass_hover()))
             .text_size(ty::SMALL)
             .text_color(if help { t.text } else { t.text_muted })
             .child(icon(icons::INFO_CIRCLE).size(px(13.0)).text_color(if help { t.accent } else { t.text_muted }))
@@ -573,16 +588,27 @@ impl Render for CallView {
             .items_center()
             .gap(px(8.0))
             .child(div().flex_1())
-            .child(top)
+            .child(target_chip)
             .child(div().flex_1().flex().justify_end().child(help_toggle));
 
-        let controls = div()
+        // The state, as a small glass pill with its own light.
+        let status = glass(&t, 999.0)
+            .h(px(30.0))
+            .px(px(12.0))
             .flex()
             .items_center()
-            .gap(px(14.0))
+            .gap(px(8.0))
+            .child(div().size(px(7.0)).rounded_full().bg(tint))
+            .child(div().text_size(ty::SMALL).font_weight(gpui::FontWeight::MEDIUM).text_color(tint).child(label));
+
+        let controls = glass(&t, 999.0)
+            .p(px(8.0))
+            .flex()
+            .items_center()
+            .gap(px(10.0))
             .child(
                 control("call-mute", if muted { "Unmute microphone" } else { "Mute microphone" }, &t)
-                    .when(muted, |d| d.bg(t.danger.opacity(0.14)))
+                    .when(muted, |d| d.bg(t.danger.opacity(0.16)))
                     .child(
                         icon(if muted { icons::MICROPHONE_OFF } else { icons::MICROPHONE })
                             .size(px(20.0))
@@ -622,8 +648,13 @@ impl Render for CallView {
                         .text_size(ty::SMALL)
                         .line_height(ty::lh::BODY)
                         .line_clamp(2)
-                        .when(you, |d| d.bg(t.accent.opacity(0.14)).text_color(t.text))
-                        .when(!you, |d| d.bg(t.wash(0.05)).text_color(t.text_muted))
+                        .border_1()
+                        .when(you, |d| {
+                            d.bg(t.accent.opacity(0.18)).border_color(t.accent.opacity(0.22)).text_color(t.text)
+                        })
+                        .when(!you, |d| {
+                            d.bg(t.composer_bg()).border_color(t.composer_border()).text_color(t.text_muted)
+                        })
                         .child(text),
                 )
             },
@@ -653,8 +684,8 @@ impl Render for CallView {
             .items_center()
             .justify_center()
             .gap(px(10.0))
-            .child(orb)
-            .child(div().text_size(ty::BODY).font_weight(gpui::FontWeight::MEDIUM).text_color(tint).child(label))
+            .child(matrix)
+            .child(status)
             .child(words_block);
         // What needs an answer and who's working: beside the stage when the
         // window is wide, under it otherwise.
@@ -710,7 +741,6 @@ impl Render for CallView {
             .relative()
             .size_full()
             .occlude()
-            .bg(t.bg)
             .flex()
             .flex_col()
             .items_center()
@@ -799,10 +829,10 @@ fn render_help(t: &Theme, cx: &mut Context<CallView>) -> gpui::AnyElement {
             .flex()
             .flex_col()
             .gap(px(6.0))
-            .rounded(px(14.0))
-            .bg(t.wash(0.04))
+            .rounded(px(16.0))
+            .bg(t.composer_bg())
             .border_1()
-            .border_color(t.border)
+            .border_color(t.composer_border())
             .child(div().text_size(ty::BODY).font_weight(gpui::FontWeight::MEDIUM).text_color(t.text).child(*title))
             .child(div().text_size(ty::CAPTION).text_color(t.text_faint).child(*blurb))
             .children(
@@ -813,7 +843,7 @@ fn render_help(t: &Theme, cx: &mut Context<CallView>) -> gpui::AnyElement {
         .id("call-help-sheet")
         .absolute()
         .inset_0()
-        .bg(t.bg.opacity(0.94))
+        .bg(t.bg.opacity(0.82))
         .flex()
         .justify_center()
         .overflow_y_scroll()
@@ -856,9 +886,9 @@ fn render_help(t: &Theme, cx: &mut Context<CallView>) -> gpui::AnyElement {
         .into_any_element()
 }
 
-/// A call control: a 56px round button.
+/// A call control: a 52px round button in the dock.
 fn control(id: &'static str, label: &'static str, t: &Theme) -> gpui::Stateful<gpui::Div> {
-    crate::ui::round_button_sized(id, label, 56.0, t).bg(t.wash(0.07))
+    crate::ui::round_button_sized(id, label, 52.0, t).bg(t.wash(0.06))
 }
 
 #[cfg(test)]
@@ -917,15 +947,25 @@ mod tests {
     }
 
     #[test]
-    fn the_orb_breathes_and_swells_with_the_voice() {
-        let quiet = orb_scale(0.0, 0.0, State::Listening);
-        assert!((quiet - 1.0).abs() < 1e-6);
-        assert!(orb_scale(0.0, 1.0, State::Hearing) > orb_scale(0.0, 1.0, State::Listening));
-        assert!(orb_scale(0.0, 1.0, State::Muted) < orb_scale(0.0, 1.0, State::Speaking));
-        assert!(orb_scale(0.0, 0.0, State::Loading) < quiet);
-        let breath = (0..100).map(|i| orb_scale(i as f32 * 0.1, 0.0, State::Listening));
-        let (lo, hi) = breath.fold((f32::MAX, f32::MIN), |(lo, hi), v| (lo.min(v), hi.max(v)));
-        assert!(hi - lo > 0.05 && hi - lo < 0.08, "a slow, small breath");
+    fn the_matrix_follows_the_call() {
+        let states = [State::Loading, State::Listening, State::Hearing, State::Thinking, State::Speaking, State::Muted];
+        for st in states {
+            for i in 0..40 {
+                let g = matrix_glow(0.3, -0.5, i as f32 * 0.13, 0.7, st);
+                assert!((0.0..=1.0).contains(&g), "{st:?} glows within 0..1");
+            }
+        }
+        // Your voice lights the centre while it hears you.
+        assert!(
+            matrix_glow(0.0, 0.0, 1.0, 1.0, State::Hearing) > matrix_glow(0.0, 0.0, 1.0, 0.0, State::Hearing) + 0.4
+        );
+        // Muted is dimmer than any active state.
+        let muted = matrix_glow(0.0, 0.0, 1.0, 1.0, State::Muted);
+        assert!(muted < 0.12 && muted < matrix_glow(0.0, 0.0, 1.0, 1.0, State::Listening));
+        // Working moves: the same dot changes over time.
+        let a = matrix_glow(0.9, 0.0, 0.0, 0.0, State::Thinking);
+        let b = matrix_glow(0.9, 0.0, 1.2, 0.0, State::Thinking);
+        assert!((a - b).abs() > 0.2, "the sweep moves");
     }
 
     #[test]

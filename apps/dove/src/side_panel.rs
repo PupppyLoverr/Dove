@@ -28,9 +28,10 @@ use dove_core::proto::{TaskId, TaskStatus, TodoItem, TodoStatus};
 use dove_core::store::{Project, Task};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable as _, InteractiveElement as _,
-    IntoElement, MouseButton, ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _,
-    Subscription, Window, anchored, canvas, deferred, div, px, relative,
+    AnyElement, AnyView, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable as _,
+    InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, Render, SharedString,
+    StatefulInteractiveElement as _, StyleRefinement, Styled as _, Subscription, Window, anchored, canvas, deferred,
+    div, px, relative,
 };
 use std::sync::Arc;
 
@@ -545,6 +546,9 @@ pub struct SidePanel {
     /// The panel has the conversation's width.
     pub expanded: bool,
     plus_open: bool,
+    /// The split menu that is open: the strip's (for the focused pane) or
+    /// a pane header's.
+    split_menu: Option<Option<PaneId>>,
     /// The highlighted card of the `+` surface picker, and its focus.
     plus_hi: Option<usize>,
     plus_focus: FocusHandle,
@@ -619,6 +623,7 @@ impl SidePanel {
             prs: HashMap::new(),
             expanded: false,
             plus_open: false,
+            split_menu: None,
             plus_hi: None,
             plus_focus: cx.focus_handle(),
             next_id: 1,
@@ -1883,15 +1888,7 @@ impl SidePanel {
             .px(px(8.0))
             .child(div().flex_1().min_w_0().child(strip))
             .when(!tabs.is_empty(), |d| d.child(plus))
-            .when(!tabs.is_empty() && single, |d| {
-                d.child(self.split_button("panel-split-right", None, Axis::Row, &t, cx)).child(self.split_button(
-                    "panel-split-down",
-                    None,
-                    Axis::Column,
-                    &t,
-                    cx,
-                ))
-            })
+            .when(!tabs.is_empty() && single, |d| d.child(self.split_menu_button("panel-split", None, &t, cx)))
             .child(
                 surface_chrome::toolbar_button(
                     "panel-expand",
@@ -1924,30 +1921,108 @@ impl SidePanel {
         }
     }
 
-    /// A split button (the strip's, or a pane header's), quiet when there
-    /// is no room.
-    fn split_button(
+    /// The Split button (the strip's, for the focused pane, or a pane
+    /// header's): one control whose menu splits right or down, maximizes or
+    /// restores the pane, and evens out the dividers.
+    fn split_menu_button(
         &self,
         id: impl Into<gpui::ElementId>,
         pane: Option<PaneId>,
-        axis: Axis,
         t: &Theme,
         cx: &mut Context<Self>,
-    ) -> gpui::Stateful<gpui::Div> {
-        let room = self.can_split(pane, axis);
-        let (glyph, tip) = match (axis, room) {
-            (Axis::Row, true) => (icons::SPLIT_COLUMNS, "Split right"),
-            (Axis::Row, false) => (icons::SPLIT_COLUMNS, "No room to split right: widen the panel or close a pane"),
-            (Axis::Column, true) => (icons::SPLIT_ROWS, "Split down"),
-            (Axis::Column, false) => (icons::SPLIT_ROWS, "No room to split down: close a pane first"),
+    ) -> AnyElement {
+        let open = self.split_menu == Some(pane);
+        let button = surface_chrome::toolbar_button(id, "Split")
+            .when(open, |d| d.bg(t.wash(0.08)))
+            .child(icon(icons::SPLIT_COLUMNS).size(px(12.5)).text_color(t.text_muted))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.split_menu = if this.split_menu == Some(pane) { None } else { Some(pane) };
+                this.plus_open = false;
+                cx.notify();
+            }));
+        div()
+            .relative()
+            .flex_none()
+            .child(button)
+            .when(open, |d| d.child(self.render_split_menu(pane, t, cx)))
+            .into_any_element()
+    }
+
+    fn render_split_menu(&self, pane: Option<PaneId>, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let target = pane.or_else(|| self.panel_ref().map(|p| p.focus));
+        let multi = self.panel_ref().is_some_and(|p| p.layout.count() > 1);
+        let maximized = target.is_some_and(|m| self.panel_ref().is_some_and(|p| p.maximized == Some(m)));
+        let item = |id: &'static str, glyph: &'static str, label: &'static str, hint: &'static str, ok: bool| {
+            crate::kit::popover::menu_item(t, id, Some(glyph), label, false, false, false)
+                .when(!ok, |d| d.opacity(0.4).cursor_default())
+                .child(div().flex_none().text_size(ty::CAPTION).text_color(t.text_faint).child(hint))
         };
-        surface_chrome::toolbar_button(id, tip)
-            .child(icon(glyph).size(px(12.5)).text_color(if room { t.text_muted } else { t.text_faint.opacity(0.5) }))
-            .when(room, |d| {
-                d.on_click(cx.listener(move |this, _, _, cx| {
-                    this.split(pane, axis, cx);
-                }))
-            })
+        let right = self.can_split(pane, Axis::Row);
+        let down = self.can_split(pane, Axis::Column);
+        let mut list = div()
+            .w(px(230.0))
+            .flex()
+            .flex_col()
+            .child(
+                item("split-menu-right", icons::SPLIT_COLUMNS, "Split right", "Ctrl+Alt+\\", right)
+                    .when(!right, |d| d.tooltip(ui::tip("No room: widen the panel or close a pane")))
+                    .when(right, |d| {
+                        d.on_click(cx.listener(move |this, _, _, cx| {
+                            this.split_menu = None;
+                            this.split(pane, Axis::Row, cx);
+                        }))
+                    }),
+            )
+            .child(
+                item("split-menu-down", icons::SPLIT_ROWS, "Split down", "Ctrl+Alt+-", down)
+                    .when(!down, |d| d.tooltip(ui::tip("No room: close a pane first")))
+                    .when(down, |d| {
+                        d.on_click(cx.listener(move |this, _, _, cx| {
+                            this.split_menu = None;
+                            this.split(pane, Axis::Column, cx);
+                        }))
+                    }),
+            );
+        if multi && let Some(m) = target {
+            list = list
+                .child(ui::separator(t))
+                .child(
+                    item(
+                        "split-menu-max",
+                        if maximized { icons::WINDOW_RESTORE } else { icons::WINDOW_MAXIMIZE },
+                        if maximized { "Restore the panes" } else { "Maximize this pane" },
+                        "Ctrl+Alt+Enter",
+                        true,
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.split_menu = None;
+                        this.toggle_maximize(m, cx);
+                    })),
+                )
+                .child(item("split-menu-even", icons::SORT_VERTICAL, "Even out the panes", "", true).on_click(
+                    cx.listener(|this, _, _, cx| {
+                        this.split_menu = None;
+                        if let Some(p) = this.panel() {
+                            p.layout.equalize();
+                        }
+                        this.layout_dirty = true;
+                        cx.notify();
+                    }),
+                ));
+        }
+        deferred(
+            anchored().anchor(gpui::Anchor::TopRight).snap_to_window_with_margin(px(8.0)).child(
+                div()
+                    .mt(px(28.0))
+                    .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                        this.split_menu = None;
+                        cx.notify();
+                    }))
+                    .child(ui::menu_card(t, list)),
+            ),
+        )
+        .with_priority(2)
+        .into_any_element()
     }
 
     /// The `+` surface picker: a two-column grid of cards (glyph, name and
@@ -2566,9 +2641,16 @@ impl SidePanel {
                 .overflow_y_scroll()
                 .child(div().px(px(14.0)).pt(px(12.0)).pb(px(24.0)).child(self.pr_view.clone()))
                 .into_any_element(),
-            Some(Surface::Changes) => self.changes.clone().into_any_element(),
+            // Views with no text input of their own are cached, so a split
+            // pane redraws only when it changes (not on every frame of a
+            // divider drag or a neighbour's update).
+            Some(Surface::Changes) => {
+                AnyView::from(self.changes.clone()).cached(StyleRefinement::default().size_full()).into_any_element()
+            }
             Some(Surface::Files) => self.files.clone().into_any_element(),
-            Some(Surface::History) => self.git_history.clone().into_any_element(),
+            Some(Surface::History) => AnyView::from(self.git_history.clone())
+                .cached(StyleRefinement::default().size_full())
+                .into_any_element(),
             Some(Surface::Plan) => self.render_plan(&t, cx),
             Some(Surface::Browser(id)) => match self.panel_ref().and_then(|p| p.browsers.get(&id)) {
                 Some((b, _)) => b.clone().into_any_element(),
@@ -2631,7 +2713,12 @@ impl SidePanel {
                         }),
                         &t,
                     );
-                    div().relative().size_full().child(term).child(term_pill::overlay(pill)).into_any_element()
+                    div()
+                        .relative()
+                        .size_full()
+                        .child(AnyView::from(term).cached(StyleRefinement::default().size_full()))
+                        .child(term_pill::overlay(pill))
+                        .into_any_element()
                 }
                 None => self.render_picker(&t, cx),
             },
@@ -2816,24 +2903,7 @@ impl SidePanel {
                 )
                 .children(switch)
                 .children(open_main)
-                .when(!maximized && multi, |d| {
-                    d.child(self.split_button(("pane-split-right", ix), Some(pane), Axis::Row, t, cx))
-                        .child(self.split_button(("pane-split-down", ix), Some(pane), Axis::Column, t, cx))
-                })
-                .when(multi, |d| {
-                    d.child(
-                        surface_chrome::toolbar_button(
-                            ("pane-max", ix),
-                            if maximized { "Restore the panes" } else { "Maximize this pane" },
-                        )
-                        .child(
-                            icon(if maximized { icons::WINDOW_RESTORE } else { icons::WINDOW_MAXIMIZE })
-                                .size(px(12.5))
-                                .text_color(t.text_muted),
-                        )
-                        .on_click(cx.listener(move |this, _, _, cx| this.toggle_maximize(pane, cx))),
-                    )
-                })
+                .when(multi, |d| d.child(self.split_menu_button(("pane-split", ix), Some(pane), t, cx)))
                 .when(!maximized, |d| match surface.filter(|_| !multi) {
                     // A lone thread pane closes its tab; split panes close.
                     Some(s) => d.child(

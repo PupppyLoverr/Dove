@@ -277,6 +277,14 @@ fn command_with(kind: HarnessKind, program: &Path, cwd: &Path, spec: &TuiSpec, a
         let existing = std::env::var("OPENCODE_CONFIG_CONTENT").ok();
         env.push(("OPENCODE_CONFIG_CONTENT".to_string(), opencode_config_content(&server, existing.as_deref())));
     }
+    // Amp merges `--mcp-config` with its own MCP settings. A file, as for
+    // Claude: quoting survives cmd.exe.
+    if kind == HarnessKind::Amp
+        && let Some(path) = crate::tool_server(cwd, spec.session).and_then(|s| write_amp_mcp_config(&s))
+    {
+        args.push("--mcp-config".to_string());
+        args.push(path.display().to_string());
+    }
     TuiCommand { program: program.to_path_buf(), args, cwd: cwd.to_path_buf(), resumes: resumed, env }
 }
 
@@ -434,16 +442,29 @@ fn toml_str(s: &str) -> String {
 /// Write a Claude `--mcp-config` file for `server` (one per launch config,
 /// reused while unchanged).
 fn write_claude_mcp_config(server: &crate::ToolServer) -> Option<std::path::PathBuf> {
+    let body = serde_json::json!({ "mcpServers": server_entry(server) }).to_string();
+    write_launch_config("dove-mcp", body)
+}
+
+/// Write an Amp `--mcp-config` file: servers by name, no wrapper.
+fn write_amp_mcp_config(server: &crate::ToolServer) -> Option<std::path::PathBuf> {
+    write_launch_config("dove-amp-mcp", server_entry(server).to_string())
+}
+
+/// `{ name: { command, args, env } }` for `server`.
+fn server_entry(server: &crate::ToolServer) -> serde_json::Value {
     let env: serde_json::Map<String, serde_json::Value> =
         server.env.iter().map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone()))).collect();
-    let body = serde_json::json!({
-        "mcpServers": { &server.name: { "command": server.command, "args": server.args, "env": env } }
-    })
-    .to_string();
+    serde_json::json!({ &server.name: { "command": server.command, "args": server.args, "env": env } })
+}
+
+/// A launch config in the temp folder, named by its content so repeated
+/// launches share it and differing ones never clash.
+fn write_launch_config(prefix: &str, body: String) -> Option<std::path::PathBuf> {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     body.hash(&mut h);
-    let path = std::env::temp_dir().join(format!("dove-mcp-{:016x}.json", h.finish()));
+    let path = std::env::temp_dir().join(format!("{prefix}-{:016x}.json", h.finish()));
     if std::fs::read_to_string(&path).ok().as_deref() != Some(body.as_str()) {
         std::fs::write(&path, body).ok()?;
     }
@@ -467,6 +488,26 @@ mod tests {
         assert_eq!(o[3], "mcp_servers.dove.args=['--mcp-browser']");
         assert_eq!(o[5], r#"mcp_servers.dove.env={DOVE_CWD='C:\w',Q="it's"}"#);
         assert_eq!(o[7], "mcp_servers.dove.tool_timeout_sec=1900");
+    }
+
+    #[test]
+    fn amp_gets_doves_servers_as_a_file_of_servers_by_name() {
+        let server = crate::ToolServer {
+            name: "dove".into(),
+            command: r"C:\Program Files\Dove\dove.exe".into(),
+            args: vec!["--mcp-browser".into()],
+            env: vec![("DOVE_SESSION".into(), "k1".into())],
+        };
+        let path = write_amp_mcp_config(&server).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(v["dove"]["command"], r"C:\Program Files\Dove\dove.exe");
+        assert_eq!(v["dove"]["args"], serde_json::json!(["--mcp-browser"]));
+        assert_eq!(v["dove"]["env"]["DOVE_SESSION"], "k1");
+        assert!(v.get("mcpServers").is_none(), "Amp takes servers by name, unwrapped");
+        let claude = write_claude_mcp_config(&server).unwrap();
+        assert_ne!(path, claude);
+        let c: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&claude).unwrap()).unwrap();
+        assert_eq!(c["mcpServers"]["dove"]["command"], v["dove"]["command"]);
     }
 
     #[test]

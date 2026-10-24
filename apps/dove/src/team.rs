@@ -598,7 +598,7 @@ impl Shell {
                         div()
                             .id(SharedString::from(format!("team-thread-{}-{}", p.id, task.id)))
                             .pl(px(14.0))
-                            .child(self.render_row(task, compact, t, cx)),
+                            .child(self.render_row(task, compact, None, t, cx)),
                     );
                 }
                 if tasks.len() > SHOWN {

@@ -181,6 +181,15 @@ impl Node {
         Some(node)
     }
 
+    /// Every divider back to the middle.
+    pub fn equalize(&mut self) {
+        if let Node::Split { ratio, a, b, .. } = self {
+            *ratio = 0.5;
+            a.equalize();
+            b.equalize();
+        }
+    }
+
     /// Move the divider of the split at `path`.
     pub fn set_ratio(&mut self, path: SplitPath, ratio: f32) {
         if let Some(Node::Split { ratio: r, .. }) = self.at_path(path) {
@@ -371,6 +380,15 @@ mod tests {
         assert_eq!(n.rects(Rect::new(0.0, 0.0, 1000.0, 800.0))[0].1.w, 1000.0);
         assert!(!Node::Leaf(0).remove(0), "the last pane stays");
         assert!(!n.split(9, Axis::Row, 10));
+    }
+
+    #[test]
+    fn equalize_centres_every_divider() {
+        let mut n = four();
+        n.set_ratio(ROOT, 0.2);
+        n.set_ratio(0b11, 0.8);
+        n.equalize();
+        assert!(n.splits().iter().all(|(_, _, r)| *r == 0.5));
     }
 
     #[test]

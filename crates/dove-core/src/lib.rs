@@ -1025,6 +1025,29 @@ impl Engine {
         Ok(tui::command(task.harness, &program, &cwd, &spec))
     }
 
+    /// An agent's TUI for Flock: a fresh session in `cwd`, with Dove's tools
+    /// (browser, computer use, memory, integrations) where the agent can
+    /// load them at launch, and the composer's permission mode. It belongs
+    /// to no thread, so a tool that needs one uses the thread in view.
+    pub fn flock_command(&self, kind: HarnessKind, cwd: &std::path::Path) -> Result<tui::TuiCommand> {
+        if kind == HarnessKind::Shell {
+            return Ok(tui::shell_command(cwd));
+        }
+        let program = self.program(kind)?;
+        let Some(program) = tui::interactive_program(kind, &program) else {
+            anyhow::bail!("{} has no terminal UI", kind.label());
+        };
+        let session = dove_harness::new_session_key();
+        let mode = match self.store.setting("permission_mode").as_deref() {
+            Some("accept_edits") => PermissionMode::AcceptEdits,
+            Some("plan") => PermissionMode::Plan,
+            Some("bypass") => PermissionMode::Bypass,
+            _ => PermissionMode::Default,
+        };
+        let spec = tui::TuiSpec { native_session_id: None, model: None, mode, add_dirs: &[], session: &session };
+        Ok(tui::command(kind, &program, cwd, &spec))
+    }
+
     /// Hand `task` to the terminal. Fails while the chat driver still runs
     /// it; stop that first (it is idle between turns, so nothing is lost).
     pub fn claim_terminal(&self, task: TaskId) -> Result<()> {

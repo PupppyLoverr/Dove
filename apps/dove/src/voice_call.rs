@@ -841,21 +841,6 @@ impl Shell {
         self.voice_redraw_docks(cx);
     }
 
-    /// The call view, while it shows: over everything below the titlebar.
-    pub fn render_call_view(&self) -> Option<gpui::AnyElement> {
-        let view = self.call_view.clone().filter(|_| self.call_view_shown)?;
-        Some(
-            div()
-                .absolute()
-                .top(px(Theme::TITLEBAR_HEIGHT))
-                .left_0()
-                .right_0()
-                .bottom_0()
-                .child(view)
-                .into_any_element(),
-        )
-    }
-
     /// Thread views are cached: redraw them so their docks show (or drop)
     /// the call strip.
     fn voice_redraw_docks(&mut self, cx: &mut Context<Self>) {

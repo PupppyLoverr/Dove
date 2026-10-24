@@ -1581,8 +1581,9 @@ impl Shell {
     }
 
     /// The dock is open and the window has room for it.
+    /// The side panel shows (it steps aside while the call view is up).
     fn panel_shown(&self) -> bool {
-        self.panel_open && self.fit.shown.1
+        self.panel_open && self.fit.shown.1 && !self.call_view_shown
     }
 
     /// Stamp columns that just opened and decide what fits this frame.
@@ -3055,7 +3056,7 @@ impl Shell {
 
     /// Routes whose picture runs under the whole window as frosted glass.
     fn full_art_route(&self) -> bool {
-        matches!(self.route, Route::Thread(_) | Route::Flock)
+        matches!(self.route, Route::Thread(_) | Route::Flock) || self.call_view_shown
     }
 
     fn has_wallpaper(&self) -> bool {
@@ -3142,6 +3143,10 @@ impl Shell {
     }
 
     fn render_center(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        // A call shows in the chat's place, over the same frosted picture.
+        if let Some(call) = self.call_view.clone().filter(|_| self.call_view_shown) {
+            return div().size_full().child(call).into_any_element();
+        }
         match self.route {
             Route::Home => self.render_home(window, cx),
             Route::Thread(id) => match self.threads.get(&id) {
@@ -3698,7 +3703,6 @@ impl Render for Shell {
             // An agent's sign-in or update terminal, over any page.
             .children(self.render_agent_sheet(&t, window, cx))
             .children(self.render_voice_bar(cx))
-            .children(self.render_call_view())
             .children((self.info_open && in_thread && !expanded).then(|| self.active_task().cloned()).flatten().map(
                 |task| {
                     let right = if panel_open { panel_w + 14.0 } else { 14.0 };
