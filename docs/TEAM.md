@@ -35,10 +35,12 @@ sidebar section and Settings › Team).
    card. A message between teammates is a **Message from …** card.
 5. To watch several at once, drag any thread (a sidebar row, a teammate's
    thread, or a teammate, which drags their latest thread) onto the
-   conversation: it opens in a pane beside it, with its own composer and
-   Chat/Terminal switch. Drop it on a pane's edge to split that side, or its
-   middle to replace what the pane shows. The thread's panes are saved with
-   it and come back when you reopen it.
+   conversation: it opens as a column beside it in the chat area, up to
+   three, each with its own composer, Chat/Terminal switch, "make main" and
+   close. A column's header drags it again: onto the right-hand dock to sit
+   among the tools there (a pane's edge splits that side, its middle replaces
+   what it shows). Columns and dock panes are saved with the thread and come
+   back when you reopen it.
 6. A teammate's page in Settings › Team lists **Working with the team**:
    what they handed to whom, what they were asked, and how each stands.
 

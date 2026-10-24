@@ -528,9 +528,13 @@ impl Shell {
                     }))
                     // Dragging a teammate drags their latest thread.
                     .when_some(self.persona_tasks(&p.id).into_iter().max_by_key(|t| t.updated_at), |d, last| {
+                        let shell = cx.entity().downgrade();
                         d.on_drag(
                             crate::side_panel::ThreadDrag { id: last.id, title: last.title.clone().into() },
-                            |d, _, _, cx| cx.new(|_| d.clone()),
+                            move |d, _, _, cx| {
+                                let _ = shell.update(cx, |_, cx| cx.notify());
+                                cx.new(|_| d.clone())
+                            },
                         )
                     })
                     .child(avatar(p, 19.0, t))

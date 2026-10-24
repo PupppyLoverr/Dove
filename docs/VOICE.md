@@ -65,6 +65,12 @@ Send would, and the call then talks to that thread.
 Push-to-talk (Settings › Voice › Listening): hold the orb, or hold Space when
 the call is muted and no text field has focus.
 
+**What you can say.** The call view's **What you can say** button lists
+everything above, grouped, with a phrase to try for each. When the call
+waits on an answer (several threads to open, a draft to send), the strip
+over the composer and the call view both show it with two buttons, so you
+can click instead of saying "yes" or "no".
+
 **Talking to one thread among many.** The call shortcut (Ctrl/Cmd+Shift+Space)
 starts a call on the thread you're in, including a thread in a pane beside
 the open one or a terminal. While a call runs, pressing it in another thread

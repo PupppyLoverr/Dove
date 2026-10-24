@@ -130,6 +130,8 @@ pub struct CallView {
     focus: FocusHandle,
     _tick: Option<gpui::Task<()>>,
     _observe: Subscription,
+    /// The "What you can say" sheet shows.
+    help: bool,
 }
 
 impl EventEmitter<CallViewEvent> for CallView {}
@@ -152,6 +154,7 @@ impl CallView {
             focus: cx.focus_handle(),
             _tick: None,
             _observe: observe,
+            help: false,
         }
     }
 
@@ -448,7 +451,7 @@ fn paint_orb(bounds: Bounds<Pixels>, secs: f32, level: f32, state: State, color:
 }
 
 impl Render for CallView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::perf_trace::count_render("CallView");
         let t = Theme::of(cx).clone();
         let call = self.call.read(cx);
@@ -494,9 +497,11 @@ impl Render for CallView {
         };
         let history: Vec<(bool, String)> = {
             let n = call.lines.len();
-            // The two lines before the one shown big.
-            call.lines.iter().take(n.saturating_sub(1)).rev().take(2).rev().map(|l| (l.you, l.text.clone())).collect()
+            // The lines before the one shown big, as a short conversation.
+            call.lines.iter().take(n.saturating_sub(1)).rev().take(4).rev().map(|l| (l.you, l.text.clone())).collect()
         };
+        let wide = window.viewport_size().width > px(1040.0);
+        let help = self.help;
         let target = call.target.clone();
         let elapsed = (call.state != State::Loading).then(|| clock(call.started().elapsed().as_secs()));
         let engines = call.engines.clone();
@@ -504,7 +509,7 @@ impl Render for CallView {
 
         let orb = div()
             .id("call-orb")
-            .size(px(300.0))
+            .size(px(if wide { 260.0 } else { 220.0 }))
             .flex_none()
             .cursor_pointer()
             .tooltip(crate::ui::tip(if muted { "Hold to talk" } else { "Hold to talk while muted" }))
@@ -543,6 +548,33 @@ impl Render for CallView {
                 d.child(div().text_color(t.text_faint).child("·")).child(div().text_color(t.text_muted).child(e))
             })
             .when_some(engines, |d, e| d.tooltip(crate::ui::tip(e)));
+        let help_toggle = div()
+            .id("call-help")
+            .h(px(32.0))
+            .px(px(12.0))
+            .flex()
+            .items_center()
+            .gap(px(6.0))
+            .rounded_full()
+            .cursor_pointer()
+            .bg(if help { t.accent.opacity(0.16) } else { t.wash(0.05) })
+            .hover(|s| s.bg(t.wash(0.09)))
+            .text_size(ty::SMALL)
+            .text_color(if help { t.text } else { t.text_muted })
+            .child(icon(icons::INFO_CIRCLE).size(px(13.0)).text_color(if help { t.accent } else { t.text_muted }))
+            .child("What you can say")
+            .on_click(cx.listener(|v, _, _, cx| {
+                v.help = !v.help;
+                cx.notify();
+            }));
+        let top = div()
+            .w_full()
+            .flex()
+            .items_center()
+            .gap(px(8.0))
+            .child(div().flex_1())
+            .child(top)
+            .child(div().flex_1().flex().justify_end().child(help_toggle));
 
         let controls = div()
             .flex()
@@ -577,45 +609,119 @@ impl Render for CallView {
                     .on_click(cx.listener(|v, _, _, cx| v.call.update(cx, |c, cx| c.end(cx)))),
             );
 
-        let words_block = div()
-            .w_full()
-            .max_w(px(640.0))
+        // The conversation so far, as bubbles (you on the right), then the
+        // line being heard or said, large.
+        let bubbles = div().w_full().max_w(px(560.0)).flex().flex_col().gap(px(6.0)).children(history.into_iter().map(
+            |(you, text)| {
+                div().w_full().flex().when(you, |d| d.justify_end()).child(
+                    div()
+                        .max_w(px(420.0))
+                        .px(px(12.0))
+                        .py(px(7.0))
+                        .rounded(px(14.0))
+                        .text_size(ty::SMALL)
+                        .line_height(ty::lh::BODY)
+                        .line_clamp(2)
+                        .when(you, |d| d.bg(t.accent.opacity(0.14)).text_color(t.text))
+                        .when(!you, |d| d.bg(t.wash(0.05)).text_color(t.text_muted))
+                        .child(text),
+                )
+            },
+        ));
+        let words_block =
+            div().w_full().max_w(px(640.0)).flex().flex_col().items_center().gap(px(14.0)).child(bubbles).when_some(
+                words,
+                |d, w| {
+                    d.child(
+                        div()
+                            .text_center()
+                            .text_size(px(21.0))
+                            .line_height(px(29.0))
+                            .text_color(words_color)
+                            .line_clamp(3)
+                            .child(w),
+                    )
+                },
+            );
+        let stage = div()
+            .flex_1()
+            .min_w_0()
+            .min_h_0()
+            .h_full()
             .flex()
             .flex_col()
             .items_center()
-            .gap(px(6.0))
-            .children(history.into_iter().map(|(you, text)| {
-                div().max_w_full().truncate().text_size(ty::SMALL).text_color(t.text_faint).child(if you {
-                    format!("You: {text}")
-                } else {
-                    text
+            .justify_center()
+            .gap(px(10.0))
+            .child(orb)
+            .child(div().text_size(ty::BODY).font_weight(gpui::FontWeight::MEDIUM).text_color(tint).child(label))
+            .child(words_block);
+        // What needs an answer and who's working: beside the stage when the
+        // window is wide, under it otherwise.
+        let pending = self.render_pending(&t, cx);
+        let rail = self.render_rail(&t, cx);
+        let side = (pending.is_some() || rail.is_some()).then(|| {
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(12.0))
+                .when(wide, |d| d.w(px(380.0)).flex_none().justify_center())
+                .when(!wide, |d| d.w_full().items_center())
+                .children(pending)
+                .when_some(rail, |d, r| {
+                    d.child(
+                        div()
+                            .w_full()
+                            .max_w(px(520.0))
+                            .flex()
+                            .flex_col()
+                            .gap(px(6.0))
+                            .child(
+                                div()
+                                    .px(px(4.0))
+                                    .text_size(ty::CAPTION)
+                                    .font_weight(gpui::FontWeight::MEDIUM)
+                                    .text_color(t.text_faint)
+                                    .child("Threads · click one to talk to it"),
+                            )
+                            .child(r),
+                    )
                 })
-            }))
-            .when_some(words, |d, w| {
-                d.child(
-                    div()
-                        .text_center()
-                        .text_size(px(22.0))
-                        .line_height(px(30.0))
-                        .text_color(words_color)
-                        .line_clamp(3)
-                        .child(w),
-                )
-            });
+        });
+        let body = if wide {
+            div().flex_1().min_h_0().w_full().flex().gap(px(28.0)).child(stage).children(side).into_any_element()
+        } else {
+            div()
+                .flex_1()
+                .min_h_0()
+                .w_full()
+                .flex()
+                .flex_col()
+                .gap(px(12.0))
+                .child(stage)
+                .children(side.map(|s| s.pb(px(8.0))))
+                .into_any_element()
+        };
 
         div()
             .id("call-view")
             .key_context("CallView")
             .track_focus(&self.focus)
+            .relative()
             .size_full()
             .occlude()
             .bg(t.bg)
             .flex()
             .flex_col()
             .items_center()
-            .px(px(24.0))
+            .gap(px(12.0))
+            .px(px(28.0))
             .py(px(20.0))
             .on_key_down(cx.listener(|v, e: &gpui::KeyDownEvent, _, cx| match e.keystroke.key.as_str() {
+                "escape" if v.help => {
+                    v.help = false;
+                    cx.notify();
+                }
                 "escape" => cx.emit(CallViewEvent::ShowChat),
                 "space" if !e.is_held => v.call.update(cx, |c, _| c.push_to_talk(true)),
                 _ => {}
@@ -626,26 +732,128 @@ impl Render for CallView {
                 }
             }))
             .child(top)
-            .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .w_full()
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .justify_center()
-                    .gap(px(10.0))
-                    .child(orb)
-                    .child(
-                        div().text_size(ty::BODY).font_weight(gpui::FontWeight::MEDIUM).text_color(tint).child(label),
-                    )
-                    .child(words_block),
-            )
-            .children(self.render_pending(&t, cx).map(|p| div().w_full().flex().justify_center().pb(px(12.0)).child(p)))
-            .children(self.render_rail(&t, cx).map(|r| div().w_full().flex().justify_center().pb(px(18.0)).child(r)))
+            .child(body)
             .child(controls)
+            .when(help, |d| d.child(render_help(&t, cx)))
     }
+}
+
+/// Everything the call understands, grouped, with a phrase to try for
+/// each. Spoken in any wording close to these.
+pub const CAPABILITIES: &[(&str, &str, &[&str])] = &[
+    (
+        "Threads",
+        "Hear how work stands and steer it",
+        &[
+            "What's happening?",
+            "What's everyone doing?",
+            "Talk to the tests thread",
+            "Tell Codex to also run clippy",
+            "Stop",
+            "Take me back",
+        ],
+    ),
+    (
+        "Start work",
+        "One thread, or several at once (Dove asks before opening more than one)",
+        &[
+            "Start a Claude task on the login page in a new worktree",
+            "Launch three Claude chats to review the auth code",
+            "Open two Codex terminals",
+            "Spin up a terminal as the Builder",
+        ],
+    ),
+    (
+        "Team",
+        "Your teammates' progress, and questions for them",
+        &["What's the team doing?", "How's the Reviewer doing?", "Ask the Reviewer to look at the login diff"],
+    ),
+    (
+        "Prompt any chat or terminal",
+        "Words go in its input unsent; then send, change or clear them",
+        &[
+            "Draft for Codex: run the tests on Windows",
+            "Type cargo test into the codex terminal",
+            "Send it · Change it to … · Add … · Never mind",
+        ],
+    ),
+    (
+        "Layout and context",
+        "Open things where you can see them",
+        &["Open the tests thread beside this", "Show the diff", "Take a look at this"],
+    ),
+    (
+        "Approvals and the call",
+        "Risky approvals always need your click",
+        &["Approve", "Approve for this session", "Deny", "Talk faster", "Mute", "Be quiet", "Repeat that", "End call"],
+    ),
+];
+
+/// The "What you can say" sheet over the call view.
+fn render_help(t: &Theme, cx: &mut Context<CallView>) -> gpui::AnyElement {
+    let groups = CAPABILITIES.iter().map(|(title, blurb, phrases)| {
+        div()
+            .w(px(300.0))
+            .flex_grow(1.0)
+            .p(px(14.0))
+            .flex()
+            .flex_col()
+            .gap(px(6.0))
+            .rounded(px(14.0))
+            .bg(t.wash(0.04))
+            .border_1()
+            .border_color(t.border)
+            .child(div().text_size(ty::BODY).font_weight(gpui::FontWeight::MEDIUM).text_color(t.text).child(*title))
+            .child(div().text_size(ty::CAPTION).text_color(t.text_faint).child(*blurb))
+            .children(
+                phrases.iter().map(|p| div().text_size(ty::SMALL).text_color(t.text_muted).child(format!("“{p}”"))),
+            )
+    });
+    div()
+        .id("call-help-sheet")
+        .absolute()
+        .inset_0()
+        .bg(t.bg.opacity(0.94))
+        .flex()
+        .justify_center()
+        .overflow_y_scroll()
+        .on_click(cx.listener(|v, _, _, cx| {
+            v.help = false;
+            cx.notify();
+        }))
+        .child(
+            div()
+                .max_w(px(980.0))
+                .w_full()
+                .px(px(28.0))
+                .py(px(36.0))
+                .flex()
+                .flex_col()
+                .gap(px(16.0))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(10.0))
+                        .child(
+                            div()
+                                .flex_1()
+                                .text_size(px(20.0))
+                                .font_weight(gpui::FontWeight::MEDIUM)
+                                .text_color(t.text)
+                                .child("What you can say"),
+                        )
+                        .child(div().text_size(ty::SMALL).text_color(t.text_faint).child("Esc or click to close")),
+                )
+                .child(
+                    div()
+                        .text_size(ty::SMALL)
+                        .text_color(t.text_muted)
+                        .child("Talk naturally: these are examples, not exact commands. Anything else goes to the thread you're talking to as your message. Ctrl+Shift+Space in another thread moves the call there."),
+                )
+                .child(div().flex().flex_wrap().gap(px(12.0)).children(groups)),
+        )
+        .into_any_element()
 }
 
 /// A call control: a 56px round button.
