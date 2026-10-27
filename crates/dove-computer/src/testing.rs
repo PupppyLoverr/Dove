@@ -10,7 +10,6 @@ pub struct FakeDriver {
     pub calls: Vec<(String, Value)>,
     windows: Value,
     rows: Value,
-    image: bool,
     /// The next `since` read answers with this diff and snapshot id.
     pub next_diff: Option<(String, String)>,
     /// What actions report as their effect.
@@ -38,13 +37,12 @@ fn row(i: u32, role: &str, label: &str, frame: (i32, i32, i32, i32)) -> Value {
 }
 
 impl FakeDriver {
-    fn new(app: &str, title: &str, rows: Value, image: bool) -> Self {
+    fn new(app: &str, title: &str, rows: Value) -> Self {
         Self {
             calls: Vec::new(),
             windows: json!([{"app_name": app, "pid": 100, "window_id": 200, "title": title, "is_on_screen": true, "z_index": 5},
                 {"app_name": "Explorer", "pid": 7, "window_id": 8, "title": "Files", "is_on_screen": true, "z_index": 1}]),
             rows,
-            image,
             next_diff: None,
             effect: "confirmed",
         }
@@ -57,13 +55,12 @@ impl FakeDriver {
             "Untitled - Notepad",
             json!([row(0, "MenuItem", "File", (0, 0, 40, 20)), row(1, "Edit", "Text editor", (0, 40, 600, 400)),
                 row(2, "Button", "Save", (10, 5, 60, 24)), row(3, "Edit", "Search", (80, 5, 200, 24))]),
-            false,
         )
     }
 
     /// A canvas app whose tree is nearly empty.
     pub fn canvas() -> Self {
-        Self::new("Paint", "Untitled - Paint", json!([row(1, "Pane", "", (0, 0, 0, 0))]), true)
+        Self::new("Paint", "Untitled - Paint", json!([row(1, "Pane", "", (0, 0, 0, 0))]))
     }
 
     /// The notepad fixture, minimized: Windows parks it at (-32000, -32000).
@@ -72,7 +69,6 @@ impl FakeDriver {
             "Notepad",
             "Untitled - Notepad",
             json!([row(0, "Document", "Text editor", (-31992, -31907, 600, 400)), row(1, "Button", "Save", (-31990, -31990, 60, 24))]),
-            false,
         )
     }
 
@@ -83,7 +79,6 @@ impl FakeDriver {
             "Sign in",
             json!([row(1, "Edit", "User name", (10, 10, 200, 24)), row(2, "Edit", "Password", (10, 40, 200, 24)),
                 row(3, "Button", "Sign in", (10, 70, 80, 24)), row(4, "Button", "Delete account", (100, 70, 120, 24))]),
-            false,
         )
     }
 
@@ -158,7 +153,7 @@ impl Driver for FakeDriver {
                     s["elements"] = self.rows.clone();
                 }
                 let mut r = Self::ok(s, "window state");
-                if shot && self.image {
+                if shot {
                     r["content"].as_array_mut().expect("content").push(json!({"type": "image", "data": png(64, 48), "mimeType": "image/png"}));
                 }
                 r

@@ -58,6 +58,10 @@ pub struct Cua<D: Driver> {
     pub snapshot: Option<String>,
     /// The query/max_elements the snapshot was read with (`since` needs the same).
     view: (Option<String>, Option<u32>),
+    /// The driver's latest read of the target carried a screenshot: pixel
+    /// coordinates are admitted against that frame, so a text-only read
+    /// disarms them until a screenshot read re-arms.
+    framed: bool,
 }
 
 fn obj(v: Value) -> Map<String, Value> {
@@ -76,6 +80,7 @@ impl<D: Driver> Cua<D> {
             raw_rows: BTreeMap::new(),
             snapshot: None,
             view: (None, None),
+            framed: false,
         }
     }
 
@@ -260,6 +265,7 @@ impl<D: Driver> Cua<D> {
 
     fn set_target(&mut self, w: &Window) {
         if self.target.as_ref().map(|t| (t.pid, t.window_id)) != Some((w.pid, w.window_id)) {
+            self.framed = false;
             self.elements.clear();
             self.raw_rows.clear();
             self.snapshot = None;
@@ -421,6 +427,7 @@ impl<D: Driver> Cua<D> {
                 return Capture { mode: mode.into(), note: format!("cua-driver error: {e}"), ..Capture::default() };
             }
         };
+        self.framed = env.image().is_some();
         let mut cap = Capture { mode: mode.into(), ..Capture::default() };
         let s = |k: &str| env.field(k).and_then(Value::as_str).unwrap_or("").to_string();
         cap.app = s("app_name");
@@ -444,7 +451,12 @@ impl<D: Driver> Cua<D> {
                     again.diff = Some(text);
                     return again;
                 }
-                None => self.replace_rows(&env, sid.as_deref()),
+                None => {
+                    self.replace_rows(&env, sid.as_deref());
+                    if self.elements.values().all(is_chrome) {
+                        self.markdown_rows(req);
+                    }
+                }
             }
             self.view = view;
             cap.elements = self.elements.values().cloned().collect();
@@ -480,6 +492,7 @@ impl<D: Driver> Cua<D> {
                 && !shot.is_error
                 && let Some((img, mime)) = shot.image()
             {
+                self.framed = true;
                 cap.image = Some(img);
                 cap.image_mime = mime;
                 cap.image_reason = Some("the accessibility tree is sparse here, so a screenshot is attached; act on what you see by coordinate, or on the OCR rows");
@@ -503,6 +516,29 @@ impl<D: Driver> Cua<D> {
         self.snapshot = sid.map(str::to_string).or_else(|| {
             self.elements.values().find_map(|e| e.token.as_deref()?.split_once(':').map(|(s, _)| s.to_string()))
         });
+    }
+
+    /// cua-driver 0.38's `elements` walk can start at a window's title bar
+    /// and return only its chrome (PowerPoint, after a while), while the
+    /// markdown walk of the same window still has every row. Take those.
+    fn markdown_rows(&mut self, req: &CaptureRequest) {
+        let mut args = self.gws_args(req, false, true);
+        args.insert("tree_format".into(), json!("markdown"));
+        let Ok(env) = self.call("get_window_state", args) else { return };
+        let sid = env.field("snapshot_id").and_then(Value::as_str).map(str::to_string);
+        let (Some(text), Some(sid)) = (env.field("tree_markdown").and_then(Value::as_str), sid) else { return };
+        let rows = parse::markdown_elements(text, &sid);
+        if env.is_error || rows.iter().all(is_chrome) {
+            return;
+        }
+        self.elements.clear();
+        self.raw_rows.clear();
+        for e in rows {
+            let raw = json!({"element_index": e.index, "element_token": e.token, "role": e.role, "label": e.label, "value": e.value});
+            self.raw_rows.insert(e.index, raw);
+            self.elements.insert(e.index, e);
+        }
+        self.snapshot = Some(sid);
     }
 
     /// Merge a `since` diff: changed and added rows replace theirs, removed
@@ -579,6 +615,25 @@ impl<D: Driver> Cua<D> {
         }
     }
 
+    /// Make sure the driver holds a screenshot frame of the target before a
+    /// pixel action: a screenshot-only read (the tree's tokens stay valid).
+    fn arm_frame(&mut self, action: &str) -> Result<(), ActionResult> {
+        if self.framed {
+            return Ok(());
+        }
+        let t = self.need_target(action)?;
+        let args = obj(json!({"pid": t.pid, "window_id": t.window_id, "include_screenshot": true,
+            "include_accessibility_tree": false, "max_image_dimension": MAX_IMAGE_DIMENSION}));
+        match self.call("get_window_state", args) {
+            Ok(env) if !env.is_error && env.image().is_some() => {
+                self.framed = true;
+                Ok(())
+            }
+            Ok(env) => Err(ActionResult::refused(action, format!("could not take the screenshot pixel coordinates refer to: {}", env.message()), Some("screenshot_unavailable"))),
+            Err(e) => Err(ActionResult::refused(action, format!("cua-driver error: {e}"), Some("transport"))),
+        }
+    }
+
     fn xy(&self, action: &str, x: i64, y: i64) -> Result<Map<String, Value>, ActionResult> {
         let t = self.need_target(action)?;
         Ok(obj(json!({"pid": t.pid, "window_id": t.window_id, "x": x, "y": y})))
@@ -622,6 +677,11 @@ impl<D: Driver> Cua<D> {
             Ok(a) => a,
             Err(r) => return r,
         };
+        if args.contains_key("x")
+            && let Err(r) = self.arm_frame("click")
+        {
+            return r;
+        }
         // Builds whose click has no `count` keep a separate double_click tool.
         let tool = if count == 2 && !self.schemas.accepts("click", "count") && self.schemas.has_tool("double_click") {
             "double_click"
@@ -651,6 +711,9 @@ impl<D: Driver> Cua<D> {
             Ok(t) => t,
             Err(r) => return r,
         };
+        if let Err(r) = self.arm_frame("drag") {
+            return r;
+        }
         let mut args = obj(json!({"pid": t.pid, "window_id": t.window_id, "from_x": from.0, "from_y": from.1, "to_x": to.0, "to_y": to.1, "button": button}));
         if !modifiers.is_empty() {
             args.insert("modifier".into(), json!(modifiers));
@@ -682,6 +745,11 @@ impl<D: Driver> Cua<D> {
             (None, Some((x, y))) => obj(json!({"pid": t.pid, "window_id": t.window_id, "x": x, "y": y})),
             (None, None) => obj(json!({"pid": t.pid, "window_id": t.window_id})),
         };
+        if args.contains_key("x")
+            && let Err(r) = self.arm_frame("scroll")
+        {
+            return r;
+        }
         args.insert("direction".into(), json!(direction));
         args.insert("amount".into(), json!(amount.clamp(1, 50)));
         if let Err(r) = self.with_delivery("scroll", &mut args, delivery) {
@@ -702,6 +770,11 @@ impl<D: Driver> Cua<D> {
             },
             None => obj(json!({"pid": t.pid, "window_id": t.window_id})),
         };
+        if args.contains_key("x")
+            && let Err(r) = self.arm_frame("type_text")
+        {
+            return r;
+        }
         args.insert("text".into(), json!(text));
         if let Err(r) = self.with_delivery("type_text", &mut args, delivery) {
             return r;
@@ -955,6 +1028,28 @@ mod tests {
         let cap = c.capture(&CaptureRequest { mode: "auto".into(), app: Some("Paint".into()), ..Default::default() });
         assert!(cap.image.is_some());
         assert!(cap.image_reason.is_some());
+    }
+
+    #[test]
+    fn pixel_actions_rearm_the_screenshot_frame() {
+        let mut c = cua(FakeDriver::notepad());
+        // A text-only read: the driver holds no frame for pixels.
+        c.capture(&CaptureRequest { mode: "ax".into(), app: Some("Notepad".into()), ..Default::default() });
+        let reads = c.driver.calls_to("get_window_state").len();
+        assert!(c.click(None, Some((40, 50)), "left", 1, &[], None).ok);
+        let calls = c.driver.calls_to("get_window_state");
+        assert_eq!(calls.len(), reads + 1, "one screenshot-only read before the pixel click");
+        assert_eq!(calls.last().unwrap()["include_accessibility_tree"], false);
+        assert_eq!(calls.last().unwrap()["include_screenshot"], true);
+        // Armed now: the next pixel click needs no read; element clicks never do.
+        c.click(None, Some((41, 51)), "left", 1, &[], None);
+        c.click(Some(2), None, "left", 1, &[], None);
+        assert_eq!(c.driver.calls_to("get_window_state").len(), reads + 1);
+        // A screenshot capture arms it too.
+        c.capture(&CaptureRequest { mode: "som".into(), app: Some("Notepad".into()), ..Default::default() });
+        let n = c.driver.calls_to("get_window_state").len();
+        c.drag((1, 1), (5, 5), "left", &[], None);
+        assert_eq!(c.driver.calls_to("get_window_state").len(), n, "a som capture already armed the frame");
     }
 
     #[test]

@@ -105,6 +105,34 @@ pub fn elements(env: &Envelope) -> Vec<UiElement> {
         .collect()
 }
 
+/// Indexed rows of a `tree_markdown` rendering (`- [7] Button "Save"
+/// [value="…" id=… actions=[…]]`), tokens minted against `sid`. The
+/// markdown carries no frames, so these rows act by index only.
+pub fn markdown_elements(text: &str, sid: &str) -> Vec<UiElement> {
+    static ROW: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    static VALUE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let row = ROW.get_or_init(|| regex::Regex::new(r#"^\s*-\s*\[(\d+)\]\s+(\S+)(?:\s+"((?:[^"\\]|\\.)*)")?(.*)$"#).expect("row regex"));
+    let value = VALUE.get_or_init(|| regex::Regex::new(r#"\bvalue="((?:[^"\\]|\\.)*)""#).expect("value regex"));
+    let unescape = |s: &str| s.replace("\\\"", "\"").replace("\\\\", "\\");
+    text.lines()
+        .filter_map(|l| {
+            let c = row.captures(l)?;
+            let index = c[1].parse::<u32>().ok()?;
+            let rest = c.get(4).map_or("", |m| m.as_str());
+            Some(UiElement {
+                index,
+                role: c[2].to_string(),
+                label: c.get(3).map(|m| unescape(m.as_str())).unwrap_or_default(),
+                value: value.captures(rest).map(|v| unescape(&v[1])).unwrap_or_default(),
+                bounds: (0, 0, 0, 0),
+                enabled: !rest.contains("disabled"),
+                token: Some(format!("{sid}:{index}")),
+                source: "tree",
+            })
+        })
+        .collect()
+}
+
 /// The verdict fields of an action result (structured wins over text).
 pub fn action_result(name: &str, env: &Envelope, requested_delivery: Option<&str>) -> ActionResult {
     let mut meta: Map<String, Value> = env.data.as_object().cloned().unwrap_or_default();
@@ -252,6 +280,17 @@ mod tests {
         let jpeg = [0xFF, 0xD8, 0xFF, 0xC0, 0, 17, 8, 0x02, 0x58, 0x03, 0x20, 3, 0, 0, 0];
         assert_eq!(image_dimensions(&jpeg), Some((800, 600)));
         assert_eq!(image_dimensions(b"nope"), None);
+    }
+
+    #[test]
+    fn markdown_rows_act_by_index() {
+        let text = "- Window \"Deck - PowerPoint\"\n  - Pane \"Ribbon\"\n    - [1] Button \"Save\" [id=FileSave actions=[invoke]]\n    - [9] Edit \"Microsoft search\" [value=\"Say \\\"hi\\\"\" actions=[set_value]]\n    - [12] Button \"Restore Down\" [actions=[invoke]]\n";
+        let rows = markdown_elements(text, "s0000000a");
+        assert_eq!(rows.len(), 3, "unindexed rows are structure only");
+        assert_eq!((rows[0].index, rows[0].role.as_str(), rows[0].label.as_str()), (1, "Button", "Save"));
+        assert_eq!(rows[0].token.as_deref(), Some("s0000000a:1"));
+        assert!(!rows[0].bounds_known());
+        assert_eq!(rows[1].value, "Say \"hi\"");
     }
 
     #[test]
