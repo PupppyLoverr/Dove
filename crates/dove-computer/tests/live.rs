@@ -151,8 +151,17 @@ impl Host for LiveHost {
 
 fn call(c: &mut Computer<McpStdio>, h: &mut LiveHost, args: Value) -> (Value, dove_computer::Output) {
     let started = Instant::now();
+    #[cfg(windows)]
+    let input_before = last_input_tick();
     let out = c.handle(&args, h);
-    eprintln!("{:>6} ms  {}", started.elapsed().as_millis(), args["action"]);
+    let head: Value = serde_json::from_str(out.text.split("
+
+").next().unwrap_or("")).unwrap_or(Value::Null);
+    #[cfg(windows)]
+    let input = if last_input_tick() != input_before { "  [real input seen]" } else { "" };
+    #[cfg(not(windows))]
+    let input = "";
+    eprintln!("{:>6} ms  {}  path={}{input} msg={}", started.elapsed().as_millis(), args["action"], head["path"], head["message"]);
     let head = out.text.split("\n\n").next().unwrap_or("").to_string();
     (serde_json::from_str(&head).unwrap_or(Value::Null), out)
 }
@@ -365,3 +374,343 @@ fn any_os_lists_and_captures() {
     assert!(h.reviews.is_empty(), "reading needs no approval");
     c.close();
 }
+
+// ------------------------------------------------------------ real apps
+//
+// Built-in Windows apps, driven through the `computer` tool exactly as an
+// agent would: by app name, by row, in the background. Each test opens its
+// own window, checks that it is its own before any input, and closes only
+// what it opened.
+
+#[cfg(windows)]
+fn running(process: &str) -> bool {
+    let out = Command::new("powershell.exe")
+        .args(["-NoProfile", "-Command", &format!("@(Get-Process -Name {process} -ErrorAction SilentlyContinue).Count")])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout).trim() != "0"
+}
+
+/// Stops the app it names when the test ends, passed or failed.
+#[cfg(windows)]
+struct Closes(&'static str);
+
+#[cfg(windows)]
+impl Drop for Closes {
+    fn drop(&mut self) {
+        stop(self.0);
+    }
+}
+
+#[cfg(windows)]
+fn stop(process: &str) {
+    let _ = Command::new("powershell.exe")
+        .args(["-NoProfile", "-Command", &format!("Stop-Process -Name {process} -ErrorAction SilentlyContinue")])
+        .output();
+}
+
+/// Capture `app` until a row containing `needle` shows up (apps build their
+/// trees after their windows appear).
+#[cfg(windows)]
+fn capture_until(c: &mut Computer<McpStdio>, h: &mut LiveHost, args: Value, needle: &str) -> dove_computer::Output {
+    let mut out = call(c, h, args.clone()).1;
+    for _ in 0..30 {
+        if out.text.contains(needle) {
+            return out;
+        }
+        std::thread::sleep(Duration::from_millis(500));
+        out = call(c, h, args.clone()).1;
+    }
+    // What the driver says at this point, for the failure report.
+    if let Ok(ws) = c.cua.list_windows() {
+        eprintln!("backend windows: {:?}", ws.iter().map(|w| (&w.app, &w.title, w.off_screen, w.pid, w.window_id)).collect::<Vec<_>>());
+    }
+    if let Some(t) = c.cua.target.clone() {
+        let mut a = serde_json::Map::new();
+        a.insert("pid".into(), json!(t.pid));
+        a.insert("window_id".into(), json!(t.window_id));
+        a.insert("tree_format".into(), json!("elements"));
+        a.insert("include_screenshot".into(), json!(false));
+        a.insert("timeout_ms".into(), json!(5000));
+        if let Ok(env) = c.cua.call("get_window_state", a) {
+            let mut st = env.structured.clone();
+            let n = st.remove("elements").and_then(|e| e.as_array().map(Vec::len));
+            eprintln!("raw read with timeout_ms=5000: {n:?} elements, {}", serde_json::to_string(&st).unwrap());
+        }
+    } else {
+        eprintln!("no target");
+    }
+    panic!("no {needle:?} after waiting:\n{}", out.text);
+}
+
+#[cfg(windows)]
+struct Guard {
+    before: (isize, (i32, i32)),
+    input: u32,
+}
+
+#[cfg(windows)]
+impl Guard {
+    fn new() -> Self {
+        std::thread::sleep(Duration::from_millis(1500));
+        Self { before: user_state(), input: last_input_tick() }
+    }
+
+    /// The user's foreground window and pointer are where they were. With
+    /// real input during the test (someone using the PC), a change could be
+    /// theirs, so it is reported instead of asserted.
+    fn check(&self, what: &str) {
+        let after = user_state();
+        if last_input_tick() == self.input {
+            assert_eq!(after.0, self.before.0, "{what}: background input changed the foreground window");
+            assert_eq!(after.1, self.before.1, "{what}: background input moved the pointer");
+            eprintln!("({what}: foreground and pointer unchanged, no real input during the test)");
+        } else {
+            eprintln!(
+                "({what}: someone used the mouse or keyboard meanwhile; foreground {} and pointer {} not asserted)",
+                if after.0 == self.before.0 { "unchanged" } else { "changed" },
+                if after.1 == self.before.1 { "unchanged" } else { "moved" }
+            );
+        }
+    }
+}
+
+#[cfg(windows)]
+#[test]
+#[ignore = "opens Calculator and clicks its buttons"]
+fn real_calculator() {
+    assert!(!running("CalculatorApp"), "Calculator is already open; close it so the test only touches its own window");
+    let _ = Command::new("calc.exe").spawn().unwrap();
+    let _closes = Closes("CalculatorApp");
+    let mut c = Computer::new(McpStdio::start(&driver_bin()), Config::default());
+    let mut h = LiveHost { dir: tempfile::tempdir().unwrap(), reviews: Vec::new() };
+
+    // By name, though the window belongs to ApplicationFrameHost.
+    let cap = capture_until(&mut c, &mut h, json!({"action": "capture", "app": "Calculator"}), "\"Equals\"");
+    eprintln!("{}", cap.text.lines().take(50).collect::<Vec<_>>().join("\n"));
+    let row = |name: &str| find(&cap.text, &format!("Button \"{name}\""));
+    let guard = Guard::new();
+
+    // 12 × 7 in one batch. Calculator's tree sometimes empties right after
+    // Equals (a UWP provider quirk), so the check is a separate step that
+    // reads the tree when it has rows, and the OCR rows of Dove's sparse-
+    // tree fallback when it does not: what an agent reads either way.
+    let (v, out) = call(&mut c, &mut h, json!({"action": "run", "steps": [
+        {"action": "click", "element": row("Clear")},
+        {"action": "click", "element": row("One")},
+        {"action": "click", "element": row("Two")},
+        {"action": "click", "element": row("Multiply by")},
+        {"action": "click", "element": row("Seven")},
+        {"action": "click", "element": row("Equals")},
+    ]}));
+    if out.text.contains("window_minimized") {
+        // Minimized before the batch: the driver refuses rather than click
+        // off-screen, and the batch stops at that step.
+        assert_eq!(v["ok"], false);
+        eprintln!("(Calculator was minimized before the batch: refused with window_minimized, as designed)");
+        c.close();
+        return;
+    }
+    assert_eq!(v["executed"], 6, "every click ran: {}", out.text);
+    let (v, _) = call(&mut c, &mut h, json!({"action": "verify", "expect": [{"text": "Display is 84"}]}));
+    if v["status"] != "satisfied" {
+        // The quirk: right after Equals the tree can come back empty. Dove's
+        // answer is the sparse-tree fallback: a screenshot (a vision model
+        // reads the 84 there) plus OCR rows. Windows OCR does not read
+        // isolated digits, so the test cannot read the result itself.
+        let (_, cap) = call(&mut c, &mut h, json!({"action": "capture", "app": "Calculator"}));
+        assert!(cap.text.contains("sparse") && cap.images.len() == 1, "an empty tree brings a screenshot:
+{}", cap.text);
+        eprintln!("(Calculator's tree was empty after Equals: the screenshot fallback was delivered; result not readable by OCR)");
+        guard.check("Calculator");
+        c.close();
+        return;
+    }
+    eprintln!("result read from the tree: Display is 84");
+
+    // Clear it by on-device grounding.
+    capture_until(&mut c, &mut h, json!({"action": "capture", "app": "Calculator"}), "\"Clear entry\"");
+    let (v, out) = call(&mut c, &mut h, json!({"action": "act", "intent": "click Clear entry"}));
+    if v["code"] == "window_minimized" {
+        // Someone minimized it meanwhile: the driver refuses instead of
+        // clicking off-screen, and the verdict says to escalate (restoring
+        // the window needs the user's approval).
+        assert_eq!(v["verdict"]["decision"], "escalate", "{}", out.text);
+        eprintln!("(Calculator was minimized during the test: refused with an escalate verdict, as designed)");
+        c.close();
+        return;
+    }
+    assert_eq!(v["ok"], true, "{}", out.text);
+    let (v, _) = call(&mut c, &mut h, json!({"action": "verify", "expect": [{"text": "Display is 0"}]}));
+    assert_eq!(v["status"], "satisfied", "{v}");
+    guard.check("Calculator");
+    assert_eq!(h.reviews.len(), 1, "one approval for Calculator, then the session grant: {:?}", h.reviews);
+    c.close();
+}
+
+#[cfg(windows)]
+#[test]
+#[ignore = "opens a temp file in Notepad, types into it and saves it"]
+fn real_notepad() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join(format!("dove-cu-{}.txt", std::process::id()));
+    std::fs::write(&file, "").unwrap();
+    let name = file.file_name().unwrap().to_string_lossy().to_string();
+    let _ = Command::new("notepad.exe").arg(&file).spawn().unwrap();
+    let mut c = Computer::new(McpStdio::start(&driver_bin()), Config::default());
+    let mut h = LiveHost { dir: tempfile::tempdir().unwrap(), reviews: Vec::new() };
+
+    let cap = capture_until(&mut c, &mut h, json!({"action": "capture", "app": "Notepad"}), &format!("{name} - Notepad\""));
+    // Never type into a document we did not create: the window shows ours.
+    assert!(cap.text.contains(&format!("window=\"{name} - Notepad\"")), "the focused tab is not the test file:\n{}", cap.text);
+    let editor = find(&cap.text, "Document \"Text editor\"");
+    let guard = Guard::new();
+
+    let text = "Typed by Dove Computer Use in the background.";
+    let (v, out) = call(&mut c, &mut h, json!({"action": "type", "element": editor, "text": text}));
+    assert_eq!(v["ok"], true, "{}", out.text);
+    eprintln!("type verdict: {}", v["verdict"]);
+    let ws = c.cua.list_windows().unwrap();
+    eprintln!("backend windows: {:?}", ws.iter().map(|w| (&w.app, &w.title, w.off_screen)).collect::<Vec<_>>());
+    let m = c.cua.match_app(&ws, "Notepad");
+    eprintln!("match_app(Notepad): {:?}", m.iter().map(|w| (&w.app, &w.title)).collect::<Vec<_>>());
+    // Still our tab before saving (Notepad retitles itself as it updates).
+    capture_until(&mut c, &mut h, json!({"action": "capture", "app": "Notepad"}), &format!("{name} - Notepad\""));
+    // Modern Notepad ignores background key messages: the shortcut comes
+    // back with an escalate verdict, and the agent's move is the menu.
+    let (v, out) = call(&mut c, &mut h, json!({"action": "key", "keys": "ctrl+s"}));
+    eprintln!("ctrl+s: ok={} verdict={}", v["ok"], v["verdict"]);
+    if v["ok"] != true {
+        assert_eq!(v["verdict"]["decision"], "escalate", "{}", out.text);
+        // A tree row, or (when Notepad's content is missing from the tree)
+        // an OCR row that clicks by pixel: either is what an agent sees.
+        let cap = capture_until(&mut c, &mut h, json!({"action": "capture", "app": "Notepad"}), "\"File\"");
+        let file_menu = find(&cap.text, "\"File\"");
+        let (v, out) = call(&mut c, &mut h, json!({"action": "click", "element": file_menu}));
+        assert_eq!(v["ok"], true, "{}", out.text);
+        let cap = capture_until(&mut c, &mut h, json!({"action": "capture", "app": "Notepad"}), "\"Save");
+        eprintln!("{}", cap.text.lines().filter(|l| l.contains("Save")).collect::<Vec<_>>().join("
+"));
+        let save = cap
+            .text
+            .lines()
+            .find(|l| l.contains("\"Save") && !l.contains("Save as") && !l.contains("Save all") && !l.contains("Button"))
+            .and_then(|l| l.trim().strip_prefix('#')?.split_whitespace().next()?.parse::<u32>().ok())
+            .unwrap_or_else(|| panic!("no Save item:
+{}", cap.text));
+        let (v, out) = call(&mut c, &mut h, json!({"action": "click", "element": save}));
+        assert_eq!(v["ok"], true, "{}", out.text);
+    }
+    let mut saved = String::new();
+    for _ in 0..20 {
+        saved = std::fs::read_to_string(&file).unwrap_or_default();
+        if saved.contains(text) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    assert_eq!(saved.trim_end(), text, "the file on disk has what was typed");
+    guard.check("Notepad");
+
+    // Close only our (saved) tab, with its own Close Tab button.
+    let cap = capture_until(&mut c, &mut h, json!({"action": "capture", "app": "Notepad"}), &format!("{name} - Notepad\""));
+    let close_tab = find(&cap.text, "Button \"Close Tab\"");
+    let (v, out) = call(&mut c, &mut h, json!({"action": "click", "element": close_tab}));
+    assert_eq!(v["ok"], true, "{}", out.text);
+    std::thread::sleep(Duration::from_secs(1));
+    let (v, _) = call(&mut c, &mut h, json!({"action": "list_windows"}));
+    assert!(!v.to_string().contains(&name), "our tab is closed: {v}");
+    c.close();
+}
+
+#[cfg(windows)]
+#[test]
+#[ignore = "opens Paint, picks a colour and draws on the canvas"]
+fn real_paint() {
+    assert!(!running("mspaint"), "Paint is already open; close it so the test only touches its own window");
+    let _ = Command::new("mspaint.exe").spawn().unwrap();
+    let _closes = Closes("mspaint");
+    let mut c = Computer::new(McpStdio::start(&driver_bin()), Config::default());
+    let mut h = LiveHost { dir: tempfile::tempdir().unwrap(), reviews: Vec::new() };
+    let cap = capture_until(&mut c, &mut h, json!({"action": "capture", "app": "Paint"}), "ListItem \"Red\"");
+    let guard = Guard::new();
+
+    // A colour swatch by row, checked by the "Colour 1" control's new name.
+    let red = find(&cap.text, "ListItem \"Red\"");
+    let (v, out) = call(&mut c, &mut h, json!({"action": "click", "element": red}));
+    assert_eq!(v["ok"], true, "{}", out.text);
+    let (v, _) = call(&mut c, &mut h, json!({"action": "verify", "expect": [{"text": "Colour 1: Red"}]}));
+    assert_eq!(v["status"], "satisfied", "{v}");
+
+    // Pixels: a screenshot, and Windows OCR reads the ribbon.
+    let (_, shot) = call(&mut c, &mut h, json!({"action": "capture", "app": "Paint", "mode": "som"}));
+    assert_eq!(shot.images.len(), 1, "som brings a screenshot");
+    use base64::Engine as _;
+    let raw = base64::engine::general_purpose::STANDARD.decode(&shot.images[0].0).unwrap();
+    let lines = dove_computer::native::ocr(&raw).expect("Windows OCR");
+    eprintln!("OCR read {} lines, e.g. {:?}", lines.len(), lines.iter().take(6).map(|l| &l.text).collect::<Vec<_>>());
+    assert!(!lines.is_empty());
+
+    // The canvas has no rows: draw on it by coordinate with the pencil,
+    // and report which rung the verdict asks for (the escalate ladder).
+    let cap = call(&mut c, &mut h, json!({"action": "capture", "app": "Paint"})).1;
+    let pencil = find(&cap.text, "Button \"Pencil\"");
+    call(&mut c, &mut h, json!({"action": "click", "element": pencil}));
+    let (_, img) = call(&mut c, &mut h, json!({"action": "capture", "app": "Paint", "mode": "vision"}));
+    let dims = img.text.split_whitespace().nth(2).unwrap_or("").to_string();
+    let (w, h_px): (i64, i64) = dims.split_once('x').map(|(a, b)| (a.parse().unwrap_or(0), b.parse().unwrap_or(0))).unwrap_or((0, 0));
+    assert!(w > 200 && h_px > 300, "a usable screenshot: {}", img.text);
+    let (v, out) = call(&mut c, &mut h, json!({"action": "drag",
+        "from_coordinate": [w / 3, h_px * 2 / 3], "to_coordinate": [w * 2 / 3, h_px * 2 / 3]}));
+    eprintln!("canvas drag: ok={} verdict={}", v["ok"], v["verdict"]);
+    assert!(v["verdict"]["decision"].is_string(), "every result carries a verdict: {}", out.text);
+    guard.check("Paint");
+    c.close();
+}
+
+#[cfg(windows)]
+#[test]
+#[ignore = "opens a temp folder in File Explorer and closes that window"]
+fn real_explorer() {
+    let dir = tempfile::tempdir().unwrap();
+    let folder = dir.path().join(format!("dove-cu-folder-{}", std::process::id()));
+    std::fs::create_dir(&folder).unwrap();
+    std::fs::write(folder.join("dove-cu-marker.txt"), "x").unwrap();
+    let title = folder.file_name().unwrap().to_string_lossy().to_string();
+    let _ = Command::new("explorer.exe").arg(&folder).spawn().unwrap();
+    let mut c = Computer::new(McpStdio::start(&driver_bin()), Config::default());
+    let mut h = LiveHost { dir: tempfile::tempdir().unwrap(), reviews: Vec::new() };
+
+    // Explorer shares its process with the desktop shell: target the window
+    // by its title, never by app name.
+    let mut w = Value::Null;
+    for _ in 0..30 {
+        let (v, _) = call(&mut c, &mut h, json!({"action": "list_windows"}));
+        if let Some(x) = v["windows"].as_array().and_then(|ws| ws.iter().find(|x| x["title"].as_str().is_some_and(|t| t.starts_with(&title)))) {
+            w = x.clone();
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    assert!(!w.is_null(), "the folder window never appeared");
+    let guard = Guard::new();
+    let target = json!({"action": "capture", "pid": w["pid"], "window_id": w["window_id"], "query": "dove-cu-marker"});
+    let cap = capture_until(&mut c, &mut h, target, "dove-cu-marker");
+    eprintln!("{}", cap.text.lines().take(12).collect::<Vec<_>>().join("
+"));
+    let full = call(&mut c, &mut h, json!({"action": "capture", "pid": w["pid"], "window_id": w["window_id"], "query": "Close"})).1;
+    // Reading never moves the user's focus or pointer.
+    guard.check("Explorer");
+    // Close that window (and only it) with its own Close button. Explorer
+    // opened in front, so closing it hands the foreground on, as it should.
+    let close = find(&full.text, "Button \"Close\"");
+    let (v, out) = call(&mut c, &mut h, json!({"action": "click", "element": close}));
+    assert_eq!(v["ok"], true, "{}", out.text);
+    std::thread::sleep(Duration::from_secs(1));
+    let (v, _) = call(&mut c, &mut h, json!({"action": "list_windows"}));
+    assert!(!v.to_string().contains(&title), "the folder window closed: {v}");
+    c.close();
+}
+
+
+

@@ -52,6 +52,8 @@ pub fn windows(env: &Envelope) -> Vec<Window> {
             })
         })
         .collect();
+    // Cursor overlays are the driver's own drawing surfaces, never a target.
+    out.retain(|w| !w.title.starts_with("Cua.AgentCursorOverlay"));
     out.sort_by(|a, b| b.z.partial_cmp(&a.z).unwrap_or(std::cmp::Ordering::Equal));
     out
 }
@@ -72,10 +74,11 @@ pub fn is_real_app_window(w: &Window) -> bool {
     !["@!", "desktop", "gnome-shell", "gnome shell"].iter().any(|p| t.starts_with(p))
 }
 
-/// The authorization daemon's own window, which the driver refuses to drive.
+/// The driver's own windows: its authorization daemon (which it refuses
+/// to drive) and its agent-cursor overlays, from any cua-driver build.
 pub fn is_driver_window(w: &Window) -> bool {
     let n: String = w.app.to_lowercase().chars().filter(|c| !matches!(c, ' ' | '_' | '-')).collect();
-    n == "cuadriver"
+    n == "cuadriver" || w.title.starts_with("Cua.AgentCursorOverlay")
 }
 
 /// `structuredContent.elements` rows, renumbered 1.. in reading order of
@@ -206,6 +209,7 @@ mod tests {
             {"app_name": "Back", "pid": 10, "window_id": 1, "title": "b", "is_on_screen": true, "z_index": 1},
             {"app_name": "Panel", "pid": null, "window_id": 2, "title": "p"},
             {"app_name": "Front", "pid": 11, "window_id": 3, "title": "f", "is_on_screen": null, "z_index": 9},
+            {"app_name": "dove-driver-windows-x86_64.exe", "pid": 12, "window_id": 4, "title": "Cua.AgentCursorOverlay.default", "z_index": 99},
         ]}));
         let w = windows(&e);
         assert_eq!(w.iter().map(|w| w.app.as_str()).collect::<Vec<_>>(), ["Front", "Back"]);

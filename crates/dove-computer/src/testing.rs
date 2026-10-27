@@ -66,6 +66,16 @@ impl FakeDriver {
         Self::new("Paint", "Untitled - Paint", json!([row(1, "Pane", "", (0, 0, 0, 0))]), true)
     }
 
+    /// The notepad fixture, minimized: Windows parks it at (-32000, -32000).
+    pub fn minimized() -> Self {
+        Self::new(
+            "Notepad",
+            "Untitled - Notepad",
+            json!([row(0, "Document", "Text editor", (-31992, -31907, 600, 400)), row(1, "Button", "Save", (-31990, -31990, 60, 24))]),
+            false,
+        )
+    }
+
     /// A login form with a password field and a Sign in button.
     pub fn login() -> Self {
         Self::new(
@@ -113,7 +123,14 @@ impl Driver for FakeDriver {
     fn call_tool(&mut self, name: &str, args: Value) -> Result<Value, String> {
         self.calls.push((name.to_string(), args.clone()));
         Ok(match name {
-            "list_windows" => Self::ok(json!({"windows": self.windows}), "2 windows"),
+            "list_windows" => {
+                // A minimized Mail window is listed only with on_screen_only:false.
+                let mut ws = self.windows.as_array().cloned().unwrap_or_default();
+                if args["on_screen_only"] == json!(false) {
+                    ws.push(json!({"app_name": "Mail.exe", "pid": 300, "window_id": 301, "title": "Inbox - Mail", "is_on_screen": false, "z_index": 0}));
+                }
+                Self::ok(json!({"windows": ws}), "windows")
+            }
             "list_apps" => Self::ok(json!({"apps": [{"name": "Notepad", "pid": 100, "running": true}]}), ""),
             "get_window_state" => {
                 let shot = args["include_screenshot"] == json!(true);

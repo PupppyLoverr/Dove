@@ -135,7 +135,13 @@ impl<D: Driver> Cua<D> {
     // ------------------------------------------------------------ windows
 
     pub fn list_windows(&mut self) -> Result<Vec<Window>, String> {
-        let env = self.call("list_windows", obj(json!({"on_screen_only": true})))?;
+        self.windows(true)
+    }
+
+    /// `list_windows`; `on_screen_only: false` adds minimized and hidden
+    /// windows, which background input still reaches.
+    pub fn windows(&mut self, on_screen_only: bool) -> Result<Vec<Window>, String> {
+        let env = self.call("list_windows", obj(json!({"on_screen_only": on_screen_only})))?;
         if env.is_error {
             return Err(format!("list_windows failed: {}", env.message()));
         }
@@ -156,17 +162,27 @@ impl<D: Driver> Cua<D> {
         Ok(env.text().lines().filter_map(|l| re.captures(l)).map(|c| json!({"name": c[1].trim(), "pid": c[2].parse::<u64>().unwrap_or(0)})).collect())
     }
 
-    /// Windows of `app`: exact names, then exact list_apps aliases (bundle
-    /// ids, display names), then substrings, then titles of nameless rows.
-    /// Asking for `Code` must not pick `Visual Studio Code` by z-order.
+    /// Windows of `app`, cheapest evidence first: the process name without
+    /// `.exe`, then titles of windows whose process only hosts them (UWP
+    /// apps live in ApplicationFrameHost), then name substrings, then
+    /// `list_apps` aliases (bundle ids, display names; slow on Windows, where
+    /// it lists installed apps too), then titles of nameless rows. Asking
+    /// for `Code` must not pick `Visual Studio Code` by z-order.
     pub fn match_app(&mut self, windows: &[Window], app: &str) -> Vec<Window> {
-        let want = app.trim().to_lowercase();
+        let want = norm_app(app);
         if want.is_empty() {
             return Vec::new();
         }
-        let exact: Vec<Window> = windows.iter().filter(|w| w.app.trim().to_lowercase() == want).cloned().collect();
-        if !exact.is_empty() {
-            return exact;
+        let pick = |f: &dyn Fn(&Window) -> bool| -> Vec<Window> { windows.iter().filter(|w| f(w)).cloned().collect() };
+        let title = |w: &Window| w.title.trim().to_lowercase();
+        let tiers = [
+            pick(&|w| norm_app(&w.app) == want),
+            pick(&|w| is_host(&w.app) && title(w) == want),
+            pick(&|w| is_host(&w.app) && title(w).contains(&want)),
+            pick(&|w| !is_host(&w.app) && norm_app(&w.app).contains(&want)),
+        ];
+        if let Some(t) = tiers.into_iter().find(|t| !t.is_empty()) {
+            return t;
         }
         let apps = self.list_apps().unwrap_or_default();
         let (mut exact_pids, mut partial_pids) = (Vec::new(), Vec::new());
@@ -180,7 +196,7 @@ impl<D: Driver> Cua<D> {
             let aliases: Vec<String> = ["bundle_id", "bundleId", "name", "app_name", "display_name", "aumid"]
                 .iter()
                 .filter_map(|k| a.get(*k).and_then(Value::as_str))
-                .map(|s| s.trim().to_lowercase())
+                .map(norm_app)
                 .filter(|s| !s.is_empty())
                 .collect();
             if aliases.contains(&want) {
@@ -189,11 +205,10 @@ impl<D: Driver> Cua<D> {
                 partial_pids.push(pid);
             }
         }
-        let tiers: [Vec<Window>; 4] = [
-            windows.iter().filter(|w| exact_pids.contains(&w.pid)).cloned().collect(),
-            windows.iter().filter(|w| w.app.to_lowercase().contains(&want)).cloned().collect(),
-            windows.iter().filter(|w| partial_pids.contains(&w.pid)).cloned().collect(),
-            windows.iter().filter(|w| w.app.trim().is_empty() && w.title.to_lowercase().contains(&want)).cloned().collect(),
+        let tiers = [
+            pick(&|w| exact_pids.contains(&w.pid)),
+            pick(&|w| partial_pids.contains(&w.pid)),
+            pick(&|w| w.app.trim().is_empty() && title(w).contains(&want)),
         ];
         tiers.into_iter().find(|t| !t.is_empty()).unwrap_or_default()
     }
@@ -318,9 +333,17 @@ impl<D: Driver> Cua<D> {
                 d
             }
             Some(a) => {
-                let m = self.match_app(&windows, a);
+                let mut m = self.match_app(&windows, a);
                 if m.is_empty() {
-                    return self.failed(&mode, format!("no on-screen window matched app={a:?}; call list_apps for the names and bundle ids (macOS reports localized names)"));
+                    // Minimized: not on screen, but background input reaches it.
+                    let all = self.windows(false).unwrap_or_default();
+                    m = self.match_app(&all, a).into_iter().filter(|w| !parse::is_driver_window(w)).collect();
+                    for w in &mut m {
+                        w.off_screen = false;
+                    }
+                }
+                if m.is_empty() {
+                    return self.failed(&mode, format!("no window matched app={a:?}; call list_apps for the names and bundle ids (macOS reports localized names)"));
                 }
                 m
             }
@@ -427,11 +450,29 @@ impl<D: Driver> Cua<D> {
             cap.elements = self.elements.values().cloned().collect();
         }
         cap.snapshot_id = self.snapshot.clone();
+        // Windows parks minimized windows near (-32000, -32000): their rows
+        // still act by index, but no coordinate or screenshot means anything.
+        let parked = cap.elements.iter().filter(|e| e.bounds_known() && e.bounds.0 < -10_000 && e.bounds.1 < -10_000).count();
+        if parked > 0 && parked * 2 >= cap.elements.iter().filter(|e| e.bounds_known()).count() {
+            cap.note = "the window is minimized: act by element index (background input still reaches it); coordinates and screenshots mean nothing until it is restored".into();
+            for e in self.elements.values_mut() {
+                e.bounds = (0, 0, 0, 0);
+            }
+            cap.elements = self.elements.values().cloned().collect();
+            return cap;
+        }
         if let Some((img, mime)) = env.image() {
             cap.image = Some(img);
             cap.image_mime = mime;
         }
-        let actionable = cap.elements.iter().filter(|e| e.enabled && (e.bounds_known() || e.token.is_some())).count();
+        // Window chrome does not make a tree rich: a XAML app whose content
+        // is missing from the tree (modern Notepad, Calculator at times)
+        // still shows its title bar and caption buttons.
+        let actionable = cap
+            .elements
+            .iter()
+            .filter(|e| e.enabled && (e.bounds_known() || e.token.is_some()) && !is_chrome(e))
+            .count();
         let degraded = env.field("degraded").and_then(Value::as_bool).unwrap_or(false);
         if mode == "auto" && cap.image.is_none() && cap.diff.is_none() && (actionable < SPARSE_TREE || degraded) {
             // Canvas, game, remote desktop: the tree cannot carry it alone.
@@ -755,6 +796,32 @@ impl<D: Driver> Cua<D> {
     }
 }
 
+/// The window frame's own controls: title bar, system menu and caption buttons.
+pub fn is_chrome(e: &UiElement) -> bool {
+    let role = e.role.to_lowercase();
+    if role == "titlebar" || role == "axtitlebar" || role.starts_with("axclosebutton") || role.starts_with("axminimizebutton") || role.starts_with("axzoombutton") {
+        return true;
+    }
+    let label = e.label.trim();
+    matches!(role.as_str(), "button" | "menuitem" | "push button" | "menu item")
+        && ["System", "Minimize", "Maximize", "Restore", "Close"]
+            .iter()
+            .any(|c| label == *c || label.starts_with(&format!("{c} ")))
+        && !label.eq_ignore_ascii_case("close tab")
+}
+
+/// An app name as people say it: lowercase, without `.exe` or `.app`.
+fn norm_app(name: &str) -> String {
+    let n = name.trim().to_lowercase();
+    n.strip_suffix(".exe").or_else(|| n.strip_suffix(".app")).unwrap_or(&n).trim().to_string()
+}
+
+/// Processes that only host other apps' windows: the window title names
+/// the app (Calculator, Settings and other UWP apps on Windows).
+fn is_host(app: &str) -> bool {
+    matches!(norm_app(app).as_str(), "applicationframehost")
+}
+
 fn named(w: &Window, names: &[&str]) -> bool {
     let hay = format!("{} {}", w.app, w.title).to_lowercase();
     names.iter().any(|n| hay.contains(n))
@@ -813,6 +880,28 @@ mod tests {
     }
 
     #[test]
+    fn minimized_windows_act_by_index_only() {
+        let mut c = cua(FakeDriver::minimized());
+        let cap = c.capture(&CaptureRequest { mode: "auto".into(), app: Some("Notepad".into()), ..Default::default() });
+        assert!(cap.note.contains("minimized"), "{}", cap.note);
+        assert!(cap.image.is_none(), "no screenshot of a minimized window");
+        assert!(cap.elements.iter().all(|e| !e.bounds_known()), "no coordinates to click by");
+        assert!(c.click(Some(1), None, "left", 1, &[], None).ok, "rows still act by token");
+        assert_eq!(c.driver.calls_to("click").pop().unwrap()["element_token"], "s0000000a:1");
+    }
+
+    #[test]
+    fn minimized_windows_are_still_found_by_name() {
+        let mut c = cua(FakeDriver::notepad());
+        let cap = c.capture(&CaptureRequest { mode: "ax".into(), app: Some("Mail".into()), ..Default::default() });
+        assert!(cap.note.is_empty(), "{}", cap.note);
+        assert_eq!(c.target.as_ref().map(|t| t.app.as_str()), Some("Mail.exe"));
+        assert_eq!(c.target.as_ref().map(|t| t.window_id), Some(301));
+        let none = c.capture(&CaptureRequest { mode: "ax".into(), app: Some("Nothing".into()), ..Default::default() });
+        assert!(none.note.starts_with("no window matched"), "{}", none.note);
+    }
+
+    #[test]
     fn exact_rereads_skip_discovery() {
         let mut c = cua(FakeDriver::notepad());
         c.capture(&CaptureRequest { mode: "ax".into(), pid: Some(100), window_id: Some(200), ..Default::default() });
@@ -832,6 +921,32 @@ mod tests {
         assert_eq!(c.match_app(&ws, "code")[0].pid, 2);
         assert_eq!(c.match_app(&ws, "studio")[0].pid, 1);
         assert!(c.match_app(&ws, "nothing").is_empty());
+        // Names as people say them, and UWP apps by their window title, all
+        // without the slow list_apps call.
+        let listed = c.driver.calls_to("list_apps").len();
+        let ws = vec![
+            Window { app: "Notepad.exe".into(), pid: 3, window_id: 3, title: "notes.txt - Notepad".into(), off_screen: false, z: 3.0 },
+            Window { app: "ApplicationFrameHost.exe".into(), pid: 4, window_id: 4, title: "Settings".into(), off_screen: false, z: 2.0 },
+            Window { app: "ApplicationFrameHost.exe".into(), pid: 4, window_id: 5, title: "Calculator".into(), off_screen: false, z: 1.0 },
+        ];
+        assert_eq!(c.match_app(&ws, "Notepad")[0].pid, 3);
+        assert_eq!(c.match_app(&ws, "calculator")[0].window_id, 5);
+        assert_eq!(c.driver.calls_to("list_apps").len(), listed, "no list_apps for names the windows already answer");
+        assert!(c.match_app(&ws, "applicationframehost").len() == 2, "the host itself still matches by name");
+    }
+
+    #[test]
+    fn chrome_only_trees_count_as_sparse() {
+        let chrome = |i: u32, role: &str, label: &str| UiElement {
+            index: i, role: role.into(), label: label.into(), bounds: (1, 1, 10, 10), enabled: true,
+            token: Some(format!("s1:{i}")), source: "tree", ..UiElement::default()
+        };
+        assert!(is_chrome(&chrome(0, "TitleBar", "notes.txt - Notepad")));
+        assert!(is_chrome(&chrome(1, "MenuItem", "System")));
+        assert!(is_chrome(&chrome(2, "Button", "Close Calculator")));
+        assert!(!is_chrome(&chrome(3, "Button", "Close Tab")));
+        assert!(!is_chrome(&chrome(4, "Button", "Save")));
+        assert!(!is_chrome(&chrome(5, "Button", "Closed captions")));
     }
 
     #[test]
