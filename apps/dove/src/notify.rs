@@ -13,16 +13,21 @@ pub const NOTIFICATIONS: &str = "notifications";
 pub const SOUND: &str = "notification_sound";
 pub const KEEP_RUNNING: &str = "keep_running";
 
-pub fn enabled(engine: &Engine) -> bool {
-    engine.store.setting(NOTIFICATIONS).as_deref() != Some("false")
-}
-
 /// Post an OS notification (off the UI thread; failures are logged).
 pub fn os_notify(engine: &Engine, title: &str, body: &str) {
-    if !enabled(engine) {
+    // The island shows these itself while it's connected.
+    if crate::island::host::serving() && engine.store.flag("notch_notifications", true) {
         return;
     }
-    let sound = engine.store.setting(SOUND).as_deref() == Some("true");
+    os_notify_store(&engine.store, title, body);
+}
+
+/// [`os_notify`] for a process without an engine (the island).
+pub fn os_notify_store(store: &dove_core::store::Store, title: &str, body: &str) {
+    if store.setting(NOTIFICATIONS).as_deref() == Some("false") {
+        return;
+    }
+    let sound = store.setting(SOUND).as_deref() == Some("true");
     let (title, body) = (title.to_string(), body.to_string());
     std::thread::spawn(move || {
         let mut n = notify_rust::Notification::new();
@@ -46,26 +51,25 @@ pub fn set_badge(window: &mut Window, needs_you: usize) {
 }
 
 /// Window-close behavior and the tray icon.
+///
+/// Closing the window frees it and everything it shows. The engine stays
+/// (headless) while agents work or wait, or while automations are kept
+/// running, and quits once that's done (`island::host`). Where the island
+/// runs it owns the tray; elsewhere Dove keeps its own for automations.
 pub fn install(engine: Arc<Engine>, window: &mut Window, cx: &mut App) {
-    let e = engine.clone();
-    window.on_window_should_close(cx, move |window, cx| {
-        if e.store.setting(KEEP_RUNNING).as_deref() == Some("true") {
-            // Keep running for automations; the tray (or taskbar) brings it back.
-            window.minimize_window();
-            false
-        } else {
-            cx.quit();
-            true
-        }
-    });
-    if engine.store.setting(KEEP_RUNNING).as_deref() == Some("true") {
+    window.on_window_should_close(cx, move |_, cx| crate::island::host::Host::on_window_close(cx));
+    if !crate::island::SUPPORTED && engine.store.setting(KEEP_RUNNING).as_deref() == Some("true") {
         tray::start(window, cx);
     }
 }
 
-/// Turn keep-running (and its tray icon) on or off from Settings.
+/// Turn keep-running (and, without the island, its tray icon) on or off
+/// from Settings.
 pub fn set_keep_running(engine: &Engine, on: bool, window: &mut Window, cx: &mut App) {
     let _ = engine.store.set_setting(KEEP_RUNNING, if on { "true" } else { "false" });
+    if crate::island::SUPPORTED {
+        return;
+    }
     if on {
         tray::start(window, cx);
     } else {

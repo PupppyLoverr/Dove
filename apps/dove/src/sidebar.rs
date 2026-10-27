@@ -836,7 +836,7 @@ impl Shell {
     /// question that opens the thread.
     fn render_needs_row(&self, task: &Task, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let id = task.id;
-        let pending = self.threads.get(&id).and_then(|v| v.read(cx).chat.read(cx).pending());
+        let pending = self.task_pending(id, cx);
         let summary = pending
             .as_ref()
             .map(|p| {
@@ -854,12 +854,8 @@ impl Shell {
             } else {
                 ui::button_ghost(SharedString::from(format!("need-{label}-{id}")), label, t).h(px(24.0))
             };
-            el.text_size(ty::META).on_click(cx.listener(move |this, _, _, cx| {
-                if let Some(v) = this.threads.get(&id) {
-                    let chat = v.read(cx).chat.clone();
-                    let rid = rid.clone();
-                    chat.update(cx, |c, cx| c.decide_from_outside(rid, d, cx));
-                }
+            el.text_size(ty::META).on_click(cx.listener(move |this, _, window, cx| {
+                this.task_decide(id, rid.clone(), d, window, cx);
             }))
         };
         let approval = pending.as_ref().is_some_and(|p| !p.is_question());

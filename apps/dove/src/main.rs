@@ -2,6 +2,7 @@
 
 mod agent_auth;
 mod assets;
+mod attention;
 mod browser;
 mod changes;
 mod composer;
@@ -18,6 +19,7 @@ mod home;
 mod hotkey;
 mod integrations_catalog;
 mod intro;
+mod island;
 mod keymap;
 mod kit;
 mod loaders;
@@ -31,6 +33,7 @@ mod memory;
 #[cfg(test)]
 mod memory_bench;
 mod motion;
+mod notch;
 mod notify;
 mod office;
 mod orchestra;
@@ -286,6 +289,12 @@ fn restore_if_minimized(window: &Window) {
 #[cfg(not(windows))]
 fn restore_if_minimized(_: &Window) {}
 
+/// Whether an engine already serves this data folder.
+fn engine_running(root: &std::path::Path) -> bool {
+    let Ok(rt) = tokio::runtime::Builder::new_current_thread().enable_all().build() else { return false };
+    island::ipc::connect(rt.handle(), root).is_some()
+}
+
 /// Portable mode: a file named `portable` beside the executable keeps all of
 /// Dove's data in a `data` folder next to it instead of `~/.dove`, so the
 /// folder can live on a USB stick. An explicit `DOVE_HOME` still wins, and
@@ -311,6 +320,16 @@ fn main() {
         mcp_browser::run();
         return;
     }
+    // `dove --island`: the always-on notch and tray (`island`). No engine.
+    if std::env::args_os().nth(1).is_some_and(|a| a == "--island") {
+        tracing_subscriber::fmt()
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::try_from_env("DOVE_LOG").unwrap_or_else(|_| "warn,dove=info".into()),
+            )
+            .init();
+        island::run();
+        return;
+    }
     perf_trace::mark_main();
     // Dove can be launched from inside an agent session (a terminal in
     // Claude Code, say). Its child-session markers must not reach the agents
@@ -325,7 +344,19 @@ fn main() {
         )
         .init();
 
-    let engine = match Engine::new(dove_core::store::default_root()) {
+    // One engine per data folder. A running one (perhaps headless, its
+    // window closed) is asked to show its window instead; `--headless` just
+    // leaves it be.
+    let root = dove_core::store::default_root();
+    if std::env::args_os().any(|a| a == "--headless") {
+        if island::ipc::read_token(&root).is_some() && engine_running(&root) {
+            return;
+        }
+    } else if island::ipc::ask_to_show(&root) {
+        return;
+    }
+
+    let engine = match Engine::new(root) {
         Ok(e) => e,
         Err(e) => {
             eprintln!("Dove could not start: {e:#}");
@@ -412,7 +443,11 @@ fn main() {
         let _ = engine.store.set_setting(intro::SEEN_KEY, "1");
     }
 
+    let headless = std::env::args_os().any(|a| a == "--headless");
     gpui_platform::application().with_assets(assets::Assets).run(move |cx: &mut App| {
+        // The window can close while agents run (headless); Dove decides when
+        // to quit (`island::host`).
+        cx.set_quit_mode(gpui::QuitMode::Explicit);
         gpui_base::init(cx);
         assets::load_fonts(cx);
         motion::init(&engine.store, cx);
@@ -426,74 +461,102 @@ fn main() {
         remote::Remote::init(engine.clone(), cx);
         cx.on_action(|_: &actions::Quit, cx| cx.quit());
 
-        let options = WindowOptions {
-            window_bounds: Some(WindowBounds::centered(default_window_size(cx), cx)),
-            window_min_size: Some(size(px(900.0), px(600.0))),
-            titlebar: Some(TitlebarOptions {
-                // `DOVE_WINDOW_TITLE` marks test instances so they are never
-                // mistaken for the real app.
-                title: cfg!(target_os = "windows")
-                    .then(|| std::env::var("DOVE_WINDOW_TITLE").unwrap_or_else(|_| "Dove".into()).into()),
-                appears_transparent: true,
-                traffic_light_position: Some(gpui::point(px(14.0), px(14.0))),
-            }),
-            // B1: always come up shown and focused, even when launched from
-            // a background process.
-            focus: true,
-            show: true,
-            app_owns_titlebar_drag: true,
-            window_decorations: cfg!(target_os = "linux").then_some(gpui::WindowDecorations::Client),
-            window_background: Theme::of(cx).window_background(),
-            app_id: Some("dev.dove.Dove".into()),
-            icon: crate::assets::brand_icon().map(std::sync::Arc::new),
-            ..Default::default()
-        };
+        let intro = std::cell::Cell::new(show_intro);
         let engine2 = engine.clone();
-        let window = cx
-            .open_window(options, |window, cx| {
-                // The interface font size is the window's rem size.
-                design::apply_to_window(window);
-                // Follow the OS light/dark switch when the theme is "system".
-                let engine3 = engine2.clone();
-                window
-                    .observe_window_appearance(move |_, cx| {
-                        if engine3.store.setting("appearance").is_none_or(|a| a == "system") {
-                            apply_theme(&engine3, cx);
-                        }
-                    })
-                    .detach();
-                cx.new(|cx| Root::new(engine2.clone(), show_intro, window, cx))
+        let open: island::host::OpenWindow =
+            std::rc::Rc::new(move |cx: &mut App| open_main_window(engine2.clone(), intro.replace(false), cx));
+        if !island::host::Host::start(engine.clone(), open.clone(), cx) {
+            // Another Dove owns this data folder (it was asked to show itself
+            // before we got here, or raced us): leave it be.
+            cx.quit();
+            return;
+        }
+        if !headless {
+            open(cx);
+        }
+        island::ensure_running(engine.store.root());
+    });
+}
+
+/// Opens Dove's main window: at launch, and again from the island or a
+/// second launch after it was closed while agents kept running.
+fn open_main_window(engine: Arc<Engine>, show_intro: bool, cx: &mut App) -> Option<gpui::AnyWindowHandle> {
+    let options = WindowOptions {
+        window_bounds: Some(WindowBounds::centered(default_window_size(cx), cx)),
+        window_min_size: Some(size(px(900.0), px(600.0))),
+        titlebar: Some(TitlebarOptions {
+            // `DOVE_WINDOW_TITLE` marks test instances so they are never
+            // mistaken for the real app.
+            title: cfg!(target_os = "windows")
+                .then(|| std::env::var("DOVE_WINDOW_TITLE").unwrap_or_else(|_| "Dove".into()).into()),
+            appears_transparent: true,
+            traffic_light_position: Some(gpui::point(px(14.0), px(14.0))),
+        }),
+        // B1: always come up shown and focused, even when launched from
+        // a background process.
+        focus: true,
+        show: true,
+        app_owns_titlebar_drag: true,
+        window_decorations: cfg!(target_os = "linux").then_some(gpui::WindowDecorations::Client),
+        window_background: Theme::of(cx).window_background(),
+        app_id: Some("dev.dove.Dove".into()),
+        icon: crate::assets::brand_icon().map(std::sync::Arc::new),
+        ..Default::default()
+    };
+    let engine2 = engine.clone();
+    let window = match cx.open_window(options, |window, cx| {
+        // The interface font size is the window's rem size.
+        design::apply_to_window(window);
+        // Follow the OS light/dark switch when the theme is "system".
+        let engine3 = engine2.clone();
+        window
+            .observe_window_appearance(move |_, cx| {
+                if engine3.store.setting("appearance").is_none_or(|a| a == "system") {
+                    apply_theme(&engine3, cx);
+                }
             })
-            .expect("failed to open the Dove window");
-        // `DOVE_NO_ACTIVATE`: benchmark and QA runs open without taking the
-        // foreground from whoever is using the machine.
-        let activate = !perf_trace::no_activate();
-        let _ = window.update(cx, |_, window, cx| {
-            if activate {
+            .detach();
+        cx.new(|cx| Root::new(engine2.clone(), show_intro, window, cx))
+    }) {
+        Ok(w) => w,
+        Err(e) => {
+            tracing::error!("failed to open the Dove window: {e:#}");
+            return None;
+        }
+    };
+    // `DOVE_NO_ACTIVATE`: benchmark and QA runs open without taking the
+    // foreground from whoever is using the machine.
+    let activate = !perf_trace::no_activate();
+    let _ = window.update(cx, |_, window, cx| {
+        if activate {
+            restore_if_minimized(window);
+            window.activate_window();
+        }
+        notify::install(engine.clone(), window, cx);
+    });
+    if activate {
+        cx.activate(true);
+    }
+    if let Ok(shell) = window.read(cx).map(|root| root.shell.clone()) {
+        shell.update(cx, |s, cx| s.watch_attention(cx));
+        cx.set_global(notch::NotchHost { window: window.into(), shell: shell.downgrade() });
+    }
+    // B1: launched from a background process (a hidden console, another
+    // app), Windows applies the launcher's "minimized" show state after
+    // the first activation. Activating again restores the window.
+    let handle = window;
+    cx.spawn(async move |cx| {
+        if !activate {
+            return;
+        }
+        for delay in [250u64, 900] {
+            cx.background_executor().timer(std::time::Duration::from_millis(delay)).await;
+            let _ = handle.update(cx, |_, window, _| {
                 restore_if_minimized(window);
                 window.activate_window();
-            }
-            notify::install(engine.clone(), window, cx);
-        });
-        if activate {
-            cx.activate(true);
+            });
         }
-        // B1: launched from a background process (a hidden console, another
-        // app), Windows applies the launcher's "minimized" show state after
-        // the first activation. Activating again restores the window.
-        let handle = window;
-        cx.spawn(async move |cx| {
-            if !activate {
-                return;
-            }
-            for delay in [250u64, 900] {
-                cx.background_executor().timer(std::time::Duration::from_millis(delay)).await;
-                let _ = handle.update(cx, |_, window, _| {
-                    restore_if_minimized(window);
-                    window.activate_window();
-                });
-            }
-        })
-        .detach();
-    });
+    })
+    .detach();
+    Some(window.into())
 }

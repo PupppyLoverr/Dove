@@ -2395,6 +2395,28 @@ impl TaskView {
         }
     }
 
+    /// The agent's latest reply as plain text (the notch's agent view): the
+    /// blocks after the last user message, streaming tail included, keeping
+    /// the last `max` characters.
+    pub fn last_reply(&self, max: usize) -> String {
+        let mut parts: Vec<String> = Vec::new();
+        for row in self.chat.rows.iter().rev() {
+            match row {
+                Row::User { .. } => break,
+                Row::Block { block, .. } => parts.push(block.plain()),
+                Row::Live { blocks } => parts.extend(blocks.iter().rev().map(|b| b.plain())),
+                _ => {}
+            }
+        }
+        parts.reverse();
+        let text = parts.join("\n\n");
+        let text = text.trim();
+        match text.char_indices().rev().nth(max.saturating_sub(1)) {
+            Some((i, _)) if i > 0 => format!("…{}", &text[i..]),
+            _ => text.to_string(),
+        }
+    }
+
     /// Answer an approval from outside the chat (the sidebar's Needs you).
     pub fn decide_from_outside(&mut self, request_id: String, decision: PermissionDecision, cx: &mut Context<Self>) {
         self.decide(request_id, decision, cx);

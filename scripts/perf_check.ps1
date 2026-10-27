@@ -16,12 +16,22 @@
 
 .EXAMPLE
   powershell -ExecutionPolicy Bypass -File scripts\perf_check.ps1 -Exe C:\dvw\target-size\release\dove.exe
+
+.PARAMETER Island
+  Measure the notch's island process alone (dove --island: no engine, no
+  window), which is what Dove costs while it's closed. The island has no
+  frame stats, so idle_renders reads 0. Target (docs/NOTCH-V2.md): a small
+  working set and about 0% CPU once it settles hidden.
+
+.EXAMPLE
+  powershell -ExecutionPolicy Bypass -File scripts\perf_check.ps1 -Exe target-check\debug\dove.exe -Island
 #>
 param(
     [Parameter(Mandatory = $true)][string]$Exe,
     [int]$SettleSec = 30,
     [int]$SampleSec = 10,
-    [string]$DoveHome = "$env:TEMP\dove-perf-check-$(Get-Date -Format yyyyMMdd-HHmmss)"
+    [string]$DoveHome = "$env:TEMP\dove-perf-check-$(Get-Date -Format yyyyMMdd-HHmmss)",
+    [switch]$Island
 )
 
 $ErrorActionPreference = 'Stop'
@@ -55,7 +65,9 @@ $envs = @{ DOVE_HOME = $DoveHome; DOVE_SKIP_INTRO = '1'; DOVE_NO_ACTIVATE = '1';
 $saved = @{}
 foreach ($k in $envs.Keys) { $saved[$k] = [Environment]::GetEnvironmentVariable($k, 'Process'); [Environment]::SetEnvironmentVariable($k, $envs[$k], 'Process') }
 try {
-    $p = Start-Process -FilePath $Exe -PassThru -RedirectStandardOutput $outLog -RedirectStandardError $errLog
+    $start = @{ FilePath = $Exe; PassThru = $true; RedirectStandardOutput = $outLog; RedirectStandardError = $errLog }
+    if ($Island) { $start.ArgumentList = '--island' }
+    $p = Start-Process @start
 } finally {
     foreach ($k in $saved.Keys) { [Environment]::SetEnvironmentVariable($k, $saved[$k], 'Process') }
 }
@@ -78,6 +90,7 @@ try {
     $kidWs = ($kids | Measure-Object WorkingSet64 -Sum).Sum
     $kidPriv = ($kids | Measure-Object PrivateMemorySize64 -Sum).Sum
     $result = [ordered]@{
+        mode              = if ($Island) { 'island' } else { 'app' }
         exe_mb            = [math]::Round((Get-Item $Exe).Length / 1MB, 2)
         main_rss_mb       = [math]::Round($p.WorkingSet64 / 1MB, 1)
         main_private_mb   = [math]::Round($p.PrivateMemorySize64 / 1MB, 1)

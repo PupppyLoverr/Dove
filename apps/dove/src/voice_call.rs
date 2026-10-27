@@ -884,8 +884,9 @@ impl Shell {
         for task in recent {
             let project = self.project(task.project_id);
             let view = self.threads.get(&task.id).map(|v| v.read(cx).chat.clone());
-            let state = view.as_ref().map(|v| v.read(cx).voice_state()).unwrap_or_default();
-            let status = view.as_ref().map(|v| v.read(cx).status).unwrap_or(task.status);
+            let state = self.task_state(task.id, cx);
+            let live = self.engine.attention().get(task.id).filter(|s| s.live).map(|s| s.status);
+            let status = live.or(view.as_ref().map(|v| v.read(cx).status)).unwrap_or(task.status);
             let (done, total) = (
                 state.todos.iter().filter(|t| t.status == dove_core::proto::TodoStatus::Completed).count() as u32,
                 state.todos.len() as u32,
@@ -1102,16 +1103,14 @@ impl Shell {
             }
             Action::Interrupt { thread } => {
                 let id = self.task_by_str(&thread)?;
-                let chat = self.chat_of(id, window, cx)?;
-                chat.update(cx, |c, cx| c.interrupt(cx));
+                self.task_interrupt(id, window, cx);
                 Some(id)
             }
             Action::Approve { thread, request_id, scope } => {
                 let id = self.task_by_str(&thread)?;
-                let chat = self.chat_of(id, window, cx)?;
                 // Defense in depth: the conductor never approves a destructive
                 // request, and neither does this.
-                let state = chat.read(cx).voice_state();
+                let state = self.task_state(id, cx);
                 let req = state.pending.iter().find(|r| r.request_id == request_id)?;
                 let pending = snapshot::Pending {
                     request_id: req.request_id.clone(),
@@ -1132,13 +1131,12 @@ impl Shell {
                     Scope::Once => PermissionDecision::AllowOnce,
                     Scope::Session => PermissionDecision::AllowAlways,
                 };
-                chat.update(cx, |c, cx| c.decide_from_outside(request_id, decision, cx));
+                self.task_decide(id, request_id, decision, window, cx);
                 Some(id)
             }
             Action::Deny { thread, request_id } => {
                 let id = self.task_by_str(&thread)?;
-                let chat = self.chat_of(id, window, cx)?;
-                chat.update(cx, |c, cx| c.decide_from_outside(request_id, PermissionDecision::Deny, cx));
+                self.task_decide(id, request_id, PermissionDecision::Deny, window, cx);
                 Some(id)
             }
             Action::TalkTo { thread } => {

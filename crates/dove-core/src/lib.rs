@@ -14,11 +14,13 @@ use anyhow::{Context, Result};
 use dove_harness::detect::Installed;
 use dove_harness::{SessionHandle, SessionSpec};
 use dove_proto::{
-    AgentEvent, HarnessKind, PermissionMode, RateWindow, ReasoningLevel, SlashCommand, TaskId, TaskStatus,
+    AgentEvent, HarnessKind, PermissionDecision, PermissionMode, RateWindow, ReasoningLevel, SlashCommand, TaskId,
+    TaskStatus,
 };
 use dove_store::{Automation, Project, Store, Task};
 use parking_lot::RwLock;
 
+pub mod attention;
 pub mod automation;
 pub mod digest;
 pub mod memory;
@@ -59,6 +61,11 @@ pub struct Engine {
     /// Session key (`DOVE_SESSION` in a session's tool server) to the
     /// thread that session belongs to, so tool calls know their caller.
     sessions: Arc<parking_lot::Mutex<HashMap<String, TaskId>>>,
+    /// What every live task is doing and needs; see [`attention`].
+    attention: Arc<attention::Attention>,
+    /// A command line into each live chat session, whoever holds its
+    /// [`LiveSession`], so approvals, steering and stops work from anywhere.
+    commands: Arc<parking_lot::Mutex<HashMap<TaskId, flume::Sender<Command>>>>,
 }
 
 /// How long a pre-started session waits for its first message.
@@ -300,7 +307,35 @@ impl Engine {
             live_models: Default::default(),
             warm: Default::default(),
             sessions: Default::default(),
+            attention: Default::default(),
+            commands: Default::default(),
         }))
+    }
+
+    /// What every live task is doing and needs.
+    pub fn attention(&self) -> &Arc<attention::Attention> {
+        &self.attention
+    }
+
+    fn command(&self, task: TaskId, cmd: Command) -> bool {
+        self.commands.lock().get(&task).is_some_and(|tx| tx.send(cmd).is_ok())
+    }
+
+    /// Sends a message to a live session, as the composer's Send does:
+    /// agents that steer take it mid-turn, the rest when the turn ends.
+    /// False when nothing is live (the caller resumes the task instead).
+    pub fn send(&self, task: TaskId, text: String) -> bool {
+        self.command(task, Command::Send(text))
+    }
+
+    /// Answers a permission request. False when the session is gone.
+    pub fn decide(&self, task: TaskId, request_id: String, decision: PermissionDecision) -> bool {
+        self.command(task, Command::Permission { request_id, decision })
+    }
+
+    /// Stops the current turn. False when nothing is live.
+    pub fn interrupt(&self, task: TaskId) -> bool {
+        self.command(task, Command::Interrupt)
     }
 
     /// The latest plan usage windows a session of `kind` reported (persisted,
@@ -1082,6 +1117,7 @@ impl Engine {
         let native = native.to_string();
         let resolve = move || tui::transcript_path(kind, &cwd, &native);
         let mut recorder = Recorder {
+            attention: self.attention.clone(),
             store: self.store.clone(),
             task: task.id,
             project: task.project_id,
@@ -1158,6 +1194,7 @@ impl Engine {
         let (stop_tx, stop_rx) = flume::bounded::<()>(1);
         self.stops.lock().insert(task.id, stop_tx.clone());
         let recorder = Recorder {
+            attention: self.attention.clone(),
             store: self.store.clone(),
             task: task.id,
             project: task.project_id,
@@ -1170,12 +1207,34 @@ impl Engine {
         };
         let stops = self.stops.clone();
         let id = task.id;
+        self.commands.lock().insert(task.id, cmd_tx.clone());
+        // Starts from the task's stored status; the session's own events
+        // (its first user message, say) move it on from there.
+        let status = task.status;
+        self.attention.update(task.id, |s| {
+            s.live = true;
+            s.capabilities = capabilities;
+            s.status = status;
+            s.pending.clear();
+        });
+        let commands = self.commands.clone();
+        let attention = self.attention.clone();
         self.rt.spawn(async move {
             recorder.run(handle, tx, cmd_rx, stop_rx).await;
-            // A newer session for the same task keeps its own handle.
+            // A newer session for the same task keeps its own handles.
             let mut s = stops.lock();
-            if s.get(&id).is_some_and(|t| t.same_channel(&stop_tx)) {
+            let current = s.get(&id).is_some_and(|t| t.same_channel(&stop_tx));
+            if current {
                 s.remove(&id);
+            }
+            drop(s);
+            if current {
+                commands.lock().remove(&id);
+                attention.update(id, |s| {
+                    s.live = false;
+                    s.pending.clear();
+                    s.activity = None;
+                });
             }
         });
         LiveSession { task: task.id, events: rx, commands: cmd_tx, capabilities }
@@ -1194,6 +1253,7 @@ impl Engine {
 }
 
 struct Recorder {
+    attention: Arc<attention::Attention>,
     store: Arc<Store>,
     task: TaskId,
     project: dove_proto::ProjectId,
@@ -1242,6 +1302,7 @@ impl Recorder {
             }
         });
         let mut ui_open = true;
+        let mut commands_open = true;
         let mut stop_open = true;
         loop {
             tokio::select! {
@@ -1265,11 +1326,14 @@ impl Recorder {
                     }
                     if exited { break; }
                 }
-                cmd = fwd_rx.recv_async(), if ui_open => match cmd {
+                // Commands come from the view and from the engine (the notch,
+                // Voice Mode, the sidebar), so they're read until every sender
+                // is gone, not just the view's. With none left the agent
+                // finishes its turn in the background rather than being killed
+                // mid-edit.
+                cmd = fwd_rx.recv_async(), if commands_open => match cmd {
                     Ok(c) => { handle.send(c); }
-                    // The UI dropped its session: let the agent finish the turn
-                    // in the background rather than killing it mid-edit.
-                    Err(_) => ui_open = false,
+                    Err(_) => commands_open = false,
                 },
             }
         }
@@ -1288,6 +1352,7 @@ impl Recorder {
 
     fn record(&mut self, ev: &AgentEvent, writer: Option<&mut dove_store::TranscriptWriter>) {
         self.memory.lock().observe(ev);
+        self.attention.observe(self.task, ev);
         if let Some(w) = writer {
             if let Err(e) = w.append(ev) {
                 tracing::warn!("transcript append failed: {e:#}");

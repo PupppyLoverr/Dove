@@ -256,6 +256,17 @@ const INDEX: &[Entry] = &[
         "Keep running in background",
         "tray background daemon automations keep running",
     ),
+    e(Section::Notifications, "notch", "Show the notch", "notch island dynamic top screen agents music clipboard"),
+    e(Section::Notifications, "island_login", "Start at login", "notch island tray login startup boot autostart"),
+    e(Section::Notifications, "notch_slim", "Keep the slim island visible", "notch slim island pin always"),
+    e(Section::Notifications, "notch_live", "Live activities", "notch live activities approvals finished popup"),
+    e(Section::Notifications, "notch_clipboard", "Clipboard history", "notch clipboard history copy paste"),
+    e(Section::Notifications, "notch_notifications", "Show notifications in the notch", "notch notifications toast banner finished failed"),
+    e(Section::Notifications, "notch_glass", "Frosted glass", "notch glass blur acrylic transparent solid"),
+    e(Section::Notifications, "notch_focus", "Focus mode", "notch focus do not disturb quiet banners"),
+    e(Section::Notifications, "notch_display", "Display", "notch display monitor screen pointer main"),
+    e(Section::Notifications, "notch_slim_items", "In the slim island", "notch slim agents music timer pinned note"),
+    e(Section::Notifications, "notch_hidden_tabs", "Tabs", "notch tabs hide show agents music tray notes timer dev"),
     e(Section::Voice, "voice_model", "Dictation model", "voice dictation parakeet nvidia model download speech"),
     e(Section::Voice, "voice_device", "Microphone", "microphone input device audio voice"),
     e(Section::Voice, "dictation_live", "Live dictation", "live dictation realtime streaming words appear as you talk"),
@@ -1868,10 +1879,12 @@ impl SettingsPage {
             true,
             "keep_running",
             "Keep running in background",
-            if crate::notify::tray_supported() {
+            if crate::island::SUPPORTED {
+                "Keep Dove running for automations after you close its window. Agents that are working always keep running until they finish."
+            } else if crate::notify::tray_supported() {
                 "Closing the window keeps Dove and its automations running in the system tray."
             } else {
-                "Closing the window minimizes Dove so automations keep running."
+                "Keep Dove running for automations after you close its window."
             },
             ctl::on_toggle(ctl::toggle(t, "set-keep", keep), cx, move |this, window, cx| {
                 crate::notify::set_keep_running(&this.engine, !keep, window, cx);
@@ -1884,7 +1897,168 @@ impl SettingsPage {
             .child(page::section(t, "Desktop", desktop))
             .child(page::section(t, "Sounds", sounds))
             .child(page::section(t, "Background", background))
+            .when(cfg!(windows), |d| d.child(page::section(t, "Notch", self.notch_card(t, cx))))
             .into_any_element()
+    }
+
+    /// The island at the top of the screen (`crate::notch`), which reads
+    /// these flags about once a second.
+    fn notch_card(&self, t: &Theme, cx: &mut Context<Self>) -> gpui::Div {
+        let on = self.flag("notch", true);
+        let slim = self.flag("notch_slim", false);
+        let live = self.flag("notch_live", true);
+        let clips = self.flag("notch_clipboard", true);
+        let login = self.flag(crate::island::login::KEY, true);
+        let notify = self.flag("notch_notifications", true);
+        let glass = self.flag("notch_glass", true);
+        let focus = self.flag("notch_focus", false);
+        let pointer = self.get("notch_display").as_deref() == Some("pointer");
+        let hidden: Vec<String> = self
+            .get("notch_hidden_tabs")
+            .unwrap_or_default()
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        let this = cx.entity().downgrade();
+        page::card(t)
+            .child(self.srow(
+                t,
+                true,
+                "notch",
+                "Show the notch",
+                "An island at the top center of the screen: rest the pointer there to see agents, music, the clipboard, notes and a timer.",
+                ctl::on_toggle(ctl::toggle(t, "set-notch", on), cx, move |this, _, cx| this.set_flag("notch", !on, cx)),
+            ))
+            .child(self.srow(
+                t,
+                false,
+                "island_login",
+                "Start at login",
+                "Start the notch and the tray when you sign in, so they're there before Dove is.",
+                ctl::on_toggle(ctl::toggle(t, "set-island-login", login), cx, move |this, _, cx| {
+                    this.set_flag(crate::island::login::KEY, !login, cx);
+                    crate::island::login::apply(&this.engine.store);
+                }),
+            ))
+            .child(self.srow(
+                t,
+                false,
+                "notch_slim",
+                "Keep the slim island visible",
+                "Always show the small island, even when nothing is running.",
+                ctl::on_toggle(ctl::toggle(t, "set-notch-slim", slim), cx, move |this, _, cx| {
+                    this.set_flag("notch_slim", !slim, cx)
+                }),
+            ))
+            .child(self.srow(
+                t,
+                false,
+                "notch_live",
+                "Live activities",
+                "Show running agents, music and the timer in the slim island, and pop up approvals and finished tasks.",
+                ctl::on_toggle(ctl::toggle(t, "set-notch-live", live), cx, move |this, _, cx| {
+                    this.set_flag("notch_live", !live, cx)
+                }),
+            ))
+            .child(self.srow(
+                t,
+                false,
+                "notch_clipboard",
+                "Clipboard history",
+                "Keep what you copy in the notch while Dove runs. Items password managers mark as secret are never kept; only pinned text is saved.",
+                ctl::on_toggle(ctl::toggle(t, "set-notch-clips", clips), cx, move |this, _, cx| {
+                    this.set_flag("notch_clipboard", !clips, cx)
+                }),
+            ))
+            .child(self.srow(
+                t,
+                false,
+                "notch_notifications",
+                "Show notifications in the notch",
+                "Finished and failed tasks appear in the notch instead of a Windows notification while the notch runs.",
+                ctl::on_toggle(ctl::toggle(t, "set-notch-notify", notify), cx, move |this, _, cx| {
+                    this.set_flag("notch_notifications", !notify, cx)
+                }),
+            ))
+            .child(self.srow(
+                t,
+                false,
+                "notch_glass",
+                "Frosted glass",
+                "Blur what's behind the island. Off draws it solid, which costs a little less.",
+                ctl::on_toggle(ctl::toggle(t, "set-notch-glass", glass), cx, move |this, _, cx| {
+                    this.set_flag("notch_glass", !glass, cx)
+                }),
+            ))
+            .child(self.srow(
+                t,
+                false,
+                "notch_focus",
+                "Focus mode",
+                "Hold back banners for finishes and the timer; approvals still show.",
+                ctl::on_toggle(ctl::toggle(t, "set-notch-focus", focus), cx, move |this, _, cx| {
+                    this.set_flag("notch_focus", !focus, cx)
+                }),
+            ))
+            .child(self.srow(
+                t,
+                false,
+                "notch_display",
+                "Display",
+                "Which screen the island lives on.",
+                ctl::segmented(
+                    t,
+                    "set-notch-display",
+                    vec![ctl::Segment::new("Main display"), ctl::Segment::new("Follow the pointer")],
+                    usize::from(pointer),
+                    {
+                        let this = this.clone();
+                        move |i, _, cx| {
+                            let _ = this.update(cx, |p, cx| {
+                                p.set("notch_display", if i == 1 { "pointer" } else { "primary" }, cx)
+                            });
+                        }
+                    },
+                ),
+            ))
+            .child(self.srow(
+                t,
+                false,
+                "notch_slim_items",
+                "In the slim island",
+                "Which live activities the small island may show.",
+                div().flex().flex_wrap().gap(px(6.0)).children(
+                    [("notch_slim_agents", "Agents"), ("notch_slim_music", "Music"), ("notch_slim_timer", "Timer"), ("notch_slim_note", "Pinned note")]
+                        .into_iter()
+                        .map(|(key, label)| {
+                            let on = self.flag(key, true);
+                            notch_chip(t, key, label, on).on_click(cx.listener(move |this, _, _, cx| this.set_flag(key, !on, cx)))
+                        }),
+                ),
+            ))
+            .child(self.srow(
+                t,
+                false,
+                "notch_hidden_tabs",
+                "Tabs",
+                "Which tabs the expanded island shows. Home always does.",
+                div().flex().flex_wrap().gap(px(6.0)).children(
+                    [("agents", "Agents"), ("music", "Music"), ("tray", "Tray"), ("notes", "Notes"), ("timer", "Timer"), ("alerts", "Notifications"), ("dev", "Dev servers")]
+                        .into_iter()
+                        .map(|(id, label)| {
+                            let shown = !hidden.iter().any(|h| h == id);
+                            let hidden = hidden.clone();
+                            notch_chip(t, id, label, shown).on_click(cx.listener(move |this, _, _, cx| {
+                                let mut next: Vec<String> = hidden.iter().filter(|h| *h != id).cloned().collect();
+                                if shown {
+                                    next.push(id.to_string());
+                                }
+                                this.set("notch_hidden_tabs", &next.join(","), cx);
+                            }))
+                        }),
+                ),
+            ))
     }
 
     fn voice(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
@@ -3175,4 +3349,13 @@ mod tests {
         rows.dedup();
         assert_eq!(rows.len(), n);
     }
+}
+
+/// An on/off chip for the notch's multi-choice rows.
+fn notch_chip(t: &Theme, id: &'static str, label: &'static str, on: bool) -> gpui::Stateful<gpui::Div> {
+    crate::ui::chip(format!("notch-chip-{id}"), t)
+        .cursor_pointer()
+        .when(on, |d| d.bg(t.accent_wash).border_color(t.accent.opacity(0.4)).text_color(t.text))
+        .when(!on, |d| d.text_color(t.text_muted))
+        .child(label)
 }
