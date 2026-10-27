@@ -14,8 +14,8 @@ pub const TEXT: Hsla = hsla(0.0, 0.0, 1.0, 0.95);
 pub const DIM: Hsla = hsla(0.0, 0.0, 1.0, 0.64);
 pub const FAINT: Hsla = hsla(0.0, 0.0, 1.0, 0.42);
 pub const GHOST: Hsla = hsla(0.0, 0.0, 1.0, 0.26);
-/// Inner glass for cards and rows.
-pub const CARD: Hsla = hsla(0.0, 0.0, 1.0, 0.06);
+/// Inner glass for cards: a wash, no border (V11).
+pub const CARD: Hsla = hsla(0.0, 0.0, 1.0, 0.045);
 pub const WASH: Hsla = hsla(0.0, 0.0, 1.0, 0.08);
 pub const WASH_HOVER: Hsla = hsla(0.0, 0.0, 1.0, 0.13);
 pub const WASH_ON: Hsla = hsla(0.0, 0.0, 1.0, 0.18);
@@ -55,9 +55,16 @@ pub const MONO: &str = "Geist Mono";
 // ----- radius, spacing --------------------------------------------------------
 
 pub const R_ISLAND: f32 = 30.0;
-pub const R_CARD: f32 = 22.0;
+pub const R_CARD: f32 = 20.0;
 pub const R_ROW: f32 = 14.0;
 pub const PAD: f32 = 14.0;
+/// Gaps between cards and groups (spacing instead of dividers).
+pub const GAP: f32 = 12.0;
+/// One height for pills and icon buttons.
+pub const CONTROL_H: f32 = 28.0;
+/// Icon sizes: in rows and controls, and in the header.
+pub const ICON_ROW: f32 = 16.0;
+pub const ICON_HEADER: f32 = 18.0;
 
 // ----- sizes ------------------------------------------------------------------
 
@@ -83,17 +90,27 @@ pub const ROW_H: f32 = 52.0;
 
 // ----- motion -----------------------------------------------------------------
 
-/// Spring stiffness and damping ratio for the island's shape: a quick settle
-/// with about 6 % overshoot.
-pub const SPRING_STIFFNESS: f32 = 420.0;
-pub const SPRING_DAMPING: f32 = 0.68;
-/// How long the dot takes to drop out of the edge.
-pub const DOT_MS: u64 = 160;
+/// Springs for the island's shape (stiffness, damping ratio), by direction
+/// (docs/NOTCH-V2.md §11.7): opening has one small overshoot (~220 ms);
+/// closing and resizing are critically damped (~150 ms, no bounce).
+pub const SPRING_OPEN: (f32, f32) = (700.0, 0.78);
+pub const SPRING_CLOSE: (f32, f32) = (900.0, 1.0);
+pub const SPRING_RESIZE: (f32, f32) = (600.0, 1.0);
 /// Breathing (needs you, working).
 pub const BREATHE_S: f32 = 1.6;
-/// Rows rise and fade in, one after another.
-pub const STAGGER_MS: u64 = 18;
-pub const RISE_PX: f32 = 6.0;
+/// Content fades in over the last part of the opening, from this far open
+/// (about the last 90 ms of it).
+pub const REVEAL_AT: f32 = 0.6;
+/// Rows rise and fade in, one after another (the first four only).
+pub const RISE_MS: u64 = 140;
+pub const STAGGER_MS: u64 = 12;
+pub const RISE_PX: f32 = 4.0;
+pub const RISE_ROWS: usize = 4;
+/// A page change cross-fades over this long; the tab puck slides in it.
+pub const PAGE_MS: f32 = 140.0;
+pub const PUCK_MS: f32 = 160.0;
+/// A shared element (art, a timer ring) flies between views this long.
+pub const HERO_MS: f32 = 260.0;
 /// The pointer pulls the slim island toward it within this distance, by at
 /// most this much.
 pub const MAGNET_RANGE: f32 = 40.0;

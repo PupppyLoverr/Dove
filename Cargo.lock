@@ -1902,6 +1902,7 @@ dependencies = [
  "anyhow",
  "block",
  "block2 0.6.2",
+ "chrono",
  "core-foundation 0.10.1",
  "core-graphics 0.24.0",
  "dove-core",

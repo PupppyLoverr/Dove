@@ -132,22 +132,15 @@ manifest `apps/dove/src/file-icons.json` are copied, through Zeron, from
 `vscode-symbols` at commit `296ef1b62287fb2315cb5651e552e09e8c8e1de8`. The full
 license is kept beside the assets in `apps/dove/assets/file-icons/LICENSE.symbols`.
 
-## Hugeicons (MIT)
-
-Copyright (c) 2025 Hugeicons. https://hugeicons.com
-
-The interface icons in `apps/dove/assets/icons` are "Hugeicons" Stroke Rounded
-glyphs from the free set (`@hugeicons/core-free-icons` 4.3.5), converted to
-SVG under Dove's own file names. The full license is kept beside the assets in
-`apps/dove/assets/LICENSE.hugeicons.md`.
-
 ## Solar Icons (CC BY 4.0)
 
-A few interface glyphs (`stop`, `star-bold`, `fast-tier`, `fast-tier-bold`
-and the composer's `queue-*` glyphs) remain from Zeron's icon set: "Solar
-Icons" (Linear) by 480 Design, licensed under CC BY 4.0
-(https://creativecommons.org/licenses/by/4.0/), or glyphs Zeron draws in the
-same style (MIT, see above).
+The interface icons in `apps/dove/assets/icons` are "Solar Icons" (Linear) by
+480 Design, licensed under CC BY 4.0
+(https://creativecommons.org/licenses/by/4.0/): most are copied from Zeron's
+icon set (`crates/ui/assets/icons`), the rest taken from the Solar set as
+published (Iconify `solar:*-linear`), some under Dove's own file names
+(`split-rows` is Solar's split-columns turned 90°). A few are glyphs Zeron
+draws in the same style (MIT, see above).
 
 Agent brand marks (Claude, OpenAI, Cursor, Devin, Grok, OpenCode, Pi, Hermes,
 Antigravity) identify the respective products and remain the property of their

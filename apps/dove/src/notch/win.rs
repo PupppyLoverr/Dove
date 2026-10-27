@@ -24,6 +24,9 @@ pub enum Event {
     Foreground,
     /// The island's global shortcut (Ctrl+Alt+Space).
     Hotkey,
+    /// Ctrl+Alt+A (true) or Ctrl+Alt+D (false) while an approval shows
+    /// ([`approval_keys`]).
+    Approve(bool),
     /// Displays or system settings changed.
     Display,
 }
@@ -53,16 +56,35 @@ mod imp {
     use windows_sys::Win32::System::DataExchange::AddClipboardFormatListener;
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows_sys::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook, UnhookWinEvent};
-    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, RegisterHotKey, VK_SPACE};
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+        MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, RegisterHotKey, UnregisterHotKey, VK_A, VK_D, VK_SPACE,
+    };
     use windows_sys::Win32::UI::Input::{RAWINPUTDEVICE, RIDEV_INPUTSINK, RegisterRawInputDevices};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         CreateWindowExW, DefWindowProcW, DispatchMessageW, EVENT_OBJECT_LOCATIONCHANGE, EVENT_SYSTEM_FOREGROUND,
         GetForegroundWindow, GetMessageW, GetWindowThreadProcessId, KillTimer, MSG, OBJID_WINDOW, RegisterClassExW,
-        SetTimer, TranslateMessage, WINEVENT_OUTOFCONTEXT, WM_CLIPBOARDUPDATE, WM_DISPLAYCHANGE, WM_HOTKEY, WM_INPUT,
-        WM_SETTINGCHANGE, WM_TIMER, WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_POPUP,
+        PostMessageW, SetTimer, TranslateMessage, WINEVENT_OUTOFCONTEXT, WM_APP, WM_CLIPBOARDUPDATE, WM_DISPLAYCHANGE,
+        WM_HOTKEY, WM_INPUT, WM_SETTINGCHANGE, WM_TIMER, WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_POPUP,
     };
 
     static SINK: OnceLock<flume::Sender<Event>> = OnceLock::new();
+    /// The event window, for messages from other threads.
+    static WINDOW: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+    /// Register (wparam 1) or drop (0) the approval hotkeys.
+    const WM_APPROVAL_KEYS: u32 = WM_APP + 1;
+    const HOTKEY_TOGGLE: i32 = 1;
+    const HOTKEY_ALLOW: i32 = 2;
+    const HOTKEY_DENY: i32 = 3;
+
+    /// Ctrl+Alt+A / Ctrl+Alt+D answer the showing approval from any app.
+    /// Registered only while one shows, so they're never taken otherwise.
+    pub fn approval_keys(on: bool) {
+        let hwnd = WINDOW.load(std::sync::atomic::Ordering::Acquire);
+        if hwnd != 0 {
+            // SAFETY: posting to our own live window.
+            unsafe { PostMessageW(hwnd as HWND, WM_APPROVAL_KEYS, on as usize, 0) };
+        }
+    }
 
     /// Pointer events at most this often; a trailing one follows the last move.
     const POINTER_EVERY: Duration = Duration::from_millis(16);
@@ -140,7 +162,8 @@ mod imp {
                 WINEVENT_OUTOFCONTEXT,
             );
             hook_foreground_process();
-            if RegisterHotKey(hwnd, 1, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_SPACE as u32) == 0 {
+            WINDOW.store(hwnd as isize, std::sync::atomic::Ordering::Release);
+            if RegisterHotKey(hwnd, HOTKEY_TOGGLE, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_SPACE as u32) == 0 {
                 tracing::info!("island: Ctrl+Alt+Space is taken by another app");
             }
             let mut msg: MSG = std::mem::zeroed();
@@ -236,7 +259,23 @@ mod imp {
                 return 0;
             }
             WM_HOTKEY => {
-                send(Event::Hotkey);
+                send(match wparam as i32 {
+                    HOTKEY_ALLOW => Event::Approve(true),
+                    HOTKEY_DENY => Event::Approve(false),
+                    _ => Event::Hotkey,
+                });
+                return 0;
+            }
+            WM_APPROVAL_KEYS => {
+                // SAFETY: hotkeys on our own window.
+                unsafe {
+                    UnregisterHotKey(hwnd, HOTKEY_ALLOW);
+                    UnregisterHotKey(hwnd, HOTKEY_DENY);
+                    if wparam == 1 {
+                        RegisterHotKey(hwnd, HOTKEY_ALLOW, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_A as u32);
+                        RegisterHotKey(hwnd, HOTKEY_DENY, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_D as u32);
+                    }
+                }
                 return 0;
             }
             WM_DISPLAYCHANGE | WM_SETTINGCHANGE => send(Event::Display),
@@ -418,6 +457,26 @@ mod imp {
     }
 
     /// Ends a dev server.
+    /// The process still runs (a dev server that stopped listening may only
+    /// be restarting).
+    pub fn process_alive(pid: u32) -> bool {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::Threading::{GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+        /// `STILL_ACTIVE`.
+        const STILL_ACTIVE: u32 = 259;
+        // SAFETY: a query-only handle, closed before returning.
+        unsafe {
+            let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if h.is_null() {
+                return false;
+            }
+            let mut code = 0u32;
+            let alive = GetExitCodeProcess(h, &mut code) != 0 && code == STILL_ACTIVE;
+            CloseHandle(h);
+            alive
+        }
+    }
+
     pub fn stop_process(pid: u32) -> bool {
         use windows_sys::Win32::Foundation::CloseHandle;
         use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_TERMINATE, TerminateProcess};
@@ -717,6 +776,10 @@ mod other {
         None
     }
     pub fn paste_into(_: Option<isize>) {}
+    pub fn approval_keys(_: bool) {}
+    pub fn process_alive(_: u32) -> bool {
+        false
+    }
 
     #[derive(Clone, Debug, Default, PartialEq)]
     pub struct AudioState {

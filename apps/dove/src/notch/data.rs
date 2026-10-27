@@ -137,6 +137,52 @@ fn parse_color(t: &str) -> Option<(u8, u8, u8)> {
     (parts.len() == 3).then(|| (parts[0], parts[1], parts[2]))
 }
 
+/// Copied text that reads like an error: a stack trace, a compiler error,
+/// failing tests or a crashed command. The island offers to have an agent
+/// fix it.
+pub fn looks_like_error(text: &str) -> bool {
+    let t = text.trim();
+    if t.len() < 24 || t.len() > 40_000 {
+        return false;
+    }
+    let lower = t.to_ascii_lowercase();
+    const MARKERS: [&str; 14] = [
+        "traceback (most recent call last)",
+        "panicked at",
+        "error[e",
+        "uncaught exception",
+        "unhandled exception",
+        "unhandledpromiserejection",
+        "npm err!",
+        "exception in thread",
+        "segmentation fault",
+        "fatal error:",
+        "syntaxerror:",
+        "typeerror:",
+        "referenceerror:",
+        "build failed",
+    ];
+    if MARKERS.iter().any(|m| lower.contains(m)) {
+        return true;
+    }
+    // A stack: several "at f (file:line:col)" / "file.py", line N" lines.
+    let frames = t
+        .lines()
+        .filter(|l| {
+            let l = l.trim_start();
+            (l.starts_with("at ") && l.contains(':')) || (l.starts_with("File \"") && l.contains(", line "))
+        })
+        .count();
+    if frames >= 2 {
+        return true;
+    }
+    // "error: …" / "Error: …" at a line start, or failing tests.
+    t.lines().any(|l| {
+        let l = l.trim_start();
+        l.starts_with("error:") || l.starts_with("Error:") || l.starts_with("ERROR ") || l.starts_with("FAILED ")
+    }) || lower.contains(" failed;") || lower.contains("tests failed")
+}
+
 /// A cheap language guess for copied code (multi-line, with code-ish lines).
 fn code_language(t: &str) -> Option<&'static str> {
     let lines: Vec<&str> = t.lines().filter(|l| !l.trim().is_empty()).collect();
@@ -346,6 +392,22 @@ impl Saved {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn errors_are_recognized_and_prose_is_not() {
+        assert!(looks_like_error("thread 'main' panicked at src/main.rs:3:5:
+boom"));
+        assert!(looks_like_error("Traceback (most recent call last):
+  File \"a.py\", line 1, in <module>
+KeyError: 'x'"));
+        assert!(looks_like_error("TypeError: cannot read properties of undefined
+    at f (app.js:10:3)
+    at g (app.js:20:1)"));
+        assert!(looks_like_error("error[E0308]: mismatched types
+ --> src/lib.rs:4:5"));
+        assert!(!looks_like_error("Remember to buy milk and eggs on the way home tonight."));
+        assert!(!looks_like_error("https://example.com/some/long/path?q=1"));
+    }
 
     #[test]
     fn repeats_move_up_and_keep_their_pin() {

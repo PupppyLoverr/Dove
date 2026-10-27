@@ -37,6 +37,16 @@ pub enum ToEngine {
     OpenFlock,
     /// Opens Settings › Notifications (where the notch's settings are).
     OpenSettings,
+    /// Answers a question request: per question, the chosen labels or text.
+    Answer { task: TaskId, request_id: String, answers: Vec<Vec<String>> },
+    /// The island has this agent open: stream its text as it arrives.
+    Watch { task: Option<TaskId> },
+    /// Merges an agent's pull request.
+    Merge { task: TaskId, number: u64 },
+    /// Runs an automation now.
+    RunAutomation { id: String },
+    /// Push-to-talk: the mic pressed (`on`) or released.
+    Dictate { on: bool },
     /// Quits the engine (and the UI) for good.
     QuitAll,
 }
@@ -47,6 +57,11 @@ pub enum ToEngine {
 pub enum ToIsland {
     Snapshot { snap: Snapshot },
     Started { id: u64, result: Result<TaskId, String> },
+    /// Push-to-talk: the words so far (`live`), the final words, or why it
+    /// couldn't listen.
+    Dictation { text: String, done: bool, error: Option<String> },
+    /// A merge finished.
+    Merged { task: TaskId, result: Result<(), String> },
     /// The engine is going away (quit, or nothing left to run).
     Bye,
 }

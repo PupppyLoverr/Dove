@@ -11,6 +11,11 @@
   home first (for real projects and agents); without it the demo data is
   used. Close any running island for the same home first.
 
+.PARAMETER Motion
+  Also log each screen's transition timings (DOVE_NOTCH_TIMING=1): the
+  first frame, when it settled and the worst gap between frames, against
+  docs/NOTCH-V2.md section 11.7. They're printed after the sheet is saved.
+
 .EXAMPLE
   powershell -ExecutionPolicy Bypass -File scripts\notch_sheet.ps1 -Exe target-check\debug\dove.exe -Out $env:TEMP\notch-sheet.png
 #>
@@ -19,6 +24,7 @@ param(
     [Parameter(Mandatory = $true)][string]$Out,
     [string]$DoveHome = '',
     [int]$Wait = 6,
+    [switch]$Motion,
     [string[]]$Screens = @('slim:', 'alert:', 'expanded:home', 'expanded:agents', 'expanded:music', 'expanded:tray',
         'expanded:notes', 'expanded:timer', 'expanded:alerts', 'expanded:dev', 'expanded:new')
 )
@@ -42,7 +48,8 @@ foreach ($s in $Screens) {
     $home_ = Join-Path $dir "home-$state-$page"
     if ($DoveHome) { Copy-Item -Recurse $DoveHome $home_ } else { New-Item -ItemType Directory -Force $home_ | Out-Null }
     $envs = @{ DOVE_HOME = $home_; DOVE_NOTCH = '1'; DOVE_NOTCH_STATE = $state; DOVE_NOTCH_PAGE = $page; DOVE_NOTCH_DEMO = '1';
-        DOVE_NOTCH_CAPTURABLE = '1'; DOVE_LOG = 'warn' }
+        DOVE_NOTCH_CAPTURABLE = '1'; DOVE_LOG = $(if ($Motion) { 'warn,dove::notch=info' } else { 'warn' })
+        DOVE_NOTCH_TIMING = $(if ($Motion) { '1' } else { '' }) }
     $saved = @{}
     foreach ($k in $envs.Keys) { $saved[$k] = [Environment]::GetEnvironmentVariable($k, 'Process'); [Environment]::SetEnvironmentVariable($k, $envs[$k], 'Process') }
     try {
@@ -75,3 +82,12 @@ for ($i = 0; $i -lt $shots.Count; $i++) {
 }
 $g.Dispose(); $sheet.Save($Out, [System.Drawing.Imaging.ImageFormat]::Png); $sheet.Dispose()
 "saved $Out (shots in $dir)"
+if ($Motion) {
+    foreach ($s in $Screens) {
+        $state, $page = $s.Split(':', 2)
+        $logs = @("home-$state-$page\out.log", "home-$state-$page\err.log") | ForEach-Object { Join-Path $dir $_ }
+        Get-Content $logs -ErrorAction SilentlyContinue |
+            Where-Object { $_ -match 'notch timing: (.*)$' } |
+            ForEach-Object { "{0,-18} {1}" -f $s, $Matches[1] }
+    }
+}

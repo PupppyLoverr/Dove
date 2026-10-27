@@ -8,12 +8,17 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 use dove_proto::{AgentEvent, Capabilities, PermissionRequest, TaskId, TaskStatus, TodoItem, ToolKind};
 use parking_lot::{Mutex, RwLock};
 
 /// The reply tail keeps this many characters.
 const REPLY_MAX: usize = 4000;
+/// Finished turns kept for small transcripts (the notch's agent view).
+const TURNS_MAX: usize = 3;
+/// A watched task's streaming text is announced at most this often.
+const STREAM_EVERY: Duration = Duration::from_millis(100);
 
 /// One task as far as attention goes.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -40,6 +45,18 @@ pub struct TaskState {
     /// The last finished turn's cost and tokens, when the agent reported them.
     pub turn_cost: Option<f64>,
     pub turn_tokens: u64,
+    /// The last few turns, oldest first, the current one last.
+    pub turns: Vec<Turn>,
+}
+
+/// One exchange: what the user said, what the agent answered and did.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Turn {
+    pub user: String,
+    /// The reply's last [`REPLY_MAX`] characters.
+    pub reply: String,
+    pub steps: Steps,
+    pub done: bool,
 }
 
 /// The tool work of one turn, for one-line summaries ("Edited 3 files · ran 2
@@ -99,7 +116,14 @@ impl TaskState {
     /// Applies one event. Pure, so it's tested without an engine.
     pub fn observe(&mut self, ev: &AgentEvent) {
         match ev {
-            AgentEvent::UserMessage { .. } => {
+            AgentEvent::UserMessage { text } => {
+                if let Some(last) = self.turns.last_mut() {
+                    last.done = true;
+                }
+                self.turns.push(Turn { user: text.to_string(), ..Default::default() });
+                if self.turns.len() > TURNS_MAX + 1 {
+                    self.turns.remove(0);
+                }
                 self.activity = None;
                 self.last_error = None;
                 self.reply.clear();
@@ -127,11 +151,7 @@ impl TaskState {
             }
             AgentEvent::TextDelta { text } => {
                 self.reply.push_str(text);
-                if self.reply.len() > REPLY_MAX * 2 {
-                    let cut = self.reply.len() - REPLY_MAX;
-                    let cut = (cut..self.reply.len()).find(|&i| self.reply.is_char_boundary(i)).unwrap_or(0);
-                    self.reply.drain(..cut);
-                }
+                trim_front(&mut self.reply);
             }
             AgentEvent::BlockEnd => {
                 if !self.reply.is_empty() && !self.reply.ends_with("\n\n") {
@@ -150,6 +170,9 @@ impl TaskState {
             // A turn that ended (or a process that's gone) can't still be
             // waiting on an answer.
             AgentEvent::TurnEnded { usage, .. } => {
+                if let Some(t) = self.turns.last_mut() {
+                    t.done = true;
+                }
                 self.activity = None;
                 self.pending.clear();
                 self.turn_ended_ms = Some(dove_store::now_ms());
@@ -174,6 +197,27 @@ impl TaskState {
         if let Some(s) = crate::next_status(ev) {
             self.status = s;
         }
+        // The current turn mirrors the reply and steps (a turn that began
+        // before this model was watching gets one with no user line).
+        if matches!(
+            ev,
+            AgentEvent::TextDelta { .. }
+                | AgentEvent::BlockEnd
+                | AgentEvent::ToolCall { .. }
+                | AgentEvent::ToolResult { .. }
+                | AgentEvent::ToolDiff { .. }
+        ) {
+            if self.turns.last().is_none_or(|t| t.done) {
+                self.turns.push(Turn::default());
+                if self.turns.len() > TURNS_MAX + 1 {
+                    self.turns.remove(0);
+                }
+            }
+            if let Some(t) = self.turns.last_mut() {
+                t.reply.clone_from(&self.reply);
+                t.steps.clone_from(&self.steps);
+            }
+        }
     }
 
     /// The reply trimmed to its last `max` characters, for small surfaces.
@@ -186,12 +230,24 @@ impl TaskState {
     }
 }
 
+/// Keeps a growing text to about its last [`REPLY_MAX`] characters.
+fn trim_front(text: &mut String) {
+    if text.len() > REPLY_MAX * 2 {
+        let cut = text.len() - REPLY_MAX;
+        let cut = (cut..text.len()).find(|&i| text.is_char_boundary(i)).unwrap_or(0);
+        text.drain(..cut);
+    }
+}
+
 /// Every task's [`TaskState`], with change notification.
 #[derive(Default)]
 pub struct Attention {
     tasks: RwLock<HashMap<TaskId, TaskState>>,
     version: AtomicU64,
     watchers: Mutex<Vec<flume::Sender<u64>>>,
+    /// Tasks someone is reading as they stream (the notch's open agent
+    /// view), with when their text was last announced.
+    streaming: Mutex<HashMap<TaskId, Option<Instant>>>,
 }
 
 impl Attention {
@@ -221,6 +277,21 @@ impl Attention {
         rx
     }
 
+    /// Streams `task`'s text to readers as it arrives (throttled) instead of
+    /// block by block; `None` stops. One task at a time.
+    pub fn watch_stream(&self, task: Option<TaskId>) {
+        let mut streaming = self.streaming.lock();
+        streaming.clear();
+        if let Some(t) = task {
+            streaming.insert(t, None);
+        }
+    }
+
+    fn announce(&self) {
+        let v = self.version.fetch_add(1, Ordering::AcqRel) + 1;
+        self.watchers.lock().retain(|w| !matches!(w.try_send(v), Err(flume::TrySendError::Disconnected(_))));
+    }
+
     /// Changes one task's state, announcing it if anything changed.
     pub fn update(&self, task: TaskId, f: impl FnOnce(&mut TaskState)) {
         let changed = {
@@ -231,8 +302,7 @@ impl Attention {
             *state != before
         };
         if changed {
-            let v = self.version.fetch_add(1, Ordering::AcqRel) + 1;
-            self.watchers.lock().retain(|w| !matches!(w.try_send(v), Err(flume::TrySendError::Disconnected(_))));
+            self.announce();
         }
     }
 
@@ -243,6 +313,23 @@ impl Attention {
         if let AgentEvent::TextDelta { .. } = ev {
             if let Some(state) = self.tasks.write().get_mut(&task) {
                 state.observe(ev);
+            }
+            // A task someone is watching stream is announced at most every
+            // STREAM_EVERY; deltas in between are counted, so the reader's
+            // next look (or sweep) still sees them.
+            let due = match self.streaming.lock().get_mut(&task) {
+                Some(last) if last.is_none_or(|t| t.elapsed() >= STREAM_EVERY) => {
+                    *last = Some(Instant::now());
+                    true
+                }
+                Some(_) => {
+                    self.version.fetch_add(1, Ordering::AcqRel);
+                    false
+                }
+                None => false,
+            };
+            if due {
+                self.announce();
             }
             return;
         }
@@ -268,6 +355,41 @@ mod tests {
 
     fn text(t: &str) -> AgentEvent {
         AgentEvent::TextDelta { text: Arc::from(t) }
+    }
+
+    #[test]
+    fn turns_keep_the_last_few_exchanges() {
+        let mut s = TaskState::default();
+        for i in 0..5 {
+            s.observe(&AgentEvent::UserMessage { text: Arc::from(format!("ask {i}")) });
+            s.observe(&text(&format!("answer {i}")));
+            s.observe(&AgentEvent::TurnEnded { usage: None, is_error: false });
+        }
+        assert_eq!(s.turns.len(), TURNS_MAX + 1);
+        let last = s.turns.last().unwrap();
+        assert_eq!(last.user, "ask 4");
+        assert_eq!(last.reply, "answer 4");
+        assert!(last.done);
+        assert_eq!(s.turns[0].user, "ask 1");
+    }
+
+    #[test]
+    fn a_watched_task_streams_and_others_wait() {
+        let a = Attention::default();
+        let (watched, other) = (TaskId::new(), TaskId::new());
+        a.update(watched, |s| s.live = true);
+        a.update(other, |s| s.live = true);
+        let pings = a.subscribe();
+        while pings.try_recv().is_ok() {}
+        a.observe(other, &text("x"));
+        assert!(pings.try_recv().is_err(), "unwatched text waits for the next event");
+        a.watch_stream(Some(watched));
+        a.observe(watched, &text("y"));
+        assert!(pings.try_recv().is_ok(), "the first delta of a watched task is announced");
+        let before = a.version();
+        a.observe(watched, &text("z"));
+        assert!(pings.try_recv().is_err(), "the next within 100 ms is not announced");
+        assert!(a.version() > before, "but it is counted");
     }
 
     #[test]

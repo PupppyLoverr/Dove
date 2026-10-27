@@ -35,8 +35,10 @@ impl Spring {
         }
     }
 
+    /// Within half a pixel and nearly still: the rest of the motion can't be
+    /// seen, so it snaps (see [`Springs::tick`]) instead of drawing frames.
     pub fn settled(&self) -> bool {
-        (self.value - self.target).abs() < 0.05 && self.velocity.abs() < 0.5
+        (self.value - self.target).abs() < 0.5 && self.velocity.abs() < 4.0
     }
 
     /// Jumps to the target (reduced motion, or a first placement).
@@ -56,6 +58,24 @@ pub struct Springs<const N: usize> {
 impl<const N: usize> Springs<N> {
     pub fn new(values: [f32; N], stiffness: f32, damping: f32) -> Self {
         Springs { s: values.map(|v| Spring::new(v, stiffness, damping)), last: None }
+    }
+
+    /// Changes how every spring moves, keeping its value and velocity.
+    pub fn tune(&mut self, (stiffness, damping): (f32, f32)) {
+        for s in &mut self.s {
+            s.stiffness = stiffness;
+            s.damping = damping;
+        }
+    }
+
+    /// Jumps to `values` and rests there (the start of an opening).
+    pub fn place(&mut self, values: [f32; N]) {
+        for (s, v) in self.s.iter_mut().zip(values) {
+            s.value = v;
+            s.target = v;
+            s.velocity = 0.0;
+        }
+        self.last = None;
     }
 
     pub fn set_targets(&mut self, targets: [f32; N]) {
@@ -79,7 +99,17 @@ impl<const N: usize> Springs<N> {
         for s in &mut self.s {
             s.advance(dt.as_secs_f32());
         }
-        !self.s.iter().all(Spring::settled)
+        if self.s.iter().all(Spring::settled) {
+            for s in &mut self.s {
+                s.snap();
+            }
+            return false;
+        }
+        true
+    }
+
+    pub fn settled(&self) -> bool {
+        self.s.iter().all(Spring::settled)
     }
 
     /// Movement paused (nothing drawn): the next tick starts fresh.

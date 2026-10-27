@@ -266,7 +266,7 @@ const INDEX: &[Entry] = &[
     e(Section::Notifications, "notch_focus", "Focus mode", "notch focus do not disturb quiet banners"),
     e(Section::Notifications, "notch_display", "Display", "notch display monitor screen pointer main"),
     e(Section::Notifications, "notch_slim_items", "In the slim island", "notch slim agents music timer pinned note"),
-    e(Section::Notifications, "notch_hidden_tabs", "Tabs", "notch tabs hide show agents music tray notes timer dev"),
+    e(Section::Notifications, "notch_hidden_tabs", "Tabs", "notch tabs hide show agents music tray notifications"),
     e(Section::Voice, "voice_model", "Dictation model", "voice dictation parakeet nvidia model download speech"),
     e(Section::Voice, "voice_device", "Microphone", "microphone input device audio voice"),
     e(Section::Voice, "dictation_live", "Live dictation", "live dictation realtime streaming words appear as you talk"),
@@ -2042,9 +2042,9 @@ impl SettingsPage {
                 false,
                 "notch_hidden_tabs",
                 "Tabs",
-                "Which tabs the expanded island shows. Home always does.",
+                "Which tabs the expanded island shows. Home always does; notes, the timer and dev servers open from Home and the search.",
                 div().flex().flex_wrap().gap(px(6.0)).children(
-                    [("agents", "Agents"), ("music", "Music"), ("tray", "Tray"), ("notes", "Notes"), ("timer", "Timer"), ("alerts", "Notifications"), ("dev", "Dev servers")]
+                    [("agents", "Agents"), ("music", "Music"), ("tray", "Tray"), ("alerts", "Notifications")]
                         .into_iter()
                         .map(|(id, label)| {
                             let shown = !hidden.iter().any(|h| h == id);

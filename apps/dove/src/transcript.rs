@@ -2422,6 +2422,18 @@ impl TaskView {
         self.decide(request_id, decision, cx);
     }
 
+    /// Answers a question from outside the view (the notch), as its own
+    /// question card would.
+    pub fn answer_from_outside(&mut self, request_id: String, answers: Vec<Vec<String>>, cx: &mut Context<Self>) {
+        if self.questions.as_ref().is_some_and(|q| q.request_id == request_id) {
+            self.questions = None;
+        }
+        if let Some(l) = &self.live {
+            l.send(Command::Answer { request_id, answers });
+        }
+        cx.notify();
+    }
+
     fn decide(&mut self, request_id: String, decision: PermissionDecision, cx: &mut Context<Self>) {
         if let Some(l) = &self.live {
             l.send(Command::Permission { request_id, decision });

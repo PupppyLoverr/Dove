@@ -11,8 +11,9 @@
 //!   click hides it for an hour or opens settings.
 //! - **Alert** (banner): approvals with a preview of the change, finishes,
 //!   failures, the timer. Never takes focus.
-//! - **Expanded**: Home cards, Agents, Music, Tray (clipboard and shelf),
-//!   Notes, Timer, Notifications and Dev servers, with a command bar.
+//! - **Expanded**: five tabs (Home, Agents, Music, Tray, Notifications) and
+//!   three pages reached from them (Notes, Timer, Dev servers), with a
+//!   command bar that reaches everything (docs/NOTCH-V2.md §11).
 //!
 //! Nothing polls. The loop sleeps until a platform event (pointer, clipboard,
 //! foreground, hotkey, display), a message from the engine, media, audio, or
@@ -21,7 +22,8 @@
 //! QA hooks: `DOVE_NOTCH_STATE=slim|expanded|alert`,
 //! `DOVE_NOTCH_PAGE=home|agents|music|tray|notes|timer|alerts|dev|new`,
 //! `DOVE_NOTCH_DEMO=1`, `DOVE_NOTCH_CAPTURABLE=1` (screenshots can see it),
-//! `DOVE_NOTCH_CAPTURED_GLASS=1` (skip composition glass).
+//! `DOVE_NOTCH_CAPTURED_GLASS=1` (skip composition glass), `DOVE_NOTCH_TIMING=1`
+//! (log transition timings), `DOVE_NOTCH_CYCLE=1` (open and close every 1.6 s).
 
 pub mod bridge;
 mod data;
@@ -38,11 +40,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use dove_core::proto::{HarnessKind, ProjectId, TaskId, TaskStatus};
+use dove_core::proto::{HarnessKind, PermissionDecision, ProjectId, TaskId, TaskStatus};
 use dove_core::store::Store;
 use gpui::{
-    App, AppContext as _, Context, Entity, ExternalPaths, Render, Subscription, Window, WindowBackgroundAppearance,
-    WindowBounds, WindowHandle, WindowKind, WindowOptions, point, px, size,
+    App, AppContext as _, Context, Entity, ExternalPaths, Render, ScrollHandle, Subscription, Window,
+    WindowBackgroundAppearance, WindowBounds, WindowHandle, WindowKind, WindowOptions, point, px, size,
 };
 use gpui_base::input::{InputEvent, InputState, TextareaState};
 
@@ -55,7 +57,13 @@ use tokens as tk;
 
 /// The pointer must rest this long before the island opens, so passing
 /// through the top edge (to a browser tab, say) doesn't open it.
-const HOVER_DELAY: Duration = Duration::from_millis(160);
+const HOVER_DELAY: Duration = Duration::from_millis(90);
+/// Moving up toward the edge at least this fast (device pixels per ms) opens
+/// it at once: the pointer is clearly headed there.
+const INTENT_SPEED: f32 = 1.2;
+/// The window is made (hidden) when the pointer comes this close to the hot
+/// zone (logical pixels), so opening never waits for it.
+const WARM_BAND: f32 = 48.0;
 /// With a button held (dragging a file up to the tray) it waits longer, so
 /// dragging a window to the top for Snap Layouts doesn't open it.
 const DRAG_DELAY: Duration = Duration::from_millis(380);
@@ -70,7 +78,20 @@ const UNDO_FOR: Duration = Duration::from_secs(5);
 /// A denial waits this long (with Undo) before it reaches the agent.
 const DENY_GRACE: Duration = Duration::from_millis(3000);
 /// After this long hidden the window closes and memory is trimmed.
-const CLOSE_AFTER: Duration = Duration::from_secs(10);
+const CLOSE_AFTER: Duration = Duration::from_secs(60);
+/// With no window to keep warm, memory is trimmed this long after start.
+const TRIM_AFTER: Duration = Duration::from_secs(10);
+/// Stop waits this long (with Undo) before it reaches the agent.
+const STOP_GRACE: Duration = Duration::from_secs(3);
+/// A note saves itself this long after the last keystroke.
+const NOTE_SAVE_AFTER: Duration = Duration::from_millis(600);
+/// Suggestions (a copied error, dropped files, a stopped server, checks)
+/// stay this long unless handled.
+const SUGGEST_FOR: Duration = Duration::from_secs(9);
+/// How often listening ports are checked while dev servers are around.
+const PORTS_EVERY: Duration = Duration::from_secs(10);
+/// Ports are watched this long after one was last seen.
+const PORTS_WATCH: Duration = Duration::from_secs(600);
 /// Hot zone at the top edge, logical pixels.
 const HOT_WIDTH: f32 = 220.0;
 const HOT_HEIGHT: f32 = 3.0;
@@ -100,6 +121,13 @@ pub enum Tab {
 impl Tab {
     pub const ALL: [Tab; 8] =
         [Tab::Home, Tab::Agents, Tab::Music, Tab::Tray, Tab::Notes, Tab::Timer, Tab::Alerts, Tab::Dev];
+    /// The tab bar; the rest are pages reached from Home, the slim island and
+    /// the command bar.
+    pub const BAR: [Tab; 5] = [Tab::Home, Tab::Agents, Tab::Music, Tab::Tray, Tab::Alerts];
+
+    pub fn in_bar(self) -> bool {
+        Tab::BAR.contains(&self)
+    }
 
     pub fn id(self) -> &'static str {
         match self {
@@ -169,6 +197,8 @@ pub struct Machine {
     pub drag_reveal: bool,
     hot_since: Option<(Instant, bool)>,
     away_since: Option<Instant>,
+    /// The last pointer reading, for its speed toward the edge.
+    last_pointer: Option<((i32, i32), Instant)>,
 }
 
 impl Default for Machine {
@@ -179,7 +209,14 @@ impl Default for Machine {
 
 impl Machine {
     pub fn new() -> Self {
-        Self { state: State::Hidden, pinned: false, drag_reveal: false, hot_since: None, away_since: None }
+        Self {
+            state: State::Hidden,
+            pinned: false,
+            drag_reveal: false,
+            hot_since: None,
+            away_since: None,
+            last_pointer: None,
+        }
     }
 
     fn in_hot_zone(input: &Input) -> bool {
@@ -225,6 +262,15 @@ impl Machine {
 
     /// Advances on a new reading. Returns the new state if it changed.
     pub fn tick(&mut self, input: &Input, now: Instant) -> Option<State> {
+        // Moving up fast into the hot zone is intent enough to skip the wait.
+        let fast = match (self.last_pointer, input.cursor) {
+            (Some(((_, py), at)), Some((_, y))) => {
+                let ms = now.saturating_duration_since(at).as_secs_f32() * 1000.0;
+                ms > 0.0 && ms < 120.0 && (py - y) as f32 / ms >= INTENT_SPEED
+            }
+            _ => false,
+        };
+        self.last_pointer = input.cursor.map(|c| (c, now));
         if input.fullscreen {
             self.hot_since = None;
             return (self.state != State::Hidden).then(|| self.go(State::Hidden));
@@ -238,6 +284,10 @@ impl Machine {
                     State::Slim => Self::over_island(input) || Self::in_hot_zone(input),
                     _ => false,
                 };
+                if trigger && fast && !input.button_down && self.state == State::Hidden {
+                    self.drag_reveal = false;
+                    return Some(self.go(State::Expanded));
+                }
                 if trigger {
                     let (since, held) = *self.hot_since.get_or_insert((now, input.button_down));
                     let wait = if held || input.button_down { DRAG_DELAY } else { HOVER_DELAY };
@@ -394,8 +444,9 @@ impl Prefs {
         }
     }
 
+    /// The tab bar, without the tabs Settings hides.
     pub fn tabs(&self) -> Vec<Tab> {
-        Tab::ALL.into_iter().filter(|t| !self.hidden_tabs.contains(t)).collect()
+        Tab::BAR.into_iter().filter(|t| !self.hidden_tabs.contains(t)).collect()
     }
 }
 
@@ -448,7 +499,7 @@ pub struct PendingDeny {
 }
 
 /// The tray's filter chips.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum TrayFilter {
     All,
     Files,
@@ -466,10 +517,156 @@ pub enum Hit {
     Clip(usize),
     Tab(Tab),
     NewAgent(String),
+    /// Ask the default agent and show the answer here.
+    Ask(String),
     Timer(u64),
     NewNote(String),
     Capture,
     Focus,
+    Pin,
+    Stop(TaskId),
+    OpenInDove(TaskId),
+    ClearClips,
+    Shuffle,
+    LinkTimer(TaskId),
+    RunAutomation(String),
+    Merge(TaskId, u64),
+}
+
+/// What a menu item does.
+#[derive(Clone, Debug, PartialEq)]
+pub enum MenuAction {
+    Pin,
+    Settings,
+    HideHour,
+    AgentMessage(TaskId),
+    AgentStop(TaskId),
+    AgentOpen(TaskId),
+    AllowAlways(TaskId, String),
+    AllowAll(TaskId, Vec<String>),
+    Filter(TrayFilter),
+    Capture,
+    ClearClips,
+    TileSend(usize),
+    TileFix(usize),
+    ClipPin(usize),
+    ShelfCopy(usize),
+    ShelfRemove(usize),
+    ShelfStart(usize),
+    NotePin(i64),
+    NoteDelete(i64),
+    NoteSend(i64),
+    LinkTimer(Option<TaskId>),
+    ResetTimer,
+    ClearNotices,
+    PortCopy(u16),
+    PortStop(u32),
+    NewKind(HarnessKind),
+    NewProject(ProjectId),
+    NewWorktree(bool),
+    Merge(TaskId, u64),
+    OpenUrl(String),
+}
+
+/// A popup banner: it waits until handled or dismissed (suggestions time
+/// out after [`SUGGEST_FOR`]).
+#[derive(Clone, Debug)]
+pub enum Popup {
+    /// A plan passed 80 % of a limit; `key` remembers the dismissal.
+    Usage { key: String, meter: bridge::Meter },
+    /// Copied text that reads like an error.
+    FixError { text: String },
+    /// Files dropped on the island.
+    Dropped { paths: Vec<PathBuf> },
+    /// A dev server stopped listening and its process is gone.
+    ServerDown { port: u16, process: String },
+    /// A pull request's checks finished.
+    Checks { pr: bridge::PrInfo },
+    /// Approvals that waited out a focus timer.
+    Held { count: usize },
+    /// A screenshot to mark up and send.
+    Shot(Shot),
+}
+
+impl Popup {
+    /// Suggestions go away by themselves; the rest wait for you.
+    fn expires(&self) -> bool {
+        matches!(self, Popup::FixError { .. } | Popup::Dropped { .. } | Popup::ServerDown { .. } | Popup::Checks { .. })
+    }
+
+    /// Shown even in Focus mode (you asked for it, or it's about money).
+    fn breaks_focus(&self) -> bool {
+        matches!(self, Popup::Dropped { .. } | Popup::Shot(_) | Popup::Held { .. } | Popup::Usage { .. })
+    }
+}
+
+/// A screenshot being marked up.
+#[derive(Clone, Debug)]
+pub struct Shot {
+    pub path: PathBuf,
+    pub image: Arc<gpui::RenderImage>,
+    pub size: (u32, u32),
+    pub title: String,
+    pub marks: Vec<Mark>,
+    pub tool: ShotTool,
+    /// The mark being drawn.
+    pub drawing: Option<Mark>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShotTool {
+    Arrow,
+    Box,
+    Highlight,
+}
+
+/// One mark on a screenshot, in fractions of its size.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Mark {
+    pub tool: ShotTool,
+    pub from: (f32, f32),
+    pub to: (f32, f32),
+}
+
+/// A message the island sent that the agent hasn't shown as a turn yet.
+#[derive(Clone, Debug)]
+pub struct Sent {
+    pub task: TaskId,
+    pub text: String,
+    pub at: Instant,
+}
+
+/// A question request's answers so far.
+#[derive(Clone, Debug, Default)]
+pub struct QAnswer {
+    pub page: usize,
+    pub picks: Vec<Vec<String>>,
+}
+
+/// An element flying between two views (album art, the timer ring), in
+/// canvas coordinates: x, y, size.
+#[derive(Clone, Copy, Debug)]
+pub struct Hero {
+    pub kind: HeroKind,
+    pub from: (f32, f32, f32),
+    pub to: (f32, f32, f32),
+    pub at: Instant,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HeroKind {
+    Art,
+    Ring,
+}
+
+/// `DOVE_NOTCH_TIMING=1`: how long a transition took to show and settle.
+#[derive(Clone, Debug)]
+pub struct Timing {
+    pub what: String,
+    pub at: Instant,
+    pub first: Option<Instant>,
+    pub last_frame: Option<Instant>,
+    pub max_gap: Duration,
 }
 
 /// Something that woke the loop.
@@ -491,7 +688,7 @@ struct Win {
 /// The text fields (they belong to the window that draws them).
 #[derive(Clone)]
 pub struct Inputs {
-    pub message: Entity<InputState>,
+    pub message: Entity<TextareaState>,
     pub prompt: Entity<InputState>,
     pub note: Entity<TextareaState>,
     pub command: Entity<InputState>,
@@ -545,7 +742,20 @@ pub struct Notch {
     deny: Option<PendingDeny>,
     /// Which slim activity leads (scroll cycles it).
     primary: usize,
+    /// The slim island's right-click actions are showing.
     context_menu: bool,
+    /// The open menu (one at a time), drawn inside the island.
+    menu: Option<views::Menu>,
+    /// Popup banners waiting (the first shows), with when each came.
+    popups: Vec<(Popup, Instant)>,
+    /// Usage warnings dismissed, by `kind|label|resets_at`.
+    usage_dismissed: HashSet<String>,
+    /// The last copied text offered for fixing (offered once).
+    offered_error: Option<u64>,
+    /// Each PR's checks as last seen, to notice them finish.
+    pr_checks: HashMap<(TaskId, u64), String>,
+    /// The state before the last transition.
+    prev_state: State,
 
     media: Option<media::Media>,
     media_src: media::Source,
@@ -557,7 +767,8 @@ pub struct Notch {
     icons: HashMap<PathBuf, Option<Arc<gpui::RenderImage>>>,
     notes: Vec<Note>,
     selected_note: Option<i64>,
-    editing_note: bool,
+    /// The note field changed; it saves itself shortly after.
+    pub(crate) note_dirty: Option<Instant>,
     timer: Timer,
     /// "Until <agent> finishes": the timer also ends when this agent does.
     timer_link: Option<TaskId>,
@@ -566,12 +777,14 @@ pub struct Notch {
     tray_selected: Option<usize>,
     ports: Vec<win::Port>,
     ports_at: Option<Instant>,
+    /// When a dev server was last seen (they're watched for a while after).
+    ports_seen: Option<Instant>,
     query: String,
     hit: usize,
     /// The hotkey opened the island: focus the command bar when it draws.
     focus_command: bool,
-    hovered_tab: Option<Tab>,
-    hovered_row: Option<TaskId>,
+    /// Where Esc and the back arrow go from a page without a tab.
+    back: Option<Page>,
     /// A tray file pressed for a drag out: its index and where the press was.
     drag_from: Option<(usize, gpui::Point<gpui::Pixels>)>,
     /// Dragging the music scrubber, as a fraction.
@@ -581,6 +794,33 @@ pub struct Notch {
     page_at: Instant,
     /// The tab the header's puck slides from.
     tab_from: Option<Tab>,
+
+    // The agent view.
+    /// The agent whose text streams to us (the open agent view).
+    watching: Option<TaskId>,
+    /// Messages sent from here that the agent hasn't shown yet.
+    sent: Vec<Sent>,
+    /// Stop waiting out its grace period (Undo cancels it).
+    stopping: Option<(TaskId, Instant)>,
+    /// Answers to question requests, by request id.
+    answers: HashMap<String, QAnswer>,
+    reply_scroll: ScrollHandle,
+    /// The reply follows the stream until you scroll up.
+    stick: bool,
+    /// Turns whose steps are unfolded.
+    unfolded: HashSet<usize>,
+    /// Files attached with @ for the next message.
+    attachments: Vec<PathBuf>,
+    /// The @ picker is open.
+    picking: bool,
+    /// Push-to-talk: the composer's text before dictation began.
+    dictation_base: Option<String>,
+    /// The composer's placeholder as last set ("Steer…", "Message…").
+    composer_hint: &'static str,
+    /// Ctrl+Alt+A / D are registered (an approval shows).
+    approval_keys: bool,
+    hero: Option<Hero>,
+    timing: Option<Timing>,
 
     /// The window that had the keyboard before the island took it.
     prev_focus: Option<isize>,
@@ -629,7 +869,11 @@ impl NotchWindow {
                 s
             })
         };
-        let message = field("Message this agent…", window, cx);
+        let message = cx.new(|cx| {
+            let mut s = TextareaState::new(window, cx).auto_grow(1, 6).submit_on_enter(true).placeholder("Message…");
+            s.set_editor_style(input_style());
+            s
+        });
         let prompt = field("What should it do?", window, cx);
         let command = field("Search or type a command…", window, cx);
         let note = cx.new(|cx| {
@@ -653,20 +897,23 @@ impl NotchWindow {
         }
         let subs = vec![
             cx.observe(&notch, |_, _, cx| cx.notify()),
-            cx.subscribe_in(&message, window, |this, _, ev: &InputEvent, window, cx| {
-                if let InputEvent::PressEnter { .. } = ev {
-                    this.notch.update(cx, |n, cx| n.send_message(window, cx));
+            cx.subscribe_in(&message, window, |this, input, ev: &InputEvent, window, cx| match ev {
+                InputEvent::PressEnter { shift: false, .. } => this.notch.update(cx, |n, cx| n.send_message(window, cx)),
+                InputEvent::Change => {
+                    let text = input.read(cx).value().to_string();
+                    this.notch.update(cx, |n, cx| n.composer_changed(&text, cx));
                 }
+                _ => {}
             }),
             cx.subscribe_in(&prompt, window, |this, _, ev: &InputEvent, window, cx| {
                 if let InputEvent::PressEnter { .. } = ev {
                     this.notch.update(cx, |n, cx| n.start_agent(window, cx));
                 }
             }),
-            cx.subscribe_in(&note, window, |this, _, ev: &InputEvent, window, cx| {
-                if let InputEvent::PressEnter { secondary: true, .. } = ev {
-                    this.notch.update(cx, |n, cx| n.save_note(window, cx));
-                }
+            cx.subscribe_in(&note, window, |this, _, ev: &InputEvent, _, cx| match ev {
+                InputEvent::PressEnter { secondary: true, .. } => this.notch.update(cx, |n, cx| n.save_note(cx)),
+                InputEvent::Change => this.notch.update(cx, |n, _| n.note_dirty = Some(Instant::now())),
+                _ => {}
             }),
             cx.subscribe_in(&command, window, |this, input, ev: &InputEvent, window, cx| {
                 let text = input.read(cx).value().to_string();
@@ -774,11 +1021,18 @@ pub fn init(store: Arc<Store>, rt: tokio::runtime::Handle, cx: &mut App) -> Opti
 /// The loop: sleep until a message or the next deadline, then step.
 fn run(notch: Entity<Notch>, rx: flume::Receiver<Msg>, cx: &mut App) {
     let demo = std::env::var_os("DOVE_NOTCH_DEMO").is_some();
+    // QA: open and close every 1.6 s with a warm window, so the timing trace
+    // (DOVE_NOTCH_TIMING) measures the transitions a hover makes.
+    let cycle = std::env::var_os("DOVE_NOTCH_CYCLE").is_some();
     cx.spawn(async move |cx| {
         let started = Instant::now();
         let mut demoed = false;
+        let mut cycled = Instant::now();
         loop {
-            let wait = cx.update(|cx| notch.read(cx).next_wake(Instant::now()));
+            let mut wait = cx.update(|cx| notch.read(cx).next_wake(Instant::now()));
+            if cycle {
+                wait = wait.min(Duration::from_millis(100));
+            }
             let timer = cx.background_executor().timer(wait);
             let msg = crate::island::host::race_value(rx.recv_async(), timer).await;
             cx.update(|cx| {
@@ -798,6 +1052,17 @@ fn run(notch: Entity<Notch>, rx: flume::Receiver<Msg>, cx: &mut App) {
                             Some(HarnessKind::ClaudeCode),
                             None,
                         );
+                    }
+                    if cycle && started.elapsed() > Duration::from_secs(3) && cycled.elapsed() > Duration::from_millis(1600) {
+                        cycled = Instant::now();
+                        let changed = if n.machine.state == State::Expanded {
+                            n.machine.close(State::Hidden, false)
+                        } else {
+                            n.machine.open().inspect(|_| n.machine.set_pinned(true))
+                        };
+                        if changed.is_some() {
+                            n.transition(cx);
+                        }
                     }
                     n.step(cx);
                 })
@@ -820,7 +1085,7 @@ impl Notch {
             fullscreen: false,
             transparency: win::transparency_on(),
             hide_until: None,
-            springs: Springs::new(Geo::HIDDEN.to_array(), tk::SPRING_STIFFNESS, tk::SPRING_DAMPING),
+            springs: Springs::new(Geo::HIDDEN.to_array(), tk::SPRING_OPEN.0, tk::SPRING_OPEN.1),
             pending_target: None,
             dot_until: None,
             lift_at: None,
@@ -850,6 +1115,18 @@ impl Notch {
             deny: None,
             primary: 0,
             context_menu: false,
+            menu: None,
+            popups: Vec::new(),
+            usage_dismissed: store
+                .setting("notch_usage_dismissed")
+                .unwrap_or_default()
+                .split(',')
+                .filter(|k| !k.is_empty())
+                .map(str::to_string)
+                .collect(),
+            offered_error: None,
+            pr_checks: HashMap::new(),
+            prev_state: State::Hidden,
             media: None,
             media_src: media::start(),
             audio: win::Audio::start(),
@@ -860,7 +1137,7 @@ impl Notch {
             icons: HashMap::new(),
             notes: data.notes,
             selected_note: None,
-            editing_note: false,
+            note_dirty: None,
             timer: Timer::new(Duration::from_secs(25 * 60)),
             timer_link: None,
             new_agent: NewAgent::default(),
@@ -868,16 +1145,36 @@ impl Notch {
             tray_selected: None,
             ports: Vec::new(),
             ports_at: None,
+            ports_seen: None,
             query: String::new(),
             hit: 0,
             focus_command: false,
-            hovered_tab: None,
-            hovered_row: None,
+            back: None,
             drag_from: None,
             scrub: None,
             scrub_bounds: None,
             page_at: Instant::now(),
             tab_from: None,
+            watching: None,
+            sent: Vec::new(),
+            stopping: None,
+            answers: HashMap::new(),
+            reply_scroll: ScrollHandle::new(),
+            stick: true,
+            unfolded: HashSet::new(),
+            attachments: Vec::new(),
+            picking: false,
+            dictation_base: None,
+            composer_hint: "",
+            approval_keys: false,
+            hero: None,
+            timing: std::env::var_os("DOVE_NOTCH_TIMING").map(|_| Timing {
+                what: String::new(),
+                at: Instant::now(),
+                first: Some(Instant::now()),
+                last_frame: None,
+                max_gap: Duration::ZERO,
+            }),
             prev_focus: None,
             backdrop: None,
             backdrop_key: Vec::new(),
@@ -908,6 +1205,12 @@ impl Notch {
         at.extend(self.toast.as_ref().map(|t| t.1 + Duration::from_millis(1600)));
         at.extend(self.undo.as_ref().map(|u| u.1 + UNDO_FOR));
         at.extend(self.deny.as_ref().map(|d| d.at + DENY_GRACE));
+        at.extend(self.stopping.map(|(_, t)| t + STOP_GRACE));
+        at.extend(self.note_dirty.map(|t| t + NOTE_SAVE_AFTER));
+        at.extend(self.popups.iter().filter(|(p, _)| p.expires()).map(|(_, t)| *t + SUGGEST_FOR));
+        if self.ports_seen.is_some_and(|t| now < t + PORTS_WATCH) {
+            at.push(self.ports_at.map_or(now, |t| t + PORTS_EVERY));
+        }
         at.extend(self.volume_shown_until);
         if self.timer.running() {
             at.push(now + self.timer.remaining());
@@ -918,7 +1221,11 @@ impl Notch {
             }
         }
         if !self.shown {
-            at.extend(self.hidden_since.filter(|_| self.win.is_some() || !self.trimmed).map(|t| t + CLOSE_AFTER));
+            if self.win.is_some() {
+                at.extend(self.hidden_since.map(|t| t + CLOSE_AFTER));
+            } else if !self.trimmed {
+                at.extend(self.hidden_since.map(|t| t + TRIM_AFTER));
+            }
         }
         if self.shown && self.animating() {
             at.push(now + Duration::from_millis(100));
@@ -952,10 +1259,13 @@ impl Notch {
             }
             Msg::Platform(win::Event::Clipboard) => {
                 if self.poll_clipboard(cx) {
+                    self.offer_fix();
+                    self.retarget(cx);
                     cx.notify();
                 }
             }
             Msg::Platform(win::Event::Hotkey) => self.hotkey(cx),
+            Msg::Platform(win::Event::Approve(allow)) => self.approve_key(allow, cx),
             Msg::Platform(win::Event::Display) => {
                 self.display = None;
                 self.transparency = win::transparency_on();
@@ -964,6 +1274,7 @@ impl Notch {
             Msg::Link(m) => self.on_link(m, cx),
             Msg::LinkGone => {
                 tracing::info!("island: Dove went away");
+                self.watching = None;
                 self.link = None;
                 self.link_at = Instant::now();
                 self.snap.agents.clear();
@@ -1033,6 +1344,18 @@ impl Notch {
             self.volume_shown_until = None;
             dirty = true;
         }
+        if let Some((task, _)) = self.stopping.take_if(|(_, t)| now >= *t + STOP_GRACE) {
+            self.command(ToEngine::Stop { task });
+            dirty = true;
+        }
+        if self.note_dirty.is_some_and(|t| now >= t + NOTE_SAVE_AFTER) {
+            self.flush_note(cx);
+        }
+        let before = self.popups.len();
+        self.popups.retain(|(p, t)| !p.expires() || now < *t + SUGGEST_FOR);
+        if self.popups.len() != before {
+            dirty = true;
+        }
         if let Some(d) = self.deny.take_if(|d| now >= d.at + DENY_GRACE) {
             self.command(ToEngine::Decide {
                 task: d.task,
@@ -1042,9 +1365,14 @@ impl Notch {
             dirty = true;
         }
         if self.timer.finished() {
+            // Approvals held for the focus timer arrive together now.
+            let held = self.held_count();
             self.timer.reset();
             self.timer_link = None;
             self.flash(FlashKind::Timer, "Time's up".into(), None, None);
+            if held > 0 {
+                self.push_popup(Popup::Held { count: held });
+            }
             dirty = true;
         }
         if self.link.is_none() && now >= self.link_at + Duration::from_secs(3) {
@@ -1055,17 +1383,42 @@ impl Notch {
                 dirty = true;
             }
         }
-        if self.shown
-            && self.page == Page::Tab(Tab::Dev)
-            && self.machine.state == State::Expanded
-            && self.ports_at.is_none_or(|t| now >= t + Duration::from_secs(3))
-        {
+        // Dev servers: checked while their page shows, and for a while after
+        // one was seen, so a crash can be noticed.
+        let looking = self.shown && self.page == Page::Tab(Tab::Dev) && self.machine.state == State::Expanded;
+        let watching = self.ports_seen.is_some_and(|t| now < t + PORTS_WATCH);
+        let every = if looking { Duration::from_secs(3) } else { PORTS_EVERY };
+        if (looking || watching) && self.ports_at.is_none_or(|t| now >= t + every) {
             self.ports_at = Some(now);
             let ports = win::listening_ports();
             if ports != self.ports {
+                for gone in self.ports.iter().filter(|p| !ports.iter().any(|q| q.port == p.port)) {
+                    if !win::process_alive(gone.pid) {
+                        let popup = Popup::ServerDown { port: gone.port, process: gone.process.clone() };
+                        self.popups.push((popup, now));
+                    }
+                }
                 self.ports = ports;
                 dirty = true;
             }
+            if !self.ports.is_empty() {
+                self.ports_seen = Some(now);
+            }
+        }
+        // Ctrl+Alt+A / D answer the approval on show, from any app.
+        let want_keys = self.approval().is_some_and(|(_, p)| p.safe && !p.question);
+        if want_keys != self.approval_keys {
+            self.approval_keys = want_keys;
+            win::approval_keys(want_keys);
+        }
+        // The open agent view streams its agent's text.
+        let watch = match self.page {
+            Page::Agent(id) if self.machine.state == State::Expanded => Some(id),
+            _ => None,
+        };
+        if watch != self.watching && self.connected() {
+            self.watching = watch;
+            self.command(ToEngine::Watch { task: watch });
         }
         if self.shown
             && self.uses_captured_glass()
@@ -1094,10 +1447,24 @@ impl Notch {
         }
         // The state machine.
         if let Some(display) = self.display {
+            let cursor = platform::cursor();
+            // Heading for the top: make the window now, so opening never
+            // waits for it.
+            if !self.shown && self.win.is_none() && !self.opening && self.prefs.enabled && !self.fullscreen
+                && let Some((x, y)) = cursor
+            {
+                let s = display.scale;
+                let near = (x - display.center_x()).abs() as f32 <= (HOT_WIDTH / 2.0 + WARM_BAND) * s
+                    && y >= display.top
+                    && ((y - display.top) as f32) < WARM_BAND * s;
+                if near {
+                    self.ensure_window(cx);
+                }
+            }
             let engaged = self.win.as_ref().and_then(|w| w.native).is_some_and(|h| h.is_foreground());
             let input = Input {
                 display,
-                cursor: platform::cursor(),
+                cursor,
                 button_down: platform::button_down(),
                 fullscreen: self.fullscreen,
                 engaged,
@@ -1118,9 +1485,11 @@ impl Notch {
             cx.notify();
         }
         // Long hidden: close the window and give memory back.
-        if !self.shown && self.hidden_since.is_some_and(|t| now >= t + CLOSE_AFTER) {
+        if !self.shown && self.hidden_since.is_some_and(|t| now >= t + TRIM_AFTER) {
             if self.win.is_some() {
-                self.drop_window(cx);
+                if self.hidden_since.is_some_and(|t| now >= t + CLOSE_AFTER) {
+                    self.drop_window(cx);
+                }
             } else if !self.trimmed {
                 // Never opened since launch: still give start-up memory back.
                 self.trimmed = true;
@@ -1147,14 +1516,53 @@ impl Notch {
             return false;
         }
         let flash = self.flash.as_ref().is_some_and(|f| !self.prefs.focus || f.kind == FlashKind::Timer);
-        self.approval().is_some() || flash
+        self.approval().is_some() || flash || self.popup().is_some()
     }
 
-    /// The first approval nobody has dismissed (or is denying).
-    fn approval(&self) -> Option<(&bridge::Agent, &bridge::Pending)> {
+    /// The first approval nobody has dismissed (or is denying), unless a
+    /// focus timer holds it (safe requests wait for the timer to end).
+    pub(crate) fn approval(&self) -> Option<(&bridge::Agent, &bridge::Pending)> {
         self.snap.agents.iter().flat_map(|a| a.pending.iter().map(move |p| (a, p))).find(|(_, p)| {
-            !self.dismissed.contains(&p.request_id) && self.deny.as_ref().is_none_or(|d| d.request_id != p.request_id)
+            !self.dismissed.contains(&p.request_id)
+                && self.deny.as_ref().is_none_or(|d| d.request_id != p.request_id)
+                && !self.held(p)
         })
+    }
+
+    /// A focus timer runs and this request can wait for it.
+    pub(crate) fn held(&self, p: &bridge::Pending) -> bool {
+        self.prefs.focus && self.timer.running() && p.safe && !p.question
+    }
+
+    fn held_count(&self) -> usize {
+        self.snap.agents.iter().flat_map(|a| a.pending.iter()).filter(|p| self.held(p)).count()
+    }
+
+    /// The popup on show: the first one Focus mode lets through.
+    pub(crate) fn popup(&self) -> Option<&Popup> {
+        self.popups.iter().map(|(p, _)| p).find(|p| !self.prefs.focus || p.breaks_focus())
+    }
+
+    pub(crate) fn push_popup(&mut self, p: Popup) {
+        self.popups.push((p, Instant::now()));
+    }
+
+    /// Dismisses the popup on show (remembering a usage warning's).
+    pub(crate) fn dismiss_popup(&mut self, cx: &mut Context<Self>) {
+        let Some(i) = self.popups.iter().position(|(p, _)| !self.prefs.focus || p.breaks_focus()) else { return };
+        match self.popups.remove(i).0 {
+            Popup::Usage { key, .. } => {
+                self.usage_dismissed.insert(key);
+                let keys: Vec<&str> = self.usage_dismissed.iter().map(String::as_str).collect();
+                let _ = self.store.set_setting("notch_usage_dismissed", &keys.join(","));
+            }
+            Popup::Shot(shot) => {
+                let _ = std::fs::remove_file(&shot.path);
+            }
+            _ => {}
+        }
+        self.retarget(cx);
+        cx.notify();
     }
 
     fn flash(&mut self, kind: FlashKind, text: String, agent: Option<HarnessKind>, task: Option<TaskId>) {
@@ -1232,10 +1640,10 @@ impl Notch {
                 }
             }
             State::Alert => {
-                let h = if self.approval().is_some() { self.banner_height() } else { tk::FLASH_H };
+                let (w, h) = self.banner_size();
                 Geo {
                     y: tk::TOP_GAP,
-                    w: tk::BANNER_W,
+                    w,
                     h,
                     r: if h > 60.0 { 28.0 } else { h / 2.0 },
                     dx: 0.0,
@@ -1271,13 +1679,22 @@ impl Notch {
         let state = self.machine.state;
         tracing::info!(target: "dove::notch", "notch: {state:?}");
         self.context_menu = false;
+        self.menu = None;
         let now = Instant::now();
         let current = Geo::from_array(self.springs.values());
+        if let Some(t) = &mut self.timing {
+            *t = Timing { what: format!("{:?} → {state:?}", self.prev_state), at: now, first: None, last_frame: None, max_gap: Duration::ZERO };
+        }
+        if state == State::Expanded && self.prev_state == State::Slim {
+            self.hero = self.hero_for_open();
+        }
+        self.prev_state = state;
         if state == State::Hidden {
+            self.springs.tune(tk::SPRING_CLOSE);
             self.springs.set_targets(Geo::DOT.to_array());
             self.pending_target = None;
             self.dot_until = None;
-            self.lift_at = Some(now + Duration::from_millis(220));
+            self.lift_at = Some(now + Duration::from_millis(90));
             self.release_focus(cx);
         } else {
             self.ensure_window(cx);
@@ -1290,15 +1707,21 @@ impl Notch {
             }
             let opening = current.h <= Geo::DOT.h + 2.0;
             let target = self.target();
+            self.pending_target = None;
+            self.dot_until = None;
             if opening {
-                self.springs.set_targets(Geo::DOT.to_array());
-                self.pending_target = Some(target);
-                self.dot_until = Some(now + Duration::from_millis(tk::DOT_MS));
+                // The dot drops as it grows: the spring starts just above the
+                // edge, so the drop is the first part of the motion, not a
+                // step before it.
+                let mut seed = Geo::DOT;
+                seed.y = tk::TOP_GAP - 10.0;
+                self.springs.place(seed.to_array());
+                self.springs.tune(tk::SPRING_OPEN);
             } else {
-                self.pending_target = None;
-                self.dot_until = None;
-                self.springs.set_targets(target.to_array());
+                let grows = target.h > current.h + 1.0 || target.w > current.w + 1.0;
+                self.springs.tune(if grows { tk::SPRING_OPEN } else { tk::SPRING_CLOSE });
             }
+            self.springs.set_targets(target.to_array());
             self.lift_at = None;
             if state == State::Expanded {
                 if self.machine.drag_reveal {
@@ -1338,6 +1761,11 @@ impl Notch {
             return;
         }
         if Geo::from_array(self.springs.targets()) != target {
+            // A change of size within a state: quick and no bounce (an
+            // opening still in flight keeps its own spring).
+            if self.springs.settled() {
+                self.springs.tune(tk::SPRING_RESIZE);
+            }
             self.springs.set_targets(target.to_array());
             if crate::motion::reduced_now() {
                 self.springs.snap();
@@ -1367,6 +1795,9 @@ impl Notch {
         let needs = self.snap.agents.iter().any(|a| a.needs_you());
         let working =
             self.snap.agents.iter().any(|a| a.status == TaskStatus::Running) || self.snap.flock.iter().any(|f| f.working);
+        if self.hero.is_some() {
+            return true;
+        }
         match self.machine.state {
             State::Slim => needs || working || self.moment.is_some(),
             State::Alert => true,
@@ -1597,9 +2028,35 @@ impl Notch {
                     {
                         self.reply = a.reply.clone();
                     }
+                    self.check_usage();
+                    self.check_prs();
                     self.retarget(cx);
                     cx.notify();
                 }
+            }
+            ToIsland::Dictation { text, done, error } => {
+                if let Some(e) = error {
+                    self.dictation_base = None;
+                    self.toast(e);
+                } else if let Some(base) = self.dictation_base.clone() {
+                    let joined = if base.trim().is_empty() { text } else { format!("{} {}", base.trim_end(), text) };
+                    if done {
+                        self.dictation_base = None;
+                    }
+                    self.with_window(cx, move |n, window, cx| {
+                        if let Some(i) = n.inputs.clone() {
+                            i.message.update(cx, |s, cx| s.set_value(joined, window, cx));
+                        }
+                    });
+                }
+                cx.notify();
+            }
+            ToIsland::Merged { result, .. } => {
+                match result {
+                    Ok(()) => self.toast("Merged"),
+                    Err(e) => self.toast(format!("Couldn't merge: {}", e.lines().next().unwrap_or(""))),
+                }
+                cx.notify();
             }
             ToIsland::Started { id, result } => {
                 if id + 1 == self.next_request {
@@ -1622,6 +2079,7 @@ impl Notch {
             ToIsland::Bye => {
                 self.link = None;
                 self.link_at = Instant::now();
+                self.watching = None;
             }
         }
     }
@@ -1680,9 +2138,15 @@ impl Notch {
                 _ => {}
             }
         }
-        // Forget dismissals of requests that are gone.
+        // Forget dismissals and answers of requests that are gone.
         let live: HashSet<&String> = snap.agents.iter().flat_map(|a| a.pending.iter().map(|p| &p.request_id)).collect();
         self.dismissed.retain(|r| live.contains(r));
+        self.answers.retain(|r, _| live.contains(r));
+        // A message the agent now shows as a turn isn't "sending" anymore.
+        if let Some(f) = &snap.focus {
+            self.sent.retain(|m| m.task != f.id || !f.turns.iter().any(|t| t.user.trim() == m.text.trim()));
+        }
+        self.sent.retain(|m| m.at.elapsed() < Duration::from_secs(600));
         self.snap = snap;
         if let Page::Agent(id) = self.page
             && !self.snap.agents.iter().any(|a| a.id == id)
@@ -1751,7 +2215,14 @@ impl Notch {
         if page != self.page {
             self.page_at = Instant::now();
             self.tab_from = Some(views::tab_of(&self.page));
+            // Pages without a tab remember where they were opened from.
+            let to_bar = matches!(page, Page::Tab(t) if t.in_bar());
+            self.back = if to_bar { None } else { Some(self.page.clone()).filter(|p| *p != page) };
+            self.stick = true;
+            self.unfolded.clear();
+            self.picking = false;
         }
+        self.menu = None;
         self.page = page.clone();
         self.query.clear();
         self.refresh_reply();
@@ -1760,6 +2231,7 @@ impl Notch {
         }
         let focus = match page {
             Page::Agent(_) => Some(0),
+            Page::Tab(Tab::Notes) => Some(2),
             Page::NewAgent => {
                 if self.new_agent.kind.is_none() {
                     self.new_agent.kind = self.snap.default_agent.or(self.snap.installed.first().copied());
@@ -1776,10 +2248,18 @@ impl Notch {
             self.take_focus(cx);
             let focus_input = move |n: &mut Notch, window: &mut Window, cx: &mut Context<Notch>| {
                 if let Some(i) = n.inputs.clone() {
-                    if which == 0 {
-                        i.message.update(cx, |s, cx| s.focus(window, cx));
-                    } else {
-                        i.prompt.update(cx, |s, cx| s.focus(window, cx));
+                    match which {
+                        0 => i.message.update(cx, |s, cx| s.focus(window, cx)),
+                        1 => i.prompt.update(cx, |s, cx| s.focus(window, cx)),
+                        _ => {
+                            // The note on show goes into the editor.
+                            let text = n.selected_note.and_then(|id| n.notes.iter().find(|x| x.id == id)).map(|x| x.text.clone());
+                            i.note.update(cx, |s, cx| {
+                                s.set_value(text.unwrap_or_default(), window, cx);
+                                s.focus(window, cx);
+                            });
+                            n.note_dirty = None;
+                        }
                     }
                 }
             };
@@ -1801,13 +2281,151 @@ impl Notch {
     pub(crate) fn send_message(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Page::Agent(id) = self.page else { return };
         let Some(inputs) = self.inputs.clone() else { return };
-        let text = inputs.message.read(cx).value().trim().to_string();
+        let typed = inputs.message.read(cx).value().trim().to_string();
+        // A question on show takes typed text as its answer.
+        if !typed.is_empty()
+            && let Some(req) = self.question_of(id)
+        {
+            let rid = req.request_id.clone();
+            inputs.message.update(cx, |s, cx| s.set_value("", window, cx));
+            self.answer_pick(id, rid, typed, true, cx);
+            return;
+        }
+        let mut text = typed;
+        for p in std::mem::take(&mut self.attachments) {
+            text.push_str(&format!("\n@{}", p.display()));
+        }
+        let text = text.trim().to_string();
         if text.is_empty() {
             return;
         }
+        self.sent.push(Sent { task: id, text: text.clone(), at: Instant::now() });
         self.command(ToEngine::Send { task: id, text });
         inputs.message.update(cx, |s, cx| s.set_value("", window, cx));
-        self.toast(if self.connected() { "Sent" } else { "Starting Dove…" });
+        self.picking = false;
+        self.stick = true;
+        if !self.connected() {
+            self.toast("Starting Dove…");
+        }
+        self.retarget(cx);
+        cx.notify();
+    }
+
+    /// The composer's text changed: `@` opens the tray picker.
+    pub(crate) fn composer_changed(&mut self, text: &str, cx: &mut Context<Self>) {
+        let picking = text.ends_with('@') && (text.len() == 1 || text[..text.len() - 1].ends_with(char::is_whitespace));
+        if picking != self.picking {
+            self.picking = picking;
+            cx.notify();
+        }
+    }
+
+    /// Attaches a tray file (from the @ picker) to the next message.
+    pub(crate) fn attach(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        if !self.attachments.contains(&path) {
+            self.attachments.push(path);
+        }
+        self.picking = false;
+        // Drop the "@" that opened the picker.
+        self.with_window(cx, |n, window, cx| {
+            if let Some(i) = n.inputs.clone() {
+                let text = i.message.read(cx).value().to_string();
+                let text = text.strip_suffix('@').unwrap_or(&text).to_string();
+                i.message.update(cx, |s, cx| {
+                    s.set_value(text, window, cx);
+                    s.focus(window, cx);
+                });
+            }
+        });
+        cx.notify();
+    }
+
+    /// The first question request of `task` (answered in the agent view).
+    pub(crate) fn question_of(&self, task: TaskId) -> Option<&bridge::Pending> {
+        self.snap.agents.iter().find(|a| a.id == task)?.pending.iter().find(|p| p.question && !p.questions.is_empty())
+    }
+
+    /// Picks (or types) an answer for the question on show; the last one
+    /// sends them all.
+    pub(crate) fn answer_pick(&mut self, task: TaskId, rid: String, choice: String, typed: bool, cx: &mut Context<Self>) {
+        let Some(req) = self.question_of(task).filter(|r| r.request_id == rid).cloned() else { return };
+        let n = req.questions.len();
+        let a = self.answers.entry(rid.clone()).or_insert_with(|| QAnswer { page: 0, picks: vec![Vec::new(); n] });
+        let page = a.page.min(n.saturating_sub(1));
+        let multi = req.questions.get(page).is_some_and(|q| q.multi) && !typed;
+        if let Some(picks) = a.picks.get_mut(page) {
+            if multi {
+                match picks.iter().position(|p| *p == choice) {
+                    Some(i) => {
+                        picks.remove(i);
+                    }
+                    None => picks.push(choice),
+                }
+                cx.notify();
+                return;
+            }
+            *picks = vec![choice];
+        }
+        self.answer_next(task, rid, cx);
+    }
+
+    /// Moves to the next question, or sends the answers after the last.
+    pub(crate) fn answer_next(&mut self, task: TaskId, rid: String, cx: &mut Context<Self>) {
+        let Some(n) = self.question_of(task).filter(|r| r.request_id == rid).map(|r| r.questions.len()) else { return };
+        let a = self.answers.entry(rid.clone()).or_insert_with(|| QAnswer { page: 0, picks: vec![Vec::new(); n] });
+        if a.page + 1 < n {
+            a.page += 1;
+        } else {
+            let answers = a.picks.clone();
+            self.answers.remove(&rid);
+            self.dismissed.insert(rid.clone());
+            self.command(ToEngine::Answer { task, request_id: rid, answers });
+            self.toast("Answered");
+        }
+        self.retarget(cx);
+        cx.notify();
+    }
+
+    /// Allows or denies the approval on show (Ctrl+Alt+A / D from any app).
+    fn approve_key(&mut self, allow: bool, cx: &mut Context<Self>) {
+        let Some((agent, req)) = self.approval() else { return };
+        let (id, rid, safe) = (agent.id, req.request_id.clone(), req.safe && !req.question);
+        if allow {
+            if safe {
+                self.decide(id, rid, PermissionDecision::AllowOnce, cx);
+            }
+        } else {
+            self.deny(id, rid, cx);
+        }
+    }
+
+    pub(crate) fn decide(&mut self, task: TaskId, rid: String, decision: PermissionDecision, cx: &mut Context<Self>) {
+        self.dismissed.insert(rid.clone());
+        self.command(ToEngine::Decide { task, request_id: rid, decision });
+        self.toast(if decision == PermissionDecision::AllowAlways { "Always allowed" } else { "Allowed" });
+        self.retarget(cx);
+        cx.notify();
+    }
+
+    /// Stops an agent after a short grace period (Undo cancels it).
+    pub(crate) fn stop_agent(&mut self, task: TaskId, cx: &mut Context<Self>) {
+        if let Some((t, _)) = self.stopping.take()
+            && t != task
+        {
+            self.command(ToEngine::Stop { task: t });
+        }
+        self.stopping = Some((task, Instant::now()));
+        self.retarget(cx);
+        cx.notify();
+    }
+
+    /// Push-to-talk on the mic: pressed or released.
+    pub(crate) fn dictate(&mut self, on: bool, cx: &mut Context<Self>) {
+        if on && self.dictation_base.is_none() {
+            self.dictation_base =
+                Some(self.inputs.as_ref().map(|i| i.message.read(cx).value().to_string()).unwrap_or_default());
+        }
+        self.command(ToEngine::Dictate { on });
         cx.notify();
     }
 
@@ -1851,29 +2469,67 @@ impl Notch {
         cx.notify();
     }
 
-    pub(crate) fn save_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Ctrl+Enter in a note: save now.
+    pub(crate) fn save_note(&mut self, cx: &mut Context<Self>) {
+        self.flush_note(cx);
+        self.toast("Saved");
+        cx.notify();
+    }
+
+    /// Writes the editor into the note on show (a new one on first text).
+    pub(crate) fn flush_note(&mut self, cx: &mut Context<Self>) {
+        self.note_dirty = None;
         let Some(inputs) = self.inputs.clone() else { return };
-        let text = inputs.note.read(cx).value().trim().to_string();
-        if text.is_empty() {
-            return;
-        }
-        match self.selected_note.filter(|_| self.editing_note) {
-            Some(id) => {
-                if let Some(n) = self.notes.iter_mut().find(|n| n.id == id) {
-                    n.text = text;
+        let text = inputs.note.read(cx).value().trim_end().to_string();
+        match self.selected_note.and_then(|id| self.notes.iter_mut().find(|n| n.id == id)) {
+            Some(n) => {
+                if n.text == text {
+                    return;
                 }
+                n.text = text;
             }
             None => {
+                if text.trim().is_empty() {
+                    return;
+                }
                 let note = Note::new(text);
                 self.selected_note = Some(note.id);
                 self.notes.insert(0, note);
             }
         }
-        self.editing_note = false;
-        inputs.note.update(cx, |s, cx| s.set_value("", window, cx));
         self.save();
-        self.toast("Saved");
         self.retarget(cx);
+        cx.notify();
+    }
+
+    /// Ticks or unticks a checklist line of the note on show, in the note
+    /// and in the editor.
+    pub(crate) fn toggle_check(&mut self, line: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.flush_note(cx);
+        let Some(n) = self.selected_note.and_then(|id| self.notes.iter_mut().find(|n| n.id == id)) else { return };
+        n.toggle(line);
+        let text = n.text.clone();
+        if let Some(i) = self.inputs.clone() {
+            i.note.update(cx, |s, cx| s.set_value(text, window, cx));
+        }
+        self.note_dirty = None;
+        self.save();
+        cx.notify();
+    }
+
+    /// Shows `id` in the editor (None: a fresh note).
+    pub(crate) fn select_note(&mut self, id: Option<i64>, window: &mut Window, cx: &mut Context<Self>) {
+        self.flush_note(cx);
+        self.selected_note = id;
+        let text = id.and_then(|id| self.notes.iter().find(|n| n.id == id)).map(|n| n.text.clone()).unwrap_or_default();
+        if let Some(i) = self.inputs.clone() {
+            i.note.update(cx, |s, cx| {
+                s.set_value(text, window, cx);
+                s.focus(window, cx);
+            });
+        }
+        self.note_dirty = None;
+        self.take_focus(cx);
         cx.notify();
     }
 
@@ -1883,7 +2539,12 @@ impl Notch {
             self.undo = Some((Undo::Note(i, note), Instant::now()));
             if self.selected_note == Some(id) {
                 self.selected_note = None;
-                self.editing_note = false;
+                self.with_window(cx, |n, window, cx| {
+                    if let Some(i) = n.inputs.clone() {
+                        i.note.update(cx, |s, cx| s.set_value("", window, cx));
+                    }
+                    n.note_dirty = None;
+                });
             }
             self.save();
             self.retarget(cx);
@@ -1913,7 +2574,9 @@ impl Notch {
     }
 
     pub(crate) fn undo_last(&mut self, cx: &mut Context<Self>) {
-        if let Some(d) = self.deny.take() {
+        if self.stopping.take().is_some() {
+            self.toast("Kept running");
+        } else if let Some(d) = self.deny.take() {
             self.dismissed.remove(&d.request_id);
             self.toast("Kept waiting");
         } else if let Some((undo, _)) = self.undo.take() {
@@ -1956,31 +2619,156 @@ impl Notch {
             }
         }
         self.shelf.truncate(60);
-        self.page = Page::Tab(Tab::Tray);
         self.tray_filter = TrayFilter::All;
         self.save();
+        if self.machine.state == State::Expanded {
+            self.page = Page::Tab(Tab::Tray);
+        }
+        // Offer to hand them to an agent.
+        self.push_popup(Popup::Dropped { paths: paths.paths().to_vec() });
         self.retarget(cx);
         cx.notify();
     }
 
-    /// Captures the window that was in front into the tray.
-    pub(crate) fn capture(&mut self, send: bool, cx: &mut Context<Self>) {
+    /// Files dropped on an agent's row go straight to it.
+    pub(crate) fn drop_on_agent(&mut self, task: TaskId, paths: &ExternalPaths, cx: &mut Context<Self>) {
+        let list: Vec<String> = paths.paths().iter().map(|p| format!("@{}", p.display())).collect();
+        if list.is_empty() {
+            return;
+        }
+        let name = self.snap.agents.iter().find(|a| a.id == task).map(|a| a.kind.label()).unwrap_or("the agent");
+        self.sent.push(Sent { task, text: list.join("\n"), at: Instant::now() });
+        self.command(ToEngine::Send { task, text: list.join("\n") });
+        self.toast(format!("Sent to {name}"));
+        cx.notify();
+    }
+
+    /// Starts a new agent with `text` waiting in its prompt.
+    pub(crate) fn new_agent_with(&mut self, text: String, window: Option<&mut Window>, cx: &mut Context<Self>) {
+        let set = move |n: &mut Notch, window: &mut Window, cx: &mut Context<Notch>| {
+            if let Some(i) = n.inputs.clone() {
+                i.prompt.update(cx, |s, cx| {
+                    s.set_value(text, window, cx);
+                    s.focus(window, cx);
+                });
+            }
+        };
+        match window {
+            Some(w) => {
+                set(self, w, cx);
+                self.open_page(Page::NewAgent, Some(w), cx);
+            }
+            None => {
+                self.with_window(cx, set);
+                self.open_page(Page::NewAgent, None, cx);
+            }
+        }
+    }
+
+    /// The newest clip reads like an error: offer to have it fixed (once).
+    fn offer_fix(&mut self) {
+        let Some(text) = self.clips.first().and_then(|c| c.as_text()).map(str::to_string) else { return };
+        if !data::looks_like_error(&text) {
+            return;
+        }
+        use std::hash::{Hash as _, Hasher as _};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        text.hash(&mut h);
+        let key = h.finish();
+        if self.offered_error == Some(key) {
+            return;
+        }
+        self.offered_error = Some(key);
+        self.popups.retain(|(p, _)| !matches!(p, Popup::FixError { .. }));
+        self.push_popup(Popup::FixError { text });
+    }
+
+    /// Hands copied error text to the agent you're working with, or to a
+    /// new one.
+    pub(crate) fn fix_error(&mut self, text: String, window: Option<&mut Window>, cx: &mut Context<Self>) {
+        let prompt = format!("Fix this error:\n\n```\n{}\n```", text.trim());
+        if let Some(id) = self.target_agent() {
+            self.sent.push(Sent { task: id, text: prompt.clone(), at: Instant::now() });
+            self.command(ToEngine::Send { task: id, text: prompt });
+            self.open_page(Page::Agent(id), window, cx);
+        } else {
+            self.new_agent_with(prompt, window, cx);
+        }
+    }
+
+    /// A plan passed 80 % of a limit: say so once per limit window.
+    fn check_usage(&mut self) {
+        for m in self.snap.limits.clone() {
+            if m.used < 80.0 {
+                continue;
+            }
+            let key = format!("{}|{}|{}", m.kind.id(), m.label, m.resets_at.unwrap_or(0));
+            let shown = self.popups.iter().any(|(p, _)| matches!(p, Popup::Usage { key: k, .. } if *k == key));
+            if !shown && !self.usage_dismissed.contains(&key) {
+                self.push_popup(Popup::Usage { key, meter: m });
+            }
+        }
+    }
+
+    /// A pull request's checks finished: say how they went.
+    fn check_prs(&mut self) {
+        let first = self.pr_checks.is_empty();
+        for pr in self.snap.prs.clone() {
+            let prev = self.pr_checks.insert((pr.task, pr.number), pr.checks.clone());
+            if !first && prev.as_deref() == Some("pending") && matches!(pr.checks.as_str(), "passing" | "failing") {
+                self.push_popup(Popup::Checks { pr });
+            }
+        }
+    }
+
+    /// Captures the window that was in front and pops it up to mark up.
+    pub(crate) fn capture(&mut self, cx: &mut Context<Self>) {
         let skip = self.win.as_ref().and_then(|w| w.native).map(|h| h.raw());
         let dir = self.store.root().join("island").join("shots");
-        match win::capture_front(&dir, skip) {
-            Some((path, title)) => {
-                self.shelf.insert(0, path.clone());
-                self.save();
-                if send {
-                    self.send_to_agent(format!("Here's a screenshot of \"{title}\": {}", path.display()), cx);
-                } else {
-                    self.toast("Captured");
+        let shot = win::capture_front(&dir, skip).and_then(|(path, title)| {
+            let img = image::open(&path).ok()?.to_rgba8();
+            let size = img.dimensions();
+            let mut bgra = img;
+            for px in bgra.pixels_mut() {
+                px.0.swap(0, 2);
+            }
+            let image = Arc::new(gpui::RenderImage::new([image::Frame::new(bgra)]));
+            Some(Shot { path, image, size, title, marks: Vec::new(), tool: ShotTool::Arrow, drawing: None })
+        });
+        match shot {
+            Some(shot) => {
+                self.popups.retain(|(p, _)| !matches!(p, Popup::Shot(_)));
+                self.push_popup(Popup::Shot(shot));
+                if self.machine.state == State::Expanded && self.machine.close(self.rest(), true).is_some() {
+                    self.transition(cx);
                 }
-                self.page = Page::Tab(Tab::Tray);
                 self.retarget(cx);
             }
             None => self.toast("Nothing to capture"),
         }
+        cx.notify();
+    }
+
+    /// The marked-up shot on show: burn the marks in, then send it to an
+    /// agent or keep it in the tray.
+    pub(crate) fn finish_shot(&mut self, send: bool, cx: &mut Context<Self>) {
+        let Some(i) = self.popups.iter().position(|(p, _)| matches!(p, Popup::Shot(_))) else { return };
+        let (Popup::Shot(shot), _) = self.popups.remove(i) else { return };
+        if !shot.marks.is_empty()
+            && let Ok(img) = image::open(&shot.path)
+        {
+            let mut img = img.to_rgba8();
+            burn_marks(&mut img, &shot.marks);
+            let _ = img.save(&shot.path);
+        }
+        self.shelf.insert(0, shot.path.clone());
+        self.save();
+        if send {
+            self.send_to_agent(format!("Here's a screenshot of \"{}\":\n@{}", shot.title, shot.path.display()), cx);
+        } else {
+            self.toast("Kept in the tray");
+        }
+        self.retarget(cx);
         cx.notify();
     }
 
@@ -2008,6 +2796,149 @@ impl Notch {
         cx.notify();
     }
 
+    /// Runs a menu item.
+    pub(crate) fn run_menu(&mut self, action: MenuAction, window: &mut Window, cx: &mut Context<Self>) {
+        self.menu = None;
+        match action {
+            MenuAction::Pin => {
+                let pinned = !self.machine.pinned;
+                self.machine.set_pinned(pinned);
+                self.toast(if pinned { "Pinned open" } else { "Unpinned" });
+            }
+            MenuAction::Settings => self.command(ToEngine::OpenSettings),
+            MenuAction::HideHour => self.hide_for_an_hour(cx),
+            MenuAction::AgentMessage(id) => self.open_page(Page::Agent(id), Some(window), cx),
+            MenuAction::AgentStop(id) => self.stop_agent(id, cx),
+            MenuAction::AgentOpen(id) => self.command(ToEngine::Open { task: Some(id) }),
+            MenuAction::AllowAlways(task, rid) => self.decide(task, rid, PermissionDecision::AllowAlways, cx),
+            MenuAction::AllowAll(task, rids) => {
+                let n = rids.len();
+                for rid in rids {
+                    self.dismissed.insert(rid.clone());
+                    self.command(ToEngine::Decide { task, request_id: rid, decision: PermissionDecision::AllowOnce });
+                }
+                self.toast(format!("Allowed {n}"));
+            }
+            MenuAction::Filter(f) => {
+                self.tray_filter = f;
+                self.tray_selected = None;
+            }
+            MenuAction::Capture => self.capture(cx),
+            MenuAction::ClearClips => self.clear_clips(cx),
+            MenuAction::TileSend(i) => {
+                if let Some(t) = self.clips.get(i).and_then(|c| c.as_text()).map(str::to_string) {
+                    self.send_to_agent(t, cx);
+                }
+            }
+            MenuAction::TileFix(i) => {
+                if let Some(t) = self.clips.get(i).and_then(|c| c.as_text()).map(str::to_string) {
+                    self.fix_error(t, Some(window), cx);
+                }
+            }
+            MenuAction::ClipPin(i) => {
+                if let Some(c) = self.clips.get_mut(i) {
+                    c.pinned = !c.pinned;
+                }
+                self.save();
+            }
+            MenuAction::ShelfCopy(i) => {
+                if let Some(p) = self.shelf.get(i) {
+                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(p.display().to_string()));
+                    self.toast("Path copied");
+                }
+            }
+            MenuAction::ShelfRemove(i) => self.remove_shelf(i, cx),
+            MenuAction::ShelfStart(i) => {
+                if let Some(p) = self.shelf.get(i).cloned() {
+                    match self.target_agent() {
+                        Some(id) => {
+                            let text = format!("@{}", p.display());
+                            self.sent.push(Sent { task: id, text: text.clone(), at: Instant::now() });
+                            self.command(ToEngine::Send { task: id, text });
+                            self.toast("Sent");
+                        }
+                        None => self.new_agent_with(format!("@{} ", p.display()), Some(window), cx),
+                    }
+                }
+            }
+            MenuAction::NotePin(id) => {
+                for n in &mut self.notes {
+                    n.pinned = n.id == id && !n.pinned;
+                }
+                self.save();
+            }
+            MenuAction::NoteDelete(id) => self.delete_note(id, cx),
+            MenuAction::NoteSend(id) => {
+                self.flush_note(cx);
+                if let Some(t) = self.notes.iter().find(|n| n.id == id).map(|n| n.text.clone()) {
+                    match self.target_agent() {
+                        Some(_) => self.send_to_agent(t, cx),
+                        None => self.new_agent_with(t, Some(window), cx),
+                    }
+                }
+            }
+            MenuAction::LinkTimer(id) => {
+                self.timer_link = id;
+                if id.is_some() {
+                    self.toast("Ends when the agent finishes");
+                }
+            }
+            MenuAction::ResetTimer => {
+                self.timer.reset();
+                self.timer_link = None;
+            }
+            MenuAction::ClearNotices => {
+                self.notices.clear();
+                self.unread_notices = 0;
+            }
+            MenuAction::PortCopy(port) => {
+                cx.write_to_clipboard(gpui::ClipboardItem::new_string(format!("http://localhost:{port}")));
+                self.toast("URL copied");
+            }
+            MenuAction::PortStop(pid) => {
+                if win::stop_process(pid) {
+                    self.ports.retain(|p| p.pid != pid);
+                    self.toast("Stopped");
+                } else {
+                    self.toast("Couldn't stop it");
+                }
+            }
+            MenuAction::NewKind(k) => self.new_agent.kind = Some(k),
+            MenuAction::NewProject(p) => self.new_agent.project = Some(p),
+            MenuAction::NewWorktree(on) => self.new_agent.worktree = on,
+            MenuAction::Merge(task, number) => {
+                self.command(ToEngine::Merge { task, number });
+                self.toast("Merging…");
+            }
+            MenuAction::OpenUrl(url) => cx.open_url(&url),
+        }
+        self.retarget(cx);
+        cx.notify();
+    }
+
+    /// Opening from the slim island: the art or the timer ring flies from
+    /// the capsule to its place in the page.
+    fn hero_for_open(&self) -> Option<Hero> {
+        if crate::motion::reduced_now() {
+            return None;
+        }
+        let first = self.slim_items().into_iter().next()?;
+        let (slim_w, _) = self.slim_size();
+        let slim_x = (tk::CANVAS_W - slim_w) / 2.0;
+        let kind = match (&first, &self.page) {
+            (views::SlimItem::Music, Page::Tab(Tab::Music)) if self.media.as_ref().is_some_and(|m| m.art.is_some()) => {
+                HeroKind::Art
+            }
+            (views::SlimItem::Timer, Page::Tab(Tab::Timer)) => HeroKind::Ring,
+            _ => return None,
+        };
+        let (from, to) = match kind {
+            HeroKind::Art => ((slim_x + 8.0, tk::TOP_GAP + 7.0, 22.0), views::music_art_rect()),
+            HeroKind::Ring => ((slim_x + 8.0, tk::TOP_GAP + 6.0, 24.0), views::timer_ring_rect()),
+        };
+        Some(Hero { kind, from, to, at: Instant::now() })
+    }
+
     pub(crate) fn set_focus_mode(&mut self, on: bool, cx: &mut Context<Self>) {
         self.prefs.focus = on;
         let _ = self.store.set_setting("notch_focus", if on { "true" } else { "false" });
@@ -2022,10 +2953,54 @@ impl Notch {
             return Vec::new();
         }
         let mut out: Vec<(Hit, String, String)> = Vec::new();
-        // Actions first: "timer 25", "note …", "new …", "capture", "focus".
+        let raw = self.query.trim();
+        // "? question" or "ask question": answered here by the default agent.
+        let ask = raw.strip_prefix('?').or_else(|| raw.strip_prefix("ask ")).map(str::trim).filter(|r| !r.is_empty());
+        if let Some(question) = ask {
+            out.push((Hit::Ask(question.to_string()), format!("Ask: {question}"), "Ask Dove".into()));
+        }
+        // Actions: "timer 25", "note …", "new …", "capture", "focus", "pin",
+        // "stop …", "open …", "ports", "clear clips", "shuffle", "run …".
         if let Some(rest) = q.strip_prefix("timer") {
             let mins = rest.trim().trim_end_matches('m').parse::<u64>().unwrap_or(25).clamp(1, 600);
             out.push((Hit::Timer(mins), format!("Start a {mins}-minute timer"), "Timer".into()));
+            if let Some(a) = self.snap.agents.iter().find(|a| a.status == TaskStatus::Running) {
+                out.push((Hit::LinkTimer(a.id), format!("Timer until “{}” finishes", a.title), "Timer".into()));
+            }
+        }
+        if q == "pin" || q == "unpin" {
+            let label = if self.machine.pinned { "Unpin the island" } else { "Pin the island open" };
+            out.push((Hit::Pin, label.into(), "Island".into()));
+        }
+        if "clear clips clipboard".starts_with(q.as_str()) && q.len() >= 3 && q.starts_with("clear") {
+            out.push((Hit::ClearClips, "Clear the clipboard history (pinned stay)".into(), "Tray".into()));
+        }
+        if q.starts_with("shuf") && self.media.as_ref().is_some_and(|m| m.shuffle.is_some()) {
+            out.push((Hit::Shuffle, "Toggle shuffle".into(), "Music".into()));
+        }
+        for (verb, stop) in [("stop ", true), ("open ", false)] {
+            if let Some(name) = q.strip_prefix(verb).map(str::trim).filter(|n| !n.is_empty()) {
+                for a in self.snap.agents.iter().filter(|a| a.title.to_lowercase().contains(name) || a.kind.label().to_lowercase().contains(name)) {
+                    if stop && a.status == TaskStatus::Running {
+                        out.push((Hit::Stop(a.id), format!("Stop “{}”", a.title), "Agents".into()));
+                    } else if !stop {
+                        out.push((Hit::OpenInDove(a.id), format!("Open “{}” in Dove", a.title), "Agents".into()));
+                    }
+                }
+            }
+        }
+        if q.starts_with("port") || q.starts_with("localhost") || q.starts_with("dev") || q.starts_with("server") {
+            out.push((Hit::Tab(Tab::Dev), "Dev servers".into(), "Go to".into()));
+        }
+        if let Some(name) = q.strip_prefix("run ").map(str::trim).filter(|n| !n.is_empty()) {
+            for a in self.snap.automations.iter().filter(|a| a.name.to_lowercase().contains(name)) {
+                out.push((Hit::RunAutomation(a.id.clone()), format!("Run “{}” now", a.name), "Automation".into()));
+            }
+        }
+        if q.starts_with("merge") {
+            for pr in self.snap.prs.iter().filter(|p| p.state == "open" && p.mergeable) {
+                out.push((Hit::Merge(pr.task, pr.number), format!("Merge #{} {}", pr.number, pr.title), "Pull request".into()));
+            }
         }
         if let Some(rest) = self.query.trim().strip_prefix("note ").filter(|r| !r.trim().is_empty()) {
             out.push((Hit::NewNote(rest.trim().to_string()), format!("Save note “{}”", rest.trim()), "Notes".into()));
@@ -2041,8 +3016,8 @@ impl Notch {
             let label = if self.prefs.focus { "Turn focus off" } else { "Turn focus on" };
             out.push((Hit::Focus, label.into(), "Focus".into()));
         }
-        for t in self.prefs.tabs() {
-            if t.label().to_lowercase().contains(&q) {
+        for t in Tab::ALL {
+            if t.label().to_lowercase().contains(&q) && !out.iter().any(|(h, _, _)| *h == Hit::Tab(t)) {
                 out.push((Hit::Tab(t), format!("Open {}", t.label()), "Go to".into()));
             }
         }
@@ -2063,8 +3038,9 @@ impl Notch {
                 out.push((Hit::Clip(i), t.lines().next().unwrap_or("").chars().take(80).collect(), "Clipboard".into()));
             }
         }
-        if new_prompt.is_none() && out.is_empty() {
-            out.push((Hit::NewAgent(self.query.trim().to_string()), format!("Ask an agent: {}", self.query.trim()), "Agents".into()));
+        if new_prompt.is_none() && ask.is_none() && out.is_empty() {
+            out.push((Hit::Ask(raw.to_string()), format!("Ask: {raw}"), "Ask Dove".into()));
+            out.push((Hit::NewAgent(raw.to_string()), format!("Start an agent: {raw}"), "Agents".into()));
         }
         out.truncate(8);
         out
@@ -2082,7 +3058,6 @@ impl Notch {
             Hit::Agent(id) => self.open_page(Page::Agent(id), Some(window), cx),
             Hit::Note(id) => {
                 self.selected_note = Some(id);
-                self.editing_note = false;
                 self.open_page(Page::Tab(Tab::Notes), Some(window), cx);
             }
             Hit::Clip(i) => {
@@ -2092,11 +3067,50 @@ impl Notch {
                 }
             }
             Hit::Tab(t) => self.open_page(Page::Tab(t), Some(window), cx),
-            Hit::NewAgent(p) => {
-                if let Some(i) = self.inputs.clone() {
-                    i.prompt.update(cx, |s, cx| s.set_value(p, window, cx));
+            Hit::NewAgent(p) => self.new_agent_with(p, Some(window), cx),
+            Hit::Ask(question) => {
+                // The default agent in the default project, answered in the
+                // agent view as it streams.
+                let kind = self.snap.default_agent.or(self.snap.installed.first().copied());
+                let project = self.snap.default_project.or(self.snap.projects.first().map(|p| p.0));
+                match (kind, project) {
+                    (Some(agent), Some(project)) => {
+                        let id = self.next_request;
+                        self.next_request += 1;
+                        self.command(ToEngine::Start { id, agent, project, prompt: question, worktree: false });
+                        self.toast(format!("Asking {}…", agent.label()));
+                    }
+                    _ => self.new_agent_with(question, Some(window), cx),
                 }
-                self.open_page(Page::NewAgent, Some(window), cx);
+            }
+            Hit::Pin => {
+                let pinned = !self.machine.pinned;
+                self.machine.set_pinned(pinned);
+                self.toast(if pinned { "Pinned open" } else { "Unpinned" });
+            }
+            Hit::Stop(id) => self.stop_agent(id, cx),
+            Hit::OpenInDove(id) => self.command(ToEngine::Open { task: Some(id) }),
+            Hit::ClearClips => self.clear_clips(cx),
+            Hit::Shuffle => {
+                if let Some(on) = self.media.as_ref().and_then(|m| m.shuffle) {
+                    self.media_src.send(media::Control::Shuffle(!on));
+                }
+            }
+            Hit::LinkTimer(id) => {
+                if !self.timer.running() {
+                    self.timer.toggle();
+                }
+                self.timer_link = Some(id);
+                self.toast("Ends when the agent finishes");
+                self.open_page(Page::Tab(Tab::Timer), Some(window), cx);
+            }
+            Hit::RunAutomation(id) => {
+                self.command(ToEngine::RunAutomation { id });
+                self.toast("Running");
+            }
+            Hit::Merge(task, number) => {
+                self.command(ToEngine::Merge { task, number });
+                self.toast("Merging…");
             }
             Hit::Timer(m) => {
                 self.timer.set(Duration::from_secs(m * 60));
@@ -2109,7 +3123,7 @@ impl Notch {
                 self.save();
                 self.toast("Note saved");
             }
-            Hit::Capture => self.capture(false, cx),
+            Hit::Capture => self.capture(cx),
             Hit::Focus => {
                 let on = !self.prefs.focus;
                 self.set_focus_mode(on, cx);
@@ -2121,6 +3135,65 @@ impl Notch {
 
     pub(crate) fn save(&self) {
         data::Saved::store(&self.store, &self.clips, &self.shelf, &self.notes);
+    }
+}
+
+/// Draws a screenshot's marks into it: arrows and boxes in red, highlights
+/// as a translucent yellow wash.
+fn burn_marks(img: &mut image::RgbaImage, marks: &[Mark]) {
+    let (w, h) = img.dimensions();
+    let px = |f: (f32, f32)| (f.0 * w as f32, f.1 * h as f32);
+    let thick = (w.max(h) as f32 / 300.0).clamp(3.0, 9.0);
+    const RED: [u8; 4] = [255, 59, 48, 255];
+    let dot = |img: &mut image::RgbaImage, x: f32, y: f32| {
+        let r = thick / 2.0;
+        for dy in -(r as i32)..=(r as i32) {
+            for dx in -(r as i32)..=(r as i32) {
+                let (cx, cy) = (x as i32 + dx, y as i32 + dy);
+                if (dx * dx + dy * dy) as f32 <= r * r && cx >= 0 && cy >= 0 && (cx as u32) < w && (cy as u32) < h {
+                    img.put_pixel(cx as u32, cy as u32, image::Rgba(RED));
+                }
+            }
+        }
+    };
+    let line = |img: &mut image::RgbaImage, a: (f32, f32), b: (f32, f32)| {
+        let steps = ((b.0 - a.0).abs().max((b.1 - a.1).abs()) / (thick / 3.0)).ceil().max(1.0) as usize;
+        for i in 0..=steps {
+            let t = i as f32 / steps as f32;
+            dot(img, a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t);
+        }
+    };
+    for m in marks {
+        let (a, b) = (px(m.from), px(m.to));
+        match m.tool {
+            ShotTool::Arrow => {
+                line(img, a, b);
+                let ang = (b.1 - a.1).atan2(b.0 - a.0);
+                let len = (thick * 5.0).max(14.0);
+                for side in [-0.5f32, 0.5] {
+                    let t = ang + std::f32::consts::PI + side;
+                    line(img, b, (b.0 + len * t.cos(), b.1 + len * t.sin()));
+                }
+            }
+            ShotTool::Box => {
+                line(img, a, (b.0, a.1));
+                line(img, (b.0, a.1), b);
+                line(img, b, (a.0, b.1));
+                line(img, (a.0, b.1), a);
+            }
+            ShotTool::Highlight => {
+                let (x0, x1) = (a.0.min(b.0).max(0.0) as u32, a.0.max(b.0).min(w as f32 - 1.0) as u32);
+                let (y0, y1) = (a.1.min(b.1).max(0.0) as u32, a.1.max(b.1).min(h as f32 - 1.0) as u32);
+                for y in y0..=y1 {
+                    for x in x0..=x1 {
+                        let p = img.get_pixel_mut(x, y);
+                        p.0[0] = ((p.0[0] as u16 * 3 + 255) / 4) as u8;
+                        p.0[1] = ((p.0[1] as u16 * 3 + 214) / 4) as u8;
+                        p.0[2] = ((p.0[2] as u16 * 3) / 4) as u8;
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -2194,8 +3267,37 @@ mod tests {
         let t = Instant::now();
         assert_eq!(m.tick(&at(TOP), t), None);
         assert_eq!(m.deadline(), Some(t + HOVER_DELAY));
-        assert_eq!(m.tick(&at(TOP), t + Duration::from_millis(100)), None);
+        assert_eq!(m.tick(&at(TOP), t + Duration::from_millis(50)), None);
         assert_eq!(m.tick(&at(TOP), t + HOVER_DELAY), Some(State::Expanded));
+    }
+
+    #[test]
+    fn heading_up_fast_opens_at_once() {
+        let mut m = Machine::new();
+        let t = Instant::now();
+        assert_eq!(m.tick(&at(Some((1000, 160))), t), None);
+        assert_eq!(m.tick(&at(TOP), t + Duration::from_millis(40)), Some(State::Expanded));
+    }
+
+    #[test]
+    fn sliding_along_the_edge_still_waits() {
+        let mut m = Machine::new();
+        let t = Instant::now();
+        assert_eq!(m.tick(&at(Some((900, 0))), t), None);
+        assert_eq!(m.tick(&at(Some((1000, 0))), t + Duration::from_millis(20)), None);
+    }
+
+    #[test]
+    fn marks_burn_into_the_shot() {
+        let mut img = image::RgbaImage::from_pixel(200, 100, image::Rgba([0, 0, 0, 255]));
+        let marks = [
+            Mark { tool: ShotTool::Box, from: (0.1, 0.1), to: (0.5, 0.9) },
+            Mark { tool: ShotTool::Highlight, from: (0.6, 0.1), to: (0.9, 0.5) },
+        ];
+        burn_marks(&mut img, &marks);
+        assert_eq!(img.get_pixel(20, 50).0[0], 255, "the box's left edge is red");
+        assert!(img.get_pixel(150, 30).0[0] > 50, "the highlight washes yellow");
+        assert_eq!(img.get_pixel(60, 50).0[0], 0, "inside the box is untouched");
     }
 
     #[test]
@@ -2205,6 +3307,9 @@ mod tests {
         m.tick(&at(TOP), t);
         m.tick(&at(AWAY), t + Duration::from_millis(100));
         assert_eq!(m.deadline(), None);
+        // Coming back slowly restarts the wait (a fast flick up would be
+        // intent, see `heading_up_fast_opens_at_once`).
+        m.tick(&at(Some((1000, 10))), t + Duration::from_millis(150));
         assert_eq!(m.tick(&at(TOP), t + Duration::from_millis(200)), None);
     }
 
@@ -2295,5 +3400,6 @@ mod tests {
             assert_eq!(Tab::from_id(t.id()), Some(t));
         }
         assert_eq!(Tab::from_id("clipboard"), Some(Tab::Tray));
+        assert!(Tab::Alerts.in_bar() && !Tab::Notes.in_bar() && !Tab::Timer.in_bar() && !Tab::Dev.in_bar());
     }
 }

@@ -91,6 +91,24 @@ impl Shell {
         }
     }
 
+    /// Answers a question request (per question, the chosen labels or free
+    /// text).
+    pub fn task_answer(
+        &mut self,
+        id: TaskId,
+        request_id: String,
+        answers: Vec<Vec<String>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.engine.answer(id, request_id.clone(), answers.clone()) {
+            return;
+        }
+        if let Some(chat) = self.chat_for(id, window, cx) {
+            chat.update(cx, |c, cx| c.answer_from_outside(request_id, answers, cx));
+        }
+    }
+
     /// Stops the current turn.
     pub fn task_interrupt(&mut self, id: TaskId, window: &mut Window, cx: &mut Context<Self>) {
         if self.engine.interrupt(id) {

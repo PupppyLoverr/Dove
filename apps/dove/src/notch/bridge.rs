@@ -35,6 +35,110 @@ pub struct Snapshot {
     /// Plan usage per agent kind that has reported it (the rate-limit strip).
     #[serde(default)]
     pub limits: Vec<Meter>,
+    /// The agent the island has open, with its recent turns.
+    #[serde(default)]
+    pub focus: Option<Focus>,
+    /// Pull requests of agents' branches, with their checks.
+    #[serde(default)]
+    pub prs: Vec<PrInfo>,
+    #[serde(default)]
+    pub automations: Vec<AutomationInfo>,
+}
+
+/// The open agent's last few exchanges, oldest first.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Focus {
+    pub id: TaskId,
+    pub turns: Vec<TurnView>,
+}
+
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+pub struct TurnView {
+    pub user: String,
+    pub reply: String,
+    /// "Edited 3 files · ran 2 commands"
+    pub steps: String,
+    pub files: Vec<String>,
+    pub failed: u32,
+    pub done: bool,
+}
+
+impl Focus {
+    pub fn of(id: TaskId, state: &TaskState) -> Self {
+        let turns = state
+            .turns
+            .iter()
+            .map(|t| TurnView {
+                user: t.user.clone(),
+                reply: t.reply.trim().to_string(),
+                steps: t.steps.summary(),
+                files: t.steps.files.clone(),
+                failed: t.steps.failed,
+                done: t.done,
+            })
+            .collect();
+        Focus { id, turns }
+    }
+}
+
+/// A pull request an agent's branch has, as the island shows it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PrInfo {
+    pub task: TaskId,
+    pub kind: HarnessKind,
+    pub number: u64,
+    pub title: String,
+    pub url: String,
+    /// `open`, `draft`, `merged` or `closed`.
+    pub state: String,
+    /// `passing`, `failing`, `pending` or `none`.
+    pub checks: String,
+    pub mergeable: bool,
+}
+
+/// A scheduled automation, as the island shows it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AutomationInfo {
+    pub id: String,
+    pub name: String,
+    pub enabled: bool,
+    /// When it next runs (store ms), for schedules.
+    pub next_ms: Option<i64>,
+    pub last_ms: Option<i64>,
+    /// The last run's thread and how it went.
+    pub last_task: Option<TaskId>,
+    pub last_status: Option<TaskStatus>,
+}
+
+/// Every automation with its next and last run.
+pub fn automations(engine: &dove_core::Engine) -> Vec<AutomationInfo> {
+    let runs = engine.store.runs(100).unwrap_or_default();
+    let now = chrono::Local::now();
+    engine
+        .store
+        .automations()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|a| {
+            let next_ms = dove_core::automation::Trigger::parse(&a.trigger)
+                .filter(|t| a.enabled && t.is_schedule())
+                .and_then(|t| t.next_after(now))
+                .map(|t| t.timestamp_millis());
+            let last = runs.iter().filter(|r| r.automation_id == a.id).max_by_key(|r| r.at);
+            let last_status = last.and_then(|r| {
+                engine.attention().get(r.task_id).map(|s| s.status).or_else(|| engine.store.task(r.task_id).ok().flatten().map(|t| t.status))
+            });
+            AutomationInfo {
+                id: a.id.clone(),
+                name: a.name.clone(),
+                enabled: a.enabled,
+                next_ms,
+                last_ms: last.map(|r| r.at).or(a.last_run),
+                last_task: last.map(|r| r.task_id),
+                last_status,
+            }
+        })
+        .collect()
 }
 
 /// One plan usage window ("Claude · 5-hour limit · 72 %").
@@ -194,6 +298,17 @@ pub struct Pending {
     pub safe: bool,
     #[serde(default)]
     pub preview: Option<Preview>,
+    /// A question request's questions, answered in place.
+    #[serde(default)]
+    pub questions: Vec<QuestionView>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct QuestionView {
+    pub header: String,
+    pub question: String,
+    pub options: Vec<String>,
+    pub multi: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -235,7 +350,25 @@ pub fn agent_from(task: &Task, project: Option<&Project>, state: Option<&TaskSta
                 };
                 let safe = dove_voice::safety::classify(&p, cwd.as_deref()) == dove_voice::safety::Risk::Normal;
                 let preview = preview_of(&p.input);
-                Pending { request_id: p.request_id, tool: p.tool, summary: p.summary, question: p.question, safe, preview }
+                let questions = r
+                    .questions
+                    .iter()
+                    .map(|q| QuestionView {
+                        header: q.header.clone(),
+                        question: q.question.clone(),
+                        options: q.options.clone(),
+                        multi: q.multi_select,
+                    })
+                    .collect();
+                Pending {
+                    request_id: p.request_id,
+                    tool: p.tool,
+                    summary: p.summary,
+                    question: p.question,
+                    safe,
+                    preview,
+                    questions,
+                }
             })
             .collect(),
         todos: (!s.todos.is_empty()).then_some((done, s.todos.len() as u32)),
@@ -362,6 +495,10 @@ impl Shell {
             default_project: composer.project.as_ref().map(|p| p.id).or(self.home_project),
             default_agent: Some(composer.harness(cx)),
             limits: meters(&self.engine, &self.installed.iter().map(|i| i.kind).collect::<Vec<_>>()),
+            // The host adds these (they don't depend on the window).
+            focus: None,
+            prs: Vec::new(),
+            automations: Vec::new(),
         }
     }
 

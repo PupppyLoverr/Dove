@@ -333,6 +333,12 @@ impl Engine {
         self.command(task, Command::Permission { request_id, decision })
     }
 
+    /// Answers a question request: per question, the chosen labels (or free
+    /// text). False when the session is gone.
+    pub fn answer(&self, task: TaskId, request_id: String, answers: Vec<Vec<String>>) -> bool {
+        self.command(task, Command::Answer { request_id, answers })
+    }
+
     /// Stops the current turn. False when nothing is live.
     pub fn interrupt(&self, task: TaskId) -> bool {
         self.command(task, Command::Interrupt)

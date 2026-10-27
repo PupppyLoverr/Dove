@@ -18,10 +18,11 @@ use std::time::{Duration, Instant};
 
 use dove_core::proto::{HarnessKind, ProjectId, TaskId, TaskStatus};
 use dove_core::{Engine, LiveSession};
-use gpui::{AnyWindowHandle, App, Global};
+use gpui::{AnyWindowHandle, App, AppContext as _, Entity, Global, Subscription};
 
 use super::ipc::{self, Hub, ToEngine, ToIsland};
 use crate::notch::{NotchHost, Snapshot, bridge};
+use crate::voice::{Dictation, DictationEvent};
 
 /// Opens Dove's main window (returning it), from `main.rs`.
 pub type OpenWindow = Rc<dyn Fn(&mut App) -> Option<AnyWindowHandle>>;
@@ -37,6 +38,16 @@ pub struct Host {
     version: u64,
     /// When the window last closed (a grace period before quitting).
     closed_at: Option<Instant>,
+    /// The agent the island has open (its text streams).
+    watched: Option<TaskId>,
+    /// Agents' pull requests, refreshed in the background about once a
+    /// minute while an island is connected.
+    prs: Vec<bridge::PrInfo>,
+    prs_at: Option<Instant>,
+    prs_busy: bool,
+    automations: Vec<bridge::AutomationInfo>,
+    /// Push-to-talk for the island's composer.
+    dictation: Option<(Entity<Dictation>, Subscription)>,
 }
 
 impl Global for Host {}
@@ -76,6 +87,12 @@ impl Host {
             // gets the same grace as a closed window, so it's still there when
             // the island connects.
             closed_at: Some(Instant::now()),
+            watched: None,
+            prs: Vec::new(),
+            prs_at: None,
+            prs_busy: false,
+            automations: Vec::new(),
+            dictation: None,
         });
         // Commands from islands.
         cx.spawn(async move |cx| {
@@ -127,6 +144,11 @@ impl Host {
         if !cx.global::<Host>().hub.is_empty() {
             let version = cx.global::<Host>().engine.attention().version();
             let changed = cx.global::<Host>().version != version;
+            if periodic {
+                let engine = cx.global::<Host>().engine.clone();
+                cx.global_mut::<Host>().automations = bridge::automations(&engine);
+                Self::refresh_prs(cx);
+            }
             if changed || periodic {
                 cx.global_mut::<Host>().version = version;
                 Self::publish(cx);
@@ -160,10 +182,26 @@ impl Host {
 
     /// Sends the snapshot to every island if it changed.
     fn publish(cx: &mut App) {
-        let snap = match bridge::snapshot(cx) {
+        let mut snap = match bridge::snapshot(cx) {
             Some(s) => s,
             None => engine_snapshot(&cx.global::<Host>().engine),
         };
+        let host = cx.global::<Host>();
+        snap.focus = host.watched.map(|id| {
+            let state = host.engine.attention().get(id).unwrap_or_default();
+            let mut focus = bridge::Focus::of(id, &state);
+            // A thread the engine hasn't seen run since it started: its
+            // last reply, from the view or the transcript.
+            if focus.turns.is_empty()
+                && let Some(a) = snap.agents.iter().find(|a| a.id == id)
+                && !a.reply.trim().is_empty()
+            {
+                focus.turns.push(bridge::TurnView { reply: a.reply.clone(), done: true, ..Default::default() });
+            }
+            focus
+        });
+        snap.prs = host.prs.clone();
+        snap.automations = host.automations.clone();
         let host = cx.global_mut::<Host>();
         if host.last.as_ref() == Some(&snap) {
             return;
@@ -225,6 +263,35 @@ impl Host {
                 Self::show(cx);
                 bridge::with_shell(cx, |s, w, cx| s.notch_open_flock(w, cx));
             }
+            ToEngine::Answer { task, request_id, answers } => {
+                if ui {
+                    bridge::with_shell(cx, |s, w, cx| s.task_answer(task, request_id, answers, w, cx));
+                } else {
+                    engine.answer(task, request_id, answers);
+                }
+            }
+            ToEngine::Watch { task } => {
+                engine.attention().watch_stream(task);
+                cx.global_mut::<Host>().watched = task;
+            }
+            ToEngine::Merge { task, number } => Self::merge(task, number, cx),
+            ToEngine::RunAutomation { id } => {
+                let Some(a) = engine.store.automations().unwrap_or_default().into_iter().find(|a| a.id == id) else {
+                    return;
+                };
+                if ui {
+                    bridge::with_shell(cx, |s, w, cx| s.run_automation(&a, None, w, cx));
+                } else {
+                    match engine.run_automation(&a, None) {
+                        Ok((task, live)) => {
+                            cx.global_mut::<Host>().headless.insert(task.id, live);
+                        }
+                        Err(e) => tracing::warn!("automation {} didn't start: {e:#}", a.name),
+                    }
+                }
+                cx.global_mut::<Host>().automations = bridge::automations(&engine);
+            }
+            ToEngine::Dictate { on } => Self::dictate(on, cx),
             ToEngine::QuitAll => {
                 tracing::info!("island asked Dove to quit");
                 cx.global::<Host>().hub.broadcast(&ToIsland::Bye);
@@ -233,6 +300,113 @@ impl Host {
         }
         cx.global_mut::<Host>().last = None;
         Self::publish(cx);
+    }
+
+    /// Push-to-talk: the mic is pressed or released. A short tap keeps it
+    /// listening until the next press (as in the composer).
+    fn dictate(on: bool, cx: &mut App) {
+        if cx.global::<Host>().dictation.is_none() {
+            let engine = cx.global::<Host>().engine.clone();
+            let d = cx.new(|cx| Dictation::new(engine, cx));
+            let sub = cx.subscribe(&d, |d, ev: &DictationEvent, cx| {
+                let msg = match ev {
+                    DictationEvent::Text(t) => Some(ToIsland::Dictation { text: t.clone(), done: true, error: None }),
+                    DictationEvent::Live(t) => Some(ToIsland::Dictation { text: t.clone(), done: false, error: None }),
+                    DictationEvent::LiveDone(t) => Some(ToIsland::Dictation { text: t.clone(), done: true, error: None }),
+                    _ => d.read(cx).error.clone().map(|e| ToIsland::Dictation { text: String::new(), done: true, error: Some(e) }),
+                };
+                if let Some(m) = msg {
+                    cx.global::<Host>().hub.broadcast(&m);
+                }
+            });
+            cx.global_mut::<Host>().dictation = Some((d, sub));
+        }
+        let Some(d) = cx.global::<Host>().dictation.as_ref().map(|(d, _)| d.clone()) else { return };
+        d.update(cx, |d, cx| if on { d.press(cx) } else { d.release(cx) });
+    }
+
+    /// Looks up the pull requests of recently active agents' branches, off
+    /// the UI thread, at most once a minute.
+    fn refresh_prs(cx: &mut App) {
+        let host = cx.global::<Host>();
+        if host.prs_busy || host.prs_at.is_some_and(|t| t.elapsed() < Duration::from_secs(60)) {
+            return;
+        }
+        let engine = host.engine.clone();
+        let week = dove_core::store::now_ms() - 3 * 86_400_000;
+        let mut work: Vec<(TaskId, HarnessKind, std::path::PathBuf)> = Vec::new();
+        for p in engine.store.projects().unwrap_or_default() {
+            for t in engine.store.tasks(p.id).unwrap_or_default() {
+                if let Some(wt) = t.worktree.clone()
+                    && t.updated_at >= week
+                    && !matches!(t.status, TaskStatus::Draft | TaskStatus::Archived)
+                    && wt.exists()
+                {
+                    work.push((t.id, t.harness, wt));
+                }
+            }
+        }
+        work.sort_by_key(|(id, _, _)| std::cmp::Reverse(engine.store.task(*id).ok().flatten().map(|t| t.updated_at)));
+        work.truncate(8);
+        let host = cx.global_mut::<Host>();
+        host.prs_at = Some(Instant::now());
+        if work.is_empty() {
+            host.prs.clear();
+            return;
+        }
+        host.prs_busy = true;
+        let job = cx.background_executor().spawn(async move {
+            if !dove_core::git::github::gh_available() {
+                return Vec::new();
+            }
+            work.into_iter()
+                .filter_map(|(task, kind, wt)| {
+                    let pr = dove_core::git::github::pr_for_branch(&wt).ok().flatten()?;
+                    Some(bridge::PrInfo {
+                        task,
+                        kind,
+                        number: pr.number,
+                        title: pr.title.clone(),
+                        url: pr.url.clone(),
+                        state: pr.status().to_string(),
+                        checks: pr.checks_summary().to_string(),
+                        mergeable: pr.mergeable == "MERGEABLE",
+                    })
+                })
+                .collect::<Vec<_>>()
+        });
+        cx.spawn(async move |cx| {
+            let prs = job.await;
+            cx.update(|cx| {
+                let host = cx.global_mut::<Host>();
+                host.prs = prs;
+                host.prs_busy = false;
+                host.last = None;
+                Host::publish(cx);
+            });
+        })
+        .detach();
+    }
+
+    fn merge(task: TaskId, number: u64, cx: &mut App) {
+        let engine = cx.global::<Host>().engine.clone();
+        let Some(wt) = engine.store.task(task).ok().flatten().and_then(|t| t.worktree) else {
+            cx.global::<Host>().hub.broadcast(&ToIsland::Merged { task, result: Err("That thread has no worktree.".into()) });
+            return;
+        };
+        let job = cx
+            .background_executor()
+            .spawn(async move { dove_core::git::github::merge_pr(&wt, number).map_err(|e| format!("{e:#}")) });
+        cx.spawn(async move |cx| {
+            let result = job.await;
+            cx.update(|cx| {
+                cx.global::<Host>().hub.broadcast(&ToIsland::Merged { task, result });
+                let host = cx.global_mut::<Host>();
+                host.prs_at = None;
+                Host::refresh_prs(cx);
+            });
+        })
+        .detach();
     }
 
     /// Opens the window if it's closed, handing it the sessions kept while
@@ -396,5 +570,8 @@ pub fn engine_snapshot(engine: &Engine) -> Snapshot {
             .setting("active_project")
             .and_then(|s| projects.iter().find(|p| p.id.to_string() == s).map(|p| p.id)),
         default_agent: engine.installed().first().map(|i| i.kind),
+        focus: None,
+        prs: Vec::new(),
+        automations: Vec::new(),
     }
 }
