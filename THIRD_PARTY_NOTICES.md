@@ -153,6 +153,55 @@ Agent brand marks (Claude, OpenAI, Cursor, Devin, Grok, OpenCode, Pi, Hermes,
 Antigravity) identify the respective products and remain the property of their
 owners.
 
+## Hermes Agent computer_use layer (MIT)
+
+`crates/dove-computer` is a Rust port of the `computer_use` tool layer of
+Hermes Agent (https://github.com/NousResearch/hermes-agent,
+`tools/computer_use/`): the action schema, the verify → escalate verdict
+ladder, element-index staleness, hard blocks, scoped approvals, the
+human-takeover fence and capture shaping. The `dove-computer` skill follows
+its `computer-use` skill.
+
+MIT License
+
+Copyright (c) 2025 Nous Research
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+## cua-driver (MIT, downloaded on demand, not shipped)
+
+Dove Computer Use runs cua-driver (https://github.com/trycua/cua,
+`libs/cua-driver`), Copyright (c) 2025 Cua AI, Inc., MIT. Dove downloads the
+pinned, signed release archive only when the user clicks Install; the
+archive carries its own `LICENSE` and `THIRD_PARTY_NOTICES.md`. Dove never
+installs cua-driver's optional perception extension, whose model artifacts
+are AGPL-3.0-only.
+
+## NEXI-CUA-1 and the nexi-cua policy (Apache-2.0)
+
+`crates/dove-grounder` is a Rust port of the decision policy of nexi-cua
+(PupppyLoverr/NEXI-Models-Drivers, `nexi-cua/`), and
+`crates/dove-grounder/assets/nexi-cua-1.onnx` is its NEXI-CUA-1 network
+(`weights/nexi-cua-1.pt`, SHA-256 6ffb91b0…9cbc) exported to ONNX with
+`crates/dove-grounder/scripts/export_onnx.py`. Both are under the Apache
+License 2.0 (https://www.apache.org/licenses/LICENSE-2.0).
+
 ## Voice Mode models (downloaded on demand, not shipped)
 
 Settings › Voice downloads these from Hugging Face at pinned revisions and

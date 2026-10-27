@@ -84,13 +84,17 @@ const COMPOSIO_INSTRUCTIONS: &str = "\nComposio: composio__* tools reach the use
 Slack, Notion, …) with accounts they connect through Composio. Search for the right tool first; if an app is not \
 connected, give the user the authorization link it returns.";
 
-const COMPUTER_INSTRUCTIONS: &str = "\nComputer use: computer__* tools (Dove Computer Use, dove-driver) see and \
-operate native desktop apps in the background. Before the first computer__* call, call dove_skills with \
+const COMPUTER_INSTRUCTIONS: &str = "\nComputer use: the `computer` tool (Dove Computer Use, on cua-driver) sees and \
+operates native desktop apps in the background. Before its first call, call dove_skills with \
 {\"name\": \"dove-computer\"} (or read the dove-computer skill) and follow it. Prefer files, CLIs and browser tools; \
-use computer use only for apps with no other interface. The loop: list_windows, get_window_state with a query, \
-run_steps (element tokens or {intent} steps), verify_state at checkpoints; a screenshot only when the tree is empty or \
-you need pixels. For tools beyond the loop, call computer__describe_tools first. Never type into password fields, and \
-confirm destructive actions with the user.";
+use computer use only for apps with no other interface. The loop: capture(app=…), act by element=N (or run several \
+steps at once), re-capture with since='latest', verify at checkpoints, and follow each result's verdict. The user \
+approves input in Dove; never type into password fields, and confirm destructive actions with the user.";
+
+/// Dove Computer Use with raw driver tools exposed (Settings): the old surface.
+const COMPUTER_RAW_INSTRUCTIONS: &str = "\nComputer use (raw driver tools): computer__* tools are cua-driver's own. \
+The loop: list_windows, get_window_state with a query, run_steps, verify_state. Never type into password fields, \
+and confirm destructive actions with the user.";
 
 fn show_visual_tool() -> Value {
     json!({
@@ -211,7 +215,8 @@ pub fn run() {
     for (on, text) in [
         (upstream.has("composio"), COMPOSIO_INSTRUCTIONS),
         (upstream.has("paper"), PAPER_INSTRUCTIONS),
-        (upstream.has("computer"), COMPUTER_INSTRUCTIONS),
+        (upstream.has("computer") && !upstream.raw_computer(), COMPUTER_INSTRUCTIONS),
+        (upstream.has("computer") && upstream.raw_computer(), COMPUTER_RAW_INSTRUCTIONS),
     ] {
         if on {
             instructions.push_str(text);
@@ -324,7 +329,9 @@ fn call(tool: &str, args: Value) -> Value {
     }
 }
 
-fn forward(tool: &str, args: Value) -> Result<Value, String> {
+/// One request to the Dove window this agent runs under (browser, team,
+/// panel and computer-use review tools), over its loopback endpoint.
+pub(crate) fn forward(tool: &str, args: Value) -> Result<Value, String> {
     let port: u16 = std::env::var("DOVE_BROWSER_PORT")
         .ok()
         .and_then(|p| p.parse().ok())
@@ -339,7 +346,14 @@ fn forward(tool: &str, args: Value) -> Result<Value, String> {
     let mut stream = TcpStream::connect(("127.0.0.1", port))
         .map_err(|_| "Dove is not running, so its browser is unavailable.".to_string())?;
     // Team tools can wait on other agents for a long while.
-    let wait = if crate::team_tools::is_team_tool(tool) { crate::team_tools::MAX_WAIT_SECS + 60 } else { 150 };
+    let wait = if crate::team_tools::is_team_tool(tool) {
+        crate::team_tools::MAX_WAIT_SECS + 60
+    } else if tool == crate::computer_host::REVIEW {
+        // The user reads an approval card; the app times it out first.
+        crate::computer_review::REVIEW_TIMEOUT_SECS + 30
+    } else {
+        150
+    };
     let _ = stream.set_read_timeout(Some(Duration::from_secs(wait)));
     let request = json!({"token": token, "cwd": cwd, "session": session, "tool": tool, "args": args});
     stream.write_all(format!("{request}\n").as_bytes()).map_err(|e| e.to_string())?;
@@ -807,8 +821,31 @@ pub(crate) mod upstream {
         specs: Vec<(String, Option<Make>)>,
         live: Vec<Live>,
         started: bool,
-        /// Apps `computer__*` calls may never target.
+        /// Apps `computer__*` calls may never target (raw driver tools).
         denied_apps: Vec<String>,
+        /// Dove Computer Use's settings, for the `computer` tool.
+        computer_settings: crate::computer_plugin::Settings,
+        /// The `computer` tool over the driver, once it started.
+        computer: Option<dove_computer::Computer<ServerDriver>>,
+    }
+
+    /// cua-driver's MCP connection, as the `computer` tool drives it.
+    pub struct ServerDriver {
+        server: Server,
+        tools: Vec<Value>,
+    }
+
+    impl dove_computer::Driver for ServerDriver {
+        fn call_tool(&mut self, name: &str, args: Value) -> Result<Value, String> {
+            self.server.request("tools/call", json!({"name": name, "arguments": args}))
+        }
+
+        fn list_tools(&mut self) -> Result<Vec<Value>, String> {
+            if self.tools.is_empty() {
+                self.tools = self.server.list_tools()?;
+            }
+            Ok(self.tools.clone())
+        }
     }
 
     /// A server definition the user entered, as a constructor.
@@ -843,8 +880,8 @@ pub(crate) mod upstream {
                 };
                 specs.push(("paper".into(), Some(make)));
             }
-            // Dove Computer Use, with its own state, the user's permission
-            // mode and lazy tool disclosure (computer_plugin::launch_env).
+            // Dove Computer Use: stock cua-driver with its own state, no
+            // telemetry and no update checks (computer_plugin::launch_env).
             // The plugin's driver files are re-hashed before it starts.
             if config.computer.enabled && cfg::cua_driver().is_some() {
                 let env = crate::computer_plugin::launch_env(&config.computer);
@@ -862,14 +899,29 @@ pub(crate) mod upstream {
                 }
                 specs.push((s.id.clone(), Some(make(&s.id, &s.transport))));
             }
-            Self { specs, live: Vec::new(), started: false, denied_apps: config.computer.denied_apps.clone() }
+            Self {
+                specs,
+                live: Vec::new(),
+                started: false,
+                denied_apps: config.computer.denied_apps.clone(),
+                computer_settings: config.computer.clone(),
+                computer: None,
+            }
         }
 
         pub fn has(&self, name: &str) -> bool {
             self.specs.iter().any(|(n, _)| n == name)
         }
 
+        /// The driver's own tools are exposed instead of `computer`.
+        pub fn raw_computer(&self) -> bool {
+            self.computer_settings.raw_tools
+        }
+
         pub fn owns(&self, tool: &str) -> bool {
+            if tool == dove_computer::schema::NAME {
+                return self.has("computer") && !self.raw_computer();
+            }
             tool.split_once("__").is_some_and(|(prefix, _)| self.has(prefix))
         }
 
@@ -918,15 +970,58 @@ pub(crate) mod upstream {
             // Keep the order the user set, not the order they answered in.
             let order: Vec<String> = self.specs.iter().map(|(n, _)| n.clone()).collect();
             self.live.sort_by_key(|l| order.iter().position(|n| *n == l.server.name).unwrap_or(usize::MAX));
+            // The driver goes behind the one `computer` tool unless the user
+            // asked for its raw tools.
+            if !self.raw_computer()
+                && let Some(i) = self.live.iter().position(|l| l.server.name == "computer")
+            {
+                let live = self.live.remove(i);
+                // The listed tools are the upstream names again for the driver.
+                let tools: Vec<Value> = live
+                    .tools
+                    .into_iter()
+                    .map(|mut t| {
+                        let exposed = t.get("name").and_then(Value::as_str).unwrap_or_default().to_string();
+                        let name = live.renamed.get(&exposed).cloned().unwrap_or_else(|| {
+                            exposed.strip_prefix("computer__").unwrap_or(&exposed).to_string()
+                        });
+                        t["name"] = json!(name);
+                        t
+                    })
+                    .collect();
+                let s = &self.computer_settings;
+                let config = dove_computer::Config {
+                    rules: s.rules(),
+                    approvals: if s.auto_background() {
+                        dove_computer::Approvals::AutoBackground
+                    } else {
+                        dove_computer::Approvals::Ask
+                    },
+                    grounder: s.ranker.then(|| dove_grounder::service::embedded(Duration::from_secs(300))),
+                };
+                self.computer = Some(dove_computer::Computer::new(ServerDriver { server: live.server, tools }, config));
+            }
         }
 
         pub fn tools(&mut self) -> Vec<Value> {
             self.start();
-            self.live.iter().flat_map(|l| l.tools.iter().cloned()).collect()
+            let mut tools: Vec<Value> = self.live.iter().flat_map(|l| l.tools.iter().cloned()).collect();
+            if self.computer.is_some() {
+                tools.push(dove_computer::schema::schema());
+            }
+            tools
         }
 
         pub fn call(&mut self, tool: &str, args: Value) -> Value {
             self.start();
+            if tool == dove_computer::schema::NAME {
+                return match self.computer.as_mut() {
+                    Some(c) => c.handle(&args, &mut crate::computer_host::AppHost::new()).to_mcp(),
+                    None => error(
+                        "Dove Computer Use's driver is not running. Check Dove → Settings → Plugins → Computer use.",
+                    ),
+                };
+            }
             let Some((prefix, _)) = tool.split_once("__") else { return error("Unknown tool") };
             if prefix == "computer"
                 && let Some(why) = crate::computer_plugin::refusal(&args, &self.denied_apps)

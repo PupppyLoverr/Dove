@@ -9,3 +9,8 @@ skills/**/*.jpeg binary
 skills/**/*.gif binary
 skills/**/*.webp binary
 skills/**/*.pdf binary
+# The Local Grounder's network, built into Dove.
+crates/dove-grounder/assets/*.onnx binary
+crates/dove-grounder/tests/goldens/*.gz binary
+# The computer tool's frozen schema is compared byte for byte.
+crates/dove-computer/tests/golden/*.json text eol=lf

@@ -27,7 +27,7 @@ started; a teammate preamble means you work as that teammate (their role and ins
 the user talking to you directly, in the main chat, a side chat or a terminal.\n\
 Pick tools by purpose. Code and files: your own file and shell tools first. Web pages, local dev servers and \
 docs: the browser tools (browser_*), or chrome_* when the page needs the user's own signed-in browser. Native \
-desktop apps: computer__* tools (only when the user asks for something outside the browser and the code). The user's \
+desktop apps: the computer tool (only when the user asks for something outside the browser and the code). The user's \
 other apps and services: their MCP tools. Skills: dove_skills before an unfamiliar document task. Charts and \
 diagrams in the chat: show_visual. Other threads and agents: the team tools.\n\
 Show your work in the side panel when it helps the user see it: when you finish making or changing something \

@@ -130,7 +130,7 @@ fn line(card: &Card, store: &dove_core::store::Store, dir: &Path, computer_use: 
                 .unwrap_or_default();
             let closer = if computer_use {
                 format!(
-                    " To look closer, use the computer__ tools with pid {pid} and window_id {id}; only read it unless the user asks you to act."
+                    " To look closer, call the computer tool with action \"capture\", pid {pid} and window_id {id}; only read it unless the user asks you to act."
                 )
             } else {
                 String::new()

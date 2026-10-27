@@ -348,8 +348,8 @@ pub fn save(config: &Config) -> std::io::Result<()> {
 }
 
 /// The computer-use driver: the installed Dove Computer Use plugin first,
-/// then a `dove-driver` or `cua-driver` on `PATH` or where their installers
-/// put it (a developer override).
+/// then a `cua-driver` (or a break-glass `dove-driver` build) on `PATH` or
+/// where their installers put it (a developer override).
 pub fn cua_driver() -> Option<PathBuf> {
     crate::computer_plugin::installed().map(|i| i.bin).or_else(dev_driver)
 }
@@ -357,7 +357,7 @@ pub fn cua_driver() -> Option<PathBuf> {
 /// A driver the user installed themselves, outside Dove's plugin folder.
 pub fn dev_driver() -> Option<PathBuf> {
     let exes: &[&str] =
-        if cfg!(windows) { &["dove-driver.exe", "cua-driver.exe"] } else { &["dove-driver", "cua-driver"] };
+        if cfg!(windows) { &["cua-driver.exe", "dove-driver.exe"] } else { &["cua-driver", "dove-driver"] };
     let mut dirs: Vec<PathBuf> =
         std::env::var_os("PATH").map(|p| std::env::split_paths(&p).collect()).unwrap_or_default();
     if let Some(home) = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from) {

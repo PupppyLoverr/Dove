@@ -1,10 +1,11 @@
 //! Settings → Plugins → Computer use: the plugin's plate.
 //!
-//! Install, Update and Uninstall of the pinned dove-driver release, the
+//! Install, Update and Uninstall of the pinned cua-driver release, the
 //! driver's own `health_report`, the per-OS permissions walkthrough (shown
-//! on first install and on demand), the approval mode, and the optional
-//! local grounder. Everything that touches the network or the disk runs in
-//! the background and only after a click.
+//! on first install and on demand), how input is approved, the apps agents
+//! may never control, the built-in grounder and the raw driver tools.
+//! Everything that touches the network or the disk runs in the background
+//! and only after a click.
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
@@ -19,7 +20,7 @@ use crate::kit::controls::{self as ctl, Tone};
 use crate::kit::page;
 use crate::theme::Theme;
 
-/// A background job on the plugin or the grounder.
+/// A background job on the plugin.
 #[derive(Clone, Default)]
 pub(super) enum Job {
     #[default]
@@ -32,28 +33,23 @@ pub(super) enum Job {
 #[derive(Default)]
 pub(super) struct State {
     job: Job,
-    grounder_job: Job,
     /// The last `health_report`, for the driver found at that time.
     health: Option<Health>,
     checking: bool,
     /// The permissions walkthrough is open.
     walkthrough: bool,
-    /// The installed grounder weights.
-    grounder: Option<std::path::PathBuf>,
     /// The QA hook ran (debug builds).
     qa_done: bool,
 }
 
 impl IntegrationsView {
-    /// After each probe: read the grounder and, once per driver, its health.
+    /// After each probe: once per driver, its health.
     pub(super) fn computer_probed(&mut self, cx: &mut Context<Self>) {
-        self.cu.grounder = plugin::grounder_installed();
         // Debug builds, QA against a fake release: `DOVE_COMPUTER_USE_QA` set
-        // to `install`, `grounder` or `uninstall` presses that button once.
+        // to `install` or `uninstall` presses that button once.
         if cfg!(debug_assertions) && !std::mem::replace(&mut self.cu.qa_done, true) {
             match std::env::var("DOVE_COMPUTER_USE_QA").as_deref() {
                 Ok("install") if self.probe.cu_plugin.is_none() => self.run_cu(true, cx),
-                Ok("grounder") if self.cu.grounder.is_none() => self.set_grounder(true, cx),
                 Ok("uninstall") if self.probe.cu_plugin.is_some() => self.run_cu(false, cx),
                 _ => {}
             }
@@ -69,7 +65,7 @@ impl IntegrationsView {
         if matches!(self.cu.job, Job::Working(_)) {
             return;
         }
-        self.cu.job = Job::Working(if install { "Downloading and verifying dove-driver…" } else { "Removing…" });
+        self.cu.job = Job::Working(if install { "Downloading and verifying cua-driver…" } else { "Removing…" });
         let task = cx
             .background_spawn(async move { if install { plugin::install().map(|_| ()) } else { plugin::uninstall() } });
         cx.spawn(async move |this, cx| {
@@ -81,12 +77,7 @@ impl IntegrationsView {
                         v.cu.health = None;
                         // Installing turns it on; removing takes the tools away.
                         v.config.computer.enabled = install;
-                        if install {
-                            v.cu.walkthrough = !v.config.computer.walkthrough_done;
-                        } else {
-                            v.config.computer.grounder = false;
-                            v.cu.walkthrough = false;
-                        }
+                        v.cu.walkthrough = install && !v.config.computer.walkthrough_done;
                         v.persist(cx);
                     }
                     Err(e) => v.cu.job = Job::Failed(e),
@@ -122,43 +113,6 @@ impl IntegrationsView {
         cx.notify();
     }
 
-    /// Turn the local grounder on (downloading its weights) or off
-    /// (removing them).
-    fn set_grounder(&mut self, on: bool, cx: &mut Context<Self>) {
-        if matches!(self.cu.grounder_job, Job::Working(_)) {
-            return;
-        }
-        if !on {
-            self.config.computer.grounder = false;
-            self.cu.grounder_job = match plugin::remove_grounder() {
-                Ok(()) => Job::Idle,
-                Err(e) => Job::Failed(e),
-            };
-            self.cu.grounder = plugin::grounder_installed();
-            self.persist(cx);
-            return;
-        }
-        self.cu.grounder_job = Job::Working("Downloading the grounder…");
-        let task = cx.background_spawn(async move { plugin::install_grounder() });
-        cx.spawn(async move |this, cx| {
-            let result = task.await;
-            let _ = this.update(cx, |v, cx| match result {
-                Ok(path) => {
-                    v.cu.grounder_job = Job::Idle;
-                    v.cu.grounder = Some(path);
-                    v.config.computer.grounder = true;
-                    v.persist(cx);
-                }
-                Err(e) => {
-                    v.cu.grounder_job = Job::Failed(e);
-                    cx.notify();
-                }
-            });
-        })
-        .detach();
-        cx.notify();
-    }
-
     pub(super) fn render_computer(&mut self, t: &Theme, cx: &mut Context<Self>) -> gpui::Div {
         let m = plugin::manifest();
         let on = self.config.computer.enabled;
@@ -182,20 +136,20 @@ impl IntegrationsView {
         let hint: SharedString = match (&self.cu.job, &installed, &self.probe.cua_version) {
             (Job::Working(m), _, _) => (*m).into(),
             (Job::Failed(e), _, _) => format!("Could not finish: {e}").into(),
-            (_, Some(p), _) => format!("Agents see and use your desktop apps through dove-driver {}", p.version).into(),
+            (_, Some(p), _) => format!("Agents use your desktop apps in the background through cua-driver {}", p.version).into(),
             (_, None, Some(v)) => format!("Agents see and use your desktop apps through {v}").into(),
-            _ => "Agents see and use your desktop apps in the background, from each window's accessibility tree".into(),
+            _ => "Agents use your desktop apps in the background, from each window's accessibility tree, through the open-source cua-driver".into(),
         };
         let install_hint = if available {
             format!(
-                "Downloads dove-driver {}{} from its GitHub releases and checks its SHA-256 against the manifest built into Dove",
+                "Downloads cua-driver {}{} (signed by Cua AI) from trycua's GitHub release and checks every file's SHA-256 against the manifest built into Dove",
                 m.version,
                 mb(asset.map(|a| a.size))
             )
         } else if asset.is_some() {
-            format!("dove-driver {} needs Dove {} or later; update Dove first", m.version, m.min_dove_version)
+            format!("cua-driver {} needs Dove {} or later; update Dove first", m.version, m.min_dove_version)
         } else {
-            format!("dove-driver {} is not published for this platform yet", m.version)
+            format!("cua-driver {} is not published for this platform", m.version)
         };
 
         let mut card = plate(t)
@@ -240,13 +194,13 @@ impl IntegrationsView {
                     "Plugin",
                     if p.outdated() {
                         format!(
-                            "dove-driver {} installed; {} is available{}",
+                            "cua-driver {} installed; {} is available{}",
                             p.version,
                             m.version,
                             mb(asset.map(|a| a.size))
                         )
                     } else {
-                        format!("dove-driver {} in {}", p.version, p.dir().display())
+                        format!("cua-driver {} in {}", p.version, p.dir().display())
                     },
                     div()
                         .flex()
@@ -314,7 +268,7 @@ impl IntegrationsView {
         card = card.child(line(
             "Permissions",
             if cfg!(target_os = "macos") {
-                "dove-driver needs Accessibility, and Screen Recording for screenshots"
+                "CuaDriver needs Accessibility, and Screen Recording for screenshots"
             } else if cfg!(windows) {
                 "Runs as you: it cannot control apps started as administrator"
             } else {
@@ -370,50 +324,79 @@ impl IntegrationsView {
             );
         }
 
-        // Approvals: the driver's standard mode (computer_plugin::PERMISSION_MODE).
+        // Approvals: Dove's review cards (computer_review.rs).
+        let auto = self.config.computer.auto_background();
         card = card.child(line(
             "Approvals",
-            "dove-driver asks before an agent acts on an app the first time, and never types into password fields",
-            status(true, "Ask first", t),
+            if auto {
+                "Background input runs without asking. Bringing a window forward, and anything that sends, buys or deletes, still asks"
+            } else {
+                "Dove asks once per app in each thread before an agent types or clicks there, and every time for anything that sends, buys or deletes"
+            },
+            div()
+                .flex()
+                .items_center()
+                .gap(px(4.0))
+                .child(
+                    ctl::button_sm(t, "int-cu-ask", "Ask per app", if auto { Tone::Quiet } else { Tone::Filled })
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.config.computer.approvals = "ask".into();
+                            this.persist(cx);
+                        })),
+                )
+                .child(
+                    ctl::button_sm(t, "int-cu-auto", "Background without asking", if auto { Tone::Filled } else { Tone::Quiet })
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.config.computer.approvals = "auto".into();
+                            this.persist(cx);
+                        })),
+                ),
             t,
         ));
 
-        // Never control: Dove's MCP server refuses calls that target these.
+        // Never control: refused by the `computer` tool before anything is read.
         card = card.child(line(
             "Never control",
             if self.config.computer.denied_apps.is_empty() {
-                "Apps agents may never touch, such as password managers. Comma separated"
+                "Apps agents may never touch, such as password managers. Comma separated names, or signer:<publisher> and bundle:<id>, which follow the signed app however it is renamed"
             } else {
-                "Agents are refused any action on these apps, in every harness"
+                "Agents are refused any action on these apps, and their windows are hidden from them"
             },
             super::field(&self.cu_denied, 260.0, t),
             t,
         ));
 
-        // Local grounder: resolves `intent` steps on the device.
-        let grounder = m.grounder();
-        let g_on = self.config.computer.grounder && self.cu.grounder.is_some();
-        let g_busy = matches!(self.cu.grounder_job, Job::Working(_));
-        let g_hint: String = match (&self.cu.grounder_job, grounder) {
-            (Job::Working(m), _) => (*m).into(),
-            (Job::Failed(e), _) => format!("Could not finish: {e}"),
-            (_, None) => {
-                format!("Resolves intent steps on this device. Not in the dove-driver {} release yet", m.version)
-            }
-            (_, Some(_)) if g_on => "Resolves intent steps on this device, at no token cost".into(),
-            (_, Some(g)) => {
-                format!("Resolves intent steps on this device. Turning it on downloads its weights{}", mb(Some(g.size)))
-            }
-        };
-        let (g_left, g_switch) = toggle(g_on, None, "int-cu-grounder", t);
-        card.child(line(
+        // The built-in grounder: NEXI-CUA-1 for `act` and intent steps.
+        let ranker = self.config.computer.ranker;
+        let (r_left, r_switch) = toggle(ranker, None, "int-cu-ranker", t);
+        card = card.child(line(
             "Local grounder",
-            g_hint,
-            g_left.child(if grounder.is_some() && !g_busy {
-                ctl::on_toggle(g_switch, cx, move |this, _, cx| this.set_grounder(!g_on, cx))
+            if ranker {
+                "Turns an intent such as \"click Save\" into the right control on this device, at no token cost (NEXI-CUA-1, built into Dove)"
             } else {
-                ctl::disabled(g_switch, if g_busy { "Downloading…" } else { "Not in this release yet" })
-            }),
+                "Intents are resolved by exact names only; the NEXI-CUA-1 network is off"
+            },
+            r_left.child(ctl::on_toggle(r_switch, cx, move |this, _, cx| {
+                this.config.computer.ranker = !ranker;
+                this.persist(cx);
+            })),
+            t,
+        ));
+
+        // Raw driver tools, for debugging the driver itself.
+        let raw = self.config.computer.raw_tools;
+        let (w_left, w_switch) = toggle(raw, None, "int-cu-raw", t);
+        card.child(line(
+            "Raw driver tools",
+            if raw {
+                "Agents get cua-driver's own computer__* tools instead of Dove's computer tool: no approval cards, no take-over fence"
+            } else {
+                "Off: agents see Dove's one computer tool. Turn on only to debug the driver"
+            },
+            w_left.child(ctl::on_toggle(w_switch, cx, move |this, _, cx| {
+                this.config.computer.raw_tools = !raw;
+                this.persist(cx);
+            })),
             t,
         ))
         .when(on && self.cu.health.as_ref().is_some_and(|h| !h.ok() && h.error.is_none()) && !open, |d| {

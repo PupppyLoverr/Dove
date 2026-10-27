@@ -1,0 +1,44 @@
+[package]
+name = "dove-computer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Dove Computer Use: the one `computer` tool agents see, driving stock cua-driver over MCP (a Rust port of Hermes Agent's computer_use layer)"
+
+[dependencies]
+dove-grounder = { path = "../dove-grounder" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = "0.10"
+base64 = "0.22"
+regex = "1"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+
+[target.'cfg(windows)'.dependencies]
+# Same windows 0.61 as the app and gpui, so one copy links.
+windows = { version = "0.61", features = [
+    "Foundation",
+    "Foundation_Collections",
+    "Globalization",
+    "Graphics_Imaging",
+    "Media_Ocr",
+    "Storage_Streams",
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_System_Ole",
+    "Win32_System_Variant",
+    "Win32_UI_Accessibility",
+] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3.2", features = ["NSArray", "NSData", "NSDictionary", "NSError", "NSString", "NSValue"] }
+objc2-vision = { version = "0.3.2", features = ["VNRequest", "VNRequestHandler", "VNRecognizeTextRequest", "VNObservation", "VNTypes"] }
+objc2-core-foundation = { version = "0.3.2", features = ["CFCGTypes"] }
+
+[features]
+# The scripted fake driver, for the app's tests.
+testing = []
+
+[dev-dependencies]
+tempfile = { workspace = true }

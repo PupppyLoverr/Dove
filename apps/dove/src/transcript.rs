@@ -4640,6 +4640,9 @@ impl TaskView {
                     .children(crate::voice_call::strip(cx))
                     // Agents this thread wants to start, for the user to approve.
                     .children(crate::orchestrate::cards_for(self.task.id, cx))
+                    // Desktop-app use this thread's agent asks for, and what it is doing.
+                    .children(crate::computer_review::cards_for(self.task.id, cx))
+                    .children(crate::computer_review::strip_for(self.task.id, cx))
                     .child(input)
                     .child(
                         canvas(
