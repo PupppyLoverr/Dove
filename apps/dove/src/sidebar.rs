@@ -994,7 +994,18 @@ impl Shell {
         let step = (task.status == TaskStatus::Running)
             .then(|| self.threads.get(&id).and_then(|v| v.read(cx).chat.read(cx).current_step()))
             .flatten();
-        let corner = div().text_size(ty::CAPTION).text_color(t.text_faint).child(ui::relative_time(task.updated_at));
+        // Where it stands, as a coloured word in place of the time: status
+        // reads as words, not badges, and quiet rows keep their age.
+        let corner = match task.status {
+            TaskStatus::NeedsInput => Some(("Waiting", t.warning)),
+            TaskStatus::Failed => Some(("Failed", t.danger)),
+            TaskStatus::Running => Some(("Running", t.busy)),
+            _ => None,
+        }
+        .map_or_else(
+            || div().text_size(ty::CAPTION).text_color(t.text_faint).child(ui::relative_time(task.updated_at)),
+            |(word, tint)| div().text_size(ty::CAPTION).font_weight(gpui::FontWeight::MEDIUM).text_color(tint).child(word),
+        );
         let archive_group = SharedString::from(format!("row-archive-{id}"));
         let archive_btn = div()
             .id(archive_group.clone())
@@ -1059,25 +1070,17 @@ impl Shell {
                     .filter(|_| compact),
                 |d, s| d.tooltip(ui::tip(s)),
             )
-            // The status column keeps its width when empty, so titles align.
-            .child(div().w(px(16.0)).flex_none().flex().justify_center().children(kit::status_mark(
-                SharedString::from(format!("sb-st-{id}")),
-                task.status,
-                task.unread,
-                t,
-            )))
-            // One mark per row: the teammate, or the agent.
+            // Rows carry no icon unless a teammate owns them; an unread
+            // thread gets a small accent dot in the margin.
             .child(
-                div().relative().flex_none().size(px(16.0)).flex().items_center().justify_center().child(
-                    match self.persona_for(id) {
-                        Some(p) => crate::team::avatar(p, 16.0, t).into_any_element(),
-                        None => icon(ui::harness_icon(task.harness))
-                            .size(px(14.0))
-                            .text_color(ui::harness_tint(task.harness, t, t.text_muted))
-                            .into_any_element(),
-                    },
-                ),
+                div()
+                    .w(px(6.0))
+                    .flex_none()
+                    .flex()
+                    .justify_center()
+                    .when(task.unread && !selected, |d| d.child(div().size(px(6.0)).rounded_full().bg(t.accent))),
             )
+            .when_some(self.persona_for(id), |d, p| d.child(crate::team::avatar(p, 16.0, t)))
             .child(match renaming {
                 Some(input) => div()
                     .flex_1()

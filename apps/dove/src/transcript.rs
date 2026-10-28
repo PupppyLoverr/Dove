@@ -1595,6 +1595,9 @@ pub struct TaskView {
     rail_hover: Option<usize>,
     /// Tick length in flight: from, to, started. Index matches the rail mark.
     rail_tick: Vec<(f32, f32, Instant)>,
+    /// The chat pane's width last frame: the rail hides when the column
+    /// leaves it no gutter, instead of sitting on the text.
+    rail_room: std::rc::Rc<std::cell::Cell<f32>>,
     /// The pointer is within 24px of the chat column's right edge.
     scroll_edge: bool,
     /// The info card is open, so stream content clears it. The scrollbar
@@ -1866,6 +1869,7 @@ impl TaskView {
             following,
             rail_hover: None,
             rail_tick: Vec::new(),
+            rail_room: Default::default(),
             scroll_edge: false,
             info_reserve: false,
             flash: None,
@@ -4451,6 +4455,10 @@ impl TaskView {
         if messages.len() < 2 {
             return None;
         }
+        let room = self.rail_room.get();
+        if room > 0.0 && (room - crate::design::conversation_width()) / 2.0 < 52.0 {
+            return None;
+        }
         let t = Theme::of(cx).clone();
         let weak = cx.weak_entity();
         let top = self.list.logical_scroll_top().item_ix;
@@ -5204,7 +5212,16 @@ impl Render for TaskView {
                             })
                         })
                         .child(
-                            canvas(move |bounds, _, _| scroll_bounds.set(Some(bounds)), |_, _, _, _| {})
+                            canvas(
+                                {
+                                    let room = self.rail_room.clone();
+                                    move |bounds, _, _| {
+                                        room.set(f32::from(bounds.size.width));
+                                        scroll_bounds.set(Some(bounds))
+                                    }
+                                },
+                                |_, _, _, _| {},
+                            )
                                 .absolute()
                                 .size_full(),
                         )

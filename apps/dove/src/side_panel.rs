@@ -2222,50 +2222,44 @@ impl SidePanel {
             ("Review", &[Tab::Changes, Tab::Files, Tab::History, Tab::Plan]),
             ("Agents", &[Tab::Subagents, Tab::Chats, Tab::SideChat]),
         ];
-        // Zeron's surface row: a quiet bordered plate, icon and name. What
-        // each one is for lives in its tooltip, so the list stays a list.
-        let (border, border_strong) = (t.border, t.border_strong);
+        // One card per group, rows inside it: icon, name, and what it is
+        // for in muted text. Rows part by hover fill, not by plates.
         let row = |k: Tab, cx: &mut Context<Self>| {
-            let blurb = k.blurb();
+            let id = SharedString::from(format!("surface-card-{}", k.label()));
             div()
-                .id(SharedString::from(format!("surface-card-{}", k.label())))
-                .group("surface-row")
+                .id(id.clone())
+                .group(id.clone())
                 .w_full()
-                .h(px(44.0))
-                .px(px(14.0))
-                .rounded(px(radius::RADIUS))
-                .border_1()
-                .border_color(border)
-                .bg(ink(0.02))
+                .h(px(40.0))
+                .px(px(10.0))
+                .rounded(px(radius::ROW))
                 .flex()
                 .items_center()
                 .gap(px(10.0))
                 .cursor_pointer()
-                .hover(move |s| s.bg(ink(0.05)).border_color(border_strong))
-                .tooltip(ui::tip(blurb))
-                .child(icon(k.glyph()).size(px(15.0)).flex_none().text_color(t.text_muted))
+                .hover(|s| s.bg(ink(0.05)))
+                .child(icon(k.glyph()).size(px(16.0)).flex_none().text_color(t.text_muted))
                 .child(
                     div()
-                        .flex_1()
-                        .min_w_0()
-                        .truncate()
+                        .flex_none()
                         .text_size(ty::BODY)
                         .font_weight(gpui::FontWeight::MEDIUM)
                         .text_color(t.text)
                         .child(k.label()),
                 )
+                .child(div().flex_1().min_w_0().truncate().text_size(ty::META).text_color(t.text_faint).child(k.blurb()))
                 .child(
                     icon(icons::ALT_ARROW_RIGHT)
                         .size(px(12.0))
                         .flex_none()
                         .text_color(t.text_faint)
                         .invisible()
-                        .group_hover("surface-row", |s| s.visible()),
+                        .group_hover(id, |s| s.visible()),
                 )
                 .on_click(cx.listener(move |this, _, window, cx| this.pick(k, window, cx)))
         };
         let has_pr = self.thread.is_some_and(|id| self.prs.contains_key(&id));
-        let mut col = div().w_full().max_w(px(300.0)).flex().flex_col().gap(px(18.0));
+        let mut col = div().w_full().max_w(px(360.0)).flex().flex_col().gap(px(16.0));
         for (title, tabs) in GROUPS {
             col = col.child(
                 div()
@@ -2274,17 +2268,27 @@ impl SidePanel {
                     .gap(px(6.0))
                     .child(
                         div()
-                            .px(px(2.0))
-                            .text_size(ty::MICRO)
+                            .px(px(4.0))
+                            .text_size(ty::META)
                             .font_weight(gpui::FontWeight::MEDIUM)
-                            .text_color(t.text_faint)
+                            .text_color(t.text_muted)
                             .child(title),
                     )
-                    .children(
-                        tabs.iter()
-                            .copied()
-                            .chain((title == "Review" && has_pr).then_some(Tab::PullRequest))
-                            .map(|k| row(k, cx)),
+                    .child(
+                        div()
+                            .p(px(4.0))
+                            .rounded(px(radius::CARD))
+                            .bg(t.surface_card.opacity(0.92))
+                            .border_1()
+                            .border_color(t.border.opacity(0.55))
+                            .flex()
+                            .flex_col()
+                            .children(
+                                tabs.iter()
+                                    .copied()
+                                    .chain((title == "Review" && has_pr).then_some(Tab::PullRequest))
+                                    .map(|k| row(k, cx)),
+                            ),
                     ),
             );
         }
