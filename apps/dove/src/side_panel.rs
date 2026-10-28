@@ -240,6 +240,8 @@ pub enum SidePanelEvent {
     PrChanged,
     /// The panel's own close button.
     Close,
+    /// Dock on the left of the chat (true) or the right.
+    Dock(bool),
     /// Expand / collapse toggled.
     Layout,
     /// Scroll the conversation to a transcript row (a subagent's call).
@@ -545,6 +547,9 @@ pub struct SidePanel {
     prs: HashMap<TaskId, PrTarget>,
     /// The panel has the conversation's width.
     pub expanded: bool,
+    /// The placement card is open; where the panel docks.
+    place_open: bool,
+    pub dock_left: bool,
     plus_open: bool,
     /// The split menu that is open: the strip's (for the focused pane) or
     /// a pane header's.
@@ -622,6 +627,8 @@ impl SidePanel {
             pr_view,
             prs: HashMap::new(),
             expanded: false,
+            place_open: false,
+            dock_left: false,
             plus_open: false,
             split_menu: None,
             plus_hi: None,
@@ -1889,6 +1896,7 @@ impl SidePanel {
             .child(div().flex_1().min_w_0().child(strip))
             .when(!tabs.is_empty(), |d| d.child(plus))
             .when(!tabs.is_empty() && single, |d| d.child(self.split_menu_button("panel-split", None, &t, cx)))
+            .child(self.render_place_button(&t, cx))
             .child(
                 surface_chrome::toolbar_button(
                     "panel-expand",
@@ -1907,6 +1915,97 @@ impl SidePanel {
                     .on_click(cx.listener(|_, _, _, cx| cx.emit(SidePanelEvent::Close))),
             )
             .into_any_element()
+    }
+
+    /// Where the panel sits: docked left or right of the chat, or filling
+    /// the window. A small card of layout glyphs, the current one lit.
+    fn render_place_button(&mut self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let open = self.place_open;
+        let left = self.dock_left;
+        let button = surface_chrome::toolbar_button("panel-place", "Move panel")
+            .child(icon(icons::MORE_HORIZONTAL).size(px(13.0)).text_color(t.text_muted))
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.place_open = !this.place_open;
+                cx.notify();
+            }));
+        let menu = open.then(|| {
+            let glyph = |id: &'static str, label: &'static str, on: bool, art: AnyElement| {
+                div()
+                    .id(id)
+                    .size(px(36.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(radius::ROW))
+                    .cursor_pointer()
+                    .when(on, |d| d.bg(t.wash(0.12)))
+                    .when(!on, |d| d.hover(|s| s.bg(t.wash(0.07))))
+                    .tooltip(ui::tip(label))
+                    .child(art)
+            };
+            let label = |text: &'static str| {
+                div().px(px(8.0)).pt(px(6.0)).pb(px(4.0)).text_size(ty::CAPTION).text_color(t.text_faint).child(text)
+            };
+            let body = div()
+                .w(px(184.0))
+                .p(px(4.0))
+                .flex()
+                .flex_col()
+                .child(label("Move"))
+                .child(
+                    div()
+                        .px(px(4.0))
+                        .flex()
+                        .gap(px(4.0))
+                        .child(
+                            glyph("place-left", "Dock left", left && !self.expanded, layout_glyph(t, Some(true)))
+                                .on_click(cx.listener(|this, _, _, cx| this.place(Some(true), cx))),
+                        )
+                        .child(
+                            glyph("place-right", "Dock right", !left && !self.expanded, layout_glyph(t, Some(false)))
+                                .on_click(cx.listener(|this, _, _, cx| this.place(Some(false), cx))),
+                        ),
+                )
+                .child(label("Fill"))
+                .child(
+                    div().px(px(4.0)).pb(px(4.0)).flex().gap(px(4.0)).child(
+                        glyph("place-fill", "Fill the window", self.expanded, layout_glyph(t, None))
+                            .on_click(cx.listener(|this, _, _, cx| this.place(None, cx))),
+                    ),
+                );
+            deferred(
+                anchored().anchor(gpui::Anchor::TopRight).snap_to_window_with_margin(px(8.0)).child(
+                    div()
+                        .mt(px(28.0))
+                        .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                            this.place_open = false;
+                            cx.notify();
+                        }))
+                        .child(ui::menu_card(t, body)),
+                ),
+            )
+        });
+        div().relative().child(button).children(menu).into_any_element()
+    }
+
+    /// Dock left (`Some(true)`), right (`Some(false)`) or fill the window.
+    fn place(&mut self, side: Option<bool>, cx: &mut Context<Self>) {
+        self.place_open = false;
+        match side {
+            Some(left) => {
+                self.dock_left = left;
+                if self.expanded {
+                    self.toggle_expanded(cx);
+                }
+                cx.emit(SidePanelEvent::Dock(left));
+            }
+            None => {
+                if !self.expanded {
+                    self.toggle_expanded(cx);
+                }
+            }
+        }
+        cx.notify();
     }
 
     /// Open a surface picked from a picker: browsers, terminals and side
@@ -3033,4 +3132,26 @@ mod tests {
         assert_eq!(find_local_urls("Listening on http://0.0.0.0:8080."), vec!["http://localhost:8080"]);
         assert!(find_local_urls("see https://example.com").is_empty());
     }
+}
+
+/// A tiny window diagram for the placement card: the panel docked left or
+/// right (`Some(left)`), or filling the window (`None`).
+fn layout_glyph(t: &Theme, side: Option<bool>) -> AnyElement {
+    let frame = t.text_muted;
+    let pane = t.text_muted.opacity(0.55);
+    div()
+        .w(px(20.0))
+        .h(px(15.0))
+        .rounded(px(3.0))
+        .border_1()
+        .border_color(frame)
+        .p(px(2.0))
+        .flex()
+        .gap(px(2.0))
+        .map(|d| match side {
+            Some(true) => d.child(div().w(px(6.0)).h_full().rounded(px(1.0)).bg(pane)).child(div().flex_1()),
+            Some(false) => d.child(div().flex_1()).child(div().w(px(6.0)).h_full().rounded(px(1.0)).bg(pane)),
+            None => d.child(div().flex_1().h_full().rounded(px(1.0)).bg(pane)),
+        })
+        .into_any_element()
 }

@@ -234,11 +234,13 @@ impl Theme {
                 appearance,
                 accent_choice,
                 surface_style,
-                bg: grey(6),
-                surface: grey(13),
-                surface_raised: neutral(0.235),
-                surface_card: grey(0x0e),
-                surface_overlay: grey(0x16),
+                // Charcoal planes, one step apart: canvas, sidebar, card,
+                // menu, raised. Colour is kept for meaning.
+                bg: grey(0x16),
+                surface: grey(0x1b),
+                surface_raised: grey(0x2b),
+                surface_card: grey(0x1e),
+                surface_overlay: grey(0x25),
                 element_hover: hsla(0.0, 0.0, 0.92, 0.11),
                 border: hsla(0.0, 0.0, 1.0, 0.08),
                 border_strong: hsla(0.0, 0.0, 1.0, 0.14),
@@ -246,14 +248,14 @@ impl Theme {
                 text_muted: neutral(0.708),
                 text_faint: neutral(0.556),
                 solid: neutral(0.922),
-                on_solid: grey(0x0e),
+                on_solid: grey(0x16),
                 accent: primary,
                 accent_strong: strong,
                 danger: oklch(0.704, 0.191, 22.216),
                 warning: oklch(0.828, 0.189, 84.429),
                 success: oklch(0.765, 0.177, 163.223),
                 busy: primary,
-                surface_dialog: mix(grey(0x0e), neutral(0.235), 0.18),
+                surface_dialog: grey(0x23),
                 element_active: primary.opacity(0.18),
                 accent_wash: primary.opacity(0.22),
                 danger_muted: mix(oklch(0.704, 0.191, 22.216), neutral(0.922), 0.28),
@@ -269,7 +271,7 @@ impl Theme {
                 claude: oklch(0.70, 0.15, 45.0),
                 font_sans: "Geist".into(),
                 font_mono: "Geist Mono".into(),
-                terminal_bg: grey(0x09),
+                terminal_bg: grey(0x13),
                 terminal_fg: hsla(0.0, 0.0, 0.91, 1.0),
                 terminal_selection: hsla(0.0, 0.0, 1.0, 0.22),
                 ansi: palette(ANSI_DARK),
@@ -373,12 +375,12 @@ impl Theme {
         match (self.surface_style, dark) {
             _ if !self.is_frost() => {
                 if dark {
-                    grey(0x12)
+                    grey(0x21)
                 } else {
                     self.bg
                 }
             }
-            (Surface::Acrylic, true) => grey(0x14).opacity(0.62),
+            (Surface::Acrylic, true) => grey(0x20).opacity(0.66),
             (Surface::Acrylic, false) => self.bg.opacity(0.70),
             (_, true) => self.composer_glass_tint(),
             (_, false) => self.bg.opacity(0.35),
@@ -392,7 +394,7 @@ impl Theme {
         match (self.surface_style, dark) {
             _ if !self.is_frost() => {
                 if dark {
-                    grey(0x12)
+                    grey(0x21)
                 } else {
                     self.bg
                 }
@@ -695,13 +697,15 @@ pub fn flatten(fg: Hsla, bg: Hsla) -> Hsla {
     hsla(h, s, l, 1.0)
 }
 
+/// WCAG relative luminance of an opaque colour (0 to 1).
+pub fn luminance(c: Hsla) -> f32 {
+    let lin = |v: f32| if v <= 0.040_45 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) };
+    let [r, g, b] = hsl_to_rgb(c.h, c.s, c.l);
+    0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
+}
+
 /// WCAG 2.1 contrast ratio between two opaque colours (1 to 21).
 fn contrast(a: Hsla, b: Hsla) -> f32 {
-    let luminance = |c: Hsla| {
-        let lin = |v: f32| if v <= 0.040_45 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) };
-        let [r, g, b] = hsl_to_rgb(c.h, c.s, c.l);
-        0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
-    };
     let (la, lb) = (luminance(a), luminance(b));
     (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
 }

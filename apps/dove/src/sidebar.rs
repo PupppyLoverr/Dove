@@ -219,13 +219,13 @@ impl Shell {
             div()
                 .id(id)
                 .group(id)
-                .h(px(30.0))
+                .h(px(32.0))
                 .mx(px(8.0))
                 .px(px(8.0))
                 .flex()
                 .items_center()
                 .gap(px(9.0))
-                .rounded(px(radius::RADIUS))
+                .rounded(px(radius::ROW))
                 .cursor_pointer()
                 .text_size(ty::BODY)
                 .when(selected, |d| d.text_color(t.text).font_weight(gpui::FontWeight::MEDIUM))
@@ -257,17 +257,19 @@ impl Shell {
         // a bordered plate here reads as a button sitting on the list.
         let new_thread = div()
             .id("nav-new")
-            .h(px(30.0))
+            .h(px(32.0))
             .mx(px(8.0))
             .px(px(8.0))
             .flex()
             .items_center()
             .gap(px(9.0))
-            .rounded(px(radius::RADIUS))
+            .rounded(px(radius::ROW))
             .cursor_pointer()
             .text_size(ty::BODY)
             .font_weight(gpui::FontWeight::MEDIUM)
             .text_color(t.text)
+            .bg(t.wash(0.07))
+            .hover(|s| s.bg(t.wash(0.11)))
             .role(gpui::Role::Button)
             .aria_label("New thread")
             .child(icon(icons::PEN_NEW_SQUARE).size(px(15.0)).text_color(t.text))
@@ -493,32 +495,47 @@ impl Shell {
                 if in_project.is_empty() {
                     continue;
                 }
-                list = list.child(
-                    div()
-                        .px(px(16.0))
-                        .pt(px(8.0))
-                        .pb(px(2.0))
-                        .flex()
-                        .items_center()
-                        .gap(px(6.0))
-                        .text_size(ty::CAPTION)
-                        .text_color(t.text_faint)
-                        .child(project_badge(&p.name, 12.0, &t))
-                        .child(p.name.clone()),
-                );
-                for task in in_project {
-                    list = list.children(self.render_branch(task, 0, &kids, compact, &t, cx));
+                let key = format!("sidebar_closed.p{}", p.id);
+                let open = self.engine.store.setting(&key).as_deref() != Some("1");
+                list = list.child(self.section_header(
+                    SharedString::from(format!("sb-proj-{}", p.id)),
+                    Some(project_badge(&p.name, 12.0, &t).into_any_element()),
+                    p.name.clone().into(),
+                    in_project.len(),
+                    open,
+                    key,
+                    &t,
+                    cx,
+                ));
+                if open {
+                    for task in in_project {
+                        list = list.children(self.render_branch(task, 0, &kids, compact, &t, cx));
+                    }
                 }
             }
         } else {
             // Pinned threads lead under their own label; the rest follow.
             let pinned = visible.iter().filter(|x| x.pinned).count();
+            let key = "sidebar_closed.pinned".to_string();
+            let pins_open = self.engine.store.setting(&key).as_deref() != Some("1");
             for (n, task) in visible.iter().enumerate() {
                 if n == 0 && pinned > 0 {
-                    list = list.child(group_label(icons::PIN, "Pinned", &t));
+                    list = list.child(self.section_header(
+                        "sb-pinned".into(),
+                        Some(icon(icons::PIN).size(px(12.0)).text_color(t.text_faint).into_any_element()),
+                        "Pinned".into(),
+                        pinned,
+                        pins_open,
+                        key.clone(),
+                        &t,
+                        cx,
+                    ));
                 }
                 if n == pinned && pinned > 0 {
-                    list = list.child(div().h(px(6.0)).flex_none());
+                    list = list.child(group_label(icons::CHAT_ROUND_LINE, "Recent", &t));
+                }
+                if n < pinned && !pins_open {
+                    continue;
                 }
                 list = list.children(self.render_branch(task, 0, &kids, compact, &t, cx));
             }
@@ -539,7 +556,7 @@ impl Shell {
                     .flex_none()
                     .items_center()
                     .gap(px(6.0))
-                    .rounded(px(radius::RADIUS))
+                    .rounded(px(radius::ROW))
                     .cursor_pointer()
                     .text_size(ty::CAPTION)
                     .text_color(t.text_faint)
@@ -582,7 +599,7 @@ impl Shell {
                             .px(px(8.0))
                             .flex()
                             .items_center()
-                            .rounded(px(radius::RADIUS))
+                            .rounded(px(radius::ROW))
                             .cursor_pointer()
                             .text_size(ty::CAPTION)
                             .text_color(t.text_faint)
@@ -700,19 +717,81 @@ impl Shell {
             .into_any_element()
     }
 
+    /// A sidebar section's label: a glyph, the name and a count, with a
+    /// caret that folds the section. The fold is remembered under `key`.
+    #[allow(clippy::too_many_arguments)]
+    fn section_header(
+        &self,
+        id: SharedString,
+        lead: Option<AnyElement>,
+        label: SharedString,
+        count: usize,
+        open: bool,
+        key: String,
+        t: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let turn = crate::motion::state_t(&id, open, crate::motion::CHEVRON, cx.reduce_motion());
+        let group = id.clone();
+        div()
+            .id(id)
+            .group(group.clone())
+            .mx(px(8.0))
+            .mt(px(8.0))
+            .h(px(26.0))
+            .px(px(8.0))
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(px(9.0))
+            .rounded(px(radius::ROW))
+            .cursor_pointer()
+            .text_size(ty::CAPTION)
+            .font_weight(gpui::FontWeight::MEDIUM)
+            .text_color(t.text_faint)
+            .hover(|s| s.text_color(t.text_muted))
+            .role(gpui::Role::Button)
+            .aria_expanded(open)
+            .aria_label(label.clone())
+            .children(lead.map(|l| div().w(px(16.0)).flex_none().flex().justify_center().child(l)))
+            .child(div().min_w_0().truncate().child(label))
+            .child(
+                icon(icons::ALT_ARROW_RIGHT)
+                    .size(px(10.0))
+                    .text_color(t.text_faint)
+                    .with_transformation(gpui::Transformation::rotate(gpui::radians(
+                        turn * std::f32::consts::FRAC_PI_2,
+                    ))),
+            )
+            .child(div().flex_1())
+            .child(
+                div()
+                    .text_size(ty::BADGE)
+                    .text_color(t.text_faint)
+                    .invisible()
+                    .group_hover(group, |s| s.visible())
+                    .child(count.to_string()),
+            )
+            .on_click(cx.listener(move |this, _, _, cx| {
+                let _ = this.engine.store.set_setting(&key, if open { "1" } else { "0" });
+                cx.notify();
+            }))
+            .into_any_element()
+    }
+
     fn render_more_item(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let selected =
             matches!(self.route, Route::Agents | Route::Usage | Route::Archived | Route::Settings | Route::Help);
         let open = self.more_open;
         let item = div()
             .id("nav-more")
-            .h(px(30.0))
+            .h(px(32.0))
             .mx(px(8.0))
             .px(px(8.0))
             .flex()
             .items_center()
             .gap(px(9.0))
-            .rounded(px(radius::RADIUS))
+            .rounded(px(radius::ROW))
             .cursor_pointer()
             .text_size(ty::BODY)
             .group("nav-more")
@@ -867,7 +946,7 @@ impl Shell {
             .flex()
             .flex_col()
             .gap(px(6.0))
-            .rounded(px(radius::RADIUS))
+            .rounded(px(radius::ROW))
             .bg(t.warning.opacity(0.05))
             .cursor_pointer()
             .on_click(cx.listener(move |this, _, window, cx| this.open_task(id, window, cx)))
@@ -964,7 +1043,7 @@ impl Shell {
             .flex()
             .items_center()
             .gap(px(8.0))
-            .rounded(px(radius::RADIUS))
+            .rounded(px(radius::ROW))
             .cursor_pointer()
             .when(selected, |d| d.bg(ui::selected_bg(t)))
             .when(archived && !selected, |d| d.opacity(0.6))
@@ -1004,7 +1083,7 @@ impl Shell {
                     .flex_1()
                     .min_w_0()
                     .px(px(4.0))
-                    .rounded(px(radius::RADIUS))
+                    .rounded(px(radius::ROW))
                     .bg(t.wash(0.08))
                     .child(Input::new(&input))
                     .into_any_element(),
@@ -1043,7 +1122,7 @@ impl Shell {
                         .flex_none()
                         .items_center()
                         .gap(px(3.0))
-                        .rounded(px(radius::RADIUS))
+                        .rounded(px(radius::ROW))
                         .text_size(ty::BADGE)
                         .text_color(t.text_faint)
                         .hover(|s| s.bg(t.wash(0.08)).text_color(t.text))
@@ -1207,7 +1286,7 @@ impl Shell {
                     .flex()
                     .items_center()
                     .gap(px(8.0))
-                    .rounded(px(radius::RADIUS))
+                    .rounded(px(radius::ROW))
                     .cursor_pointer()
                     .hover(|st| st.bg(t.wash(0.05)))
                     .tooltip(ui::tip(if s.prompt.is_empty() { s.title.clone() } else { s.prompt.clone() }))
@@ -1281,7 +1360,7 @@ impl Shell {
                     .flex()
                     .items_center()
                     .gap(px(9.0))
-                    .rounded(px(radius::RADIUS))
+                    .rounded(px(radius::ROW))
                     .cursor_pointer()
                     .when(selected, |d| d.bg(t.wash(0.08)))
                     .when(!selected, |d| d.hover(|s| s.bg(t.wash(0.04))))

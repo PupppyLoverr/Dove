@@ -103,7 +103,7 @@ fn step_target(target: (f32, f32)) -> (u32, u32) {
 /// have none).
 static RETIRED: Mutex<Vec<Arc<RenderImage>>> = Mutex::new(Vec::new());
 
-fn retire(images: impl IntoIterator<Item = Arc<RenderImage>>) {
+pub(crate) fn retire(images: impl IntoIterator<Item = Arc<RenderImage>>) {
     if let Ok(mut retired) = RETIRED.lock() {
         retired.extend(images);
     }
@@ -1556,7 +1556,7 @@ impl Render for Hero {
 /// Where hero pixel (0, 0) lands in the window, and window px per hero px:
 /// the base cover-fitted into the bounds, zoomed by `motion` about its
 /// centre. Zooming about a point inside the hero keeps it covered.
-fn placement(bounds: Bounds<Pixels>, src: (f32, f32), motion: Motion) -> Option<(f32, f32, f32)> {
+pub(crate) fn placement(bounds: Bounds<Pixels>, src: (f32, f32), motion: Motion) -> Option<(f32, f32, f32)> {
     let (sw, sh) = (src.0.max(1.0), src.1.max(1.0));
     let (w, h) = (f32::from(bounds.size.width), f32::from(bounds.size.height));
     if w <= 0.0 || h <= 0.0 {
@@ -1571,7 +1571,7 @@ fn placement(bounds: Bounds<Pixels>, src: (f32, f32), motion: Motion) -> Option<
 }
 
 /// The bottom fade, and with `cutout` the composer's feathered rounded rect.
-fn alpha_mask(bounds: Bounds<Pixels>, composer: Option<Bounds<Pixels>>, cutout: bool, fade: bool) -> ImageAlphaMask {
+pub(crate) fn alpha_mask(bounds: Bounds<Pixels>, composer: Option<Bounds<Pixels>>, cutout: bool, fade: bool) -> ImageAlphaMask {
     let h = f32::from(bounds.size.height);
     let bottom_fade = fade.then(|| (bounds.bottom(), px(h.max(1.0))));
     match (cutout, composer) {

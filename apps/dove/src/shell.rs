@@ -18,7 +18,7 @@ use gpui::{
     Anchor, AnyElement, AnyView, AppContext as _, Bounds, ClipboardItem, Context, Entity, FocusHandle,
     InteractiveElement as _, IntoElement, MouseButton, MouseMoveEvent, ParentElement as _, Pixels, Point, Render,
     SharedString, StatefulInteractiveElement as _, StyleRefinement, Styled as _, Subscription, Window,
-    WindowControlArea, anchored, deferred, div, px,
+    WindowControlArea, anchored, deferred, div, px, relative,
 };
 use gpui_base::input::{InputEvent, InputState};
 
@@ -48,10 +48,13 @@ const CENTER_MIN: f32 = 300.0;
 /// Narrowest the dock gets.
 const PANEL_FLOOR: f32 = 360.0;
 
-/// A thread's picture: blurred enough to read as colour and soft shapes,
-/// darkened enough that text stays calm on any image.
-const THREAD_ART_BLUR: f32 = 30.0;
-const THREAD_ART_TINT: f32 = 0.60;
+/// A thread's picture is a baked frost (see `wallpaper_media`): blurred
+/// until only colour remains, under a scrim that starts at this dim and
+/// rises until text reads. Zeron's frosted-wallpaper recipe.
+pub const CHAT_DIM_DARK: f32 = 0.78;
+pub const CHAT_DIM_LIGHT: f32 = 0.82;
+pub const CHAT_DIM_MIN: f32 = 0.55;
+pub const CHAT_DIM_MAX: f32 = 0.95;
 /// The sidebar and dock over that picture: the same frost, a shade deeper.
 const SIDE_ART_TINT: f32 = 0.24;
 
@@ -285,6 +288,7 @@ impl Shell {
         let panel = cx.new(|cx| {
             let mut p = SidePanel::new(engine.clone(), window, cx);
             p.expanded = engine.store.setting("panel_expanded").as_deref() == Some("true");
+            p.dock_left = engine.store.setting("panel_side").as_deref() == Some("left");
             p
         });
         // Composers list the in-app browser's tabs for `@` mentions.
@@ -322,6 +326,10 @@ impl Shell {
                     let text = text.clone();
                     chat.update(cx, |c, cx| c.submit(text, window, cx));
                 }
+            }
+            SidePanelEvent::Dock(left) => {
+                let _ = this.engine.store.set_setting("panel_side", if *left { "left" } else { "right" });
+                cx.notify();
             }
             SidePanelEvent::Close => {
                 this.panel_open = false;
@@ -1906,8 +1914,14 @@ impl Shell {
         let palette = cx.new(|cx| Palette::new(items, root, window, cx));
         let sub = cx.subscribe_in(&palette, window, |this, _, ev: &PaletteEvent, window, cx| {
             this.palette = None;
-            if let PaletteEvent::Pick(item) = ev {
-                this.run_palette(item.clone(), window, cx);
+            match ev {
+                PaletteEvent::Pick(item) => this.run_palette(item.clone(), window, cx),
+                PaletteEvent::Compose(text) => {
+                    this.new_session(window, cx);
+                    crate::composer::set_text(&this.composer, text, window, cx);
+                    crate::composer::focus(&this.composer, window, cx);
+                }
+                PaletteEvent::Close => {}
             }
             cx.notify();
         });
@@ -2295,13 +2309,14 @@ impl Shell {
             self.render_bar_title(&t, cx)
         };
         let files_on = panel_open && self.panel.read(cx).showing(crate::side_panel::Surface::Files);
+        let dock_left = self.panel_left();
         let right_tools = div()
             .flex()
             .flex_none()
             .items_center()
             .gap(px(4.0))
             .pl(px(8.0))
-            .pr(px(if panel_open { 8.0 } else { ui::caption_reserve() + 8.0 }))
+            .pr(px(if panel_open && !dock_left { 8.0 } else { ui::caption_reserve() + 8.0 }))
             // Thread tools sit in the bar: Chat | Terminal (Ctrl+`), info,
             // then the panel toggle.
             .when(in_thread, |d| {
@@ -2371,19 +2386,28 @@ impl Shell {
             .when(!home_art && !thread_art, |d| d.bg(t.bg))
             .flex()
             .items_center()
-            .when(!expanded, |d| {
-                d.child(div().flex_1().min_w_0().h_full().flex().items_center().child(tabs)).child(right_tools)
-            })
-            .when_some(strip, |d, strip| {
-                d.child(
+            .map(|d| {
+                let strip = strip.map(|strip| {
                     div()
                         .h_full()
                         .min_w_0()
                         .when(!expanded, |d| d.w(px(panel_w)).flex_none())
                         .when(expanded, |d| d.flex_1())
-                        .pr(px(ui::caption_reserve()))
-                        .child(strip),
-                )
+                        .when(!dock_left || expanded, |d| d.pr(px(ui::caption_reserve())))
+                        .when(dock_left && !expanded, |d| d.border_r_1().border_color(t.wash(0.06)))
+                        .child(strip)
+                });
+                let main = (!expanded).then(|| {
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .h_full()
+                        .flex()
+                        .items_center()
+                        .child(div().flex_1().min_w_0().h_full().flex().items_center().child(tabs))
+                        .child(right_tools)
+                });
+                if dock_left { d.children(strip).children(main) } else { d.children(main).children(strip) }
             });
         let bar = div()
             .relative()
@@ -2787,110 +2811,201 @@ impl Shell {
                 .child(icon(glyph).size(px(15.0)).flex_none().text_color(t.text_muted))
                 .child(div().flex_1().min_w_0().truncate().child(text))
         };
-        let rule = kit::popover::menu_separator(t);
-        let sheet = div()
-            .id("thread-info")
-            .w(px(272.0))
-            .max_h(px(560.0))
-            .flex()
-            .flex_col()
-            .overflow_y_scroll()
-            .rounded(px(kit::popover::CARD_RADIUS))
-            .border_1()
-            .border_color(t.border_strong)
-            .bg(t.bg.opacity(0.48))
-            .p(px(kit::popover::CARD_INSET))
-            .gap(px(kit::popover::MENU_GAP))
-            .child(fact(icons::LAPTOP, format!("Local · {}", ui::host_name())))
-            .child(fact(icons::FOLDER, project.as_ref().map(|p| p.name.clone()).unwrap_or_else(|| "No folder".into())))
-            .when_some(task.branch.clone(), |d, b| d.child(fact(icons::GIT_BRANCH, b)))
-            .when(!path_s.is_empty(), |d| d.child(fact(icons::FOLDER_WITH_FILES, path_s.clone())))
-            .child(rule)
-            .child(fact(icons::CLOCK_CIRCLE, context_line))
-            .child(fact(ui::harness_icon(task.harness), model))
-            .child(fact(icons::KEY_MINIMALISTIC, format!("Permissions · {mode_name}")))
-            .when(usage.total_tokens() > 0, |d| d.child(fact(icons::TAG, ui::usage_line(&usage))))
-            .when_some(usage.cost_usd, |d, cost| d.child(fact(icons::TAG, format!("${cost:.2} this thread"))))
-            .when(files > 0, |d| {
-                d.child(
+        let context_pct = match context {
+            (Some(u), Some(w)) if w > 0 => Some((u as f32 / w as f32).clamp(0.0, 1.0)),
+            _ => None,
+        };
+        // One card per subject. Folded, a card is one line that says the
+        // number that matters; the fold is remembered per card.
+        let card = |key: &'static str, title: &'static str, summary: Option<AnyElement>, body: Vec<AnyElement>, this: &Self, cx: &mut Context<Self>| {
+            let setting = format!("info_closed.{key}");
+            let open = this.engine.store.setting(&setting).as_deref() != Some("1");
+            let turn = crate::motion::state_t(key, open, crate::motion::CHEVRON, cx.reduce_motion());
+            div()
+                .flex()
+                .flex_col()
+                .rounded(px(crate::design::radius::CARD))
+                .border_1()
+                .border_color(t.border)
+                .bg(t.glass_overlay())
+                .shadow_md()
+                .p(px(4.0))
+                .child(
                     div()
-                        .id("info-open-changes")
-                        .min_h(px(30.0))
+                        .id(SharedString::from(format!("info-head-{key}")))
+                        .h(px(30.0))
                         .px(px(8.0))
-                        .py(px(5.0))
                         .flex()
                         .items_center()
-                        .gap(px(10.0))
+                        .gap(px(6.0))
                         .rounded(px(kit::popover::MENU_ITEM_RADIUS))
                         .cursor_pointer()
+                        .hover(|s| s.bg(t.wash(0.05)))
                         .text_size(ty::BODY)
+                        .font_weight(gpui::FontWeight::MEDIUM)
                         .text_color(t.text)
-                        .hover(|s| s.bg(kit::popover::row_active_bg(t)))
-                        .tooltip(ui::tip("Show the changes"))
-                        .on_click(cx.listener(|this, _, window, cx| this.show_panel(Tab::Changes, window, cx)))
-                        .child(icon(icons::GIT_BRANCH).size(px(15.0)).flex_none().text_color(t.text_muted))
-                        .child(div().flex_1().min_w_0().truncate().child(format!("{files} changed")))
+                        .child(title)
                         .child(
-                            div()
-                                .flex_none()
-                                .flex()
-                                .gap(px(6.0))
-                                .text_size(ty::META)
-                                .child(div().text_color(t.success).child(format!("+{adds}")))
-                                .child(div().text_color(t.danger).child(format!("−{dels}"))),
-                        ),
+                            icon(icons::ALT_ARROW_RIGHT)
+                                .size(px(10.0))
+                                .text_color(t.text_faint)
+                                .with_transformation(gpui::Transformation::rotate(gpui::radians(
+                                    turn * std::f32::consts::FRAC_PI_2,
+                                ))),
+                        )
+                        .child(div().flex_1())
+                        .children(summary)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            let _ = this.engine.store.set_setting(&setting, if open { "1" } else { "0" });
+                            cx.notify();
+                        })),
                 )
-            })
-            .when_some(pr, |d, (target, detail)| {
-                let (status, color) = match &detail {
-                    Some(d) => crate::pr_view::status_style(d, t),
-                    None => ("", t.text_muted),
-                };
-                let checks = detail.as_ref().map(|d| d.checks_summary()).unwrap_or("none");
-                let title = detail.as_ref().map(|d| d.title.clone()).unwrap_or_default();
-                d.child(
-                    div()
-                        .id("info-open-pr")
-                        .min_h(px(30.0))
-                        .px(px(8.0))
-                        .py(px(5.0))
-                        .flex()
-                        .items_center()
-                        .gap(px(10.0))
-                        .rounded(px(kit::popover::MENU_ITEM_RADIUS))
-                        .cursor_pointer()
-                        .text_size(ty::BODY)
-                        .text_color(t.text)
-                        .hover(|s| s.bg(kit::popover::row_active_bg(t)))
-                        .tooltip(ui::tip("Show the pull request"))
-                        .on_click(cx.listener(|this, _, window, cx| this.show_panel(Tab::PullRequest, window, cx)))
-                        .child(icon(icons::PULL_REQUEST).size(px(15.0)).flex_none().text_color(color))
-                        .child(div().flex_1().min_w_0().truncate().child(if title.is_empty() {
-                            format!("PR #{}", target.number)
-                        } else {
-                            format!("#{} · {title}", target.number)
-                        }))
-                        .when(!status.is_empty(), |d| {
-                            d.child(div().flex_none().text_size(ty::META).text_color(color).child(status))
-                        })
-                        .when(checks != "none", |d| {
-                            d.child(ui::dot(
-                                match checks {
-                                    "passing" => t.success,
-                                    "failing" => t.danger,
-                                    _ => t.warning,
-                                },
-                                6.0,
-                            ))
-                        }),
+                .when(open, |d| d.children(body))
+        };
+        let meter = |p: f32| {
+            div()
+                .w(px(36.0))
+                .h(px(4.0))
+                .rounded_full()
+                .bg(t.wash(0.12))
+                .child(
+                    div().h_full().w(relative(p)).rounded_full().bg(if p >= 0.95 {
+                        t.danger
+                    } else if p >= 0.8 {
+                        t.warning
+                    } else {
+                        t.accent
+                    }),
                 )
-            })
-            .child(kit::popover::menu_separator(t))
-            .child(
-                ui::menu_row("info-side", icons::PLUS, "New side chat", false, t)
-                    .on_click(cx.listener(|this, _, window, cx| this.side_chat(window, cx))),
+        };
+        let quiet = |text: String| div().text_size(ty::META).text_color(t.text_faint).child(text).into_any_element();
+
+        let mut env = vec![
+            fact(icons::LAPTOP, format!("Local · {}", ui::host_name())).into_any_element(),
+            fact(
+                icons::FOLDER,
+                match (&project, path.as_ref()) {
+                    (Some(p), Some(dir)) => format!("{} · {}", p.name, dir.display()),
+                    (Some(p), None) => p.name.clone(),
+                    _ => "No folder".into(),
+                },
             )
-            .child(if can_fork {
+            .into_any_element(),
+        ];
+        if let Some(b) = task.branch.clone() {
+            env.push(fact(icons::GIT_BRANCH, b).into_any_element());
+        }
+        let environment = card("env", "Environment", task.branch.clone().map(quiet), env, self, cx);
+
+        let mut ctx_rows = vec![
+            fact(icons::CLOCK_CIRCLE, context_line).into_any_element(),
+            fact(ui::harness_icon(task.harness), model).into_any_element(),
+            fact(icons::KEY_MINIMALISTIC, format!("Permissions · {mode_name}")).into_any_element(),
+        ];
+        if usage.total_tokens() > 0 {
+            ctx_rows.push(fact(icons::TAG, ui::usage_line(&usage)).into_any_element());
+        }
+        if let Some(cost) = usage.cost_usd {
+            ctx_rows.push(fact(icons::TAG, format!("${cost:.2} this thread")).into_any_element());
+        }
+        let ctx_summary = context_pct.map(|p| {
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.0))
+                .child(div().text_size(ty::META).text_color(t.text_muted).child(format!("{:.0}%", p * 100.0)))
+                .child(meter(p))
+                .into_any_element()
+        });
+        let context_card = card("context", "Context", ctx_summary, ctx_rows, self, cx);
+
+        let mut change_rows = Vec::new();
+        if files > 0 {
+            change_rows.push(
+                div()
+                    .id("info-open-changes")
+                    .min_h(px(30.0))
+                    .px(px(8.0))
+                    .py(px(5.0))
+                    .flex()
+                    .items_center()
+                    .gap(px(10.0))
+                    .rounded(px(kit::popover::MENU_ITEM_RADIUS))
+                    .cursor_pointer()
+                    .text_size(ty::BODY)
+                    .text_color(t.text)
+                    .hover(|s| s.bg(kit::popover::row_active_bg(t)))
+                    .tooltip(ui::tip("Show the changes"))
+                    .on_click(cx.listener(|this, _, window, cx| this.show_panel(Tab::Changes, window, cx)))
+                    .child(icon(icons::FILE_CODE).size(px(15.0)).flex_none().text_color(t.text_muted))
+                    .child(div().flex_1().min_w_0().truncate().child(format!("{files} files changed")))
+                    .child(div().text_size(ty::META).text_color(t.text_faint).child("Review"))
+                    .into_any_element(),
+            );
+        }
+        if let Some((target, detail)) = pr {
+            let (status, color) = match &detail {
+                Some(d) => crate::pr_view::status_style(d, t),
+                None => ("", t.text_muted),
+            };
+            let checks = detail.as_ref().map(|d| d.checks_summary()).unwrap_or("none");
+            let title = detail.as_ref().map(|d| d.title.clone()).unwrap_or_default();
+            change_rows.push(
+                div()
+                    .id("info-open-pr")
+                    .min_h(px(30.0))
+                    .px(px(8.0))
+                    .py(px(5.0))
+                    .flex()
+                    .items_center()
+                    .gap(px(10.0))
+                    .rounded(px(kit::popover::MENU_ITEM_RADIUS))
+                    .cursor_pointer()
+                    .text_size(ty::BODY)
+                    .text_color(t.text)
+                    .hover(|s| s.bg(kit::popover::row_active_bg(t)))
+                    .tooltip(ui::tip("Show the pull request"))
+                    .on_click(cx.listener(|this, _, window, cx| this.show_panel(Tab::PullRequest, window, cx)))
+                    .child(icon(icons::PULL_REQUEST).size(px(15.0)).flex_none().text_color(color))
+                    .child(div().flex_1().min_w_0().truncate().child(if title.is_empty() {
+                        format!("PR #{}", target.number)
+                    } else {
+                        format!("#{} · {title}", target.number)
+                    }))
+                    .when(!status.is_empty(), |d| {
+                        d.child(div().flex_none().text_size(ty::META).text_color(color).child(status))
+                    })
+                    .when(checks != "none", |d| {
+                        d.child(ui::dot(
+                            match checks {
+                                "passing" => t.success,
+                                "failing" => t.danger,
+                                _ => t.warning,
+                            },
+                            6.0,
+                        ))
+                    })
+                    .into_any_element(),
+            );
+        }
+        let changes_card = (!change_rows.is_empty()).then(|| {
+            let summary = (files > 0).then(|| {
+                div()
+                    .flex()
+                    .gap(px(6.0))
+                    .text_size(ty::META)
+                    .child(div().text_color(t.success).child(format!("+{adds}")))
+                    .child(div().text_color(t.danger).child(format!("−{dels}")))
+                    .into_any_element()
+            });
+            card("changes", "Changes", summary, change_rows, self, cx)
+        });
+
+        let actions = vec![
+            ui::menu_row("info-side", icons::PLUS, "New side chat", false, t)
+                .on_click(cx.listener(|this, _, window, cx| this.side_chat(window, cx)))
+                .into_any_element(),
+            if can_fork {
                 ui::menu_row("info-fork", icons::FORK, "Fork thread", false, t)
                     .on_click(cx.listener(move |this, _, window, cx| this.fork_task(id, window, cx)))
                     .into_any_element()
@@ -2899,8 +3014,8 @@ impl Shell {
                     .opacity(0.45)
                     .tooltip(ui::tip("Forking needs a Claude Code session that has started"))
                     .into_any_element()
-            })
-            .child({
+            },
+            {
                 let p = path.clone();
                 ui::menu_row("info-open", icons::FOLDER_WITH_FILES, "Open folder", false, t)
                     .on_click(cx.listener(move |_, _, _, cx| {
@@ -2909,8 +3024,8 @@ impl Shell {
                         }
                     }))
                     .into_any_element()
-            })
-            .child({
+            },
+            {
                 let p = path;
                 ui::menu_row("info-term", icons::TERMINAL, "Open in system terminal", false, t)
                     .on_click(cx.listener(move |_, _, _, _cx| {
@@ -2919,12 +3034,26 @@ impl Shell {
                         }
                     }))
                     .into_any_element()
-            })
-            .child(
-                ui::menu_row("info-copy-path", icons::COPY, "Copy path", false, t)
-                    .on_click(cx.listener(move |this, _, _, cx| this.copy(path_s.clone(), cx))),
-            );
-        ui::frosted(kit::popover::CARD_RADIUS, 64.0, sheet).into_any_element()
+            },
+            ui::menu_row("info-copy-path", icons::COPY, "Copy path", false, t)
+                .on_click(cx.listener(move |this, _, _, cx| this.copy(path_s.clone(), cx)))
+                .into_any_element(),
+        ];
+        let actions_card = card("actions", "Actions", None, actions, self, cx);
+
+        let sheet = div()
+            .id("thread-info")
+            .w(px(300.0))
+            .max_h(px(620.0))
+            .flex()
+            .flex_col()
+            .gap(px(8.0))
+            .overflow_y_scroll()
+            .child(environment)
+            .child(context_card)
+            .children(changes_card)
+            .child(actions_card);
+        sheet.into_any_element()
     }
 
     fn render_menu_overlay(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -3056,7 +3185,13 @@ impl Shell {
 
     /// Routes whose picture runs under the whole window as frosted glass.
     fn full_art_route(&self) -> bool {
-        matches!(self.route, Route::Thread(_) | Route::Flock) || self.call_view_shown
+        (matches!(self.route, Route::Thread(_) | Route::Flock) || self.call_view_shown)
+            && self.engine.store.setting("wallpaper_chat").as_deref() != Some("false")
+    }
+
+    /// The side panel docks on the left of the chat instead of the right.
+    pub fn panel_left(&self) -> bool {
+        self.engine.store.setting("panel_side").as_deref() == Some("left")
     }
 
     fn has_wallpaper(&self) -> bool {
@@ -3100,28 +3235,64 @@ impl Shell {
         let viewport_h = f32::from(window.viewport_size().height);
         let height = if thread { viewport_h } else { crate::wallpaper::hero_height(viewport_h) };
         let scale = window.scale_factor();
-        let effect =
-            crate::wallpaper::Effect::from_id(&self.engine.store.setting("wallpaper_effect").unwrap_or_default());
-        let animate = self.engine.store.setting("wallpaper_animate").as_deref() == Some("true");
-        // A thread backdrop always uses the live frost below: the baked
-        // raster blur (a quarter-size Gaussian under a flat tint) did not
-        // match its look.
-        let props = crate::wallpaper::HeroProps {
-            path: path.into(),
-            effect,
-            light: !t.appearance.is_dark(),
-            target: (width * scale, height * scale),
-            animate,
-            frosted: t.is_frost(),
-            blur: 0,
-            fade: home,
-            composer: if home { self.composer_bounds.clone() } else { std::rc::Rc::new(std::cell::Cell::new(None)) },
+        let kind = crate::wallpaper_media::kind_cached(std::path::Path::new(&path));
+        let playback = self.engine.store.setting("wallpaper_playback").unwrap_or_else(|| "always".into());
+        let composer = if home { self.composer_bounds.clone() } else { std::rc::Rc::new(std::cell::Cell::new(None)) };
+        let target = (width * scale, height * scale);
+        let art = if thread {
+            // The chat frost: baked blur, painted under a contrast-solved scrim.
+            let blur = self.chat_blur().round() as u32;
+            let play = playback == "always" && kind != crate::wallpaper_media::Kind::Still;
+            let variant = crate::wallpaper_media::Variant::Frost(blur);
+            let props = crate::wallpaper_media::BackdropProps {
+                path: path.clone().into(),
+                variant,
+                target,
+                play,
+                fade: false,
+                composer: None,
+                opacity: 1.0,
+            };
+            let view = window.use_keyed_state("shell-frost", cx, crate::wallpaper_media::Backdrop::new);
+            let ready = view.update(cx, |b, cx| b.show(props, cx));
+            let bright = crate::wallpaper_media::clip(std::path::Path::new(&path), variant, target, true, cx)
+                .map_or(1.0, |c| c.bright);
+            ready.then(|| (view.into_any_element(), Some(self.chat_scrim(bright, &t))))
+        } else if kind == crate::wallpaper_media::Kind::Still {
+            let effect =
+                crate::wallpaper::Effect::from_id(&self.engine.store.setting("wallpaper_effect").unwrap_or_default());
+            let animate = self.engine.store.setting("wallpaper_animate").as_deref() == Some("true");
+            let props = crate::wallpaper::HeroProps {
+                path: path.into(),
+                effect,
+                light: !t.appearance.is_dark(),
+                target,
+                animate,
+                frosted: t.is_frost(),
+                blur: 0,
+                fade: home,
+                composer,
+            };
+            let view = window.use_keyed_state("shell-hero", cx, crate::wallpaper::Hero::new);
+            view.update(cx, |hero, cx| hero.show(props, cx)).then(|| (view.into_any_element(), None))
+        } else {
+            // A moving background on home: full size, faded into the canvas.
+            let props = crate::wallpaper_media::BackdropProps {
+                path: path.into(),
+                variant: crate::wallpaper_media::Variant::Hero,
+                target,
+                play: playback != "off",
+                fade: true,
+                composer: Some(composer),
+                opacity: if t.is_frost() { crate::wallpaper::FROSTED_OPACITY } else { 1.0 },
+            };
+            let view = window.use_keyed_state("shell-motion", cx, crate::wallpaper_media::Backdrop::new);
+            view.update(cx, |b, cx| b.show(props, cx)).then(|| (view.into_any_element(), None))
         };
-        let view = window.use_keyed_state("shell-hero", cx, crate::wallpaper::Hero::new);
-        view.update(cx, |hero, cx| hero.show(props, cx)).then(|| {
+        art.map(|(view, scrim)| {
             // One column, from the title strip down. Home fades into the
-            // canvas. A thread keeps the picture and lays one frost over
-            // the whole column, titlebar included, so the bar is the page.
+            // canvas. A thread lays the baked frost and one scrim over the
+            // whole window, titlebar included, so the bar is the page.
             div()
                 .absolute()
                 .top_0()
@@ -3131,15 +3302,41 @@ impl Shell {
                 .overflow_hidden()
                 .bg(t.bg)
                 .child(div().absolute().top_0().left_0().right_0().h(px(height)).child(view))
-                .when(thread, |d| {
-                    d.child(div().absolute().inset_0().child(ui::frosted(
-                        0.0,
-                        THREAD_ART_BLUR,
-                        div().size_full().bg(t.bg.opacity(THREAD_ART_TINT)),
-                    )))
-                })
+                .when_some(scrim, |d, alpha| d.child(div().absolute().inset_0().bg(t.bg.opacity(alpha))))
                 .into_any_element()
         })
+    }
+
+    /// The chat backdrop's blur, in screen pixels (Settings › Background).
+    fn chat_blur(&self) -> f32 {
+        use crate::wallpaper_media::FrostLook;
+        self.engine
+            .store
+            .setting("wallpaper_chat_blur")
+            .and_then(|v| v.parse::<f32>().ok())
+            .unwrap_or(FrostLook::DEFAULT_BLUR)
+            .clamp(FrostLook::MIN_BLUR, FrostLook::MAX_BLUR)
+    }
+
+    /// Scrim coverage over the chat frost: the user's dim as the floor,
+    /// raised until body text holds 7:1 over the art's brightest region
+    /// (its darkest, on a light theme).
+    fn chat_scrim(&self, bright: f32, t: &Theme) -> f32 {
+        let dark = t.appearance.is_dark();
+        let floor = self
+            .engine
+            .store
+            .setting("wallpaper_chat_dim")
+            .and_then(|v| v.parse::<f32>().ok())
+            .unwrap_or(if dark { CHAT_DIM_DARK } else { CHAT_DIM_LIGHT })
+            .clamp(CHAT_DIM_MIN, CHAT_DIM_MAX);
+        let backdrop = if dark { bright } else { 0.0 };
+        crate::wallpaper_media::scrim_alpha(
+            backdrop,
+            crate::theme::luminance(crate::theme::flatten(t.bg, t.bg)),
+            crate::theme::luminance(crate::theme::flatten(t.text, t.bg)),
+            floor,
+        )
     }
 
     fn render_center(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
@@ -3384,6 +3581,7 @@ impl Render for Shell {
         // The dock is the window's full height. Its fill is the same as the
         // chat, and it continues up through the titlebar strip (`dock_layer`).
         let panel_entrance = (!expanded).then(|| self.slides.panel.entrance("panel-in")).flatten();
+        let dock_left = self.panel_left();
         let panel = panel_open.then(|| {
             div()
                 .relative()
@@ -3394,7 +3592,8 @@ impl Render for Shell {
                     d.child(
                         div()
                             .absolute()
-                            .left(px(-3.0))
+                            .when(!dock_left, |d| d.left(px(-3.0)))
+                            .when(dock_left, |d| d.right(px(-3.0)))
                             .top_0()
                             .bottom_0()
                             .w(px(6.0))
@@ -3411,8 +3610,8 @@ impl Render for Shell {
                 .child(AnyView::from(self.panel.clone()).cached(StyleRefinement::default().size_full()))
         });
         let panel = panel.map(|panel| match (panel_entrance, panel_nudge) {
-            (Some(id), _) => crate::motion::slide_in(id, panel_w, true, panel).into_any_element(),
-            (None, Some(o)) => panel.left(px(o)).into_any_element(),
+            (Some(id), _) => crate::motion::slide_in(id, panel_w, !dock_left, panel).into_any_element(),
+            (None, Some(o)) => panel.left(px(if dock_left { -o } else { o })).into_any_element(),
             (None, None) => panel.into_any_element(),
         });
 
@@ -3448,17 +3647,21 @@ impl Render for Shell {
         // The dock continues the same fill up through its strip. No rule on
         // the seam: the two columns are one surface, split only by content.
         let dock_layer = panel_open.then(|| {
+            let inner = if sidebar_shown { self.sidebar_w } else { 0.0 };
             div()
                 .absolute()
                 .top_0()
                 .bottom_0()
-                .right_0()
+                .when(!dock_left || expanded, |d| d.right_0())
+                .when(dock_left && !expanded, |d| d.left(px(inner)))
                 .when(!expanded, |d| d.w(px(panel_w)))
-                .when(expanded, |d| d.left(px(if sidebar_shown { self.sidebar_w } else { 0.0 })))
+                .when(expanded, |d| d.left(px(inner)))
                 // Over a thread's picture the dock is the same frost, a
                 // shade deeper, with a hairline seam; otherwise the page.
                 .when(thread_art, |d| {
-                    d.bg(t.bg.opacity(SIDE_ART_TINT)).when(!expanded, |d| d.border_l_1().border_color(t.wash(0.06)))
+                    d.bg(t.bg.opacity(SIDE_ART_TINT)).when(!expanded, |d| {
+                        if dock_left { d.border_r_1() } else { d.border_l_1() }.border_color(t.wash(0.06))
+                    })
                 })
                 .when(!thread_art, |d| d.bg(t.bg))
         });
@@ -3639,7 +3842,8 @@ impl Render for Shell {
                         // saved width is the one you see.
                         Edge::Panel => {
                             let max = this.panel_room(window).max(PANEL_FLOOR);
-                            let (w, pressing) = crate::motion::clamp_resize(width - delta, PANEL_FLOOR, max);
+                            let grow = if this.panel_left() { delta } else { -delta };
+                            let (w, pressing) = crate::motion::clamp_resize(width + grow, PANEL_FLOOR, max);
                             this.panel_w = w;
                             this.note_resize_edge(edge, pressing);
                         }
@@ -3674,8 +3878,10 @@ impl Render for Shell {
                 // chat and dock are one frosted surface); home keeps it to
                 // the chat column, where it fades into the canvas.
                 let full = thread_art;
-                let art_left = if sidebar_shown && !full { self.sidebar_w } else { 0.0 };
-                let art_right = if panel_open && !expanded && !full { panel_w } else { 0.0 };
+                let docked = panel_open && !expanded && !full;
+                let art_left = if sidebar_shown && !full { self.sidebar_w } else { 0.0 }
+                    + if docked && dock_left { panel_w } else { 0.0 };
+                let art_right = if docked && !dock_left { panel_w } else { 0.0 };
                 let art_width = (f32::from(window.viewport_size().width) - art_left - art_right).max(1.0);
                 self.wallpaper_layer(art_left, art_width, window, cx)
             })
@@ -3690,8 +3896,7 @@ impl Render for Shell {
                     .min_h_0()
                     .flex()
                     .children(sidebar)
-                    .children(card)
-                    .children(panel)
+                    .map(|d| if dock_left { d.children(panel).children(card) } else { d.children(card).children(panel) })
                     .children(sidebar_ghost),
             )
             .when(bare, |d| d.child(self.render_bare_chrome(window, cx)))
@@ -3705,7 +3910,7 @@ impl Render for Shell {
             .children(self.render_voice_bar(cx))
             .children((self.info_open && in_thread && !expanded).then(|| self.active_task().cloned()).flatten().map(
                 |task| {
-                    let right = if panel_open { panel_w + 14.0 } else { 14.0 };
+                    let right = if panel_open && !dock_left { panel_w + 14.0 } else { 14.0 };
                     div()
                         .absolute()
                         .top(px(Theme::TITLEBAR_HEIGHT + 8.0))

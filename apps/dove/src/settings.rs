@@ -222,7 +222,12 @@ const INDEX: &[Entry] = &[
     ),
     e(Section::Appearance, "theme_import", "Import VS Code theme", "import vscode visual studio code theme json file"),
     e(Section::Appearance, "surface", "Window material", "glass acrylic normal frosted surface material blur"),
-    e(Section::Appearance, "wallpaper_path", "New-thread background", "wallpaper background image backdrop home"),
+    e(Section::Appearance, "wallpaper_path", "Background", "wallpaper background image backdrop home gif video animated"),
+    e(Section::Appearance, "wallpaper_recent", "Recent backgrounds", "wallpaper background recent history"),
+    e(Section::Appearance, "wallpaper_playback", "Play animated backgrounds", "gif video animated wallpaper play pause"),
+    e(Section::Appearance, "wallpaper_chat", "Show behind chats", "wallpaper background chat thread behind frost"),
+    e(Section::Appearance, "wallpaper_chat_blur", "Chat blur", "blur frost wallpaper chat background strength"),
+    e(Section::Appearance, "wallpaper_chat_dim", "Chat dim", "dim darken scrim wallpaper chat background"),
     e(Section::Appearance, "wallpaper_effect", "Background effect", "dither halftone scanlines effect shader backdrop"),
     e(Section::Appearance, "wallpaper_animate", "Animate background", "animate animation backdrop wallpaper motion"),
     e(Section::Appearance, "reduce_motion", "Reduce motion", "motion animation accessibility reduce"),
@@ -379,6 +384,9 @@ fn find_settings(query: &str) -> Vec<&'static Entry> {
 
 /// How long a revealed setting glows.
 const FLASH: Duration = Duration::from_millis(900);
+/// Backgrounds the recents strip remembers.
+const WALLPAPER_RECENTS: usize = 8;
+
 /// Text fields save this long after typing stops (and on blur).
 const SAVE_AFTER: Duration = Duration::from_millis(400);
 
@@ -434,6 +442,11 @@ pub struct SettingsPage {
     voice_cloud_url: Entity<InputState>,
     voice_router_url: Entity<InputState>,
     width_slider: SliderState,
+    chat_blur_slider: SliderState,
+    chat_dim_slider: SliderState,
+    /// Live values while a background slider is dragged.
+    chat_blur_drag: Option<f32>,
+    chat_dim_drag: Option<f32>,
     save_gen: HashMap<&'static str, u64>,
     _subs: Vec<Subscription>,
 }
@@ -571,6 +584,10 @@ impl SettingsPage {
             voice_cloud_url,
             voice_router_url,
             width_slider: SliderState::default(),
+            chat_blur_slider: SliderState::default(),
+            chat_dim_slider: SliderState::default(),
+            chat_blur_drag: None,
+            chat_dim_drag: None,
             save_gen: HashMap::new(),
             _subs: subs,
         }
@@ -690,14 +707,34 @@ impl SettingsPage {
             files: true,
             directories: false,
             multiple: false,
-            prompt: Some("Choose background image".into()),
+            prompt: Some("Choose a background: image, GIF or video".into()),
         });
         cx.spawn(async move |this, cx| {
             let Ok(Ok(Some(paths))) = pick.await else { return };
             let Some(path) = paths.into_iter().next() else { return };
-            let _ = this.update(cx, |s, cx| s.set("wallpaper_path", &path.to_string_lossy(), cx));
+            let _ = this.update(cx, |s, cx| s.use_wallpaper(&path.to_string_lossy(), cx));
         })
         .detach();
+    }
+
+    /// Recently used backgrounds, newest first, that are still on disk.
+    fn recent_wallpapers(&self) -> Vec<String> {
+        self.get("wallpaper_recent")
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| !l.is_empty() && std::path::Path::new(l).is_file())
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// Make `path` the background and put it at the head of the recents.
+    fn use_wallpaper(&mut self, path: &str, cx: &mut Context<Self>) {
+        let mut recent = self.recent_wallpapers();
+        recent.retain(|p| p != path);
+        recent.insert(0, path.to_string());
+        recent.truncate(WALLPAPER_RECENTS);
+        let _ = self.engine.store.set_setting("wallpaper_recent", &recent.join("\n"));
+        self.set("wallpaper_path", path, cx);
     }
 
     /// Pick a VS Code theme JSON, import it (off the UI thread), save it
@@ -1448,38 +1485,36 @@ impl SettingsPage {
             .menu_width(220.0)
             .on_select(|this, i, _, cx| this.set("surface", Surface::ALL[i].id(), cx))
             .render(t, &self.sel_surface, cx);
-        let effect_select = ctl::select::<Self>("set-effect", "Background effect", |s| &mut s.sel_effect)
-            .options(
-                Effect::ALL.iter().map(|e| SelectOption::new(e.label())),
-                Effect::ALL.iter().position(|e| *e == effect).unwrap_or(0),
-            )
-            .width(150.0)
-            .on_select(|this, i, _, cx| this.set("wallpaper_effect", Effect::ALL[i].id(), cx))
-            .render(t, &self.sel_effect, cx);
         let wall_name =
             wall.as_ref().and_then(|w| std::path::Path::new(w).file_name().map(|n| n.to_string_lossy().to_string()));
-        // A small preview of the chosen image with its effect applied.
+        let wall_kind = wall.as_ref().map(|w| crate::wallpaper_media::kind_cached(std::path::Path::new(w)));
+        let still = wall_kind.is_none_or(|k| k == crate::wallpaper_media::Kind::Still);
+        let video_without_ffmpeg =
+            wall_kind == Some(crate::wallpaper_media::Kind::Video) && crate::wallpaper_media::ffmpeg().is_none();
+        // A small preview of the chosen background: a still with its effect
+        // applied, or a moving background's first frame.
         let (thumb_w, thumb_h) = crate::wallpaper::PREVIEW_SIZE;
+        let scale = window.scale_factor();
         let thumb = wall.as_ref().map(|w| {
-            let image = crate::wallpaper::preview(
-                std::path::Path::new(w),
-                effect,
-                !t.appearance.is_dark(),
-                window.scale_factor(),
-                cx,
-            );
+            let path = std::path::Path::new(w);
+            let image = if still {
+                crate::wallpaper::preview(path, effect, !t.appearance.is_dark(), scale, cx)
+            } else {
+                crate::wallpaper_media::thumbnail(path, (thumb_w * scale, thumb_h * scale), cx)
+            };
             div()
                 .id("wall-preview")
+                .relative()
                 .flex_none()
                 .w(px(thumb_w))
                 .h(px(thumb_h))
-                .rounded(px(design::radius::RADIUS))
+                .rounded(px(design::radius::CARD))
                 .overflow_hidden()
                 .border_1()
                 .border_color(t.border)
                 .bg(t.wash(0.06))
                 .cursor_pointer()
-                .tooltip(ui::tip("Replace image"))
+                .tooltip(ui::tip("Replace background"))
                 .on_click(cx.listener(|this, _, _, cx| this.pick_wallpaper(cx)))
                 .child(match image {
                     Some(image) => gpui::StyledImage::object_fit(gpui::img(image), gpui::ObjectFit::Cover)
@@ -1487,6 +1522,7 @@ impl SettingsPage {
                         .into_any_element(),
                     None => page::skeleton(t, gpui::relative(1.0), thumb_h),
                 })
+                .when(!still, |d| d.child(motion_badge(t)))
         });
         let wall_control = div().flex().items_center().gap(px(10.0)).children(thumb).child(
             div()
@@ -1495,22 +1531,138 @@ impl SettingsPage {
                 .items_end()
                 .gap(px(6.0))
                 .child(
-                    ctl::button_sm(
-                        t,
-                        "wall-pick",
-                        if wall.is_some() { "Replace…" } else { "Choose image…" },
-                        Tone::Filled,
-                    )
-                    .on_click(cx.listener(|this, _, _, cx| this.pick_wallpaper(cx))),
+                    ctl::button_sm(t, "wall-pick", if wall.is_some() { "Replace…" } else { "Choose…" }, Tone::Filled)
+                        .on_click(cx.listener(|this, _, _, cx| this.pick_wallpaper(cx))),
                 )
                 .when(wall.is_some(), |d| {
                     d.child(
-                        ctl::button_sm(t, "wall-clear", "Remove", Tone::Quiet)
-                            .on_click(cx.listener(|this, _, _, cx| this.set("wallpaper_path", "", cx))),
+                        ctl::button_sm(t, "wall-clear", "Remove", Tone::Quiet).on_click(cx.listener(
+                            |this, _, window, cx| {
+                                crate::wallpaper_media::release(window);
+                                this.set("wallpaper_path", "", cx)
+                            },
+                        )),
                     )
                 }),
         );
+        // Recently used backgrounds, one click to switch back.
+        let recents = self.recent_wallpapers();
+        let recent_strip = (recents.len() > 1).then(|| {
+            div().flex().flex_wrap().justify_end().gap(px(8.0)).children(recents.iter().take(WALLPAPER_RECENTS).map(
+                |path| {
+                    let p = std::path::Path::new(path);
+                    let moving = crate::wallpaper_media::kind_cached(p) != crate::wallpaper_media::Kind::Still;
+                    let image = crate::wallpaper_media::thumbnail(p, (72.0 * scale, 45.0 * scale), cx);
+                    let current = wall.as_deref() == Some(path.as_str());
+                    let name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                    let chosen = path.clone();
+                    div()
+                        .id(SharedString::from(format!("wall-recent-{path}")))
+                        .relative()
+                        .w(px(72.0))
+                        .h(px(45.0))
+                        .rounded(px(design::radius::ROW))
+                        .overflow_hidden()
+                        .border_1()
+                        .border_color(if current { t.accent } else { t.border })
+                        .bg(t.wash(0.06))
+                        .cursor_pointer()
+                        .tooltip(ui::tip(name))
+                        .children(image.map(|image| {
+                            gpui::StyledImage::object_fit(gpui::img(image), gpui::ObjectFit::Cover).size_full()
+                        }))
+                        .when(moving, |d| d.child(motion_badge(t)))
+                        .on_click(cx.listener(move |this, _, _, cx| this.use_wallpaper(&chosen, cx)))
+                },
+            ))
+        });
+        let effect_select = ctl::select::<Self>("set-effect", "Background effect", |s| &mut s.sel_effect)
+            .options(
+                Effect::ALL.iter().map(|e| SelectOption::new(e.label())),
+                Effect::ALL.iter().position(|e| *e == effect).unwrap_or(0),
+            )
+            .width(150.0)
+            .on_select(|this, i, _, cx| this.set("wallpaper_effect", Effect::ALL[i].id(), cx))
+            .render(t, &self.sel_effect, cx);
         let has_wall = wall.is_some();
+        let playback = self.get("wallpaper_playback").unwrap_or_else(|| "always".into());
+        let playback_ids = ["always", "home", "off"];
+        let this = cx.entity().downgrade();
+        let playback_control = ctl::segmented(
+            t,
+            "set-wall-playback",
+            vec![ctl::Segment::new("Always"), ctl::Segment::new("Home only"), ctl::Segment::new("Off")],
+            playback_ids.iter().position(|id| *id == playback).unwrap_or(0),
+            {
+                let this = this.clone();
+                move |i, _, cx| {
+                    let _ = this.update(cx, |p, cx| p.set("wallpaper_playback", playback_ids[i], cx));
+                }
+            },
+        );
+        let behind_chats = self.flag("wallpaper_chat", true);
+        let blur = self.chat_blur_drag.unwrap_or_else(|| {
+            self.get("wallpaper_chat_blur")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(crate::wallpaper_media::FrostLook::DEFAULT_BLUR)
+        });
+        let dark = t.appearance.is_dark();
+        let dim = self.chat_dim_drag.unwrap_or_else(|| {
+            self.get("wallpaper_chat_dim").and_then(|v| v.parse().ok()).unwrap_or(if dark {
+                crate::shell::CHAT_DIM_DARK
+            } else {
+                crate::shell::CHAT_DIM_LIGHT
+            })
+        });
+        let blur_slider = ctl::slider::<Self>(
+            t,
+            "set-chat-blur",
+            blur,
+            (crate::wallpaper_media::FrostLook::MIN_BLUR, crate::wallpaper_media::FrostLook::MAX_BLUR, 4.0),
+            180.0,
+            &self.chat_blur_slider,
+            |s| &mut s.chat_blur_slider,
+            |this, v, commit, _, cx| {
+                if commit {
+                    this.chat_blur_drag = None;
+                    this.set("wallpaper_chat_blur", &format!("{v:.0}"), cx);
+                } else {
+                    this.chat_blur_drag = Some(v);
+                    cx.notify();
+                }
+            },
+            cx,
+        );
+        let dim_slider = ctl::slider::<Self>(
+            t,
+            "set-chat-dim",
+            dim,
+            (crate::shell::CHAT_DIM_MIN, crate::shell::CHAT_DIM_MAX, 0.01),
+            180.0,
+            &self.chat_dim_slider,
+            |s| &mut s.chat_dim_slider,
+            |this, v, commit, _, cx| {
+                if commit {
+                    this.chat_dim_drag = None;
+                    this.set("wallpaper_chat_dim", &format!("{v:.2}"), cx);
+                } else {
+                    this.chat_dim_drag = Some(v);
+                    cx.notify();
+                }
+            },
+            cx,
+        );
+        let blur_word = if blur < 56.0 {
+            "Soft"
+        } else if blur < 104.0 {
+            "Frost"
+        } else {
+            "Deep"
+        };
+        let value_label =
+            |text: String| div().w(px(56.0)).text_size(ty::META).text_color(t.text_muted).child(text).into_any_element();
+        let gate = |on: bool, el: AnyElement| if on { el } else { div().opacity(0.45).child(el).into_any_element() };
+        let chat_on = has_wall && behind_chats;
         let material = page::card(t)
             .child(self.srow(
                 t,
@@ -1528,37 +1680,105 @@ impl SettingsPage {
                 t,
                 false,
                 "wallpaper_path",
-                "New-thread background",
-                wall_name.clone().unwrap_or_else(|| "No image selected".into()),
+                "Background",
+                match (&wall_name, wall_kind) {
+                    (Some(name), _) if video_without_ffmpeg => {
+                        format!("{name} · Video needs ffmpeg (winget install ffmpeg), showing its first frame")
+                    }
+                    (Some(name), Some(kind)) => format!("{name} · {}", kind.label()),
+                    _ => "An image, GIF, animated WebP or video behind new threads and chats.".into(),
+                },
                 wall_control,
             ))
+            .when_some(recent_strip, |d, strip| {
+                d.child(self.srow(t, false, "wallpaper_recent", "Recent backgrounds", "Click one to switch back.", strip))
+            })
             .child(self.srow(
                 t,
                 false,
                 "wallpaper_effect",
                 "Background effect",
-                if has_wall {
+                if !has_wall {
+                    "Choose a background first."
+                } else if still {
                     "How the background is drawn behind the composer."
                 } else {
-                    "Choose a background image first."
+                    "Effects apply to still images."
                 },
-                if has_wall { effect_select } else { div().opacity(0.45).child(effect_select).into_any_element() },
+                gate(has_wall && still, effect_select),
             ))
             .child(self.srow(
                 t,
                 false,
                 "wallpaper_animate",
-                "Animate background",
-                if has_wall { effect.motion_hint() } else { "Choose a background image to animate it." },
-                if has_wall {
+                "Animate effect",
+                if has_wall && still { effect.motion_hint() } else { "Moves a still image's effect." },
+                if has_wall && still {
                     ctl::on_toggle(ctl::toggle(t, "set-wall-animate", animate), cx, move |this, _, cx| {
                         this.set_flag("wallpaper_animate", !animate, cx)
                     })
                     .into_any_element()
                 } else {
-                    ctl::disabled(ctl::toggle(t, "set-wall-animate", animate), "Choose a background image first")
+                    ctl::disabled(ctl::toggle(t, "set-wall-animate", animate), "For still images").into_any_element()
+                },
+            ))
+            .child(self.srow(
+                t,
+                false,
+                "wallpaper_playback",
+                "Play animated backgrounds",
+                "GIFs and videos pause when Dove is in the background or motion is reduced.",
+                gate(has_wall && !still, playback_control),
+            ))
+            .child(self.srow(
+                t,
+                false,
+                "wallpaper_chat",
+                "Show behind chats",
+                "The background, frosted, behind every conversation.",
+                if has_wall {
+                    ctl::on_toggle(ctl::toggle(t, "set-wall-chat", behind_chats), cx, move |this, _, cx| {
+                        this.set_flag("wallpaper_chat", !behind_chats, cx)
+                    })
+                    .into_any_element()
+                } else {
+                    ctl::disabled(ctl::toggle(t, "set-wall-chat", behind_chats), "Choose a background first")
                         .into_any_element()
                 },
+            ))
+            .child(self.srow(
+                t,
+                false,
+                "wallpaper_chat_blur",
+                "Chat blur",
+                "Stronger blur leaves only colour behind the conversation.",
+                gate(
+                    chat_on,
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(10.0))
+                        .child(blur_slider)
+                        .child(value_label(blur_word.into()))
+                        .into_any_element(),
+                ),
+            ))
+            .child(self.srow(
+                t,
+                false,
+                "wallpaper_chat_dim",
+                "Chat dim",
+                "Dove darkens further on its own when text would be hard to read.",
+                gate(
+                    chat_on,
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(10.0))
+                        .child(dim_slider)
+                        .child(value_label(format!("{:.0}%", dim * 100.0)))
+                        .into_any_element(),
+                ),
             ));
 
         // Motion.
@@ -3358,4 +3578,20 @@ fn notch_chip(t: &Theme, id: &'static str, label: &'static str, on: bool) -> gpu
         .when(on, |d| d.bg(t.accent_wash).border_color(t.accent.opacity(0.4)).text_color(t.text))
         .when(!on, |d| d.text_color(t.text_muted))
         .child(label)
+}
+
+/// A small play mark on a moving background's thumbnail.
+fn motion_badge(t: &Theme) -> impl IntoElement {
+    div()
+        .absolute()
+        .right(px(4.0))
+        .bottom(px(4.0))
+        .size(px(16.0))
+        .rounded_full()
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(gpui::black().opacity(0.55))
+        .child(icon(icons::MEDIA_PLAY).size(px(9.0)).text_color(gpui::white()))
+        .text_color(t.text)
 }

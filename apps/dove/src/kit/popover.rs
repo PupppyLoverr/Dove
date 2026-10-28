@@ -16,13 +16,13 @@ use crate::motion;
 use crate::theme::Theme;
 
 /// Card corner radius; rows inside are concentric with it.
-pub const CARD_RADIUS: f32 = radius::RADIUS;
+pub const CARD_RADIUS: f32 = radius::CARD;
 /// The card's inner padding.
 pub const CARD_INSET: f32 = 4.0;
 /// Gap between rows.
 pub const MENU_GAP: f32 = 2.0;
 /// Row corners: the card's radius less the inset the rows sit in.
-pub const MENU_ITEM_RADIUS: f32 = radius::nested(CARD_INSET);
+pub const MENU_ITEM_RADIUS: f32 = radius::CARD - CARD_INSET;
 
 // ---------------------------------------------------------------------------
 // Lifecycle
@@ -303,11 +303,11 @@ pub fn menu_separator(t: &Theme) -> Div {
 // ---------------------------------------------------------------------------
 
 /// Dialog corner radius.
-pub const DIALOG_RADIUS: f32 = radius::RADIUS;
+pub const DIALOG_RADIUS: f32 = radius::MODAL;
 /// The command palette's corners; its rows are concentric with them.
-pub const PALETTE_RADIUS: f32 = radius::RADIUS;
+pub const PALETTE_RADIUS: f32 = radius::MODAL;
 /// Palette rows: the palette's corners less the inset they sit in.
-pub const PALETTE_ITEM_RADIUS: f32 = radius::nested(4.0);
+pub const PALETTE_ITEM_RADIUS: f32 = radius::ROW;
 /// How strongly a palette dims the window, against a dialog's full scrim:
 /// lighter, so the frosted card keeps the backdrop's hue (Zeron's 0.35).
 pub const PALETTE_SCRIM: f32 = 0.58;
