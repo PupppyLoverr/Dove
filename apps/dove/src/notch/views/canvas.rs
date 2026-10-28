@@ -870,7 +870,17 @@ impl Notch {
                     .flex()
                     .items_center()
                     .gap(px(STEP - SLOT))
-                    .child(div().absolute().left(px(puck_x)).top_0().size(px(SLOT)).rounded_full().bg(tk::WASH_ON));
+                    .child(
+                        div()
+                            .absolute()
+                            .left(px(puck_x))
+                            .top_0()
+                            .size(px(SLOT))
+                            .rounded_full()
+                            .bg(tk::WASH_HOVER)
+                            .border_1()
+                            .border_color(tk::CARD_EDGE),
+                    );
                 for (i, t) in tabs.iter().copied().enumerate() {
                     let on = t == page_tab;
                     strip = strip.child(
@@ -1147,11 +1157,30 @@ impl Notch {
         let menu = self.render_menu(cx);
         let composition = self.win.as_ref().is_some_and(|w| w.glass.is_some());
         let frosted = self.prefs.glass && self.transparency && (composition || self.backdrop.is_some());
-        let (top, bottom) = if frosted { (tk::TINT_TOP, tk::TINT_BOTTOM) } else { (tk::SOLID_TOP, tk::SOLID_BOTTOM) };
+        // The tint thickens over a bright backdrop, easing as it changes.
+        let dt = now.duration_since(self.luma_frame).as_secs_f32();
+        self.luma_frame = now;
+        let goal = self.glass_luma;
+        self.luma_shown += (goal - self.luma_shown) * (1.0 - (-dt / 0.25).exp());
+        if (goal - self.luma_shown).abs() > 0.005 {
+            window.request_animation_frame();
+        } else {
+            self.luma_shown = goal;
+        }
+        let dense = {
+            let t = ((self.luma_shown - tk::LUMA_FROM) / (tk::LUMA_TO - tk::LUMA_FROM)).clamp(0.0, 1.0);
+            t * t * (3.0 - 2.0 * t) * tk::TINT_DENSE
+        };
+        let (top, bottom) = if frosted {
+            (Hsla { a: tk::TINT_TOP.a + dense, ..tk::TINT_TOP }, Hsla { a: tk::TINT_BOTTOM.a + dense, ..tk::TINT_BOTTOM })
+        } else {
+            (tk::SOLID_TOP, tk::SOLID_BOTTOM)
+        };
         let backdrop = self.backdrop.clone().filter(|_| frosted && !composition);
         let glow = self.glow();
         let needs = self.approval().is_some() && state != State::Expanded;
-        let border = if needs { tk::AMBER.opacity(0.35 + 0.35 * breathe(self.t())) } else { tk::HAIRLINE };
+        let border = if needs { tk::AMBER.opacity(0.35 + 0.35 * breathe(self.t())) } else { tk::RIM };
+        let grain = frosted.then(grain);
         let glass = move |d: Div, left: f32, y: f32, r: f32| {
             d.border_1()
                 .border_color(border)
@@ -1167,6 +1196,18 @@ impl Notch {
                     )
                 })
                 .child(div().absolute().top_0().left_0().size_full().bg(linear_gradient(180.0, linear_color_stop(top, 0.0), linear_color_stop(bottom, 1.0))))
+                .when(frosted, |d| d.child(div().absolute().top_0().left_0().size_full().bg(tk::FROST)))
+                .when_some(grain.clone(), |d, image| {
+                    d.child(
+                        img(image)
+                            .absolute()
+                            .left(px(-left - 1.0))
+                            .top(px(-y - 1.0))
+                            .w(px(tk::CANVAS_W))
+                            .h(px(tk::CANVAS_H))
+                            .object_fit(ObjectFit::Fill),
+                    )
+                })
                 .when_some(glow, |d, c| {
                     d.child(
                         div()
@@ -1177,6 +1218,16 @@ impl Notch {
                             .bg(linear_gradient(180.0, linear_color_stop(c, 0.0), linear_color_stop(c.opacity(0.0), 0.7))),
                     )
                 })
+                // Light from above, and the pane's inner edge.
+                .child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full()
+                        .bg(linear_gradient(180.0, linear_color_stop(tk::SHEEN, 0.0), linear_color_stop(tk::SHEEN.opacity(0.0), tk::SHEEN_TO))),
+                )
+                .child(div().absolute().top_0().left_0().size_full().rounded(px((r - 1.0).max(0.0))).border_1().border_color(tk::RIM_INNER))
                 // The specular line along the top edge.
                 .child(
                     div()
@@ -1533,4 +1584,26 @@ fn paint_mark(window: &mut Window, tool: ShotTool, a: gpui::Point<gpui::Pixels>,
             }
         }
     }
+}
+
+/// A canvas-sized grain texture, made once: sparse light and dark specks at
+/// a low alpha (premultiplied), laid over the blur so it reads as frosted.
+fn grain() -> std::sync::Arc<gpui::RenderImage> {
+    static GRAIN: std::sync::OnceLock<std::sync::Arc<gpui::RenderImage>> = std::sync::OnceLock::new();
+    GRAIN
+        .get_or_init(|| {
+            let (w, h) = (tk::CANVAS_W as u32, tk::CANVAS_H as u32);
+            let mut seed: u32 = 0x9e37_79b9;
+            let img = image::RgbaImage::from_fn(w, h, |_, _| {
+                seed ^= seed << 13;
+                seed ^= seed >> 17;
+                seed ^= seed << 5;
+                let a = (seed & 0xff) as u32 * tk::GRAIN as u32 / 255;
+                let a = a as u8;
+                // Half the specks lighten, half darken.
+                if seed & 0x100 == 0 { image::Rgba([a, a, a, a]) } else { image::Rgba([0, 0, 0, a]) }
+            });
+            std::sync::Arc::new(gpui::RenderImage::new([image::Frame::new(img)]))
+        })
+        .clone()
 }

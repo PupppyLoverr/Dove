@@ -831,6 +831,12 @@ pub struct Notch {
     backdrop_at: Option<Instant>,
     retired: Vec<Arc<gpui::RenderImage>>,
     capturing: bool,
+    /// How bright the backdrop under the island is (0–1), sampled with the
+    /// backdrop (composition glass too), and the value the tint shows, which
+    /// eases toward it.
+    pub(crate) glass_luma: f32,
+    pub(crate) luma_shown: f32,
+    pub(crate) luma_frame: Instant,
 
     /// The line to Dove's engine (`None` while Dove isn't running), what
     /// waits to go over it, and when it was last tried.
@@ -1181,6 +1187,9 @@ impl Notch {
             backdrop_at: None,
             retired: Vec::new(),
             capturing: false,
+            glass_luma: 0.3,
+            luma_shown: 0.3,
+            luma_frame: Instant::now(),
             link,
             queue: Vec::new(),
             link_at: Instant::now(),
@@ -1230,8 +1239,8 @@ impl Notch {
         if self.shown && self.animating() {
             at.push(now + Duration::from_millis(100));
         }
-        if self.shown && self.uses_captured_glass() {
-            let every = if self.machine.state == State::Slim { 2000 } else { 600 };
+        if self.shown && self.samples_backdrop() {
+            let every = self.backdrop_every();
             at.push(self.backdrop_at.map_or(now, |t| t + Duration::from_millis(every)));
         }
         if self.shown && self.page == Page::Tab(Tab::Dev) && self.machine.state == State::Expanded {
@@ -1421,11 +1430,8 @@ impl Notch {
             self.command(ToEngine::Watch { task: watch });
         }
         if self.shown
-            && self.uses_captured_glass()
-            && self.backdrop_at.is_none_or(|t| {
-                let every = if self.machine.state == State::Slim { 2000 } else { 600 };
-                now >= t + Duration::from_millis(every)
-            })
+            && self.samples_backdrop()
+            && self.backdrop_at.is_none_or(|t| now >= t + Duration::from_millis(self.backdrop_every()))
         {
             self.refresh_backdrop(cx);
         }
@@ -1832,6 +1838,23 @@ impl Notch {
         self.prefs.glass && self.transparency && self.win.as_ref().is_some_and(|w| w.glass.is_none() && w.native.is_some())
     }
 
+    /// Whether the screen behind is sampled: for captured glass's image, or
+    /// (with composition glass) just for its brightness, which sets the tint.
+    fn samples_backdrop(&self) -> bool {
+        self.prefs.glass && self.transparency && self.win.as_ref().is_some_and(|w| w.native.is_some())
+    }
+
+    /// How often the backdrop is sampled (ms): captured glass needs fresh
+    /// frames; the brightness alone can lag.
+    fn backdrop_every(&self) -> u64 {
+        match (self.uses_captured_glass(), self.machine.state == State::Slim) {
+            (true, true) => 2000,
+            (true, false) => 600,
+            (false, true) => 3000,
+            (false, false) => 1200,
+        }
+    }
+
     /// Opens the window (once) outside the current update: opening draws a
     /// first frame, and that reads this notch.
     fn ensure_window(&mut self, cx: &mut Context<Self>) {
@@ -1961,11 +1984,29 @@ impl Notch {
         self.backdrop_at = Some(Instant::now());
         let (w, h) = ((tk::CANVAS_W * d.scale).round() as i32, (tk::CANVAS_H * d.scale).round() as i32);
         let (x, y) = (d.center_x() - w / 2, d.top);
-        let task = cx.background_executor().spawn(async move { platform::capture_behind(x, y, w, h, 8).map(frost) });
+        // The island's target shape, in the shrunk capture's pixels.
+        const SHRINK: i32 = 8;
+        let k = d.scale / SHRINK as f32;
+        let g = Geo::from_array(self.springs.targets());
+        let under = [g.x() * k, g.y * k, (g.x() + g.w) * k, (g.y + g.h) * k];
+        // QA screenshots leave the island in the capture: read around it.
+        let around = std::env::var_os("DOVE_NOTCH_CAPTURABLE").is_some();
+        let image = self.uses_captured_glass();
+        let task = cx.background_executor().spawn(async move {
+            platform::capture_behind(x, y, w, h, SHRINK).map(|small| {
+                let luma = luma_of(&small, under, around);
+                (luma, image.then(|| frost(small)))
+            })
+        });
         cx.spawn(async move |this, cx| {
             let frame = task.await;
             let _ = this.update(cx, |n, cx| {
                 n.capturing = false;
+                let Some((luma, frame)) = frame else { return };
+                if (luma - n.glass_luma).abs() > 0.02 {
+                    n.glass_luma = luma;
+                    cx.notify();
+                }
                 if let Some((key, image)) = frame
                     && key != n.backdrop_key
                 {
@@ -3197,6 +3238,28 @@ fn burn_marks(img: &mut image::RgbaImage, marks: &[Mark]) {
     }
 }
 
+/// How bright a capture (BGRA) is, 0–1, under the island's rectangle
+/// `under` (or, `around`, outside it): mostly its brighter pixels, since a
+/// bright patch is what makes white type hard to read.
+fn luma_of(small: &image::RgbaImage, under: [f32; 4], around: bool) -> f32 {
+    let mut lumas: Vec<f32> = Vec::new();
+    for (x, y, p) in small.enumerate_pixels() {
+        let (fx, fy) = (x as f32 + 0.5, y as f32 + 0.5);
+        let inside = fx >= under[0] && fx < under[2] && fy >= under[1] && fy < under[3];
+        if inside != around {
+            let [b, g, r, _] = p.0;
+            lumas.push((0.0722 * b as f32 + 0.7152 * g as f32 + 0.2126 * r as f32) / 255.0);
+        }
+    }
+    if lumas.is_empty() {
+        return 0.3;
+    }
+    lumas.sort_by(f32::total_cmp);
+    let mean = lumas.iter().sum::<f32>() / lumas.len() as f32;
+    let p90 = lumas[(lumas.len() * 9 / 10).min(lumas.len() - 1)];
+    0.5 * mean + 0.5 * p90
+}
+
 /// Blurs a capture (already 1/8 size; GPUI scales it back up smoothly) into
 /// frosted glass, with bright backgrounds pulled down so white type stays
 /// readable over them.
@@ -3382,6 +3445,17 @@ mod tests {
         let full = Input { fullscreen: true, alert: true, rest: State::Slim, ..at(TOP) };
         assert_eq!(m.tick(&full, Instant::now()), Some(State::Hidden));
         assert_eq!(m.tick(&full, Instant::now() + Duration::from_secs(1)), None);
+    }
+
+    #[test]
+    fn a_bright_patch_under_the_island_reads_bright() {
+        // Dark all round, white under the island's rectangle.
+        let img = image::RgbaImage::from_fn(20, 10, |x, y| {
+            if (5..15).contains(&x) && (2..8).contains(&y) { image::Rgba([255, 255, 255, 255]) } else { image::Rgba([10, 10, 10, 255]) }
+        });
+        let under = [5.0, 2.0, 15.0, 8.0];
+        assert!(luma_of(&img, under, false) > 0.95);
+        assert!(luma_of(&img, under, true) < 0.1);
     }
 
     #[test]

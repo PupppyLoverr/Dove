@@ -213,9 +213,10 @@ impl Render for Tip {
             .px(px(8.0))
             .py(px(4.0))
             .rounded(px(8.0))
-            .bg(gpui::hsla(240.0 / 360.0, 0.08, 0.08, 0.94))
+            .bg(tk::FLOAT)
             .border_1()
-            .border_color(tk::HAIRLINE)
+            .border_color(tk::RIM)
+            .shadow_md()
             .text_size(px(tk::T11))
             .text_color(tk::TEXT)
             .child(self.0.clone())
@@ -304,9 +305,9 @@ fn section(label: impl Into<SharedString>) -> Div {
     div().text_size(px(tk::T11)).font_weight(FontWeight::MEDIUM).text_color(tk::FAINT).child(label.into())
 }
 
-/// A card: a soft wash on the glass, no border.
+/// A card: a lighter pane on the glass with a faint edge.
 fn card() -> Div {
-    div().p(px(12.0)).rounded(px(tk::R_CARD)).bg(tk::CARD)
+    div().p(px(12.0)).rounded(px(tk::R_CARD)).bg(tk::CARD).border_1().border_color(tk::CARD_EDGE)
 }
 
 fn bar(p: f32, color: Hsla, height: f32) -> Div {

@@ -14,14 +14,28 @@ pub const TEXT: Hsla = hsla(0.0, 0.0, 1.0, 0.95);
 pub const DIM: Hsla = hsla(0.0, 0.0, 1.0, 0.64);
 pub const FAINT: Hsla = hsla(0.0, 0.0, 1.0, 0.42);
 pub const GHOST: Hsla = hsla(0.0, 0.0, 1.0, 0.26);
-/// Inner glass for cards: a wash, no border (V11).
-pub const CARD: Hsla = hsla(0.0, 0.0, 1.0, 0.045);
+/// Inner glass for cards: a lighter pane with a faint edge (glass on glass).
+pub const CARD: Hsla = hsla(0.0, 0.0, 1.0, 0.055);
+pub const CARD_EDGE: Hsla = hsla(0.0, 0.0, 1.0, 0.07);
 pub const WASH: Hsla = hsla(0.0, 0.0, 1.0, 0.08);
 pub const WASH_HOVER: Hsla = hsla(0.0, 0.0, 1.0, 0.13);
 pub const WASH_ON: Hsla = hsla(0.0, 0.0, 1.0, 0.18);
 pub const HAIRLINE: Hsla = hsla(0.0, 0.0, 1.0, 0.10);
 /// The specular line along the island's top edge.
-pub const SPECULAR: Hsla = hsla(0.0, 0.0, 1.0, 0.22);
+pub const SPECULAR: Hsla = hsla(0.0, 0.0, 1.0, 0.40);
+/// The island's rim: a bright outer edge and a faint inner one, so the
+/// glass reads as a thick pane rather than a cut-out.
+pub const RIM: Hsla = hsla(0.0, 0.0, 1.0, 0.15);
+pub const RIM_INNER: Hsla = hsla(0.0, 0.0, 1.0, 0.045);
+/// Light falling on the glass from above, fading out by this far down.
+pub const SHEEN: Hsla = hsla(0.0, 0.0, 1.0, 0.075);
+pub const SHEEN_TO: f32 = 0.45;
+/// The milky frost over the blur, and the grain that makes it read as
+/// frosted rather than smoked.
+pub const FROST: Hsla = hsla(220.0 / 360.0, 0.3, 0.9, 0.035);
+pub const GRAIN: u8 = 9;
+/// Floating surfaces over the island (menus, tooltips).
+pub const FLOAT: Hsla = hsla(232.0 / 360.0, 0.12, 0.12, 0.94);
 pub const INK: Hsla = hsla(0.0, 0.0, 0.07, 1.0);
 pub const WHITE: Hsla = hsla(0.0, 0.0, 1.0, 0.96);
 pub const WHITE_HOVER: Hsla = hsla(0.0, 0.0, 1.0, 0.82);
@@ -33,9 +47,16 @@ pub const GREEN: Hsla = hsla(138.0 / 360.0, 0.62, 0.52, 1.0);
 pub const RED: Hsla = hsla(3.0 / 360.0, 1.0, 0.63, 1.0);
 pub const CLAUDE: Hsla = hsla(15.0 / 360.0, 0.63, 0.60, 1.0);
 
-/// The glass tint over the blurred backdrop (top, bottom), dark default.
-pub const TINT_TOP: Hsla = hsla(240.0 / 360.0, 0.06, 0.13, 0.66);
-pub const TINT_BOTTOM: Hsla = hsla(240.0 / 360.0, 0.08, 0.05, 0.76);
+/// The glass tint over the blurred backdrop (top, bottom): clear over a
+/// dark backdrop, denser over a bright one so white type stays readable.
+pub const TINT_TOP: Hsla = hsla(228.0 / 360.0, 0.14, 0.15, 0.34);
+pub const TINT_BOTTOM: Hsla = hsla(232.0 / 360.0, 0.16, 0.07, 0.46);
+/// How much alpha the tint gains over a fully bright backdrop.
+pub const TINT_DENSE: f32 = 0.30;
+/// The backdrop brightness (0–1) where the tint starts and finishes
+/// thickening.
+pub const LUMA_FROM: f32 = 0.30;
+pub const LUMA_TO: f32 = 0.80;
 /// The solid material (transparency effects off, or no glass at all).
 pub const SOLID_TOP: Hsla = hsla(240.0 / 360.0, 0.06, 0.13, 0.97);
 pub const SOLID_BOTTOM: Hsla = hsla(240.0 / 360.0, 0.08, 0.07, 0.98);
@@ -55,8 +76,9 @@ pub const MONO: &str = "Geist Mono";
 // ----- radius, spacing --------------------------------------------------------
 
 pub const R_ISLAND: f32 = 30.0;
-pub const R_CARD: f32 = 20.0;
-pub const R_ROW: f32 = 14.0;
+/// Concentric with the island: its radius less the padding.
+pub const R_CARD: f32 = R_ISLAND - PAD;
+pub const R_ROW: f32 = 12.0;
 pub const PAD: f32 = 14.0;
 /// Gaps between cards and groups (spacing instead of dividers).
 pub const GAP: f32 = 12.0;
