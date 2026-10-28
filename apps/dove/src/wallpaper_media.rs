@@ -2,8 +2,11 @@
 //!
 //! A background can be a still, an animated image (GIF, APNG, animated
 //! WebP) or a video (MP4, WebM, MOV, MKV, decoded through ffmpeg when it is
-//! installed). Every variant is decoded once, off the UI thread, into one
-//! multi-frame [`RenderImage`]; playback only picks the frame to paint.
+//! installed). Stills and animated images are decoded once, off the UI
+//! thread, into one multi-frame [`RenderImage`] at no more than their own
+//! resolution; playback only picks the frame to paint. A video plays as it
+//! decodes: ffmpeg paces and loops it and only the newest frame is kept, so
+//! a long 4K clip costs a frame or two of memory, not the whole clip.
 //!
 //! The chat backdrop never runs a live blur. Its frames are baked: shrunk
 //! to an eighth, blurred until only colour fields remain, lifted back to a
@@ -14,7 +17,7 @@
 //! a few megabytes and no per-frame GPU blur.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
 use gpui::{
@@ -23,7 +26,7 @@ use gpui::{
 };
 use image::{AnimationDecoder, RgbaImage, imageops};
 
-use crate::wallpaper::{Motion, alpha_mask, placement, retire};
+use crate::wallpaper::{Motion, alpha_mask, drop_retired, placement, retire};
 
 /// Video files, decoded through ffmpeg.
 pub const VIDEO_EXTS: [&str; 5] = ["mp4", "webm", "mov", "mkv", "m4v"];
@@ -170,6 +173,21 @@ fn cover_bgra(img: &RgbaImage, target: (u32, u32)) -> RgbaImage {
     swap_rb(fitted)
 }
 
+/// Like [`cover_bgra`], but never past the source's own resolution: a
+/// small GIF keeps its pixels and the GPU scales it up when painting, so
+/// every frame fits the budget instead of every nineteenth.
+fn cover_within(img: &RgbaImage, target: (u32, u32)) -> RgbaImage {
+    let (w, h) = img.dimensions();
+    let (tw, th) = (target.0.max(1), target.1.max(1));
+    let k = (w as f32 / tw as f32).min(h as f32 / th as f32);
+    if k >= 1.0 {
+        return cover_bgra(img, target);
+    }
+    // The largest centred crop with the target's shape.
+    let (cw, ch) = (((tw as f32 * k).round() as u32).clamp(1, w), ((th as f32 * k).round() as u32).clamp(1, h));
+    swap_rb(imageops::crop_imm(img, (w - cw) / 2, (h - ch) / 2, cw, ch).to_image())
+}
+
 fn swap_rb(mut img: RgbaImage) -> RgbaImage {
     for p in img.pixels_mut() {
         p.0.swap(0, 2);
@@ -199,7 +217,7 @@ fn decode_animated(path: &Path, target: (u32, u32), budget: usize, look: &dyn Fn
     for frame in frames {
         let Ok(frame) = frame else { break };
         let delay = delay_secs(&frame);
-        let img = look(cover_bgra(frame.buffer(), target));
+        let img = look(cover_within(frame.buffer(), target));
         bytes += img.as_raw().len();
         out.images.push(img);
         out.delays.push(delay);
@@ -473,7 +491,7 @@ pub fn clip(path: &Path, variant: Variant, target: (f32, f32), animate: bool, cx
     }
     // A moving clip takes seconds to decode (a video, up to 30 s of
     // frames). With nothing to show meanwhile, its first frame stands in.
-    if key.animate && stale.is_none() {
+    if key.animate && stale.is_none() && kind_cached(&key.path) == Kind::Animated {
         let first = Key { animate: false, ..key.clone() };
         let work = cx.background_executor().spawn(async move { decode(&first).map(|f| Arc::new(Clip::new(f))) });
         let slot = slot.clone();
@@ -526,20 +544,12 @@ fn decode(key: &Key) -> Option<Frames> {
     if !key.animate {
         return decode_still(&key.path, target, &*look);
     }
+    let _ = fps;
     match kind_of(&key.path) {
-        Kind::Still => decode_still(&key.path, target, &*look),
         Kind::Animated => decode_animated(&key.path, target, budget, &*look),
-        // Video decodes straight at the variant's own size.
-        Kind::Video => match key.variant {
-            Variant::Hero => decode_video(&key.path, target, fps, budget, usize::MAX, &|i| i),
-            Variant::Frost(blur) => {
-                let small = ((target.0 / 2).max(64), (target.1 / 2).max(64));
-                decode_video(&key.path, small, fps, budget, usize::MAX, &move |img| {
-                    let up = imageops::resize(&img, target.0, target.1, imageops::FilterType::Nearest);
-                    frost_frame(up, target, FrostLook { blur: blur as f32 })
-                })
-            }
-        },
+        // A video's clip is its first frame (the scrim's brightness, and
+        // what shows while paused); [`Backdrop`] streams the moving frames.
+        Kind::Still | Kind::Video => decode_still(&key.path, target, &*look),
     }
 }
 
@@ -578,19 +588,98 @@ pub struct BackdropProps {
     pub opacity: f32,
 }
 
-/// Paints a [`Clip`], advancing on each frame's own delay. The next frame
-/// is scheduled by a timer, never by a display-rate loop, so a 10 fps GIF
-/// wakes the app 10 times a second.
+/// A video playing as it decodes. ffmpeg reads the file at its own pace
+/// (`-re`), loops it (`-stream_loop -1`) and scales each frame to the size
+/// asked for; the newest frame waits here for the next paint. The decoder
+/// thread holds only a weak reference and stops (killing ffmpeg) within a
+/// frame once the stream is dropped.
+struct Stream {
+    latest: Mutex<Option<RgbaImage>>,
+}
+
+/// Longest edge a streamed full-size frame is decoded at, in device pixels.
+/// A 4K source scaled to this and stretched by the GPU looks the same
+/// behind the fade, at a fraction of the copying.
+const STREAM_EDGE: f32 = 1920.0;
+
+/// The size a variant's video is streamed at: the full-size area capped at
+/// [`STREAM_EDGE`], or the frost's quarter size (it is blurred anyway).
+fn stream_size(target: (u32, u32), variant: Variant) -> (u32, u32) {
+    let (w, h) = match variant {
+        Variant::Hero => {
+            let k = (STREAM_EDGE / target.0.max(target.1).max(1) as f32).min(1.0);
+            ((target.0 as f32 * k) as u32, (target.1 as f32 * k) as u32)
+        }
+        Variant::Frost(_) => (target.0 / 4, target.1 / 4),
+    };
+    (w.max(64) & !1, h.max(64) & !1)
+}
+
+fn stream_video(
+    path: &Path,
+    size: (u32, u32),
+    fps: u32,
+    look: Box<dyn Fn(RgbaImage) -> RgbaImage + Send>,
+) -> Option<Arc<Stream>> {
+    use std::io::Read as _;
+    let ffmpeg = ffmpeg()?;
+    let (w, h) = size;
+    let filter = format!("fps={fps},scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h}");
+    let mut cmd = std::process::Command::new(ffmpeg);
+    cmd.args(["-hide_banner", "-loglevel", "error", "-re", "-stream_loop", "-1", "-i"])
+        .arg(path)
+        .args(["-an", "-vf", &filter, "-f", "rawvideo", "-pix_fmt", "bgra", "-"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt as _;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    let mut child = cmd.spawn().ok()?;
+    let mut stdout = child.stdout.take()?;
+    let stream = Arc::new(Stream { latest: Mutex::new(None) });
+    let weak: Weak<Stream> = Arc::downgrade(&stream);
+    let frame_len = w as usize * h as usize * 4;
+    let spawned = std::thread::Builder::new().name("dove-wallpaper-video".into()).spawn(move || {
+        loop {
+            let mut buf = vec![0u8; frame_len];
+            if stdout.read_exact(&mut buf).is_err() {
+                break;
+            }
+            let Some(img) = RgbaImage::from_raw(w, h, buf) else { break };
+            let img = look(img);
+            let Some(stream) = weak.upgrade() else { break };
+            if let Ok(mut latest) = stream.latest.lock() {
+                *latest = Some(img);
+            }
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+    });
+    spawned.ok().map(|_| stream)
+}
+
+/// Paints a [`Clip`], advancing on each frame's own delay, or a video's
+/// [`Stream`]. The next frame is scheduled by a timer, never by a
+/// display-rate loop, so a 10 fps GIF wakes the app 10 times a second.
 pub struct Backdrop {
     props: Option<BackdropProps>,
     clock: f32,
     last: Option<Instant>,
     timer: Option<gpui::Task<()>>,
+    /// The playing video, and what it was started for.
+    stream: Option<(StreamKey, Arc<Stream>)>,
+    /// The video frame on screen, uploaded once.
+    live: Option<Arc<RenderImage>>,
 }
+
+type StreamKey = (PathBuf, Variant, (u32, u32));
 
 impl Backdrop {
     pub fn new(_: &mut Window, _: &mut Context<Self>) -> Self {
-        Backdrop { props: None, clock: 0.0, last: None, timer: None }
+        Backdrop { props: None, clock: 0.0, last: None, timer: None, stream: None, live: None }
     }
 
     /// Take this frame's props; true when there is art to paint.
@@ -600,15 +689,72 @@ impl Backdrop {
         self.props = Some(props);
         ready
     }
+
+    fn tick(&mut self, wait: f32, cx: &mut Context<Self>) {
+        let wait = Duration::from_secs_f32(wait.max(MIN_DELAY));
+        self.timer = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(wait).await;
+            let _ = this.update(cx, |_, cx| cx.notify());
+        }));
+    }
+}
+
+impl Drop for Backdrop {
+    fn drop(&mut self) {
+        retire(self.live.take());
+    }
 }
 
 impl Render for Backdrop {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        drop_retired(window);
         let Some(p) = self.props.as_ref() else { return div() };
         let animate = p.play || matches!(p.variant, Variant::Frost(_));
         let Some(clip) = clip(&p.path, p.variant, p.target, animate, cx) else { return div() };
+        let (fade, composer, opacity) = (p.fade, p.composer.clone(), p.opacity);
+        let playing = p.play && crate::motion::media_motion(cx);
+
+        if kind_cached(&p.path) == Kind::Video {
+            let target = step(p.target, p.variant);
+            let key: StreamKey = (p.path.clone(), p.variant, stream_size(target, p.variant));
+            let fps = if matches!(p.variant, Variant::Frost(_)) { 15 } else { 30 };
+            if !playing {
+                // Paused: ffmpeg stops; the last frame (or the first) holds.
+                self.stream = None;
+            } else if self.stream.as_ref().is_none_or(|(k, _)| *k != key) {
+                let look: Box<dyn Fn(RgbaImage) -> RgbaImage + Send> = match p.variant {
+                    Variant::Hero => Box::new(|img| img),
+                    Variant::Frost(blur) => {
+                        Box::new(move |img| frost_frame(img, target, FrostLook { blur: blur as f32 }))
+                    }
+                };
+                let size = key.2;
+                self.stream = stream_video(&p.path, size, fps, look).map(|s| (key, s));
+            }
+            let fresh = self.stream.as_ref().and_then(|(_, s)| s.latest.lock().ok().and_then(|mut l| l.take()));
+            if let Some(frame) = fresh {
+                let image = Arc::new(RenderImage::new(vec![image::Frame::new(frame)]));
+                if let Some(old) = self.live.replace(image) {
+                    let _ = window.drop_image(old);
+                }
+            }
+            if self.stream.is_some() {
+                self.tick(1.0 / fps as f32, cx);
+            } else {
+                self.timer = None;
+            }
+            let (image, src) = match &self.live {
+                Some(live) => {
+                    let s = live.size(0);
+                    (live.clone(), (s.width.0 as f32, s.height.0 as f32))
+                }
+                None => (clip.image.clone(), clip.size),
+            };
+            return paint_art(image, 0, src, fade, composer, opacity);
+        }
+
         let now = Instant::now();
-        let running = p.play && clip.animated() && crate::motion::media_motion(cx);
+        let running = playing && clip.animated();
         if running {
             if let Some(last) = self.last {
                 self.clock += now.duration_since(last).as_secs_f32().min(0.5);
@@ -619,42 +765,65 @@ impl Render for Backdrop {
         }
         let (frame, wait) = clip.frame_at(self.clock);
         if running {
-            let wait = Duration::from_secs_f32(wait.max(MIN_DELAY));
-            self.timer = Some(cx.spawn(async move |this, cx| {
-                cx.background_executor().timer(wait).await;
-                let _ = this.update(cx, |_, cx| cx.notify());
-            }));
+            self.tick(wait, cx);
         } else {
             self.timer = None;
         }
-        let (fade, composer, opacity) = (p.fade, p.composer.clone(), p.opacity);
-        div().size_full().opacity(opacity).child(
-            canvas(
-                |_, _, _| {},
-                move |bounds, _, window, _| {
-                    let composer = composer.as_ref().and_then(|c| c.get());
-                    let Some((ox, oy, k)) = placement(bounds, clip.size, Motion::STILL) else { return };
-                    let full = Bounds::new(point(px(ox), px(oy)), size(px(clip.size.0 * k), px(clip.size.1 * k)));
-                    let mask = (fade || composer.is_some()).then(|| alpha_mask(bounds, composer, composer.is_some(), fade));
-                    let _ = window.paint_image_fitted_masked(
-                        bounds,
-                        full,
-                        Corners::default(),
-                        clip.image.clone(),
-                        frame,
-                        false,
-                        mask,
-                    );
-                },
-            )
-            .size_full(),
-        )
+        paint_art(clip.image.clone(), frame, clip.size, fade, composer, opacity)
     }
+}
+
+/// One frame of `image` covering the area, faded and cut around the
+/// composer as asked.
+fn paint_art(
+    image: Arc<RenderImage>,
+    frame: usize,
+    src: (f32, f32),
+    fade: bool,
+    composer: Option<std::rc::Rc<std::cell::Cell<Option<Bounds<Pixels>>>>>,
+    opacity: f32,
+) -> gpui::Div {
+    div().size_full().opacity(opacity).child(
+        canvas(
+            |_, _, _| {},
+            move |bounds, _, window, _| {
+                let composer = composer.as_ref().and_then(|c| c.get());
+                let Some((ox, oy, k)) = placement(bounds, src, Motion::STILL) else { return };
+                let full = Bounds::new(point(px(ox), px(oy)), size(px(src.0 * k), px(src.1 * k)));
+                let mask = (fade || composer.is_some()).then(|| alpha_mask(bounds, composer, composer.is_some(), fade));
+                let _ = window.paint_image_fitted_masked(bounds, full, Corners::default(), image, frame, false, mask);
+            },
+        )
+        .size_full(),
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A small GIF keeps its own pixels (cropped to the area's shape)
+    /// instead of being blown up to the window, so all its frames fit.
+    #[test]
+    fn small_frames_keep_their_resolution() {
+        let gif = RgbaImage::new(400, 225);
+        let out = cover_within(&gif, (2400, 1300));
+        assert!(out.width() <= 400 && out.height() <= 225, "{:?}", out.dimensions());
+        let shape = out.width() as f32 / out.height() as f32;
+        assert!((shape - 2400.0 / 1300.0).abs() < 0.02, "{shape}");
+        // A big source still comes down to the area.
+        assert_eq!(cover_within(&RgbaImage::new(3840, 2160), (1920, 1080)).dimensions(), (1920, 1080));
+        // 301 frames of it fit the full-size budget whole.
+        assert!(301 * out.as_raw().len() < HERO_BUDGET);
+    }
+
+    #[test]
+    fn streamed_video_is_capped_and_even() {
+        let (w, h) = stream_size((3840, 2112), Variant::Hero);
+        assert!(w <= 1920 && h <= 1920 && w % 2 == 0 && h % 2 == 0, "{w}x{h}");
+        assert_eq!(stream_size((1280, 704), Variant::Hero), (1280, 704));
+        assert_eq!(stream_size((2560, 1536), Variant::Frost(80)), (640, 384));
+    }
 
     /// A video's still (thumbnails, and the frame shown when playback is
     /// off)

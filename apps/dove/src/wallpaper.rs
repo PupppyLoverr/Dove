@@ -109,7 +109,7 @@ pub(crate) fn retire(images: impl IntoIterator<Item = Arc<RenderImage>>) {
     }
 }
 
-fn drop_retired(window: &mut Window) {
+pub(crate) fn drop_retired(window: &mut Window) {
     let images = RETIRED.lock().map(|mut r| std::mem::take(&mut *r)).unwrap_or_default();
     for image in images {
         let _ = window.drop_image(image);
