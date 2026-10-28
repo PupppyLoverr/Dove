@@ -471,6 +471,31 @@ pub fn clip(path: &Path, variant: Variant, target: (f32, f32), animate: bool, cx
         }
         retire(gone);
     }
+    // A moving clip takes seconds to decode (a video, up to 30 s of
+    // frames). With nothing to show meanwhile, its first frame stands in.
+    if key.animate && stale.is_none() {
+        let first = Key { animate: false, ..key.clone() };
+        let work = cx.background_executor().spawn(async move { decode(&first).map(|f| Arc::new(Clip::new(f))) });
+        let slot = slot.clone();
+        cx.spawn(async move |cx| {
+            let Some(still) = work.await else { return };
+            let mut placed = false;
+            if let Ok(mut entries) = CACHE.lock()
+                && let Some(e) = entries.iter_mut().find(|e| Arc::ptr_eq(&e.slot, &slot))
+                && e.fallback.is_none()
+                && slot.lock().is_ok_and(|s| s.is_none())
+            {
+                e.fallback = Some(still.clone());
+                placed = true;
+            }
+            if placed {
+                cx.update(|cx| cx.refresh_windows());
+            } else {
+                retire(Some(still.image.clone()));
+            }
+        })
+        .detach();
+    }
     let work = cx.background_executor().spawn(async move { decode(&key).map(|f| Arc::new(Clip::new(f))) });
     cx.spawn(async move |cx| {
         let clip = work.await;
@@ -583,7 +608,7 @@ impl Render for Backdrop {
         let animate = p.play || matches!(p.variant, Variant::Frost(_));
         let Some(clip) = clip(&p.path, p.variant, p.target, animate, cx) else { return div() };
         let now = Instant::now();
-        let running = p.play && clip.animated() && crate::motion::decorative_motion(cx);
+        let running = p.play && clip.animated() && crate::motion::media_motion(cx);
         if running {
             if let Some(last) = self.last {
                 self.clock += now.duration_since(last).as_secs_f32().min(0.5);
@@ -631,7 +656,8 @@ impl Render for Backdrop {
 mod tests {
     use super::*;
 
-    /// A video's still (thumbnails, and every frame under Reduce motion)
+    /// A video's still (thumbnails, and the frame shown when playback is
+    /// off)
     /// has no byte budget: it used to overflow `budget * 2` and abort the
     /// app. It also reads one frame, not the whole clip.
     #[test]

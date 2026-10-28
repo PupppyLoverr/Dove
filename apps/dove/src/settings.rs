@@ -1727,7 +1727,7 @@ impl SettingsPage {
                 false,
                 "wallpaper_playback",
                 "Play animated backgrounds",
-                "GIFs and videos pause when Dove is in the background or motion is reduced.",
+                "GIFs and videos play even with Reduce motion on. Off holds the first frame.",
                 gate(has_wall && !still, playback_control),
             ))
             .child(self.srow(
@@ -1813,7 +1813,7 @@ impl SettingsPage {
                 match preference {
                     ReduceMotion::System if system => "Following your system: motion is reduced.",
                     ReduceMotion::System => "Following your system setting.",
-                    ReduceMotion::On => "Transitions snap, indicators breathe slowly, background art holds still.",
+                    ReduceMotion::On => "Transitions snap, indicators breathe slowly, image effects hold still.",
                     ReduceMotion::Off => "Full motion, whatever the system says.",
                 },
                 reduce_select,
