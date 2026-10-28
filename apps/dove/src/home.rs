@@ -147,11 +147,8 @@ impl Shell {
         let mut projects: Vec<_> = self.projects.to_vec();
         projects.sort_by_key(|p| Some(p.id) != current);
         projects.truncate(HOME_PROJECTS);
-        let card_bg = if scenic {
-            t.glass_overlay()
-        } else {
-            t.surface_card.opacity(if t.is_frost() { 0.72 } else { 1.0 })
-        };
+        let card_bg =
+            if scenic { t.glass_overlay() } else { t.surface_card.opacity(if t.is_frost() { 0.72 } else { 1.0 }) };
         let card = |id: &'static str| {
             div()
                 .id(id)
@@ -243,7 +240,13 @@ impl Shell {
                     )
                     .child(div().flex_shrink(1.0).min_w_0().truncate().child(task.title.clone()))
                     .child(
-                        div().flex_1().min_w(px(40.0)).truncate().text_size(ty::CAPTION).text_color(t.text_faint).child(detail),
+                        div()
+                            .flex_1()
+                            .min_w(px(40.0))
+                            .truncate()
+                            .text_size(ty::CAPTION)
+                            .text_color(t.text_faint)
+                            .child(detail),
                     )
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.navigate(crate::shell::Route::Thread(id), window, cx)

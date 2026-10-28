@@ -281,7 +281,7 @@ final class NewSessionViewController: UIViewController, UIGestureRecognizerDeleg
             let items = byDevice[device]!
             let name = items.first?.deviceName ?? "Host"
             return UIMenu(title: name + (items.first?.online == false ? " · offline" : ""), options: .displayInline, children: items.map { p in
-                UIAction(title: p.name, image: UIImage(systemName: p.git ? "folder.badge.gearshape" : "folder"), state: p.id == draft.projectId ? .on : .off) { [weak self] _ in
+                UIAction(title: p.name, image: K22Icon.resolve(systemName: p.git ? "folder.badge.gearshape" : "folder"), state: p.id == draft.projectId ? .on : .off) { [weak self] _ in
                     self?.draft.projectId = p.id
                     self?.draft.hostId = nil
                     self?.draft.branch = nil
@@ -290,13 +290,13 @@ final class NewSessionViewController: UIViewController, UIGestureRecognizerDeleg
             })
         }
         sections.append(UIMenu(options: .displayInline, children: [
-            UIAction(title: "No Project…", image: UIImage(systemName: "tray"), state: draft.projectId == nil ? .on : .off) { [weak self] _ in
+            UIAction(title: "No Project…", image: K22Icon.image("tray"), state: draft.projectId == nil ? .on : .off) { [weak self] _ in
                 guard let self else { return }
                 self.draft.projectId = nil
                 self.draft.hostId = self.draft.hostId ?? self.app.hostOptions.first(where: \.online)?.id ?? self.app.hostOptions.first?.id
                 self.loadModels()
             },
-            UIAction(title: "New Project…", image: UIImage(systemName: "folder.badge.plus")) { [weak self] _ in
+            UIAction(title: "New Project…", image: K22Icon.image("folder-add")) { [weak self] _ in
                 guard let self else { return }
                 let vc = NewProjectViewController(app: self.app)
                 vc.onCreated = { [weak self] id in
@@ -313,7 +313,7 @@ final class NewSessionViewController: UIViewController, UIGestureRecognizerDeleg
 
     private func hostMenu() -> UIMenu {
         UIMenu(title: "Run on", children: app.hostOptions.map { h in
-            UIAction(title: h.name, subtitle: h.online ? "Online" : "Offline", image: UIImage(systemName: "desktopcomputer"), state: h.id == draft.hostId ? .on : .off) { [weak self] _ in
+            UIAction(title: h.name, subtitle: h.online ? "Online" : "Offline", image: K22Icon.image("monitor"), state: h.id == draft.hostId ? .on : .off) { [weak self] _ in
                 self?.draft.hostId = h.id
                 self?.loadModels()
             }

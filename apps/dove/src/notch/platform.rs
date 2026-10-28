@@ -44,16 +44,13 @@ mod windows {
     use super::{Display, Shape};
     use windows_sys::Win32::Foundation::{HWND, POINT, RECT};
     use windows_sys::Win32::Graphics::Dwm::{
-        DWMWA_BORDER_COLOR, DWMWA_COLOR_NONE, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND,
-        DwmSetWindowAttribute,
+        DWMWA_BORDER_COLOR, DWMWA_COLOR_NONE, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND, DwmSetWindowAttribute,
     };
     use windows_sys::Win32::Graphics::Gdi::{
         CombineRgn, CreateRectRgn, CreateRoundRectRgn, DeleteObject, GetMonitorInfoW, MONITOR_DEFAULTTONEAREST,
         MONITOR_DEFAULTTOPRIMARY, MONITORINFO, MonitorFromPoint, MonitorFromWindow, RGN_OR, SetWindowRgn,
     };
-    use windows_sys::Win32::System::DataExchange::{
-        IsClipboardFormatAvailable, RegisterClipboardFormatW,
-    };
+    use windows_sys::Win32::System::DataExchange::{IsClipboardFormatAvailable, RegisterClipboardFormatW};
     use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
     use windows_sys::Win32::System::Threading::{AttachThreadInput, GetCurrentProcessId, GetCurrentThreadId};
     use windows_sys::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
@@ -63,9 +60,9 @@ mod windows {
         SHQueryUserNotificationState,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        BringWindowToTop, GWL_EXSTYLE, GWL_STYLE, GetClassNameW, GetCursorPos, GetForegroundWindow,
-        GetWindowLongPtrW, GetWindowRect, GetWindowThreadProcessId, HWND_TOPMOST, IsWindow, IsZoomed, SW_HIDE,
-        SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, SetForegroundWindow,
+        BringWindowToTop, GWL_EXSTYLE, GWL_STYLE, GetClassNameW, GetCursorPos, GetForegroundWindow, GetWindowLongPtrW,
+        GetWindowRect, GetWindowThreadProcessId, HWND_TOPMOST, IsWindow, IsZoomed, SW_HIDE, SWP_FRAMECHANGED,
+        SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, SetForegroundWindow,
         SetWindowDisplayAffinity, SetWindowLongPtrW, SetWindowPos, ShowWindow, WDA_EXCLUDEFROMCAPTURE, WS_CAPTION,
         WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_POPUP, WS_VISIBLE,
     };
@@ -293,9 +290,8 @@ mod windows {
     /// itself excluded: the source of its frosted glass. Safe on any thread.
     pub fn capture_behind(x: i32, y: i32, w: i32, h: i32, shrink: i32) -> Option<image::RgbaImage> {
         use windows_sys::Win32::Graphics::Gdi::{
-            BI_RGB, BITMAPINFO, BITMAPINFOHEADER, CreateCompatibleBitmap, CreateCompatibleDC, DIB_RGB_COLORS,
-            DeleteDC, GetDC, GetDIBits, HALFTONE, ReleaseDC, SRCCOPY, SelectObject, SetBrushOrgEx, SetStretchBltMode,
-            StretchBlt,
+            BI_RGB, BITMAPINFO, BITMAPINFOHEADER, CreateCompatibleBitmap, CreateCompatibleDC, DIB_RGB_COLORS, DeleteDC,
+            GetDC, GetDIBits, HALFTONE, ReleaseDC, SRCCOPY, SelectObject, SetBrushOrgEx, SetStretchBltMode, StretchBlt,
         };
         let (sw, sh) = (w, h);
         let (w, h) = ((w / shrink.max(1)).max(1), (h / shrink.max(1)).max(1));
@@ -487,7 +483,8 @@ mod windows {
             // SAFETY: COM calls on the UI thread, which GPUI initialized for
             // OLE (its own drop target needs it).
             unsafe {
-                let item: IShellItem = SHCreateItemFromParsingName(&HSTRING::from(path.as_os_str()), None::<&IBindCtx>)?;
+                let item: IShellItem =
+                    SHCreateItemFromParsingName(&HSTRING::from(path.as_os_str()), None::<&IBindCtx>)?;
                 let data: IDataObject = item.BindToHandler(None::<&IBindCtx>, &BHID_DataObject)?;
                 let source: IDropSource = Source.into();
                 let mut effect = DROPEFFECT(0);

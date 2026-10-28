@@ -70,10 +70,7 @@ final class ModelPickerViewController: UIViewController, UITableViewDataSource, 
         titleLabel.adjustsFontForContentSizeCategory = true
 
         var closeConfiguration = UIButton.Configuration.plain()
-        closeConfiguration.image = UIImage(
-            systemName: "chevron.left",
-            withConfiguration: UIImage.SymbolConfiguration(pointSize: 14, weight: .medium)
-        )
+        closeConfiguration.image = K22Icon.image("alt-arrow-left", pointSize: 14)
         closeConfiguration.baseForegroundColor = Palette.secondary
         closeConfiguration.contentInsets = .zero
         closeButton.configuration = closeConfiguration
@@ -174,10 +171,7 @@ final class ModelPickerViewController: UIViewController, UITableViewDataSource, 
         search.accessibilityIdentifier = "model-search"
         search.autocorrectionType = .no
         search.clearButtonMode = .whileEditing
-        let icon = UIImageView(image: UIImage(
-            systemName: "magnifyingglass",
-            withConfiguration: UIImage.SymbolConfiguration(pointSize: 14, weight: .medium)
-        ))
+        let icon = UIImageView(image: K22Icon.image("magnifer", pointSize: 14))
         icon.tintColor = Palette.tertiary
         icon.contentMode = .center
         icon.translatesAutoresizingMaskIntoConstraints = false
@@ -380,7 +374,7 @@ final class ModelPickerViewController: UIViewController, UITableViewDataSource, 
         let searching = !(search.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let selectedFilter: Filter? = searching ? nil : filter
         railStack.addArrangedSubview(railButton(
-            image: UIImage(systemName: "star.fill"),
+            image: K22Icon.image("star-bold"),
             label: "Favorites",
             identifier: "model-rail-favorites",
             foregroundColor: selectedFilter == .favorites ? Palette.text : Palette.secondary,
@@ -692,7 +686,7 @@ final class ModelPickerViewController: UIViewController, UITableViewDataSource, 
             self?.toggleFavorite(model)
             completion(true)
         }
-        action.image = UIImage(systemName: favorited ? "star.slash" : "star.fill")
+        action.image = K22Icon.resolve(systemName: favorited ? "star.slash" : "star.fill")
         action.backgroundColor = favorited ? Palette.tertiary : Palette.text
         let configuration = UISwipeActionsConfiguration(actions: [action])
         configuration.performsFirstActionWithFullSwipe = false
@@ -708,7 +702,7 @@ final class ModelPickerViewController: UIViewController, UITableViewDataSource, 
         let favorited = isFavorite(model)
         let favorite = UIAction(
             title: favorited ? "Unfavorite" : "Favorite",
-            image: UIImage(systemName: favorited ? "star.slash" : "star.fill")
+            image: K22Icon.resolve(systemName: favorited ? "star.slash" : "star.fill")
         ) { [weak self] _ in
             self?.toggleFavorite(model)
         }
@@ -732,7 +726,7 @@ private final class ModelPickerCell: UITableViewCell {
     private let title = UILabel()
     private let detail = UILabel()
     private let favoriteButton = UIButton(type: .system)
-    private let checkmark = UIImageView(image: UIImage(systemName: "checkmark"))
+    private let checkmark = UIImageView(image: K22Icon.image("check"))
     private let labels = UIStackView()
     private let rowContent = UIStackView()
     private var minimumHeightConstraint: NSLayoutConstraint!
@@ -841,10 +835,7 @@ private final class ModelPickerCell: UITableViewCell {
         detail.isHidden = model.description?.isEmpty ?? true
         minimumHeightConstraint.constant = detail.isHidden ? 44 : 52
         favoriteButton.setImage(
-            UIImage(
-                systemName: favorite ? "star.fill" : "star",
-                withConfiguration: UIImage.SymbolConfiguration(pointSize: 13, weight: .regular)
-            ),
+            K22Icon.resolve(systemName: favorite ? "star.fill" : "star", pointSize: 13, weight: .regular),
             for: .normal
         )
         favoriteButton.tintColor = favorite ? Palette.text : Palette.tertiary

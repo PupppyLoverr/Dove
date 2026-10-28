@@ -89,7 +89,11 @@ impl Steps {
             parts.push(if files == 1 { "Edited 1 file".to_string() } else { format!("Edited {files} files") });
         }
         if self.commands > 0 {
-            parts.push(if self.commands == 1 { "ran 1 command".into() } else { format!("ran {} commands", self.commands) });
+            parts.push(if self.commands == 1 {
+                "ran 1 command".into()
+            } else {
+                format!("ran {} commands", self.commands)
+            });
         }
         if self.reads + self.searches > 0 {
             parts.push(format!("read {}", self.reads + self.searches));
@@ -450,7 +454,9 @@ mod tests {
         let mut s = TaskState::default();
         s.observe(&AgentEvent::UserMessage { text: Arc::from("go") });
         assert!(s.turn_started_ms.is_some());
-        for (kind, title) in [(ToolKind::Edit, "Edit a.rs"), (ToolKind::Edit, "Edit b.rs"), (ToolKind::Execute, "cargo test")] {
+        for (kind, title) in
+            [(ToolKind::Edit, "Edit a.rs"), (ToolKind::Edit, "Edit b.rs"), (ToolKind::Execute, "cargo test")]
+        {
             s.observe(&AgentEvent::ToolCall {
                 call_id: title.into(),
                 name: "x".into(),

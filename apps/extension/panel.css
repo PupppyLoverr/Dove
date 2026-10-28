@@ -15,7 +15,7 @@
 html, body { height: 100%; }
 body {
   margin: 0; padding: 12px; min-width: 300px; display: flex; flex-direction: column; gap: 10px;
-  font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif;
+  font: 13px/1.45 Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   color: var(--fg); background: var(--bg); -webkit-font-smoothing: antialiased;
 }
 section, .status { margin: 0; }
@@ -44,7 +44,7 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--fg); outlin
 /* Pairing */
 #pair .field { display: flex; gap: 6px; margin-top: 10px; }
 input {
-  flex: 1; min-width: 0; font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--fg);
+  flex: 1; min-width: 0; font: 12px "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--fg);
   background: var(--hover); border: 1px solid transparent; border-radius: 9px; padding: 8px 10px; outline: none;
   transition: border-color .15s, background .15s;
 }

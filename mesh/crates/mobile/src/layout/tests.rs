@@ -29,13 +29,13 @@ fn font(name: &str) -> Vec<u8> {
 
 pub(crate) fn text_system() -> Arc<TextSystem> {
     let faces = [
-        (FaceRole::Sans, "Geist"),
-        (FaceRole::SansMedium, "Geist-Medium"),
-        (FaceRole::SansSemibold, "Geist-SemiBold"),
-        (FaceRole::SansBold, "Geist-Bold"),
-        (FaceRole::SansItalic, "Geist-Italic"),
-        (FaceRole::SansSemiboldItalic, "Geist-SemiBoldItalic"),
-        (FaceRole::Mono, "GeistMono"),
+        (FaceRole::Sans, "Inter-Regular"),
+        (FaceRole::SansMedium, "Inter-Medium"),
+        (FaceRole::SansSemibold, "Inter-SemiBold"),
+        (FaceRole::SansBold, "Inter-Bold"),
+        (FaceRole::SansItalic, "Inter-Italic"),
+        (FaceRole::SansSemiboldItalic, "Inter-SemiBoldItalic"),
+        (FaceRole::Mono, "JetBrainsMono-Regular"),
     ]
     .into_iter()
     .map(|(role, name)| FaceData {

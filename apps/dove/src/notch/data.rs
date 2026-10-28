@@ -180,7 +180,8 @@ pub fn looks_like_error(text: &str) -> bool {
     t.lines().any(|l| {
         let l = l.trim_start();
         l.starts_with("error:") || l.starts_with("Error:") || l.starts_with("ERROR ") || l.starts_with("FAILED ")
-    }) || lower.contains(" failed;") || lower.contains("tests failed")
+    }) || lower.contains(" failed;")
+        || lower.contains("tests failed")
 }
 
 /// A cheap language guess for copied code (multi-line, with code-ish lines).
@@ -190,7 +191,11 @@ fn code_language(t: &str) -> Option<&'static str> {
         .iter()
         .filter(|l| {
             let l = l.trim_end();
-            l.ends_with(';') || l.ends_with('{') || l.ends_with('}') || l.ends_with(':') || l.starts_with("    ")
+            l.ends_with(';')
+                || l.ends_with('{')
+                || l.ends_with('}')
+                || l.ends_with(':')
+                || l.starts_with("    ")
                 || l.starts_with('\t')
         })
         .count();
@@ -395,16 +400,24 @@ mod tests {
 
     #[test]
     fn errors_are_recognized_and_prose_is_not() {
-        assert!(looks_like_error("thread 'main' panicked at src/main.rs:3:5:
-boom"));
-        assert!(looks_like_error("Traceback (most recent call last):
+        assert!(looks_like_error(
+            "thread 'main' panicked at src/main.rs:3:5:
+boom"
+        ));
+        assert!(looks_like_error(
+            "Traceback (most recent call last):
   File \"a.py\", line 1, in <module>
-KeyError: 'x'"));
-        assert!(looks_like_error("TypeError: cannot read properties of undefined
+KeyError: 'x'"
+        ));
+        assert!(looks_like_error(
+            "TypeError: cannot read properties of undefined
     at f (app.js:10:3)
-    at g (app.js:20:1)"));
-        assert!(looks_like_error("error[E0308]: mismatched types
- --> src/lib.rs:4:5"));
+    at g (app.js:20:1)"
+        ));
+        assert!(looks_like_error(
+            "error[E0308]: mismatched types
+ --> src/lib.rs:4:5"
+        ));
         assert!(!looks_like_error("Remember to buy milk and eggs on the way home tonight."));
         assert!(!looks_like_error("https://example.com/some/long/path?q=1"));
     }

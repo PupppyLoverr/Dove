@@ -75,7 +75,8 @@ pub fn kind_of(path: &Path) -> Kind {
             .and_then(|r| image::codecs::gif::GifDecoder::new(r).ok())
             .is_some_and(|d| d.into_frames().take(2).count() > 1),
         "png" | "apng" => {
-            open().and_then(|r| image::codecs::png::PngDecoder::new(r).ok()).and_then(|d| d.is_apng().ok()) == Some(true)
+            open().and_then(|r| image::codecs::png::PngDecoder::new(r).ok()).and_then(|d| d.is_apng().ok())
+                == Some(true)
         }
         "webp" => open().and_then(|r| image::codecs::webp::WebPDecoder::new(r).ok()).is_some_and(|d| d.has_animation()),
         _ => false,
@@ -120,7 +121,8 @@ pub fn ffmpeg() -> Option<PathBuf> {
                 candidates.push(home.join(".dove").join("tools").join(exe));
                 candidates.push(home.join("scoop").join("shims").join(exe));
             }
-            candidates.extend(["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg"].map(PathBuf::from));
+            candidates
+                .extend(["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg"].map(PathBuf::from));
             candidates.into_iter().find(|p| p.is_file())
         })
         .clone()
@@ -202,7 +204,12 @@ fn delay_secs(frame: &image::Frame) -> f32 {
 
 /// Decode an animated image's frames, each fitted to `target` and passed
 /// through `look`, stopping once `budget` is reached.
-fn decode_animated(path: &Path, target: (u32, u32), budget: usize, look: &dyn Fn(RgbaImage) -> RgbaImage) -> Option<Frames> {
+fn decode_animated(
+    path: &Path,
+    target: (u32, u32),
+    budget: usize,
+    look: &dyn Fn(RgbaImage) -> RgbaImage,
+) -> Option<Frames> {
     let reader = || std::fs::File::open(path).ok().map(std::io::BufReader::new);
     let frames: Box<dyn Iterator<Item = image::ImageResult<image::Frame>>> = match ext(path).as_str() {
         "gif" => Box::new(image::codecs::gif::GifDecoder::new(reader()?).ok()?.into_frames()),
@@ -287,11 +294,13 @@ fn decode_video(
 /// The first frame of any background, for stills and thumbnails.
 fn decode_still(path: &Path, target: (u32, u32), look: &dyn Fn(RgbaImage) -> RgbaImage) -> Option<Frames> {
     let img = match kind_of(path) {
-        Kind::Video => return decode_video(path, target, 1, usize::MAX, 1, look).map(|mut f| {
-            f.images.truncate(1);
-            f.delays.truncate(1);
-            f
-        }),
+        Kind::Video => {
+            return decode_video(path, target, 1, usize::MAX, 1, look).map(|mut f| {
+                f.images.truncate(1);
+                f.delays.truncate(1);
+                f
+            });
+        }
         _ => {
             let bytes = std::fs::read(path).ok()?;
             image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format().ok()?.decode().ok()?.to_rgba8()
@@ -398,7 +407,8 @@ pub struct Clip {
 
 impl Clip {
     fn new(frames: Frames) -> Self {
-        let bright = frames.images.iter().step_by((frames.images.len() / 8).max(1)).map(bright_luma).fold(0.0, f32::max);
+        let bright =
+            frames.images.iter().step_by((frames.images.len() / 8).max(1)).map(bright_luma).fold(0.0, f32::max);
         let size = frames.images.first().map_or((1.0, 1.0), |i| (i.width() as f32, i.height() as f32));
         let total = frames.delays.iter().sum::<f32>().max(MIN_DELAY);
         let image = Arc::new(RenderImage::new(frames.images.into_iter().map(image::Frame::new).collect::<Vec<_>>()));
@@ -836,7 +846,16 @@ mod tests {
         let _ = std::fs::create_dir_all(&dir);
         let clip = dir.join("clip.mp4");
         let made = std::process::Command::new(ffmpeg)
-            .args(["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=320x180:rate=24:duration=2"])
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc=size=320x180:rate=24:duration=2",
+            ])
             .args(["-pix_fmt", "yuv420p"])
             .arg(&clip)
             .status()

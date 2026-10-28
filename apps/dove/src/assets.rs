@@ -1,9 +1,8 @@
 //! Embedded icons and fonts, served to GPUI.
 //!
-//! The control set is Zeron's: Solar Icons (Linear, CC BY 4.0, 480 Design)
-//! plus the hand-drawn glyphs Zeron uses for the terminal, git family, and
-//! window chrome. They are served as drawn — stroke, fill, and viewBox stay
-//! in the file. Agent brand marks keep their own art. GPUI tints `currentColor`
+//! The control set is the K22 icon pack (16-grid, `currentColor`). Brand and
+//! vendor marks keep their own art. A few icons added after the pack have no
+//! K22 file yet and still use the previous drawing. GPUI tints `currentColor`
 //! with the element's text color.
 
 use std::borrow::Cow;
@@ -89,11 +88,15 @@ impl IntoElement for Icon {
 }
 
 const FONTS: &[&[u8]] = &[
-    include_bytes!("../assets/fonts/Geist.ttf"),
-    include_bytes!("../assets/fonts/Geist-Medium.ttf"),
-    include_bytes!("../assets/fonts/Geist-SemiBold.ttf"),
-    include_bytes!("../assets/fonts/GeistMono.ttf"),
-    include_bytes!("../assets/fonts/GeistMono-Medium.ttf"),
+    include_bytes!("../assets/fonts/Inter-Regular.ttf"),
+    include_bytes!("../assets/fonts/Inter-Medium.ttf"),
+    include_bytes!("../assets/fonts/Inter-SemiBold.ttf"),
+    include_bytes!("../assets/fonts/Inter-Bold.ttf"),
+    include_bytes!("../assets/fonts/Inter-Italic.ttf"),
+    include_bytes!("../assets/fonts/InterDisplay-SemiBold.ttf"),
+    include_bytes!("../assets/fonts/JetBrainsMono-Regular.ttf"),
+    include_bytes!("../assets/fonts/JetBrainsMono-Medium.ttf"),
+    include_bytes!("../assets/fonts/JetBrainsMono-Italic.ttf"),
 ];
 
 /// The natural dove mark, decoded from the embedded photo.

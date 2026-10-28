@@ -10,8 +10,7 @@ import androidx.compose.ui.res.painterResource
 import sh.dove.android.R
 
 /**
- * Dove's icon set — the same glyphs the desktop (crates/ui/assets/icons,
- * Solar Linear + Dove's hand-drawn additions) and iOS draw, compiled to
+ * Dove's icon set — the same K22 glyphs the desktop and iOS draw, compiled to
  * VectorDrawables at build time by scripts/android/svg2vd.py.
  */
 object DoveIcons {

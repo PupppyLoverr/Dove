@@ -44,7 +44,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import kotlinx.coroutines.launch
 import sh.dove.android.core.AppModel
-import sh.dove.android.design.GeistMono
+import sh.dove.android.design.KMono
 import sh.dove.android.design.DoveIcon
 import sh.dove.android.design.DoveIcons
 import uniffi.zeron_core.DeviceView
@@ -179,7 +179,7 @@ fun NewProjectScreen(model: AppModel, onDismiss: () -> Unit, onCreated: (String)
                         Text(
                             it,
                             style = MaterialTheme.typography.bodySmall,
-                            fontFamily = if (it == current?.path) GeistMono else null,
+                            fontFamily = if (it == current?.path) KMono else null,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 2,
                             overflow = TextOverflow.Ellipsis,

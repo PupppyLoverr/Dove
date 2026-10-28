@@ -14,9 +14,9 @@ use gpui::{
     Animation, AnimationExt as _, AnyElement, AnyView, App, AppContext as _, ClickEvent, ClipboardItem, Context, Div,
     ExternalPaths, Focusable as _, FontStyle, FontWeight, HighlightStyle, Hsla, InteractiveElement as _,
     InteractiveText, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ObjectFit,
-    ParentElement as _, Render, ScrollDelta, ScrollWheelEvent, SharedString, Stateful,
-    StatefulInteractiveElement as _, StyledText, Styled as _, StyledImage as _, UnderlineStyle, Window, canvas, div,
-    img, linear_color_stop, linear_gradient, point, px,
+    ParentElement as _, Render, ScrollDelta, ScrollWheelEvent, SharedString, Stateful, StatefulInteractiveElement as _,
+    Styled as _, StyledImage as _, StyledText, UnderlineStyle, Window, canvas, div, img, linear_color_stop,
+    linear_gradient, point, px,
 };
 use gpui_base::input::{Input, Textarea};
 
@@ -38,9 +38,14 @@ use crate::island::ipc::ToEngine;
 pub enum SlimItem {
     /// Agents with something going on: each kind, how many, whether one needs
     /// you; plus overall todo progress.
-    Agents { groups: Vec<(HarnessKind, usize, bool)>, progress: Option<f32> },
+    Agents {
+        groups: Vec<(HarnessKind, usize, bool)>,
+        progress: Option<f32>,
+    },
     /// A pull request whose checks are running or failed.
-    Pr { checks: String },
+    Pr {
+        checks: String,
+    },
     Music,
     Timer,
     Note(String),
@@ -83,7 +88,11 @@ fn glyph(t: Tab) -> &'static str {
 
 fn mins_secs(d: Duration) -> String {
     let s = d.as_secs();
-    if s >= 3600 { format!("{}:{:02}:{:02}", s / 3600, (s / 60) % 60, s % 60) } else { format!("{}:{:02}", s / 60, s % 60) }
+    if s >= 3600 {
+        format!("{}:{:02}:{:02}", s / 3600, (s / 60) % 60, s % 60)
+    } else {
+        format!("{}:{:02}", s / 60, s % 60)
+    }
 }
 
 fn elapsed(secs: i64) -> String {
@@ -175,8 +184,11 @@ fn progress_ring(p: f32, size: f32, stroke: f32, color: Hsla, inner: AnyElement)
                     if let Some(track) = arc(0.0, TAU) {
                         window.paint_path(track, tk::WASH_HOVER);
                     }
-                    let (from, sweep) =
-                        if spin { (phase * TAU - TAU / 4.0, TAU * 0.28) } else { (-TAU / 4.0, TAU * p.clamp(0.0, 1.0)) };
+                    let (from, sweep) = if spin {
+                        (phase * TAU - TAU / 4.0, TAU * 0.28)
+                    } else {
+                        (-TAU / 4.0, TAU * p.clamp(0.0, 1.0))
+                    };
                     if sweep > 0.01
                         && let Some(path) = arc(from, sweep)
                     {
@@ -229,7 +241,13 @@ fn tip(text: impl Into<SharedString>) -> impl Fn(&mut Window, &mut App) -> AnyVi
 }
 
 /// An icon-only button, named by its tooltip.
-fn ibtn(id: impl Into<gpui::ElementId>, path: &'static str, size: f32, color: Hsla, name: &'static str) -> Stateful<Div> {
+fn ibtn(
+    id: impl Into<gpui::ElementId>,
+    path: &'static str,
+    size: f32,
+    color: Hsla,
+    name: &'static str,
+) -> Stateful<Div> {
     div()
         .id(id)
         .size(px(size))
@@ -349,16 +367,14 @@ fn roll(text: &str, key: &str, size: f32, color: Hsla, weight: FontWeight) -> Di
     for (i, ch) in text.chars().enumerate() {
         if ch.is_ascii_digit() && !crate::motion::reduced_now() {
             let id = SharedString::from(format!("roll-{key}-{i}-{ch}"));
-            row = row.child(
-                div().min_w(px(size * 0.6)).flex().justify_center().child(ch.to_string()).with_animation(
-                    id,
-                    Animation::new(Duration::from_millis(160)),
-                    move |el, t| {
-                        let e = 1.0 - (1.0 - t).powi(3);
-                        el.relative().top(px((1.0 - e) * -size * 0.35)).opacity(e)
-                    },
-                ),
-            );
+            row = row.child(div().min_w(px(size * 0.6)).flex().justify_center().child(ch.to_string()).with_animation(
+                id,
+                Animation::new(Duration::from_millis(160)),
+                move |el, t| {
+                    let e = 1.0 - (1.0 - t).powi(3);
+                    el.relative().top(px((1.0 - e) * -size * 0.35)).opacity(e)
+                },
+            ));
         } else {
             row = row.child(div().child(ch.to_string()));
         }
@@ -484,14 +500,21 @@ fn blocks(src: &str) -> Vec<Block> {
                 if let Some(s) = bold.pop() {
                     run.styles.push((
                         s..run.text.len(),
-                        HighlightStyle { font_weight: Some(FontWeight::SEMIBOLD), color: Some(tk::TEXT), ..Default::default() },
+                        HighlightStyle {
+                            font_weight: Some(FontWeight::SEMIBOLD),
+                            color: Some(tk::TEXT),
+                            ..Default::default()
+                        },
                     ));
                 }
             }
             Event::Start(Tag::Emphasis) => italic.push(run.text.len()),
             Event::End(TagEnd::Emphasis) => {
                 if let Some(s) = italic.pop() {
-                    run.styles.push((s..run.text.len(), HighlightStyle { font_style: Some(FontStyle::Italic), ..Default::default() }));
+                    run.styles.push((
+                        s..run.text.len(),
+                        HighlightStyle { font_style: Some(FontStyle::Italic), ..Default::default() },
+                    ));
                 }
             }
             Event::Start(Tag::Link { dest_url, .. }) => link = Some((run.text.len(), dest_url.to_string())),
@@ -502,7 +525,11 @@ fn blocks(src: &str) -> Vec<Block> {
                         r.clone(),
                         HighlightStyle {
                             color: Some(tk::BLUE),
-                            underline: Some(UnderlineStyle { thickness: px(1.0), color: Some(tk::BLUE.opacity(0.5)), wavy: false }),
+                            underline: Some(UnderlineStyle {
+                                thickness: px(1.0),
+                                color: Some(tk::BLUE.opacity(0.5)),
+                                wavy: false,
+                            }),
                             ..Default::default()
                         },
                     ));
@@ -514,7 +541,11 @@ fn blocks(src: &str) -> Vec<Block> {
                 run.text.push_str(&c);
                 run.styles.push((
                     s..run.text.len(),
-                    HighlightStyle { color: Some(tk::TEXT), background_color: Some(tk::WASH_HOVER), ..Default::default() },
+                    HighlightStyle {
+                        color: Some(tk::TEXT),
+                        background_color: Some(tk::WASH_HOVER),
+                        ..Default::default()
+                    },
                 ));
             }
             Event::Text(t) => run.text.push_str(&t),
@@ -565,7 +596,9 @@ fn markdown(src: &str, key: &str) -> AnyElement {
         let id = SharedString::from(format!("md-{key}-{i}"));
         col = col.child(match b {
             Block::Para { text, styles, links, heading } => div()
-                .when(heading, |d| d.text_color(tk::TEXT).font_weight(FontWeight::SEMIBOLD).text_size(px(tk::T13)).pt(px(2.0)))
+                .when(heading, |d| {
+                    d.text_color(tk::TEXT).font_weight(FontWeight::SEMIBOLD).text_size(px(tk::T13)).pt(px(2.0))
+                })
                 .child(rich(id, text, styles, links))
                 .into_any_element(),
             Block::Item { lead, depth, text, styles, links } => div()
@@ -600,7 +633,9 @@ fn markdown(src: &str, key: &str) -> AnyElement {
                             .gap(px(4.0))
                             .invisible()
                             .group_hover(group, |s| s.visible())
-                            .when(!lang.is_empty(), |d| d.child(div().text_size(px(tk::T11)).text_color(tk::FAINT).child(lang)))
+                            .when(!lang.is_empty(), |d| {
+                                d.child(div().text_size(px(tk::T11)).text_color(tk::FAINT).child(lang))
+                            })
                             .child(
                                 div()
                                     .id("copy-code")
@@ -613,7 +648,9 @@ fn markdown(src: &str, key: &str) -> AnyElement {
                                     .hover(|s| s.bg(tk::WASH_HOVER))
                                     .tooltip(tip("Copy"))
                                     .child(icon(icons::COPY).size(px(13.0)).text_color(tk::DIM))
-                                    .on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))),
+                                    .on_click(move |_, _, cx| {
+                                        cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))
+                                    }),
                             ),
                     )
                     .into_any_element()
@@ -640,7 +677,9 @@ fn preview(p: &Preview, lines: usize) -> AnyElement {
                         .gap(px(6.0))
                         .text_size(px(tk::T11))
                         .child(icon(icons::FILE_CODE).size(px(13.0)).text_color(tk::DIM))
-                        .child(div().flex_1().min_w_0().truncate().font_family(tk::MONO).text_color(tk::TEXT).child(name))
+                        .child(
+                            div().flex_1().min_w_0().truncate().font_family(tk::MONO).text_color(tk::TEXT).child(name),
+                        )
                         .child(div().text_color(tk::GREEN).child(format!("+{added}")))
                         .child(div().text_color(tk::RED).child(format!("−{removed}"))),
                 )
@@ -663,7 +702,9 @@ fn preview(p: &Preview, lines: usize) -> AnyElement {
                                     .bg(bg)
                                     .font_family(tk::MONO)
                                     .text_size(px(tk::T11))
-                                    .child(div().w(px(16.0)).flex_none().text_color(fg).pl(px(6.0)).child(tag.to_string()))
+                                    .child(
+                                        div().w(px(16.0)).flex_none().text_color(fg).pl(px(6.0)).child(tag.to_string()),
+                                    )
                                     .child(div().flex_1().min_w_0().truncate().text_color(tk::TEXT).child(text.clone()))
                             })),
                     )
@@ -704,10 +745,14 @@ fn rise(el: impl IntoElement + 'static, key: (u64, usize), index: usize) -> AnyE
     let lead = delay as f32 / dur.as_millis() as f32;
     div()
         .child(el)
-        .with_animation(id, Animation::new(dur).with_easing(move |t| ((t - lead) / (1.0 - lead)).clamp(0.0, 1.0)), |el, t| {
-            let e = 1.0 - (1.0 - t).powi(3);
-            el.opacity(e).relative().top(px((1.0 - e) * tk::RISE_PX))
-        })
+        .with_animation(
+            id,
+            Animation::new(dur).with_easing(move |t| ((t - lead) / (1.0 - lead)).clamp(0.0, 1.0)),
+            |el, t| {
+                let e = 1.0 - (1.0 - t).powi(3);
+                el.opacity(e).relative().top(px((1.0 - e) * tk::RISE_PX))
+            },
+        )
         .into_any_element()
 }
 
@@ -848,12 +893,16 @@ impl HomeCard {
                 });
                 24.0 + 8.0 + 36.0 + 8.0 + tk::CONTROL_H + preview.map(|p| p + 8.0).unwrap_or(0.0)
             }
-            HomeCard::Working => n.snap.agents.iter().filter(|a| a.active() && !a.needs_you()).take(3).count() as f32 * (tk::ROW_H + 2.0),
+            HomeCard::Working => {
+                n.snap.agents.iter().filter(|a| a.active() && !a.needs_you()).take(3).count() as f32 * (tk::ROW_H + 2.0)
+            }
             HomeCard::Music => 68.0,
             HomeCard::Timer => 64.0,
             HomeCard::Dev => 24.0 + n.ports.len().min(3) as f32 * 22.0,
             HomeCard::Prs => 24.0 + n.snap.prs.iter().filter(|p| p.state == "open").take(3).count() as f32 * 40.0,
-            HomeCard::Automations => 24.0 + n.snap.automations.iter().filter(|a| a.enabled).take(2).count() as f32 * 38.0,
+            HomeCard::Automations => {
+                24.0 + n.snap.automations.iter().filter(|a| a.enabled).take(2).count() as f32 * 38.0
+            }
             HomeCard::Note => 76.0,
             HomeCard::Clips => 24.0 + n.clips.len().min(3) as f32 * 26.0,
         }

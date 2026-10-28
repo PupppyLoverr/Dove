@@ -29,18 +29,16 @@ impl Glass {
 mod imp {
     use std::cell::RefCell;
 
-    use windows_numerics::{Vector2, Vector3};
     use windows::System::DispatcherQueueController;
     use windows::UI::Composition::Desktop::DesktopWindowTarget;
-    use windows::UI::Composition::{
-        CompositionRoundedRectangleGeometry, Compositor, ContainerVisual, SpriteVisual,
-    };
+    use windows::UI::Composition::{CompositionRoundedRectangleGeometry, Compositor, ContainerVisual, SpriteVisual};
     use windows::Win32::Foundation::HWND;
     use windows::Win32::System::WinRT::Composition::ICompositorDesktopInterop;
     use windows::Win32::System::WinRT::{
         CreateDispatcherQueueController, DQTAT_COM_NONE, DQTYPE_THREAD_CURRENT, DispatcherQueueOptions,
     };
     use windows_core::Interface as _;
+    use windows_numerics::{Vector2, Vector3};
 
     use super::Shape;
 

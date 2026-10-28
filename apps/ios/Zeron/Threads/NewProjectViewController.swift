@@ -39,14 +39,14 @@ final class NewProjectViewController: UIViewController, UICollectionViewDelegate
             guard let entry = self?.listing?.entries.first(where: { $0.name == name }) else {
                 var c = UIListContentConfiguration.cell()
                 c.text = name == ".." ? "Parent Folder" : name
-                c.image = UIImage(systemName: "arrow.turn.left.up")
+                c.image = K22Icon.image("arrow-turn-left-up")
                 cell.contentConfiguration = c
                 return
             }
             var c = UIListContentConfiguration.cell()
             c.text = entry.name
             c.textProperties.font = Fonts.ui(.sansMedium, 16)
-            c.image = UIImage(systemName: entry.isRepo ? "folder.badge.gearshape" : entry.isDir ? "folder" : "doc")
+            c.image = K22Icon.resolve(systemName: entry.isRepo ? "folder.badge.gearshape" : entry.isDir ? "folder" : "doc")
             c.imageProperties.tintColor = entry.isRepo ? Palette.accent : Palette.secondary
             cell.contentConfiguration = c
             cell.accessories = entry.isDir ? [.disclosureIndicator()] : []
@@ -86,7 +86,7 @@ final class NewProjectViewController: UIViewController, UICollectionViewDelegate
         let hosts = app.hostOptions
         device = hosts.first(where: \.online) ?? hosts.first
         navigationItem.rightBarButtonItem = UIBarButtonItem(title: device?.name ?? "No hosts", menu: UIMenu(title: "Device", children: hosts.map { h in
-            UIAction(title: h.name, subtitle: h.online ? "Online" : "Offline", image: UIImage(systemName: "desktopcomputer")) { [weak self] _ in
+            UIAction(title: h.name, subtitle: h.online ? "Online" : "Offline", image: K22Icon.image("monitor")) { [weak self] _ in
                 self?.device = h
                 self?.navigationItem.rightBarButtonItem?.title = h.name
                 self?.load(nil)

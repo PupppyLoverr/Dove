@@ -117,7 +117,7 @@ final class QuestionPanel: UIView, UITextFieldDelegate, UITextViewDelegate {
         for (i, option) in q.options.enumerated() {
             var c = UIButton.Configuration.plain()
             c.title = option
-            c.image = UIImage(systemName: chosen.contains(option) ? (q.multiSelect ? "checkmark.square.fill" : "checkmark.circle.fill") : "\(i + 1).circle")
+            c.image = K22Icon.resolve(systemName: chosen.contains(option) ? (q.multiSelect ? "checkmark.square.fill" : "checkmark.circle.fill") : "\(i + 1).circle")
             c.imagePadding = 10
             c.baseForegroundColor = chosen.contains(option) ? Palette.accent : Palette.text
             c.contentInsets = NSDirectionalEdgeInsets(top: 11, leading: 12, bottom: 11, trailing: 12)
@@ -268,7 +268,7 @@ final class QueuePanel: UIView {
     private func row(_ item: SessionChrome.QueuedItem, index: Int, count: Int) -> UIView {
         let v = UIView()
         v.heightAnchor.constraint(equalToConstant: 40).isActive = true
-        let icon = UIImageView(image: UIImage(systemName: "clock", withConfiguration: UIImage.SymbolConfiguration(pointSize: 12, weight: .medium)))
+        let icon = UIImageView(image: K22Icon.image("clock-circle", pointSize: 12))
         icon.tintColor = Palette.tertiary
         let thumb = UIImageView(image: item.thumbnail)
         thumb.contentMode = .scaleAspectFill
@@ -280,21 +280,21 @@ final class QueuePanel: UIView {
         label.font = Fonts.ui(.sans, 15)
         label.textColor = Palette.text
         var sendConfig = UIButton.Configuration.plain()
-        sendConfig.image = UIImage(systemName: "arrow.up.circle.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 20, weight: .regular))
+        sendConfig.image = K22Icon.image("send", pointSize: 20)
         sendConfig.baseForegroundColor = Palette.text
         let send = UIButton(configuration: sendConfig, primaryAction: UIAction { [weak self] _ in self?.onAction?(item.id, .sendNow) })
         send.accessibilityLabel = "Send"
         var moreConfig = UIButton.Configuration.plain()
-        moreConfig.image = UIImage(systemName: "ellipsis", withConfiguration: UIImage.SymbolConfiguration(pointSize: 14, weight: .semibold))
+        moreConfig.image = K22Icon.image("more-horizontal", pointSize: 14)
         moreConfig.baseForegroundColor = Palette.secondary
         let more = UIButton(configuration: moreConfig)
         more.accessibilityLabel = "More queue actions"
         more.showsMenuAsPrimaryAction = true
         more.menu = UIMenu(children: [
-            UIAction(title: "Edit", image: UIImage(systemName: "pencil")) { [weak self] _ in self?.onAction?(item.id, .edit) },
-            UIAction(title: "Move Up", image: UIImage(systemName: "arrow.up"), attributes: index == 0 ? .disabled : []) { [weak self] _ in self?.onAction?(item.id, .moveUp) },
-            UIAction(title: "Move Down", image: UIImage(systemName: "arrow.down"), attributes: index == count - 1 ? .disabled : []) { [weak self] _ in self?.onAction?(item.id, .moveDown) },
-            UIAction(title: "Remove", image: UIImage(systemName: "trash"), attributes: .destructive) { [weak self] _ in self?.onAction?(item.id, .remove) },
+            UIAction(title: "Edit", image: K22Icon.image("pen")) { [weak self] _ in self?.onAction?(item.id, .edit) },
+            UIAction(title: "Move Up", image: K22Icon.image("arrow-up"), attributes: index == 0 ? .disabled : []) { [weak self] _ in self?.onAction?(item.id, .moveUp) },
+            UIAction(title: "Move Down", image: K22Icon.image("arrow-down"), attributes: index == count - 1 ? .disabled : []) { [weak self] _ in self?.onAction?(item.id, .moveDown) },
+            UIAction(title: "Remove", image: K22Icon.image("trash-bin-minimalistic"), attributes: .destructive) { [weak self] _ in self?.onAction?(item.id, .remove) },
         ])
         for s in [icon, thumb, label, send, more] {
             s.translatesAutoresizingMaskIntoConstraints = false

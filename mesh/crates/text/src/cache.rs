@@ -88,6 +88,9 @@ pub struct WidthCache {
     kern_ascii: Vec<Option<Box<[PairContext]>>>,
     /// Pair context between other single-char graphemes.
     kern_chars: HashMap<(u16, char, char), PairContext, FxBuildHasher>,
+    /// Pair contexts that depend on the grapheme before the pair (see
+    /// [`WidthCache::pair_context`]), keyed by style and the three single chars.
+    kern_triples: HashMap<(u16, char, char, char), PairContext, FxBuildHasher>,
     /// The fallback measurer declined [`crate::FallbackMeasurer::measure_run`]; don't ask again.
     pub(crate) runs_unsupported: bool,
     run_scratch: Vec<f32>,
@@ -174,6 +177,7 @@ impl WidthCache {
             plans: Vec::new(),
             kern_ascii: Vec::new(),
             kern_chars: HashMap::default(),
+            kern_triples: HashMap::default(),
             runs_unsupported: false,
             run_scratch: Vec::new(),
             buffer: None,
@@ -195,6 +199,7 @@ impl WidthCache {
         self.plans.clear();
         self.kern_ascii.clear();
         self.kern_chars.clear();
+        self.kern_triples.clear();
         self.runs_unsupported = false;
         self.stats = CacheStats::default();
     }
@@ -404,10 +409,86 @@ impl WidthCache {
     /// side: `(Δa, Δb)` in points, where `Δa = adv_in_pair(a) − shape(a)` and likewise for `b`
     /// (glyphs are attributed to a side by their cluster). This is what a paragraph-level shaper
     /// applies across a segment boundary: pair kerning lands on `a` (GPOS adjusts the first
-    /// glyph's advance); a ligature or contextual form spanning both (Geist's `->` arrow) puts
+    /// glyph's advance); a ligature or contextual form spanning both (Inter's `->` arrow) puts
     /// its whole advance on `a` and leaves `b` with `−shape(b)`. Both graphemes must be shaped
     /// by the style's face (see [`WidthCache::is_shaped`]).
+    ///
+    /// `before` is the grapheme preceding `a` in the same shaping run (empty at a run start).
+    /// Contextual alternates can look back past the pair: Inter draws `]` after a digit as a
+    /// raised form that no longer kerns with a following `“`. Single-char triples are cached.
     pub(crate) fn pair_context(
+        &mut self,
+        book: &FontBook,
+        style: StyleId,
+        before: &str,
+        a: &str,
+        b: &str,
+    ) -> PairContext {
+        if before.is_empty() {
+            return self.pair_alone(book, style, a, b);
+        }
+        let mut z = before.chars();
+        let mut x = a.chars();
+        let mut y = b.chars();
+        if let (Some(z), None, Some(x), None, Some(y), None) =
+            (z.next(), z.next(), x.next(), x.next(), y.next(), y.next())
+        {
+            if let Some(&v) = self.kern_triples.get(&(style.0, z, x, y)) {
+                return v;
+            }
+            let v = self.compute_in_context(book, style, before, a, b);
+            self.kern_triples.insert((style.0, z, x, y), v);
+            return v;
+        }
+        self.compute_in_context(book, style, before, a, b)
+    }
+
+    /// The pair context of `a` and `b` shaped after `before`: `Δleft` is how much `before`+`a`
+    /// grow when `b` follows (both were measured together in the left segment), `Δright` how
+    /// much `b` differs from being shaped alone.
+    fn compute_in_context(
+        &mut self,
+        book: &FontBook,
+        style: StyleId,
+        before: &str,
+        a: &str,
+        b: &str,
+    ) -> PairContext {
+        let sd = book.style_data(style);
+        let face = book.face_data(sd.style.face);
+        let left_len = before.len() + a.len();
+        let mut zab = String::with_capacity(left_len + b.len());
+        zab.push_str(before);
+        zab.push_str(a);
+        zab.push_str(b);
+        let (mut in_left, mut in_b) = (0i64, 0i64);
+        let mut ids: Vec<u32> = Vec::new();
+        let glyphs = self.shape_glyphs(sd, face, &zab);
+        for (info, pos) in glyphs.glyph_infos().iter().zip(glyphs.glyph_positions()) {
+            ids.push(info.glyph_id);
+            if (info.cluster as usize) < left_len {
+                in_left += pos.x_advance as i64;
+            } else {
+                in_b += pos.x_advance as i64;
+            }
+        }
+        self.buffer = Some(glyphs.clear());
+        let mut apart: Vec<u32> = Vec::new();
+        let mut units = [0i64; 2];
+        for (k, t) in [&zab[..left_len], b].into_iter().enumerate() {
+            let glyphs = self.shape_glyphs(sd, face, t);
+            apart.extend(glyphs.glyph_infos().iter().map(|g| g.glyph_id));
+            units[k] = glyphs.glyph_positions().iter().map(|p| p.x_advance as i64).sum();
+            self.buffer = Some(glyphs.clear());
+        }
+        PairContext {
+            left: (in_left - units[0]) as f32 * sd.scale,
+            right: (in_b - units[1]) as f32 * sd.scale,
+            substituted: ids != apart,
+        }
+    }
+
+    fn pair_alone(
         &mut self,
         book: &FontBook,
         style: StyleId,

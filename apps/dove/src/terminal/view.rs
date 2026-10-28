@@ -382,13 +382,16 @@ impl gpui::Element for TerminalElement {
     }
 }
 
-/// Fonts tried when Geist Mono has no glyph (emoji, symbols, box drawing).
-/// Set only on pinned non-ASCII runs, so an ASCII run stays on the mono face.
+/// Fonts tried when JetBrains Mono has no glyph (emoji, symbols, box drawing).
+/// JetBrains Mono is first so a later face does not steal box-drawing or Powerline
+/// glyphs the mono face already has. Set only on pinned non-ASCII runs, so an
+/// ASCII run stays on the mono face.
 fn symbol_fallbacks() -> gpui::FontFallbacks {
     static FALLBACKS: std::sync::OnceLock<gpui::FontFallbacks> = std::sync::OnceLock::new();
     FALLBACKS
         .get_or_init(|| {
             gpui::FontFallbacks::from_fonts(vec![
+                "JetBrains Mono".into(),
                 "Cascadia Mono".into(),
                 "Cascadia Code".into(),
                 "Consolas".into(),

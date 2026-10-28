@@ -135,7 +135,10 @@ fn exe() -> Option<PathBuf> {
 fn spawn_detached(args: &[&str]) -> bool {
     let Some(exe) = exe() else { return false };
     let mut cmd = std::process::Command::new(exe);
-    cmd.args(args).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+    cmd.args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt as _;
@@ -200,7 +203,8 @@ mod tray {
     pub fn start(store: Arc<Store>, rt: tokio::runtime::Handle, notch: Option<Entity<Notch>>, cx: &mut App) {
         let menu = Menu::new();
         let open = MenuItem::new("Open Dove", true, None);
-        let login = CheckMenuItem::new("Start at login", super::login::allowed(), store.flag(super::login::KEY, true), None);
+        let login =
+            CheckMenuItem::new("Start at login", super::login::allowed(), store.flag(super::login::KEY, true), None);
         let quit = MenuItem::new("Quit Dove completely", true, None);
         let _ = menu.append(&open);
         let _ = menu.append(&PredefinedMenuItem::separator());
@@ -239,7 +243,11 @@ mod tray {
             }));
         }
         TrayIconEvent::set_event_handler(Some(move |e: TrayIconEvent| {
-            if let TrayIconEvent::Click { button: MouseButton::Left, button_state: tray_icon::MouseButtonState::Up, .. } = e
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: tray_icon::MouseButtonState::Up,
+                ..
+            } = e
             {
                 let _ = tx.send(Click::Open);
             }
@@ -249,32 +257,31 @@ mod tray {
             let _tray = tray;
             let _login_item = login.clone();
             while let Ok(click) = rx.recv_async().await {
-                let quit = cx
-                    .update(|cx| match click {
-                        Click::Open => {
-                            send(notch.as_ref(), &store, &rt, ToEngine::Open { task: None }, cx);
-                            false
+                let quit = cx.update(|cx| match click {
+                    Click::Open => {
+                        send(notch.as_ref(), &store, &rt, ToEngine::Open { task: None }, cx);
+                        false
+                    }
+                    Click::Login => {
+                        let on = !store.flag(super::login::KEY, true);
+                        let _ = store.set_setting(super::login::KEY, if on { "true" } else { "false" });
+                        super::login::apply(&store);
+                        login.set_checked(on);
+                        false
+                    }
+                    Click::QuitAll => {
+                        let running = notch.as_ref().map(|n| n.read(cx).running_agents()).unwrap_or(0);
+                        if running > 0 && !confirm_quit(running) {
+                            return false;
                         }
-                        Click::Login => {
-                            let on = !store.flag(super::login::KEY, true);
-                            let _ = store.set_setting(super::login::KEY, if on { "true" } else { "false" });
-                            super::login::apply(&store);
-                            login.set_checked(on);
-                            false
-                        }
-                        Click::QuitAll => {
-                            let running = notch.as_ref().map(|n| n.read(cx).running_agents()).unwrap_or(0);
-                            if running > 0 && !confirm_quit(running) {
-                                return false;
-                            }
-                            send(notch.as_ref(), &store, &rt, ToEngine::QuitAll, cx);
-                            true
-                        }
-                    });
+                        send(notch.as_ref(), &store, &rt, ToEngine::QuitAll, cx);
+                        true
+                    }
+                });
                 if quit {
                     // Let the goodbye reach Dove before the island goes.
                     cx.background_executor().timer(Duration::from_millis(400)).await;
-                    let _ = cx.update(|cx| cx.quit());
+                    cx.update(|cx| cx.quit());
                     break;
                 }
             }
@@ -319,8 +326,12 @@ mod tray {
         let title: Vec<u16> = "Dove".encode_utf16().chain(Some(0)).collect();
         // SAFETY: two NUL-terminated strings that outlive the call.
         unsafe {
-            MessageBoxW(std::ptr::null_mut(), text.as_ptr(), title.as_ptr(), MB_YESNO | MB_ICONWARNING | MB_SETFOREGROUND)
-                == IDYES
+            MessageBoxW(
+                std::ptr::null_mut(),
+                text.as_ptr(),
+                title.as_ptr(),
+                MB_YESNO | MB_ICONWARNING | MB_SETFOREGROUND,
+            ) == IDYES
         }
     }
 

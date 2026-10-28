@@ -49,7 +49,7 @@ final class SessionViewController: UIViewController, UIGestureRecognizerDelegate
         }
         navigationItem.largeTitleDisplayMode = .never
         navigationItem.titleView = titleView
-        navigationItem.rightBarButtonItem = UIBarButtonItem(image: UIImage(systemName: "ellipsis"), menu: sessionMenu())
+        navigationItem.rightBarButtonItem = UIBarButtonItem(image: K22Icon.image("more-horizontal"), menu: sessionMenu())
 
         list.frame = view.bounds
         list.autoresizingMask = [.flexibleWidth, .flexibleHeight]
@@ -662,11 +662,11 @@ final class SessionViewController: UIViewController, UIGestureRecognizerDelegate
             let vm = self.app.session(self.chatId)
             let pinned = vm?.pinned ?? false
             done([
-                UIAction(title: pinned ? "Unpin" : "Pin", image: UIImage(systemName: pinned ? "pin.slash" : "pin")) { _ in self.app.setPinned(self.chatId, !pinned) },
-                UIAction(title: "Copy Transcript", image: UIImage(systemName: "doc.on.doc")) { _ in
+                UIAction(title: pinned ? "Unpin" : "Pin", image: K22Icon.resolve(systemName: pinned ? "pin.slash" : "pin")) { _ in self.app.setPinned(self.chatId, !pinned) },
+                UIAction(title: "Copy Transcript", image: K22Icon.image("copy")) { _ in
                     UIPasteboard.general.string = self.engine.frame().plainText()
                 },
-                UIAction(title: "Archive", image: UIImage(systemName: "archivebox"), attributes: .destructive) { _ in
+                UIAction(title: "Archive", image: K22Icon.image("archive-minimalistic"), attributes: .destructive) { _ in
                     self.app.archive(self.chatId)
                     // Beside the iPad sidebar there's nothing to pop back to.
                     if let split = self.splitViewController as? SplitRootController, !split.isCollapsed {

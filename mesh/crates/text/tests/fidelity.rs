@@ -11,10 +11,10 @@ use common::*;
 use unicode_segmentation::UnicodeSegmentation;
 use zeron_text::*;
 
-/// Independent rustybuzz shaping of `text` in Geist at `size` (default features: kerning and
+/// Independent rustybuzz shaping of `text` in Inter at `size` (default features: kerning and
 /// standard ligatures, like the fixture's sans style).
 fn shaped(text: &str, size: f32) -> f32 {
-    let data = font_bytes("Geist.ttf");
+    let data = font_bytes("Inter-Regular.ttf");
     let face = rustybuzz::Face::from_slice(&data, 0).unwrap();
     let mut buf = rustybuzz::UnicodeBuffer::new();
     buf.push_str(text);
@@ -129,20 +129,20 @@ fn segment_seams_reproduce_whole_paragraph_shaping() {
 }
 
 /// A line's advance includes the kerning between its last glyph and the next line's first
-/// glyph, as CoreText's paragraph-level fit does: `long/` followed by `path` is narrower than
-/// `long/` alone.
+/// glyph, as CoreText's paragraph-level fit does: `long/` followed by `Java` is narrower than
+/// `long/` alone (Inter kerns `/J`).
 #[test]
 fn kerning_counts_across_the_break() {
     let mut fx = Fixture::without_fallback();
-    let p = fx.prep("long/path");
+    let p = fx.prep("long/Java");
     let lines = p.lines(p.max_content_width() - 1.0);
     assert_eq!(
         line_texts(&p, p.max_content_width() - 1.0),
-        ["long/", "path"]
+        ["long/", "Java"]
     );
-    let in_context = shaped("long/p", 15.0) - shaped("p", 15.0);
-    assert_close(lines[0].width, in_context, "long/ before p");
-    assert!(in_context < shaped("long/", 15.0) - 0.05, "Geist kerns /p");
+    let in_context = shaped("long/J", 15.0) - shaped("J", 15.0);
+    assert_close(lines[0].width, in_context, "long/ before J");
+    assert!(in_context < shaped("long/", 15.0) - 0.05, "Inter kerns /J");
 }
 
 /// Where UAX #14 has no opportunity after whitespace (`( x`, `8 !=`), the line still ends after
@@ -192,19 +192,20 @@ fn fit_uses_coretext_slack() {
     assert_eq!(LINE_FIT_EPSILON, 0.0002);
 }
 
-/// Overflow splits happen between glyphs, never inside a ligature: `fi` stays together.
+/// Overflow splits happen between glyphs, never inside a ligature: Inter's `=>` arrow stays
+/// together.
 #[test]
 fn ligatures_are_never_split() {
-    let ligates = shaped("fi", 15.0) != shaped("f", 15.0) + shaped("i", 15.0);
-    assert!(ligates, "Geist has an fi ligature");
+    let ligates = shaped("=>", 15.0) != shaped("=", 15.0) + shaped(">", 15.0);
+    assert!(ligates, "Inter has an => ligature");
     let mut fx = Fixture::without_fallback();
-    let p = fx.prep("fine");
-    assert_eq!(line_texts(&p, 0.0), ["fi", "n", "e"]);
+    let p = fx.prep("=>ab");
+    assert_eq!(line_texts(&p, 0.0), ["=>", "a", "b"]);
     // Also across a same-style span boundary.
     let spans = [Span::new(0..1, fx.sans), Span::new(1..4, fx.sans)];
-    let p = fx.prep_spans("fine", &spans, normal());
-    assert_eq!(line_texts(&p, 0.0), ["fi", "n", "e"]);
-    assert_close(p.max_content_width(), shaped("fine", 15.0), "fine");
+    let p = fx.prep_spans("=>ab", &spans, normal());
+    assert_eq!(line_texts(&p, 0.0), ["=>", "a", "b"]);
+    assert_close(p.max_content_width(), shaped("=>ab", 15.0), "=>ab");
 }
 
 fn contents(p: &Prepared) -> Vec<&str> {
@@ -327,7 +328,7 @@ impl FallbackMeasurer for RunHost {
 
 fn run_book(supports_runs: bool) -> (FontBook, StyleId, Arc<RunHost>) {
     let mut book = FontBook::new();
-    let face = book.add_face(font_bytes("Geist.ttf")).unwrap();
+    let face = book.add_face(font_bytes("Inter-Regular.ttf")).unwrap();
     let style = book.add_style(face, 15.0, StyleOptions::default());
     let host = Arc::new(RunHost {
         runs: AtomicUsize::new(0),
@@ -382,7 +383,7 @@ fn hosts_without_run_support_are_asked_once() {
 #[test]
 fn fallback_runs_get_letter_spacing() {
     let mut book = FontBook::new();
-    let face = book.add_face(font_bytes("Geist.ttf")).unwrap();
+    let face = book.add_face(font_bytes("Inter-Regular.ttf")).unwrap();
     let style = book.add_style(
         face,
         15.0,

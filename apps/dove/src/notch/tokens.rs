@@ -66,7 +66,7 @@ pub const T12: f32 = 12.0;
 pub const T13: f32 = 13.0;
 pub const T15: f32 = 15.0;
 pub const T20: f32 = 20.0;
-pub const MONO: &str = "Geist Mono";
+pub const MONO: &str = "JetBrains Mono";
 
 // ----- radius, spacing --------------------------------------------------------
 

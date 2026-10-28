@@ -350,7 +350,15 @@ impl Geo {
     }
 
     fn from_array(a: [f32; 7]) -> Geo {
-        Geo { y: a[0], w: a[1].max(1.0), h: a[2].max(1.0), r: a[3].max(0.0), dx: a[4], b1: a[5].max(0.0), b2: a[6].max(0.0) }
+        Geo {
+            y: a[0],
+            w: a[1].max(1.0),
+            h: a[2].max(1.0),
+            r: a[3].max(0.0),
+            dx: a[4],
+            b1: a[5].max(0.0),
+            b2: a[6].max(0.0),
+        }
     }
 
     pub fn x(&self) -> f32 {
@@ -898,7 +906,9 @@ impl NotchWindow {
         let subs = vec![
             cx.observe(&notch, |_, _, cx| cx.notify()),
             cx.subscribe_in(&message, window, |this, input, ev: &InputEvent, window, cx| match ev {
-                InputEvent::PressEnter { shift: false, .. } => this.notch.update(cx, |n, cx| n.send_message(window, cx)),
+                InputEvent::PressEnter { shift: false, .. } => {
+                    this.notch.update(cx, |n, cx| n.send_message(window, cx))
+                }
                 InputEvent::Change => {
                     let text = input.read(cx).value().to_string();
                     this.notch.update(cx, |n, cx| n.composer_changed(&text, cx));
@@ -1053,7 +1063,10 @@ fn run(notch: Entity<Notch>, rx: flume::Receiver<Msg>, cx: &mut App) {
                             None,
                         );
                     }
-                    if cycle && started.elapsed() > Duration::from_secs(3) && cycled.elapsed() > Duration::from_millis(1600) {
+                    if cycle
+                        && started.elapsed() > Duration::from_secs(3)
+                        && cycled.elapsed() > Duration::from_millis(1600)
+                    {
                         cycled = Instant::now();
                         let changed = if n.machine.state == State::Expanded {
                             n.machine.close(State::Hidden, false)
@@ -1450,7 +1463,11 @@ impl Notch {
             let cursor = platform::cursor();
             // Heading for the top: make the window now, so opening never
             // waits for it.
-            if !self.shown && self.win.is_none() && !self.opening && self.prefs.enabled && !self.fullscreen
+            if !self.shown
+                && self.win.is_none()
+                && !self.opening
+                && self.prefs.enabled
+                && !self.fullscreen
                 && let Some((x, y)) = cursor
             {
                 let s = display.scale;
@@ -1641,15 +1658,7 @@ impl Notch {
             }
             State::Alert => {
                 let (w, h) = self.banner_size();
-                Geo {
-                    y: tk::TOP_GAP,
-                    w,
-                    h,
-                    r: if h > 60.0 { 28.0 } else { h / 2.0 },
-                    dx: 0.0,
-                    b1: 0.0,
-                    b2: 0.0,
-                }
+                Geo { y: tk::TOP_GAP, w, h, r: if h > 60.0 { 28.0 } else { h / 2.0 }, dx: 0.0, b1: 0.0, b2: 0.0 }
             }
             State::Expanded => Geo {
                 y: tk::TOP_GAP,
@@ -1683,7 +1692,13 @@ impl Notch {
         let now = Instant::now();
         let current = Geo::from_array(self.springs.values());
         if let Some(t) = &mut self.timing {
-            *t = Timing { what: format!("{:?} → {state:?}", self.prev_state), at: now, first: None, last_frame: None, max_gap: Duration::ZERO };
+            *t = Timing {
+                what: format!("{:?} → {state:?}", self.prev_state),
+                at: now,
+                first: None,
+                last_frame: None,
+                max_gap: Duration::ZERO,
+            };
         }
         if state == State::Expanded && self.prev_state == State::Slim {
             self.hero = self.hero_for_open();
@@ -1793,8 +1808,8 @@ impl Notch {
             return false;
         }
         let needs = self.snap.agents.iter().any(|a| a.needs_you());
-        let working =
-            self.snap.agents.iter().any(|a| a.status == TaskStatus::Running) || self.snap.flock.iter().any(|f| f.working);
+        let working = self.snap.agents.iter().any(|a| a.status == TaskStatus::Running)
+            || self.snap.flock.iter().any(|f| f.working);
         if self.hero.is_some() {
             return true;
         }
@@ -1829,7 +1844,9 @@ impl Notch {
     // ----- the window -------------------------------------------------------------
 
     fn uses_captured_glass(&self) -> bool {
-        self.prefs.glass && self.transparency && self.win.as_ref().is_some_and(|w| w.glass.is_none() && w.native.is_some())
+        self.prefs.glass
+            && self.transparency
+            && self.win.as_ref().is_some_and(|w| w.glass.is_none() && w.native.is_some())
     }
 
     /// Opens the window (once) outside the current update: opening draws a
@@ -1879,7 +1896,12 @@ impl Notch {
         .detach();
     }
 
-    fn adopt_window(&mut self, handle: WindowHandle<NotchWindow>, native: Option<platform::Handle>, cx: &mut Context<Self>) {
+    fn adopt_window(
+        &mut self,
+        handle: WindowHandle<NotchWindow>,
+        native: Option<platform::Handle>,
+        cx: &mut Context<Self>,
+    ) {
         self.opening = false;
         let glass = native.filter(|_| self.prefs.glass && self.transparency).and_then(|h| glass::Glass::new(h.raw()));
         if let Some(h) = native {
@@ -2126,14 +2148,24 @@ impl Notch {
             }
             match (prev, a.status) {
                 (Some(TaskStatus::Running), TaskStatus::Done | TaskStatus::Idle) => {
-                    self.flash(FlashKind::Done, format!("{} finished · {}", a.kind.label(), a.title), Some(a.kind), Some(a.id));
+                    self.flash(
+                        FlashKind::Done,
+                        format!("{} finished · {}", a.kind.label(), a.title),
+                        Some(a.kind),
+                        Some(a.id),
+                    );
                     if self.timer_link == Some(a.id) && self.timer.running() {
                         self.timer.reset();
                         self.timer_link = None;
                     }
                 }
                 (Some(p), TaskStatus::Failed) if p != TaskStatus::Failed => {
-                    self.flash(FlashKind::Failed, format!("{} failed · {}", a.kind.label(), a.title), Some(a.kind), Some(a.id));
+                    self.flash(
+                        FlashKind::Failed,
+                        format!("{} failed · {}", a.kind.label(), a.title),
+                        Some(a.kind),
+                        Some(a.id),
+                    );
                 }
                 _ => {}
             }
@@ -2197,7 +2229,11 @@ impl Notch {
 
     /// Runs `f` with the island's window (for its text fields), when there is
     /// one, after the current update.
-    fn with_window(&mut self, cx: &mut Context<Self>, f: impl FnOnce(&mut Notch, &mut Window, &mut Context<Notch>) + 'static) {
+    fn with_window(
+        &mut self,
+        cx: &mut Context<Self>,
+        f: impl FnOnce(&mut Notch, &mut Window, &mut Context<Notch>) + 'static,
+    ) {
         let Some(handle) = self.win.as_ref().map(|w| w.handle) else { return };
         let this = cx.entity();
         cx.spawn(async move |_, cx| {
@@ -2253,7 +2289,10 @@ impl Notch {
                         1 => i.prompt.update(cx, |s, cx| s.focus(window, cx)),
                         _ => {
                             // The note on show goes into the editor.
-                            let text = n.selected_note.and_then(|id| n.notes.iter().find(|x| x.id == id)).map(|x| x.text.clone());
+                            let text = n
+                                .selected_note
+                                .and_then(|id| n.notes.iter().find(|x| x.id == id))
+                                .map(|x| x.text.clone());
                             i.note.update(cx, |s, cx| {
                                 s.set_value(text.unwrap_or_default(), window, cx);
                                 s.focus(window, cx);
@@ -2347,7 +2386,14 @@ impl Notch {
 
     /// Picks (or types) an answer for the question on show; the last one
     /// sends them all.
-    pub(crate) fn answer_pick(&mut self, task: TaskId, rid: String, choice: String, typed: bool, cx: &mut Context<Self>) {
+    pub(crate) fn answer_pick(
+        &mut self,
+        task: TaskId,
+        rid: String,
+        choice: String,
+        typed: bool,
+        cx: &mut Context<Self>,
+    ) {
         let Some(req) = self.question_of(task).filter(|r| r.request_id == rid).cloned() else { return };
         let n = req.questions.len();
         let a = self.answers.entry(rid.clone()).or_insert_with(|| QAnswer { page: 0, picks: vec![Vec::new(); n] });
@@ -2980,7 +3026,11 @@ impl Notch {
         }
         for (verb, stop) in [("stop ", true), ("open ", false)] {
             if let Some(name) = q.strip_prefix(verb).map(str::trim).filter(|n| !n.is_empty()) {
-                for a in self.snap.agents.iter().filter(|a| a.title.to_lowercase().contains(name) || a.kind.label().to_lowercase().contains(name)) {
+                for a in
+                    self.snap.agents.iter().filter(|a| {
+                        a.title.to_lowercase().contains(name) || a.kind.label().to_lowercase().contains(name)
+                    })
+                {
                     if stop && a.status == TaskStatus::Running {
                         out.push((Hit::Stop(a.id), format!("Stop “{}”", a.title), "Agents".into()));
                     } else if !stop {
@@ -2999,7 +3049,11 @@ impl Notch {
         }
         if q.starts_with("merge") {
             for pr in self.snap.prs.iter().filter(|p| p.state == "open" && p.mergeable) {
-                out.push((Hit::Merge(pr.task, pr.number), format!("Merge #{} {}", pr.number, pr.title), "Pull request".into()));
+                out.push((
+                    Hit::Merge(pr.task, pr.number),
+                    format!("Merge #{} {}", pr.number, pr.title),
+                    "Pull request".into(),
+                ));
             }
         }
         if let Some(rest) = self.query.trim().strip_prefix("note ").filter(|r| !r.trim().is_empty()) {

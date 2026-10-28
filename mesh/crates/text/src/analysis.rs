@@ -509,7 +509,7 @@ const PAIRED: [char; 34] = [
 ///
 /// Itemization happens per font run, so characters drawn by a fallback font (`foreign(byte, c)`)
 /// end the current run: neutrals after them start fresh (CoreText sets `ηνικά "q` as Helvetica
-/// then one Geist run ` "q`, kerning `"q`; but `λ, "q` all in Geist as Greek `λ, "` + Latin `q`).
+/// then one Inter run ` "q`, kerning `"q`; but `λ, "q` all in Inter as Greek `λ, "` + Latin `q`).
 pub(crate) fn script_breaks(text: &str, foreign: impl Fn(usize, char) -> bool, out: &mut Vec<u32>) {
     out.clear();
     if text.is_ascii() {

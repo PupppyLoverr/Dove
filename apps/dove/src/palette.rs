@@ -82,8 +82,7 @@ pub enum Scope {
 }
 
 impl Scope {
-    pub const ALL: [Scope; 6] =
-        [Self::All, Self::Threads, Self::Projects, Self::Files, Self::Actions, Self::Settings];
+    pub const ALL: [Scope; 6] = [Self::All, Self::Threads, Self::Projects, Self::Files, Self::Actions, Self::Settings];
 
     fn label(self) -> &'static str {
         match self {

@@ -5222,8 +5222,8 @@ impl Render for TaskView {
                                 },
                                 |_, _, _, _| {},
                             )
-                                .absolute()
-                                .size_full(),
+                            .absolute()
+                            .size_full(),
                         )
                         .child(transcript)
                         .when(!empty && !self.loading, |d| {

@@ -126,7 +126,11 @@ pub fn automations(engine: &dove_core::Engine) -> Vec<AutomationInfo> {
                 .map(|t| t.timestamp_millis());
             let last = runs.iter().filter(|r| r.automation_id == a.id).max_by_key(|r| r.at);
             let last_status = last.and_then(|r| {
-                engine.attention().get(r.task_id).map(|s| s.status).or_else(|| engine.store.task(r.task_id).ok().flatten().map(|t| t.status))
+                engine
+                    .attention()
+                    .get(r.task_id)
+                    .map(|s| s.status)
+                    .or_else(|| engine.store.task(r.task_id).ok().flatten().map(|t| t.status))
             });
             AutomationInfo {
                 id: a.id.clone(),
@@ -321,7 +325,12 @@ pub struct FlockAgent {
 
 /// One task as the island shows it, from the engine's view of it (`state`)
 /// when there is one. Shared by the window's snapshot and the headless one.
-pub fn agent_from(task: &Task, project: Option<&Project>, state: Option<&TaskState>, teammate: Option<String>) -> Agent {
+pub fn agent_from(
+    task: &Task,
+    project: Option<&Project>,
+    state: Option<&TaskState>,
+    teammate: Option<String>,
+) -> Agent {
     let empty = TaskState::default();
     let s = state.unwrap_or(&empty);
     // A state the caller has (the engine's, or the view's) is newer than the
@@ -461,7 +470,8 @@ impl Shell {
             if state.reply.trim().is_empty() {
                 state.reply = self.task_reply(task.id, REPLY_CHARS, cx);
             }
-            let busy = matches!(state.status, TaskStatus::Running | TaskStatus::NeedsInput) || !state.pending.is_empty();
+            let busy =
+                matches!(state.status, TaskStatus::Running | TaskStatus::NeedsInput) || !state.pending.is_empty();
             if !busy {
                 // Idle threads only as a short "recent" tail.
                 if recent >= 6 {
@@ -600,7 +610,10 @@ mod tests {
 
     #[test]
     fn commands_and_files_preview_too() {
-        assert_eq!(preview_of(&serde_json::json!({"command": "cargo test"})), Some(Preview::Command("cargo test".into())));
+        assert_eq!(
+            preview_of(&serde_json::json!({"command": "cargo test"})),
+            Some(Preview::Command("cargo test".into()))
+        );
         assert_eq!(
             preview_of(&serde_json::json!({"command": ["git", "push"]})),
             Some(Preview::Command("git push".into()))

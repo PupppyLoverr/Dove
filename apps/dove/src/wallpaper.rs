@@ -1571,7 +1571,12 @@ pub(crate) fn placement(bounds: Bounds<Pixels>, src: (f32, f32), motion: Motion)
 }
 
 /// The bottom fade, and with `cutout` the composer's feathered rounded rect.
-pub(crate) fn alpha_mask(bounds: Bounds<Pixels>, composer: Option<Bounds<Pixels>>, cutout: bool, fade: bool) -> ImageAlphaMask {
+pub(crate) fn alpha_mask(
+    bounds: Bounds<Pixels>,
+    composer: Option<Bounds<Pixels>>,
+    cutout: bool,
+    fade: bool,
+) -> ImageAlphaMask {
     let h = f32::from(bounds.size.height);
     let bottom_fade = fade.then(|| (bounds.bottom(), px(h.max(1.0))));
     match (cutout, composer) {

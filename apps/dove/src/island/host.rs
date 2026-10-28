@@ -168,11 +168,9 @@ impl Host {
     /// Whether the engine has work worth staying for: an agent working or
     /// waiting on the user, or automations the user keeps running.
     pub fn busy(engine: &Engine) -> bool {
-        let working = engine
-            .attention()
-            .all()
-            .iter()
-            .any(|(_, s)| s.live && (matches!(s.status, TaskStatus::Running | TaskStatus::NeedsInput) || !s.pending.is_empty()));
+        let working = engine.attention().all().iter().any(|(_, s)| {
+            s.live && (matches!(s.status, TaskStatus::Running | TaskStatus::NeedsInput) || !s.pending.is_empty())
+        });
         working || engine.store.setting(crate::notify::KEEP_RUNNING).as_deref() == Some("true")
     }
 
@@ -312,8 +310,14 @@ impl Host {
                 let msg = match ev {
                     DictationEvent::Text(t) => Some(ToIsland::Dictation { text: t.clone(), done: true, error: None }),
                     DictationEvent::Live(t) => Some(ToIsland::Dictation { text: t.clone(), done: false, error: None }),
-                    DictationEvent::LiveDone(t) => Some(ToIsland::Dictation { text: t.clone(), done: true, error: None }),
-                    _ => d.read(cx).error.clone().map(|e| ToIsland::Dictation { text: String::new(), done: true, error: Some(e) }),
+                    DictationEvent::LiveDone(t) => {
+                        Some(ToIsland::Dictation { text: t.clone(), done: true, error: None })
+                    }
+                    _ => d.read(cx).error.clone().map(|e| ToIsland::Dictation {
+                        text: String::new(),
+                        done: true,
+                        error: Some(e),
+                    }),
                 };
                 if let Some(m) = msg {
                     cx.global::<Host>().hub.broadcast(&m);
@@ -391,7 +395,9 @@ impl Host {
     fn merge(task: TaskId, number: u64, cx: &mut App) {
         let engine = cx.global::<Host>().engine.clone();
         let Some(wt) = engine.store.task(task).ok().flatten().and_then(|t| t.worktree) else {
-            cx.global::<Host>().hub.broadcast(&ToIsland::Merged { task, result: Err("That thread has no worktree.".into()) });
+            cx.global::<Host>()
+                .hub
+                .broadcast(&ToIsland::Merged { task, result: Err("That thread has no worktree.".into()) });
             return;
         };
         let job = cx
@@ -506,11 +512,7 @@ async fn futures_lite_race<A: std::future::Future, B: std::future::Future>(a: A,
     let mut a = pin!(a);
     let mut b = pin!(b);
     std::future::poll_fn(|cx| {
-        if a.as_mut().poll(cx).is_ready() || b.as_mut().poll(cx).is_ready() {
-            Poll::Ready(())
-        } else {
-            Poll::Pending
-        }
+        if a.as_mut().poll(cx).is_ready() || b.as_mut().poll(cx).is_ready() { Poll::Ready(()) } else { Poll::Pending }
     })
     .await
 }

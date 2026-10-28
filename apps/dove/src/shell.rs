@@ -1947,8 +1947,8 @@ impl Shell {
             P::Action("Archived threads", icons::ARCHIVE_MINIMALISTIC, "archived"),
             P::Action("Settings", icons::SETTINGS, "settings"),
             P::Action("Keyboard shortcuts", icons::KEYBOARD, "help"),
-            P::Action("Toggle sidebar", icons::SPLIT_COLUMNS, "sidebar"),
-            P::Action("Toggle side panel", icons::SPLIT_COLUMNS, "panel"),
+            P::Action("Toggle sidebar", icons::SIDEBAR, "sidebar"),
+            P::Action("Toggle side panel", icons::PANEL_RIGHT_TOGGLE, "panel"),
             P::Action("Add project…", icons::DOCUMENT_ADD, "add_project"),
             P::Action("Switch theme (light / dark)", icons::MOON, "theme"),
             P::Action("Teach Dove a skill…", icons::MAGIC_STICK_3, "teach"),
@@ -2382,36 +2382,32 @@ impl Shell {
         // the same surface as the page. Everywhere else it is the solid bar.
         let home_art = matches!(self.route, Route::Home) && self.has_wallpaper();
         let thread_art = self.full_art_route() && self.has_wallpaper();
-        let surface = div()
-            .flex_1()
-            .min_w_0()
-            .h_full()
-            .when(!home_art && !thread_art, |d| d.bg(t.bg))
-            .flex()
-            .items_center()
-            .map(|d| {
-                let strip = strip.map(|strip| {
-                    div()
-                        .h_full()
-                        .min_w_0()
-                        .when(!expanded, |d| d.w(px(panel_w)).flex_none())
-                        .when(expanded, |d| d.flex_1())
-                        .when(!dock_left || expanded, |d| d.pr(px(ui::caption_reserve())))
-                        .when(dock_left && !expanded, |d| d.border_r_1().border_color(t.wash(0.06)))
-                        .child(strip)
-                });
-                let main = (!expanded).then(|| {
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .h_full()
-                        .flex()
-                        .items_center()
-                        .child(div().flex_1().min_w_0().h_full().flex().items_center().child(tabs))
-                        .child(right_tools)
-                });
-                if dock_left { d.children(strip).children(main) } else { d.children(main).children(strip) }
-            });
+        let surface =
+            div().flex_1().min_w_0().h_full().when(!home_art && !thread_art, |d| d.bg(t.bg)).flex().items_center().map(
+                |d| {
+                    let strip = strip.map(|strip| {
+                        div()
+                            .h_full()
+                            .min_w_0()
+                            .when(!expanded, |d| d.w(px(panel_w)).flex_none())
+                            .when(expanded, |d| d.flex_1())
+                            .when(!dock_left || expanded, |d| d.pr(px(ui::caption_reserve())))
+                            .when(dock_left && !expanded, |d| d.border_r_1().border_color(t.wash(0.06)))
+                            .child(strip)
+                    });
+                    let main = (!expanded).then(|| {
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .h_full()
+                            .flex()
+                            .items_center()
+                            .child(div().flex_1().min_w_0().h_full().flex().items_center().child(tabs))
+                            .child(right_tools)
+                    });
+                    if dock_left { d.children(strip).children(main) } else { d.children(main).children(strip) }
+                },
+            );
         let bar = div()
             .relative()
             .h(px(Theme::TITLEBAR_HEIGHT))
@@ -2820,7 +2816,12 @@ impl Shell {
         };
         // One card per subject. Folded, a card is one line that says the
         // number that matters; the fold is remembered per card.
-        let card = |key: &'static str, title: &'static str, summary: Option<AnyElement>, body: Vec<AnyElement>, this: &Self, cx: &mut Context<Self>| {
+        let card = |key: &'static str,
+                    title: &'static str,
+                    summary: Option<AnyElement>,
+                    body: Vec<AnyElement>,
+                    this: &Self,
+                    cx: &mut Context<Self>| {
             let setting = format!("info_closed.{key}");
             let open = this.engine.store.setting(&setting).as_deref() != Some("1");
             let turn = crate::motion::state_t(key, open, crate::motion::CHEVRON, cx.reduce_motion());
@@ -2849,12 +2850,9 @@ impl Shell {
                         .text_color(t.text)
                         .child(title)
                         .child(
-                            icon(icons::ALT_ARROW_RIGHT)
-                                .size(px(10.0))
-                                .text_color(t.text_faint)
-                                .with_transformation(gpui::Transformation::rotate(gpui::radians(
-                                    turn * std::f32::consts::FRAC_PI_2,
-                                ))),
+                            icon(icons::ALT_ARROW_RIGHT).size(px(10.0)).text_color(t.text_faint).with_transformation(
+                                gpui::Transformation::rotate(gpui::radians(turn * std::f32::consts::FRAC_PI_2)),
+                            ),
                         )
                         .child(div().flex_1())
                         .children(summary)
@@ -2866,20 +2864,15 @@ impl Shell {
                 .when(open, |d| d.children(body))
         };
         let meter = |p: f32| {
-            div()
-                .w(px(36.0))
-                .h(px(4.0))
-                .rounded_full()
-                .bg(t.wash(0.12))
-                .child(
-                    div().h_full().w(relative(p)).rounded_full().bg(if p >= 0.95 {
-                        t.danger
-                    } else if p >= 0.8 {
-                        t.warning
-                    } else {
-                        t.accent
-                    }),
-                )
+            div().w(px(36.0)).h(px(4.0)).rounded_full().bg(t.wash(0.12)).child(
+                div().h_full().w(relative(p)).rounded_full().bg(if p >= 0.95 {
+                    t.danger
+                } else if p >= 0.8 {
+                    t.warning
+                } else {
+                    t.accent
+                }),
+            )
         };
         let quiet = |text: String| div().text_size(ty::META).text_color(t.text_faint).child(text).into_any_element();
 
@@ -3701,7 +3694,11 @@ impl Render for Shell {
             .flex_col()
             .bg(t.glass())
             .text_color(t.text)
-            .font_family(t.font_sans.clone())
+            .font({
+                let mut font = gpui::font(t.font_sans.clone());
+                font.fallbacks = Some(gpui_base::theme_tokens::sans_font_fallbacks());
+                font
+            })
             .text_size(ty::MD)
             .on_action(cx.listener(|this, _: &actions::NewSession, window, cx| this.new_session(window, cx)))
             .on_action(cx.listener(|this, _: &actions::AddProject, _, cx| this.add_project_dialog(cx)))
@@ -3902,7 +3899,9 @@ impl Render for Shell {
                     .min_h_0()
                     .flex()
                     .children(sidebar)
-                    .map(|d| if dock_left { d.children(panel).children(card) } else { d.children(card).children(panel) })
+                    .map(
+                        |d| if dock_left { d.children(panel).children(card) } else { d.children(card).children(panel) },
+                    )
                     .children(sidebar_ghost),
             )
             .when(bare, |d| d.child(self.render_bare_chrome(window, cx)))

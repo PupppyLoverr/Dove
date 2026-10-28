@@ -40,7 +40,15 @@ impl Notch {
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
         for (i, item) in m.items.iter().enumerate() {
             let Some(action) = item.action.clone() else {
-                col = col.child(div().h(px(MENU_HEAD)).px(px(8.0)).flex().items_end().pb(px(3.0)).child(section(item.label.clone())));
+                col = col.child(
+                    div()
+                        .h(px(MENU_HEAD))
+                        .px(px(8.0))
+                        .flex()
+                        .items_end()
+                        .pb(px(3.0))
+                        .child(section(item.label.clone())),
+                );
                 continue;
             };
             let on = m.hovered == Some(i);
@@ -70,7 +78,9 @@ impl Notch {
                         d.child(icon(path).size(px(15.0)).text_color(if item.danger { tk::RED } else { tk::DIM }))
                     })
                     .child(div().flex_1().min_w_0().truncate().child(item.label.clone()))
-                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.run_menu(action.clone(), window, cx))),
+                    .on_click(
+                        cx.listener(move |this, _: &ClickEvent, window, cx| this.run_menu(action.clone(), window, cx)),
+                    ),
             );
         }
         Some(
@@ -107,9 +117,17 @@ impl Notch {
             MenuItem::act("Open in Dove", icons::ARROW_UP_RIGHT, MenuAction::AgentOpen(id)),
         ];
         if let Some(pr) = self.snap.prs.iter().find(|p| p.task == id && p.state == "open") {
-            items.push(MenuItem::act(format!("Open PR #{}", pr.number), icons::GIT_MERGE, MenuAction::OpenUrl(pr.url.clone())));
+            items.push(MenuItem::act(
+                format!("Open PR #{}", pr.number),
+                icons::GIT_MERGE,
+                MenuAction::OpenUrl(pr.url.clone()),
+            ));
             if pr.checks == "passing" && pr.mergeable {
-                items.push(MenuItem::act(format!("Merge #{}", pr.number), icons::GIT_MERGE, MenuAction::Merge(id, pr.number)));
+                items.push(MenuItem::act(
+                    format!("Merge #{}", pr.number),
+                    icons::GIT_MERGE,
+                    MenuAction::Merge(id, pr.number),
+                ));
             }
         }
         if running {
@@ -126,11 +144,19 @@ impl Notch {
         if !self.snap.projects.is_empty() {
             items.push(MenuItem::head("Project"));
             for (id, name) in self.snap.projects.iter().take(6) {
-                items.push(MenuItem::check(name.clone(), self.new_agent.project == Some(*id), MenuAction::NewProject(*id)));
+                items.push(MenuItem::check(
+                    name.clone(),
+                    self.new_agent.project == Some(*id),
+                    MenuAction::NewProject(*id),
+                ));
             }
         }
         items.push(MenuItem::head("Where"));
-        items.push(MenuItem::check("Its own worktree", self.new_agent.worktree, MenuAction::NewWorktree(!self.new_agent.worktree)));
+        items.push(MenuItem::check(
+            "Its own worktree",
+            self.new_agent.worktree,
+            MenuAction::NewWorktree(!self.new_agent.worktree),
+        ));
         items
     }
 
@@ -187,11 +213,16 @@ impl Notch {
 
     pub(crate) fn timer_menu(&self) -> Vec<MenuItem> {
         let mut items = Vec::new();
-        let running: Vec<&Agent> = self.snap.agents.iter().filter(|a| a.status == TaskStatus::Running).take(4).collect();
+        let running: Vec<&Agent> =
+            self.snap.agents.iter().filter(|a| a.status == TaskStatus::Running).take(4).collect();
         if !running.is_empty() || self.timer_link.is_some() {
             items.push(MenuItem::head("End early when"));
             for a in running {
-                items.push(MenuItem::check(format!("“{}” finishes", a.title), self.timer_link == Some(a.id), MenuAction::LinkTimer(Some(a.id))));
+                items.push(MenuItem::check(
+                    format!("“{}” finishes", a.title),
+                    self.timer_link == Some(a.id),
+                    MenuAction::LinkTimer(Some(a.id)),
+                ));
             }
             if self.timer_link.is_some() {
                 items.push(MenuItem::act("Unlink", icons::CLOSE, MenuAction::LinkTimer(None)));
@@ -217,23 +248,37 @@ impl Notch {
     /// Deny, then Allow with its options (Always; all of a burst of similar
     /// safe requests) behind a chevron. Risky requests only open in Dove;
     /// questions with a few options answer right here.
-    pub(crate) fn decision_row(&self, id: TaskId, req: &Pending, key: &'static str, cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn decision_row(
+        &self,
+        id: TaskId,
+        req: &Pending,
+        key: &'static str,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let row = div().flex().items_center().justify_end().gap(px(6.0));
         if req.question {
-            if let Some(q) = req.questions.first().filter(|q| req.questions.len() == 1 && !q.multi && q.options.len() <= 4) {
+            if let Some(q) =
+                req.questions.first().filter(|q| req.questions.len() == 1 && !q.multi && q.options.len() <= 4)
+            {
                 let mut r = row;
                 for (i, opt) in q.options.iter().enumerate() {
                     let (rid, opt) = (req.request_id.clone(), opt.clone());
                     let last = i + 1 == q.options.len();
-                    let el = if last { primary((key, 10 + i), opt.clone()) } else { pill((key, 10 + i), opt.clone(), false) };
-                    r = r.child(el.on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.answer_pick(id, rid.clone(), opt.clone(), false, cx))));
+                    let el = if last {
+                        primary((key, 10 + i), opt.clone())
+                    } else {
+                        pill((key, 10 + i), opt.clone(), false)
+                    };
+                    r = r.child(el.on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        this.answer_pick(id, rid.clone(), opt.clone(), false, cx)
+                    })));
                 }
                 return r.into_any_element();
             }
             return row
-                .child(primary((key, 1usize), "Answer").on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                    this.open_page(Page::Agent(id), Some(window), cx)
-                })))
+                .child(primary((key, 1usize), "Answer").on_click(cx.listener(
+                    move |this, _: &ClickEvent, window, cx| this.open_page(Page::Agent(id), Some(window), cx),
+                )))
                 .into_any_element();
         }
         let rid = req.request_id.clone();
@@ -243,9 +288,9 @@ impl Notch {
         })));
         if !req.safe {
             return row
-                .child(primary((key, 5usize), "Review in Dove").on_click(cx.listener(move |this, _: &ClickEvent, _, _| {
-                    this.command(ToEngine::Open { task: Some(id) })
-                })))
+                .child(primary((key, 5usize), "Review in Dove").on_click(
+                    cx.listener(move |this, _: &ClickEvent, _, _| this.command(ToEngine::Open { task: Some(id) })),
+                ))
                 .into_any_element();
         }
         // A burst of the same safe tool can be allowed together.
@@ -254,7 +299,13 @@ impl Notch {
             .agents
             .iter()
             .find(|a| a.id == id)
-            .map(|a| a.pending.iter().filter(|p| p.safe && !p.question && p.tool == req.tool).map(|p| p.request_id.clone()).collect())
+            .map(|a| {
+                a.pending
+                    .iter()
+                    .filter(|p| p.safe && !p.question && p.tool == req.tool)
+                    .map(|p| p.request_id.clone())
+                    .collect()
+            })
             .unwrap_or_default();
         let mut options = vec![MenuItem::act("Always allow", icons::CHECK, MenuAction::AllowAlways(id, rid.clone()))];
         if similar.len() > 1 {
@@ -289,7 +340,9 @@ impl Notch {
                         .child("Allow")
                         .on_click(cx.listener({
                             let rid = rid.clone();
-                            move |this, _: &ClickEvent, _, cx| this.decide(id, rid.clone(), PermissionDecision::AllowOnce, cx)
+                            move |this, _: &ClickEvent, _, cx| {
+                                this.decide(id, rid.clone(), PermissionDecision::AllowOnce, cx)
+                            }
                         })),
                 )
                 .child(div().w(px(1.0)).h(px(14.0)).bg(tk::INK.opacity(0.18)))
@@ -306,7 +359,9 @@ impl Notch {
                         .hover(|s| s.bg(tk::WHITE_HOVER))
                         .tooltip(tip("More ways to allow"))
                         .child(icon(icons::ALT_ARROW_DOWN).size(px(13.0)).text_color(tk::INK))
-                        .on_click(cx.listener(move |this, ev: &ClickEvent, _, cx| this.open_menu(ev.position(), options.clone(), cx))),
+                        .on_click(cx.listener(move |this, ev: &ClickEvent, _, cx| {
+                            this.open_menu(ev.position(), options.clone(), cx)
+                        })),
                 ),
         )
         .into_any_element()

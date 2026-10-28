@@ -7,8 +7,8 @@
 use std::time::Duration;
 
 use gpui::{
-    Bounds, Context, Hsla, IntoElement, ParentElement as _, Render, Styled as _, Window, canvas, div, fill, point,
-    px, size,
+    Bounds, Context, Hsla, IntoElement, ParentElement as _, Render, Styled as _, Window, canvas, div, fill, point, px,
+    size,
 };
 
 use crate::theme::{Theme, mix};

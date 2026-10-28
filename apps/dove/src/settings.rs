@@ -222,9 +222,19 @@ const INDEX: &[Entry] = &[
     ),
     e(Section::Appearance, "theme_import", "Import VS Code theme", "import vscode visual studio code theme json file"),
     e(Section::Appearance, "surface", "Window material", "glass acrylic normal frosted surface material blur"),
-    e(Section::Appearance, "wallpaper_path", "Background", "wallpaper background image backdrop home gif video animated"),
+    e(
+        Section::Appearance,
+        "wallpaper_path",
+        "Background",
+        "wallpaper background image backdrop home gif video animated",
+    ),
     e(Section::Appearance, "wallpaper_recent", "Recent backgrounds", "wallpaper background recent history"),
-    e(Section::Appearance, "wallpaper_playback", "Play animated backgrounds", "gif video animated wallpaper play pause"),
+    e(
+        Section::Appearance,
+        "wallpaper_playback",
+        "Play animated backgrounds",
+        "gif video animated wallpaper play pause",
+    ),
     e(Section::Appearance, "wallpaper_chat", "Show behind chats", "wallpaper background chat thread behind frost"),
     e(Section::Appearance, "wallpaper_chat_blur", "Chat blur", "blur frost wallpaper chat background strength"),
     e(Section::Appearance, "wallpaper_chat_dim", "Chat dim", "dim darken scrim wallpaper chat background"),
@@ -266,7 +276,12 @@ const INDEX: &[Entry] = &[
     e(Section::Notifications, "notch_slim", "Keep the slim island visible", "notch slim island pin always"),
     e(Section::Notifications, "notch_live", "Live activities", "notch live activities approvals finished popup"),
     e(Section::Notifications, "notch_clipboard", "Clipboard history", "notch clipboard history copy paste"),
-    e(Section::Notifications, "notch_notifications", "Show notifications in the notch", "notch notifications toast banner finished failed"),
+    e(
+        Section::Notifications,
+        "notch_notifications",
+        "Show notifications in the notch",
+        "notch notifications toast banner finished failed",
+    ),
     e(Section::Notifications, "notch_glass", "Frosted glass", "notch glass blur acrylic transparent solid"),
     e(Section::Notifications, "notch_focus", "Focus mode", "notch focus do not disturb quiet banners"),
     e(Section::Notifications, "notch_display", "Display", "notch display monitor screen pointer main"),
@@ -1535,14 +1550,12 @@ impl SettingsPage {
                         .on_click(cx.listener(|this, _, _, cx| this.pick_wallpaper(cx))),
                 )
                 .when(wall.is_some(), |d| {
-                    d.child(
-                        ctl::button_sm(t, "wall-clear", "Remove", Tone::Quiet).on_click(cx.listener(
-                            |this, _, window, cx| {
-                                crate::wallpaper_media::release(window);
-                                this.set("wallpaper_path", "", cx)
-                            },
-                        )),
-                    )
+                    d.child(ctl::button_sm(t, "wall-clear", "Remove", Tone::Quiet).on_click(cx.listener(
+                        |this, _, window, cx| {
+                            crate::wallpaper_media::release(window);
+                            this.set("wallpaper_path", "", cx)
+                        },
+                    )))
                 }),
         );
         // Recently used backgrounds, one click to switch back.
@@ -1659,8 +1672,9 @@ impl SettingsPage {
         } else {
             "Deep"
         };
-        let value_label =
-            |text: String| div().w(px(56.0)).text_size(ty::META).text_color(t.text_muted).child(text).into_any_element();
+        let value_label = |text: String| {
+            div().w(px(56.0)).text_size(ty::META).text_color(t.text_muted).child(text).into_any_element()
+        };
         let gate = |on: bool, el: AnyElement| if on { el } else { div().opacity(0.45).child(el).into_any_element() };
         let chat_on = has_wall && behind_chats;
         let material = page::card(t)

@@ -2033,7 +2033,7 @@ impl SidePanel {
         let open = self.split_menu == Some(pane);
         let button = surface_chrome::toolbar_button(id, "Split")
             .when(open, |d| d.bg(t.wash(0.08)))
-            .child(icon(icons::SPLIT_COLUMNS).size(px(12.5)).text_color(t.text_muted))
+            .child(icon(icons::SPLIT_VERTICAL).size(px(12.5)).text_color(t.text_muted))
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.split_menu = if this.split_menu == Some(pane) { None } else { Some(pane) };
                 this.plus_open = false;
@@ -2063,7 +2063,7 @@ impl SidePanel {
             .flex()
             .flex_col()
             .child(
-                item("split-menu-right", icons::SPLIT_COLUMNS, "Split right", "Ctrl+Alt+\\", right)
+                item("split-menu-right", icons::SPLIT_VERTICAL, "Split right", "Ctrl+Alt+\\", right)
                     .when(!right, |d| d.tooltip(ui::tip("No room: widen the panel or close a pane")))
                     .when(right, |d| {
                         d.on_click(cx.listener(move |this, _, _, cx| {
@@ -2073,7 +2073,7 @@ impl SidePanel {
                     }),
             )
             .child(
-                item("split-menu-down", icons::SPLIT_ROWS, "Split down", "Ctrl+Alt+-", down)
+                item("split-menu-down", icons::SPLIT_HORIZONTAL, "Split down", "Ctrl+Alt+-", down)
                     .when(!down, |d| d.tooltip(ui::tip("No room: close a pane first")))
                     .when(down, |d| {
                         d.on_click(cx.listener(move |this, _, _, cx| {
@@ -2088,7 +2088,7 @@ impl SidePanel {
                 .child(
                     item(
                         "split-menu-max",
-                        if maximized { icons::WINDOW_RESTORE } else { icons::WINDOW_MAXIMIZE },
+                        if maximized { icons::WINDOW_RESTORE } else { icons::PANE_MAXIMIZE },
                         if maximized { "Restore the panes" } else { "Maximize this pane" },
                         "Ctrl+Alt+Enter",
                         true,
@@ -2247,7 +2247,9 @@ impl SidePanel {
                         .text_color(t.text)
                         .child(k.label()),
                 )
-                .child(div().flex_1().min_w_0().truncate().text_size(ty::META).text_color(t.text_faint).child(k.blurb()))
+                .child(
+                    div().flex_1().min_w_0().truncate().text_size(ty::META).text_color(t.text_faint).child(k.blurb()),
+                )
                 .child(
                     icon(icons::ALT_ARROW_RIGHT)
                         .size(px(12.0))
@@ -3016,7 +3018,7 @@ impl SidePanel {
                     ),
                     None => d.child(
                         surface_chrome::toolbar_button(("pane-close", ix), "Close pane (its tab stays in the strip)")
-                            .child(icon(icons::CLOSE).size(px(12.0)).text_color(t.text_muted))
+                            .child(icon(icons::SPLIT_CLOSE).size(px(12.0)).text_color(t.text_muted))
                             .on_click(cx.listener(move |this, _, _, cx| this.close_pane(pane, cx))),
                     ),
                 })

@@ -272,7 +272,7 @@ impl Shell {
             .hover(|s| s.bg(t.wash(0.11)))
             .role(gpui::Role::Button)
             .aria_label("New thread")
-            .child(icon(icons::PEN_NEW_SQUARE).size(px(15.0)).text_color(t.text))
+            .child(icon(icons::NEW).size(px(15.0)).text_color(t.text))
             .child(div().flex_1().child("New thread"))
             .child(kit::kbd(&crate::keymap::pretty("secondary-n"), &t))
             .on_click(cx.listener(|this, _, window, cx| this.new_session(window, cx)));
@@ -305,7 +305,7 @@ impl Shell {
             ))
             .child(nav_item(
                 "nav-kanban",
-                icons::SPLIT_COLUMNS,
+                icons::SPLIT_THREE_COLUMNS,
                 "Kanban",
                 Some(Route::Kanban),
                 (drafts > 0).then(|| {
@@ -756,12 +756,9 @@ impl Shell {
             .children(lead.map(|l| div().w(px(16.0)).flex_none().flex().justify_center().child(l)))
             .child(div().min_w_0().truncate().child(label))
             .child(
-                icon(icons::ALT_ARROW_RIGHT)
-                    .size(px(10.0))
-                    .text_color(t.text_faint)
-                    .with_transformation(gpui::Transformation::rotate(gpui::radians(
-                        turn * std::f32::consts::FRAC_PI_2,
-                    ))),
+                icon(icons::ALT_ARROW_RIGHT).size(px(10.0)).text_color(t.text_faint).with_transformation(
+                    gpui::Transformation::rotate(gpui::radians(turn * std::f32::consts::FRAC_PI_2)),
+                ),
             )
             .child(div().flex_1())
             .child(
@@ -1004,7 +1001,9 @@ impl Shell {
         }
         .map_or_else(
             || div().text_size(ty::CAPTION).text_color(t.text_faint).child(ui::relative_time(task.updated_at)),
-            |(word, tint)| div().text_size(ty::CAPTION).font_weight(gpui::FontWeight::MEDIUM).text_color(tint).child(word),
+            |(word, tint)| {
+                div().text_size(ty::CAPTION).font_weight(gpui::FontWeight::MEDIUM).text_color(tint).child(word)
+            },
         );
         let archive_group = SharedString::from(format!("row-archive-{id}"));
         let archive_btn = div()

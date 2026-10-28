@@ -23,7 +23,7 @@ final class SignInViewController: UIViewController, ASWebAuthenticationPresentat
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = Palette.background
-        let mark = UIImageView(image: UIImage(systemName: "sparkle", withConfiguration: UIImage.SymbolConfiguration(pointSize: 44, weight: .light)))
+        let mark = UIImageView(image: K22Icon.image("sparkle", pointSize: 44))
         mark.tintColor = Palette.text
         let title = UILabel()
         title.text = "Dove"

@@ -16,8 +16,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use dove_core::proto::{HarnessKind, PermissionDecision, ProjectId, TaskId};
-use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
+use std::sync::Mutex;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use crate::notch::Snapshot;
@@ -26,27 +26,59 @@ use crate::notch::Snapshot;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "t", rename_all = "snake_case")]
 pub enum ToEngine {
-    Hello { token: String },
-    Send { task: TaskId, text: String },
-    Decide { task: TaskId, request_id: String, decision: PermissionDecision },
-    Stop { task: TaskId },
-    Start { id: u64, agent: HarnessKind, project: ProjectId, prompt: String, worktree: bool },
+    Hello {
+        token: String,
+    },
+    Send {
+        task: TaskId,
+        text: String,
+    },
+    Decide {
+        task: TaskId,
+        request_id: String,
+        decision: PermissionDecision,
+    },
+    Stop {
+        task: TaskId,
+    },
+    Start {
+        id: u64,
+        agent: HarnessKind,
+        project: ProjectId,
+        prompt: String,
+        worktree: bool,
+    },
     /// Shows Dove's window, on `task` if given (opening it if closed).
-    Open { task: Option<TaskId> },
+    Open {
+        task: Option<TaskId>,
+    },
     /// Opens Flock in Dove's window.
     OpenFlock,
     /// Opens Settings › Notifications (where the notch's settings are).
     OpenSettings,
     /// Answers a question request: per question, the chosen labels or text.
-    Answer { task: TaskId, request_id: String, answers: Vec<Vec<String>> },
+    Answer {
+        task: TaskId,
+        request_id: String,
+        answers: Vec<Vec<String>>,
+    },
     /// The island has this agent open: stream its text as it arrives.
-    Watch { task: Option<TaskId> },
+    Watch {
+        task: Option<TaskId>,
+    },
     /// Merges an agent's pull request.
-    Merge { task: TaskId, number: u64 },
+    Merge {
+        task: TaskId,
+        number: u64,
+    },
     /// Runs an automation now.
-    RunAutomation { id: String },
+    RunAutomation {
+        id: String,
+    },
     /// Push-to-talk: the mic pressed (`on`) or released.
-    Dictate { on: bool },
+    Dictate {
+        on: bool,
+    },
     /// Quits the engine (and the UI) for good.
     QuitAll,
 }
@@ -55,13 +87,25 @@ pub enum ToEngine {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "t", rename_all = "snake_case")]
 pub enum ToIsland {
-    Snapshot { snap: Snapshot },
-    Started { id: u64, result: Result<TaskId, String> },
+    Snapshot {
+        snap: Snapshot,
+    },
+    Started {
+        id: u64,
+        result: Result<TaskId, String>,
+    },
     /// Push-to-talk: the words so far (`live`), the final words, or why it
     /// couldn't listen.
-    Dictation { text: String, done: bool, error: Option<String> },
+    Dictation {
+        text: String,
+        done: bool,
+        error: Option<String>,
+    },
     /// A merge finished.
-    Merged { task: TaskId, result: Result<(), String> },
+    Merged {
+        task: TaskId,
+        result: Result<(), String>,
+    },
     /// The engine is going away (quit, or nothing left to run).
     Bye,
 }
