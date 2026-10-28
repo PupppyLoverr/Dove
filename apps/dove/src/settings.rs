@@ -1727,7 +1727,7 @@ impl SettingsPage {
                 false,
                 "wallpaper_playback",
                 "Play animated backgrounds",
-                "GIFs and videos loop exactly as attached, even with Reduce motion on. Off holds the first frame.",
+                "GIFs and videos loop as attached, lightly dimmed, even with Reduce motion on. Off holds the first frame.",
                 gate(has_wall && !still, playback_control),
             ))
             .child(self.srow(
@@ -1735,7 +1735,7 @@ impl SettingsPage {
                 false,
                 "wallpaper_chat",
                 "Show behind chats",
-                "Behind every conversation. Images are frosted; GIFs and videos play as they are.",
+                "Behind every conversation. Images are frosted; GIFs and videos play unblurred, lightly dimmed.",
                 if has_wall {
                     ctl::on_toggle(ctl::toggle(t, "set-wall-chat", behind_chats), cx, move |this, _, cx| {
                         this.set_flag("wallpaper_chat", !behind_chats, cx)
@@ -1768,7 +1768,7 @@ impl SettingsPage {
                 false,
                 "wallpaper_chat_dim",
                 "Chat dim",
-                "For images; Dove darkens further when text would be hard to read. GIFs and videos are never dimmed.",
+                "For images; Dove darkens further when text would be hard to read. GIFs and videos get a fixed light dim.",
                 gate(
                     chat_on,
                     div()

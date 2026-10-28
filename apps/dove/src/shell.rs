@@ -55,6 +55,9 @@ pub const CHAT_DIM_DARK: f32 = 0.78;
 pub const CHAT_DIM_LIGHT: f32 = 0.82;
 pub const CHAT_DIM_MIN: f32 = 0.55;
 pub const CHAT_DIM_MAX: f32 = 0.95;
+/// How much a GIF or video background is darkened: a light black veil so a
+/// bright clip sits calmly behind the app, still plainly the clip itself.
+pub const MOVING_DIM: f32 = 0.22;
 /// The sidebar and dock over that picture: the same frost, a shade deeper.
 const SIDE_ART_TINT: f32 = 0.24;
 
@@ -3234,9 +3237,9 @@ impl Shell {
         let t = Theme::of(cx).clone();
         let viewport_h = f32::from(window.viewport_size().height);
         let kind = crate::wallpaper_media::kind_cached(std::path::Path::new(&path));
-        // A GIF or video is shown exactly as attached, on loop: the whole
-        // column, no blur, dim, fade, cut-out or effect. Only stills get the
-        // hero treatment and the chat frost.
+        // A GIF or video loops as attached across the whole column: no
+        // blur, fade, cut-out or effect, only a light dim (`MOVING_DIM`).
+        // Stills get the hero treatment and the chat frost.
         let moving = kind != crate::wallpaper_media::Kind::Still;
         let height = if thread || moving { viewport_h } else { crate::wallpaper::hero_height(viewport_h) };
         let scale = window.scale_factor();
@@ -3254,7 +3257,8 @@ impl Shell {
                 opacity: 1.0,
             };
             let view = window.use_keyed_state("shell-motion", cx, crate::wallpaper_media::Backdrop::new);
-            view.update(cx, |b, cx| b.show(props, cx)).then(|| (view.into_any_element(), None))
+            let veil = gpui::black().opacity(MOVING_DIM);
+            view.update(cx, |b, cx| b.show(props, cx)).then(|| (view.into_any_element(), Some(veil)))
         } else if thread {
             // A still behind a chat: baked frost under a contrast-solved scrim.
             let blur = self.chat_blur().round() as u32;
@@ -3272,7 +3276,7 @@ impl Shell {
             let ready = view.update(cx, |b, cx| b.show(props, cx));
             let bright = crate::wallpaper_media::clip(std::path::Path::new(&path), variant, target, true, cx)
                 .map_or(1.0, |c| c.bright);
-            ready.then(|| (view.into_any_element(), Some(self.chat_scrim(bright, &t))))
+            ready.then(|| (view.into_any_element(), Some(t.bg.opacity(self.chat_scrim(bright, &t)))))
         } else {
             let effect =
                 crate::wallpaper::Effect::from_id(&self.engine.store.setting("wallpaper_effect").unwrap_or_default());
@@ -3304,7 +3308,7 @@ impl Shell {
                 .overflow_hidden()
                 .bg(t.bg)
                 .child(div().absolute().top_0().left_0().right_0().h(px(height)).child(view))
-                .when_some(scrim, |d, alpha| d.child(div().absolute().inset_0().bg(t.bg.opacity(alpha))))
+                .when_some(scrim, |d, veil| d.child(div().absolute().inset_0().bg(veil)))
                 .into_any_element()
         })
     }
