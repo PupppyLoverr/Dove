@@ -597,10 +597,10 @@ struct Stream {
     latest: Mutex<Option<RgbaImage>>,
 }
 
-/// Longest edge a streamed full-size frame is decoded at, in device pixels.
-/// A 4K source scaled to this and stretched by the GPU looks the same
-/// behind the fade, at a fraction of the copying.
-const STREAM_EDGE: f32 = 1920.0;
+/// Longest edge a streamed full-size frame is decoded at, in device pixels:
+/// the window's own resolution on any common screen, so the clip shows as
+/// attached, while a 5K window does not copy 60 MB a frame.
+const STREAM_EDGE: f32 = 2560.0;
 
 /// The size a variant's video is streamed at: the full-size area capped at
 /// [`STREAM_EDGE`], or the frost's quarter size (it is blurred anyway).
@@ -820,7 +820,7 @@ mod tests {
     #[test]
     fn streamed_video_is_capped_and_even() {
         let (w, h) = stream_size((3840, 2112), Variant::Hero);
-        assert!(w <= 1920 && h <= 1920 && w % 2 == 0 && h % 2 == 0, "{w}x{h}");
+        assert!(w <= 2560 && h <= 2560 && w % 2 == 0 && h % 2 == 0, "{w}x{h}");
         assert_eq!(stream_size((1280, 704), Variant::Hero), (1280, 704));
         assert_eq!(stream_size((2560, 1536), Variant::Frost(80)), (640, 384));
     }

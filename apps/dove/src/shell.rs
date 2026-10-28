@@ -3233,22 +3233,37 @@ impl Shell {
         let path = self.wallpaper_path()?;
         let t = Theme::of(cx).clone();
         let viewport_h = f32::from(window.viewport_size().height);
-        let height = if thread { viewport_h } else { crate::wallpaper::hero_height(viewport_h) };
-        let scale = window.scale_factor();
         let kind = crate::wallpaper_media::kind_cached(std::path::Path::new(&path));
+        // A GIF or video is shown exactly as attached, on loop: the whole
+        // column, no blur, dim, fade, cut-out or effect. Only stills get the
+        // hero treatment and the chat frost.
+        let moving = kind != crate::wallpaper_media::Kind::Still;
+        let height = if thread || moving { viewport_h } else { crate::wallpaper::hero_height(viewport_h) };
+        let scale = window.scale_factor();
         let playback = self.engine.store.setting("wallpaper_playback").unwrap_or_else(|| "always".into());
         let composer = if home { self.composer_bounds.clone() } else { std::rc::Rc::new(std::cell::Cell::new(None)) };
         let target = (width * scale, height * scale);
-        let art = if thread {
-            // The chat frost: baked blur, painted under a contrast-solved scrim.
+        let art = if moving {
+            let props = crate::wallpaper_media::BackdropProps {
+                path: path.into(),
+                variant: crate::wallpaper_media::Variant::Hero,
+                target,
+                play: if thread { playback == "always" } else { playback != "off" },
+                fade: false,
+                composer: None,
+                opacity: 1.0,
+            };
+            let view = window.use_keyed_state("shell-motion", cx, crate::wallpaper_media::Backdrop::new);
+            view.update(cx, |b, cx| b.show(props, cx)).then(|| (view.into_any_element(), None))
+        } else if thread {
+            // A still behind a chat: baked frost under a contrast-solved scrim.
             let blur = self.chat_blur().round() as u32;
-            let play = playback == "always" && kind != crate::wallpaper_media::Kind::Still;
             let variant = crate::wallpaper_media::Variant::Frost(blur);
             let props = crate::wallpaper_media::BackdropProps {
                 path: path.clone().into(),
                 variant,
                 target,
-                play,
+                play: false,
                 fade: false,
                 composer: None,
                 opacity: 1.0,
@@ -3258,7 +3273,7 @@ impl Shell {
             let bright = crate::wallpaper_media::clip(std::path::Path::new(&path), variant, target, true, cx)
                 .map_or(1.0, |c| c.bright);
             ready.then(|| (view.into_any_element(), Some(self.chat_scrim(bright, &t))))
-        } else if kind == crate::wallpaper_media::Kind::Still {
+        } else {
             let effect =
                 crate::wallpaper::Effect::from_id(&self.engine.store.setting("wallpaper_effect").unwrap_or_default());
             let animate = self.engine.store.setting("wallpaper_animate").as_deref() == Some("true");
@@ -3275,19 +3290,6 @@ impl Shell {
             };
             let view = window.use_keyed_state("shell-hero", cx, crate::wallpaper::Hero::new);
             view.update(cx, |hero, cx| hero.show(props, cx)).then(|| (view.into_any_element(), None))
-        } else {
-            // A moving background on home: full size, faded into the canvas.
-            let props = crate::wallpaper_media::BackdropProps {
-                path: path.into(),
-                variant: crate::wallpaper_media::Variant::Hero,
-                target,
-                play: playback != "off",
-                fade: true,
-                composer: Some(composer),
-                opacity: if t.is_frost() { crate::wallpaper::FROSTED_OPACITY } else { 1.0 },
-            };
-            let view = window.use_keyed_state("shell-motion", cx, crate::wallpaper_media::Backdrop::new);
-            view.update(cx, |b, cx| b.show(props, cx)).then(|| (view.into_any_element(), None))
         };
         art.map(|(view, scrim)| {
             // One column, from the title strip down. Home fades into the
