@@ -429,7 +429,7 @@ impl Prefs {
             live: store.flag("notch_live", true),
             clipboard: store.flag("notch_clipboard", true),
             notifications: store.flag("notch_notifications", true),
-            glass: store.flag("notch_glass", true),
+            glass: store.flag("notch_glass", false),
             display: if store.setting("notch_display").as_deref() == Some("pointer") {
                 DisplayPick::Pointer
             } else {

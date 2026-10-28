@@ -1910,7 +1910,7 @@ impl SettingsPage {
         let clips = self.flag("notch_clipboard", true);
         let login = self.flag(crate::island::login::KEY, true);
         let notify = self.flag("notch_notifications", true);
-        let glass = self.flag("notch_glass", true);
+        let glass = self.flag("notch_glass", false);
         let focus = self.flag("notch_focus", false);
         let pointer = self.get("notch_display").as_deref() == Some("pointer");
         let hidden: Vec<String> = self

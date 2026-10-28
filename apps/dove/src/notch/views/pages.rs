@@ -175,17 +175,10 @@ impl Notch {
         let key = self.key();
         let cards = self.home_cards();
         if cards.is_empty() {
-            return div()
-                .size_full()
-                .flex()
-                .flex_col()
-                .items_center()
-                .justify_center()
-                .gap(px(12.0))
-                .child(icon(icons::DOVE_LOGO).size(px(26.0)).text_color(tk::FAINT))
-                .child(div().text_size(px(tk::T13)).text_color(tk::DIM).child("All quiet"))
+            return empty(icons::DOVE_LOGO, "All quiet", "Agents, music and anything that needs you show up here.")
                 .child(
                     div()
+                        .mt(px(8.0))
                         .flex()
                         .gap(px(6.0))
                         .child(primary("empty-agent", "Start an agent").on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
@@ -218,6 +211,44 @@ impl Notch {
                 )));
             }
             col = col.child(rise(more, (key, 3), 3));
+        }
+        if cards.len() < 2 {
+            // A sparse Home: shortcuts, so the space isn't dead.
+            let shortcut = |id: &'static str, glyph: &'static str, label: &'static str| {
+                div()
+                    .id(id)
+                    .flex_1()
+                    .h(px(56.0))
+                    .rounded(px(tk::R_ROW))
+                    .bg(tk::CARD)
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(5.0))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(tk::WASH_HOVER))
+                    .active(|s| s.bg(tk::WASH_ON))
+                    .child(icon(glyph).size(px(tk::ICON_ROW)).text_color(tk::DIM))
+                    .child(div().text_size(px(tk::T11)).text_color(tk::DIM).child(label))
+            };
+            let row = div()
+                .flex()
+                .gap(px(8.0))
+                .child(shortcut("go-agent", icons::ADD_CIRCLE, "New agent").on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                    this.open_page(Page::NewAgent, Some(window), cx)
+                })))
+                .child(shortcut("go-timer", icons::TIMER, "Timer").on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                    this.open_page(Page::Tab(Tab::Timer), Some(window), cx)
+                })))
+                .child(shortcut("go-note", icons::NOTE_TEXT, "Note").on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                    this.selected_note = None;
+                    this.open_page(Page::Tab(Tab::Notes), Some(window), cx);
+                })))
+                .child(shortcut("go-dev", icons::SERVER, "Servers").on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                    this.open_page(Page::Tab(Tab::Dev), Some(window), cx)
+                })));
+            col = col.child(rise(row, (key, 4), 4));
         }
         col.into_any_element()
     }
@@ -487,16 +518,8 @@ impl Notch {
     pub(crate) fn page_agents(&self, cx: &mut Context<Self>) -> AnyElement {
         let new = primary("agents-new", "New agent").on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.open_page(Page::NewAgent, Some(window), cx)));
         if self.snap.agents.is_empty() && self.snap.flock.is_empty() {
-            return div()
-                .size_full()
-                .flex()
-                .flex_col()
-                .items_center()
-                .justify_center()
-                .gap(px(10.0))
-                .child(div().text_size(px(tk::T13)).text_color(tk::DIM).child("No agents yet"))
-                .child(div().text_size(px(tk::T11)).text_color(tk::FAINT).child("Or type “new …” in the search"))
-                .child(new)
+            return empty(icons::SPARKLE_AGENT, "No agents yet", "Start one here, or type “new …” in the search.")
+                .child(div().mt(px(8.0)).child(new))
                 .into_any_element();
         }
         let key = self.key();
@@ -1103,17 +1126,13 @@ impl Notch {
 
     pub(crate) fn page_music(&self, cx: &mut Context<Self>) -> AnyElement {
         let Some(m) = self.media.clone() else {
-            return div()
-                .size_full()
-                .flex()
-                .flex_col()
-                .items_center()
-                .justify_center()
-                .gap(px(8.0))
-                .child(icon(icons::MUSIC_NOTE).size(px(24.0)).text_color(tk::FAINT))
-                .child(div().text_size(px(tk::T13)).text_color(tk::DIM).child("Nothing playing"))
-                .child(div().text_size(px(tk::T11)).text_color(tk::FAINT).child("Play something in Spotify, a browser or any player."))
-                .child(pill("open-spotify", "Open Spotify", false).on_click(cx.listener(|_, _: &ClickEvent, _, _| super::super::media::open_player("Spotify.exe"))))
+            return empty(icons::MUSIC_NOTE, "Nothing playing", "Play something in Spotify, a browser or any player.")
+                .child(
+                    div().mt(px(8.0)).child(
+                        pill("open-spotify", "Open Spotify", false)
+                            .on_click(cx.listener(|_, _: &ClickEvent, _, _| super::super::media::open_player("Spotify.exe"))),
+                    ),
+                )
                 .into_any_element();
         };
         let now = m.now();
@@ -1560,13 +1579,7 @@ impl Notch {
                         .border_1()
                         .border_dashed()
                         .border_color(tk::HAIRLINE)
-                        .flex()
-                        .flex_col()
-                        .items_center()
-                        .justify_center()
-                        .gap(px(8.0))
-                        .child(icon(icons::DOCUMENT_ADD).size(px(20.0)).text_color(tk::FAINT))
-                        .child(div().text_size(px(tk::T12)).text_color(tk::DIM).child(hint)),
+                        .child(empty(icons::DOCUMENT_ADD, "The tray is empty", hint)),
                 )
                 .into_any_element();
         }
@@ -1847,17 +1860,7 @@ impl Notch {
 
     pub(crate) fn page_alerts(&self, cx: &mut Context<Self>) -> AnyElement {
         if self.notices.is_empty() {
-            return div()
-                .size_full()
-                .flex()
-                .flex_col()
-                .items_center()
-                .justify_center()
-                .gap(px(8.0))
-                .child(icon(icons::BELL).size(px(22.0)).text_color(tk::FAINT))
-                .child(div().text_size(px(tk::T13)).text_color(tk::DIM).child("Nothing new"))
-                .child(div().text_size(px(tk::T11)).text_color(tk::FAINT).child("Finishes, failures and the timer show up here."))
-                .into_any_element();
+            return empty(icons::BELL, "You're all caught up", "Finishes, failures and the timer show up here.").into_any_element();
         }
         let key = self.key();
         let mut col = div().id("alerts").size_full().overflow_y_scroll().flex().flex_col().gap(px(2.0)).child(
@@ -1905,16 +1908,7 @@ impl Notch {
 
     pub(crate) fn page_dev(&self, cx: &mut Context<Self>) -> AnyElement {
         if self.ports.is_empty() {
-            return div()
-                .size_full()
-                .flex()
-                .flex_col()
-                .items_center()
-                .justify_center()
-                .gap(px(8.0))
-                .child(icon(icons::SERVER).size(px(22.0)).text_color(tk::FAINT))
-                .child(div().text_size(px(tk::T13)).text_color(tk::DIM).child("No dev servers running"))
-                .child(div().text_size(px(tk::T11)).text_color(tk::FAINT).child("Servers your agents start (Vite, Next, Django…) show up here."))
+            return empty(icons::SERVER, "No dev servers running", "Servers your agents start (Vite, Next, Django…) show up here.")
                 .into_any_element();
         }
         let mut col = div().id("dev").size_full().overflow_y_scroll().flex().flex_col().gap(px(2.0)).pt(px(4.0));

@@ -746,7 +746,8 @@ impl Notch {
                 } else {
                     let shown = cards.len().min(3);
                     let h: f32 = cards.iter().take(3).map(|c| c.height(self)).sum::<f32>() + tk::GAP * (shown as f32 - 1.0);
-                    h + if cards.len() > 3 { 36.0 } else { 0.0 }
+                    // A sparse Home also shows the shortcut row (pages.rs).
+                    h + if cards.len() > 3 { 36.0 } else { 0.0 } + if cards.len() < 2 { tk::GAP + 56.0 } else { 0.0 }
                 }
             }
             Page::Tab(Tab::Agents) => {
@@ -877,9 +878,7 @@ impl Notch {
                             .top_0()
                             .size(px(SLOT))
                             .rounded_full()
-                            .bg(tk::WASH_HOVER)
-                            .border_1()
-                            .border_color(tk::CARD_EDGE),
+                            .bg(tk::WASH_ON),
                     );
                 for (i, t) in tabs.iter().copied().enumerate() {
                     let on = t == page_tab;
@@ -940,7 +939,7 @@ impl Notch {
                 .h(px(32.0))
                 .px(px(if searching { 12.0 } else { 0.0 }))
                 .rounded_full()
-                .when(searching, |d| d.bg(tk::WASH_HOVER))
+                .when(searching, |d| d.bg(tk::WASH))
                 .hover(|s| s.bg(tk::WASH_HOVER))
                 .flex()
                 .items_center()
@@ -1179,7 +1178,13 @@ impl Notch {
         let backdrop = self.backdrop.clone().filter(|_| frosted && !composition);
         let glow = self.glow();
         let needs = self.approval().is_some() && state != State::Expanded;
-        let border = if needs { tk::AMBER.opacity(0.35 + 0.35 * breathe(self.t())) } else { tk::RIM };
+        let border = if needs {
+            tk::AMBER.opacity(0.35 + 0.35 * breathe(self.t()))
+        } else if frosted {
+            tk::RIM
+        } else {
+            tk::NONE
+        };
         let grain = frosted.then(grain);
         let glass = move |d: Div, left: f32, y: f32, r: f32| {
             d.border_1()
@@ -1218,18 +1223,18 @@ impl Notch {
                             .bg(linear_gradient(180.0, linear_color_stop(c, 0.0), linear_color_stop(c.opacity(0.0), 0.7))),
                     )
                 })
-                // Light from above, and the pane's inner edge.
-                .child(
+                // Glass only: light from above, the pane's inner edge and
+                // the specular line along the top.
+                .when(frosted, |d| d.child(
                     div()
                         .absolute()
                         .top_0()
                         .left_0()
                         .size_full()
                         .bg(linear_gradient(180.0, linear_color_stop(tk::SHEEN, 0.0), linear_color_stop(tk::SHEEN.opacity(0.0), tk::SHEEN_TO))),
-                )
-                .child(div().absolute().top_0().left_0().size_full().rounded(px((r - 1.0).max(0.0))).border_1().border_color(tk::RIM_INNER))
-                // The specular line along the top edge.
-                .child(
+                ))
+                .when(frosted, |d| d.child(div().absolute().top_0().left_0().size_full().rounded(px((r - 1.0).max(0.0))).border_1().border_color(tk::RIM_INNER)))
+                .when(frosted, |d| d.child(
                     div()
                         .absolute()
                         .top_0()
@@ -1237,7 +1242,7 @@ impl Notch {
                         .right(px(r * 0.7))
                         .h(px(1.0))
                         .bg(linear_gradient(90.0, linear_color_stop(tk::SPECULAR.opacity(0.0), 0.0), linear_color_stop(tk::SPECULAR, 0.5))),
-                )
+                ))
         };
         let r = g.r.min(g.h / 2.0);
         let this = cx.entity().downgrade();

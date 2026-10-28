@@ -14,9 +14,9 @@ pub const TEXT: Hsla = hsla(0.0, 0.0, 1.0, 0.95);
 pub const DIM: Hsla = hsla(0.0, 0.0, 1.0, 0.64);
 pub const FAINT: Hsla = hsla(0.0, 0.0, 1.0, 0.42);
 pub const GHOST: Hsla = hsla(0.0, 0.0, 1.0, 0.26);
-/// Inner glass for cards: a lighter pane with a faint edge (glass on glass).
-pub const CARD: Hsla = hsla(0.0, 0.0, 1.0, 0.055);
-pub const CARD_EDGE: Hsla = hsla(0.0, 0.0, 1.0, 0.07);
+/// Cards: a flat raised surface on the black, no edge.
+pub const CARD: Hsla = hsla(0.0, 0.0, 1.0, 0.06);
+pub const NONE: Hsla = hsla(0.0, 0.0, 0.0, 0.0);
 pub const WASH: Hsla = hsla(0.0, 0.0, 1.0, 0.08);
 pub const WASH_HOVER: Hsla = hsla(0.0, 0.0, 1.0, 0.13);
 pub const WASH_ON: Hsla = hsla(0.0, 0.0, 1.0, 0.18);
@@ -34,8 +34,11 @@ pub const SHEEN_TO: f32 = 0.45;
 /// frosted rather than smoked.
 pub const FROST: Hsla = hsla(220.0 / 360.0, 0.3, 0.9, 0.035);
 pub const GRAIN: u8 = 9;
+/// The plate behind an empty state's glyph (top, bottom).
+pub const PLATE_TOP: Hsla = hsla(0.0, 0.0, 1.0, 0.11);
+pub const PLATE_BOTTOM: Hsla = hsla(0.0, 0.0, 1.0, 0.03);
 /// Floating surfaces over the island (menus, tooltips).
-pub const FLOAT: Hsla = hsla(232.0 / 360.0, 0.12, 0.12, 0.94);
+pub const FLOAT: Hsla = hsla(0.0, 0.0, 0.09, 0.98);
 pub const INK: Hsla = hsla(0.0, 0.0, 0.07, 1.0);
 pub const WHITE: Hsla = hsla(0.0, 0.0, 1.0, 0.96);
 pub const WHITE_HOVER: Hsla = hsla(0.0, 0.0, 1.0, 0.82);
@@ -57,9 +60,10 @@ pub const TINT_DENSE: f32 = 0.30;
 /// thickening.
 pub const LUMA_FROM: f32 = 0.30;
 pub const LUMA_TO: f32 = 0.80;
-/// The solid material (transparency effects off, or no glass at all).
-pub const SOLID_TOP: Hsla = hsla(240.0 / 360.0, 0.06, 0.13, 0.97);
-pub const SOLID_BOTTOM: Hsla = hsla(240.0 / 360.0, 0.08, 0.07, 0.98);
+/// The default material: true black, so the island reads as part of the
+/// screen's edge (glass is opt-in, Settings → Frosted glass).
+pub const SOLID_TOP: Hsla = hsla(0.0, 0.0, 0.0, 1.0);
+pub const SOLID_BOTTOM: Hsla = hsla(0.0, 0.0, 0.0, 1.0);
 /// How strongly a glow (art colour, alert) tints the glass.
 pub const GLOW: f32 = 0.09;
 

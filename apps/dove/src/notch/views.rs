@@ -215,7 +215,7 @@ impl Render for Tip {
             .rounded(px(8.0))
             .bg(tk::FLOAT)
             .border_1()
-            .border_color(tk::RIM)
+            .border_color(tk::HAIRLINE)
             .shadow_md()
             .text_size(px(tk::T11))
             .text_color(tk::TEXT)
@@ -305,9 +305,35 @@ fn section(label: impl Into<SharedString>) -> Div {
     div().text_size(px(tk::T11)).font_weight(FontWeight::MEDIUM).text_color(tk::FAINT).child(label.into())
 }
 
+/// An empty page: its glyph on a small glass plate, a title and a hint,
+/// centered. Callers add an action after it when there is one.
+fn empty(glyph: &'static str, title: impl Into<SharedString>, hint: impl Into<SharedString>) -> Div {
+    div()
+        .size_full()
+        .flex()
+        .flex_col()
+        .items_center()
+        .justify_center()
+        .gap(px(6.0))
+        .child(
+            div()
+                .size(px(44.0))
+                .mb(px(4.0))
+                .flex_none()
+                .rounded_full()
+                .bg(linear_gradient(180.0, linear_color_stop(tk::PLATE_TOP, 0.0), linear_color_stop(tk::PLATE_BOTTOM, 1.0)))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(icon(glyph).size(px(20.0)).text_color(tk::DIM)),
+        )
+        .child(div().text_size(px(tk::T15)).font_weight(FontWeight::SEMIBOLD).text_color(tk::TEXT).child(title.into()))
+        .child(div().max_w(px(340.0)).text_center().text_size(px(tk::T11)).text_color(tk::FAINT).child(hint.into()))
+}
+
 /// A card: a lighter pane on the glass with a faint edge.
 fn card() -> Div {
-    div().p(px(12.0)).rounded(px(tk::R_CARD)).bg(tk::CARD).border_1().border_color(tk::CARD_EDGE)
+    div().p(px(12.0)).rounded(px(tk::R_CARD)).bg(tk::CARD)
 }
 
 fn bar(p: f32, color: Hsla, height: f32) -> Div {
