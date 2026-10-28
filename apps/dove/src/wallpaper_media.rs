@@ -203,7 +203,7 @@ fn decode_animated(path: &Path, target: (u32, u32), budget: usize, look: &dyn Fn
         bytes += img.as_raw().len();
         out.images.push(img);
         out.delays.push(delay);
-        if bytes > budget * 2 {
+        if bytes > budget.saturating_mul(2) {
             out = out.fit(budget);
             bytes = out.bytes();
         }
@@ -211,9 +211,16 @@ fn decode_animated(path: &Path, target: (u32, u32), budget: usize, look: &dyn Fn
     (!out.images.is_empty()).then(|| out.fit(budget))
 }
 
-/// Decode up to [`VIDEO_SECONDS`] of a video through ffmpeg as raw BGRA at
-/// exactly `target` (cover-cropped), at `fps`.
-fn decode_video(path: &Path, target: (u32, u32), fps: u32, budget: usize, look: &dyn Fn(RgbaImage) -> RgbaImage) -> Option<Frames> {
+/// Decode up to [`VIDEO_SECONDS`] (and at most `max_frames`) of a video
+/// through ffmpeg as raw BGRA at exactly `target` (cover-cropped), at `fps`.
+fn decode_video(
+    path: &Path,
+    target: (u32, u32),
+    fps: u32,
+    budget: usize,
+    max_frames: usize,
+    look: &dyn Fn(RgbaImage) -> RgbaImage,
+) -> Option<Frames> {
     use std::io::Read as _;
     let ffmpeg = ffmpeg()?;
     let (w, h) = (target.0.max(2) & !1, target.1.max(2) & !1);
@@ -223,7 +230,9 @@ fn decode_video(path: &Path, target: (u32, u32), fps: u32, budget: usize, look: 
         .arg(VIDEO_SECONDS.to_string())
         .arg("-i")
         .arg(path)
-        .args(["-an", "-vf", &filter, "-f", "rawvideo", "-pix_fmt", "bgra", "-"])
+        .args(["-an", "-vf", &filter, "-frames:v"])
+        .arg(max_frames.min(u32::MAX as usize).to_string())
+        .args(["-f", "rawvideo", "-pix_fmt", "bgra", "-"])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null());
@@ -234,10 +243,10 @@ fn decode_video(path: &Path, target: (u32, u32), fps: u32, budget: usize, look: 
     }
     let mut child = cmd.spawn().ok()?;
     let mut stdout = child.stdout.take()?;
-    let frame_len = (w * h * 4) as usize;
+    let frame_len = w as usize * h as usize * 4;
     let mut out = Frames { images: Vec::new(), delays: Vec::new() };
     let mut bytes = 0usize;
-    loop {
+    while out.images.len() < max_frames {
         let mut buf = vec![0u8; frame_len];
         if stdout.read_exact(&mut buf).is_err() {
             break;
@@ -247,7 +256,7 @@ fn decode_video(path: &Path, target: (u32, u32), fps: u32, budget: usize, look: 
         bytes += img.as_raw().len();
         out.images.push(img);
         out.delays.push(1.0 / fps as f32);
-        if bytes > budget * 2 {
+        if bytes > budget.saturating_mul(2) {
             out = out.fit(budget);
             bytes = out.bytes();
         }
@@ -260,7 +269,7 @@ fn decode_video(path: &Path, target: (u32, u32), fps: u32, budget: usize, look: 
 /// The first frame of any background, for stills and thumbnails.
 fn decode_still(path: &Path, target: (u32, u32), look: &dyn Fn(RgbaImage) -> RgbaImage) -> Option<Frames> {
     let img = match kind_of(path) {
-        Kind::Video => return decode_video(path, target, 1, usize::MAX, look).map(|mut f| {
+        Kind::Video => return decode_video(path, target, 1, usize::MAX, 1, look).map(|mut f| {
             f.images.truncate(1);
             f.delays.truncate(1);
             f
@@ -497,10 +506,10 @@ fn decode(key: &Key) -> Option<Frames> {
         Kind::Animated => decode_animated(&key.path, target, budget, &*look),
         // Video decodes straight at the variant's own size.
         Kind::Video => match key.variant {
-            Variant::Hero => decode_video(&key.path, target, fps, budget, &|i| i),
+            Variant::Hero => decode_video(&key.path, target, fps, budget, usize::MAX, &|i| i),
             Variant::Frost(blur) => {
                 let small = ((target.0 / 2).max(64), (target.1 / 2).max(64));
-                decode_video(&key.path, small, fps, budget, &move |img| {
+                decode_video(&key.path, small, fps, budget, usize::MAX, &move |img| {
                     let up = imageops::resize(&img, target.0, target.1, imageops::FilterType::Nearest);
                     frost_frame(up, target, FrostLook { blur: blur as f32 })
                 })
@@ -621,6 +630,30 @@ impl Render for Backdrop {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A video's still (thumbnails, and every frame under Reduce motion)
+    /// has no byte budget: it used to overflow `budget * 2` and abort the
+    /// app. It also reads one frame, not the whole clip.
+    #[test]
+    fn video_still_decodes_one_frame_without_overflow() {
+        let Some(ffmpeg) = ffmpeg() else { return };
+        let dir = std::env::temp_dir().join(format!("dove-wm-test-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let clip = dir.join("clip.mp4");
+        let made = std::process::Command::new(ffmpeg)
+            .args(["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=320x180:rate=24:duration=2"])
+            .args(["-pix_fmt", "yuv420p"])
+            .arg(&clip)
+            .status()
+            .is_ok_and(|s| s.success());
+        if !made {
+            return;
+        }
+        let still = decode_still(&clip, (640, 360), &|i| i).expect("a first frame");
+        assert_eq!(still.images.len(), 1);
+        assert_eq!(still.images[0].dimensions(), (640, 360));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn scrim_rises_until_text_reads() {
