@@ -270,6 +270,8 @@ pub struct Shell {
     _browser_control: Option<gpui::Task<()>>,
     /// Presses of Voice Mode's system-wide shortcut.
     _voice_hotkey: Option<gpui::Task<()>>,
+    /// Ctrl+Alt+Shift+S (Windows): take or hand back computer control.
+    _computer_hotkey: Option<gpui::Task<()>>,
     /// Delegation and teammate messaging between threads (`orchestra.rs`).
     pub(crate) team: crate::orchestra::TeamState,
     /// Threads beside each open thread in the chat area (`split.rs`).
@@ -480,6 +482,7 @@ impl Shell {
             _scheduler: None,
             _browser_control: None,
             _voice_hotkey: None,
+            _computer_hotkey: None,
             team: Default::default(),
             companions: HashMap::new(),
         };
@@ -490,6 +493,7 @@ impl Shell {
         this.start_browser_control(window, cx);
         this.start_team_sweep(window, cx);
         this.start_voice_hotkey(window, cx);
+        this.start_computer_hotkey(window, cx);
         crate::composer::focus(&this.composer, window, cx);
         // `DOVE_OPEN_THREAD=<id>`: start on a thread (QA and scripting).
         if let Some(id) = std::env::var("DOVE_OPEN_THREAD").ok().and_then(|s| uuid_task(&s)) {
@@ -699,12 +703,56 @@ impl Shell {
         }));
     }
 
+    fn start_computer_hotkey(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let presses = crate::computer_review::hotkey_events();
+        self._computer_hotkey = Some(cx.spawn_in(window, async move |this, cx| {
+            while presses.recv_async().await.is_ok() {
+                if this.update(cx, |_, cx| crate::computer_review::on_hotkey(cx)).is_err() {
+                    break;
+                }
+            }
+        }));
+    }
+
+    /// `computer_*` from an agent's `computer` tool: approval cards in its
+    /// thread, the take-over lease and the activity strip.
+    fn route_computer_call(
+        &mut self,
+        req: &crate::browser::control::Request,
+        cx: &mut Context<Self>,
+    ) -> crate::computer_review::Reply {
+        let visible = match self.route {
+            Route::Thread(id) => Some(id),
+            _ => None,
+        };
+        let thread = self.team_caller(req).ok().or(visible);
+        crate::computer_review::route(&req.tool, &req.args, thread, cx)
+    }
+
     /// Serve agents' browser tool calls (`dove --mcp-browser`): route each
     /// to the browser of the thread it came from, and run it there.
     fn start_browser_control(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(requests) = crate::browser::control::take_requests() else { return };
         self._browser_control = Some(cx.spawn_in(window, async move |this, cx| {
             while let Ok(req) = requests.recv_async().await {
+                if crate::computer_review::is_gui_tool(&req.tool) {
+                    match this.update(cx, |s, cx| s.route_computer_call(&req, cx)) {
+                        Ok(crate::computer_review::Reply::Now(outcome)) => {
+                            let _ = req.reply.send(outcome);
+                        }
+                        Ok(crate::computer_review::Reply::Wait(decided)) => {
+                            cx.spawn(async move |_| {
+                                let d = decided.await.unwrap_or(dove_computer::Decision::Deny {
+                                    reason: "the card was closed".into(),
+                                });
+                                let _ = req.reply.send(crate::computer_review::decision_outcome(&d));
+                            })
+                            .detach();
+                        }
+                        Err(_) => break,
+                    }
+                    continue;
+                }
                 if crate::panel_tools::is_panel_tool(&req.tool) {
                     let reply = this.update_in(cx, |s, window, cx| s.route_panel_call(&req, window, cx));
                     match reply {

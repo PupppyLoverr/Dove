@@ -1,9 +1,429 @@
 {
   "manifest_version": 1,
-  "name": "dove-driver",
-  "version": "0.37.0",
-  "tag": "dove-driver-v0.37.0",
-  "repository": "PupppyLoverr/NEXI-Models-Drivers",
+  "name": "cua-driver",
+  "version": "0.38.0",
+  "tag": "cua-driver-rs-v0.38.0",
+  "repository": "trycua/cua",
   "min_dove_version": "0.1.0",
-  "platforms": {}
+  "platforms": {
+    "windows-x86_64": {
+      "name": "cua-driver-rs-0.38.0-windows-x86_64.zip",
+      "url": "https://github.com/trycua/cua/releases/download/cua-driver-rs-v0.38.0/cua-driver-rs-0.38.0-windows-x86_64.zip",
+      "sha256": "997f20114ad3db227a854e1e5a886234f76405b155f4af70605d4b7ca4a436a1",
+      "size": 35894668,
+      "archive": "zip",
+      "root": "cua-driver-rs-0.38.0-windows-x86_64",
+      "entrypoint": "cua-driver.exe",
+      "files": [
+        {
+          "path": "LICENSE",
+          "sha256": "d0a32419a44fa38d5023d1431dfcbedd1457eb5e7b2e6c7c87ca064facb41b41",
+          "size": 1090,
+          "executable": false,
+          "role": "license"
+        },
+        {
+          "path": "THIRD_PARTY_NOTICES.md",
+          "sha256": "10bcfd768457983b250239299d1599150ad23331c1f33a5c5248d7dea8842671",
+          "size": 10006,
+          "executable": false,
+          "role": "notice"
+        },
+        {
+          "path": "cua-cursor-theme.exe",
+          "sha256": "ffaf56a62b0f3bdaf65f2bc30612e5d6ed408362d4868d6f20e8db93be851f0c",
+          "size": 2981712,
+          "executable": false,
+          "role": "support"
+        },
+        {
+          "path": "cua-driver-uia.exe",
+          "sha256": "69aa6ea0049ce59dfd14593be77c0632f12f6eda3d4a2f4bab1a00e3a72a9754",
+          "size": 25465168,
+          "executable": false,
+          "role": "uia-sidecar"
+        },
+        {
+          "path": "cua-driver.exe",
+          "sha256": "ffa58d88779ee219304b0c307f4cfa970fe822f830c6ecf9254eda5c29e22bf2",
+          "size": 38673232,
+          "executable": true,
+          "role": "driver"
+        },
+        {
+          "path": "cua_driver_abi.h",
+          "sha256": "c17169f41da321baa5e7e953323c3ad660b00790176ba381e93189fba3506587",
+          "size": 7998,
+          "executable": false,
+          "role": "support"
+        },
+        {
+          "path": "cua_driver_node_runtime.node",
+          "sha256": "3306eb003a0c57c0c0f58a488fb9cc052630fb800a0db611d3459a76531aec87",
+          "size": 633168,
+          "executable": false,
+          "role": "support"
+        },
+        {
+          "path": "cua_driver_sdk.dll",
+          "sha256": "68c5540cc99eeb725352db3f3a944679f9d6e1757923b2d8d8ee441b39cd78d9",
+          "size": 30555984,
+          "executable": false,
+          "role": "support"
+        }
+      ]
+    },
+    "windows-arm64": {
+      "name": "cua-driver-rs-0.38.0-windows-arm64.zip",
+      "url": "https://github.com/trycua/cua/releases/download/cua-driver-rs-v0.38.0/cua-driver-rs-0.38.0-windows-arm64.zip",
+      "sha256": "c442872360cbb819e288b9f30daa7e3d2693d5945495d1400bcd90af5bd16402",
+      "size": 33686209,
+      "archive": "zip",
+      "root": "cua-driver-rs-0.38.0-windows-arm64",
+      "entrypoint": "cua-driver.exe",
+      "files": [
+        {
+          "path": "LICENSE",
+          "sha256": "d0a32419a44fa38d5023d1431dfcbedd1457eb5e7b2e6c7c87ca064facb41b41",
+          "size": 1090,
+          "executable": false,
+          "role": "license"
+        },
+        {
+          "path": "THIRD_PARTY_NOTICES.md",
+          "sha256": "10bcfd768457983b250239299d1599150ad23331c1f33a5c5248d7dea8842671",
+          "size": 10006,
+          "executable": false,
+          "role": "notice"
+        },
+        {
+          "path": "cua-cursor-theme.exe",
+          "sha256": "7b2e64ccd1ee6198b5b76ea49f793e2f7dfc48823bf829cdab6562c41a2b4908",
+          "size": 2636624,
+          "executable": false,
+          "role": "support"
+        },
+        {
+          "path": "cua-driver-uia.exe",
+          "sha256": "51971aa82f70b4a0eebd55ed8e7e628c979399317ec07bd41107d7203d0630c7",
+          "size": 22031176,
+          "executable": false,
+          "role": "uia-sidecar"
+        },
+        {
+          "path": "cua-driver.exe",
+          "sha256": "2d6a0822be887a8a51678f57682d7362d484d4049b769ef964f0c2dffda29de1",
+          "size": 32621904,
+          "executable": true,
+          "role": "driver"
+        },
+        {
+          "path": "cua_driver_abi.h",
+          "sha256": "c17169f41da321baa5e7e953323c3ad660b00790176ba381e93189fba3506587",
+          "size": 7998,
+          "executable": false,
+          "role": "support"
+        },
+        {
+          "path": "cua_driver_node_runtime.node",
+          "sha256": "5d860e5f0b23e505d420d2ba31a60edc4fcb34403dc7ab34fcea1ed6ca5a0d4c",
+          "size": 579400,
+          "executable": false,
+          "role": "support"
+        },
+        {
+          "path": "cua_driver_sdk.dll",
+          "sha256": "16c298d530fb743fc5d1a05d600e9a2cd303f5dc0d592b0644db3a35b0ec1f5b",
+          "size": 26456912,
+          "executable": false,
+          "role": "support"
+        }
+      ]
+    },
+    "macos-universal": {
+      "name": "cua-driver-rs-0.38.0-darwin-universal.tar.gz",
+      "url": "https://github.com/trycua/cua/releases/download/cua-driver-rs-v0.38.0/cua-driver-rs-0.38.0-darwin-universal.tar.gz",
+      "sha256": "121cf20cafd2cfa69dd720e8967350c6406b22e558be6889de7a1ae3343b6d4b",
+      "size": 85040507,
+      "archive": "tar.gz",
+      "root": "cua-driver-rs-0.38.0-darwin-universal",
+      "entrypoint": "CuaDriver.app/Contents/MacOS/cua-driver",
+      "files": [
+        {
+          "path": "CuaDriver.app/Contents/CodeResources",
+          "sha256": "9037a83345527c6e77a7f12fc731419e3460b28a18d823142275b665b04019da",
+          "size": 1716,
+          "executable": false,
+          "role": "support"
+        },
+        {
+          "path": "CuaDriver.app/Contents/Info.plist",
+          "sha256": "07a000eacd93faa941d3f6ff2c4659d4c4492325005b9dfd28d0db03e94dd33a",
+          "size": 1223,
+          "executable": false,
+          "role": "support"
+        },
+        {
+          "path": "CuaDriver.app/Contents/MacOS/cua-cursor-theme",
+          "sha256": "270514e576b41b81f7c986ed310fedc5e36c7421fa86734804c76068ad7e642d",
+          "size": 5363648,
+          "executable": true,
+          "role": "support"
+        },
+        {
+          "path": "CuaDriver.app/Contents/MacOS/cua-driver",
+          "sha256": "b4d974a9c1c92a700cd7be7ede987aea4a1e6835e37039ce3d628b71bd5f0ca8",
+          "size": 80571696,
+          "executable": true,
+          "role": "driver"
+        },
+        {
+          "path": "CuaDriver.app/Contents/Resources/AppIcon.icns",
+          "sha256": "a23ece4fd5e883b511890fd917f3480141aa20a73ed1a862a98c50de984ab793",
+          "size": 687131,
+          "executable": false,
+          "role": "support"
+        },
+        {
+          "path": "CuaDriver.app/Contents/_CodeSignature/CodeResources",
+          "sha256": "d5c80667ebff57c5506f50321af882b79648de49aba5bcdd3e184cc2cb3479e5",
+          "size": 2999,
+          "executable": false,
+          "role": "support"
+        },
+        {
+          "path": "CuaDriver.app/Contents/embedded.provisionprofile",
+          "sha256": "6d0ef96f919a526c5245089d62319f53c81345a0a92cc3ef2a5911ca2e871b91",
+          "size": 12308,
+          "executable": false,
+          "role": "support"
+        },
+        {
+          "path": "LICENSE",
+          "sha256": "c0779290c1d4783169aa3dbfb55feb505e563ef8a004bbf55298ceffcfbda8d9",
+          "size": 1069,
+          "executable": false,
+          "role": "license"
+        },
+        {
+          "path": "THIRD_PARTY_NOTICES.md",
+          "sha256": "82470c85cb48dd084fccbf192d4a9f0b9d0afe614ab9b63e0fceac0eb315f412",
+          "size": 9965,
+          "executable": false,
+          "role": "notice"
+        },
+        {
+          "path": "cua-cursor-theme",
+          "sha256": "270514e576b41b81f7c986ed310fedc5e36c7421fa86734804c76068ad7e642d",
+          "size": 5363648,
+          "executable": true,
+          "role": "support"
+        },
+        {
+          "path": "cua-driver",
+          "sha256": "92067848d0eeb9de76929fbd06a137af801b0ff6caedbb3109bd7a6cc84a1f9f",
+          "size": 80571376,
+          "executable": true,
+          "role": "support"
+        },
+        {
+          "path": "cua_driver_abi.h",
+          "sha256": "e952620e41ac81b2d900886c7b0a24ebc6268a4edb8df88cc9971ae34af4ba0d",
+          "size": 7762,
+          "executable": false,
+          "role": "support"
+        },
+        {
+          "path": "cua_driver_node_runtime.node",
+          "sha256": "67862e4fdeea00e5bc15495c709851eaad94d67aa7e679966e8c08001514903a",
+          "size": 1755088,
+          "executable": true,
+          "role": "support"
+        },
+        {
+          "path": "libcua_driver_sdk.dylib",
+          "sha256": "f627aa1c08544d954624b36ba2ddc76f08fea20f9b1d7ff0d0724c22c348354a",
+          "size": 62702912,
+          "executable": true,
+          "role": "support"
+        }
+      ]
+    },
+    "linux-x86_64": {
+      "name": "cua-driver-rs-0.38.0-linux-x86_64.tar.gz",
+      "url": "https://github.com/trycua/cua/releases/download/cua-driver-rs-v0.38.0/cua-driver-rs-0.38.0-linux-x86_64.tar.gz",
+      "sha256": "a305cbd531f94d6413c5db300c33df68e3adbe8b92b9604cf8e645c5f6cb1fa3",
+      "size": 37188638,
+      "archive": "tar.gz",
+      "root": "cua-driver-rs-0.38.0-linux-x86_64",
+      "entrypoint": "cua-driver",
+      "files": [
+        {
+          "path": "LICENSE",
+          "sha256": "c0779290c1d4783169aa3dbfb55feb505e563ef8a004bbf55298ceffcfbda8d9",
+          "size": 1069,
+          "executable": false,
+          "role": "license"
+        },
+        {
+          "path": "THIRD_PARTY_NOTICES.md",
+          "sha256": "82470c85cb48dd084fccbf192d4a9f0b9d0afe614ab9b63e0fceac0eb315f412",
+          "size": 9965,
+          "executable": false,
+          "role": "notice"
+        },
+        {
+          "path": "cua-cursor-theme",
+          "sha256": "5e203a2ce6ed0abe575884030f04973e96858ef586679297fe171a74a1c1c0e8",
+          "size": 4375056,
+          "executable": true,
+          "role": "support"
+        },
+        {
+          "path": "cua-driver",
+          "sha256": "bf57b2f3778a0a7daa9388e241f20ce948b32a7a2f4dd102e497f34e54137934",
+          "size": 60728624,
+          "executable": true,
+          "role": "driver"
+        },
+        {
+          "path": "cua_driver_abi.h",
+          "sha256": "e952620e41ac81b2d900886c7b0a24ebc6268a4edb8df88cc9971ae34af4ba0d",
+          "size": 7762,
+          "executable": false,
+          "role": "support"
+        },
+        {
+          "path": "cua_driver_node_runtime.node",
+          "sha256": "b63caaebdacbc1f70e4de6c8ad757148e55ae72764194c9aa090a7a1e1dac98f",
+          "size": 965128,
+          "executable": true,
+          "role": "support"
+        },
+        {
+          "path": "libcua_driver_sdk.so",
+          "sha256": "dbd45b0846995f9f1f2134108a13ef8febc0a82d3a825b04e1222b8d07b784bc",
+          "size": 50278536,
+          "executable": true,
+          "role": "support"
+        },
+        {
+          "path": "wayland-helper/README.md",
+          "sha256": "17ed58c871ef71f42afbd29c4d086536cf2619e5aed0bd98e336a55c8a6f52e4",
+          "size": 8004,
+          "executable": false,
+          "role": "support"
+        },
+        {
+          "path": "wayland-helper/install.sh",
+          "sha256": "1f36c163562d8d7a3a711e69625adc33895a511a1ca0f2bb8f516c3aca0906fb",
+          "size": 1932,
+          "executable": true,
+          "role": "support"
+        },
+        {
+          "path": "wayland-helper/winrects@cua/extension.js",
+          "sha256": "bb20be8157365e486dc7d08ed0d60cd4f46396363ab57fa94546df8111b05a2d",
+          "size": 35871,
+          "executable": false,
+          "role": "support"
+        },
+        {
+          "path": "wayland-helper/winrects@cua/metadata.json",
+          "sha256": "5f6896ea8dc0f9dfdd4619f4b727a1d28af4ffbab2cb9782b42c245a57f8c175",
+          "size": 231,
+          "executable": false,
+          "role": "support"
+        }
+      ]
+    },
+    "linux-arm64": {
+      "name": "cua-driver-rs-0.38.0-linux-arm64.tar.gz",
+      "url": "https://github.com/trycua/cua/releases/download/cua-driver-rs-v0.38.0/cua-driver-rs-0.38.0-linux-arm64.tar.gz",
+      "sha256": "ed8a51125ade8807c7717c3dde13d62bd31e6275e6b5e2446cf018d0b01d93b3",
+      "size": 36675638,
+      "archive": "tar.gz",
+      "root": "cua-driver-rs-0.38.0-linux-arm64",
+      "entrypoint": "cua-driver",
+      "files": [
+        {
+          "path": "LICENSE",
+          "sha256": "c0779290c1d4783169aa3dbfb55feb505e563ef8a004bbf55298ceffcfbda8d9",
+          "size": 1069,
+          "executable": false,
+          "role": "license"
+        },
+        {
+          "path": "THIRD_PARTY_NOTICES.md",
+          "sha256": "82470c85cb48dd084fccbf192d4a9f0b9d0afe614ab9b63e0fceac0eb315f412",
+          "size": 9965,
+          "executable": false,
+          "role": "notice"
+        },
+        {
+          "path": "cua-cursor-theme",
+          "sha256": "62677c2e25678a2a55278fe68179b92435c1d3b376871caa64912a02ebf70c97",
+          "size": 2831848,
+          "executable": true,
+          "role": "support"
+        },
+        {
+          "path": "cua-driver",
+          "sha256": "26e9eee8165e9ce7b614b5e3d68e5d963231385a82b65236406718b5ce1ff936",
+          "size": 56512184,
+          "executable": true,
+          "role": "driver"
+        },
+        {
+          "path": "cua_driver_abi.h",
+          "sha256": "e952620e41ac81b2d900886c7b0a24ebc6268a4edb8df88cc9971ae34af4ba0d",
+          "size": 7762,
+          "executable": false,
+          "role": "support"
+        },
+        {
+          "path": "cua_driver_node_runtime.node",
+          "sha256": "212c6265b73ce93538d0b04f48be4dfa54d11c7cad8a6ee1c0d99473588a8f43",
+          "size": 984392,
+          "executable": true,
+          "role": "support"
+        },
+        {
+          "path": "libcua_driver_sdk.so",
+          "sha256": "11a8fa2ca9674767256596f45e965aed55e665a5b761d0c74a748c94dde02847",
+          "size": 46946992,
+          "executable": true,
+          "role": "support"
+        },
+        {
+          "path": "wayland-helper/README.md",
+          "sha256": "17ed58c871ef71f42afbd29c4d086536cf2619e5aed0bd98e336a55c8a6f52e4",
+          "size": 8004,
+          "executable": false,
+          "role": "support"
+        },
+        {
+          "path": "wayland-helper/install.sh",
+          "sha256": "1f36c163562d8d7a3a711e69625adc33895a511a1ca0f2bb8f516c3aca0906fb",
+          "size": 1932,
+          "executable": true,
+          "role": "support"
+        },
+        {
+          "path": "wayland-helper/winrects@cua/extension.js",
+          "sha256": "bb20be8157365e486dc7d08ed0d60cd4f46396363ab57fa94546df8111b05a2d",
+          "size": 35871,
+          "executable": false,
+          "role": "support"
+        },
+        {
+          "path": "wayland-helper/winrects@cua/metadata.json",
+          "sha256": "5f6896ea8dc0f9dfdd4619f4b727a1d28af4ffbab2cb9782b42c245a57f8c175",
+          "size": 231,
+          "executable": false,
+          "role": "support"
+        }
+      ]
+    }
+  }
 }

@@ -1,19 +1,17 @@
-//! Dove Computer Use: the `dove-driver` plugin (Dove's fork of the
-//! open-source cua-driver), installed only when the user clicks Install in
-//! Settings → Plugins.
+//! Dove Computer Use: stock cua-driver (trycua/cua, MIT, signed by Cua AI),
+//! installed only when the user clicks Install in Settings → Plugins.
 //!
-//! The driver comes from the dove-driver GitHub releases, at the version
-//! pinned in the release manifest compiled into Dove
-//! (`assets/computer-use-release.json`, the release's
-//! `dove-driver-manifest.json`), and is accepted only when the archive's
-//! size and SHA-256 and every file in it match that manifest. Before each
-//! launch the hub re-hashes the driver and its helpers. It lands in
-//! `<dove data>/plugins/computer-use/<version>/`, which the hub launches as
-//! the `computer` upstream with [`launch_env`]. Update replaces it with the
-//! pinned version; Uninstall removes the plugin folder, and with it the
-//! `computer__*` tools. The optional local grounder (the `intent` step and
-//! `act` tool) is a second asset in the same manifest, downloaded only when
-//! the user turns it on.
+//! The driver comes from trycua's GitHub release at the version pinned in
+//! the manifest compiled into Dove (`assets/computer-use-release.json`,
+//! written from the release's archives), and is accepted only when the
+//! archive's size and SHA-256 and every file in it match that manifest.
+//! Before each launch the hub re-hashes the driver and its helpers. It
+//! lands in `<dove data>/plugins/computer-use/<version>/`, which the hub
+//! launches as the `computer` upstream with [`launch_env`]: its own state
+//! folder, no telemetry, no update checks. Agents never see the driver's
+//! tools: the hub wraps it in the one `computer` tool (crate
+//! `dove-computer`). Update replaces it with the pinned version; Uninstall
+//! removes the plugin folder.
 
 use std::collections::BTreeMap;
 use std::io::Read as _;
@@ -30,26 +28,58 @@ const MANIFEST: &str = include_str!("../assets/computer-use-release.json");
 const MAX_BYTES: u64 = 512 * 1024 * 1024;
 /// The installer's record in each version folder.
 const RECORD: &str = "plugin.json";
-/// The manifest a local `dev-install.py` install keeps beside its files.
+/// The manifest a local build keeps beside its files (a break-glass driver
+/// build packaged with dove-driver's `dev-install.py`).
 const DEV_MANIFEST: &str = "dove-driver-manifest.json";
-/// Driver state (`DOVE_DRIVER_HOME`) and the grounder live next to the
-/// version folders, so an update keeps them.
+/// Driver state (`CUA_DRIVER_RS_HOME`) lives next to the version folders,
+/// so an update keeps it.
 const STATE_DIR: &str = "state";
-const GROUNDER_DIR: &str = "grounder";
 
 /// Settings › Plugins › Computer use, stored in `integrations.json` as
 /// `computer`. Older files carry only `enabled`; unknown fields are ignored.
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct Settings {
     pub enabled: bool,
-    /// Use the local grounder for `intent` steps (downloads its weights).
-    pub grounder: bool,
+    /// Rank `act` and intent steps with the built-in NEXI-CUA-1 network;
+    /// off, the deterministic resolver decides alone.
+    pub ranker: bool,
     /// The permissions walkthrough was finished or dismissed.
     pub walkthrough_done: bool,
-    /// Apps agents may never control (process or app names, any case);
-    /// Dove's MCP server refuses `computer__*` calls that target them.
+    /// Apps agents may never control: names (`1Password`), or
+    /// `signer:<publisher or Team ID>`, `bundle:<id>`, `path:<prefix>`.
     pub denied_apps: Vec<String>,
+    /// `ask`: approve background input once per app per thread (default);
+    /// `auto`: background input runs without asking. Foreground input and
+    /// consequential controls (send, buy, delete…) always ask.
+    pub approvals: String,
+    /// Expose the driver's own tools (`computer__*`) instead of the one
+    /// `computer` tool, for debugging the driver itself.
+    pub raw_tools: bool,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            ranker: true,
+            walkthrough_done: false,
+            denied_apps: Vec::new(),
+            approvals: "ask".into(),
+            raw_tools: false,
+        }
+    }
+}
+
+impl Settings {
+    /// The never-control rules, parsed.
+    pub fn rules(&self) -> Vec<dove_computer::Rule> {
+        self.denied_apps.iter().filter_map(|l| dove_computer::Rule::parse(l)).collect()
+    }
+
+    pub fn auto_background(&self) -> bool {
+        self.approvals == "auto"
+    }
 }
 
 /// Whether `app` (a process name, path or app name) is on the user's
@@ -147,23 +177,24 @@ pub fn refusal(args: &serde_json::Value, list: &[String]) -> Option<String> {
     ))
 }
 
-/// The driver's permission mode (`DOVE_DRIVER_PERMISSION_MODE`): it asks
-/// before an agent acts on an app the first time. `bounded` refuses to
-/// start without a `--capability-manifest` and `unrestricted` needs a
-/// separate risk acknowledgement, so Dove offers neither yet.
+/// The driver's permission mode (`CUA_DRIVER_PERMISSION_MODE`). Dove's own
+/// `computer` layer asks the user before input; the driver's `standard`
+/// mode adds its gates on process control and existing browser profiles.
+/// `bounded` refuses to start without a capability manifest and
+/// `unrestricted` needs a separate risk acknowledgement: Dove uses neither.
 pub const PERMISSION_MODE: &str = "standard";
 
 // ---------------------------------------------------------------- manifest
 
-/// The release manifest (`dove-driver-manifest.json`, `manifest_version`
-/// 1, written by dove-driver's release pipeline): one pinned version, an
-/// archive per platform with every file's hash, and the optional grounder.
+/// The release manifest (`manifest_version` 1): one pinned version and an
+/// archive per platform with every file's hash, written from the release's
+/// archives. Unknown fields are ignored.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct Manifest {
     pub manifest_version: u32,
     pub version: String,
-    /// Release tag, `dove-driver-v<version>`.
+    /// Release tag, `cua-driver-rs-v<version>`.
     pub tag: String,
     /// `owner/name` of the repository whose releases carry the assets.
     pub repository: String,
@@ -172,13 +203,6 @@ pub struct Manifest {
     /// By platform key: `windows-x86_64`, `windows-arm64`, `macos-universal`,
     /// `linux-x86_64`, `linux-arm64`. A missing key: no build for it.
     pub platforms: BTreeMap<String, Platform>,
-    pub optional_assets: OptionalAssets,
-}
-
-#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
-#[serde(default)]
-pub struct OptionalAssets {
-    pub grounder: Option<Grounder>,
 }
 
 /// One platform's archive.
@@ -210,20 +234,6 @@ pub struct FileEntry {
     pub executable: bool,
     /// `driver`, `uia-sidecar`, `app-bundle-driver`, `license`, `notice`.
     pub role: String,
-}
-
-/// The W9 grounder weights.
-#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
-#[serde(default)]
-pub struct Grounder {
-    pub name: String,
-    pub url: String,
-    pub sha256: String,
-    pub size: u64,
-    /// `onnx`, `safetensors`, `gguf` or `bin`.
-    pub format: String,
-    /// `fp16`, `fp32` or `int8`.
-    pub precision: String,
 }
 
 fn is_sha(s: &str) -> bool {
@@ -263,12 +273,6 @@ impl Platform {
     }
 }
 
-impl Grounder {
-    fn valid(&self) -> bool {
-        safe_rel(&self.name) && !self.name.contains(['/', '\\']) && is_sha(&self.sha256) && self.size > 0
-    }
-}
-
 impl Manifest {
     pub fn parse(text: &str) -> Result<Self, String> {
         let m: Manifest = serde_json::from_str(text).map_err(|e| format!("bad release manifest: {e}"))?;
@@ -289,10 +293,6 @@ impl Manifest {
     /// The archive for this machine.
     pub fn asset(&self) -> Option<&Platform> {
         self.platform(platform_key()?)
-    }
-
-    pub fn grounder(&self) -> Option<&Grounder> {
-        self.optional_assets.grounder.as_ref().filter(|g| g.valid())
     }
 
     /// Whether this Dove is new enough for the release.
@@ -411,7 +411,7 @@ fn record_from_manifest(dir: &Path) -> Option<Record> {
     let m = Manifest::parse(&text).ok()?;
     let p = m.platform(platform_key()?)?;
     Some(Record {
-        name: "dove-driver".into(),
+        name: "cua-driver".into(),
         version: m.version.clone(),
         asset: p.name.clone(),
         sha256: p.sha256.to_ascii_lowercase(),
@@ -485,32 +485,21 @@ pub fn launch_bin() -> Result<PathBuf, String> {
     }
 }
 
-/// The installed grounder weights, if any.
-pub fn grounder_installed() -> Option<PathBuf> {
-    grounder_in(&root(), manifest())
-}
-
-fn grounder_in(root: &Path, m: &Manifest) -> Option<PathBuf> {
-    let g = m.grounder()?;
-    let path = root.join(GROUNDER_DIR).join(&g.sha256[..12]).join(&g.name);
-    path.is_file().then_some(path)
-}
-
 /// The environment the hub (and the Settings health check) starts the
-/// driver with: its own state under Dove's data folder, the user's
-/// permission mode, lazy tool disclosure, and the grounder when installed.
-pub fn launch_env(settings: &Settings) -> BTreeMap<String, String> {
-    launch_env_in(&root(), settings, grounder_installed())
+/// driver with: its own state under Dove's data folder (never shared with
+/// a cua-driver the user installed), the permission mode, no telemetry and
+/// no update checks (Dove's plugin manager owns updates).
+pub fn launch_env(_settings: &Settings) -> BTreeMap<String, String> {
+    launch_env_in(&root())
 }
 
-fn launch_env_in(root: &Path, settings: &Settings, grounder: Option<PathBuf>) -> BTreeMap<String, String> {
+fn launch_env_in(root: &Path) -> BTreeMap<String, String> {
     let mut env = BTreeMap::new();
-    env.insert("DOVE_DRIVER_HOME".into(), root.join(STATE_DIR).display().to_string());
-    env.insert("DOVE_DRIVER_PERMISSION_MODE".into(), PERMISSION_MODE.into());
-    env.insert("DOVE_TOOL_DISCLOSURE".into(), "lazy".into());
-    if let Some(model) = grounder.filter(|_| settings.grounder) {
-        env.insert("DOVE_DRIVER_GROUNDER_MODEL".into(), model.display().to_string());
-    }
+    env.insert("CUA_DRIVER_RS_HOME".into(), root.join(STATE_DIR).display().to_string());
+    env.insert("CUA_DRIVER_PERMISSION_MODE".into(), PERMISSION_MODE.into());
+    env.insert("CUA_DRIVER_RS_TELEMETRY_ENABLED".into(), "0".into());
+    env.insert("DO_NOT_TRACK".into(), "1".into());
+    env.insert("CUA_DRIVER_RS_UPDATE_CHECK".into(), "0".into());
     env
 }
 
@@ -525,9 +514,9 @@ pub fn install() -> Result<Installed, String> {
 fn install_in(root: &Path, m: &Manifest) -> Result<Installed, String> {
     let key = platform_key().ok_or("Dove Computer Use is not built for this platform")?;
     let p =
-        m.platform(key).ok_or_else(|| format!("dove-driver {} has no release for this platform ({key})", m.version))?;
+        m.platform(key).ok_or_else(|| format!("cua-driver {} has no release for this platform ({key})", m.version))?;
     if !m.dove_supported() {
-        return Err(format!("dove-driver {} needs Dove {} or later", m.version, m.min_dove_version));
+        return Err(format!("cua-driver {} needs Dove {} or later", m.version, m.min_dove_version));
     }
     let bytes = download(&m.url(&p.name, &p.url), p.size)?;
     install_bytes(root, &m.version, p, &bytes)
@@ -557,7 +546,7 @@ fn install_bytes(root: &Path, version: &str, p: &Platform, bytes: &[u8]) -> Resu
             }
         }
         let record = Record {
-            name: "dove-driver".into(),
+            name: "cua-driver".into(),
             version: version.into(),
             asset: p.name.clone(),
             sha256: p.sha256.to_ascii_lowercase(),
@@ -697,9 +686,9 @@ fn untar(bytes: &[u8], dest: &Path, p: &Platform) -> Result<(), String> {
     Ok(())
 }
 
-/// Remove every version folder except `keep`, leaving the driver state and
-/// the grounder. A running driver keeps its folder locked on Windows; that
-/// one goes on the next update.
+/// Remove every version folder except `keep`, leaving the driver state. A
+/// running driver keeps its folder locked on Windows; that one goes on the
+/// next update.
 fn remove_others(root: &Path, keep: &str) {
     for entry in std::fs::read_dir(root).into_iter().flatten().flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
@@ -709,7 +698,7 @@ fn remove_others(root: &Path, keep: &str) {
     }
 }
 
-/// Remove the plugin: every version, the driver's state and the grounder.
+/// Remove the plugin: every version and the driver's state.
 pub fn uninstall() -> Result<(), String> {
     uninstall_in(&root())
 }
@@ -719,47 +708,6 @@ fn uninstall_in(root: &Path) -> Result<(), String> {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(busy(root, e)),
-    }
-}
-
-/// Download and verify the grounder weights. Blocking.
-pub fn install_grounder() -> Result<PathBuf, String> {
-    install_grounder_in(&root(), manifest())
-}
-
-fn install_grounder_in(root: &Path, m: &Manifest) -> Result<PathBuf, String> {
-    let g = m.grounder().ok_or_else(|| format!("dove-driver {} has no local grounder release yet", m.version))?;
-    if let Some(path) = grounder_in(root, m) {
-        return Ok(path);
-    }
-    let bytes = download(&m.url(&g.name, &g.url), g.size)?;
-    store_grounder(root, g, &bytes)
-}
-
-fn store_grounder(root: &Path, g: &Grounder, bytes: &[u8]) -> Result<PathBuf, String> {
-    verify(&g.sha256, g.size, bytes)?;
-    let base = root.join(GROUNDER_DIR);
-    let dir = base.join(&g.sha256[..12]);
-    std::fs::create_dir_all(&dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
-    let path = dir.join(&g.name);
-    let part = dir.join(".download.part");
-    write_file(&part, bytes)?;
-    std::fs::rename(&part, &path).map_err(|e| format!("could not install {}: {e}", path.display()))?;
-    // Older weights go.
-    for e in std::fs::read_dir(&base).into_iter().flatten().flatten() {
-        if e.path() != dir {
-            let _ = std::fs::remove_dir_all(e.path());
-        }
-    }
-    Ok(path)
-}
-
-pub fn remove_grounder() -> Result<(), String> {
-    let dir = root().join(GROUNDER_DIR);
-    match std::fs::remove_dir_all(&dir) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(busy(&dir, e)),
     }
 }
 
@@ -842,7 +790,7 @@ impl Health {
         if let Some(e) = &self.error {
             return e.clone();
         }
-        let ver = self.driver_version.as_deref().map(|v| format!("dove-driver {v} · ")).unwrap_or_default();
+        let ver = self.driver_version.as_deref().map(|v| format!("cua-driver {v} · ")).unwrap_or_default();
         match (self.overall.as_str(), self.problems.first()) {
             ("ok", _) => format!("{ver}Ready: all {} checks passed", self.passed),
             (_, Some((msg, hint))) => {
@@ -880,7 +828,7 @@ pub fn walkthrough() -> &'static [Step] {
         &[
             Step {
                 title: "Accessibility",
-                body: "Lets dove-driver read windows and press buttons. Turn on dove-driver in Privacy & Security › Accessibility.",
+                body: "Lets CuaDriver read windows and press buttons. Turn on CuaDriver in Privacy & Security › Accessibility. If it already shows on but the checks fail, turn it off and on again: a driver update changes its signature.",
                 action: Some((
                     "Open Accessibility",
                     StepAction::Open("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"),
@@ -888,7 +836,7 @@ pub fn walkthrough() -> &'static [Step] {
             },
             Step {
                 title: "Screen Recording",
-                body: "Lets dove-driver take window screenshots when the accessibility tree is not enough. Turn on dove-driver in Privacy & Security › Screen & System Audio Recording.",
+                body: "Lets CuaDriver take window screenshots when the accessibility tree is not enough. Turn on CuaDriver in Privacy & Security › Screen & System Audio Recording.",
                 action: Some((
                     "Open Screen Recording",
                     StepAction::Open("x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"),
@@ -898,14 +846,14 @@ pub fn walkthrough() -> &'static [Step] {
     } else if cfg!(windows) {
         &[Step {
             title: "Same integrity level",
-            body: "dove-driver runs as you, at the same integrity level as Dove. Windows stops it from reading or controlling apps started as administrator (elevated). Run those apps normally, or start Dove as administrator only when you need to automate them. Its UIA helper runs from Dove's per-user folder without UIAccess, so it cannot type into elevated windows either. UAC prompts always stay with you.",
+            body: "cua-driver runs as you, at the same integrity level as Dove. Windows stops it from reading or controlling apps started as administrator (elevated). Run those apps normally, or start Dove as administrator only when you need to automate them. Its UIA helper runs from Dove's per-user folder without UIAccess, so it cannot type into elevated windows either. UAC prompts always stay with you.",
             action: None,
         }]
     } else {
         &[
             Step {
                 title: "Accessibility bus (AT-SPI)",
-                body: "dove-driver reads apps through AT-SPI. GNOME and KDE turn it on by default; elsewhere enable it, then restart the apps you want to automate.",
+                body: "cua-driver reads apps through AT-SPI. GNOME and KDE turn it on by default; elsewhere enable it, then restart the apps you want to automate.",
                 action: Some(("Enable AT-SPI", StepAction::EnableAtSpi)),
             },
             Step {
@@ -946,8 +894,8 @@ mod tests {
     }
     use std::io::Write as _;
 
-    const EXE: &str = if cfg!(windows) { "dove-driver.exe" } else { "dove-driver" };
-    const UIA: &str = "dove-driver-uia.exe";
+    const EXE: &str = if cfg!(windows) { "cua-driver.exe" } else { "cua-driver" };
+    const UIA: &str = "cua-driver-uia.exe";
 
     fn scratch(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("dove-cu-{name}-{}", std::process::id()));
@@ -975,7 +923,7 @@ mod tests {
         out.finish().unwrap().into_inner()
     }
 
-    const ROOT: &str = "dove-driver-0.37.0-windows-x86_64";
+    const ROOT: &str = "cua-driver-rs-0.38.0-windows-x86_64";
 
     /// A release archive in R0.6's layout (one top folder, driver, UIA
     /// sidecar, a notice) and its manifest entry.
@@ -986,7 +934,7 @@ mod tests {
         let bytes = zip_of(&zipped.iter().map(|(p, b)| (p.as_str(), *b)).collect::<Vec<_>>());
         let p = Platform {
             name: format!("{ROOT}.zip"),
-            url: format!("https://github.com/o/r/releases/download/dove-driver-v0.37.0/{ROOT}.zip"),
+            url: format!("https://github.com/trycua/cua/releases/download/cua-driver-rs-v0.38.0/{ROOT}.zip"),
             sha256: sha256_hex(&bytes),
             size: bytes.len() as u64,
             archive: "zip".into(),
@@ -1032,38 +980,41 @@ mod tests {
         let m = Manifest::parse(MANIFEST).expect("assets/computer-use-release.json");
         assert_eq!(m.manifest_version, 1);
         assert!(m.repository.contains('/'));
-        assert_eq!(m.tag, format!("dove-driver-v{}", m.version));
+        assert_eq!(m.tag, format!("cua-driver-rs-v{}", m.version));
+        assert_eq!(m.repository, "trycua/cua");
         // Every listed platform is well formed; a bad entry would silently hide it.
         assert!(m.platforms.values().all(Platform::valid), "{:?}", m.platforms);
         assert!(m.dove_supported());
+        // All five platforms ship, each from trycua's tag, with its driver
+        // (inside the signed CuaDriver.app on macOS, for its TCC identity).
+        for key in ["windows-x86_64", "windows-arm64", "macos-universal", "linux-x86_64", "linux-arm64"] {
+            let p = m.platform(key).unwrap_or_else(|| panic!("{key} missing"));
+            assert!(p.url.starts_with(&format!("https://github.com/trycua/cua/releases/download/{}/", m.tag)), "{key}");
+            assert!(p.files.iter().any(|f| f.path == p.entrypoint && f.role == "driver"), "{key}");
+        }
+        assert_eq!(m.platform("macos-universal").unwrap().entrypoint, "CuaDriver.app/Contents/MacOS/cua-driver");
+        let win = m.platform("windows-x86_64").unwrap();
+        assert!(win.launch_files().iter().any(|f| f.path == "cua-driver-uia.exe"), "the UIA sidecar is re-hashed too");
     }
 
     #[test]
-    fn reads_the_release_pipelines_manifest() {
-        // Trimmed from the R0.6 dry run (dove-driver-release-manifest.md).
+    fn reads_a_release_manifest_and_refuses_bad_entries() {
         let (p, _) = release();
         let text = serde_json::json!({
-            "manifest_version": 1, "name": "dove-driver", "version": "0.37.0", "tag": "dove-driver-v0.37.0",
-            "repository": "PupppyLoverr/NEXI-Models-Drivers", "published_at": "2026-10-20T10:47:25Z",
-            "source": {"commit": "a41d24f6c4671befeac6afa13e6e76031a02d0bb"}, "min_dove_version": "0.1.0",
-            "sigstore": {"certificate_identity": "x", "certificate_oidc_issuer": "y"},
+            "manifest_version": 1, "name": "cua-driver", "version": "0.38.0", "tag": "cua-driver-rs-v0.38.0",
+            "repository": "trycua/cua", "min_dove_version": "0.1.0", "extra": {"ignored": true},
             "platforms": {
                 "windows-x86_64": {"name": p.name, "url": p.url, "sha256": p.sha256, "size": p.size,
-                    "sigstore_bundle": "z", "os": "windows", "arch": "x86_64", "archive": "zip", "root": ROOT,
-                    "entrypoint": EXE, "files": p.files, "signing": {"authenticode": "unsigned"}},
+                    "archive": "zip", "root": ROOT, "entrypoint": EXE, "files": p.files},
                 "linux-arm64": {"name": "../x.tar.gz", "sha256": p.sha256, "size": 1, "archive": "tar.gz",
-                    "root": "r", "entrypoint": "dove-driver", "files": []}
-            },
-            "optional_assets": {"grounder": {"name": "dove-grounder-0.37.0-fp16.onnx", "url": "u",
-                "sha256": "84aa797099f39740064785dc0b1b3e2b92cf1c5796ea40ed17a9a3df571e046c", "size": 3355443,
-                "format": "onnx", "precision": "fp16"}}
+                    "root": "r", "entrypoint": "cua-driver", "files": []}
+            }
         })
         .to_string();
         let m = Manifest::parse(&text).unwrap();
         assert_eq!(m.platform("windows-x86_64"), Some(&p));
         assert!(m.platform("linux-arm64").is_none(), "a path in the name is refused");
         assert!(m.platform("macos-universal").is_none());
-        assert_eq!(m.grounder().map(|g| g.precision.as_str()), Some("fp16"));
         assert_eq!(m.url(&p.name, &p.url), p.url);
         assert!(Manifest::parse(&text.replace("\"manifest_version\":1", "\"manifest_version\":2")).is_err());
         let newer = text.replace("\"min_dove_version\":\"0.1.0\"", "\"min_dove_version\":\"999.0.0\"");
@@ -1119,7 +1070,7 @@ mod tests {
         let lic = format!("{ROOT}/LICENSE");
         // Outside root, `..`, an unlisted file, a missing file, a changed file.
         assert!(check(&[("../evil.exe", b"x"), (&exe, b"driver")]).is_err());
-        assert!(check(&[("other/dove-driver.exe", b"driver")]).is_err());
+        assert!(check(&[("other/cua-driver.exe", b"driver")]).is_err());
         assert!(
             check(&[(&exe, b"driver"), (&uia, b"uia"), (&lic, b"MIT"), (&format!("{ROOT}/extra.dll"), b"x")])
                 .unwrap_err()
@@ -1138,16 +1089,6 @@ mod tests {
         let root = scratch("root");
         let (p, bytes) = release();
         std::fs::write(release_dir.join(&p.name), &bytes).unwrap();
-        let weights = b"weights";
-        let g = Grounder {
-            name: "dove-grounder-0.37.0-fp16.onnx".into(),
-            url: String::new(),
-            sha256: sha256_hex(weights),
-            size: weights.len() as u64,
-            format: "onnx".into(),
-            precision: "fp16".into(),
-        };
-        std::fs::write(release_dir.join(&g.name), weights).unwrap();
         let base = serve(release_dir);
         let got =
             install_bytes(&root, "0.37.0", &p, &download(&format!("{base}/{}", p.name), p.size).unwrap()).unwrap();
@@ -1155,36 +1096,29 @@ mod tests {
         // The manifest's size caps the download; a missing file fails.
         assert!(download(&format!("{base}/{}", p.name), 3).is_err());
         assert!(download(&format!("{base}/missing.zip"), 10).is_err());
-
-        // Grounder: verified, stored under its hash, passed to the driver only when on.
-        let path = store_grounder(&root, &g, &download(&format!("{base}/{}", g.name), g.size).unwrap()).unwrap();
-        let m = Manifest { optional_assets: OptionalAssets { grounder: Some(g.clone()) }, ..Manifest::default() };
-        assert_eq!(grounder_in(&root, &m), Some(path.clone()));
-        assert!(store_grounder(&root, &g, b"tampere").is_err());
-        let on = Settings { enabled: true, grounder: true, ..Settings::default() };
-        let env = launch_env_in(&root, &on, Some(path.clone()));
-        assert_eq!(env["DOVE_DRIVER_GROUNDER_MODEL"], path.display().to_string());
-        let off = launch_env_in(&root, &Settings { grounder: false, ..on }, Some(path));
-        assert!(!off.contains_key("DOVE_DRIVER_GROUNDER_MODEL"));
         let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
-    fn launch_env_sets_home_mode_and_lazy_tools() {
+    fn launch_env_isolates_state_and_never_phones_home() {
         let root = PathBuf::from("plugins").join("computer-use");
-        let env = launch_env_in(&root, &Settings { enabled: true, ..Settings::default() }, None);
-        assert_eq!(env["DOVE_DRIVER_HOME"], root.join(STATE_DIR).display().to_string());
-        assert_eq!(env["DOVE_DRIVER_PERMISSION_MODE"], "standard");
-        assert_eq!(env["DOVE_TOOL_DISCLOSURE"], "lazy");
+        let env = launch_env_in(&root);
+        assert_eq!(env["CUA_DRIVER_RS_HOME"], root.join(STATE_DIR).display().to_string());
+        assert_eq!(env["CUA_DRIVER_PERMISSION_MODE"], "standard");
+        assert_eq!(env["CUA_DRIVER_RS_TELEMETRY_ENABLED"], "0");
+        assert_eq!(env["DO_NOT_TRACK"], "1");
+        assert_eq!(env["CUA_DRIVER_RS_UPDATE_CHECK"], "0");
     }
 
     #[test]
     fn settings_read_older_files() {
         let s: Settings = serde_json::from_str(r#"{"enabled":true}"#).unwrap();
-        assert!(s.enabled && !s.grounder);
+        assert!(s.enabled && s.ranker && s.approvals == "ask" && !s.raw_tools, "older files get today's defaults");
         let s: Settings =
-            serde_json::from_str(r#"{"enabled":true,"permission_mode":"bounded","grounder":true}"#).unwrap();
-        assert!(s.enabled && s.grounder, "a stray permission_mode is ignored");
+            serde_json::from_str(r#"{"enabled":true,"permission_mode":"bounded","grounder":true,"approvals":"auto"}"#).unwrap();
+        assert!(s.enabled && s.auto_background(), "stray old fields are ignored");
+        let s = Settings { denied_apps: vec!["1Password".into(), "signer:AgileBits".into(), " ".into()], ..Settings::default() };
+        assert_eq!(s.rules().len(), 2);
     }
 
     #[test]
@@ -1193,7 +1127,7 @@ mod tests {
             "checks":[{"name":"binary_version","status":"pass","message":"v"},{"name":"ax","status":"pass","message":"a"}]});
         let h = Health::from_report(&ok);
         assert!(h.ok());
-        assert_eq!(h.summary(), "dove-driver 0.37.0 · Ready: all 2 checks passed");
+        assert_eq!(h.summary(), "cua-driver 0.37.0 · Ready: all 2 checks passed");
         let bad = serde_json::json!({"overall":"degraded","checks":[
             {"name":"tcc_accessibility","status":"fail","message":"Accessibility is off","hint":"Turn it on in System Settings"},
             {"name":"tcc_screen_recording","status":"fail","message":"Screen Recording is off"},
@@ -1213,7 +1147,6 @@ mod tests {
         assert!(parse_version("0.37.0-dev") > parse_version("0.36.9"));
         assert_eq!(parse_version("0.37.0-"), None);
         assert_eq!(parse_version(STATE_DIR), None);
-        assert_eq!(parse_version(GROUNDER_DIR), None);
         let i = Installed { version: "0.1.0".into(), bin: PathBuf::from(EXE) };
         assert!(i.outdated() || version().is_empty());
     }
@@ -1266,7 +1199,6 @@ mod tests {
         assert!(available(), "no release for this platform in the QA manifest");
         let i = install_in(&root, m).unwrap();
         verify_installed(&i).unwrap();
-        install_grounder_in(&root, m).unwrap();
         eprintln!("installed {} at {}", i.version, i.bin.display());
     }
 }

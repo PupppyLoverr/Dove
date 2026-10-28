@@ -66,7 +66,7 @@ pub const SKILLS: &[Skill] = &[
     ),
     skill!(
         "dove-computer",
-        "Desktop app playbook for Dove Computer Use (computer__* tools): tree-first loop, intent steps, safety.",
+        "Desktop app playbook for Dove Computer Use (the computer tool): capture, act by row, batch, verify, safety.",
         []
     ),
     skill!(
