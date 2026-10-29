@@ -752,6 +752,8 @@ pub fn title_from_prompt(prompt: &str) -> String {
 }
 
 /// "now", "5m", "3h", "2d", "1w"
+/// A short age for lists: `now`, `5m`, `3h`, `2d`, `3w`, then the date
+/// (`12 Oct`, or `12 Oct 2025` in an earlier year).
 pub fn relative_time(ms: i64) -> String {
     let secs = (dove_core::store::now_ms() - ms).max(0) / 1000;
     match secs {
@@ -759,7 +761,34 @@ pub fn relative_time(ms: i64) -> String {
         60..3600 => format!("{}m", secs / 60),
         3600..86400 => format!("{}h", secs / 3600),
         86400..604800 => format!("{}d", secs / 86400),
-        _ => format!("{}w", secs / 604800),
+        604800..2419200 => format!("{}w", secs / 604800),
+        _ => calendar_date(ms),
+    }
+}
+
+/// Claude's age under a reply: `just now`, `5 minutes ago`, `3 hours ago`,
+/// `2 days ago`, then the date.
+pub fn relative_time_long(ms: i64) -> String {
+    let secs = (dove_core::store::now_ms() - ms).max(0) / 1000;
+    let unit = |n: i64, word: &str| format!("{n} {word}{} ago", if n == 1 { "" } else { "s" });
+    match secs {
+        0..60 => "just now".into(),
+        60..3600 => unit(secs / 60, "minute"),
+        3600..86400 => unit(secs / 3600, "hour"),
+        86400..604800 => unit(secs / 86400, "day"),
+        604800..2419200 => unit(secs / 604800, "week"),
+        _ => calendar_date(ms),
+    }
+}
+
+/// `12 Oct` this year, `12 Oct 2025` before it (local time).
+fn calendar_date(ms: i64) -> String {
+    use chrono::{Datelike as _, TimeZone as _};
+    let Some(at) = chrono::Local.timestamp_millis_opt(ms).single() else { return String::new() };
+    if at.year() == chrono::Local::now().year() {
+        at.format("%-d %b").to_string()
+    } else {
+        at.format("%-d %b %Y").to_string()
     }
 }
 

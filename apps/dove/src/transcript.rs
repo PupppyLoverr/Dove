@@ -4256,6 +4256,11 @@ impl TaskView {
             .when(has_text, |d| d.children(self.remember_button(i, weak, t)))
             .when_some(elapsed.filter(|_| !failed), |d, e| {
                 d.child(div().ml(px(6.0)).child(format!("Worked for {}", duration(e))))
+            })
+            // When the reply landed, Claude-style ("51 minutes ago"): the
+            // turn's prompt time plus how long it ran.
+            .when_some(self.turn_finished_at(i, elapsed), |d, at| {
+                d.child(div().ml(px(6.0)).child(ui::relative_time_long(at)))
             });
         let row = match self.memory_strip(i, weak, t) {
             Some(strip) => div().flex().flex_col().gap(px(4.0)).child(row).child(strip).into_any_element(),
@@ -4265,6 +4270,16 @@ impl TaskView {
             Some(strip) => div().flex().flex_col().gap(px(4.0)).pt(px(4.0)).child(strip).child(row).into_any_element(),
             None => row,
         }
+    }
+
+    /// When turn `i` ended, in Unix ms: its prompt's time plus how long it
+    /// ran (just the prompt's time when that is unknown).
+    fn turn_finished_at(&self, i: usize, elapsed: Option<Duration>) -> Option<i64> {
+        let at = self.chat.rows[..i.min(self.chat.rows.len())].iter().rev().find_map(|r| match r {
+            Row::User { at, .. } if *at > 0 => Some(*at),
+            _ => None,
+        })?;
+        Some(at + elapsed.map_or(0, |e| e.as_millis() as i64))
     }
 
     /// The prompt an error row's Retry resends: the turn's prompt, unless a
