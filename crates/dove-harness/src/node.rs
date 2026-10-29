@@ -548,7 +548,7 @@ if [ "$v" = "$1" ]; then echo ok; else echo "need $(uname -s) $(uname -m)"; fi"#
             let code = child.wait().ok().and_then(|s| s.code()).unwrap_or(255);
             input.lock().unwrap().pipe = None;
             // 255 is ssh's own "connection failed"; anything else is the agent.
-            if code != 255 || !matches!(host, Host::Ssh { .. } | Host::Sandbox { .. }) {
+            if code != 255 || !matches!(host, Host::Ssh { .. } | Host::Sandbox { .. } | Host::Node { .. }) {
                 return code;
             }
             if received > before {

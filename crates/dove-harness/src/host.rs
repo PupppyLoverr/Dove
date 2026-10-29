@@ -28,6 +28,9 @@ pub enum Host {
     /// A box at a cloud provider ([`crate::hosts`]), reached over SSH with a
     /// config the launcher writes after waking the box.
     Sandbox { provider: String, id: String },
+    /// Another computer on the user's account, paired with this one and
+    /// reached through the account's device relay ([`crate::paired`]).
+    Node { device: String },
 }
 
 /// A program, its arguments and the local directory to start it in, ready
@@ -55,6 +58,7 @@ impl Host {
             Host::Ssh { alias } => format!("ssh: {alias}"),
             Host::CuaSpace { name } => format!("Space: {name}"),
             Host::Docker { container } => format!("Docker: {container}"),
+            Host::Node { device } => crate::paired::name(device),
             Host::Sandbox { provider, id } => {
                 let label = crate::hosts::provider(provider).map(|p| p.label()).unwrap_or(provider.as_str());
                 format!("{label}: {id}")
@@ -100,6 +104,13 @@ impl Host {
                     ssh_invocation(Some(&config), crate::hosts::SSH_ALIAS, program, args, cwd, tty)
                 }
             },
+            Host::Node { device } => {
+                let mut argv: Vec<String> =
+                    ["sh", "-lc", r#"cd "$HOME" 2>/dev/null; cd "$0" && exec "$@""#].map(String::from).to_vec();
+                argv.extend([cwd.to_string(), program.to_string()]);
+                argv.extend(args.iter().cloned());
+                crate::paired::exec_invocation(device, &argv)
+            }
             Host::Docker { container } => {
                 let mut a: Vec<String> = vec!["exec".into(), if tty { "-it" } else { "-i" }.into(), container.clone()];
                 // Start in the container user's home so a relative `cwd`
@@ -130,7 +141,7 @@ impl Host {
         match self {
             Host::Local => local.display().to_string(),
             Host::Wsl { .. } => to_wsl_path(&local.display().to_string()),
-            Host::Ssh { .. } | Host::CuaSpace { .. } | Host::Docker { .. } | Host::Sandbox { .. } => {
+            Host::Ssh { .. } | Host::CuaSpace { .. } | Host::Docker { .. } | Host::Sandbox { .. } | Host::Node { .. } => {
                 local.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| ".".into())
             }
         }
@@ -144,6 +155,7 @@ impl Host {
             Host::Ssh { alias } => format!("ssh-{alias}"),
             Host::CuaSpace { name } => format!("cua-{name}"),
             Host::Docker { container } => format!("docker-{container}"),
+            Host::Node { device } => format!("node-{device}"),
             Host::Sandbox { provider, id } => format!("{provider}-{id}"),
         };
         raw.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' }).collect()
@@ -493,6 +505,7 @@ pub fn discover() -> Vec<Host> {
     hosts.extend(cua_spaces().into_iter().map(|name| Host::CuaSpace { name }));
     hosts.extend(docker_containers().into_iter().map(|container| Host::Docker { container }));
     hosts.extend(sandboxes());
+    hosts.extend(crate::paired::devices().into_iter().map(|d| Host::Node { device: d.id }));
     hosts
 }
 

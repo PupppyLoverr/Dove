@@ -16,6 +16,7 @@ pub use external::defers_prompt;
 pub mod models;
 pub mod node;
 pub mod office_skills;
+pub mod paired;
 pub mod process;
 mod rpc;
 pub mod skills;

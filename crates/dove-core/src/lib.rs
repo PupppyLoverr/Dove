@@ -35,6 +35,7 @@ pub use dove_harness::hosts;
 pub use dove_harness::is_supported as harness_supported;
 pub use dove_harness::models;
 pub use dove_harness::node;
+pub use dove_harness::paired;
 pub use dove_harness::office_skills;
 pub use dove_harness::process as harness_process;
 pub use dove_harness::skills;
