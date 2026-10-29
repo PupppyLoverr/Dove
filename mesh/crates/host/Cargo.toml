@@ -23,3 +23,14 @@ chrono.workspace = true
 uuid.workspace = true
 reqwest.workspace = true
 anyhow.workspace = true
+zeron-rpc.workspace = true
+async-trait.workspace = true
+sha2.workspace = true
+# Pairing QR in the terminal (`serve-node`); no image backends.
+qrcode = { version = "0.14", default-features = false }
+
+[dev-dependencies]
+tempfile.workspace = true
+zeron-rpc.workspace = true
+zeron-sync = { workspace = true, features = ["mock-server"] }
+tokio-tungstenite.workspace = true
