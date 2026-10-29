@@ -366,6 +366,27 @@ impl Theme {
         self.glass().a < 1.0
     }
 
+    /// The left sidebar's tint straight over the blurred desktop: Zeron's
+    /// sidebar glass (the shell tint at `GLASS_ALPHA`, whichever surface is
+    /// chosen), raised only as far as its labels need on a worst-case
+    /// desktop. Opaque themes keep their plain shell surface.
+    pub fn sidebar_glass(&self) -> Hsla {
+        if !self.is_frost() {
+            return self.glass();
+        }
+        let worst = if self.appearance.is_dark() { grey(0xff) } else { grey(0) };
+        for step in 0..=20 {
+            let alpha = Self::GLASS_ALPHA + (1.0 - Self::GLASS_ALPHA) * step as f32 / 20.0;
+            let plate = flatten(self.surface.opacity(alpha), worst);
+            if contrast(flatten(self.text, plate), plate) >= 4.5
+                && contrast(flatten(self.text_muted, plate), plate) >= 3.0
+            {
+                return self.surface.opacity(alpha);
+            }
+        }
+        self.surface
+    }
+
     /// The composer's fill. Glass is Zeron's dark frosted tint: a 15% plate
     /// solved so the bar lands on the content plane's tone, leaving the blur
     /// to do the work. Acrylic is a matte tint that hides shapes behind it.

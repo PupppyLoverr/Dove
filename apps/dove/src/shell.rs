@@ -3351,10 +3351,13 @@ impl Shell {
             let view = window.use_keyed_state("shell-hero", cx, crate::wallpaper::Hero::new);
             view.update(cx, |hero, cx| hero.show(props, cx)).then(|| (view.into_any_element(), None))
         };
-        art.map(|(view, scrim)| {
-            // One column, from the title strip down. Home fades into the
-            // canvas. A thread lays the baked frost and one scrim over the
-            // whole window, titlebar included, so the bar is the page.
+        // One column, from the title strip down. Home fades into the canvas.
+        // A thread lays the baked frost and one scrim over the whole window,
+        // titlebar included, so the bar is the page. While the art decodes
+        // (or if it cannot) the column is the plain page: the chat skips its
+        // own fill under a wallpaper, so without this the window glass would
+        // show the desktop through it.
+        Some(
             div()
                 .absolute()
                 .top_0()
@@ -3363,10 +3366,12 @@ impl Shell {
                 .w(px(width))
                 .overflow_hidden()
                 .bg(t.bg)
-                .child(div().absolute().top_0().left_0().right_0().h(px(height)).child(view))
-                .when_some(scrim, |d, veil| d.child(div().absolute().inset_0().bg(veil)))
-                .into_any_element()
-        })
+                .when_some(art, |d, (view, scrim)| {
+                    d.child(div().absolute().top_0().left_0().right_0().h(px(height)).child(view))
+                        .when_some(scrim, |d, veil| d.child(div().absolute().inset_0().bg(veil)))
+                })
+                .into_any_element(),
+        )
     }
 
     /// The chat backdrop's blur, in screen pixels (Settings › Background).
@@ -3734,9 +3739,30 @@ impl Render for Shell {
                 .when(expanded, |d| d.left(px(inner)))
                 .when(!expanded, |d| if dock_left { d.border_r_1() } else { d.border_l_1() }.border_color(seam))
         });
-        let side_layer = (sidebar_shown || in_settings).then(|| {
-            chrome(div()).absolute().top_0().bottom_0().left_0().w(px(self.sidebar_w)).border_r_1().border_color(seam)
+        // The left sidebar is Zeron's glass on every page, wallpaper or not:
+        // no fill of its own over the window's desktop blur, only the
+        // sidebar tint. The shell plane below and any wallpaper start at its
+        // edge, so the blur shows through at Zeron's strength.
+        let side_shown = sidebar_shown || in_settings;
+        let side_layer = side_shown.then(|| {
+            div()
+                .absolute()
+                .top_0()
+                .bottom_0()
+                .left_0()
+                .w(px(self.sidebar_w))
+                .bg(t.sidebar_glass())
+                .border_r_1()
+                .border_color(seam)
         });
+        // The shell's glass, everywhere but under the sidebar.
+        let plane = div()
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .right_0()
+            .left(px(if side_shown { self.sidebar_w } else { 0.0 }))
+            .bg(t.glass());
 
         let menu = self.render_menu_overlay(cx);
         // The palette draws its own scrim and card (kit modal layer).
@@ -3750,7 +3776,6 @@ impl Render for Shell {
             .size_full()
             .flex()
             .flex_col()
-            .bg(t.glass())
             .text_color(t.text)
             .font({
                 let mut font = gpui::font(t.font_sans.clone());
@@ -3934,13 +3959,15 @@ impl Render for Shell {
                 MouseButton::Navigate(gpui::NavigationDirection::Forward),
                 cx.listener(|this, _, window, cx| this.go_forward(window, cx)),
             )
+            .child(plane)
             .children({
-                // A thread's picture runs under the whole window (sidebar,
-                // chat and dock are one frosted surface); home keeps it to
-                // the chat column, where it fades into the canvas.
+                // A thread's picture runs from the sidebar's edge under the
+                // chat and the dock (one frosted surface; the sidebar stays
+                // glass over the desktop blur); home keeps it to the chat
+                // column, where it fades into the canvas.
                 let full = thread_art;
                 let docked = panel_open && !expanded && !full;
-                let art_left = if sidebar_shown && !full { self.sidebar_w } else { 0.0 }
+                let art_left = if sidebar_shown || in_settings { self.sidebar_w } else { 0.0 }
                     + if docked && dock_left { panel_w } else { 0.0 };
                 let art_right = if docked && !dock_left { panel_w } else { 0.0 };
                 let art_width = (f32::from(window.viewport_size().width) - art_left - art_right).max(1.0);
