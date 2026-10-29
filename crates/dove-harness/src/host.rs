@@ -592,22 +592,45 @@ pub fn docker_containers() -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Boxes at every cloud provider the user has a key for. A sleeping box is
-/// listed too: the launcher wakes it.
+/// Boxes at every cloud provider the user has a key for (and every local
+/// runtime that needs none). A sleeping box is listed too: the launcher
+/// wakes it. Providers are asked in parallel, and one that hasn't answered
+/// in [`LIST_TIMEOUT`] (an unreachable cluster, a stuck CLI) is skipped.
 pub fn sandboxes() -> Vec<Host> {
     let keys = crate::hosts::Keys::load();
-    crate::hosts::providers()
-        .into_iter()
-        .filter(|p| !p.needs_key() || keys.has(p.id()))
-        .flat_map(|p| {
-            p.list(&keys)
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut asked = 0;
+    for p in crate::hosts::providers().into_iter().filter(|p| !p.needs_key() || keys.has(p.id())) {
+        let (tx, keys) = (tx.clone(), keys.clone());
+        asked += 1;
+        std::thread::spawn(move || {
+            let boxes: Vec<Host> = p
+                .list(&keys)
                 .unwrap_or_default()
                 .into_iter()
                 .filter(|b| !matches!(b.state.as_str(), "deleting" | "deleted" | "error"))
                 .map(|b| Host::Sandbox { provider: p.id().to_string(), id: b.id })
-        })
-        .collect()
+                .collect();
+            let _ = tx.send((p.id(), boxes));
+        });
+    }
+    let deadline = std::time::Instant::now() + LIST_TIMEOUT;
+    let mut found: Vec<(&str, Vec<Host>)> = Vec::new();
+    for _ in 0..asked {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        match rx.recv_timeout(left) {
+            Ok(got) => found.push(got),
+            Err(_) => break,
+        }
+    }
+    // Stable order: the registry's, not whoever answered first.
+    let order: Vec<&str> = crate::hosts::providers().iter().map(|p| p.id()).collect();
+    found.sort_by_key(|(id, _)| order.iter().position(|o| o == id));
+    found.into_iter().flat_map(|(_, boxes)| boxes).collect()
 }
+
+/// How long [`sandboxes`] waits for the slowest provider.
+const LIST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
 
 /// Can `host` run a command right now? Runs `true` there (a box is not woken
 /// for this; its provider's probe answers instead).
