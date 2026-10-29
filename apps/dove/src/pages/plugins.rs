@@ -432,7 +432,7 @@ impl IntegrationsView {
         let choice = match self.config.browser {
             BrowserChoice::Ego => "Agents browse with ego lite only",
             BrowserChoice::Both => "Agents browse with ego lite first, Keplorayx's browser as a fallback",
-            BrowserChoice::Keplorayx => "Agents use Keplorayx's browser; ego lite is off",
+            BrowserChoice::Dove => "Agents use Keplorayx's browser; ego lite is off",
         };
         let row = self.plugin_row(
             "ego",

@@ -1174,7 +1174,7 @@ impl Render for IntegrationsView {
                 match choice {
                     BrowserChoice::Ego => "ego lite only. Keplorayx's own browser tools are hidden from agents",
                     BrowserChoice::Both => "ego lite first, with Keplorayx's browser as a fallback",
-                    BrowserChoice::Keplorayx => "Keplorayx's browser in the side panel; agents are not pointed at ego lite",
+                    BrowserChoice::Dove => "Keplorayx's browser in the side panel; agents are not pointed at ego lite",
                 },
                 ctl::segmented(
                     &t,
