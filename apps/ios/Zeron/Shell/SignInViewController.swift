@@ -26,7 +26,7 @@ final class SignInViewController: UIViewController, ASWebAuthenticationPresentat
         let mark = UIImageView(image: K22Icon.image("sparkle", pointSize: 44))
         mark.tintColor = Palette.text
         let title = UILabel()
-        title.text = "Dove"
+        title.text = "Keplorayx"
         title.font = Fonts.ui(.sansSemibold, 34)
         title.textColor = Palette.text
         let tagline = UILabel()

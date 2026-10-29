@@ -1,4 +1,4 @@
-# The Dove notch
+# The Keplorayx notch
 
 Status: **built on Windows** (2026-10-27), in `apps/dove/src/notch/`. macOS and Linux report the platform as unsupported and keep the notch off; their native layers (§4) are still to do. Part of [ROADMAP.md](ROADMAP.md) §3.5.
 Reference: [Syllo](https://trysyllo.app/) (a Dynamic Island for Windows and macOS: music, a file shelf, clipboard history, and coding-agent status with approvals).
@@ -11,25 +11,25 @@ Reference: [Syllo](https://trysyllo.app/) (a Dynamic Island for Windows and macO
 | Motion | Opening drops a 13 px dot from above the edge (170 ms), then springs it into shape (560 ms, `1 − e^(−7t)·cos(8t)`, about 6 % overshoot). Closing shrinks back to the dot and lifts it away. Size changes inside a state (a page, a new agent) glide with the same spring. Reduced motion snaps. |
 | Glass | DWM acrylic ignores window regions (it blurs the whole rectangle), so the island makes its own frosted glass: the screen behind the canvas is captured with GDI (the notch excludes itself with `WDA_EXCLUDEFROMCAPTURE`), shrunk to 1/8, blurred and drawn under a dark tint, refreshed every 0.4 s open and 2 s slim, with no repaint when nothing behind it changed. |
 | Slim | A 34 px capsule: each agent kind with work going on (chat threads and Flock panes) with its count and an orange dot when it needs you; the song (art and an equalizer); the timer. A third activity gets a round bubble beside it. Shown while something is live, or always (setting). Hover or click opens it. |
-| Alerts | Approvals pop up with Deny / Always / Allow, or Review in Dove for anything the safety classifier flags (deletions, force pushes, work outside the folder) and for questions. Finished and failed tasks flash for 5 s; a click opens the agent. |
-| Expanded | Tabs: Home, Agents, Music, Clipboard, Notes, Timer, plus `+` (new agent) and Pin. The agent view shows its status, steps, latest reply and approvals, and has a message field (send = the composer's Send: steer, queue or resume), Stop and Open in Dove. The new-agent form picks the agent, project and worktree, then starts it the way the home composer does. |
+| Alerts | Approvals pop up with Deny / Always / Allow, or Review in Keplorayx for anything the safety classifier flags (deletions, force pushes, work outside the folder) and for questions. Finished and failed tasks flash for 5 s; a click opens the agent. |
+| Expanded | Tabs: Home, Agents, Music, Clipboard, Notes, Timer, plus `+` (new agent) and Pin. The agent view shows its status, steps, latest reply and approvals, and has a message field (send = the composer's Send: steer, queue or resume), Stop and Open in Keplorayx. The new-agent form picks the agent, project and worktree, then starts it the way the home composer does. |
 | Music | Windows media session (GSMTC) on its own thread: art, title, artist, app, position, play/pause/next/previous. |
-| Clipboard | History while Dove runs (text and images, concealed items skipped, pinned text saved); click to copy back, send text to an agent. The shelf takes files dropped on the island and drags them out (OLE, the shell's own data object), copies paths and sends them to an agent. |
+| Clipboard | History while Keplorayx runs (text and images, concealed items skipped, pinned text saved); click to copy back, send text to an agent. The shelf takes files dropped on the island and drags them out (OLE, the shell's own data object), copies paths and sends them to an agent. |
 | Notes, Timer | Saved notes with edit and delete; a countdown with presets, ±1 min, pause and an OS notification at zero. |
 | Settings | Notifications › Notch: Show the notch, Keep the slim island visible, Live activities, Clipboard history. |
 | Not yet | macOS and Linux; messaging a Flock pane from the notch (it opens Flock); multi-monitor (primary display only). |
 
 ## 1. What it is
 
-A small black island at the top center of the screen that belongs to Dove.
+A small black island at the top center of the screen that belongs to Keplorayx.
 
 - **macOS:** it wraps the MacBook's camera notch, so it looks like the notch itself grew. On Macs without a notch (and external displays) it draws the same pill just under the menu bar.
 - **Windows and Linux:** nothing is visible until the pointer reaches the top middle of the screen. Then the island drops down. It goes back up when the pointer leaves.
 - **Live activity:** without any hover, it briefly widens on its own when something needs you: an agent asks for permission, a task finishes or fails, a track changes. Then it shrinks back.
 
-It shows what Dove's agents are doing (chat threads and Flock panes), what's playing, and a **shelf**: drag anything onto it to keep it, and drag it back out later to attach it to a thread or drop it into any app.
+It shows what Keplorayx's agents are doing (chat threads and Flock panes), what's playing, and a **shelf**: drag anything onto it to keep it, and drag it back out later to attach it to a thread or drop it into any app.
 
-Why Dove can do this better than Syllo: Syllo watches agents from the outside through hooks. Dove *is* the runtime. The notch reads the same `Engine` state as the sidebar, so it can approve, answer, steer, stop, start and hand off with the same calls a click makes, for every agent Dove supports.
+Why Keplorayx can do this better than Syllo: Syllo watches agents from the outside through hooks. Keplorayx *is* the runtime. The notch reads the same `Engine` state as the sidebar, so it can approve, answer, steer, stop, start and hand off with the same calls a click makes, for every agent Keplorayx supports.
 
 ## 2. States
 
@@ -67,7 +67,7 @@ Actions, all through the same paths the main window uses:
 | Answer a question | 1–9, like the transcript |
 | Quick reply / steer | A one-line composer in the row (`TaskView::submit`: steer when working, queue or send when idle) |
 | Stop | `TaskView::interrupt` |
-| Open | Focuses Dove on that thread, or the Flock pane |
+| Open | Focuses Keplorayx on that thread, or the Flock pane |
 | New task | A mini composer: project, agent, prompt, worktree on/off. Voice button for push-to-talk via Voice Mode |
 
 Also in this tab:
@@ -75,7 +75,7 @@ Also in this tab:
 - **Team** runs grouped under their parent, with fan-out progress ("3 of 4 children done").
 - **Race groups** (ROADMAP §3.2) show as one row with N mini progress bars and a "Compare" button.
 
-Later (N5): agents run in plain terminals *outside* Dove (Claude Code and Codex hooks, as Syllo does), shown read-only with a "Bring into Dove" action.
+Later (N5): agents run in plain terminals *outside* Keplorayx (Claude Code and Codex hooks, as Syllo does), shown read-only with a "Bring into Keplorayx" action.
 
 ### 3.2 Shelf (drag clipboard)
 
@@ -84,7 +84,7 @@ Drop anything on the island (or press the hotkey while it's open and paste) and 
 - **What it holds:** files and folders (copied or referenced, user's choice; default referenced up to 50 MB, copied for temp/screenshot sources), images, text snippets, URLs, and screenshots taken from the notch.
 - **Storage:** `~/.dove/shelf/` for blobs and a `shelf_items` table in `dove-store` (id, kind, name, path or blob, size, source app, created, pinned, tags). Unpinned items expire after 7 days (configurable).
 - **Taking things out:**
-  - **Drag out** to any app (Explorer/Finder, Slack, a browser upload field) or onto Dove's composer, which already accepts file drops.
+  - **Drag out** to any app (Explorer/Finder, Slack, a browser upload field) or onto Keplorayx's composer, which already accepts file drops.
   - **Attach to…** sends it to a thread's composer (pick from the attention list), or straight to a running agent as a steer with the file attached.
   - **Copy** puts it on the system clipboard.
 - **Multi-select:** drag several items out at once, or "attach all".
@@ -115,7 +115,7 @@ Ordered by value. Each is a module the user can turn off.
 6. **Phone handoff.** Shows when the phone remote is connected and which device approved what.
 7. **Quick launcher.** Type in the open island: thread search, actions and projects, the same results as the command palette (Ctrl K).
 
-Left out on purpose (Syllo has them, but they aren't Dove's job): calendar, Pomodoro timers, notes, window snapping, file conversion. They're cheap to add later as modules if users ask.
+Left out on purpose (Syllo has them, but they aren't Keplorayx's job): calendar, Pomodoro timers, notes, window snapping, file conversion. They're cheap to add later as modules if users ask.
 
 ## 4. Platform mechanics
 
@@ -179,8 +179,8 @@ These go into `scripts/perf_check.ps1` and the CI perf gate.
 | Phase | Contents | Size | Done when |
 | --- | --- | --- | --- |
 | **N0 spike** | The window on all three OSes: placement, level, click-through, hover reveal, full-screen hiding, a morph animation. Measure RSS and CPU | M | A blank island behaves right on a notched Mac, Windows 11 multi-monitor, KDE Wayland, GNOME and X11 |
-| **N1 agents** | Attention model extraction, Agents tab, live activity, approve/deny/answer/stop/reply, open in Dove, Flock panes | M | You can run a day of agents without looking at the main window |
-| **N2 shelf (in)** | Drops of files, text, URLs and images; store; Attach to…; copy; drag onto Dove's composer | M | A screenshot dropped on the notch ends up in a thread in two clicks |
+| **N1 agents** | Attention model extraction, Agents tab, live activity, approve/deny/answer/stop/reply, open in Keplorayx, Flock panes | M | You can run a day of agents without looking at the main window |
+| **N2 shelf (in)** | Drops of files, text, URLs and images; store; Attach to…; copy; drag onto Keplorayx's composer | M | A screenshot dropped on the notch ends up in a thread in two clicks |
 | **N3 music** | Windows GSMTC and Linux MPRIS; macOS adapter spike, then the implementation | M | Play/pause/skip and art for Spotify and browsers on all three |
 | **N4 out** | Native drag-out (Windows, macOS, then Linux), clipboard history (opt-in), shelf MCP tools | L | Drag a shelved file into Slack or a browser upload |
 | **N5 extras** | Voice in the island, notification center, ports, screenshot to agent, focus mode, launcher, outside-Dove agent hooks | L | Chosen per user feedback |

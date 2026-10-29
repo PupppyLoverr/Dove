@@ -145,7 +145,7 @@ fun NewProjectScreen(model: AppModel, onDismiss: () -> Unit, onCreated: (String)
             Box(Modifier.fillMaxSize().padding(padding)) {
                 if (hosts.isEmpty()) {
                     Text(
-                        "No desktop devices yet — open Dove on a computer to add one.",
+                        "No desktop devices yet — open Keplorayx on a computer to add one.",
                         textAlign = TextAlign.Center,
                         style = MaterialTheme.typography.bodyLarge,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,

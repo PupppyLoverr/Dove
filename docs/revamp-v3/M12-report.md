@@ -37,7 +37,7 @@ The full diff is in `inventory/diff-baseline-to-m12.txt`.
 
 The window was visible but not focused, so GPUI caps it at about 30 fps. The PATH was minimal and the fake agent streamed 240 chars/s per session. The sessions ran in the background, not in open tabs.
 
-| Sessions | Start → window | Idle CPU (main) | Streaming CPU (main) | Dove RAM (private) | Harness RAM | Key → frame p50 / p99 |
+| Sessions | Start → window | Idle CPU (main) | Streaming CPU (main) | Keplorayx RAM (private) | Harness RAM | Key → frame p50 / p99 |
 |---|---|---|---|---|---|---|
 | 1 | 384 ms | 0.73% | 21.6% | 95 MB | 2 MB | 56 / 64 ms |
 | 5 | 357 ms | 0.62% | 29.3% | 109 MB | 5 MB | 57 / 73 ms |
@@ -57,7 +57,7 @@ Key → frame latency while streaming (p50 about 55 ms) includes the 30 fps cap 
 ## Notes and flags
 
 - **Deletes now confirm (M8).** Three deletes that used to be instant now ask first: bulk Delete on Threads, Delete on Archived, and draft Delete on Kanban.
-- **Licence (M11).** The "Shades of Purple" theme's licence adds a condition that anything built with it should also be MIT-licensed. Dove is Apache-2.0. Either drop that one theme or accept the condition.
+- **Licence (M11).** The "Shades of Purple" theme's licence adds a condition that anything built with it should also be MIT-licensed. Keplorayx is Apache-2.0. Either drop that one theme or accept the condition.
 - **Backdrop (M9).** `Shell::render` still runs on each backdrop frame: one window at vsync, with no timer.
 - **Not yet checked visually.** M7–M11 and the M12 dialogs have not been checked in the running app. Only build, lint, tests and the perf harness have run.
 - **Startup sweep.** Even with a minimal PATH, the daily model sweep (120 s after launch, when the last fetch is over 24 h old) found an installed `droid`, and it printed a device-login prompt in the perf log.

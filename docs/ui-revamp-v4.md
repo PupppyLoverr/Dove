@@ -1,4 +1,4 @@
-# Dove UI/UX revamp — plan v4 ("quiet desk")
+# Keplorayx UI/UX revamp — plan v4 ("quiet desk")
 
 Status: proposal, 2026-10-28. Builds on `ui-revamp-plan.md` (v2) and `revamp-v3/`.
 Where this plan and v2 disagree about the window chrome (v2's thread-tab top bar),
@@ -8,7 +8,7 @@ Source: six reference screenshots of a desktop agent app (new-session screen,
 sidebar, files pane with a placement menu, context panel, search palette,
 empty state). We take the **design principles and interaction patterns**,
 not the look one-to-one: no copied mascot, wording, icon set or exact
-layout. Dove keeps its own mark, Solar icons, accent, copy and the custom
+layout. Keplorayx keeps its own mark, Solar icons, accent, copy and the custom
 wallpaper, which the references don't have.
 
 Design happens in **Paper** first (paper.design, local MCP on :29979), one frame
@@ -41,7 +41,7 @@ per screen below, before any Rust changes.
   - Pinned rows carry a **type icon**: camera (social or scheduled), a green
     sunrise (scheduled routine), `</>` (code session).
   - Long titles **fade out** at the right edge (a gradient mask, no ellipsis).
-- **Project group "Dove ▾"**: rows have **no icon**, just text. That hierarchy is
+- **Project group "Keplorayx ▾"**: rows have **no icon**, just text. That hierarchy is
   quieter than Pinned.
   - An archived or idle row ("Worktrees cleanup and sync") shows in **dimmed text**.
   - Parents with children have a **▸ disclosure** after the title. Under them sits
@@ -100,7 +100,7 @@ per screen below, before any Rust changes.
 
 ### Image 4 — the context panel (session details)
 Stacked **collapsible cards** (about 14 px radius, hairline border, a hair lighter fill):
-- **Environment ▾**: machine ("dove") with a gear on hover; folder "Dove ·
+- **Environment ▾**: machine ("dove") with a gear on hover; folder "Keplorayx ·
   C:\Users\…\Downloads" (name bright, path muted); branch "feat/notch-v2";
   **Remote Control** with a toggle switch.
 - **Context ▸ 12 %** with a tiny inline progress bar (blue): collapsed to one line.
@@ -144,7 +144,7 @@ Stacked **collapsible cards** (about 14 px radius, hairline border, a hair light
 
 ---
 
-## 2. Where Dove is today (relevant code)
+## 2. Where Keplorayx is today (relevant code)
 
 | Area | File(s) | Today |
 |---|---|---|
@@ -172,7 +172,7 @@ contrast-checked.
 ## 3. The plan
 
 ### Phase 0 — Paper designs (gate for everything below)
-One Paper page, "Dove v4", with frames at 1440 × 900 and 1920 × 1080, dark and light:
+One Paper page, "Keplorayx v4", with frames at 1440 × 900 and 1920 × 1080, dark and light:
 1. New session, no wallpaper · 2. New session with wallpaper · 3. Thread with wallpaper (new frost)
 · 4. Thread plus Files pane · 5. Placement popover · 6. Context panel · 7. Search palette
 · 8. Settings › Appearance › Background · 9. Sidebar states (hover, nested, collapsed, narrow).
@@ -189,8 +189,8 @@ Tokens are defined in Paper first, then mirrored in `design.rs`. Sign-off before
 - **Borders**: `hairline` (about 6 % white) and `hairline_strong` (about 10 %); cards separate
   by fill first.
 - **Semantic colours** (used only for meaning): `waiting` amber, `git` violet,
-  `added` green, `removed` red, `progress` Dove accent, `danger`. The Dove accent stays
-  Dove's own (not orange), and the mascot uses it.
+  `added` green, `removed` red, `progress` Keplorayx accent, `danger`. The Keplorayx accent stays
+  Keplorayx's own (not orange), and the mascot uses it.
 - **Elevation**: `flat` (planes), `float` (popover: blur 16, shadow y4 b24 at 0.35),
   `modal` (palette: plus a 0.45 scrim).
 - Row height `ROW_H = 36` (compact density 32, comfortable 40) via the existing size prefs.
@@ -198,7 +198,7 @@ Tokens are defined in Paper first, then mirrored in `design.rs`. Sign-off before
 ### Phase 2 — Window chrome (`shell.rs`, `surface_chrome.rs`, `shell_menu.rs`)
 - Title bar 44 px, the same plane as the sidebar, no bottom border.
 - Left: menu · sidebar toggle · back or forward (history of routes, new: a `NavHistory`
-  stack in `Shell`) · **mode switch** (Dove's own modes: *Chat* / *Code*, where Code opens
+  stack in `Shell`) · **mode switch** (Keplorayx's own modes: *Chat* / *Code*, where Code opens
   the session's terminal or TUI view from v2's chat ⇄ terminal toggle).
 - Page title left-aligned to the content column (thread title, editable on double-click).
 - Right: **pane toggles** Terminal · Browser · Files · Details (context panel), each a 28 px
@@ -232,9 +232,9 @@ Tokens are defined in Paper first, then mirrored in `design.rs`. Sign-off before
 - **Attention card**: up to 3 sessions needing you, sorted by `attention_rank`,
   each a coloured status word plus title plus muted reason; click opens the session.
   Hidden when there are none.
-- **Dove's mark**: an original pixel dove (our own sprite sheet, 3–4 idle poses,
+- **Keplorayx's mark**: an original pixel dove (our own sprite sheet, 3–4 idle poses,
   blinks or preens every 6–10 s, still under reduced motion) perched on the
-  workspace card's edge. Not a crab, not orange: Dove accent.
+  workspace card's edge. Not a crab, not orange: Keplorayx accent.
 - With a wallpaper: the hero keeps its effects and the fade into the canvas; the
   cards get the `float` frost so they sit cleanly on the art.
 - The composer autofocuses on New (`Ctrl+N`).
@@ -278,7 +278,7 @@ Tokens are defined in Paper first, then mirrored in `design.rs`. Sign-off before
 - Modal 760 × 600, `MODAL` radius, `raised` fill plus `modal` scrim.
 - Scope tabs: **All · Sessions · Projects · Files · Automations · Commands**, switched with ← →.
 - Sections "Recent" and "Actions"; the selected row shows "…" (an Alt+↵ action menu) and ↵.
-- **Tab = start a new session with the query** (Dove's version of compose).
+- **Tab = start a new session with the query** (Keplorayx's version of compose).
 - A footer keycap legend (a new `kit::keycap`). `/` opens filters (project, status, agent).
 
 ### Phase 9 — Popovers, menus and controls (`kit/popover.rs`, `kit/controls.rs`)
@@ -309,7 +309,7 @@ Halftone, Scanlines), the animated effect, and the home hero fade.
 - Pipeline (`wallpaper.rs`): a new `Media::{Still, Frames{frames, delays}}`. Decode
   off the main thread; frames become `RenderImage` frames; playback is paced by
   `request_animation_frame` using frame delays.
-- **Performance rules** (from Dove's perf-first stance):
+- **Performance rules** (from Keplorayx's perf-first stance):
   - Pause when the window is unfocused, minimised or occluded, on battery saver, or under reduced motion.
   - Cap at 30 fps; the home hero plays at full resolution.
   - **The chat backdrop plays pre-blurred, low-res frames** (1/8 size: after a
@@ -385,7 +385,7 @@ These can run in parallel once Phase 9 lands: **3 (sidebar)**, **7 (panes)**,
 - `apps/dove/Cargo.toml` is in an unresolved merge state (`UU`); resolve it before any build.
 - The notch files have uncommitted edits on `feat/notch-v2`; land the revamp on its own
   branch (`feat/ui-v4`) cut after the notch work is committed.
-- Originality guardrails: our own mark and sprites, Solar icons, Dove accent, our own copy
+- Originality guardrails: our own mark and sprites, Solar icons, Keplorayx accent, our own copy
   ("Start something…", "Needs you", "Pick a file to preview"), and different panel
   composition (Details includes Team and Integrations). Don't reuse the reference
   app's strings, mascot or icons.

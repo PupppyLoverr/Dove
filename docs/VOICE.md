@@ -1,6 +1,6 @@
 # Voice Mode
 
-A hands-free call with every thread in Dove. Architecture:
+A hands-free call with every thread in Keplorayx. Architecture:
 [ARCHITECTURE.md › Voice](../ARCHITECTURE.md#voice-dictation-and-voice-mode). Code:
 `crates/dove-voice` (no UI) and `apps/dove/src/voice_call.rs` (the app side).
 
@@ -23,18 +23,18 @@ you stop).
    Moonshine (more accurate, about 700 MB of memory while a call runs).
 2. Click the phone button beside the mic, or press Ctrl/Cmd+Shift+Space
    (Settings › Shortcuts can change it). On Windows the shortcut also works
-   while another app is in front (Settings › Voice › Shortcut outside Dove;
+   while another app is in front (Settings › Voice › Shortcut outside Keplorayx;
    if another app already owns the keys, Settings says so). Text already in
    the composer is sent first.
 3. Talk. The call strip sits on the input you are talking into (a thread's,
    or the new-thread composer on Home; on other pages it floats at the foot
    of the page). It shows Listening / Hearing you / Working on it / Speaking,
    who the call talks to, a live waveform and the call's length, the live
-   caption or the reply being read, and buttons to mute the mic, stop Dove
+   caption or the reply being read, and buttons to mute the mic, stop Keplorayx
    talking (the agent keeps working) and end the call. The phone button stays
    lit while a call runs. A soft chime marks when the call starts listening
-   and when Dove has heard you (Settings › Voice › Sounds). Calls continue
-   while you move around Dove.
+   and when Keplorayx has heard you (Settings › Voice › Sounds). Calls continue
+   while you move around Keplorayx.
 
 **No thread yet?** Start a call from Home and say what you want done. The
 first request starts a new thread on the agent, model, effort, permission
@@ -43,7 +43,7 @@ Send would, and the call then talks to that thread.
 
 | Say | Does |
 | --- | --- |
-| "What's happening?" / "Status" | Status of the current thread from Dove's own state |
+| "What's happening?" / "Status" | Status of the current thread from Keplorayx's own state |
 | "What's everyone doing?" | Every thread: counts, then the ones that need you |
 | "Stop" | Interrupt the current thread and stop speaking |
 | "Approve" / "Deny" / "Approve for this session" | Answer the waiting request (session scope only where the agent has it) |
@@ -52,7 +52,7 @@ Send would, and the call then talks to that thread.
 | "Claude, how's the auth fix?" | Status of a named thread |
 | "Tell Codex to also run clippy" | Steer (or send to) a named thread |
 | "Start a Gemini task on the landing page in a new worktree" | A new thread, in a new worktree |
-| "Launch three Claude chats to review the auth code" / "Open two Codex terminals" / "Spin up a terminal as the Builder" | Several threads at once, in chat or the agent's own terminal UI (up to 8). Dove says what it will open and waits for "yes" (or the card's **Open them**); the first becomes the open thread and the rest open in panes beside it |
+| "Launch three Claude chats to review the auth code" / "Open two Codex terminals" / "Spin up a terminal as the Builder" | Several threads at once, in chat or the agent's own terminal UI (up to 8). Keplorayx says what it will open and waits for "yes" (or the card's **Open them**); the first becomes the open thread and the rest open in panes beside it |
 | "What's the team doing?" / "How's the Reviewer doing?" | What each teammate is working on, from their threads |
 | "Ask the Reviewer to look at the login diff" / "Tell Builder the API changed" | Goes to the teammate's latest thread in the project (or a new one as them); their answer is read to you |
 | "Draft for Codex: run the tests on Windows" / "Type cargo test into the codex terminal" | Puts the words in that thread's input (its composer, or the terminal's prompt line) without sending. Then "send it", "change it to …", "add …" or "never mind" (the call view shows the draft with Send and Clear) |
@@ -85,21 +85,21 @@ in the call view a click on any thread in the list talks to it.
 - Destructive requests are never approved by voice alone: recursive deletes,
   force pushes, history rewrites, database drops, `curl | sh`, secrets
   (`.env`, keys, `.ssh`, `.aws`), system permission changes, and paths outside
-  the thread's folder. Dove says why, asks you to say a confirmation phrase
+  the thread's folder. Keplorayx says why, asks you to say a confirmation phrase
   ("confirm delete"), and then waits for your click on Approve in the chat. If
   the request changes before you click, the confirmation is dropped.
 - A command router, when turned on, only proposes; every intent is checked
-  against a strict schema and Dove's current state before anything runs.
+  against a strict schema and Keplorayx's current state before anything runs.
   It can be an installed agent (a tool-less, read-only run in an empty
   scratch folder on its cheapest model) or an OpenAI-compatible endpoint.
-- Dove never reports progress it has not seen: statuses come from the
+- Keplorayx never reports progress it has not seen: statuses come from the
   thread's events, todos, current activity and `git diff --shortstat`.
 
 ## Privacy
 
 Everything runs on this computer by default. Audio stays in memory for the
 current turn and is never written to disk. `~/.dove/voice/calls.jsonl` records
-each call's text turns (what you said, what Dove said, which thread) so a call
+each call's text turns (what you said, what Keplorayx said, which thread) so a call
 can be reviewed; delete it any time.
 
 Optional cloud features are off until you turn them on, and Settings says what
@@ -107,19 +107,19 @@ each sends:
 - **Cloud speech recognition** uploads your spoken audio: to an
   OpenAI-compatible endpoint (`DOVE_VOICE_API_KEY`) or Deepgram
   (`DEEPGRAM_API_KEY`, model `nova-3` unless set).
-- **Cloud voice** uploads what Dove says, which includes agents' replies, to
+- **Cloud voice** uploads what Keplorayx says, which includes agents' replies, to
   the service you pick: Fish Audio (`FISH_AUDIO_API_KEY`; the free
   `s2.1-pro-free` model by default), Deepgram Aura-2 (`DEEPGRAM_API_KEY`),
   Cartesia Sonic (`CARTESIA_API_KEY`), Inworld (`INWORLD_API_KEY`),
   ElevenLabs (`ELEVENLABS_API_KEY`, Flash v2.5) or an OpenAI-compatible
   endpoint. All but the last stream 16 kHz PCM, so speech starts on the first
-  chunk. If the service fails, Dove says so once and uses the system voice.
+  chunk. If the service fails, Keplorayx says so once and uses the system voice.
   Prices, free tiers and startup programs: [VOICE_PROVIDERS.md](VOICE_PROVIDERS.md).
 - **Command router** sends the request and your threads' titles to the agent
   or endpoint you chose.
 - **Look at this window** writes a PNG to `~/.dove/voice/look/` and gives the
   agent its path; the agent's own provider sees it as it would any attachment.
-Keys are read from the environment, never stored in Dove's database.
+Keys are read from the environment, never stored in Keplorayx's database.
 
 ## Models
 
@@ -144,10 +144,10 @@ Choices made from measurements on this project's test machine:
   are OpenRAIL-M with use restrictions. The system voice renders a first
   clause in 13–21 ms with no download and no memory cost. A neural voice can
   be added behind the `TextToSpeech` trait.
-- **Echo cancellation is a Dove NLMS filter, not WebRTC AEC3**, to avoid a C++
+- **Echo cancellation is a Keplorayx NLMS filter, not WebRTC AEC3**, to avoid a C++
   build dependency. It removes more than 20 dB of a synthetic echo in tests but
   is weaker than AEC3 on loud, non-linear laptop speakers, so barge-in also
-  needs 128 ms of strong speech while Dove talks.
+  needs 128 ms of strong speech while Keplorayx talks.
 
 ## Benchmark
 
@@ -201,7 +201,7 @@ Playback timings use the real speaker. The microphone is not opened unless
   with the encoder and decoder built in parallel and hashes checked
   alongside). Later calls within five minutes start warm.
 - *Memory after unload (+30 MB):* allocator and ONNX Runtime pages kept after
-  the sessions are dropped. A Dove that never starts a call loads none of it.
+  the sessions are dropped. A Keplorayx that never starts a call loads none of it.
 - *Turn decision (53–61 ms):* Smart Turn's 8 s window (17 ms of it is the
   log-mel front end, the rest the model on 4 threads).
 
@@ -251,9 +251,9 @@ picker's model, and the reply on the strip.
 
 - **"Voice Mode needs local speech recognition."** Download Moonshine (or
   Parakeet) in Settings › Voice.
-- **Dove hears itself on speakers.** Keep Echo cancellation on; lower the
+- **Keplorayx hears itself on speakers.** Keep Echo cancellation on; lower the
   volume or use headphones; push-to-talk avoids the problem entirely.
-- **It cuts me off mid-sentence.** Install Smart Turn; without it Dove ends a
+- **It cuts me off mid-sentence.** Install Smart Turn; without it Keplorayx ends a
   turn after 550 ms of silence (1 s after words like "and" or "the").
 - **"Speaker unavailable."** The call keeps listening and shows replies in the
   chat; check the default output device.

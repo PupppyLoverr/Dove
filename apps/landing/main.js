@@ -1,4 +1,4 @@
-/* Dove landing: no dependencies. Curated motion — every effect degrades to
+/* Keplorayx landing: no dependencies. Curated motion — every effect degrades to
    static content without JS, WebGL or motion, and respects reduced-motion. */
 (function () {
   "use strict";

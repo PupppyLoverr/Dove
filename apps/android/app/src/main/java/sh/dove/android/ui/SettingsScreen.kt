@@ -165,7 +165,7 @@ fun SettingsScreen(model: AppModel, onArchived: () -> Unit) {
                     shapes = segmentedShapes(0, 2),
                     colors = ListItemDefaults.segmentedColors(containerColor = cardColor()),
                     leadingContent = { IconTile(DoveIcons.Info) },
-                    supportingContent = { Text("Dove for Android · ${BuildConfig.VERSION_NAME}") },
+                    supportingContent = { Text("Keplorayx for Android · ${BuildConfig.VERSION_NAME}") },
                 ) { Text("Version") }
                 SegmentedListItem(
                     onClick = { if (model.isDemo) model.signOut() else confirmSignOut = true },

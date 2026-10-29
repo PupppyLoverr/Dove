@@ -10,7 +10,7 @@ Status: **V0–V7 and V10 done on Windows** (2026-10-27); **V8 (macOS) and V9 (L
 - **V10 (settings + perf):** Settings › Notifications › Notch gains notifications, glass, focus, display, slim activities and tabs; `scripts/perf_check.ps1 -Island` measures the closed-Dove cost.
 - **Limits of this pass:** GPUI draws circular corners, so the island is not a true squircle; shared-element transitions are approximated by the puck, springs and rises; the island has no voice module; only files (not text or images) can be dropped on it; link tiles have no favicons.
 
-- **V2:** the island is `dove --island` (the same executable in its own process, so packaging stays one binary; it loads no engine, webview or voice) in `apps/dove/src/island/`: `ipc.rs` (newline-delimited JSON over a per-data-folder named pipe / Unix socket, token in `<home>/run/island.token`; owning the pipe also makes the engine single-instance, so a second launch shows the first window), `host.rs` (engine side: snapshots pushed on attention changes, commands run through the window's Shell or straight on the engine when headless, sessions handed to and back from the closed window, the close/idle lifecycle with a 20 s grace), `mod.rs` (island main, one per data folder, the tray with Open Dove, Start at login and **Quit Dove completely** with a confirmation when agents are running), `login.rs` (HKCU Run key; never from dev builds or another `DOVE_HOME`). `dove --headless` runs the engine with no window. The notch now runs only in the island and reaches agents only over the pipe; when Dove isn't running it says so, keeps music/clipboard/notes/timer, and launches Dove (headless, or with its window for Open) when a command needs it.
+- **V2:** the island is `dove --island` (the same executable in its own process, so packaging stays one binary; it loads no engine, webview or voice) in `apps/dove/src/island/`: `ipc.rs` (newline-delimited JSON over a per-data-folder named pipe / Unix socket, token in `<home>/run/island.token`; owning the pipe also makes the engine single-instance, so a second launch shows the first window), `host.rs` (engine side: snapshots pushed on attention changes, commands run through the window's Shell or straight on the engine when headless, sessions handed to and back from the closed window, the close/idle lifecycle with a 20 s grace), `mod.rs` (island main, one per data folder, the tray with Open Keplorayx, Start at login and **Quit Keplorayx completely** with a confirmation when agents are running), `login.rs` (HKCU Run key; never from dev builds or another `DOVE_HOME`). `dove --headless` runs the engine with no window. The notch now runs only in the island and reaches agents only over the pipe; when Keplorayx isn't running it says so, keeps music/clipboard/notes/timer, and launches Keplorayx (headless, or with its window for Open) when a command needs it.
   - Verified end to end on a scratch home: launch starts the island; snapshot over the pipe; a second launch forwards and exits; closing the window keeps the engine for the grace period, then it quits while the island stays; headless serves the pipe and `open` brings the window; `quit_all` stops the engine.
   - Not yet: the tray menu itself was not clicked in QA; agent team tools and the in-app browser need the window (headless agents get errors from those tools until it reopens); headless resumes use default run settings (Ask mode).
   - **Island cost before V3 (debug, hidden, alone):** 63 MB working set, 78 MB private, 1.5–1.8 % CPU. **After V3:** 2–5 MB working set, ~40 MB private, 0.16–0.31 % of one core (debug build, 60 s sample, measured 2026-10-27); a release build should be lower.
@@ -22,7 +22,7 @@ Starts from: [NOTCH.md](NOTCH.md) (the v1 spec, and §0 there for what v1 shippe
 v1 proved the idea on Windows: a frosted island that drops out of the top edge as a dot, a slim live-activity capsule, approvals, an agent view you can message, music, a clipboard and file shelf, notes and a timer. v2 has three goals:
 
 1. **Make it feel like Apple made it.** A new visual system, interruptible physics, shared-element motion, and better modules.
-2. **Make it ambient.** It keeps working with Dove's window closed (and with Dove itself quit), costs almost nothing while idle, and the tray quits everything.
+2. **Make it ambient.** It keeps working with Keplorayx's window closed (and with Keplorayx itself quit), costs almost nothing while idle, and the tray quits everything.
 3. **Make it native on all three OSes.** Real glass on each, the real notch on Macs, and layer-shell on Linux.
 
 ---
@@ -32,7 +32,7 @@ v1 proved the idea on Windows: a frosted island that drops out of the top edge a
 | | v1 on Windows (debug build) |
 | --- | --- |
 | Code | `apps/dove/src/notch/`: 6 files, ~4,100 lines; 14 unit tests pass |
-| Process | Lives inside Dove. "Keep running" only **minimizes** the main window, so a "closed" Dove still holds the whole UI (~80–150 MB) and the tray polls every 300 ms |
+| Process | Lives inside Keplorayx. "Keep running" only **minimizes** the main window, so a "closed" Keplorayx still holds the whole UI (~80–150 MB) and the tray polls every 300 ms |
 | Data path | Reads agents through `Shell` → `TaskView` (approvals live in the transcript's rows), so the notch is dead without the main window |
 | Idle cost, hidden | No measurable CPU change; +10–16 MB working set, ~+22 MB private (a second GPUI window) |
 | Cost, open | 11–19 % of a core before the last optimization pass (full-size screen capture every 0.4 s, a 20 fps equalizer). **V0, after the fix** (GDI shrinks during the copy, 10 fps idle animation; 3 runs, debug build, `notch_bench.ps1`): notch off 61–67 MB working set / 86–87 MB private / 1.6–4.4 % CPU; hidden +6–11 MB working set, +~22 MB private, CPU unchanged, 1 render; expanded 80–92 MB / 106–114 MB / 3.2–7.2 % CPU, 10 renders while still. Release-build numbers are still to take (V2, with the island process) |
@@ -44,17 +44,17 @@ What v1 got right and v2 keeps: the dot-to-island morph, the shape-clipped windo
 
 ## 2. What "#1" means
 
-Most rivals are music-plus-shelf utilities: NotchNook, Boring Notch, Alcove, DynamicLake, Droppy, Tinycast. Syllo adds coding agents, but watches them from outside through hooks. To lead, Dove needs to be the only one that is all of these:
+Most rivals are music-plus-shelf utilities: NotchNook, Boring Notch, Alcove, DynamicLake, Droppy, Tinycast. Syllo adds coding agents, but watches them from outside through hooks. To lead, Keplorayx needs to be the only one that is all of these:
 
 | Claim | Proof we hold ourselves to |
 | --- | --- |
-| **Agent-native** | Approve, reply, steer, stop and start any of 20+ agents from the island, with the same safety rules as Dove. Approvals show a real diff preview |
+| **Agent-native** | Approve, reply, steer, stop and start any of 20+ agents from the island, with the same safety rules as Keplorayx. Approvals show a real diff preview |
 | **Ambient and free** | Island-only process: ≤ 18 MB working set, ≤ 0.02 % CPU and ≤ 1 wake-up per second while idle. Nothing renders while hidden |
 | **Native everywhere** | The real notch on Macs; real vibrancy/acrylic/KWin blur; Wayland layer-shell; multi-monitor |
 | **Delightful** | 120 Hz interruptible springs, shared-element transitions, no dropped frames on a 2020 laptop |
 | **Private** | Local only. Clipboard secrets never stored. Every module can be turned off |
 
-## 3. Process model: works with Dove closed, costs almost nothing
+## 3. Process model: works with Keplorayx closed, costs almost nothing
 
 ### 3.1 Three pieces
 
@@ -74,14 +74,14 @@ Most rivals are music-plus-shelf utilities: NotchNook, Boring Notch, Alcove, Dyn
 
 | Situation | What runs | Target |
 | --- | --- | --- |
-| Dove open | `dove` (UI + engine) + `dove-island` | as today, plus the island |
+| Keplorayx open | `dove` (UI + engine) + `dove-island` | as today, plus the island |
 | Window closed, agents or automations running | `dove --headless` (engine only, **no GPU, no views**) + island | engine ≤ 60 MB; island ≤ 18 MB |
 | Window closed, nothing running | `dove-island` only | ≤ 18 MB working set, ≤ 0.02 % CPU |
-| Tray › **Quit Dove completely** | nothing | both exit; running agents are asked first |
+| Tray › **Quit Keplorayx completely** | nothing | both exit; running agents are asked first |
 
 - **`dove-island`** is a new small binary (`apps/island`), built like the `dove-mesh-host` sidecar: GPUI for the island only, no engine, no webview, no voice. It owns the tray (moved out of `notify.rs`) and starts at login (setting).
-- **Closing Dove's window** drops the window and every view (Shell, TaskViews, panels, the browser). The engine stays only while something is running or scheduled; otherwise the process exits. The island then shows "Dove isn't running", and its New agent button starts `dove --headless` and hands it the prompt.
-- **Opening Dove** (tray, island, shortcut) relaunches the UI or attaches a window to the headless engine.
+- **Closing Keplorayx's window** drops the window and every view (Shell, TaskViews, panels, the browser). The engine stays only while something is running or scheduled; otherwise the process exits. The island then shows "Keplorayx isn't running", and its New agent button starts `dove --headless` and hands it the prompt.
+- **Opening Keplorayx** (tray, island, shortcut) relaunches the UI or attaches a window to the headless engine.
 
 ### 3.2 Engine-level attention model (the prerequisite)
 
@@ -153,7 +153,7 @@ Users choose which activities may appear in Compact and their order (Settings �
 
 ### 5.1 Layout
 
-- **Command bar first.** Typing as soon as the island opens (with the hotkey, focus goes straight in) searches threads, notes, clipboard and actions ("new claude task…", "timer 25", "note …"), the same engine as Dove's Ctrl K.
+- **Command bar first.** Typing as soon as the island opens (with the hotkey, focus goes straight in) searches threads, notes, clipboard and actions ("new claude task…", "timer 25", "note …"), the same engine as Keplorayx's Ctrl K.
 - **Home is a live dashboard of cards,** ordered by attention: needs you → working → now playing → timer → recent clips and notes. Each card expands in place.
 - **Modules** sit in a compact segmented control: Agents · Music · Tray · Notes · Timer. Labels show on hover; numbers 1–5 switch. Modules can be reordered or hidden.
 - **Keyboard everywhere:** ↑↓ to move, Enter to open, A / D for approvals, Esc to close, Ctrl+Alt+Space (rebindable) to toggle from any app.
@@ -162,8 +162,8 @@ Users choose which activities may appear in Compact and their order (Settings �
 
 **Agents** (the core):
 - Rows with a todo-progress ring around the mark, a live ticker of the current tool ("Editing `auth.rs`"), elapsed time, and tokens/cost for the turn.
-- The **approval card shows a diff preview** (file, +/− lines, the first hunk), or the command to be run, with Deny · Always · Allow. Risky requests show Review in Dove.
-- An agent view with a streaming reply, **quick replies** ("Continue", "Run the tests", "Explain"), `@` to attach shelf items, push-to-talk via Voice Mode, Stop, and Open in Dove.
+- The **approval card shows a diff preview** (file, +/− lines, the first hunk), or the command to be run, with Deny · Always · Allow. Risky requests show Review in Keplorayx.
+- An agent view with a streaming reply, **quick replies** ("Continue", "Run the tests", "Explain"), `@` to attach shelf items, push-to-talk via Voice Mode, Stop, and Open in Keplorayx.
 - Team runs grouped under their parent with fan-out progress; race groups with Compare (ROADMAP §3.2).
 - Rate-limit meters with a one-time "plan running low" banner.
 - Flock panes: send a line to the pane's PTY, with Enter confirmation.
@@ -223,7 +223,7 @@ Users choose which activities may appear in Compact and their order (Settings �
 - **Needs you.** The capsule's hairline turns amber and breathes (1.6 s), and the leading mark gets a 6 px amber dot. Nothing else changes, so it reads at a glance without shouting.
 - **Moments.** When a task finishes, the trailing slot rolls to a green "Done" with a check that draws itself (400 ms), then rolls back. When a track changes, the art cross-fades and the title marquees once in the trailing slot.
 - **Bubbles (Minimal).** Extra activities are 36 px glass circles 6 px apart. They're born from the capsule's edge with a little stretch, like a droplet separating.
-- **Idle with "keep visible" on.** The Dove mark and the time, at 60 % opacity, at single width.
+- **Idle with "keep visible" on.** The Keplorayx mark and the time, at 60 % opacity, at single width.
 - **Interaction.**
   - Hover lifts the capsule (+1 px, a stronger highlight) before it expands.
   - Scroll over it cycles the primary activity.
@@ -234,7 +234,7 @@ Users choose which activities may appear in Compact and their order (Settings �
 - About 380 × 96, with the agent mark at 32 px in a tinted plate.
 - Two lines: the title in 13 semibold; then what it wants, in 12, with the command or file in JetBrains Mono.
 - Actions sit right-aligned as pills, primary last (Deny · Always · Allow). Keys A and D work while it's showing.
-- Risky requests show an amber shield icon and only "Review in Dove".
+- Risky requests show an amber shield icon and only "Review in Keplorayx".
 - A thin countdown line along the bottom for timed banners.
 
 **Header (expanded).**
@@ -245,7 +245,7 @@ Users choose which activities may appear in Compact and their order (Settings �
 - A two-column card grid on wide content, one column otherwise.
 - Cards (radius 22, inner glass at 6 %) in attention order: Needs you, then the working agents, Now playing, Timer, Recent clips, Pinned note.
 - Each card has a header row (icon, label, count) and expands in place with the spring.
-- Empty: a centered Dove mark with three suggestion chips (Start an agent · Play music · New note).
+- Empty: a centered Keplorayx mark with three suggestion chips (Start an agent · Play music · New note).
 
 **Agents list.**
 - Rows grouped under sticky headers: Needs you · Working · Recent · Flock.
@@ -311,11 +311,11 @@ Users choose which activities may appear in Compact and their order (Settings �
 | Placement | Top-center of the chosen monitor, under any top taskbar | **Inside the hardware notch**: `NSScreen.safeAreaInsets`, `auxiliaryTopLeftArea/RightArea`; non-notch screens get the floating capsule under the menu bar | Wayland layer-shell (`Overlay`, top anchor, exclusive zone 0) on KDE, Hyprland and Sway; X11 `_NET_WM_WINDOW_TYPE_NOTIFICATION` + above; GNOME: under the top bar, XWayland fallback |
 | Window | Popup, `WS_EX_NOACTIVATE`/`TOOLWINDOW`, shape via window region | Borderless `NSPanel` (non-activating), level above the menu bar, `canJoinAllSpaces` + `stationary` + `fullScreenAuxiliary` (setting) | Layer surface, input region = island |
 | **Glass** | Spike first: a Windows.UI.Composition `DesktopWindowTarget` under GPUI's DirectComposition target, with a host-backdrop brush clipped to the squircle geometry. That is real-time acrylic that respects the shape. Fallback: v1's in-app capture blur | `NSVisualEffectView` (`.hudWindow`, behind-window blending) with a mask image of the shape: real vibrancy | KDE `org_kde_kwin_blur` with the island region; Hyprland/Sway blur via the layer namespace `dove-island`; GNOME: the solid material |
-| Focus for typing | Take the foreground only when a field is clicked; hand it back on close (v1) | `NSPanel` becomes key without activating Dove | Layer-shell keyboard interactivity `on_demand` |
+| Focus for typing | Take the foreground only when a field is clicked; hand it back on close (v1) | `NSPanel` becomes key without activating Keplorayx | Layer-shell keyboard interactivity `on_demand` |
 | Media | GSMTC events | MediaRemote via the `/usr/bin/perl` adapter (entitled) with an AppleScript fallback for Spotify and Music | MPRIS (`zbus`) |
 | Audio level | `IAudioMeterInformation` | Core Audio process tap (14.4+), else none | PipeWire/PulseAudio monitor peak |
 | Drag in/out | Done (out); add an `IDropTarget` for text/URLs/images | `NSDraggingDestination` / `NSDraggingSession` | XDND + `wl_data_device` / `wl_data_source` |
-| Tray and login | `tray-icon`, Run key | `NSStatusItem`, `SMAppService` login item; the island is an `LSUIElement` helper inside `Dove.app` | `ksni` StatusNotifierItem, XDG autostart |
+| Tray and login | `tray-icon`, Run key | `NSStatusItem`, `SMAppService` login item; the island is an `LSUIElement` helper inside `Keplorayx.app` | `ksni` StatusNotifierItem, XDG autostart |
 | Hotkey | `RegisterHotKey` (exists) | Carbon `RegisterEventHotKey` | Portal `GlobalShortcuts`, `XGrabKey` |
 
 ## 7. Performance and resource budgets (CI-gated)
@@ -340,7 +340,7 @@ Each phase ships on its own. Sizes: **S** days, **M** 1–2 weeks, **L** 3+ week
 | --- | --- | --- | --- |
 | **V0: Baseline** | Re-measure v1 after the capture/animation fix; release-build numbers; record the budget gaps | S | A table of real numbers in this doc |
 | **V1: Engine attention model** | §3.2: `AttentionModel`, `Engine::send/decide/answer/interrupt/start` in `dove-core`; TaskView, sidebar and Voice Mode move onto it; tests | M | The notch works with no TaskView open for the thread |
-| **V2: Process split** | §3.1/§3.3: `apps/island` binary, IPC, `dove --headless`, window-close lifecycle, tray moved to the island with **Quit Dove completely**, start at login | L | Close Dove's window: the island keeps showing and approving agents; with nothing running only the island stays, within budget |
+| **V2: Process split** | §3.1/§3.3: `apps/island` binary, IPC, `dove --headless`, window-close lifecycle, tray moved to the island with **Quit Keplorayx completely**, start at login | L | Close Keplorayx's window: the island keeps showing and approving agents; with nothing running only the island stays, within budget |
 | **V3: Zero-idle Windows layer** | §3.4: raw-input pointer, WinEvent hooks, clipboard listener, GSMTC events, close-when-hidden, working-set trim | M | Hidden-island budgets met on Windows |
 | **V4: Design tokens** | §4 and §5 as code: colour, type, radius, spacing and motion tokens for the island, plus a screenshot harness that renders every state over light, dark and busy backgrounds | S | Every state captured in one contact sheet |
 | **V5: Visual system and motion** | Squircle path (zui), glass layers, art tint, presentations, interruptible springs, shared elements, magnetism; the slim view, banner and header rebuilt to §5.4 | L | Every state reviewed in the contact sheet; 0 dropped frames |
@@ -348,7 +348,7 @@ Each phase ships on its own. Sizes: **S** days, **M** 1–2 weeks, **L** 3+ week
 | **V7: Real glass** | Windows composition-backdrop spike → ship or keep the fallback; macOS vibrancy; KWin blur | M | Glass follows moving video at display rate on Windows and macOS |
 | **V8: macOS** | §6 macOS column: notch integration, NSPanel, helper app, MediaRemote adapter, drag, login item | L | Daily-drivable on a notched MacBook and on an external display |
 | **V9: Linux** | §6 Linux column: layer-shell (KDE, Hyprland, Sway), X11, GNOME fallback, MPRIS, SNI tray | L | Works on KDE Wayland, GNOME Wayland, X11 |
-| **V11: Calm revamp** | §11: snappier motion, a rebuilt agent view, zeron's Solar icons across Dove, 8 notch tabs to 5, one primary action per screen, secondary actions on hover, in one `…` menu, on keys and in the command bar | L | Motion targets met; agent view done-when met; every feature still reachable; no screen with more than one filled control |
+| **V11: Calm revamp** | §11: snappier motion, a rebuilt agent view, zeron's Solar icons across Keplorayx, 8 notch tabs to 5, one primary action per screen, secondary actions on hover, in one `…` menu, on keys and in the command bar | L | Motion targets met; agent view done-when met; every feature still reachable; no screen with more than one filled control |
 | **V10: Polish and gates** | Accessibility, multi-monitor, settings page "Notch" of its own, perf gates in CI on all three, docs | M | All budgets green in CI |
 
 Order (§10.5): V0 → V1 → V2 → V3 (foundation), then V4 → V5 → V6 → V7 on Windows, then V8 and V9, then V10.
@@ -368,7 +368,7 @@ Order (§10.5): V0 → V1 → V2 → V3 (foundation), then V4 → V5 → V6 → 
 ## 10. Decisions (made 2026-10-27)
 
 1. **Process split:** `dove-island` ships as a separate binary.
-2. **Dove's window closes with nothing running:** the engine exits; only the island stays.
+2. **Keplorayx's window closes with nothing running:** the engine exits; only the island stays.
 3. **Start at login:** the island is on by default (Settings turns it off).
 4. **Glass default:** dark.
 5. **Order after the foundation:** look and feel on Windows first (V5, V6, then V7), then the macOS and Linux ports (V8, V9). **V4 changes:** the design is done directly in code, not drawn in Paper first; §4–§5 are the spec, and each state is reviewed from screenshots of the running build.
@@ -376,7 +376,7 @@ Order (§10.5): V0 → V1 → V2 → V3 (foundation), then V4 → V5 → V6 → 
 ## 11. V11: Calm revamp (plan, 2026-10-27)
 
 **Status (2026-10-27): built on Windows.**
-- **Icons:** all of Dove now uses Solar Linear. 121 icons were copied from zeron, and 15 of Dove's own plus 14 new ones came from the Solar set; brand marks are unchanged. `THIRD_PARTY_NOTICES.md` updated; the Hugeicons license file removed.
+- **Icons:** all of Keplorayx now uses Solar Linear. 121 icons were copied from zeron, and 15 of Keplorayx's own plus 14 new ones came from the Solar set; brand marks are unchanged. `THIRD_PARTY_NOTICES.md` updated; the Hugeicons license file removed.
 - **Structure:** the tab bar is Home, Agents, Music, Tray and Notifications. Notes, Timer and Dev servers are pages with a back arrow. A menu inside the island (`views/menus.rs`) holds the secondary actions, opened by right-click or `…`. Allow is a split button whose chevron holds Always and Allow all. Tooltips name every icon-only control.
 - **Agent view:**
   - the engine keeps the last turns per task and streams a watched task's text at most every 100 ms (`dove-core` attention, with tests);
@@ -398,7 +398,7 @@ Order (§10.5): V0 → V1 → V2 → V3 (foundation), then V4 → V5 → V6 → 
   - PR checks (Home card, slim activity, popup, Merge);
   - dev-server crash popup;
   - push-to-talk via the engine's dictation;
-  - Ask Dove (`?` or `ask …`);
+  - Ask Keplorayx (`?` or `ask …`);
   - usage popup at 80 %, dismissed per limit window;
   - automations card with Run now;
   - approvals held during a focus timer;
@@ -412,13 +412,13 @@ Order (§10.5): V0 → V1 → V2 → V3 (foundation), then V4 → V5 → V6 → 
 - **Not done or limits:**
   - pages fade in, but the old page doesn't fade out, and there is no 2 % scale (GPUI divs have no transform);
   - no agent-mark flight from row to view;
-  - clicking a file step opens the thread in Dove (the island has no diffs);
+  - clicking a file step opens the thread in Keplorayx (the island has no diffs);
   - `@` attachments are sent as `@path` mentions;
   - the crash popup has no log lines (the island can't read another process's output);
   - the screenshot is the window behind, not a region;
   - push-to-talk needs local voice installed;
   - PRs need the GitHub CLI;
-  - push-to-talk, merge, PR checks and Ask Dove were built and compile, but weren't exercised end to end here (no live agents, voice model or PRs on the QA home);
+  - push-to-talk, merge, PR checks and Ask Keplorayx were built and compile, but weren't exercised end to end here (no live agents, voice model or PRs on the QA home);
   - the main app was checked at its sidebar and home only after the icon swap.
 
 **Why.** The first pass put every feature on the surface. The code has 57 buttons (25 icon buttons, 22 pills, 10 white primaries), and the expanded header alone carries 11 controls: 8 tabs, search, `+` and Pin. V11 keeps **every feature** but makes the island quiet: fewer places to go, one obvious action per screen, and everything else on hover, in one menu, on the keyboard, or in the command bar.
@@ -432,14 +432,14 @@ Order (§10.5): V0 → V1 → V2 → V3 (foundation), then V4 → V5 → V6 → 
 5. **One icon language, app-wide:** zeron's **Solar Icons, Linear** (1.5 stroke, 24 grid; CC BY 4.0, 480 Design), at 16 px in rows and 18 px in the header. Agent brand marks keep their colours. Text labels replace icons wherever a word is clearer.
 6. **No hint text that a tooltip can carry.** "A allow · D deny" and "Ctrl+Enter saves" move into tooltips. Keys still work.
 
-### 11.2 Icons (all of Dove, decision §11.6.1)
+### 11.2 Icons (all of Keplorayx, decision §11.6.1)
 
-Dove has 150 icons (134 constants in use): 23 brand and agent marks, 121 with the same name as a zeron icon but drawn in Hugeicons, and 16 of Dove's own.
+Keplorayx has 150 icons (134 constants in use): 23 brand and agent marks, 121 with the same name as a zeron icon but drawn in Hugeicons, and 16 of Keplorayx's own.
 - **The 121 shared names:** replace each file with zeron's (`zeron/crates/ui/assets/icons`). Names and constants stay the same, so call sites don't change.
-- **Dove's 16 own** (`clipboard-list`, `dove-logo`, `media-next/pause/play/previous/shuffle`, `music-note`, `note-text`, `phone`, `send-up`, `sparkle-agent`, `split-rows`, `timer`, `users-group`, `widget-add`): take the matching Solar Linear glyph. The hand-drawn ones go. `dove-logo` stays (it's the brand).
+- **Keplorayx's 16 own** (`clipboard-list`, `dove-logo`, `media-next/pause/play/previous/shuffle`, `music-note`, `note-text`, `phone`, `send-up`, `sparkle-agent`, `split-rows`, `timer`, `users-group`, `widget-add`): take the matching Solar Linear glyph. The hand-drawn ones go. `dove-logo` stays (it's the brand).
 - **Brand and agent marks** (23) keep their own art and colours.
 - **Sizes:** Solar is drawn for a 1.5 stroke at 24. Check the app at its common icon sizes (14, 16, 18) for glyphs that read heavier or lighter than before, and adjust sizes at call sites, not the files.
-- **Credit:** "Solar Icons by 480 Design (CC BY 4.0)" in `THIRD_PARTY_NOTICES.md` and in the comment on Dove's icon list.
+- **Credit:** "Solar Icons by 480 Design (CC BY 4.0)" in `THIRD_PARTY_NOTICES.md` and in the comment on Keplorayx's icon list.
 - **Review:** the app's own screenshots (sidebar, composer, settings, Flock, call view) as well as the notch's contact sheet, since this changes every screen.
 
 ### 11.3 Structure: 8 tabs → 5 (decision §11.6.2)
@@ -465,7 +465,7 @@ The pages without tabs open with a small back arrow in the header's place of the
 | **Banner** | Dismiss, Deny, Always, Allow (+ key hint) | **Deny** and **Allow**; Allow is a split button whose chevron offers Always | Dismiss → Esc or a swipe up. Key hint → tooltip |
 | **Slim** | As is | As is, without the "+N" chip (the stacked marks and ring say enough) | The count moves into the hover tooltip |
 | **Home** | Up to 6 cards, each with a header row and count | 3 cards at most, in attention order (needs you, working, now playing, timer, dev servers, note, clips), without header rows | Cards that don't fit show as a one-line "2 more" row |
-| **Agents list** | Rows, plus 3 hover icons (message, stop, open) | Rows; hover shows one `…` | `…`: Message, Stop, Open in Dove. Click still opens the agent view. The rate strip becomes one line under the list that appears only above 50 % |
+| **Agents list** | Rows, plus 3 hover icons (message, stop, open) | Rows; hover shows one `…` | `…`: Message, Stop, Open in Keplorayx. Click still opens the agent view. The rate strip becomes one line under the list that appears only above 50 % |
 | **Agent view** | Back, Stop, Open, branch and worktree chips, 3 quick replies, @ chip, Send (+ approvals) | Title row (Stop only while it runs), the reply, the composer with Send | Back → the Agents tab, Esc or Backspace. Open → click the title. Branch and worktree → one faint mono line. Quick replies → suggestions shown only while the composer is empty and focused. @ → type `@` for a shelf picker |
 | **New agent** | Prompt, agent chips, project chips, worktree pill, Start | Prompt and **Start**; one line "Claude Code · dove · worktree off" | Click the line to change the agent, project or worktree (an inline picker) |
 | **Music** | Shuffle, prev, play, next, device chip, scrubber | Prev, **play**, next, scrubber | Shuffle and the device appear on hover, top right. Volume stays on scroll |
@@ -489,7 +489,7 @@ Result: the header goes from 11 controls to 6, the agent view from about 11 to 2
 
 ### 11.6 Decisions (made 2026-10-27)
 
-1. **Icons:** all of Dove moves to zeron's Solar Linear, not just the notch (§11.2).
+1. **Icons:** all of Keplorayx moves to zeron's Solar Linear, not just the notch (§11.2).
 2. **Tabs:** Home, Agents, Music, Tray and Notifications. Notes, Timer and Dev servers become pages reached from Home, the slim island and the command bar (§11.3).
 3. **Pin:** leaves the header for the header's `…` menu and Ctrl+P.
 
@@ -537,17 +537,17 @@ On top of that, after 10 s hidden the window is destroyed, so the next open also
 - **It doesn't follow the stream.** The reply doesn't stay scrolled to the bottom as it grows.
 - **A fixed 330 px height,** whether the agent said one line or a page.
 - **Approvals push the conversation away.** Several stack above the reply and can hide it.
-- **Questions can't be answered here.** Only "Answer in Dove".
+- **Questions can't be answered here.** Only "Answer in Keplorayx".
 - **The composer is one line,** so longer messages are awkward.
 - **Stop has no Undo,** and there's no sign of messages queued for the end of the turn.
 
 **The new agent view.**
-- **Title row.** The mark in its progress ring, the title (click to open in Dove), one status word in its colour, and Stop while it runs. A faint mono line under it: `feat/login · worktree · 4m · $0.12`.
+- **Title row.** The mark in its progress ring, the title (click to open in Keplorayx), one status word in its colour, and Stop while it runs. A faint mono line under it: `feat/login · worktree · 4m · $0.12`.
 - **A real mini transcript,** newest at the bottom, sticking to the bottom while it streams (unless you scroll up, then a "Jump to latest" pill):
   - **your messages** as right-aligned bubbles, including queued ones (marked "queued" until the agent reads them);
   - **the agent's replies** with proper Markdown: headings, bold and italic inline (one text run, no line breaks), code spans, fenced code blocks in JetBrains Mono with a Copy button on hover, lists, links (open in the browser);
   - **tool steps** folded into one line per turn ("Edited 3 files · ran tests ✓ · 1 failed"); click it to unfold the list of steps, and click a file step to see its diff;
-  - the last 3 turns, with "Earlier in Dove" at the top to open the full thread.
+  - the last 3 turns, with "Earlier in Keplorayx" at the top to open the full thread.
 - **Streaming, at low cost.** The engine announces text at most every 100 ms per task, and only to readers that asked for it (the island while that agent's view is open). Every other reader still gets the existing per-event pings, so idle cost doesn't change.
 - **Approvals pinned at the bottom,** above the composer, one at a time, with a diff preview and "1 of 3" when there are more. The conversation stays visible above. Deny keeps its Undo.
 - **Questions answered in place:** the question with its options as buttons (and free text when it allows it), sent with `Engine::answer`.
@@ -559,8 +559,8 @@ On top of that, after 10 s hidden the window is destroyed, so the next open also
   - quick replies ("Continue", "Run the tests", "Explain") show only while the composer is empty and focused.
 - **Height follows the content.** At least 220 px, at most the island's maximum, springing as the reply grows.
 - **Stop has an Undo** for 3 s, like Deny.
-- **Keyboard:** Esc goes back; ↑ in an empty composer edits your last queued message; A and D answer the visible approval; Ctrl+O opens the thread in Dove.
-- **Done when** a streaming reply reads smoothly with no jumps, a long reply with code and lists renders like Dove's transcript, you can approve, answer, steer, queue and stop without leaving the island, and the view looks right at 1 line and at 200.
+- **Keyboard:** Esc goes back; ↑ in an empty composer edits your last queued message; A and D answer the visible approval; Ctrl+O opens the thread in Keplorayx.
+- **Done when** a streaming reply reads smoothly with no jumps, a long reply with code and lists renders like Keplorayx's transcript, you can approve, answer, steer, queue and stop without leaving the island, and the view looks right at 1 line and at 200.
 
 ### 11.9 More things the notch does (picked 2026-10-27: 1–12 in V11; 13 and 14 later)
 
@@ -575,12 +575,12 @@ Agent work first, since it's what no other notch can do.
 | 5 | **PR and CI activity** | After an agent opens a PR: a live activity with checks running or failing, then Merge, from the island | M |
 | 6 | **Dev-server watch** | When a dev server an agent started crashes, a banner with its last log lines and "Ask the agent to fix it" | M |
 | 7 | **Push-to-talk to an agent** | Hold the hotkey and speak; it's transcribed into the agent's composer (local voice model) | M |
-| 8 | **Ask Dove** | Type a question in the command bar and get a short answer inline from the default agent, in a scratch thread | M |
+| 8 | **Ask Keplorayx** | Type a question in the command bar and get a short answer inline from the default agent, in a scratch thread | M |
 | 9 | **Usage running low** | A popup banner when a plan passes 80 % of a limit, with the meter and when it resets. It stays until you dismiss it, then stays quiet for that limit window | S |
 | 10 | **Automations** | Next scheduled run, "Run now", and the last run's result | S |
 | 11 | **Focus with batching** | During a focus timer, approvals queue silently and arrive together when it ends (risky ones still break through) | S |
 | 12 | **Screenshot and annotate** | Capture a region; the shot pops up in the island like the usage banner, where you draw an arrow, box or highlight on it and send it to an agent (or keep it in the tray). It goes away when you dismiss or send it; no separate window | M |
-| 13 | **Continue on phone** (later) | Hand the agent view to Dove's phone remote with one click | S |
+| 13 | **Continue on phone** (later) | Hand the agent view to Keplorayx's phone remote with one click | S |
 | 14 | **Agent cost today** (later) | A tiny daily total of tokens and spend across agents, on Home | S |
 
 ### 11.10 Order and done-when
@@ -593,7 +593,7 @@ Agent work first, since it's what no other notch can do.
 6. Every other screen in §11.4.
 7. Shared elements and rolling numbers (§11.7 items 8 and 9).
 8. Command-bar verbs.
-9. Ideas 1–12 from §11.9, in this order: 1, 2, 11 (approvals); 9 (usage popup); 4, 3 (clipboard and drop); 12 (screenshot popup); 6, 5 (dev servers, PR/CI); 10 (automations); 7, 8 (voice and Ask Dove). Both popups (9 and 12) use the banner presentation and its dismiss.
+9. Ideas 1–12 from §11.9, in this order: 1, 2, 11 (approvals); 9 (usage popup); 4, 3 (clipboard and drop); 12 (screenshot popup); 6, 5 (dev servers, PR/CI); 10 (automations); 7, 8 (voice and Ask Keplorayx). Both popups (9 and 12) use the banner presentation and its dismiss.
 10. Contact sheet (`scripts/notch_sheet.ps1`) before and after, the `-Motion` timings, and a keyboard pass.
 
 Done when the motion targets in §11.7 are met in the timing trace, the agent view meets its own done-when (§11.8), every action in §5.2 is still reachable (each checked by pointer, keyboard and command bar), no screen has more than one filled control, and the contact sheet reads calmer at a glance. One build at the end.

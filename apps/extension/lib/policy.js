@@ -1,12 +1,12 @@
-// Dove for Chrome — pure rules shared by the service worker and the tests.
+// Keplorayx for Chrome — pure rules shared by the service worker and the tests.
 // Nothing here touches chrome.* APIs, so `node --test` can check every rule.
 
-/** Largest message accepted from Dove (screenshots go the other way). */
+/** Largest message accepted from Keplorayx (screenshots go the other way). */
 export const MAX_INBOUND_BYTES = 1024 * 1024;
-/** Largest text result sent back to Dove. */
+/** Largest text result sent back to Keplorayx. */
 export const MAX_RESULT_CHARS = 200_000;
 
-/** Every tool Dove may call, with the arguments each accepts. */
+/** Every tool Keplorayx may call, with the arguments each accepts. */
 export const TOOLS = {
   tabs: [],
   tab_open: ['url', 'background'],
@@ -59,7 +59,7 @@ export function normalizeUrl(raw) {
 }
 
 /**
- * Check a message from Dove: known type, known tool, plain-object args,
+ * Check a message from Keplorayx: known type, known tool, plain-object args,
  * nothing unexpected. Returns an error string, or null when it is fine.
  */
 export function validateInbound(raw) {
@@ -131,7 +131,7 @@ export function consequential(action, el) {
   return null;
 }
 
-/** Fields Dove never types into: passwords, payment and identity numbers. */
+/** Fields Keplorayx never types into: passwords, payment and identity numbers. */
 export function sensitiveField(el) {
   if (!el) return null;
   const type = String(el.type || '').toLowerCase();

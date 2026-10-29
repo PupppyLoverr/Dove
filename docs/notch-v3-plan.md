@@ -29,7 +29,7 @@ See "Built" at the end for what landed where.
 | Black island (solid black, glass opt-in, flat cards, shared empty states, Home shortcuts) | Built and checked on screen, **not committed**, in the main checkout on `feat/notch-v2` |
 | K22 icon pack, Inter + JetBrains Mono (`689e34d`) | On `feat/ui-v4` only |
 | UI v4's notch rework (about 1,440 lines across 16 notch/island files) | On `feat/ui-v4` only |
-| Rebrand Dove → Keplorayx (K22) | Uncommitted in the main checkout, by another session; it touches `notch/mod.rs` and `settings.rs` |
+| Rebrand Keplorayx → Keplorayx (K22) | Uncommitted in the main checkout, by another session; it touches `notch/mod.rs` and `settings.rs` |
 | Voice Mode | `voice_call.rs` on the app's Shell, plus `crates/dove-voice`: pipeline, `Conductor`, intents, optional model router. The notch has push-to-talk only (`ToEngine::Dictate`) |
 | Generative UI | Already exists: agents call the `show_visual` MCP tool with a Luau script, which returns a `zeron_visual` node tree that `visuals.rs` renders (charts, tables, dashboards, controls) |
 | Plans and progress | `AgentEvent::Plan { text }`, `Todos { items }`, `Status`, `ToolDiff` and `PermissionRequested` all flow from every harness through `dove-proto` |

@@ -1,6 +1,6 @@
-# Dove for Android
+# Keplorayx for Android
 
-Dove for Android lets you follow and steer Dove sessions from an Android device. Sign in with Woozlit or open the built-in demo.
+Keplorayx for Android lets you follow and steer Keplorayx sessions from an Android device. Sign in with Woozlit or open the built-in demo.
 
 ## Build and run
 
@@ -12,7 +12,7 @@ Install the Android SDK, NDK `27.2.12479018`, Rust targets `aarch64-linux-androi
 ./gradlew lintDebug
 ```
 
-The first build compiles Dove's Rust mobile core, generates UniFFI bindings and Android icons, and packages the `arm64-v8a` and `x86_64` libraries. Generated files stay under `mesh/target/android-core`.
+The first build compiles Keplorayx's Rust mobile core, generates UniFFI bindings and Android icons, and packages the `arm64-v8a` and `x86_64` libraries. Generated files stay under `mesh/target/android-core`.
 
 Install and launch the demo:
 
@@ -36,13 +36,13 @@ Sign-in uses Woozlit only. The app checks the OAuth state in the `dove://auth/ca
 
 ## App architecture
 
-Rust decides what to paint; Kotlin paints. Dove's mesh core owns session behavior, authentication, and the view data sent to Jetpack Compose. `net/DoveClient.kt` and `net/ChatBridge.kt` are the Kotlin boundary to that core. UniFFI generates the Kotlin bindings and native libraries during the Android build.
+Rust decides what to paint; Kotlin paints. Keplorayx's mesh core owns session behavior, authentication, and the view data sent to Jetpack Compose. `net/DoveClient.kt` and `net/ChatBridge.kt` are the Kotlin boundary to that core. UniFFI generates the Kotlin bindings and native libraries during the Android build.
 
 The Kotlin registry replica would be a second source of truth. Cosmos's `RegistryBridge` only nudged the host and could not deliver messages durably, so sends and interrupts go through the core's command ledger.
 
 ## Pairing
 
-Dove's mobile core exposes no pairing API. Offer, list, and revoke are host IPC in `mesh/crates/rpc/src/lib.rs`; the app signs in with Woozlit only and has no code or QR entry.
+Keplorayx's mobile core exposes no pairing API. Offer, list, and revoke are host IPC in `mesh/crates/rpc/src/lib.rs`; the app signs in with Woozlit only and has no code or QR entry.
 
 ## Screenshot tests
 

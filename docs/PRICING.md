@@ -1,13 +1,13 @@
-# Dove pricing
+# Keplorayx pricing
 
-Dove is free to download and free to use with your own agents and keys. Paid plans cover what costs real money to run or to support: hosted sync for phones and multiple machines, team features, and enterprise controls.
+Keplorayx is free to download and free to use with your own agents and keys. Paid plans cover what costs real money to run or to support: hosted sync for phones and multiple machines, team features, and enterprise controls.
 
 ## Principles
 
-1. **BYOK stays free, forever.** Dove never resells model tokens. You pay Anthropic, OpenAI, Google and others directly, or use the subscriptions you already have (Claude, ChatGPT, Cursor, Copilot). No markup, no credits.
+1. **BYOK stays free, forever.** Keplorayx never resells model tokens. You pay Anthropic, OpenAI, Google and others directly, or use the subscriptions you already have (Claude, ChatGPT, Cursor, Copilot). No markup, no credits.
 2. **Everything local is free.** Any feature that runs on your machine (all agents, worktrees, diffs, browser control, generative UI, office documents, integrations, usage ledger) is in the free plan.
 3. **Pay for hosted, shared and governed.** Hosted relay capacity, history retention, team spaces, SSO and audit are the paid surface.
-4. **The relay is open source.** Anyone can self-host the Cloudflare Worker on their own free-tier account and get remote control without paying Dove.
+4. **The relay is open source.** Anyone can self-host the Cloudflare Worker on their own free-tier account and get remote control without paying Keplorayx.
 
 ## Plans
 
@@ -18,7 +18,7 @@ Dove is free to download and free to use with your own agents and keys. Paid pla
 | Browser control (in-app + Chrome extension) | ✓ | ✓ | ✓ | ✓ |
 | Generative UI, office docs, Paper, Composio (own key), computer use | ✓ | ✓ | ✓ | ✓ |
 | Usage ledger across agents | ✓ | ✓ | ✓ | Org-wide reporting |
-| Mobile remote via Dove's hosted relay | 1 desktop + 1 phone | Unlimited devices | Unlimited devices | Unlimited devices |
+| Mobile remote via Keplorayx's hosted relay | 1 desktop + 1 phone | Unlimited devices | Unlimited devices | Unlimited devices |
 | Remote session history on the relay | 24 hours | 90 days | 1 year | Custom retention |
 | Push notifications (needs you / done / failed) | — | ✓ | ✓ | ✓ |
 | Start new runs from the phone | ✓ | ✓ | ✓ | ✓ |
@@ -43,11 +43,11 @@ Benchmarks below come from each vendor's public pricing page when this plan was 
 | Warp | Free; paid individual ~$18–20/mo | Business tier per seat, above individual | Terminal plus bundled AI requests |
 | Conductor | Free with your own Claude/Codex plan; paid tiers ~$50–60/mo observed | Teams and Enterprise listed | Mac app orchestrating Claude Code/Codex worktrees |
 | Codex | Included with ChatGPT Plus ($20/mo) and Pro ($200/mo) | Business/Enterprise per seat | Model access plus the agent |
-| Zeron | Open source desktop (MIT); hosted features are the paid surface | — | Agent workspace, the design reference for Dove |
+| Zeron | Open source desktop (MIT); hosted features are the paid surface | — | Agent workspace, the design reference for Keplorayx |
 
 What follows from this:
 
-- Cursor, Warp and Codex charge $18–20 at the entry tier mostly because **they bundle model inference**. Dove bundles none, so its Pro price has to sit clearly below that line. $12 ($10 yearly) is close to the price of one hosted service, which is what Pro is.
+- Cursor, Warp and Codex charge $18–20 at the entry tier mostly because **they bundle model inference**. Keplorayx bundles none, so its Pro price has to sit clearly below that line. $12 ($10 yearly) is close to the price of one hosted service, which is what Pro is.
 - Conductor shows that people pay for orchestration alone, but its paid tiers are above what a sync add-on can justify for individuals.
 - Team at $24/user is below Cursor Teams (~$40) and comparable to Warp's team tier. It is still twice Pro, because shared state and seat management carry most of the cost.
 - Enterprise is custom because SSO, audit and self-hosted relay support are sales-led everywhere in this market.

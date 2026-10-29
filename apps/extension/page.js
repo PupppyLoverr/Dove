@@ -308,7 +308,7 @@ export async function pageWaitFor(text, selector, timeoutMs) {
   return { error: `Timed out after ${timeoutMs} ms waiting for ${selector ? 'selector ' + selector : text ? '"' + text + '"' : 'the page to load'}.` };
 }
 
-/** The "Dove is controlling this tab" indicator: a hairline frame and a pill. */
+/** The "Keplorayx is controlling this tab" indicator: a hairline frame and a pill. */
 export function pageIndicator(on, label) {
   const ID = 'dove-control-indicator';
   let host = document.getElementById(ID);
@@ -338,6 +338,6 @@ export function pageIndicator(on, label) {
     document.documentElement.appendChild(host);
   }
   const t = host._root?.querySelector('.t');
-  if (t) t.textContent = label || 'Dove is controlling this tab';
+  if (t) t.textContent = label || 'Keplorayx is controlling this tab';
   return true;
 }

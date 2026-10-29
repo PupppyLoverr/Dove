@@ -1,16 +1,16 @@
-# Dove for Chrome
+# Keplorayx for Chrome
 
-A Manifest V3 extension that lets the agents in the Dove desktop app work in
+A Manifest V3 extension that lets the agents in the Keplorayx desktop app work in
 your own browser (your logins, your tabs) on the sites you allow, while you
 watch, stop or take over at any moment.
 
-It is one of three ways agents browse in Dove:
+It is one of three ways agents browse in Keplorayx:
 
 | Path | What it is | When agents use it |
 | --- | --- | --- |
 | **ego lite** (`ego-browser`) | Your Chromium with an isolated Space per task | Default for web tasks when installed and healthy (the `dove-browser` skill) |
-| **Dove's browser** (`browser_*` tools) | The in-app browser in the side panel | Local dev servers, or when you choose it in Settings › Plugins |
-| **Dove for Chrome** (`chrome_*` tools) | This extension, in the browser you already use | Tasks that need your signed-in session in that browser |
+| **Keplorayx's browser** (`browser_*` tools) | The in-app browser in the side panel | Local dev servers, or when you choose it in Settings › Plugins |
+| **Keplorayx for Chrome** (`chrome_*` tools) | This extension, in the browser you already use | Tasks that need your signed-in session in that browser |
 
 The extension never takes over ego lite's Spaces, never opens windows on its
 own except its review window, and acts only on tabs it is asked to.
@@ -24,7 +24,7 @@ Safari are not supported.
 
 ## What it can do
 
-| Tool (in Dove: `chrome_<name>`) | |
+| Tool (in Keplorayx: `chrome_<name>`) | |
 | --- | --- |
 | `tabs`, `tab_open`, `tab_close`, `tab_activate` | List and manage tabs |
 | `navigate`, `wait` | Load pages; wait for text, a selector or the load (reports "still loading" instead of hanging) |
@@ -44,12 +44,12 @@ agent takes a fresh snapshot instead of clicking the wrong thing.
 
 ## Trust model
 
-- **Pairing.** Dove listens on `127.0.0.1` only. The extension's first message
+- **Pairing.** Keplorayx listens on `127.0.0.1` only. The extension's first message
   must carry the pairing token (64 hex characters from the OS CSPRNG), and
-  Dove accepts only `chrome-extension://` origins. After the first pairing Dove
+  Keplorayx accepts only `chrome-extension://` origins. After the first pairing Keplorayx
   remembers that extension and refuses any other until you choose **New
-  pairing code** in Dove › Settings › Plugins.
-- **Messages from Dove** are validated before anything runs: known message
+  pairing code** in Keplorayx › Settings › Plugins.
+- **Messages from Keplorayx** are validated before anything runs: known message
   types, known tools, only that tool's arguments, plain-object arguments, at
   most 1 MB. Anything else gets an error reply.
 - **Messages inside the browser.** Only the extension's own pages (side panel,
@@ -67,16 +67,16 @@ agent takes a fresh snapshot instead of clicking the wrong thing.
   declined action fails with a message telling the agent not to retry. The
   review window is an extension page: a website cannot draw over it or click
   it.
-- **Fields Dove never types into:** passwords, payment card fields, identity
+- **Fields Keplorayx never types into:** passwords, payment card fields, identity
   and bank numbers, one-time codes. The agent is told to ask you to fill them.
 - **Untrusted content.** Text read from a page is returned inside
   `<page origin="…">…</page>` with a note that it is untrusted data, so an
   agent does not mistake "ignore your instructions" on a page for an
   instruction.
-- **Stop.** The side panel's Stop and the in-page "Dove is controlling this
+- **Stop.** The side panel's Stop and the in-page "Keplorayx is controlling this
   tab" pill pause the extension, deny every pending review, and fail in-flight
   calls within ~100 ms (measured: 35 ms). Nothing runs until you Resume.
-- **Uploads** are checked by Dove first: only existing files inside the
+- **Uploads** are checked by Keplorayx first: only existing files inside the
   asking thread's folder.
 - **The activity log** keeps short summaries, never page contents or full
   payloads, in session storage (cleared when the browser closes).
@@ -84,9 +84,9 @@ agent takes a fresh snapshot instead of clicking the wrong thing.
 ## Develop
 
 Load it unpacked: open `chrome://extensions` (or `edge://extensions`), turn on
-Developer mode, **Load unpacked**, pick `apps/extension`. Click the Dove icon to
-open the side panel, then paste the pairing code from Dove › Settings ›
-Integrations › Dove for Chrome.
+Developer mode, **Load unpacked**, pick `apps/extension`. Click the Keplorayx icon to
+open the side panel, then paste the pairing code from Keplorayx › Settings ›
+Integrations › Keplorayx for Chrome.
 
 ```sh
 cd apps/extension
@@ -96,7 +96,7 @@ node test/e2e/run.mjs             # browser evaluations in headless Chromium
 
 `test/e2e/run.mjs` launches each installed Chromium browser headless with a
 temporary profile and a copy of the extension, serves local fixture sites from
-`127.0.0.1`, and drives the extension over the same wire protocol as Dove's
+`127.0.0.1`, and drives the extension over the same wire protocol as Keplorayx's
 bridge (a test double in `test/e2e/harness.mjs`). The only change to the copy:
 host access to the fixture origin is pre-granted in its manifest, because a
 headless browser cannot show the permission prompt. Reviews are answered by
@@ -109,7 +109,7 @@ choose browsers.
 1. Bump `version` in `manifest.json`.
 2. `node --test "test/*.test.mjs"` and `node test/e2e/run.mjs` pass in Chrome
    and Edge.
-3. Pair with a release build of Dove and run QA prompts H, I and J from
+3. Pair with a release build of Keplorayx and run QA prompts H, I and J from
    `docs/QA_PROMPTS.md` by hand.
 4. Check `manifest.json` still has no `host_permissions` and only the
    permissions listed below.
@@ -117,18 +117,18 @@ choose browsers.
    `cd apps/extension && zip -r ../../dove-for-chrome-<version>.zip . -x 'test/*'`
 6. Upload to the Chrome Web Store and Edge Add-ons; describe each permission:
    - `tabs`: list tabs and their titles/URLs for `chrome_tabs`.
-   - `scripting`: run Dove's page functions in tabs you allowed.
+   - `scripting`: run Keplorayx's page functions in tabs you allowed.
    - `debugger`: trusted clicks, typing and screenshots (Chrome shows its
-     "started debugging" bar while Dove acts).
+     "started debugging" bar while Keplorayx acts).
    - `storage`: pairing, allowed sites, the activity log.
-   - `sidePanel`, `alarms`: the side panel; reconnecting to Dove.
+   - `sidePanel`, `alarms`: the side panel; reconnecting to Keplorayx.
    - optional `http://*/*`, `https://*/*`: requested per site, from your click.
 
 ## Limits
 
 - Cross-origin iframes are listed but not read or acted in.
 - Closed shadow roots are invisible (by design of the web platform).
-- Chrome shows a "Dove started debugging this browser" bar while an agent
+- Chrome shows a "Keplorayx started debugging this browser" bar while an agent
   clicks or types; that is the price of trusted input events.
 - The heuristics for consequential actions are word lists and form context.
   They catch common cases (the e2e suite covers order, delete and submit

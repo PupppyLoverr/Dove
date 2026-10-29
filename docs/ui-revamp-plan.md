@@ -1,4 +1,4 @@
-# Dove UI/UX revamp — plan v2
+# Keplorayx UI/UX revamp — plan v2
 
 Status: proposal, 2026-10-12. Supersedes v1, which is folded in below.
 Owner: main UI session (Opus 5.5). Bounded sweeps go to Haiku subagents.
@@ -42,7 +42,7 @@ Verified facts that C relies on:
 - **Stick-to-bottom spring** with a growth EMA that parks when idle (no animation loop), and a 70 px release band.
 - **Send runway**: space reserved under a just-sent message so it glides to the top.
 
-Dove's biggest current cost: the streaming message re-parses its *entire* markdown on every 8 ms batch (`transcript.rs:317`), which is O(n²) over a long reply.
+Keplorayx's biggest current cost: the streaming message re-parses its *entire* markdown on every 8 ms batch (`transcript.rs:317`), which is O(n²) over a long reply.
 
 **Voice.** Zeron dictation is local-only:
 - Model: Parakeet TDT 0.6B v3 INT8 ONNX, 670 MB, downloaded from Settings with SHA-256 verification, CC-BY-4.0.
@@ -51,7 +51,7 @@ Dove's biggest current cost: the streaming message re-parses its *entire* markdo
 
 **Meters.**
 - Context ring: from harness events (Claude: latest message input + cache tokens; Codex: `tokenUsage.last`; ACP: `usage_update`). Colors: muted < 75%, warning ≥ 75%, danger ≥ 90%.
-- Plan-usage ring: from rate-limit windows. Claude has `rate_limit_event` and Codex has `account/rateLimits/updated`. Dove currently ignores both.
+- Plan-usage ring: from rate-limit windows. Claude has `rate_limit_event` and Codex has `account/rateLimits/updated`. Keplorayx currently ignores both.
 
 **Kanban (Synara).** Cards are chats. Columns: Draft → In progress → Awaiting you → Done, with a Review state when a live PR exists. Cards support "Send as goal".
 
@@ -88,7 +88,7 @@ Attention first · keyboard-complete · calm by default · honest (no fake butto
 ```
 
 **Top bar** (always visible, including when the sidebar is collapsed):
-- Dove mark, sidebar toggle (Ctrl+B), back/forward.
+- Keplorayx mark, sidebar toggle (Ctrl+B), back/forward.
 - **Thread tabs**: open threads with a status glyph and title. Middle-click closes; closing doesn't archive; drag to reorder. A **+** opens a new thread.
 - Right side:
   - **per-thread view switch `Chat | Terminal`** (Ctrl+`) when a thread is active;
@@ -138,7 +138,7 @@ Attention first · keyboard-complete · calm by default · honest (no fake butto
 - **Input**:
   - Placeholder "Ask anything, / for commands, @ for context".
   - Auto-grows from a 49 px compact pill (Zeron hysteresis) to a 300 px cap.
-  - `@` mentions files from the worktree; `/` offers agent slash commands plus Dove templates.
+  - `@` mentions files from the worktree; `/` offers agent slash commands plus Keplorayx templates.
   - Paste or drop images and files; attachments show as chips with previews.
 - **Bottom row**:
   - **＋** attach (files, images, folder context).
@@ -241,7 +241,7 @@ Attention first · keyboard-complete · calm by default · honest (no fake butto
   - **Event triggers**: "on new commit to branch" and "on PR opened/review requested" (via `gh` polling).
   - Each run creates a normal thread tagged with the automation.
   - The **Inbox** tab lists runs with unread markers.
-  - The scheduler lives in `dove-core` and runs while Dove runs. An optional tray icon keeps it alive with the window closed.
+  - The scheduler lives in `dove-core` and runs while Keplorayx runs. An optional tray icon keeps it alive with the window closed.
 - **Pull requests**: the existing list plus a detail page (description, checks, files using the diff view) and **Check out in new thread**.
 - **More**:
   - **Agents**: per agent, path (override), version, sign-in status with "Sign in", default model, and enabled.
@@ -264,7 +264,7 @@ Tabs: **Changes · Files · Terminal (shells) · Preview · Plan**. Resizable 36
 
 ## 10. Notifications and attention
 
-- OS notification when a thread needs you, finishes, or fails while Dove is unfocused; clicking opens the thread.
+- OS notification when a thread needs you, finishes, or fails while Keplorayx is unfocused; clicking opens the thread.
 - Taskbar badge with the Needs-you count. Optional sound.
 - In-app toasts for background completions.
 
@@ -296,7 +296,7 @@ Tabs: **Changes · Files · Terminal (shells) · Preview · Plan**. Resizable 36
 | **P4 Chat ⇄ Terminal** | Driver ownership, PTY command spawn, handoff both ways, transcript mirror, per-agent table | Toggle on an idle Claude thread < 1.5 s; chat stays live during the TUI |
 | **P5 Conversation polish** | Activity fold with mini diffs, actions, rail, working indicator, permission hotkeys, auto titles | A long run reads cleanly; approvals take one key |
 | **P6 Pages** | Threads, Kanban, Automations (scheduler + inbox), PR detail, More pages | An automation fires on schedule into a thread |
-| **P7 Side panel and delivery** | Changes with stage, comments and the commit/push/PR footer, file preview, plan | Prompt → review → PR inside Dove |
+| **P7 Side panel and delivery** | Changes with stage, comments and the commit/push/PR footer, file preview, plan | Prompt → review → PR inside Keplorayx |
 | **P8 Voice** | Parakeet local install from Settings › Voice, mic in the composer and terminal | Dictate offline; installer verifies hashes |
 | **P9 Polish** | Light-theme parity, empty states, skeletons, motion review, a11y sweep | Visual QA checklist clean |
 
@@ -335,4 +335,4 @@ Tabs: **Changes · Files · Terminal (shells) · Preview · Plan**. Resizable 36
 
 ## 16. Open risk found during research
 
-`crates/dove-harness/Cargo.toml` now depends on `zeron-harness` and `zeron-proto` by relative path (`../../../zeron/...`), added by the model-picker session. Dove won't build without a sibling Zeron checkout, which breaks CI and any fresh clone. Before P0 lands, either vendor the needed Zeron crates under `vendor/` (MIT, with notices) or pin them as a git dependency at a fixed revision.
+`crates/dove-harness/Cargo.toml` now depends on `zeron-harness` and `zeron-proto` by relative path (`../../../zeron/...`), added by the model-picker session. Keplorayx won't build without a sibling Zeron checkout, which breaks CI and any fresh clone. Before P0 lands, either vendor the needed Zeron crates under `vendor/` (MIT, with notices) or pin them as a git dependency at a fixed revision.

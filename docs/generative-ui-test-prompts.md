@@ -1,6 +1,6 @@
 # Generative UI and agent-browser test prompts
 
-Use these in any Dove thread. Claude Code gets the `dove` MCP tools
+Use these in any Keplorayx thread. Claude Code gets the `dove` MCP tools
 automatically; Codex and ACP agents do too. Each prompt says what to expect.
 
 ## Interactive cards (`show_ui`)

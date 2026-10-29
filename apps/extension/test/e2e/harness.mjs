@@ -1,4 +1,4 @@
-// Test plumbing: a stand-in for Dove's loopback bridge (the same wire
+// Test plumbing: a stand-in for Keplorayx's loopback bridge (the same wire
 // protocol as apps/dove/src/browser/control.rs), a tiny DevTools client, and
 // browser discovery. Clearly a test double: it lives only under test/.
 import http from 'node:http';
@@ -8,7 +8,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { spawn } from 'node:child_process';
 
-// ---------- the stand-in Dove bridge ----------
+// ---------- the stand-in Keplorayx bridge ----------
 export function startBridge() {
   const token = crypto.randomBytes(32).toString('hex');
   let sock = null;
@@ -44,7 +44,7 @@ export function startBridge() {
           if (msg.token !== token) { socket.write(frame(1, JSON.stringify({ type: 'rejected', reason: 'bad token' }))); socket.end(); return; }
           paired = true;
           sock = socket;
-          socket.write(frame(1, JSON.stringify({ type: 'welcome', app: 'Dove (test bridge)' })));
+          socket.write(frame(1, JSON.stringify({ type: 'welcome', app: 'Keplorayx (test bridge)' })));
           onHello(msg);
         } else if (msg.type === 'result' && paired) {
           const p = pending.get(msg.id);

@@ -11,7 +11,7 @@ val androidNdkVersion = "27.2.12479018"
 val skipCore = providers.gradleProperty("doveSkipCore").isPresent
 
 val buildCore by tasks.registering(Exec::class) {
-    description = "Builds Dove's Rust mobile core and generates Kotlin bindings."
+    description = "Builds Keplorayx's Rust mobile core and generates Kotlin bindings."
     val ndk = System.getenv("ANDROID_NDK_HOME")
         ?: androidComponents.sdkComponents.sdkDirectory.get().dir("ndk/$androidNdkVersion").asFile.path
     val nativeLibraries = coreOut.resolve("jniLibs")
@@ -25,7 +25,7 @@ val buildCore by tasks.registering(Exec::class) {
 }
 
 val generateIcons by tasks.registering(Exec::class) {
-    description = "Generates Android vector icons from Dove's shared SVG assets."
+    description = "Generates Android vector icons from Keplorayx's shared SVG assets."
     inputs.dir(repoRoot.resolve("apps/dove/assets/icons"))
     inputs.dir(repoRoot.resolve("apps/ios/Zeron/Assets.xcassets/TabIcons"))
     inputs.dir(repoRoot.resolve("apps/ios/Zeron/Assets.xcassets/ToolIcons"))

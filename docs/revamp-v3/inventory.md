@@ -1,4 +1,4 @@
-# Dove UI inventory: baseline for the "nothing removed" checklist
+# Keplorayx UI inventory: baseline for the "nothing removed" checklist
 
 Snapshot of the working tree on 2026-10-15 (HEAD `2cd238b` plus uncommitted changes). Paths are relative to `apps/dove/src` unless shown otherwise. Line numbers are approximate; the tree is changing.
 
@@ -40,7 +40,7 @@ Snapshot of the working tree on 2026-10-15 (HEAD `2cd238b` plus uncommitted chan
 | 30 | Remote Control | Woozlit account | status + Sign in / Sign out | — | — |
 | 31 | Remote Control | Connection status | badge | — | — |
 | 32 | Remote Control | Device ID, Last error | read-only rows | — | — |
-| 33 | Integrations | Dove for Chrome | status + pairing code copy | — | — |
+| 33 | Integrations | Keplorayx for Chrome | status + pairing code copy | — | — |
 | 34 | Integrations | Composio | switch | `integrations.json › composio.enabled` | off |
 | 35 | Integrations | Composio API key | masked field | `composio.api_key` | empty |
 | 36 | Integrations | Composio toolkits | 10 chips + other slugs field | `composio.toolkits` | empty |

@@ -65,7 +65,7 @@ fetch that would cut it to about 6 MB.
 ### Parakeet no longer loads at startup (−670 MB idle)
 
 `VoiceModel::init` used to send Parakeet (≈670 MB once loaded) to the
-dictation worker as soon as Dove started, whenever the model was installed.
+dictation worker as soon as Keplorayx started, whenever the model was installed.
 Dictation already loads the model on the worker while the microphone
 records, and the worker drops it after 10 idle minutes anyway, so the
 startup warm-up only helped clips shorter than the load time in the first
@@ -79,9 +79,9 @@ memory (static data, decoded on demand); this only shrinks the binary.
 
 ## Looked at, not changed
 
-- **`image` features.** Trimming Dove's list does nothing: gpui (the zui
+- **`image` features.** Trimming Keplorayx's list does nothing: gpui (the zui
   git dependency) enables bmp, dds, exr, ff, gif, hdr, ico, jpeg, png, pnm,
-  qoi, tga, tiff and webp for every crate, and Cargo merges features. Dove's
+  qoi, tga, tiff and webp for every crate, and Cargo merges features. Keplorayx's
   own list matches formats it really decodes (markdown and Office images,
   favicons, wallpapers). The saving would have to happen in zui.
 - **Wallpaper.** About 15 MB with a wallpaper set: the effect is rasterized

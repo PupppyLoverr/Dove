@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
-  "name": "Dove for Chrome",
-  "short_name": "Dove",
+  "name": "Keplorayx for Chrome",
+  "short_name": "Keplorayx",
   "version": "0.2.0",
-  "description": "Lets the agents in your Dove app work in this browser, with your logins, on the sites you allow. You review anything that submits, buys, sends or deletes.",
+  "description": "Lets the agents in your Keplorayx app work in this browser, with your logins, on the sites you allow. You review anything that submits, buys, sends or deletes.",
   "minimum_chrome_version": "116",
   "permissions": [
     "tabs",
@@ -18,7 +18,7 @@
     "type": "module"
   },
   "action": {
-    "default_title": "Dove",
+    "default_title": "Keplorayx",
     "default_icon": {
       "16": "icons/16.png",
       "32": "icons/32.png",

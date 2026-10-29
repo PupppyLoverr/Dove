@@ -1,8 +1,8 @@
 # Team and orchestration
 
 Teammates are people you brief once (a name, a role, standing instructions,
-notes they keep between threads) who work on any agent Dove runs. Every
-thread in Dove, whether a teammate runs it or not, can hand work to any
+notes they keep between threads) who work on any agent Keplorayx runs. Every
+thread in Keplorayx, whether a teammate runs it or not, can hand work to any
 agent and model, message teammates, and read, steer, wait on or stop other
 threads. Architecture:
 [ARCHITECTURE.md › Team and orchestration](../ARCHITECTURE.md#team-and-orchestration).
@@ -46,13 +46,13 @@ sidebar section and Settings › Team).
 
 ## The tools
 
-Every agent Dove starts gets these through Dove's tool server, beside the
+Every agent Keplorayx starts gets these through Keplorayx's tool server, beside the
 browser tools (they stay available with the agent browser turned off).
 
 | Tool | What it does |
 |---|---|
 | `team_capabilities` | Your own thread (id, agent, model, teammate, permission, depth, children), the installed agents with their models and reasoning levels, the teammates (preferred agent, recent threads) and the limits. |
-| `delegate_task` | Start a child thread on any agent and model, optionally as a teammate, in your folder or its own git worktree, with a permission mode no broader than yours. `mode: "async"` (default) returns at once and Dove wakes you with the result; `mode: "wait"` returns the result in the call. `request_key` makes retries idempotent. |
+| `delegate_task` | Start a child thread on any agent and model, optionally as a teammate, in your folder or its own git worktree, with a permission mode no broader than yours. `mode: "async"` (default) returns at once and Keplorayx wakes you with the result; `mode: "wait"` returns the result in the call. `request_key` makes retries idempotent. |
 | `delegate_tasks` | Fan out: several children in one call, each with its own task (and optionally its own teammate, agent, model or isolation), all reporting back together. |
 | `task_status` | How a delegated task stands, with its result once finished. |
 | `task_cancel` | Stop a delegated task and everything it delegated in turn. |
@@ -93,7 +93,7 @@ follow the thread's permission mode like any tool.
 - **Waits are bounded.** A wait lasts 10 minutes by default, 30 at most, and
   never stops the other thread. A timed-out `delegate_task` goes back to
   automatic delivery.
-- **Identity.** Each session Dove starts carries a private session key, so
+- **Identity.** Each session Keplorayx starts carries a private session key, so
   a tool call is attributed to the exact thread that made it, even with
   several threads in one folder.
 - **Your approvals stay yours.** A child that needs an approval or asks a
@@ -105,14 +105,14 @@ follow the thread's permission mode like any tool.
 [t3code](https://github.com/pingdotgg/t3code)'s Orchestrator V2 (MIT) set the
 bar: `delegate_task` to any provider and model, `task_status`/`task_cancel`,
 thread tools, batched wake-ups, no permission escalation, idempotent
-retries, worktree isolation. Dove has the same model and adds:
+retries, worktree isolation. Keplorayx has the same model and adds:
 
 - **Teammates.** Named, briefed personas with persistent notes that any
   agent can run as, and `team_message` for talking to them, not just
   spawning anonymous workers.
 - **Waiting that's aware of you.** A child stuck on an approval reports that
   instead of hanging its parent, and reports again when you unblock it.
-- **Every agent.** The tools ride on Dove's tool server, so every agent Dove
+- **Every agent.** The tools ride on Keplorayx's tool server, so every agent Keplorayx
   hands it to (Claude Code, Codex, OpenCode, Cursor, Pi, Gemini and the
   other ACP agents) gets them, in chat or terminal mode, and any of them can
   hand work to any other.

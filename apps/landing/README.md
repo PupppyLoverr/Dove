@@ -1,4 +1,4 @@
-# Dove website
+# Keplorayx website
 
 Static landing page: `index.html`, `styles.css`, `main.js` and `assets/`. No build step, no runtime dependencies, no third-party requests (fonts and logos are self-hosted).
 
@@ -23,7 +23,7 @@ npx wrangler pages deploy apps/landing --project-name dove
 
 ## Screenshots
 
-`assets/shots/*.jpg` are captures of the running Dove app (`cargo run -p dove`), saved as JPEG at 2× and roughly 1600–2400 px wide. Replace them when the UI changes; keep the file names.
+`assets/shots/*.jpg` are captures of the running Keplorayx app (`cargo run -p dove`), saved as JPEG at 2× and roughly 1600–2400 px wide. Replace them when the UI changes; keep the file names.
 
 ## Credits
 

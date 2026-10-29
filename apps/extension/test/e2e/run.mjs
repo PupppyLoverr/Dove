@@ -1,5 +1,5 @@
-// Browser evaluations for Dove for Chrome, end to end: a real Chromium
-// browser (headless) runs the real extension, a stand-in for Dove's bridge
+// Browser evaluations for Keplorayx for Chrome, end to end: a real Chromium
+// browser (headless) runs the real extension, a stand-in for Keplorayx's bridge
 // drives it over the real wire protocol, and local fixture pages play the
 // websites. Run: node test/e2e/run.mjs   (or npm run e2e)
 //
@@ -223,15 +223,15 @@ async function scenarios(b, dove, fx) {
   await run('multiple tabs', async () => {
     okText(await dove.call('tab_open', { url: `${base}/product/a` }));
     const tabs = okText(await dove.call('tabs', {}));
-    assert(tabs.includes('Kettle A') && tabs.includes('(Dove)'), tabs);
+    assert(tabs.includes('Kettle A') && tabs.includes('(Keplorayx)'), tabs);
     const id = Number(tabs.match(/\[(\d+)\][^\n]*Catalog|\[(\d+)\][^\n]*Shop|\[(\d+)\][^\n]*Frames/)?.slice(1).find(Boolean));
     if (id) okText(await dove.call('tab_activate', { tab: id }));
     return `${tabs.split('\n').length} tabs listed`;
   });
 
-  await run('Dove’s malformed or unknown calls are rejected', async () => {
+  await run('Keplorayx’s malformed or unknown calls are rejected', async () => {
     const r = await dove.call('eval', { code: 'alert(1)' });
-    assert(!r.ok && /Rejected by Dove for Chrome: unknown tool/.test(r.error), JSON.stringify(r));
+    assert(!r.ok && /Rejected by Keplorayx for Chrome: unknown tool/.test(r.error), JSON.stringify(r));
     const r2 = await dove.call('click', { ref: 'e1', script: 'x' });
     assert(!r2.ok && /unexpected argument/.test(r2.error), JSON.stringify(r2));
     return 'unknown tool and unknown argument refused';

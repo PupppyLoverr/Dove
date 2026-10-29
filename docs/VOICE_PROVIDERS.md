@@ -1,11 +1,11 @@
 # Voice providers: what to use, what it costs, what's free
 
-Dove's voice runs on this computer by default: speech recognition (Moonshine
+Keplorayx's voice runs on this computer by default: speech recognition (Moonshine
 or Parakeet) and dictation never need the network. The weak spot of a fully
 local setup is the *speaking* voice: the operating system's voices sound
-robotic next to neural ones. Dove can speak through a cloud voice instead,
+robotic next to neural ones. Keplorayx can speak through a cloud voice instead,
 streamed so the first words play while the rest of the sentence is still
-being made. This page compares the services Dove supports, their prices and
+being made. This page compares the services Keplorayx supports, their prices and
 the free or startup programs that cover them.
 
 Research date: 2026-10-22. Prices change often; check the linked pages before
@@ -16,7 +16,7 @@ the provider's own page.
 
 | Use | Pick | Why |
 | --- | --- | --- |
-| Free, natural voice now | **Fish Audio, `s2.1-pro-free`** | Fish Audio's S2.1 Pro is free for developers through the API; no card. Dove's default model for Fish Audio. |
+| Free, natural voice now | **Fish Audio, `s2.1-pro-free`** | Fish Audio's S2.1 Pro is free for developers through the API; no card. Keplorayx's default model for Fish Audio. |
 | Lowest latency, paid | **Deepgram Aura-2** | Plain REST that streams raw PCM; new accounts get $200 of credit. |
 | Real-time agent voice, free to try | **Cartesia Sonic** | 20,000 free credits a month (non-commercial use only). |
 | Quality per dollar | **Inworld** | Natural voices, streams NDJSON. |
@@ -28,7 +28,7 @@ the quickest: about 160 MB in use, MIT licence).
 
 ## Text-to-speech services
 
-| Service | Price | Free | First audio | Dove setting |
+| Service | Price | Free | First audio | Keplorayx setting |
 | --- | --- | --- | --- | --- |
 | [Fish Audio](https://fish.audio/developers/) | S2.1 Pro: $15 per 1M UTF-8 bytes | `s2.1-pro-free` model free for developers; credits to start, no card | Sub-second (provider's claim) | `fish`, key `FISH_AUDIO_API_KEY` (or `FISH_API_KEY`) |
 | [Deepgram Aura-2](https://developers.deepgram.com/reference/text-to-speech/speak-request) | $0.030 per 1,000 characters (*reported*) | $200 credit on sign-up (*reported*) | ~90 ms (*reported*) | `deepgram`, `DEEPGRAM_API_KEY` |
@@ -42,7 +42,7 @@ the quickest: about 160 MB in use, MIT licence).
 Not used: OpenAI's realtime voice through Codex. It is a speech-to-speech
 model on the user's ChatGPT plan (what Zeron uses), but it is gated by OpenAI's
 rollout and was not available on this project's test account (the call is
-refused with 404 at `chatgpt.com/backend-api/codex/realtime/calls`). Dove can
+refused with 404 at `chatgpt.com/backend-api/codex/realtime/calls`). Keplorayx can
 add it once accounts have it.
 
 ## Free and startup programs
@@ -59,12 +59,12 @@ add it once accounts have it.
 | AWS Activate | $1K–$5K self-funded; up to $100K through a VC/accelerator (*reported*) | Startups | [comparison](https://fin.ai/learn/startup-credit-programs) |
 | AssemblyAI (speech recognition) | $50 credit (*reported*); a startup program for bootstrapped through Series A (*reported*) | Startups | [tracker](https://agentdeals.dev/vendor/assemblyai) |
 
-For Dove itself the best mix today: the Fish Audio free model for speech,
+For Keplorayx itself the best mix today: the Fish Audio free model for speech,
 then apply to the Fish Audio and ElevenLabs startup programs for headroom.
 
 ## Speech recognition
 
-Dove recognises speech locally, so none of this is required.
+Keplorayx recognises speech locally, so none of this is required.
 
 - **Moonshine base** (default for Voice Mode and live dictation): MIT, 66 MB
   download, ~160 MB in use, ~290 ms per turn on the test machine.
@@ -73,21 +73,21 @@ Dove recognises speech locally, so none of this is required.
   uses a sliding-window encoder made for live captions ([paper](https://arxiv.org/abs/2602.12241),
   [model docs](https://huggingface.co/docs/transformers/en/model_doc/moonshine_streaming)).
   The official repositories publish no ONNX export yet, only community
-  conversions, so Dove doesn't ship it; it is the next step for even faster
+  conversions, so Keplorayx doesn't ship it; it is the next step for even faster
   live dictation.
-- Cloud options already in Dove: Deepgram (`DEEPGRAM_API_KEY`) and any
+- Cloud options already in Keplorayx: Deepgram (`DEEPGRAM_API_KEY`) and any
   OpenAI-compatible `/audio/transcriptions` endpoint.
 
 ## Setting it up
 
 1. Make an account and an API key with the service.
 2. Put the key in your environment (Windows: *Edit environment variables for
-   your account*), for example `FISH_AUDIO_API_KEY`, and restart Dove. Dove
+   your account*), for example `FISH_AUDIO_API_KEY`, and restart Keplorayx. Keplorayx
    reads keys from the environment and never stores them.
 3. Settings › Voice › Cloud voice: turn it on and pick the service. *Service
-   voice* takes that service's voice id (empty uses Dove's default).
+   voice* takes that service's voice id (empty uses Keplorayx's default).
 4. Start a call. If the service fails (offline, out of credits, key revoked),
-   Dove says so once and keeps speaking with your system's voice.
+   Keplorayx says so once and keeps speaking with your system's voice.
 
 Live check of a key from a terminal (sends one short sentence):
 

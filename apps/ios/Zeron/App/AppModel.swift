@@ -456,7 +456,7 @@ final class AppModel {
     var accountDetail: String {
         if isDemo { return "Offline demo workspace" }
         let p = AccountProfile.load()
-        return [p.name != nil ? p.email : nil, p.orgName].compactMap { $0 }.joined(separator: " · ").nonEmpty ?? "Dove account"
+        return [p.name != nil ? p.email : nil, p.orgName].compactMap { $0 }.joined(separator: " · ").nonEmpty ?? "Keplorayx account"
     }
 
     /// Logins from before profiles were saved: recover the org name (the

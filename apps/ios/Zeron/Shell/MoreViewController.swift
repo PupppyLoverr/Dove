@@ -156,7 +156,7 @@ final class MoreViewController: UIViewController, UICollectionViewDelegate {
             }
             if notificationStatus == .denied {
                 // Only the Settings app can turn them back on.
-                let alert = UIAlertController(title: "Notifications are off", message: "Allow notifications for Dove in iOS Settings.", preferredStyle: .alert)
+                let alert = UIAlertController(title: "Notifications are off", message: "Allow notifications for Keplorayx in iOS Settings.", preferredStyle: .alert)
                 alert.addAction(UIAlertAction(title: "Not Now", style: .cancel) { [weak self] _ in self?.reload() })
                 alert.addAction(UIAlertAction(title: "Open Settings", style: .default) { [weak self] _ in
                     if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }

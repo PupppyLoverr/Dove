@@ -1,6 +1,6 @@
-# Dove UI/UX plan v5: the sidebar, Artifacts, and a UI people recognise
+# Keplorayx UI/UX plan v5: the sidebar, Artifacts, and a UI people recognise
 
-Written 2026-10-29 from a fresh pass over every Dove screen (current
+Written 2026-10-29 from a fresh pass over every Keplorayx screen (current
 `feat/ui-v4` build, scratch home) against the six reference shots of the
 Claude desktop app. Builds on `ui-revamp-v4.md`; this plan replaces its
 Phase 3 (sidebar) and adds Artifacts.
@@ -14,7 +14,7 @@ Settings › Appearance.
 ## 1. The sidebar, made the same as the reference
 
 Same structure, spacing and behaviour as the reference sidebar, **minus**
-its chat/code toggle and its menu (☰) button. The title bar keeps Dove's
+its chat/code toggle and its menu (☰) button. The title bar keeps Keplorayx's
 own sidebar toggle and back/forward.
 
 ### 1.1 Top rows (fixed, never scroll)
@@ -29,7 +29,7 @@ own sidebar toggle and back/forward.
 | **More** | `···` | — | Opens the More menu (section 1.4). |
 
 - Rows are 40 px tall with a 20 px outline icon and a 16 px label, the
-  reference sizes. Dove's rows are 41 px now and very close.
+  reference sizes. Keplorayx's rows are 41 px now and very close.
 - Hover gives a full-width 8 px rounded fill. Selected gives a stronger fill.
   No pills or badges, except a count where one helps.
 - **Removed from this list:** Threads (Search covers it), Kanban, Flock,
@@ -43,11 +43,11 @@ that remembers its state:
 1. **Pinned ▾**: pinned threads, each row with a *type icon* (code
    `</>`, chat bubble, automation sunrise, teammate avatar). Long titles
    **fade out** at the edge with a gradient mask instead of an ellipsis.
-2. **One section per project ▾** (for example "Dove ▾"): rows have **no
+2. **One section per project ▾** (for example "Keplorayx ▾"): rows have **no
    icon**, just the title. This is quieter than Pinned, as in the reference.
    - Idle or done rows in dim text; the active thread brighter.
    - Status as a coloured **word** on the right in place of the time
-     (Waiting / Running / Failed). Dove already does this.
+     (Waiting / Running / Failed). Keplorayx already does this.
    - Trailing glyphs where they apply: branch/PR glyph (violet), remote
      cloud, `⑂ n` for several PRs.
    - Parents with children: a ▸ after the title and a muted
@@ -77,7 +77,7 @@ section header opens a popover. The **Projects** row opens the same popover.
 - **Include archived:** a switch.
 
 When a filter is on, the section header shows a quiet chip such as
-"Dove · Needs you ✕" so it's obvious, and one click clears it. Choices
+"Keplorayx · Needs you ✕" so it's obvious, and one click clears it. Choices
 persist (`sidebar_filter.*`). The search box at the top of Search covers
 text search, so the sidebar has no text field.
 
@@ -174,7 +174,7 @@ showing the settings sections as today. Back returns to where you were.
 | **Flock** | The raw GIF sits under the terminal and is cut off sharply at the side panel edge. | Same as Thread. Terminals always get the frost. |
 | **Threads** | Columns don't line up: Status and Updated drift right on longer rows. | Page removed (1.6). |
 | **Kanban** | Clean. | Cards use 12 px radius and a hairline like Home's cards; the column "+" shows only on hover. |
-| **Automations** | Clean empty state. | Move the "runs while Dove is open" note into the empty card as its third line. |
+| **Automations** | Clean empty state. | Move the "runs while Keplorayx is open" note into the empty card as its third line. |
 | **Pull requests** | Clean. | The project picker matches the composer chip style. |
 | **Agents** | Opens inside Settings (sidebar becomes the settings list). | Fine as a settings page; reach it from More › Agents. |
 | **Team** | Good structure. | Presets as quiet chips without emoji. Stat numbers 20 px, not display size. |

@@ -342,7 +342,7 @@ class AppModel(private val app: Application) {
         }
 
     val accountDetail: String
-        get() = if (isDemo) "Offline demo workspace" else credentials.profile.email ?: "Dove account"
+        get() = if (isDemo) "Offline demo workspace" else credentials.profile.email ?: "Keplorayx account"
 
     // ── events ─────────────────────────────────────────────────────────────
 

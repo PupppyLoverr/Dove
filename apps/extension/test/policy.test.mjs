@@ -25,11 +25,11 @@ test('only http(s) URLs are opened', () => {
   assert.equal(originOf('chrome-extension://abc/panel.html'), null);
 });
 
-test('messages from Dove are validated before anything runs', () => {
+test('messages from Keplorayx are validated before anything runs', () => {
   const call = (tool, args, id = 1) => JSON.stringify({ type: 'call', id, tool, args });
   assert.equal(validateInbound(call('snapshot', { ref: 'e1' })), null);
   assert.equal(validateInbound(call('click', { ref: 'e2', context: 'Codex · dove' })), null);
-  assert.equal(validateInbound('{"type":"welcome","app":"Dove 0.1"}'), null);
+  assert.equal(validateInbound('{"type":"welcome","app":"Keplorayx 0.1"}'), null);
   assert.match(validateInbound(call('eval', { code: 'x' })), /unknown tool/);
   assert.match(validateInbound(call('click', { ref: 'e1', script: 'alert(1)' })), /unexpected argument/);
   assert.match(validateInbound(call('click', ['e1'])), /object/);

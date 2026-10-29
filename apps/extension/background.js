@@ -1,8 +1,8 @@
-// Dove for Chrome — service worker. Holds one WebSocket to the Dove app on
+// Keplorayx for Chrome — service worker. Holds one WebSocket to the Keplorayx app on
 // 127.0.0.1 and executes chrome_* tool calls in the user's real tabs.
 //
 // Trust boundaries:
-// - Dove: authenticated by the pairing token; its messages are validated
+// - Keplorayx: authenticated by the pairing token; its messages are validated
 //   (known types, known tools, known arguments, size limits) before use.
 // - Web pages: everything read from them is returned to agents as untrusted
 //   data, and nothing a page does can approve anything. Site access and
@@ -24,7 +24,7 @@ const LOG_MAX = 200;
 const OWN_ORIGIN = chrome.runtime.getURL('');
 let ws = null;
 let state = 'unpaired'; // unpaired | connecting | connected | offline | rejected
-let controlled = null; // tab id Dove last acted on
+let controlled = null; // tab id Keplorayx last acted on
 let epoch = 0; // bumped by Stop: calls from an older epoch give up
 const attached = new Set();
 const reviews = new Reviews();
@@ -37,7 +37,7 @@ async function setStatus(next, detail = '') {
   await chrome.storage.session.set({ status: { state, detail, at: Date.now() } });
   const waiting = reviews.list().length;
   chrome.action.setBadgeText({ text: waiting ? String(waiting) : '' });
-  chrome.action.setTitle({ title: `Dove — ${next}${detail ? ': ' + detail : ''}` });
+  chrome.action.setTitle({ title: `Keplorayx — ${next}${detail ? ': ' + detail : ''}` });
 }
 async function log(entry) {
   const { log = [] } = await chrome.storage.session.get('log');
@@ -63,12 +63,12 @@ async function connect() {
   sock.onmessage = async (ev) => {
     const problem = validateInbound(ev.data);
     if (problem) {
-      // A malformed call still gets an answer, so Dove does not hang on it.
-      try { const m = JSON.parse(ev.data); if (Number.isSafeInteger(m?.id)) sock.send(JSON.stringify({ type: 'result', id: m.id, ok: false, error: `Rejected by Dove for Chrome: ${problem}` })); } catch (_) {}
+      // A malformed call still gets an answer, so Keplorayx does not hang on it.
+      try { const m = JSON.parse(ev.data); if (Number.isSafeInteger(m?.id)) sock.send(JSON.stringify({ type: 'result', id: m.id, ok: false, error: `Rejected by Keplorayx for Chrome: ${problem}` })); } catch (_) {}
       return;
     }
     const msg = JSON.parse(ev.data);
-    if (msg.type === 'welcome') { await setStatus('connected', msg.app || 'Dove'); return; }
+    if (msg.type === 'welcome') { await setStatus('connected', msg.app || 'Keplorayx'); return; }
     if (msg.type === 'rejected') { await setStatus('rejected', msg.reason || 'pairing code was not accepted'); return; }
     if (msg.type !== 'call') return;
     const started = epoch;
@@ -82,7 +82,7 @@ async function connect() {
     await log({ tool: msg.tool, args: summarize(msg.args, redact), ok: reply.ok, error: reply.error, ms: Date.now() - at, who: msg.args?.context || null });
     if (sock.readyState === WebSocket.OPEN) sock.send(JSON.stringify(reply));
   };
-  sock.onclose = async () => { if (ws === sock) ws = null; if (state !== 'rejected') await setStatus('offline', 'Dove is not running'); };
+  sock.onclose = async () => { if (ws === sock) ws = null; if (state !== 'rejected') await setStatus('offline', 'Keplorayx is not running'); };
   sock.onerror = () => {};
 }
 // Keep the worker alive while connected (Chrome 116+ extends lifetime on WS traffic).
@@ -109,7 +109,7 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
     if (!senderMayRequest(sender, chrome.runtime.id, OWN_ORIGIN, type)) return respond({ error: 'not allowed' });
     if (type === 'pair') {
       const p = parsePairingCode(msg.code);
-      if (!p) return respond({ error: 'That is not a Dove pairing code. Copy it from Dove → Settings → Plugins.' });
+      if (!p) return respond({ error: 'That is not a Keplorayx pairing code. Copy it from Keplorayx → Settings → Plugins.' });
       await chrome.storage.local.set({ pairing: p });
       ws?.close(); ws = null; await connect();
       return respond({ ok: true });
@@ -135,7 +135,7 @@ chrome.tabs.onRemoved.addListener((id) => { attached.delete(id); if (controlled 
 chrome.windows.onRemoved.addListener((id) => { if (id === reviewWindow) { reviewWindow = null; reviews.denyAll('review window closed'); publishReviews(); } });
 chrome.tabs.onUpdated.addListener((id, info) => {
   if (id !== controlled || info.status !== 'complete') return;
-  // Re-show the indicator after a reload, but only where the user already allowed Dove.
+  // Re-show the indicator after a reload, but only where the user already allowed Keplorayx.
   Promise.all([chrome.tabs.get(id), local()])
     .then(([tab, { allowed, paused }]) => {
       if (!paused && allowed[originOf(tab.url || '')]) return indicator(id, true);
@@ -166,7 +166,7 @@ async function exec(tabId, func, args = []) {
   return v;
 }
 async function indicator(tabId, on) {
-  try { await chrome.scripting.executeScript({ target: { tabId }, func: pageIndicator, args: [on, 'Dove is controlling this tab'] }); } catch (_) {}
+  try { await chrome.scripting.executeScript({ target: { tabId }, func: pageIndicator, args: [on, 'Keplorayx is controlling this tab'] }); } catch (_) {}
 }
 async function release() {
   for (const id of [...attached]) { try { await chrome.debugger.detach({ tabId: id }); } catch (_) {} }
@@ -215,14 +215,14 @@ async function review(details) {
 async function claim(tab, started) {
   checkEpoch(started);
   const { allowed, paused } = await local();
-  if (paused) throw new Error('The user paused Dove in this browser (Dove side panel → Resume).');
+  if (paused) throw new Error('The user paused Keplorayx in this browser (Keplorayx side panel → Resume).');
   const origin = originOf(tab.url || '');
-  if (!origin) throw new Error(`Dove can only act on http(s) pages; this tab is ${tab.url || 'blank'}.`);
+  if (!origin) throw new Error(`Keplorayx can only act on http(s) pages; this tab is ${tab.url || 'blank'}.`);
   const granted = () => chrome.permissions.contains({ origins: [`${origin}/*`] });
   if (!allowed[origin] || !(await granted())) {
-    const ok = await review({ kind: 'site', origin, what: `Let Dove read and act on ${new URL(origin).host}` });
+    const ok = await review({ kind: 'site', origin, what: `Let Keplorayx read and act on ${new URL(origin).host}` });
     checkEpoch(started);
-    if (!ok || !(await granted())) throw new Error(`The user has not allowed Dove on ${origin}. Ask them to allow it from the Dove side panel.`);
+    if (!ok || !(await granted())) throw new Error(`The user has not allowed Keplorayx on ${origin}. Ask them to allow it from the Keplorayx side panel.`);
     const cur = await local();
     await chrome.storage.local.set({ allowed: { ...cur.allowed, [origin]: true } });
     await log({ tool: 'allow', ok: true, args: origin });
@@ -266,7 +266,7 @@ async function mouse(tabId, x, y, click) {
   await cdp(tabId, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: click });
 }
 const need = (args, k) => { if (args[k] == null || args[k] === '') throw new Error(`Missing "${k}".`); return args[k]; };
-const tabLine = (t) => `[${t.id}]${t.active ? ' (active)' : ''}${t.id === controlled ? ' (Dove)' : ''} ${t.title || ''} — ${t.url || ''}`;
+const tabLine = (t) => `[${t.id}]${t.active ? ' (active)' : ''}${t.id === controlled ? ' (Keplorayx)' : ''} ${t.title || ''} — ${t.url || ''}`;
 const pageText = (tab, text) => untrusted(originOf(tab.url || '') || 'this page', text);
 
 // ---------- tools ----------
@@ -278,7 +278,7 @@ async function run(tool, args, started) {
     }
     case 'tab_open': {
       const { paused } = await local();
-      if (paused) throw new Error('The user paused Dove in this browser.');
+      if (paused) throw new Error('The user paused Keplorayx in this browser.');
       const url = args.url ? normalizeUrl(args.url) : 'about:blank';
       const t = await chrome.tabs.create({ url, active: args.background !== true });
       controlled = t.id;
@@ -301,7 +301,7 @@ async function run(tool, args, started) {
       const t = await tabFor(args);
       checkEpoch(started);
       const { paused } = await local();
-      if (paused) throw new Error('The user paused Dove in this browser.');
+      if (paused) throw new Error('The user paused Keplorayx in this browser.');
       const url = normalizeUrl(need(args, 'url'));
       await chrome.tabs.update(t.id, { url });
       controlled = t.id;
@@ -346,7 +346,7 @@ async function run(tool, args, started) {
       const ref = String(need(args, 'ref'));
       const el = await exec(t.id, pageDescribe, [ref, false]);
       const sensitive = sensitiveField(el);
-      if (sensitive) throw new Error(`Dove does not type into ${sensitive}. Ask the user to fill it in themselves, then continue.`);
+      if (sensitive) throw new Error(`Keplorayx does not type into ${sensitive}. Ask the user to fill it in themselves, then continue.`);
       if (args.submit) await guard(t, 'type', { ...el, submit: true }, started);
       await exec(t.id, pageLocate, [ref]);
       const ok = await exec(t.id, pageFocusClear, [ref, args.clear !== false]);

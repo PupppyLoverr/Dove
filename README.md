@@ -1,18 +1,18 @@
-<p align="center"><img src="apps/landing/assets/favicon.svg" width="56" height="56" alt="Dove"></p>
+<p align="center"><img src="apps/landing/assets/favicon.svg" width="56" height="56" alt="Keplorayx"></p>
 
-<h1 align="center">Dove</h1>
+<h1 align="center">Keplorayx</h1>
 
 <p align="center"><b>The agentic development environment.</b><br>Many coding agents, one native window. Worktrees, diffs, browser control and your phone as a remote.</p>
 
 <p align="center"><a href="#install">Install</a> · <a href="#features">Features</a> · <a href="ARCHITECTURE.md">Architecture</a> · <a href="#supported-agents">Agents</a> · <a href="CONTRIBUTING.md">Contributing</a></p>
 
-![Dove's main window](apps/landing/assets/shots/hero.jpg)
+![Keplorayx's main window](apps/landing/assets/shots/hero.jpg)
 
-## What Dove is
+## What Keplorayx is
 
-Dove is a native desktop app for working with coding agents. It runs Claude Code, Codex, Cursor, Gemini CLI, OpenCode, Devin and more side by side. Each task gets its own git worktree, a live transcript, a diff to review, an in-app browser the agent can drive, and a usage ledger that stays in one place whichever agent did the work.
+Keplorayx is a native desktop app for working with coding agents. It runs Claude Code, Codex, Cursor, Gemini CLI, OpenCode, Devin and more side by side. Each task gets its own git worktree, a live transcript, a diff to review, an in-app browser the agent can drive, and a usage ledger that stays in one place whichever agent did the work.
 
-Dove is written in Rust on [GPUI](https://github.com/zeronsh/zui). There is no Electron shell and no embedded web app for the product itself. It is local-first: your data lives in `~/.dove`, and agents run on your own subscriptions and API keys.
+Keplorayx is written in Rust on [GPUI](https://github.com/zeronsh/zui). There is no Electron shell and no embedded web app for the product itself. It is local-first: your data lives in `~/.dove`, and agents run on your own subscriptions and API keys.
 
 ## Features
 
@@ -21,14 +21,14 @@ Dove is written in Rust on [GPUI](https://github.com/zeronsh/zui). There is no E
 - **Worktrees by default.** A task can run on its own branch so two agents can edit the same repo without overwriting each other. Commit, push, open and merge PRs from the thread.
 - **Chat ⇄ terminal.** Chat is the rich view: approvals, steering, queued messages, usage. Terminal hands the same session to the agent's own TUI and mirrors it back.
 - **Side panel.** Diffs, git history, a file viewer and editor, an in-app browser, a terminal and a side chat stay attached to each thread. `path:line` links open in place.
-- **Browser control.** Every agent gets Dove's browser tools over MCP (`browser_navigate`, `browser_snapshot`, `browser_click`, `browser_type`, `browser_press`, `browser_scroll`, `browser_screenshot`). Drive the in-app browser or your own Chrome through the extension.
+- **Browser control.** Every agent gets Keplorayx's browser tools over MCP (`browser_navigate`, `browser_snapshot`, `browser_click`, `browser_type`, `browser_press`, `browser_scroll`, `browser_screenshot`). Drive the in-app browser or your own Chrome through the extension.
 - **Generative UI.** Agents can answer with interactive cards (` ```ui ` fences or the `show_ui` tool): stats, charts, tables, checklists, toggles, choices. The user's pick returns as a normal message, so every harness can continue.
 - **Office documents.** Create, preview and edit PDF, PPTX, XLSX and DOCX files in the side panel.
 - **Integrations.** Paper design canvases, Composio apps (GitHub, Linear, Slack, Notion and more, with your own key) and desktop computer use (one `computer` tool on the open-source cua-driver: background input, approvals in the thread, Take over), all injected through the same MCP server.
 - **Dictation.** Hold the mic in the composer or terminal to talk; the text is inserted, never sent. Speech to text runs on your machine with NVIDIA Parakeet, downloaded on demand from Settings › Voice.
-- **Voice Mode.** A hands-free call with all your agents: ask "what's happening?", "tell Codex to also run clippy", "stop", "approve", "talk to the tests thread", "start a Claude task on the login page in a new worktree". Listening, turn detection and speech recognition run on your machine (Moonshine or Parakeet, Silero VAD, Smart Turn); Dove speaks with your system's voice and you can talk over it. Voice never approves deletions, force pushes or work outside a thread's folder.
-- **Dove for Chrome.** A browser extension that lets agents work in your own browser, on sites you allow, with a review window before anything that submits, buys, sends or deletes, and a Stop that takes effect immediately.
-- **Faster first reply.** Dove starts Claude Code while you type (process, settings and MCP servers) and hands it your message on send: 11.35 s → 2.87 s to first text in a local measurement.
+- **Voice Mode.** A hands-free call with all your agents: ask "what's happening?", "tell Codex to also run clippy", "stop", "approve", "talk to the tests thread", "start a Claude task on the login page in a new worktree". Listening, turn detection and speech recognition run on your machine (Moonshine or Parakeet, Silero VAD, Smart Turn); Keplorayx speaks with your system's voice and you can talk over it. Voice never approves deletions, force pushes or work outside a thread's folder.
+- **Keplorayx for Chrome.** A browser extension that lets agents work in your own browser, on sites you allow, with a review window before anything that submits, buys, sends or deletes, and a Stop that takes effect immediately.
+- **Faster first reply.** Keplorayx starts Claude Code while you type (process, settings and MCP servers) and hands it your message on send: 11.35 s → 2.87 s to first text in a local measurement.
 - **Mobile remote.** iOS and Android apps signed in with your Woozlit account show live transcripts and let you approve, steer and start runs. The agent keeps running on your desktop.
 - **Your own backdrop.** Put any image behind the new-thread page through Original, Dither, Halftone or Scanlines. Turn on **Animate backdrop** and each effect gets its own motion worked out from the image: a slow push, an aircraft with light trails crossing a Bayer-dithered scene, rippling halftone dots, or a rolling CRT scan.
 - **A transcript that reads like a document.** Markdown, tables, Mermaid, math and images render incrementally while tokens stream. Tool calls fold.
@@ -39,9 +39,9 @@ Dove is written in Rust on [GPUI](https://github.com/zeronsh/zui). There is no E
 
 ## Install
 
-Download the latest beta from [GitHub Releases](https://github.com/PupppyLoverr/Dove/releases): `Dove-Setup-<version>.exe` or the portable zip for Windows, the `.dmg` for macOS (Apple Silicon), and the `.deb`, AppImage or tarball for Linux (glibc 2.38+: Ubuntu 24.04, Debian 13 or newer). The beta is not code-signed yet: on Windows choose **More info → Run anyway** at the SmartScreen prompt, and on macOS right-click Dove → **Open** the first time. Feedback, bugs and feature requests: [the beta form](https://form.typeform.com/to/LeOHrZiR).
+Download the latest beta from [GitHub Releases](https://github.com/PupppyLoverr/Dove/releases): `Dove-Setup-<version>.exe` or the portable zip for Windows, the `.dmg` for macOS (Apple Silicon), and the `.deb`, AppImage or tarball for Linux (glibc 2.38+: Ubuntu 24.04, Debian 13 or newer). The beta is not code-signed yet: on Windows choose **More info → Run anyway** at the SmartScreen prompt, and on macOS right-click Keplorayx → **Open** the first time. Feedback, bugs and feature requests: [the beta form](https://form.typeform.com/to/LeOHrZiR).
 
-Dove drives agent CLIs you install yourself. Install at least one, for example:
+Keplorayx drives agent CLIs you install yourself. Install at least one, for example:
 
 ```sh
 npm i -g @anthropic-ai/claude-code   # Claude Code
@@ -49,7 +49,7 @@ npm i -g @openai/codex               # Codex
 npm i -g @google/gemini-cli          # Gemini CLI
 ```
 
-Sign in to each CLI once in a terminal the way you normally would. Dove picks up its credentials.
+Sign in to each CLI once in a terminal the way you normally would. Keplorayx picks up its credentials.
 
 ## Build from source
 
@@ -57,12 +57,12 @@ Requires Rust stable 1.90 or newer.
 
 ```sh
 git clone https://github.com/PupppyLoverr/Dove
-cd Dove
+cd Keplorayx
 cargo run -p dove                 # or: cargo run -p dove -- path/to/repo
 CARGO_INCREMENTAL=0 cargo build -p dove --release
 ```
 
-The release `Dove.app` is 91 MB: `dove` is 80 MB and the `dove-mesh-host` remote-control sidecar is 9.3 MB. Both are built with LTO and stripped.
+The release `Keplorayx.app` is 91 MB: `dove` is 80 MB and the `dove-mesh-host` remote-control sidecar is 9.3 MB. Both are built with LTO and stripped.
 
 Linux system dependencies:
 
@@ -89,7 +89,7 @@ crates/dove-git      Worktrees, status, diffs, history, PRs
 crates/dove-term     Terminal emulator and PTY sessions
 ```
 
-The UI never writes session activity itself. It watches `LiveSession` events and sends commands; the engine appends each event to the transcript, updates status and usage, then forwards it. Agents enter through one harness boundary, and Dove's extra tools reach every agent through one injected MCP server. [ARCHITECTURE.md](ARCHITECTURE.md) covers the data flow, the browser control path, the store and the desktop ⇄ edge ⇄ mobile sync.
+The UI never writes session activity itself. It watches `LiveSession` events and sends commands; the engine appends each event to the transcript, updates status and usage, then forwards it. Agents enter through one harness boundary, and Keplorayx's extra tools reach every agent through one injected MCP server. [ARCHITECTURE.md](ARCHITECTURE.md) covers the data flow, the browser control path, the store and the desktop ⇄ edge ⇄ mobile sync.
 
 ## Supported agents
 
@@ -118,11 +118,11 @@ The iOS app (`apps/ios`) and the Android app (`apps/android`) are remote control
 
 ## Dictation and Voice Mode
 
-Speech to text is optional and is not inside the Dove binary. **Parakeet** (NVIDIA Parakeet TDT 0.6B v3, the model Zeron uses) downloads on demand from Settings › Voice into `~/.dove/voice` and runs entirely on your machine.
+Speech to text is optional and is not inside the Keplorayx binary. **Parakeet** (NVIDIA Parakeet TDT 0.6B v3, the model Zeron uses) downloads on demand from Settings › Voice into `~/.dove/voice` and runs entirely on your machine.
 
-**Voice Mode** is a call: click the phone button beside the mic (or press Ctrl/Cmd+Shift+Space; on Windows it works from any app) and talk. Download its models once in Settings › Voice › Voice Mode models: Moonshine (66 MB, fast) or use Parakeet (more accurate, more memory), Silero VAD (2 MB) and Smart Turn (9 MB). Everything runs locally; cloud speech (an OpenAI-compatible endpoint, Deepgram or ElevenLabs) is off unless you turn it on, and Settings says what it would upload. "Take a look at this" attaches the open page, the diff, or (Windows) the window you were just in. Hold the orb (or Space) to talk while muted; talk over Dove to interrupt it. Measured on a 2020 laptop (i7-10810U, Windows 11): listening-ready in 1.4–1.8 s from cold, about 160 MB of memory while a call runs, under 1% of a core while you are silent, playback stops within 9 ms of you interrupting. Details and the targets it does not meet yet: [docs/VOICE.md](docs/VOICE.md).
+**Voice Mode** is a call: click the phone button beside the mic (or press Ctrl/Cmd+Shift+Space; on Windows it works from any app) and talk. Download its models once in Settings › Voice › Voice Mode models: Moonshine (66 MB, fast) or use Parakeet (more accurate, more memory), Silero VAD (2 MB) and Smart Turn (9 MB). Everything runs locally; cloud speech (an OpenAI-compatible endpoint, Deepgram or ElevenLabs) is off unless you turn it on, and Settings says what it would upload. "Take a look at this" attaches the open page, the diff, or (Windows) the window you were just in. Hold the orb (or Space) to talk while muted; talk over Keplorayx to interrupt it. Measured on a 2020 laptop (i7-10810U, Windows 11): listening-ready in 1.4–1.8 s from cold, about 160 MB of memory while a call runs, under 1% of a core while you are silent, playback stops within 9 ms of you interrupting. Details and the targets it does not meet yet: [docs/VOICE.md](docs/VOICE.md).
 
-## Dove for Chrome
+## Keplorayx for Chrome
 
 `apps/extension` is a Manifest V3 extension for Chrome, Edge and Brave. Load it unpacked, open its side panel and paste the pairing code from Settings › Plugins. Agents then get `chrome_*` tools for your own browser, only on sites you allow, with a review window before consequential actions. See [apps/extension/README.md](apps/extension/README.md).
 

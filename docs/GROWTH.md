@@ -1,12 +1,12 @@
 # Growth plan: 100,000 users in 12 weeks
 
-A **user** here is a person who installed Dove and started at least one agent session (counted by the opt-in anonymous "first session" ping, or by Woozlit sign-in for mobile). Stars and downloads are tracked but are not the goal.
+A **user** here is a person who installed Keplorayx and started at least one agent session (counted by the opt-in anonymous "first session" ping, or by Woozlit sign-in for mobile). Stars and downloads are tracked but are not the goal.
 
 Target: **100,000 activated users by the end of week 12**, with ≥ 25% week-4 retention.
 
 ## Positioning
 
-- One line: **Dove is the agentic development environment. Every coding agent, one native window.**
+- One line: **Keplorayx is the agentic development environment. Every coding agent, one native window.**
 - Who first: developers who already pay for two or more of Claude Code, Codex, Cursor and Copilot and juggle them in terminals.
 - Wedge: run three agents on the same task in three worktrees, compare the diffs, merge the best one. Nobody else does this natively across vendors.
 - Proof points to repeat everywhere: native Rust (cold start and memory), free with your own keys, open source (Apache-2.0), phone remote.
@@ -47,7 +47,7 @@ If cumulative activation is more than 20% under plan at the end of week 5, pull 
 
 Order matters: each channel feeds the next.
 
-1. **Tuesday, Show HN** at ~08:00 US Eastern. Title: "Show HN: Dove – run Claude Code, Codex and Gemini side by side in worktrees (Rust, open source)". The founder answers every comment for 12 hours. Link the repo, not the landing page.
+1. **Tuesday, Show HN** at ~08:00 US Eastern. Title: "Show HN: Keplorayx – run Claude Code, Codex and Gemini side by side in worktrees (Rust, open source)". The founder answers every comment for 12 hours. Link the repo, not the landing page.
 2. **Tuesday afternoon, X/Twitter thread** quoting HN traction: a 30-second video of three agents racing on one task, then the diff compare. Under 280 characters per post; the video carries the message.
 3. **Wednesday, Reddit**: r/rust (the GPUI/native angle), r/ClaudeAI, r/ChatGPTCoding, r/LocalLLaMA (BYOK, local-first), each with a post written for that community.
 4. **Thursday, Product Hunt** at 00:01 Pacific, with HN and X social proof in the first comment. Line up beta users who already have PH accounts; never ask for upvotes, ask people to try it and comment.
@@ -66,13 +66,13 @@ iOS on TestFlight and then the App Store, Android on Play. Message: "approve you
 
 ### Weeks 9–12: second wave and 1.0
 
-- Second HN post only with genuinely new substance (for example a benchmark: Dove vs. Electron alternatives on memory and startup with a reproducible script).
+- Second HN post only with genuinely new substance (for example a benchmark: Keplorayx vs. Electron alternatives on memory and startup with a reproducible script).
 - YouTube: send builds and talking points to 30 developer creators; one video from a large channel is worth a launch.
 - 1.0 release in week 12 with a "100k developers" post.
 
 ## Open-source loops
 
-- **Built-in attribution, off by default.** When an agent opens a PR from Dove, offer an opt-in "Made with Dove" line in the PR body. Every enabled PR is a backlink seen by reviewers.
+- **Built-in attribution, off by default.** When an agent opens a PR from Keplorayx, offer an opt-in "Made with Keplorayx" line in the PR body. Every enabled PR is a backlink seen by reviewers.
 - **Adapters as contributions.** Every new agent CLI is an ACP adapter away. Publish an "add your agent" guide; each agent vendor that merges an adapter announces it to their users.
 - **Good first issues, always ten open.** Fast reviews (under 24 hours) turn first-time contributors into advocates.
 - **Self-hostable relay** on Cloudflare's free tier with a one-click deploy button. Infrastructure people share deploy buttons.
@@ -87,10 +87,10 @@ iOS on TestFlight and then the App Store, Android on Play. Message: "approve you
 
 ## Templates
 
-A template is a project starter with prompts, a worktree layout, agent choices and MCP tools pre-wired, shared as a small file or a URL that opens in Dove.
+A template is a project starter with prompts, a worktree layout, agent choices and MCP tools pre-wired, shared as a small file or a URL that opens in Keplorayx.
 
 - Launch with 25: "three agents race a bug", "Claude plans, Codex implements, Gemini reviews", "UI from a Paper design", "office report from a CSV", "fix failing CI", "upgrade a dependency across the monorepo", "write tests to 80% coverage".
-- Every template page has its own URL on the site (SEO) and a "Open in Dove" button (deep link that installs Dove first if needed).
+- Every template page has its own URL on the site (SEO) and a "Open in Keplorayx" button (deep link that installs Keplorayx first if needed).
 - Community submissions through PRs to a `templates/` repo; featured weekly.
 
 ## Metrics
@@ -115,5 +115,5 @@ Weekly dashboard:
 
 - **A broken launch build.** Mitigate with a week of private beta and auto-update before week 3.
 - **Agent CLI breaking changes.** Pin known-good versions in the adapter tests; ship adapter fixes within 24 hours.
-- **Vendor bundling** (an agent vendor shipping its own multi-agent UI). Dove's answer is cross-vendor: the more vendors exist, the more Dove is needed.
+- **Vendor bundling** (an agent vendor shipping its own multi-agent UI). Keplorayx's answer is cross-vendor: the more vendors exist, the more Keplorayx is needed.
 - **Over-counting.** Report activated users, not downloads or stars.

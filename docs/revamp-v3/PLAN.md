@@ -1,37 +1,37 @@
-# Dove UI/UX revamp v3: Zeron design parity, settings, motion, performance
+# Keplorayx UI/UX revamp v3: Zeron design parity, settings, motion, performance
 
 Status: **proposal, awaiting approval** (2026-10-15). Nothing in the code has changed.
-Earlier plan: [`docs/ui-revamp-plan.md`](../ui-revamp-plan.md) (v2, 2026-10-12). Most of its layout and feature work has shipped: top-bar thread tabs, chat ⇄ terminal, Kanban, Automations, the composer and the side panel. v3 does not redo that work. It brings Dove to Zeron's design language and quality bar, rebuilds Settings, adds a motion system, and meets the performance targets.
+Earlier plan: [`docs/ui-revamp-plan.md`](../ui-revamp-plan.md) (v2, 2026-10-12). Most of its layout and feature work has shipped: top-bar thread tabs, chat ⇄ terminal, Kanban, Automations, the composer and the side panel. v3 does not redo that work. It brings Keplorayx to Zeron's design language and quality bar, rebuilds Settings, adds a motion system, and meets the performance targets.
 
 Hard rules from the request, applied throughout:
 1. **Nothing is removed.** Every feature, panel, setting, shortcut and workflow stays. Anything that would be merged or moved is listed in [§4 Decisions](#4-decisions-that-need-your-approval). Until you approve a proposal there, the default is to keep things where they are.
-2. **Dove keeps its identity:** its name, mark and branding, and the features Zeron lacks.
+2. **Keplorayx keeps its identity:** its name, mark and branding, and the features Zeron lacks.
 3. **Plan first.** Implementation starts only after you approve.
 
-Screenshots are in [`shots/`](shots/). All Dove captures come from an isolated QA copy (scratch `DOVE_HOME`, seeded threads); your real `~/.dove` was opened read-only for the copy. All Zeron settings captures come from an isolated instance (`ZERON_DATA_DIR` scratch).
+Screenshots are in [`shots/`](shots/). All Keplorayx captures come from an isolated QA copy (scratch `DOVE_HOME`, seeded threads); your real `~/.dove` was opened read-only for the copy. All Zeron settings captures come from an isolated instance (`ZERON_DATA_DIR` scratch).
 
 ---
 
 ## 0. Summary
 
-**What Dove is built on.** Dove already runs on **ZUI**: it uses the same `zeronsh/zui` GPUI fork at the same revision (`361ff20`) as Zeron, plus `gpui-base`. No framework migration is needed. The gap is in the **component and design layer above ZUI**. Zeron's `crates/ui` is about 224k lines and includes `motion.rs`, `popover.rs`, `settings/widgets.rs`, `typography.rs`, the `theme` crate and a toaster. Dove's UI is about 49k lines with hand-rolled primitives spread over three files. "Port ZUI components" therefore means porting those Zeron modules (MIT, already credited) into a single Dove kit.
+**What Keplorayx is built on.** Keplorayx already runs on **ZUI**: it uses the same `zeronsh/zui` GPUI fork at the same revision (`361ff20`) as Zeron, plus `gpui-base`. No framework migration is needed. The gap is in the **component and design layer above ZUI**. Zeron's `crates/ui` is about 224k lines and includes `motion.rs`, `popover.rs`, `settings/widgets.rs`, `typography.rs`, the `theme` crate and a toaster. Keplorayx's UI is about 49k lines with hand-rolled primitives spread over three files. "Port ZUI components" therefore means porting those Zeron modules (MIT, already credited) into a single Keplorayx kit.
 
 **Biggest gaps, in order:**
 1. **Settings.** There are three columns (the app sidebar, a settings nav and the content). Every section opens with a hero card with badges. Labels wrap one word per line. Some icons are wrong. Labels are stale ("Voice & Jarvis", "Crew & Team"). Agent settings are split between Settings and the Agents page.
 2. **No motion system.** Menus, popovers and panels appear instantly. Reduced motion is not supported. Four animations animate layout (height, margin, width).
 3. **No type, spacing or radius scale.** There are 508 `text_size(px(..))` calls across 17 sizes and 15 different radii, and no UI font-size setting.
 4. **Fragile error and empty states.** Diffs on a non-git folder dumps raw `git diff` usage text that overflows its panel and paints over the chat ([shot](shots/dove-diffs-error-overflow.png)).
-5. **Idle and startup cost.** An idle window re-renders about once a second, forever, and uses 3–6% of a CPU core. At launch Dove spawns about 10 agent CLIs to refresh model lists, a transient load of about 0.5 GB of child processes.
+5. **Idle and startup cost.** An idle window re-renders about once a second, forever, and uses 3–6% of a CPU core. At launch Keplorayx spawns about 10 agent CLIs to refresh model lists, a transient load of about 0.5 GB of child processes.
 
 **Recommended path:** fix the performance issues first (no visual change), then tokens, motion and the kit, then rebuild Settings, then the shell chrome, chat and pages. Each step ships on its own.
 
 ---
 
-## 1. Phase 1: Audit of Dove
+## 1. Phase 1: Audit of Keplorayx
 
 ### 1.1 Stack
 
-| Concern | What Dove uses | Where |
+| Concern | What Keplorayx uses | Where |
 |---|---|---|
 | UI framework | GPUI from `zeronsh/zui` @ `361ff20` (backdrop blur, edge fades, rounded clip) + `gpui-base` (patched: the caret stops blinking after about 10 s) | `Cargo.toml`, `vendor/README.md` |
 | Rendering | GPUI's immediate-mode element tree. GPU-composited quads, text and images. Blur through zui. No webview for the main UI | `apps/dove/src/ui.rs` (`frosted`, `rounded_clip`, `bottom_faded`) |
@@ -41,9 +41,9 @@ Screenshots are in [`shots/`](shots/). All Dove captures come from an isolated Q
 | Harnesses | Zeron's vendored drivers (Claude, Codex, Cursor, OpenCode, Pi, Devin, Grok, Hermes, Antigravity, Kilo), with ACP for the rest. On Windows each spawn goes through a job object and a suspended "escrow" copy of `dove.exe` | `crates/dove-harness`, `vendor/zeron-harness/src/process/windows/escrow.rs` |
 | Agent tools | Each harness gets the `dove` MCP server (`dove --mcp-browser`, stdio → loopback control) | `mcp_browser.rs`, `browser/control.rs` |
 
-**Does Dove use ZUI?** Yes, fully at the framework level. It does **not** reuse Zeron's component layer. A "migration to ZUI" therefore means:
+**Does Keplorayx use ZUI?** Yes, fully at the framework level. It does **not** reuse Zeron's component layer. A "migration to ZUI" therefore means:
 
-| Zeron module (MIT) | Dove today | Action |
+| Zeron module (MIT) | Keplorayx today | Action |
 |---|---|---|
 | `crates/ui/src/motion.rs` (specs, curves, hover fades, reduced motion, pulse clock) | none (8 ad-hoc `with_animation` uses) | Port whole |
 | `popover.rs` (Popup lifecycle with exit animation, anchored menus, nested menus, keyboard nav, modal, dialog parts) | `ui.rs` + `surface_chrome.rs` (two `menu_row`s), custom overlays | Port and replace |
@@ -101,9 +101,9 @@ Animation stops when the home page is not drawn. It does not stop when the windo
 
 ### 1.4 Baseline performance
 
-Measured on this machine: Windows 11, 125% scaling, 16 GB RAM, other agents running. The numbers come from the **debug** build (`target-wallpaper`, app at opt-level 1, deps at opt-level 2), because no release build exists. Release numbers will be lower; the first implementation step re-baselines in release. Method: `scratchpad/bench.ps1` launches a QA copy minimized, times process start to visible window, restores the window without stealing focus, samples private and working set and CPU, and reads Dove's own `DOVE_FRAME_STATS` render counter.
+Measured on this machine: Windows 11, 125% scaling, 16 GB RAM, other agents running. The numbers come from the **debug** build (`target-wallpaper`, app at opt-level 1, deps at opt-level 2), because no release build exists. Release numbers will be lower; the first implementation step re-baselines in release. Method: `scratchpad/bench.ps1` launches a QA copy minimized, times process start to visible window, restores the window without stealing focus, samples private and working set and CPU, and reads Keplorayx's own `DOVE_FRAME_STATS` render counter.
 
-| Scenario (Dove debug) | Start → window | Main WS / Private | Idle CPU (1 core) | Shell renders/s idle |
+| Scenario (Keplorayx debug) | Start → window | Main WS / Private | Idle CPU (1 core) | Shell renders/s idle |
 |---|---|---|---|---|
 | Home, dither still, first 16 s | 1.2–2.0 s | 98–109 / 106–136 MB (peak WS 164–174 during wallpaper decode) | 5.6% | 2–5 |
 | Home, steady (after 25 s) | — | 98 / 136 MB | **2.8%** | **~1, forever** |
@@ -112,10 +112,10 @@ Measured on this machine: Windows 11, 125% scaling, 16 GB RAM, other agents runn
 | 10 open threads, steady (after 25 s) | 1.1–1.6 s | 91 / 154 MB | **3.7%** | **~1, forever** |
 | 10 threads + Diffs panel | 1.5 s | 83 / 106 MB | 6.7% | bursts of 14–27 |
 | Settings page | 1.6–2.6 s | 67–73 / 85–130 MB | 0.8–12% | 1–13 |
-| Your live Dove (debug, home, minimized) | — | 144 / 167 MB | 2.3% (while minimized) | — |
+| Your live Keplorayx (debug, home, minimized) | — | 144 / 167 MB | 2.3% (while minimized) | — |
 | Zeron 0.2.x release (live, minimized), for reference | — | 203 / 149 MB | 6.4% | — |
 
-Child processes Dove starts **without any session**, sampled in the first 15 s after launch:
+Child processes Keplorayx starts **without any session**, sampled in the first 15 s after launch:
 
 | Process | Why | Size |
 |---|---|---|
@@ -126,7 +126,7 @@ Child processes Dove starts **without any session**, sampled in the first 15 s a
 
 The transient child load is about **0.5 GB** with no session running.
 
-**Concurrent sessions (1, 5 and 10 with mixed harnesses).** Each open thread above is a real `ThreadView` with transcript, composer and list state, so the RAM figures cover Dove's UI side of N threads. Not measured yet:
+**Concurrent sessions (1, 5 and 10 with mixed harnesses).** Each open thread above is a real `ThreadView` with transcript, composer and list state, so the RAM figures cover Keplorayx's UI side of N threads. Not measured yet:
 - **Live streaming CPU.** It needs N agents actually streaming.
 - **The per-session processes** (agent CLI, escrow `dove.exe`, `dove --mcp-browser` bridge).
 - **Input latency.** There is no instrumentation yet.
@@ -137,23 +137,23 @@ Doing it now would mean spending real agent tokens and typing into QA windows on
 
 ---
 
-## 2. Phase 2: Zeron vs Dove
+## 2. Phase 2: Zeron vs Keplorayx
 
-Reference shots: Zeron [home](shots/zeron-home-live.png), [Settings › General](shots/zeron-settings-general.png), [Appearance](shots/zeron-settings-appearance.png), [Shortcuts](shots/zeron-settings-shortcuts.png), [Providers](shots/zeron-settings-providers.png). Dove [home](shots/dove-home-live.png), [thread](shots/dove-thread.png), [Settings › General](shots/dove-settings-general.png), [Appearance](shots/dove-settings-appearance.png), [Keyboard](shots/dove-settings-keyboard.png), [Agents](shots/dove-settings-agents.png), [Threads page](shots/dove-threads-page-empty.png), [Diffs error](shots/dove-diffs-error-overflow.png).
+Reference shots: Zeron [home](shots/zeron-home-live.png), [Settings › General](shots/zeron-settings-general.png), [Appearance](shots/zeron-settings-appearance.png), [Shortcuts](shots/zeron-settings-shortcuts.png), [Providers](shots/zeron-settings-providers.png). Keplorayx [home](shots/dove-home-live.png), [thread](shots/dove-thread.png), [Settings › General](shots/dove-settings-general.png), [Appearance](shots/dove-settings-appearance.png), [Keyboard](shots/dove-settings-keyboard.png), [Agents](shots/dove-settings-agents.png), [Threads page](shots/dove-threads-page-empty.png), [Diffs error](shots/dove-diffs-error-overflow.png).
 
 ### 2.1 Layout and information architecture
 
-| Region | Zeron | Dove | Verdict |
+| Region | Zeron | Keplorayx | Verdict |
 |---|---|---|---|
 | Titlebar | 38 px. Left: sidebar glyph, back, forward, `+` new. Centre: harness icon + session title. Right: surface tabs (24 px chips) + files and right-pane toggles. 36 px captions | 36 px. Left pill: toggle, back, forward. **Thread tab strip** (Dove-only, kept). Right: Chat/Terminal segmented, info, panel toggle | Keep tabs. Adopt Zeron metrics and fix tab truncation |
-| Sidebar | 256 (242–400). "All projects" filter. Pinned group. Single-line rows (status dot, harness mark, title, time). Archived shelf. Custom sections. Footer: Local, mic, PRs, settings | 264 (208–400). New-thread button. Nav block (5 rows). Team. Needs you. Two-line rows. Footer: device + usage | Keep Dove's nav, Team and Needs you. Restyle rows to Zeron's grammar. Single-line density is an option |
+| Sidebar | 256 (242–400). "All projects" filter. Pinned group. Single-line rows (status dot, harness mark, title, time). Archived shelf. Custom sections. Footer: Local, mic, PRs, settings | 264 (208–400). New-thread button. Nav block (5 rows). Team. Needs you. Two-line rows. Footer: device + usage | Keep Keplorayx's nav, Team and Needs you. Restyle rows to Zeron's grammar. Single-line density is an option |
 | Chat column | Width 736 (560–1200, a setting). Composer max 768, radius 26. Message rail hidden below 768 px | Composer radius 20. Width not configurable | Adopt metrics; add a width setting |
 | Right dock | Host 520 (360 to viewport − 300). Surface-picker cards. Docked Files column 220–440. Expand/takeover. **LRU column eviction** when narrow | 460 (360–760). `+` menu with 10 tab kinds. Expand. Fixed centre minimum | Adopt picker cards, eviction and slide transitions. Keep all 10 tab kinds |
 | Settings | Route. **App sidebar is replaced** by "← Back" + section nav. 760 px page column. Title, then section labels, then cards of 60 px rows | Route. App sidebar **plus** settings nav **plus** content (3 columns). Hero card per section. Nav-only filter | Rebuild (§3.3) |
 
 ### 2.2 Visual language
 
-| Aspect | Zeron | Dove | Gap |
+| Aspect | Zeron | Keplorayx | Gap |
 |---|---|---|---|
 | Typography | Inter / JetBrains Mono. **rem-scaled** (UI size 12–20 px setting). Roles: page 20/26 medium, row title 13/17 medium, description 12/16, markdown 14/22, code 12.5/18. Weights mostly Medium | Inter / JetBrains Mono. **Fixed px**. 17 sizes (most often 12, 13, 11.5, 12.5, 11). No line-height roles. No size setting | High |
 | Spacing | `SPACE_XS/SM/MD/LG` 4/8/12/16. Settings: section gap 32, row padding 16×12, min height 60 | Magic numbers (8, 12, 6, 10, 13, 14, 4, …) | High |
@@ -167,7 +167,7 @@ Reference shots: Zeron [home](shots/zeron-home-live.png), [Settings › General]
 
 ### 2.3 Interaction
 
-| Aspect | Zeron | Dove |
+| Aspect | Zeron | Keplorayx |
 |---|---|---|
 | Hover | 150 ms colour fade (`EASE_TAILWIND`) on every interactive wash | Instant colour swap |
 | Focus | 2 px accent ring. Arrow, Home and End keys in settings nav and menus. Typeahead filter in menus | Keyboard nav in the palette, model picker and transcript. Most menus and the settings nav are mouse-only |
@@ -182,7 +182,7 @@ Reference shots: Zeron [home](shots/zeron-home-live.png), [Settings › General]
 
 ### 2.4 Settings UX
 
-| Aspect | Zeron | Dove |
+| Aspect | Zeron | Keplorayx |
 |---|---|---|
 | Structure | 9 sections, grouped by spacing: General, Appearance, Notifications, Voice, Shortcuts · Providers, Devices · Files, Archived sessions | 13 sections under 4 headers: App · Agents & Studio · Workspace · System |
 | Navigation | The sidebar becomes the settings nav ("← Back", Esc closes and returns to the previous route). Remembers the last section. Deep link `settings/<slug>` | A second nav column beside the app sidebar. Deep link `DOVE_SETTINGS` |
@@ -192,7 +192,7 @@ Reference shots: Zeron [home](shots/zeron-home-live.png), [Settings › General]
 | Controls | Toggle 44.8×28.8 with 180 ms thumb travel. Select 32 px (popover menu). Option cards with previews. Swatches. Slider. Text actions in 4 tones | Switch, segmented control, swatches, outline buttons, text fields |
 | Saving | Immediate for discrete choices; text and sliders debounced 400 ms; atomic JSON write; applied live | Immediate; text fields write on every keystroke and on blur; applied live |
 
-### 2.5 Dove's biggest UX gaps, ranked
+### 2.5 Keplorayx's biggest UX gaps, ranked
 
 1. **Settings IA and layout:** three columns, hero noise, broken row layout, stale labels, wrong icons, agent settings split across two places.
 2. **No motion language:** no hover fades, menu or dialog transitions, panel slides, indicator slides or reduced-motion support. Some animations animate layout.
@@ -206,7 +206,7 @@ Reference shots: Zeron [home](shots/zeron-home-live.png), [Settings › General]
 10. **Memory hygiene:** closed tabs keep their transcript, composer poller, web views and terminals until archive.
 11. **Theme breadth:** 1 theme, 5 accents; no font-size or conversation-width controls.
 
-What Dove has that Zeron lacks, kept and restyled: thread tabs, Kanban, Automations, Team, Canvas, side chat, Usage, the Threads page, chat ⇄ terminal, office viewers, Integrations, remote mobile, and settings search (to be upgraded).
+What Keplorayx has that Zeron lacks, kept and restyled: thread tabs, Kanban, Automations, Team, Canvas, side chat, Usage, the Threads page, chat ⇄ terminal, office viewers, Integrations, remote mobile, and settings search (to be upgraded).
 
 ---
 
@@ -214,7 +214,7 @@ What Dove has that Zeron lacks, kept and restyled: thread tabs, Kanban, Automati
 
 ### 3.1 Design system
 
-**Tokens** go in a new `apps/dove/src/design/`, ported from Zeron with Dove's identity preserved:
+**Tokens** go in a new `apps/dove/src/design/`, ported from Zeron with Keplorayx's identity preserved:
 - **Type roles in rems:**
   - `page` 20/26 medium, `title` 15/20 medium;
   - `row` 13/17 medium, `body` 13/18, `meta` 12/16, `micro` 11/14, `badge` 10.5;
@@ -223,7 +223,7 @@ What Dove has that Zeron lacks, kept and restyled: thread tabs, Kanban, Automati
 - **Spacing:** 2, 4, 8, 12, 16, 24, 32 (`XXS`…`XXL`).
 - **Radii:** control 6, menu item 7, select 8, panel 10, card 12, bubble 16, composer 26, pill 999.
 - **Elevation:** glass plate (y1 b2 α.22 + y2 b6 α.06), popover `lg`, dialog scrim (α.60 dark / .32 light).
-- **Colour:** add Zeron's derived tokens: `surface_dialog`, `surface_overlay` mixes, `element_active`, `accent_wash`, `*_muted` and `ensure_contrast` for muted text. Keep Dove's accent list, keep **sky** as Dove's default accent (identity), and add Zeron's extra presets (Amber, Cyan, Blue) as options.
+- **Colour:** add Zeron's derived tokens: `surface_dialog`, `surface_overlay` mixes, `element_active`, `accent_wash`, `*_muted` and `ensure_contrast` for muted text. Keep Keplorayx's accent list, keep **sky** as Keplorayx's default accent (identity), and add Zeron's extra presets (Amber, Cyan, Blue) as options.
 
 **Components** go in a single kit (`apps/dove/src/kit/`) replacing `kit.rs`, `ui.rs` widgets and `surface_chrome.rs` duplicates:
 
@@ -240,7 +240,7 @@ What Dove has that Zeron lacks, kept and restyled: thread tabs, Kanban, Automati
 | Tooltip | Zeron `TextTooltip` | — |
 | Toaster | Zeron `toast.rs` | Keeps today's toast messages |
 | PageColumn, Section, Card, Row, RowTile, Badge, Kbd, ErrorStrip, WarningStrip, ScrollFaded | Zeron `widgets.rs` | Settings, pages, panels |
-| EmptyState, **Skeleton** (new), Spinner and StatusGlyph on a pulse clock | Dove `kit.rs` + Zeron `loaders.rs` pulse | Skeleton is new for loading transcript, diff and PRs |
+| EmptyState, **Skeleton** (new), Spinner and StatusGlyph on a pulse clock | Keplorayx `kit.rs` + Zeron `loaders.rs` pulse | Skeleton is new for loading transcript, diff and PRs |
 | ResizeSeam (20 px hitbox, edge nudge) | Zeron `resize_drag_sample` | Sidebar and dock |
 | SurfacePicker cards | Zeron right-pane picker | Dock `+` |
 
@@ -286,7 +286,7 @@ Every row ends with **Features kept**. Nothing is dropped; anything that would m
   - Zeron composer plate (`input_bg`, radius 26, 76–260 px grow).
   - Context chips on the kit Select.
   - Permission-mode menu with descriptions on the kit Menu.
-  - Model picker keeps Dove's picker, restyled to Zeron's compact picker spacing (rows 32 px).
+  - Model picker keeps Keplorayx's picker, restyled to Zeron's compact picker spacing (rows 32 px).
   - Send button state morph (Send, Steer, Queue, Stop) uses a 150 ms crossfade.
 - *Features kept:* all chips and menus in §1.2, @ and /, attachments, paste and drop, mic, persona, Bypass confirmation, drafts, steer and queue.
 
@@ -381,7 +381,7 @@ Every row ends with **Features kept**. Nothing is dropped; anything that would m
 | 26 | Keep running in background (`keep_running`) | Notifications | Notifications › Background | Toggle |
 | 27 | Enable remote control (`remote_enabled`) | Remote Control | Remote | Toggle |
 | 28 | Woozlit account sign in/out, connection status, device ID, last error | Remote Control | Remote | Rows + actions |
-| 29 | Dove for Chrome: status + pairing code copy | Integrations | Integrations › Chrome | Row + copy |
+| 29 | Keplorayx for Chrome: status + pairing code copy | Integrations | Integrations › Chrome | Row + copy |
 | 30 | Composio: enabled, API key, toolkits, other slugs (`integrations.json`) | Integrations | Integrations › Composio | Toggle, masked field, chips, text |
 | 31 | Paper: enabled + status | Integrations | Integrations › Paper | Toggle + status |
 | 32 | Computer use: enabled, status, Check, Detect again, install guide | Integrations | Integrations › Computer use | Toggle + actions |
@@ -463,7 +463,7 @@ Port Zeron's `motion.rs` as `apps/dove/src/motion.rs`.
 
 | Metric | Baseline (debug) | Target |
 |---|---|---|
-| RAM, Dove's own processes, 10 concurrent sessions (main + escrow helpers + MCP bridges + mesh host + web views) | main 80–154 MB with 10 threads open; per-session helpers not yet measured live | **≤ 300 MB** with no browser tabs open; **≤ 500 MB** with 3 active browser tabs; **1 GB hard ceiling** enforced by a watchdog that hibernates hidden web views and trims caches |
+| RAM, Keplorayx's own processes, 10 concurrent sessions (main + escrow helpers + MCP bridges + mesh host + web views) | main 80–154 MB with 10 threads open; per-session helpers not yet measured live | **≤ 300 MB** with no browser tabs open; **≤ 500 MB** with 3 active browser tabs; **1 GB hard ceiling** enforced by a watchdog that hibernates hidden web views and trims caches |
 | Idle CPU | 2.8–6.7% of a core; ~1 render/s forever | **0 renders/s and < 0.1% of a core** after 2 s idle |
 | CPU while streaming | not yet measured | 1 session < 5% of a core; 10 sessions < 20%; background (unviewed) sessions cause 0 renders; no polling |
 | Startup | 1.1–2.0 s to window (debug); about 10 child CLIs in the first 15 s | **≤ 400 ms** to window, **≤ 600 ms** to an interactive home (warm); **no child processes in the first 5 s** |
@@ -477,7 +477,7 @@ Port Zeron's `motion.rs` as `apps/dove/src/motion.rs`.
 | P2 | Running spinners in the sidebar **re-render the Shell every frame**; the activity shimmer `frame_pump`s the TaskView every frame — `kit.rs:185`, `tool_calls.rs:232` | Spinners and shimmer in tiny isolated elements on the leased 30 Hz pulse clock; paused when the window is inactive | Streaming CPU sharply lower (Shell no longer rebuilt at 60–120 Hz) |
 | P3 | Wallpaper CPU raster at 15–24 fps + full upload each frame; Original refreshes the window at 30 Hz; `ANIM`/`CACHE` never released — `wallpaper.rs` | §3.5 | Home idle → ~0; 14–57 MB freed off-home |
 | P4 | **Startup spawn storm:** catalog refresh starts ACP agents (node, droid), plus ~8 `--version` probes — `dove-core lib.rs:1030–1110`, `shell.rs:391–410` | Use cached `models.v2.*`; refresh one agent lazily when its picker opens, or once a day in idle time, sequential and low priority. Cache versions keyed by binary mtime and size; probe only when the Agents page or updates pill is shown | ~0.5 GB transient and ~2 s of a core removed from launch |
-| P5 | Each agent spawn on Windows creates a **suspended full `dove.exe` escrow** (13–20 MB) — `zeron-harness …/escrow.rs` | Point the escrow at a tiny stub exe (`dove-escrow.exe`, about 100 KB) shipped next to Dove; record the patch in `vendor/README.md` | ~15 MB → ~1 MB per session |
+| P5 | Each agent spawn on Windows creates a **suspended full `dove.exe` escrow** (13–20 MB) — `zeron-harness …/escrow.rs` | Point the escrow at a tiny stub exe (`dove-escrow.exe`, about 100 KB) shipped next to Keplorayx; record the patch in `vendor/README.md` | ~15 MB → ~1 MB per session |
 | P6 | `dove --mcp-browser` bridge per session runs the full GUI binary | Measure first; if it is heavy, build the bridge as a small separate binary without GPUI | Up to ~10–15 MB per session |
 | P7 | **Closed tabs keep their `ThreadView`**: transcript, composer + poller, web views and terminals until archive — `shell.rs:901–913` | Hibernate on close after a 30 s grace: drop transcript rows, composer and list state when no agent is live (reloaded on reopen). Terminals and live agents keep running. Web views: see §4 D7 | RAM scales with *visible* threads, not history |
 | P8 | O(rows) work per streamed batch: `sync_panel` clones todos and scans subagents and designs; `pending()` and `user_messages()` per render — `shell.rs:817–848`, `transcript.rs:757, 3052` | Maintain incremental indexes inside `Chat::apply` | Batch cost O(new events) |
@@ -494,14 +494,14 @@ Port Zeron's `motion.rs` as `apps/dove/src/motion.rs`.
 - **`dove-fake-agent`:** replays recorded transcripts as Claude stream-json, Codex app-server JSON-RPC or ACP at realistic token rates. It is registered through `agent_path.*` in a scratch `DOVE_HOME`, giving 1, 5 and 10 concurrent mixed-harness sessions with no token cost.
 - **`perf.ps1`** (built from today's `bench.ps1`):
   - startup: process start → window → first frame, with a `DOVE_FRAME_STATS` marker;
-  - RAM split: Dove main, escrow, bridges, web views and mesh host vs harness children;
+  - RAM split: Keplorayx main, escrow, bridges, web views and mesh host vs harness children;
   - idle CPU and streaming CPU.
 - **`DOVE_INPUT_TRACE`:** timestamps at key dispatch and at the next presented frame (`on_next_frame`), giving a p50/p99 histogram.
 - **Final real run** with Claude, Codex and Gemini sessions, only with your OK, because it spends tokens.
 
 ### 3.7 Migration strategy
 
-Each milestone is a separate branch and PR from a **git worktree**, because the shared checkout is edited by other agents. Dove builds, runs and passes CI (`clippy -D warnings`) at every step.
+Each milestone is a separate branch and PR from a **git worktree**, because the shared checkout is edited by other agents. Keplorayx builds, runs and passes CI (`clippy -D warnings`) at every step.
 
 | Step | Scope | Ships as | Risk |
 |---|---|---|---|
@@ -538,7 +538,7 @@ After each step I post a short summary (what changed, numbers, screenshots) and 
 
 ### 3.8 Acceptance criteria
 
-1. **Visual parity screenshots:** Dove vs Zeron side by side for home, thread, right dock (Diffs, Files, Browser, Terminal), sidebar (comfortable and compact), top bar (tabs, narrow), every settings section, menus and popovers, dialogs, empty, loading and error states.
+1. **Visual parity screenshots:** Keplorayx vs Zeron side by side for home, thread, right dock (Diffs, Files, Browser, Terminal), sidebar (comfortable and compact), top bar (tabs, narrow), every settings section, menus and popovers, dialogs, empty, loading and error states.
    - Dark + light, at 100%, 125% and 150% scaling.
    - Plus a token check script: sampled font sizes, row heights, radii and colours match the token table.
 2. **Nothing-removed checklist:**

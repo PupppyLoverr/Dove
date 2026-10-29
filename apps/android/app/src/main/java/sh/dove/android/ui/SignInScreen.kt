@@ -45,7 +45,7 @@ fun SignInScreen(model: AppModel) {
             colorFilter = ColorFilter.tint(MaterialTheme.colorScheme.onSurface),
         )
         Spacer(Modifier.height(24.dp))
-        Text("Dove", style = MaterialTheme.typography.headlineLarge)
+        Text("Keplorayx", style = MaterialTheme.typography.headlineLarge)
         Spacer(Modifier.height(8.dp))
         Text(
             "Follow and steer your coding agents from anywhere.",
