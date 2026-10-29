@@ -419,8 +419,10 @@ impl Composer {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let mut this = Self::build(engine.clone(), "Send follow-up", (1, 8), window, cx);
-        this.dock_bar = true;
+        // The same card as the new-thread page, always open: no one-line bar
+        // that tucks to an idle hint while the sidebar is shown.
+        let mut this = Self::build(engine.clone(), "Send follow-up", (2, 12), window, cx);
+        this.variant = Variant::Hero;
         this.picker.update(cx, |p, _| {
             p.lock_to(task.harness, task.model.clone());
             p.set_text_trigger(true);
@@ -3256,16 +3258,39 @@ impl Composer {
 
         div()
             .id("composer")
+            .relative()
             .w_full()
             .flex()
             .flex_col()
             .gap(px(6.0))
             .capture_key_down(cx.listener(Self::on_key))
+            .when(!home && self.menu == Some(Menu::Place), |d| {
+                d.child(div().absolute().top_0().left(relative(0.5)).child(self.place_card(t, cx)))
+            })
             .child(box_)
             // Under the plate, quiet and unfilled: where it runs on the
             // left, the meters on the right.
             .when(home, |d| d.child(self.render_home_chips(hero, t, cx)))
             .when(home && hero && !self.add_dirs.is_empty(), |d| d.child(self.render_git_row(t, cx)))
+            // A thread's card keeps the dock bar's footer: where it runs,
+            // any extra folders, and the meters.
+            .when(!home && hero, |d| {
+                d.child(
+                    div()
+                        .w_full()
+                        .h(px(26.0))
+                        .px(px(HERO_INSET - 8.0))
+                        .flex()
+                        .items_center()
+                        .gap(px(4.0))
+                        .child(self.place_chip(t, cx))
+                        .when(!self.add_dirs.is_empty(), |d| {
+                            d.child(div().flex().min_w_0().overflow_hidden().child(self.render_context_row(t, cx)))
+                        })
+                        .child(div().flex_1())
+                        .child(self.rings(t, cx)),
+                )
+            })
             .children(meta)
             .when_some(self.error.clone(), |d, e| {
                 d.child(
