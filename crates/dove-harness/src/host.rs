@@ -515,7 +515,9 @@ mod tests {
     fn remote_dirs() {
         let p = Path::new("C:\\code\\dove");
         assert_eq!(Host::Wsl { distro: None }.remote_dir(p), "/mnt/c/code/dove");
-        assert_eq!(Host::Ssh { alias: "b".into() }.remote_dir(p), "dove");
+        // A local folder's own name: a Windows path only splits on Windows.
+        let native = Path::new(if cfg!(windows) { "C:\\code\\dove" } else { "/code/dove" });
+        assert_eq!(Host::Ssh { alias: "b".into() }.remote_dir(native), "dove");
         assert_eq!(Host::CuaSpace { name: "local:x".into() }.slug(), "cua-local_x");
     }
 
