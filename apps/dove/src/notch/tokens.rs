@@ -50,7 +50,6 @@ pub const AMBER: Hsla = hsla(0.0, 0.0, 1.0, 0.96);
 pub const BLUE: Hsla = hsla(0.0, 0.0, 1.0, 0.70);
 pub const GREEN: Hsla = hsla(0.0, 0.0, 1.0, 0.86);
 pub const RED: Hsla = hsla(0.0, 0.0, 1.0, 1.0);
-pub const CLAUDE: Hsla = hsla(0.0, 0.0, 1.0, 0.95);
 /// K22 (live voice).
 pub const K22: Hsla = hsla(0.0, 0.0, 1.0, 0.96);
 
