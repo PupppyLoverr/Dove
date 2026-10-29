@@ -1190,7 +1190,7 @@ impl SettingsPage {
         let prewarm = self.flag("prewarm", true);
         let agent_panels = self.flag("agents_open_panels", true);
         let ai_titles = self.flag("ai_titles", true);
-        let grouped = self.get("sidebar_group").as_deref() == Some("project");
+        let grouped = self.get("sidebar_group").as_deref() != Some("none");
         let compact = self.get("sidebar_density").as_deref() == Some("compact");
         let archived = self.flag("sidebar_archived", false);
         let browser = self.flag("agent_browser", true);

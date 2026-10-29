@@ -937,20 +937,18 @@ impl Shell {
         let step = (task.status == TaskStatus::Running)
             .then(|| self.threads.get(&id).and_then(|v| v.read(cx).chat.read(cx).current_step()))
             .flatten();
-        // Where it stands, as a coloured word in place of the time: status
-        // reads as words, not badges, and quiet rows keep their age.
+        // Claude's rows: the title only. A thread that needs a look says so in
+        // a coloured word; quiet rows show nothing there (the agent, project
+        // and age are the tooltip).
         let corner = match task.status {
             TaskStatus::NeedsInput => Some(("Waiting", t.warning)),
             TaskStatus::Failed => Some(("Failed", t.danger)),
             TaskStatus::Running => Some(("Running", t.busy)),
             _ => None,
         }
-        .map_or_else(
-            || div().text_size(ty::CAPTION).text_color(t.text_faint).child(ui::relative_time(task.updated_at)),
-            |(word, tint)| {
-                div().text_size(ty::CAPTION).font_weight(gpui::FontWeight::MEDIUM).text_color(tint).child(word)
-            },
-        );
+        .map_or_else(div, |(word, tint)| {
+            div().text_size(ty::CAPTION).font_weight(gpui::FontWeight::MEDIUM).text_color(tint).child(word)
+        });
         // Hover reveals "···": the same menu as a right-click (rename, pin,
         // archive, move, delete), so the row itself stays clean.
         let more_group = SharedString::from(format!("row-more-{id}"));
@@ -982,9 +980,9 @@ impl Shell {
                     .group_hover(more_group, |s| s.text_color(t.text)),
             );
 
-        // The second line says where the thread stands: what it is doing,
-        // whether it waits on you, or where it works.
-        let (detail, detail_tint): (Option<String>, Hsla) = match task.status {
+        // Where the thread stands (what it is doing, whether it waits on you,
+        // or where it works), for the row's tooltip.
+        let (detail, _): (Option<String>, Hsla) = match task.status {
             TaskStatus::NeedsInput => (Some("Waiting for you".into()), t.warning),
             TaskStatus::Failed => (Some("Failed".into()), t.danger),
             TaskStatus::Running => {
@@ -998,12 +996,11 @@ impl Shell {
                 (Some(line), t.text_faint)
             }
         };
-        let two_line = !compact && renaming.is_none();
         let renaming_now = renaming.is_some();
         let row = div()
             .id(SharedString::from(format!("row-{id}")))
             .group(group.clone())
-            .h(px(if compact { 32.0 } else { 44.0 }))
+            .h(px(if compact { 32.0 } else { 34.0 }))
             .mx(px(8.0))
             .px(px(8.0))
             .flex()
@@ -1013,18 +1010,21 @@ impl Shell {
             .cursor_pointer()
             .when(selected, |d| d.bg(ui::selected_bg(t)))
             .when(archived && !selected, |d| d.opacity(0.6))
-            // Compact rows have no second line: the step a working thread is
-            // on, or (with several projects) where it lives, is the tooltip.
-            .when_some(
-                step.clone()
-                    .or_else(|| {
-                        (self.projects.len() > 1)
-                            .then(|| self.project(task.project_id).map(|p| SharedString::from(p.name.clone())))
-                            .flatten()
-                    })
-                    .filter(|_| compact),
-                |d, s| d.tooltip(ui::tip(s)),
-            )
+            // One line: the step a working thread is on, or the agent, where
+            // it works and how long ago, is the tooltip.
+            .when(renaming.is_none(), |d| {
+                let tip: SharedString = match step.clone() {
+                    Some(s) => s,
+                    None => {
+                        let age = ui::relative_time(task.updated_at);
+                        let mut parts = vec![task.harness.label().to_string()];
+                        parts.extend(detail.clone().filter(|l| l != task.harness.label()));
+                        parts.push(age);
+                        parts.join(" · ").into()
+                    }
+                };
+                d.tooltip(ui::tip(tip))
+            })
             // Rows carry no icon unless a teammate owns them; an unread
             // thread gets a small accent dot in the margin.
             .child(
@@ -1045,28 +1045,21 @@ impl Shell {
                     .bg(t.wash(0.08))
                     .child(Input::new(&input))
                     .into_any_element(),
-                None => {
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .child(
-                            div()
-                                .truncate()
-                                .text_size(ty::BODY)
-                                .when(task.unread, |d| d.font_weight(gpui::FontWeight::SEMIBOLD))
-                                .text_color(if selected || task.unread { t.text } else { t.text_muted })
-                                .group_hover(group.clone(), |s| s.text_color(t.text))
-                                .child(task.title.clone()),
-                        )
-                        .when(two_line, |d| {
-                            d.children(detail.map(|line| {
-                                div().truncate().text_size(ty::CAPTION).text_color(detail_tint).child(line)
-                            }))
-                        })
-                        .into_any_element()
-                }
+                None => div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .truncate()
+                            .text_size(ty::BODY)
+                            .when(task.unread, |d| d.font_weight(gpui::FontWeight::SEMIBOLD))
+                            .text_color(if selected || task.unread { t.text } else { t.text_muted })
+                            .group_hover(group.clone(), |s| s.text_color(t.text))
+                            .child(task.title.clone()),
+                    )
+                    .into_any_element(),
             })
             .when(task.pinned, |d| d.child(icon(icons::PIN).size(px(12.0)).text_color(t.text_faint)))
             .when_some(fold, |d, (open, n)| {
