@@ -1796,12 +1796,15 @@ impl SidePanel {
             strip = strip.child(
                 surface_chrome::tab(("panel-chip", ix), selected, &t)
                     .group(group.clone())
-                    .h(px(24.0))
+                    .h(px(28.0))
                     .flex_1()
                     .min_w(px(CHIP_MIN))
                     .max_w(px(CHIP_W))
-                    .px(px(4.0))
-                    .rounded(px(radius::RADIUS))
+                    .px(px(6.0))
+                    .rounded(px(radius::ROW))
+                    // The sidebar's own selected row, so the two columns of
+                    // chrome speak one language.
+                    .when(selected, |d| d.bg(ui::selected_bg(&t)))
                     .gap(px(3.0))
                     .aria_label(title.clone())
                     .tooltip(ui::tip(title.clone()))
@@ -2222,100 +2225,85 @@ impl SidePanel {
             ("Review", &[Tab::Changes, Tab::Files, Tab::History, Tab::Plan]),
             ("Agents", &[Tab::Subagents, Tab::Chats, Tab::SideChat]),
         ];
-        // One card per group, rows inside it: icon, name, and what it is
-        // for in muted text. Rows part by hover fill, not by plates.
+        // The sidebar's language: a quiet section label, then 36 px rows
+        // with an 18 px glyph and the name; what each one is for is its
+        // tooltip. Top-aligned, as the sidebar list is.
         let row = |k: Tab, cx: &mut Context<Self>| {
             let id = SharedString::from(format!("surface-card-{}", k.label()));
             div()
                 .id(id.clone())
                 .group(id.clone())
-                .w_full()
-                .h(px(40.0))
+                .h(px(36.0))
+                .mx(px(8.0))
                 .px(px(10.0))
-                .rounded(px(radius::ROW))
                 .flex()
+                .flex_none()
                 .items_center()
                 .gap(px(10.0))
+                .rounded(px(radius::ROW))
                 .cursor_pointer()
-                .hover(|s| s.bg(ink(0.05)))
-                .child(icon(k.glyph()).size(px(16.0)).flex_none().text_color(t.text_muted))
+                .text_size(ty::BODY)
+                .text_color(t.text_muted)
+                .hover(|s| s.bg(ink(0.05)).text_color(t.text))
+                .role(gpui::Role::Button)
+                .aria_label(k.label())
+                .tooltip(ui::tip(k.blurb()))
+                .child(
+                    icon(k.glyph())
+                        .size(px(18.0))
+                        .flex_none()
+                        .text_color(t.text_muted)
+                        .group_hover(id.clone(), |s| s.text_color(t.text)),
+                )
+                .child(div().flex_1().min_w_0().truncate().child(k.label()))
                 .child(
                     div()
                         .flex_none()
-                        .text_size(ty::BODY)
-                        .font_weight(gpui::FontWeight::MEDIUM)
-                        .text_color(t.text)
-                        .child(k.label()),
-                )
-                .child(
-                    div().flex_1().min_w_0().truncate().text_size(ty::META).text_color(t.text_faint).child(k.blurb()),
-                )
-                .child(
-                    icon(icons::ALT_ARROW_RIGHT)
-                        .size(px(12.0))
-                        .flex_none()
+                        .text_size(ty::CAPTION)
                         .text_color(t.text_faint)
                         .invisible()
-                        .group_hover(id, |s| s.visible()),
+                        .group_hover(id, |s| s.visible())
+                        .child(k.blurb()),
                 )
                 .on_click(cx.listener(move |this, _, window, cx| this.pick(k, window, cx)))
         };
         let has_pr = self.thread.is_some_and(|id| self.prs.contains_key(&id));
-        let mut col = div().w_full().max_w(px(360.0)).flex().flex_col().gap(px(16.0));
+        let mut col = div().w_full().flex().flex_col().pt(px(8.0));
         for (title, tabs) in GROUPS {
-            col = col.child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(6.0))
-                    .child(
-                        div()
-                            .px(px(4.0))
-                            .text_size(ty::META)
-                            .font_weight(gpui::FontWeight::MEDIUM)
-                            .text_color(t.text_muted)
-                            .child(title),
-                    )
-                    .child(
-                        div()
-                            .p(px(4.0))
-                            .rounded(px(radius::CARD))
-                            .bg(t.surface_card.opacity(0.92))
-                            .border_1()
-                            .border_color(t.border.opacity(0.55))
-                            .flex()
-                            .flex_col()
-                            .children(
-                                tabs.iter()
-                                    .copied()
-                                    .chain((title == "Review" && has_pr).then_some(Tab::PullRequest))
-                                    .map(|k| row(k, cx)),
-                            ),
-                    ),
-            );
+            col = col
+                .child(
+                    div()
+                        .mx(px(8.0))
+                        .mt(px(10.0))
+                        .mb(px(2.0))
+                        .h(px(26.0))
+                        .px(px(10.0))
+                        .flex()
+                        .items_center()
+                        .text_size(ty::CAPTION)
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .text_color(t.text_faint)
+                        .child(title),
+                )
+                .children(
+                    tabs.iter().copied().chain((title == "Review" && has_pr).then_some(Tab::PullRequest)).map(|k| row(k, cx)),
+                );
         }
-        // Centered in the pane when it fits, scrolling from the top when not.
         div()
             .id("surface-picker")
             .size_full()
             .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .child(col)
+            .child(div().flex_1())
             .child(
                 div()
-                    .w_full()
-                    .min_h(gpui::relative(1.0))
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .justify_center()
-                    .p(px(16.0))
-                    .child(col)
-                    .child(
-                        div()
-                            .mt(px(18.0))
-                            .text_size(ty::CAPTION)
-                            .text_color(t.text_faint)
-                            .child("Ctrl+\\ hides the panel"),
-                    ),
+                    .px(px(18.0))
+                    .py(px(14.0))
+                    .text_size(ty::CAPTION)
+                    .text_color(t.text_faint)
+                    .child("Ctrl+\\ hides the panel"),
             )
             .into_any_element()
     }

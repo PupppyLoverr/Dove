@@ -134,8 +134,10 @@ license is kept beside the assets in `apps/dove/assets/file-icons/LICENSE.symbol
 
 ## K22 icons
 
-The interface icons in `apps/dove/assets/icons` (except `brand-*` and `*-mark`)
-are original K22 drawings. They are not Solar or Hugeicons.
+The interface icons in `apps/dove/assets/icons` (except `brand-*` and `*-mark`),
+and the K22 art on iOS, Android, the landing page and the extension, are
+original K22 drawings (pack v5). None are traced from Solar, Hugeicons, Lucide
+or Phosphor.
 
 Agent brand marks (Claude, OpenAI, Cursor, Devin, Grok, OpenCode, Pi, Hermes,
 Antigravity) identify the respective products and remain the property of their

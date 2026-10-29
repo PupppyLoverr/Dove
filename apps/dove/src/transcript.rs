@@ -1982,11 +1982,6 @@ impl TaskView {
         cx.notify();
     }
 
-    /// The pending approval or question summary, for "Needs you".
-    pub fn pending(&self) -> Option<PermissionRequest> {
-        self.chat.pending().map(|(_, r)| r.clone())
-    }
-
     pub fn current_step(&self) -> Option<SharedString> {
         self.chat.current_step()
     }
@@ -3077,16 +3072,19 @@ impl TaskView {
             .children(chip)
             .when(!body.is_empty(), |d| {
                 d.child(
+                    // A quiet filled bubble, no outline: the reply beside it
+                    // is plain text, so the fill alone says who spoke. The
+                    // outline appears only to mark a message jumped to.
                     div()
                         .max_w(px((crate::design::conversation_width() * 0.78).round()))
-                        .px(px(14.0))
-                        .py(px(9.0))
+                        .px(px(16.0))
+                        .py(px(10.0))
                         .rounded(px(Theme::BUBBLE_RADIUS))
                         .text_size(ty::MD)
                         .line_height(ty::lh::MD)
-                        .bg(t.wash(0.09))
+                        .bg(t.wash(0.07))
                         .border_1()
-                        .border_color(if self.flash == Some(i) { t.accent.opacity(0.7) } else { t.wash(0.08) })
+                        .border_color(if self.flash == Some(i) { t.accent.opacity(0.7) } else { gpui::transparent_black() })
                         .text_color(t.text)
                         .child(body),
                 )
@@ -4214,14 +4212,19 @@ impl TaskView {
             self.error_strip(i, what, prompt.clone().filter(|_| idle), weak, t)
         });
         let prompt = prompt.filter(|_| !failed);
+        // The latest reply keeps its actions in view; earlier ones show
+        // them on hover, so a long thread is text, not rows of icons.
+        let group = SharedString::from(format!("turn-end-{i}"));
         let row = div()
-            .group("turn-end")
+            .id(group.clone())
+            .group(group.clone())
             .h(px(28.0))
             .flex()
             .items_center()
             .gap(px(2.0))
             .text_size(ty::META)
             .text_color(t.text_faint)
+            .when(!last, |d| d.opacity(0.0).hover(|s| s.opacity(1.0)))
             .when(has_text, |d| {
                 let weak = weak.clone();
                 d.child(action_button(SharedString::from(format!("copy-turn-{i}")), icons::COPY, "Copy", t).on_click(

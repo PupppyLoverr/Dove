@@ -1760,7 +1760,7 @@ impl SettingsPage {
                 false,
                 "wallpaper_chat",
                 "Show behind chats",
-                "Behind every conversation. Images are frosted; GIFs and videos play unblurred, lightly dimmed.",
+                "Behind every conversation and terminal, frosted so text reads. GIFs and videos keep playing.",
                 if has_wall {
                     ctl::on_toggle(ctl::toggle(t, "set-wall-chat", behind_chats), cx, move |this, _, cx| {
                         this.set_flag("wallpaper_chat", !behind_chats, cx)
@@ -1776,7 +1776,7 @@ impl SettingsPage {
                 false,
                 "wallpaper_chat_blur",
                 "Chat blur",
-                "For images: stronger blur leaves only colour. GIFs and videos are never blurred.",
+                "Stronger blur leaves only colour behind the conversation.",
                 gate(
                     chat_on,
                     div()
@@ -1793,7 +1793,7 @@ impl SettingsPage {
                 false,
                 "wallpaper_chat_dim",
                 "Chat dim",
-                "For images; Dove darkens further when text would be hard to read. GIFs and videos get a fixed light dim.",
+                "Dove darkens further on its own when text would be hard to read.",
                 gate(
                     chat_on,
                     div()

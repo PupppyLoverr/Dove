@@ -427,8 +427,6 @@ pub const FADE_IN: MotionSpec = MotionSpec::new(500, EASE_OUT_EXPO);
 pub const FADE_QUICK: MotionSpec = MotionSpec::new(150, EASE);
 /// Chevron disclosure crossfade.
 pub const CHEVRON: MotionSpec = MotionSpec::new(200, EASE);
-/// Collapsible content reveal (opacity + rise; the height snaps).
-pub const REVEAL: MotionSpec = MotionSpec::new(180, EASE_OUT);
 /// Rail jumps and scroll-to-row.
 pub const SCROLL_GLIDE: MotionSpec = MotionSpec::new(500, EASE_IN_OUT);
 /// Toggle thumb travel.
@@ -489,15 +487,6 @@ where
     E: Styled + IntoElement + 'static,
 {
     element.with_animation(id, DIALOG_IN.animation(), |el, t| el.relative().opacity(t).top(px(2.0 * (1.0 - t))))
-}
-
-/// Content reveal for collapsibles: the height is final at once, the
-/// content fades and rises 3 px into it.
-pub fn reveal<E>(id: impl Into<ElementId>, element: E) -> AnimationElement<E>
-where
-    E: Styled + IntoElement + 'static,
-{
-    element.with_animation(id, REVEAL.animation(), |el, t| el.relative().opacity(t).top(px(-3.0 * (1.0 - t))))
 }
 
 /// A panel sliding in from the right (`from_right`) or left by `distance`.

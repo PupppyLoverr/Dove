@@ -137,7 +137,9 @@ struct Fit {
 pub enum Route {
     Home,
     Thread(TaskId),
+    /// Gone as a page: it opens Search on Threads (`navigate`).
     Threads,
+    Artifacts,
     Kanban,
     Automations,
     PullRequests,
@@ -156,6 +158,7 @@ impl Route {
         Some(match id {
             "home" => Route::Home,
             "threads" => Route::Threads,
+            "artifacts" => Route::Artifacts,
             "kanban" => Route::Kanban,
             "automations" => Route::Automations,
             "prs" | "pull-requests" => Route::PullRequests,
@@ -240,6 +243,8 @@ pub struct Shell {
     pub info_open: bool,
     pub more_open: bool,
     pub sidebar_options_open: bool,
+    /// The sidebar footer's account menu.
+    pub account_open: bool,
     /// The "+N" menu of tabs that do not fit the strip.
     pub tab_overflow_open: bool,
     /// Keyboard and exit state of the shell's own menus.
@@ -251,11 +256,6 @@ pub struct Shell {
     pub updates: Vec<crate::updates::Update>,
     pub today: Usage,
     pub error: Option<SharedString>,
-    pub search: Entity<InputState>,
-    pub search_q: String,
-    /// The sidebar's thread filter is showing (it also shows while it holds
-    /// a query).
-    pub search_open: bool,
     pub pages: PageState,
     /// Unread automation runs, for the sidebar dot.
     pub inbox_unread: usize,
@@ -301,12 +301,6 @@ impl Shell {
         let prs = cx.new(|cx| PullRequestsPage::new(engine.clone(), window, cx));
         let workspace = cx.new(|cx| crate::flock::Workspace::new(engine.clone(), cx));
         let settings = cx.new(|cx| crate::settings::SettingsPage::new(engine.clone(), window, cx));
-        let style = ui::input_style(Theme::of(cx));
-        let search = cx.new(|cx| {
-            let mut s = InputState::new(window, cx).placeholder("Search threads");
-            s.set_editor_style(style);
-            s
-        });
         let mut subs = Vec::new();
         subs.push(cx.subscribe(&workspace, |_, _, ev: &crate::flock::WorkspaceEvent, cx| match ev {
             crate::flock::WorkspaceEvent::AgentsChanged => cx.notify(),
@@ -385,18 +379,6 @@ impl Shell {
             }
             PrEvent::HandOff { project, prompt } => this.stage_new_thread(project.clone(), prompt, window, cx),
         }));
-        subs.push(cx.subscribe(&search, |this, s, ev: &InputEvent, cx| match ev {
-            InputEvent::Change => {
-                this.search_q = s.read(cx).value().to_lowercase();
-                cx.notify();
-            }
-            // An empty filter folds away when you leave it.
-            InputEvent::Blur if this.search_q.is_empty() => {
-                this.search_open = false;
-                cx.notify();
-            }
-            _ => {}
-        }));
         if let Some(remote) = crate::remote::Remote::global(cx) {
             subs.push(cx.subscribe_in(&remote, window, |this, remote, ev: &RemoteEvent, window, cx| {
                 this.on_remote(remote.clone(), ev, window, cx)
@@ -468,6 +450,7 @@ impl Shell {
             info_open: false,
             more_open: false,
             sidebar_options_open: false,
+            account_open: false,
             tab_overflow_open: false,
             menus: crate::shell_menu::Menus::new(cx),
             agents_open: false,
@@ -476,9 +459,6 @@ impl Shell {
             updates: Vec::new(),
             today: Usage::default(),
             error: None,
-            search,
-            search_q: String::new(),
-            search_open: false,
             pages,
             inbox_unread: 0,
             focus: cx.focus_handle(),
@@ -990,6 +970,11 @@ impl Shell {
         // Agents live in Settings › Agents (one place for them).
         if route == Route::Agents {
             self.open_settings_section("agents", window, cx);
+            return;
+        }
+        // The Threads page gave way to Search, scoped to threads.
+        if route == Route::Threads {
+            self.open_search(crate::palette::Scope::Threads, window, cx);
             return;
         }
         if route == self.route {
@@ -1947,6 +1932,41 @@ impl Shell {
     }
 
     // ------------------------------------------------------------ palette
+
+    /// Search (the palette), opened on one scope.
+    pub fn open_search(&mut self, scope: crate::palette::Scope, window: &mut Window, cx: &mut Context<Self>) {
+        if self.palette.is_none() {
+            self.open_palette(window, cx);
+        }
+        if let Some(p) = self.palette.clone() {
+            p.update(cx, |p, cx| p.set_scope(scope, cx));
+        }
+    }
+
+    /// The workspace of threads with no folder (`<data>/chats`).
+    pub fn is_chats_project(&self, id: ProjectId) -> bool {
+        let dir = crate::pages::artifacts::chats_dir();
+        let norm = |p: &std::path::Path| p.to_string_lossy().trim_start_matches(r"\?\").to_lowercase();
+        self.project(id).is_some_and(|p| norm(&p.path) == norm(&dir))
+    }
+
+    /// A new thread with no folder: it works in `<data>/chats`, and what it
+    /// makes shows on the Artifacts page.
+    pub fn new_chat_without_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let dir = crate::pages::artifacts::chats_dir();
+        let _ = std::fs::create_dir_all(&dir);
+        match self.engine.store.add_project(&dir) {
+            Ok(p) => {
+                self.reload(cx);
+                self.set_home_project(p.id, cx);
+                self.new_session(window, cx);
+            }
+            Err(e) => {
+                self.error = Some(format!("{e:#}").into());
+                cx.notify();
+            }
+        }
+    }
 
     pub fn open_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.palette.is_some() {
@@ -3272,16 +3292,17 @@ impl Shell {
         let t = Theme::of(cx).clone();
         let viewport_h = f32::from(window.viewport_size().height);
         let kind = crate::wallpaper_media::kind_cached(std::path::Path::new(&path));
-        // A GIF or video loops as attached across the whole column: no
+        // On Home a GIF or video loops as attached across the column: no
         // blur, fade, cut-out or effect, only a light dim (`MOVING_DIM`).
-        // Stills get the hero treatment and the chat frost.
+        // Behind chats and terminals every background is frosted under the
+        // contrast scrim, moving ones still playing, so text stays readable.
         let moving = kind != crate::wallpaper_media::Kind::Still;
         let height = if thread || moving { viewport_h } else { crate::wallpaper::hero_height(viewport_h) };
         let scale = window.scale_factor();
         let playback = self.engine.store.setting("wallpaper_playback").unwrap_or_else(|| "always".into());
         let composer = if home { self.composer_bounds.clone() } else { std::rc::Rc::new(std::cell::Cell::new(None)) };
         let target = (width * scale, height * scale);
-        let art = if moving {
+        let art = if moving && !thread {
             let props = crate::wallpaper_media::BackdropProps {
                 path: path.into(),
                 variant: crate::wallpaper_media::Variant::Hero,
@@ -3295,14 +3316,14 @@ impl Shell {
             let veil = gpui::black().opacity(MOVING_DIM);
             view.update(cx, |b, cx| b.show(props, cx)).then(|| (view.into_any_element(), Some(veil)))
         } else if thread {
-            // A still behind a chat: baked frost under a contrast-solved scrim.
+            // Behind a chat: baked frost under a contrast-solved scrim.
             let blur = self.chat_blur().round() as u32;
             let variant = crate::wallpaper_media::Variant::Frost(blur);
             let props = crate::wallpaper_media::BackdropProps {
                 path: path.clone().into(),
                 variant,
                 target,
-                play: false,
+                play: moving && playback == "always",
                 fade: false,
                 composer: None,
                 opacity: 1.0,
@@ -3399,7 +3420,8 @@ impl Shell {
                 }
                 None => div().into_any_element(),
             },
-            Route::Threads => self.render_threads_page(window, cx),
+            Route::Threads => self.render_home(window, cx),
+            Route::Artifacts => self.render_artifacts_page(window, cx),
             Route::Kanban => self.render_kanban(window, cx),
             Route::Automations => self.render_automations(window, cx),
             Route::PullRequests => self.prs.clone().into_any_element(),
@@ -3611,9 +3633,17 @@ impl Render for Shell {
                 .when(bare, |d| d.pt(px(Theme::TITLEBAR_HEIGHT)))
                 .child(rows)
         });
+        let thread_art_now = self.full_art_route() && self.has_wallpaper();
         let panel_ghost =
             self.slides.panel.exit(now).map(|(p, w)| {
-                div().absolute().top_0().bottom_0().right(px(-24.0 * p)).w(px(w)).opacity(1.0 - p).bg(t.bg)
+                div()
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .right(px(-24.0 * p))
+                    .w(px(w))
+                    .opacity(1.0 - p)
+                    .bg(if thread_art_now { t.bg.opacity(SIDE_ART_TINT) } else { t.glass() })
             });
         if sidebar_ghost.is_some() || panel_ghost.is_some() {
             window.request_animation_frame();
@@ -3685,11 +3715,21 @@ impl Render for Shell {
                     .child(div().size_full().flex().child(div().flex_1().min_w_0().h_full().child(center)))
             })
         };
-        // The dock continues the same fill up through its strip. No rule on
-        // the seam: the two columns are one surface, split only by content.
+        // The sidebar and the dock are one material, the window's chrome:
+        // the same fill (over a thread's picture, the same frost a shade
+        // deeper; otherwise the glass, lifted a step on a dark frosted
+        // theme so a near-black one does not turn it into a slab) and the
+        // same hairline seam where they meet the chat. The chat is the only
+        // page-coloured plane, so the dock never reads as part of it.
+        let lift = t.is_frost() && t.appearance.is_dark();
+        let (art_tint, lift_fill) = (t.bg.opacity(SIDE_ART_TINT), t.surface_raised.opacity(0.30));
+        let chrome = move |d: gpui::Div| {
+            d.when(thread_art, |d| d.bg(art_tint)).when(!thread_art && lift, |d| d.bg(lift_fill))
+        };
+        let seam = t.wash(0.06);
         let dock_layer = panel_open.then(|| {
             let inner = if sidebar_shown { self.sidebar_w } else { 0.0 };
-            div()
+            chrome(div())
                 .absolute()
                 .top_0()
                 .bottom_0()
@@ -3697,29 +3737,10 @@ impl Render for Shell {
                 .when(dock_left && !expanded, |d| d.left(px(inner)))
                 .when(!expanded, |d| d.w(px(panel_w)))
                 .when(expanded, |d| d.left(px(inner)))
-                // Over a thread's picture the dock is the same frost, a
-                // shade deeper, with a hairline seam; otherwise the page.
-                .when(thread_art, |d| {
-                    d.bg(t.bg.opacity(SIDE_ART_TINT)).when(!expanded, |d| {
-                        if dock_left { d.border_r_1() } else { d.border_l_1() }.border_color(t.wash(0.06))
-                    })
-                })
-                .when(!thread_art, |d| d.bg(t.bg))
+                .when(!expanded, |d| if dock_left { d.border_r_1() } else { d.border_l_1() }.border_color(seam))
         });
-        // The sidebar column, titlebar included. Over a thread's picture it
-        // is the same frost a shade deeper (as the dock), with a hairline
-        // seam. Without one, a dark frosted sidebar is lifted a step so a
-        // near-black theme does not turn it into a black slab.
         let side_layer = (sidebar_shown || in_settings).then(|| {
-            let lift = t.is_frost() && t.appearance.is_dark();
-            div()
-                .absolute()
-                .top_0()
-                .bottom_0()
-                .left_0()
-                .w(px(self.sidebar_w))
-                .when(thread_art, |d| d.bg(t.bg.opacity(SIDE_ART_TINT)).border_r_1().border_color(t.wash(0.06)))
-                .when(!thread_art && lift, |d| d.bg(t.surface_raised.opacity(0.30)))
+            chrome(div()).absolute().top_0().bottom_0().left_0().w(px(self.sidebar_w)).border_r_1().border_color(seam)
         });
 
         let menu = self.render_menu_overlay(cx);

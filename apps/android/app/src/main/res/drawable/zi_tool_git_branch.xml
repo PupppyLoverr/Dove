@@ -1,22 +1,22 @@
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="24dp" android:height="24dp"
     android:viewportWidth="24" android:viewportHeight="24">
-  <path android:pathData="M5.25,5.25a2.25,2.25 0 1,0 4.5,0a2.25,2.25 0 1,0 -4.5,0Z"
+  <path android:pathData="M4.5,5.25a2.25,2.25 0 1,0 4.5,0a2.25,2.25 0 1,0 -4.5,0Z"
       android:strokeColor="#FF000000"
       android:strokeWidth="1.75"
       android:strokeLineCap="round"
       android:strokeLineJoin="round" />
-  <path android:pathData="M5.25,18.75a2.25,2.25 0 1,0 4.5,0a2.25,2.25 0 1,0 -4.5,0Z"
+  <path android:pathData="M4.5,18.75a2.25,2.25 0 1,0 4.5,0a2.25,2.25 0 1,0 -4.5,0Z"
       android:strokeColor="#FF000000"
       android:strokeWidth="1.75"
       android:strokeLineCap="round"
       android:strokeLineJoin="round" />
-  <path android:pathData="M14.25,6.75a2.25,2.25 0 1,0 4.5,0a2.25,2.25 0 1,0 -4.5,0Z"
+  <path android:pathData="M15,6.75a2.25,2.25 0 1,0 4.5,0a2.25,2.25 0 1,0 -4.5,0Z"
       android:strokeColor="#FF000000"
       android:strokeWidth="1.75"
       android:strokeLineCap="round"
       android:strokeLineJoin="round" />
-  <path android:pathData="M7.5 7.5v9M16.5 9c0 4.5 -9 3 -9 7.5"
+  <path android:pathData="M6.75 7.5v9M17.25 9c0 4.5 -10.5 3 -10.5 7.5"
       android:strokeColor="#FF000000"
       android:strokeWidth="1.75"
       android:strokeLineCap="round"

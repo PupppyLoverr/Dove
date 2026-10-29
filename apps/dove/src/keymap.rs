@@ -102,7 +102,15 @@ pub fn rebind(store: &Store, id: &str, key: &str, cx: &mut App) {
 
 /// "secondary-k" → "Ctrl K" (or "⌘ K" on macOS).
 pub fn pretty(key: &str) -> String {
-    key.split('-')
+    // "secondary-alt--" binds the minus key: the last "-" is the key.
+    let (mods, minus) = match key.strip_suffix("--") {
+        Some(rest) => (rest, true),
+        None => (key, key == "-"),
+    };
+    let mods = if mods == "-" { "" } else { mods };
+    mods.split('-')
+        .filter(|p| !p.is_empty())
+        .chain(minus.then_some("-"))
         .map(|part| match part {
             "secondary" => if cfg!(target_os = "macos") { "⌘" } else { "Ctrl" }.to_string(),
             "ctrl" => "Ctrl".into(),
@@ -114,6 +122,10 @@ pub fn pretty(key: &str) -> String {
             "tab" => "Tab".into(),
             "space" => "Space".into(),
             "\\" => "\\".into(),
+            "up" => "↑".into(),
+            "down" => "↓".into(),
+            "enter" => "↵".into(),
+            "escape" => "Esc".into(),
             other => other.to_uppercase(),
         })
         .collect::<Vec<_>>()
@@ -150,6 +162,15 @@ pub fn from_keystroke(k: &gpui::Keystroke) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn minus_and_arrows_keep_their_key() {
+        let ctrl = if cfg!(target_os = "macos") { "⌘" } else { "Ctrl" };
+        let alt = if cfg!(target_os = "macos") { "⌥" } else { "Alt" };
+        assert_eq!(pretty("secondary-alt--"), format!("{ctrl} {alt} -"));
+        assert_eq!(pretty("secondary-alt-down"), format!("{ctrl} {alt} ↓"));
+        assert_eq!(pretty("secondary-n"), format!("{ctrl} N"));
+    }
 
     #[test]
     fn shortcut_ids_are_unique_and_pretty() {

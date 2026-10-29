@@ -5,7 +5,7 @@
 //! open, and falls back to the view for a thread the engine hasn't seen
 //! live since launch (one loaded from its transcript).
 
-use dove_core::proto::{PermissionDecision, PermissionRequest, TaskId};
+use dove_core::proto::{PermissionDecision, TaskId};
 use gpui::{App, Context, Window};
 
 use crate::shell::Shell;
@@ -55,14 +55,6 @@ impl Shell {
             };
         }
         self.threads.get(&id).map(|v| v.read(cx).chat.read(cx).voice_state()).unwrap_or_default()
-    }
-
-    /// The request a Needs-you row shows: the newest undecided one.
-    pub fn task_pending(&self, id: TaskId, cx: &App) -> Option<PermissionRequest> {
-        match self.engine.attention().get(id) {
-            Some(s) if s.live => s.pending.last().cloned(),
-            _ => self.threads.get(&id).and_then(|v| v.read(cx).chat.read(cx).pending()),
-        }
     }
 
     /// The agent's latest reply as plain text, its last `max` characters.
