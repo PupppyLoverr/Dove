@@ -370,9 +370,18 @@ pub mod remote {
     /// Runs the remote `dove` with the arguments after it.
     const RUN_DOVE: &str = r#"exec "$HOME/.dove/bin/dove" "$@""#;
 
-    /// Prints `ok` when the remote `dove` is this version, else `need <os> <arch>`.
-    const CHECK: &str = r#"v=$("$HOME/.dove/bin/dove" node version 2>/dev/null)
-if [ "$v" = "$1" ]; then echo ok; else echo "need $(uname -s) $(uname -m)"; fi"#;
+    /// Prints `ok` when the remote `dove` is this version; `libs <names…>`
+    /// when it is there but the host lacks system libraries it loads; else
+    /// `need <os> <arch>`.
+    const CHECK: &str = r#"d="$HOME/.dove/bin/dove"
+v=$("$d" node version 2>/dev/null)
+if [ "$v" = "$1" ]; then echo ok
+elif [ -x "$d" ] && command -v ldd >/dev/null 2>&1 && ldd "$d" 2>/dev/null | grep -q "not found"; then
+  echo "libs $(ldd "$d" 2>/dev/null | awk '/not found/ {print $1}' | tr '\n' ' ')"
+else echo "need $(uname -s) $(uname -m)"; fi"#;
+
+    /// Debian/Ubuntu packages for the libraries the binary loads at start.
+    const LINUX_LIBS_HINT: &str = "sudo apt-get install -y libxkbcommon0 libxkbcommon-x11-0 libxcb-xkb1 libasound2";
 
     /// stdin: the binary.
     const INSTALL: &str = r#"mkdir -p "$HOME/.dove/bin" && t="$HOME/.dove/bin/dove.tmp" && cat > "$t" && chmod 755 "$t" && mv -f "$t" "$HOME/.dove/bin/dove""#;
@@ -395,6 +404,10 @@ if [ "$v" = "$1" ]; then echo ok; else echo "need $(uname -s) $(uname -m)"; fi"#
         let said = said.lines().map(str::trim).rfind(|l| !l.is_empty()).unwrap_or("").to_string();
         if said == "ok" {
             return true;
+        }
+        if let Some(libs) = said.strip_prefix("libs ") {
+            eprintln!("{}", missing_libs_hint(&host.label(), libs));
+            return false;
         }
         let mut words = said.split_whitespace().skip(1);
         let (os, arch) = (words.next().unwrap_or(""), words.next().unwrap_or(""));
@@ -420,7 +433,23 @@ if [ "$v" = "$1" ]; then echo ok; else echo "need $(uname -s) $(uname -m)"; fi"#
             eprintln!("dove: could not install Keplorayx on {}: {err:#}", host.label());
             return false;
         }
-        run(host, CHECK, &[super::VERSION], None).is_ok_and(|o| o.lines().any(|l| l.trim() == "ok"))
+        match run(host, CHECK, &[super::VERSION], None) {
+            Ok(o) if o.lines().any(|l| l.trim() == "ok") => true,
+            Ok(o) => {
+                if let Some(libs) = o.lines().find_map(|l| l.trim().strip_prefix("libs ")) {
+                    eprintln!("{}", missing_libs_hint(&host.label(), libs));
+                }
+                false
+            }
+            Err(_) => false,
+        }
+    }
+
+    fn missing_libs_hint(host: &str, libs: &str) -> String {
+        format!(
+            "dove: {host} lacks system libraries Keplorayx needs ({}). Install them there for sessions that survive disconnects, e.g. `{LINUX_LIBS_HINT}`",
+            libs.trim()
+        )
     }
 
     /// `uname -s` / `uname -m` against the platform this binary was built for.
@@ -611,6 +640,12 @@ if [ "$v" = "$1" ]; then echo ok; else echo "need $(uname -s) $(uname -m)"; fi"#
             let a = attach_args("s1", 42, "claude", &["-p".into()]);
             assert_eq!(a[1], RUN_DOVE);
             assert_eq!(&a[3..], &["node", "attach", "s1", "--from", "42", "--", "claude", "-p"].map(String::from)[..]);
+        }
+
+        #[test]
+        fn missing_libs_hint_names_them_and_the_fix() {
+            let h = missing_libs_hint("ssh: box", "libxkbcommon.so.0 ");
+            assert!(h.contains("ssh: box") && h.contains("libxkbcommon.so.0") && h.contains("apt-get"));
         }
 
         #[test]
