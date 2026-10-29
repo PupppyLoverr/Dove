@@ -809,6 +809,7 @@ pub(crate) async fn discover_models(kind: HarnessKind, program: &std::path::Path
         prompt: None,
         fork: false,
         session: String::new(),
+        host: Default::default(),
     };
     let (exe, args) = launch_command(&spec).map_err(anyhow::Error::msg)?;
     let mut cmd = process::command(&exe, &args, &spec.cwd);
@@ -1052,6 +1053,7 @@ mod tests {
             prompt: None,
             fork: false,
             session: String::new(),
+            host: Default::default(),
         };
         let steps = plan_setup(&spec, &session);
         assert_eq!(
@@ -1079,6 +1081,7 @@ mod tests {
             prompt: None,
             fork: false,
             session: String::new(),
+            host: Default::default(),
         };
         assert_eq!(plan_setup(&spec, &session), vec![WireSetup::SetModel("grok-4.5".into())]);
         assert_eq!(launch_args(HarnessKind::Hermes), Some(&["acp"][..]));
@@ -1116,6 +1119,7 @@ mod tests {
             prompt: None,
             fork: false,
             session: String::new(),
+            host: Default::default(),
         }
     }
 

@@ -746,6 +746,7 @@ mod tests {
             prompt: None,
             fork: false,
             session: String::new(),
+            host: Default::default(),
         };
         let rule = |r: &RunRequest| r.model_options.get("dove.allowedTools").and_then(Value::as_str).map(str::to_owned);
         let claude = spec(HarnessKind::ClaudeCode, PermissionMode::Default);

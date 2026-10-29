@@ -155,6 +155,16 @@ pub fn command(program: &Path, args: &[String], cwd: &Path) -> Command {
     cmd
 }
 
+/// [`command`] for an agent that runs on `host`. On a remote host `cwd` is
+/// the agent's directory there, and the local process starts in the temp dir.
+pub fn command_on(host: &crate::host::Host, program: &Path, args: &[String], cwd: &Path) -> Command {
+    if host.is_local() {
+        return command(program, args, cwd);
+    }
+    let inv = host.wrap(&program.to_string_lossy(), args, &cwd.to_string_lossy(), false);
+    command(&inv.program, &inv.args, &inv.local_cwd.unwrap_or_else(std::env::temp_dir))
+}
+
 /// Spawn with a readable error naming the program.
 pub fn spawn(mut cmd: Command, program: &Path) -> Result<tokio::process::Child> {
     cmd.spawn().with_context(|| format!("failed to start {}", program.display()))

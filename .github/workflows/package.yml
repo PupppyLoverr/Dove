@@ -18,6 +18,7 @@ on:
       - ".github/workflows/package.yml"
       - "packaging/**"
       - "scripts/macos/**"
+      - "scripts/size_gate.sh"
 
 env:
   CARGO_TERM_COLOR: always
@@ -46,6 +47,9 @@ jobs:
           if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) { choco install innosetup -y --no-progress }
       - name: Package
         run: .\packaging\windows\package.ps1
+      - name: Size gate (docs/ROADMAP.md §3)
+        shell: bash
+        run: bash scripts/size_gate.sh --binary target/release/dove.exe packaging/out/Dove packaging/out/Dove-Setup-*.exe packaging/out/Dove-Portable-*.zip
       - name: Launch smoke test
         run: |
           $h = New-Item -ItemType Directory -Force "$env:RUNNER_TEMP\dove-home"
@@ -88,6 +92,8 @@ jobs:
             sed -i '' -e '/dove-mesh-host/d' scripts/macos/bundle.sh
             ./packaging/macos/dmg.sh
           fi
+      - name: Size gate (docs/ROADMAP.md §3)
+        run: bash scripts/size_gate.sh --binary target/release/dove packaging/out/*.dmg
       - name: Launch smoke test
         run: |
           APP=target/release/Dove.app
@@ -140,6 +146,8 @@ jobs:
             https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
           chmod +x "$RUNNER_TEMP/appimagetool"
           APPIMAGE_EXTRACT_AND_RUN=1 APPIMAGETOOL="$RUNNER_TEMP/appimagetool" ./packaging/linux/package.sh
+      - name: Size gate (docs/ROADMAP.md §3)
+        run: bash scripts/size_gate.sh --binary target/release/dove packaging/out/*.deb packaging/out/*.AppImage packaging/out/*.tar.gz
       - name: Launch smoke test (Xvfb, software Vulkan)
         continue-on-error: true
         run: |

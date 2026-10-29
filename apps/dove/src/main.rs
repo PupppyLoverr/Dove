@@ -315,6 +315,11 @@ fn portable_home() {
 }
 
 fn main() {
+    // Started as a remote-host launcher (`dove-hosts/<host>/<agent>`): hop to
+    // WSL, SSH or a Cua Space and exit, before any window or store exists.
+    if let Some(code) = dove_core::host::run_launcher() {
+        std::process::exit(code);
+    }
     portable_home();
     // `dove --mcp-browser`: the stdio MCP bridge agents spawn to drive the
     // in-app browser. No window, no store.

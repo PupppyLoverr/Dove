@@ -235,6 +235,20 @@ pub const CATALOG: &[Entry] = &[
         hint: "",
     },
     Entry {
+        id: "cua",
+        name: "Cua Spaces",
+        blurb: "Give agents their own computers: create Spaces, run commands, drive their desktops (needs the cua CLI)",
+        icon: icons::CLOUD,
+        // Cua's own MCP setup: `cua mcp` serves every tool over stdio.
+        kind: Kind::Stdio("cua", &["mcp"]),
+        auth: Auth::None,
+        docs: "https://cua.ai/docs",
+        hint: "cua__* tools control Cua Spaces, isolated computers the user can watch. Start with list_spaces; \
+               create_space(on=\"local\", reuse=true) makes a free local one. Work inside it with space_bash, \
+               space_write, upload and download, and drive its desktop through list_tools/call_tool. Do risky or \
+               GUI work in a Space instead of on the user's own computer, and delete_space only Spaces you created.",
+    },
+    Entry {
         id: "supermemory",
         name: "Supermemory",
         blurb: "Long-term memory shared by every agent and harness",
@@ -310,5 +324,15 @@ mod tests {
         assert!(
             matches!(exa.transport, Transport::Http { ref headers, .. } if headers.get("x-api-key").map(String::as_str) == Some("k"))
         );
+    }
+
+    #[test]
+    fn cua_spaces_runs_cua_mcp() {
+        let cua = get("cua").unwrap().server("cua".into(), None);
+        assert!(cua.enabled && !cua.is_remote());
+        match cua.transport {
+            Transport::Stdio { command, args, .. } => assert_eq!((command.as_str(), args), ("cua", vec!["mcp".to_string()])),
+            _ => panic!("stdio"),
+        }
     }
 }

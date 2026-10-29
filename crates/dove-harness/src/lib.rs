@@ -9,6 +9,7 @@ pub mod acp;
 mod agy;
 pub mod catalog;
 pub mod detect;
+pub mod host;
 mod external;
 pub use external::defers_prompt;
 pub mod models;
@@ -48,6 +49,8 @@ pub struct SessionSpec {
     /// `DOVE_SESSION`: how a tool call says which thread it comes from (many
     /// threads can share one folder). Empty: no key.
     pub session: String,
+    /// Where the agent runs (this PC, WSL, SSH, a Cua Space).
+    pub host: host::Host,
 }
 
 /// A fresh session key for [`SessionSpec::session`].
@@ -204,8 +207,13 @@ pub fn is_supported(kind: HarnessKind) -> bool {
 
 /// Start a session on `rt`. Returns immediately; failures to launch arrive as
 /// an [`AgentEvent::Error`] followed by [`AgentEvent::Exited`].
-pub fn spawn(rt: &tokio::runtime::Handle, spec: SessionSpec) -> Result<SessionHandle> {
+pub fn spawn(rt: &tokio::runtime::Handle, mut spec: SessionSpec) -> Result<SessionHandle> {
     skills::ensure_installed();
+    // A remote host runs through a launcher named like the agent, so every
+    // driver below starts it exactly as it would the local binary.
+    if !spec.host.is_local() {
+        spec.program = host::launcher(&spec.host, &spec.program)?;
+    }
     let (ev_tx, ev_rx) = flume::unbounded();
     let (cmd_tx, cmd_rx) = flume::unbounded();
     // Shared agents (Claude, Codex, Cursor, OpenCode, Pi, Devin, Grok,

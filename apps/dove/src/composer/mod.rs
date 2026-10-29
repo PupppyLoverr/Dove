@@ -219,6 +219,10 @@ pub struct Composer {
     pub project: Option<Project>,
     projects: Vec<Project>,
     pub add_dirs: Vec<PathBuf>,
+    /// Where a new thread's agent runs (a thread keeps its own host).
+    host: dove_core::host::Host,
+    /// Machines found when the device menu last opened; `None` while looking.
+    hosts: Option<Vec<dove_core::host::Host>>,
     attachments: Vec<PathBuf>,
     /// Mentioned threads, folders, windows and tabs, shown as cards.
     cards: Vec<mentions::Card>,
@@ -347,6 +351,8 @@ impl Composer {
             project: None,
             projects: Vec::new(),
             add_dirs: Vec::new(),
+            host: dove_core::host::Host::Local,
+            hosts: None,
             attachments: Vec::new(),
             cards: Vec::new(),
             mention_threads: Vec::new(),
@@ -420,6 +426,7 @@ impl Composer {
             p.set_text_trigger(true);
         });
         this.add_dirs = engine.add_dirs(task.id);
+        this.host = engine.task_host(task.id);
         this.thread = Some((task.clone(), project.clone()));
         this.project = Some(project.clone());
         if let Some(m) = engine.store.setting(&format!("mode.{}", task.id)) {
@@ -579,6 +586,7 @@ impl Composer {
             reasoning: p.reasoning,
             model_options: p.model_options.clone(),
             add_dirs: if dove_core::supports_add_dirs(p.harness) { self.add_dirs.clone() } else { Vec::new() },
+            host: self.host.clone(),
         }
     }
 
@@ -1266,37 +1274,101 @@ impl Composer {
         row.into_any_element()
     }
 
+    /// The host this composer's agent runs on: the thread's own (loaded
+    /// once in `for_task`), or the pick for the next new thread.
+    fn current_host(&self) -> dove_core::host::Host {
+        self.host.clone()
+    }
+
+    fn host_label(host: &dove_core::host::Host) -> String {
+        match host {
+            dove_core::host::Host::Local => ui::host_name().to_string(),
+            other => other.label(),
+        }
+    }
+
+    fn host_icon(host: &dove_core::host::Host) -> &'static str {
+        use dove_core::host::Host;
+        match host {
+            Host::Local => icons::LAPTOP,
+            Host::Wsl { .. } => icons::TERMINAL,
+            Host::Ssh { .. } => icons::SERVER,
+            Host::CuaSpace { .. } => icons::CLOUD,
+        }
+    }
+
+    /// Open the device menu and look for machines off the UI thread
+    /// (`wsl -l`, `~/.ssh/config`, `cua sandbox ls`).
+    fn open_device_menu(&mut self, cx: &mut Context<Self>) {
+        self.toggle_menu(Menu::Device, cx);
+        if self.menu != Some(Menu::Device) || self.thread.is_some() {
+            return;
+        }
+        self.hosts = None;
+        let work = cx.background_spawn(async move { dove_core::host::discover() });
+        cx.spawn(async move |this, cx| {
+            let hosts = work.await;
+            let _ = this.update(cx, |c, cx| {
+                c.hosts = Some(hosts);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn pick_host(&mut self, host: dove_core::host::Host, cx: &mut Context<Self>) {
+        self.host = host;
+        self.menu = None;
+        cx.notify();
+    }
+
     fn device_chip(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
-        let chip =
-            ui::footer_chip("composer-device", icons::MONITOR, ui::host_name(), self.menu == Some(Menu::Device), t)
-                .on_click(cx.listener(|this, _, _, cx| this.toggle_menu(Menu::Device, cx)));
+        let current = self.current_host();
+        let chip = ui::footer_chip(
+            "composer-device",
+            Self::host_icon(&current),
+            Self::host_label(&current),
+            self.menu == Some(Menu::Device),
+            t,
+        )
+        .on_click(cx.listener(|this, _, _, cx| this.open_device_menu(cx)));
         let menu = (self.menu == Some(Menu::Device)).then(|| {
-            let rows = div()
-                .w(px(250.0))
-                .flex()
-                .flex_col()
-                .child(
-                    ui::menu_row("dev-local", icons::LAPTOP, format!("Local · {}", ui::host_name()), false, t)
+            let mut rows = div().w(px(280.0)).max_h(px(380.0)).flex().flex_col();
+            if self.thread.is_some() {
+                // A thread's worktree and session live on its host.
+                rows = rows.child(
+                    ui::menu_row("dev-thread", Self::host_icon(&current), Self::host_label(&current), false, t)
                         .child(icon(icons::CHECK).size(px(14.0)).text_color(t.accent))
+                        .tooltip(ui::tip("A thread keeps the machine it started on"))
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.menu = None;
                             cx.notify();
                         })),
-                )
-                .child(
-                    div()
-                        .h(px(34.0))
-                        .px(px(10.0))
-                        .mx(px(4.0))
-                        .flex()
-                        .items_center()
-                        .gap(px(10.0))
-                        .text_size(ty::MD)
-                        .text_color(t.text_faint)
-                        .child(icon(icons::CLOUD).size(px(16.0)))
-                        .child(div().flex_1().child("Cloud"))
-                        .child(kit::badge("Coming soon", t.text_faint)),
                 );
+            } else {
+                let hosts = self.hosts.clone();
+                let list = hosts.clone().unwrap_or_else(|| vec![dove_core::host::Host::Local]);
+                rows = rows.child(div().id("host-list").max_h(px(300.0)).overflow_y_scroll().flex().flex_col().children(
+                    list.into_iter().enumerate().map(|(i, h)| {
+                        let label = match &h {
+                            dove_core::host::Host::Local => format!("Local · {}", ui::host_name()),
+                            other => other.label(),
+                        };
+                        let selected = h == current;
+                        ui::menu_row(SharedString::from(format!("dev-{i}")), Self::host_icon(&h), label, false, t)
+                            .when(selected, |d| d.child(icon(icons::CHECK).size(px(14.0)).text_color(t.accent)))
+                            .on_click(cx.listener(move |this, _, _, cx| this.pick_host(h.clone(), cx)))
+                    }),
+                ));
+                let note = if hosts.is_none() {
+                    "Looking for WSL, SSH hosts and Cua Spaces…"
+                } else {
+                    "WSL distros, ~/.ssh/config hosts and ready Cua Spaces"
+                };
+                rows = rows.child(ui::separator(t)).child(
+                    div().px(px(14.0)).py(px(6.0)).text_size(ty::META).text_color(t.text_faint).child(note),
+                );
+            }
             self.popover(Anchor::BottomLeft, ui::menu_card(t, rows), cx)
         });
         div().relative().child(chip).children(menu).into_any_element()
@@ -2512,10 +2584,12 @@ impl Composer {
                     this.menu = None;
                     cx.notify();
                 }))
-                .child(icon(icons::LAPTOP).size(px(16.0)).flex_none().text_color(t.text_muted))
-                .child(div().flex_1().min_w_0().truncate().child(format!("Local · {}", ui::host_name())))
-                .child(icon(icons::CHECK).size(px(14.0)).flex_none().text_color(t.accent))
-                .child(div().flex_none().text_size(ty::META).text_color(t.text_faint).child("Cloud · soon")),
+                .child(icon(Self::host_icon(&self.current_host())).size(px(16.0)).flex_none().text_color(t.text_muted))
+                .child(div().flex_1().min_w_0().truncate().child(match self.current_host() {
+                    dove_core::host::Host::Local => format!("Local · {}", ui::host_name()),
+                    other => other.label(),
+                }))
+                .child(icon(icons::CHECK).size(px(14.0)).flex_none().text_color(t.accent)),
         );
         deferred(
             anchored()

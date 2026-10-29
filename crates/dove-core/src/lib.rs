@@ -30,6 +30,7 @@ pub mod orchestra;
 pub use dove_git as git;
 pub use dove_harness::Command;
 pub use dove_harness::detect as harness_detect;
+pub use dove_harness::host;
 pub use dove_harness::is_supported as harness_supported;
 pub use dove_harness::models;
 pub use dove_harness::office_skills;
@@ -81,6 +82,7 @@ struct WarmKey {
     options: Vec<(String, String)>,
     mode: PermissionMode,
     resume: Option<String>,
+    host: dove_harness::host::Host,
 }
 
 impl WarmKey {
@@ -93,6 +95,7 @@ impl WarmKey {
             options: spec.model_options.clone(),
             mode: spec.permission_mode,
             resume: spec.resume.clone(),
+            host: spec.host.clone(),
         }
     }
 }
@@ -135,6 +138,8 @@ pub struct RunSettings {
     pub model_options: Vec<(String, String)>,
     /// Extra folders the agent may use (`--add-dir`, where supported).
     pub add_dirs: Vec<PathBuf>,
+    /// Where a new thread's agent runs. A thread keeps the host it started on.
+    pub host: dove_harness::host::Host,
 }
 
 impl RunSettings {
@@ -430,6 +435,7 @@ impl Engine {
         };
         self.store.insert_task(&task)?;
         self.save_add_dirs(task.id, &new.run.add_dirs);
+        self.save_task_host(task.id, &new.run.host);
         let first = match &new.persona {
             Some(p) => {
                 self.store.assign_persona(task.id, &p.id)?;
@@ -484,6 +490,7 @@ impl Engine {
             self.store.insert_task(&task)?;
         }
         self.save_add_dirs(task.id, &new.run.add_dirs);
+        self.save_task_host(task.id, &new.run.host);
         let prompt = match &new.persona {
             Some(p) => {
                 self.store.assign_persona(task.id, &p.id)?;
@@ -509,6 +516,7 @@ impl Engine {
             prompt: Some(prompt),
             fork: false,
             session: dove_harness::new_session_key(),
+            host: new.run.host.clone(),
         };
         if memory::recalls(&self.store, project.id) {
             let live = self.launch_deferred(&task, spec)?;
@@ -544,6 +552,7 @@ impl Engine {
             prompt: None,
             fork: false,
             session: dove_harness::new_session_key(),
+            host: run.host.clone(),
         });
     }
 
@@ -674,6 +683,7 @@ impl Engine {
             prompt,
             fork: false,
             session: dove_harness::new_session_key(),
+            host: self.task_host(task.id),
         })
     }
 
@@ -849,6 +859,19 @@ impl Engine {
             .unwrap_or_default()
     }
 
+    /// The host a thread's agent runs on (this PC unless it started elsewhere).
+    pub fn task_host(&self, task: TaskId) -> dove_harness::host::Host {
+        self.store.setting(&format!("host.{task}")).and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+    }
+
+    fn save_task_host(&self, task: TaskId, host: &dove_harness::host::Host) {
+        if !host.is_local()
+            && let Ok(json) = serde_json::to_string(host)
+        {
+            let _ = self.store.set_setting(&format!("host.{task}"), &json);
+        }
+    }
+
     fn save_add_dirs(&self, task: TaskId, dirs: &[PathBuf]) {
         if !dirs.is_empty() {
             let joined = dirs.iter().map(|d| d.display().to_string()).collect::<Vec<_>>().join("\n");
@@ -878,6 +901,7 @@ impl Engine {
         };
         self.store.insert_task(&forked)?;
         self.save_add_dirs(forked.id, &run.add_dirs);
+        self.save_task_host(forked.id, &self.task_host(task.id));
         let spec = SessionSpec {
             kind: task.harness,
             program: self.program(task.harness)?,
@@ -890,6 +914,7 @@ impl Engine {
             prompt: None,
             fork: true,
             session: dove_harness::new_session_key(),
+            host: self.task_host(task.id),
         };
         let live = self.launch(&forked, spec)?;
         Ok((forked, live))

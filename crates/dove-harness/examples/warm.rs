@@ -44,6 +44,7 @@ fn main() -> anyhow::Result<()> {
         prompt,
         fork: false,
         session: String::new(),
+        host: Default::default(),
     };
 
     let start = Instant::now();
