@@ -1,0 +1,61 @@
+//! Fly Machines. Not implemented yet: every call says so, and the provider shows as
+//! unavailable in the app.
+
+use std::path::Path;
+
+use anyhow::{Result, bail};
+
+use super::{BoxInfo, BoxSpec, Endpoint, Keys, Probe, Provider};
+
+pub struct Fly;
+pub static PROVIDER: Fly = Fly;
+
+impl Provider for Fly {
+    fn id(&self) -> &'static str {
+        "fly"
+    }
+
+    fn label(&self) -> &'static str {
+        "Fly Machines"
+    }
+
+    fn key_url(&self) -> &'static str {
+        "https://fly.io/user/personal_access_tokens"
+    }
+
+    fn verified(&self) -> bool {
+        false
+    }
+
+    fn needs_key(&self) -> bool {
+        true
+    }
+
+    fn probe(&self, _keys: &Keys) -> Probe {
+        Probe::Unavailable("Fly Machines support is not built yet".into())
+    }
+
+    fn list(&self, _keys: &Keys) -> Result<Vec<BoxInfo>> {
+        bail!("Fly Machines support is not built yet")
+    }
+
+    fn create(&self, _keys: &Keys, _spec: &BoxSpec) -> Result<BoxInfo> {
+        bail!("Fly Machines support is not built yet")
+    }
+
+    fn wake(&self, _keys: &Keys, _id: &str) -> Result<()> {
+        bail!("Fly Machines support is not built yet")
+    }
+
+    fn sleep(&self, _keys: &Keys, _id: &str) -> Result<()> {
+        bail!("Fly Machines support is not built yet")
+    }
+
+    fn delete(&self, _keys: &Keys, _id: &str) -> Result<()> {
+        bail!("Fly Machines support is not built yet")
+    }
+
+    fn connect(&self, _keys: &Keys, _id: &str, _dir: &Path) -> Result<Endpoint> {
+        bail!("Fly Machines support is not built yet")
+    }
+}

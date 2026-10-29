@@ -8,8 +8,31 @@
 //! Keys live in `$DOVE_HOME/cloud-keys.json` ([`keys`]); they are read only in
 //! Keplorayx's own process and the launcher, never handed to an agent.
 
+pub mod apptainer;
+pub mod blaxel;
+pub mod boat;
+pub mod bubblewrap;
+pub mod cloudflare;
+pub mod coder;
+pub mod codespaces;
+pub mod cua;
+pub mod daytona;
+pub mod deepinfra;
+pub mod e2b;
+pub mod fly;
 pub mod instabox;
 pub mod keys;
+pub mod kubernetes;
+pub mod modal;
+pub mod morph;
+pub mod northflank;
+pub mod ona;
+pub mod railway;
+pub mod runloop;
+pub mod smolmachines;
+pub mod sprites;
+pub mod vercel;
+pub mod wslc;
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -125,6 +148,11 @@ pub trait Provider: Send + Sync {
     fn key_url(&self) -> &'static str;
     /// Whether this provider was tested end to end with a real account.
     fn verified(&self) -> bool;
+    /// Whether it needs an API key in `cloud-keys.json` (local runtimes and
+    /// providers that reuse a logged-in CLI don't).
+    fn needs_key(&self) -> bool {
+        true
+    }
     /// Is the key there and accepted? Under a few seconds, no side effects.
     fn probe(&self, keys: &Keys) -> Probe;
     fn list(&self, keys: &Keys) -> Result<Vec<BoxInfo>>;
@@ -148,7 +176,32 @@ pub trait Provider: Send + Sync {
 
 /// Every provider Keplorayx knows.
 pub fn providers() -> Vec<&'static dyn Provider> {
-    vec![&instabox::INSTABOX]
+    vec![
+        &instabox::INSTABOX,
+        &daytona::PROVIDER,
+        &boat::PROVIDER,
+        &runloop::PROVIDER,
+        &morph::PROVIDER,
+        &fly::PROVIDER,
+        &codespaces::PROVIDER,
+        &coder::PROVIDER,
+        &ona::PROVIDER,
+        &railway::PROVIDER,
+        &e2b::PROVIDER,
+        &sprites::PROVIDER,
+        &modal::PROVIDER,
+        &vercel::PROVIDER,
+        &northflank::PROVIDER,
+        &blaxel::PROVIDER,
+        &kubernetes::PROVIDER,
+        &deepinfra::PROVIDER,
+        &cloudflare::PROVIDER,
+        &cua::PROVIDER,
+        &apptainer::PROVIDER,
+        &bubblewrap::PROVIDER,
+        &wslc::PROVIDER,
+        &smolmachines::PROVIDER,
+    ]
 }
 
 pub fn provider(id: &str) -> Option<&'static dyn Provider> {

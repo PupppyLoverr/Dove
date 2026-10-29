@@ -501,7 +501,7 @@ pub fn sandboxes() -> Vec<Host> {
     let keys = crate::hosts::Keys::load();
     crate::hosts::providers()
         .into_iter()
-        .filter(|p| keys.has(p.id()))
+        .filter(|p| !p.needs_key() || keys.has(p.id()))
         .flat_map(|p| {
             p.list(&keys)
                 .unwrap_or_default()
