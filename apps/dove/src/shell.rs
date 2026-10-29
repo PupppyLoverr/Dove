@@ -3591,9 +3591,17 @@ impl Render for Shell {
                 .when(bare, |d| d.pt(px(Theme::TITLEBAR_HEIGHT)))
                 .child(rows)
         });
+        let thread_art_now = self.full_art_route() && self.has_wallpaper();
         let panel_ghost =
             self.slides.panel.exit(now).map(|(p, w)| {
-                div().absolute().top_0().bottom_0().right(px(-24.0 * p)).w(px(w)).opacity(1.0 - p).bg(t.bg)
+                div()
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .right(px(-24.0 * p))
+                    .w(px(w))
+                    .opacity(1.0 - p)
+                    .bg(if thread_art_now { t.bg.opacity(SIDE_ART_TINT) } else { t.glass() })
             });
         if sidebar_ghost.is_some() || panel_ghost.is_some() {
             window.request_animation_frame();
@@ -3665,11 +3673,21 @@ impl Render for Shell {
                     .child(div().size_full().flex().child(div().flex_1().min_w_0().h_full().child(center)))
             })
         };
-        // The dock continues the same fill up through its strip. No rule on
-        // the seam: the two columns are one surface, split only by content.
+        // The sidebar and the dock are one material, the window's chrome:
+        // the same fill (over a thread's picture, the same frost a shade
+        // deeper; otherwise the glass, lifted a step on a dark frosted
+        // theme so a near-black one does not turn it into a slab) and the
+        // same hairline seam where they meet the chat. The chat is the only
+        // page-coloured plane, so the dock never reads as part of it.
+        let lift = t.is_frost() && t.appearance.is_dark();
+        let (art_tint, lift_fill) = (t.bg.opacity(SIDE_ART_TINT), t.surface_raised.opacity(0.30));
+        let chrome = move |d: gpui::Div| {
+            d.when(thread_art, |d| d.bg(art_tint)).when(!thread_art && lift, |d| d.bg(lift_fill))
+        };
+        let seam = t.wash(0.06);
         let dock_layer = panel_open.then(|| {
             let inner = if sidebar_shown { self.sidebar_w } else { 0.0 };
-            div()
+            chrome(div())
                 .absolute()
                 .top_0()
                 .bottom_0()
@@ -3677,29 +3695,10 @@ impl Render for Shell {
                 .when(dock_left && !expanded, |d| d.left(px(inner)))
                 .when(!expanded, |d| d.w(px(panel_w)))
                 .when(expanded, |d| d.left(px(inner)))
-                // Over a thread's picture the dock is the same frost, a
-                // shade deeper, with a hairline seam; otherwise the page.
-                .when(thread_art, |d| {
-                    d.bg(t.bg.opacity(SIDE_ART_TINT)).when(!expanded, |d| {
-                        if dock_left { d.border_r_1() } else { d.border_l_1() }.border_color(t.wash(0.06))
-                    })
-                })
-                .when(!thread_art, |d| d.bg(t.bg))
+                .when(!expanded, |d| if dock_left { d.border_r_1() } else { d.border_l_1() }.border_color(seam))
         });
-        // The sidebar column, titlebar included. Over a thread's picture it
-        // is the same frost a shade deeper (as the dock), with a hairline
-        // seam. Without one, a dark frosted sidebar is lifted a step so a
-        // near-black theme does not turn it into a black slab.
         let side_layer = (sidebar_shown || in_settings).then(|| {
-            let lift = t.is_frost() && t.appearance.is_dark();
-            div()
-                .absolute()
-                .top_0()
-                .bottom_0()
-                .left_0()
-                .w(px(self.sidebar_w))
-                .when(thread_art, |d| d.bg(t.bg.opacity(SIDE_ART_TINT)).border_r_1().border_color(t.wash(0.06)))
-                .when(!thread_art && lift, |d| d.bg(t.surface_raised.opacity(0.30)))
+            chrome(div()).absolute().top_0().bottom_0().left_0().w(px(self.sidebar_w)).border_r_1().border_color(seam)
         });
 
         let menu = self.render_menu_overlay(cx);
