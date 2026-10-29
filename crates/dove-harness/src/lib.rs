@@ -14,6 +14,7 @@ pub mod host;
 pub mod hosts;
 pub use external::defers_prompt;
 pub mod models;
+pub mod node;
 pub mod office_skills;
 pub mod process;
 mod rpc;

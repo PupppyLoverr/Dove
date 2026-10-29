@@ -280,6 +280,12 @@ pub fn run_launcher() -> Option<i32> {
         // WSL2 forwards loopback ports to Windows by itself.
         _ => {}
     }
+    // On a machine that can drop off (SSH, a box, a Space, a container), run
+    // the agent under `dove node attach` there when possible: it keeps
+    // running through a lost connection and this launcher reattaches.
+    if forward.is_none() && port.is_none() && host.needs_sync() && crate::node::remote::ensure(&host) {
+        return Some(crate::node::remote::run_attached(&host, &dir, &program, &args, RECONNECT_FOR));
+    }
     let mut cmd = std::process::Command::new(&inv.program);
     cmd.args(&inv.args);
     // Unix replaces this process, so the driver's signals reach the hop
@@ -307,6 +313,10 @@ pub fn run_launcher() -> Option<i32> {
     }
     Some(code)
 }
+
+/// How long a launcher keeps trying to reattach to a remote agent after the
+/// connection drops (a laptop asleep in a bag, a train tunnel).
+const RECONNECT_FOR: std::time::Duration = std::time::Duration::from_secs(30 * 60);
 
 /// Environment the launcher passes on to the agent on its host. OpenCode's
 /// driver sets its server password and config this way.

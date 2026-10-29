@@ -31,8 +31,10 @@ pub use dove_git as git;
 pub use dove_harness::Command;
 pub use dove_harness::detect as harness_detect;
 pub use dove_harness::host;
+pub use dove_harness::hosts;
 pub use dove_harness::is_supported as harness_supported;
 pub use dove_harness::models;
+pub use dove_harness::node;
 pub use dove_harness::office_skills;
 pub use dove_harness::process as harness_process;
 pub use dove_harness::skills;
@@ -1158,6 +1160,9 @@ impl Engine {
             shared: self.shared.clone(),
             drivers: self.drivers.clone(),
             memory: self.memory_session(task),
+            // The terminal mirror tails a local transcript; only the chat
+            // driver brings remote work back.
+            remote: None,
         };
         let mut writer = self.store.transcript_writer(task.id).ok();
         let parser = mirror::LineParser::new(kind).since(since);
@@ -1235,6 +1240,10 @@ impl Engine {
             shared: self.shared.clone(),
             drivers: self.drivers.clone(),
             memory: self.memory_session(task),
+            remote: {
+                let host = self.task_host(task.id);
+                host.needs_sync().then(|| (host, self.task_dir(task)))
+            },
         };
         let stops = self.stops.clone();
         let id = task.id;
@@ -1272,14 +1281,19 @@ impl Engine {
     }
 
     fn memory_session(&self, task: &Task) -> memory::Shared {
-        let cwd = task.worktree.clone().unwrap_or_else(|| {
+        memory::Session::new(self.store.clone(), task.id, task.project_id, task.harness, self.task_dir(task))
+    }
+
+    /// The local folder a task's agent works in: its worktree, else the
+    /// project folder.
+    fn task_dir(&self, task: &Task) -> PathBuf {
+        task.worktree.clone().unwrap_or_else(|| {
             self.store
                 .projects()
                 .ok()
                 .and_then(|ps| ps.into_iter().find(|p| p.id == task.project_id).map(|p| p.path))
                 .unwrap_or_default()
-        });
-        memory::Session::new(self.store.clone(), task.id, task.project_id, task.harness, cwd)
+        })
     }
 }
 
@@ -1295,6 +1309,9 @@ struct Recorder {
     drivers: Arc<parking_lot::Mutex<HashMap<TaskId, Driver>>>,
     /// Memory recall/capture for this session.
     memory: memory::Shared,
+    /// For an agent on another machine: that host and the local folder its
+    /// work is brought back into after every turn.
+    remote: Option<(dove_harness::host::Host, PathBuf)>,
 }
 
 impl Recorder {
@@ -1346,6 +1363,9 @@ impl Recorder {
                     let Ok(ev) = ev else { break };
                     self.record(&ev, writer.as_mut());
                     let exited = matches!(ev, AgentEvent::Exited { .. });
+                    if matches!(ev, AgentEvent::TurnEnded { .. }) || exited {
+                        self.pull_remote_work();
+                    }
                     // Free the chat driver before the UI sees Exited, so the
                     // terminal can claim this same session on the next tick.
                     if exited {
@@ -1372,6 +1392,25 @@ impl Recorder {
             let _ = w.flush();
         }
         self.release_chat_driver();
+    }
+
+    /// Bring the agent's edits on its remote host back into the local folder
+    /// (`dove_harness::sync::pull`), so the diff, history and file views show
+    /// them. Off the async workers; overwrites nothing changed locally.
+    fn pull_remote_work(&self) {
+        let Some((host, local)) = self.remote.clone() else { return };
+        let task = self.task;
+        tokio::task::spawn_blocking(move || {
+            let dir = host.remote_dir(&local);
+            match dove_harness::sync::pull(&host, &local, &dir) {
+                Ok(outcome) => {
+                    if let Some(note) = outcome.note(&host, &dir, false) {
+                        tracing::info!("{task}: {note}");
+                    }
+                }
+                Err(err) => tracing::warn!("{task}: bringing work back from {} failed: {err:#}", host.label()),
+            }
+        });
     }
 
     fn release_chat_driver(&self) {
