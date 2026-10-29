@@ -366,6 +366,16 @@ impl Theme {
         self.glass().a < 1.0
     }
 
+    /// `fill` carried toward the wallpaper's `hue` (its dominant colour),
+    /// keeping `fill`'s coverage: the chrome takes the picture's colour, deep
+    /// enough on a dark theme (pale on a light one) that its labels still read.
+    pub fn wallpaper_tinted(&self, fill: Hsla, hue: Hsla) -> Hsla {
+        let (neutral, depth) = if self.appearance.is_dark() { (grey(0), 0.40) } else { (grey(0xff), 0.62) };
+        let tint = mix(hue, neutral, depth);
+        let c = mix(hsla(fill.h, fill.s, fill.l, 1.0), tint, 0.72);
+        hsla(c.h, c.s, c.l, fill.a)
+    }
+
     /// The left sidebar's tint straight over the blurred desktop: Zeron's
     /// sidebar glass (the shell tint at `GLASS_ALPHA`, whichever surface is
     /// chosen), raised only as far as its labels need on a worst-case
@@ -779,6 +789,17 @@ fn rgb_to_hsl(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wallpaper_tint_takes_the_hue_and_keeps_coverage() {
+        let t = Theme::new(Appearance::Dark, Accent::Sky, Surface::Glass);
+        let fill = t.sidebar_glass();
+        let blue = hsla(0.6, 0.8, 0.5, 1.0);
+        let out = t.wallpaper_tinted(fill, blue);
+        assert_eq!(out.a, fill.a);
+        assert!(out.s > fill.s + 0.1, "takes the picture's colour: {out:?}");
+        assert!(out.l < 0.3, "stays dark enough for light labels: {out:?}");
+    }
 
     #[test]
     fn muted_text_stays_legible_on_every_material() {

@@ -309,6 +309,39 @@ fn decode_still(path: &Path, target: (u32, u32), look: &dyn Fn(RgbaImage) -> Rgb
     Some(Frames { images: vec![look(cover_bgra(&img, target))], delays: vec![1.0] })
 }
 
+/// The wallpaper's dominant colour, for tinting the sidebar and dock: a
+/// quantized histogram over a small first frame (Zeron's, coarser) that
+/// skips near-black pixels and favours bright, saturated ones, so a dark
+/// photo gives its sky or its lights rather than its shadows. Blocking (it decodes, a video through ffmpeg), so call
+/// it off the UI thread.
+pub fn dominant_color(path: &Path) -> Option<gpui::Hsla> {
+    let frames = decode_still(path, (160, 90), &|img| img)?;
+    let img = frames.images.first()?;
+    let mut bins = vec![(0.0_f64, [0.0_f64; 3]); 512];
+    // `cover_bgra` hands back BGRA.
+    for p in img.pixels() {
+        let [b, g, r, a] = p.0;
+        let high = r.max(g).max(b) as f64;
+        if a < 128 || high < 48.0 {
+            continue;
+        }
+        let low = r.min(g).min(b) as f64;
+        let saturation = (high - low) / high;
+        let weight = 0.05 + saturation * saturation * high / 255.0;
+        let index = ((r as usize >> 5) << 6) | ((g as usize >> 5) << 3) | (b as usize >> 5);
+        let (count, sums) = &mut bins[index];
+        *count += weight;
+        for (sum, channel) in sums.iter_mut().zip([r, g, b]) {
+            *sum += channel as f64 * weight;
+        }
+    }
+    let (count, sums) = bins.into_iter().max_by(|a, b| a.0.total_cmp(&b.0))?;
+    (count > 0.0).then(|| {
+        let c = |i: usize| (sums[i] / count / 255.0) as f32;
+        gpui::Rgba { r: c(0), g: c(1), b: c(2), a: 1.0 }.into()
+    })
+}
+
 // ------------------------------------------------------------ the frost
 
 /// How strongly the chat backdrop is frosted, from the "Chat blur" slider.

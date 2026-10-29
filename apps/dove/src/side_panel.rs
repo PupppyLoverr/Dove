@@ -692,6 +692,12 @@ impl SidePanel {
         self.on_screen().contains(&s)
     }
 
+    /// Whether a surface of `tab`'s kind is on screen (any browser, any
+    /// subagent…), for the top bar's tab buttons.
+    pub fn showing_kind(&self, tab: Tab) -> bool {
+        self.on_screen().iter().any(|s| s.kind() == tab)
+    }
+
     /// The browsers that get a live web view: those on screen, most
     /// recently focused first, at most [`MAX_LIVE_BROWSERS`].
     fn live_browsers(&self) -> Vec<u64> {

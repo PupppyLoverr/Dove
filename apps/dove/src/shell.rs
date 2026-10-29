@@ -247,6 +247,11 @@ pub struct Shell {
     pub account_open: bool,
     /// The "+N" menu of tabs that do not fit the strip.
     pub tab_overflow_open: bool,
+    /// The top bar's ⋯ menu of dock tabs.
+    pub dock_more_open: bool,
+    /// The wallpaper's dominant colour, per path (`None` inside while it is
+    /// being worked out, or when the picture has none).
+    wallpaper_hue: Option<(String, Option<gpui::Hsla>)>,
     /// Keyboard and exit state of the shell's own menus.
     pub menus: crate::shell_menu::Menus,
     pub agents_open: bool,
@@ -452,6 +457,8 @@ impl Shell {
             sidebar_options_open: false,
             account_open: false,
             tab_overflow_open: false,
+            dock_more_open: false,
+            wallpaper_hue: None,
             menus: crate::shell_menu::Menus::new(cx),
             agents_open: false,
             installed: Vec::new(),
@@ -2362,7 +2369,7 @@ impl Shell {
         };
         let tools_w = 16.0
             + if in_thread { ui::BUTTON + 4.0 } else { 0.0 }
-            + if in_thread && !tabs_on { ui::BUTTON + 2.0 } else { 0.0 }
+            + if in_thread { (ui::BUTTON + 2.0) * 4.0 + 9.0 } else { 0.0 }
             + if (in_thread || flock) && !panel_open { ui::BUTTON + 4.0 } else { 0.0 }
             + if panel_open { panel_w } else { ui::caption_reserve() };
         let room = f32::from(window.viewport_size().width) - cluster_w - tools_w;
@@ -2373,7 +2380,6 @@ impl Shell {
         } else {
             self.render_bar_title(&t, cx)
         };
-        let files_on = panel_open && self.panel.read(cx).showing(crate::side_panel::Surface::Files);
         let dock_left = self.panel_left();
         let right_tools = div()
             .flex()
@@ -2395,26 +2401,9 @@ impl Shell {
                         .children(switch)
                         .child(self.render_info_button(cx))
                         .when_some(self.render_pr_button(&t, cx), |d, b| d.child(b))
-                        // The slim bar also opens the files straight away.
-                        .when(!tabs_on, |d| {
-                            let color = if files_on {
-                                t.text
-                            } else {
-                                crate::motion::hover_blend("tb-files", t.text_muted, t.text)
-                            };
-                            d.child(quiet_bar_button(
-                                "tb-files",
-                                "Files",
-                                icon(icons::FOLDER_TREE).size(px(16.0)).text_color(color),
-                                cx.listener(move |this, _, window, cx| {
-                                    if files_on {
-                                        this.toggle_panel(cx);
-                                    } else {
-                                        this.show_panel(Tab::Files, window, cx);
-                                    }
-                                }),
-                            ))
-                        })
+                        // The dock's main tabs as buttons, the rest under ⋯.
+                        .child(div().w(px(1.0)).h(px(14.0)).mx(px(4.0)).bg(t.wash(0.10)))
+                        .child(self.render_dock_tabs(panel_open, &t, cx))
                         .when(!panel_open, |d| {
                             let color = crate::motion::hover_blend("tb-panel", t.text_muted, t.text);
                             d.child(quiet_bar_button(
@@ -2789,6 +2778,92 @@ impl Shell {
             .with_priority(2)
         });
         div().relative().flex_none().child(chip).children(menu).into_any_element()
+    }
+
+    /// The dock tabs on the bar: the main ones as buttons, the rest in a ⋯
+    /// menu. A button opens the dock on that tab, or closes the dock when
+    /// that tab is already what it shows.
+    fn render_dock_tabs(&mut self, panel_open: bool, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        use crate::shell_menu::{Item, act};
+        const MAIN: [Tab; 3] = [Tab::Changes, Tab::Browser, Tab::Files];
+        const MORE: [Tab; 6] = [Tab::Terminal, Tab::History, Tab::Plan, Tab::Subagents, Tab::Chats, Tab::SideChat];
+        let on = |tab: Tab, cx: &gpui::App| panel_open && self.panel.read(cx).showing_kind(tab);
+        let mut row = div().flex().items_center().gap(px(2.0));
+        for tab in MAIN {
+            let lit = on(tab, cx);
+            let id = match tab {
+                Tab::Changes => "tb-tab-diffs",
+                Tab::Browser => "tb-tab-browser",
+                _ => "tb-tab-files",
+            };
+            let color = if lit { t.text } else { crate::motion::hover_blend(id, t.text_muted, t.text) };
+            row = row.child(
+                quiet_bar_button(
+                    id,
+                    tab.label(),
+                    icon(tab.glyph()).size(px(16.0)).text_color(color),
+                    cx.listener(move |this, _, window, cx| {
+                        if lit {
+                            this.toggle_panel(cx);
+                        } else {
+                            this.show_panel(tab, window, cx);
+                        }
+                    }),
+                )
+                .when(lit, |d| d.bg(ui::selected_bg(t))),
+            );
+        }
+        let open = self.dock_more_open;
+        let lit_more = MORE.iter().any(|tab| on(*tab, cx));
+        let color = if open || lit_more { t.text } else { crate::motion::hover_blend("tb-more", t.text_muted, t.text) };
+        let button = quiet_bar_button(
+            "tb-more",
+            "More panels",
+            icon(icons::MORE_HORIZONTAL).size(px(16.0)).text_color(color),
+            cx.listener(|this, _, window, cx| {
+                let was = this.dock_more_open;
+                this.close_menus();
+                if !was {
+                    this.dock_more_open = true;
+                    this.menu_opened(window, cx);
+                }
+                cx.notify();
+            }),
+        )
+        .when(open, |d| d.bg(ui::selected_bg(t)));
+        let exit = if open { None } else { self.menus.dock_more_exit() };
+        let menu = (open || exit.is_some()).then(|| {
+            let items: Vec<Item> = MORE
+                .into_iter()
+                .map(|tab| {
+                    Item::row(
+                        SharedString::from(format!("tb-more-{}", tab.label())),
+                        Some(tab.glyph()),
+                        tab.label(),
+                        act(move |this, window, cx| this.show_panel(tab, window, cx)),
+                    )
+                    .trailing(div().text_size(ty::META).text_color(t.text_faint).child(tab.blurb()))
+                })
+                .collect();
+            let live = exit.is_none();
+            let body = self.menu_list(items, 300.0, live, t, cx);
+            let card = self.menu_surface(t, body, exit);
+            deferred(
+                anchored().anchor(Anchor::TopRight).snap_to_window_with_margin(px(8.0)).child(
+                    div()
+                        .mt(px(32.0))
+                        .when(live, |d| {
+                            d.on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                                this.close_menus();
+                                cx.notify();
+                            }))
+                        })
+                        .child(card),
+                ),
+            )
+            .with_priority(2)
+        });
+        row.child(div().relative().flex_none().child(button).children(menu)).into_any_element()
     }
 
     fn render_info_button(&mut self, cx: &mut Context<Self>) -> AnyElement {
@@ -3254,6 +3329,34 @@ impl Shell {
 
     fn has_wallpaper(&self) -> bool {
         self.wallpaper_path().is_some()
+    }
+
+    /// The wallpaper's dominant colour, worked out once per picture off the
+    /// UI thread (the shell repaints when it lands).
+    fn wallpaper_hue(&mut self, cx: &mut Context<Self>) -> Option<gpui::Hsla> {
+        let path = self.wallpaper_path()?;
+        if let Some((seen, hue)) = &self.wallpaper_hue
+            && *seen == path
+        {
+            return *hue;
+        }
+        self.wallpaper_hue = Some((path.clone(), None));
+        let work = cx.background_executor().spawn({
+            let path = path.clone();
+            async move { crate::wallpaper_media::dominant_color(std::path::Path::new(&path)) }
+        });
+        cx.spawn(async move |this, cx| {
+            let hue = work.await;
+            tracing::debug!(?hue, "wallpaper hue for {path}");
+            let _ = this.update(cx, |this, cx| {
+                if this.wallpaper_hue.as_ref().is_some_and(|(p, _)| *p == path) {
+                    this.wallpaper_hue = Some((path, hue));
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+        None
     }
 
     /// The wallpaper image, when it is set and on disk. The disk check is
@@ -3724,8 +3827,17 @@ impl Render for Shell {
         // page-coloured plane, so the dock never reads as part of it.
         let lift = t.is_frost() && t.appearance.is_dark();
         let (art_tint, lift_fill) = (t.bg.opacity(SIDE_ART_TINT), t.surface_raised.opacity(0.30));
-        let chrome =
-            move |d: gpui::Div| d.when(thread_art, |d| d.bg(art_tint)).when(!thread_art && lift, |d| d.bg(lift_fill));
+        // With a wallpaper set, the sidebar and the dock take its colour:
+        // their glass is carried toward the picture's dominant hue. Over a
+        // thread's frost the dock already shows the picture itself.
+        let hue = self.wallpaper_hue(cx);
+        let dock_fill = match hue {
+            Some(h) => Some(t.wallpaper_tinted(if lift { lift_fill } else { t.surface.opacity(0.22) }, h)),
+            None => lift.then_some(lift_fill),
+        };
+        let chrome = move |d: gpui::Div| {
+            d.when(thread_art, |d| d.bg(art_tint)).when_some(dock_fill.filter(|_| !thread_art), |d, fill| d.bg(fill))
+        };
         let seam = t.wash(0.06);
         let dock_layer = panel_open.then(|| {
             let inner = if sidebar_shown { self.sidebar_w } else { 0.0 };
@@ -3751,7 +3863,7 @@ impl Render for Shell {
                 .bottom_0()
                 .left_0()
                 .w(px(self.sidebar_w))
-                .bg(t.sidebar_glass())
+                .bg(hue.map_or(t.sidebar_glass(), |h| t.wallpaper_tinted(t.sidebar_glass(), h)))
                 .border_r_1()
                 .border_color(seam)
         });

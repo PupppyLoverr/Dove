@@ -103,6 +103,8 @@ pub enum Which {
     Options,
     Account,
     Overflow,
+    /// The top bar's ⋯: the dock tabs that are not on the bar.
+    DockMore,
     Context(ChatMenu),
 }
 
@@ -148,6 +150,10 @@ impl Menus {
         self.exit_of(|w| matches!(w, Which::Overflow))
     }
 
+    pub fn dock_more_exit(&self) -> Option<f32> {
+        self.exit_of(|w| matches!(w, Which::DockMore))
+    }
+
     /// The context menu's ghost: what it showed, and its exit progress.
     pub fn context_exit(&self) -> Option<(ChatMenu, f32)> {
         let p = self.exit_of(|w| matches!(w, Which::Context(_)))?;
@@ -180,6 +186,8 @@ impl Shell {
             Some(Which::Account)
         } else if self.tab_overflow_open {
             Some(Which::Overflow)
+        } else if self.dock_more_open {
+            Some(Which::DockMore)
         } else {
             self.menu.clone().map(Which::Context)
         };
@@ -187,6 +195,7 @@ impl Shell {
         self.sidebar_options_open = false;
         self.account_open = false;
         self.tab_overflow_open = false;
+        self.dock_more_open = false;
         self.menu = None;
         self.menus.hi = None;
         let Some(which) = which else { return false };
@@ -210,6 +219,7 @@ impl Shell {
             || self.sidebar_options_open
             || self.account_open
             || self.tab_overflow_open
+            || self.dock_more_open
             || self.menu.is_some();
         if !open && self.menus.focus.is_focused(window) {
             match self.menus.restore.take() {
