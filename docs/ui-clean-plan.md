@@ -64,8 +64,27 @@ Each one is a single commit, testable on its own, in this order.
 
 **Each package:** build into `C:\dvw\target-ui-v4`, screenshot Home and a thread on Glass, Acrylic and Normal, with and without a wallpaper (six shots), and compare against the Claude reference before committing.
 
-## 5. Decisions for you
+## 5. Decisions (answered 2026-10-29)
 
-1. **Composer:** you asked earlier for the thread composer to match Home's tall card and never go idle. Claude instead uses one slim pill everywhere that grows as you type, and is never idle either. Recommended: the slim pill on Home and in threads (C6). Alternative: keep the tall card everywhere and only move the footer chips into it.
-2. **Bar buttons:** Claude shows five panel toggles. Ours would be info, terminal, diffs, browser and files, with the rest under ⋯. OK to drop History and Plan from the bar?
-3. **Sidebar times:** Claude shows no times on rows. Drop ours ("3h") into the tooltip, or keep them?
+- **Composer:** threads, and Home placed at the bottom, use Claude's slim pill. Home centred keeps Zeron's card. Neither is ever tucked or idle.
+- **Home:** no greeting. The page is the input bar alone: no folder card, no thread list, no pixel bird, in either placement.
+- **Bar:** five buttons (info, terminal, diffs, browser, files); History, Plan, Subagents, Chats and Side chat under ⋯.
+- **Sidebar rows:** title only; agent, project and age in the tooltip.
+- **Sidebar glass:** with a wallpaper, the sidebar sits on the picture's frost with a light glass tint in its hue, as part of the same surface as the chat.
+- **Shipping:** each package pushed to `origin/main`.
+
+## 6. Status (2026-10-29, night)
+
+| # | Status | Notes |
+| --- | --- | --- |
+| C1 One bar | **Done** | Chat/Terminal beside the title, ⌄ thread menu on the title, info + Terminal, Diffs, Browser, Files (open one lit) + ⋯ on the right. The dock's controls left the bar; the separate panel toggle is gone (Ctrl+\ still works) |
+| C2 Dock header | **Mostly** | A 40 px header in the dock: the open surfaces (or "Panels"), +, split, move, expand, close. Left: Diffs still has its own second row (wrap, split, collapse, refresh) under the header |
+| C3 Content plane | **Done** | The dock uses the chat's plane (page colour with the wallpaper's hue), and shares the chat's frost when the wallpaper is behind chats |
+| C4 Quiet activity | **Already so** | Tool groups and "Thought process" were already borderless rows; the filled pill in the reference was the hover state. Left: long inline code chips still wrap |
+| C5 Reply row | **Done** | Copy, retry, fork, "Worked for …" and Claude's "51 minutes ago". Replayed transcripts have no stored times, so only this run's replies show an age |
+| C6 One composer | **Done** | As decided above. The tucked/idle state is removed from the code |
+| C7 Sidebar | **Partly** | Rows are one line (34 px), title only, with agent · project · age as the tooltip. Pinned and per-project groups already exist ("Group threads by project"); the Settings toggle disagreed with the sidebar about the default and now matches it. Your install has grouping off. Left: nested-thread collapse line, Beta pill |
+| C8 Home | **Done (as decided)** | Folder card, thread list and pixel bird removed |
+| C9 Type and rhythm | **Not started** | Needs a token audit across pages |
+| C10 Pages | **Partly** | Ages turn into dates after four weeks ("12 Oct"). The `threads` deep link already opens Search (the earlier finding was wrong). Left: Settings cards-in-cards, Agents path lines, PR command chip, "Customize" title |
+| Sidebar glass | **Done** | Frost + scrim + hue-tinted glass at 42 % with a wallpaper; Zeron's glass over the desktop blur without one |
