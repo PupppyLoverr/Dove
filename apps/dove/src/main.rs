@@ -28,7 +28,6 @@ mod loaders;
 mod look;
 mod markdown;
 mod markdown_extra;
-mod mascot;
 mod math;
 mod mcp_browser;
 mod mcp_oauth;

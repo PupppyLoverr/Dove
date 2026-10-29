@@ -246,10 +246,6 @@ pub struct Composer {
     home_dock: bool,
     /// A thread's composer draws the same bottom bar as the new-thread dock.
     dock_bar: bool,
-    /// The sidebar is open, so the bar stays tucked until the pointer is over it.
-    dock_tuck: bool,
-    /// The pointer is over the dock, which holds a tucked bar open.
-    dock_hot: bool,
     /// The usage card under the pointer, if any.
     meter: Option<Meter>,
     /// Bumped when the pointer enters a meter, so a leave-timer cannot
@@ -371,8 +367,6 @@ impl Composer {
             dragging_files: false,
             home_dock: false,
             dock_bar: false,
-            dock_tuck: false,
-            dock_hot: false,
             meter: None,
             meter_gen: 0,
             cache_slot: None,
@@ -386,8 +380,9 @@ impl Composer {
         self.cache_slot = Some((height, host));
     }
 
-    /// Match the new-thread bar to Settings › Appearance. No-op unless the
-    /// choice changed, so typing does not rebuild the field.
+    /// Match the new-thread bar to Settings › Appearance: Zeron's card when
+    /// centred, the pill at the bottom. No-op unless the choice changed, so
+    /// typing does not rebuild the field.
     pub fn apply_home_chrome(&mut self, dock: bool, window: &mut Window, cx: &mut Context<Self>) {
         if self.variant != Variant::Hero || self.home_dock == dock {
             return;
@@ -419,10 +414,9 @@ impl Composer {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        // The same card as the new-thread page, always open: no one-line bar
-        // that tucks to an idle hint while the sidebar is shown.
-        let mut this = Self::build(engine.clone(), "Send follow-up", (2, 12), window, cx);
-        this.variant = Variant::Hero;
+        // The same one-line pill as the new-thread page, always open.
+        let mut this = Self::build(engine.clone(), "Send follow-up", (1, 8), window, cx);
+        this.dock_bar = true;
         this.picker.update(cx, |p, _| {
             p.lock_to(task.harness, task.model.clone());
             p.set_text_trigger(true);
@@ -444,7 +438,6 @@ impl Composer {
         self.variant = Variant::Pill;
         self.home_dock = false;
         self.dock_bar = false;
-        self.dock_tuck = false;
         self.picker.update(cx, |p, _| p.set_text_trigger(false));
         self.input.update(cx, |s, cx| s.set_auto_grow(PLATE_ROWS.0, PLATE_ROWS.1, cx));
         cx.notify();
@@ -2391,28 +2384,11 @@ const DOCK_FOOTER_H: f32 = 26.0;
 const DOCK_GAP: f32 = 4.0;
 
 impl Composer {
+    /// Threads, and Home placed at the bottom, use Claude's one-line pill;
+    /// Home centred keeps Zeron's card; the side chat's narrow plate
+    /// (`as_pill`) is its own layout.
     fn docked(&self) -> bool {
         self.dock_bar || (self.variant == Variant::Hero && self.home_dock)
-    }
-
-    fn note_dock_hover(&mut self, hovered: bool, cx: &mut Context<Self>) {
-        if self.dock_hot == hovered {
-            return;
-        }
-        self.dock_hot = hovered;
-        cx.notify();
-    }
-
-    /// Tuck the thread bar while the sidebar is open. No-op when unchanged.
-    pub fn set_dock_tuck(&mut self, tuck: bool, cx: &mut Context<Self>) {
-        if self.dock_tuck == tuck {
-            return;
-        }
-        self.dock_tuck = tuck;
-        if !tuck {
-            self.dock_hot = false;
-        }
-        cx.notify();
     }
 
     /// The pointer entered or left a usage meter. Leaving waits briefly so
@@ -2884,8 +2860,9 @@ impl Composer {
         div().relative().child(chip).children(menu).into_any_element()
     }
 
-    /// The bottom-center bar: a short field, then folder, permissions,
-    /// model and the two usage meters on the row beneath it.
+    /// Claude's pill, on Home and in threads: `+`, the prompt, mic and send
+    /// in one line that grows as you type; under it the mode, where it runs,
+    /// the model and the usage ring. Never tucked or idle.
     fn render_dock(
         &self,
         _window: &mut Window,
@@ -2898,60 +2875,7 @@ impl Composer {
         // A squircle: large corners, with a straight run along the top and bottom.
         let radius = radius::plate(DOCK_H);
         let edge = t.composer_border();
-        let busy = has_text
-            || !self.attachments.is_empty()
-            || !self.cards.is_empty()
-            || !self.queue.is_empty()
-            || self.running
-            || focused
-            || self.menu.is_some()
-            || self.meter.is_some();
-        if self.dock_tuck && !self.dock_hot && !busy {
-            // Tucked, the bar keeps its full size and the `+` and hint sit
-            // exactly where the open bar draws them, with the footer's room
-            // held empty, so opening it changes what is shown, never where.
-            let hint = if self.thread.is_some() { "Send follow-up" } else { "Do anything…" };
-            let bar = div()
-                .w_full()
-                .h(px(DOCK_H))
-                .pl(px(DOCK_PAD_L))
-                .pr(px(DOCK_PAD_R))
-                .flex()
-                .items_center()
-                .gap(px(2.0))
-                .rounded(px(radius))
-                .border_1()
-                .border_color(edge)
-                .bg(t.composer_bg())
-                .cursor_text()
-                .text_size(ty::TITLE)
-                .text_color(t.text_faint)
-                .child(
-                    div()
-                        .size(px(ui::ROUND_BUTTON))
-                        .flex_none()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(icon(icons::PLUS).size(px(ui::ICON_LG)).text_color(t.text_muted)),
-                )
-                .child(div().flex_1().min_w_0().px(px(2.0)).truncate().child(hint));
-            return div()
-                .id("composer")
-                .w_full()
-                .flex()
-                .flex_col()
-                .gap(px(DOCK_GAP))
-                .child(bar)
-                .child(div().h(px(DOCK_FOOTER_H)).flex_none())
-                .on_hover(cx.listener(|this, hovered: &bool, _, cx| this.note_dock_hover(*hovered, cx)))
-                .on_click(cx.listener(|this, _, window, cx| {
-                    this.dock_hot = true;
-                    focus_input(&this.input, window, cx);
-                    cx.notify();
-                }))
-                .into_any_element();
-        }
+
         // The plate looks the same in every permission mode; the mode chip
         // under it says which one is on.
         let border = if self.dragging_files {
@@ -3025,10 +2949,10 @@ impl Composer {
             .flex()
             .items_center()
             .gap(px(2.0))
-            .child(self.place_chip(t, cx))
-            .child(div().w(px(1.0)).h(px(10.0)).mx(px(6.0)).bg(t.border))
             .child(self.dock_mode(t, cx))
             .children(self.orchestrate_chip(t, cx))
+            .child(div().w(px(1.0)).h(px(10.0)).mx(px(6.0)).bg(t.border))
+            .child(self.place_chip(t, cx))
             .child(div().flex_1())
             .child(div().flex_none().max_w(px(240.0)).child(self.picker.clone()))
             .child(self.meter_chip(Meter::Plan, t, cx));
@@ -3039,7 +2963,6 @@ impl Composer {
             .flex()
             .flex_col()
             .gap(px(DOCK_GAP))
-            .on_hover(cx.listener(|this, hovered: &bool, _, cx| this.note_dock_hover(*hovered, cx)))
             .capture_key_down(cx.listener(Self::on_key))
             .when(self.menu == Some(Menu::Place), |d| {
                 d.child(div().absolute().top_0().left(relative(0.5)).child(self.place_card(t, cx)))
@@ -3258,39 +3181,16 @@ impl Composer {
 
         div()
             .id("composer")
-            .relative()
             .w_full()
             .flex()
             .flex_col()
             .gap(px(6.0))
             .capture_key_down(cx.listener(Self::on_key))
-            .when(!home && self.menu == Some(Menu::Place), |d| {
-                d.child(div().absolute().top_0().left(relative(0.5)).child(self.place_card(t, cx)))
-            })
             .child(box_)
             // Under the plate, quiet and unfilled: where it runs on the
             // left, the meters on the right.
             .when(home, |d| d.child(self.render_home_chips(hero, t, cx)))
             .when(home && hero && !self.add_dirs.is_empty(), |d| d.child(self.render_git_row(t, cx)))
-            // A thread's card keeps the dock bar's footer: where it runs,
-            // any extra folders, and the meters.
-            .when(!home && hero, |d| {
-                d.child(
-                    div()
-                        .w_full()
-                        .h(px(26.0))
-                        .px(px(HERO_INSET - 8.0))
-                        .flex()
-                        .items_center()
-                        .gap(px(4.0))
-                        .child(self.place_chip(t, cx))
-                        .when(!self.add_dirs.is_empty(), |d| {
-                            d.child(div().flex().min_w_0().overflow_hidden().child(self.render_context_row(t, cx)))
-                        })
-                        .child(div().flex_1())
-                        .child(self.rings(t, cx)),
-                )
-            })
             .children(meta)
             .when_some(self.error.clone(), |d, e| {
                 d.child(
