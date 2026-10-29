@@ -60,6 +60,9 @@ pub const CHAT_DIM_MAX: f32 = 0.95;
 pub const MOVING_DIM: f32 = 0.22;
 /// The sidebar and dock over that picture: the same frost, a shade deeper.
 const SIDE_ART_TINT: f32 = 0.24;
+/// The sidebar's glass over the wallpaper's frost: enough to read as a
+/// pane of tinted glass, light enough that the picture shows through.
+const SIDE_GLASS_OVER_ART: f32 = 0.42;
 
 /// Responsive fit, after Zeron's `horizontal_panel_fit`: which side columns
 /// the window has room for, as (sidebar, dock). A column that does not fit
@@ -2270,6 +2273,32 @@ impl Shell {
                     .text_color(t.text)
                     .child(task.title.clone()),
             )
+            // Claude's ⌄ after the title: the thread's menu (rename, pin,
+            // fork, archive, copy…), the same one its sidebar row opens.
+            .child(
+                div()
+                    .id("tb-title-menu")
+                    .size(px(20.0))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(6.0))
+                    .hover(|s| s.bg(t.wash(0.08)))
+                    .tooltip(ui::tip("Thread menu"))
+                    .child(icon(icons::CHEVRON_DOWN).size(px(12.0)).text_color(t.text_muted))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, e: &gpui::MouseDownEvent, window, cx| {
+                            cx.stop_propagation();
+                            this.close_menus();
+                            this.menu =
+                                Some(ChatMenu { task: id, at: e.position, copy_open: false, confirm_delete: false });
+                            this.menu_opened(window, cx);
+                            cx.notify();
+                        }),
+                    ),
+            )
             .into_any_element()
     }
 
@@ -2357,10 +2386,9 @@ impl Shell {
         let in_thread = matches!(self.route, Route::Thread(_));
         let flock = self.route == Route::Flock;
         let panel_open = (in_thread || flock) && self.panel_shown();
-        let expanded = panel_open && self.panel.read(cx).expanded;
-        let panel_w = self.panel_width(window);
-        // What the tabs get: the bar minus the cluster, the tools beside the
-        // tabs and the dock's strip (or the caption buttons).
+        // What the tabs get: the bar minus the cluster, the switch, the
+        // tools and the caption buttons. The dock's own controls live in its
+        // header, not here.
         let cluster_w = if side {
             self.sidebar_w
         } else {
@@ -2368,10 +2396,9 @@ impl Shell {
             left_pad + ui::BUTTON * 3.0 + 8.0 + 2.0 + 8.0
         };
         let tools_w = 16.0
-            + if in_thread { ui::BUTTON + 4.0 } else { 0.0 }
-            + if in_thread { (ui::BUTTON + 2.0) * 4.0 + 9.0 } else { 0.0 }
-            + if (in_thread || flock) && !panel_open { ui::BUTTON + 4.0 } else { 0.0 }
-            + if panel_open { panel_w } else { ui::caption_reserve() };
+            + if in_thread { (ui::BUTTON + 2.0) * 8.0 } else { 0.0 }
+            + if flock && !panel_open { ui::BUTTON + 4.0 } else { 0.0 }
+            + ui::caption_reserve();
         let room = f32::from(window.viewport_size().width) - cluster_w - tools_w;
         let tabs = if flock {
             self.workspace.update(cx, |w, cx| w.render_bar(cx))
@@ -2380,39 +2407,28 @@ impl Shell {
         } else {
             self.render_bar_title(&t, cx)
         };
-        let dock_left = self.panel_left();
+        // Claude's bar: Chat | Terminal beside the title; on the right the
+        // thread's info and the panels (the open one lit), the rest under ⋯.
+        let switch = in_thread
+            .then(|| self.active_thread().cloned().map(|v| v.update(cx, |v, cx| v.view_switch(&t, cx))))
+            .flatten();
         let right_tools = div()
             .flex()
             .flex_none()
             .items_center()
             .gap(px(4.0))
             .pl(px(8.0))
-            .pr(px(if panel_open && !dock_left { 8.0 } else { ui::caption_reserve() + 8.0 }))
-            // Thread tools sit in the bar: Chat | Terminal (Ctrl+`), info,
-            // then the panel toggle.
+            .pr(px(ui::caption_reserve() + 8.0))
             .when(in_thread, |d| {
-                let switch = self.active_thread().cloned().map(|v| v.update(cx, |v, cx| v.view_switch(&t, cx)));
                 d.child(
                     div()
                         .h(px(28.0))
                         .flex()
                         .items_center()
                         .gap(px(2.0))
-                        .children(switch)
-                        .child(self.render_info_button(cx))
                         .when_some(self.render_pr_button(&t, cx), |d, b| d.child(b))
-                        // The dock's main tabs as buttons, the rest under ⋯.
-                        .child(div().w(px(1.0)).h(px(14.0)).mx(px(4.0)).bg(t.wash(0.10)))
-                        .child(self.render_dock_tabs(panel_open, &t, cx))
-                        .when(!panel_open, |d| {
-                            let color = crate::motion::hover_blend("tb-panel", t.text_muted, t.text);
-                            d.child(quiet_bar_button(
-                                "tb-panel",
-                                "Side panel: browser, diffs, files… (Ctrl+\\)",
-                                ui::sidebar_glyph(0.0, true, 16.0, color),
-                                cx.listener(|this, _, _, cx| this.toggle_panel(cx)),
-                            ))
-                        }),
+                        .child(self.render_info_button(cx))
+                        .child(self.render_dock_tabs(panel_open, &t, cx)),
                 )
             })
             // Flock keeps only the panel toggle: no thread info to show.
@@ -2425,40 +2441,21 @@ impl Shell {
                     cx.listener(|this, _, _, cx| this.toggle_panel(cx)),
                 ))
             });
-        // The call view covers the panel: its strip (and buttons) goes too.
-        let strip = (panel_open && !self.call_view_shown).then(|| self.panel.update(cx, |p, cx| p.render_strip(cx)));
-
         // Over artwork the strip stays clear: the picture (and, in a thread,
         // its frost) is already painted for this column, so the tabs sit on
         // the same surface as the page. Everywhere else it is the solid bar.
         let home_art = matches!(self.route, Route::Home) && self.has_wallpaper();
         let thread_art = self.full_art_route() && self.has_wallpaper();
-        let surface =
-            div().flex_1().min_w_0().h_full().when(!home_art && !thread_art, |d| d.bg(t.bg)).flex().items_center().map(
-                |d| {
-                    let strip = strip.map(|strip| {
-                        div()
-                            .h_full()
-                            .min_w_0()
-                            .when(!expanded, |d| d.w(px(panel_w)).flex_none())
-                            .when(expanded, |d| d.flex_1())
-                            .when(!dock_left || expanded, |d| d.pr(px(ui::caption_reserve())))
-                            .when(dock_left && !expanded, |d| d.border_r_1().border_color(t.wash(0.06)))
-                            .child(strip)
-                    });
-                    let main = (!expanded).then(|| {
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .h_full()
-                            .flex()
-                            .items_center()
-                            .child(div().flex_1().min_w_0().h_full().flex().items_center().child(tabs))
-                            .child(right_tools)
-                    });
-                    if dock_left { d.children(strip).children(main) } else { d.children(main).children(strip) }
-                },
-            );
+        let surface = div()
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .when(!home_art && !thread_art, |d| d.bg(t.bg))
+            .flex()
+            .items_center()
+            .children(switch.map(|s| div().flex_none().pl(px(4.0)).pr(px(6.0)).child(s)))
+            .child(div().flex_1().min_w_0().h_full().flex().items_center().child(tabs))
+            .child(right_tools);
         let bar = div()
             .relative()
             .h(px(Theme::TITLEBAR_HEIGHT))
@@ -2785,13 +2782,14 @@ impl Shell {
     /// that tab is already what it shows.
     fn render_dock_tabs(&mut self, panel_open: bool, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         use crate::shell_menu::{Item, act};
-        const MAIN: [Tab; 3] = [Tab::Changes, Tab::Browser, Tab::Files];
-        const MORE: [Tab; 6] = [Tab::Terminal, Tab::History, Tab::Plan, Tab::Subagents, Tab::Chats, Tab::SideChat];
+        const MAIN: [Tab; 4] = [Tab::Terminal, Tab::Changes, Tab::Browser, Tab::Files];
+        const MORE: [Tab; 5] = [Tab::History, Tab::Plan, Tab::Subagents, Tab::Chats, Tab::SideChat];
         let on = |tab: Tab, cx: &gpui::App| panel_open && self.panel.read(cx).showing_kind(tab);
         let mut row = div().flex().items_center().gap(px(2.0));
         for tab in MAIN {
             let lit = on(tab, cx);
             let id = match tab {
+                Tab::Terminal => "tb-tab-terminal",
                 Tab::Changes => "tb-tab-diffs",
                 Tab::Browser => "tb-tab-browser",
                 _ => "tb-tab-files",
@@ -2882,17 +2880,6 @@ impl Shell {
                 }),
             ))
             .into_any_element()
-    }
-
-    /// While the sidebar is open the chat column is too narrow for the full
-    /// bar, so it tucks until the pointer is over it.
-    fn sync_thread_dock(&mut self, tuck: bool, cx: &mut Context<Self>) {
-        let Route::Thread(id) = self.route else { return };
-        let Some(view) = self.threads.get(&id).cloned() else { return };
-        view.update(cx, |v, cx| {
-            let composer = v.chat.read(cx).composer.clone();
-            composer.update(cx, |c, cx| c.set_dock_tuck(tuck, cx));
-        });
     }
 
     fn render_info_card(&self, task: &Task, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
@@ -3477,6 +3464,48 @@ impl Shell {
         )
     }
 
+    /// The wallpaper's frost under the left sidebar, cut from a window-size
+    /// copy so it lines up with a thread's full-window frost (the same cached
+    /// clip, which this also warms before a chat opens), under the chat's
+    /// contrast scrim. Until it lands the strip is the page colour.
+    fn sidebar_frost(&mut self, width: f32, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let path = self.wallpaper_path()?;
+        let t = Theme::of(cx).clone();
+        let viewport = window.viewport_size();
+        let (vw, vh) = (f32::from(viewport.width), f32::from(viewport.height));
+        let target = (vw * window.scale_factor(), vh * window.scale_factor());
+        let variant = crate::wallpaper_media::Variant::Frost(self.chat_blur().round() as u32);
+        let props = crate::wallpaper_media::BackdropProps {
+            path: path.clone().into(),
+            variant,
+            target,
+            play: false,
+            fade: false,
+            composer: None,
+            opacity: 1.0,
+        };
+        let view = window.use_keyed_state("sidebar-frost", cx, crate::wallpaper_media::Backdrop::new);
+        let ready = view.update(cx, |b, cx| b.show(props, cx));
+        let bright = crate::wallpaper_media::clip(std::path::Path::new(&path), variant, target, true, cx)
+            .map_or(1.0, |c| c.bright);
+        let scrim = t.bg.opacity(self.chat_scrim(bright, &t));
+        Some(
+            div()
+                .absolute()
+                .top_0()
+                .bottom_0()
+                .left_0()
+                .w(px(width))
+                .overflow_hidden()
+                .bg(t.bg)
+                .when(ready, |d| {
+                    d.child(div().absolute().top_0().left_0().w(px(vw)).h(px(vh)).child(view))
+                        .child(div().absolute().inset_0().bg(scrim))
+                })
+                .into_any_element(),
+        )
+    }
+
     /// The chat backdrop's blur, in screen pixels (Settings › Background).
     fn chat_blur(&self) -> f32 {
         use crate::wallpaper_media::FrostLook;
@@ -3669,7 +3698,6 @@ impl Render for Shell {
         let panel_open = docked && self.panel_shown();
         let expanded = panel_open && wants_expand;
         let sidebar_shown = self.sidebar_shown();
-        self.sync_thread_dock(sidebar_shown, cx);
         // Web views are native windows: the call view hides them.
         let panel_live = panel_open && !self.call_view_shown;
         self.panel.update(cx, |p, cx| p.sync(panel_live, self.resize.is_some(), cx));
@@ -3819,25 +3847,17 @@ impl Render for Shell {
                     .child(div().size_full().flex().child(div().flex_1().min_w_0().h_full().child(center)))
             })
         };
-        // The sidebar and the dock are one material, the window's chrome:
-        // the same fill (over a thread's picture, the same frost a shade
-        // deeper; otherwise the glass, lifted a step on a dark frosted
-        // theme so a near-black one does not turn it into a slab) and the
-        // same hairline seam where they meet the chat. The chat is the only
-        // page-coloured plane, so the dock never reads as part of it.
-        let lift = t.is_frost() && t.appearance.is_dark();
-        let (art_tint, lift_fill) = (t.bg.opacity(SIDE_ART_TINT), t.surface_raised.opacity(0.30));
-        // With a wallpaper set, the sidebar and the dock take its colour:
-        // their glass is carried toward the picture's dominant hue. Over a
-        // thread's frost the dock already shows the picture itself.
+        // The sidebar takes the wallpaper's colour when one is set.
         let hue = self.wallpaper_hue(cx);
-        let dock_fill = match hue {
-            Some(h) => Some(t.wallpaper_tinted(if lift { lift_fill } else { t.surface.opacity(0.22) }, h)),
-            None => lift.then_some(lift_fill),
-        };
-        let chrome = move |d: gpui::Div| {
-            d.when(thread_art, |d| d.bg(art_tint)).when_some(dock_fill.filter(|_| !thread_art), |d, fill| d.bg(fill))
-        };
+        // The dock is content, not chrome: it sits on the chat's plane (the
+        // page colour, carrying the wallpaper's hue when one is set), and
+        // over a thread's frost it shares the chat's frost with nothing on
+        // top, so a thread shows two tones, not three materials.
+        let dock_fill = (!thread_art).then(|| match hue {
+            Some(h) => t.wallpaper_tinted(t.bg, h),
+            None => t.bg,
+        });
+        let chrome = move |d: gpui::Div| d.when_some(dock_fill, |d, fill| d.bg(fill));
         let seam = t.wash(0.06);
         let dock_layer = panel_open.then(|| {
             let inner = if sidebar_shown { self.sidebar_w } else { 0.0 };
@@ -3851,11 +3871,25 @@ impl Render for Shell {
                 .when(expanded, |d| d.left(px(inner)))
                 .when(!expanded, |d| if dock_left { d.border_r_1() } else { d.border_l_1() }.border_color(seam))
         });
-        // The left sidebar is Zeron's glass on every page, wallpaper or not:
-        // no fill of its own over the window's desktop blur, only the
-        // sidebar tint. The shell plane below and any wallpaper start at its
-        // edge, so the blur shows through at Zeron's strength.
+        // The left sidebar is glass. Without a wallpaper it is Zeron's: the
+        // sidebar tint straight over the window's desktop blur. With one, the
+        // picture runs under it as the chat's frost (a thread's full-window
+        // frost, or its own strip elsewhere) under the chat's scrim, with a
+        // light glass tint in the picture's hue on top, so the sidebar reads
+        // as part of the same surface instead of a separate slab.
         let side_shown = sidebar_shown || in_settings;
+        let has_wallpaper = self.has_wallpaper();
+        let side_fill = match hue {
+            Some(h) if has_wallpaper => {
+                let g = t.wallpaper_tinted(t.sidebar_glass(), h);
+                g.opacity(SIDE_GLASS_OVER_ART)
+            }
+            _ if has_wallpaper => t.sidebar_glass().opacity(SIDE_GLASS_OVER_ART),
+            _ => t.sidebar_glass(),
+        };
+        let side_frost = (side_shown && has_wallpaper && !thread_art)
+            .then(|| self.sidebar_frost(self.sidebar_w, window, cx))
+            .flatten();
         let side_layer = side_shown.then(|| {
             div()
                 .absolute()
@@ -3863,7 +3897,7 @@ impl Render for Shell {
                 .bottom_0()
                 .left_0()
                 .w(px(self.sidebar_w))
-                .bg(hue.map_or(t.sidebar_glass(), |h| t.wallpaper_tinted(t.sidebar_glass(), h)))
+                .bg(side_fill)
                 .border_r_1()
                 .border_color(seam)
         });
@@ -4073,18 +4107,19 @@ impl Render for Shell {
             )
             .child(plane)
             .children({
-                // A thread's picture runs from the sidebar's edge under the
-                // chat and the dock (one frosted surface; the sidebar stays
-                // glass over the desktop blur); home keeps it to the chat
-                // column, where it fades into the canvas.
+                // A thread's picture runs under the whole window as one
+                // frost (the sidebar's tinted glass sits on it); home keeps
+                // it to the chat column, where it fades into the canvas, and
+                // the sidebar gets its own strip of frost.
                 let full = thread_art;
                 let docked = panel_open && !expanded && !full;
-                let art_left = if sidebar_shown || in_settings { self.sidebar_w } else { 0.0 }
+                let art_left = if (sidebar_shown || in_settings) && !full { self.sidebar_w } else { 0.0 }
                     + if docked && dock_left { panel_w } else { 0.0 };
                 let art_right = if docked && !dock_left { panel_w } else { 0.0 };
                 let art_width = (f32::from(window.viewport_size().width) - art_left - art_right).max(1.0);
                 self.wallpaper_layer(art_left, art_width, window, cx)
             })
+            .children(side_frost)
             .children(side_layer)
             .children(dock_layer)
             .children(panel_ghost)
