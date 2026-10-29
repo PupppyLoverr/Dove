@@ -332,7 +332,10 @@ pub fn run_launcher() -> Option<i32> {
     // the agent under `dove node attach` there when possible: it keeps
     // running through a lost connection and this launcher reattaches. The
     // same remote `dove` serves Keplorayx's tools to the agent.
-    let attached = port.is_none() && host.needs_sync() && crate::node::remote::ensure(&host);
+    // A terminal pane (the agent's own TUI) gets a TTY on the host instead
+    // of raw pipes, and isn't attached: a TUI redraws itself on reconnect.
+    let tty = std::io::IsTerminal::is_terminal(&std::io::stdin());
+    let attached = !tty && port.is_none() && host.needs_sync() && crate::node::remote::ensure(&host);
     // Only now (not for prepare/sync/install): forward the app's tool-server
     // port back from the host, so the agent's `dove` MCP server reaches it.
     if let Some(p) =
@@ -343,7 +346,7 @@ pub fn run_launcher() -> Option<i32> {
     if attached {
         return Some(crate::node::remote::run_attached(&host, &dir, &program, &args, RECONNECT_FOR));
     }
-    let mut inv = host.wrap(&program, &args, &dir, false);
+    let mut inv = host.wrap(&program, &args, &dir, tty);
     let mut forward = None;
     match (&host, port) {
         (Host::Ssh { .. } | Host::Sandbox { .. }, Some(p)) if inv.program == Path::new("ssh") => {

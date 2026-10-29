@@ -35,8 +35,8 @@ pub use dove_harness::hosts;
 pub use dove_harness::is_supported as harness_supported;
 pub use dove_harness::models;
 pub use dove_harness::node;
-pub use dove_harness::paired;
 pub use dove_harness::office_skills;
+pub use dove_harness::paired;
 pub use dove_harness::process as harness_process;
 pub use dove_harness::skills;
 pub use dove_harness::teach;
@@ -284,6 +284,23 @@ pub fn supports_add_dirs(kind: HarnessKind) -> bool {
 
 /// How an event moves a task's status. Shared by the recorder and any UI that
 /// wants to update optimistically from the same stream.
+/// A TUI's arguments minus flags that point at files on this machine
+/// (`--mcp-config <path>`, and `--strict-mcp-config` that goes with it).
+fn without_local_config(args: &[String]) -> Vec<String> {
+    let mut out = Vec::with_capacity(args.len());
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--mcp-config" => {
+                it.next();
+            }
+            "--strict-mcp-config" => {}
+            _ => out.push(a.clone()),
+        }
+    }
+    out
+}
+
 pub fn next_status(event: &AgentEvent) -> Option<TaskStatus> {
     match event {
         AgentEvent::UserMessage { .. } | AgentEvent::PermissionResolved { .. } => Some(TaskStatus::Running),
@@ -1091,7 +1108,15 @@ impl Engine {
             add_dirs: &run.add_dirs,
             session: &session,
         };
-        Ok(tui::command(task.harness, &program, &cwd, &spec))
+        let mut cmd = tui::command(task.harness, &program, &cwd, &spec);
+        let host = self.task_host(task.id);
+        if !host.is_local() {
+            // The launcher wakes and syncs the host, then runs the TUI there
+            // with a TTY. Config files written here mean nothing there.
+            cmd.args = without_local_config(&cmd.args);
+            cmd.program = dove_harness::host::launcher(&host, &cmd.program)?;
+        }
+        Ok(cmd)
     }
 
     /// An agent's TUI for Flock: a fresh session in `cwd`, with Dove's tools
@@ -1734,5 +1759,16 @@ mod persona_tests {
         assert!(sent.contains("Be terse."));
         assert_eq!(strip_persona(&sent), "Fix the login bug");
         assert_eq!(strip_persona("plain"), "plain");
+    }
+}
+
+#[cfg(test)]
+mod remote_tui_tests {
+    #[test]
+    fn local_config_paths_are_dropped() {
+        let a: Vec<String> = ["--resume", "abc", "--strict-mcp-config", "--mcp-config", "/tmp/x.json", "--model", "m"]
+            .map(String::from)
+            .to_vec();
+        assert_eq!(super::without_local_config(&a), ["--resume", "abc", "--model", "m"].map(String::from).to_vec());
     }
 }
