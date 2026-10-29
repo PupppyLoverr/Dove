@@ -20,3 +20,6 @@ flume = "0.11"
 futures = "0.3"
 # Skills library: GitHub listings and downloads (blocking; runs off the UI thread).
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "blocking"] }
+# Cloud sandboxes whose exec stream is a WebSocket (Fly Sprites, Northflank).
+# Sync client on the rustls (ring) stack reqwest already links.
+tungstenite = { version = "0.28", default-features = false, features = ["handshake", "rustls-tls-webpki-roots"] }
