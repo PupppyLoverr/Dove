@@ -1,6 +1,7 @@
-//! Where an agent runs: this machine, a WSL distro, an SSH host, or a Cua
-//! Space. A [`Host`] rewrites a local invocation into one that runs on the
-//! target through a system tool (`wsl.exe`, `ssh`, `cua`), so the stdio/PTY
+//! Where an agent runs: this machine, a WSL distro, an SSH host, a Cua Space,
+//! a Docker container, or a cloud sandbox the user brings a key for. A
+//! [`Host`] rewrites a local invocation into one that runs on the target
+//! through a system tool (`wsl.exe`, `ssh`, `cua`, `docker`), so the stdio/PTY
 //! plumbing, the `AgentEvent` stream and the UI stay exactly as they are.
 //! Nothing here bundles a client: every target costs zero binary size.
 
@@ -22,6 +23,11 @@ pub enum Host {
     /// A Cua Space (local VM/container, or one in the user's own cloud),
     /// driven through `cua sandbox exec`.
     CuaSpace { name: String },
+    /// A running Docker container, driven through `docker exec -i`.
+    Docker { container: String },
+    /// A box at a cloud provider ([`crate::hosts`]), reached over SSH with a
+    /// config the launcher writes after waking the box.
+    Sandbox { provider: String, id: String },
 }
 
 /// A program, its arguments and the local directory to start it in, ready
@@ -48,7 +54,18 @@ impl Host {
             Host::Wsl { distro: None } => "WSL".into(),
             Host::Ssh { alias } => format!("ssh: {alias}"),
             Host::CuaSpace { name } => format!("Space: {name}"),
+            Host::Docker { container } => format!("Docker: {container}"),
+            Host::Sandbox { provider, id } => {
+                let label = crate::hosts::provider(provider).map(|p| p.label()).unwrap_or(provider.as_str());
+                format!("{label}: {id}")
+            }
         }
+    }
+
+    /// Whether the agent's files live elsewhere and must be synced
+    /// ([`crate::sync`]). WSL sees the Windows drive itself.
+    pub fn needs_sync(&self) -> bool {
+        !matches!(self, Host::Local | Host::Wsl { .. })
     }
 
     /// Rewrite `program args` (run in `cwd` on the host) into a local
@@ -67,23 +84,30 @@ impl Host {
                 a.extend(args.iter().cloned());
                 Invocation { program: "wsl.exe".into(), args: a, local_cwd: None }
             }
-            Host::Ssh { alias } => {
-                let mut line = format!("cd {} && exec {}", sh_quote(cwd), sh_quote(program));
-                for arg in args {
-                    line.push(' ');
-                    line.push_str(&sh_quote(arg));
+            Host::Ssh { alias } => ssh_invocation(None, alias, program, args, cwd, tty),
+            Host::Sandbox { provider, id } => match crate::hosts::saved_endpoint(provider, id) {
+                Some(crate::hosts::Endpoint::Exec { argv }) => exec_invocation(&argv, program, args, cwd),
+                Some(crate::hosts::Endpoint::Native) => {
+                    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("dove"));
+                    let mut prefix = vec![exe.display().to_string(), "node".into(), "bridge".into()];
+                    prefix.extend([provider.clone(), id.clone(), "--".into()]);
+                    exec_invocation(&prefix, program, args, cwd)
                 }
-                let mut a: Vec<String> = vec![if tty { "-tt" } else { "-T" }.into()];
-                a.extend(["-o".into(), "BatchMode=yes".into()]);
-                if !cfg!(windows) {
-                    // Windows OpenSSH has no ControlMaster support.
-                    a.extend(
-                        ["-o", "ControlMaster=auto", "-o", "ControlPersist=10m", "-o", "ControlPath=~/.ssh/dove-%C"]
-                            .map(String::from),
-                    );
+                // SSH routes, and a box not connected yet (the launcher
+                // connects first; the config then exists).
+                _ => {
+                    let config = crate::hosts::ssh_config_path(provider, id);
+                    ssh_invocation(Some(&config), crate::hosts::SSH_ALIAS, program, args, cwd, tty)
                 }
-                a.extend([alias.clone(), "--".into(), line]);
-                Invocation { program: "ssh".into(), args: a, local_cwd: None }
+            },
+            Host::Docker { container } => {
+                let mut a: Vec<String> = vec!["exec".into(), if tty { "-it" } else { "-i" }.into(), container.clone()];
+                // Start in the container user's home so a relative `cwd`
+                // means the same thing it does over SSH.
+                a.extend(["sh".into(), "-lc".into(), r#"cd "$HOME" 2>/dev/null; cd "$0" && exec "$@""#.into()]);
+                a.extend([cwd.into(), program.into()]);
+                a.extend(args.iter().cloned());
+                Invocation { program: "docker".into(), args: a, local_cwd: None }
             }
             Host::CuaSpace { name } => {
                 let mut a: Vec<String> = ["sandbox", "exec"].map(String::from).to_vec();
@@ -106,22 +130,67 @@ impl Host {
         match self {
             Host::Local => local.display().to_string(),
             Host::Wsl { .. } => to_wsl_path(&local.display().to_string()),
-            Host::Ssh { .. } | Host::CuaSpace { .. } => {
+            Host::Ssh { .. } | Host::CuaSpace { .. } | Host::Docker { .. } | Host::Sandbox { .. } => {
                 local.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| ".".into())
             }
         }
     }
 
-    /// A stable folder name for this host's launchers.
-    fn slug(&self) -> String {
+    /// A stable folder name for this host's launchers and sync state.
+    pub(crate) fn slug(&self) -> String {
         let raw = match self {
             Host::Local => "local".to_string(),
             Host::Wsl { distro } => format!("wsl-{}", distro.as_deref().unwrap_or("default")),
             Host::Ssh { alias } => format!("ssh-{alias}"),
             Host::CuaSpace { name } => format!("cua-{name}"),
+            Host::Docker { container } => format!("docker-{container}"),
+            Host::Sandbox { provider, id } => format!("{provider}-{id}"),
         };
         raw.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' }).collect()
     }
+}
+
+/// `<prefix…> sh -lc 'cd "$0" && exec "$@"' <cwd> <program> <args…>`: a
+/// vendor exec command with live stdio. A relative `cwd` is under `$HOME`.
+fn exec_invocation(prefix: &[String], program: &str, args: &[String], cwd: &str) -> Invocation {
+    let (head, rest) =
+        prefix.split_first().map(|(h, r)| (h.clone(), r.to_vec())).unwrap_or_else(|| ("sh".into(), vec![]));
+    let mut a = rest;
+    a.extend(["sh".into(), "-lc".into(), r#"cd "$HOME" 2>/dev/null; cd "$0" && exec "$@""#.into()]);
+    a.extend([cwd.into(), program.into()]);
+    a.extend(args.iter().cloned());
+    Invocation { program: head.into(), args: a, local_cwd: None }
+}
+
+/// `ssh [-F config] -T|-tt … target -- "cd <cwd> && exec <program> <args>"`.
+fn ssh_invocation(
+    config: Option<&Path>,
+    target: &str,
+    program: &str,
+    args: &[String],
+    cwd: &str,
+    tty: bool,
+) -> Invocation {
+    let mut line = format!("cd {} && exec {}", sh_quote(cwd), sh_quote(program));
+    for arg in args {
+        line.push(' ');
+        line.push_str(&sh_quote(arg));
+    }
+    let mut a: Vec<String> = Vec::new();
+    if let Some(c) = config {
+        a.extend(["-F".into(), c.display().to_string()]);
+    }
+    a.push(if tty { "-tt" } else { "-T" }.into());
+    a.extend(["-o".into(), "BatchMode=yes".into()]);
+    if !cfg!(windows) {
+        // Windows OpenSSH has no ControlMaster support.
+        a.extend(
+            ["-o", "ControlMaster=auto", "-o", "ControlPersist=10m", "-o", "ControlPath=~/.ssh/dove-%C"]
+                .map(String::from),
+        );
+    }
+    a.extend([target.to_string(), "--".into(), line]);
+    Invocation { program: "ssh".into(), args: a, local_cwd: None }
 }
 
 /// What a launcher reads from the `host.json` beside it.
@@ -163,8 +232,15 @@ pub fn run_launcher() -> Option<i32> {
     let program = exe.file_stem()?.to_string_lossy().into_owned();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let cwd = std::env::current_dir().unwrap_or_default();
-    if let Host::CuaSpace { name } = &host {
-        wake_space(name);
+    match &host {
+        Host::CuaSpace { name } => wake_space(name),
+        Host::Sandbox { provider, id } => {
+            if let Err(err) = crate::hosts::connect_box(provider, id) {
+                eprintln!("dove: could not reach {}: {err:#}", host.label());
+                return Some(1);
+            }
+        }
+        _ => {}
     }
     let dir = host.remote_dir(&cwd);
     if let Err(code) = prepare(&host, &program, &dir, &cwd) {
@@ -181,7 +257,7 @@ pub fn run_launcher() -> Option<i32> {
     let port = served_port(&args);
     let mut forward = None;
     match (&host, port) {
-        (Host::Ssh { .. }, Some(p)) => {
+        (Host::Ssh { .. } | Host::Sandbox { .. }, Some(p)) if inv.program == Path::new("ssh") => {
             let spec = format!("{p}:127.0.0.1:{p}");
             inv.args.splice(0..0, ["-o", "ExitOnForwardFailure=yes", "-L", spec.as_str()].map(String::from));
         }
@@ -256,12 +332,26 @@ fn served_port(args: &[String]) -> Option<u16> {
     args.get(i + 1)?.parse().ok()
 }
 
-/// Gets `dir` ready on the host before the agent starts: a missing folder is
-/// cloned from the local checkout's `origin` (on its current branch when the
-/// remote has it), and the agent must be on the host's `PATH`. Runs as its own
-/// process with captured output, so nothing lands on the agent's stdout (the
-/// JSON channel). On failure prints why and returns the exit code to use.
+/// Gets `dir` ready on the host before the agent starts: the project is
+/// synced there ([`crate::sync::push`]: unpushed commits and uncommitted
+/// edits included; a folder that isn't a git repository falls back to
+/// cloning `origin`), and the agent must be on the host's `PATH`. Everything
+/// runs as separate processes with captured output, so nothing lands on the
+/// agent's stdout (the JSON channel). On failure prints why and returns the
+/// exit code to use.
 fn prepare(host: &Host, agent: &str, dir: &str, local: &Path) -> Result<(), i32> {
+    if host.needs_sync() {
+        match crate::sync::push(host, local, dir) {
+            Ok(outcome) => {
+                if let Some(note) = outcome.note(host, dir, true) {
+                    eprintln!("{note}");
+                }
+            }
+            // Sync is best-effort: the prepare script below still clones
+            // `origin` when the folder is missing.
+            Err(err) => eprintln!("dove: could not sync this project to {}: {err:#}", host.label()),
+        }
+    }
     let git = |args: &[&str]| {
         let mut a = vec!["-C", local.to_str().unwrap_or(".")];
         a.extend_from_slice(args);
@@ -391,7 +481,62 @@ pub fn discover() -> Vec<Host> {
         hosts.extend(ssh_aliases(&config).into_iter().map(|alias| Host::Ssh { alias }));
     }
     hosts.extend(cua_spaces().into_iter().map(|name| Host::CuaSpace { name }));
+    hosts.extend(docker_containers().into_iter().map(|container| Host::Docker { container }));
+    hosts.extend(sandboxes());
     hosts
+}
+
+/// Running Docker containers, by name.
+pub fn docker_containers() -> Vec<String> {
+    quiet_output("docker", &["ps", "--format", "{{.Names}}"])
+        .map(|raw| {
+            String::from_utf8_lossy(&raw).lines().map(str::trim).filter(|l| !l.is_empty()).map(String::from).collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Boxes at every cloud provider the user has a key for. A sleeping box is
+/// listed too: the launcher wakes it.
+pub fn sandboxes() -> Vec<Host> {
+    let keys = crate::hosts::Keys::load();
+    crate::hosts::providers()
+        .into_iter()
+        .filter(|p| keys.has(p.id()))
+        .flat_map(|p| {
+            p.list(&keys)
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|b| !matches!(b.state.as_str(), "deleting" | "deleted" | "error"))
+                .map(|b| Host::Sandbox { provider: p.id().to_string(), id: b.id })
+        })
+        .collect()
+}
+
+/// Can `host` run a command right now? Runs `true` there (a box is not woken
+/// for this; its provider's probe answers instead).
+pub fn probe(host: &Host) -> crate::hosts::Probe {
+    use crate::hosts::Probe;
+    if let Host::Sandbox { provider, .. } = host {
+        return match crate::hosts::provider(provider) {
+            Some(p) => p.probe(&crate::hosts::Keys::load()),
+            None => Probe::Unavailable(format!("unknown provider {provider}")),
+        };
+    }
+    let inv = host.wrap("true", &[], ".", false);
+    let mut cmd = std::process::Command::new(&inv.program);
+    cmd.args(&inv.args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000);
+    }
+    match cmd.output() {
+        Ok(out) if out.status.success() => Probe::Ready,
+        Ok(out) => {
+            Probe::NeedsSetup(String::from_utf8_lossy(&out.stderr).trim().lines().last().unwrap_or("").to_string())
+        }
+        Err(err) => Probe::Unavailable(format!("{} is not installed: {err}", inv.program.display())),
+    }
 }
 
 fn quiet_output(program: &str, args: &[&str]) -> Option<Vec<u8>> {
@@ -509,6 +654,31 @@ mod tests {
                 "--acp"
             ])
         );
+    }
+
+    #[test]
+    fn docker_execs_with_a_relative_home() {
+        let inv = Host::Docker { container: "dev".into() }.wrap("claude", &s(&["-p"]), "repo", false);
+        assert_eq!(inv.program, PathBuf::from("docker"));
+        assert_eq!(&inv.args[..3], &s(&["exec", "-i", "dev"])[..]);
+        assert_eq!(&inv.args[inv.args.len() - 3..], &s(&["repo", "claude", "-p"])[..]);
+        let tty = Host::Docker { container: "dev".into() }.wrap("sh", &[], ".", true);
+        assert_eq!(tty.args[1], "-it");
+    }
+
+    #[test]
+    fn sandbox_uses_its_generated_ssh_config() {
+        let h = Host::Sandbox { provider: "instabox".into(), id: "m_1".into() };
+        let inv = h.wrap("claude", &s(&["-p"]), "repo", false);
+        assert_eq!(inv.program, PathBuf::from("ssh"));
+        assert_eq!(inv.args[0], "-F");
+        assert!(inv.args[1].ends_with("ssh_config"));
+        assert!(inv.args.iter().any(|a| a == crate::hosts::SSH_ALIAS));
+        assert_eq!(h.label(), "InstaBox: m_1");
+        assert!(h.needs_sync());
+        assert!(!Host::Wsl { distro: None }.needs_sync());
+        let json = serde_json::to_string(&h).unwrap();
+        assert_eq!(json, r#"{"kind":"sandbox","provider":"instabox","id":"m_1"}"#);
     }
 
     #[test]
