@@ -2286,7 +2286,10 @@ impl SidePanel {
                         .child(title),
                 )
                 .children(
-                    tabs.iter().copied().chain((title == "Review" && has_pr).then_some(Tab::PullRequest)).map(|k| row(k, cx)),
+                    tabs.iter()
+                        .copied()
+                        .chain((title == "Review" && has_pr).then_some(Tab::PullRequest))
+                        .map(|k| row(k, cx)),
                 );
         }
         div()

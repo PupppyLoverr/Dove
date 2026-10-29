@@ -67,7 +67,9 @@ impl Card {
             Card::File { path } | Card::Folder { path } => path.display().to_string(),
             Card::Thread { agent, .. } => format!("Thread · {agent}"),
             Card::Window { title, .. } => title.clone(),
-            Card::Tab { chrome, url, .. } => format!("{} · {url}", if *chrome { "Chrome" } else { "Keplorayx browser" }),
+            Card::Tab { chrome, url, .. } => {
+                format!("{} · {url}", if *chrome { "Chrome" } else { "Keplorayx browser" })
+            }
         }
     }
 

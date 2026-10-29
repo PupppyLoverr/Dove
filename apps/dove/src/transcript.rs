@@ -3084,7 +3084,11 @@ impl TaskView {
                         .line_height(ty::lh::MD)
                         .bg(t.wash(0.07))
                         .border_1()
-                        .border_color(if self.flash == Some(i) { t.accent.opacity(0.7) } else { gpui::transparent_black() })
+                        .border_color(if self.flash == Some(i) {
+                            t.accent.opacity(0.7)
+                        } else {
+                            gpui::transparent_black()
+                        })
                         .text_color(t.text)
                         .child(body),
                 )

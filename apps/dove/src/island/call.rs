@@ -132,7 +132,9 @@ fn start(task: Option<TaskId>, cx: &mut App) {
     let engine = engine(cx);
     if !crate::voice_call::local_stt_ready(&engine) && !engine.store.flag("voice_cloud", false) {
         let info = CallInfo {
-            error: Some("Voice Mode needs speech recognition: install it in Settings › Voice (it runs on this device).".into()),
+            error: Some(
+                "Voice Mode needs speech recognition: install it in Settings › Voice (it runs on this device).".into(),
+            ),
             ..Default::default()
         };
         Host::broadcast(&ToIsland::Call { call: info }, cx);
@@ -321,8 +323,7 @@ pub fn tick(cx: &mut App) {
     let from = (from..=reply.len()).find(|i| reply.is_char_boundary(*i)).unwrap_or(reply.len());
     let fresh = reply[from..].to_string();
     let done = state.turn_ended_ms.is_some_and(|e| state.turn_started_ms.is_some_and(|s| e >= s))
-        || matches!(state.status, TaskStatus::Done | TaskStatus::Failed | TaskStatus::Idle)
-            && !state.live;
+        || matches!(state.status, TaskStatus::Done | TaskStatus::Failed | TaskStatus::Idle) && !state.live;
     if !fresh.is_empty() {
         call.update(cx, |v, cx| v.reply_delta(&fresh, cx));
     }
@@ -376,7 +377,8 @@ pub fn headless_snapshot(engine: &Engine, call: &VoiceCall) -> Snapshot {
         .map(|(task, project)| {
             let state = engine.attention().get(task.id).unwrap_or_default();
             let status = if state.live { state.status } else { task.status };
-            let done = state.todos.iter().filter(|t| t.status == dove_core::proto::TodoStatus::Completed).count() as u32;
+            let done =
+                state.todos.iter().filter(|t| t.status == dove_core::proto::TodoStatus::Completed).count() as u32;
             let current_todo = state
                 .todos
                 .iter()

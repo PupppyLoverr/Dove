@@ -19,7 +19,8 @@ pub struct AppHost {
 
 impl AppHost {
     pub fn new() -> Self {
-        let data = std::env::var_os("DOVE_DATA").map(PathBuf::from).unwrap_or_else(crate::pages::integrations::data_root);
+        let data =
+            std::env::var_os("DOVE_DATA").map(PathBuf::from).unwrap_or_else(crate::pages::integrations::data_root);
         Self { cache: data.join("cache").join("computer") }
     }
 
@@ -156,7 +157,14 @@ fn authenticode_signer(path: &str) -> Option<(String, bool)> {
                 let cert = (*(*sgnr).pasCertChain).pCert;
                 if !cert.is_null() {
                     let mut buf = [0u16; 512];
-                    let n = CertGetNameStringW(cert, CERT_NAME_SIMPLE_DISPLAY_TYPE, 0, std::ptr::null(), buf.as_mut_ptr(), buf.len() as u32);
+                    let n = CertGetNameStringW(
+                        cert,
+                        CERT_NAME_SIMPLE_DISPLAY_TYPE,
+                        0,
+                        std::ptr::null(),
+                        buf.as_mut_ptr(),
+                        buf.len() as u32,
+                    );
                     if n > 1 {
                         signer = String::from_utf16_lossy(&buf[..(n - 1) as usize]);
                     }
@@ -233,7 +241,8 @@ mod tests {
     #[test]
     fn a_signed_system_binary_reports_its_signer() {
         // explorer.exe carries an embedded Microsoft signature.
-        let explorer = std::path::Path::new(&std::env::var("WINDIR").unwrap_or("C:\\Windows".into())).join("explorer.exe");
+        let explorer =
+            std::path::Path::new(&std::env::var("WINDIR").unwrap_or("C:\\Windows".into())).join("explorer.exe");
         let (signer, signed) = authenticode_signer(&explorer.display().to_string()).expect("explorer is signed");
         assert!(signed);
         assert!(signer.contains("Microsoft"), "{signer}");

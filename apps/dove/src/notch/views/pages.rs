@@ -302,19 +302,22 @@ impl Notch {
             let row = div()
                 .flex()
                 .gap(px(8.0))
-                .child(shortcut("go-agent", icons::ADD_CIRCLE, "New agent").on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                    this.open_page(Page::NewAgent, Some(window), cx)
-                })))
-                .child(shortcut("go-timer", icons::TIMER, "Timer").on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                    this.open_page(Page::Tab(Tab::Timer), Some(window), cx)
-                })))
-                .child(shortcut("go-note", icons::NOTE_TEXT, "Note").on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                    this.selected_note = None;
-                    this.open_page(Page::Tab(Tab::Notes), Some(window), cx);
-                })))
-                .child(shortcut("go-talk", icons::WAVEFORM, "Talk to K22").on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                    this.talk(None, cx)
-                })));
+                .child(shortcut("go-agent", icons::ADD_CIRCLE, "New agent").on_click(
+                    cx.listener(|this, _: &ClickEvent, window, cx| this.open_page(Page::NewAgent, Some(window), cx)),
+                ))
+                .child(shortcut("go-timer", icons::TIMER, "Timer").on_click(cx.listener(
+                    |this, _: &ClickEvent, window, cx| this.open_page(Page::Tab(Tab::Timer), Some(window), cx),
+                )))
+                .child(shortcut("go-note", icons::NOTE_TEXT, "Note").on_click(cx.listener(
+                    |this, _: &ClickEvent, window, cx| {
+                        this.selected_note = None;
+                        this.open_page(Page::Tab(Tab::Notes), Some(window), cx);
+                    },
+                )))
+                .child(
+                    shortcut("go-talk", icons::WAVEFORM, "Talk to K22")
+                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.talk(None, cx))),
+                );
             col = col.child(rise(row, (key, 4), 4));
             if let Some(chips) = self.automation_chips(cx) {
                 col = col.child(rise(chips, (key, 5), 5));
@@ -1393,12 +1396,11 @@ impl Notch {
     pub(crate) fn page_music(&self, cx: &mut Context<Self>) -> AnyElement {
         let Some(m) = self.media.clone() else {
             return empty(icons::MUSIC_NOTE, "Nothing playing", "Play something in Spotify, a browser or any player.")
-                .child(
-                    div().mt(px(8.0)).child(
-                        pill("open-spotify", "Open Spotify", false)
-                            .on_click(cx.listener(|_, _: &ClickEvent, _, _| super::super::media::open_player("Spotify.exe"))),
+                .child(div().mt(px(8.0)).child(
+                    pill("open-spotify", "Open Spotify", false).on_click(
+                        cx.listener(|_, _: &ClickEvent, _, _| super::super::media::open_player("Spotify.exe")),
                     ),
-                )
+                ))
                 .into_any_element();
         };
         let now = m.now();
@@ -2077,13 +2079,13 @@ impl Notch {
                             .right(px(4.0))
                             .invisible()
                             .group_hover(group, |s| s.visible())
-                            .child(ibtn(("note-more", i), icons::MORE, 22.0, tk::DIM, "More").on_click(
-                                cx.listener(move |this, ev: &ClickEvent, _, cx| {
+                            .child(ibtn(("note-more", i), icons::MORE, 22.0, tk::DIM, "More").on_click(cx.listener(
+                                move |this, ev: &ClickEvent, _, cx| {
                                     cx.stop_propagation();
                                     let items = this.note_menu(id);
                                     this.open_menu(ev.position(), items, cx);
-                                }),
-                            )),
+                                },
+                            ))),
                     ),
             );
         }
@@ -2308,7 +2310,8 @@ impl Notch {
 
     pub(crate) fn page_alerts(&self, cx: &mut Context<Self>) -> AnyElement {
         if self.notices.is_empty() {
-            return empty(icons::BELL, "You're all caught up", "Finishes, failures and the timer show up here.").into_any_element();
+            return empty(icons::BELL, "You're all caught up", "Finishes, failures and the timer show up here.")
+                .into_any_element();
         }
         let key = self.key();
         let mut col = div().id("alerts").size_full().overflow_y_scroll().flex().flex_col().gap(px(2.0)).child(
@@ -2370,8 +2373,12 @@ impl Notch {
 
     pub(crate) fn page_dev(&self, cx: &mut Context<Self>) -> AnyElement {
         if self.ports.is_empty() {
-            return empty(icons::SERVER, "No dev servers running", "Servers your agents start (Vite, Next, Django…) show up here.")
-                .into_any_element();
+            return empty(
+                icons::SERVER,
+                "No dev servers running",
+                "Servers your agents start (Vite, Next, Django…) show up here.",
+            )
+            .into_any_element();
         }
         let mut col = div().id("dev").size_full().overflow_y_scroll().flex().flex_col().gap(px(2.0)).pt(px(4.0));
         for (i, p) in self.ports.iter().enumerate() {

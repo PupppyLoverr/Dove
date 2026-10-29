@@ -979,18 +979,19 @@ pub(crate) mod upstream {
             {
                 let live = self.live.remove(i);
                 // The listed tools are the upstream names again for the driver.
-                let tools: Vec<Value> = live
-                    .tools
-                    .into_iter()
-                    .map(|mut t| {
-                        let exposed = t.get("name").and_then(Value::as_str).unwrap_or_default().to_string();
-                        let name = live.renamed.get(&exposed).cloned().unwrap_or_else(|| {
-                            exposed.strip_prefix("computer__").unwrap_or(&exposed).to_string()
-                        });
-                        t["name"] = json!(name);
-                        t
-                    })
-                    .collect();
+                let tools: Vec<Value> =
+                    live.tools
+                        .into_iter()
+                        .map(|mut t| {
+                            let exposed = t.get("name").and_then(Value::as_str).unwrap_or_default().to_string();
+                            let name =
+                                live.renamed.get(&exposed).cloned().unwrap_or_else(|| {
+                                    exposed.strip_prefix("computer__").unwrap_or(&exposed).to_string()
+                                });
+                            t["name"] = json!(name);
+                            t
+                        })
+                        .collect();
                 let s = &self.computer_settings;
                 let config = dove_computer::Config {
                     rules: s.rules(),
@@ -1031,7 +1032,9 @@ pub(crate) mod upstream {
                 return error(&why);
             }
             let Some(live) = self.live.iter_mut().find(|l| l.server.name == prefix) else {
-                return error(&format!("The {prefix} integration is not connected. Check Keplorayx → Settings → Plugins."));
+                return error(&format!(
+                    "The {prefix} integration is not connected. Check Keplorayx → Settings → Plugins."
+                ));
             };
             let name = live
                 .renamed

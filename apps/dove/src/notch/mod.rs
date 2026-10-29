@@ -51,11 +51,11 @@ use gpui_base::input::{InputEvent, InputState, TextareaState};
 use crate::island::ipc::{self, ToEngine, ToIsland};
 use crate::island::view::{CallInfo, NotchView, ShowWhat};
 pub use bridge::{NotchHost, Snapshot};
-pub use views::v3::{Asking, Lens, PlanEdit};
 use data::{Clip, Note, Timer, Undo};
 use platform::{Display, Shape};
 use spring::Springs;
 use tokens as tk;
+pub use views::v3::{Asking, Lens, PlanEdit};
 
 /// The pointer must rest this long before the island opens, so passing
 /// through the top edge (to a browser tab, say) doesn't open it.
@@ -2415,7 +2415,12 @@ impl Notch {
         for (id, kind, title) in waiting {
             let key = format!("wait|{id}");
             if self.nudged.insert(key) {
-                self.flash(FlashKind::Done, format!("{} has waited 5 min on you · {title}", kind.label()), Some(kind), Some(id));
+                self.flash(
+                    FlashKind::Done,
+                    format!("{} has waited 5 min on you · {title}", kind.label()),
+                    Some(kind),
+                    Some(id),
+                );
             }
         }
     }
@@ -3828,7 +3833,11 @@ mod tests {
     fn a_bright_patch_under_the_island_reads_bright() {
         // Dark all round, white under the island's rectangle.
         let img = image::RgbaImage::from_fn(20, 10, |x, y| {
-            if (5..15).contains(&x) && (2..8).contains(&y) { image::Rgba([255, 255, 255, 255]) } else { image::Rgba([10, 10, 10, 255]) }
+            if (5..15).contains(&x) && (2..8).contains(&y) {
+                image::Rgba([255, 255, 255, 255])
+            } else {
+                image::Rgba([10, 10, 10, 255])
+            }
         });
         let under = [5.0, 2.0, 15.0, 8.0];
         assert!(luma_of(&img, under, false) > 0.95);

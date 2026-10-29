@@ -180,9 +180,19 @@ impl Shell {
         };
         let mut place = card("home-place").child(
             row("home-no-folder".into())
-                .child(icon(icons::CHAT_ROUND_LINE).size(px(15.0)).text_color(if chats_on { t.text } else { t.text_muted }))
+                .child(icon(icons::CHAT_ROUND_LINE).size(px(15.0)).text_color(if chats_on {
+                    t.text
+                } else {
+                    t.text_muted
+                }))
                 .child(div().flex_1().min_w_0().truncate().child("No folder"))
-                .child(div().flex_none().text_size(ty::CAPTION).text_color(t.text_faint).child("Just chat · files go to Artifacts"))
+                .child(
+                    div()
+                        .flex_none()
+                        .text_size(ty::CAPTION)
+                        .text_color(t.text_faint)
+                        .child("Just chat · files go to Artifacts"),
+                )
                 .when(chats_on, |d| d.child(icon(icons::CHECK).size(px(14.0)).text_color(t.text)))
                 .on_click(cx.listener(|this, _, _, cx| {
                     let dir = crate::pages::artifacts::chats_dir();

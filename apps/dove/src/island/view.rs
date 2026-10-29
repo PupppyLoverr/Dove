@@ -212,11 +212,24 @@ pub enum Block {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "do", rename_all = "snake_case")]
 pub enum ViewAction {
-    Reply { task: TaskId, text: String },
-    Approve { task: TaskId, request: String },
-    Deny { task: TaskId, request: String },
-    Stop { task: TaskId },
-    Open { task: TaskId },
+    Reply {
+        task: TaskId,
+        text: String,
+    },
+    Approve {
+        task: TaskId,
+        request: String,
+    },
+    Deny {
+        task: TaskId,
+        request: String,
+    },
+    Stop {
+        task: TaskId,
+    },
+    Open {
+        task: TaskId,
+    },
     /// Start an agent (`agent` and `project` by id or name; the defaults
     /// otherwise).
     Start {
@@ -226,13 +239,24 @@ pub enum ViewAction {
         #[serde(default)]
         project: Option<String>,
     },
-    Merge { task: TaskId, pr: u64 },
-    RunAutomation { id: String },
-    Timer { mins: u64 },
+    Merge {
+        task: TaskId,
+        pr: u64,
+    },
+    RunAutomation {
+        id: String,
+    },
+    Timer {
+        mins: u64,
+    },
     /// Ask K22 a follow-up.
-    Ask { text: String },
+    Ask {
+        text: String,
+    },
     /// Review an agent's plan.
-    Plan { task: TaskId },
+    Plan {
+        task: TaskId,
+    },
     /// Talk to K22 (or about `task`).
     Call {
         #[serde(default)]
@@ -554,9 +578,13 @@ pub struct PlanStep {
 pub enum PlanVerdict {
     Approve,
     /// Approve, with the user's edited plan sent along.
-    Edited { text: String },
+    Edited {
+        text: String,
+    },
     /// Keep planning, with why.
-    Reject { reason: String },
+    Reject {
+        reason: String,
+    },
 }
 
 /// The request that gates a plan (Claude Code's `ExitPlanMode`, ACP's
@@ -575,7 +603,8 @@ pub fn is_plan_request(req: &PermissionRequest) -> bool {
 /// A plan request's text: its `plan` input, else the plan the agent last
 /// showed, else what it said this turn.
 pub fn plan_text(req: Option<&PermissionRequest>, state: &TaskState) -> Option<String> {
-    let from_req = req.and_then(|r| r.input.get("plan").and_then(Value::as_str)).map(str::trim).filter(|s| !s.is_empty());
+    let from_req =
+        req.and_then(|r| r.input.get("plan").and_then(Value::as_str)).map(str::trim).filter(|s| !s.is_empty());
     from_req
         .map(str::to_string)
         .or_else(|| state.plan.clone().filter(|p| !p.trim().is_empty()))
@@ -587,7 +616,16 @@ pub fn plans_of(task: TaskId, kind: HarnessKind, title: &str, project: &str, sta
     let make = |request_id: Option<String>, text: String| {
         let steps = plan_steps(&text);
         let files = plan_files(&text);
-        PendingPlan { task, request_id, kind, title: title.to_string(), project: project.to_string(), text, steps, files }
+        PendingPlan {
+            task,
+            request_id,
+            kind,
+            title: title.to_string(),
+            project: project.to_string(),
+            text,
+            steps,
+            files,
+        }
     };
     let mut out: Vec<PendingPlan> = state
         .pending

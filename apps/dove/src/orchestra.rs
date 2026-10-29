@@ -723,7 +723,8 @@ impl Shell {
         }
         let mut out = base;
         out["status"] = json!("running");
-        out["note"] = json!("Started. End your turn when you have nothing else to do: Keplorayx wakes you with the result.");
+        out["note"] =
+            json!("Started. End your turn when you have nothing else to do: Keplorayx wakes you with the result.");
         Ok(TeamReply::Now(json_out(out)))
     }
 

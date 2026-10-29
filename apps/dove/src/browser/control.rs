@@ -487,7 +487,8 @@ mod extension {
                     drop(st);
                     connection_changed();
                     let _ = tx.send(
-                        json!({"type": "welcome", "app": format!("Keplorayx {}", env!("CARGO_PKG_VERSION"))}).to_string(),
+                        json!({"type": "welcome", "app": format!("Keplorayx {}", env!("CARGO_PKG_VERSION"))})
+                            .to_string(),
                     );
                 }
                 Some("result") if paired => {

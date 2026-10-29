@@ -12,9 +12,9 @@ use dove_core::proto::{ProjectId, TaskId, TaskStatus};
 use dove_core::store::Task;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    Anchor, AnimationExt as _, AnyElement, App, AppContext as _, Context, Entity, Hsla, InteractiveElement as _,
-    IntoElement, MouseButton, MouseDownEvent, ParentElement as _, Render, SharedString,
-    Stateful, Div, StatefulInteractiveElement as _, Styled as _, Subscription, WeakEntity, Window, anchored, deferred, div, hsla, px,
+    Anchor, AnimationExt as _, AnyElement, App, AppContext as _, Context, Div, Entity, Hsla, InteractiveElement as _,
+    IntoElement, MouseButton, MouseDownEvent, ParentElement as _, Render, SharedString, Stateful,
+    StatefulInteractiveElement as _, Styled as _, Subscription, WeakEntity, Window, anchored, deferred, div, hsla, px,
 };
 use gpui_base::input::Input;
 
@@ -169,11 +169,9 @@ impl SidebarFilter {
         let show = match get("sidebar_show").as_deref() {
             Some("projects") => Show::Projects,
             Some("chats") => Show::Chats,
-            Some(v) if v.starts_with("p:") => shell
-                .projects
-                .iter()
-                .find(|p| p.id.to_string() == v[2..])
-                .map_or(Show::All, |p| Show::Project(p.id)),
+            Some(v) if v.starts_with("p:") => {
+                shell.projects.iter().find(|p| p.id.to_string() == v[2..]).map_or(Show::All, |p| Show::Project(p.id))
+            }
             _ => Show::All,
         };
         let status = get("sidebar_status").filter(|s| ["needs", "running", "failed", "done"].contains(&s.as_str()));
@@ -312,64 +310,74 @@ impl Shell {
         let filter_exit = if filter_open { None } else { self.menus.options_exit() };
         let filter_menu =
             (filter_open || filter_exit.is_some()).then(|| self.render_filter_menu(&filter, filter_exit, &t, cx));
-        let nav = div()
-            .flex()
-            .flex_none()
-            .flex_col()
-            .gap(px(2.0))
-            .pt(px(8.0))
-            .child(new_row)
-            .child(row("nav-search", icons::MAGNIFER, "Search", false, None).on_click(cx.listener(
-                |this, _, window, cx| this.open_search(crate::palette::Scope::All, window, cx),
-            )))
-            .child(
-                div()
-                    .relative()
-                    .child(
-                        row(
-                            "nav-projects",
-                            icons::PROJECTS,
-                            "Projects",
-                            filter_open,
-                            filter.is_active().then(|| ui::dot(t.accent, 6.0).into_any_element()),
+        let nav =
+            div()
+                .flex()
+                .flex_none()
+                .flex_col()
+                .gap(px(2.0))
+                .pt(px(8.0))
+                .child(new_row)
+                .child(row("nav-search", icons::MAGNIFER, "Search", false, None).on_click(
+                    cx.listener(|this, _, window, cx| this.open_search(crate::palette::Scope::All, window, cx)),
+                ))
+                .child(
+                    div()
+                        .relative()
+                        .child(
+                            row(
+                                "nav-projects",
+                                icons::PROJECTS,
+                                "Projects",
+                                filter_open,
+                                filter.is_active().then(|| ui::dot(t.accent, 6.0).into_any_element()),
+                            )
+                            .on_click(cx.listener(|this, _, window, cx| this.toggle_filter_menu(window, cx))),
                         )
-                        .on_click(cx.listener(|this, _, window, cx| this.toggle_filter_menu(window, cx))),
+                        .children(filter_menu),
+                )
+                .child(
+                    row(
+                        "nav-artifacts",
+                        icons::ARTIFACTS,
+                        "Artifacts",
+                        self.route == Route::Artifacts,
+                        (artifacts > 0).then(|| {
+                            div()
+                                .text_size(ty::MICRO)
+                                .text_color(t.text_faint)
+                                .child(artifacts.to_string())
+                                .into_any_element()
+                        }),
                     )
-                    .children(filter_menu),
-            )
-            .child(
-                row(
-                    "nav-artifacts",
-                    icons::ARTIFACTS,
-                    "Artifacts",
-                    self.route == Route::Artifacts,
-                    (artifacts > 0).then(|| {
-                        div().text_size(ty::MICRO).text_color(t.text_faint).child(artifacts.to_string()).into_any_element()
-                    }),
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.pages.artifact_open = None;
+                        this.navigate(Route::Artifacts, window, cx);
+                    })),
                 )
-                .on_click(cx.listener(|this, _, window, cx| {
-                    this.pages.artifact_open = None;
-                    this.navigate(Route::Artifacts, window, cx);
-                })),
-            )
-            .child(
-                row(
-                    "nav-customize",
-                    icons::CUSTOMIZE,
-                    "Customize",
-                    self.route == Route::Settings
-                        && self.settings.read(cx).section == crate::settings::Section::Appearance,
-                    None,
+                .child(
+                    row(
+                        "nav-customize",
+                        icons::CUSTOMIZE,
+                        "Customize",
+                        self.route == Route::Settings
+                            && self.settings.read(cx).section == crate::settings::Section::Appearance,
+                        None,
+                    )
+                    .on_click(cx.listener(|this, _, window, cx| this.open_settings_section("appearance", window, cx))),
                 )
-                .on_click(cx.listener(|this, _, window, cx| this.open_settings_section("appearance", window, cx))),
-            )
-            .child(self.render_more_item(&t, cx));
+                .child(self.render_more_item(&t, cx));
 
         // The list: Pinned, one section per project, then Chats (threads
         // with no folder). Status reads as a word in each row, so there is
         // no separate Needs-you block.
-        let mut visible: Vec<Task> =
-            self.tasks.iter().filter(|x| x.status != TaskStatus::Draft).filter(|x| filter.admits(x, self)).cloned().collect();
+        let mut visible: Vec<Task> = self
+            .tasks
+            .iter()
+            .filter(|x| x.status != TaskStatus::Draft)
+            .filter(|x| filter.admits(x, self))
+            .cloned()
+            .collect();
         if filter.archived {
             visible.extend(self.archived.iter().filter(|x| filter.admits(x, self)).cloned());
         }
@@ -461,7 +469,8 @@ impl Shell {
         let account_menu =
             (account_open || account_exit.is_some()).then(|| self.render_account_menu(account_exit, &t, cx));
         let host = ui::host_name();
-        let initial: String = host.chars().find(|c| c.is_alphanumeric()).map_or('D', |c| c.to_ascii_uppercase()).to_string();
+        let initial: String =
+            host.chars().find(|c| c.is_alphanumeric()).map_or('D', |c| c.to_ascii_uppercase()).to_string();
         let footer = div()
             .relative()
             .flex_none()
@@ -489,20 +498,15 @@ impl Shell {
                     .aria_label("Account")
                     .child(kit::avatar_tile(initial, 0.6, 24.0, &t))
                     .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .text_size(ty::BODY)
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(5.0))
-                                    .child(div().font_weight(gpui::FontWeight::MEDIUM).text_color(t.text).child(host))
-                                    .child(div().text_color(t.text_faint).child("· Local"))
-                                    .child(icon(icons::ALT_ARROW_DOWN).size(px(12.0)).text_color(t.text_faint)),
-                            ),
+                        div().flex_1().min_w_0().truncate().text_size(ty::BODY).child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(5.0))
+                                .child(div().font_weight(gpui::FontWeight::MEDIUM).text_color(t.text).child(host))
+                                .child(div().text_color(t.text_faint).child("· Local"))
+                                .child(icon(icons::ALT_ARROW_DOWN).size(px(12.0)).text_color(t.text_faint)),
+                        ),
                     )
                     .on_click(cx.listener(|this, _, window, cx| {
                         let was = this.account_open;
@@ -624,7 +628,12 @@ impl Shell {
             if filter.archived { "false".into() } else { "true".into() },
         ));
         items.push(Item::Separator);
-        items.push(Item::row("flt-add", Some(icons::DOCUMENT_ADD), "Add project…", act(|this, _, cx| this.add_project_dialog(cx))));
+        items.push(Item::row(
+            "flt-add",
+            Some(icons::DOCUMENT_ADD),
+            "Add project…",
+            act(|this, _, cx| this.add_project_dialog(cx)),
+        ));
         let live = exit.is_none();
         let body = self.menu_list(items, 240.0, live, t, cx);
         let card = self.menu_surface(t, body, exit);
@@ -652,7 +661,9 @@ impl Shell {
             Show::All => {}
             Show::Projects => parts.push("Projects".into()),
             Show::Chats => parts.push("Chats".into()),
-            Show::Project(id) => parts.push(self.project(id).map(|p| p.name.clone()).unwrap_or_else(|| "Project".into())),
+            Show::Project(id) => {
+                parts.push(self.project(id).map(|p| p.name.clone()).unwrap_or_else(|| "Project".into()))
+            }
         }
         if filter.status != "any" {
             parts.push(
@@ -702,18 +713,38 @@ impl Shell {
         use crate::shell_menu::{Item, act};
         let usage = format!("Today {}", ui::usage_line(&self.today));
         let items = vec![
-            Item::row("acc-usage", Some(icons::CLOCK_CIRCLE), usage, act(|this, window, cx| this.navigate(Route::Usage, window, cx))),
+            Item::row(
+                "acc-usage",
+                Some(icons::CLOCK_CIRCLE),
+                usage,
+                act(|this, window, cx| this.navigate(Route::Usage, window, cx)),
+            ),
             Item::Separator,
-            Item::row("acc-settings", Some(icons::SETTINGS), "Settings", act(|this, window, cx| this.navigate(Route::Settings, window, cx))),
+            Item::row(
+                "acc-settings",
+                Some(icons::SETTINGS),
+                "Settings",
+                act(|this, window, cx| this.navigate(Route::Settings, window, cx)),
+            ),
             Item::row(
                 "acc-appearance",
                 Some(icons::CUSTOMIZE),
                 "Appearance",
                 act(|this, window, cx| this.open_settings_section("appearance", window, cx)),
             ),
-            Item::row("acc-project", Some(icons::FOLDER_WITH_FILES), "Add project…", act(|this, _, cx| this.add_project_dialog(cx))),
+            Item::row(
+                "acc-project",
+                Some(icons::FOLDER_WITH_FILES),
+                "Add project…",
+                act(|this, _, cx| this.add_project_dialog(cx)),
+            ),
             Item::Separator,
-            Item::row("acc-help", Some(icons::KEYBOARD), "Help & shortcuts", act(|this, window, cx| this.navigate(Route::Help, window, cx))),
+            Item::row(
+                "acc-help",
+                Some(icons::KEYBOARD),
+                "Help & shortcuts",
+                act(|this, window, cx| this.navigate(Route::Help, window, cx)),
+            ),
         ];
         let live = exit.is_none();
         let body = self.menu_list(items, 230.0, live, t, cx);
@@ -807,7 +838,8 @@ impl Shell {
                 | Route::Usage
                 | Route::Archived
                 | Route::Help
-        ) || (self.route == Route::Settings && self.settings.read(cx).section != crate::settings::Section::Appearance);
+        ) || (self.route == Route::Settings
+            && self.settings.read(cx).section != crate::settings::Section::Appearance);
         let open = self.more_open;
         let lit = selected || open;
         let item = div()

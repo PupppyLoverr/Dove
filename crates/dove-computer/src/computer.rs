@@ -43,9 +43,18 @@ pub struct Config {
 
 /// Names a model reaches for that are not actions, with the real one.
 const SUGGEST: &[(&str, &str)] = &[
-    ("hotkey", "key"), ("press_key", "key"), ("keypress", "key"), ("shortcut", "key"), ("type_text", "type"),
-    ("input_text", "type"), ("screenshot", "capture"), ("get_window_state", "capture"), ("left_click", "click"),
-    ("run_steps", "run"), ("verify_state", "verify"), ("ground", "act"),
+    ("hotkey", "key"),
+    ("press_key", "key"),
+    ("keypress", "key"),
+    ("shortcut", "key"),
+    ("type_text", "type"),
+    ("input_text", "type"),
+    ("screenshot", "capture"),
+    ("get_window_state", "capture"),
+    ("left_click", "click"),
+    ("run_steps", "run"),
+    ("verify_state", "verify"),
+    ("ground", "act"),
 ];
 
 fn err(action: &str, code: &str, message: impl Into<String>) -> Output {
@@ -138,8 +147,16 @@ impl<D: Driver> Computer<D> {
             return err("", "bad_arguments", "missing `action`");
         }
         if !ACTIONS.contains(&action.as_str()) {
-            let hint = SUGGEST.iter().find(|(a, _)| *a == action).map(|(_, b)| format!(" (did you mean {b:?}?)")).unwrap_or_default();
-            return err(&action, "unknown_action", format!("unknown action {action:?}{hint}; see the action enum in the schema"));
+            let hint = SUGGEST
+                .iter()
+                .find(|(a, _)| *a == action)
+                .map(|(_, b)| format!(" (did you mean {b:?}?)"))
+                .unwrap_or_default();
+            return err(
+                &action,
+                "unknown_action",
+                format!("unknown action {action:?}{hint}; see the action enum in the schema"),
+            );
         }
         let admitted = host.lease();
         if admitted.human_control {
@@ -150,7 +167,13 @@ impl<D: Driver> Computer<D> {
         }
         if !self.started {
             if let Err(e) = self.cua.start() {
-                return err(&action, "driver_unavailable", format!("Keplorayx Computer Use's driver did not start: {e}. Check Keplorayx → Settings → Plugins → Computer use."));
+                return err(
+                    &action,
+                    "driver_unavailable",
+                    format!(
+                        "Keplorayx Computer Use's driver did not start: {e}. Check Keplorayx → Settings → Plugins → Computer use."
+                    ),
+                );
             }
             self.started = true;
         }
@@ -174,15 +197,20 @@ impl<D: Driver> Computer<D> {
 
     fn hard_block(&self, action: &str, args: &Value) -> Option<String> {
         let check_type = |t: &str| policy::blocked_text(t).map(str::to_string);
-        let check_keys = |k: &str| policy::blocked_combo(&[k.to_string()]).map(|c| format!("blocked key combo {c}: destructive system shortcuts are hard-blocked"));
+        let check_keys = |k: &str| {
+            policy::blocked_combo(&[k.to_string()])
+                .map(|c| format!("blocked key combo {c}: destructive system shortcuts are hard-blocked"))
+        };
         match action {
             "type" => string(args, "text").and_then(check_type),
             "key" => string(args, "keys").and_then(check_keys),
             "run" => args.get("steps").and_then(Value::as_array).into_iter().flatten().find_map(|s| {
-                string(s, "text").and_then(check_type).or_else(|| string(s, "keys").and_then(check_keys)).or_else(|| {
-                    // Intents may name keys or text too: `press win+l`.
-                    string(s, "intent").and_then(|i| policy::blocked_text(i).map(str::to_string))
-                })
+                string(s, "text").and_then(check_type).or_else(|| string(s, "keys").and_then(check_keys)).or_else(
+                    || {
+                        // Intents may name keys or text too: `press win+l`.
+                        string(s, "intent").and_then(|i| policy::blocked_text(i).map(str::to_string))
+                    },
+                )
             }),
             "act" => string(args, "intent").and_then(check_type),
             _ => None,
@@ -275,7 +303,9 @@ impl<D: Driver> Computer<D> {
             Decision::Unavailable { reason } => Err(err(
                 "review",
                 "approval_unavailable",
-                format!("{first:?} needs the user's approval, and nobody can answer here ({reason}). Do it another way or ask the user."),
+                format!(
+                    "{first:?} needs the user's approval, and nobody can answer here ({reason}). Do it another way or ask the user."
+                ),
             )),
         }
     }
@@ -317,7 +347,9 @@ impl<D: Driver> Computer<D> {
         let mut cap = self.cua.read_target(&resolved, req);
         self.ocr_rows(&mut cap, host);
         if cap.elements.is_empty() && cap.image.is_none() && cap.note.is_empty() {
-            cap.note = "the window returned no rows and no image; it may be minimized, on another desktop, or protected".into();
+            cap.note =
+                "the window returned no rows and no image; it may be minimized, on another desktop, or protected"
+                    .into();
         }
         Ok(cap)
     }
@@ -327,7 +359,10 @@ impl<D: Driver> Computer<D> {
         if cap.image_reason.is_none() {
             return;
         }
-        let Some(raw) = cap.image.as_deref().and_then(|b| base64::engine::general_purpose::STANDARD.decode(b).ok()) else { return };
+        let Some(raw) = cap.image.as_deref().and_then(|b| base64::engine::general_purpose::STANDARD.decode(b).ok())
+        else {
+            return;
+        };
         match host.ocr(&raw) {
             Ok(lines) if !lines.is_empty() => {
                 let start = cap.elements.iter().map(|e| e.index).max().unwrap_or(0) + 1;
@@ -371,7 +406,8 @@ impl<D: Driver> Computer<D> {
                 }
                 let mut out = json!({"windows": rows, "count": rows.len()});
                 if hidden > 0 {
-                    out["note"] = json!(format!("{hidden} window(s) of apps the user keeps from agents are not listed"));
+                    out["note"] =
+                        json!(format!("{hidden} window(s) of apps the user keeps from agents are not listed"));
                 }
                 Output::json(&out)
             }
@@ -415,7 +451,9 @@ impl<D: Driver> Computer<D> {
             return out;
         }
         if args.get("raise_window").and_then(Value::as_bool) == Some(true) {
-            if let Err(out) = self.approve(Scope::Foreground, &t.app, vec![format!("bring {} to the front", t.app)], host) {
+            if let Err(out) =
+                self.approve(Scope::Foreground, &t.app, vec![format!("bring {} to the front", t.app)], host)
+            {
                 return out;
             }
             let r = self.cua.bring_to_front();
@@ -458,7 +496,11 @@ impl<D: Driver> Computer<D> {
         let element = index(args, "element");
         let row = element.and_then(|i| self.cua.element(i).cloned());
         if element.is_some() && row.is_none() {
-            return err(action, "stale", "That element index is not in the last capture. Capture again and use an index from it.");
+            return err(
+                action,
+                "stale",
+                "That element index is not in the last capture. Capture again and use an index from it.",
+            );
         }
         // What the action does, for the review card and the secure check.
         let label = row.as_ref().map(|e| if e.label.is_empty() { e.role.clone() } else { format!("{:?}", e.label) });
@@ -466,13 +508,29 @@ impl<D: Driver> Computer<D> {
             "type" => {
                 let text = string(args, "text").unwrap_or("");
                 let short: String = text.chars().take(60).collect();
-                format!("type {:?}{}{}", short, if text.chars().count() > 60 { "…" } else { "" }, label.as_ref().map(|l| format!(" into {l}")).unwrap_or_default())
+                format!(
+                    "type {:?}{}{}",
+                    short,
+                    if text.chars().count() > 60 { "…" } else { "" },
+                    label.as_ref().map(|l| format!(" into {l}")).unwrap_or_default()
+                )
             }
             "key" => format!("press {}", string(args, "keys").unwrap_or("?")),
-            "set_value" => format!("set {} to {:?}", label.clone().unwrap_or_else(|| "a field".into()), string(args, "value").unwrap_or("")),
+            "set_value" => format!(
+                "set {} to {:?}",
+                label.clone().unwrap_or_else(|| "a field".into()),
+                string(args, "value").unwrap_or("")
+            ),
             "drag" => "drag".to_string(),
             "scroll" => format!("scroll {}", string(args, "direction").unwrap_or("down")),
-            _ => format!("{} {}", action.replace('_', " "), label.clone().or_else(|| coord(args, "coordinate").map(|(x, y)| format!("at ({x}, {y})"))).unwrap_or_default()),
+            _ => format!(
+                "{} {}",
+                action.replace('_', " "),
+                label
+                    .clone()
+                    .or_else(|| coord(args, "coordinate").map(|(x, y)| format!("at ({x}, {y})")))
+                    .unwrap_or_default()
+            ),
         };
         let consequential = matches!(action, "click" | "double_click" | "right_click" | "middle_click")
             && row.as_ref().is_some_and(|e| policy::consequential(&e.label));
@@ -482,7 +540,13 @@ impl<D: Driver> Computer<D> {
                 return out;
             }
         }
-        let scope = if consequential { Scope::Consequential } else if foreground { Scope::Foreground } else { Scope::Background };
+        let scope = if consequential {
+            Scope::Consequential
+        } else if foreground {
+            Scope::Foreground
+        } else {
+            Scope::Background
+        };
         if let Err(out) = self.approve(scope, &t.app, vec![summary.clone()], host) {
             return out;
         }
@@ -497,23 +561,52 @@ impl<D: Driver> Computer<D> {
                     _ => string(args, "button").unwrap_or("left"),
                 };
                 let count = if action == "double_click" { 2 } else { 1 };
-                let r = self.cua.click(element, coord(args, "coordinate"), button, count, &strings(args, "modifiers"), delivery);
+                let r = self.cua.click(
+                    element,
+                    coord(args, "coordinate"),
+                    button,
+                    count,
+                    &strings(args, "modifiers"),
+                    delivery,
+                );
                 if r.ok {
                     self.focused = element;
                 }
                 r
             }
             "drag" => {
-                let from = index(args, "from_element").and_then(|i| self.cua.center_of(i)).or_else(|| coord(args, "from_coordinate"));
-                let to = index(args, "to_element").and_then(|i| self.cua.center_of(i)).or_else(|| coord(args, "to_coordinate"));
+                let from = index(args, "from_element")
+                    .and_then(|i| self.cua.center_of(i))
+                    .or_else(|| coord(args, "from_coordinate"));
+                let to = index(args, "to_element")
+                    .and_then(|i| self.cua.center_of(i))
+                    .or_else(|| coord(args, "to_coordinate"));
                 match (from, to) {
-                    (Some(f), Some(t)) => self.cua.drag(f, t, string(args, "button").unwrap_or("left"), &strings(args, "modifiers"), delivery),
-                    _ => return err("drag", "bad_arguments", "drag needs from_element/to_element (with known bounds) or from_coordinate/to_coordinate"),
+                    (Some(f), Some(t)) => self.cua.drag(
+                        f,
+                        t,
+                        string(args, "button").unwrap_or("left"),
+                        &strings(args, "modifiers"),
+                        delivery,
+                    ),
+                    _ => {
+                        return err(
+                            "drag",
+                            "bad_arguments",
+                            "drag needs from_element/to_element (with known bounds) or from_coordinate/to_coordinate",
+                        );
+                    }
                 }
             }
             "scroll" => {
                 let amount = int(args, "amount").unwrap_or(3).clamp(1, 50) as u32;
-                self.cua.scroll(string(args, "direction").unwrap_or("down"), amount, element, coord(args, "coordinate"), delivery)
+                self.cua.scroll(
+                    string(args, "direction").unwrap_or("down"),
+                    amount,
+                    element,
+                    coord(args, "coordinate"),
+                    delivery,
+                )
             }
             "type" => match string(args, "text") {
                 Some(text) => self.cua.type_text(text, element, delivery),
@@ -539,7 +632,8 @@ impl<D: Driver> Computer<D> {
         if !foreground && let (Some(before), Some(after)) = (idle_before, host.idle_ms()) {
             let elapsed = started.elapsed().as_millis() as u64;
             if after < elapsed && before > after {
-                payload["note"] = json!("The user was using the computer while this ran. Capture again before the next step.");
+                payload["note"] =
+                    json!("The user was using the computer while this ran. Capture again before the next step.");
                 payload["verdict"] = json!({"decision": "verify_fresh_state", "hint": "Re-capture: the user was active during the action."});
             }
         }
@@ -582,7 +676,16 @@ impl<D: Driver> Computer<D> {
             }
             let g = ground::ground_with(self.config.grounder.as_ref(), &rows, intent);
             let Plan::Tool { tool, args } = g.plan else {
-                let cands: Vec<String> = g.candidates.iter().filter_map(|c| c.get("row").and_then(|r| r.get("element_index")).and_then(Value::as_u64).map(|n| format!("#{n}"))).collect();
+                let cands: Vec<String> = g
+                    .candidates
+                    .iter()
+                    .filter_map(|c| {
+                        c.get("row")
+                            .and_then(|r| r.get("element_index"))
+                            .and_then(Value::as_u64)
+                            .map(|n| format!("#{n}"))
+                    })
+                    .collect();
                 return Err(format!(
                     "step {}: the grounder abstained on {intent:?} ({}){}; read the rows and use element=",
                     i + 1,
@@ -596,9 +699,15 @@ impl<D: Driver> Computer<D> {
                 st
             });
         }
-        let action = string(s, "action").or_else(|| string(s, "tool")).ok_or_else(|| format!("step {}: needs action= or intent=", i + 1))?;
+        let action = string(s, "action")
+            .or_else(|| string(s, "tool"))
+            .ok_or_else(|| format!("step {}: needs action= or intent=", i + 1))?;
         let element = index(s, "element");
-        let row = element.map(|n| self.cua.element(n).cloned().ok_or_else(|| format!("step {}: #{n} is not in the last capture", i + 1))).transpose()?;
+        let row = element
+            .map(|n| {
+                self.cua.element(n).cloned().ok_or_else(|| format!("step {}: #{n} is not in the last capture", i + 1))
+            })
+            .transpose()?;
         let mut args = Map::new();
         let mut selector = Map::new();
         if let Some(e) = &row {
@@ -631,11 +740,19 @@ impl<D: Driver> Computer<D> {
                     args.insert("count".into(), json!(2));
                 }
                 if row.is_none() {
-                    let (x, y) = coord(s, "coordinate").ok_or_else(|| format!("step {}: {action} needs element= or coordinate=", i + 1))?;
+                    let (x, y) = coord(s, "coordinate")
+                        .ok_or_else(|| format!("step {}: {action} needs element= or coordinate=", i + 1))?;
                     args.insert("x".into(), json!(x));
                     args.insert("y".into(), json!(y));
                 }
-                ("click", format!("{} {}", action.replace('_', " "), row.as_ref().map(|e| format!("{:?}", e.label)).unwrap_or_default()))
+                (
+                    "click",
+                    format!(
+                        "{} {}",
+                        action.replace('_', " "),
+                        row.as_ref().map(|e| format!("{:?}", e.label)).unwrap_or_default()
+                    ),
+                )
             }
             "type" => {
                 let text = string(s, "text").ok_or_else(|| format!("step {}: type needs text=", i + 1))?;
@@ -649,7 +766,10 @@ impl<D: Driver> Computer<D> {
                 if row.is_none() {
                     return Err(format!("step {}: set_value needs element=", i + 1));
                 }
-                let v = s.get("value").map(|v| v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string())).ok_or_else(|| format!("step {}: set_value needs value=", i + 1))?;
+                let v = s
+                    .get("value")
+                    .map(|v| v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string()))
+                    .ok_or_else(|| format!("step {}: set_value needs value=", i + 1))?;
                 args.insert("value".into(), json!(v));
                 ("set_value", format!("set {:?} to {v:?}", row.as_ref().map(|e| e.label.clone()).unwrap_or_default()))
             }
@@ -675,7 +795,12 @@ impl<D: Driver> Computer<D> {
                 args.insert("amount".into(), json!(int(s, "amount").unwrap_or(3).clamp(1, 50)));
                 ("scroll", format!("scroll {}", string(s, "direction").unwrap_or("down")))
             }
-            other => return Err(format!("step {}: {other:?} cannot run in a batch (use click, type, key, set_value or scroll)", i + 1)),
+            other => {
+                return Err(format!(
+                    "step {}: {other:?} cannot run in a batch (use click, type, key, set_value or scroll)",
+                    i + 1
+                ));
+            }
         };
         let mut driver = json!({"tool": tool, "args": Value::Object(args.clone())});
         let mut replayable_args = args.clone();
@@ -694,7 +819,8 @@ impl<D: Driver> Computer<D> {
             driver,
             summary,
             consequential: matches!(tool, "click") && row.as_ref().is_some_and(|e| policy::consequential(&e.label)),
-            writes: matches!(tool, "type_text" | "set_value").then(|| row.clone().or_else(|| self.focused.and_then(|n| self.cua.element(n).cloned()))),
+            writes: matches!(tool, "type_text" | "set_value")
+                .then(|| row.clone().or_else(|| self.focused.and_then(|n| self.cua.element(n).cloned()))),
             replayable,
         })
     }
@@ -746,7 +872,9 @@ impl<D: Driver> Computer<D> {
                 return Output::error(&verdict::payload(&res));
             }
         }
-        let Some(t) = self.cua.target.clone() else { return err("run", "no_target", "No target window: capture first (steps act on its rows).") };
+        let Some(t) = self.cua.target.clone() else {
+            return err("run", "no_target", "No target window: capture first (steps act on its rows).");
+        };
         if let Err(out) = self.check_app(t.pid, &t.app, "run", host) {
             return out;
         }
@@ -799,15 +927,20 @@ impl<D: Driver> Computer<D> {
             }
         }
         if let Some(steps) = env.field("steps").and_then(Value::as_array) {
-            out["steps"] = json!(steps.iter().map(|s| {
-                let mut r = Map::new();
-                for k in ["ok", "tool", "phase", "error", "message", "effect", "code"] {
-                    if let Some(v) = s.get(k).filter(|v| !v.is_null()) {
-                        r.insert(k.into(), v.clone());
-                    }
-                }
-                Value::Object(r)
-            }).collect::<Vec<_>>());
+            out["steps"] = json!(
+                steps
+                    .iter()
+                    .map(|s| {
+                        let mut r = Map::new();
+                        for k in ["ok", "tool", "phase", "error", "message", "effect", "code"] {
+                            if let Some(v) = s.get(k).filter(|v| !v.is_null()) {
+                                r.insert(k.into(), v.clone());
+                            }
+                        }
+                        Value::Object(r)
+                    })
+                    .collect::<Vec<_>>()
+            );
         }
         out["verdict"] = if ok {
             json!({"decision": "done", "hint": "Every step and its expect checks held. Verify the task's outcome at your next checkpoint."})
@@ -868,7 +1001,9 @@ impl<D: Driver> Computer<D> {
                 std::thread::sleep(Duration::from_millis(ms));
                 Output::json(&json!({"ok": true, "action": "act", "message": format!("waited {ms} ms ({how})")}))
             }
-            Plan::Done => Output::json(&json!({"ok": true, "action": "act", "verdict": {"decision": "done"}, "message": "the intent says the task is finished"})),
+            Plan::Done => Output::json(
+                &json!({"ok": true, "action": "act", "verdict": {"decision": "done"}, "message": "the intent says the task is finished"}),
+            ),
             Plan::Abstain { reason } => Output::error(&json!({
                 "ok": false, "action": "act", "code": "abstained", "reason": reason,
                 "candidates": g.candidates.iter().map(|c| {
@@ -895,7 +1030,8 @@ impl<D: Driver> Computer<D> {
         match self.cua.verify(checks) {
             Ok(env) => {
                 let ok = !env.is_error && env.field("ok").and_then(Value::as_bool).unwrap_or(false);
-                let mut out = json!({"ok": ok, "action": "verify", "status": if ok { "satisfied" } else { "unsatisfied" }});
+                let mut out =
+                    json!({"ok": ok, "action": "verify", "status": if ok { "satisfied" } else { "unsatisfied" }});
                 if !ok {
                     let failed: Vec<Value> = env
                         .field("steps")
@@ -908,8 +1044,10 @@ impl<D: Driver> Computer<D> {
                     out["failed"] = json!(failed);
                     let msg = env.text();
                     if !msg.is_empty() {
-                        out["message"] = json!(msg.lines().take(12).collect::<Vec<_>>().join("
-"));
+                        out["message"] = json!(msg.lines().take(12).collect::<Vec<_>>().join(
+                            "
+"
+                        ));
                     }
                     out["verdict"] = json!({"decision": "not_done", "hint": "A check did not hold: capture and keep working, or report what is missing."});
                 } else {
@@ -926,12 +1064,20 @@ impl<D: Driver> Computer<D> {
     // --------------------------------------------------------- replays
 
     fn save_replay(&mut self, args: &Value, host: &mut dyn Host) -> Output {
-        let Some(name) = string(args, "name") else { return err("save_replay", "bad_arguments", "save_replay needs name=") };
+        let Some(name) = string(args, "name") else {
+            return err("save_replay", "bad_arguments", "save_replay needs name=");
+        };
         let Some((app, steps)) = self.last_run.clone() else {
-            return err("save_replay", "nothing_to_save", "Only a run whose steps all succeeded can be saved; run the flow first.");
+            return err(
+                "save_replay",
+                "nothing_to_save",
+                "Only a run whose steps all succeeded can be saved; run the flow first.",
+            );
         };
         match replay::save(&host.cache_dir(), name, &app, &steps) {
-            Ok(path) => Output::json(&json!({"ok": true, "action": "save_replay", "name": replay::slug(name), "steps": steps.len(), "path": path.display().to_string()})),
+            Ok(path) => Output::json(
+                &json!({"ok": true, "action": "save_replay", "name": replay::slug(name), "steps": steps.len(), "path": path.display().to_string()}),
+            ),
             Err(e) => err("save_replay", "io_error", e),
         }
     }
@@ -951,16 +1097,24 @@ impl<D: Driver> Computer<D> {
             return out;
         }
         let summaries: Vec<String> = r.steps.iter().map(replay::describe).collect();
-        let consequential = r.steps.iter().any(|s| s["tool"] == "click" && s["args"].get("name").and_then(Value::as_str).is_some_and(policy::consequential));
+        let consequential = r.steps.iter().any(|s| {
+            s["tool"] == "click" && s["args"].get("name").and_then(Value::as_str).is_some_and(policy::consequential)
+        });
         for s in &r.steps {
             if matches!(s["tool"].as_str(), Some("type_text" | "set_value"))
                 && let Some(name) = s["args"].get("name").and_then(Value::as_str)
                 && policy::secure_field(s["args"].get("role").and_then(Value::as_str).unwrap_or(""), name)
             {
-                return err("replay", "handoff_required", "This replay types into a password or payment field; Keplorayx never does that.");
+                return err(
+                    "replay",
+                    "handoff_required",
+                    "This replay types into a password or payment field; Keplorayx never does that.",
+                );
             }
         }
-        if let Some(text) = r.steps.iter().filter_map(|s| s["args"].get("text").and_then(Value::as_str)).find_map(policy::blocked_text) {
+        if let Some(text) =
+            r.steps.iter().filter_map(|s| s["args"].get("text").and_then(Value::as_str)).find_map(policy::blocked_text)
+        {
             return err("replay", "blocked", text);
         }
         let scope = if consequential { Scope::Consequential } else { Scope::Background };
@@ -1042,7 +1196,11 @@ mod tests {
     impl Host for FakeHost {
         fn review(&mut self, review: &Review) -> Decision {
             self.reviews.push(review.clone());
-            if self.decisions.is_empty() { Decision::Deny { reason: "script ran out".into() } } else { self.decisions.remove(0) }
+            if self.decisions.is_empty() {
+                Decision::Deny { reason: "script ran out".into() }
+            } else {
+                self.decisions.remove(0)
+            }
         }
         fn lease(&mut self) -> Lease {
             self.reads += 1;
@@ -1149,7 +1307,11 @@ mod tests {
         assert_eq!(v["ok"], true, "{v}");
         assert_eq!(c.cua.driver.calls_to("type_text").len(), 1);
         // Batches are checked step by step too.
-        let (v, _) = call(&mut c, &mut h, json!({"action": "run", "steps": [{"action": "set_value", "element": 2, "value": "x"}]}));
+        let (v, _) = call(
+            &mut c,
+            &mut h,
+            json!({"action": "run", "steps": [{"action": "set_value", "element": 2, "value": "x"}]}),
+        );
         assert_eq!(v["code"], "handoff_required");
     }
 
@@ -1182,7 +1344,10 @@ mod tests {
         let rules = vec![Rule::parse("signer:AgileBits").unwrap()];
         let mut c = Computer::new(FakeDriver::notepad(), Config { rules, ..auto() });
         let mut h = FakeHost::new(vec![]);
-        h.ids.insert(100, AppIdentity { name: "Notepad".into(), signer: "AgileBits Inc.".into(), signed: true, ..Default::default() });
+        h.ids.insert(
+            100,
+            AppIdentity { name: "Notepad".into(), signer: "AgileBits Inc.".into(), signed: true, ..Default::default() },
+        );
         let (v, _) = call(&mut c, &mut h, json!({"action": "capture", "app": "Notepad"}));
         assert_eq!(v["code"], "app_denied", "{v}");
         assert!(c.cua.driver.calls_to("get_window_state").is_empty(), "nothing is read from a denied app");
@@ -1211,11 +1376,15 @@ mod tests {
         let mut c = Computer::new(FakeDriver::notepad(), auto());
         let mut h = FakeHost::new(vec![]);
         call(&mut c, &mut h, json!({"action": "capture", "app": "Notepad"}));
-        let (v, _) = call(&mut c, &mut h, json!({"action": "run", "steps": [
-            {"action": "click", "element": 3},
-            {"action": "type", "text": "report"},
-            {"action": "key", "keys": "ctrl+s", "expect": [{"text": "Saved"}]},
-        ]}));
+        let (v, _) = call(
+            &mut c,
+            &mut h,
+            json!({"action": "run", "steps": [
+                {"action": "click", "element": 3},
+                {"action": "type", "text": "report"},
+                {"action": "key", "keys": "ctrl+s", "expect": [{"text": "Saved"}]},
+            ]}),
+        );
         assert_eq!(v["ok"], true, "{v}");
         let sent = c.cua.driver.calls_to("run_steps").pop().unwrap();
         assert_eq!(sent["steps"][0]["args"]["element_token"], "s0000000a:3");

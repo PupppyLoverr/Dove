@@ -296,13 +296,23 @@ const INDEX: &[Entry] = &[
         "Voice Mode",
         "voice mode call hands free talk conversation listening push to talk",
     ),
-    e(Section::Voice, "voice_harness", "K22's agent", "k22 assistant voice agent harness default claude codex jarvis notch"),
+    e(
+        Section::Voice,
+        "voice_harness",
+        "K22's agent",
+        "k22 assistant voice agent harness default claude codex jarvis notch",
+    ),
     e(Section::Voice, "voice_agent_model", "K22's model", "k22 assistant voice model default"),
     e(Section::Voice, "voice_project", "K22's project", "k22 assistant voice project folder"),
     e(Section::Voice, "voice_effort", "K22's effort", "k22 reasoning effort thinking fast"),
     e(Section::Voice, "voice_persona", "K22's style", "k22 persona style concise chatty formal tone"),
     e(Section::Voice, "voice_name", "Voice", "voice speech tts speaker system voice"),
-    e(Section::Voice, "voice_global_hotkey", "Shortcut outside Keplorayx", "global hotkey shortcut voice call system wide"),
+    e(
+        Section::Voice,
+        "voice_global_hotkey",
+        "Shortcut outside Keplorayx",
+        "global hotkey shortcut voice call system wide",
+    ),
     e(Section::Voice, "voice_rate", "Speaking rate", "voice speed rate faster slower"),
     e(
         Section::Voice,
@@ -2478,11 +2488,8 @@ impl SettingsPage {
             .render(t, &self.sel_k22_model, cx);
         let projects = self.engine.store.projects().unwrap_or_default();
         let project_ids: Vec<String> = projects.iter().map(|p| p.id.to_string()).collect();
-        let selected_project = agent
-            .as_ref()
-            .and_then(|a| a.project)
-            .and_then(|p| projects.iter().position(|x| x.id == p))
-            .unwrap_or(0);
+        let selected_project =
+            agent.as_ref().and_then(|a| a.project).and_then(|p| projects.iter().position(|x| x.id == p)).unwrap_or(0);
         let project_select = ctl::select::<Self>("set-k22-project", "K22's project", |s| &mut s.sel_k22_project)
             .options(projects.iter().map(|p| SelectOption::new(p.name.clone())), selected_project)
             .width(200.0)
@@ -3265,7 +3272,10 @@ impl SettingsPage {
         div()
             .flex()
             .flex_col()
-            .child(page::page_subtitle(t, "Built-in tools, apps, MCP servers and skills for every agent Keplorayx starts."))
+            .child(page::page_subtitle(
+                t,
+                "Built-in tools, apps, MCP servers and skills for every agent Keplorayx starts.",
+            ))
             .child(
                 div()
                     .relative()
@@ -3579,7 +3589,11 @@ fn motion_inventory(t: &Theme, reduced: bool, has_wall: bool, animate: bool, eff
                 .flex()
                 .flex_col()
                 .gap(px(10.0))
-                .child(page::row_text(t, "What animates", "Everything in Keplorayx that moves, and what it does right now."))
+                .child(page::row_text(
+                    t,
+                    "What animates",
+                    "Everything in Keplorayx that moves, and what it does right now.",
+                ))
                 .child(list),
         )
         .into_any_element()

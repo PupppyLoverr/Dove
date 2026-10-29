@@ -135,7 +135,9 @@ pub fn route(tool: &str, args: &serde_json::Value, thread: Option<TaskId>, cx: &
         REVIEW => {
             let Some(thread) = thread else {
                 return Reply::Now(decision_outcome(&Decision::Unavailable {
-                    reason: "Keplorayx couldn't tell which thread this agent belongs to; start it from a Keplorayx thread".into(),
+                    reason:
+                        "Keplorayx couldn't tell which thread this agent belongs to; start it from a Keplorayx thread"
+                            .into(),
                 }));
             };
             let review: Review = match serde_json::from_value(args.clone()) {
@@ -143,7 +145,9 @@ pub fn route(tool: &str, args: &serde_json::Value, thread: Option<TaskId>, cx: &
                 Err(e) => return Reply::Now(Outcome::err(format!("bad review request: {e}"))),
             };
             if lease().human_control {
-                return Reply::Now(decision_outcome(&Decision::Deny { reason: "the user has control of the computer".into() }));
+                return Reply::Now(decision_outcome(&Decision::Deny {
+                    reason: "the user has control of the computer".into(),
+                }));
             }
             let (tx, rx) = tokio::sync::oneshot::channel();
             let app = review.app.clone();
@@ -204,7 +208,9 @@ impl ReviewCard {
 fn scope_text(scope: Scope) -> &'static str {
     match scope {
         Scope::Background => "In the background: your mouse, keyboard and focus stay yours.",
-        Scope::Foreground => "Brings the window to the front briefly; the pointer may move. Best when you are not typing.",
+        Scope::Foreground => {
+            "Brings the window to the front briefly; the pointer may move. Best when you are not typing."
+        }
         Scope::Consequential => "This sends, deletes, buys or confirms something, so Keplorayx asks every time.",
     }
 }
@@ -312,13 +318,18 @@ impl Render for Strip {
             .child(icon(icons::MONITOR).size(px(13.0)).text_color(if human { t.accent } else { t.text_muted }))
             .child(div().flex_1().text_size(ty::CAPTION).text_color(t.text_muted).truncate().child(text))
             .child(
-                ctl::button_sm(&t, "cu-take", if human { "Hand back" } else { "Take over" }, if human { Tone::Solid } else { Tone::Quiet })
-                    .tooltip(crate::ui::tip(if cfg!(windows) {
-                        "Stop agents using the computer until you hand it back (Ctrl+Alt+Shift+S)"
-                    } else {
-                        "Stop agents using the computer until you hand it back"
-                    }))
-                    .on_click(cx.listener(|_, _, _, cx| toggle_control(cx))),
+                ctl::button_sm(
+                    &t,
+                    "cu-take",
+                    if human { "Hand back" } else { "Take over" },
+                    if human { Tone::Solid } else { Tone::Quiet },
+                )
+                .tooltip(crate::ui::tip(if cfg!(windows) {
+                    "Stop agents using the computer until you hand it back (Ctrl+Alt+Shift+S)"
+                } else {
+                    "Stop agents using the computer until you hand it back"
+                }))
+                .on_click(cx.listener(|_, _, _, cx| toggle_control(cx))),
             )
     }
 }
@@ -350,7 +361,9 @@ fn start_hotkey(tx: flume::Sender<()>) {
     // A distinct id from Voice Mode's registration (1).
     const ID: i32 = 0x0C17;
     let _ = std::thread::Builder::new().name("dove-computer-hotkey".into()).spawn(move || unsafe {
-        if RegisterHotKey(std::ptr::null_mut(), ID, MOD_CONTROL | MOD_ALT | MOD_SHIFT | MOD_NOREPEAT, u32::from(b'S')) == 0 {
+        if RegisterHotKey(std::ptr::null_mut(), ID, MOD_CONTROL | MOD_ALT | MOD_SHIFT | MOD_NOREPEAT, u32::from(b'S'))
+            == 0
+        {
             tracing::info!("computer use: Ctrl+Alt+Shift+S is taken by another app; use Take over in the thread");
             return;
         }

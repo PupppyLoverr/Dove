@@ -132,7 +132,9 @@ pub fn is_k22(store: &Store, task: TaskId) -> bool {
 
 /// A typed ask, framed so K22 knows it came from the notch.
 pub fn ask_prompt(text: &str) -> String {
-    format!("{text}\n\n(Asked in the notch. Answer in a sentence or two; if a view would help, show it with notch_view.)")
+    format!(
+        "{text}\n\n(Asked in the notch. Answer in a sentence or two; if a view would help, show it with notch_view.)"
+    )
 }
 
 #[cfg(test)]

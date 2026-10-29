@@ -428,8 +428,7 @@ impl Host {
         let reasoning = agent.effort.filter(|e| model.is_some_and(|m| m.reasoning_levels.contains(e)));
         let run = dove_core::RunSettings { model: agent.model.clone(), reasoning, ..Default::default() };
         let title = format!("K22 · {}", chrono::Local::now().format("%a %e %b"));
-        let id =
-            Self::start_agent(agent.kind, project, text, false, run, Some(k22::persona(&agent)), Some(title), cx)?;
+        let id = Self::start_agent(agent.kind, project, text, false, run, Some(k22::persona(&agent)), Some(title), cx)?;
         k22::remember(&engine.store, id, agent.kind);
         Ok(id)
     }
@@ -484,33 +483,41 @@ impl Host {
     /// A `notch_*` tool call from an agent.
     fn notch_tool(c: view::ToolCall, cx: &mut App) {
         let engine = Self::engine(cx);
-        let reply = match c.tool.as_str() {
-            "notch_view" => match NotchView::from_args(&c.args) {
-                Err(e) => Err(e),
-                Ok(_) if cx.global::<Host>().hub.is_empty() => {
-                    Err("The notch isn't running, so nothing was shown. Answer in text instead.".into())
-                }
-                Ok(mut v) => {
-                    let task = engine.task_for_session(&c.session).or_else(|| {
-                        let cwd = c.cwd.as_deref()?;
-                        engine.store.projects().ok()?.into_iter().find_map(|p| {
-                            engine.store.tasks(p.id).ok()?.into_iter().find(|t| {
-                                t.worktree.as_ref().is_some_and(|w| w.display().to_string() == cwd)
-                            })
-                        }).map(|t| t.id)
-                    });
-                    v.task = task;
-                    v.kind = task.and_then(|t| engine.store.task(t).ok().flatten()).map(|t| t.harness);
-                    v.id = match (cx.global::<Host>().ask, task) {
-                        (Some((id, asked)), Some(t)) if asked == t => id,
-                        _ => view_id(task, &v.title),
-                    };
-                    Self::broadcast(&ToIsland::View { view: v }, cx);
-                    Ok("Shown in the notch. Reply in a sentence that doesn't restate it.".to_string())
-                }
-            },
-            other => Err(format!("Unknown notch tool: {other}")),
-        };
+        let reply =
+            match c.tool.as_str() {
+                "notch_view" => match NotchView::from_args(&c.args) {
+                    Err(e) => Err(e),
+                    Ok(_) if cx.global::<Host>().hub.is_empty() => {
+                        Err("The notch isn't running, so nothing was shown. Answer in text instead.".into())
+                    }
+                    Ok(mut v) => {
+                        let task =
+                            engine.task_for_session(&c.session).or_else(|| {
+                                let cwd = c.cwd.as_deref()?;
+                                engine
+                                    .store
+                                    .projects()
+                                    .ok()?
+                                    .into_iter()
+                                    .find_map(|p| {
+                                        engine.store.tasks(p.id).ok()?.into_iter().find(|t| {
+                                            t.worktree.as_ref().is_some_and(|w| w.display().to_string() == cwd)
+                                        })
+                                    })
+                                    .map(|t| t.id)
+                            });
+                        v.task = task;
+                        v.kind = task.and_then(|t| engine.store.task(t).ok().flatten()).map(|t| t.harness);
+                        v.id = match (cx.global::<Host>().ask, task) {
+                            (Some((id, asked)), Some(t)) if asked == t => id,
+                            _ => view_id(task, &v.title),
+                        };
+                        Self::broadcast(&ToIsland::View { view: v }, cx);
+                        Ok("Shown in the notch. Reply in a sentence that doesn't restate it.".to_string())
+                    }
+                },
+                other => Err(format!("Unknown notch tool: {other}")),
+            };
         let _ = c.reply.send(reply);
     }
 

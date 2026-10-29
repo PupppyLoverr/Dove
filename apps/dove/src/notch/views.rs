@@ -52,7 +52,9 @@ pub enum SlimItem {
     /// The Voice Mode call (V3): it leads while it runs.
     Call,
     /// Plans waiting on you.
-    Plan { count: usize },
+    Plan {
+        count: usize,
+    },
 }
 
 /// The tab a page belongs to (the agent view and the new-agent form live
@@ -345,7 +347,11 @@ fn empty(glyph: &'static str, title: impl Into<SharedString>, hint: impl Into<Sh
                 .mb(px(4.0))
                 .flex_none()
                 .rounded_full()
-                .bg(linear_gradient(180.0, linear_color_stop(tk::PLATE_TOP, 0.0), linear_color_stop(tk::PLATE_BOTTOM, 1.0)))
+                .bg(linear_gradient(
+                    180.0,
+                    linear_color_stop(tk::PLATE_TOP, 0.0),
+                    linear_color_stop(tk::PLATE_BOTTOM, 1.0),
+                ))
                 .flex()
                 .items_center()
                 .justify_center()

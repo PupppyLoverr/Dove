@@ -55,11 +55,9 @@ impl Host {
     /// invocation. `tty` asks for an interactive terminal (TUI panes).
     pub fn wrap(&self, program: &str, args: &[String], cwd: &str, tty: bool) -> Invocation {
         match self {
-            Host::Local => Invocation {
-                program: PathBuf::from(program),
-                args: args.to_vec(),
-                local_cwd: Some(PathBuf::from(cwd)),
-            },
+            Host::Local => {
+                Invocation { program: PathBuf::from(program), args: args.to_vec(), local_cwd: Some(PathBuf::from(cwd)) }
+            }
             Host::Wsl { distro } => {
                 let mut a = Vec::new();
                 if let Some(d) = distro {
@@ -337,7 +335,9 @@ fn missing_agent_hint(agent: &str, host: &str) -> String {
         _ => None,
     };
     match install {
-        Some(cmd) => format!("dove: {agent} is not installed on {host}. Install it there with `{cmd}`, then try again."),
+        Some(cmd) => {
+            format!("dove: {agent} is not installed on {host}. Install it there with `{cmd}`, then try again.")
+        }
         None => format!("dove: {agent} is not installed on {host}. Install it there, then try again."),
     }
 }
@@ -472,7 +472,8 @@ mod tests {
 
     #[test]
     fn wsl_maps_the_drive_path() {
-        let inv = Host::Wsl { distro: Some("Ubuntu".into()) }.wrap("codex", &s(&["exec"]), "C:\\Users\\me\\repo", false);
+        let inv =
+            Host::Wsl { distro: Some("Ubuntu".into()) }.wrap("codex", &s(&["exec"]), "C:\\Users\\me\\repo", false);
         assert_eq!(inv.program, PathBuf::from("wsl.exe"));
         assert_eq!(inv.args, s(&["-d", "Ubuntu", "--cd", "/mnt/c/Users/me/repo", "--", "codex", "exec"]));
         assert_eq!(to_wsl_path("/home/me"), "/home/me");
@@ -495,7 +496,18 @@ mod tests {
         assert_eq!(inv.program, PathBuf::from("cua"));
         assert_eq!(
             inv.args,
-            s(&["sandbox", "exec", "-i", "local:space-1", "sh", "-lc", r#"cd "$0" && exec "$@""#, "/work", "gemini", "--acp"])
+            s(&[
+                "sandbox",
+                "exec",
+                "-i",
+                "local:space-1",
+                "sh",
+                "-lc",
+                r#"cd "$0" && exec "$@""#,
+                "/work",
+                "gemini",
+                "--acp"
+            ])
         );
     }
 

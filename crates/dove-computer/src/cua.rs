@@ -14,7 +14,8 @@ use crate::types::{ActionResult, Capture, UiElement};
 /// `app=` values that mean "the whole screen" (pixels only).
 const FULL_SCREEN: &[&str] = &["screen", "fullscreen", "full screen", "all"];
 /// Shell windows: Windows desktop and taskbar, macOS Finder desktop and Dock.
-const DESKTOP_NAMES: &[&str] = &["progman", "workerw", "program manager", "shell_traywnd", "taskbar", "finder", "desktop", "dock"];
+const DESKTOP_NAMES: &[&str] =
+    &["progman", "workerw", "program manager", "shell_traywnd", "taskbar", "finder", "desktop", "dock"];
 const DESKTOP_BACKDROP: &[&str] = &["progman", "workerw", "program manager", "finder", "desktop"];
 /// Bound on the driver's accessibility walk: the response shows 100 rows,
 /// so walking thousands of nodes only costs latency.
@@ -164,7 +165,12 @@ impl<D: Driver> Cua<D> {
         }
         // Old text-only drivers: "Name (pid 123)" lines.
         let re = Regex::new(r"(.+?)\s+\(pid\s+(\d+)\)").expect("apps regex");
-        Ok(env.text().lines().filter_map(|l| re.captures(l)).map(|c| json!({"name": c[1].trim(), "pid": c[2].parse::<u64>().unwrap_or(0)})).collect())
+        Ok(env
+            .text()
+            .lines()
+            .filter_map(|l| re.captures(l))
+            .map(|c| json!({"name": c[1].trim(), "pid": c[2].parse::<u64>().unwrap_or(0)}))
+            .collect())
     }
 
     /// Windows of `app`, cheapest evidence first: the process name without
@@ -192,7 +198,8 @@ impl<D: Driver> Cua<D> {
         let apps = self.list_apps().unwrap_or_default();
         let (mut exact_pids, mut partial_pids) = (Vec::new(), Vec::new());
         for a in &apps {
-            let Some(pid) = a.get("pid").and_then(Value::as_u64).and_then(|p| u32::try_from(p).ok()).filter(|p| *p > 0) else {
+            let Some(pid) = a.get("pid").and_then(Value::as_u64).and_then(|p| u32::try_from(p).ok()).filter(|p| *p > 0)
+            else {
                 continue;
             };
             if a.get("running") == Some(&Value::Bool(false)) {
@@ -233,7 +240,10 @@ impl<D: Driver> Cua<D> {
                 pool = real;
             }
             let flat = pool.iter().map(|w| w.z.to_bits()).collect::<std::collections::HashSet<_>>().len() <= 1;
-            if flat && let Some(active) = linux_active_window() && let Some(w) = pool.iter().find(|w| w.window_id == active) {
+            if flat
+                && let Some(active) = linux_active_window()
+                && let Some(w) = pool.iter().find(|w| w.window_id == active)
+            {
                 return Some((*w).clone());
             }
         }
@@ -252,7 +262,13 @@ impl<D: Driver> Cua<D> {
         let matched = self.match_app(&windows, app);
         let Some(w) = matched.first().cloned() else {
             self.forget_target();
-            return ActionResult::refused("focus_app", format!("No on-screen window found for app {app:?}. Call list_apps or list_windows to see what is open."), Some("no_window"));
+            return ActionResult::refused(
+                "focus_app",
+                format!(
+                    "No on-screen window found for app {app:?}. Call list_apps or list_windows to see what is open."
+                ),
+                Some("no_window"),
+            );
         };
         self.set_target(&w);
         ActionResult {
@@ -279,7 +295,11 @@ impl<D: Driver> Cua<D> {
             return ActionResult::refused("bring_to_front", "Capture an exact target first.", Some("no_target"));
         };
         if !self.schemas.has_tool("bring_to_front") {
-            return ActionResult::refused("bring_to_front", "This cua-driver has no bring_to_front tool.", Some("bring_to_front_unsupported"));
+            return ActionResult::refused(
+                "bring_to_front",
+                "This cua-driver has no bring_to_front tool.",
+                Some("bring_to_front_unsupported"),
+            );
         }
         self.action("bring_to_front", obj(json!({"pid": t.pid, "window_id": t.window_id})), None)
     }
@@ -301,7 +321,10 @@ impl<D: Driver> Cua<D> {
         let mode = if req.mode.is_empty() { "auto".to_string() } else { req.mode.clone() };
         let exact = req.pid.is_some() || req.window_id.is_some();
         let app = req.app.as_deref().map(str::trim).filter(|a| !a.is_empty());
-        if !exact && let Some(a) = app && FULL_SCREEN.contains(&a.to_lowercase().as_str()) {
+        if !exact
+            && let Some(a) = app
+            && FULL_SCREEN.contains(&a.to_lowercase().as_str())
+        {
             return Ok(None);
         }
         if exact {
@@ -311,9 +334,19 @@ impl<D: Driver> Cua<D> {
             // Re-reads of the current target skip discovery (one driver
             // round trip less); a new exact target is named from it.
             if let Some(t) = self.target.as_ref().filter(|t| t.pid == pid && t.window_id == window_id) {
-                return Ok(Some(Window { app: t.app.clone(), pid, window_id, title: t.title.clone(), off_screen: false, z: 0.0 }));
+                return Ok(Some(Window {
+                    app: t.app.clone(),
+                    pid,
+                    window_id,
+                    title: t.title.clone(),
+                    off_screen: false,
+                    z: 0.0,
+                }));
             }
-            let known = self.list_windows().ok().and_then(|ws| ws.into_iter().find(|w| w.pid == pid && w.window_id == window_id));
+            let known = self
+                .list_windows()
+                .ok()
+                .and_then(|ws| ws.into_iter().find(|w| w.pid == pid && w.window_id == window_id));
             return Ok(Some(known.unwrap_or(Window {
                 app: app.unwrap_or("").to_string(),
                 pid,
@@ -464,7 +497,8 @@ impl<D: Driver> Cua<D> {
         cap.snapshot_id = self.snapshot.clone();
         // Windows parks minimized windows near (-32000, -32000): their rows
         // still act by index, but no coordinate or screenshot means anything.
-        let parked = cap.elements.iter().filter(|e| e.bounds_known() && e.bounds.0 < -10_000 && e.bounds.1 < -10_000).count();
+        let parked =
+            cap.elements.iter().filter(|e| e.bounds_known() && e.bounds.0 < -10_000 && e.bounds.1 < -10_000).count();
         if parked > 0 && parked * 2 >= cap.elements.iter().filter(|e| e.bounds_known()).count() {
             cap.note = "the window is minimized: act by element index (background input still reaches it); coordinates and screenshots mean nothing until it is restored".into();
             for e in self.elements.values_mut() {
@@ -495,7 +529,9 @@ impl<D: Driver> Cua<D> {
                 self.framed = true;
                 cap.image = Some(img);
                 cap.image_mime = mime;
-                cap.image_reason = Some("the accessibility tree is sparse here, so a screenshot is attached; act on what you see by coordinate, or on the OCR rows");
+                cap.image_reason = Some(
+                    "the accessibility tree is sparse here, so a screenshot is attached; act on what you see by coordinate, or on the OCR rows",
+                );
             }
         }
         cap
@@ -575,11 +611,23 @@ impl<D: Driver> Cua<D> {
         self.forget_target();
         let env = match self.call("get_desktop_state", obj(json!({"max_image_dimension": MAX_IMAGE_DIMENSION}))) {
             Ok(e) if !e.is_error => e,
-            Ok(e) => return Capture { mode: mode.into(), note: format!("get_desktop_state failed: {}", e.message()), ..Capture::default() },
-            Err(e) => return Capture { mode: mode.into(), note: format!("cua-driver error: {e}"), ..Capture::default() },
+            Ok(e) => {
+                return Capture {
+                    mode: mode.into(),
+                    note: format!("get_desktop_state failed: {}", e.message()),
+                    ..Capture::default()
+                };
+            }
+            Err(e) => {
+                return Capture { mode: mode.into(), note: format!("cua-driver error: {e}"), ..Capture::default() };
+            }
         };
         let Some((img, mime)) = env.image() else {
-            return Capture { mode: mode.into(), note: "get_desktop_state returned no image; capture a specific app instead".into(), ..Capture::default() };
+            return Capture {
+                mode: mode.into(),
+                note: "get_desktop_state returned no image; capture a specific app instead".into(),
+                ..Capture::default()
+            };
         };
         Capture {
             mode: "vision".into(),
@@ -599,19 +647,29 @@ impl<D: Driver> Cua<D> {
     }
 
     fn need_target(&self, action: &str) -> Result<Target, ActionResult> {
-        self.target.clone().ok_or_else(|| ActionResult::refused(action, "No target window: call capture (or focus_app) first.", Some("no_target")))
+        self.target.clone().ok_or_else(|| {
+            ActionResult::refused(action, "No target window: call capture (or focus_app) first.", Some("no_target"))
+        })
     }
 
     /// Element addressing: its token, or (OCR rows) its center by pixel.
     fn address(&self, action: &str, index: u32) -> Result<Map<String, Value>, ActionResult> {
         let t = self.need_target(action)?;
         let Some(e) = self.elements.get(&index) else {
-            return Err(ActionResult::refused(action, format!("No element #{index} in the last capture. Capture again and use an index from it."), Some("stale")));
+            return Err(ActionResult::refused(
+                action,
+                format!("No element #{index} in the last capture. Capture again and use an index from it."),
+                Some("stale"),
+            ));
         };
         match (&e.token, e.center()) {
             (Some(tok), _) => Ok(obj(json!({"pid": t.pid, "element_token": tok}))),
             (None, Some((x, y))) => Ok(obj(json!({"pid": t.pid, "window_id": t.window_id, "x": x, "y": y}))),
-            (None, None) => Err(ActionResult::refused(action, format!("Element #{index} has no handle or position; capture again."), Some("stale"))),
+            (None, None) => Err(ActionResult::refused(
+                action,
+                format!("Element #{index} has no handle or position; capture again."),
+                Some("stale"),
+            )),
         }
     }
 
@@ -629,7 +687,11 @@ impl<D: Driver> Cua<D> {
                 self.framed = true;
                 Ok(())
             }
-            Ok(env) => Err(ActionResult::refused(action, format!("could not take the screenshot pixel coordinates refer to: {}", env.message()), Some("screenshot_unavailable"))),
+            Ok(env) => Err(ActionResult::refused(
+                action,
+                format!("could not take the screenshot pixel coordinates refer to: {}", env.message()),
+                Some("screenshot_unavailable"),
+            )),
             Err(e) => Err(ActionResult::refused(action, format!("cua-driver error: {e}"), Some("transport"))),
         }
     }
@@ -639,7 +701,12 @@ impl<D: Driver> Cua<D> {
         Ok(obj(json!({"pid": t.pid, "window_id": t.window_id, "x": x, "y": y})))
     }
 
-    fn with_delivery(&self, tool: &str, args: &mut Map<String, Value>, delivery: Option<&str>) -> Result<(), ActionResult> {
+    fn with_delivery(
+        &self,
+        tool: &str,
+        args: &mut Map<String, Value>,
+        delivery: Option<&str>,
+    ) -> Result<(), ActionResult> {
         match delivery {
             None | Some("background") => Ok(()),
             Some("foreground") if self.schemas.accepts(tool, "delivery_mode") => {
@@ -648,9 +715,17 @@ impl<D: Driver> Cua<D> {
             }
             Some("foreground") => Err(ActionResult {
                 delivery_mode: Some("foreground".into()),
-                ..ActionResult::refused(tool, "This driver's action schema has no delivery_mode, so foreground delivery is unavailable. Use another verified rung.", Some("foreground_unsupported"))
+                ..ActionResult::refused(
+                    tool,
+                    "This driver's action schema has no delivery_mode, so foreground delivery is unavailable. Use another verified rung.",
+                    Some("foreground_unsupported"),
+                )
             }),
-            Some(other) => Err(ActionResult::refused(tool, format!("unknown delivery_mode {other:?}: use background or foreground"), Some("bad_delivery_mode"))),
+            Some(other) => Err(ActionResult::refused(
+                tool,
+                format!("unknown delivery_mode {other:?}: use background or foreground"),
+                Some("bad_delivery_mode"),
+            )),
         }
     }
 
@@ -663,15 +738,29 @@ impl<D: Driver> Cua<D> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn click(&mut self, element: Option<u32>, xy: Option<(i64, i64)>, button: &str, count: u32, modifiers: &[String], delivery: Option<&str>) -> ActionResult {
+    pub fn click(
+        &mut self,
+        element: Option<u32>,
+        xy: Option<(i64, i64)>,
+        button: &str,
+        count: u32,
+        modifiers: &[String],
+        delivery: Option<&str>,
+    ) -> ActionResult {
         let button = button.to_lowercase();
         if !["left", "right", "middle"].contains(&button.as_str()) {
-            return ActionResult::refused("click", format!("unknown button {button:?}: left, right or middle"), Some("bad_button"));
+            return ActionResult::refused(
+                "click",
+                format!("unknown button {button:?}: left, right or middle"),
+                Some("bad_button"),
+            );
         }
         let addressed = match (element, xy) {
             (Some(i), _) => self.address("click", i),
             (None, Some((x, y))) => self.xy("click", x, y),
-            (None, None) => Err(ActionResult::refused("click", "click needs element= or coordinate=[x, y]", Some("bad_arguments"))),
+            (None, None) => {
+                Err(ActionResult::refused("click", "click needs element= or coordinate=[x, y]", Some("bad_arguments")))
+            }
         };
         let mut args = match addressed {
             Ok(a) => a,
@@ -706,7 +795,14 @@ impl<D: Driver> Cua<D> {
         r
     }
 
-    pub fn drag(&mut self, from: (i64, i64), to: (i64, i64), button: &str, modifiers: &[String], delivery: Option<&str>) -> ActionResult {
+    pub fn drag(
+        &mut self,
+        from: (i64, i64),
+        to: (i64, i64),
+        button: &str,
+        modifiers: &[String],
+        delivery: Option<&str>,
+    ) -> ActionResult {
         let t = match self.need_target("drag") {
             Ok(t) => t,
             Err(r) => return r,
@@ -714,7 +810,9 @@ impl<D: Driver> Cua<D> {
         if let Err(r) = self.arm_frame("drag") {
             return r;
         }
-        let mut args = obj(json!({"pid": t.pid, "window_id": t.window_id, "from_x": from.0, "from_y": from.1, "to_x": to.0, "to_y": to.1, "button": button}));
+        let mut args = obj(
+            json!({"pid": t.pid, "window_id": t.window_id, "from_x": from.0, "from_y": from.1, "to_x": to.0, "to_y": to.1, "button": button}),
+        );
         if !modifiers.is_empty() {
             args.insert("modifier".into(), json!(modifiers));
         }
@@ -729,7 +827,14 @@ impl<D: Driver> Cua<D> {
         self.elements.get(&index).and_then(UiElement::center)
     }
 
-    pub fn scroll(&mut self, direction: &str, amount: u32, element: Option<u32>, xy: Option<(i64, i64)>, delivery: Option<&str>) -> ActionResult {
+    pub fn scroll(
+        &mut self,
+        direction: &str,
+        amount: u32,
+        element: Option<u32>,
+        xy: Option<(i64, i64)>,
+        delivery: Option<&str>,
+    ) -> ActionResult {
         if !["up", "down", "left", "right"].contains(&direction) {
             return ActionResult::refused("scroll", format!("unknown direction {direction:?}"), Some("bad_arguments"));
         }
@@ -811,7 +916,13 @@ impl<D: Driver> Cua<D> {
     pub fn set_value(&mut self, element: u32, value: &str) -> ActionResult {
         let mut args = match self.address("set_value", element) {
             Ok(a) if a.contains_key("element_token") => a,
-            Ok(_) => return ActionResult::refused("set_value", format!("#{element} is OCR text, not a control; click it and type instead"), Some("bad_arguments")),
+            Ok(_) => {
+                return ActionResult::refused(
+                    "set_value",
+                    format!("#{element} is OCR text, not a control; click it and type instead"),
+                    Some("bad_arguments"),
+                );
+            }
             Err(r) => return r,
         };
         args.insert("value".into(), json!(value));
@@ -872,7 +983,12 @@ impl<D: Driver> Cua<D> {
 /// The window frame's own controls: title bar, system menu and caption buttons.
 pub fn is_chrome(e: &UiElement) -> bool {
     let role = e.role.to_lowercase();
-    if role == "titlebar" || role == "axtitlebar" || role.starts_with("axclosebutton") || role.starts_with("axminimizebutton") || role.starts_with("axzoombutton") {
+    if role == "titlebar"
+        || role == "axtitlebar"
+        || role.starts_with("axclosebutton")
+        || role.starts_with("axminimizebutton")
+        || role.starts_with("axzoombutton")
+    {
         return true;
     }
     let label = e.label.trim();
@@ -905,7 +1021,11 @@ fn linux_active_window() -> Option<u64> {
     if !cfg!(target_os = "linux") || std::env::var_os("DISPLAY").is_none() {
         return None;
     }
-    let out = std::process::Command::new("xprop").args(["-root", "_NET_ACTIVE_WINDOW"]).stdin(std::process::Stdio::null()).output().ok()?;
+    let out = std::process::Command::new("xprop")
+        .args(["-root", "_NET_ACTIVE_WINDOW"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .ok()?;
     let text = String::from_utf8_lossy(&out.stdout);
     let hex = text.split_whitespace().find(|t| t.starts_with("0x"))?;
     u64::from_str_radix(hex.trim_start_matches("0x").trim_end_matches(','), 16).ok().filter(|w| *w > 0)
@@ -913,7 +1033,10 @@ fn linux_active_window() -> Option<u64> {
 
 /// Why discovery found no windows: the usual causes per platform.
 fn empty_discovery_reason() -> String {
-    if cfg!(target_os = "linux") && std::env::var_os("DISPLAY").is_none() && std::env::var_os("WAYLAND_DISPLAY").is_none() {
+    if cfg!(target_os = "linux")
+        && std::env::var_os("DISPLAY").is_none()
+        && std::env::var_os("WAYLAND_DISPLAY").is_none()
+    {
         return "window discovery found nothing: no DISPLAY or WAYLAND_DISPLAY is set".into();
     }
     if cfg!(target_os = "macos") {
@@ -979,7 +1102,12 @@ mod tests {
         let mut c = cua(FakeDriver::notepad());
         c.capture(&CaptureRequest { mode: "ax".into(), pid: Some(100), window_id: Some(200), ..Default::default() });
         assert_eq!(c.driver.calls_to("list_windows").len(), 1, "a new exact target is named once");
-        let cap = c.capture(&CaptureRequest { mode: "ax".into(), pid: Some(100), window_id: Some(200), ..Default::default() });
+        let cap = c.capture(&CaptureRequest {
+            mode: "ax".into(),
+            pid: Some(100),
+            window_id: Some(200),
+            ..Default::default()
+        });
         assert_eq!(c.driver.calls_to("list_windows").len(), 1, "a re-read of the target does not list windows again");
         assert_eq!(cap.app, "Notepad");
     }
@@ -988,7 +1116,14 @@ mod tests {
     fn app_matching_prefers_exact_names() {
         let mut c = cua(FakeDriver::notepad());
         let ws = vec![
-            Window { app: "Visual Studio Code".into(), pid: 1, window_id: 1, title: String::new(), off_screen: false, z: 9.0 },
+            Window {
+                app: "Visual Studio Code".into(),
+                pid: 1,
+                window_id: 1,
+                title: String::new(),
+                off_screen: false,
+                z: 9.0,
+            },
             Window { app: "Code".into(), pid: 2, window_id: 2, title: String::new(), off_screen: false, z: 1.0 },
         ];
         assert_eq!(c.match_app(&ws, "code")[0].pid, 2);
@@ -998,9 +1133,30 @@ mod tests {
         // without the slow list_apps call.
         let listed = c.driver.calls_to("list_apps").len();
         let ws = vec![
-            Window { app: "Notepad.exe".into(), pid: 3, window_id: 3, title: "notes.txt - Notepad".into(), off_screen: false, z: 3.0 },
-            Window { app: "ApplicationFrameHost.exe".into(), pid: 4, window_id: 4, title: "Settings".into(), off_screen: false, z: 2.0 },
-            Window { app: "ApplicationFrameHost.exe".into(), pid: 4, window_id: 5, title: "Calculator".into(), off_screen: false, z: 1.0 },
+            Window {
+                app: "Notepad.exe".into(),
+                pid: 3,
+                window_id: 3,
+                title: "notes.txt - Notepad".into(),
+                off_screen: false,
+                z: 3.0,
+            },
+            Window {
+                app: "ApplicationFrameHost.exe".into(),
+                pid: 4,
+                window_id: 4,
+                title: "Settings".into(),
+                off_screen: false,
+                z: 2.0,
+            },
+            Window {
+                app: "ApplicationFrameHost.exe".into(),
+                pid: 4,
+                window_id: 5,
+                title: "Calculator".into(),
+                off_screen: false,
+                z: 1.0,
+            },
         ];
         assert_eq!(c.match_app(&ws, "Notepad")[0].pid, 3);
         assert_eq!(c.match_app(&ws, "calculator")[0].window_id, 5);
@@ -1011,8 +1167,14 @@ mod tests {
     #[test]
     fn chrome_only_trees_count_as_sparse() {
         let chrome = |i: u32, role: &str, label: &str| UiElement {
-            index: i, role: role.into(), label: label.into(), bounds: (1, 1, 10, 10), enabled: true,
-            token: Some(format!("s1:{i}")), source: "tree", ..UiElement::default()
+            index: i,
+            role: role.into(),
+            label: label.into(),
+            bounds: (1, 1, 10, 10),
+            enabled: true,
+            token: Some(format!("s1:{i}")),
+            source: "tree",
+            ..UiElement::default()
         };
         assert!(is_chrome(&chrome(0, "TitleBar", "notes.txt - Notepad")));
         assert!(is_chrome(&chrome(1, "MenuItem", "System")));
@@ -1071,16 +1233,30 @@ mod tests {
         let mut c = cua(FakeDriver::notepad());
         c.capture(&CaptureRequest { mode: "ax".into(), app: Some("Notepad".into()), ..Default::default() });
         // No change: the same rows, tokens re-minted on the new snapshot.
-        let cap = c.capture(&CaptureRequest { mode: "ax".into(), app: Some("Notepad".into()), since: Some("latest".into()), ..Default::default() });
+        let cap = c.capture(&CaptureRequest {
+            mode: "ax".into(),
+            app: Some("Notepad".into()),
+            since: Some("latest".into()),
+            ..Default::default()
+        });
         assert!(cap.diff.as_deref().is_some_and(|d| d.starts_with("no change")));
         assert_eq!(cap.elements.len(), 4);
         assert_eq!(c.element(1).unwrap().token.as_deref(), Some("s0000000b:1"));
         let since_read = c.driver.calls_to("get_window_state").pop().unwrap();
         assert_eq!(since_read["tree_format"], "markdown", "0.38 refuses elements-format since reads");
         // A change: the diff for the model, then a full read for exact rows.
-        c.driver.next_diff = Some(("~ [2] Button \"Saved\"
-- [3] Edit".into(), "s0000000c".into()));
-        let cap = c.capture(&CaptureRequest { mode: "ax".into(), app: Some("Notepad".into()), since: Some("latest".into()), ..Default::default() });
+        c.driver.next_diff = Some((
+            "~ [2] Button \"Saved\"
+- [3] Edit"
+                .into(),
+            "s0000000c".into(),
+        ));
+        let cap = c.capture(&CaptureRequest {
+            mode: "ax".into(),
+            app: Some("Notepad".into()),
+            since: Some("latest".into()),
+            ..Default::default()
+        });
         assert!(cap.diff.as_deref().is_some_and(|d| d.contains("Saved")));
         assert_eq!(cap.elements.len(), 3, "row 3 was removed");
         assert_eq!(c.element(2).unwrap().label, "Saved");

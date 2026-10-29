@@ -77,7 +77,8 @@ impl ArtKind {
     /// Shown as text in the preview and the viewer.
     fn is_text(self, path: &Path) -> bool {
         let ext = path.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
-        matches!(self, ArtKind::Code | ArtKind::Page) || (self == ArtKind::Doc && !matches!(ext.as_str(), "docx" | "pdf"))
+        matches!(self, ArtKind::Code | ArtKind::Page)
+            || (self == ArtKind::Doc && !matches!(ext.as_str(), "docx" | "pdf"))
     }
 }
 
@@ -107,7 +108,12 @@ pub fn scan(root: &Path, cap: usize) -> Vec<Artifact> {
                 }
             } else if meta.is_file() {
                 let kind = ArtKind::of(&path);
-                out.push(Artifact { path, kind, size: meta.len(), modified: meta.modified().unwrap_or(SystemTime::UNIX_EPOCH) });
+                out.push(Artifact {
+                    path,
+                    kind,
+                    size: meta.len(),
+                    modified: meta.modified().unwrap_or(SystemTime::UNIX_EPOCH),
+                });
             }
         }
     }
@@ -370,7 +376,14 @@ impl Shell {
                         Some(actions.into_any_element()),
                     )))
                     .child(
-                        div().id("art-view-scroll").mt(px(space::MD)).flex_1().min_h_0().overflow_y_scroll().pb(px(24.0)).child(body),
+                        div()
+                            .id("art-view-scroll")
+                            .mt(px(space::MD))
+                            .flex_1()
+                            .min_h_0()
+                            .overflow_y_scroll()
+                            .pb(px(24.0))
+                            .child(body),
                     ),
             )
             .into_any_element()
@@ -413,7 +426,8 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(20));
         std::fs::write(dir.join("site/index.html"), "<p>").unwrap();
         let found = scan(&dir, 10);
-        let names: Vec<String> = found.iter().map(|a| a.path.file_name().unwrap().to_string_lossy().to_string()).collect();
+        let names: Vec<String> =
+            found.iter().map(|a| a.path.file_name().unwrap().to_string_lossy().to_string()).collect();
         assert_eq!(names, vec!["index.html", "old.md"]);
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -481,7 +481,9 @@ pub fn verify_installed(i: &Installed) -> Result<(), String> {
 pub fn launch_bin() -> Result<PathBuf, String> {
     match installed() {
         Some(i) => verify_installed(&i).map(|()| i.bin),
-        None => crate::pages::integrations::dev_driver().ok_or_else(|| "Keplorayx Computer Use is not installed".into()),
+        None => {
+            crate::pages::integrations::dev_driver().ok_or_else(|| "Keplorayx Computer Use is not installed".into())
+        }
     }
 }
 
@@ -1115,9 +1117,13 @@ mod tests {
         let s: Settings = serde_json::from_str(r#"{"enabled":true}"#).unwrap();
         assert!(s.enabled && s.ranker && s.approvals == "ask" && !s.raw_tools, "older files get today's defaults");
         let s: Settings =
-            serde_json::from_str(r#"{"enabled":true,"permission_mode":"bounded","grounder":true,"approvals":"auto"}"#).unwrap();
+            serde_json::from_str(r#"{"enabled":true,"permission_mode":"bounded","grounder":true,"approvals":"auto"}"#)
+                .unwrap();
         assert!(s.enabled && s.auto_background(), "stray old fields are ignored");
-        let s = Settings { denied_apps: vec!["1Password".into(), "signer:AgileBits".into(), " ".into()], ..Settings::default() };
+        let s = Settings {
+            denied_apps: vec!["1Password".into(), "signer:AgileBits".into(), " ".into()],
+            ..Settings::default()
+        };
         assert_eq!(s.rules().len(), 2);
     }
 

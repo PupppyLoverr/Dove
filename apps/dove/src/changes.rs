@@ -375,7 +375,11 @@ impl Changes {
         let (n, adds, dels) = self.summary();
         let files: Vec<String> =
             self.files.iter().take(30).map(|f| format!("- `{}` (+{} −{})", f.path, f.additions, f.deletions)).collect();
-        format!("{}\n\n{n} files changed, +{adds} −{dels}\n\n{}\n\n_Opened from Keplorayx._", self.title, files.join("\n"))
+        format!(
+            "{}\n\n{n} files changed, +{adds} −{dels}\n\n{}\n\n_Opened from Keplorayx._",
+            self.title,
+            files.join("\n")
+        )
     }
 
     /// Send the line comments to the agent as one review.

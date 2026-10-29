@@ -727,9 +727,9 @@ impl Shell {
                         }
                         Ok(crate::computer_review::Reply::Wait(decided)) => {
                             cx.spawn(async move |_| {
-                                let d = decided.await.unwrap_or(dove_computer::Decision::Deny {
-                                    reason: "the card was closed".into(),
-                                });
+                                let d = decided
+                                    .await
+                                    .unwrap_or(dove_computer::Decision::Deny { reason: "the card was closed".into() });
                                 let _ = req.reply.send(crate::computer_review::decision_outcome(&d));
                             })
                             .detach();
@@ -3634,17 +3634,13 @@ impl Render for Shell {
                 .child(rows)
         });
         let thread_art_now = self.full_art_route() && self.has_wallpaper();
-        let panel_ghost =
-            self.slides.panel.exit(now).map(|(p, w)| {
-                div()
-                    .absolute()
-                    .top_0()
-                    .bottom_0()
-                    .right(px(-24.0 * p))
-                    .w(px(w))
-                    .opacity(1.0 - p)
-                    .bg(if thread_art_now { t.bg.opacity(SIDE_ART_TINT) } else { t.glass() })
-            });
+        let panel_ghost = self.slides.panel.exit(now).map(|(p, w)| {
+            div().absolute().top_0().bottom_0().right(px(-24.0 * p)).w(px(w)).opacity(1.0 - p).bg(if thread_art_now {
+                t.bg.opacity(SIDE_ART_TINT)
+            } else {
+                t.glass()
+            })
+        });
         if sidebar_ghost.is_some() || panel_ghost.is_some() {
             window.request_animation_frame();
         }
@@ -3723,9 +3719,8 @@ impl Render for Shell {
         // page-coloured plane, so the dock never reads as part of it.
         let lift = t.is_frost() && t.appearance.is_dark();
         let (art_tint, lift_fill) = (t.bg.opacity(SIDE_ART_TINT), t.surface_raised.opacity(0.30));
-        let chrome = move |d: gpui::Div| {
-            d.when(thread_art, |d| d.bg(art_tint)).when(!thread_art && lift, |d| d.bg(lift_fill))
-        };
+        let chrome =
+            move |d: gpui::Div| d.when(thread_art, |d| d.bg(art_tint)).when(!thread_art && lift, |d| d.bg(lift_fill));
         let seam = t.wash(0.06);
         let dock_layer = panel_open.then(|| {
             let inner = if sidebar_shown { self.sidebar_w } else { 0.0 };

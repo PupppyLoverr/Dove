@@ -1350,26 +1350,27 @@ impl Composer {
             } else {
                 let hosts = self.hosts.clone();
                 let list = hosts.clone().unwrap_or_else(|| vec![dove_core::host::Host::Local]);
-                rows = rows.child(div().id("host-list").max_h(px(300.0)).overflow_y_scroll().flex().flex_col().children(
-                    list.into_iter().enumerate().map(|(i, h)| {
-                        let label = match &h {
-                            dove_core::host::Host::Local => format!("Local · {}", ui::host_name()),
-                            other => other.label(),
-                        };
-                        let selected = h == current;
-                        ui::menu_row(SharedString::from(format!("dev-{i}")), Self::host_icon(&h), label, false, t)
-                            .when(selected, |d| d.child(icon(icons::CHECK).size(px(14.0)).text_color(t.accent)))
-                            .on_click(cx.listener(move |this, _, _, cx| this.pick_host(h.clone(), cx)))
-                    }),
-                ));
+                rows =
+                    rows.child(div().id("host-list").max_h(px(300.0)).overflow_y_scroll().flex().flex_col().children(
+                        list.into_iter().enumerate().map(|(i, h)| {
+                            let label = match &h {
+                                dove_core::host::Host::Local => format!("Local · {}", ui::host_name()),
+                                other => other.label(),
+                            };
+                            let selected = h == current;
+                            ui::menu_row(SharedString::from(format!("dev-{i}")), Self::host_icon(&h), label, false, t)
+                                .when(selected, |d| d.child(icon(icons::CHECK).size(px(14.0)).text_color(t.accent)))
+                                .on_click(cx.listener(move |this, _, _, cx| this.pick_host(h.clone(), cx)))
+                        }),
+                    ));
                 let note = if hosts.is_none() {
                     "Looking for WSL, SSH hosts and Cua Spaces…"
                 } else {
                     "WSL distros, ~/.ssh/config hosts and ready Cua Spaces"
                 };
-                rows = rows.child(ui::separator(t)).child(
-                    div().px(px(14.0)).py(px(6.0)).text_size(ty::META).text_color(t.text_faint).child(note),
-                );
+                rows = rows
+                    .child(ui::separator(t))
+                    .child(div().px(px(14.0)).py(px(6.0)).text_size(ty::META).text_color(t.text_faint).child(note));
             }
             self.popover(Anchor::BottomLeft, ui::menu_card(t, rows), cx)
         });

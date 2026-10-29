@@ -510,7 +510,11 @@ fn sync_in(root: &Path, reg: &Registry, dirs: &[PathBuf]) -> Vec<String> {
             let result = if s.enabled && src.join("SKILL.md").is_file() {
                 mirror(&src, dir, &s.name).map(|m| {
                     if m == Mirror::Foreign {
-                        problems.push(format!("kept the existing {} skill in {} (not Keplorayx's)", s.name, dir.display()));
+                        problems.push(format!(
+                            "kept the existing {} skill in {} (not Keplorayx's)",
+                            s.name,
+                            dir.display()
+                        ));
                     }
                 })
             } else {
@@ -581,7 +585,9 @@ fn describe_in(root: &Path, reg: &Registry, name: Option<&str>) -> Result<String
                 "Skills Keplorayx installed for agents. Call dove_skills with {\"name\": ...} for the full instructions.\n\n",
             );
             if on.is_empty() {
-                out.push_str("(none are turned on; the user manages them in Keplorayx → Settings → Plugins → Skills)\n");
+                out.push_str(
+                    "(none are turned on; the user manages them in Keplorayx → Settings → Plugins → Skills)\n",
+                );
             }
             for s in on {
                 out.push_str(&format!("- {}: {} (folder: {})\n", s.name, s.description, root.join(&s.name).display()));

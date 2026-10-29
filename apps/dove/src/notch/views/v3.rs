@@ -4,9 +4,9 @@
 //! ([`crate::island::view`]). These pages are wide (`tk::WIDE_W`).
 
 use super::*;
+use crate::island::view::{Block, CallPhase, NotchView, PlanStep, PlanVerdict, Tone, ViewAction, ViewSource};
 use dove_core::store::Store;
 use std::collections::HashSet;
-use crate::island::view::{Block, CallPhase, NotchView, PlanStep, PlanVerdict, Tone, ViewAction, ViewSource};
 
 /// A built-in lens.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -48,8 +48,15 @@ impl Lens {
             Some(Lens::Needs)
         } else if has(&["today", "summary", "summarize my day", "what happened", "recap"]) {
             Some(Lens::Today)
-        } else if has(&["what's running", "whats running", "what is running", "status", "everyone doing", "agents doing", "progress"])
-        {
+        } else if has(&[
+            "what's running",
+            "whats running",
+            "what is running",
+            "status",
+            "everyone doing",
+            "agents doing",
+            "progress",
+        ]) {
             Some(Lens::Status)
         } else {
             None
@@ -175,16 +182,28 @@ impl Notch {
                 if self.call.live {
                     // The model line, the orb, the status, one exchange, the
                     // controls; K22's line wraps at about 64 characters.
-                    let k22 = self.call.lines.iter().rev().find(|l| !l.0).map_or(0.0, |l| {
-                        l.1.chars().count().div_ceil(64).clamp(1, 6) as f32 * 21.0
-                    });
-                    let you = if self.call.lines.iter().any(|l| l.0) || self.call.partial.is_some() { 22.0 } else { 0.0 };
+                    let k22 = self
+                        .call
+                        .lines
+                        .iter()
+                        .rev()
+                        .find(|l| !l.0)
+                        .map_or(0.0, |l| l.1.chars().count().div_ceil(64).clamp(1, 6) as f32 * 21.0);
+                    let you =
+                        if self.call.lines.iter().any(|l| l.0) || self.call.partial.is_some() { 22.0 } else { 0.0 };
                     let error = if self.call.error.is_some() { 40.0 } else { 0.0 };
                     let typing = if self.call_typing { 46.0 } else { 0.0 };
                     let click = if self.call.awaiting_click.is_some() { 46.0 } else { 0.0 };
                     24.0 + 8.0 + 143.0 + 8.0 + 16.0 + 12.0 + you + k22 + error + typing + click + 14.0 + 36.0 + 16.0
                 } else {
-                    24.0 + 8.0 + 143.0 + 8.0 + 16.0 + 40.0 + 40.0 + self.views.len().min(3) as f32 * 38.0 + if self.views.is_empty() { 0.0 } else { 30.0 }
+                    24.0 + 8.0
+                        + 143.0
+                        + 8.0
+                        + 16.0
+                        + 40.0
+                        + 40.0
+                        + self.views.len().min(3) as f32 * 38.0
+                        + if self.views.is_empty() { 0.0 } else { 30.0 }
                 }
             }
             Page::Plan(task) => {
@@ -193,12 +212,20 @@ impl Notch {
                     .as_ref()
                     .filter(|e| e.task == *task)
                     .map(|e| {
-                        e.steps.iter().map(|s| s.text.chars().count().div_ceil(80).max(1) as f32 * 18.0 + 22.0).sum::<f32>()
-                            + e.open.iter().filter_map(|i| e.steps.get(*i)).map(|s| s.detail.len() as f32 * 18.0).sum::<f32>()
+                        e.steps
+                            .iter()
+                            .map(|s| s.text.chars().count().div_ceil(80).max(1) as f32 * 18.0 + 22.0)
+                            .sum::<f32>()
+                            + e.open
+                                .iter()
+                                .filter_map(|i| e.steps.get(*i))
+                                .map(|s| s.detail.len() as f32 * 18.0)
+                                .sum::<f32>()
                     })
                     .unwrap_or(120.0);
                 let files = if self.plan_for(*task).is_some_and(|p| !p.files.is_empty()) { 30.0 } else { 0.0 };
-                let editing = if self.plan_edit.as_ref().is_some_and(|e| e.mode != PlanMode::View) { 44.0 } else { 0.0 };
+                let editing =
+                    if self.plan_edit.as_ref().is_some_and(|e| e.mode != PlanMode::View) { 44.0 } else { 0.0 };
                 // Title, steps, files, the answer row, and the gaps between.
                 64.0 + steps + files + editing + 28.0 + 24.0 + tk::CONTROL_H + 24.0
             }
@@ -334,7 +361,11 @@ impl Notch {
                     .and_then(|x| x.pending.iter().find(|p| p.request_id == request))
                     .is_some_and(|p| p.safe && !p.question);
                 if safe {
-                    self.command(ToEngine::Decide { task, request_id: request, decision: PermissionDecision::AllowOnce });
+                    self.command(ToEngine::Decide {
+                        task,
+                        request_id: request,
+                        decision: PermissionDecision::AllowOnce,
+                    });
                     self.toast("Approved");
                 } else {
                     self.command(ToEngine::Open { task: Some(task) });
@@ -350,11 +381,7 @@ impl Notch {
             ViewAction::Start { prompt, agent, project } => {
                 let find_agent = |s: &str| {
                     let s = s.to_lowercase();
-                    self.snap
-                        .installed
-                        .iter()
-                        .copied()
-                        .find(|k| k.id() == s || k.label().to_lowercase().contains(&s))
+                    self.snap.installed.iter().copied().find(|k| k.id() == s || k.label().to_lowercase().contains(&s))
                 };
                 let kind = agent.as_deref().and_then(find_agent).or(self.snap.voice.agent).or(self.snap.default_agent);
                 let project = project
@@ -439,7 +466,11 @@ impl Notch {
                         let (task, request_id) = (edit.task, edit.request_id.clone());
                         edit.mode = PlanMode::View;
                         edit.answered = true;
-                        self.command(ToEngine::Plan { task, request_id, verdict: PlanVerdict::Reject { reason: text } });
+                        self.command(ToEngine::Plan {
+                            task,
+                            request_id,
+                            verdict: PlanVerdict::Reject { reason: text },
+                        });
                         self.toast("Sent back to keep planning");
                     }
                     PlanMode::View => {}
@@ -541,7 +572,10 @@ impl Notch {
             .and_then(|m| self.snap.voice.models.iter().find(|x| &x.0 == m).map(|x| x.1.clone()))
             .or(model.clone())
             .unwrap_or_else(|| {
-                c.agent.or(self.snap.voice.agent).map(|k| k.label().to_string()).unwrap_or_else(|| "Default model".into())
+                c.agent
+                    .or(self.snap.voice.agent)
+                    .map(|k| k.label().to_string())
+                    .unwrap_or_else(|| "Default model".into())
             });
         col = col.child(
             div()
@@ -570,17 +604,10 @@ impl Notch {
         } else {
             "Not in a call".into()
         };
-        col = col.child(
-            div().font_family(tk::MONO).text_size(px(tk::T11)).text_color(tk::FAINT).child(status),
-        );
+        col = col.child(div().font_family(tk::MONO).text_size(px(tk::T11)).text_color(tk::FAINT).child(status));
         if let Some(e) = &c.error {
             col = col.child(
-                div()
-                    .max_w(px(460.0))
-                    .text_center()
-                    .text_size(px(tk::T12))
-                    .text_color(tk::TEXT)
-                    .child(e.clone()),
+                div().max_w(px(460.0)).text_center().text_size(px(tk::T12)).text_color(tk::TEXT).child(e.clone()),
             );
         }
         if c.live {
@@ -610,12 +637,7 @@ impl Notch {
                             .child(y)
                     }))
                     .children(k22.map(|k| {
-                        div()
-                            .max_w(px(520.0))
-                            .text_center()
-                            .text_size(px(tk::T15))
-                            .text_color(tk::TEXT)
-                            .child(k)
+                        div().max_w(px(520.0)).text_center().text_size(px(tk::T15)).text_color(tk::TEXT).child(k)
                     })),
             );
             if let Some((task, _)) = c.awaiting_click {
@@ -631,10 +653,12 @@ impl Notch {
                         .items_center()
                         .gap(px(10.0))
                         .child(div().text_size(px(tk::T12)).text_color(tk::TEXT).child("Needs your click in Keplorayx"))
-                        .child(link("call-confirm", "Open").on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                            this.command(ToEngine::Open { task: Some(task) });
-                            cx.notify();
-                        }))),
+                        .child(link("call-confirm", "Open").on_click(cx.listener(
+                            move |this, _: &ClickEvent, _, cx| {
+                                this.command(ToEngine::Open { task: Some(task) });
+                                cx.notify();
+                            },
+                        ))),
                 );
             }
             if self.call_typing
@@ -735,7 +759,8 @@ impl Notch {
                     },
                 )));
             if !self.views.is_empty() {
-                let mut recent = div().w_full().mt(px(8.0)).flex().flex_col().gap(px(2.0)).child(section("Recent views"));
+                let mut recent =
+                    div().w_full().mt(px(8.0)).flex().flex_col().gap(px(2.0)).child(section("Recent views"));
                 for (i, v) in self.views.iter().filter(|v| !v.pending).take(3).enumerate() {
                     let id = v.id;
                     recent = recent.child(
@@ -750,7 +775,14 @@ impl Notch {
                             .items_center()
                             .gap(px(10.0))
                             .child(icon(icons::ARTIFACTS).size(px(tk::ICON_ROW)).text_color(tk::FAINT))
-                            .child(div().flex_1().truncate().text_size(px(tk::T13)).text_color(tk::TEXT).child(v.title.clone()))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .truncate()
+                                    .text_size(px(tk::T13))
+                                    .text_color(tk::TEXT)
+                                    .child(v.title.clone()),
+                            )
                             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                                 this.open_page(Page::View(id), Some(window), cx)
                             })),
@@ -856,13 +888,18 @@ impl Notch {
 
     pub(crate) fn page_plan(&mut self, task: TaskId, cx: &mut Context<Self>) -> AnyElement {
         let Some(edit) = self.plan_edit_for(task) else {
-            return empty(icons::LAYERS, "No plan waiting", "When an agent proposes a plan, it shows here to approve or change.")
-                .into_any_element();
+            return empty(
+                icons::LAYERS,
+                "No plan waiting",
+                "When an agent proposes a plan, it shows here to approve or change.",
+            )
+            .into_any_element();
         };
         let plan = self.plan_for(task).cloned();
         let agent = self.snap.agents.iter().find(|a| a.id == task).cloned();
         let kind = plan.as_ref().map(|p| p.kind).or(agent.as_ref().map(|a| a.kind));
-        let title = plan.as_ref().map(|p| p.title.clone()).or(agent.as_ref().map(|a| a.title.clone())).unwrap_or_default();
+        let title =
+            plan.as_ref().map(|p| p.title.clone()).or(agent.as_ref().map(|a| a.title.clone())).unwrap_or_default();
         let project = plan.as_ref().map(|p| p.project.clone()).unwrap_or_default();
         let line = self.inputs.as_ref().map(|i| i.line.clone());
         let mut col = div().id("plan").size_full().overflow_y_scroll().flex().flex_col().gap(px(8.0)).pt(px(4.0));
@@ -902,7 +939,12 @@ impl Notch {
             let todos = agent.as_ref().map(|a| a.todo_list.clone()).unwrap_or_default();
             let mut list = div().flex().flex_col().gap(px(4.0));
             if todos.is_empty() {
-                list = list.child(div().text_size(px(tk::T12)).text_color(tk::DIM).child("Sent. Its checklist shows here as it works."));
+                list = list.child(
+                    div()
+                        .text_size(px(tk::T12))
+                        .text_color(tk::DIM)
+                        .child("Sent. Its checklist shows here as it works."),
+                );
             }
             for (i, (text, status)) in todos.iter().enumerate() {
                 let done = status == "completed";
@@ -928,11 +970,11 @@ impl Notch {
                 );
             }
             col = col.child(card().child(list));
-            col = col.child(
-                div().flex().gap(px(6.0)).child(pill("plan-open-agent", "Open agent", false).on_click(cx.listener(
-                    move |this, _: &ClickEvent, window, cx| this.open_page(Page::Agent(task), Some(window), cx),
-                ))),
-            );
+            col = col.child(div().flex().gap(px(6.0)).child(pill("plan-open-agent", "Open agent", false).on_click(
+                cx.listener(move |this, _: &ClickEvent, window, cx| {
+                    this.open_page(Page::Agent(task), Some(window), cx)
+                }),
+            )));
             return col.into_any_element();
         }
         // The steps.
@@ -1007,7 +1049,11 @@ impl Notch {
                         })
                         .when(open, |d| {
                             d.children(s.detail.iter().map(|x| {
-                                div().text_size(px(tk::T12)).text_color(tk::DIM).child(format!("· {x}")).into_any_element()
+                                div()
+                                    .text_size(px(tk::T12))
+                                    .text_color(tk::DIM)
+                                    .child(format!("· {x}"))
+                                    .into_any_element()
                             }))
                         }),
                 )
@@ -1110,19 +1156,22 @@ impl Notch {
                 );
             }
             _ => {
-                steps = steps.child(
-                    link("plan-add", "+ Add a step").mt(px(2.0)).on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                steps = steps.child(link("plan-add", "+ Add a step").mt(px(2.0)).on_click(cx.listener(
+                    |this, _: &ClickEvent, _, cx| {
                         this.edit_plan(|e| e.mode = PlanMode::Add, cx);
                         this.focus_line(String::new(), cx);
-                    })),
-                );
+                    },
+                )));
             }
         }
         col = col.child(steps);
         if let Some(p) = plan.as_ref().filter(|p| !p.files.is_empty()) {
-            let mut files = div().flex().flex_wrap().items_center().gap(px(4.0)).child(
-                div().text_size(px(tk::T11)).text_color(tk::FAINT).mr(px(2.0)).child("Touches"),
-            );
+            let mut files = div()
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .gap(px(4.0))
+                .child(div().text_size(px(tk::T11)).text_color(tk::FAINT).mr(px(2.0)).child("Touches"));
             for f in p.files.iter().take(6) {
                 files = files.child(
                     div()
@@ -1150,43 +1199,52 @@ impl Notch {
                 .items_center()
                 .gap(px(6.0))
                 .child(
-                    primary("plan-approve", if dirty { "Approve with edits" } else if gated { "Approve" } else { "Looks good" })
-                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                            let Some(e) = this.plan_edit.as_mut() else { return };
-                            let verdict = if e.dirty() {
-                                PlanVerdict::Edited { text: crate::island::view::plan_markdown(&e.steps) }
-                            } else {
-                                PlanVerdict::Approve
-                            };
-                            let (task, request_id) = (e.task, e.request_id.clone());
-                            e.answered = true;
-                            this.command(ToEngine::Plan { task, request_id, verdict });
-                            this.toast("Approved");
-                            cx.notify();
-                        })),
+                    primary(
+                        "plan-approve",
+                        if dirty {
+                            "Approve with edits"
+                        } else if gated {
+                            "Approve"
+                        } else {
+                            "Looks good"
+                        },
+                    )
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        let Some(e) = this.plan_edit.as_mut() else { return };
+                        let verdict = if e.dirty() {
+                            PlanVerdict::Edited { text: crate::island::view::plan_markdown(&e.steps) }
+                        } else {
+                            PlanVerdict::Approve
+                        };
+                        let (task, request_id) = (e.task, e.request_id.clone());
+                        e.answered = true;
+                        this.command(ToEngine::Plan { task, request_id, verdict });
+                        this.toast("Approved");
+                        cx.notify();
+                    })),
                 )
                 .when(dirty, |d| {
-                    d.child(pill("plan-reset", "Undo edits", false).on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        this.edit_plan(|e| e.steps = e.original.clone(), cx)
-                    })))
+                    d.child(pill("plan-reset", "Undo edits", false).on_click(
+                        cx.listener(|this, _: &ClickEvent, _, cx| this.edit_plan(|e| e.steps = e.original.clone(), cx)),
+                    ))
                 })
-                .child(pill("plan-reject", "Keep planning…", false).on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                    this.edit_plan(|e| e.mode = PlanMode::Reject, cx);
-                    this.focus_line(String::new(), cx);
-                })))
+                .child(pill("plan-reject", "Keep planning…", false).on_click(cx.listener(
+                    |this, _: &ClickEvent, _, cx| {
+                        this.edit_plan(|e| e.mode = PlanMode::Reject, cx);
+                        this.focus_line(String::new(), cx);
+                    },
+                )))
                 .child(div().flex_1())
                 .child(
                     ibtn("plan-talk", icons::WAVEFORM, 30.0, tk::DIM, "Talk it through")
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.talk(Some(task), cx))),
                 )
-                .child(
-                    ibtn("plan-open", icons::LINK, 30.0, tk::DIM, "Open in Keplorayx").on_click(cx.listener(
-                        move |this, _: &ClickEvent, _, cx| {
-                            this.command(ToEngine::Open { task: Some(task) });
-                            cx.notify();
-                        },
-                    )),
-                ),
+                .child(ibtn("plan-open", icons::LINK, 30.0, tk::DIM, "Open in Keplorayx").on_click(cx.listener(
+                    move |this, _: &ClickEvent, _, cx| {
+                        this.command(ToEngine::Open { task: Some(task) });
+                        cx.notify();
+                    },
+                ))),
         );
         col.into_any_element()
     }
@@ -1202,19 +1260,25 @@ impl Notch {
         let reply = self.view_reply(&v);
         let pinned = self.widgets.iter().any(|w| w.id == v.id);
         let line = self.inputs.as_ref().map(|i| i.line.clone());
-        let mut col = div().id(eid(format!("view-{id}"))).size_full().overflow_y_scroll().flex().flex_col().gap(px(10.0)).pt(px(4.0));
+        let mut col = div()
+            .id(eid(format!("view-{id}")))
+            .size_full()
+            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .gap(px(10.0))
+            .pt(px(4.0));
         col = col.child(self.view_title(&v, pinned, cx));
         if v.pending && v.blocks.is_empty() {
             // The skeleton while K22 works, with what it's saying.
             let t = self.t();
             if let Some(a) = self.asking.as_ref().filter(|a| a.id == id) {
                 let slow = a.at.elapsed() > Duration::from_secs(90);
-                col = col.child(
-                    div()
-                        .text_size(px(tk::T12))
-                        .text_color(tk::FAINT)
-                        .child(if slow { format!("Still working on “{}”…", a.text) } else { format!("“{}”", a.text) }),
-                );
+                col = col.child(div().text_size(px(tk::T12)).text_color(tk::FAINT).child(if slow {
+                    format!("Still working on “{}”…", a.text)
+                } else {
+                    format!("“{}”", a.text)
+                }));
             }
             for (i, w) in [0.92f32, 0.7, 0.84].into_iter().enumerate() {
                 col = col.child(
@@ -1233,13 +1297,10 @@ impl Notch {
             col = col.child(rise(el, (key ^ id, i), i));
         }
         if !reply.is_empty() && !v.pending || (v.pending && !reply.is_empty()) {
-            col = col.child(
-                div()
-                    .pt(px(4.0))
-                    .text_size(px(tk::T12))
-                    .text_color(tk::DIM)
-                    .child(markdown(&reply.chars().rev().take(600).collect::<String>().chars().rev().collect::<String>(), &format!("vr{id}"))),
-            );
+            col = col.child(div().pt(px(4.0)).text_size(px(tk::T12)).text_color(tk::DIM).child(markdown(
+                &reply.chars().rev().take(600).collect::<String>().chars().rev().collect::<String>(),
+                &format!("vr{id}"),
+            )));
         }
         if let Some(l) = line {
             col = col.child(
@@ -1254,9 +1315,10 @@ impl Notch {
                     .gap(px(8.0))
                     .child(icon(icons::K22_MARK).size(px(14.0)).text_color(tk::K22))
                     .child(div().flex_1().text_size(px(tk::T13)).child(Input::new(&l)))
-                    .child(ibtn("view-talk", icons::WAVEFORM, 28.0, tk::DIM, "Talk to K22").on_click(cx.listener(
-                        |this, _: &ClickEvent, _, cx| this.talk(None, cx),
-                    ))),
+                    .child(
+                        ibtn("view-talk", icons::WAVEFORM, 28.0, tk::DIM, "Talk to K22")
+                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.talk(None, cx))),
+                    ),
             );
         }
         col.into_any_element()
@@ -1286,7 +1348,11 @@ impl Notch {
                             .child(v.title.clone()),
                     )
                     .children(v.subtitle.clone().map(|s| {
-                        div().text_size(px(tk::T11)).text_color(if v.pending { tk::K22 } else { tk::FAINT }).truncate().child(s)
+                        div()
+                            .text_size(px(tk::T11))
+                            .text_color(if v.pending { tk::K22 } else { tk::FAINT })
+                            .truncate()
+                            .child(s)
                     })),
             )
             .when(!v.pending, |d| {
@@ -1308,7 +1374,14 @@ impl Notch {
 
     pub(crate) fn page_lens(&mut self, lens: Lens, cx: &mut Context<Self>) -> AnyElement {
         let v = self.lens_view(lens);
-        let mut col = div().id(eid(format!("lens-{}", lens.id()))).size_full().overflow_y_scroll().flex().flex_col().gap(px(10.0)).pt(px(4.0));
+        let mut col = div()
+            .id(eid(format!("lens-{}", lens.id())))
+            .size_full()
+            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .gap(px(10.0))
+            .pt(px(4.0));
         col = col.child(
             div()
                 .flex()
@@ -1356,7 +1429,12 @@ impl Notch {
                             trend: None,
                             tone: if failed > 0 { Tone::Bad } else { Tone::Neutral },
                         },
-                        StatItem { value: self.snap.plans.len().to_string(), label: "plans".into(), trend: None, tone: Tone::Neutral },
+                        StatItem {
+                            value: self.snap.plans.len().to_string(),
+                            label: "plans".into(),
+                            trend: None,
+                            tone: Tone::Neutral,
+                        },
                     ],
                 });
                 let active: Vec<_> = agents.iter().filter(|a| a.active()).collect();
@@ -1388,13 +1466,15 @@ impl Notch {
                 }
                 for a in agents.iter().filter(|a| a.needs_you()) {
                     let mut inner = Vec::new();
-                    for p in a.pending.iter().filter(|p| !crate::island::view::is_plan_request(&dove_core::proto::PermissionRequest {
-                        request_id: p.request_id.clone(),
-                        tool: p.tool.clone(),
-                        summary: p.summary.clone().into(),
-                        input: serde_json::Value::Null,
-                        questions: Vec::new(),
-                    })) {
+                    for p in a.pending.iter().filter(|p| {
+                        !crate::island::view::is_plan_request(&dove_core::proto::PermissionRequest {
+                            request_id: p.request_id.clone(),
+                            tool: p.tool.clone(),
+                            summary: p.summary.clone().into(),
+                            input: serde_json::Value::Null,
+                            questions: Vec::new(),
+                        })
+                    }) {
                         inner.push(Block::Text { text: p.summary.clone() });
                         if let Some(Preview::Diff { file, added, removed, lines }) = &p.preview {
                             inner.push(Block::Diff {
@@ -1404,11 +1484,20 @@ impl Notch {
                                 lines: lines.iter().map(|(t, l)| format!("{t}{l}")).collect(),
                             });
                         } else if let Some(Preview::Command(c)) = &p.preview {
-                            inner.push(Block::Diff { file: "command".into(), added: 0, removed: 0, lines: vec![format!(" {c}")] });
+                            inner.push(Block::Diff {
+                                file: "command".into(),
+                                added: 0,
+                                removed: 0,
+                                lines: vec![format!(" {c}")],
+                            });
                         }
                         let mut buttons = Vec::new();
                         if p.question {
-                            buttons.push(Button { label: "Answer".into(), action: ViewAction::Open { task: a.id }, primary: true });
+                            buttons.push(Button {
+                                label: "Answer".into(),
+                                action: ViewAction::Open { task: a.id },
+                                primary: true,
+                            });
                         } else {
                             buttons.push(Button {
                                 label: if p.safe { "Approve".into() } else { "Review in app".into() },
@@ -1426,15 +1515,25 @@ impl Notch {
                     if a.pending.is_empty() {
                         inner.push(Block::Text { text: "Waiting on your reply.".into() });
                         inner.push(Block::Actions {
-                            items: vec![Button { label: "Reply".into(), action: ViewAction::Open { task: a.id }, primary: true }],
+                            items: vec![Button {
+                                label: "Reply".into(),
+                                action: ViewAction::Open { task: a.id },
+                                primary: true,
+                            }],
                         });
                     }
                     if !inner.is_empty() {
-                        blocks.push(Block::Section { title: format!("{} · {}", a.kind.label(), a.title), blocks: inner });
+                        blocks
+                            .push(Block::Section {
+                                title: format!("{} · {}", a.kind.label(), a.title), blocks: inner
+                            });
                     }
                 }
                 if blocks.is_empty() {
-                    blocks.push(Block::Callout { text: "You're all caught up: nothing needs you.".into(), tone: Tone::Good });
+                    blocks.push(Block::Callout {
+                        text: "You're all caught up: nothing needs you.".into(),
+                        tone: Tone::Good,
+                    });
                 }
             }
             Lens::Today => {
@@ -1452,8 +1551,18 @@ impl Notch {
                 subtitle = Some(chrono::Local::now().format("%A %e %B").to_string());
                 blocks.push(Block::Stats {
                     items: vec![
-                        StatItem { value: done.len().to_string(), label: "finished".into(), trend: None, tone: Tone::Good },
-                        StatItem { value: running.len().to_string(), label: "in progress".into(), trend: None, tone: Tone::Info },
+                        StatItem {
+                            value: done.len().to_string(),
+                            label: "finished".into(),
+                            trend: None,
+                            tone: Tone::Good,
+                        },
+                        StatItem {
+                            value: running.len().to_string(),
+                            label: "in progress".into(),
+                            trend: None,
+                            tone: Tone::Info,
+                        },
                         StatItem {
                             value: failed.len().to_string(),
                             label: "failed".into(),
@@ -1481,7 +1590,9 @@ impl Notch {
                 if !timeline.is_empty() {
                     blocks.push(Block::Section {
                         title: "What happened".into(),
-                        blocks: vec![Block::Timeline { items: timeline.into_iter().map(|(_, t)| t).take(10).collect() }],
+                        blocks: vec![Block::Timeline {
+                            items: timeline.into_iter().map(|(_, t)| t).take(10).collect(),
+                        }],
                     });
                 }
                 // Next steps.
@@ -1592,7 +1703,12 @@ impl Notch {
                 div().text_size(px(tk::T13)).text_color(tk::DIM).child(markdown(text, key)).into_any_element()
             }
             Block::Stat { value, label, trend, tone } => self.stats(
-                &[crate::island::view::StatItem { value: value.clone(), label: label.clone(), trend: trend.clone(), tone: *tone }],
+                &[crate::island::view::StatItem {
+                    value: value.clone(),
+                    label: label.clone(),
+                    trend: trend.clone(),
+                    tone: *tone,
+                }],
                 key,
             ),
             Block::Stats { items } => self.stats(items, key),
@@ -1606,7 +1722,9 @@ impl Notch {
                         .justify_between()
                         .text_size(px(tk::T12))
                         .child(div().text_color(tk::DIM).child(label.clone()))
-                        .child(div().font_family(tk::MONO).text_color(tk::FAINT).child(format!("{:.0}%", value * 100.0))),
+                        .child(
+                            div().font_family(tk::MONO).text_color(tk::FAINT).child(format!("{:.0}%", value * 100.0)),
+                        ),
                 )
                 .child(bar(*value, if *tone == Tone::Neutral { tk::BLUE } else { tone_color(*tone) }, 5.0))
                 .into_any_element(),
@@ -1614,24 +1732,35 @@ impl Notch {
                 let mut col = div().flex().flex_col().gap(px(2.0));
                 for (i, it) in items.iter().enumerate() {
                     let color = if it.tone == Tone::Neutral { tk::DIM } else { tone_color(it.tone) };
-                    let mut row = div()
-                        .id(eid(format!("{key}-li-{i}")))
-                        .h(px(40.0))
-                        .px(px(8.0))
-                        .rounded(px(tk::R_ROW))
-                        .flex()
-                        .items_center()
-                        .gap(px(10.0))
-                        .child(icon(it.icon.as_deref().map(icon_named).unwrap_or(icons::CHECK)).size(px(tk::ICON_ROW)).text_color(color))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .child(div().text_size(px(tk::T13)).text_color(tk::TEXT).truncate().child(it.title.clone()))
-                                .children(it.meta.clone().map(|m| {
-                                    div().text_size(px(tk::T11)).text_color(tk::FAINT).truncate().child(m)
-                                })),
-                        );
+                    let mut row =
+                        div()
+                            .id(eid(format!("{key}-li-{i}")))
+                            .h(px(40.0))
+                            .px(px(8.0))
+                            .rounded(px(tk::R_ROW))
+                            .flex()
+                            .items_center()
+                            .gap(px(10.0))
+                            .child(
+                                icon(it.icon.as_deref().map(icon_named).unwrap_or(icons::CHECK))
+                                    .size(px(tk::ICON_ROW))
+                                    .text_color(color),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .child(
+                                        div()
+                                            .text_size(px(tk::T13))
+                                            .text_color(tk::TEXT)
+                                            .truncate()
+                                            .child(it.title.clone()),
+                                    )
+                                    .children(it.meta.clone().map(|m| {
+                                        div().text_size(px(tk::T11)).text_color(tk::FAINT).truncate().child(m)
+                                    })),
+                            );
                     if let Some(a) = &it.action {
                         row = row
                             .cursor_pointer()
@@ -1654,7 +1783,8 @@ impl Notch {
                             .child(if it.done {
                                 icon(icons::CHECK).size(px(14.0)).text_color(tk::GREEN).into_any_element()
                             } else {
-                                self.dot(if it.active { tk::BLUE } else { tk::GHOST }, 7.0, it.active).into_any_element()
+                                self.dot(if it.active { tk::BLUE } else { tk::GHOST }, 7.0, it.active)
+                                    .into_any_element()
                             })
                             .child(
                                 div()
@@ -1684,8 +1814,20 @@ impl Notch {
                                     .text_color(tk::FAINT)
                                     .child(it.time.clone()),
                             )
-                            .child(self.dot(if it.tone == Tone::Neutral { tk::DIM } else { tone_color(it.tone) }, 6.0, false))
-                            .child(div().flex_1().min_w_0().truncate().text_size(px(tk::T13)).text_color(tk::TEXT).child(it.text.clone())),
+                            .child(self.dot(
+                                if it.tone == Tone::Neutral { tk::DIM } else { tone_color(it.tone) },
+                                6.0,
+                                false,
+                            ))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_size(px(tk::T13))
+                                    .text_color(tk::TEXT)
+                                    .child(it.text.clone()),
+                            ),
                     );
                 }
                 col.into_any_element()
@@ -1700,9 +1842,34 @@ impl Notch {
                         .items_center()
                         .gap(px(8.0))
                         .child(icon(icons::FILE_DIFF).size(px(14.0)).text_color(tk::DIM))
-                        .child(div().flex_1().min_w_0().truncate().font_family(tk::MONO).text_size(px(tk::T12)).text_color(tk::TEXT).child(file.clone()))
-                        .when(*added > 0, |d| d.child(div().font_family(tk::MONO).text_size(px(tk::T11)).text_color(tk::GREEN).child(format!("+{added}"))))
-                        .when(*removed > 0, |d| d.child(div().font_family(tk::MONO).text_size(px(tk::T11)).text_color(tk::RED).child(format!("−{removed}")))),
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .font_family(tk::MONO)
+                                .text_size(px(tk::T12))
+                                .text_color(tk::TEXT)
+                                .child(file.clone()),
+                        )
+                        .when(*added > 0, |d| {
+                            d.child(
+                                div()
+                                    .font_family(tk::MONO)
+                                    .text_size(px(tk::T11))
+                                    .text_color(tk::GREEN)
+                                    .child(format!("+{added}")),
+                            )
+                        })
+                        .when(*removed > 0, |d| {
+                            d.child(
+                                div()
+                                    .font_family(tk::MONO)
+                                    .text_size(px(tk::T11))
+                                    .text_color(tk::RED)
+                                    .child(format!("−{removed}")),
+                            )
+                        }),
                 )
                 .children(lines.iter().map(|l| {
                     let color = match l.chars().next() {
@@ -1710,7 +1877,13 @@ impl Notch {
                         Some('-') => tk::FAINT,
                         _ => tk::DIM,
                     };
-                    div().font_family(tk::MONO).text_size(px(tk::T11)).text_color(color).truncate().child(l.clone()).into_any_element()
+                    div()
+                        .font_family(tk::MONO)
+                        .text_size(px(tk::T11))
+                        .text_color(color)
+                        .truncate()
+                        .child(l.clone())
+                        .into_any_element()
                 }))
                 .into_any_element(),
             Block::Agent { task } => match self.snap.agents.iter().position(|a| a.id == *task) {
@@ -1722,11 +1895,19 @@ impl Notch {
                         .flex_col()
                         .child(self.agent_row(&a, 900 + i, cx))
                         .when_some(a.todos.filter(|(_, t)| *t > 0), |d, (done, total)| {
-                            d.child(div().px(px(10.0)).pb(px(8.0)).child(bar(done as f32 / total as f32, tk::BLUE, 3.0)))
+                            d.child(div().px(px(10.0)).pb(px(8.0)).child(bar(
+                                done as f32 / total as f32,
+                                tk::BLUE,
+                                3.0,
+                            )))
                         })
                         .into_any_element()
                 }
-                None => card().text_size(px(tk::T12)).text_color(tk::FAINT).child("That agent isn't around any more.").into_any_element(),
+                None => card()
+                    .text_size(px(tk::T12))
+                    .text_color(tk::FAINT)
+                    .child("That agent isn't around any more.")
+                    .into_any_element(),
             },
             Block::Plan { task } => match self.plan_for(*task) {
                 Some(p) => {
@@ -1741,18 +1922,40 @@ impl Notch {
                                 .items_center()
                                 .gap(px(8.0))
                                 .child(icon(icons::LAYERS).size(px(14.0)).text_color(tk::BLUE))
-                                .child(div().flex_1().text_size(px(tk::T13)).font_weight(FontWeight::MEDIUM).text_color(tk::TEXT).child(format!("{}'s plan", p.kind.label())))
-                                .child(div().text_size(px(tk::T11)).text_color(tk::FAINT).child(format!("{} steps", p.steps.len()))),
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .text_size(px(tk::T13))
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .text_color(tk::TEXT)
+                                        .child(format!("{}'s plan", p.kind.label())),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(tk::T11))
+                                        .text_color(tk::FAINT)
+                                        .child(format!("{} steps", p.steps.len())),
+                                ),
                         )
                         .children(p.steps.iter().take(4).enumerate().map(|(i, s)| {
-                            div().text_size(px(tk::T12)).text_color(tk::DIM).truncate().child(format!("{}. {}", i + 1, s.text)).into_any_element()
+                            div()
+                                .text_size(px(tk::T12))
+                                .text_color(tk::DIM)
+                                .truncate()
+                                .child(format!("{}. {}", i + 1, s.text))
+                                .into_any_element()
                         }))
                         .child(
                             div().flex().gap(px(6.0)).child(
-                                primary(eid(format!("{key}-review")), if p.request_id.is_some() { "Review plan" } else { "Open plan" })
-                                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                                primary(
+                                    eid(format!("{key}-review")),
+                                    if p.request_id.is_some() { "Review plan" } else { "Open plan" },
+                                )
+                                .on_click(cx.listener(
+                                    move |this, _: &ClickEvent, window, cx| {
                                         this.open_page(Page::Plan(task), Some(window), cx)
-                                    })),
+                                    },
+                                )),
                             ),
                         )
                         .into_any_element()
@@ -1802,16 +2005,28 @@ impl Notch {
                 .child(div().flex_1().min_w_0().flex().flex_col().gap(px(10.0)).children(
                     left.iter().enumerate().map(|(i, b)| self.block(b, &format!("{key}-l{i}"), cx)).collect::<Vec<_>>(),
                 ))
-                .child(div().flex_1().min_w_0().flex().flex_col().gap(px(10.0)).children(
-                    right.iter().enumerate().map(|(i, b)| self.block(b, &format!("{key}-r{i}"), cx)).collect::<Vec<_>>(),
-                ))
+                .child(
+                    div().flex_1().min_w_0().flex().flex_col().gap(px(10.0)).children(
+                        right
+                            .iter()
+                            .enumerate()
+                            .map(|(i, b)| self.block(b, &format!("{key}-r{i}"), cx))
+                            .collect::<Vec<_>>(),
+                    ),
+                )
                 .into_any_element(),
             Block::Section { title, blocks } => div()
                 .flex()
                 .flex_col()
                 .gap(px(8.0))
                 .child(section(title.clone()))
-                .children(blocks.iter().enumerate().map(|(i, b)| self.block(b, &format!("{key}-s{i}"), cx)).collect::<Vec<_>>())
+                .children(
+                    blocks
+                        .iter()
+                        .enumerate()
+                        .map(|(i, b)| self.block(b, &format!("{key}-s{i}"), cx))
+                        .collect::<Vec<_>>(),
+                )
                 .into_any_element(),
             Block::Unknown => div().into_any_element(),
         }
@@ -1839,8 +2054,16 @@ impl Notch {
                             .flex()
                             .items_baseline()
                             .gap(px(6.0))
-                            .child(div().text_size(px(tk::T20)).font_weight(FontWeight::SEMIBOLD).text_color(color).child(s.value.clone()))
-                            .children(s.trend.clone().map(|t| div().text_size(px(tk::T11)).text_color(tk::FAINT).child(t))),
+                            .child(
+                                div()
+                                    .text_size(px(tk::T20))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(color)
+                                    .child(s.value.clone()),
+                            )
+                            .children(
+                                s.trend.clone().map(|t| div().text_size(px(tk::T11)).text_color(tk::FAINT).child(t)),
+                            ),
                     )
                     .child(div().text_size(px(tk::T11)).text_color(tk::FAINT).truncate().child(s.label.clone())),
             );
@@ -1862,17 +2085,25 @@ impl Notch {
                     .gap(px(12.0))
                     .cursor_pointer()
                     .hover(|s| s.bg(tk::WASH))
-                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.open_page(Page::Call, Some(window), cx)))
+                    .on_click(
+                        cx.listener(|this, _: &ClickEvent, window, cx| this.open_page(Page::Call, Some(window), cx)),
+                    )
                     .child(self.orb(28.0))
                     .child(
                         div()
                             .flex_1()
                             .min_w_0()
-                            .child(div().text_size(px(tk::T13)).font_weight(FontWeight::MEDIUM).text_color(tk::TEXT).child(format!(
-                                "{} · {}",
-                                self.call.target.clone().unwrap_or_else(|| "K22".into()),
-                                self.call.phase.word()
-                            )))
+                            .child(
+                                div()
+                                    .text_size(px(tk::T13))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(tk::TEXT)
+                                    .child(format!(
+                                        "{} · {}",
+                                        self.call.target.clone().unwrap_or_else(|| "K22".into()),
+                                        self.call.phase.word()
+                                    )),
+                            )
                             .child(div().text_size(px(tk::T11)).text_color(tk::FAINT).truncate().child(caption)),
                     )
                     .child(
@@ -1905,37 +2136,48 @@ impl Notch {
                     .flex_col()
                     .gap(px(8.0))
                     .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(10.0))
-                            .child(avatar(p.kind, 26.0, None))
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .child(div().text_size(px(tk::T13)).font_weight(FontWeight::MEDIUM).text_color(tk::TEXT).truncate().child(p.title.clone()))
-                                    .child(div().text_size(px(tk::T11)).text_color(tk::BLUE).child(format!(
-                                        "{} has a plan · {} steps",
-                                        p.kind.label(),
-                                        p.steps.len()
-                                    ))),
-                            ),
+                        div().flex().items_center().gap(px(10.0)).child(avatar(p.kind, 26.0, None)).child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .child(
+                                    div()
+                                        .text_size(px(tk::T13))
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .text_color(tk::TEXT)
+                                        .truncate()
+                                        .child(p.title.clone()),
+                                )
+                                .child(div().text_size(px(tk::T11)).text_color(tk::BLUE).child(format!(
+                                    "{} has a plan · {} steps",
+                                    p.kind.label(),
+                                    p.steps.len()
+                                ))),
+                        ),
                     )
                     .children(p.steps.iter().take(2).enumerate().map(|(i, s)| {
-                        div().text_size(px(tk::T12)).text_color(tk::DIM).truncate().child(format!("{}. {}", i + 1, s.text)).into_any_element()
+                        div()
+                            .text_size(px(tk::T12))
+                            .text_color(tk::DIM)
+                            .truncate()
+                            .child(format!("{}. {}", i + 1, s.text))
+                            .into_any_element()
                     }))
                     .child(
                         div()
                             .flex()
                             .gap(px(6.0))
-                            .child(primary("home-plan", "Review").on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                                this.open_page(Page::Plan(task), Some(window), cx)
-                            })))
+                            .child(primary("home-plan", "Review").on_click(cx.listener(
+                                move |this, _: &ClickEvent, window, cx| {
+                                    this.open_page(Page::Plan(task), Some(window), cx)
+                                },
+                            )))
                             .when(self.snap.plans.len() > 1, |d| {
                                 let n = self.snap.plans.len() - 1;
                                 d.child(pill("home-plans", format!("{n} more"), false).on_click(cx.listener(
-                                    |this, _: &ClickEvent, window, cx| this.open_page(Page::Lens(Lens::Needs), Some(window), cx),
+                                    |this, _: &ClickEvent, window, cx| {
+                                        this.open_page(Page::Lens(Lens::Needs), Some(window), cx)
+                                    },
                                 )))
                             }),
                     )
@@ -1950,32 +2192,49 @@ impl Notch {
                         .items_center()
                         .gap(px(8.0))
                         .child(icon(icons::ARTIFACTS).size(px(14.0)).text_color(tk::DIM))
-                        .child(div().flex_1().truncate().text_size(px(tk::T13)).font_weight(FontWeight::MEDIUM).text_color(tk::TEXT).child(w.title.clone()))
-                        .child(ibtn("home-widget-open", icons::ALT_ARROW_RIGHT, 24.0, tk::DIM, "Open").on_click(cx.listener(
-                            move |this, _: &ClickEvent, window, cx| {
+                        .child(
+                            div()
+                                .flex_1()
+                                .truncate()
+                                .text_size(px(tk::T13))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(tk::TEXT)
+                                .child(w.title.clone()),
+                        )
+                        .child(ibtn("home-widget-open", icons::ALT_ARROW_RIGHT, 24.0, tk::DIM, "Open").on_click(
+                            cx.listener(move |this, _: &ClickEvent, window, cx| {
                                 if !this.views.iter().any(|v| v.id == id)
                                     && let Some(w) = this.widgets.iter().find(|w| w.id == id).cloned()
                                 {
                                     this.views.insert(0, w);
                                 }
                                 this.open_page(Page::View(id), Some(window), cx)
-                            },
-                        ))),
+                            }),
+                        )),
                 );
-                for (i, b) in w.blocks.iter().filter(|b| !matches!(b, Block::Heading { .. } | Block::Text { .. })).take(2).enumerate() {
+                for (i, b) in w
+                    .blocks
+                    .iter()
+                    .filter(|b| !matches!(b, Block::Heading { .. } | Block::Text { .. }))
+                    .take(2)
+                    .enumerate()
+                {
                     c = c.child(self.block(b, &format!("w{id}-{i}"), cx));
                 }
                 c.into_any_element()
             }
             HomeCard::Usage => {
-                let Some(m) = self.snap.limits.iter().filter(|m| m.used >= 80.0).max_by(|a, b| a.used.total_cmp(&b.used)).cloned()
+                let Some(m) = self
+                    .snap
+                    .limits
+                    .iter()
+                    .filter(|m| m.used >= 80.0)
+                    .max_by(|a, b| a.used.total_cmp(&b.used))
+                    .cloned()
                 else {
                     return div().into_any_element();
                 };
-                let reset = m
-                    .resets_at
-                    .map(|s| format!(" · resets {}", until(s * 1000)))
-                    .unwrap_or_default();
+                let reset = m.resets_at.map(|s| format!(" · resets {}", until(s * 1000))).unwrap_or_default();
                 card()
                     .flex()
                     .flex_col()
@@ -1986,8 +2245,18 @@ impl Notch {
                             .items_center()
                             .gap(px(8.0))
                             .child(mark(m.kind, 13.0))
-                            .child(div().flex_1().text_size(px(tk::T12)).text_color(tk::DIM).child(format!("{} · {}{reset}", m.kind.label(), m.label)))
-                            .child(div().font_family(tk::MONO).text_size(px(tk::T12)).text_color(if m.used >= 95.0 { tk::RED } else { tk::AMBER }).child(format!("{:.0}%", m.used))),
+                            .child(div().flex_1().text_size(px(tk::T12)).text_color(tk::DIM).child(format!(
+                                "{} · {}{reset}",
+                                m.kind.label(),
+                                m.label
+                            )))
+                            .child(
+                                div()
+                                    .font_family(tk::MONO)
+                                    .text_size(px(tk::T12))
+                                    .text_color(if m.used >= 95.0 { tk::RED } else { tk::AMBER })
+                                    .child(format!("{:.0}%", m.used)),
+                            ),
                     )
                     .child(bar((m.used / 100.0) as f32, if m.used >= 95.0 { tk::RED } else { tk::AMBER }, 4.0))
                     .into_any_element()
@@ -2000,10 +2269,26 @@ impl Notch {
     pub(crate) fn home_card_v3_height(&self, c: HomeCard) -> f32 {
         match c {
             HomeCard::Call => 56.0,
-            HomeCard::Plan => 24.0 + 30.0 + self.snap.plans.first().map_or(0.0, |p| p.steps.len().min(2) as f32 * 18.0) + 8.0 + tk::CONTROL_H + 8.0,
-            HomeCard::Widget => 24.0 + 32.0 + self.widgets.first().map_or(0.0, |w| {
-                blocks_h(&w.blocks.iter().filter(|b| !matches!(b, Block::Heading { .. } | Block::Text { .. })).take(2).cloned().collect::<Vec<_>>())
-            }),
+            HomeCard::Plan => {
+                24.0 + 30.0
+                    + self.snap.plans.first().map_or(0.0, |p| p.steps.len().min(2) as f32 * 18.0)
+                    + 8.0
+                    + tk::CONTROL_H
+                    + 8.0
+            }
+            HomeCard::Widget => {
+                24.0 + 32.0
+                    + self.widgets.first().map_or(0.0, |w| {
+                        blocks_h(
+                            &w.blocks
+                                .iter()
+                                .filter(|b| !matches!(b, Block::Heading { .. } | Block::Text { .. }))
+                                .take(2)
+                                .cloned()
+                                .collect::<Vec<_>>(),
+                        )
+                    })
+            }
             HomeCard::Usage => 52.0,
             _ => 0.0,
         }
@@ -2018,16 +2303,13 @@ impl Notch {
         let mut row = div().flex().flex_wrap().items_center().gap(px(6.0)).child(section("Run"));
         for (i, a) in autos.into_iter().enumerate() {
             let id = a.id.clone();
-            row = row.child(
-                pill(("auto-chip", i), a.name.clone(), false)
-                    .h(px(24.0))
-                    .px(px(10.0))
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        this.command(ToEngine::RunAutomation { id: id.clone() });
-                        this.toast("Running");
-                        cx.notify();
-                    })),
-            );
+            row = row.child(pill(("auto-chip", i), a.name.clone(), false).h(px(24.0)).px(px(10.0)).on_click(
+                cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    this.command(ToEngine::RunAutomation { id: id.clone() });
+                    this.toast("Running");
+                    cx.notify();
+                }),
+            ));
         }
         Some(row.into_any_element())
     }

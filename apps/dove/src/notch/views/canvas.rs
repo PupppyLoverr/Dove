@@ -875,10 +875,12 @@ impl Notch {
                     150.0
                 } else {
                     let shown = cards.len().min(3);
-                    let h: f32 = cards.iter().take(3).map(|c| c.height(self)).sum::<f32>() + tk::GAP * (shown as f32 - 1.0);
+                    let h: f32 =
+                        cards.iter().take(3).map(|c| c.height(self)).sum::<f32>() + tk::GAP * (shown as f32 - 1.0);
                     // A sparse Home also shows the shortcut row (pages.rs).
                     let chips = if self.snap.automations.iter().any(|a| a.enabled) { tk::GAP + 24.0 } else { 0.0 };
-                    h + if cards.len() > 3 { 36.0 } else { 0.0 } + if cards.len() < 2 { tk::GAP + 56.0 + chips } else { 0.0 }
+                    h + if cards.len() > 3 { 36.0 } else { 0.0 }
+                        + if cards.len() < 2 { tk::GAP + 56.0 + chips } else { 0.0 }
                 }
             }
             Page::Tab(Tab::Agents) => {
@@ -1044,15 +1046,7 @@ impl Notch {
                     .flex()
                     .items_center()
                     .gap(px(STEP - SLOT))
-                    .child(
-                        div()
-                            .absolute()
-                            .left(px(puck_x))
-                            .top_0()
-                            .size(px(SLOT))
-                            .rounded_full()
-                            .bg(tk::WASH_ON),
-                    );
+                    .child(div().absolute().left(px(puck_x)).top_0().size(px(SLOT)).rounded_full().bg(tk::WASH_ON));
                 for (i, t) in tabs.iter().copied().enumerate() {
                     let on = t == page_tab;
                     strip = strip.child(
@@ -1139,7 +1133,9 @@ impl Notch {
                     .gap(px(6.0))
                     .tooltip(tip("End the call"))
                     .child(icon(icons::WAVEFORM).size(px(tk::ICON_ROW)).text_color(tk::RED))
-                    .child(div().text_size(px(tk::T12)).font_weight(FontWeight::MEDIUM).text_color(tk::RED).child("End"))
+                    .child(
+                        div().text_size(px(tk::T12)).font_weight(FontWeight::MEDIUM).text_color(tk::RED).child("End"),
+                    )
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                         this.command(ToEngine::Call { on: false, task: None });
                         cx.notify();
@@ -1419,7 +1415,10 @@ impl Notch {
             t * t * (3.0 - 2.0 * t) * tk::TINT_DENSE
         };
         let (top, bottom) = if frosted {
-            (Hsla { a: tk::TINT_TOP.a + dense, ..tk::TINT_TOP }, Hsla { a: tk::TINT_BOTTOM.a + dense, ..tk::TINT_BOTTOM })
+            (
+                Hsla { a: tk::TINT_TOP.a + dense, ..tk::TINT_TOP },
+                Hsla { a: tk::TINT_BOTTOM.a + dense, ..tk::TINT_BOTTOM },
+            )
         } else {
             (tk::SOLID_TOP, tk::SOLID_BOTTOM)
         };
@@ -1448,7 +1447,11 @@ impl Notch {
                             .object_fit(ObjectFit::Fill),
                     )
                 })
-                .child(div().absolute().top_0().left_0().size_full().bg(linear_gradient(180.0, linear_color_stop(top, 0.0), linear_color_stop(bottom, 1.0))))
+                .child(div().absolute().top_0().left_0().size_full().bg(linear_gradient(
+                    180.0,
+                    linear_color_stop(top, 0.0),
+                    linear_color_stop(bottom, 1.0),
+                )))
                 .when(frosted, |d| d.child(div().absolute().top_0().left_0().size_full().bg(tk::FROST)))
                 .when_some(grain.clone(), |d, image| {
                     d.child(
@@ -1470,24 +1473,34 @@ impl Notch {
                 })
                 // Glass only: light from above, the pane's inner edge and
                 // the specular line along the top.
-                .when(frosted, |d| d.child(
-                    div()
-                        .absolute()
-                        .top_0()
-                        .left_0()
-                        .size_full()
-                        .bg(linear_gradient(180.0, linear_color_stop(tk::SHEEN, 0.0), linear_color_stop(tk::SHEEN.opacity(0.0), tk::SHEEN_TO))),
-                ))
-                .when(frosted, |d| d.child(div().absolute().top_0().left_0().size_full().rounded(px((r - 1.0).max(0.0))).border_1().border_color(tk::RIM_INNER)))
-                .when(frosted, |d| d.child(
-                    div()
-                        .absolute()
-                        .top_0()
-                        .left(px(r * 0.7))
-                        .right(px(r * 0.7))
-                        .h(px(1.0))
-                        .bg(linear_gradient(90.0, linear_color_stop(tk::SPECULAR.opacity(0.0), 0.0), linear_color_stop(tk::SPECULAR, 0.5))),
-                ))
+                .when(frosted, |d| {
+                    d.child(div().absolute().top_0().left_0().size_full().bg(linear_gradient(
+                        180.0,
+                        linear_color_stop(tk::SHEEN, 0.0),
+                        linear_color_stop(tk::SHEEN.opacity(0.0), tk::SHEEN_TO),
+                    )))
+                })
+                .when(frosted, |d| {
+                    d.child(
+                        div()
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .size_full()
+                            .rounded(px((r - 1.0).max(0.0)))
+                            .border_1()
+                            .border_color(tk::RIM_INNER),
+                    )
+                })
+                .when(frosted, |d| {
+                    d.child(div().absolute().top_0().left(px(r * 0.7)).right(px(r * 0.7)).h(px(1.0)).bg(
+                        linear_gradient(
+                            90.0,
+                            linear_color_stop(tk::SPECULAR.opacity(0.0), 0.0),
+                            linear_color_stop(tk::SPECULAR, 0.5),
+                        ),
+                    ))
+                })
         };
         let r = g.r.min(g.h / 2.0);
         let this = cx.entity().downgrade();
@@ -1700,7 +1713,8 @@ impl Notch {
         if !typing && !in_command && self.plan_key(key, m.alt, cx) {
             return;
         }
-        let deep = !tab_of(&self.page).in_bar() || matches!(self.page, Page::Agent(_) | Page::NewAgent) || self.page.wide();
+        let deep =
+            !tab_of(&self.page).in_bar() || matches!(self.page, Page::Agent(_) | Page::NewAgent) || self.page.wide();
         match key {
             "escape" => {
                 if self.picking {

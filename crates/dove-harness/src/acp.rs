@@ -527,8 +527,8 @@ pub fn choose(options: &[AcpOption], decision: PermissionDecision) -> Value {
 /// needs `AMP_CLI_PATH` pointing at the installed `amp` binary.
 fn launch_command(spec: &SessionSpec) -> Result<(std::path::PathBuf, Vec<String>), String> {
     if spec.kind == HarnessKind::Amp {
-        let npx =
-            process::resolve("npx").ok_or_else(|| "Amp needs Node.js (`npx`) so Keplorayx can start amp-acp".to_string())?;
+        let npx = process::resolve("npx")
+            .ok_or_else(|| "Amp needs Node.js (`npx`) so Keplorayx can start amp-acp".to_string())?;
         return Ok((npx, vec!["-y".into(), "amp-acp".into()]));
     }
     let args = launch_args(spec.kind).ok_or_else(|| format!("{} has no known ACP mode", spec.kind.label()))?;
