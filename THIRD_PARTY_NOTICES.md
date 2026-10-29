@@ -134,17 +134,10 @@ license is kept beside the assets in `apps/dove/assets/file-icons/LICENSE.symbol
 
 ## K22 icons
 
-The interface icons in `apps/dove/assets/icons` (except `brand-*`, `*-mark`, and
-the files listed below) are original K22 drawings. They are not Solar or Hugeicons.
-
-These files were added after the K22 pack and still use the previous Solar
-Linear drawings (CC BY 4.0, 480 Design, https://creativecommons.org/licenses/by/4.0/):
-`alarm`, `bolt`, `box-select`, `calendar-time`, `chart`, `chat-line`,
-`chevron-down`, `clipboard-list`, `code-scan`, `eraser`, `git-merge`,
-`hand-shake`, `highlighter`, `link-chain`, `media-next`, `media-pause`,
-`media-play`, `media-previous`, `media-shuffle`, `microphone-2`, `music-note`,
-`note-text`, `repeat-play`, `screen-capture`, `send-up`, `server`,
-`sparkle-agent`, `timer`, `undo`.
+The interface icons in `apps/dove/assets/icons` (except `brand-*` and `*-mark`),
+and the K22 art on iOS, Android, the landing page and the extension, are
+original K22 drawings (pack v5). None are traced from Solar, Hugeicons, Lucide
+or Phosphor.
 
 Agent brand marks (Claude, OpenAI, Cursor, Devin, Grok, OpenCode, Pi, Hermes,
 Antigravity) identify the respective products and remain the property of their

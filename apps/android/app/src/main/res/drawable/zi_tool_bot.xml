@@ -1,17 +1,12 @@
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="24dp" android:height="24dp"
     android:viewportWidth="24" android:viewportHeight="24">
-  <path android:pathData="M20.145 10.53C20.22 10.965 20.25 11.46 20.25 12L20.25 15.75C20.25 18.99 18.99 20.25 15.75 20.25L8.25 20.25C5.01 20.25 3.75 18.99 3.75 15.75L3.75 12C3.75 8.76 5.01 7.5 8.25 7.5L15.75 7.5C16.29 7.5 16.785 7.53 17.22 7.605"
+  <path android:pathData="M8.25 8.25L15.75 8.25C18.99 8.25 20.25 9.51 20.25 12.75L20.25 15.75C20.25 18.99 18.99 20.25 15.75 20.25L8.25 20.25C5.01 20.25 3.75 18.99 3.75 15.75L3.75 12.75C3.75 9.51 5.01 8.25 8.25 8.25Z"
       android:strokeColor="#FF000000"
       android:strokeWidth="1.75"
       android:strokeLineCap="round"
       android:strokeLineJoin="round" />
-  <path android:pathData="M12 7.5V4.875M9 13.125v1.5M15 13.125v1.5"
-      android:strokeColor="#FF000000"
-      android:strokeWidth="1.75"
-      android:strokeLineCap="round"
-      android:strokeLineJoin="round" />
-  <path android:pathData="M10.875,3.375a1.125,1.125 0 1,0 2.25,0a1.125,1.125 0 1,0 -2.25,0Z"
+  <path android:pathData="M12 7.5L12 3.75M9.75 13.125L9.75 14.625M14.25 13.125L14.25 14.625"
       android:strokeColor="#FF000000"
       android:strokeWidth="1.75"
       android:strokeLineCap="round"
