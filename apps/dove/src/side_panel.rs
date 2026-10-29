@@ -240,6 +240,8 @@ pub enum SidePanelEvent {
     PrChanged,
     /// The panel's own close button.
     Close,
+    /// Dock on the left of the chat (true) or the right.
+    Dock(bool),
     /// Expand / collapse toggled.
     Layout,
     /// Scroll the conversation to a transcript row (a subagent's call).
@@ -545,6 +547,9 @@ pub struct SidePanel {
     prs: HashMap<TaskId, PrTarget>,
     /// The panel has the conversation's width.
     pub expanded: bool,
+    /// The placement card is open; where the panel docks.
+    place_open: bool,
+    pub dock_left: bool,
     plus_open: bool,
     /// The split menu that is open: the strip's (for the focused pane) or
     /// a pane header's.
@@ -622,6 +627,8 @@ impl SidePanel {
             pr_view,
             prs: HashMap::new(),
             expanded: false,
+            place_open: false,
+            dock_left: false,
             plus_open: false,
             split_menu: None,
             plus_hi: None,
@@ -1889,6 +1896,7 @@ impl SidePanel {
             .child(div().flex_1().min_w_0().child(strip))
             .when(!tabs.is_empty(), |d| d.child(plus))
             .when(!tabs.is_empty() && single, |d| d.child(self.split_menu_button("panel-split", None, &t, cx)))
+            .child(self.render_place_button(&t, cx))
             .child(
                 surface_chrome::toolbar_button(
                     "panel-expand",
@@ -1907,6 +1915,97 @@ impl SidePanel {
                     .on_click(cx.listener(|_, _, _, cx| cx.emit(SidePanelEvent::Close))),
             )
             .into_any_element()
+    }
+
+    /// Where the panel sits: docked left or right of the chat, or filling
+    /// the window. A small card of layout glyphs, the current one lit.
+    fn render_place_button(&mut self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let open = self.place_open;
+        let left = self.dock_left;
+        let button = surface_chrome::toolbar_button("panel-place", "Move panel")
+            .child(icon(icons::MORE_HORIZONTAL).size(px(13.0)).text_color(t.text_muted))
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.place_open = !this.place_open;
+                cx.notify();
+            }));
+        let menu = open.then(|| {
+            let glyph = |id: &'static str, label: &'static str, on: bool, art: AnyElement| {
+                div()
+                    .id(id)
+                    .size(px(36.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(radius::ROW))
+                    .cursor_pointer()
+                    .when(on, |d| d.bg(t.wash(0.12)))
+                    .when(!on, |d| d.hover(|s| s.bg(t.wash(0.07))))
+                    .tooltip(ui::tip(label))
+                    .child(art)
+            };
+            let label = |text: &'static str| {
+                div().px(px(8.0)).pt(px(6.0)).pb(px(4.0)).text_size(ty::CAPTION).text_color(t.text_faint).child(text)
+            };
+            let body = div()
+                .w(px(184.0))
+                .p(px(4.0))
+                .flex()
+                .flex_col()
+                .child(label("Move"))
+                .child(
+                    div()
+                        .px(px(4.0))
+                        .flex()
+                        .gap(px(4.0))
+                        .child(
+                            glyph("place-left", "Dock left", left && !self.expanded, layout_glyph(t, Some(true)))
+                                .on_click(cx.listener(|this, _, _, cx| this.place(Some(true), cx))),
+                        )
+                        .child(
+                            glyph("place-right", "Dock right", !left && !self.expanded, layout_glyph(t, Some(false)))
+                                .on_click(cx.listener(|this, _, _, cx| this.place(Some(false), cx))),
+                        ),
+                )
+                .child(label("Fill"))
+                .child(
+                    div().px(px(4.0)).pb(px(4.0)).flex().gap(px(4.0)).child(
+                        glyph("place-fill", "Fill the window", self.expanded, layout_glyph(t, None))
+                            .on_click(cx.listener(|this, _, _, cx| this.place(None, cx))),
+                    ),
+                );
+            deferred(
+                anchored().anchor(gpui::Anchor::TopRight).snap_to_window_with_margin(px(8.0)).child(
+                    div()
+                        .mt(px(28.0))
+                        .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                            this.place_open = false;
+                            cx.notify();
+                        }))
+                        .child(ui::menu_card(t, body)),
+                ),
+            )
+        });
+        div().relative().child(button).children(menu).into_any_element()
+    }
+
+    /// Dock left (`Some(true)`), right (`Some(false)`) or fill the window.
+    fn place(&mut self, side: Option<bool>, cx: &mut Context<Self>) {
+        self.place_open = false;
+        match side {
+            Some(left) => {
+                self.dock_left = left;
+                if self.expanded {
+                    self.toggle_expanded(cx);
+                }
+                cx.emit(SidePanelEvent::Dock(left));
+            }
+            None => {
+                if !self.expanded {
+                    self.toggle_expanded(cx);
+                }
+            }
+        }
+        cx.notify();
     }
 
     /// Open a surface picked from a picker: browsers, terminals and side
@@ -1934,7 +2033,7 @@ impl SidePanel {
         let open = self.split_menu == Some(pane);
         let button = surface_chrome::toolbar_button(id, "Split")
             .when(open, |d| d.bg(t.wash(0.08)))
-            .child(icon(icons::SPLIT_COLUMNS).size(px(12.5)).text_color(t.text_muted))
+            .child(icon(icons::SPLIT_VERTICAL).size(px(12.5)).text_color(t.text_muted))
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.split_menu = if this.split_menu == Some(pane) { None } else { Some(pane) };
                 this.plus_open = false;
@@ -1964,7 +2063,7 @@ impl SidePanel {
             .flex()
             .flex_col()
             .child(
-                item("split-menu-right", icons::SPLIT_COLUMNS, "Split right", "Ctrl+Alt+\\", right)
+                item("split-menu-right", icons::SPLIT_VERTICAL, "Split right", "Ctrl+Alt+\\", right)
                     .when(!right, |d| d.tooltip(ui::tip("No room: widen the panel or close a pane")))
                     .when(right, |d| {
                         d.on_click(cx.listener(move |this, _, _, cx| {
@@ -1974,7 +2073,7 @@ impl SidePanel {
                     }),
             )
             .child(
-                item("split-menu-down", icons::SPLIT_ROWS, "Split down", "Ctrl+Alt+-", down)
+                item("split-menu-down", icons::SPLIT_HORIZONTAL, "Split down", "Ctrl+Alt+-", down)
                     .when(!down, |d| d.tooltip(ui::tip("No room: close a pane first")))
                     .when(down, |d| {
                         d.on_click(cx.listener(move |this, _, _, cx| {
@@ -1989,7 +2088,7 @@ impl SidePanel {
                 .child(
                     item(
                         "split-menu-max",
-                        if maximized { icons::WINDOW_RESTORE } else { icons::WINDOW_MAXIMIZE },
+                        if maximized { icons::WINDOW_RESTORE } else { icons::PANE_MAXIMIZE },
                         if maximized { "Restore the panes" } else { "Maximize this pane" },
                         "Ctrl+Alt+Enter",
                         true,
@@ -2123,37 +2222,33 @@ impl SidePanel {
             ("Review", &[Tab::Changes, Tab::Files, Tab::History, Tab::Plan]),
             ("Agents", &[Tab::Subagents, Tab::Chats, Tab::SideChat]),
         ];
-        // Zeron's surface row: a quiet bordered plate, icon and name. What
-        // each one is for lives in its tooltip, so the list stays a list.
-        let (border, border_strong) = (t.border, t.border_strong);
+        // One card per group, rows inside it: icon, name, and what it is
+        // for in muted text. Rows part by hover fill, not by plates.
         let row = |k: Tab, cx: &mut Context<Self>| {
-            let blurb = k.blurb();
+            let id = SharedString::from(format!("surface-card-{}", k.label()));
             div()
-                .id(SharedString::from(format!("surface-card-{}", k.label())))
-                .group("surface-row")
+                .id(id.clone())
+                .group(id.clone())
                 .w_full()
-                .h(px(44.0))
-                .px(px(14.0))
-                .rounded(px(radius::RADIUS))
-                .border_1()
-                .border_color(border)
-                .bg(ink(0.02))
+                .h(px(40.0))
+                .px(px(10.0))
+                .rounded(px(radius::ROW))
                 .flex()
                 .items_center()
                 .gap(px(10.0))
                 .cursor_pointer()
-                .hover(move |s| s.bg(ink(0.05)).border_color(border_strong))
-                .tooltip(ui::tip(blurb))
-                .child(icon(k.glyph()).size(px(15.0)).flex_none().text_color(t.text_muted))
+                .hover(|s| s.bg(ink(0.05)))
+                .child(icon(k.glyph()).size(px(16.0)).flex_none().text_color(t.text_muted))
                 .child(
                     div()
-                        .flex_1()
-                        .min_w_0()
-                        .truncate()
+                        .flex_none()
                         .text_size(ty::BODY)
                         .font_weight(gpui::FontWeight::MEDIUM)
                         .text_color(t.text)
                         .child(k.label()),
+                )
+                .child(
+                    div().flex_1().min_w_0().truncate().text_size(ty::META).text_color(t.text_faint).child(k.blurb()),
                 )
                 .child(
                     icon(icons::ALT_ARROW_RIGHT)
@@ -2161,12 +2256,12 @@ impl SidePanel {
                         .flex_none()
                         .text_color(t.text_faint)
                         .invisible()
-                        .group_hover("surface-row", |s| s.visible()),
+                        .group_hover(id, |s| s.visible()),
                 )
                 .on_click(cx.listener(move |this, _, window, cx| this.pick(k, window, cx)))
         };
         let has_pr = self.thread.is_some_and(|id| self.prs.contains_key(&id));
-        let mut col = div().w_full().max_w(px(300.0)).flex().flex_col().gap(px(18.0));
+        let mut col = div().w_full().max_w(px(360.0)).flex().flex_col().gap(px(16.0));
         for (title, tabs) in GROUPS {
             col = col.child(
                 div()
@@ -2175,17 +2270,27 @@ impl SidePanel {
                     .gap(px(6.0))
                     .child(
                         div()
-                            .px(px(2.0))
-                            .text_size(ty::MICRO)
+                            .px(px(4.0))
+                            .text_size(ty::META)
                             .font_weight(gpui::FontWeight::MEDIUM)
-                            .text_color(t.text_faint)
+                            .text_color(t.text_muted)
                             .child(title),
                     )
-                    .children(
-                        tabs.iter()
-                            .copied()
-                            .chain((title == "Review" && has_pr).then_some(Tab::PullRequest))
-                            .map(|k| row(k, cx)),
+                    .child(
+                        div()
+                            .p(px(4.0))
+                            .rounded(px(radius::CARD))
+                            .bg(t.surface_card.opacity(0.92))
+                            .border_1()
+                            .border_color(t.border.opacity(0.55))
+                            .flex()
+                            .flex_col()
+                            .children(
+                                tabs.iter()
+                                    .copied()
+                                    .chain((title == "Review" && has_pr).then_some(Tab::PullRequest))
+                                    .map(|k| row(k, cx)),
+                            ),
                     ),
             );
         }
@@ -2913,7 +3018,7 @@ impl SidePanel {
                     ),
                     None => d.child(
                         surface_chrome::toolbar_button(("pane-close", ix), "Close pane (its tab stays in the strip)")
-                            .child(icon(icons::CLOSE).size(px(12.0)).text_color(t.text_muted))
+                            .child(icon(icons::SPLIT_CLOSE).size(px(12.0)).text_color(t.text_muted))
                             .on_click(cx.listener(move |this, _, _, cx| this.close_pane(pane, cx))),
                     ),
                 })
@@ -3033,4 +3138,26 @@ mod tests {
         assert_eq!(find_local_urls("Listening on http://0.0.0.0:8080."), vec!["http://localhost:8080"]);
         assert!(find_local_urls("see https://example.com").is_empty());
     }
+}
+
+/// A tiny window diagram for the placement card: the panel docked left or
+/// right (`Some(left)`), or filling the window (`None`).
+fn layout_glyph(t: &Theme, side: Option<bool>) -> AnyElement {
+    let frame = t.text_muted;
+    let pane = t.text_muted.opacity(0.55);
+    div()
+        .w(px(20.0))
+        .h(px(15.0))
+        .rounded(px(3.0))
+        .border_1()
+        .border_color(frame)
+        .p(px(2.0))
+        .flex()
+        .gap(px(2.0))
+        .map(|d| match side {
+            Some(true) => d.child(div().w(px(6.0)).h_full().rounded(px(1.0)).bg(pane)).child(div().flex_1()),
+            Some(false) => d.child(div().flex_1()).child(div().w(px(6.0)).h_full().rounded(px(1.0)).bg(pane)),
+            None => d.child(div().flex_1().h_full().rounded(px(1.0)).bg(pane)),
+        })
+        .into_any_element()
 }

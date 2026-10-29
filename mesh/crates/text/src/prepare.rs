@@ -116,7 +116,7 @@ pub enum SegmentBreak {
 pub(crate) const F_DYN_W: u8 = 1; // content contains a tab: width depends on line position
 pub(crate) const F_DYN_H: u8 = 2; // hang contains a tab
 pub(crate) const F_BREAKABLE: u8 = 4; // overflow-wrap may split the content (>1 unit)
-/// Glyphs were substituted across the boundary before this segment (`-|>` in Geist): `Cold::lead`
+/// Glyphs were substituted across the boundary before this segment (`-|>` in Inter): `Cold::lead`
 /// applies when it continues a line, and a line starting here is shaped anew.
 pub(crate) const F_LEAD: u8 = 8;
 
@@ -856,7 +856,29 @@ impl Builder<'_> {
         {
             return PairContext::NONE;
         }
-        self.cache.pair_context(self.book, style, a, b)
+        // One grapheme of look-behind, when it is in the same run: contextual alternates can
+        // change the left glyph (and so the pair's kerning) based on what precedes it.
+        let before = if a0 == 0 || self.scripts.binary_search(&(a0 as u32)).is_ok() {
+            ""
+        } else {
+            let z0 = if bytes[a0 - 1] < 0x80 {
+                a0 - 1
+            } else {
+                let mut c = GraphemeCursor::new(a0, len, true);
+                c.prev_boundary(text, 0).ok().flatten().unwrap_or(a0)
+            };
+            let zs = self.spans.partition_point(|s| s.range.end <= z0);
+            let z = &text[z0..a0];
+            let same_run = self.spans.get(zs).is_some_and(|s| {
+                s.style == style && !s.atomic && (zs == ls || (s.pad_end == 0.0 && sl.pad_start == 0.0))
+            });
+            if z.is_empty() || !same_run || is_hard_break_str(z) || !self.cache.is_shaped(self.book, style, z) {
+                ""
+            } else {
+                z
+            }
+        };
+        self.cache.pair_context(self.book, style, before, a, b)
     }
 
     /// Drops the pieces pushed since `from` when they are a single non-tab piece (implied by

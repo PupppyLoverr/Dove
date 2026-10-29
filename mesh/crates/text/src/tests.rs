@@ -259,7 +259,7 @@ fn apple_quote_and_sa_tailoring() {
 fn bmp_coverage_bitmap_matches_cmap() {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../ui/assets/fonts");
     let mut book = crate::FontBook::new();
-    for f in ["Geist.ttf", "GeistMono.ttf"] {
+    for f in ["Inter-Regular.ttf", "JetBrainsMono-Regular.ttf"] {
         let id = book.add_face(std::fs::read(dir.join(f)).unwrap()).unwrap();
         let face = book.face_data(id);
         for u in 0..0x10000u32 {

@@ -147,6 +147,19 @@ pub fn start(rt: &tokio::runtime::Handle) -> Option<Endpoint> {
                             Err(e) => Outcome::err(e),
                         }
                     }
+                    // The notch's tools go to the island host, window or not.
+                    Ok(req)
+                        if req.get("token").and_then(Value::as_str) == Some(want.as_str())
+                            && req.get("tool").and_then(Value::as_str).is_some_and(|t| t.starts_with("notch_")) =>
+                    {
+                        let s = |k: &str| req.get(k).and_then(Value::as_str).unwrap_or_default().to_string();
+                        let cwd = Some(s("cwd")).filter(|c| !c.is_empty());
+                        let args = req.get("args").cloned().unwrap_or(json!({}));
+                        match crate::island::view::submit(s("tool"), args, s("session"), cwd).await {
+                            Ok(text) => Outcome::ok(text),
+                            Err(e) => Outcome::err(e),
+                        }
+                    }
                     Ok(req) if req.get("token").and_then(Value::as_str) == Some(want.as_str()) => {
                         let (rtx, rrx) = tokio::sync::oneshot::channel();
                         let request = Request {

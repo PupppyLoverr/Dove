@@ -29,7 +29,7 @@
 //!      piece takes its share; otherwise each piece is measured on its own.
 //! 5. **Seams**: a paragraph is shaped as a whole by the platform, so segments measured apart
 //!    get the difference back at each boundary: the pair context of the two graphemes around it
-//!    (kerning lands on the left glyph; a ligature or contextual form spanning it, like Geist's
+//!    (kerning lands on the left glyph; a ligature or contextual form spanning it, like Inter's
 //!    `->` arrow, puts its whole advance on the left and makes the right glyph a "lead" that
 //!    only counts mid-line). No context crosses a script-run change (ICU `UScriptRun`
 //!    semantics, resetting at fallback text), a bidi level change, a style change, padding, or

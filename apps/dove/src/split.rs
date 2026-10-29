@@ -250,7 +250,7 @@ impl Shell {
                                 .text_color(t.text)
                                 .invisible()
                                 .group_drag_over::<ThreadDrag>("split-drop", |s| s.visible())
-                                .child(icon(icons::SPLIT_COLUMNS).size(px(14.0)).text_color(t.accent))
+                                .child(icon(icons::SPLIT_VERTICAL).size(px(14.0)).text_color(t.accent))
                                 .child("Drop to open side by side"),
                         ),
                 )
@@ -377,7 +377,7 @@ impl Shell {
             )
             .child(switch)
             .child(
-                button("main", icons::ARROW_UP_RIGHT, "Make this the main thread")
+                button("main", icons::PANE_SWAP, "Make this the main thread")
                     .on_click(cx.listener(move |this, _, window, cx| this.swap_main(main, id, window, cx))),
             )
             .child(

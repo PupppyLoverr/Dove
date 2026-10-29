@@ -6,8 +6,9 @@ into a live, generated view of what's happening and what to do next. Any
 agent's plan appears in the notch for you to approve, edit or reject. All of it
 uses the K22 icon pack and the black-island look.
 
-Status: plan only. Nothing here is built. The design goes into Paper first
-(paper.design), then into code.
+Status: **built** on `feat/notch-v3` (worktree `Downloads/dove-notch-v3`).
+The notch is designed in code (the standing exception to designing in Paper).
+See "Built" at the end for what landed where.
 
 ### Decisions so far (from you)
 
@@ -401,3 +402,33 @@ beyond the user's own configured harnesses.
 3. **Plan edits:** send the edited plan as a normal reply after approval, or
    reject with "use this plan instead"? This depends on the harness; check
    Claude Code, Codex and OpenCode.
+
+---
+
+## 9. Built
+
+| Part | Where |
+|---|---|
+| Shared types: `NotchView` blocks and actions, plans and their step parser, `CallInfo`, `ShowWhat`, `VoiceInfo`, the `notch_view` tool | `apps/dove/src/island/view.rs` |
+| K22: its agent, model, project, effort and style; the K22 teammate; today's K22 thread | `apps/dove/src/island/k22.rs` |
+| Calls without the window: start, end, mute, type, retarget, and the windowless executor; replies read aloud from attention | `apps/dove/src/island/call.rs` |
+| Host: the new IPC commands, the system-wide shortcut, plan verdicts, Ask, `notch_view` calls, plans and voice in the snapshot | `apps/dove/src/island/host.rs`, `island/ipc.rs` |
+| `notch_*` tools reach the host from any agent (window or not) | `browser/control.rs`, `mcp_browser.rs` |
+| Voice call: reading replies from the engine, `CallInfo`, one call at a time | `voice_call.rs` |
+| Plans at the source: `TaskState.plan` from `AgentEvent::Plan` | `crates/dove-core/src/attention.rs` |
+| Notch pages: the call (orb), plan review, views, lenses; the Home Now stack, pinned views, usage; the slim call and plan capsules; the header's Talk button; quick settings | `notch/views/v3.rs`, `notch/mod.rs`, `notch/views/*.rs` |
+| Settings › Voice › K22 | `settings.rs` |
+| K22 icon drawings (29 Solar leftovers redrawn, Android vectors regenerated) | `apps/dove/assets/icons/`, `apps/android/.../drawable/` |
+
+Decisions on §8:
+
+1. **K22 thread lifetime:** one per day, per agent (`k22_thread`).
+2. **`notch_view` and the local router:** not in V3. Views come from K22's
+   agent; the lenses cover the offline cases.
+3. **Plan edits:** approve, then send the edited plan as the next message
+   ("follow this version instead"). Agents that steer (Claude Code, Codex)
+   pick it up mid-turn. A rejection denies the plan request and sends the
+   reason.
+
+QA hooks: `DOVE_NOTCH_PAGE=call|plan|view:status|view:needs|view:today`, with
+`DOVE_NOTCH_DEMO=1` for demo data.

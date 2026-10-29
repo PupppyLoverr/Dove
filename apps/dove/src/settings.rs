@@ -222,7 +222,22 @@ const INDEX: &[Entry] = &[
     ),
     e(Section::Appearance, "theme_import", "Import VS Code theme", "import vscode visual studio code theme json file"),
     e(Section::Appearance, "surface", "Window material", "glass acrylic normal frosted surface material blur"),
-    e(Section::Appearance, "wallpaper_path", "New-thread background", "wallpaper background image backdrop home"),
+    e(
+        Section::Appearance,
+        "wallpaper_path",
+        "Background",
+        "wallpaper background image backdrop home gif video animated",
+    ),
+    e(Section::Appearance, "wallpaper_recent", "Recent backgrounds", "wallpaper background recent history"),
+    e(
+        Section::Appearance,
+        "wallpaper_playback",
+        "Play animated backgrounds",
+        "gif video animated wallpaper play pause",
+    ),
+    e(Section::Appearance, "wallpaper_chat", "Show behind chats", "wallpaper background chat thread behind frost"),
+    e(Section::Appearance, "wallpaper_chat_blur", "Chat blur", "blur frost wallpaper chat background strength"),
+    e(Section::Appearance, "wallpaper_chat_dim", "Chat dim", "dim darken scrim wallpaper chat background"),
     e(Section::Appearance, "wallpaper_effect", "Background effect", "dither halftone scanlines effect shader backdrop"),
     e(Section::Appearance, "wallpaper_animate", "Animate background", "animate animation backdrop wallpaper motion"),
     e(Section::Appearance, "reduce_motion", "Reduce motion", "motion animation accessibility reduce"),
@@ -261,7 +276,12 @@ const INDEX: &[Entry] = &[
     e(Section::Notifications, "notch_slim", "Keep the slim island visible", "notch slim island pin always"),
     e(Section::Notifications, "notch_live", "Live activities", "notch live activities approvals finished popup"),
     e(Section::Notifications, "notch_clipboard", "Clipboard history", "notch clipboard history copy paste"),
-    e(Section::Notifications, "notch_notifications", "Show notifications in the notch", "notch notifications toast banner finished failed"),
+    e(
+        Section::Notifications,
+        "notch_notifications",
+        "Show notifications in the notch",
+        "notch notifications toast banner finished failed",
+    ),
     e(Section::Notifications, "notch_glass", "Frosted glass", "notch glass blur acrylic transparent solid"),
     e(Section::Notifications, "notch_focus", "Focus mode", "notch focus do not disturb quiet banners"),
     e(Section::Notifications, "notch_display", "Display", "notch display monitor screen pointer main"),
@@ -276,6 +296,11 @@ const INDEX: &[Entry] = &[
         "Voice Mode",
         "voice mode call hands free talk conversation listening push to talk",
     ),
+    e(Section::Voice, "voice_harness", "K22's agent", "k22 assistant voice agent harness default claude codex jarvis notch"),
+    e(Section::Voice, "voice_agent_model", "K22's model", "k22 assistant voice model default"),
+    e(Section::Voice, "voice_project", "K22's project", "k22 assistant voice project folder"),
+    e(Section::Voice, "voice_effort", "K22's effort", "k22 reasoning effort thinking fast"),
+    e(Section::Voice, "voice_persona", "K22's style", "k22 persona style concise chatty formal tone"),
     e(Section::Voice, "voice_name", "Voice", "voice speech tts speaker system voice"),
     e(Section::Voice, "voice_global_hotkey", "Shortcut outside Keplorayx", "global hotkey shortcut voice call system wide"),
     e(Section::Voice, "voice_rate", "Speaking rate", "voice speed rate faster slower"),
@@ -379,6 +404,9 @@ fn find_settings(query: &str) -> Vec<&'static Entry> {
 
 /// How long a revealed setting glows.
 const FLASH: Duration = Duration::from_millis(900);
+/// Backgrounds the recents strip remembers.
+const WALLPAPER_RECENTS: usize = 8;
+
 /// Text fields save this long after typing stops (and on blur).
 const SAVE_AFTER: Duration = Duration::from_millis(400);
 
@@ -424,6 +452,9 @@ pub struct SettingsPage {
     sel_home_input: SelectState,
     sel_mic: SelectState,
     sel_voice: SelectState,
+    sel_k22_agent: SelectState,
+    sel_k22_model: SelectState,
+    sel_k22_project: SelectState,
     sel_tts_provider: SelectState,
     /// The voice id for the selected cloud voice service (saved per service).
     voice_tts_voice: Entity<InputState>,
@@ -434,6 +465,11 @@ pub struct SettingsPage {
     voice_cloud_url: Entity<InputState>,
     voice_router_url: Entity<InputState>,
     width_slider: SliderState,
+    chat_blur_slider: SliderState,
+    chat_dim_slider: SliderState,
+    /// Live values while a background slider is dragged.
+    chat_blur_drag: Option<f32>,
+    chat_dim_drag: Option<f32>,
     save_gen: HashMap<&'static str, u64>,
     _subs: Vec<Subscription>,
 }
@@ -564,6 +600,9 @@ impl SettingsPage {
             sel_home_input: SelectState::default(),
             sel_mic: SelectState::default(),
             sel_voice: SelectState::default(),
+            sel_k22_agent: SelectState::default(),
+            sel_k22_model: SelectState::default(),
+            sel_k22_project: SelectState::default(),
             sel_tts_provider: SelectState::default(),
             voice_tts_voice,
             voices: Vec::new(),
@@ -571,6 +610,10 @@ impl SettingsPage {
             voice_cloud_url,
             voice_router_url,
             width_slider: SliderState::default(),
+            chat_blur_slider: SliderState::default(),
+            chat_dim_slider: SliderState::default(),
+            chat_blur_drag: None,
+            chat_dim_drag: None,
             save_gen: HashMap::new(),
             _subs: subs,
         }
@@ -690,14 +733,34 @@ impl SettingsPage {
             files: true,
             directories: false,
             multiple: false,
-            prompt: Some("Choose background image".into()),
+            prompt: Some("Choose a background: image, GIF or video".into()),
         });
         cx.spawn(async move |this, cx| {
             let Ok(Ok(Some(paths))) = pick.await else { return };
             let Some(path) = paths.into_iter().next() else { return };
-            let _ = this.update(cx, |s, cx| s.set("wallpaper_path", &path.to_string_lossy(), cx));
+            let _ = this.update(cx, |s, cx| s.use_wallpaper(&path.to_string_lossy(), cx));
         })
         .detach();
+    }
+
+    /// Recently used backgrounds, newest first, that are still on disk.
+    fn recent_wallpapers(&self) -> Vec<String> {
+        self.get("wallpaper_recent")
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| !l.is_empty() && std::path::Path::new(l).is_file())
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// Make `path` the background and put it at the head of the recents.
+    fn use_wallpaper(&mut self, path: &str, cx: &mut Context<Self>) {
+        let mut recent = self.recent_wallpapers();
+        recent.retain(|p| p != path);
+        recent.insert(0, path.to_string());
+        recent.truncate(WALLPAPER_RECENTS);
+        let _ = self.engine.store.set_setting("wallpaper_recent", &recent.join("\n"));
+        self.set("wallpaper_path", path, cx);
     }
 
     /// Pick a VS Code theme JSON, import it (off the UI thread), save it
@@ -1448,38 +1511,36 @@ impl SettingsPage {
             .menu_width(220.0)
             .on_select(|this, i, _, cx| this.set("surface", Surface::ALL[i].id(), cx))
             .render(t, &self.sel_surface, cx);
-        let effect_select = ctl::select::<Self>("set-effect", "Background effect", |s| &mut s.sel_effect)
-            .options(
-                Effect::ALL.iter().map(|e| SelectOption::new(e.label())),
-                Effect::ALL.iter().position(|e| *e == effect).unwrap_or(0),
-            )
-            .width(150.0)
-            .on_select(|this, i, _, cx| this.set("wallpaper_effect", Effect::ALL[i].id(), cx))
-            .render(t, &self.sel_effect, cx);
         let wall_name =
             wall.as_ref().and_then(|w| std::path::Path::new(w).file_name().map(|n| n.to_string_lossy().to_string()));
-        // A small preview of the chosen image with its effect applied.
+        let wall_kind = wall.as_ref().map(|w| crate::wallpaper_media::kind_cached(std::path::Path::new(w)));
+        let still = wall_kind.is_none_or(|k| k == crate::wallpaper_media::Kind::Still);
+        let video_without_ffmpeg =
+            wall_kind == Some(crate::wallpaper_media::Kind::Video) && crate::wallpaper_media::ffmpeg().is_none();
+        // A small preview of the chosen background: a still with its effect
+        // applied, or a moving background's first frame.
         let (thumb_w, thumb_h) = crate::wallpaper::PREVIEW_SIZE;
+        let scale = window.scale_factor();
         let thumb = wall.as_ref().map(|w| {
-            let image = crate::wallpaper::preview(
-                std::path::Path::new(w),
-                effect,
-                !t.appearance.is_dark(),
-                window.scale_factor(),
-                cx,
-            );
+            let path = std::path::Path::new(w);
+            let image = if still {
+                crate::wallpaper::preview(path, effect, !t.appearance.is_dark(), scale, cx)
+            } else {
+                crate::wallpaper_media::thumbnail(path, (thumb_w * scale, thumb_h * scale), cx)
+            };
             div()
                 .id("wall-preview")
+                .relative()
                 .flex_none()
                 .w(px(thumb_w))
                 .h(px(thumb_h))
-                .rounded(px(design::radius::RADIUS))
+                .rounded(px(design::radius::CARD))
                 .overflow_hidden()
                 .border_1()
                 .border_color(t.border)
                 .bg(t.wash(0.06))
                 .cursor_pointer()
-                .tooltip(ui::tip("Replace image"))
+                .tooltip(ui::tip("Replace background"))
                 .on_click(cx.listener(|this, _, _, cx| this.pick_wallpaper(cx)))
                 .child(match image {
                     Some(image) => gpui::StyledImage::object_fit(gpui::img(image), gpui::ObjectFit::Cover)
@@ -1487,6 +1548,7 @@ impl SettingsPage {
                         .into_any_element(),
                     None => page::skeleton(t, gpui::relative(1.0), thumb_h),
                 })
+                .when(!still, |d| d.child(motion_badge(t)))
         });
         let wall_control = div().flex().items_center().gap(px(10.0)).children(thumb).child(
             div()
@@ -1495,22 +1557,137 @@ impl SettingsPage {
                 .items_end()
                 .gap(px(6.0))
                 .child(
-                    ctl::button_sm(
-                        t,
-                        "wall-pick",
-                        if wall.is_some() { "Replace…" } else { "Choose image…" },
-                        Tone::Filled,
-                    )
-                    .on_click(cx.listener(|this, _, _, cx| this.pick_wallpaper(cx))),
+                    ctl::button_sm(t, "wall-pick", if wall.is_some() { "Replace…" } else { "Choose…" }, Tone::Filled)
+                        .on_click(cx.listener(|this, _, _, cx| this.pick_wallpaper(cx))),
                 )
                 .when(wall.is_some(), |d| {
-                    d.child(
-                        ctl::button_sm(t, "wall-clear", "Remove", Tone::Quiet)
-                            .on_click(cx.listener(|this, _, _, cx| this.set("wallpaper_path", "", cx))),
-                    )
+                    d.child(ctl::button_sm(t, "wall-clear", "Remove", Tone::Quiet).on_click(cx.listener(
+                        |this, _, window, cx| {
+                            crate::wallpaper_media::release(window);
+                            this.set("wallpaper_path", "", cx)
+                        },
+                    )))
                 }),
         );
+        // Recently used backgrounds, one click to switch back.
+        let recents = self.recent_wallpapers();
+        let recent_strip = (recents.len() > 1).then(|| {
+            div().flex().flex_wrap().justify_end().gap(px(8.0)).children(recents.iter().take(WALLPAPER_RECENTS).map(
+                |path| {
+                    let p = std::path::Path::new(path);
+                    let moving = crate::wallpaper_media::kind_cached(p) != crate::wallpaper_media::Kind::Still;
+                    let image = crate::wallpaper_media::thumbnail(p, (72.0 * scale, 45.0 * scale), cx);
+                    let current = wall.as_deref() == Some(path.as_str());
+                    let name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                    let chosen = path.clone();
+                    div()
+                        .id(SharedString::from(format!("wall-recent-{path}")))
+                        .relative()
+                        .w(px(72.0))
+                        .h(px(45.0))
+                        .rounded(px(design::radius::ROW))
+                        .overflow_hidden()
+                        .border_1()
+                        .border_color(if current { t.accent } else { t.border })
+                        .bg(t.wash(0.06))
+                        .cursor_pointer()
+                        .tooltip(ui::tip(name))
+                        .children(image.map(|image| {
+                            gpui::StyledImage::object_fit(gpui::img(image), gpui::ObjectFit::Cover).size_full()
+                        }))
+                        .when(moving, |d| d.child(motion_badge(t)))
+                        .on_click(cx.listener(move |this, _, _, cx| this.use_wallpaper(&chosen, cx)))
+                },
+            ))
+        });
+        let effect_select = ctl::select::<Self>("set-effect", "Background effect", |s| &mut s.sel_effect)
+            .options(
+                Effect::ALL.iter().map(|e| SelectOption::new(e.label())),
+                Effect::ALL.iter().position(|e| *e == effect).unwrap_or(0),
+            )
+            .width(150.0)
+            .on_select(|this, i, _, cx| this.set("wallpaper_effect", Effect::ALL[i].id(), cx))
+            .render(t, &self.sel_effect, cx);
         let has_wall = wall.is_some();
+        let playback = self.get("wallpaper_playback").unwrap_or_else(|| "always".into());
+        let playback_ids = ["always", "home", "off"];
+        let this = cx.entity().downgrade();
+        let playback_control = ctl::segmented(
+            t,
+            "set-wall-playback",
+            vec![ctl::Segment::new("Always"), ctl::Segment::new("Home only"), ctl::Segment::new("Off")],
+            playback_ids.iter().position(|id| *id == playback).unwrap_or(0),
+            {
+                let this = this.clone();
+                move |i, _, cx| {
+                    let _ = this.update(cx, |p, cx| p.set("wallpaper_playback", playback_ids[i], cx));
+                }
+            },
+        );
+        let behind_chats = self.flag("wallpaper_chat", true);
+        let blur = self.chat_blur_drag.unwrap_or_else(|| {
+            self.get("wallpaper_chat_blur")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(crate::wallpaper_media::FrostLook::DEFAULT_BLUR)
+        });
+        let dark = t.appearance.is_dark();
+        let dim = self.chat_dim_drag.unwrap_or_else(|| {
+            self.get("wallpaper_chat_dim").and_then(|v| v.parse().ok()).unwrap_or(if dark {
+                crate::shell::CHAT_DIM_DARK
+            } else {
+                crate::shell::CHAT_DIM_LIGHT
+            })
+        });
+        let blur_slider = ctl::slider::<Self>(
+            t,
+            "set-chat-blur",
+            blur,
+            (crate::wallpaper_media::FrostLook::MIN_BLUR, crate::wallpaper_media::FrostLook::MAX_BLUR, 4.0),
+            180.0,
+            &self.chat_blur_slider,
+            |s| &mut s.chat_blur_slider,
+            |this, v, commit, _, cx| {
+                if commit {
+                    this.chat_blur_drag = None;
+                    this.set("wallpaper_chat_blur", &format!("{v:.0}"), cx);
+                } else {
+                    this.chat_blur_drag = Some(v);
+                    cx.notify();
+                }
+            },
+            cx,
+        );
+        let dim_slider = ctl::slider::<Self>(
+            t,
+            "set-chat-dim",
+            dim,
+            (crate::shell::CHAT_DIM_MIN, crate::shell::CHAT_DIM_MAX, 0.01),
+            180.0,
+            &self.chat_dim_slider,
+            |s| &mut s.chat_dim_slider,
+            |this, v, commit, _, cx| {
+                if commit {
+                    this.chat_dim_drag = None;
+                    this.set("wallpaper_chat_dim", &format!("{v:.2}"), cx);
+                } else {
+                    this.chat_dim_drag = Some(v);
+                    cx.notify();
+                }
+            },
+            cx,
+        );
+        let blur_word = if blur < 56.0 {
+            "Soft"
+        } else if blur < 104.0 {
+            "Frost"
+        } else {
+            "Deep"
+        };
+        let value_label = |text: String| {
+            div().w(px(56.0)).text_size(ty::META).text_color(t.text_muted).child(text).into_any_element()
+        };
+        let gate = |on: bool, el: AnyElement| if on { el } else { div().opacity(0.45).child(el).into_any_element() };
+        let chat_on = has_wall && behind_chats;
         let material = page::card(t)
             .child(self.srow(
                 t,
@@ -1528,37 +1705,105 @@ impl SettingsPage {
                 t,
                 false,
                 "wallpaper_path",
-                "New-thread background",
-                wall_name.clone().unwrap_or_else(|| "No image selected".into()),
+                "Background",
+                match (&wall_name, wall_kind) {
+                    (Some(name), _) if video_without_ffmpeg => {
+                        format!("{name} · Video needs ffmpeg (winget install ffmpeg), showing its first frame")
+                    }
+                    (Some(name), Some(kind)) => format!("{name} · {}", kind.label()),
+                    _ => "An image, GIF, animated WebP or video behind new threads and chats.".into(),
+                },
                 wall_control,
             ))
+            .when_some(recent_strip, |d, strip| {
+                d.child(self.srow(t, false, "wallpaper_recent", "Recent backgrounds", "Click one to switch back.", strip))
+            })
             .child(self.srow(
                 t,
                 false,
                 "wallpaper_effect",
                 "Background effect",
-                if has_wall {
+                if !has_wall {
+                    "Choose a background first."
+                } else if still {
                     "How the background is drawn behind the composer."
                 } else {
-                    "Choose a background image first."
+                    "Effects apply to still images."
                 },
-                if has_wall { effect_select } else { div().opacity(0.45).child(effect_select).into_any_element() },
+                gate(has_wall && still, effect_select),
             ))
             .child(self.srow(
                 t,
                 false,
                 "wallpaper_animate",
-                "Animate background",
-                if has_wall { effect.motion_hint() } else { "Choose a background image to animate it." },
-                if has_wall {
+                "Animate effect",
+                if has_wall && still { effect.motion_hint() } else { "Moves a still image's effect." },
+                if has_wall && still {
                     ctl::on_toggle(ctl::toggle(t, "set-wall-animate", animate), cx, move |this, _, cx| {
                         this.set_flag("wallpaper_animate", !animate, cx)
                     })
                     .into_any_element()
                 } else {
-                    ctl::disabled(ctl::toggle(t, "set-wall-animate", animate), "Choose a background image first")
+                    ctl::disabled(ctl::toggle(t, "set-wall-animate", animate), "For still images").into_any_element()
+                },
+            ))
+            .child(self.srow(
+                t,
+                false,
+                "wallpaper_playback",
+                "Play animated backgrounds",
+                "GIFs and videos loop as attached, lightly dimmed, even with Reduce motion on. Off holds the first frame.",
+                gate(has_wall && !still, playback_control),
+            ))
+            .child(self.srow(
+                t,
+                false,
+                "wallpaper_chat",
+                "Show behind chats",
+                "Behind every conversation. Images are frosted; GIFs and videos play unblurred, lightly dimmed.",
+                if has_wall {
+                    ctl::on_toggle(ctl::toggle(t, "set-wall-chat", behind_chats), cx, move |this, _, cx| {
+                        this.set_flag("wallpaper_chat", !behind_chats, cx)
+                    })
+                    .into_any_element()
+                } else {
+                    ctl::disabled(ctl::toggle(t, "set-wall-chat", behind_chats), "Choose a background first")
                         .into_any_element()
                 },
+            ))
+            .child(self.srow(
+                t,
+                false,
+                "wallpaper_chat_blur",
+                "Chat blur",
+                "For images: stronger blur leaves only colour. GIFs and videos are never blurred.",
+                gate(
+                    chat_on,
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(10.0))
+                        .child(blur_slider)
+                        .child(value_label(blur_word.into()))
+                        .into_any_element(),
+                ),
+            ))
+            .child(self.srow(
+                t,
+                false,
+                "wallpaper_chat_dim",
+                "Chat dim",
+                "For images; Dove darkens further when text would be hard to read. GIFs and videos get a fixed light dim.",
+                gate(
+                    chat_on,
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(10.0))
+                        .child(dim_slider)
+                        .child(value_label(format!("{:.0}%", dim * 100.0)))
+                        .into_any_element(),
+                ),
             ));
 
         // Motion.
@@ -1593,7 +1838,7 @@ impl SettingsPage {
                 match preference {
                     ReduceMotion::System if system => "Following your system: motion is reduced.",
                     ReduceMotion::System => "Following your system setting.",
-                    ReduceMotion::On => "Transitions snap, indicators breathe slowly, background art holds still.",
+                    ReduceMotion::On => "Transitions snap, indicators breathe slowly, image effects hold still.",
                     ReduceMotion::Off => "Full motion, whatever the system says.",
                 },
                 reduce_select,
@@ -2191,6 +2436,111 @@ impl SettingsPage {
             .into_any_element()
     }
 
+    /// Settings › Voice › K22: the assistant you talk to from the notch, and
+    /// the agent, model and project it runs on.
+    fn k22_card(&self, t: &Theme, cx: &mut Context<Self>) -> gpui::Div {
+        let installed: Vec<HarnessKind> = self.engine.installed().iter().map(|i| i.kind).collect();
+        let agent = crate::island::k22::voice_agent(&self.engine);
+        let kind = agent.as_ref().map(|a| a.kind);
+        let kinds = installed.clone();
+        let agent_select = ctl::select::<Self>("set-k22-agent", "K22's agent", |s| &mut s.sel_k22_agent)
+            .options(
+                installed.iter().map(|k| SelectOption::new(k.label())),
+                kind.and_then(|k| installed.iter().position(|x| *x == k)).unwrap_or(0),
+            )
+            .width(200.0)
+            .menu_width(260.0)
+            .on_select(move |this, i, _, cx| {
+                if let Some(k) = kinds.get(i) {
+                    this.set("voice_harness", k.id(), cx);
+                    this.set("voice_agent_model", "", cx);
+                }
+            })
+            .render(t, &self.sel_k22_agent, cx);
+        let models = kind.map(|k| self.engine.models(k)).unwrap_or_default();
+        let mut model_options = vec![SelectOption::new("Agent's default")];
+        model_options.extend(models.iter().map(|m| SelectOption::new(m.label.clone())));
+        let model_ids: Vec<String> = models.iter().map(|m| m.id.clone()).collect();
+        let selected_model = agent
+            .as_ref()
+            .and_then(|a| a.model.as_ref())
+            .and_then(|m| model_ids.iter().position(|x| x == m))
+            .map(|i| i + 1)
+            .unwrap_or(0);
+        let model_select = ctl::select::<Self>("set-k22-model", "K22's model", |s| &mut s.sel_k22_model)
+            .options(model_options, selected_model)
+            .width(200.0)
+            .menu_width(300.0)
+            .on_select(move |this, i, _, cx| {
+                let id = if i == 0 { String::new() } else { model_ids.get(i - 1).cloned().unwrap_or_default() };
+                this.set("voice_agent_model", &id, cx);
+            })
+            .render(t, &self.sel_k22_model, cx);
+        let projects = self.engine.store.projects().unwrap_or_default();
+        let project_ids: Vec<String> = projects.iter().map(|p| p.id.to_string()).collect();
+        let selected_project = agent
+            .as_ref()
+            .and_then(|a| a.project)
+            .and_then(|p| projects.iter().position(|x| x.id == p))
+            .unwrap_or(0);
+        let project_select = ctl::select::<Self>("set-k22-project", "K22's project", |s| &mut s.sel_k22_project)
+            .options(projects.iter().map(|p| SelectOption::new(p.name.clone())), selected_project)
+            .width(200.0)
+            .menu_width(260.0)
+            .on_select(move |this, i, _, cx| {
+                if let Some(id) = project_ids.get(i) {
+                    this.set("voice_project", id, cx);
+                }
+            })
+            .render(t, &self.sel_k22_project, cx);
+        let this = cx.entity().downgrade();
+        let effort = self.get("voice_effort").unwrap_or_else(|| "low".into());
+        let efforts = ["low", "medium", "high"];
+        let effort_seg = ctl::segmented(
+            t,
+            "set-k22-effort",
+            vec![ctl::Segment::new("Quick"), ctl::Segment::new("Balanced"), ctl::Segment::new("Thorough")],
+            efforts.iter().position(|e| *e == effort).unwrap_or(0),
+            {
+                let this = this.clone();
+                move |i, _, cx| {
+                    let _ = this.update(cx, |p, cx| p.set("voice_effort", efforts[i.min(2)], cx));
+                }
+            },
+        );
+        let style = self.get("voice_persona").unwrap_or_else(|| "concise".into());
+        let styles = ["concise", "chatty", "formal"];
+        let style_seg = ctl::segmented(
+            t,
+            "set-k22-style",
+            vec![ctl::Segment::new("Concise"), ctl::Segment::new("Chatty"), ctl::Segment::new("Formal")],
+            styles.iter().position(|s| *s == style).unwrap_or(0),
+            move |i, _, cx| {
+                let _ = this.update(cx, |p, cx| p.set("voice_persona", styles[i.min(2)], cx));
+            },
+        );
+        page::card(t)
+            .child(self.srow(
+                t,
+                true,
+                "voice_harness",
+                "Agent",
+                "K22 answers on this agent: what you ask in the notch, typed or by voice, and threads you start by voice.",
+                agent_select,
+            ))
+            .child(self.srow(
+                t,
+                false,
+                "voice_agent_model",
+                "Model",
+                "A fast model keeps spoken replies quick.",
+                model_select,
+            ))
+            .child(self.srow(t, false, "voice_project", "Project", "Where K22 works and new threads start.", project_select))
+            .child(self.srow(t, false, "voice_effort", "Effort", "How hard K22 thinks before it answers.", effort_seg))
+            .child(self.srow(t, false, "voice_persona", "Style", "How K22 talks.", style_seg))
+    }
+
     /// Settings › Voice › Voice Mode: the hands-free call.
     fn voice_mode(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let this = cx.entity().downgrade();
@@ -2318,6 +2668,7 @@ impl SettingsPage {
                     "\"What's happening?\", \"Stop\", \"Approve\" or \"Deny\", \"Talk to the tests thread\", \"Tell Codex to also run clippy\", \"Start a Claude task on the login page in a new worktree\", \"Take me back\", \"Show the diff\", \"End call\". Anything else goes to the thread you're talking to. Voice never approves deletions, force pushes or work outside the thread's folder: those need your click.",
                 )),
             );
+        let k22 = self.k22_card(t, cx);
         let models = page::card(t)
             .child(self.voice_stt_row(t, cx))
             .child(self.voice_model_row(t, &dove_voice::models::SILERO, cx))
@@ -2473,6 +2824,7 @@ impl SettingsPage {
         div()
             .flex()
             .flex_col()
+            .child(page::section(t, "K22", k22))
             .child(page::section(t, "Voice Mode", call))
             .child(page::section(t, "Voice Mode models", models))
             .child(page::section(t, "Cloud (optional)", cloud_card))
@@ -3358,4 +3710,20 @@ fn notch_chip(t: &Theme, id: &'static str, label: &'static str, on: bool) -> gpu
         .when(on, |d| d.bg(t.accent_wash).border_color(t.accent.opacity(0.4)).text_color(t.text))
         .when(!on, |d| d.text_color(t.text_muted))
         .child(label)
+}
+
+/// A small play mark on a moving background's thumbnail.
+fn motion_badge(t: &Theme) -> impl IntoElement {
+    div()
+        .absolute()
+        .right(px(4.0))
+        .bottom(px(4.0))
+        .size(px(16.0))
+        .rounded_full()
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(gpui::black().opacity(0.55))
+        .child(icon(icons::MEDIA_PLAY).size(px(9.0)).text_color(gpui::white()))
+        .text_color(t.text)
 }

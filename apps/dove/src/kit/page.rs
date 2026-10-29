@@ -228,10 +228,18 @@ pub fn row_divider(t: &Theme) -> Hsla {
     t.border.opacity(0.6)
 }
 
-/// A stack of rows on the page itself. The page surface is the card.
+/// A stack of rows on a card: a hair lighter than the page, a low-contrast
+/// hairline, the card radius. Cards part by fill more than by line.
 pub fn card(t: &Theme) -> Div {
-    let _ = t;
-    div().w_full().overflow_hidden().flex().flex_col()
+    div()
+        .w_full()
+        .overflow_hidden()
+        .flex()
+        .flex_col()
+        .rounded(px(crate::design::radius::CARD))
+        .bg(t.surface_card)
+        .border_1()
+        .border_color(t.border.opacity(0.55))
 }
 
 /// One row in a [`card`]: inset 16 px, at least 60 px tall, a hairline above

@@ -598,18 +598,18 @@ extension TranscriptListView: UIContextMenuInteractionDelegate {
         return UIContextMenuConfiguration(identifier: NSNumber(value: model.display.key), previewProvider: nil) { _ in
             var actions: [UIMenuElement] = []
             if !block.isEmpty {
-                actions.append(UIAction(title: "Copy", image: UIImage(systemName: "doc.on.doc")) { _ in
+                actions.append(UIAction(title: "Copy", image: K22Icon.image("copy")) { _ in
                     UIPasteboard.general.string = block
                 })
             }
             if let message = frame.messageText(index: index), !message.isEmpty, message != block {
-                actions.append(UIAction(title: "Copy Message", image: UIImage(systemName: "doc.on.clipboard")) { _ in
+                actions.append(UIAction(title: "Copy Message", image: K22Icon.image("clipboard")) { _ in
                     UIPasteboard.general.string = message
                 })
             }
             let selectable = frame.messageText(index: index) ?? block
             if !selectable.isEmpty {
-                actions.append(UIAction(title: "Select Text", image: UIImage(systemName: "character.cursor.ibeam")) { [weak self] _ in
+                actions.append(UIAction(title: "Select Text", image: K22Icon.image("text-cursor")) { [weak self] _ in
                     self?.presentSelection(selectable)
                 })
             }

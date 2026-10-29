@@ -7,7 +7,7 @@ before it is shown, so scrolling never guesses. Inline `code spans` get chips,
 ## Steps
 
 1. Parse markdown incrementally (`IncrementalParser::append`).
-2. Measure with `rustybuzz` on the bundled Geist faces.
+2. Measure with `rustybuzz` on the bundled Inter faces.
    - Nested bullet with a very/long/path/that/must/wrap/somewhere/in/the/middle/because/it/is/too/wide.rs
    - Another nested item
 3. Paint at Rust positions.

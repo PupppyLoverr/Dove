@@ -255,7 +255,7 @@ final class RowView: UIView {
                     iv = UIImageView(image: asset)
                     iv.contentMode = .scaleAspectFit
                 } else {
-                    iv = UIImageView(image: UIImage(systemName: name, withConfiguration: UIImage.SymbolConfiguration(pointSize: rect.height * 0.8, weight: .medium)))
+                    iv = UIImageView(image: K22Icon.resolve(systemName: name, pointSize: rect.height * 0.8, weight: .medium))
                     iv.contentMode = .center
                 }
                 iv.tintColor = Palette.color(color)
@@ -322,7 +322,7 @@ final class CopyButton: UIButton {
         self.payload = payload
         super.init(frame: .zero)
         let config = UIImage.SymbolConfiguration(pointSize: 13, weight: .medium)
-        setImage(UIImage(systemName: "square.on.square", withConfiguration: config), for: .normal)
+        setImage(K22Icon.image("copy"), for: .normal)
         tintColor = Palette.tertiary
         accessibilityLabel = "Copy code"
         addAction(UIAction { [weak self] _ in self?.copy() }, for: .touchUpInside)
@@ -334,10 +334,10 @@ final class CopyButton: UIButton {
         UIPasteboard.general.string = payload
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
         let config = UIImage.SymbolConfiguration(pointSize: 13, weight: .semibold)
-        setImage(UIImage(systemName: "checkmark", withConfiguration: config), for: .normal)
+        setImage(K22Icon.image("check"), for: .normal)
         tintColor = Palette.accent
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) { [weak self] in
-            self?.setImage(UIImage(systemName: "square.on.square", withConfiguration: UIImage.SymbolConfiguration(pointSize: 13, weight: .medium)), for: .normal)
+            self?.setImage(K22Icon.image("copy", pointSize: 13), for: .normal)
             self?.tintColor = Palette.tertiary
         }
     }
@@ -350,7 +350,7 @@ final class DisclosureControl: UIControl {
         accessibilityTraits = .button
         accessibilityLabel = expanded ? "Collapse" : "Expand"
         guard chevron else { return }
-        let iv = UIImageView(image: UIImage(systemName: "chevron.right", withConfiguration: UIImage.SymbolConfiguration(pointSize: 10, weight: .semibold)))
+        let iv = UIImageView(image: K22Icon.image("alt-arrow-right", pointSize: 10))
         iv.tintColor = Palette.tertiary
         iv.transform = expanded ? CGAffineTransform(rotationAngle: .pi / 2) : .identity
         iv.tag = 1
@@ -382,7 +382,7 @@ final class ToolStatusView: UIView {
             grid.autoresizingMask = [.flexibleWidth, .flexibleHeight]
             addSubview(grid)
         } else {
-            let iv = UIImageView(image: UIImage(systemName: failed ? "xmark" : "checkmark", withConfiguration: UIImage.SymbolConfiguration(pointSize: 10, weight: .bold)))
+            let iv = UIImageView(image: K22Icon.resolve(systemName: failed ? "xmark" : "checkmark", pointSize: 10, weight: .bold))
             iv.tintColor = failed ? Palette.danger : Palette.tertiary
             iv.contentMode = .center
             iv.autoresizingMask = [.flexibleWidth, .flexibleHeight]

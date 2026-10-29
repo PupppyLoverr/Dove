@@ -3,7 +3,7 @@
 //! These tokens describe visual roles and scales. They intentionally do not
 //! contain component names such as `button`, `table`, or `sidebar`.
 
-use gpui::{BoxShadow, FontWeight, Hsla, Pixels, SharedString, point, px};
+use gpui::{BoxShadow, FontFallbacks, FontWeight, Hsla, Pixels, SharedString, point, px};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -152,6 +152,28 @@ fn default_mono_font_family() -> SharedString {
     } else {
         "DejaVu Sans Mono".into()
     }
+}
+
+/// Glyphs Inter does not cover, then the system UI face if the bundled family failed to load.
+pub fn sans_font_fallbacks() -> FontFallbacks {
+    FontFallbacks::from_fonts(vec![
+        ".SystemUIFont".into(),
+        "Segoe UI".into(),
+        "SF Pro".into(),
+        "Noto Sans".into(),
+    ])
+}
+
+/// Glyphs JetBrains Mono does not cover. The first entry is this platform's existing mono default.
+pub fn mono_font_fallbacks() -> FontFallbacks {
+    let mut names = vec![
+        default_mono_font_family().to_string(),
+        "Menlo".into(),
+        "Consolas".into(),
+        "DejaVu Sans Mono".into(),
+    ];
+    names.dedup();
+    FontFallbacks::from_fonts(names)
 }
 
 fn box_shadow(x: f32, y: f32, blur: f32, spread: f32, color: Hsla) -> BoxShadow {

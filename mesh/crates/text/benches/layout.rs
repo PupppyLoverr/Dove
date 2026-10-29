@@ -161,12 +161,12 @@ fn setup() -> (FontBook, Vec<(String, Vec<Span>)>, Styles) {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../ui/assets/fonts");
     let read = |n: &str| std::fs::read(dir.join(n)).unwrap();
     let mut book = FontBook::new();
-    let geist = book.add_face(read("Geist.ttf")).unwrap();
-    let geist_bold = book.add_face(read("Geist-SemiBold.ttf")).unwrap();
-    let mono = book.add_face(read("GeistMono.ttf")).unwrap();
+    let sans = book.add_face(read("Inter-Regular.ttf")).unwrap();
+    let sans_bold = book.add_face(read("Inter-SemiBold.ttf")).unwrap();
+    let mono = book.add_face(read("JetBrainsMono-Regular.ttf")).unwrap();
     let st = Styles {
-        sans: book.add_style(geist, 15.0, StyleOptions::default()),
-        bold: book.add_style(geist_bold, 15.0, StyleOptions::default()),
+        sans: book.add_style(sans, 15.0, StyleOptions::default()),
+        bold: book.add_style(sans_bold, 15.0, StyleOptions::default()),
         mono: book.add_style(
             mono,
             13.0,

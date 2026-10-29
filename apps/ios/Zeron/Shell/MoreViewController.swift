@@ -54,7 +54,7 @@ final class MoreViewController: UIViewController, UICollectionViewDelegate {
             c.secondaryText = row.subtitle
             c.secondaryTextProperties.font = Fonts.ui(.sans, 13)
             c.secondaryTextProperties.color = Palette.secondary
-            c.image = UIImage(systemName: row.symbol)
+            c.image = K22Icon.resolve(systemName: row.symbol)
             c.imageProperties.tintColor = row.destructive ? Palette.danger : row.tint
             cell.contentConfiguration = c
             var bg = UIBackgroundConfiguration.listGroupedCell()

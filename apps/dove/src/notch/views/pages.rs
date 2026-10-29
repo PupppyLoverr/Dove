@@ -12,19 +12,23 @@ impl Notch {
         for (i, (hit, label, kind)) in hits.into_iter().enumerate() {
             let on = i == self.hit;
             let glyph = match hit {
-                Hit::Agent(_) | Hit::Stop(_) | Hit::OpenInDove(_) => icons::BOT,
+                Hit::Agent(_) | Hit::Stop(_) | Hit::OpenInDove(_) => icons::CURSOR_AGENT,
                 Hit::Note(_) | Hit::NewNote(_) => icons::NOTE_TEXT,
                 Hit::Clip(_) | Hit::ClearClips => icons::COPY,
                 Hit::Tab(t) => glyph(t),
-                Hit::NewAgent(_) => icons::SPARKLE_AGENT,
+                Hit::NewAgent(_) => icons::SPARKLE,
                 Hit::Ask(_) => icons::CHAT_ROUND_LINE,
                 Hit::Timer(_) | Hit::LinkTimer(_) => icons::TIMER,
                 Hit::Capture => icons::SCREEN_CAPTURE,
                 Hit::Focus => icons::MOON,
                 Hit::Pin => icons::PIN,
                 Hit::Shuffle => icons::MEDIA_SHUFFLE,
-                Hit::RunAutomation(_) => icons::BOLT,
+                Hit::RunAutomation(_) => icons::WORKFLOW,
                 Hit::Merge(..) => icons::GIT_MERGE,
+                Hit::Call => icons::WAVEFORM,
+                Hit::Lens(_) => icons::LAYERS,
+                Hit::View(_) => icons::ARTIFACTS,
+                Hit::Plan(_) => icons::LAYERS,
             };
             col = col.child(
                 div()
@@ -53,10 +57,32 @@ impl Notch {
     pub(crate) fn agent_row(&self, a: &Agent, ix: usize, cx: &mut Context<Self>) -> AnyElement {
         let id = a.id;
         let (label, color) = status_of(a);
-        let ticker = a.activity.clone().filter(|s| !s.is_empty()).or_else(|| (!a.steps.is_empty()).then(|| a.steps.clone()));
+        let ticker =
+            a.activity.clone().filter(|s| !s.is_empty()).or_else(|| (!a.steps.is_empty()).then(|| a.steps.clone()));
         let now = dove_core::store::now_ms();
         let time = a.elapsed_secs(now).filter(|s| *s > 0).map(elapsed);
         let running = a.status == TaskStatus::Running && a.live;
+        // Its pull request's checks, at a glance.
+        let pr = self.snap.prs.iter().find(|p| p.task == id && p.state == "open").map(|p| {
+            let color = match p.checks.as_str() {
+                "passing" => tk::GREEN,
+                "failing" => tk::RED,
+                "pending" => tk::AMBER,
+                _ => tk::DIM,
+            };
+            div()
+                .flex_none()
+                .h(px(18.0))
+                .px(px(6.0))
+                .rounded_full()
+                .bg(color.opacity(0.14))
+                .flex()
+                .items_center()
+                .font_family(tk::MONO)
+                .text_size(px(tk::T11))
+                .text_color(color)
+                .child(format!("#{}", p.number))
+        });
         let group = SharedString::from(format!("agent-row-{ix}"));
         div()
             .id(("agent", ix))
@@ -74,7 +100,9 @@ impl Notch {
                 cx.stop_propagation();
                 this.drop_on_agent(id, paths, cx);
             }))
-            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.open_page(Page::Agent(id), Some(window), cx)))
+            .on_click(
+                cx.listener(move |this, _: &ClickEvent, window, cx| this.open_page(Page::Agent(id), Some(window), cx)),
+            )
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
@@ -87,10 +115,28 @@ impl Notch {
                 div()
                     .flex_1()
                     .min_w_0()
-                    .child(div().text_size(px(tk::T13)).font_weight(FontWeight::MEDIUM).text_color(tk::TEXT).truncate().child(a.title.clone()))
+                    .child(
+                        div()
+                            .text_size(px(tk::T13))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(tk::TEXT)
+                            .truncate()
+                            .child(a.title.clone()),
+                    )
                     .child(match ticker {
-                        Some(t) => div().font_family(tk::MONO).text_size(px(tk::T11)).text_color(tk::FAINT).truncate().child(t).into_any_element(),
-                        None => div().text_size(px(tk::T11)).text_color(tk::FAINT).truncate().child(a.project.clone()).into_any_element(),
+                        Some(t) => div()
+                            .font_family(tk::MONO)
+                            .text_size(px(tk::T11))
+                            .text_color(tk::FAINT)
+                            .truncate()
+                            .child(t)
+                            .into_any_element(),
+                        None => div()
+                            .text_size(px(tk::T11))
+                            .text_color(tk::FAINT)
+                            .truncate()
+                            .child(a.project.clone())
+                            .into_any_element(),
                     }),
             )
             .child(
@@ -99,6 +145,7 @@ impl Notch {
                     .items_center()
                     .gap(px(8.0))
                     .flex_none()
+                    .children(pr)
                     .child(
                         div()
                             .flex()
@@ -120,7 +167,7 @@ impl Notch {
                             })),
                     )
                     .child(div().invisible().group_hover(group, |s| s.visible()).child(
-                        ibtn(("row-more", ix), icons::MORE_HORIZONTAL, 26.0, tk::DIM, "More").on_click(cx.listener(
+                        ibtn(("row-more", ix), icons::MORE, 26.0, tk::DIM, "More").on_click(cx.listener(
                             move |this, ev: &ClickEvent, _, cx| {
                                 cx.stop_propagation();
                                 let items = this.agent_menu(id, running);
@@ -140,11 +187,24 @@ impl Notch {
         if !self.connected() && self.snap.agents.is_empty() {
             out.push(HomeCard::Offline);
         }
+        // The Now stack: the call, a plan, what needs you, what's running.
+        if self.call.live {
+            out.push(HomeCard::Call);
+        }
+        if self.snap.plans.iter().any(|p| p.request_id.is_some()) {
+            out.push(HomeCard::Plan);
+        }
         if self.approval().is_some() {
             out.push(HomeCard::Approval);
         }
         if self.snap.agents.iter().any(|a| a.active() && !a.needs_you()) {
             out.push(HomeCard::Working);
+        }
+        if self.snap.limits.iter().any(|m| m.used >= 80.0) {
+            out.push(HomeCard::Usage);
+        }
+        if !self.widgets.is_empty() {
+            out.push(HomeCard::Widget);
         }
         if self.media.is_some() {
             out.push(HomeCard::Music);
@@ -159,7 +219,12 @@ impl Notch {
             out.push(HomeCard::Prs);
         }
         let now = dove_core::store::now_ms();
-        if self.snap.automations.iter().any(|a| a.next_ms.is_some_and(|n| n < now + 86_400_000) || a.last_ms.is_some_and(|l| now - l < 3_600_000)) {
+        if self
+            .snap
+            .automations
+            .iter()
+            .any(|a| a.next_ms.is_some_and(|n| n < now + 86_400_000) || a.last_ms.is_some_and(|l| now - l < 3_600_000))
+        {
             out.push(HomeCard::Automations);
         }
         if !self.notes.is_empty() {
@@ -175,22 +240,24 @@ impl Notch {
         let key = self.key();
         let cards = self.home_cards();
         if cards.is_empty() {
-            return empty(icons::DOVE_LOGO, "All quiet", "Agents, music and anything that needs you show up here.")
+            return empty(icons::K22_MARK, "All quiet", "Agents, music and anything that needs you show up here.")
                 .child(
                     div()
                         .mt(px(8.0))
                         .flex()
                         .gap(px(6.0))
-                        .child(primary("empty-agent", "Start an agent").on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                            this.open_page(Page::NewAgent, Some(window), cx)
-                        })))
-                        .child(pill("empty-timer", "Timer", false).on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                            this.open_page(Page::Tab(Tab::Timer), Some(window), cx)
-                        })))
-                        .child(pill("empty-note", "New note", false).on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                            this.selected_note = None;
-                            this.open_page(Page::Tab(Tab::Notes), Some(window), cx);
-                        }))),
+                        .child(primary("empty-agent", "Start an agent").on_click(cx.listener(
+                            |this, _: &ClickEvent, window, cx| this.open_page(Page::NewAgent, Some(window), cx),
+                        )))
+                        .child(pill("empty-timer", "Timer", false).on_click(cx.listener(
+                            |this, _: &ClickEvent, window, cx| this.open_page(Page::Tab(Tab::Timer), Some(window), cx),
+                        )))
+                        .child(pill("empty-note", "New note", false).on_click(cx.listener(
+                            |this, _: &ClickEvent, window, cx| {
+                                this.selected_note = None;
+                                this.open_page(Page::Tab(Tab::Notes), Some(window), cx);
+                            },
+                        ))),
                 )
                 .into_any_element();
         }
@@ -245,27 +312,36 @@ impl Notch {
                     this.selected_note = None;
                     this.open_page(Page::Tab(Tab::Notes), Some(window), cx);
                 })))
-                .child(shortcut("go-dev", icons::SERVER, "Servers").on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                    this.open_page(Page::Tab(Tab::Dev), Some(window), cx)
+                .child(shortcut("go-talk", icons::WAVEFORM, "Talk to K22").on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                    this.talk(None, cx)
                 })));
             col = col.child(rise(row, (key, 4), 4));
+            if let Some(chips) = self.automation_chips(cx) {
+                col = col.child(rise(chips, (key, 5), 5));
+            }
         }
         col.into_any_element()
     }
 
     fn home_card(&mut self, c: HomeCard, cx: &mut Context<Self>) -> AnyElement {
         match c {
+            HomeCard::Call | HomeCard::Plan | HomeCard::Widget | HomeCard::Usage => self.home_card_v3(c, cx),
             HomeCard::Offline => card()
                 .flex()
                 .items_center()
                 .gap(px(10.0))
-                .child(icon(icons::DOVE_LOGO).size(px(18.0)).text_color(tk::DIM))
+                .child(icon(icons::K22_MARK).size(px(18.0)).text_color(tk::DIM))
                 .child(
                     div()
                         .flex_1()
                         .min_w_0()
                         .child(div().text_size(px(tk::T13)).text_color(tk::TEXT).child("Dove isn't running"))
-                        .child(div().text_size(px(tk::T11)).text_color(tk::FAINT).child("Music, the tray, notes and the timer still work.")),
+                        .child(
+                            div()
+                                .text_size(px(tk::T11))
+                                .text_color(tk::FAINT)
+                                .child("Music, the tray, notes and the timer still work."),
+                        ),
                 )
                 .child(link("open-dove", "Open Dove").on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                     this.command(ToEngine::Open { task: None });
@@ -286,16 +362,32 @@ impl Notch {
                             .items_center()
                             .gap(px(8.0))
                             .child(mark(kind, 15.0))
-                            .child(div().flex_1().min_w_0().truncate().text_size(px(tk::T13)).font_weight(FontWeight::SEMIBOLD).text_color(tk::TEXT).child(title))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_size(px(tk::T13))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(tk::TEXT)
+                                    .child(title),
+                            )
                             .child(self.dot(tk::AMBER, 6.0, true)),
                     )
-                    .child(div().text_size(px(tk::T12)).text_color(tk::DIM).line_clamp(2).child(format!("{} · {}", req.tool, req.summary)))
+                    .child(
+                        div()
+                            .text_size(px(tk::T12))
+                            .text_color(tk::DIM)
+                            .line_clamp(2)
+                            .child(format!("{} · {}", req.tool, req.summary)),
+                    )
                     .when_some(req.preview.clone(), |d, p| d.child(preview(&p, 3)))
                     .child(self.decision_row(id, &req, "home-decide", cx))
                     .into_any_element()
             }
             HomeCard::Working => {
-                let working: Vec<Agent> = self.snap.agents.iter().filter(|a| a.active() && !a.needs_you()).take(3).cloned().collect();
+                let working: Vec<Agent> =
+                    self.snap.agents.iter().filter(|a| a.active() && !a.needs_you()).take(3).cloned().collect();
                 let mut c = div().flex().flex_col().gap(px(2.0));
                 for (i, a) in working.iter().enumerate() {
                     c = c.child(self.agent_row(a, 100 + i, cx));
@@ -307,7 +399,9 @@ impl Notch {
                 card()
                     .id("home-music")
                     .cursor_pointer()
-                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.open_page(Page::Tab(Tab::Music), Some(window), cx)))
+                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                        this.open_page(Page::Tab(Tab::Music), Some(window), cx)
+                    }))
                     .flex()
                     .items_center()
                     .gap(px(12.0))
@@ -321,8 +415,21 @@ impl Notch {
                             .gap(px(6.0))
                             .child(
                                 div()
-                                    .child(div().text_size(px(tk::T13)).font_weight(FontWeight::MEDIUM).text_color(tk::TEXT).truncate().child(m.title.clone()))
-                                    .child(div().text_size(px(tk::T11)).text_color(tk::FAINT).truncate().child(m.artist.clone())),
+                                    .child(
+                                        div()
+                                            .text_size(px(tk::T13))
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .text_color(tk::TEXT)
+                                            .truncate()
+                                            .child(m.title.clone()),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(tk::T11))
+                                            .text_color(tk::FAINT)
+                                            .truncate()
+                                            .child(m.artist.clone()),
+                                    ),
                             )
                             .child(bar(m.progress(), tk::TEXT.opacity(0.8), 3.0)),
                     )
@@ -333,7 +440,9 @@ impl Notch {
             HomeCard::Timer => card()
                 .id("home-timer")
                 .cursor_pointer()
-                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.open_page(Page::Tab(Tab::Timer), Some(window), cx)))
+                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                    this.open_page(Page::Tab(Tab::Timer), Some(window), cx)
+                }))
                 .flex()
                 .items_center()
                 .gap(px(12.0))
@@ -346,7 +455,11 @@ impl Notch {
                 ))
                 .child(roll(&mins_secs(self.timer.remaining()), "home-timer", tk::T20, tk::TEXT, FontWeight::SEMIBOLD))
                 .child(div().flex_1())
-                .child(div().text_size(px(tk::T11)).text_color(tk::FAINT).child(if self.timer.running() { "Running" } else { "Paused" }))
+                .child(div().text_size(px(tk::T11)).text_color(tk::FAINT).child(if self.timer.running() {
+                    "Running"
+                } else {
+                    "Paused"
+                }))
                 .into_any_element(),
             HomeCard::Dev => {
                 let mut c = card().flex().flex_col().gap(px(4.0));
@@ -362,9 +475,15 @@ impl Notch {
                             .rounded(px(8.0))
                             .hover(|s| s.bg(tk::WASH))
                             .child(self.dot(tk::GREEN, 6.0, false))
-                            .child(div().font_family(tk::MONO).text_size(px(tk::T12)).text_color(tk::TEXT).child(format!("localhost:{}", p.port)))
+                            .child(
+                                div()
+                                    .font_family(tk::MONO)
+                                    .text_size(px(tk::T12))
+                                    .text_color(tk::TEXT)
+                                    .child(format!("localhost:{}", p.port)),
+                            )
                             .child(div().flex_1().text_size(px(tk::T11)).text_color(tk::FAINT).child(p.process.clone()))
-                            .child(icon(icons::ARROW_UP_RIGHT).size(px(13.0)).text_color(tk::FAINT))
+                            .child(icon(icons::LINK).size(px(13.0)).text_color(tk::FAINT))
                             .on_click(move |_, _, cx| cx.open_url(&url)),
                     );
                 }
@@ -395,7 +514,13 @@ impl Notch {
                                     .min_w_0()
                                     .cursor_pointer()
                                     .on_click(move |_, _, cx| cx.open_url(&url))
-                                    .child(div().text_size(px(tk::T12)).text_color(tk::TEXT).truncate().child(format!("#{} {}", pr.number, pr.title)))
+                                    .child(
+                                        div()
+                                            .text_size(px(tk::T12))
+                                            .text_color(tk::TEXT)
+                                            .truncate()
+                                            .child(format!("#{} {}", pr.number, pr.title)),
+                                    )
                                     .child(
                                         div()
                                             .flex()
@@ -408,11 +533,13 @@ impl Notch {
                                     ),
                             )
                             .when(mergeable, |d| {
-                                d.child(link(("home-merge", i), "Merge").on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                                    this.command(ToEngine::Merge { task, number });
-                                    this.toast("Merging…");
-                                    cx.notify();
-                                })))
+                                d.child(link(("home-merge", i), "Merge").on_click(cx.listener(
+                                    move |this, _: &ClickEvent, _, cx| {
+                                        this.command(ToEngine::Merge { task, number });
+                                        this.toast("Merging…");
+                                        cx.notify();
+                                    },
+                                )))
                             }),
                     );
                 }
@@ -435,25 +562,35 @@ impl Notch {
                             .flex()
                             .items_center()
                             .gap(px(8.0))
-                            .child(icon(icons::BOLT).size(px(15.0)).text_color(tk::DIM))
+                            .child(icon(icons::WORKFLOW).size(px(15.0)).text_color(tk::DIM))
                             .child(
                                 div()
                                     .flex_1()
                                     .min_w_0()
-                                    .child(div().text_size(px(tk::T12)).text_color(tk::TEXT).truncate().child(a.name.clone()))
+                                    .child(
+                                        div()
+                                            .text_size(px(tk::T12))
+                                            .text_color(tk::TEXT)
+                                            .truncate()
+                                            .child(a.name.clone()),
+                                    )
                                     .child(div().text_size(px(tk::T11)).text_color(tk::FAINT).child(line)),
                             )
-                            .child(link(("run-auto", i), "Run now").on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                                this.command(ToEngine::RunAutomation { id: aid.clone() });
-                                this.toast("Running");
-                                cx.notify();
-                            }))),
+                            .child(link(("run-auto", i), "Run now").on_click(cx.listener(
+                                move |this, _: &ClickEvent, _, cx| {
+                                    this.command(ToEngine::RunAutomation { id: aid.clone() });
+                                    this.toast("Running");
+                                    cx.notify();
+                                },
+                            ))),
                     );
                 }
                 c.into_any_element()
             }
             HomeCard::Note => {
-                let Some(n) = self.notes.iter().find(|n| n.pinned).or(self.notes.first()).cloned() else { return div().into_any_element() };
+                let Some(n) = self.notes.iter().find(|n| n.pinned).or(self.notes.first()).cloned() else {
+                    return div().into_any_element();
+                };
                 let id = n.id;
                 card()
                     .id("home-note")
@@ -471,19 +608,37 @@ impl Notch {
                             .items_center()
                             .gap(px(6.0))
                             .when(n.pinned, |d| d.child(icon(icons::PIN).size(px(12.0)).text_color(tk::AMBER)))
-                            .child(div().flex_1().min_w_0().text_size(px(tk::T13)).font_weight(FontWeight::MEDIUM).text_color(tk::TEXT).truncate().child(n.title()))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .text_size(px(tk::T13))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(tk::TEXT)
+                                    .truncate()
+                                    .child(n.title()),
+                            )
                             .child(div().text_size(px(tk::T11)).text_color(tk::FAINT).child(match n.checklist() {
                                 Some((d, t)) => format!("{d}/{t}"),
                                 None => String::new(),
                             })),
                     )
-                    .child(div().text_size(px(tk::T12)).text_color(tk::DIM).line_clamp(2).child(n.text.lines().skip(1).collect::<Vec<_>>().join(" ")))
+                    .child(
+                        div()
+                            .text_size(px(tk::T12))
+                            .text_color(tk::DIM)
+                            .line_clamp(2)
+                            .child(n.text.lines().skip(1).collect::<Vec<_>>().join(" ")),
+                    )
                     .into_any_element()
             }
             HomeCard::Clips => {
                 let mut c = card().flex().flex_col().gap(px(2.0));
                 for (i, clip) in self.clips.iter().take(3).enumerate() {
-                    let text = clip.as_text().map(|t| t.trim().lines().next().unwrap_or("").to_string()).unwrap_or_else(|| "Image".into());
+                    let text = clip
+                        .as_text()
+                        .map(|t| t.trim().lines().next().unwrap_or("").to_string())
+                        .unwrap_or_else(|| "Image".into());
                     let copy = clip.clone();
                     c = c.child(
                         div()
@@ -497,7 +652,15 @@ impl Notch {
                             .cursor_pointer()
                             .hover(|s| s.bg(tk::WASH))
                             .child(icon(icons::COPY).size(px(13.0)).text_color(tk::FAINT))
-                            .child(div().flex_1().min_w_0().truncate().text_size(px(tk::T12)).text_color(tk::DIM).child(text))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_size(px(tk::T12))
+                                    .text_color(tk::DIM)
+                                    .child(text),
+                            )
                             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                                 cx.write_to_clipboard(match &copy.body {
                                     ClipBody::Text(t) => ClipboardItem::new_string(t.clone()),
@@ -516,9 +679,10 @@ impl Notch {
     // ----- agents -----------------------------------------------------------------------
 
     pub(crate) fn page_agents(&self, cx: &mut Context<Self>) -> AnyElement {
-        let new = primary("agents-new", "New agent").on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.open_page(Page::NewAgent, Some(window), cx)));
+        let new = primary("agents-new", "New agent")
+            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.open_page(Page::NewAgent, Some(window), cx)));
         if self.snap.agents.is_empty() && self.snap.flock.is_empty() {
-            return empty(icons::SPARKLE_AGENT, "No agents yet", "Start one here, or type “new …” in the search.")
+            return empty(icons::SPARKLE, "No agents yet", "Start one here, or type “new …” in the search.")
                 .child(div().mt(px(8.0)).child(new))
                 .into_any_element();
         }
@@ -534,7 +698,10 @@ impl Notch {
         let mut index = 0;
         let groups: [(&str, Vec<&Agent>); 3] = [
             ("Needs you", self.snap.agents.iter().filter(|a| a.needs_you()).collect()),
-            ("Working", self.snap.agents.iter().filter(|a| a.status == TaskStatus::Running && !a.needs_you()).collect()),
+            (
+                "Working",
+                self.snap.agents.iter().filter(|a| a.status == TaskStatus::Running && !a.needs_you()).collect(),
+            ),
             ("Recent", self.snap.agents.iter().filter(|a| !a.active()).collect()),
         ];
         for (label, agents) in groups {
@@ -570,7 +737,15 @@ impl Notch {
                         .hover(|s| s.bg(tk::WASH))
                         .on_click(cx.listener(|this, _: &ClickEvent, _, _| this.command(ToEngine::OpenFlock)))
                         .child(avatar(f.kind, 28.0, (f.working || f.needs_input).then_some((-1.0, color))))
-                        .child(div().flex_1().min_w_0().truncate().text_size(px(tk::T13)).text_color(tk::TEXT).child(f.place.clone()))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_size(px(tk::T13))
+                                .text_color(tk::TEXT)
+                                .child(f.place.clone()),
+                        )
                         .child(self.dot(color, 6.0, f.working || f.needs_input))
                         .child(div().text_size(px(tk::T11)).text_color(color).child(label)),
                 );
@@ -655,13 +830,23 @@ impl Notch {
                     .min_w_0()
                     .cursor_pointer()
                     .tooltip(tip("Open in Dove · Ctrl+O"))
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _, _| this.command(ToEngine::Open { task: Some(id) })))
+                    .on_click(
+                        cx.listener(move |this, _: &ClickEvent, _, _| this.command(ToEngine::Open { task: Some(id) })),
+                    )
                     .child(
                         div()
                             .flex()
                             .items_center()
                             .gap(px(8.0))
-                            .child(div().min_w_0().truncate().text_size(px(tk::T13)).font_weight(FontWeight::SEMIBOLD).text_color(tk::TEXT).child(a.title.clone()))
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_size(px(tk::T13))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(tk::TEXT)
+                                    .child(a.title.clone()),
+                            )
                             .child(
                                 div()
                                     .flex_none()
@@ -674,18 +859,30 @@ impl Notch {
                                     .child(label),
                             ),
                     )
-                    .when(!meta.is_empty(), |d| d.child(div().font_family(tk::MONO).text_size(px(tk::T11)).text_color(tk::FAINT).truncate().child(meta.join(" · ")))),
+                    .when(!meta.is_empty(), |d| {
+                        d.child(
+                            div()
+                                .font_family(tk::MONO)
+                                .text_size(px(tk::T11))
+                                .text_color(tk::FAINT)
+                                .truncate()
+                                .child(meta.join(" · ")),
+                        )
+                    }),
             )
             .when(running && !stopping, |d| {
-                d.child(ibtn("agent-stop", icons::STOP, 30.0, tk::RED, "Stop").on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.stop_agent(id, cx))))
+                d.child(
+                    ibtn("agent-stop", icons::STOP, 30.0, tk::RED, "Stop")
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.stop_agent(id, cx))),
+                )
             });
 
         // The mini transcript.
         let mut log = div().flex().flex_col().gap(px(10.0)).pb(px(4.0));
         if turns.len() > 1 || turns.first().is_some_and(|t| !t.user.is_empty()) {
-            log = log.child(div().flex().justify_center().child(link("earlier", "Earlier in Dove").on_click(cx.listener(
-                move |this, _: &ClickEvent, _, _| this.command(ToEngine::Open { task: Some(id) }),
-            ))));
+            log = log.child(div().flex().justify_center().child(link("earlier", "Earlier in Dove").on_click(
+                cx.listener(move |this, _: &ClickEvent, _, _| this.command(ToEngine::Open { task: Some(id) })),
+            )));
         }
         for (ti, t) in turns.iter().enumerate() {
             if !t.user.trim().is_empty() {
@@ -709,7 +906,11 @@ impl Notch {
                                 .text_size(px(tk::T11))
                                 .text_color(if failed { tk::RED.opacity(0.85) } else { tk::FAINT })
                                 .hover(|s| s.text_color(tk::DIM))
-                                .child(icon(if open { icons::ALT_ARROW_DOWN } else { icons::CHECKLIST }).size(px(13.0)).text_color(tk::FAINT))
+                                .child(
+                                    icon(if open { icons::ALT_ARROW_DOWN } else { icons::CHECKLIST })
+                                        .size(px(13.0))
+                                        .text_color(tk::FAINT),
+                                )
                                 .child(div().truncate().child(t.steps.clone()))
                                 .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                                     if !this.unfolded.remove(&ti) {
@@ -734,9 +935,11 @@ impl Notch {
                                     .text_color(tk::DIM)
                                     .hover(|s| s.text_color(tk::TEXT))
                                     .tooltip(tip("See the change in Dove"))
-                                    .child(icon(icons::FILE_CODE).size(px(12.0)).text_color(tk::FAINT))
+                                    .child(icon(icons::FILE_DIFF).size(px(12.0)).text_color(tk::FAINT))
                                     .child(div().truncate().child(name))
-                                    .on_click(cx.listener(move |this, _: &ClickEvent, _, _| this.command(ToEngine::Open { task: Some(id) })))
+                                    .on_click(cx.listener(move |this, _: &ClickEvent, _, _| {
+                                        this.command(ToEngine::Open { task: Some(id) })
+                                    }))
                             }))
                         }),
                 );
@@ -800,15 +1003,18 @@ impl Notch {
             )
             .when(!stick, |d| {
                 d.child(div().absolute().bottom(px(6.0)).left_0().right_0().flex().justify_center().child(
-                    pill("jump", "Jump to latest", true).h(px(24.0)).shadow_md().on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        this.stick = true;
-                        cx.notify();
-                    })),
+                    pill("jump", "Jump to latest", true).h(px(24.0)).shadow_md().on_click(cx.listener(
+                        |this, _: &ClickEvent, _, cx| {
+                            this.stick = true;
+                            cx.notify();
+                        },
+                    )),
                 ))
             });
 
         // What it waits on: one approval or question at a time, pinned.
-        let pending: Vec<Pending> = a.pending.iter().filter(|p| !self.dismissed.contains(&p.request_id)).cloned().collect();
+        let pending: Vec<Pending> =
+            a.pending.iter().filter(|p| !self.dismissed.contains(&p.request_id)).cloned().collect();
         let waiting = pending.first().cloned().map(|req| {
             let count = pending.len();
             if req.question && !req.questions.is_empty() {
@@ -824,8 +1030,20 @@ impl Notch {
                             .items_center()
                             .gap(px(6.0))
                             .child(self.dot(tk::AMBER, 6.0, true))
-                            .child(div().flex_1().min_w_0().truncate().text_size(px(tk::T12)).text_color(tk::TEXT).child(format!("{} · {}", req.tool, req.summary)))
-                            .when(count > 1, |d| d.child(div().text_size(px(tk::T11)).text_color(tk::FAINT).child(format!("1 of {count}")))),
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_size(px(tk::T12))
+                                    .text_color(tk::TEXT)
+                                    .child(format!("{} · {}", req.tool, req.summary)),
+                            )
+                            .when(count > 1, |d| {
+                                d.child(
+                                    div().text_size(px(tk::T11)).text_color(tk::FAINT).child(format!("1 of {count}")),
+                                )
+                            }),
                     )
                     .when_some(req.preview.clone(), |d, p| d.child(preview(&p, 6)))
                     .child(self.decision_row(id, &req, "agent-decide", cx))
@@ -834,28 +1052,35 @@ impl Notch {
         });
 
         // The composer.
-        let composer_focused = self.inputs.as_ref().is_some_and(|i| i.message.read(cx).focus_handle(cx).is_focused(window));
+        let composer_focused =
+            self.inputs.as_ref().is_some_and(|i| i.message.read(cx).focus_handle(cx).is_focused(window));
         let empty = self.inputs.as_ref().is_none_or(|i| i.message.read(cx).value().trim().is_empty());
         let quick = (composer_focused && empty && waiting.is_none() && !self.picking).then(|| {
             let mut chips = div().flex().gap(px(6.0)).flex_wrap();
             for (i, q) in ["Continue", "Run the tests", "Explain what you did"].iter().enumerate() {
                 let q = q.to_string();
-                chips = chips.child(pill(("quick", i), q.clone(), false).h(px(24.0)).px(px(10.0)).on_click(cx.listener(
-                    move |this, _: &ClickEvent, _, cx| {
+                chips = chips.child(pill(("quick", i), q.clone(), false).h(px(24.0)).px(px(10.0)).on_click(
+                    cx.listener(move |this, _: &ClickEvent, _, cx| {
                         this.sent.push(super::super::Sent { task: id, text: q.clone(), at: Instant::now() });
                         this.command(ToEngine::Send { task: id, text: q.clone() });
                         this.stick = true;
                         this.retarget(cx);
                         cx.notify();
-                    },
-                )));
+                    }),
+                ));
             }
             chips
         });
         let picker = self.picking.then(|| {
             let mut list = card().p(px(6.0)).flex().flex_col();
             if self.shelf.is_empty() {
-                list = list.child(div().p(px(6.0)).text_size(px(tk::T12)).text_color(tk::FAINT).child("Drop files on the island to attach them"));
+                list = list.child(
+                    div()
+                        .p(px(6.0))
+                        .text_size(px(tk::T12))
+                        .text_color(tk::FAINT)
+                        .child("Drop files on the island to attach them"),
+                );
             }
             for (i, p) in self.shelf.iter().take(5).enumerate() {
                 let name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
@@ -871,8 +1096,14 @@ impl Notch {
                         .gap(px(8.0))
                         .cursor_pointer()
                         .hover(|s| s.bg(tk::WASH_HOVER))
-                        .child(icon(if p.is_dir() { icons::FOLDER } else { icons::DOCUMENT }).size(px(14.0)).text_color(tk::DIM))
-                        .child(div().flex_1().min_w_0().truncate().text_size(px(tk::T12)).text_color(tk::TEXT).child(name))
+                        .child(
+                            icon(if p.is_dir() { icons::PROJECTS } else { icons::DOCUMENT })
+                                .size(px(14.0))
+                                .text_color(tk::DIM),
+                        )
+                        .child(
+                            div().flex_1().min_w_0().truncate().text_size(px(tk::T12)).text_color(tk::TEXT).child(name),
+                        )
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.attach(path.clone(), cx))),
                 );
             }
@@ -942,7 +1173,11 @@ impl Notch {
                     .when(dictating, |d| d.bg(tk::RED.opacity(0.2)))
                     .hover(|s| s.bg(tk::WASH_HOVER))
                     .tooltip(tip("Hold to talk"))
-                    .child(icon(icons::MICROPHONE).size(px(tk::ICON_ROW)).text_color(if dictating { tk::RED } else { tk::DIM }))
+                    .child(icon(icons::MICROPHONE).size(px(tk::ICON_ROW)).text_color(if dictating {
+                        tk::RED
+                    } else {
+                        tk::DIM
+                    }))
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(|this, _: &MouseDownEvent, _, cx| {
@@ -950,7 +1185,10 @@ impl Notch {
                             this.dictate(true, cx);
                         }),
                     )
-                    .on_mouse_up(MouseButton::Left, cx.listener(|this, _: &MouseUpEvent, _, cx| this.dictate(false, cx))),
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(|this, _: &MouseUpEvent, _, cx| this.dictate(false, cx)),
+                    ),
             )
             .child(
                 div()
@@ -965,7 +1203,7 @@ impl Notch {
                     .cursor_pointer()
                     .hover(|s| s.opacity(0.85))
                     .tooltip(tip("Send · Enter"))
-                    .child(icon(icons::SEND_UP).size(px(15.0)).text_color(if ready { tk::INK } else { tk::DIM }))
+                    .child(icon(icons::SEND).size(px(15.0)).text_color(if ready { tk::INK } else { tk::DIM }))
                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.send_message(window, cx))),
             );
         div()
@@ -994,9 +1232,9 @@ impl Notch {
         for (i, o) in q.options.iter().enumerate() {
             let (rid, o2) = (req.request_id.clone(), o.clone());
             let on = picked.contains(o);
-            opts = opts.child(pill(("opt", i), o.clone(), on).on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                this.answer_pick(id, rid.clone(), o2.clone(), false, cx)
-            })));
+            opts = opts.child(pill(("opt", i), o.clone(), on).on_click(cx.listener(
+                move |this, _: &ClickEvent, _, cx| this.answer_pick(id, rid.clone(), o2.clone(), false, cx),
+            )));
         }
         let rid = req.request_id.clone();
         card()
@@ -1009,9 +1247,15 @@ impl Notch {
                     .items_center()
                     .gap(px(6.0))
                     .child(self.dot(tk::AMBER, 6.0, true))
-                    .child(div().flex_1().min_w_0().text_size(px(tk::T12)).text_color(tk::TEXT).child(q.question.clone()))
+                    .child(
+                        div().flex_1().min_w_0().text_size(px(tk::T12)).text_color(tk::TEXT).child(q.question.clone()),
+                    )
                     .when(req.questions.len() > 1, |d| {
-                        d.child(div().text_size(px(tk::T11)).text_color(tk::FAINT).child(format!("{} of {}", page + 1, req.questions.len())))
+                        d.child(div().text_size(px(tk::T11)).text_color(tk::FAINT).child(format!(
+                            "{} of {}",
+                            page + 1,
+                            req.questions.len()
+                        )))
                     }),
             )
             .child(opts)
@@ -1022,7 +1266,9 @@ impl Notch {
                     .gap(px(6.0))
                     .child(div().flex_1().text_size(px(tk::T11)).text_color(tk::GHOST).child("Or type an answer below"))
                     .when(q.multi, |d| {
-                        d.child(primary("q-next", "Next").on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.answer_next(id, rid.clone(), cx))))
+                        d.child(primary("q-next", "Next").on_click(
+                            cx.listener(move |this, _: &ClickEvent, _, cx| this.answer_next(id, rid.clone(), cx)),
+                        ))
                     }),
             )
             .into_any_element()
@@ -1037,7 +1283,9 @@ impl Notch {
             .project
             .and_then(|p| self.snap.projects.iter().find(|(id, _)| *id == p))
             .map(|(_, n)| n.clone())
-            .unwrap_or_else(|| if self.snap.projects.is_empty() { "No project".into() } else { "Pick a project".into() });
+            .unwrap_or_else(
+                || if self.snap.projects.is_empty() { "No project".into() } else { "Pick a project".into() },
+            );
         let summary = format!("{kind} · {project} · {}", if form.worktree { "own worktree" } else { "this folder" });
         let prompt = self.inputs.as_ref().map(|i| i.prompt.clone());
         div()
@@ -1054,7 +1302,10 @@ impl Notch {
                     .flex()
                     .items_center()
                     .text_size(px(tk::T13))
-                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _: &MouseDownEvent, _, cx| this.take_focus(cx)))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _: &MouseDownEvent, _, cx| this.take_focus(cx)),
+                    )
                     .children(prompt.map(|p| div().flex_1().child(Input::new(&p)))),
             )
             .child(
@@ -1084,8 +1335,19 @@ impl Notch {
                     .flex()
                     .items_center()
                     .gap(px(8.0))
-                    .child(div().flex_1().min_w_0().truncate().text_size(px(tk::T11)).text_color(tk::RED).child(form.error.clone().unwrap_or_default()))
-                    .child(primary("new-start", "Start").on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.start_agent(window, cx)))),
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(px(tk::T11))
+                            .text_color(tk::RED)
+                            .child(form.error.clone().unwrap_or_default()),
+                    )
+                    .child(
+                        primary("new-start", "Start")
+                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.start_agent(window, cx))),
+                    ),
             )
             .into_any_element()
     }
@@ -1107,7 +1369,11 @@ impl Notch {
             .hover(|s| s.bg(tk::WHITE_HOVER))
             .active(|s| s.opacity(0.85))
             .tooltip(tip(if playing { "Pause" } else { "Play" }))
-            .child(icon(if playing { icons::MEDIA_PAUSE } else { icons::MEDIA_PLAY }).size(px((size * 0.44).round())).text_color(tk::INK))
+            .child(
+                icon(if playing { icons::MEDIA_PAUSE } else { icons::MEDIA_PLAY })
+                    .size(px((size * 0.44).round()))
+                    .text_color(tk::INK),
+            )
             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                 cx.stop_propagation();
                 this.toggle_play(cx);
@@ -1148,7 +1414,9 @@ impl Notch {
             .size_full()
             .rounded(px(tk::R_CARD))
             .overflow_hidden()
-            .when_some(m.backdrop.clone(), |d, b| d.child(img(b).absolute().top_0().left_0().size_full().object_fit(ObjectFit::Cover).opacity(0.9)))
+            .when_some(m.backdrop.clone(), |d, b| {
+                d.child(img(b).absolute().top_0().left_0().size_full().object_fit(ObjectFit::Cover).opacity(0.9))
+            })
             .child(
                 div()
                     .relative()
@@ -1162,7 +1430,15 @@ impl Notch {
                             .flex()
                             .items_center()
                             .gap(px(14.0))
-                            .child(div().size(px(88.0)).flex().items_center().justify_center().when(hide_art, |d| d.opacity(0.0)).child(self.art(art, 18.0)))
+                            .child(
+                                div()
+                                    .size(px(88.0))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .when(hide_art, |d| d.opacity(0.0))
+                                    .child(self.art(art, 18.0)),
+                            )
                             .child(
                                 div()
                                     .flex_1()
@@ -1170,12 +1446,32 @@ impl Notch {
                                     .flex()
                                     .flex_col()
                                     .gap(px(3.0))
-                                    .child(div().text_size(px(tk::T15)).font_weight(FontWeight::SEMIBOLD).text_color(tk::TEXT).truncate().child(m.title.clone()))
-                                    .child(div().text_size(px(tk::T12)).text_color(tk::DIM).truncate().child(m.artist.clone()))
-                                    .child(div().text_size(px(tk::T11)).text_color(tk::FAINT).truncate().child(m.app.clone())),
+                                    .child(
+                                        div()
+                                            .text_size(px(tk::T15))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(tk::TEXT)
+                                            .truncate()
+                                            .child(m.title.clone()),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(tk::T12))
+                                            .text_color(tk::DIM)
+                                            .truncate()
+                                            .child(m.artist.clone()),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(tk::T11))
+                                            .text_color(tk::FAINT)
+                                            .truncate()
+                                            .child(m.app.clone()),
+                                    ),
                             )
-                            .child(
-                                div().flex().flex_col().items_end().gap(px(8.0)).child(self.eq(18.0)).when(shown_volume, |d| {
+                            .child(div().flex().flex_col().items_end().gap(px(8.0)).child(self.eq(18.0)).when(
+                                shown_volume,
+                                |d| {
                                     d.child(
                                         div()
                                             .w(px(6.0))
@@ -1185,10 +1481,16 @@ impl Notch {
                                             .flex()
                                             .flex_col()
                                             .justify_end()
-                                            .child(div().w_full().rounded_full().bg(tk::TEXT).h(gpui::relative(self.audio_state.volume.clamp(0.0, 1.0)))),
+                                            .child(
+                                                div()
+                                                    .w_full()
+                                                    .rounded_full()
+                                                    .bg(tk::TEXT)
+                                                    .h(gpui::relative(self.audio_state.volume.clamp(0.0, 1.0))),
+                                            ),
                                     )
-                                }),
-                            ),
+                                },
+                            )),
                     )
                     .child(
                         div()
@@ -1221,7 +1523,10 @@ impl Notch {
                                             let this = this.clone();
                                             move |bounds, _, _, cx| {
                                                 let _ = this.update(cx, |n, _| {
-                                                    n.scrub_bounds = Some((f32::from(bounds.origin.x), f32::from(bounds.size.width).max(1.0)));
+                                                    n.scrub_bounds = Some((
+                                                        f32::from(bounds.origin.x),
+                                                        f32::from(bounds.size.width).max(1.0),
+                                                    ));
                                                 });
                                             }
                                         })
@@ -1235,7 +1540,13 @@ impl Notch {
                                             .group_hover("scrub", |s| s.h(px(7.0)))
                                             .rounded_full()
                                             .bg(tk::WASH_HOVER)
-                                            .child(div().h_full().rounded_full().bg(tk::TEXT).w(gpui::relative(progress.clamp(0.0, 1.0)))),
+                                            .child(
+                                                div()
+                                                    .h_full()
+                                                    .rounded_full()
+                                                    .bg(tk::TEXT)
+                                                    .w(gpui::relative(progress.clamp(0.0, 1.0))),
+                                            ),
                                     )
                                     .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _, cx| {
                                         if this.scrub.is_some()
@@ -1268,8 +1579,16 @@ impl Notch {
                                     .justify_between()
                                     .text_size(px(tk::T11))
                                     .text_color(tk::FAINT)
-                                    .child(mins_secs(if self.scrub.is_some() { m.duration.mul_f32(progress) } else { now }))
-                                    .child(if m.duration.is_zero() { String::new() } else { format!("-{}", mins_secs(m.duration.saturating_sub(now))) }),
+                                    .child(mins_secs(if self.scrub.is_some() {
+                                        m.duration.mul_f32(progress)
+                                    } else {
+                                        now
+                                    }))
+                                    .child(if m.duration.is_zero() {
+                                        String::new()
+                                    } else {
+                                        format!("-{}", mins_secs(m.duration.saturating_sub(now)))
+                                    }),
                             ),
                     )
                     .child(
@@ -1278,13 +1597,17 @@ impl Notch {
                             .items_center()
                             .justify_center()
                             .gap(px(24.0))
-                            .child(ibtn("music-prev", icons::MEDIA_PREVIOUS, 38.0, tk::TEXT, "Previous").on_click(cx.listener(|this, _: &ClickEvent, _, _| {
-                                this.media_src.send(super::super::media::Control::Previous)
-                            })))
+                            .child(ibtn("music-prev", icons::MEDIA_PREVIOUS, 38.0, tk::TEXT, "Previous").on_click(
+                                cx.listener(|this, _: &ClickEvent, _, _| {
+                                    this.media_src.send(super::super::media::Control::Previous)
+                                }),
+                            ))
                             .child(self.play_button("music-play", 48.0, cx))
-                            .child(ibtn("music-next", icons::MEDIA_NEXT, 38.0, tk::TEXT, "Next").on_click(cx.listener(|this, _: &ClickEvent, _, _| {
-                                this.media_src.send(super::super::media::Control::Next)
-                            }))),
+                            .child(ibtn("music-next", icons::MEDIA_NEXT, 38.0, tk::TEXT, "Next").on_click(
+                                cx.listener(|this, _: &ClickEvent, _, _| {
+                                    this.media_src.send(super::super::media::Control::Next)
+                                }),
+                            )),
                     ),
             )
             // Shuffle and the output device, on hover.
@@ -1315,12 +1638,19 @@ impl Notch {
                         )
                     })
                     .when_some(m.shuffle, |d, on| {
-                        d.child(ibtn("music-shuffle", icons::MEDIA_SHUFFLE, 26.0, if on { tk::GREEN } else { tk::DIM }, "Shuffle").on_click(cx.listener(
-                            move |this, _: &ClickEvent, _, cx| {
+                        d.child(
+                            ibtn(
+                                "music-shuffle",
+                                icons::MEDIA_SHUFFLE,
+                                26.0,
+                                if on { tk::GREEN } else { tk::DIM },
+                                "Shuffle",
+                            )
+                            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                                 this.media_src.send(super::super::media::Control::Shuffle(!on));
                                 cx.notify();
-                            },
-                        )))
+                            })),
+                        )
                     }),
             )
             .into_any_element()
@@ -1385,7 +1715,7 @@ impl Notch {
                 .justify_center()
                 .cursor_pointer()
                 .hover(|s| s.bg(gpui::hsla(0.0, 0.0, 0.0, 0.65)))
-                .child(icon(icons::MORE_HORIZONTAL).size(px(14.0)).text_color(tk::TEXT))
+                .child(icon(icons::MORE).size(px(14.0)).text_color(tk::TEXT))
                 .on_click(cx.listener(move |this, ev: &ClickEvent, _, cx| {
                     cx.stop_propagation();
                     let items = this.tile_menu(item);
@@ -1395,12 +1725,18 @@ impl Notch {
         match item {
             TrayItem::File(i) => {
                 let Some(path) = self.shelf.get(i).cloned() else { return div().into_any_element() };
-                let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| path.display().to_string());
+                let name = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| path.display().to_string());
                 let size = std::fs::metadata(&path).ok().filter(|m| m.is_file()).map(|m| human_size(m.len()));
                 let icon_img = self.icon_for(&path);
                 let p_open = path.clone();
                 base.cursor_grab()
-                    .on_mouse_down(MouseButton::Left, cx.listener(move |this, ev: &MouseDownEvent, _, _| this.drag_from = Some((i, ev.position))))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, ev: &MouseDownEvent, _, _| this.drag_from = Some((i, ev.position))),
+                    )
                     .on_mouse_up(MouseButton::Left, cx.listener(|this, _: &MouseUpEvent, _, _| this.drag_from = None))
                     .on_mouse_move(cx.listener(move |this, ev: &MouseMoveEvent, _, cx| {
                         let Some((ix, from)) = this.drag_from else { return };
@@ -1413,7 +1749,9 @@ impl Notch {
                             return;
                         }
                         this.drag_from = None;
-                        if let (Some(handle), Some(path)) = (this.win.as_ref().and_then(|w| w.native), this.shelf.get(ix).cloned()) {
+                        if let (Some(handle), Some(path)) =
+                            (this.win.as_ref().and_then(|w| w.native), this.shelf.get(ix).cloned())
+                        {
                             cx.spawn(async move |_, _| {
                                 handle.drag_file(&path);
                             })
@@ -1433,10 +1771,18 @@ impl Notch {
                             .gap(px(6.0))
                             .child(match icon_img {
                                 Some(im) => img(im).size(px(28.0)).into_any_element(),
-                                None => icon(if path.is_dir() { icons::FOLDER } else { icons::DOCUMENT }).size(px(24.0)).text_color(tk::DIM).into_any_element(),
+                                None => icon(if path.is_dir() { icons::PROJECTS } else { icons::DOCUMENT })
+                                    .size(px(24.0))
+                                    .text_color(tk::DIM)
+                                    .into_any_element(),
                             })
                             .child(div().text_size(px(tk::T12)).text_color(tk::TEXT).truncate().child(name))
-                            .child(div().text_size(px(tk::T11)).text_color(tk::FAINT).child(size.unwrap_or_else(|| "Folder".into()))),
+                            .child(
+                                div()
+                                    .text_size(px(tk::T11))
+                                    .text_color(tk::FAINT)
+                                    .child(size.unwrap_or_else(|| "Folder".into())),
+                            ),
                     )
                     .child(more)
                     .into_any_element()
@@ -1444,59 +1790,84 @@ impl Notch {
             TrayItem::Clip(i) => {
                 let Some(clip) = self.clips.get(i).cloned() else { return div().into_any_element() };
                 let error = clip.as_text().is_some_and(super::super::data::looks_like_error);
-                let body: AnyElement = match (&clip.body, clip.kind()) {
-                    (ClipBody::Image(im), _) => img(im.clone()).absolute().top_0().left_0().size_full().object_fit(ObjectFit::Cover).into_any_element(),
-                    (ClipBody::Text(t), ClipKind::Link(host)) => div()
-                        .flex()
-                        .flex_col()
-                        .gap(px(4.0))
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap(px(5.0))
-                                .child(icon(icons::GLOBAL).size(px(13.0)).text_color(tk::BLUE))
-                                .child(div().text_size(px(tk::T12)).font_weight(FontWeight::MEDIUM).text_color(tk::TEXT).truncate().child(host)),
-                        )
-                        .child(div().text_size(px(tk::T11)).text_color(tk::FAINT).line_clamp(2).child(t.trim().to_string()))
-                        .into_any_element(),
-                    (ClipBody::Text(t), ClipKind::Color(r, g, b)) => div()
-                        .flex()
-                        .items_center()
-                        .gap(px(8.0))
-                        .child(div().size(px(34.0)).rounded(px(10.0)).border_1().border_color(tk::HAIRLINE).bg(gpui::Rgba {
-                            r: r as f32 / 255.0,
-                            g: g as f32 / 255.0,
-                            b: b as f32 / 255.0,
-                            a: 1.0,
-                        }))
-                        .child(div().font_family(tk::MONO).text_size(px(tk::T12)).text_color(tk::TEXT).child(t.trim().to_string()))
-                        .into_any_element(),
-                    (ClipBody::Text(t), kind) => {
-                        let tag = if error {
-                            Some(("error", tk::RED))
-                        } else if let ClipKind::Code(lang) = kind {
-                            Some((lang, tk::BLUE))
-                        } else {
-                            None
-                        };
-                        let code = matches!(kind, ClipKind::Code(_)) || error;
-                        div()
+                let body: AnyElement =
+                    match (&clip.body, clip.kind()) {
+                        (ClipBody::Image(im), _) => img(im.clone())
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .size_full()
+                            .object_fit(ObjectFit::Cover)
+                            .into_any_element(),
+                        (ClipBody::Text(t), ClipKind::Link(host)) => div()
                             .flex()
                             .flex_col()
-                            .gap(px(3.0))
-                            .when_some(tag, |d, (label, color)| d.child(div().text_size(px(tk::T11)).text_color(color).child(label)))
+                            .gap(px(4.0))
                             .child(
                                 div()
-                                    .when(code, |d| d.font_family(tk::MONO).text_size(px(tk::T11)))
-                                    .when(!code, |d| d.text_size(px(tk::T12)))
-                                    .text_color(tk::TEXT)
-                                    .line_clamp(if code { 3 } else { 4 })
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(5.0))
+                                    .child(icon(icons::GLOBAL).size(px(13.0)).text_color(tk::BLUE))
+                                    .child(
+                                        div()
+                                            .text_size(px(tk::T12))
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .text_color(tk::TEXT)
+                                            .truncate()
+                                            .child(host),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(tk::T11))
+                                    .text_color(tk::FAINT)
+                                    .line_clamp(2)
                                     .child(t.trim().to_string()),
                             )
-                            .into_any_element()
-                    }
-                };
+                            .into_any_element(),
+                        (ClipBody::Text(t), ClipKind::Color(r, g, b)) => div()
+                            .flex()
+                            .items_center()
+                            .gap(px(8.0))
+                            .child(div().size(px(34.0)).rounded(px(10.0)).border_1().border_color(tk::HAIRLINE).bg(
+                                gpui::Rgba { r: r as f32 / 255.0, g: g as f32 / 255.0, b: b as f32 / 255.0, a: 1.0 },
+                            ))
+                            .child(
+                                div()
+                                    .font_family(tk::MONO)
+                                    .text_size(px(tk::T12))
+                                    .text_color(tk::TEXT)
+                                    .child(t.trim().to_string()),
+                            )
+                            .into_any_element(),
+                        (ClipBody::Text(t), kind) => {
+                            let tag = if error {
+                                Some(("error", tk::RED))
+                            } else if let ClipKind::Code(lang) = kind {
+                                Some((lang, tk::BLUE))
+                            } else {
+                                None
+                            };
+                            let code = matches!(kind, ClipKind::Code(_)) || error;
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap(px(3.0))
+                                .when_some(tag, |d, (label, color)| {
+                                    d.child(div().text_size(px(tk::T11)).text_color(color).child(label))
+                                })
+                                .child(
+                                    div()
+                                        .when(code, |d| d.font_family(tk::MONO).text_size(px(tk::T11)))
+                                        .when(!code, |d| d.text_size(px(tk::T12)))
+                                        .text_color(tk::TEXT)
+                                        .line_clamp(if code { 3 } else { 4 })
+                                        .child(t.trim().to_string()),
+                                )
+                                .into_any_element()
+                        }
+                    };
                 let copy = clip.clone();
                 base.on_click(cx.listener(move |this, ev: &ClickEvent, _, cx| {
                     if ev.click_count() >= 2 {
@@ -1517,7 +1888,15 @@ impl Notch {
                 }))
                 .tooltip(tip("Click copies · double-click pastes"))
                 .child(body)
-                .when(clip.pinned, |d| d.child(div().absolute().bottom(px(6.0)).right(px(8.0)).child(icon(icons::PIN).size(px(11.0)).text_color(tk::AMBER))))
+                .when(clip.pinned, |d| {
+                    d.child(
+                        div()
+                            .absolute()
+                            .bottom(px(6.0))
+                            .right(px(8.0))
+                            .child(icon(icons::PIN).size(px(11.0)).text_color(tk::AMBER)),
+                    )
+                })
                 .child(more)
                 .into_any_element()
             }
@@ -1579,13 +1958,15 @@ impl Notch {
                         .border_1()
                         .border_dashed()
                         .border_color(tk::HAIRLINE)
-                        .child(empty(icons::DOCUMENT_ADD, "The tray is empty", hint)),
+                        .child(empty(icons::UPLOAD, "The tray is empty", hint)),
                 )
                 .into_any_element();
         }
         // A two-column masonry: tiles alternate between columns.
-        let (mut left, mut right) =
-            (div().flex_1().min_w_0().flex().flex_col().gap(px(8.0)), div().flex_1().min_w_0().flex().flex_col().gap(px(8.0)));
+        let (mut left, mut right) = (
+            div().flex_1().min_w_0().flex().flex_col().gap(px(8.0)),
+            div().flex_1().min_w_0().flex().flex_col().gap(px(8.0)),
+        );
         let key = self.key();
         for (ix, item) in items.into_iter().enumerate() {
             let tile = rise(self.tray_tile(item, ix, cx), (key, ix), ix);
@@ -1601,31 +1982,47 @@ impl Notch {
             .flex_col()
             .gap(px(8.0))
             .child(header)
-            .child(div().id("tray").flex_1().min_h_0().overflow_y_scroll().child(div().flex().gap(px(8.0)).child(left).child(right)))
+            .child(
+                div()
+                    .id("tray")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .child(div().flex().gap(px(8.0)).child(left).child(right)),
+            )
             .into_any_element()
     }
 
     // ----- notes -----------------------------------------------------------------------
 
     pub(crate) fn page_notes(&self, cx: &mut Context<Self>) -> AnyElement {
-        let mut list = div().id("notes").w(px(146.0)).flex_none().h_full().overflow_y_scroll().flex().flex_col().gap(px(2.0)).child(
-            div()
-                .id("note-new")
-                .h(px(30.0))
-                .px(px(10.0))
-                .rounded(px(12.0))
-                .flex()
-                .items_center()
-                .gap(px(6.0))
-                .cursor_pointer()
-                .text_size(px(tk::T12))
-                .text_color(if self.selected_note.is_none() { tk::TEXT } else { tk::DIM })
-                .when(self.selected_note.is_none(), |d| d.bg(tk::WASH_HOVER))
-                .hover(|s| s.bg(tk::WASH))
-                .child(icon(icons::PLUS).size(px(14.0)).text_color(tk::DIM))
-                .child("New note")
-                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.select_note(None, window, cx))),
-        );
+        let mut list = div()
+            .id("notes")
+            .w(px(146.0))
+            .flex_none()
+            .h_full()
+            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .gap(px(2.0))
+            .child(
+                div()
+                    .id("note-new")
+                    .h(px(30.0))
+                    .px(px(10.0))
+                    .rounded(px(12.0))
+                    .flex()
+                    .items_center()
+                    .gap(px(6.0))
+                    .cursor_pointer()
+                    .text_size(px(tk::T12))
+                    .text_color(if self.selected_note.is_none() { tk::TEXT } else { tk::DIM })
+                    .when(self.selected_note.is_none(), |d| d.bg(tk::WASH_HOVER))
+                    .hover(|s| s.bg(tk::WASH))
+                    .child(icon(icons::NEW).size(px(14.0)).text_color(tk::DIM))
+                    .child("New note")
+                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.select_note(None, window, cx))),
+            );
         for (i, n) in self.notes.iter().enumerate() {
             let id = n.id;
             let on = self.selected_note == Some(id);
@@ -1642,7 +2039,9 @@ impl Notch {
                     .cursor_pointer()
                     .when(on, |d| d.bg(tk::WASH_HOVER))
                     .hover(|s| s.bg(tk::WASH))
-                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.select_note(Some(id), window, cx)))
+                    .on_click(
+                        cx.listener(move |this, _: &ClickEvent, window, cx| this.select_note(Some(id), window, cx)),
+                    )
                     .on_mouse_down(
                         MouseButton::Right,
                         cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
@@ -1671,13 +2070,21 @@ impl Notch {
                         Some((d, t)) => format!("{d}/{t} done"),
                         None => ago(n.id),
                     }))
-                    .child(div().absolute().top(px(6.0)).right(px(4.0)).invisible().group_hover(group, |s| s.visible()).child(
-                        ibtn(("note-more", i), icons::MORE_HORIZONTAL, 22.0, tk::DIM, "More").on_click(cx.listener(move |this, ev: &ClickEvent, _, cx| {
-                            cx.stop_propagation();
-                            let items = this.note_menu(id);
-                            this.open_menu(ev.position(), items, cx);
-                        })),
-                    )),
+                    .child(
+                        div()
+                            .absolute()
+                            .top(px(6.0))
+                            .right(px(4.0))
+                            .invisible()
+                            .group_hover(group, |s| s.visible())
+                            .child(ibtn(("note-more", i), icons::MORE, 22.0, tk::DIM, "More").on_click(
+                                cx.listener(move |this, ev: &ClickEvent, _, cx| {
+                                    cx.stop_propagation();
+                                    let items = this.note_menu(id);
+                                    this.open_menu(ev.position(), items, cx);
+                                }),
+                            )),
+                    ),
             );
         }
         // The editor: always editable; it saves itself as you type.
@@ -1716,7 +2123,10 @@ impl Notch {
                     .bg(tk::CARD)
                     .overflow_hidden()
                     .text_size(px(tk::T12))
-                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _: &MouseDownEvent, _, cx| this.take_focus(cx)))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _: &MouseDownEvent, _, cx| this.take_focus(cx)),
+                    )
                     .children(note_input.map(|n| Textarea::new(&n))),
             )
             .when(!checks.is_empty(), |d| {
@@ -1743,8 +2153,18 @@ impl Notch {
                                 .justify_center()
                                 .when(done, |d| d.child(icon(icons::CHECK).size(px(10.0)).text_color(tk::INK))),
                         )
-                        .child(div().flex_1().min_w_0().truncate().text_size(px(tk::T12)).text_color(if done { tk::FAINT } else { tk::TEXT }).child(text))
-                        .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.toggle_check(line, window, cx)))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_size(px(tk::T12))
+                                .text_color(if done { tk::FAINT } else { tk::TEXT })
+                                .child(text),
+                        )
+                        .on_click(
+                            cx.listener(move |this, _: &ClickEvent, window, cx| this.toggle_check(line, window, cx)),
+                        )
                 })))
             })
             .child(
@@ -1771,13 +2191,16 @@ impl Notch {
         for (i, m) in [5u64, 15, 25, 45].iter().enumerate() {
             let m = *m;
             let on = self.timer.total == Duration::from_secs(m * 60);
-            chips = chips.child(pill(("preset", i), format!("{m}m"), on).on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                this.timer.set(Duration::from_secs(m * 60));
-                this.retarget(cx);
-                cx.notify();
-            })));
+            chips = chips.child(pill(("preset", i), format!("{m}m"), on).on_click(cx.listener(
+                move |this, _: &ClickEvent, _, cx| {
+                    this.timer.set(Duration::from_secs(m * 60));
+                    this.retarget(cx);
+                    cx.notify();
+                },
+            )));
         }
-        let linked = self.timer_link.and_then(|id| self.snap.agents.iter().find(|a| a.id == id)).map(|a| a.title.clone());
+        let linked =
+            self.timer_link.and_then(|id| self.snap.agents.iter().find(|a| a.id == id)).map(|a| a.title.clone());
         let hide_ring = self.hero_flying(HeroKind::Ring);
         let has_menu = !self.timer_menu().is_empty();
         div()
@@ -1816,9 +2239,22 @@ impl Notch {
                             .flex_col()
                             .items_center()
                             .opacity(pulse)
-                            .child(roll(&mins_secs(remaining), "timer", 30.0, if running { tk::TEXT } else { tk::DIM }, FontWeight::SEMIBOLD))
+                            .child(roll(
+                                &mins_secs(remaining),
+                                "timer",
+                                30.0,
+                                if running { tk::TEXT } else { tk::DIM },
+                                FontWeight::SEMIBOLD,
+                            ))
                             .when_some(linked, |d, t| {
-                                d.child(div().max_w(px(90.0)).truncate().text_size(px(tk::T11)).text_color(tk::FAINT).child(format!("or when “{t}” ends")))
+                                d.child(
+                                    div()
+                                        .max_w(px(90.0))
+                                        .truncate()
+                                        .text_size(px(tk::T11))
+                                        .text_color(tk::FAINT)
+                                        .child(format!("or when “{t}” ends")),
+                                )
                             })
                             .into_any_element(),
                     )),
@@ -1837,21 +2273,33 @@ impl Notch {
                             cx.notify();
                         })))
                     })
-                    .child(primary("timer-go", if running { "Pause" } else if self.timer.active() { "Resume" } else { "Start" }).on_click(cx.listener(
-                        |this, _: &ClickEvent, _, cx| {
+                    .child(
+                        primary(
+                            "timer-go",
+                            if running {
+                                "Pause"
+                            } else if self.timer.active() {
+                                "Resume"
+                            } else {
+                                "Start"
+                            },
+                        )
+                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                             this.timer.toggle();
                             this.retarget(cx);
                             cx.notify();
-                        },
-                    ))),
+                        })),
+                    ),
             )
             .when(has_menu, |d| {
-                d.child(div().absolute().top(px(4.0)).right(px(0.0)).child(ibtn("timer-more", icons::MORE_HORIZONTAL, 28.0, tk::DIM, "More").on_click(
-                    cx.listener(|this, ev: &ClickEvent, _, cx| {
-                        let items = this.timer_menu();
-                        this.open_menu(ev.position(), items, cx);
-                    }),
-                )))
+                d.child(div().absolute().top(px(4.0)).right(px(0.0)).child(
+                    ibtn("timer-more", icons::MORE, 28.0, tk::DIM, "More").on_click(cx.listener(
+                        |this, ev: &ClickEvent, _, cx| {
+                            let items = this.timer_menu();
+                            this.open_menu(ev.position(), items, cx);
+                        },
+                    )),
+                ))
             })
             .into_any_element()
     }
@@ -1865,16 +2313,22 @@ impl Notch {
         let key = self.key();
         let mut col = div().id("alerts").size_full().overflow_y_scroll().flex().flex_col().gap(px(2.0)).child(
             div().flex().items_center().px(px(8.0)).pb(px(4.0)).child(div().flex_1()).child(
-                ibtn("alerts-more", icons::MORE_HORIZONTAL, 26.0, tk::DIM, "More").on_click(cx.listener(|this, ev: &ClickEvent, _, cx| {
-                    this.open_menu(ev.position(), Notch::clear_notices_menu(), cx);
-                })),
+                ibtn("alerts-more", icons::MORE, 26.0, tk::DIM, "More").on_click(cx.listener(
+                    |this, ev: &ClickEvent, _, cx| {
+                        this.open_menu(ev.position(), Notch::clear_notices_menu(), cx);
+                    },
+                )),
             ),
         );
         for (i, n) in self.notices.iter().enumerate() {
             let (glyph, color): (AnyElement, Hsla) = match (n.kind, n.agent) {
                 (k, Some(kind)) => (avatar(kind, 26.0, None), if k == FlashKind::Failed { tk::RED } else { tk::GREEN }),
-                (FlashKind::Timer, None) => (icon(icons::TIMER).size(px(15.0)).text_color(tk::AMBER).into_any_element(), tk::AMBER),
-                (FlashKind::Failed, None) => (icon(icons::DANGER_TRIANGLE).size(px(15.0)).text_color(tk::RED).into_any_element(), tk::RED),
+                (FlashKind::Timer, None) => {
+                    (icon(icons::TIMER).size(px(15.0)).text_color(tk::AMBER).into_any_element(), tk::AMBER)
+                }
+                (FlashKind::Failed, None) => {
+                    (icon(icons::DANGER_TRIANGLE).size(px(15.0)).text_color(tk::RED).into_any_element(), tk::RED)
+                }
                 _ => (icon(icons::CHECK).size(px(15.0)).text_color(tk::GREEN).into_any_element(), tk::GREEN),
             };
             let task = n.task;
@@ -1894,7 +2348,15 @@ impl Notch {
                         }
                     }))
                     .child(glyph)
-                    .child(div().flex_1().min_w_0().truncate().text_size(px(tk::T12)).text_color(tk::TEXT).child(n.text.clone()))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(px(tk::T12))
+                            .text_color(tk::TEXT)
+                            .child(n.text.clone()),
+                    )
                     .child(self.dot(color, 6.0, false))
                     .child(div().text_size(px(tk::T11)).text_color(tk::GHOST).child(ago(n.at_ms))),
                 (key, i),
@@ -1932,21 +2394,31 @@ impl Notch {
                     .on_click(move |_, _, cx| cx.open_url(&url))
                     .on_mouse_down(
                         MouseButton::Right,
-                        cx.listener(move |this, ev: &MouseDownEvent, _, cx| this.open_menu(ev.position, Notch::port_menu(port, pid), cx)),
+                        cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
+                            this.open_menu(ev.position, Notch::port_menu(port, pid), cx)
+                        }),
                     )
                     .child(self.dot(tk::GREEN, 7.0, false))
                     .child(
                         div()
                             .flex_1()
                             .min_w_0()
-                            .child(div().font_family(tk::MONO).text_size(px(tk::T13)).text_color(tk::TEXT).child(format!("localhost:{port}")))
+                            .child(
+                                div()
+                                    .font_family(tk::MONO)
+                                    .text_size(px(tk::T13))
+                                    .text_color(tk::TEXT)
+                                    .child(format!("localhost:{port}")),
+                            )
                             .child(div().text_size(px(tk::T11)).text_color(tk::FAINT).child(p.process.clone())),
                     )
                     .child(div().invisible().group_hover(group, |s| s.visible()).child(
-                        ibtn(("port-more", i), icons::MORE_HORIZONTAL, 26.0, tk::DIM, "More").on_click(cx.listener(move |this, ev: &ClickEvent, _, cx| {
-                            cx.stop_propagation();
-                            this.open_menu(ev.position(), Notch::port_menu(port, pid), cx);
-                        })),
+                        ibtn(("port-more", i), icons::MORE, 26.0, tk::DIM, "More").on_click(cx.listener(
+                            move |this, ev: &ClickEvent, _, cx| {
+                                cx.stop_propagation();
+                                this.open_menu(ev.position(), Notch::port_menu(port, pid), cx);
+                            },
+                        )),
                     )),
             );
         }

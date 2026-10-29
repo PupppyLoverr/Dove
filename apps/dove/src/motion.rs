@@ -961,6 +961,15 @@ pub fn decorative_motion(cx: &App) -> bool {
     !cx.reduce_motion()
 }
 
+/// Whether a chosen animated background (GIF, video) may advance. Picking
+/// one is an explicit request to see it move, so Reduce motion does not
+/// stop it: its own "Play animated backgrounds" setting does. It still
+/// holds while another window is focused when "Pause animations in
+/// background" is on.
+pub fn media_motion(cx: &App) -> bool {
+    cx.try_global::<MotionState>().is_none_or(|s| !(s.pause_in_background && !s.active))
+}
+
 pub fn set_preference(preference: ReduceMotion, store: &Store, cx: &mut App) {
     let _ = store.set_setting("reduce_motion", preference.id());
     if let Some(state) = cx.has_global::<MotionState>().then(|| cx.global_mut::<MotionState>()) {
@@ -987,8 +996,15 @@ pub fn window_activation_changed(active: bool, cx: &mut App) {
     if active {
         refresh_system(cx);
     }
-    cx.global_mut::<MotionState>().active = active;
+    let state = cx.global_mut::<MotionState>();
+    state.active = active;
+    let pause = state.pause_in_background;
     apply(cx);
+    // A background held for focus resumes even when Reduce motion keeps
+    // the flag unchanged (see `media_motion`).
+    if pause {
+        cx.refresh_windows();
+    }
 }
 
 fn set_system(system: bool, cx: &mut App) {

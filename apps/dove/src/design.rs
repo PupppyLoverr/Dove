@@ -90,14 +90,18 @@ pub mod radius {
     pub const CONTROL: f32 = fit(24.0);
     /// Selects, segmented controls, text fields.
     pub const SELECT: f32 = RADIUS;
+    /// Sidebar, list and menu rows.
+    pub const ROW: f32 = 8.0;
     /// Inset panels and the main card.
-    pub const PANEL: f32 = RADIUS;
+    pub const PANEL: f32 = 12.0;
     /// Cards, popovers, menus.
-    pub const CARD: f32 = RADIUS;
+    pub const CARD: f32 = 12.0;
+    /// Modal sheets: the palette, dialogs.
+    pub const MODAL: f32 = 16.0;
     /// Chat bubbles.
     pub const BUBBLE: f32 = RADIUS;
-    /// The composer plate: send-disc radius (14) plus the hero corner inset (12).
-    pub const COMPOSER: f32 = 26.0;
+    /// The composer plate: a calm rounded rectangle, not a capsule.
+    pub const COMPOSER: f32 = 18.0;
 
     /// The corner of something padded by `padding` inside a [`RADIUS`] surface.
     pub const fn nested(padding: f32) -> f32 {

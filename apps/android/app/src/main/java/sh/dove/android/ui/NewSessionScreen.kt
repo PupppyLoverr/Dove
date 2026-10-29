@@ -354,7 +354,7 @@ private fun ProjectRow(
             Text(
                 supporting,
                 style = MaterialTheme.typography.bodySmall,
-                fontFamily = if (mono) sh.dove.android.design.GeistMono else null,
+                fontFamily = if (mono) sh.dove.android.design.KMono else null,
                 maxLines = 1,
                 overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
             )

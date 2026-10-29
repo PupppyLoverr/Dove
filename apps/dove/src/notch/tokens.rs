@@ -22,17 +22,17 @@ pub const WASH_HOVER: Hsla = hsla(0.0, 0.0, 1.0, 0.13);
 pub const WASH_ON: Hsla = hsla(0.0, 0.0, 1.0, 0.18);
 pub const HAIRLINE: Hsla = hsla(0.0, 0.0, 1.0, 0.10);
 /// The specular line along the island's top edge.
-pub const SPECULAR: Hsla = hsla(0.0, 0.0, 1.0, 0.40);
+pub const SPECULAR: Hsla = hsla(0.0, 0.0, 1.0, 0.26);
 /// The island's rim: a bright outer edge and a faint inner one, so the
 /// glass reads as a thick pane rather than a cut-out.
-pub const RIM: Hsla = hsla(0.0, 0.0, 1.0, 0.15);
-pub const RIM_INNER: Hsla = hsla(0.0, 0.0, 1.0, 0.045);
+pub const RIM: Hsla = hsla(0.0, 0.0, 1.0, 0.11);
+pub const RIM_INNER: Hsla = hsla(0.0, 0.0, 1.0, 0.035);
 /// Light falling on the glass from above, fading out by this far down.
-pub const SHEEN: Hsla = hsla(0.0, 0.0, 1.0, 0.075);
+pub const SHEEN: Hsla = hsla(0.0, 0.0, 1.0, 0.05);
 pub const SHEEN_TO: f32 = 0.45;
 /// The milky frost over the blur, and the grain that makes it read as
 /// frosted rather than smoked.
-pub const FROST: Hsla = hsla(220.0 / 360.0, 0.3, 0.9, 0.035);
+pub const FROST: Hsla = hsla(0.0, 0.0, 0.9, 0.03);
 pub const GRAIN: u8 = 9;
 /// The plate behind an empty state's glyph (top, bottom).
 pub const PLATE_TOP: Hsla = hsla(0.0, 0.0, 1.0, 0.11);
@@ -43,17 +43,22 @@ pub const INK: Hsla = hsla(0.0, 0.0, 0.07, 1.0);
 pub const WHITE: Hsla = hsla(0.0, 0.0, 1.0, 0.96);
 pub const WHITE_HOVER: Hsla = hsla(0.0, 0.0, 1.0, 0.82);
 
-/// One accent per meaning.
-pub const AMBER: Hsla = hsla(37.0 / 360.0, 1.0, 0.56, 1.0);
-pub const BLUE: Hsla = hsla(211.0 / 360.0, 1.0, 0.62, 1.0);
-pub const GREEN: Hsla = hsla(138.0 / 360.0, 0.62, 0.52, 1.0);
-pub const RED: Hsla = hsla(3.0 / 360.0, 1.0, 0.63, 1.0);
-pub const CLAUDE: Hsla = hsla(15.0 / 360.0, 0.63, 0.60, 1.0);
+/// Black and white: meaning is carried by brightness, words and motion,
+/// never hue. Needs-you and failures are full white (and breathe or say
+/// so); working is a softer white; done is quiet.
+pub const AMBER: Hsla = hsla(0.0, 0.0, 1.0, 0.96);
+pub const BLUE: Hsla = hsla(0.0, 0.0, 1.0, 0.70);
+pub const GREEN: Hsla = hsla(0.0, 0.0, 1.0, 0.86);
+pub const RED: Hsla = hsla(0.0, 0.0, 1.0, 1.0);
+pub const CLAUDE: Hsla = hsla(0.0, 0.0, 1.0, 0.95);
+/// K22 (live voice).
+pub const K22: Hsla = hsla(0.0, 0.0, 1.0, 0.96);
 
-/// The glass tint over the blurred backdrop (top, bottom): clear over a
-/// dark backdrop, denser over a bright one so white type stays readable.
-pub const TINT_TOP: Hsla = hsla(228.0 / 360.0, 0.14, 0.15, 0.34);
-pub const TINT_BOTTOM: Hsla = hsla(232.0 / 360.0, 0.16, 0.07, 0.46);
+/// The opt-in glass's tint over the blurred backdrop (top, bottom): neutral
+/// charcoal, clear over a dark backdrop and denser over a bright one so white
+/// type stays readable.
+pub const TINT_TOP: Hsla = hsla(0.0, 0.0, 0.14, 0.42);
+pub const TINT_BOTTOM: Hsla = hsla(0.0, 0.0, 0.085, 0.54);
 /// How much alpha the tint gains over a fully bright backdrop.
 pub const TINT_DENSE: f32 = 0.30;
 /// The backdrop brightness (0–1) where the tint starts and finishes
@@ -75,7 +80,7 @@ pub const T12: f32 = 12.0;
 pub const T13: f32 = 13.0;
 pub const T15: f32 = 15.0;
 pub const T20: f32 = 20.0;
-pub const MONO: &str = "Geist Mono";
+pub const MONO: &str = "JetBrains Mono";
 
 // ----- radius, spacing --------------------------------------------------------
 
@@ -95,8 +100,8 @@ pub const ICON_HEADER: f32 = 18.0;
 // ----- sizes ------------------------------------------------------------------
 
 /// The window: a fixed canvas the island moves and morphs in.
-pub const CANVAS_W: f32 = 520.0;
-pub const CANVAS_H: f32 = 440.0;
+pub const CANVAS_W: f32 = 720.0;
+pub const CANVAS_H: f32 = 660.0;
 /// The island floats this far below the screen's top edge.
 pub const TOP_GAP: f32 = 8.0;
 pub const SLIM_H: f32 = 36.0;
@@ -111,6 +116,11 @@ pub const BANNER_H: f32 = 96.0;
 pub const FLASH_H: f32 = 52.0;
 pub const EXPANDED_W: f32 = 468.0;
 pub const EXPANDED_MAX_H: f32 = 404.0;
+/// The wide island: the call, a plan, a view (V3), up to this tall, and
+/// never past this share of the display's height.
+pub const WIDE_W: f32 = 640.0;
+pub const WIDE_MAX_H: f32 = 600.0;
+pub const WIDE_SHARE: f32 = 0.7;
 pub const HEADER_H: f32 = 48.0;
 pub const ROW_H: f32 = 52.0;
 

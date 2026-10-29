@@ -2,7 +2,7 @@
 //! detected-agents pill. With no threads open the window has no title bar;
 //! the shell floats a small navigation cluster over this page instead.
 
-use dove_core::proto::HarnessKind;
+use dove_core::proto::{HarnessKind, TaskStatus};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, Context, InteractiveElement as _, IntoElement, ParentElement as _, SharedString,
@@ -88,10 +88,11 @@ impl Shell {
         // The bar centres in the main area beside the sidebar, at full width.
         let bar_max = 820.0;
         let mut page = div().relative().size_full().flex().flex_col().items_center().child(div().h(px(spacer)));
+        let cards = self.render_home_cards(scenic, &t, window, cx);
         if dock {
             page = page
                 .child(div().w_full().max_w(px(bar_max)).px(px(32.0)).flex().flex_col().gap(px(8.0)).children(join))
-                .child(div().flex_1())
+                .child(div().flex_1().w_full().flex().flex_col().items_center().justify_center().children(cards))
                 .child(
                     div()
                         .w_full()
@@ -120,6 +121,7 @@ impl Shell {
                         .child(composer)
                         .children(error),
                 )
+                .child(div().w_full().flex().flex_col().items_center().pt(px(20.0)).children(cards))
                 .child(div().flex_1());
         }
         // The agents-ready strip sits under the centered composer. In the
@@ -128,6 +130,152 @@ impl Shell {
             page = page.child(self.render_agents_pill(&t, cx));
         }
         page.into_any_element()
+    }
+
+    /// The quiet cards under (or, docked, above) the composer: where the
+    /// new thread will run, and the threads that want you. Dove's pixel
+    /// mark perches on the first card.
+    fn render_home_cards(
+        &mut self,
+        scenic: bool,
+        t: &Theme,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let current = self.home_project.or_else(|| self.projects.first().map(|p| p.id));
+        // The current project first, then the rest as the sidebar has them.
+        let mut projects: Vec<_> = self.projects.to_vec();
+        projects.sort_by_key(|p| Some(p.id) != current);
+        projects.truncate(HOME_PROJECTS);
+        let card_bg =
+            if scenic { t.glass_overlay() } else { t.surface_card.opacity(if t.is_frost() { 0.72 } else { 1.0 }) };
+        let card = |id: &'static str| {
+            div()
+                .id(id)
+                .w_full()
+                .p(px(4.0))
+                .flex()
+                .flex_col()
+                .rounded(px(radius::CARD))
+                .border_1()
+                .border_color(t.border)
+                .bg(card_bg)
+        };
+        let hover = t.wash(0.07);
+        let row = |id: SharedString| {
+            div()
+                .id(id)
+                .h(px(34.0))
+                .px(px(10.0))
+                .flex()
+                .items_center()
+                .gap(px(10.0))
+                .rounded(px(radius::CARD - 4.0))
+                .text_size(ty::BODY)
+                .text_color(t.text)
+                .cursor_pointer()
+                .hover(move |s| s.bg(hover))
+        };
+        let mut place = card("home-place");
+        for p in &projects {
+            let id = p.id;
+            let on = Some(id) == current;
+            place = place.child(
+                row(SharedString::from(format!("home-proj-{id}")))
+                    .child(icon(icons::LAPTOP).size(px(15.0)).text_color(if on { t.text } else { t.text_muted }))
+                    .child(div().flex_1().min_w_0().truncate().child(p.name.clone()))
+                    .child(
+                        div()
+                            .flex_none()
+                            .max_w(px(160.0))
+                            .truncate()
+                            .text_size(ty::CAPTION)
+                            .text_color(t.text_faint)
+                            .child(short_path(&p.path)),
+                    )
+                    .when(on, |d| d.child(icon(icons::CHECK).size(px(14.0)).text_color(t.text)))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.set_home_project(id, cx);
+                        let projects = this.projects.clone();
+                        this.composer.update(cx, |c, cx| c.set_projects(projects, Some(id), cx));
+                    })),
+            );
+        }
+        place = place.child(div().mx(px(8.0)).my(px(4.0)).h(px(1.0)).bg(t.border)).child(
+            row("home-add-proj".into())
+                .text_color(t.text_muted)
+                .child(icon(icons::FOLDER_WITH_FILES).size(px(15.0)))
+                .child(div().flex_1().child("Open another folder…"))
+                .child(div().text_size(ty::MICRO).text_color(t.text_faint).child(crate::keymap::pretty("secondary-o")))
+                .on_click(cx.listener(|this, _, _, cx| this.add_project_dialog(cx))),
+        );
+
+        // Threads that want you first, then what is running, then the latest.
+        let mut recent: Vec<_> = self
+            .tasks
+            .iter()
+            .filter(|x| !matches!(x.status, TaskStatus::Draft | TaskStatus::Archived))
+            .cloned()
+            .collect();
+        crate::sidebar::attention_sort(&mut recent);
+        recent.truncate(HOME_RECENTS);
+        let mut lines = Vec::new();
+        for task in &recent {
+            let id = task.id;
+            let step = (task.status == TaskStatus::Running)
+                .then(|| self.threads.get(&id).and_then(|v| v.read(cx).chat.read(cx).current_step()))
+                .flatten();
+            let (word, tint, detail): (Option<&'static str>, _, String) = match task.status {
+                TaskStatus::NeedsInput => (Some("Waiting"), t.warning, "Asked a question".into()),
+                TaskStatus::Running => {
+                    (Some("Running"), t.accent, step.map(|s| s.to_string()).unwrap_or_else(|| "Working…".into()))
+                }
+                TaskStatus::Failed => (Some("Failed"), t.danger, "Stopped with an error".into()),
+                _ => (None, t.text_faint, ui::relative_time(task.updated_at)),
+            };
+            lines.push(
+                row(SharedString::from(format!("home-task-{id}")))
+                    .children(
+                        word.map(|w| div().flex_none().text_color(tint).font_weight(gpui::FontWeight::MEDIUM).child(w)),
+                    )
+                    .child(div().flex_shrink(1.0).min_w_0().truncate().child(task.title.clone()))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(40.0))
+                            .truncate()
+                            .text_size(ty::CAPTION)
+                            .text_color(t.text_faint)
+                            .child(detail),
+                    )
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.navigate(crate::shell::Route::Thread(id), window, cx)
+                    })),
+            );
+        }
+        let attention = (!lines.is_empty()).then(|| card("home-recent").children(lines));
+
+        let dove = window.use_keyed_state("home-dove", cx, |window, cx| crate::mascot::Dove::new(3.0, window, cx));
+        let (dove_w, dove_h) = dove.read(cx).size();
+        Some(
+            div()
+                .w_full()
+                .max_w(px(HOME_CARD_W))
+                .px(px(16.0))
+                .pt(px(dove_h - 4.0))
+                .flex()
+                .flex_col()
+                .gap(px(10.0))
+                .child(
+                    div()
+                        .relative()
+                        .child(place)
+                        // Perched on the card's top edge, feet on the line.
+                        .child(div().absolute().top(px(-(dove_h - 4.0))).right(px(24.0)).w(px(dove_w)).child(dove)),
+                )
+                .children(attention)
+                .into_any_element(),
+        )
     }
 
     fn render_agents_pill(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
@@ -280,6 +428,21 @@ impl Shell {
                     .on_click(cx.listener(|this, _, _, cx| this.add_project_dialog(cx))),
             )
             .into_any_element()
+    }
+}
+
+/// The home cards' column width and how much each lists.
+const HOME_CARD_W: f32 = 460.0;
+const HOME_PROJECTS: usize = 4;
+const HOME_RECENTS: usize = 3;
+
+/// `~/code/dove` rather than the full path.
+fn short_path(path: &std::path::Path) -> String {
+    let full = path.display().to_string();
+    let home = std::env::var(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).unwrap_or_default();
+    match full.strip_prefix(&home) {
+        Some(rest) if !home.is_empty() => format!("~{rest}"),
+        _ => full,
     }
 }
 

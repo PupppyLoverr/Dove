@@ -126,7 +126,7 @@ Designed directly in code (§10.5): each state is built, then reviewed from scre
 - **Floating.** 8 px below the top edge on Windows and Linux. On a notched Mac it is the notch: the top corners are concave "shoulders" that flow into the menu bar.
 - **Glass (layers, bottom to top).** Live blur of what's behind (§6) → a tint (dark 64–76 % default; light and "clear" variants) → a 0.5 px inner specular highlight along the top edge → a 1 px hairline at 10 % white → content. A soft outer shadow on platforms that allow it outside the shape (macOS natively; Windows via a second, shadow-only layered window).
 - **Art-aware tint.** While music plays, the glass picks up a faint glow from the album art's dominant colour. Agent alerts glow amber; failures red; finished green. Glows are 6–10 % strength, never neon.
-- **Type.** Geist and Geist Mono (already bundled) with tabular numbers for timers, progress and counts. Six sizes only: 11, 12, 13, 15, 20, 40.
+- **Type.** Inter and JetBrains Mono (already bundled) with tabular numbers for timers, progress and counts. Six sizes only: 11, 12, 13, 15, 20, 40.
 - **Iconography.** One stroke weight (1.6) everywhere; agent brand marks keep their colours.
 
 ### 4.2 Presentations (Apple's model, adapted)
@@ -232,7 +232,7 @@ Users choose which activities may appear in Compact and their order (Settings �
 
 **Banner (approvals, finishes, failures, timer).**
 - About 380 × 96, with the agent mark at 32 px in a tinted plate.
-- Two lines: the title in 13 semibold; then what it wants, in 12, with the command or file in Geist Mono.
+- Two lines: the title in 13 semibold; then what it wants, in 12, with the command or file in JetBrains Mono.
 - Actions sit right-aligned as pills, primary last (Deny · Always · Allow). Keys A and D work while it's showing.
 - Risky requests show an amber shield icon and only "Review in Dove".
 - A thin countdown line along the bottom for timed banners.
@@ -251,7 +251,7 @@ Users choose which activities may appear in Compact and their order (Settings �
 - Rows grouped under sticky headers: Needs you · Working · Recent · Flock.
 - Each row (52 px):
   - The mark inside its progress ring.
-  - The title in 13 medium, and under it a live ticker of the current step in Geist Mono 11 that slides up as it changes.
+  - The title in 13 medium, and under it a live ticker of the current step in JetBrains Mono 11 that slides up as it changes.
   - On the right: elapsed time, plus the turn's cost in faint text.
 - Hover reveals inline actions (Message · Stop · Open) instead of only a status word.
 - A rate-limit strip at the bottom: one thin meter per agent kind, which turns amber at 80 %.
@@ -294,7 +294,7 @@ Users choose which activities may appear in Compact and their order (Settings �
 - "Send as prompt" sits on the editor's toolbar.
 
 **Timer.**
-- A large ring (120 px) with the time centered in Geist 40 tabular figures. The ring drains smoothly, and the last 10 s pulse.
+- A large ring (120 px) with the time centered in Inter 40 tabular figures. The ring drains smoothly, and the last 10 s pulse.
 - Presets as a horizontal chip rail, and custom time by scrolling the digits.
 - Start is a pill that becomes Pause in place. A "linked to agent" chip shows when a timer is tied to an agent.
 
@@ -545,7 +545,7 @@ On top of that, after 10 s hidden the window is destroyed, so the next open also
 - **Title row.** The mark in its progress ring, the title (click to open in Dove), one status word in its colour, and Stop while it runs. A faint mono line under it: `feat/login · worktree · 4m · $0.12`.
 - **A real mini transcript,** newest at the bottom, sticking to the bottom while it streams (unless you scroll up, then a "Jump to latest" pill):
   - **your messages** as right-aligned bubbles, including queued ones (marked "queued" until the agent reads them);
-  - **the agent's replies** with proper Markdown: headings, bold and italic inline (one text run, no line breaks), code spans, fenced code blocks in Geist Mono with a Copy button on hover, lists, links (open in the browser);
+  - **the agent's replies** with proper Markdown: headings, bold and italic inline (one text run, no line breaks), code spans, fenced code blocks in JetBrains Mono with a Copy button on hover, lists, links (open in the browser);
   - **tool steps** folded into one line per turn ("Edited 3 files · ran tests ✓ · 1 failed"); click it to unfold the list of steps, and click a file step to see its diff;
   - the last 3 turns, with "Earlier in Dove" at the top to open the full thread.
 - **Streaming, at low cost.** The engine announces text at most every 100 ms per task, and only to readers that asked for it (the island while that agent's view is open). Every other reader still gets the existing per-event pings, so idle cost doesn't change.

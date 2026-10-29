@@ -38,7 +38,7 @@ enum Glass {
     /// A round glass icon button (toolbar "…", search, attach).
     static func circleButton(symbol: String, size: CGFloat = 44, pointSize: CGFloat = 17, action: UIAction? = nil) -> UIButton {
         var config = UIButton.Configuration.glass()
-        config.image = UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: pointSize, weight: .medium))
+        config.image = K22Icon.resolve(systemName: symbol, pointSize: pointSize, weight: .medium)
         config.baseForegroundColor = Palette.text
         config.cornerStyle = .capsule
         let b = UIButton(configuration: config, primaryAction: action)

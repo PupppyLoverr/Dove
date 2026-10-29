@@ -16,18 +16,18 @@ import uniffi.zeron_core.TextSystem
  */
 object Fonts {
     val files: List<Pair<FaceRole, String>> = listOf(
-        FaceRole.SANS to "Geist.ttf",
-        FaceRole.SANS_MEDIUM to "Geist-Medium.ttf",
-        FaceRole.SANS_SEMIBOLD to "Geist-SemiBold.ttf",
-        FaceRole.SANS_BOLD to "Geist-Bold.ttf",
-        FaceRole.SANS_ITALIC to "Geist-Italic.ttf",
-        FaceRole.SANS_MEDIUM_ITALIC to "Geist-MediumItalic.ttf",
-        FaceRole.SANS_SEMIBOLD_ITALIC to "Geist-SemiBoldItalic.ttf",
-        FaceRole.SANS_BOLD_ITALIC to "Geist-BoldItalic.ttf",
-        FaceRole.MONO to "GeistMono.ttf",
-        FaceRole.MONO_MEDIUM to "GeistMono-Medium.ttf",
-        FaceRole.MONO_SEMIBOLD to "GeistMono-SemiBold.ttf",
-        FaceRole.MONO_ITALIC to "GeistMono-Italic.ttf",
+        FaceRole.SANS to "Inter-Regular.ttf",
+        FaceRole.SANS_MEDIUM to "Inter-Medium.ttf",
+        FaceRole.SANS_SEMIBOLD to "Inter-SemiBold.ttf",
+        FaceRole.SANS_BOLD to "Inter-Bold.ttf",
+        FaceRole.SANS_ITALIC to "Inter-Italic.ttf",
+        FaceRole.SANS_MEDIUM_ITALIC to "Inter-MediumItalic.ttf",
+        FaceRole.SANS_SEMIBOLD_ITALIC to "Inter-SemiBoldItalic.ttf",
+        FaceRole.SANS_BOLD_ITALIC to "Inter-BoldItalic.ttf",
+        FaceRole.MONO to "JetBrainsMono-Regular.ttf",
+        FaceRole.MONO_MEDIUM to "JetBrainsMono-Medium.ttf",
+        FaceRole.MONO_SEMIBOLD to "JetBrainsMono-SemiBold.ttf",
+        FaceRole.MONO_ITALIC to "JetBrainsMono-Italic.ttf",
     )
 
     private lateinit var faces: List<FaceData>

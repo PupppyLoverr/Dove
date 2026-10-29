@@ -227,7 +227,7 @@ class SessionListController: UIViewController, UICollectionViewDelegate {
             self?.app.setPinned(id, !vm.pinned)
             done(true)
         }
-        pin.image = UIImage(systemName: vm.pinned ? "pin.slash.fill" : "pin.fill")
+        pin.image = K22Icon.resolve(systemName: vm.pinned ? "pin.slash.fill" : "pin.fill")
         pin.backgroundColor = Palette.accent
         return UISwipeActionsConfiguration(actions: [pin])
     }
@@ -239,7 +239,7 @@ class SessionListController: UIViewController, UICollectionViewDelegate {
                 self?.app.unarchive(id)
                 done(true)
             }
-            restore.image = UIImage(systemName: "tray.and.arrow.up.fill")
+            restore.image = K22Icon.image("upload")
             restore.backgroundColor = Palette.accent
             return UISwipeActionsConfiguration(actions: [restore])
         }
@@ -247,13 +247,13 @@ class SessionListController: UIViewController, UICollectionViewDelegate {
             self?.app.archive(id)
             done(true)
         }
-        archive.image = UIImage(systemName: "archivebox.fill")
+        archive.image = K22Icon.image("archive-minimalistic")
         archive.backgroundColor = Palette.secondary
         let move = UIContextualAction(style: .normal, title: "Move") { [weak self] _, view, done in
             self?.presentMoveMenu(id, from: view)
             done(true)
         }
-        move.image = UIImage(systemName: "folder.fill")
+        move.image = K22Icon.image("folder")
         move.backgroundColor = UIColor(hex: 0x5E6AD2)
         return UISwipeActionsConfiguration(actions: [archive, move])
     }
@@ -267,28 +267,28 @@ class SessionListController: UIViewController, UICollectionViewDelegate {
             guard let self else { return nil }
             if self.archivedRows {
                 return UIMenu(children: [
-                    UIAction(title: "Unarchive", image: UIImage(systemName: "tray.and.arrow.up")) { _ in self.app.unarchive(id) },
-                    UIAction(title: "Rename…", image: UIImage(systemName: "pencil")) { _ in self.rename(id) },
+                    UIAction(title: "Unarchive", image: K22Icon.image("upload")) { _ in self.app.unarchive(id) },
+                    UIAction(title: "Rename…", image: K22Icon.image("pen")) { _ in self.rename(id) },
                 ])
             }
             return UIMenu(children: [
-                UIAction(title: vm.pinned ? "Unpin" : "Pin", image: UIImage(systemName: vm.pinned ? "pin.slash" : "pin")) { _ in self.app.setPinned(id, !vm.pinned) },
+                UIAction(title: vm.pinned ? "Unpin" : "Pin", image: K22Icon.resolve(systemName: vm.pinned ? "pin.slash" : "pin")) { _ in self.app.setPinned(id, !vm.pinned) },
                 self.moveMenu(id),
-                UIAction(title: "Rename…", image: UIImage(systemName: "pencil")) { _ in self.rename(id) },
-                UIAction(title: "Archive", image: UIImage(systemName: "archivebox"), attributes: .destructive) { _ in self.app.archive(id) },
+                UIAction(title: "Rename…", image: K22Icon.image("pen")) { _ in self.rename(id) },
+                UIAction(title: "Archive", image: K22Icon.image("archive-minimalistic"), attributes: .destructive) { _ in self.app.archive(id) },
             ])
         }
     }
 
     func moveMenu(_ id: String) -> UIMenu {
         var items: [UIMenuElement] = app.frontPage.folders.filter { $0.id != "pinned" }.map { f in
-            UIAction(title: f.name, image: UIImage(systemName: "folder")) { [weak self] _ in self?.app.move(id, toSection: f.id) }
+            UIAction(title: f.name, image: K22Icon.image("folder")) { [weak self] _ in self?.app.move(id, toSection: f.id) }
         }
-        items.append(UIAction(title: "No Section", image: UIImage(systemName: "tray")) { [weak self] _ in self?.app.move(id, toSection: nil) })
-        items.append(UIAction(title: "New Section…", image: UIImage(systemName: "folder.badge.plus")) { [weak self] _ in
+        items.append(UIAction(title: "No Section", image: K22Icon.image("tray")) { [weak self] _ in self?.app.move(id, toSection: nil) })
+        items.append(UIAction(title: "New Section…", image: K22Icon.image("folder-add")) { [weak self] _ in
             self?.promptForSection { name in self?.app.createSection(name) }
         })
-        return UIMenu(title: "Move to Section", image: UIImage(systemName: "folder"), children: items)
+        return UIMenu(title: "Move to Section", image: K22Icon.image("folder"), children: items)
     }
 
     private func presentMoveMenu(_ id: String, from view: UIView) {
@@ -344,7 +344,7 @@ class SessionsViewController: SessionListController {
         collectionView.backgroundView = backdrop
         title = "Sessions"
         navigationItem.largeTitleDisplayMode = .always
-        navigationItem.rightBarButtonItem = UIBarButtonItem(image: UIImage(systemName: "ellipsis"), menu: optionsMenu())
+        navigationItem.rightBarButtonItem = UIBarButtonItem(image: K22Icon.image("more-horizontal"), menu: optionsMenu())
     }
 
     override func buildSections() -> [(id: String, header: String?, folders: [FolderRowVM], sessions: [SessionRowVM])] {
@@ -373,17 +373,17 @@ class SessionsViewController: SessionListController {
     override func headerMenu(_ id: String) -> UIMenu? {
         if id == "recent" { return nil }
         guard let folder = app.frontPage.folders.first(where: { $0.id == id }) else { return nil }
-        let open = UIAction(title: "Open", image: UIImage(systemName: "arrow.up.right")) { [weak self] _ in self?.openFolder(id) }
+        let open = UIAction(title: "Open", image: K22Icon.image("arrow-up-right")) { [weak self] _ in self?.openFolder(id) }
         if id == "pinned" {
             return UIMenu(children: [
                 open,
-                UIAction(title: "Reorder…", image: UIImage(systemName: "arrow.up.arrow.down")) { [weak self] _ in self?.openFolder(id) },
+                UIAction(title: "Reorder…", image: K22Icon.image("sort-vertical")) { [weak self] _ in self?.openFolder(id) },
             ])
         }
         return UIMenu(children: [
             open,
-            UIAction(title: "Rename Section…", image: UIImage(systemName: "pencil")) { [weak self] _ in self?.renameSection(folder) },
-            UIAction(title: "Delete Section", image: UIImage(systemName: "trash"), attributes: .destructive) { [weak self] _ in self?.app.deleteSection(id) },
+            UIAction(title: "Rename Section…", image: K22Icon.image("pen")) { [weak self] _ in self?.renameSection(folder) },
+            UIAction(title: "Delete Section", image: K22Icon.image("trash-bin-minimalistic"), attributes: .destructive) { [weak self] _ in self?.app.deleteSection(id) },
         ])
     }
 
@@ -400,14 +400,14 @@ class SessionsViewController: SessionListController {
 
     func optionsMenu() -> UIMenu {
         UIMenu(children: [
-            UIAction(title: "New Section…", image: UIImage(systemName: "folder.badge.plus")) { [weak self] _ in
+            UIAction(title: "New Section…", image: K22Icon.image("folder-add")) { [weak self] _ in
                 self?.promptForSection { name in self?.app.createSection(name) }
             },
-            UIAction(title: "Collapse All", image: UIImage(systemName: "rectangle.compress.vertical")) { [weak self] _ in
+            UIAction(title: "Collapse All", image: K22Icon.image("fold-vertical")) { [weak self] _ in
                 guard let self else { return }
                 for f in self.app.frontPage.folders where !self.collapsed.contains(f.id) { self.toggleSection(f.id) }
             },
-            UIAction(title: "Archived", image: UIImage(systemName: "archivebox")) { [weak self] _ in
+            UIAction(title: "Archived", image: K22Icon.image("archive-minimalistic")) { [weak self] _ in
                 guard let self else { return }
                 self.navigationController?.pushViewController(FolderViewController(app: self.app, folder: FolderRowVM(id: "archived", name: "Archived", count: 0, symbol: "archivebox")), animated: true)
             },
@@ -439,9 +439,9 @@ final class FolderViewController: SessionListController {
             dataSource.reorderingHandlers.canReorderItem = { _ in true }
             dataSource.reorderingHandlers.didReorder = { [weak self] tx in self?.pinsReordered(tx) }
         } else if folder.id != "archived" {
-            navigationItem.rightBarButtonItem = UIBarButtonItem(image: UIImage(systemName: "ellipsis"), menu: UIMenu(children: [
-                UIAction(title: "Rename Section…", image: UIImage(systemName: "pencil")) { [weak self] _ in self?.renameSection() },
-                UIAction(title: "Delete Section", image: UIImage(systemName: "trash"), attributes: .destructive) { [weak self] _ in self?.deleteSection() },
+            navigationItem.rightBarButtonItem = UIBarButtonItem(image: K22Icon.image("more-horizontal"), menu: UIMenu(children: [
+                UIAction(title: "Rename Section…", image: K22Icon.image("pen")) { [weak self] _ in self?.renameSection() },
+                UIAction(title: "Delete Section", image: K22Icon.image("trash-bin-minimalistic"), attributes: .destructive) { [weak self] _ in self?.deleteSection() },
             ]))
         }
     }

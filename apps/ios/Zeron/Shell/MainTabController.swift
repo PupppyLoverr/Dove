@@ -194,7 +194,7 @@ final class AskAnythingAccessory: UIControl {
     private let label = UILabel()
     private let summary = UILabel()
     private let cells = StatusGlyph()
-    private let mark = UIImageView(image: UIImage(systemName: "plus", withConfiguration: UIImage.SymbolConfiguration(pointSize: 15, weight: .semibold)))
+    private let mark = UIImageView(image: K22Icon.image("plus", pointSize: 15))
 
     init(onTap: @escaping () -> Void) {
         self.onTap = onTap

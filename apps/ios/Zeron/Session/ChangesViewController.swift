@@ -111,7 +111,7 @@ final class ModelAccessoryPill: UIControl {
     private let glass = Glass.surface(interactive: true)
     private let mark = UIImageView()
     private let label = UILabel()
-    private let chevron = UIImageView(image: UIImage(systemName: "chevron.down"))
+    private let chevron = UIImageView(image: K22Icon.image("alt-arrow-down"))
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -251,7 +251,7 @@ private final class ChangeFileRow: UIView {
             ? "\(file.path), edited"
             : "\(file.path), +\(file.additions), −\(file.deletions)"
 
-        let icon = UIImageView(image: UIImage(systemName: Self.icon(for: file.path)))
+        let icon = UIImageView(image: K22Icon.resolve(systemName: Self.icon(for: file.path)))
         icon.tintColor = Palette.secondary
         icon.contentMode = .scaleAspectFit
         icon.translatesAutoresizingMaskIntoConstraints = false

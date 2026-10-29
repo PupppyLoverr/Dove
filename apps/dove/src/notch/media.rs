@@ -10,6 +10,9 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+/// A track's cover: the image, a raster of it, and its average colour.
+type Art = (Option<Arc<gpui::Image>>, Option<Arc<gpui::RenderImage>>, Option<(u8, u8, u8)>);
+
 #[derive(Clone, Debug)]
 pub struct Media {
     pub app: String,
@@ -214,7 +217,8 @@ mod windows {
     pub fn run(tx: flume::Sender<Option<Media>>, rx: flume::Receiver<Control>) {
         // SAFETY: once, first thing on this thread.
         unsafe {
-            let _ = ::windows::Win32::System::WinRT::RoInitialize(::windows::Win32::System::WinRT::RO_INIT_MULTITHREADED);
+            let _ =
+                ::windows::Win32::System::WinRT::RoInitialize(::windows::Win32::System::WinRT::RO_INIT_MULTITHREADED);
         }
         let manager = loop {
             match Manager::RequestAsync().and_then(|op| op.get()) {
@@ -234,7 +238,7 @@ mod windows {
         let mut watched: Option<Watched> = None;
         let mut last: Option<Media> = None;
         let mut art_key = String::new();
-        let mut art: (Option<Arc<gpui::Image>>, Option<Arc<gpui::RenderImage>>, Option<(u8, u8, u8)>) = (None, None, None);
+        let mut art: Art = (None, None, None);
         let _ = wake_tx.send(());
         loop {
             let mut control = None;
@@ -288,11 +292,7 @@ mod windows {
         }
     }
 
-    fn read(
-        s: &Session,
-        art_key: &mut String,
-        art: &mut (Option<Arc<gpui::Image>>, Option<Arc<gpui::RenderImage>>, Option<(u8, u8, u8)>),
-    ) -> Option<Media> {
+    fn read(s: &Session, art_key: &mut String, art: &mut Art) -> Option<Media> {
         let props = s.TryGetMediaPropertiesAsync().ok()?.get().ok()?;
         let title = props.Title().ok()?.to_string();
         if title.is_empty() {
@@ -362,9 +362,7 @@ mod windows {
     }
 
     #[allow(clippy::type_complexity)]
-    fn thumbnail(
-        t: &::windows::Storage::Streams::IRandomAccessStreamReference,
-    ) -> Option<(Option<Arc<gpui::Image>>, Option<Arc<gpui::RenderImage>>, Option<(u8, u8, u8)>)> {
+    fn thumbnail(t: &::windows::Storage::Streams::IRandomAccessStreamReference) -> Option<Art> {
         let stream = t.OpenReadAsync().ok()?.get().ok()?;
         let size = stream.Size().ok()? as u32;
         if size == 0 || size > 8 * 1024 * 1024 {
