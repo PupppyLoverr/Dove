@@ -52,6 +52,9 @@ pub enum Section {
     /// Built-in tools, apps (Composio), MCP servers, skills and memory on
     /// one page (`pages/plugins.rs`).
     Plugins,
+    /// This computer, connected machines, cloud providers and paired
+    /// devices (`pages/machines.rs`).
+    Machines,
     Remote,
     Data,
     Archived,
@@ -70,7 +73,7 @@ pub enum SettingsEvent {
 
 impl Section {
     #[cfg(test)]
-    pub const ALL: [Section; 12] = [
+    pub const ALL: [Section; 13] = [
         Section::General,
         Section::Appearance,
         Section::Notifications,
@@ -79,6 +82,7 @@ impl Section {
         Section::Agents,
         Section::Team,
         Section::Plugins,
+        Section::Machines,
         Section::Remote,
         Section::Data,
         Section::Archived,
@@ -88,7 +92,7 @@ impl Section {
     /// The navigation, grouped by spacing (no headers), as in Zeron.
     const GROUPS: [&'static [Section]; 3] = [
         &[Section::General, Section::Appearance, Section::Notifications, Section::Voice, Section::Shortcuts],
-        &[Section::Agents, Section::Team, Section::Plugins, Section::Remote],
+        &[Section::Agents, Section::Team, Section::Plugins, Section::Machines, Section::Remote],
         &[Section::Data, Section::Archived, Section::About],
     ];
 
@@ -102,6 +106,7 @@ impl Section {
             Section::Agents => "Agents",
             Section::Team => "Team",
             Section::Plugins => "Plugins",
+            Section::Machines => "Machines",
             Section::Remote => "Remote",
             Section::Data => "Data & Storage",
             Section::Archived => "Archived",
@@ -119,6 +124,7 @@ impl Section {
             Section::Agents => icons::WIDGET,
             Section::Team => icons::USERS_GROUP,
             Section::Plugins => icons::WIDGET_ADD,
+            Section::Machines => icons::SERVER,
             Section::Remote => icons::SMARTPHONE,
             Section::Data => icons::HARD_DRIVE,
             Section::Archived => icons::ARCHIVE_MINIMALISTIC,
@@ -136,6 +142,7 @@ impl Section {
             Section::Agents => "agents",
             Section::Team => "team",
             Section::Plugins => "plugins",
+            Section::Machines => "machines",
             Section::Remote => "remote",
             Section::Data => "data",
             Section::Archived => "archived",
@@ -159,6 +166,7 @@ impl Section {
             | "supermemory" | "directory" | "computer" | "computer_use" | "ego" | "chrome" | "extension" | "github" => {
                 Section::Plugins
             }
+            "machines" | "hosts" | "environments" | "cloud" | "sandboxes" => Section::Machines,
             "remote" | "devices" => Section::Remote,
             "data" | "storage" => Section::Data,
             "archived" => Section::Archived,
@@ -365,6 +373,19 @@ const INDEX: &[Entry] = &[
         "Plugins: memory",
         "memory supermemory recall remember forget capture corrections learn profile never send",
     ),
+    e(
+        Section::Machines,
+        "machines_hosts",
+        "This computer & connected machines",
+        "machines hosts wsl ssh docker containers cua spaces remote environment where run",
+    ),
+    e(
+        Section::Machines,
+        "machines_cloud",
+        "Cloud providers",
+        "cloud providers sandbox box api key e2b daytona modal fly vercel codespaces instabox morph runloop",
+    ),
+    e(Section::Machines, "machines_paired", "Paired devices", "pair device mac node another computer dove node"),
     e(Section::Remote, "remote_enabled", "Remote control", "remote phone mobile companion woozlit account"),
     e(Section::Data, "data_size", "Storage", "data storage disk size folder"),
     e(Section::Data, "data_path", "Storage location", "dove_home path location folder"),
@@ -433,6 +454,7 @@ pub struct SettingsPage {
     devices: Vec<(String, String)>,
     data_size: Option<u64>,
     integrations: Entity<crate::pages::integrations::IntegrationsView>,
+    machines: Entity<crate::pages::machines::MachinesView>,
     /// Held here; Plugins (the integrations view) draws them.
     _skills: Entity<crate::pages::skills::SkillsView>,
     _memory: Entity<crate::pages::memory_settings::MemoryView>,
@@ -575,6 +597,8 @@ impl SettingsPage {
         };
         subs.push(cx.observe(&memory, |_, _, cx| cx.notify()));
         integrations.update(cx, |v, _| v.embed(&skills, &memory));
+        let machines = cx.new(|cx| crate::pages::machines::MachinesView::new(window, cx));
+        subs.push(cx.observe(&machines, |_, _, cx| cx.notify()));
         Self {
             engine,
             section,
@@ -586,6 +610,7 @@ impl SettingsPage {
             devices: Vec::new(),
             data_size: None,
             integrations,
+            machines,
             _skills: skills,
             _memory: memory,
             focus: cx.focus_handle(),
@@ -1162,6 +1187,11 @@ impl SettingsPage {
             // [`Self::team_options`] under it.
             Section::Team => return None,
             Section::Plugins => (Some(self.plugins_actions(&t)), self.plugins_section(&t)),
+            Section::Machines => {
+                // Discovery and probes start the first time the page shows.
+                self.machines.update(cx, |v, cx| v.ensure_loaded(cx));
+                (Some(self.machines_actions(&t, cx)), self.machines_section(&t))
+            }
             Section::Remote => (None, self.remote(&t, cx)),
             Section::Data => (None, self.data(&t, cx)),
             Section::About => (None, self.about(&t, cx)),
@@ -3286,6 +3316,35 @@ impl SettingsPage {
                     .child(self.anchor("memory"))
                     .child(self.integrations.clone()),
             )
+            .into_any_element()
+    }
+
+    fn machines_section(&self, t: &Theme) -> AnyElement {
+        div()
+            .flex()
+            .flex_col()
+            .child(page::page_subtitle(
+                t,
+                "Where agents run: this computer, WSL, SSH hosts, containers, Cua Spaces and cloud boxes.",
+            ))
+            .child(
+                div()
+                    .relative()
+                    .child(self.anchor("machines_hosts"))
+                    .child(self.anchor("machines_cloud"))
+                    .child(self.anchor("machines_paired"))
+                    .child(self.machines.clone()),
+            )
+            .into_any_element()
+    }
+
+    /// Machines' header: look for machines and probe everything again.
+    fn machines_actions(&self, t: &Theme, cx: &App) -> AnyElement {
+        let view = self.machines.clone();
+        let busy = view.read(cx).is_refreshing();
+        ctl::button_sm(t, "machines-refresh", if busy { "Refreshing…" } else { "Refresh" }, Tone::Quiet)
+            .tooltip(ui::tip("Look for machines again and re-check every provider"))
+            .on_click(move |_, _, cx| view.update(cx, |v, cx| v.refresh(cx)))
             .into_any_element()
     }
 

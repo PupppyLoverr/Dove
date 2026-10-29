@@ -13,6 +13,7 @@ mod automations;
 mod help;
 pub mod integrations;
 mod kanban;
+pub mod machines;
 pub mod memory_settings;
 pub mod skills;
 mod usage;

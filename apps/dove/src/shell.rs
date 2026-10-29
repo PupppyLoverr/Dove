@@ -314,6 +314,7 @@ impl Shell {
             ComposerEvent::Submit(text) => this.start(text.clone(), window, cx),
             ComposerEvent::OpenUsage => this.navigate(Route::Usage, window, cx),
             ComposerEvent::OpenVoiceSettings => this.open_settings_section("voice", window, cx),
+            ComposerEvent::OpenMachines => this.open_settings_section("machines", window, cx),
             ComposerEvent::ProjectChanged(id) => this.set_home_project(*id, cx),
             ComposerEvent::ProjectsChanged => this.reload(cx),
             ComposerEvent::Stop => {}

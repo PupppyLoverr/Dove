@@ -72,6 +72,8 @@ pub enum ComposerEvent {
     OpenUsage,
     /// "Install local voice…" was chosen.
     OpenVoiceSettings,
+    /// The device menu's "Add a machine…" was chosen.
+    OpenMachines,
     /// The new-thread project changed.
     ProjectChanged(ProjectId),
     /// A project was added or cloned; the app should reload its list.
@@ -1295,7 +1297,28 @@ impl Composer {
             Host::Local => icons::LAPTOP,
             Host::Wsl { .. } => icons::TERMINAL,
             Host::Ssh { .. } => icons::SERVER,
-            Host::CuaSpace { .. } => icons::CLOUD,
+            Host::CuaSpace { .. } => icons::BOX_SELECT,
+            Host::Docker { .. } => icons::LAYERS,
+            Host::Sandbox { .. } => icons::CLOUD,
+            Host::Node { .. } => icons::MONITOR,
+        }
+    }
+
+    /// The device menu's group for `host`: its header, and the name a row
+    /// shows under that header (the header already says what kind it is).
+    fn host_group(host: &dove_core::host::Host) -> (String, String) {
+        use dove_core::host::Host;
+        match host {
+            Host::Local => ("This computer".into(), format!("Local · {}", ui::host_name())),
+            Host::Node { .. } => ("Paired devices".into(), host.label()),
+            Host::Wsl { distro } => ("WSL".into(), distro.clone().unwrap_or_else(|| "Default distro".into())),
+            Host::Ssh { alias } => ("SSH".into(), alias.clone()),
+            Host::Docker { container } => ("Containers (Docker)".into(), container.clone()),
+            Host::CuaSpace { name } => ("Spaces (Cua)".into(), name.clone()),
+            Host::Sandbox { provider, id } => {
+                let label = dove_core::hosts::provider(provider).map(|p| p.label()).unwrap_or(provider.as_str());
+                (format!("Cloud · {label}"), id.clone())
+            }
         }
     }
 
@@ -1350,27 +1373,57 @@ impl Composer {
             } else {
                 let hosts = self.hosts.clone();
                 let list = hosts.clone().unwrap_or_else(|| vec![dove_core::host::Host::Local]);
-                rows =
-                    rows.child(div().id("host-list").max_h(px(300.0)).overflow_y_scroll().flex().flex_col().children(
-                        list.into_iter().enumerate().map(|(i, h)| {
-                            let label = match &h {
-                                dove_core::host::Host::Local => format!("Local · {}", ui::host_name()),
-                                other => other.label(),
-                            };
-                            let selected = h == current;
-                            ui::menu_row(SharedString::from(format!("dev-{i}")), Self::host_icon(&h), label, false, t)
-                                .when(selected, |d| d.child(icon(icons::CHECK).size(px(14.0)).text_color(t.accent)))
-                                .on_click(cx.listener(move |this, _, _, cx| this.pick_host(h.clone(), cx)))
-                        }),
-                    ));
-                let note = if hosts.is_none() {
-                    "Looking for WSL, SSH hosts and Cua Spaces…"
-                } else {
-                    "WSL distros, ~/.ssh/config hosts and ready Cua Spaces"
+                // Group by kind, keeping discovery's order (this computer
+                // first) for the groups and the rows inside each.
+                let mut groups: Vec<(String, Vec<(usize, dove_core::host::Host, String)>)> = Vec::new();
+                for (i, h) in list.into_iter().enumerate() {
+                    let (header, name) = Self::host_group(&h);
+                    match groups.iter_mut().find(|(g, _)| *g == header) {
+                        Some((_, rows)) => rows.push((i, h, name)),
+                        None => groups.push((header, vec![(i, h, name)])),
+                    }
+                }
+                let heading = |label: String| {
+                    div()
+                        .px(px(14.0))
+                        .pt(px(6.0))
+                        .pb(px(4.0))
+                        .text_size(ty::MICRO)
+                        .text_color(t.text_faint)
+                        .child(label)
                 };
-                rows = rows
-                    .child(ui::separator(t))
-                    .child(div().px(px(14.0)).py(px(6.0)).text_size(ty::META).text_color(t.text_faint).child(note));
+                let mut list_el = div().id("host-list").max_h(px(300.0)).overflow_y_scroll().flex().flex_col();
+                for (header, entries) in groups {
+                    list_el = list_el.child(heading(header));
+                    for (i, h, name) in entries {
+                        let selected = h == current;
+                        let tip = Self::host_label(&h);
+                        list_el = list_el.child(
+                            ui::menu_row(SharedString::from(format!("dev-{i}")), Self::host_icon(&h), name, false, t)
+                                .when(selected, |d| d.child(icon(icons::CHECK).size(px(14.0)).text_color(t.accent)))
+                                .tooltip(ui::tip(tip))
+                                .on_click(cx.listener(move |this, _, _, cx| this.pick_host(h.clone(), cx))),
+                        );
+                    }
+                }
+                rows = rows.child(list_el);
+                if hosts.is_none() {
+                    rows =
+                        rows.child(
+                            div().px(px(14.0)).py(px(6.0)).text_size(ty::META).text_color(t.text_faint).child(
+                                "Looking for paired devices, WSL, SSH hosts, containers, Spaces and cloud boxes…",
+                            ),
+                        );
+                }
+                rows = rows.child(ui::separator(t)).child(
+                    ui::menu_row("dev-add", icons::ADD_CIRCLE, "Add a machine…", false, t)
+                        .tooltip(ui::tip("Settings › Machines: SSH, containers, cloud providers, paired devices"))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.menu = None;
+                            cx.emit(ComposerEvent::OpenMachines);
+                            cx.notify();
+                        })),
+                );
             }
             self.popover(Anchor::BottomLeft, ui::menu_card(t, rows), cx)
         });
