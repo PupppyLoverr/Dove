@@ -43,14 +43,16 @@ pub const INK: Hsla = hsla(0.0, 0.0, 0.07, 1.0);
 pub const WHITE: Hsla = hsla(0.0, 0.0, 1.0, 0.96);
 pub const WHITE_HOVER: Hsla = hsla(0.0, 0.0, 1.0, 0.82);
 
-/// One accent per meaning.
-pub const AMBER: Hsla = hsla(37.0 / 360.0, 1.0, 0.56, 1.0);
-pub const BLUE: Hsla = hsla(211.0 / 360.0, 1.0, 0.62, 1.0);
-pub const GREEN: Hsla = hsla(138.0 / 360.0, 0.62, 0.52, 1.0);
-pub const RED: Hsla = hsla(3.0 / 360.0, 1.0, 0.63, 1.0);
-pub const CLAUDE: Hsla = hsla(15.0 / 360.0, 0.63, 0.60, 1.0);
-/// K22's hue: live voice only.
-pub const K22: Hsla = hsla(258.0 / 360.0, 0.90, 0.68, 1.0);
+/// Black and white: meaning is carried by brightness, words and motion,
+/// never hue. Needs-you and failures are full white (and breathe or say
+/// so); working is a softer white; done is quiet.
+pub const AMBER: Hsla = hsla(0.0, 0.0, 1.0, 0.96);
+pub const BLUE: Hsla = hsla(0.0, 0.0, 1.0, 0.70);
+pub const GREEN: Hsla = hsla(0.0, 0.0, 1.0, 0.86);
+pub const RED: Hsla = hsla(0.0, 0.0, 1.0, 1.0);
+pub const CLAUDE: Hsla = hsla(0.0, 0.0, 1.0, 0.95);
+/// K22 (live voice).
+pub const K22: Hsla = hsla(0.0, 0.0, 1.0, 0.96);
 
 /// The opt-in glass's tint over the blurred backdrop (top, bottom): neutral
 /// charcoal, clear over a dark backdrop and denser over a bright one so white

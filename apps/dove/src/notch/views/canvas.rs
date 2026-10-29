@@ -1130,8 +1130,9 @@ impl Notch {
                     .h(px(32.0))
                     .px(px(10.0))
                     .rounded_full()
-                    .bg(tk::RED.opacity(0.16 + 0.10 * breathe(t)))
-                    .hover(|s| s.bg(tk::RED.opacity(0.3)))
+                    .border_1()
+                    .border_color(tk::TEXT.opacity(0.25 + 0.35 * breathe(t)))
+                    .hover(|s| s.bg(tk::WASH))
                     .cursor_pointer()
                     .flex()
                     .items_center()
@@ -1296,6 +1297,11 @@ impl Notch {
     /// for a moment after a finish, else the album art's colour while music
     /// plays.
     fn glow(&self) -> Option<Hsla> {
+        // Black and white: no colour washes on the black island (the glass,
+        // opt-in, keeps them).
+        if !self.prefs.glass {
+            return None;
+        }
         if self.approval().is_some() {
             return Some(tk::AMBER.opacity(tk::GLOW * (0.6 + 0.4 * breathe(self.t()))));
         }

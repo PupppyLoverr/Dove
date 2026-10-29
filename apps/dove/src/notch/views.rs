@@ -129,8 +129,9 @@ fn until(ms: i64) -> String {
     }
 }
 
-fn tint(kind: HarnessKind) -> Hsla {
-    if kind == HarnessKind::ClaudeCode { tk::CLAUDE } else { tk::TEXT }
+/// Agent marks are white like everything else (black and white).
+fn tint(_kind: HarnessKind) -> Hsla {
+    tk::TEXT
 }
 
 fn mark(kind: HarnessKind, size: f32) -> AnyElement {

@@ -173,23 +173,18 @@ impl Notch {
         let h = match &self.page {
             Page::Call => {
                 if self.call.live {
-                    // Each line wraps at about 80 characters.
-                    let lines: f32 = self
-                        .call
-                        .lines
-                        .iter()
-                        .rev()
-                        .take(4)
-                        .map(|(_, t)| t.chars().count().div_ceil(80).max(1) as f32 * 19.0 + 6.0)
-                        .sum();
-                    let partial = if self.call.partial.as_ref().is_some_and(|p| !p.trim().is_empty()) { 24.0 } else { 0.0 };
-                    let error = if self.call.error.is_some() { 46.0 } else { 0.0 };
+                    // The model line, the orb, the status, one exchange, the
+                    // controls; K22's line wraps at about 64 characters.
+                    let k22 = self.call.lines.iter().rev().find(|l| !l.0).map_or(0.0, |l| {
+                        l.1.chars().count().div_ceil(64).clamp(1, 6) as f32 * 21.0
+                    });
+                    let you = if self.call.lines.iter().any(|l| l.0) || self.call.partial.is_some() { 22.0 } else { 0.0 };
+                    let error = if self.call.error.is_some() { 40.0 } else { 0.0 };
                     let typing = if self.call_typing { 46.0 } else { 0.0 };
-                    // Chips, the orb at its fullest (it swells with the voice), the
-                    // state, the controls, and the gaps between.
-                    344.0 + lines + partial + error + typing + if self.call.awaiting_click.is_some() { 56.0 } else { 0.0 }
+                    let click = if self.call.awaiting_click.is_some() { 46.0 } else { 0.0 };
+                    24.0 + 8.0 + 143.0 + 8.0 + 16.0 + 12.0 + you + k22 + error + typing + click + 14.0 + 36.0 + 16.0
                 } else {
-                    210.0 + self.views.len().min(3) as f32 * 42.0
+                    24.0 + 8.0 + 143.0 + 8.0 + 16.0 + 40.0 + 40.0 + self.views.len().min(3) as f32 * 38.0 + if self.views.is_empty() { 0.0 } else { 30.0 }
                 }
             }
             Page::Plan(task) => {
@@ -484,50 +479,51 @@ impl Notch {
         row.into_any_element()
     }
 
-    /// The orb: K22's mark in a ring that breathes with the voice.
+    /// The orb: a white core in thin rings that open with the voice.
     fn orb(&self, size: f32) -> AnyElement {
         let c = &self.call;
         let t = self.t();
-        let level = if c.live { c.level } else { 0.0 };
-        let (color, glow) = match c.phase {
-            _ if !c.live => (tk::K22.opacity(0.55), 0.08),
-            CallPhase::Muted => (tk::DIM, 0.05),
-            CallPhase::Thinking => (tk::K22, 0.12 + 0.10 * breathe(t)),
-            CallPhase::Speaking => (tk::K22, 0.16 + 0.35 * level),
-            CallPhase::Hearing => (tk::K22, 0.18 + 0.4 * level),
-            CallPhase::Listening => (tk::K22, 0.10 + 0.06 * breathe(t * 0.6)),
-            CallPhase::Loading => (tk::K22.opacity(0.6), 0.06 + 0.06 * breathe(t)),
+        let live = c.live;
+        let level = if live { c.level } else { 0.0 };
+        let (core, rings) = match c.phase {
+            _ if !live => (tk::TEXT.opacity(0.9), 0.10),
+            CallPhase::Muted => (tk::FAINT, 0.05),
+            CallPhase::Thinking => (tk::TEXT, 0.10 + 0.12 * breathe(t)),
+            CallPhase::Loading => (tk::DIM, 0.06 + 0.08 * breathe(t)),
+            CallPhase::Listening => (tk::TEXT, 0.12 + 0.05 * breathe(t * 0.6)),
+            CallPhase::Speaking | CallPhase::Hearing => (tk::TEXT, 0.16 + 0.5 * level),
         };
-        let swell = size * (0.16 + 0.22 * level);
-        div()
-            .size(px(size + 2.0 * swell.max(size * 0.16)))
-            .flex()
-            .items_center()
-            .justify_center()
-            .child(
+        let core_d = size * 0.5;
+        let box_d = size * 1.7;
+        let mut orb = div().relative().size(px(box_d)).flex_none();
+        for (i, share) in [1.0f32, 0.62, 0.34].into_iter().enumerate() {
+            let open = (i as f32 + 1.0) * size * 0.14 + level * size * 0.22 * share;
+            let d = (core_d + 2.0 * open).min(box_d);
+            orb = orb.child(
                 div()
-                    .size(px(size + 2.0 * swell))
+                    .absolute()
+                    .left(px((box_d - d) / 2.0))
+                    .top(px((box_d - d) / 2.0))
+                    .size(px(d))
                     .rounded_full()
-                    .bg(color.opacity(glow))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(
-                        div()
-                            .size(px(size))
-                            .rounded_full()
-                            .bg(linear_gradient(
-                                160.0,
-                                linear_color_stop(color.opacity(0.95), 0.0),
-                                linear_color_stop(Hsla { l: 0.32, ..color }, 1.0),
-                            ))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .child(icon(icons::K22_MARK).size(px(size * 0.38)).text_color(tk::WHITE)),
-                    ),
-            )
-            .into_any_element()
+                    .border_1()
+                    .border_color(tk::TEXT.opacity(rings * share)),
+            );
+        }
+        orb.child(
+            div()
+                .absolute()
+                .left(px((box_d - core_d) / 2.0))
+                .top(px((box_d - core_d) / 2.0))
+                .size(px(core_d))
+                .rounded_full()
+                .bg(core)
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(icon(icons::K22_MARK).size(px(core_d * 0.42)).text_color(tk::INK)),
+        )
+        .into_any_element()
     }
 
     pub(crate) fn page_call(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
@@ -536,136 +532,106 @@ impl Notch {
             window.request_animation_frame();
         }
         let line = self.inputs.as_ref().map(|i| i.line.clone());
-        let mut col = div().id("call").size_full().flex().flex_col().items_center().gap(px(10.0)).pt(px(6.0));
-        // Who it talks to, and K22's agent.
+        let mut col = div().id("call").size_full().flex().flex_col().items_center().gap(px(8.0)).pt(px(2.0));
+        // Who it talks to, and on what: one quiet line.
         let target = c.target.clone().unwrap_or_else(|| "K22".into());
-        let agent = c.agent.or(self.snap.voice.agent);
         let model = c.model.clone().or(self.snap.voice.model.clone());
         let model_label = model
             .as_ref()
             .and_then(|m| self.snap.voice.models.iter().find(|x| &x.0 == m).map(|x| x.1.clone()))
             .or(model.clone())
-            .unwrap_or_else(|| "Default model".into());
+            .unwrap_or_else(|| {
+                c.agent.or(self.snap.voice.agent).map(|k| k.label().to_string()).unwrap_or_else(|| "Default model".into())
+            });
         col = col.child(
             div()
-                .w_full()
+                .id("call-model")
+                .h(px(24.0))
+                .px(px(8.0))
+                .rounded_full()
+                .hover(|s| s.bg(tk::WASH))
+                .cursor_pointer()
                 .flex()
                 .items_center()
-                .justify_center()
                 .gap(px(6.0))
-                .child(
-                    div()
-                        .h(px(26.0))
-                        .px(px(10.0))
-                        .rounded_full()
-                        .bg(tk::WASH)
-                        .flex()
-                        .items_center()
-                        .gap(px(6.0))
-                        .child(match c.target_kind {
-                            Some(k) if target != "K22" => mark(k, 13.0),
-                            _ => icon(icons::K22_MARK).size(px(13.0)).text_color(tk::K22).into_any_element(),
-                        })
-                        .child(div().text_size(px(tk::T12)).text_color(tk::TEXT).max_w(px(260.0)).truncate().child(target)),
-                )
-                .child(
-                    div()
-                        .id("call-model")
-                        .h(px(26.0))
-                        .px(px(10.0))
-                        .rounded_full()
-                        .bg(tk::WASH)
-                        .hover(|s| s.bg(tk::WASH_HOVER))
-                        .cursor_pointer()
-                        .flex()
-                        .items_center()
-                        .gap(px(6.0))
-                        .tooltip(tip("K22's agent and model"))
-                        .children(agent.map(|k| mark(k, 13.0)))
-                        .child(div().text_size(px(tk::T12)).text_color(tk::DIM).child(model_label))
-                        .child(icon(icons::ALT_ARROW_DOWN).size(px(12.0)).text_color(tk::FAINT))
-                        .on_click(cx.listener(|this, ev: &ClickEvent, _, cx| {
-                            let items = this.voice_menu();
-                            this.open_menu(ev.position(), items, cx);
-                        })),
-                ),
+                .tooltip(tip("K22's agent and model"))
+                .child(div().text_size(px(tk::T12)).text_color(tk::DIM).max_w(px(240.0)).truncate().child(target))
+                .child(div().text_size(px(tk::T12)).text_color(tk::GHOST).child("·"))
+                .child(div().text_size(px(tk::T12)).text_color(tk::FAINT).child(model_label))
+                .child(icon(icons::ALT_ARROW_DOWN).size(px(11.0)).text_color(tk::GHOST))
+                .on_click(cx.listener(|this, ev: &ClickEvent, _, cx| {
+                    let items = this.voice_menu();
+                    this.open_menu(ev.position(), items, cx);
+                })),
         );
-        col = col.child(self.orb(96.0));
-        let phase = if c.live { c.phase.word() } else { "Talk to K22" };
+        col = col.child(self.orb(84.0));
+        let status = if c.live {
+            format!("{} · {}", c.phase.word(), mins_secs(Duration::from_secs(c.elapsed_s as u64)))
+        } else {
+            "Not in a call".into()
+        };
         col = col.child(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(8.0))
-                .child(
-                    div()
-                        .text_size(px(tk::T15))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(if c.live { tk::TEXT } else { tk::DIM })
-                        .child(phase),
-                )
-                .when(c.live, |d| {
-                    d.child(div().font_family(tk::MONO).text_size(px(tk::T12)).text_color(tk::FAINT).child(mins_secs(
-                        Duration::from_secs(c.elapsed_s as u64),
-                    )))
-                }),
+            div().font_family(tk::MONO).text_size(px(tk::T11)).text_color(tk::FAINT).child(status),
         );
         if let Some(e) = &c.error {
             col = col.child(
                 div()
-                    .w_full()
-                    .p(px(10.0))
-                    .rounded(px(tk::R_ROW))
-                    .bg(tk::RED.opacity(0.12))
+                    .max_w(px(460.0))
+                    .text_center()
                     .text_size(px(tk::T12))
-                    .text_color(tk::RED)
+                    .text_color(tk::TEXT)
                     .child(e.clone()),
             );
         }
         if c.live {
-            // The conversation: you on the right, K22 on the left.
-            let mut lines = div().w_full().flex().flex_col().gap(px(6.0));
-            let shown: Vec<_> = c.lines.iter().rev().take(4).rev().cloned().collect();
-            for (i, (you, text)) in shown.into_iter().enumerate() {
-                lines = lines.child(
-                    div().w_full().flex().when(you, |d| d.justify_end()).child(
+            // One exchange at a time: what you said (or are saying), small,
+            // and K22's last line, large.
+            let you = c
+                .partial
+                .clone()
+                .filter(|p| !p.trim().is_empty())
+                .or_else(|| c.lines.iter().rev().find(|l| l.0).map(|l| l.1.clone()));
+            let k22 = c.lines.iter().rev().find(|l| !l.0).map(|l| l.1.clone());
+            col = col.child(
+                div()
+                    .w_full()
+                    .mt(px(4.0))
+                    .px(px(24.0))
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .gap(px(6.0))
+                    .children(you.map(|y| {
                         div()
-                            .id(("call-line", i))
-                            .max_w(gpui::relative(0.86))
-                            .text_size(px(if you { tk::T12 } else { tk::T13 }))
-                            .text_color(if you { tk::DIM } else { tk::TEXT })
-                            .when(you, |d| d.text_right())
-                            .child(text),
-                    ),
-                );
-            }
-            if let Some(p) = c.partial.clone().filter(|p| !p.trim().is_empty()) {
-                lines = lines.child(
-                    div().w_full().flex().justify_end().child(
-                        div().text_size(px(tk::T12)).text_color(tk::FAINT).italic().child(p),
-                    ),
-                );
-            }
-            col = col.child(lines);
+                            .text_center()
+                            .text_size(px(tk::T12))
+                            .text_color(tk::FAINT)
+                            .when(c.partial.as_ref().is_some_and(|p| !p.trim().is_empty()), |d| d.italic())
+                            .child(y)
+                    }))
+                    .children(k22.map(|k| {
+                        div()
+                            .max_w(px(520.0))
+                            .text_center()
+                            .text_size(px(tk::T15))
+                            .text_color(tk::TEXT)
+                            .child(k)
+                    })),
+            );
             if let Some((task, _)) = c.awaiting_click {
                 col = col.child(
                     div()
-                        .w_full()
-                        .p(px(10.0))
-                        .rounded(px(tk::R_ROW))
-                        .bg(tk::AMBER.opacity(0.12))
+                        .mt(px(2.0))
+                        .h(px(36.0))
+                        .px(px(14.0))
+                        .rounded_full()
+                        .border_1()
+                        .border_color(tk::HAIRLINE)
                         .flex()
                         .items_center()
                         .gap(px(10.0))
-                        .child(icon(icons::DANGER_TRIANGLE).size(px(15.0)).text_color(tk::AMBER))
-                        .child(
-                            div()
-                                .flex_1()
-                                .text_size(px(tk::T12))
-                                .text_color(tk::TEXT)
-                                .child("That needs your click in Keplorayx (voice never confirms it)."),
-                        )
-                        .child(pill("call-confirm", "Open", false).on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        .child(div().text_size(px(tk::T12)).text_color(tk::TEXT).child("Needs your click in Keplorayx"))
+                        .child(link("call-confirm", "Open").on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                             this.command(ToEngine::Open { task: Some(task) });
                             cx.notify();
                         }))),
@@ -676,72 +642,75 @@ impl Notch {
             {
                 col = col.child(
                     div()
-                        .w_full()
+                        .w(px(440.0))
                         .h(px(36.0))
-                        .px(px(12.0))
+                        .px(px(14.0))
                         .rounded_full()
-                        .bg(tk::WASH)
+                        .border_1()
+                        .border_color(tk::HAIRLINE)
                         .flex()
                         .items_center()
                         .text_size(px(tk::T13))
                         .child(div().flex_1().child(Input::new(&line))),
                 );
             }
-            // Controls.
+            // Controls: quiet icons, and one white End.
             let muted = c.muted;
             let last_view = self.views.iter().find(|v| !v.pending).map(|v| v.id);
             let target_task = c.target_task;
             col = col.child(
                 div()
-                    .mt(px(4.0))
+                    .mt(px(6.0))
                     .flex()
                     .items_center()
-                    .gap(px(8.0))
+                    .gap(px(4.0))
                     .child(
-                        ibtn("call-mute", icons::MICROPHONE, 36.0, if muted { tk::RED } else { tk::TEXT }, "Mute")
-                            .bg(if muted { tk::RED.opacity(0.16) } else { tk::WASH })
+                        ibtn("call-mute", icons::MICROPHONE, 36.0, if muted { tk::GHOST } else { tk::DIM }, "Mute")
+                            .when(muted, |d| d.bg(tk::WASH_ON))
                             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                                 this.command(ToEngine::CallMute { on: !muted });
                                 this.call.muted = !muted;
                                 cx.notify();
                             })),
                     )
-                    .child(ibtn("call-type", icons::TEXT_CURSOR, 36.0, tk::TEXT, "Type instead").bg(tk::WASH).on_click(
-                        cx.listener(|this, _: &ClickEvent, _, cx| {
-                            this.call_typing = !this.call_typing;
-                            if this.call_typing {
-                                this.focus_line(String::new(), cx);
-                            }
-                            cx.notify();
-                        }),
-                    ))
-                    .child(ibtn("call-show", icons::ARTIFACTS, 36.0, tk::TEXT, "Show me").bg(tk::WASH).on_click(
-                        cx.listener(move |this, _: &ClickEvent, window, cx| match last_view {
+                    .child(
+                        ibtn("call-type", icons::TEXT_CURSOR, 36.0, tk::DIM, "Type instead")
+                            .when(self.call_typing, |d| d.bg(tk::WASH_ON))
+                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                this.call_typing = !this.call_typing;
+                                if this.call_typing {
+                                    this.focus_line(String::new(), cx);
+                                }
+                                cx.notify();
+                            })),
+                    )
+                    .child(ibtn("call-show", icons::ARTIFACTS, 36.0, tk::DIM, "Show me").on_click(cx.listener(
+                        move |this, _: &ClickEvent, window, cx| match last_view {
                             Some(id) => this.open_page(Page::View(id), Some(window), cx),
                             None => this.open_page(Page::Lens(Lens::Status), Some(window), cx),
-                        }),
-                    ))
-                    .child(ibtn("call-open", icons::LINK, 36.0, tk::TEXT, "Open in Keplorayx").bg(tk::WASH).on_click(
-                        cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        },
+                    )))
+                    .child(ibtn("call-open", icons::LINK, 36.0, tk::DIM, "Open in Keplorayx").on_click(cx.listener(
+                        move |this, _: &ClickEvent, _, cx| {
                             this.command(ToEngine::Open { task: target_task });
                             cx.notify();
-                        }),
-                    ))
+                        },
+                    )))
                     .child(
                         div()
                             .id("call-end")
-                            .h(px(36.0))
-                            .px(px(18.0))
+                            .ml(px(8.0))
+                            .h(px(34.0))
+                            .px(px(20.0))
                             .rounded_full()
-                            .bg(tk::RED)
-                            .hover(|s| s.bg(tk::RED.opacity(0.85)))
+                            .bg(tk::WHITE)
+                            .hover(|s| s.bg(tk::WHITE_HOVER))
                             .cursor_pointer()
                             .flex()
                             .items_center()
-                            .gap(px(6.0))
                             .text_size(px(tk::T13))
                             .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(tk::WHITE)
+                            .text_color(tk::INK)
                             .child("End")
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                                 this.command(ToEngine::Call { on: false, task: None });
@@ -753,23 +722,26 @@ impl Notch {
             col = col
                 .child(
                     div()
-                        .max_w(px(360.0))
+                        .mt(px(2.0))
+                        .max_w(px(340.0))
                         .text_center()
                         .text_size(px(tk::T12))
                         .text_color(tk::FAINT)
-                        .child("Talk to K22 about your agents: what's running, start one, review a plan, approve safe steps."),
+                        .child("Ask about your agents, start one, or review a plan, out loud."),
                 )
-                .child(primary("call-start", "Start talking").on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                    this.talk(None, cx);
-                })));
+                .child(primary("call-start", "Talk to K22").mt(px(4.0)).on_click(cx.listener(
+                    |this, _: &ClickEvent, _, cx| {
+                        this.talk(None, cx);
+                    },
+                )));
             if !self.views.is_empty() {
-                let mut recent = div().w_full().mt(px(6.0)).flex().flex_col().gap(px(2.0)).child(section("Recent views"));
+                let mut recent = div().w_full().mt(px(8.0)).flex().flex_col().gap(px(2.0)).child(section("Recent views"));
                 for (i, v) in self.views.iter().filter(|v| !v.pending).take(3).enumerate() {
                     let id = v.id;
                     recent = recent.child(
                         div()
                             .id(("recent-view", i))
-                            .h(px(38.0))
+                            .h(px(36.0))
                             .px(px(10.0))
                             .rounded(px(tk::R_ROW))
                             .hover(|s| s.bg(tk::WASH))
@@ -777,7 +749,7 @@ impl Notch {
                             .flex()
                             .items_center()
                             .gap(px(10.0))
-                            .child(icon(icons::ARTIFACTS).size(px(tk::ICON_ROW)).text_color(tk::DIM))
+                            .child(icon(icons::ARTIFACTS).size(px(tk::ICON_ROW)).text_color(tk::FAINT))
                             .child(div().flex_1().truncate().text_size(px(tk::T13)).text_color(tk::TEXT).child(v.title.clone()))
                             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                                 this.open_page(Page::View(id), Some(window), cx)
@@ -1735,7 +1707,7 @@ impl Notch {
                 .children(lines.iter().map(|l| {
                     let color = match l.chars().next() {
                         Some('+') => tk::GREEN,
-                        Some('-') => tk::RED,
+                        Some('-') => tk::FAINT,
                         _ => tk::DIM,
                     };
                     div().font_family(tk::MONO).text_size(px(tk::T11)).text_color(color).truncate().child(l.clone()).into_any_element()
@@ -1856,7 +1828,8 @@ impl Notch {
                     .h(px(60.0))
                     .px(px(12.0))
                     .rounded(px(tk::R_ROW))
-                    .bg(tk::CARD)
+                    .border_1()
+                    .border_color(tk::HAIRLINE)
                     .flex()
                     .flex_col()
                     .justify_center()
@@ -1908,13 +1881,13 @@ impl Notch {
                             .h(px(28.0))
                             .px(px(12.0))
                             .rounded_full()
-                            .bg(tk::RED)
+                            .bg(tk::WHITE)
                             .cursor_pointer()
                             .flex()
                             .items_center()
                             .text_size(px(tk::T12))
                             .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(tk::WHITE)
+                            .text_color(tk::INK)
                             .child("End")
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                                 cx.stop_propagation();
