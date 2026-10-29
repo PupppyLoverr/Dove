@@ -350,6 +350,15 @@ fn run_request(spec: &SessionSpec, prompt: String, allow_ego: bool) -> RunReques
         _ => "default",
     };
     model_options.insert("dove.permissionMode".into(), Value::String(cli_mode.into()));
+    // On another machine the agent works in the folder as that machine sees
+    // it. The launcher already starts SSH and Space agents inside it.
+    if !spec.host.is_local() {
+        let remote = match spec.host {
+            crate::host::Host::Wsl { .. } => spec.host.remote_dir(&spec.cwd),
+            _ => ".".into(),
+        };
+        model_options.insert("dove.remoteDirectory".into(), Value::String(remote));
+    }
     // The harness's own allow rules, one per line. Only Claude has one Dove
     // can pass at launch that parses the command itself; Codex reads rules
     // only from files, and OpenCode already answers every ask in chat.

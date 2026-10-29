@@ -204,6 +204,13 @@ Hermes ships an installer on this machine (`Downloads/Hermes-Setup.exe`); add **
   - Agents get a short hint: work in a Space and only delete Spaces they created.
   - Checked against `cua` 0.9.0 on this PC: the server answers the MCP handshake and lists 156 tools.
   - The "run the whole agent in a Space" host above still uses `cua sandbox exec -i`. An agent's JSON-over-stdio needs a live stream, and MCP's `space_bash` returns only when the command finishes.
+- **End-to-end test (2026-10-29), OpenCode + `opencode/deepseek-v4.1-flash-free`:**
+  - **Agent in a Space:** Dove's harness ran OpenCode inside `local:space-1`. Its shell tool reported the Space's hostname and `/home/cua/Temp`, in 28 s.
+    - This needed two launcher additions. Drivers that serve over HTTP (`opencode serve --port P`) get that port forwarded for the session: `cua sandbox port-forward` for a Space, `ssh -L` for SSH; WSL2 forwards loopback by itself. `OPENCODE_*` variables travel with the command.
+    - It also needed a `dove.remoteDirectory` option, so the vendored OpenCode driver scopes the session to the folder as the host sees it.
+  - **Agent on this PC driving Spaces:** the same model, through Dove's MCP server with the Cua Spaces integration on, called `cua__list_spaces` and `cua__space_bash` (`hostname && whoami` in `space-1`).
+    - The 156 Cua tools add about 32k tokens to every session. A narrower `--permissions` set is worth offering.
+  - Reproduce with `DOVE_HOST` / `DOVE_TOOL_SERVER` on `crates/dove-harness/examples/smoke.rs`.
 - **Host prep (built):** before the agent starts, the launcher runs one short script on the host, with its output captured so nothing reaches the agent's JSON stdout.
   - A missing `<home>/<folder>` is cloned from the local checkout's `origin`, on the current branch when the remote has it, or the default branch with a note when it doesn't.
   - If the agent isn't on the host's `PATH`, the launcher stops with exit 127 and prints the install command (`npm install -g @anthropic-ai/claude-code` and others).

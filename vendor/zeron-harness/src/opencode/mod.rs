@@ -1363,7 +1363,16 @@ async fn run_session(session: Session) {
         turn: turn_control,
     } = controls;
     let request_input = Arc::new(request_input);
-    let directory = (!request.cwd.is_empty()).then(|| request.cwd.clone());
+    // Dove runs some agents on another machine (WSL, SSH, a Cua Space): the
+    // server starts from the local folder, but scopes the session to the
+    // folder as that machine sees it.
+    let directory = request
+        .model_options
+        .get("dove.remoteDirectory")
+        .and_then(Value::as_str)
+        .filter(|d| !d.is_empty())
+        .map(str::to_owned)
+        .or_else(|| (!request.cwd.is_empty()).then(|| request.cwd.clone()));
     let dir = directory.as_deref();
 
     let agent = request.model_options.get("agent").and_then(Value::as_str).filter(|a| !a.is_empty());

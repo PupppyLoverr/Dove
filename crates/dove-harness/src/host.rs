@@ -172,19 +172,54 @@ pub fn run_launcher() -> Option<i32> {
     if let Err(code) = prepare(&host, &program, &dir, &cwd) {
         return Some(code);
     }
-    let inv = host.wrap(&program, &args, &dir, false);
+    // The driver hands some agents settings through the environment, which
+    // the hop does not carry, so they ride along as `env K=V program …`.
+    let pass: Vec<(String, String)> =
+        std::env::vars().filter(|(k, _)| FORWARD_ENV_PREFIXES.iter().any(|p| k.starts_with(p))).collect();
+    let (program, args) = with_env(&program, &args, &pass);
+    let mut inv = host.wrap(&program, &args, &dir, false);
+    // Agents served over HTTP (`opencode serve --port P --hostname
+    // 127.0.0.1`) listen on the host's loopback; bring that port here.
+    let port = served_port(&args);
+    let mut forward = None;
+    match (&host, port) {
+        (Host::Ssh { .. }, Some(p)) => {
+            let spec = format!("{p}:127.0.0.1:{p}");
+            inv.args.splice(0..0, ["-o", "ExitOnForwardFailure=yes", "-L", spec.as_str()].map(String::from));
+        }
+        (Host::CuaSpace { name }, Some(p)) => {
+            let mut fwd = std::process::Command::new("cua");
+            fwd.args(["sandbox", "port-forward", name, &format!("{p}:{p}")])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                fwd.creation_flags(0x0800_0000);
+            }
+            match fwd.spawn() {
+                Ok(child) => forward = Some(child),
+                Err(err) => eprintln!("dove: could not forward port {p} from {}: {err}", host.label()),
+            }
+        }
+        // WSL2 forwards loopback ports to Windows by itself.
+        _ => {}
+    }
     let mut cmd = std::process::Command::new(&inv.program);
     cmd.args(&inv.args);
     // Unix replaces this process, so the driver's signals reach the hop
-    // directly. Windows waits; the driver's job object kills the whole tree.
+    // directly, unless a port forward must be stopped afterwards. Windows
+    // waits; the driver's job object kills the whole tree.
     #[cfg(unix)]
-    let code = {
-        use std::os::unix::process::CommandExt;
-        let err = cmd.exec();
-        eprintln!("dove: could not start {} for {}: {err}", inv.program.display(), host.label());
-        127
-    };
-    #[cfg(not(unix))]
+    {
+        if forward.is_none() {
+            use std::os::unix::process::CommandExt;
+            let err = cmd.exec();
+            eprintln!("dove: could not start {} for {}: {err}", inv.program.display(), host.label());
+            return Some(127);
+        }
+    }
     let code = match cmd.status() {
         Ok(status) => status.code().unwrap_or(1),
         Err(err) => {
@@ -192,7 +227,35 @@ pub fn run_launcher() -> Option<i32> {
             127
         }
     };
+    if let Some(mut child) = forward {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
     Some(code)
+}
+
+/// Environment the launcher passes on to the agent on its host. OpenCode's
+/// driver sets its server password and config this way.
+const FORWARD_ENV_PREFIXES: &[&str] = &["OPENCODE_"];
+
+/// `program args` run under `env K=V …` when there is anything to pass.
+fn with_env(program: &str, args: &[String], vars: &[(String, String)]) -> (String, Vec<String>) {
+    if vars.is_empty() {
+        return (program.to_string(), args.to_vec());
+    }
+    let mut a: Vec<String> = vars.iter().map(|(k, v)| format!("{k}={v}")).collect();
+    a.push(program.to_string());
+    a.extend(args.iter().cloned());
+    ("env".into(), a)
+}
+
+/// The loopback port an agent serves on: `serve … --port P`.
+fn served_port(args: &[String]) -> Option<u16> {
+    if !args.iter().any(|a| a == "serve") {
+        return None;
+    }
+    let i = args.iter().position(|a| a == "--port")?;
+    args.get(i + 1)?.parse().ok()
 }
 
 /// Gets `dir` ready on the host before the agent starts: a missing folder is
@@ -471,6 +534,20 @@ mod tests {
         assert_eq!(a[0], "-c");
         assert_eq!(&a[2..], &s(&["dove-prepare", "repo", "https://x/y.git", "", "claude"])[..]);
         assert!(!a[1].contains("repo"), "values never land in the script text");
+    }
+
+    #[test]
+    fn served_port_comes_from_serve_args_only() {
+        assert_eq!(served_port(&s(&["serve", "--port", "4123", "--hostname", "127.0.0.1"])), Some(4123));
+        assert_eq!(served_port(&s(&["run", "--port", "4123"])), None);
+        assert_eq!(served_port(&s(&["serve"])), None);
+    }
+
+    #[test]
+    fn env_rides_along_before_the_program() {
+        let (p, a) = with_env("opencode", &s(&["serve"]), &[("OPENCODE_PASSWORD".into(), "x y".into())]);
+        assert_eq!((p.as_str(), a), ("env", s(&["OPENCODE_PASSWORD=x y", "opencode", "serve"])));
+        assert_eq!(with_env("claude", &s(&["-p"]), &[]), ("claude".to_string(), s(&["-p"])));
     }
 
     #[test]
