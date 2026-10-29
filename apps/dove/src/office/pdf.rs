@@ -308,6 +308,6 @@ mod imp {
     }
 
     pub fn save(_: &Path, _: &[(String, String)]) -> Result<(), String> {
-        Err("Filling PDF forms in Dove needs macOS's PDFKit.".into())
+        Err("Filling PDF forms in Keplorayx needs macOS's PDFKit.".into())
     }
 }

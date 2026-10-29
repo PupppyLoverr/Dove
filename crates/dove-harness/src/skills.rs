@@ -109,7 +109,7 @@ impl Source {
     /// A short label: "Dove" or `owner/repo`.
     pub fn label(&self) -> &str {
         match self {
-            Source::Bundled => "Dove",
+            Source::Bundled => "Keplorayx",
             Source::Git { repo, .. } => repo,
             Source::Local { .. } => "You",
         }
@@ -222,7 +222,7 @@ pub fn remove(name: &str) -> Result<(), String> {
     update(|reg| {
         let s = reg.get(name).ok_or_else(|| format!("{name} is not installed"))?;
         if s.source == Source::Bundled {
-            return Err(format!("{name} comes with Dove; turn it off instead"));
+            return Err(format!("{name} comes with Keplorayx; turn it off instead"));
         }
         reg.skills.retain(|s| s.name != name);
         for dir in harness_dirs() {
@@ -510,7 +510,7 @@ fn sync_in(root: &Path, reg: &Registry, dirs: &[PathBuf]) -> Vec<String> {
             let result = if s.enabled && src.join("SKILL.md").is_file() {
                 mirror(&src, dir, &s.name).map(|m| {
                     if m == Mirror::Foreign {
-                        problems.push(format!("kept the existing {} skill in {} (not Dove's)", s.name, dir.display()));
+                        problems.push(format!("kept the existing {} skill in {} (not Keplorayx's)", s.name, dir.display()));
                     }
                 })
             } else {
@@ -578,10 +578,10 @@ fn describe_in(root: &Path, reg: &Registry, name: Option<&str>) -> Result<String
     match name.map(str::trim).filter(|n| !n.is_empty()) {
         None => {
             let mut out = String::from(
-                "Skills Dove installed for agents. Call dove_skills with {\"name\": ...} for the full instructions.\n\n",
+                "Skills Keplorayx installed for agents. Call dove_skills with {\"name\": ...} for the full instructions.\n\n",
             );
             if on.is_empty() {
-                out.push_str("(none are turned on; the user manages them in Dove → Settings → Plugins → Skills)\n");
+                out.push_str("(none are turned on; the user manages them in Keplorayx → Settings → Plugins → Skills)\n");
             }
             for s in on {
                 out.push_str(&format!("- {}: {} (folder: {})\n", s.name, s.description, root.join(&s.name).display()));
@@ -1174,7 +1174,7 @@ fn install_from(repo: &str, tree: &Tree, path: &str) -> Result<Installed, String
     let meta = parse_meta(&String::from_utf8_lossy(&md))?;
     let name = meta.name.clone();
     if office_skills::find(&name).is_some() || name == CACHE {
-        return Err(format!("{name} is a name Dove reserves for its own skills"));
+        return Err(format!("{name} is a name Keplorayx reserves for its own skills"));
     }
     let sha = if path.is_empty() {
         tree.sha.clone()
@@ -1237,7 +1237,7 @@ fn install_from(repo: &str, tree: &Tree, path: &str) -> Result<Installed, String
         if std::fs::symlink_metadata(&dest).is_ok() {
             if !ours(&dest) {
                 let _ = std::fs::remove_dir_all(&staging);
-                return Err(format!("{} already has a {name} folder Dove did not make", root.display()));
+                return Err(format!("{} already has a {name} folder Keplorayx did not make", root.display()));
             }
             std::fs::remove_dir_all(&dest).map_err(|e| format!("could not replace {}: {e}", dest.display()))?;
         }
@@ -1264,7 +1264,7 @@ pub fn install_local(dir: &Path) -> Result<Installed, String> {
     let meta = parse_meta(&String::from_utf8_lossy(&md))?;
     let name = meta.name.clone();
     if office_skills::find(&name).is_some() || name == CACHE {
-        return Err(format!("{name} is a name Dove reserves for its own skills"));
+        return Err(format!("{name} is a name Keplorayx reserves for its own skills"));
     }
     if let Some(existing) = load().get(&name)
         && !matches!(&existing.source, Source::Local { .. })
@@ -1309,7 +1309,7 @@ pub fn install_local(dir: &Path) -> Result<Installed, String> {
         if std::fs::symlink_metadata(&dest).is_ok() {
             if !ours(&dest) {
                 let _ = std::fs::remove_dir_all(&staging);
-                return Err(format!("{} already has a {name} folder Dove did not make", root.display()));
+                return Err(format!("{} already has a {name} folder Keplorayx did not make", root.display()));
             }
             std::fs::remove_dir_all(&dest).map_err(|e| format!("could not replace {}: {e}", dest.display()))?;
         }

@@ -804,7 +804,7 @@ impl Shell {
             _ => None,
         };
         let Some(thread) = self.team_caller(req).ok().or(visible) else {
-            return Outcome::err("Dove couldn't tell which thread this call comes from.");
+            return Outcome::err("Keplorayx couldn't tell which thread this call comes from.");
         };
         let shown = Some(thread) == visible;
         match req.tool.as_str() {
@@ -884,7 +884,7 @@ impl Shell {
                     .map(|t| t.id)
             })
             .or(visible)
-            .ok_or("Open a Dove thread to use its browser.")?;
+            .ok_or("Open a Keplorayx thread to use its browser.")?;
         let shown = Some(thread) == visible;
         if req.tool == "browser_tabs" {
             let action = req.args.get("action").and_then(serde_json::Value::as_str).unwrap_or("list").to_string();
@@ -1298,7 +1298,7 @@ impl Shell {
                 _ => ("Finished", Tone::Success),
             };
             if !self.window_active {
-                notify::os_notify(&self.engine, &format!("{headline}: {title}"), "Open Dove to continue.");
+                notify::os_notify(&self.engine, &format!("{headline}: {title}"), "Open Keplorayx to continue.");
                 self.pending_focus = Some((id, Instant::now()));
             } else if self.route != Route::Thread(id) {
                 Toasts::push(cx, format!("{headline}: {title}"), None, tone, Some(id));

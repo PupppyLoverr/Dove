@@ -513,7 +513,7 @@ pub fn decisions_note(lines: &[String]) -> String {
         out.push_str(&format!("- {l}\n"));
     }
     out.push_str(
-        "\n</dove-team-update>\n\nThis is an automatic update from Dove, not a message from the user. Started \
+        "\n</dove-team-update>\n\nThis is an automatic update from Keplorayx, not a message from the user. Started \
          agents report back when they finish; carry on (or end your turn) with that in mind.",
     );
     out

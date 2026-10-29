@@ -919,7 +919,7 @@ fn empty_discovery_reason() -> String {
     if cfg!(target_os = "macos") {
         return "window discovery found nothing: macOS reports no shareable display (asleep or headless), or Screen Recording is off for CuaDriver".into();
     }
-    "window discovery found nothing: the desktop may be locked, or the driver lacks access; run the checks in Dove → Settings → Plugins → Computer use".into()
+    "window discovery found nothing: the desktop may be locked, or the driver lacks access; run the checks in Keplorayx → Settings → Plugins → Computer use".into()
 }
 
 #[cfg(test)]

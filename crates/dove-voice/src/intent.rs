@@ -260,7 +260,7 @@ impl Rejection {
             Self::UnknownAgent(a) => format!("{a} isn't installed."),
             Self::UnknownProject(p) => format!("I can't find a project called {p}."),
             Self::Empty => "What should I send?".into(),
-            Self::CannotInterrupt(t) => format!("{t} can't be interrupted from Dove."),
+            Self::CannotInterrupt(t) => format!("{t} can't be interrupted from Keplorayx."),
             Self::SessionScopeUnsupported(t) => {
                 format!("{t} doesn't have approve-for-session, so I can only approve this once.")
             }
@@ -484,7 +484,7 @@ pub fn validate(intent: Intent, snap: &Snapshot) -> Result<Action, Rejection> {
 
 /// The instructions a model router gets. The utterance and the thread list
 /// go in as JSON data, never as instructions.
-pub const ROUTER_INSTRUCTIONS: &str = "You route one spoken request in a voice call with Dove, an app that runs coding agents. \
+pub const ROUTER_INSTRUCTIONS: &str = "You route one spoken request in a voice call with Keplorayx, an app that runs coding agents. \
 Answer with exactly one JSON object and nothing else. Its \"intent\" field is one of: talk_to {thread}, \
 start_task {agent, project?, prompt, worktree?}, send {thread?, text}, steer {thread?, text}, interrupt {thread?}, \
 approve {thread?, scope: once|session}, deny {thread?}, status {thread?, all?}, show {panel: diff|browser|terminal|files|plan|chat}, \

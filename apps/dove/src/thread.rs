@@ -753,7 +753,7 @@ impl ThreadView {
                     .items_center()
                     .justify_center()
                     .opacity(0.4)
-                    .tooltip(ui::tip(format!("{} has no terminal UI Dove can open", harness.label())))
+                    .tooltip(ui::tip(format!("{} has no terminal UI Keplorayx can open", harness.label())))
                     .child(icon(icons::TERMINAL).size(px(13.5)).text_color(t.text_faint))
                     .into_any_element()
             })

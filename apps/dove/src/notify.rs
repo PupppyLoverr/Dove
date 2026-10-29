@@ -46,7 +46,7 @@ pub fn os_notify_store(store: &dove_core::store::Store, title: &str, body: &str)
 
 /// "Dove (2)" while two threads need you.
 pub fn set_badge(window: &mut Window, needs_you: usize) {
-    let title = if needs_you == 0 { "Keplorayx".to_string() } else { format!("Dove ({needs_you})") };
+    let title = if needs_you == 0 { "Keplorayx".to_string() } else { format!("Keplorayx ({needs_you})") };
     window.set_window_title(&title);
 }
 
@@ -108,12 +108,12 @@ mod tray {
             return;
         }
         let menu = Menu::new();
-        let open = MenuItem::new("Open Dove", true, None);
+        let open = MenuItem::new("Open Keplorayx", true, None);
         let quit = MenuItem::new("Quit Keplorayx", true, None);
         let _ = menu.append(&open);
         let _ = menu.append(&quit);
         let built = TrayIconBuilder::new()
-            .with_tooltip("Dove: automations keep running")
+            .with_tooltip("Keplorayx: automations keep running")
             .with_menu(Box::new(menu))
             .with_icon(match icon() {
                 Some(i) => i,

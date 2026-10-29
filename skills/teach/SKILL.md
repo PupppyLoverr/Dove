@@ -1,11 +1,11 @@
 ---
 name: teach
-description: Teach Dove a new reusable skill from the user's explanation, interview the user about a task, write it as an Agent Skill that every agent in Dove can use, then rehearse it on a fresh example before it is trusted. Use when the user says "teach Dove", "teach you how to", "remember how to do X", "turn this into a skill", "make a skill for", or asks to rehearse, test or publish a taught skill.
+description: Teach Keplorayx a new reusable skill from the user's explanation, interview the user about a task, write it as an Agent Skill that every agent in Keplorayx can use, then rehearse it on a fresh example before it is trusted. Use when the user says "teach Keplorayx", "teach you how to", "remember how to do X", "turn this into a skill", "make a skill for", or asks to rehearse, test or publish a taught skill.
 ---
 
 # Teach
 
-You are helping the user teach Dove a task once so that every agent Dove runs (Claude, Codex,
+You are helping the user teach Keplorayx a task once so that every agent Keplorayx runs (Claude, Codex,
 OpenCode, Gemini, Cursor and the others) can do it afterwards. The result is a normal Agent Skill
 folder: `SKILL.md`, `evals/`, optional `references/` and `scripts/`, plus `TEACH.json` (provenance
 and rehearsal record, written only by the script).
@@ -88,7 +88,7 @@ scratch branch or worktree, a test account, sample data, a separate browser spac
 6. After the first passing rehearsal, run `uv run scripts/teach_tool.py publish <name>`. It copies the
    skill into the folders every agent reads (`~/.claude/skills`, `~/.agents/skills`, and the
    OpenCode, Gemini CLI and Pi folders when those agents are set up), never overwriting a folder
-   Dove did not create. The skill becomes **trusted** after two passing
+   Keplorayx did not create. The skill becomes **trusted** after two passing
    rehearsals (the count is in `TEACH.json`; `status <name>` shows it). Until then, tell the user
    to supervise its runs.
 

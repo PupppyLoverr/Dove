@@ -37,7 +37,7 @@ pub fn run() {
     let store = match Store::open(&root) {
         Ok(s) => Arc::new(s),
         Err(e) => {
-            eprintln!("Dove's island could not open its data: {e:#}");
+            eprintln!("Keplorayx's island could not open its data: {e:#}");
             return;
         }
     };
@@ -49,7 +49,7 @@ pub fn run() {
     {
         Ok(rt) => rt,
         Err(e) => {
-            eprintln!("Dove's island could not start: {e:#}");
+            eprintln!("Keplorayx's island could not start: {e:#}");
             return;
         }
     };
@@ -205,7 +205,7 @@ mod tray {
     /// the UI thread (no polling) and are handled on GPUI's executor.
     pub fn start(store: Arc<Store>, rt: tokio::runtime::Handle, notch: Option<Entity<Notch>>, cx: &mut App) {
         let menu = Menu::new();
-        let open = MenuItem::new("Open Dove", true, None);
+        let open = MenuItem::new("Open Keplorayx", true, None);
         let login =
             CheckMenuItem::new("Start at login", super::login::allowed(), store.flag(super::login::KEY, true), None);
         let quit = MenuItem::new("Quit Keplorayx completely", true, None);
@@ -321,7 +321,7 @@ mod tray {
             IDYES, MB_ICONWARNING, MB_SETFOREGROUND, MB_YESNO, MessageBoxW,
         };
         let text = format!(
-            "{running} agent{} still working or waiting for you. Quit Dove completely and stop {}?",
+            "{running} agent{} still working or waiting for you. Quit Keplorayx completely and stop {}?",
             if running == 1 { " is" } else { "s are" },
             if running == 1 { "it" } else { "them" }
         );

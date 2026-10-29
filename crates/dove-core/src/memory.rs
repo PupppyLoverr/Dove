@@ -602,7 +602,7 @@ pub fn render_block_with(
     found: &[Memory],
     budget: usize,
 ) -> Option<(String, usize)> {
-    let head = "Memories Dove recalled for this task from earlier sessions (any agent). Standing rules are the user's own instructions for this project: follow them. Use the rest where it helps. When two memories disagree, the newer one wins; the user's current request wins over all of them.";
+    let head = "Memories Keplorayx recalled for this task from earlier sessions (any agent). Standing rules are the user's own instructions for this project: follow them. Use the rest where it helps. When two memories disagree, the newer one wins; the user's current request wins over all of them.";
     let mut body = String::new();
     let mut count = 0;
     let mut used = head.len() + OPEN.len() + CLOSE.len() + 40;
@@ -2076,7 +2076,7 @@ pub fn backfill_docs(store: &Store, with_prs: bool) -> Vec<Doc> {
             }
             out.push(Doc {
                 content: redact(&format!(
-                    "Earlier Dove thread \"{}\" ({}):\nUser: {}\nAgent: {}",
+                    "Earlier Keplorayx thread \"{}\" ({}):\nUser: {}\nAgent: {}",
                     task.title,
                     task.harness.label(),
                     clip(&prompt, PROMPT_CHARS),

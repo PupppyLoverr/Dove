@@ -86,5 +86,5 @@ a copy instead of rewriting the file.
 - One message per slide; the title states it. At most ~6 bullets, ~8 words each.
 - Use section slides to group a long deck; finish with a closing slide.
 - Prefer an image or table slide to a wall of bullets. Put detail in speaker notes.
-- After writing, run `dump` to check the result. Dove's side panel previews and edits .pptx
+- After writing, run `dump` to check the result. Keplorayx's side panel previews and edits .pptx
   files: tell the user the path.

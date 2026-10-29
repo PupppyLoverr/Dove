@@ -29,7 +29,9 @@ pub use extension::{chrome_tabs, connected_browser, connection_watch, new_pairin
 /// (title, url).
 pub fn parse_tab_line(line: &str) -> Option<(String, String)> {
     let rest = line.trim().strip_prefix('[')?.split_once(']')?.1;
-    let rest = rest.trim_start().trim_start_matches("(active)").trim_start().trim_start_matches("(Dove)").trim_start();
+    // "(Dove)" is what extensions from before the rename send.
+    let rest = rest.trim_start().trim_start_matches("(active)").trim_start();
+    let rest = rest.trim_start_matches("(Keplorayx)").trim_start_matches("(Dove)").trim_start();
     let (title, url) = rest.rsplit_once(" — ")?;
     let url = url.trim();
     (url.starts_with("http") || url.starts_with("file:")).then(|| (title.trim().to_string(), url.to_string()))
@@ -88,7 +90,7 @@ pub fn check_upload_paths(cwd: Option<&std::path::Path>, paths: &[String]) -> Re
             let full = if path.is_absolute() { path.to_path_buf() } else { root.join(path) };
             let full = full.canonicalize().map_err(|_| format!("{p} does not exist."))?;
             if !full.starts_with(&root) {
-                return Err(format!("{p} is outside this thread's folder; Dove only uploads project files."));
+                return Err(format!("{p} is outside this thread's folder; Keplorayx only uploads project files."));
             }
             if !full.is_file() {
                 return Err(format!("{p} is not a file."));
@@ -170,7 +172,7 @@ pub fn start(rt: &tokio::runtime::Handle) -> Option<Endpoint> {
                             reply: rtx,
                         };
                         if tx.send(request).is_err() {
-                            Outcome::err("Dove is shutting down")
+                            Outcome::err("Keplorayx is shutting down")
                         } else {
                             rrx.await.unwrap_or_else(|_| Outcome::err("Keplorayx dropped the request"))
                         }
@@ -362,13 +364,13 @@ mod extension {
             let mut st = state();
             let Some(conn) = st.conn.as_ref() else {
                 return Outcome::err(
-                    "Dove for Chrome is not connected. Ask the user to install the extension and pair it in \
-                     Dove → Settings → Plugins, or use the in-app browser_* tools instead.",
+                    "Keplorayx for Chrome is not connected. Ask the user to install the extension and pair it in \
+                     Keplorayx → Settings → Plugins, or use the in-app browser_* tools instead.",
                 );
             };
             let msg = json!({"type": "call", "id": id, "tool": tool, "args": args}).to_string();
             if conn.tx.send(msg).is_err() {
-                return Outcome::err("Dove for Chrome just disconnected.");
+                return Outcome::err("Keplorayx for Chrome just disconnected.");
             }
             st.pending.insert(id, tx);
         }
@@ -462,12 +464,12 @@ mod extension {
                     let current = state().pairing.as_ref().map(|(_, t)| t.clone()).unwrap_or_else(|| token.to_string());
                     let pinned = state().paired_origin.clone();
                     if pinned.as_deref().is_some_and(|p| p != origin) {
-                        let _ = tx.send(json!({"type": "rejected", "reason": "This Dove is paired with a different browser extension. To switch, choose New pairing code in Dove → Settings → Plugins."}).to_string());
+                        let _ = tx.send(json!({"type": "rejected", "reason": "This Keplorayx is paired with a different browser extension. To switch, choose New pairing code in Keplorayx → Settings → Plugins."}).to_string());
                         let _ = ctl_tx.send((8, Vec::new()));
                         break;
                     }
                     if msg.get("token").and_then(Value::as_str) != Some(current.as_str()) {
-                        let _ = tx.send(json!({"type": "rejected", "reason": "Pairing code does not match this Dove. Copy it again from Settings → Plugins."}).to_string());
+                        let _ = tx.send(json!({"type": "rejected", "reason": "Pairing code does not match this Keplorayx. Copy it again from Settings → Plugins."}).to_string());
                         let _ = ctl_tx.send((8, Vec::new()));
                         break;
                     }
@@ -485,7 +487,7 @@ mod extension {
                     drop(st);
                     connection_changed();
                     let _ = tx.send(
-                        json!({"type": "welcome", "app": format!("Dove {}", env!("CARGO_PKG_VERSION"))}).to_string(),
+                        json!({"type": "welcome", "app": format!("Keplorayx {}", env!("CARGO_PKG_VERSION"))}).to_string(),
                     );
                 }
                 Some("result") if paired => {
@@ -622,6 +624,10 @@ mod tests {
     fn tab_lines_parse_to_title_and_url() {
         assert_eq!(
             super::parse_tab_line("[12] (active) (Dove) Docs — Rust — https://doc.rust-lang.org/"),
+            Some(("Docs — Rust".into(), "https://doc.rust-lang.org/".into()))
+        );
+        assert_eq!(
+            super::parse_tab_line("[12] (active) (Keplorayx) Docs — Rust — https://doc.rust-lang.org/"),
             Some(("Docs — Rust".into(), "https://doc.rust-lang.org/".into()))
         );
         assert_eq!(super::parse_tab_line("[3] New Tab — chrome://newtab/"), None, "browser pages are not mentionable");

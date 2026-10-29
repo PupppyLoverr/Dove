@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
-const BASE_INSTRUCTIONS: &str = "Tools from Dove, the app the user is chatting with you in.\n\
+const BASE_INSTRUCTIONS: &str = "Tools from Keplorayx, the app the user is chatting with you in.\n\
 Browser: Dove has an in-app browser the user watches in the side panel. Start with browser_navigate \
 (localhost dev servers work), then browser_snapshot for an outline whose elements carry refs like \
 [ref=e12]; pass refs to browser_click, browser_type, browser_hover and friends. Actions return a fresh \
@@ -50,7 +50,7 @@ fn skills_tool_for(on: &[&str]) -> Value {
     json!({
         "name": "dove_skills",
         "description": format!(
-            "Skills the user turned on in Dove (Settings › Plugins › Skills): {names}. These can be Dove's office skills \
+            "Skills the user turned on in Keplorayx (Settings › Plugins › Skills): {names}. These can be Keplorayx's office skills \
              (pdf, pptx, xlsx, docx), dove-browser (the playbook for any web task), dove-memory, and any skill the \
              user installed from GitHub. Without a name it lists every skill that is on, with its description and \
              folder; with a name it returns that skill's full instructions and its folder."
@@ -85,7 +85,7 @@ const COMPOSIO_INSTRUCTIONS: &str = "\nComposio: composio__* tools reach the use
 Slack, Notion, …) with accounts they connect through Composio. Search for the right tool first; if an app is not \
 connected, give the user the authorization link it returns.";
 
-const COMPUTER_INSTRUCTIONS: &str = "\nComputer use: the `computer` tool (Dove Computer Use, on cua-driver) sees and \
+const COMPUTER_INSTRUCTIONS: &str = "\nComputer use: the `computer` tool (Keplorayx Computer Use, on cua-driver) sees and \
 operates native desktop apps in the background. Before its first call, call dove_skills with \
 {\"name\": \"dove-computer\"} (or read the dove-computer skill) and follow it. Prefer files, CLIs and browser tools; \
 use computer use only for apps with no other interface. The loop: capture(app=…), act by element=N (or run several \
@@ -208,7 +208,7 @@ pub fn run() {
     let mut instructions = if browser {
         format!("{BASE_INSTRUCTIONS}{CHROME_INSTRUCTIONS}")
     } else {
-        "Tools from Dove, the app the user is chatting with you in.".to_string()
+        "Tools from Keplorayx, the app the user is chatting with you in.".to_string()
     };
     if (!browser || ego_only) && config.browser != BrowserChoice::Dove {
         instructions.push_str(EGO_INSTRUCTIONS);
@@ -251,7 +251,7 @@ pub fn run() {
             "initialize" => Ok(json!({
                 "protocolVersion": params.get("protocolVersion").cloned().unwrap_or(json!("2025-06-18")),
                 "capabilities": {"tools": {"listChanged": false}},
-                "serverInfo": {"name": "dove", "title": "Dove browser", "version": env!("CARGO_PKG_VERSION")},
+                "serverInfo": {"name": "dove", "title": "Keplorayx browser", "version": env!("CARGO_PKG_VERSION")},
                 "instructions": instructions,
             })),
             "ping" => Ok(json!({})),
@@ -337,7 +337,7 @@ pub(crate) fn forward(tool: &str, args: Value) -> Result<Value, String> {
     let port: u16 = std::env::var("DOVE_BROWSER_PORT")
         .ok()
         .and_then(|p| p.parse().ok())
-        .ok_or("Dove's browser is not available (DOVE_BROWSER_PORT is unset).")?;
+        .ok_or("Keplorayx's browser is not available (DOVE_BROWSER_PORT is unset).")?;
     let token = std::env::var("DOVE_BROWSER_TOKEN").unwrap_or_default();
     let cwd = std::env::var("DOVE_CWD")
         .ok()
@@ -346,7 +346,7 @@ pub(crate) fn forward(tool: &str, args: Value) -> Result<Value, String> {
     // Which thread is calling (team tools need it; see `Engine::task_for_session`).
     let session = std::env::var("DOVE_SESSION").unwrap_or_default();
     let mut stream = TcpStream::connect(("127.0.0.1", port))
-        .map_err(|_| "Dove is not running, so its browser is unavailable.".to_string())?;
+        .map_err(|_| "Keplorayx is not running, so its browser is unavailable.".to_string())?;
     // Team tools can wait on other agents for a long while.
     let wait = if crate::team_tools::is_team_tool(tool) {
         crate::team_tools::MAX_WAIT_SECS + 60
@@ -361,12 +361,12 @@ pub(crate) fn forward(tool: &str, args: Value) -> Result<Value, String> {
     stream.write_all(format!("{request}\n").as_bytes()).map_err(|e| e.to_string())?;
     let mut line = String::new();
     BufReader::new(stream.take(64 * 1024 * 1024)).read_line(&mut line).map_err(|e| e.to_string())?;
-    serde_json::from_str(&line).map_err(|_| "Dove closed the connection without answering.".to_string())
+    serde_json::from_str(&line).map_err(|_| "Keplorayx closed the connection without answering.".to_string())
 }
 
 /// `chrome_*`: the user's own browser, through the Dove for Chrome extension.
 fn chrome_tools() -> Vec<Value> {
-    let tab = json!({"type": "integer", "description": "Tab id from chrome_tabs. Defaults to the tab Dove last used, else the active tab."});
+    let tab = json!({"type": "integer", "description": "Tab id from chrome_tabs. Defaults to the tab Keplorayx last used, else the active tab."});
     let reference = json!({"type": "string", "description": "Element ref from chrome_snapshot (e12), or a CSS selector, or visible text."});
     let tool = |name: &str, description: &str, mut props: Value, required: &[&str]| {
         if let Some(p) = props.as_object_mut() {
@@ -711,7 +711,7 @@ pub(crate) mod upstream {
                 Link::Http { client, url, headers, session, oauth } => {
                     let mut bearer = match oauth.as_deref() {
                         Some(id) => Some(crate::mcp_oauth::token(id).ok_or_else(|| {
-                            format!("Not signed in to {name}. Sign in from Dove → Settings → Plugins.")
+                            format!("Not signed in to {name}. Sign in from Keplorayx → Settings → Plugins.")
                         })?),
                         None => None,
                     };
@@ -723,12 +723,12 @@ pub(crate) mod upstream {
                             Reply::Unauthorized if attempt == 0 && oauth.is_some() => {
                                 let id = oauth.as_deref().unwrap_or_default();
                                 bearer = Some(crate::mcp_oauth::refresh(id).map_err(|_| {
-                                    format!("{name} signed Dove out. Sign in again from Dove → Settings → Plugins.")
+                                    format!("{name} signed Keplorayx out. Sign in again from Keplorayx → Settings → Plugins.")
                                 })?);
                             }
                             Reply::Unauthorized => {
                                 return Err(format!(
-                                    "{name} refused the credentials. Check them in Dove → Settings → Plugins."
+                                    "{name} refused the credentials. Check them in Keplorayx → Settings → Plugins."
                                 ));
                             }
                         }
@@ -1020,7 +1020,7 @@ pub(crate) mod upstream {
                 return match self.computer.as_mut() {
                     Some(c) => c.handle(&args, &mut crate::computer_host::AppHost::new()).to_mcp(),
                     None => error(
-                        "Dove Computer Use's driver is not running. Check Dove → Settings → Plugins → Computer use.",
+                        "Keplorayx Computer Use's driver is not running. Check Keplorayx → Settings → Plugins → Computer use.",
                     ),
                 };
             }
@@ -1031,7 +1031,7 @@ pub(crate) mod upstream {
                 return error(&why);
             }
             let Some(live) = self.live.iter_mut().find(|l| l.server.name == prefix) else {
-                return error(&format!("The {prefix} integration is not connected. Check Dove → Settings → Plugins."));
+                return error(&format!("The {prefix} integration is not connected. Check Keplorayx → Settings → Plugins."));
             };
             let name = live
                 .renamed

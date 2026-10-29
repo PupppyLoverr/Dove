@@ -140,7 +140,7 @@ pub fn launcher(host: &Host, program: &Path) -> anyhow::Result<PathBuf> {
     let dir = std::env::temp_dir().join("dove-hosts").join(host.slug());
     std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
     std::fs::write(dir.join(LAUNCHER_CONFIG), serde_json::to_vec(host)?)?;
-    let exe = std::env::current_exe().context("locating Dove's own binary")?;
+    let exe = std::env::current_exe().context("locating Keplorayx's own binary")?;
     let link = dir.join(format!("{stem}{}", std::env::consts::EXE_SUFFIX));
     // Re-link so a launcher follows Dove updates. A launcher another thread
     // is running can't be removed on Windows; reusing it is fine, since any

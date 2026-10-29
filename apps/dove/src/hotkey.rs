@@ -147,7 +147,7 @@ fn stop() {
 
 #[cfg(not(windows))]
 fn start(_mods: u32, _vk: u32) -> Result<(), String> {
-    Err("A shortcut that works outside Dove is available on Windows; elsewhere use it inside Dove.".into())
+    Err("A shortcut that works outside Keplorayx is available on Windows; elsewhere use it inside Keplorayx.".into())
 }
 
 #[cfg(test)]

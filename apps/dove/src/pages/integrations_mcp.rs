@@ -366,7 +366,7 @@ impl IntegrationsView {
             Err(e) => return self.set_form_error(Some(e), cx),
         };
         if server.uses_oauth() && !crate::mcp_oauth::signed_in(&server.id) {
-            return self.set_form_error(Some("Save first, then sign in; Dove tests after sign-in".into()), cx);
+            return self.set_form_error(Some("Save first, then sign in; Keplorayx tests after sign-in".into()), cx);
         }
         if let Some(Dialog::Custom(f)) = &mut self.dialog {
             f.test = Some(Status::Busy("Connecting…"));
@@ -588,7 +588,7 @@ impl IntegrationsView {
         let message = match entry.auth {
             Auth::OAuthOrKey { .. } => format!("Sign in with your browser, or paste a {}.", label.to_lowercase()),
             Auth::OptionalKey { .. } => "Works without a key; a key raises the limits.".to_string(),
-            _ => format!("Paste your {}. It stays in Dove's data folder.", label.to_lowercase()),
+            _ => format!("Paste your {}. It stays in Keplorayx's data folder.", label.to_lowercase()),
         };
         popover::dialog_card(t, 440.0)
             .child(popover::dialog_body(t, format!("Connect {}", entry.name), message))
@@ -712,7 +712,7 @@ impl IntegrationsView {
             .child(popover::dialog_body(
                 t,
                 if form.editing.is_some() { "Edit MCP server" } else { "Add an MCP server" },
-                "Every agent Dove starts gets its tools, in any harness.",
+                "Every agent Keplorayx starts gets its tools, in any harness.",
             ))
             .child(
                 div()

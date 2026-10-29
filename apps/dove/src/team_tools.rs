@@ -27,7 +27,7 @@ pub fn is_team_tool(name: &str) -> bool {
     NAMES.contains(&name)
 }
 
-pub const INSTRUCTIONS: &str = "\n\nTeam: you can work with other agents and the user's teammates in Dove. \
+pub const INSTRUCTIONS: &str = "\n\nTeam: you can work with other agents and the user's teammates in Keplorayx. \
 Starting agents (delegate_task, delegate_tasks, a teammate's new thread) needs the user's /orchestrator in your \
 thread: while it is off those calls say so and you work alone. With it on, each agent you start may first appear to \
 the user as a card they approve and may edit (task, agent, model, effort, permission); the call then answers \
@@ -65,7 +65,7 @@ pub fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "delegate_task",
-            "description": "Hand one task to a new child thread: on any installed agent and model, or as one of the user's teammates. The child gets only `task` (not your conversation), so include the context it needs. It starts in your project and shares your working folder, or its own git worktree with isolation \"worktree\". Its permission mode is yours or narrower. Returns its task_id (the child thread's id). With mode async, end your turn: Dove wakes you with the result. Retrying with the same request_key returns the same child instead of starting another.",
+            "description": "Hand one task to a new child thread: on any installed agent and model, or as one of the user's teammates. The child gets only `task` (not your conversation), so include the context it needs. It starts in your project and shares your working folder, or its own git worktree with isolation \"worktree\". Its permission mode is yours or narrower. Returns its task_id (the child thread's id). With mode async, end your turn: Keplorayx wakes you with the result. Retrying with the same request_key returns the same child instead of starting another.",
             "inputSchema": obj(json!({
                 "task": {"type": "string", "description": "The complete task: goal, context, constraints, and what to report back."},
                 "title": {"type": "string", "description": "A short title for the child thread."},
@@ -105,7 +105,7 @@ pub fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "task_status",
-            "description": "How a task you delegated stands: running, needs_input (waiting for the user's approval or answer), completed, failed or cancelled, with its result once finished. Reading a finished result here means Dove won't deliver it to you again.",
+            "description": "How a task you delegated stands: running, needs_input (waiting for the user's approval or answer), completed, failed or cancelled, with its result once finished. Reading a finished result here means Keplorayx won't deliver it to you again.",
             "inputSchema": obj(json!({"task_id": {"type": "string"}}), &["task_id"]),
             "annotations": {"title": "Delegated task status", "readOnlyHint": true}
         }),

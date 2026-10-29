@@ -72,4 +72,4 @@ uv run scripts/pdf_tool.py watermark file.pdf "DRAFT" -o draft.pdf
 - Scanned PDFs have no text layer; `extract` returns little. Say so instead of guessing.
 - `fill` sets field values and asks viewers to regenerate appearances, so filled values show in
   Preview, Acrobat and browsers. Add `--flatten` to make the result non-editable.
-- Dove's side panel renders PDF pages: tell the user the path so they can check the output.
+- Keplorayx's side panel renders PDF pages: tell the user the path so they can check the output.

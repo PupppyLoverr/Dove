@@ -3407,7 +3407,7 @@ impl Notch {
                     if stop && a.status == TaskStatus::Running {
                         out.push((Hit::Stop(a.id), format!("Stop “{}”", a.title), "Agents".into()));
                     } else if !stop {
-                        out.push((Hit::OpenInDove(a.id), format!("Open “{}” in Dove", a.title), "Agents".into()));
+                        out.push((Hit::OpenInDove(a.id), format!("Open “{}” in Keplorayx", a.title), "Agents".into()));
                     }
                 }
             }

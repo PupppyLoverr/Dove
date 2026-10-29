@@ -528,7 +528,7 @@ pub fn choose(options: &[AcpOption], decision: PermissionDecision) -> Value {
 fn launch_command(spec: &SessionSpec) -> Result<(std::path::PathBuf, Vec<String>), String> {
     if spec.kind == HarnessKind::Amp {
         let npx =
-            process::resolve("npx").ok_or_else(|| "Amp needs Node.js (`npx`) so Dove can start amp-acp".to_string())?;
+            process::resolve("npx").ok_or_else(|| "Amp needs Node.js (`npx`) so Keplorayx can start amp-acp".to_string())?;
         return Ok((npx, vec!["-y".into(), "amp-acp".into()]));
     }
     let args = launch_args(spec.kind).ok_or_else(|| format!("{} has no known ACP mode", spec.kind.label()))?;
@@ -576,7 +576,7 @@ pub(crate) async fn run(spec: SessionSpec, events: flume::Sender<AgentEvent>, co
             json!({
                 "protocolVersion": 1,
                 "clientCapabilities": {"fs": {"readTextFile": false, "writeTextFile": false}, "terminal": false},
-                "clientInfo": {"name": "dove", "title": "Dove", "version": env!("CARGO_PKG_VERSION")},
+                "clientInfo": {"name": "dove", "title": "Keplorayx", "version": env!("CARGO_PKG_VERSION")},
             }),
             Purpose::Initialize,
         )
@@ -672,7 +672,7 @@ pub(crate) async fn run(spec: SessionSpec, events: flume::Sender<AgentEvent>, co
                                 let _ = events.send(AgentEvent::PermissionRequested(req));
                             }
                         }
-                        _ => { let _ = client.respond_error(id, -32601, "not supported by Dove").await; }
+                        _ => { let _ = client.respond_error(id, -32601, "not supported by Keplorayx").await; }
                     },
                     Incoming::Notification { method, params } => {
                         if method == "session/update" {
@@ -827,7 +827,7 @@ pub(crate) async fn discover_models(kind: HarnessKind, program: &std::path::Path
                 json!({
                     "protocolVersion": 1,
                     "clientCapabilities": {"fs": {"readTextFile": false, "writeTextFile": false}, "terminal": false},
-                    "clientInfo": {"name": "dove", "title": "Dove", "version": env!("CARGO_PKG_VERSION")},
+                    "clientInfo": {"name": "dove", "title": "Keplorayx", "version": env!("CARGO_PKG_VERSION")},
                 }),
                 (),
             )

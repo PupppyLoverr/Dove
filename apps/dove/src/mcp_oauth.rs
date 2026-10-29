@@ -184,7 +184,7 @@ pub fn endpoints(issuer: &str, prm: Option<&Value>, meta: Option<&Value>) -> Res
     if let Some(methods) = meta.and_then(|m| m.get("code_challenge_methods_supported")).and_then(Value::as_array)
         && !methods.iter().any(|m| m.as_str() == Some("S256"))
     {
-        return Err("this server's sign-in does not support PKCE (S256), so Dove cannot sign in safely".into());
+        return Err("this server's sign-in does not support PKCE (S256), so Keplorayx cannot sign in safely".into());
     }
     let scope = prm
         .and_then(|m| m.get("scopes_supported"))
@@ -334,8 +334,8 @@ impl Pending {
                 .unwrap_or_else(|| "sign-in was cancelled".into()))
         };
         let (title, body) = match &result {
-            Ok(_) => ("Signed in", "Dove is connected. You can close this tab."),
-            Err(_) => ("Sign-in failed", "Dove could not finish signing in. Go back to Dove and try again."),
+            Ok(_) => ("Signed in", "Keplorayx is connected. You can close this tab."),
+            Err(_) => ("Sign-in failed", "Keplorayx could not finish signing in. Go back to Keplorayx and try again."),
         };
         let page = format!(
             "<!doctype html><meta charset=utf-8><title>{title}</title><body style=\"font:15px system-ui;\
@@ -399,7 +399,7 @@ fn post_form(url: &str, form: &[(&str, String)]) -> Result<Value, String> {
 /// RFC 7591 registration as a public client. Returns (client_id, secret).
 fn register(endpoint: &str, redirect: &str, scope: Option<&str>) -> Result<(String, Option<String>), String> {
     let mut body = serde_json::json!({
-        "client_name": "Dove",
+        "client_name": "Keplorayx",
         "client_uri": "https://github.com/PupppyLoverr/dove",
         "redirect_uris": [redirect],
         "grant_types": ["authorization_code", "refresh_token"],

@@ -135,7 +135,7 @@ impl Notch {
         let mut items = vec![
             MenuItem::act("Message", icons::CHAT_ROUND_LINE, MenuAction::AgentMessage(id)),
             MenuItem::act("Talk about this", icons::WAVEFORM, MenuAction::TalkAbout(id)),
-            MenuItem::act("Open in Dove", icons::LINK, MenuAction::AgentOpen(id)),
+            MenuItem::act("Open in Keplorayx", icons::LINK, MenuAction::AgentOpen(id)),
         ];
         if let Some(pr) = self.snap.prs.iter().find(|p| p.task == id && p.state == "open") {
             items.push(MenuItem::act(
@@ -309,7 +309,7 @@ impl Notch {
         })));
         if !req.safe {
             return row
-                .child(primary((key, 5usize), "Review in Dove").on_click(
+                .child(primary((key, 5usize), "Review in Keplorayx").on_click(
                     cx.listener(move |this, _: &ClickEvent, _, _| this.command(ToEngine::Open { task: Some(id) })),
                 ))
                 .into_any_element();

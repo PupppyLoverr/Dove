@@ -40,7 +40,7 @@ Spec:
 }]}
 ```
 
-- A string starting with `=` is a formula; it stays live in Excel, Numbers, LibreOffice and Dove.
+- A string starting with `=` is a formula; it stays live in Excel, Numbers, LibreOffice and Keplorayx.
 - `format` is any Excel number format (`0.0%`, `#,##0.00`, `yyyy-mm-dd`). ISO dates
   (`"2024-05-01"`) become real dates.
 - `totals` appends a bold row with `SUM` formulas for the listed columns.
@@ -65,8 +65,8 @@ starting with `=` is a formula. Styles on edited cells are kept.
 ## Notes
 
 - openpyxl writes formulas without cached results. The workbook is flagged to recalculate on
-  open, so Excel/LibreOffice show the values; Dove's viewer evaluates common functions (SUM,
+  open, so Excel/LibreOffice show the values; Keplorayx's viewer evaluates common functions (SUM,
   AVERAGE, MIN, MAX, COUNT, ROUND, IF, arithmetic) itself. Use `dump` to check formulas.
 - Charts and formatting survive `set` and `append` because openpyxl rewrites the whole file;
   pivot tables and macros do not survive openpyxl at all — warn the user before editing such files.
-- Dove's side panel previews and edits .xlsx files: tell the user the path.
+- Keplorayx's side panel previews and edits .xlsx files: tell the user the path.

@@ -44,7 +44,7 @@ pub fn tools() -> Value {
     json!([
         {
             "name": "browser_navigate",
-            "description": "Open a URL in Dove's in-app browser (the user watches it in the side panel). Returns a snapshot of the loaded page.",
+            "description": "Open a URL in Keplorayx's in-app browser (the user watches it in the side panel). Returns a snapshot of the loaded page.",
             "inputSchema": {"type": "object", "properties": {"url": {"type": "string", "description": "URL or host, e.g. localhost:3000"}}, "required": ["url"]}
         },
         {

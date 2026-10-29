@@ -150,7 +150,7 @@ impl<D: Driver> Computer<D> {
         }
         if !self.started {
             if let Err(e) = self.cua.start() {
-                return err(&action, "driver_unavailable", format!("Dove Computer Use's driver did not start: {e}. Check Dove → Settings → Plugins → Computer use."));
+                return err(&action, "driver_unavailable", format!("Keplorayx Computer Use's driver did not start: {e}. Check Keplorayx → Settings → Plugins → Computer use."));
             }
             self.started = true;
         }
@@ -168,7 +168,7 @@ impl<D: Driver> Computer<D> {
         err(
             action,
             "human_has_control",
-            "The user has taken control of the computer. Wait until they hand it back (Dove shows it in the thread), then capture again.",
+            "The user has taken control of the computer. Wait until they hand it back (Keplorayx shows it in the thread), then capture again.",
         )
     }
 
@@ -235,7 +235,7 @@ impl<D: Driver> Computer<D> {
                 action,
                 "app_denied",
                 format!(
-                    "The user does not let agents control {} (rule {:?} in Dove → Settings → Plugins → Computer use). Ask the user to do this step themselves.",
+                    "The user does not let agents control {} (rule {:?} in Keplorayx → Settings → Plugins → Computer use). Ask the user to do this step themselves.",
                     if id.name.is_empty() { app } else { &id.name },
                     rule.label()
                 ),
@@ -436,7 +436,7 @@ impl<D: Driver> Computer<D> {
             err(
                 "type",
                 "handoff_required",
-                "That is a password, PIN or payment field. Dove never types secrets: stop and ask the user to fill it in themselves.",
+                "That is a password, PIN or payment field. Keplorayx never types secrets: stop and ask the user to fill it in themselves.",
             )
         })
     }
@@ -957,7 +957,7 @@ impl<D: Driver> Computer<D> {
                 && let Some(name) = s["args"].get("name").and_then(Value::as_str)
                 && policy::secure_field(s["args"].get("role").and_then(Value::as_str).unwrap_or(""), name)
             {
-                return err("replay", "handoff_required", "This replay types into a password or payment field; Dove never does that.");
+                return err("replay", "handoff_required", "This replay types into a password or payment field; Keplorayx never does that.");
             }
         }
         if let Some(text) = r.steps.iter().filter_map(|s| s["args"].get("text").and_then(Value::as_str)).find_map(policy::blocked_text) {

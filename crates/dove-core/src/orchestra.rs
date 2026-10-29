@@ -133,7 +133,7 @@ pub fn pick_agent(
     installed
         .first()
         .map(|k| Pick { harness: *k, model: None })
-        .ok_or_else(|| "No agent that Dove can run is installed.".to_string())
+        .ok_or_else(|| "No agent that Keplorayx can run is installed.".to_string())
 }
 
 /// How many links up from `task` to a thread nobody started: 0 for a
@@ -316,7 +316,7 @@ pub fn delegation_prompt(from: &str, task: &str, isolated: bool) -> String {
         "You share the parent's working folder, so other agents may be editing files too: keep changes focused."
     };
     format!(
-        "<dove-task from=\"{from}\">\n{}\n</dove-task>\n\n{place} This task was handed to you in Dove by {from}. \
+        "<dove-task from=\"{from}\">\n{}\n</dove-task>\n\n{place} This task was handed to you in Keplorayx by {from}. \
          When you are done, end your turn with a clear, self-contained report: what you did, what you found, and \
          anything left open. That final message is delivered back automatically.",
         task.trim()
@@ -331,7 +331,7 @@ pub fn message_prompt(from: &str, message: &str, wants_reply: bool) -> String {
         ""
     };
     format!(
-        "<dove-message from=\"{from}\">\n{}\n</dove-message>\n\nA message from {from} in Dove.{reply}",
+        "<dove-message from=\"{from}\">\n{}\n</dove-message>\n\nA message from {from} in Keplorayx.{reply}",
         message.trim()
     )
 }
@@ -368,7 +368,7 @@ pub fn team_update(reports: &[Report]) -> String {
         }
     }
     out.push_str(
-        "\n</dove-team-update>\n\nThis is an automatic update from Dove, not a message from the user. Continue \
+        "\n</dove-team-update>\n\nThis is an automatic update from Keplorayx, not a message from the user. Continue \
          your work with these results. Use thread_read with a thread id for the full detail, or thread_send to \
          follow up.",
     );

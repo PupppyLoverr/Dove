@@ -142,12 +142,12 @@ impl IntegrationsView {
         };
         let install_hint = if available {
             format!(
-                "Downloads cua-driver {}{} (signed by Cua AI) from trycua's GitHub release and checks every file's SHA-256 against the manifest built into Dove",
+                "Downloads cua-driver {}{} (signed by Cua AI) from trycua's GitHub release and checks every file's SHA-256 against the manifest built into Keplorayx",
                 m.version,
                 mb(asset.map(|a| a.size))
             )
         } else if asset.is_some() {
-            format!("cua-driver {} needs Dove {} or later; update Dove first", m.version, m.min_dove_version)
+            format!("cua-driver {} needs Keplorayx {} or later; update Keplorayx first", m.version, m.min_dove_version)
         } else {
             format!("cua-driver {} is not published for this platform", m.version)
         };
@@ -331,7 +331,7 @@ impl IntegrationsView {
             if auto {
                 "Background input runs without asking. Bringing a window forward, and anything that sends, buys or deletes, still asks"
             } else {
-                "Dove asks once per app in each thread before an agent types or clicks there, and every time for anything that sends, buys or deletes"
+                "Keplorayx asks once per app in each thread before an agent types or clicks there, and every time for anything that sends, buys or deletes"
             },
             div()
                 .flex()
@@ -372,7 +372,7 @@ impl IntegrationsView {
         card = card.child(line(
             "Local grounder",
             if ranker {
-                "Turns an intent such as \"click Save\" into the right control on this device, at no token cost (NEXI-CUA-1, built into Dove)"
+                "Turns an intent such as \"click Save\" into the right control on this device, at no token cost (NEXI-CUA-1, built into Keplorayx)"
             } else {
                 "Intents are resolved by exact names only; the NEXI-CUA-1 network is off"
             },
@@ -389,9 +389,9 @@ impl IntegrationsView {
         card.child(line(
             "Raw driver tools",
             if raw {
-                "Agents get cua-driver's own computer__* tools instead of Dove's computer tool: no approval cards, no take-over fence"
+                "Agents get cua-driver's own computer__* tools instead of Keplorayx's computer tool: no approval cards, no take-over fence"
             } else {
-                "Off: agents see Dove's one computer tool. Turn on only to debug the driver"
+                "Off: agents see Keplorayx's one computer tool. Turn on only to debug the driver"
             },
             w_left.child(ctl::on_toggle(w_switch, cx, move |this, _, cx| {
                 this.config.computer.raw_tools = !raw;

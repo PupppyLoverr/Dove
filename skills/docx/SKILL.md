@@ -71,4 +71,4 @@ Without `-o` the input file is rewritten in place.
 - One idea per paragraph; tables for comparisons; keep tables under ~6 columns.
 - Put images next to the text that refers to them, at most the text width (6.5in on Letter).
 - After writing, run `dump` to check the result before telling the user it is done.
-- Dove's side panel previews and edits .docx files: tell the user the path so they can open it.
+- Keplorayx's side panel previews and edits .docx files: tell the user the path so they can open it.

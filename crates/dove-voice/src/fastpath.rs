@@ -36,6 +36,8 @@ pub enum FastCommand {
 /// Fillers dropped from either end before matching.
 const FILLERS: &[&str] = &[
     "please",
+    "keplorayx",
+    "k22",
     "dove",
     "hey",
     "ok",
@@ -251,6 +253,8 @@ mod tests {
             ("stop!", FastCommand::Stop),
             ("Okay, stop it please", FastCommand::Stop),
             ("Hey Dove, cancel that.", FastCommand::Stop),
+            ("Hey K22, cancel that.", FastCommand::Stop),
+            ("Keplorayx, stop.", FastCommand::Stop),
             ("Hold on", FastCommand::Stop),
             ("Approve.", FastCommand::Approve { session: false }),
             ("Yes, go ahead", FastCommand::Approve { session: false }),

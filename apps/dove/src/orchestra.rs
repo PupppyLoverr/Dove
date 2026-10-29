@@ -101,7 +101,7 @@ pub async fn wait(this: WeakEntity<Shell>, mut w: Waiter, cx: &mut AsyncWindowCo
         match step {
             Ok(Some(out)) => return out,
             Ok(None) => {}
-            Err(_) => return Outcome::err("Dove closed before the thread finished."),
+            Err(_) => return Outcome::err("Keplorayx closed before the thread finished."),
         }
     }
 }
@@ -173,7 +173,7 @@ impl Shell {
                 return Ok(only.id);
             }
         }
-        Err("Dove couldn't tell which thread this call comes from (start a new thread so its session is \
+        Err("Keplorayx couldn't tell which thread this call comes from (start a new thread so its session is \
              registered, then try again)."
             .into())
     }
@@ -274,7 +274,7 @@ impl Shell {
             "status": "awaiting_approval",
             "proposal_id": id,
             "title": title,
-            "note": "The user reviews it in Dove and may change the task, agent, model, effort or permission. End \
+            "note": "The user reviews it in Keplorayx and may change the task, agent, model, effort or permission. End \
                      your turn when you have nothing else to do: Dove tells you what was started or skipped, and \
                      started agents report back when they finish.",
         }))
@@ -723,7 +723,7 @@ impl Shell {
         }
         let mut out = base;
         out["status"] = json!("running");
-        out["note"] = json!("Started. End your turn when you have nothing else to do: Dove wakes you with the result.");
+        out["note"] = json!("Started. End your turn when you have nothing else to do: Keplorayx wakes you with the result.");
         Ok(TeamReply::Now(json_out(out)))
     }
 
@@ -1084,7 +1084,7 @@ impl Shell {
                 json!({"thread_id": id.0.to_string(), "status": status_id(status), "note": "It wasn't working."}),
             ));
         }
-        let v = self.threads.get(&id).ok_or("That thread isn't open in Dove.")?;
+        let v = self.threads.get(&id).ok_or("That thread isn't open in Keplorayx.")?;
         let chat = v.read(cx).chat.clone();
         chat.update(cx, |c, cx| c.interrupt(cx));
         Ok(json_out(json!({"thread_id": id.0.to_string(), "status": "interrupting"})))
@@ -1133,7 +1133,7 @@ impl Shell {
         if status == TaskStatus::NeedsInput {
             out["needs_user"] = json!(true);
             out["note"] = json!(
-                "It is waiting for the user (an approval or a question). The user answers it in Dove; its result still comes back."
+                "It is waiting for the user (an approval or a question). The user answers it in Keplorayx; its result still comes back."
             );
         } else if timed_out && !settled {
             out["note"] =

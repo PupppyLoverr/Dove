@@ -824,8 +824,8 @@ impl Render for IntegrationsView {
             GhStep::Failed(e) => format!("Could not finish: {e}").into(),
             GhStep::Idle => match (&self.probe.gh, &self.probe.gh_user) {
                 (Some(_), Some(_)) => "Pull requests, reviews and PR automations use this account".into(),
-                (Some(_), None) => "Sign in once so Dove can list, open and merge pull requests".into(),
-                (None, _) => "Dove opens, reviews and merges pull requests through the GitHub CLI (gh)".into(),
+                (Some(_), None) => "Sign in once so Keplorayx can list, open and merge pull requests".into(),
+                (None, _) => "Keplorayx opens, reviews and merges pull requests through the GitHub CLI (gh)".into(),
             },
         };
         let gh_action = if !gh_installed {
@@ -889,7 +889,7 @@ impl Render for IntegrationsView {
                 if browser.is_some() {
                     "Paired. To switch browsers or extensions, make a new code"
                 } else {
-                    "Open the Dove side panel in Chrome and paste this once"
+                    "Open the Keplorayx side panel in Chrome and paste this once"
                 },
                 div()
                     .flex()
@@ -1025,7 +1025,7 @@ impl Render for IntegrationsView {
                 d.child(line(
                     "API key",
                     match (c.api_key.is_empty(), key_kind) {
-                        (true, _) => "From composio.dev → Settings. Kept only in Dove's data folder",
+                        (true, _) => "From composio.dev → Settings. Kept only in Keplorayx's data folder",
                         (false, ComposioKey::Consumer) => "Connect key. Agents pick apps as they need them",
                         (false, ComposioKey::Project) => "Project key. Limited to the toolkits below",
                         (false, ComposioKey::User) => "User key. Limited to the toolkits below",
@@ -1172,9 +1172,9 @@ impl Render for IntegrationsView {
             .child(line(
                 "Agents browse with",
                 match choice {
-                    BrowserChoice::Ego => "ego lite only. Dove's own browser tools are hidden from agents",
+                    BrowserChoice::Ego => "ego lite only. Keplorayx's own browser tools are hidden from agents",
                     BrowserChoice::Both => "ego lite first, with Keplorayx's browser as a fallback",
-                    BrowserChoice::Dove => "Dove's browser in the side panel; agents are not pointed at ego lite",
+                    BrowserChoice::Keplorayx => "Keplorayx's browser in the side panel; agents are not pointed at ego lite",
                 },
                 ctl::segmented(
                     &t,
@@ -1212,9 +1212,9 @@ impl Render for IntegrationsView {
                 d.child(line(
                     "Install",
                     if ego_stale.is_some() {
-                        "ego lite was removed from this computer (its last version folder is gone). Install it again, finish onboarding, then detect again. Dove never downloads it for you"
+                        "ego lite was removed from this computer (its last version folder is gone). Install it again, finish onboarding, then detect again. Keplorayx never downloads it for you"
                     } else {
-                        "Download ego lite, finish its onboarding, then detect again. Dove never downloads it for you"
+                        "Download ego lite, finish its onboarding, then detect again. Keplorayx never downloads it for you"
                     },
                     div()
                         .flex()

@@ -56,7 +56,7 @@ pub const SKILLS: &[Skill] = &[
     skill!("docx", "Create Word documents with styles, lists, tables and images; edit text.", ["scripts/docx_tool.py"]),
     skill!(
         "dove-browser",
-        "Browser playbook: ego lite (the user's own Chromium) or Dove's browser, with Dove's safety and hand-off rules.",
+        "Browser playbook: ego lite (the user's own Chromium) or Keplorayx's browser, with Keplorayx's safety and hand-off rules.",
         ["reference/helpers.md", "reference/recipes.md", "reference/troubleshooting.md", "evals/tasks.md"]
     ),
     skill!(
@@ -66,12 +66,12 @@ pub const SKILLS: &[Skill] = &[
     ),
     skill!(
         "dove-computer",
-        "Desktop app playbook for Dove Computer Use (the computer tool): capture, act by row, batch, verify, safety.",
+        "Desktop app playbook for Keplorayx Computer Use (the computer tool): capture, act by row, batch, verify, safety.",
         []
     ),
     skill!(
         "teach",
-        "Teach Dove a reusable skill: interview the user, write it, rehearse it, publish it to every agent.",
+        "Teach Keplorayx a reusable skill: interview the user, write it, rehearse it, publish it to every agent.",
         ["scripts/teach_tool.py"]
     ),
 ];

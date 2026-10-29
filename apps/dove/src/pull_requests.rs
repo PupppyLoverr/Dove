@@ -343,7 +343,7 @@ impl Render for PullRequestsPage {
                 let (installed, busy) = (*installed, *busy);
                 let body: SharedString = note.clone().unwrap_or_else(|| {
                     if installed {
-                        "Sign in to GitHub once so Dove can list, open and merge pull requests.".into()
+                        "Sign in to GitHub once so Keplorayx can list, open and merge pull requests.".into()
                     } else {
                         "Keplorayx works with pull requests through the GitHub CLI (gh).".into()
                     }

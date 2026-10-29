@@ -100,7 +100,7 @@ fn list_in(root: &Path) -> Vec<Taught> {
     out
 }
 
-const LOAD: &str = "Use Dove's `teach` skill for this (if your agent has no skills folder, call the dove_skills tool \
+const LOAD: &str = "Use Keplorayx's `teach` skill for this (if your agent has no skills folder, call the dove_skills tool \
                     with {\"name\": \"teach\"} to read it).";
 
 /// The composer text that starts a teaching thread. The user finishes the

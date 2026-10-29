@@ -181,7 +181,7 @@ pub fn persona_preamble(
     let role = if p.role.trim().is_empty() { String::new() } else { format!(", {}", p.role.trim()) };
     let name = p.name.trim();
     let mut out = format!(
-        "{PERSONA_OPEN}\nYou are {name}{role}, a member of the user's team in Dove. Work as {name} for this whole thread.\n"
+        "{PERSONA_OPEN}\nYou are {name}{role}, a member of the user's team in Keplorayx. Work as {name} for this whole thread.\n"
     );
     if !p.instructions.trim().is_empty() {
         out.push_str(&format!("\nHow you work:\n{}\n", p.instructions.trim()));
@@ -196,7 +196,7 @@ pub fn persona_preamble(
         .collect();
     if !others.is_empty() {
         out.push_str(&format!(
-            "\nYour teammates:\n{}\nWork with them through Dove's tools (the `dove` MCP server): `team_message` asks a \
+            "\nYour teammates:\n{}\nWork with them through Keplorayx's tools (the `dove` MCP server): `team_message` asks a \
              teammate something and their reply comes back to you, `delegate_task` hands a teammate (or any agent \
              and model) a task, and `thread_read` reads what they did. Ask a teammate when their role fits the work \
              better than yours.\n",

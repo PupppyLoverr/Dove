@@ -135,7 +135,7 @@ pub fn route(tool: &str, args: &serde_json::Value, thread: Option<TaskId>, cx: &
         REVIEW => {
             let Some(thread) = thread else {
                 return Reply::Now(decision_outcome(&Decision::Unavailable {
-                    reason: "Dove couldn't tell which thread this agent belongs to; start it from a Dove thread".into(),
+                    reason: "Keplorayx couldn't tell which thread this agent belongs to; start it from a Keplorayx thread".into(),
                 }));
             };
             let review: Review = match serde_json::from_value(args.clone()) {
@@ -205,7 +205,7 @@ fn scope_text(scope: Scope) -> &'static str {
     match scope {
         Scope::Background => "In the background: your mouse, keyboard and focus stay yours.",
         Scope::Foreground => "Brings the window to the front briefly; the pointer may move. Best when you are not typing.",
-        Scope::Consequential => "This sends, deletes, buys or confirms something, so Dove asks every time.",
+        Scope::Consequential => "This sends, deletes, buys or confirms something, so Keplorayx asks every time.",
     }
 }
 

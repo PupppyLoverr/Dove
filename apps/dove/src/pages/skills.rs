@@ -484,7 +484,7 @@ impl SkillsView {
         if !bundled.is_empty() {
             let rows: Vec<AnyElement> =
                 bundled.iter().enumerate().map(|(i, s)| self.installed_row(t, s, i == 0, cx)).collect();
-            out = out.child(page::section(t, "Included with Dove", page::card(t).children(rows)));
+            out = out.child(page::section(t, "Included with Keplorayx", page::card(t).children(rows)));
         }
         let git_rows: Vec<AnyElement> =
             git.iter().enumerate().map(|(i, s)| self.installed_row(t, s, i == 0, cx)).collect();

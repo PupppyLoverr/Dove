@@ -1,20 +1,20 @@
 ---
 name: dove-browser
-description: Dove's playbook for any task that needs a web browser - opening sites, research across pages, reading signed-in dashboards, filling and submitting forms, extracting tables or lists, downloads and uploads, screenshots, and QA or dogfooding of web apps (including localhost). Read it before the first browser step. It drives ego lite (the ego-browser command, the user's own logged-in Chromium) with Dove's rules for planning, verifying, staying safe and handing off to the user, and falls back to Dove's built-in browser tools when ego lite is not installed.
+description: Keplorayx's playbook for any task that needs a web browser - opening sites, research across pages, reading signed-in dashboards, filling and submitting forms, extracting tables or lists, downloads and uploads, screenshots, and QA or dogfooding of web apps (including localhost). Read it before the first browser step. It drives ego lite (the ego-browser command, the user's own logged-in Chromium) with Keplorayx's rules for planning, verifying, staying safe and handing off to the user, and falls back to Keplorayx's built-in browser tools when ego lite is not installed.
 ---
 
-# Dove browser playbook
+# Keplorayx browser playbook
 
-You are running inside Dove. For web work you have, in order of preference:
+You are running inside Keplorayx. For web work you have, in order of preference:
 
 1. **ego lite** (`ego-browser` command): a real Chromium with the user's own
    sign-ins, where each task gets its own TaskSpace the user can watch and
    take over. Best for anything real: signed-in sites, multi-step flows,
    research, downloads.
-2. **Dove's browser tools** (`browser_*` on Dove's MCP server): Dove's in-app
+2. **Keplorayx's browser tools** (`browser_*` on Keplorayx's MCP server): Keplorayx's in-app
    browser, visible in the side panel. Best for localhost dev servers and
    quick checks when ego lite is missing.
-3. **`chrome_*` tools**: the user's own Chrome through the Dove for Chrome
+3. **`chrome_*` tools**: the user's own Chrome through the Keplorayx for Chrome
    extension, only on sites the user allowed.
 
 Plain HTTP (`curl`, `fetch`) is still right for public APIs and raw files: no
@@ -33,8 +33,8 @@ was cut, so save it to a file and read it in parts.
 
 - `ego-browser: command not found` or `Unknown command: skill`: ego lite is
   missing or old. Tell the user once ("Install ego lite from
-  https://lite.ego.app/ for the best browser control, or I can use Dove's
-  browser"), then continue with Dove's `browser_*` tools. Never install it
+  https://lite.ego.app/ for the best browser control, or I can use Keplorayx's
+  browser"), then continue with Keplorayx's `browser_*` tools. Never install it
   yourself.
 - Do not run other preflight checks (`which`, `node -v`, help dumps) before a
   real command. Diagnose only when a command fails.
@@ -146,7 +146,7 @@ If the user takes control on their own, stop; never fight them for the page.
 ## Testing web apps (QA / dogfooding)
 
 - Start from the app's real entry URL (localhost works in ego lite and in
-  Dove's browser). For each flow under test write the expected result first,
+  Keplorayx's browser). For each flow under test write the expected result first,
   then drive it and compare.
 - Check: the happy path, an empty state, an invalid input, a reload mid-flow,
   narrow width (set by `page.cdp("Emulation.setDeviceMetricsOverride", …)`
@@ -159,7 +159,7 @@ If the user takes control on their own, stop; never fight them for the page.
 
 - Before working on a site, check what is already known:
   - ego's bundled site learnings (the guide explains them).
-  - Dove memory, when the `supermemory__search_memory` tool exists: search
+  - Keplorayx memory, when the `supermemory__search_memory` tool exists: search
     `"<domain> browser"`.
 - After a task, if you learned something durable about a site (a selector that
   survives redesigns, the order of a tricky flow, a rate limit, where the
@@ -168,9 +168,9 @@ If the user takes control on their own, stop; never fight them for the page.
   `[data-test-id=issue-list-item]`; filters live in the `q` URL param").
   Never save credentials, personal data, or one-off page content.
 
-## Fallback: Dove's browser tools
+## Fallback: Keplorayx's browser tools
 
-Without ego lite, use Dove's `browser_*` tools with the same loop:
+Without ego lite, use Keplorayx's `browser_*` tools with the same loop:
 `browser_navigate` → `browser_snapshot` (refs like `[ref=e12]`) →
 `browser_click` / `browser_type` by ref → the action returns a fresh snapshot
 → `browser_screenshot` only for visuals. Use `chrome_*` only when the task

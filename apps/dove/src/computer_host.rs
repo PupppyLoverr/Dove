@@ -32,14 +32,14 @@ impl AppHost {
 impl Host for AppHost {
     fn review(&mut self, review: &Review) -> Decision {
         if !Self::app() {
-            return Decision::Unavailable { reason: "no Dove window is attached to this agent".into() };
+            return Decision::Unavailable { reason: "no Keplorayx window is attached to this agent".into() };
         }
         let args = serde_json::to_value(review).unwrap_or(Value::Null);
         match crate::mcp_browser::forward(REVIEW, args) {
             Ok(v) if v.get("isError").and_then(Value::as_bool) != Some(true) => {
                 let text = v.get("text").and_then(Value::as_str).unwrap_or("");
                 serde_json::from_str::<Decision>(text)
-                    .unwrap_or(Decision::Unavailable { reason: format!("Dove answered {text:?}") })
+                    .unwrap_or(Decision::Unavailable { reason: format!("Keplorayx answered {text:?}") })
             }
             Ok(v) => Decision::Unavailable {
                 reason: v.get("text").and_then(Value::as_str).unwrap_or("Keplorayx refused the request").to_string(),

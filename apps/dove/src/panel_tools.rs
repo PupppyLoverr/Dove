@@ -19,7 +19,7 @@ pub fn is_panel_tool(name: &str) -> bool {
 /// How to work in Dove: the tools by purpose, and when each fits. Sent to
 /// every agent (main chat, side chats, teammates, delegated agents, and
 /// agents running in Dove's terminal).
-pub const GUIDE: &str = "\n\nWorking in Dove: you are one agent inside Dove, a desktop app where the user runs coding \
+pub const GUIDE: &str = "\n\nWorking in Keplorayx: you are one agent inside Keplorayx, a desktop app where the user runs coding \
 agents in threads. Read your first message to know where you are: a message wrapped in <dove-task> is work another \
 agent handed you (do exactly that, then end with a clear report, since your final answer is sent back); \
 <dove-message> is a teammate writing to you (reply to what they ask); <dove-team-update> is results from agents you \
@@ -51,7 +51,7 @@ pub fn tools() -> Vec<Value> {
     vec![
         json!({
             "name": "panel_open",
-            "description": "Show things in Dove's side panel beside the chat, for the user to look at: a page in the browser, a file, the diff, a terminal, history or your plan. Pass several to open them together; layout \"right\" or \"down\" puts each in its own pane, \"tabs\" (default) as tabs of one pane. If the user is looking at another thread, they open when the user comes back to yours. Use it to present finished work, not for every step.",
+            "description": "Show things in Keplorayx's side panel beside the chat, for the user to look at: a page in the browser, a file, the diff, a terminal, history or your plan. Pass several to open them together; layout \"right\" or \"down\" puts each in its own pane, \"tabs\" (default) as tabs of one pane. If the user is looking at another thread, they open when the user comes back to yours. Use it to present finished work, not for every step.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

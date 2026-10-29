@@ -31,20 +31,20 @@ with `python3`:
 python3 -m pip install --user python-docx python-pptx openpyxl reportlab pypdf
 ```
 
-## How Dove ships them
+## How Keplorayx ships them
 
-The Dove binary embeds this folder. Before it starts any agent, Dove writes the
+The Keplorayx binary embeds this folder. Before it starts any agent, Keplorayx writes the
 skills to `~/.dove/skills/<name>` (or `$DOVE_HOME/skills`) and links them where
 the harnesses look for user skills:
 
 - `~/.claude/skills/<name>` (or `$CLAUDE_CONFIG_DIR/skills`) for Claude Code and OpenCode
 - `~/.agents/skills/<name>` for Codex, OpenCode, Cursor, Devin, Grok, Pi and other Agent Skills readers
 
-A folder that already exists there and was not written by Dove is left alone.
+A folder that already exists there and was not written by Keplorayx is left alone.
 ACP agents that do not read skill folders get them through the `dove` MCP
 server: its instructions name the skills and the `dove_skills` tool returns a
 skill's full text and script paths. Turn the install off with the
 `agent_office_skills` setting set to `false`.
 
-Dove's file viewer previews and edits `.pdf`, `.docx`, `.xlsx` and `.pptx`
+Keplorayx's file viewer previews and edits `.pdf`, `.docx`, `.xlsx` and `.pptx`
 natively, so the user can check what the agent made in the side panel.

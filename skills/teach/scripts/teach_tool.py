@@ -3,7 +3,7 @@
 # requires-python = ">=3.9"
 # dependencies = []
 # ///
-"""Create, validate, rehearse and publish skills taught to Dove. See ../SKILL.md."""
+"""Create, validate, rehearse and publish skills taught to Keplorayx. See ../SKILL.md."""
 import argparse
 import datetime
 import hashlib
@@ -86,7 +86,7 @@ def taught_root():
 
 
 def harness_dirs():
-    """The folders agents read user skills from (same list as Dove's skills engine):
+    """The folders agents read user skills from (same list as Keplorayx's skills engine):
     ~/.claude/skills, ~/.agents/skills, and OpenCode's, Gemini CLI's and Pi's own
     folders when those agents are set up here."""
     home = Path.home()
@@ -102,7 +102,7 @@ def harness_dirs():
 
 
 def installed_names():
-    """Skills in Dove's registry (bundled and installed from GitHub)."""
+    """Skills in Keplorayx's registry (bundled and installed from GitHub)."""
     try:
         reg = json.loads((dove_home() / "skills" / "registry.json").read_text(encoding="utf-8"))
         return {s.get("name") for s in reg.get("skills", []) if isinstance(s, dict)}
@@ -118,13 +118,13 @@ def check_name(name):
     if not NAME_RE.match(name) or len(name) > 64:
         sys.exit(f"Invalid name {name!r}: use lowercase letters, digits and single hyphens (at most 64).")
     if name in RESERVED:
-        sys.exit(f"{name!r} is one of Dove's bundled skills; pick another name.")
+        sys.exit(f"{name!r} is one of Keplorayx's bundled skills; pick another name.")
 
 
 def check_free(name):
-    """A new or published taught skill may not share a name with a skill Dove manages."""
+    """A new or published taught skill may not share a name with a skill Keplorayx manages."""
     if name in installed_names():
-        sys.exit(f"{name!r} is already a skill in Dove (Settings > Skills); pick another name.")
+        sys.exit(f"{name!r} is already a skill in Keplorayx (Settings > Skills); pick another name.")
 
 
 def skill_dir(name):
@@ -244,7 +244,7 @@ def stamp(d):
 
 
 def owned(dest):
-    """A published folder Dove may replace: it carries Dove's marker."""
+    """A published folder Keplorayx may replace: it carries Keplorayx's marker."""
     try:
         return (dest / MARKER).read_text(encoding="utf-8").startswith("dove taught ")
     except OSError:

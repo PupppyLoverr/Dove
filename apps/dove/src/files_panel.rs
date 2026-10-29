@@ -492,11 +492,11 @@ impl FilesPanel {
         let PreviewKind::Office(kind) = p.kind else { return };
         let skill = kind.skill();
         let mut msg = format!(
-            "Edit `{}` using Dove's {skill} skill (call the dove_skills tool with name \"{skill}\" for its instructions and script).",
+            "Edit `{}` using Keplorayx's {skill} skill (call the dove_skills tool with name \"{skill}\" for its instructions and script).",
             p.path
         );
         if let Some((view, sel)) = p.office.as_ref().and_then(|v| v.selected.as_ref().map(|s| (v, s))) {
-            msg.push_str(&format!("\n\nSelected in Dove: {} — \"{}\"", view.label(sel), view.text_of(sel)));
+            msg.push_str(&format!("\n\nSelected in Keplorayx: {} — \"{}\"", view.label(sel), view.text_of(sel)));
         }
         msg.push_str("\n\n");
         msg.push_str(if instruction.trim().is_empty() {

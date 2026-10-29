@@ -45,7 +45,7 @@ pub fn digest(title: &str, agent: &str, events: &[AgentEvent]) -> String {
         }
     }
     flush(&mut turns, &mut answer, &mut tools);
-    let head = format!("Dove thread \"{title}\" ({agent})\n\n");
+    let head = format!("Keplorayx thread \"{title}\" ({agent})\n\n");
     let mut body = turns.join("\n\n");
     if body.len() > MAX_CHARS {
         let cut = body.len() - MAX_CHARS;
@@ -78,7 +78,7 @@ mod tests {
             AgentEvent::UserMessage { text: "Thanks".into() },
         ];
         let d = digest("Login", "Claude Code", &events);
-        assert!(d.starts_with("Dove thread \"Login\" (Claude Code)"));
+        assert!(d.starts_with("Keplorayx thread \"Login\" (Claude Code)"));
         let user = d.find("User: Fix the login bug").unwrap();
         let tools = d.find("Tools: Read src/login.rs").unwrap();
         let agent = d.find("Agent: Looking Fixed it.").unwrap();
@@ -100,6 +100,6 @@ mod tests {
         assert!(d.len() < MAX_CHARS + 200);
         assert!(d.contains("question 1999") && !d.contains("question 0\n"));
         assert!(d.contains("[earlier turns left out]"));
-        assert_eq!(digest("Empty", "Codex", &[]).trim_end(), "Dove thread \"Empty\" (Codex)\n\n(no messages yet)");
+        assert_eq!(digest("Empty", "Codex", &[]).trim_end(), "Keplorayx thread \"Empty\" (Codex)\n\n(no messages yet)");
     }
 }

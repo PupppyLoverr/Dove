@@ -27,7 +27,7 @@ const TIPS: &[(&str, &str)] = &[
     ),
     (
         "Mentions and commands",
-        "Type @ in the composer for files, / for the agent's commands and Dove's prompt templates.",
+        "Type @ in the composer for files, / for the agent's commands and Keplorayx's prompt templates.",
     ),
     (
         "Steer or queue",
@@ -66,7 +66,7 @@ impl Shell {
         page_with(
             "help-page",
             "Help & shortcuts",
-            "How Dove works, and every key it listens for.",
+            "How Keplorayx works, and every key it listens for.",
             &t,
             None,
             div()

@@ -786,7 +786,7 @@ pub const CAPABILITIES: &[(&str, &str, &[&str])] = &[
     ),
     (
         "Start work",
-        "One thread, or several at once (Dove asks before opening more than one)",
+        "One thread, or several at once (Keplorayx asks before opening more than one)",
         &[
             "Start a Claude task on the login page in a new worktree",
             "Launch three Claude chats to review the auth code",

@@ -1365,7 +1365,7 @@ impl SettingsPage {
             true,
             "agent_browser",
             "Browser tools for agents",
-            "Agents can drive the in-app browser. Applies after Dove restarts.",
+            "Agents can drive the in-app browser. Applies after Keplorayx restarts.",
             ctl::on_toggle(ctl::toggle(t, "set-agent-browser", browser), cx, move |this, _, cx| {
                 this.set_flag("agent_browser", !browser, cx)
             }),
@@ -1470,7 +1470,7 @@ impl SettingsPage {
             match &self.theme_import {
                 Some(Ok(name)) => format!("Imported “{name}” and switched to it.").into(),
                 Some(Err(e)) => format!("Could not import: {e}").into(),
-                None => "A color theme JSON from a VS Code extension, saved in Dove's data folder.".into(),
+                None => "A color theme JSON from a VS Code extension, saved in Keplorayx's data folder.".into(),
             }
         };
         let import_button = ctl::button_sm(t, "theme-import", "Import…", Tone::Filled)
@@ -1793,7 +1793,7 @@ impl SettingsPage {
                 false,
                 "wallpaper_chat_dim",
                 "Chat dim",
-                "Dove darkens further on its own when text would be hard to read.",
+                "Keplorayx darkens further on its own when text would be hard to read.",
                 gate(
                     chat_on,
                     div()
@@ -2104,7 +2104,7 @@ impl SettingsPage {
             true,
             "notifications",
             "Desktop notifications",
-            "When an agent needs you, finishes or fails while Dove is in the background.",
+            "When an agent needs you, finishes or fails while Keplorayx is in the background.",
             ctl::on_toggle(ctl::toggle(t, "set-notify", on), cx, move |this, _, cx| {
                 this.set_flag(crate::notify::NOTIFICATIONS, !on, cx)
             }),
@@ -2125,11 +2125,11 @@ impl SettingsPage {
             "keep_running",
             "Keep running in background",
             if crate::island::SUPPORTED {
-                "Keep Dove running for automations after you close its window. Agents that are working always keep running until they finish."
+                "Keep Keplorayx running for automations after you close its window. Agents that are working always keep running until they finish."
             } else if crate::notify::tray_supported() {
-                "Closing the window keeps Dove and its automations running in the system tray."
+                "Closing the window keeps Keplorayx and its automations running in the system tray."
             } else {
-                "Keep Dove running for automations after you close its window."
+                "Keep Keplorayx running for automations after you close its window."
             },
             ctl::on_toggle(ctl::toggle(t, "set-keep", keep), cx, move |this, window, cx| {
                 crate::notify::set_keep_running(&this.engine, !keep, window, cx);
@@ -2180,7 +2180,7 @@ impl SettingsPage {
                 false,
                 "island_login",
                 "Start at login",
-                "Start the notch and the tray when you sign in, so they're there before Dove is.",
+                "Start the notch and the tray when you sign in, so they're there before Keplorayx is.",
                 ctl::on_toggle(ctl::toggle(t, "set-island-login", login), cx, move |this, _, cx| {
                     this.set_flag(crate::island::login::KEY, !login, cx);
                     crate::island::login::apply(&this.engine.store);
@@ -2211,7 +2211,7 @@ impl SettingsPage {
                 false,
                 "notch_clipboard",
                 "Clipboard history",
-                "Keep what you copy in the notch while Dove runs. Items password managers mark as secret are never kept; only pinned text is saved.",
+                "Keep what you copy in the notch while Keplorayx runs. Items password managers mark as secret are never kept; only pinned text is saved.",
                 ctl::on_toggle(ctl::toggle(t, "set-notch-clips", clips), cx, move |this, _, cx| {
                     this.set_flag("notch_clipboard", !clips, cx)
                 }),
@@ -2613,8 +2613,8 @@ impl SettingsPage {
                 let detail: SharedString = match (global, crate::hotkey::last_error()) {
                     (true, Some(e)) => format!("The shortcut couldn't be registered: {e}. Pick another in Shortcuts.").into(),
                     (true, None) if cfg!(windows) => format!("{shortcut} starts or ends a call from any app.").into(),
-                    (true, None) => "Available on Windows; elsewhere the shortcut works inside Dove.".into(),
-                    (false, _) => "Off: the shortcut works only while Dove is in front.".into(),
+                    (true, None) => "Available on Windows; elsewhere the shortcut works inside Keplorayx.".into(),
+                    (false, _) => "Off: the shortcut works only while Keplorayx is in front.".into(),
                 };
                 self.srow(
                     t,
@@ -2636,7 +2636,7 @@ impl SettingsPage {
                 false,
                 "voice_echo_cancel",
                 "Echo cancellation",
-                "Lets you use speakers instead of headphones, and talk over Dove to interrupt it.",
+                "Lets you use speakers instead of headphones, and talk over Keplorayx to interrupt it.",
                 ctl::on_toggle(ctl::toggle(t, "set-voice-echo", echo), cx, move |this, _, cx| {
                     this.set_flag("voice_echo_cancel", !echo, cx)
                 }),
@@ -2656,7 +2656,7 @@ impl SettingsPage {
                 false,
                 "voice_earcons",
                 "Sounds",
-                "A soft chime when the call starts listening and when Dove has heard you.",
+                "A soft chime when the call starts listening and when Keplorayx has heard you.",
                 ctl::on_toggle(ctl::toggle(t, "set-voice-earcons", earcons), cx, move |this, _, cx| {
                     this.set_flag("voice_earcons", !earcons, cx)
                 }),
@@ -2705,7 +2705,7 @@ impl SettingsPage {
                     let id = self.get("voice_cloud_tts_provider").unwrap_or_else(|| "openai".into());
                     let label = TTS_SERVICES.iter().find(|s| s.id == id).map_or("the endpoint below", |s| s.label);
                     SharedString::from(format!(
-                        "On: what Dove says (including agents' replies) is sent to {label} for speech. If it fails, Dove uses your system's voice."
+                        "On: what Keplorayx says (including agents' replies) is sent to {label} for speech. If it fails, Keplorayx uses your system's voice."
                     ))
                 } else {
                     SharedString::from("Off: Keplorayx speaks with your system's voice.")
@@ -2761,7 +2761,7 @@ impl SettingsPage {
                     format!("{} is set. {}", service.key_vars[0], service.voice_hint).into()
                 } else {
                     format!(
-                        "Set {} in your environment, then restart Dove. {}",
+                        "Set {} in your environment, then restart Keplorayx. {}",
                         service.key_vars[0], service.voice_hint
                     )
                     .into()
@@ -2798,9 +2798,9 @@ impl SettingsPage {
                     "voice_router",
                     "Command router",
                     match selected {
-                        1 => "Requests Dove's rules don't recognise are routed by a tool-less run of the current thread's agent on its cheapest model (a few seconds). The request and thread titles go to that agent.",
-                        2 => "Requests Dove's rules don't recognise are routed by the endpoint below. The request and thread titles are sent to it.",
-                        _ => "Off: requests Dove's rules don't recognise go to the thread you're talking to, as you said them.",
+                        1 => "Requests Keplorayx's rules don't recognise are routed by a tool-less run of the current thread's agent on its cheapest model (a few seconds). The request and thread titles go to that agent.",
+                        2 => "Requests Keplorayx's rules don't recognise are routed by the endpoint below. The request and thread titles are sent to it.",
+                        _ => "Off: requests Keplorayx's rules don't recognise go to the thread you're talking to, as you said them.",
                     },
                     ctl::segmented(
                         t,
@@ -3265,7 +3265,7 @@ impl SettingsPage {
         div()
             .flex()
             .flex_col()
-            .child(page::page_subtitle(t, "Built-in tools, apps, MCP servers and skills for every agent Dove starts."))
+            .child(page::page_subtitle(t, "Built-in tools, apps, MCP servers and skills for every agent Keplorayx starts."))
             .child(
                 div()
                     .relative()
@@ -3400,7 +3400,7 @@ impl SettingsPage {
                 true,
                 "remote_enabled",
                 "Remote control",
-                "Watch and steer this computer's threads from the Dove mobile app. While off, no connection is opened.",
+                "Watch and steer this computer's threads from the Keplorayx mobile app. While off, no connection is opened.",
                 toggle,
             ))
             .child(self.srow(t, false, "remote_account", "Woozlit account", account, account_button))
@@ -3434,7 +3434,7 @@ impl SettingsPage {
                 t,
                 false,
                 "License",
-                "Apache-2.0. Third-party notices ship with Dove.",
+                "Apache-2.0. Third-party notices ship with Keplorayx.",
                 page::badge(t, "Apache-2.0"),
             ))
             .child(page::setting_row(
@@ -3579,7 +3579,7 @@ fn motion_inventory(t: &Theme, reduced: bool, has_wall: bool, animate: bool, eff
                 .flex()
                 .flex_col()
                 .gap(px(10.0))
-                .child(page::row_text(t, "What animates", "Everything in Dove that moves, and what it does right now."))
+                .child(page::row_text(t, "What animates", "Everything in Keplorayx that moves, and what it does right now."))
                 .child(list),
         )
         .into_any_element()
@@ -3599,7 +3599,7 @@ const TTS_SERVICES: &[TtsService] = &[
     TtsService {
         id: "fish",
         label: "Fish Audio (free model)",
-        blurb: "Fish Audio's S2.1 Pro, free for developers through the API. Streams, so Dove starts speaking on the first chunk.",
+        blurb: "Fish Audio's S2.1 Pro, free for developers through the API. Streams, so Keplorayx starts speaking on the first chunk.",
         key_vars: &["FISH_AUDIO_API_KEY", "FISH_API_KEY"],
         voice_hint: "Voice: a Fish Audio voice model id (reference id); empty uses their default.",
     },

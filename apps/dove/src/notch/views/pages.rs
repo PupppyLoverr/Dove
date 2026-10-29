@@ -335,7 +335,7 @@ impl Notch {
                     div()
                         .flex_1()
                         .min_w_0()
-                        .child(div().text_size(px(tk::T13)).text_color(tk::TEXT).child("Dove isn't running"))
+                        .child(div().text_size(px(tk::T13)).text_color(tk::TEXT).child("Keplorayx isn't running"))
                         .child(
                             div()
                                 .text_size(px(tk::T11))
@@ -343,7 +343,7 @@ impl Notch {
                                 .child("Music, the tray, notes and the timer still work."),
                         ),
                 )
-                .child(link("open-dove", "Open Dove").on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                .child(link("open-dove", "Open Keplorayx").on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                     this.command(ToEngine::Open { task: None });
                     this.toast("Opening Dove…");
                     cx.notify();
@@ -829,7 +829,7 @@ impl Notch {
                     .flex_1()
                     .min_w_0()
                     .cursor_pointer()
-                    .tooltip(tip("Open in Dove · Ctrl+O"))
+                    .tooltip(tip("Open in Keplorayx · Ctrl+O"))
                     .on_click(
                         cx.listener(move |this, _: &ClickEvent, _, _| this.command(ToEngine::Open { task: Some(id) })),
                     )
@@ -880,7 +880,7 @@ impl Notch {
         // The mini transcript.
         let mut log = div().flex().flex_col().gap(px(10.0)).pb(px(4.0));
         if turns.len() > 1 || turns.first().is_some_and(|t| !t.user.is_empty()) {
-            log = log.child(div().flex().justify_center().child(link("earlier", "Earlier in Dove").on_click(
+            log = log.child(div().flex().justify_center().child(link("earlier", "Earlier in Keplorayx").on_click(
                 cx.listener(move |this, _: &ClickEvent, _, _| this.command(ToEngine::Open { task: Some(id) })),
             )));
         }
@@ -934,7 +934,7 @@ impl Notch {
                                     .text_size(px(tk::T11))
                                     .text_color(tk::DIM)
                                     .hover(|s| s.text_color(tk::TEXT))
-                                    .tooltip(tip("See the change in Dove"))
+                                    .tooltip(tip("See the change in Keplorayx"))
                                     .child(icon(icons::FILE_DIFF).size(px(12.0)).text_color(tk::FAINT))
                                     .child(div().truncate().child(name))
                                     .on_click(cx.listener(move |this, _: &ClickEvent, _, _| {
@@ -950,7 +950,7 @@ impl Notch {
         }
         for m in self.sent.iter().filter(|m| m.task == id) {
             let note = if !self.connected() {
-                "waiting for Dove"
+                "waiting for Keplorayx"
             } else if running && !a.steers {
                 "queued for after this turn"
             } else {

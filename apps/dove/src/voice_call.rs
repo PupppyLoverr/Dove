@@ -1305,7 +1305,7 @@ impl Shell {
                     dove_voice::intent::LookTarget::Browser => {
                         self.panel.read(cx).browser_context(cx).map(|(title, url)| {
                             format!(
-                                "(From the voice call: the user is looking at \"{title}\" — {url} in Dove's browser.)"
+                                "(From the voice call: the user is looking at \"{title}\" — {url} in Keplorayx's browser.)"
                             )
                         })
                     }

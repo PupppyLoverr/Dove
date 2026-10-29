@@ -141,7 +141,7 @@ fn line(card: &Card, store: &dove_core::store::Store, dir: &Path, computer_use: 
             let how = if *chrome {
                 "in the user's own browser; the chrome_* tools reach it"
             } else {
-                "in Dove's browser; browser_navigate opens it"
+                "in Keplorayx's browser; browser_navigate opens it"
             };
             format!("- Tab \"{}\": {url} ({how}).", one_line(title))
         }

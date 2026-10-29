@@ -173,7 +173,7 @@ pub fn refusal(args: &serde_json::Value, list: &[String]) -> Option<String> {
     let hit = names.into_iter().chain(pids.into_iter().filter_map(process_name)).find(|n| denied(n, list))?;
     let app = hit.rsplit(['/', '\\']).next().unwrap_or(&hit).to_string();
     Some(format!(
-        "The user does not let agents control {app}. It is on the never-control list in Dove → Settings → Plugins → Computer use. Ask the user to do this step themselves."
+        "The user does not let agents control {app}. It is on the never-control list in Keplorayx → Settings → Plugins → Computer use. Ask the user to do this step themselves."
     ))
 }
 
@@ -481,7 +481,7 @@ pub fn verify_installed(i: &Installed) -> Result<(), String> {
 pub fn launch_bin() -> Result<PathBuf, String> {
     match installed() {
         Some(i) => verify_installed(&i).map(|()| i.bin),
-        None => crate::pages::integrations::dev_driver().ok_or_else(|| "Dove Computer Use is not installed".into()),
+        None => crate::pages::integrations::dev_driver().ok_or_else(|| "Keplorayx Computer Use is not installed".into()),
     }
 }
 
@@ -512,11 +512,11 @@ pub fn install() -> Result<Installed, String> {
 }
 
 fn install_in(root: &Path, m: &Manifest) -> Result<Installed, String> {
-    let key = platform_key().ok_or("Dove Computer Use is not built for this platform")?;
+    let key = platform_key().ok_or("Keplorayx Computer Use is not built for this platform")?;
     let p =
         m.platform(key).ok_or_else(|| format!("cua-driver {} has no release for this platform ({key})", m.version))?;
     if !m.dove_supported() {
-        return Err(format!("cua-driver {} needs Dove {} or later", m.version, m.min_dove_version));
+        return Err(format!("cua-driver {} needs Keplorayx {} or later", m.version, m.min_dove_version));
     }
     let bytes = download(&m.url(&p.name, &p.url), p.size)?;
     install_bytes(root, &m.version, p, &bytes)
@@ -571,7 +571,7 @@ fn install_bytes(root: &Path, version: &str, p: &Platform, bytes: &[u8]) -> Resu
 fn verify(sha256: &str, size: u64, bytes: &[u8]) -> Result<(), String> {
     if bytes.len() as u64 != size {
         return Err(format!(
-            "The download is {} bytes, not the {size} in Dove's manifest. Nothing was installed.",
+            "The download is {} bytes, not the {size} in Keplorayx's manifest. Nothing was installed.",
             bytes.len()
         ));
     }
@@ -580,7 +580,7 @@ fn verify(sha256: &str, size: u64, bytes: &[u8]) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!(
-            "The download's checksum does not match Dove's manifest (got {}…). Nothing was installed.",
+            "The download's checksum does not match Keplorayx's manifest (got {}…). Nothing was installed.",
             &got[..12]
         ))
     }
@@ -609,7 +609,7 @@ fn check_tree(top: &Path, p: &Platform) -> Result<(), String> {
                 .ok_or_else(|| format!("the release has an unlisted file {rel}"))?;
             let bytes = std::fs::read(e.path()).map_err(|e| e.to_string())?;
             if bytes.len() as u64 != f.size || !sha256_hex(&bytes).eq_ignore_ascii_case(&f.sha256) {
-                return Err(format!("{rel} does not match Dove's manifest"));
+                return Err(format!("{rel} does not match Keplorayx's manifest"));
             }
             seen.push(rel);
         }
@@ -846,7 +846,7 @@ pub fn walkthrough() -> &'static [Step] {
     } else if cfg!(windows) {
         &[Step {
             title: "Same integrity level",
-            body: "cua-driver runs as you, at the same integrity level as Dove. Windows stops it from reading or controlling apps started as administrator (elevated). Run those apps normally, or start Dove as administrator only when you need to automate them. Its UIA helper runs from Dove's per-user folder without UIAccess, so it cannot type into elevated windows either. UAC prompts always stay with you.",
+            body: "cua-driver runs as you, at the same integrity level as Keplorayx. Windows stops it from reading or controlling apps started as administrator (elevated). Run those apps normally, or start Keplorayx as administrator only when you need to automate them. Its UIA helper runs from Keplorayx's per-user folder without UIAccess, so it cannot type into elevated windows either. UAC prompts always stay with you.",
             action: None,
         }]
     } else {

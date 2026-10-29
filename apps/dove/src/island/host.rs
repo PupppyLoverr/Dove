@@ -294,7 +294,7 @@ impl Host {
             ToEngine::Start { id, agent, project, prompt, worktree } => {
                 let result = if ui {
                     bridge::with_shell(cx, |s, w, cx| s.notch_start(agent, project, prompt, worktree, w, cx))
-                        .unwrap_or_else(|| Err("Dove's window isn't ready.".into()))
+                        .unwrap_or_else(|| Err("Keplorayx's window isn't ready.".into()))
                 } else {
                     Self::start_headless(&engine, agent, project, prompt, worktree, cx)
                 };

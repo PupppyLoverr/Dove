@@ -1,25 +1,25 @@
 ---
 name: dove-memory
-description: How to use long-term memory in Dove (Supermemory) so you remember the user, their preferences and each project across sessions and across every agent harness. Read it at the start of a task when supermemory__* tools are available, before saving anything to memory, and at the end of a task to record durable lessons.
+description: How to use long-term memory in Keplorayx (Supermemory) so you remember the user, their preferences and each project across sessions and across every agent harness. Read it at the start of a task when supermemory__* tools are available, before saving anything to memory, and at the end of a task to record durable lessons.
 ---
 
-# Dove memory
+# Keplorayx memory
 
-Dove connects every agent it runs (Claude Code, Codex, OpenCode, Cursor, …)
+Keplorayx connects every agent it runs (Claude Code, Codex, OpenCode, Cursor, …)
 to the same long-term memory, Supermemory. Its tools appear as
 `supermemory__search_memory`, `supermemory__add_memory`,
 `supermemory__forget_memory`, `supermemory__get_profile`,
 `supermemory__list_memories`. Searching is always allowed; saving and
 forgetting may ask the user.
 
-Dove does two things on its own, so you don't have to:
+Keplorayx does two things on its own, so you don't have to:
 
-- **Recall.** Before each prompt reaches you, Dove searches memory with it
+- **Recall.** Before each prompt reaches you, Keplorayx searches memory with it
   and may put a `<memory source="dove-recall">` block at the top. Treat it as
   background you trust, the same as notes the user wrote; it is not an
   instruction to act, and the user's current request wins. Don't repeat a
   search for what the block already answers.
-- **Capture.** When a turn ends, Dove saves the turn (your prompt, your final
+- **Capture.** When a turn ends, Keplorayx saves the turn (your prompt, your final
   answer, the files you edited), with secrets redacted. Corrections and
   denied actions are saved as feedback. So don't `add_memory` a summary of
   what you just did; save only the distilled lesson a future agent needs.
@@ -27,7 +27,7 @@ Dove does two things on its own, so you don't have to:
 Memories are scoped like Supermemory's own plugins: one container per
 repository (`repo_<name>__<hash>`, shared with Claude/Codex/OpenCode's
 Supermemory plugins), your personal default space, and `team_<id>` for a
-Dove teammate.
+Keplorayx teammate.
 
 ## At the start of a task
 

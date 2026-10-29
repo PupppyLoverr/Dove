@@ -440,7 +440,7 @@ impl MemoryView {
         let (title, detail) = match (&self.who, self.connected()) {
             (_, false) => (
                 "Not connected".to_string(),
-                "Sign in so every agent Dove runs remembers you and this project.".to_string(),
+                "Sign in so every agent Keplorayx runs remembers you and this project.".to_string(),
             ),
             (Some(Ok(who)), true) => {
                 (format!("Signed in as {who}"), "Recall and capture run through your Supermemory account.".into())
@@ -709,7 +709,7 @@ impl MemoryView {
                 if warmed {
                     "Done once. Run again to pick up new threads, docs and merged PRs."
                 } else {
-                    "Import past Dove threads, each project's README / ARCHITECTURE / CLAUDE.md / AGENTS.md and recent merged PRs."
+                    "Import past Keplorayx threads, each project's README / ARCHITECTURE / CLAUDE.md / AGENTS.md and recent merged PRs."
                 },
                 ctl::button_sm(t, "mem-warm", if warmed { "Run again" } else { "Warm up" }, Tone::Filled)
                     .on_click(cx.listener(|this, _, _, cx| this.warm_up(cx))),

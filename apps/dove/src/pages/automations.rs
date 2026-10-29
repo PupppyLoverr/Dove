@@ -630,7 +630,7 @@ impl Shell {
                     ))
                 });
                 let keep = (!self.engine.store.setting(crate::notify::KEEP_RUNNING).is_some_and(|v| v == "true")).then(|| {
-                    page::info_strip(&t, "Automations run while Dove is open. To keep them running with the window closed, turn on \"Keep running in the background\" in Settings › Notifications.")
+                    page::info_strip(&t, "Automations run while Keplorayx is open. To keep them running with the window closed, turn on \"Keep running in the background\" in Settings › Notifications.")
                 });
                 super::page_with(
                     "automations-page",

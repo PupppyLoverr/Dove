@@ -368,7 +368,7 @@ fn main() {
     let engine = match Engine::new(root) {
         Ok(e) => e,
         Err(e) => {
-            eprintln!("Dove could not start: {e:#}");
+            eprintln!("Keplorayx could not start: {e:#}");
             std::process::exit(1);
         }
     };
