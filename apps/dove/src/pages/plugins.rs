@@ -49,7 +49,7 @@ impl Item {
         match self {
             Item::Memory => "Memory",
             Item::Ego => "ego lite",
-            Item::Chrome => "Dove for Chrome",
+            Item::Chrome => "Keplorayx for Chrome",
             Item::Computer => "Computer use",
             Item::GitHub => "GitHub",
             Item::Paper => "Paper",

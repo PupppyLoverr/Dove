@@ -836,7 +836,7 @@ pub(crate) enum HomeCard {
 impl HomeCard {
     fn label(self) -> &'static str {
         match self {
-            HomeCard::Offline => "Dove",
+            HomeCard::Offline => "Keplorayx",
             HomeCard::Approval => "Needs you",
             HomeCard::Working => "Agents",
             HomeCard::Music => "Music",

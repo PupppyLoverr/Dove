@@ -899,7 +899,7 @@ impl Composer {
                         _ => "On · /orchestrator off stops it, /orchestrator auto skips approvals".into(),
                     },
                     insert: "/orchestrator".into(),
-                    section: "Dove",
+                    section: "Keplorayx",
                     ..Default::default()
                 });
                 items.extend(TEMPLATES.iter().map(|(name, detail, body)| MentionItem {

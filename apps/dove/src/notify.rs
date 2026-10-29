@@ -31,7 +31,7 @@ pub fn os_notify_store(store: &dove_core::store::Store, title: &str, body: &str)
     let (title, body) = (title.to_string(), body.to_string());
     std::thread::spawn(move || {
         let mut n = notify_rust::Notification::new();
-        n.summary(&title).body(&body).appname("Dove");
+        n.summary(&title).body(&body).appname("Keplorayx");
         if sound {
             #[cfg(target_os = "macos")]
             n.sound_name("default");
@@ -46,7 +46,7 @@ pub fn os_notify_store(store: &dove_core::store::Store, title: &str, body: &str)
 
 /// "Dove (2)" while two threads need you.
 pub fn set_badge(window: &mut Window, needs_you: usize) {
-    let title = if needs_you == 0 { "Dove".to_string() } else { format!("Dove ({needs_you})") };
+    let title = if needs_you == 0 { "Keplorayx".to_string() } else { format!("Dove ({needs_you})") };
     window.set_window_title(&title);
 }
 
@@ -109,7 +109,7 @@ mod tray {
         }
         let menu = Menu::new();
         let open = MenuItem::new("Open Dove", true, None);
-        let quit = MenuItem::new("Quit Dove", true, None);
+        let quit = MenuItem::new("Quit Keplorayx", true, None);
         let _ = menu.append(&open);
         let _ = menu.append(&quit);
         let built = TrayIconBuilder::new()

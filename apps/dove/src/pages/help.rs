@@ -75,7 +75,7 @@ impl Shell {
                 .gap(px(space::XL))
                 .items_start()
                 .child(column("Keyboard (change them in Settings › Keyboard)", shortcuts))
-                .child(column("How Dove works", tips)),
+                .child(column("How Keplorayx works", tips)),
         )
     }
 }

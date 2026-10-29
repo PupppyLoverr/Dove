@@ -434,7 +434,7 @@ impl SkillsView {
         let name = s.name.clone();
         let on = s.enabled;
         let detail = match &s.source {
-            Source::Bundled => format!("{} · Dove", s.description),
+            Source::Bundled => format!("{} · Keplorayx", s.description),
             Source::Git { repo, .. } => format!("{} · {repo}", s.description),
             Source::Local { .. } => format!("{} · Yours", s.description),
         };

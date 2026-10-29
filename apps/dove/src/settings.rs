@@ -277,7 +277,7 @@ const INDEX: &[Entry] = &[
         "voice mode call hands free talk conversation listening push to talk",
     ),
     e(Section::Voice, "voice_name", "Voice", "voice speech tts speaker system voice"),
-    e(Section::Voice, "voice_global_hotkey", "Shortcut outside Dove", "global hotkey shortcut voice call system wide"),
+    e(Section::Voice, "voice_global_hotkey", "Shortcut outside Keplorayx", "global hotkey shortcut voice call system wide"),
     e(Section::Voice, "voice_rate", "Speaking rate", "voice speed rate faster slower"),
     e(
         Section::Voice,
@@ -2270,7 +2270,7 @@ impl SettingsPage {
                     t,
                     false,
                     "voice_global_hotkey",
-                    "Shortcut outside Dove",
+                    "Shortcut outside Keplorayx",
                     detail,
                     ctl::on_toggle(ctl::toggle(t, "set-voice-global", global), cx, move |this, _, cx| {
                         this.set_flag("voice_global_hotkey", !global, cx);
@@ -2357,7 +2357,7 @@ impl SettingsPage {
                         "On: what Dove says (including agents' replies) is sent to {label} for speech. If it fails, Dove uses your system's voice."
                     ))
                 } else {
-                    SharedString::from("Off: Dove speaks with your system's voice.")
+                    SharedString::from("Off: Keplorayx speaks with your system's voice.")
                 },
                 ctl::on_toggle(ctl::toggle(t, "set-voice-cloud-tts", cloud_tts), cx, move |this, _, cx| {
                     this.set_flag("voice_cloud_tts", !cloud_tts, cx)
@@ -2971,7 +2971,7 @@ impl SettingsPage {
                     false,
                     "data_path",
                     "Storage location",
-                    "Set DOVE_HOME to move Dove's data folder.",
+                    "Set DOVE_HOME to move Keplorayx's data folder.",
                     div()
                         .flex()
                         .items_center()
@@ -3094,7 +3094,7 @@ impl SettingsPage {
                     .child(icon(icons::ARROW_UP_RIGHT).size(px(12.0)))
                     .on_click(cx.listener(|_, _, _, cx| cx.open_url("https://github.com/dove-ade/dove"))),
             ));
-        page::section(t, "Dove", card).into_any_element()
+        page::section(t, "Keplorayx", card).into_any_element()
     }
 }
 
@@ -3263,7 +3263,7 @@ const TTS_SERVICES: &[TtsService] = &[
         label: "Cartesia Sonic",
         blurb: "Built for real-time agents. The free plan's 20,000 credits a month are for non-commercial use.",
         key_vars: &["CARTESIA_API_KEY"],
-        voice_hint: "Voice: a Cartesia voice id; empty uses Dove's default.",
+        voice_hint: "Voice: a Cartesia voice id; empty uses Keplorayx's default.",
     },
     TtsService {
         id: "inworld",

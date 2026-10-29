@@ -201,7 +201,7 @@ mod tray {
         let menu = Menu::new();
         let open = MenuItem::new("Open Dove", true, None);
         let login = CheckMenuItem::new("Start at login", super::login::allowed(), store.flag(super::login::KEY, true), None);
-        let quit = MenuItem::new("Quit Dove completely", true, None);
+        let quit = MenuItem::new("Quit Keplorayx completely", true, None);
         let _ = menu.append(&open);
         let _ = menu.append(&PredefinedMenuItem::separator());
         let _ = menu.append(&login);
@@ -209,7 +209,7 @@ mod tray {
         let _ = menu.append(&quit);
         let Some(image) = icon() else { return };
         let tray: TrayIcon = match TrayIconBuilder::new()
-            .with_tooltip("Dove")
+            .with_tooltip("Keplorayx")
             .with_menu(Box::new(menu))
             .with_menu_on_left_click(false)
             .with_icon(image)
@@ -316,7 +316,7 @@ mod tray {
             if running == 1 { "it" } else { "them" }
         );
         let text: Vec<u16> = text.encode_utf16().chain(Some(0)).collect();
-        let title: Vec<u16> = "Dove".encode_utf16().chain(Some(0)).collect();
+        let title: Vec<u16> = "Keplorayx".encode_utf16().chain(Some(0)).collect();
         // SAFETY: two NUL-terminated strings that outlive the call.
         unsafe {
             MessageBoxW(std::ptr::null_mut(), text.as_ptr(), title.as_ptr(), MB_YESNO | MB_ICONWARNING | MB_SETFOREGROUND)

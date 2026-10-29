@@ -3,7 +3,7 @@ name = "dove"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Dove — a fast, native Agentic Development Environment"
+description = "Keplorayx (K22) — a fast, native Agentic Development Environment"
 
 [[bin]]
 name = "dove"

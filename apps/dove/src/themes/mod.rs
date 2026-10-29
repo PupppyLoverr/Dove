@@ -420,7 +420,7 @@ pub struct Choice {
 /// Zeron's order, then imports by name.
 pub fn choices(appearance: Appearance) -> Vec<Choice> {
     let dark = appearance.is_dark();
-    let mut out = vec![Choice { id: DOVE_ID.into(), name: "Dove".into(), imported: false, accent: None }];
+    let mut out = vec![Choice { id: DOVE_ID.into(), name: "Keplorayx".into(), imported: false, accent: None }];
     let entry = |p: &Arc<Palette>, imported: bool| Choice {
         id: p.id.clone(),
         name: p.name.clone(),

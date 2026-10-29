@@ -111,17 +111,13 @@ fn linux_browser_helper() {
     assert!(status.success(), "Linux browser helper compilation failed");
 }
 
-/// Square PNG and multi-size ICO from the source photo, then the exe icon.
+/// Multi-size ICO from the app icon (a square RGBA PNG), then the exe icon.
 fn windows_icon() {
-    println!("cargo:rerun-if-changed=assets/dove-icon.jpg");
+    println!("cargo:rerun-if-changed=assets/keplorayx-icon.png");
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;
     }
-    let src = image::open("assets/dove-icon.jpg").expect("assets/dove-icon.jpg").into_rgba8();
-    let (w, h) = src.dimensions();
-    let side = w.min(h);
-    let square = image::imageops::crop_imm(&src, (w - side) / 2, (h - side) / 2, side, side).to_image();
-    square.save("assets/dove-icon.png").expect("write dove-icon.png");
+    let square = image::open("assets/keplorayx-icon.png").expect("assets/keplorayx-icon.png").into_rgba8();
     let sizes = [16u32, 24, 32, 48, 64, 128, 256];
     let mut raw = Vec::with_capacity(sizes.len());
     for size in sizes {
@@ -134,9 +130,11 @@ fn windows_icon() {
             image::codecs::ico::IcoFrame::as_png(buf, *size, *size, image::ExtendedColorType::Rgba8).expect("ico frame")
         })
         .collect::<Vec<_>>();
-    let file = std::fs::File::create("assets/dove.ico").expect("create dove.ico");
-    image::codecs::ico::IcoEncoder::new(file).encode_images(&frames).expect("write dove.ico");
+    let file = std::fs::File::create("assets/keplorayx.ico").expect("create keplorayx.ico");
+    image::codecs::ico::IcoEncoder::new(file).encode_images(&frames).expect("write keplorayx.ico");
     let mut res = winresource::WindowsResource::new();
-    res.set_icon("assets/dove.ico");
-    res.compile().expect("embed the Dove icon in the exe");
+    res.set_icon("assets/keplorayx.ico");
+    res.set("ProductName", "Keplorayx");
+    res.set("FileDescription", "Keplorayx");
+    res.compile().expect("embed the Keplorayx icon in the exe");
 }

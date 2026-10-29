@@ -155,7 +155,7 @@ impl IntegrationsView {
         let mut card = plate(t)
             .child(head(
                 icons::MONITOR,
-                "Dove Computer Use",
+                "Keplorayx Computer Use",
                 hint,
                 left.when(found, |d| {
                     d.child(ctl::on_toggle(switch, cx, move |this, _, cx| {

@@ -3080,7 +3080,7 @@ impl Notch {
             }
         }
         if new_prompt.is_none() && ask.is_none() && out.is_empty() {
-            out.push((Hit::Ask(raw.to_string()), format!("Ask: {raw}"), "Ask Dove".into()));
+            out.push((Hit::Ask(raw.to_string()), format!("Ask: {raw}"), "Ask Keplorayx".into()));
             out.push((Hit::NewAgent(raw.to_string()), format!("Start an agent: {raw}"), "Agents".into()));
         }
         out.truncate(8);

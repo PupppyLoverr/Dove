@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Linux packages from release binaries already built:
 #   dove_<version>_amd64.deb         (apt install ./dove_*.deb)
-#   Dove-<version>-x86_64.AppImage   (chmod +x and run; uses the system's
+#   Keplorayx-<version>-x86_64.AppImage   (chmod +x and run; uses the system's
 #                                     GTK/WebKit, Vulkan and Wayland/X11 libs)
 #   dove-<version>-linux-x86_64.tar.gz
 # Needs: dpkg-deb; APPIMAGETOOL pointing at appimagetool for the AppImage.
@@ -11,7 +11,7 @@ BIN="${BIN:-$ROOT/target/release}"
 MESH_BIN="${MESH_BIN:-$ROOT/mesh/target/release}"
 OUT="${OUT:-$ROOT/packaging/out}"
 VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' "$ROOT/Cargo.toml" | head -1)"
-ICON="$ROOT/apps/dove/assets/dove-icon.png"
+ICON="$ROOT/apps/dove/assets/keplorayx-icon.png"
 mkdir -p "$OUT"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
@@ -49,12 +49,12 @@ Version: ${VERSION}
 Section: devel
 Priority: optional
 Architecture: amd64
-Maintainer: Dove <noreply@dove.sh>
+Maintainer: Keplorayx <noreply@dove.sh>
 Installed-Size: ${SIZE_KB}
 Depends: libc6 (>= 2.38), libgcc-s1, libxkbcommon0, libxkbcommon-x11-0, libwayland-client0, libvulkan1, libx11-xcb1, libxcb1, libfontconfig1, libfreetype6, libssl3 | libssl3t64, libasound2t64 | libasound2, libwebkit2gtk-4.1-0, libgtk-3-0t64 | libgtk-3-0, libjson-glib-1.0-0
 Recommends: git, mesa-vulkan-drivers
 Homepage: https://github.com/PupppyLoverr/Dove
-Description: Dove, a desktop environment for coding agents
+Description: Keplorayx (K22), a desktop environment for coding agents
  Runs Claude Code, Codex, Gemini and other agent CLIs side by side, with
  threads, diffs, a terminal and a built-in browser.
 CONTROL
@@ -77,7 +77,7 @@ HERE="$(dirname "$(readlink -f "$0")")"
 exec "$HERE/usr/lib/dove/dove" "$@"
 APPRUN
   chmod 755 "$APPDIR/AppRun"
-  ARCH=x86_64 "$APPIMAGETOOL" --no-appstream "$APPDIR" "$OUT/Dove-${VERSION}-x86_64.AppImage"
+  ARCH=x86_64 "$APPIMAGETOOL" --no-appstream "$APPDIR" "$OUT/Keplorayx-${VERSION}-x86_64.AppImage"
 else
   echo "APPIMAGETOOL not set; skipping the AppImage" >&2
 fi

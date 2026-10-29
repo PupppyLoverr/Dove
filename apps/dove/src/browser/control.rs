@@ -159,7 +159,7 @@ pub fn start(rt: &tokio::runtime::Handle) -> Option<Endpoint> {
                         if tx.send(request).is_err() {
                             Outcome::err("Dove is shutting down")
                         } else {
-                            rrx.await.unwrap_or_else(|_| Outcome::err("Dove dropped the request"))
+                            rrx.await.unwrap_or_else(|_| Outcome::err("Keplorayx dropped the request"))
                         }
                     }
                     Ok(_) => Outcome::err("Bad token"),

@@ -1982,7 +1982,7 @@ impl Shell {
             P::Action("Toggle side panel", icons::SPLIT_COLUMNS, "panel"),
             P::Action("Add project…", icons::DOCUMENT_ADD, "add_project"),
             P::Action("Switch theme (light / dark)", icons::MOON, "theme"),
-            P::Action("Teach Dove a skill…", icons::MAGIC_STICK_3, "teach"),
+            P::Action("Teach Keplorayx a skill…", icons::MAGIC_STICK_3, "teach"),
         ];
         if self.active_task().is_some() {
             items.extend([

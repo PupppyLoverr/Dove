@@ -1,4 +1,4 @@
-; Early-release installer for Dove.
+; Early-release installer for Keplorayx (K22).
 ; packaging\windows\package.ps1 stages the binaries and compiles this:
 ;   iscc /DStage=<folder with dove.exe and sidecars> /DAppVersion=0.1.0 packaging\dove.iss
 ; or, for dove.exe alone:
@@ -8,7 +8,7 @@
   #define DoveExe "..\target\release\dove.exe"
 #endif
 #ifndef DoveIcon
-  #define DoveIcon "..\apps\dove\assets\dove.ico"
+  #define DoveIcon "..\apps\dove\assets\keplorayx.ico"
 #endif
 #ifndef AppVersion
   #define AppVersion "0.1.0"
@@ -23,15 +23,15 @@
 
 [Setup]
 AppId={{7E4B9C2A-1D58-4F63-9A70-6C2E8B15D4F1}
-AppName=Dove
+AppName=Keplorayx
 AppVersion={#AppVersion}
-AppPublisher=Dove
-DefaultDirName={localappdata}\Programs\Dove
-DefaultGroupName=Dove
+AppPublisher=Keplorayx
+DefaultDirName={localappdata}\Programs\Keplorayx
+DefaultGroupName=Keplorayx
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 OutputDir=out
-OutputBaseFilename=Dove-Setup
+OutputBaseFilename=Keplorayx-Setup
 SetupIconFile={#DoveIcon}
 UninstallDisplayIcon={app}\dove.exe
 Compression=lzma2
@@ -56,8 +56,8 @@ Source: "{#DoveDir}DirectML.dll"; DestDir: "{app}"; Flags: ignoreversion skipifs
 Source: "{#DoveDir}dove-mesh-host.exe"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 
 [Icons]
-Name: "{group}\Dove"; Filename: "{app}\dove.exe"
-Name: "{autodesktop}\Dove"; Filename: "{app}\dove.exe"; Tasks: desktopicon
+Name: "{group}\Keplorayx"; Filename: "{app}\dove.exe"
+Name: "{autodesktop}\Keplorayx"; Filename: "{app}\dove.exe"; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\dove.exe"; Description: "{cm:LaunchProgram,Dove}"; Flags: nowait postinstall skipifsilent

@@ -495,7 +495,7 @@ fn open_main_window(engine: Arc<Engine>, show_intro: bool, cx: &mut App) -> Opti
             // `DOVE_WINDOW_TITLE` marks test instances so they are never
             // mistaken for the real app.
             title: cfg!(target_os = "windows")
-                .then(|| std::env::var("DOVE_WINDOW_TITLE").unwrap_or_else(|_| "Dove".into()).into()),
+                .then(|| std::env::var("DOVE_WINDOW_TITLE").unwrap_or_else(|_| "Keplorayx".into()).into()),
             appears_transparent: true,
             traffic_light_position: Some(gpui::point(px(14.0), px(14.0))),
         }),

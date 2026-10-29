@@ -875,7 +875,7 @@ impl Render for IntegrationsView {
         let chrome = plate(&t)
             .child(head(
                 icons::GLOBE,
-                "Dove for Chrome",
+                "Keplorayx for Chrome",
                 "Agents work in your own browser with your logins, only on sites you allow",
                 status(
                     browser.is_some(),
@@ -1173,13 +1173,13 @@ impl Render for IntegrationsView {
                 "Agents browse with",
                 match choice {
                     BrowserChoice::Ego => "ego lite only. Dove's own browser tools are hidden from agents",
-                    BrowserChoice::Both => "ego lite first, with Dove's browser as a fallback",
+                    BrowserChoice::Both => "ego lite first, with Keplorayx's browser as a fallback",
                     BrowserChoice::Dove => "Dove's browser in the side panel; agents are not pointed at ego lite",
                 },
                 ctl::segmented(
                     &t,
                     "int-ego-choice",
-                    vec![ctl::Segment::new("ego lite"), ctl::Segment::new("Dove browser"), ctl::Segment::new("Both")],
+                    vec![ctl::Segment::new("ego lite"), ctl::Segment::new("Keplorayx browser"), ctl::Segment::new("Both")],
                     match choice {
                         BrowserChoice::Ego => 0,
                         BrowserChoice::Dove => 1,

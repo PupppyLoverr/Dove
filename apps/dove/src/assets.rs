@@ -96,9 +96,9 @@ const FONTS: &[&[u8]] = &[
     include_bytes!("../assets/fonts/GeistMono-Medium.ttf"),
 ];
 
-/// The natural dove mark, decoded from the embedded photo.
+/// The Keplorayx (K22) app icon: the ringed planet on its squircle.
 pub fn brand_icon() -> Option<image::RgbaImage> {
-    image::load_from_memory(include_bytes!("../assets/dove-icon.jpg")).ok().map(|img| img.to_rgba8())
+    image::load_from_memory(include_bytes!("../assets/keplorayx-icon.png")).ok().map(|img| img.to_rgba8())
 }
 
 /// `brand_icon` scaled to a square, for the tray and other small slots.

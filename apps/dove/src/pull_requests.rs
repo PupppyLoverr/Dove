@@ -345,7 +345,7 @@ impl Render for PullRequestsPage {
                     if installed {
                         "Sign in to GitHub once so Dove can list, open and merge pull requests.".into()
                     } else {
-                        "Dove works with pull requests through the GitHub CLI (gh).".into()
+                        "Keplorayx works with pull requests through the GitHub CLI (gh).".into()
                     }
                 });
                 let primary = if installed {

@@ -42,7 +42,7 @@ impl Host for AppHost {
                     .unwrap_or(Decision::Unavailable { reason: format!("Dove answered {text:?}") })
             }
             Ok(v) => Decision::Unavailable {
-                reason: v.get("text").and_then(Value::as_str).unwrap_or("Dove refused the request").to_string(),
+                reason: v.get("text").and_then(Value::as_str).unwrap_or("Keplorayx refused the request").to_string(),
             },
             Err(e) => Decision::Unavailable { reason: e },
         }

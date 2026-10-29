@@ -91,7 +91,7 @@ pub fn apply(store: &dove_core::store::Store) {
     match (on, binding) {
         (true, Some(b)) => {
             if let Err(e) = set(Some(&b)) {
-                tracing::info!("voice call shortcut outside Dove: {e}");
+                tracing::info!("voice call shortcut outside Keplorayx: {e}");
             }
         }
         _ => {

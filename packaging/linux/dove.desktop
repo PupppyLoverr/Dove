@@ -1,7 +1,7 @@
 [Desktop Entry]
 Type=Application
-Name=Dove
-Comment=Desktop environment for coding agents
+Name=Keplorayx
+Comment=Keplorayx (K22), a desktop environment for coding agents
 Exec=dove %U
 Icon=dove
 Terminal=false
