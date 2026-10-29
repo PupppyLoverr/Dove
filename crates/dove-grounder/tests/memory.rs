@@ -28,12 +28,9 @@ fn status_kb(key: &str) -> u64 {
 
 /// The real pages and their goals, as observations.
 fn pages() -> Vec<(Observation, Vec<String>)> {
-    let path =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/goldens/nexi-cua-0.4.0.json.gz");
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/goldens/nexi-cua-0.4.0.json.gz");
     let mut text = String::new();
-    flate2::read::GzDecoder::new(std::fs::File::open(path).unwrap())
-        .read_to_string(&mut text)
-        .unwrap();
+    flate2::read::GzDecoder::new(std::fs::File::open(path).unwrap()).read_to_string(&mut text).unwrap();
     let g: Value = serde_json::from_str(&text).unwrap();
     g["real"]
         .as_array()
@@ -64,12 +61,8 @@ fn pages() -> Vec<(Observation, Vec<String>)> {
                     ..Default::default()
                 })
                 .collect();
-            let goals = page["cases"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|c| c["goal"].as_str().unwrap().to_owned())
-                .collect();
+            let goals =
+                page["cases"].as_array().unwrap().iter().map(|c| c["goal"].as_str().unwrap().to_owned()).collect();
             let obs = Observation {
                 elements,
                 screen_w: page["obs"]["sw"].as_i64().unwrap(),
@@ -95,10 +88,7 @@ fn grounder_adds_under_30_mb_and_unloads_when_idle() {
     // Reset VmHWM to the current RSS (Linux >= 4.0).
     std::fs::write("/proc/self/clear_refs", "5").expect("reset the peak RSS mark");
     let base = status_kb("VmRSS:");
-    let grounder = Arc::new(Grounder::new(
-        PathBuf::from(path),
-        Duration::from_millis(400),
-    ));
+    let grounder = Arc::new(Grounder::new(PathBuf::from(path), Duration::from_millis(400)));
     let started = Instant::now();
     for _ in 0..3 {
         for (obs, goals) in &pages {
@@ -119,10 +109,7 @@ fn grounder_adds_under_30_mb_and_unloads_when_idle() {
     if cfg!(debug_assertions) {
         eprintln!("debug build: the {BUDGET_KB} kB budget is checked with --release");
     } else {
-        assert!(
-            added < BUDGET_KB,
-            "the grounder added {added} kB, budget {BUDGET_KB} kB"
-        );
+        assert!(added < BUDGET_KB, "the grounder added {added} kB, budget {BUDGET_KB} kB");
     }
 
     assert!(grounder.is_loaded());
@@ -130,10 +117,7 @@ fn grounder_adds_under_30_mb_and_unloads_when_idle() {
     while grounder.is_loaded() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(50));
     }
-    assert!(
-        !grounder.is_loaded(),
-        "the grounder did not unload after 400 ms idle"
-    );
+    assert!(!grounder.is_loaded(), "the grounder did not unload after 400 ms idle");
     // It loads again on demand.
     let (obs, goals) = &pages[0];
     assert!(!grounder.decide(obs, &goals[0]).reason.contains("loading"));

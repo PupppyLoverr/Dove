@@ -7,8 +7,26 @@ use serde_json::{Value, json};
 pub const NAME: &str = "computer";
 
 pub const ACTIONS: &[&str] = &[
-    "capture", "click", "double_click", "right_click", "middle_click", "drag", "scroll", "type", "key", "set_value",
-    "run", "act", "verify", "wait", "list_apps", "list_windows", "focus_app", "save_replay", "replay", "list_replays",
+    "capture",
+    "click",
+    "double_click",
+    "right_click",
+    "middle_click",
+    "drag",
+    "scroll",
+    "type",
+    "key",
+    "set_value",
+    "run",
+    "act",
+    "verify",
+    "wait",
+    "list_apps",
+    "list_windows",
+    "focus_app",
+    "save_replay",
+    "replay",
+    "list_replays",
 ];
 
 const DESCRIPTION: &str = "Operate native desktop apps (Windows, macOS, Linux) in the background: the user keeps their \
@@ -75,8 +93,14 @@ mod tests {
         let text = serde_json::to_string_pretty(&schema()).unwrap();
         // Regenerate on purpose: DOVE_BLESS_SCHEMA=1 cargo test -p dove-computer schema
         if std::env::var_os("DOVE_BLESS_SCHEMA").is_some() {
-            std::fs::write(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/golden/schema.json"), format!("{text}
-")).unwrap();
+            std::fs::write(
+                concat!(env!("CARGO_MANIFEST_DIR"), "/tests/golden/schema.json"),
+                format!(
+                    "{text}
+"
+                ),
+            )
+            .unwrap();
             return;
         }
         let golden = include_str!("../tests/golden/schema.json");

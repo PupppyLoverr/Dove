@@ -53,8 +53,12 @@ impl FakeDriver {
         Self::new(
             "Notepad",
             "Untitled - Notepad",
-            json!([row(0, "MenuItem", "File", (0, 0, 40, 20)), row(1, "Edit", "Text editor", (0, 40, 600, 400)),
-                row(2, "Button", "Save", (10, 5, 60, 24)), row(3, "Edit", "Search", (80, 5, 200, 24))]),
+            json!([
+                row(0, "MenuItem", "File", (0, 0, 40, 20)),
+                row(1, "Edit", "Text editor", (0, 40, 600, 400)),
+                row(2, "Button", "Save", (10, 5, 60, 24)),
+                row(3, "Edit", "Search", (80, 5, 200, 24))
+            ]),
         )
     }
 
@@ -68,7 +72,10 @@ impl FakeDriver {
         Self::new(
             "Notepad",
             "Untitled - Notepad",
-            json!([row(0, "Document", "Text editor", (-31992, -31907, 600, 400)), row(1, "Button", "Save", (-31990, -31990, 60, 24))]),
+            json!([
+                row(0, "Document", "Text editor", (-31992, -31907, 600, 400)),
+                row(1, "Button", "Save", (-31990, -31990, 60, 24))
+            ]),
         )
     }
 
@@ -77,8 +84,12 @@ impl FakeDriver {
         Self::new(
             "Bank",
             "Sign in",
-            json!([row(1, "Edit", "User name", (10, 10, 200, 24)), row(2, "Edit", "Password", (10, 40, 200, 24)),
-                row(3, "Button", "Sign in", (10, 70, 80, 24)), row(4, "Button", "Delete account", (100, 70, 120, 24))]),
+            json!([
+                row(1, "Edit", "User name", (10, 10, 200, 24)),
+                row(2, "Edit", "Password", (10, 40, 200, 24)),
+                row(3, "Button", "Sign in", (10, 70, 80, 24)),
+                row(4, "Button", "Delete account", (100, 70, 120, 24))
+            ]),
         )
     }
 
@@ -93,7 +104,19 @@ impl FakeDriver {
 
 impl Driver for FakeDriver {
     fn list_tools(&mut self) -> Result<Vec<Value>, String> {
-        let pointer = ["session", "pid", "window_id", "element_token", "x", "y", "button", "count", "modifier", "delivery_mode", "scope"];
+        let pointer = [
+            "session",
+            "pid",
+            "window_id",
+            "element_token",
+            "x",
+            "y",
+            "button",
+            "count",
+            "modifier",
+            "delivery_mode",
+            "scope",
+        ];
         Ok(vec![
             json!({"name": "start_session", "inputSchema": props(&["session"])}),
             json!({"name": "end_session", "inputSchema": props(&["session"])}),
@@ -133,7 +156,10 @@ impl Driver for FakeDriver {
                 if tree && args.get("since").is_some() {
                     // As stock 0.38 answers a markdown `since` read: the diff
                     // text, no elements. A change also changes the rows.
-                    let (diff, sid) = self.next_diff.take().unwrap_or_else(|| ("no change since s0000000a".into(), "s0000000b".into()));
+                    let (diff, sid) = self
+                        .next_diff
+                        .take()
+                        .unwrap_or_else(|| ("no change since s0000000a".into(), "s0000000b".into()));
                     let status = if diff.starts_with("no change") { "no_change" } else { "diff" };
                     if status == "diff" {
                         let rows = self.rows.as_array_mut().expect("rows");
@@ -154,11 +180,16 @@ impl Driver for FakeDriver {
                 }
                 let mut r = Self::ok(s, "window state");
                 if shot {
-                    r["content"].as_array_mut().expect("content").push(json!({"type": "image", "data": png(64, 48), "mimeType": "image/png"}));
+                    r["content"]
+                        .as_array_mut()
+                        .expect("content")
+                        .push(json!({"type": "image", "data": png(64, 48), "mimeType": "image/png"}));
                 }
                 r
             }
-            "get_desktop_state" => json!({"content": [{"type": "image", "data": png(64, 48), "mimeType": "image/png"}], "isError": false}),
+            "get_desktop_state" => {
+                json!({"content": [{"type": "image", "data": png(64, 48), "mimeType": "image/png"}], "isError": false})
+            }
             "run_steps" => {
                 let mut s = json!({"ok": true, "total": args["steps"].as_array().map_or(0, Vec::len), "executed": 1, "failed_step": null});
                 if args.get("observe").is_some() {

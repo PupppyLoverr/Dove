@@ -43,8 +43,7 @@ pub struct Model {
 
 impl Model {
     pub fn load(path: &Path) -> TractResult<Self> {
-        let mut file =
-            std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
+        let mut file = std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
         Self::read(&mut file)
     }
 
@@ -63,14 +62,9 @@ impl Model {
                 .with_context(|| format!("reading {key}"))
         };
         // nexi-cua-1.calib.json, carried in the file.
-        let calibration = Calibration {
-            temperature: metadata("temperature")?,
-            abstain_threshold: metadata("abstain_threshold")?,
-        };
-        let graph = proto
-            .graph
-            .as_mut()
-            .ok_or_else(|| anyhow!("the model file has no graph"))?;
+        let calibration =
+            Calibration { temperature: metadata("temperature")?, abstain_threshold: metadata("abstain_threshold")? };
+        let graph = proto.graph.as_mut().ok_or_else(|| anyhow!("the model file has no graph"))?;
         // Inside a block so the proto's copies and the untransposed weight
         // are freed before tract builds its own model.
         let (text_weight, text_bias) = {
@@ -89,18 +83,10 @@ impl Model {
             text_bias.copy_from_slice(&bias);
             (text_weight, text_bias)
         };
-        let plan = onnx
-            .model_for_proto_model(&proto)?
-            .into_optimized()?
-            .into_runnable()?;
+        let plan = onnx.model_for_proto_model(&proto)?.into_optimized()?.into_runnable()?;
         drop(proto);
         release_free_memory();
-        Ok(Self {
-            calibration,
-            plan,
-            text_weight,
-            text_bias,
-        })
+        Ok(Self { calibration, plan, text_weight, text_bias })
     }
 
     /// `text_proj(text_features(...))` for one sparse vector.
@@ -138,11 +124,7 @@ impl Model {
         // the attention sees is that padding row, so feed one of it.
         let pad;
         let (role_idx, elem_text, numeric) = if batch.role_idx.is_empty() {
-            pad = (
-                vec![0i64],
-                vec![SparseText::new()],
-                vec![[0f32; NUMERIC_DIM]],
-            );
+            pad = (vec![0i64], vec![SparseText::new()], vec![[0f32; NUMERIC_DIM]]);
             (&pad.0, &pad.1, &pad.2)
         } else {
             (&batch.role_idx, &batch.elem_text, &batch.numeric)
@@ -150,8 +132,7 @@ impl Model {
         let k = role_idx.len();
         let numeric_flat: Vec<f32> = numeric.iter().flatten().copied().collect();
         let inputs: TVec<TValue> = tvec![
-            self.project_rows(std::slice::from_ref(&batch.goal_text))?
-                .into(),
+            self.project_rows(std::slice::from_ref(&batch.goal_text))?.into(),
             self.project_rows(elem_text)?.into(),
             Tensor::from_shape(&[k], role_idx)?.into(),
             Tensor::from_shape(&[k, NUMERIC_DIM], &numeric_flat)?.into(),
@@ -160,16 +141,8 @@ impl Model {
             self.project_rows(&batch.arg_text)?.into(),
         ];
         let outputs = self.plan.run(inputs)?;
-        let logits = outputs[0]
-            .to_plain_array_view::<f32>()?
-            .iter()
-            .copied()
-            .collect();
-        let corr = outputs[1]
-            .to_plain_array_view::<f32>()?
-            .iter()
-            .copied()
-            .collect();
+        let logits = outputs[0].to_plain_array_view::<f32>()?.iter().copied().collect();
+        let corr = outputs[1].to_plain_array_view::<f32>()?.iter().copied().collect();
         Ok((logits, corr))
     }
 }
@@ -186,10 +159,7 @@ pub fn release_free_memory() {
 }
 
 fn take_initializer(list: &mut Vec<TensorProto>, name: &str) -> TractResult<TensorProto> {
-    let at = list
-        .iter()
-        .position(|t| t.name == name)
-        .ok_or_else(|| anyhow!("the model file has no {name}"))?;
+    let at = list.iter().position(|t| t.name == name).ok_or_else(|| anyhow!("the model file has no {name}"))?;
     Ok(list.remove(at))
 }
 
@@ -211,19 +181,11 @@ fn weights_f32(tensor: &TensorProto, shape: &[usize]) -> TractResult<Vec<f32>> {
         }
         // Without raw_data, ONNX keeps fp16 bit patterns in int32_data.
         if tensor.int32_data.len() == count {
-            return Ok(tensor
-                .int32_data
-                .iter()
-                .map(|v| f16::from_bits(*v as u16).to_f32())
-                .collect());
+            return Ok(tensor.int32_data.iter().map(|v| f16::from_bits(*v as u16).to_f32()).collect());
         }
     } else if tensor.data_type == DataType::Float as i32 {
         if tensor.raw_data.len() == count * 4 {
-            return Ok(tensor
-                .raw_data
-                .chunks_exact(4)
-                .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
-                .collect());
+            return Ok(tensor.raw_data.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect());
         }
         if tensor.float_data.len() == count {
             return Ok(tensor.float_data.clone());

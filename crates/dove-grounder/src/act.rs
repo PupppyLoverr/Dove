@@ -19,10 +19,7 @@ pub const MAX_CANDIDATES: usize = 5;
 #[derive(Clone, Debug, PartialEq)]
 pub enum Plan {
     /// Call `tool` with `args` (pid, window_id and session still to add).
-    Tool {
-        tool: &'static str,
-        args: Map<String, Value>,
-    },
+    Tool { tool: &'static str, args: Map<String, Value> },
     /// Pause, then report.
     Wait { ms: u64 },
     /// The intent says the task is finished: nothing to do.
@@ -46,10 +43,9 @@ impl Grounding {
     pub fn summary(&self) -> String {
         let how = match self.decision.decided_by {
             DecidedBy::Resolver => "resolver".to_owned(),
-            DecidedBy::Ranker => format!(
-                "NEXI-CUA-1 p={:.2} confidence={:.2}",
-                self.decision.probability, self.decision.confidence
-            ),
+            DecidedBy::Ranker => {
+                format!("NEXI-CUA-1 p={:.2} confidence={:.2}", self.decision.probability, self.decision.confidence)
+            }
             DecidedBy::NoCandidates => "no candidates".to_owned(),
         };
         match &self.plan {
@@ -79,42 +75,26 @@ pub fn ground_with(grounder: Option<&Arc<Grounder>>, rows: &[Value], intent: &st
 pub fn plan_decision(decision: Decision, by_id: &HashMap<String, Row>) -> Grounding {
     let abstain = |decision: Decision, reason: String| {
         let candidates = candidate_rows(&decision, by_id);
-        Grounding {
-            decision,
-            plan: Plan::Abstain { reason },
-            target: None,
-            candidates,
-        }
+        Grounding { decision, plan: Plan::Abstain { reason }, target: None, candidates }
     };
     let action = match (&decision.action, decision.abstain) {
         (Some(action), false) => action.clone(),
         _ => {
-            let reason = if decision.reason.is_empty() {
-                "no confident action".to_owned()
-            } else {
-                decision.reason.clone()
-            };
+            let reason =
+                if decision.reason.is_empty() { "no confident action".to_owned() } else { decision.reason.clone() };
             return abstain(decision, reason);
         }
     };
     let row = action.element_id.as_deref().and_then(|id| by_id.get(id));
     match plan_action(&action, row) {
-        Ok(plan) => Grounding {
-            target: row.map(|r| describe(r)),
-            decision,
-            plan,
-            candidates: Vec::new(),
-        },
+        Ok(plan) => Grounding { target: row.map(|r| describe(r)), decision, plan, candidates: Vec::new() },
         Err(reason) => abstain(decision, reason),
     }
 }
 
 fn token_args(row: Option<&Row>) -> Result<Map<String, Value>, String> {
     let row = row.ok_or("the decision names no element")?;
-    let token = row
-        .token
-        .as_deref()
-        .ok_or_else(|| format!("row {} has no element_token", row.index))?;
+    let token = row.token.as_deref().ok_or_else(|| format!("row {} has no element_token", row.index))?;
     let mut args = Map::new();
     args.insert("element_token".into(), json!(token));
     Ok(args)
@@ -140,31 +120,17 @@ pub fn plan_action(action: &Action, row: Option<&Row>) -> Result<Plan, String> {
         Verb::RightClick => tool("right_click", token_args(row)?),
         Verb::Type | Verb::Select => {
             if action.text.is_empty() || action.text.starts_with('\u{0}') {
-                return Err(format!(
-                    "{} needs text: put it in quotes in the intent",
-                    action.verb.as_str()
-                ));
+                return Err(format!("{} needs text: put it in quotes in the intent", action.verb.as_str()));
             }
             let mut args = token_args(row)?;
             args.insert("value".into(), json!(action.text));
             tool("set_value", args)
         }
         Verb::Scroll => {
-            let mut args = if row.is_some() {
-                token_args(row)?
-            } else {
-                Map::new()
-            };
-            let direction = if action.direction.is_empty() {
-                "down"
-            } else {
-                action.direction.as_str()
-            };
+            let mut args = if row.is_some() { token_args(row)? } else { Map::new() };
+            let direction = if action.direction.is_empty() { "down" } else { action.direction.as_str() };
             args.insert("direction".into(), json!(direction));
-            args.insert(
-                "amount".into(),
-                json!(action.amount.round().clamp(1.0, 50.0) as u64),
-            );
+            args.insert("amount".into(), json!(action.amount.round().clamp(1.0, 50.0) as u64));
             tool("scroll", args)
         }
         Verb::Keypress => {
@@ -183,15 +149,10 @@ pub fn plan_action(action: &Action, row: Option<&Row>) -> Result<Plan, String> {
                 }
             }
         }
-        Verb::Wait => Ok(Plan::Wait {
-            ms: action.wait_ms.clamp(0, 10_000) as u64,
-        }),
+        Verb::Wait => Ok(Plan::Wait { ms: action.wait_ms.clamp(0, 10_000) as u64 }),
         Verb::Done => Ok(Plan::Done),
         Verb::Drag => Err("drag takes coordinates; act does not drag".into()),
-        verb => Err(format!(
-            "{} is a browser-session action; use the browser tools",
-            verb.as_str()
-        )),
+        verb => Err(format!("{} is a browser-session action; use the browser tools", verb.as_str())),
     }
 }
 
@@ -224,10 +185,8 @@ pub fn candidate_rows(decision: &Decision, by_id: &HashMap<String, Row>) -> Vec<
             continue;
         }
         seen.push(key);
-        let readable = text
-            .replace("\u{0}ARG", "<text>")
-            .replace("\u{0}DST", "<target>")
-            .replace("\u{0}KEYS", "<keys>");
+        let readable =
+            text.replace("\u{0}ARG", "<text>").replace("\u{0}DST", "<target>").replace("\u{0}KEYS", "<keys>");
         let mut entry = json!({
             "action": readable,
             "verb": action.verb.as_str(),
@@ -258,11 +217,7 @@ mod tests {
     }
 
     fn el(id: &str) -> Element {
-        Element {
-            id: id.into(),
-            name: "Save".into(),
-            ..Default::default()
-        }
+        Element { id: id.into(), name: "Save".into(), ..Default::default() }
     }
 
     #[test]
@@ -271,39 +226,19 @@ mod tests {
         let click = Action::on(Verb::Click, &el("3"));
         assert_eq!(
             plan_action(&click, Some(&r)).unwrap(),
-            Plan::Tool {
-                tool: "click",
-                args: json!({"element_token": "s1:3"})
-                    .as_object()
-                    .unwrap()
-                    .clone()
-            }
+            Plan::Tool { tool: "click", args: json!({"element_token": "s1:3"}).as_object().unwrap().clone() }
         );
         let typed = Action::on(Verb::Type, &el("3")).with_text("hello");
-        let Plan::Tool { tool, args } = plan_action(&typed, Some(&r)).unwrap() else {
-            panic!()
-        };
+        let Plan::Tool { tool, args } = plan_action(&typed, Some(&r)).unwrap() else { panic!() };
         assert_eq!((tool, &args["value"]), ("set_value", &json!("hello")));
         assert!(plan_action(&Action::on(Verb::Type, &el("3")), Some(&r)).is_err());
         let chord = Action::new(Verb::Keypress).with_keys(vec!["cmd".into(), "z".into()]);
-        let Plan::Tool { tool, args } = plan_action(&chord, None).unwrap() else {
-            panic!()
-        };
+        let Plan::Tool { tool, args } = plan_action(&chord, None).unwrap() else { panic!() };
         assert_eq!(tool, "hotkey");
-        let expected = if cfg!(target_os = "macos") {
-            "cmd"
-        } else {
-            "ctrl"
-        };
+        let expected = if cfg!(target_os = "macos") { "cmd" } else { "ctrl" };
         assert_eq!(args["keys"], json!([expected, "z"]));
         let enter = Action::new(Verb::Keypress).with_keys(vec!["enter".into()]);
-        assert!(matches!(
-            plan_action(&enter, None),
-            Ok(Plan::Tool {
-                tool: "press_key",
-                ..
-            })
-        ));
+        assert!(matches!(plan_action(&enter, None), Ok(Plan::Tool { tool: "press_key", .. })));
         assert_eq!(plan_action(&Action::new(Verb::Done), None), Ok(Plan::Done));
         assert!(plan_action(&Action::new(Verb::Back), None).is_err());
     }
@@ -312,11 +247,8 @@ mod tests {
     fn abstentions_list_candidate_rows_once_each() {
         let mut by_id = HashMap::new();
         by_id.insert("3".to_owned(), row(3));
-        let cands = vec![
-            Action::on(Verb::Click, &el("3")),
-            Action::on(Verb::DoubleClick, &el("3")),
-            Action::new(Verb::Wait),
-        ];
+        let cands =
+            vec![Action::on(Verb::Click, &el("3")), Action::on(Verb::DoubleClick, &el("3")), Action::new(Verb::Wait)];
         let decision = Decision {
             action: None,
             probability: 0.4,
@@ -324,11 +256,7 @@ mod tests {
             abstain: true,
             reason: "max correctness 0.10 < 0.52".into(),
             decided_by: DecidedBy::Ranker,
-            top_k: vec![
-                (0, cands[0].to_string(), 0.4),
-                (1, cands[1].to_string(), 0.3),
-                (2, cands[2].to_string(), 0.2),
-            ],
+            top_k: vec![(0, cands[0].to_string(), 0.4), (1, cands[1].to_string(), 0.3), (2, cands[2].to_string(), 0.2)],
             candidates: cands,
             latency_ms: 0.0,
         };

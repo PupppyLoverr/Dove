@@ -17,11 +17,7 @@ pub fn nexi_role(role: &str) -> &'static str {
     if let Some(ax) = role.strip_prefix("AX") {
         return ax_role(ax);
     }
-    let folded: String = role
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric())
-        .map(|c| c.to_ascii_lowercase())
-        .collect();
+    let folded: String = role.chars().filter(|c| c.is_ascii_alphanumeric()).map(|c| c.to_ascii_lowercase()).collect();
     match folded.as_str() {
         // UIA control types (`Button`, `Edit`, ...) and AT-SPI role names
         // (`push button`, `entry`, ...), folded to lowercase without spaces.
@@ -39,9 +35,7 @@ pub fn nexi_role(role: &str) -> &'static str {
         "listitem" => "listitem",
         "option" => "option",
         "menu" => "menu",
-        "menuitem" | "menuitemcheckbox" | "menuitemradio" | "checkmenuitem" | "radiomenuitem" => {
-            "menuitem"
-        }
+        "menuitem" | "menuitemcheckbox" | "menuitemradio" | "checkmenuitem" | "radiomenuitem" => "menuitem",
         "menubar" => "menubar",
         "tabitem" | "pagetab" | "tab" => "tab",
         "pagetablist" | "tablist" => "tabgroup",
@@ -130,12 +124,7 @@ fn ax_role(ax: &str) -> &'static str {
 fn frame(row: &Value) -> Option<Bounds> {
     let f = row.get("frame")?;
     let get = |a: &str, b: &str| f.get(a).or_else(|| f.get(b)).and_then(Value::as_f64);
-    Some(Bounds {
-        x: get("x", "left")?,
-        y: get("y", "top")?,
-        w: get("w", "width")?,
-        h: get("h", "height")?,
-    })
+    Some(Bounds { x: get("x", "left")?, y: get("y", "top")?, w: get("w", "width")?, h: get("h", "height")? })
 }
 
 /// A checkable control's state from its value ("1"/"0", "true"/"false",
@@ -144,13 +133,12 @@ fn checked(role: &str, row: &Value) -> Option<bool> {
     if !matches!(role, "checkbox" | "radio" | "switch" | "toggle") {
         return None;
     }
-    let from_value = row.get("value").and_then(Value::as_str).and_then(|v| {
-        match v.trim().to_ascii_lowercase().as_str() {
+    let from_value =
+        row.get("value").and_then(Value::as_str).and_then(|v| match v.trim().to_ascii_lowercase().as_str() {
             "1" | "true" | "on" | "checked" => Some(true),
             "0" | "false" | "off" | "unchecked" => Some(false),
             _ => None,
-        }
-    });
+        });
     from_value.or_else(|| row.get("selected").and_then(Value::as_bool))
 }
 
@@ -160,11 +148,8 @@ fn checked(role: &str, row: &Value) -> Option<bool> {
 /// can take a value; otherwise typing would target a field's label.
 fn row_role(raw_role: &str, row: &Value) -> &'static str {
     let role = nexi_role(raw_role);
-    let folded: String = raw_role
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric())
-        .map(|c| c.to_ascii_lowercase())
-        .collect();
+    let folded: String =
+        raw_role.chars().filter(|c| c.is_ascii_alphanumeric()).map(|c| c.to_ascii_lowercase()).collect();
     if role == "textfield" && folded == "text" {
         let editable = row
             .get("actions")
@@ -194,20 +179,11 @@ pub fn observation(rows: &[Value], goal: &str) -> (Observation, HashMap<String, 
             *children.entry(parent).or_default() += 1;
         }
     }
-    let frames: Vec<Bounds> = rows
-        .iter()
-        .filter_map(frame)
-        .filter(|b| b.w > 0.0 && b.h > 0.0)
-        .collect();
-    let (x0, y0, x1, y1) = frames.iter().fold(
-        (
-            f64::INFINITY,
-            f64::INFINITY,
-            f64::NEG_INFINITY,
-            f64::NEG_INFINITY,
-        ),
-        |(a, b, c, d), f| (a.min(f.x), b.min(f.y), c.max(f.x + f.w), d.max(f.y + f.h)),
-    );
+    let frames: Vec<Bounds> = rows.iter().filter_map(frame).filter(|b| b.w > 0.0 && b.h > 0.0).collect();
+    let (x0, y0, x1, y1) =
+        frames.iter().fold((f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY), |(a, b, c, d), f| {
+            (a.min(f.x), b.min(f.y), c.max(f.x + f.w), d.max(f.y + f.h))
+        });
     let has_extent = x1 > x0 && y1 > y0;
     let mut elements = Vec::with_capacity(rows.len());
     let mut by_id = HashMap::new();
@@ -217,12 +193,7 @@ pub fn observation(rows: &[Value], goal: &str) -> (Observation, HashMap<String, 
         };
         let raw_role = row.get("role").and_then(Value::as_str).unwrap_or("");
         let role = row_role(raw_role, row);
-        let text = |key: &str| {
-            row.get(key)
-                .and_then(Value::as_str)
-                .map(|s| s.trim().to_owned())
-                .unwrap_or_default()
-        };
+        let text = |key: &str| row.get(key).and_then(Value::as_str).map(|s| s.trim().to_owned()).unwrap_or_default();
         let mut extra = Map::new();
         if row.get("in_web_content").and_then(Value::as_bool) == Some(true) {
             extra.insert("web".into(), Value::Bool(true));
@@ -233,24 +204,11 @@ pub fn observation(rows: &[Value], goal: &str) -> (Observation, HashMap<String, 
             role: role.to_owned(),
             name: text("label"),
             value: text("value"),
-            bounds: frame(row).map(|b| {
-                if has_extent {
-                    Bounds {
-                        x: b.x - x0,
-                        y: b.y - y0,
-                        ..b
-                    }
-                } else {
-                    b
-                }
-            }),
+            bounds: frame(row).map(|b| if has_extent { Bounds { x: b.x - x0, y: b.y - y0, ..b } } else { b }),
             enabled: row.get("enabled").and_then(Value::as_bool).unwrap_or(true),
             focused: row.get("focused").and_then(Value::as_bool).unwrap_or(false),
             checked: checked(role, row),
-            selected: row
-                .get("selected")
-                .and_then(Value::as_bool)
-                .unwrap_or(false),
+            selected: row.get("selected").and_then(Value::as_bool).unwrap_or(false),
             children_count: children.get(&index).copied().unwrap_or(0),
             source: "a11y".into(),
             depth: row.get("depth").and_then(Value::as_i64).unwrap_or(0),
@@ -258,31 +216,11 @@ pub fn observation(rows: &[Value], goal: &str) -> (Observation, HashMap<String, 
         });
         by_id.insert(
             id,
-            Row {
-                index,
-                token: row
-                    .get("element_token")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned),
-                raw: row.clone(),
-            },
+            Row { index, token: row.get("element_token").and_then(Value::as_str).map(str::to_owned), raw: row.clone() },
         );
     }
-    let (screen_w, screen_h) = if has_extent {
-        ((x1 - x0).round() as i64, (y1 - y0).round() as i64)
-    } else {
-        (0, 0)
-    };
-    (
-        Observation {
-            goal: goal.to_owned(),
-            elements,
-            browser: None,
-            screen_w,
-            screen_h,
-        },
-        by_id,
-    )
+    let (screen_w, screen_h) = if has_extent { ((x1 - x0).round() as i64, (y1 - y0).round() as i64) } else { (0, 0) };
+    (Observation { goal: goal.to_owned(), elements, browser: None, screen_w, screen_h }, by_id)
 }
 
 #[cfg(test)]

@@ -36,10 +36,7 @@ impl PyRandom {
         if key.is_empty() {
             key.push(0);
         }
-        let mut rng = Self {
-            mt: [0; N],
-            index: N,
-        };
+        let mut rng = Self { mt: [0; N], index: N };
         rng.init_by_array(&key);
         rng
     }
@@ -49,9 +46,7 @@ impl PyRandom {
         self.mt[0] = s;
         for i in 1..N {
             let prev = self.mt[i - 1];
-            self.mt[i] = 1_812_433_253u32
-                .wrapping_mul(prev ^ (prev >> 30))
-                .wrapping_add(i as u32);
+            self.mt[i] = 1_812_433_253u32.wrapping_mul(prev ^ (prev >> 30)).wrapping_add(i as u32);
         }
         self.index = N;
     }
@@ -79,8 +74,7 @@ impl PyRandom {
         }
         for _ in 0..N - 1 {
             let prev = self.mt[i - 1];
-            self.mt[i] = (self.mt[i] ^ (prev ^ (prev >> 30)).wrapping_mul(1_566_083_941))
-                .wrapping_sub(i as u32);
+            self.mt[i] = (self.mt[i] ^ (prev ^ (prev >> 30)).wrapping_mul(1_566_083_941)).wrapping_sub(i as u32);
             i += 1;
             if i >= N {
                 self.mt[0] = self.mt[N - 1];
@@ -239,39 +233,12 @@ mod tests {
     fn matches_cpython_stream() {
         let mut r = PyRandom::new(31337);
         let bits: Vec<u64> = (0..3).map(|_| r.random().to_bits()).collect();
-        assert_eq!(
-            bits,
-            [0x3fe5c260ba04740a, 0x3fc5dab974d447c8, 0x3fee5f455e60df75]
-        );
-        let got: Vec<u128> = [1, 7, 32, 33, 64, 100]
-            .iter()
-            .map(|&k| r.getrandbits(k))
-            .collect();
-        assert_eq!(
-            got,
-            [
-                0,
-                26,
-                3551084662,
-                772076153,
-                10234245951101125297,
-                1155756214032968201439001130643
-            ]
-        );
-        let got: Vec<u64> = [1, 2, 3, 10, 1000, (1 << 40) + 3]
-            .iter()
-            .map(|&n| r.randbelow(n))
-            .collect();
+        assert_eq!(bits, [0x3fe5c260ba04740a, 0x3fc5dab974d447c8, 0x3fee5f455e60df75]);
+        let got: Vec<u128> = [1, 7, 32, 33, 64, 100].iter().map(|&k| r.getrandbits(k)).collect();
+        assert_eq!(got, [0, 26, 3551084662, 772076153, 10234245951101125297, 1155756214032968201439001130643]);
+        let got: Vec<u64> = [1, 2, 3, 10, 1000, (1 << 40) + 3].iter().map(|&n| r.randbelow(n)).collect();
         assert_eq!(got, [0, 1, 0, 0, 82, 410729249105]);
-        assert_eq!(
-            [
-                r.randrange(7),
-                r.randrange2(3, 9),
-                r.randint(99, 999),
-                r.randint(1, 99999)
-            ],
-            [6, 3, 805, 20384]
-        );
+        assert_eq!([r.randrange(7), r.randrange2(3, 9), r.randint(99, 999), r.randint(1, 99999)], [6, 3, 805, 20384]);
         let letters: Vec<char> = "abcdefg".chars().collect();
         let got: String = (0..5).map(|_| *r.choice(&letters)).collect();
         assert_eq!(got, "dgbdb");
@@ -297,23 +264,11 @@ mod tests {
             (1 << 32, 485306839, 0x3fbced31cb3df170),
             ((1 << 32) + 5, 675479763, 0x3fc4218067c49768),
             ((1 << 64) + 7, 4134331577, 0x3feecd9c9456e992),
-            (
-                123456789012345678901234567890,
-                3124625047,
-                0x3fe747bfd0e1ccc9,
-            ),
+            (123456789012345678901234567890, 3124625047, 0x3fe747bfd0e1ccc9),
         ];
         for (seed, word, bits) in cases {
-            assert_eq!(
-                PyRandom::from_u128(seed).getrandbits(32),
-                word,
-                "seed {seed}"
-            );
-            assert_eq!(
-                PyRandom::from_u128(seed).random().to_bits(),
-                bits,
-                "seed {seed}"
-            );
+            assert_eq!(PyRandom::from_u128(seed).getrandbits(32), word, "seed {seed}");
+            assert_eq!(PyRandom::from_u128(seed).random().to_bits(), bits, "seed {seed}");
         }
     }
 }

@@ -66,12 +66,7 @@ impl Grounder {
     }
 
     fn with_source(source: Source, idle: Duration) -> Self {
-        Self {
-            source,
-            idle,
-            loaded: Mutex::new(None),
-            reaper_running: Mutex::new(false),
-        }
+        Self { source, idle, loaded: Mutex::new(None), reaper_running: Mutex::new(false) }
     }
 
     /// The asset's file, when it is one.
@@ -84,10 +79,7 @@ impl Grounder {
 
     /// Whether the network is in memory now.
     pub fn is_loaded(&self) -> bool {
-        self.loaded
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .is_some()
+        self.loaded.lock().unwrap_or_else(|e| e.into_inner()).is_some()
     }
 
     /// Drop the network now (it reloads on the next decision).
@@ -103,17 +95,12 @@ impl Grounder {
             return Ok(loaded.model.clone());
         }
         let loaded = match &self.source {
-            Source::File(path) => {
-                Model::load(path).map_err(|e| format!("loading {}: {e:#}", path.display()))
-            }
+            Source::File(path) => Model::load(path).map_err(|e| format!("loading {}: {e:#}", path.display())),
             Source::Bytes(bytes) => Model::read(&mut std::io::Cursor::new(*bytes))
                 .map_err(|e| format!("loading the built-in NEXI-CUA-1: {e:#}")),
         };
         let model = Arc::new(loaded?);
-        *slot = Some(Loaded {
-            model: model.clone(),
-            last_used: Instant::now(),
-        });
+        *slot = Some(Loaded { model: model.clone(), last_used: Instant::now() });
         drop(slot);
         self.start_reaper();
         Ok(model)
@@ -121,36 +108,26 @@ impl Grounder {
 
     /// One thread per load: it ends once the network is unloaded.
     fn start_reaper(self: &Arc<Self>) {
-        let mut running = self
-            .reaper_running
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let mut running = self.reaper_running.lock().unwrap_or_else(|e| e.into_inner());
         if *running {
             return;
         }
         *running = true;
         let weak: Weak<Self> = Arc::downgrade(self);
         let tick = (self.idle / 4).clamp(Duration::from_millis(50), Duration::from_secs(30));
-        let spawned = std::thread::Builder::new()
-            .name("dove-grounder-idle".into())
-            .spawn(move || loop {
-                std::thread::sleep(tick);
-                let Some(this) = weak.upgrade() else { return };
-                let mut slot = this.loaded.lock().unwrap_or_else(|e| e.into_inner());
-                let expired = slot
-                    .as_ref()
-                    .is_none_or(|loaded| loaded.last_used.elapsed() >= this.idle);
-                if expired {
-                    *slot = None;
-                    drop(slot);
-                    crate::model::release_free_memory();
-                    *this
-                        .reaper_running
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner()) = false;
-                    return;
-                }
-            });
+        let spawned = std::thread::Builder::new().name("dove-grounder-idle".into()).spawn(move || loop {
+            std::thread::sleep(tick);
+            let Some(this) = weak.upgrade() else { return };
+            let mut slot = this.loaded.lock().unwrap_or_else(|e| e.into_inner());
+            let expired = slot.as_ref().is_none_or(|loaded| loaded.last_used.elapsed() >= this.idle);
+            if expired {
+                *slot = None;
+                drop(slot);
+                crate::model::release_free_memory();
+                *this.reaper_running.lock().unwrap_or_else(|e| e.into_inner()) = false;
+                return;
+            }
+        });
         if spawned.is_err() {
             *running = false;
         }

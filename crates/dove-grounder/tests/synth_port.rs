@@ -68,28 +68,17 @@ fn element_diffs(row: &Value, e: &Element, at: &str, out: &mut Vec<String>) {
     check("selected", same_i64(&r[8], e.selected as i64));
     check("children_count", same_i64(&r[9], e.children_count));
     check("depth", same_i64(&r[10], e.depth));
-    let extra_ok = if e.extra.is_empty() {
-        r[11].is_null()
-    } else {
-        r[11].as_object() == Some(&e.extra)
-    };
+    let extra_ok = if e.extra.is_empty() { r[11].is_null() } else { r[11].as_object() == Some(&e.extra) };
     check("extra", extra_ok);
 }
 
 fn observation_diffs(raw: &Value, obs: &Observation, at: &str, out: &mut Vec<String>) {
     if !same_i64(&raw["sw"], obs.screen_w) || !same_i64(&raw["sh"], obs.screen_h) {
-        out.push(format!(
-            "{at}.screen: python {}x{} rust {}x{}",
-            raw["sw"], raw["sh"], obs.screen_w, obs.screen_h
-        ));
+        out.push(format!("{at}.screen: python {}x{} rust {}x{}", raw["sw"], raw["sh"], obs.screen_w, obs.screen_h));
     }
     let rows = raw["els"].as_array().expect("els");
     if rows.len() != obs.elements.len() {
-        out.push(format!(
-            "{at}.els: python {} elements, rust {}",
-            rows.len(),
-            obs.elements.len()
-        ));
+        out.push(format!("{at}.els: python {} elements, rust {}", rows.len(), obs.elements.len()));
     }
     for (k, (row, e)) in rows.iter().zip(&obs.elements).enumerate() {
         element_diffs(row, e, &format!("{at}.els[{k}]"), out);
@@ -98,34 +87,20 @@ fn observation_diffs(raw: &Value, obs: &Observation, at: &str, out: &mut Vec<Str
         tabs.as_array()
             .expect("tabs")
             .iter()
-            .map(|t| {
-                (
-                    t[0].as_str().unwrap().to_owned(),
-                    t[1].as_str().unwrap().to_owned(),
-                )
-            })
+            .map(|t| (t[0].as_str().unwrap().to_owned(), t[1].as_str().unwrap().to_owned()))
             .collect()
     });
-    let rust_tabs: Option<Vec<(String, String)>> = obs.browser.as_ref().map(|b| {
-        b.tabs
-            .iter()
-            .map(|t| (t.id.clone(), t.title.clone()))
-            .collect()
-    });
+    let rust_tabs: Option<Vec<(String, String)>> =
+        obs.browser.as_ref().map(|b| b.tabs.iter().map(|t| (t.id.clone(), t.title.clone())).collect());
     if python_tabs != rust_tabs {
-        out.push(format!(
-            "{at}.tabs: python {python_tabs:?} rust {rust_tabs:?}"
-        ));
+        out.push(format!("{at}.tabs: python {python_tabs:?} rust {rust_tabs:?}"));
     }
 }
 
 fn sample_diffs(rec: &Value, s: &Sample, at: &str) -> Vec<String> {
     let mut out = Vec::new();
     if rec["goal"].as_str() != Some(s.obs.goal.as_str()) {
-        out.push(format!(
-            "{at}.goal: python {} rust {:?}",
-            rec["goal"], s.obs.goal
-        ));
+        out.push(format!("{at}.goal: python {} rust {:?}", rec["goal"], s.obs.goal));
     }
     observation_diffs(&rec["obs"], &s.obs, &format!("{at}.obs"), &mut out);
     let ours = truth(s);
@@ -163,10 +138,5 @@ fn synthetic_screens_match_python() {
     for line in &shown {
         eprintln!("{line}");
     }
-    assert_eq!(
-        bad,
-        0,
-        "{bad} of {} synthetic samples differ from Python",
-        records.len()
-    );
+    assert_eq!(bad, 0, "{bad} of {} synthetic samples differ from Python", records.len());
 }

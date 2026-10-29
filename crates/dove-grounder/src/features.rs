@@ -77,10 +77,7 @@ pub const ROLE_VOCAB: [&str; 56] = [
 /// `role_index`: position in ROLE_VOCAB, "unknown" otherwise.
 pub fn role_index(role: &str) -> i64 {
     let role = pystr::lower(role);
-    let position = ROLE_VOCAB
-        .iter()
-        .position(|r| *r == role)
-        .unwrap_or(ROLE_VOCAB.len() - 1);
+    let position = ROLE_VOCAB.iter().position(|r| *r == role).unwrap_or(ROLE_VOCAB.len() - 1);
     position as i64
 }
 
@@ -103,9 +100,7 @@ pub fn text_features(text: &str) -> SparseText {
     let mut counts: std::collections::BTreeMap<u32, f32> = Default::default();
     let tl = pystr::strip(&pystr::lower(text)).to_owned();
     // _ngrams lowers and strips again before adding the ^ $ markers.
-    let marked: Vec<char> = format!("^{}$", pystr::strip(&pystr::lower(&tl)))
-        .chars()
-        .collect();
+    let marked: Vec<char> = format!("^{}$", pystr::strip(&pystr::lower(&tl))).chars().collect();
     let trigram_buckets = (TEXT_DIM - WORD_BUCKETS) as u32;
     let mut buf = String::new();
     for window in marked.windows(3) {
@@ -129,35 +124,24 @@ pub fn text_features(text: &str) -> SparseText {
     }
 }
 
-const FEATURE_STOP: [&str; 16] = [
-    "the", "a", "an", "of", "to", "in", "on", "for", "and", "or", "it", "is", "my", "your", "this",
-    "that",
-];
+const FEATURE_STOP: [&str; 16] =
+    ["the", "a", "an", "of", "to", "in", "on", "for", "and", "or", "it", "is", "my", "your", "this", "that"];
 
 static ALNUM: LazyLock<Regex> = LazyLock::new(|| Regex::new("[a-z0-9]+").unwrap());
 
 /// Lowercased `[a-z0-9]+` words of `text`.
 pub fn ascii_words(text: &str) -> impl Iterator<Item = String> {
     let lowered = pystr::lower(text);
-    ALNUM
-        .find_iter(&lowered)
-        .map(|m| m.as_str().to_owned())
-        .collect::<Vec<_>>()
-        .into_iter()
+    ALNUM.find_iter(&lowered).map(|m| m.as_str().to_owned()).collect::<Vec<_>>().into_iter()
 }
 
 fn wordset(text: &str) -> HashSet<String> {
-    ascii_words(text)
-        .filter(|w| !FEATURE_STOP.contains(&w.as_str()))
-        .collect()
+    ascii_words(text).filter(|w| !FEATURE_STOP.contains(&w.as_str())).collect()
 }
 
 /// Ordinal position among same-role named elements in reading order, 0..1.
 fn role_rank(el: &Element, elements: &[Element]) -> f64 {
-    let mut sibs: Vec<&Element> = elements
-        .iter()
-        .filter(|e| e.role == el.role && !e.name.is_empty())
-        .collect();
+    let mut sibs: Vec<&Element> = elements.iter().filter(|e| e.role == el.role && !e.name.is_empty()).collect();
     sort_by_reading(&mut sibs);
     if sibs.len() <= 1 {
         return 0.0;
@@ -190,16 +174,8 @@ pub fn element_numeric(
     goal: &str,
     elements: &[Element],
 ) -> [f32; NUMERIC_DIM] {
-    let sw = if screen_w != 0 {
-        screen_w as f64
-    } else {
-        1600.0
-    };
-    let sh = if screen_h != 0 {
-        screen_h as f64
-    } else {
-        1200.0
-    };
+    let sw = if screen_w != 0 { screen_w as f64 } else { 1600.0 };
+    let sh = if screen_h != 0 { screen_h as f64 } else { 1200.0 };
     let (nx, ny, nw, nh) = match &el.bounds {
         Some(b) => (b.x / sw, b.y / sh, b.w / sw, b.h / sh),
         None => (0.0, 0.0, 0.0, 0.0),
@@ -207,16 +183,8 @@ pub fn element_numeric(
     let name_w = wordset(&el.name);
     let goal_w = wordset(goal);
     let common = name_w.intersection(&goal_w).count() as f64;
-    let name_in_goal = if name_w.is_empty() {
-        0.0
-    } else {
-        common / name_w.len() as f64
-    };
-    let goal_in_name = if goal_w.is_empty() {
-        0.0
-    } else {
-        common / goal_w.len() as f64
-    };
+    let name_in_goal = if name_w.is_empty() { 0.0 } else { common / name_w.len() as f64 };
+    let goal_in_name = if goal_w.is_empty() { 0.0 } else { common / goal_w.len() as f64 };
     let checked = match el.checked {
         None => -1.0,
         Some(true) => 1.0,
@@ -237,11 +205,7 @@ pub fn element_numeric(
         checked,
         name_in_goal,
         goal_in_name,
-        if elements.is_empty() {
-            0.0
-        } else {
-            role_rank(el, elements)
-        },
+        if elements.is_empty() { 0.0 } else { role_rank(el, elements) },
     ];
     feats.map(|f| f as f32)
 }
@@ -259,11 +223,7 @@ pub fn element_text(el: &Element) -> String {
             other => other.to_string(),
         });
     }
-    parts
-        .into_iter()
-        .filter(|p| !p.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ")
+    parts.into_iter().filter(|p| !p.is_empty()).collect::<Vec<_>>().join(" ")
 }
 
 #[cfg(test)]

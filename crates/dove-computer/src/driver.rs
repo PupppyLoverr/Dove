@@ -112,8 +112,11 @@ impl Schemas {
         for t in tools {
             let Some(name) = t.get("name").and_then(Value::as_str) else { continue };
             let schema = t.get("inputSchema").cloned().unwrap_or(Value::Null);
-            let props: HashSet<String> =
-                schema.get("properties").and_then(Value::as_object).map(|p| p.keys().cloned().collect()).unwrap_or_default();
+            let props: HashSet<String> = schema
+                .get("properties")
+                .and_then(Value::as_object)
+                .map(|p| p.keys().cloned().collect())
+                .unwrap_or_default();
             let strict = schema.get("additionalProperties") == Some(&Value::Bool(false));
             map.insert(name.to_string(), (props, strict));
         }

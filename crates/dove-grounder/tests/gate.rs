@@ -36,8 +36,7 @@ use std::sync::OnceLock;
 fn goldens() -> &'static Value {
     static GOLDENS: OnceLock<Value> = OnceLock::new();
     GOLDENS.get_or_init(|| {
-        let path =
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/goldens/nexi-cua-0.4.0.json.gz");
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/goldens/nexi-cua-0.4.0.json.gz");
         let mut text = String::new();
         flate2::read::GzDecoder::new(std::fs::File::open(&path).expect("goldens"))
             .read_to_string(&mut text)
@@ -92,10 +91,7 @@ fn observation(raw: &Value, goal: &str) -> Observation {
             .as_array()
             .unwrap()
             .iter()
-            .map(|t| Tab {
-                id: t[0].as_str().unwrap().to_owned(),
-                title: t[1].as_str().unwrap().to_owned(),
-            })
+            .map(|t| Tab { id: t[0].as_str().unwrap().to_owned(), title: t[1].as_str().unwrap().to_owned() })
             .collect(),
         ..Default::default()
     });
@@ -115,16 +111,10 @@ fn screen_digest(obs: &Observation) -> String {
     for e in &obs.elements {
         let bounds = match &e.bounds {
             None => "-".to_owned(),
-            Some(b) => [b.x, b.y, b.w, b.h]
-                .iter()
-                .map(|v| format!("{:016x}", v.to_bits()))
-                .collect(),
+            Some(b) => [b.x, b.y, b.w, b.h].iter().map(|v| format!("{:016x}", v.to_bits())).collect(),
         };
-        let extra: Vec<String> = e
-            .extra
-            .iter()
-            .map(|(k, v)| format!("{k}={}", serde_json::to_string(v).unwrap()))
-            .collect();
+        let extra: Vec<String> =
+            e.extra.iter().map(|(k, v)| format!("{k}={}", serde_json::to_string(v).unwrap())).collect();
         let flag = |b: bool| (b as u8).to_string();
         parts.push(
             [
@@ -167,11 +157,7 @@ fn cases() -> &'static [(String, Observation, &'static Value)] {
             let name = page["name"].as_str().unwrap();
             for (i, case) in page["cases"].as_array().unwrap().iter().enumerate() {
                 let goal = case["goal"].as_str().unwrap();
-                out.push((
-                    format!("real/{name}/{i}"),
-                    observation(&page["obs"], goal),
-                    case,
-                ));
+                out.push((format!("real/{name}/{i}"), observation(&page["obs"], goal), case));
             }
         }
         let records = g["synthetic"].as_array().unwrap();
@@ -179,21 +165,9 @@ fn cases() -> &'static [(String, Observation, &'static Value)] {
         let samples = support::synth::generate(records.len(), seed);
         for (i, (case, sample)) in records.iter().zip(samples).enumerate() {
             let name = format!("synthetic/{i}");
-            assert_eq!(
-                case["goal"].as_str(),
-                Some(sample.obs.goal.as_str()),
-                "{name} goal"
-            );
-            assert_eq!(
-                case["h"].as_str(),
-                Some(screen_digest(&sample.obs).as_str()),
-                "{name} screen"
-            );
-            assert_eq!(
-                case["truth"].as_str(),
-                support::synth::truth(&sample).as_deref(),
-                "{name} truth"
-            );
+            assert_eq!(case["goal"].as_str(), Some(sample.obs.goal.as_str()), "{name} goal");
+            assert_eq!(case["h"].as_str(), Some(screen_digest(&sample.obs).as_str()), "{name} screen");
+            assert_eq!(case["truth"].as_str(), support::synth::truth(&sample).as_deref(), "{name} truth");
             out.push((name, sample.obs, case));
         }
         out
@@ -253,19 +227,12 @@ fn resolver_matches_python_without_weights() {
         } else if python.get("alts").is_none() {
             // Python deferred to the ranker, so the resolver must too.
             if let Some(action) = rust {
-                misses.push(format!(
-                    "{name}: rust resolved {action} where python deferred"
-                ));
+                misses.push(format!("{name}: rust resolved {action} where python deferred"));
             }
         }
     }
     assert!(checked > 1000, "only {checked} resolver cases");
-    assert!(
-        misses.is_empty(),
-        "{} of {checked} resolver cases differ:\n{}",
-        misses.len(),
-        misses.join("\n")
-    );
+    assert!(misses.is_empty(), "{} of {checked} resolver cases differ:\n{}", misses.len(), misses.join("\n"));
 }
 
 struct Tally {
@@ -276,11 +243,7 @@ struct Tally {
 
 fn run_mode(model: &Model, mode: &str) -> (Tally, Vec<(String, Decision, &'static Value)>) {
     let use_resolver = mode == "full";
-    let mut tally = Tally {
-        total: 0,
-        agree: 0,
-        misses: Vec::new(),
-    };
+    let mut tally = Tally { total: 0, agree: 0, misses: Vec::new() };
     let mut decisions = Vec::new();
     for (name, obs, case) in cases() {
         let python = &case[mode];
@@ -315,8 +278,7 @@ fn real_score(decisions: &[(String, Decision, &Value)]) -> (usize, usize, usize,
             };
             match (&d.action, d.abstain) {
                 (Some(a), false) => {
-                    a.element_id.as_deref() == case["expect_element"].as_str()
-                        && want.contains(&a.verb.as_str())
+                    a.element_id.as_deref() == case["expect_element"].as_str() && want.contains(&a.verb.as_str())
                 }
                 _ => false,
             }
@@ -329,10 +291,7 @@ fn real_score(decisions: &[(String, Decision, &Value)]) -> (usize, usize, usize,
 /// semantic_eval's accuracy on answerable screens and abstain recall.
 fn synthetic_score(decisions: &[(String, Decision, &Value)]) -> (f64, f64) {
     let (mut tp, mut wrong, mut abst_fp, mut abst_tp, mut abst_fn) = (0, 0, 0, 0, 0);
-    for (_, d, case) in decisions
-        .iter()
-        .filter(|(n, _, _)| n.starts_with("synthetic/"))
-    {
+    for (_, d, case) in decisions.iter().filter(|(n, _, _)| n.starts_with("synthetic/")) {
         match case["truth"].as_str() {
             None if d.abstain => abst_tp += 1,
             None => abst_fn += 1,
@@ -369,20 +328,11 @@ fn full_pipeline_matches_python_and_scores() {
          {abstain_hit}/{abstain_total}; synthetic accuracy {:.4}, abstain recall {:.4}",
         tally.agree, tally.total, accuracy, recall
     );
-    assert!(
-        tally.misses.is_empty(),
-        "{} cases differ from python:\n{}",
-        tally.misses.len(),
-        tally.misses.join("\n")
-    );
+    assert!(tally.misses.is_empty(), "{} cases differ from python:\n{}", tally.misses.len(), tally.misses.join("\n"));
     assert_eq!((hit, total), (71, 72), "real-web score");
     assert_eq!((abstain_hit, abstain_total), (10, 10), "real-web abstain");
     assert_eq!(round4(accuracy), 0.9501, "synthetic full-pipeline accuracy");
-    assert_eq!(
-        round4(recall),
-        0.8847,
-        "synthetic full-pipeline abstain recall"
-    );
+    assert_eq!(round4(recall), 0.8847, "synthetic full-pipeline abstain recall");
 }
 
 #[test]
@@ -397,16 +347,7 @@ fn ranker_alone_matches_python_and_scores() {
         "ranker alone: {}/{} cases agree with python; synthetic accuracy {:.4}, abstain recall {:.4}",
         tally.agree, tally.total, accuracy, recall
     );
-    assert!(
-        tally.misses.is_empty(),
-        "{} cases differ from python:\n{}",
-        tally.misses.len(),
-        tally.misses.join("\n")
-    );
+    assert!(tally.misses.is_empty(), "{} cases differ from python:\n{}", tally.misses.len(), tally.misses.join("\n"));
     assert_eq!(round4(accuracy), 0.6156, "synthetic ranker-only accuracy");
-    assert_eq!(
-        round4(recall),
-        0.9172,
-        "synthetic ranker-only abstain recall"
-    );
+    assert_eq!(round4(recall), 0.9172, "synthetic ranker-only abstain recall");
 }

@@ -51,11 +51,7 @@ pub fn casefold_eq(a: &str, b: &str) -> bool {
 /// also matches before a trailing newline. `ignore_case` is `re.I`.
 pub fn py_regex(pattern: &str, ignore_case: bool) -> Regex {
     let translated = translate(pattern);
-    let full = if ignore_case {
-        format!("(?i){translated}")
-    } else {
-        translated
-    };
+    let full = if ignore_case { format!("(?i){translated}") } else { translated };
     Regex::new(&full).unwrap_or_else(|error| panic!("bad pattern {pattern:?}: {error}"))
 }
 

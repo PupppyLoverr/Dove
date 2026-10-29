@@ -35,18 +35,11 @@ static PRESS_RE: LazyLock<Regex> = LazyLock::new(|| {
         true,
     )
 });
-static MOD_RE: LazyLock<Regex> =
-    LazyLock::new(|| py_regex(r"(cmd|command|ctrl|alt|option|shift|fn|super)", true));
-static DIRECTION_RE: LazyLock<Regex> =
-    LazyLock::new(|| py_regex(r"\b(up|down|left|right)\b", true));
+static MOD_RE: LazyLock<Regex> = LazyLock::new(|| py_regex(r"(cmd|command|ctrl|alt|option|shift|fn|super)", true));
+static DIRECTION_RE: LazyLock<Regex> = LazyLock::new(|| py_regex(r"\b(up|down|left|right)\b", true));
 
 fn first_group(caps: &regex::Captures<'_>) -> Option<String> {
-    caps.iter()
-        .skip(1)
-        .flatten()
-        .map(|g| g.as_str())
-        .find(|g| !g.is_empty())
-        .map(str::to_owned)
+    caps.iter().skip(1).flatten().map(|g| g.as_str()).find(|g| !g.is_empty()).map(str::to_owned)
 }
 
 /// `_goal_text_arg`: the quoted text, or what follows "type/enter/fill".
@@ -61,10 +54,7 @@ pub fn goal_text_arg(goal: &str) -> String {
 }
 
 fn goal_url_arg(goal: &str) -> String {
-    GOTO_RE
-        .captures(goal)
-        .map(|c| pystr::strip(&c[1]).to_owned())
-        .unwrap_or_default()
+    GOTO_RE.captures(goal).map(|c| pystr::strip(&c[1]).to_owned()).unwrap_or_default()
 }
 
 fn goal_keys_arg(goal: &str) -> Vec<String> {
@@ -72,33 +62,22 @@ fn goal_keys_arg(goal: &str) -> Vec<String> {
         return Vec::new();
     };
     let mods_text = m.get(1).map(|g| g.as_str()).unwrap_or("");
-    let mut keys: Vec<String> = MOD_RE
-        .find_iter(mods_text)
-        .map(|x| resolver::canonical_key(&pystr::lower(x.as_str())))
-        .collect();
+    let mut keys: Vec<String> =
+        MOD_RE.find_iter(mods_text).map(|x| resolver::canonical_key(&pystr::lower(x.as_str()))).collect();
     keys.push(pystr::lower(&m[2]));
     keys
 }
 
-static SELECT_SET_TO_RE: LazyLock<Regex> = LazyLock::new(|| {
-    py_regex(
-        r"(?:set|change|switch)\s+(?:the\s+)?(.+?)\s+to\s+(.+)$",
-        true,
-    )
-});
-static SELECT_CHOOSE_RE: LazyLock<Regex> = LazyLock::new(|| {
-    py_regex(
-        r"(?:choose|pick|select)\s+(.+?)\s+(?:for|in|from|on)\b",
-        true,
-    )
-});
+static SELECT_SET_TO_RE: LazyLock<Regex> =
+    LazyLock::new(|| py_regex(r"(?:set|change|switch)\s+(?:the\s+)?(.+?)\s+to\s+(.+)$", true));
+static SELECT_CHOOSE_RE: LazyLock<Regex> =
+    LazyLock::new(|| py_regex(r"(?:choose|pick|select)\s+(.+?)\s+(?:for|in|from|on)\b", true));
 static SELECT_FALLBACK_RE: LazyLock<Regex> =
     LazyLock::new(|| py_regex("(?:to|as|for)\\s+([\"']?[\\w .-]+[\"']?)\\s*$", true));
 static SELECT_ROLE_SUFFIX_RE: LazyLock<Regex> =
     LazyLock::new(|| py_regex(r"(?:\s+(?:dropdown|menu|field|list|option))+\s*$", true));
 static ARTICLE_RE: LazyLock<Regex> = LazyLock::new(|| py_regex(r"^(?:the|a|an)\s+", true));
-static ROLE_WORD_RE: LazyLock<Regex> =
-    LazyLock::new(|| py_regex(r"\b(?:dropdown|menu|field|list|option)\b", true));
+static ROLE_WORD_RE: LazyLock<Regex> = LazyLock::new(|| py_regex(r"\b(?:dropdown|menu|field|list|option)\b", true));
 
 fn clean_select_arg(value: &str) -> String {
     let value = pystr::strip(value).trim_matches(|c| matches!(c, '"' | '\'' | '“' | '”'));
@@ -116,18 +95,14 @@ fn extract_goal_select_arg(goal: &str) -> String {
     if let Some(caps) = SELECT_CHOOSE_RE.captures(goal) {
         return clean_select_arg(&caps[1]);
     }
-    SELECT_FALLBACK_RE
-        .captures(goal)
-        .map(|caps| clean_select_arg(&caps[1]))
-        .unwrap_or_default()
+    SELECT_FALLBACK_RE.captures(goal).map(|caps| clean_select_arg(&caps[1])).unwrap_or_default()
 }
 
 /// `_goal_select_arg(goal, target_name)`.
 pub fn goal_select_arg(goal: &str, target_name: &str) -> String {
     let arg = extract_goal_select_arg(goal);
     if !target_name.is_empty() && pystr::casefold_eq(&arg, pystr::strip(target_name)) {
-        let name_re =
-            Regex::new(&format!("(?i){}", regex::escape(target_name))).expect("escaped literal");
+        let name_re = Regex::new(&format!("(?i){}", regex::escape(target_name))).expect("escaped literal");
         let without_target = name_re.replace_all(goal, " ");
         let without_target = ROLE_WORD_RE.replace_all(&without_target, " ");
         return extract_goal_select_arg(&without_target);
@@ -161,11 +136,7 @@ pub fn resolve_args(a: &Action, goal: &str, elements: &[Element]) -> Action {
         Verb::Type if a.text == actions::ARG => a.text = goal_text_arg(goal),
         Verb::Select if a.text == actions::ARG => {
             let text = goal_text_arg(goal);
-            a.text = if text.is_empty() {
-                goal_select_arg(goal, "")
-            } else {
-                text
-            };
+            a.text = if text.is_empty() { goal_select_arg(goal, "") } else { text };
         }
         Verb::Navigate if a.text == actions::ARG => a.text = goal_url_arg(goal),
         Verb::Scroll => {
@@ -240,32 +211,18 @@ pub struct Calibration {
 
 impl Calibration {
     /// For the resolver-only path, which never reads it.
-    pub const NONE: Calibration = Calibration {
-        temperature: 1.0,
-        abstain_threshold: 1.0,
-    };
+    pub const NONE: Calibration = Calibration { temperature: 1.0, abstain_threshold: 1.0 };
 }
 
 /// `SemanticPolicy._batch`: the elements the model sees (targets first),
 /// as `(element, index)` pairs, plus each candidate's target index.
 pub fn build_batch(obs: &Observation, cands: &[Action]) -> Batch {
     let m = cands.len().min(MAX_M);
-    let target_ids: HashSet<&str> = cands[..m]
-        .iter()
-        .filter_map(|a| a.element_id.as_deref())
-        .filter(|id| !id.is_empty())
-        .collect();
-    let mut selected: Vec<&Element> = obs
-        .elements
-        .iter()
-        .filter(|e| target_ids.contains(e.id.as_str()))
-        .collect();
+    let target_ids: HashSet<&str> =
+        cands[..m].iter().filter_map(|a| a.element_id.as_deref()).filter(|id| !id.is_empty()).collect();
+    let mut selected: Vec<&Element> = obs.elements.iter().filter(|e| target_ids.contains(e.id.as_str())).collect();
     let selected_ids: HashSet<&str> = selected.iter().map(|e| e.id.as_str()).collect();
-    selected.extend(
-        obs.elements
-            .iter()
-            .filter(|e| !selected_ids.contains(e.id.as_str())),
-    );
+    selected.extend(obs.elements.iter().filter(|e| !selected_ids.contains(e.id.as_str())));
     selected.truncate(MAX_K);
     let mut batch = Batch::default();
     let mut eidx: std::collections::HashMap<&str, i64> = Default::default();
@@ -273,25 +230,13 @@ pub fn build_batch(obs: &Observation, cands: &[Action]) -> Batch {
         // A later element with the same id takes the index (dict assignment).
         eidx.insert(e.id.as_str(), j as i64);
         batch.role_idx.push(features::role_index(&e.role));
-        batch
-            .elem_text
-            .push(features::text_features(&features::element_text(e)));
-        batch.numeric.push(features::element_numeric(
-            e,
-            obs.screen_w,
-            obs.screen_h,
-            &obs.goal,
-            &obs.elements,
-        ));
+        batch.elem_text.push(features::text_features(&features::element_text(e)));
+        batch.numeric.push(features::element_numeric(e, obs.screen_w, obs.screen_h, &obs.goal, &obs.elements));
     }
     for a in &cands[..m] {
         batch.verb_idx.push(a.verb.index());
-        let target = a
-            .element_id
-            .as_deref()
-            .filter(|id| !id.is_empty())
-            .and_then(|id| eidx.get(id).copied())
-            .unwrap_or(-1);
+        let target =
+            a.element_id.as_deref().filter(|id| !id.is_empty()).and_then(|id| eidx.get(id).copied()).unwrap_or(-1);
         batch.tgt_idx.push(target);
         batch.arg_text.push(features::text_features(&a.textual()));
     }
@@ -346,8 +291,7 @@ pub fn decide(
     }
     decision.decided_by = DecidedBy::Ranker;
     let Some(model) = model else {
-        decision.reason =
-            "the resolver could not name a target and the ranker is not loaded".into();
+        decision.reason = "the resolver could not name a target and the ranker is not loaded".into();
         decision.latency_ms = elapsed(t0);
         return decision;
     };
@@ -377,16 +321,8 @@ pub fn decide(
     let mut order: Vec<usize> = (0..m).collect();
     // torch.sort(descending=True) is not stable; ties only occur between
     // identical candidates, whose strings are equal too.
-    order.sort_by(|a, b| {
-        probs[*b]
-            .partial_cmp(&probs[*a])
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    decision.top_k = order
-        .iter()
-        .take(5)
-        .map(|i| (*i, cands[*i].to_string(), probs[*i] as f64))
-        .collect();
+    order.sort_by(|a, b| probs[*b].partial_cmp(&probs[*a]).unwrap_or(std::cmp::Ordering::Equal));
+    decision.top_k = order.iter().take(5).map(|i| (*i, cands[*i].to_string(), probs[*i] as f64)).collect();
     let second_p = if m > 1 { probs[order[1]] as f64 } else { 0.0 };
     let decisive = top_p >= 0.95 || (top_p >= 0.30 && top_p >= 1.5 * second_p);
     let top = &cands[top_i];

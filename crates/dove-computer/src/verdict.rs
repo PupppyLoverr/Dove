@@ -56,12 +56,9 @@ pub fn payload(res: &ActionResult) -> Value {
     if let Some(v) = res.verified {
         out["verified"] = json!(v);
     }
-    for (k, v) in [
-        ("effect", &res.effect),
-        ("path", &res.path),
-        ("delivery_mode", &res.delivery_mode),
-        ("code", &res.code),
-    ] {
+    for (k, v) in
+        [("effect", &res.effect), ("path", &res.path), ("delivery_mode", &res.delivery_mode), ("code", &res.code)]
+    {
         if let Some(v) = v {
             out[k] = json!(v);
         }

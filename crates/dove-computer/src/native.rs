@@ -27,7 +27,9 @@ mod imp {
     use windows::Win32::Foundation::HWND;
     use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx};
     use windows::Win32::System::Variant::VARIANT;
-    use windows::Win32::UI::Accessibility::{CUIAutomation, IUIAutomation, TreeScope_Descendants, UIA_IsPasswordPropertyId};
+    use windows::Win32::UI::Accessibility::{
+        CUIAutomation, IUIAutomation, TreeScope_Descendants, UIA_IsPasswordPropertyId,
+    };
 
     fn com() {
         // S_FALSE or RPC_E_CHANGED_MODE: this thread already has COM.
@@ -49,7 +51,8 @@ mod imp {
             stream.Seek(0)?;
             let decoder = BitmapDecoder::CreateAsync(&stream)?.get()?;
             let bitmap = decoder.GetSoftwareBitmapAsync()?.get()?;
-            let bitmap = SoftwareBitmap::ConvertWithAlpha(&bitmap, BitmapPixelFormat::Bgra8, BitmapAlphaMode::Premultiplied)?;
+            let bitmap =
+                SoftwareBitmap::ConvertWithAlpha(&bitmap, BitmapPixelFormat::Bgra8, BitmapAlphaMode::Premultiplied)?;
             let engine = OcrEngine::TryCreateFromUserProfileLanguages()?;
             let result = engine.RecognizeAsync(&bitmap)?.get()?;
             let mut out = Vec::new();
@@ -134,7 +137,13 @@ mod imp {
                 let (fw, fh) = (w as f64, h as f64);
                 let x = b.origin.x * fw;
                 let y = (1.0 - b.origin.y - b.size.height) * fh;
-                out.push(OcrLine { text, x: x as i64, y: y as i64, w: (b.size.width * fw) as i64, h: (b.size.height * fh) as i64 });
+                out.push(OcrLine {
+                    text,
+                    x: x as i64,
+                    y: y as i64,
+                    w: (b.size.width * fw) as i64,
+                    h: (b.size.height * fh) as i64,
+                });
             }
             Ok(out)
         }

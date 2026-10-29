@@ -57,7 +57,8 @@ impl McpStdio {
     fn request(&mut self, method: &str, params: Value) -> Result<Value, String> {
         let id = self.next;
         self.next += 1;
-        writeln!(self.stdin, "{}", json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params})).map_err(|e| e.to_string())?;
+        writeln!(self.stdin, "{}", json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}))
+            .map_err(|e| e.to_string())?;
         self.stdin.flush().map_err(|e| e.to_string())?;
         let mut line = String::new();
         loop {
@@ -108,7 +109,12 @@ fn driver_bin() -> PathBuf {
     }
     let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from).unwrap();
     let root = home.join(".dove").join("plugins").join("computer-use");
-    let mut versions: Vec<PathBuf> = std::fs::read_dir(&root).expect("no Dove Computer Use install").flatten().map(|e| e.path()).filter(|p| p.join("plugin.json").is_file()).collect();
+    let mut versions: Vec<PathBuf> = std::fs::read_dir(&root)
+        .expect("no Dove Computer Use install")
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.join("plugin.json").is_file())
+        .collect();
     versions.sort();
     let dir = versions.pop().expect("no installed version");
     let record: Value = serde_json::from_slice(&std::fs::read(dir.join("plugin.json")).unwrap()).unwrap();
@@ -154,14 +160,28 @@ fn call(c: &mut Computer<McpStdio>, h: &mut LiveHost, args: Value) -> (Value, do
     #[cfg(windows)]
     let input_before = last_input_tick();
     let out = c.handle(&args, h);
-    let head: Value = serde_json::from_str(out.text.split("
+    let head: Value = serde_json::from_str(
+        out.text
+            .split(
+                "
 
-").next().unwrap_or("")).unwrap_or(Value::Null);
+",
+            )
+            .next()
+            .unwrap_or(""),
+    )
+    .unwrap_or(Value::Null);
     #[cfg(windows)]
     let input = if last_input_tick() != input_before { "  [real input seen]" } else { "" };
     #[cfg(not(windows))]
     let input = "";
-    eprintln!("{:>6} ms  {}  path={}{input} msg={}", started.elapsed().as_millis(), args["action"], head["path"], head["message"]);
+    eprintln!(
+        "{:>6} ms  {}  path={}{input} msg={}",
+        started.elapsed().as_millis(),
+        args["action"],
+        head["path"],
+        head["message"]
+    );
     let head = out.text.split("\n\n").next().unwrap_or("").to_string();
     (serde_json::from_str(&head).unwrap_or(Value::Null), out)
 }
@@ -274,7 +294,13 @@ fn windows_fixture_end_to_end() {
 
     // Find the fixture by its title.
     let (v, _) = call(&mut c, &mut h, json!({"action": "list_windows"}));
-    let w = v["windows"].as_array().unwrap().iter().find(|w| w["title"] == "Dove CU Fixture").unwrap_or_else(|| panic!("fixture not listed: {v}")).clone();
+    let w = v["windows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|w| w["title"] == "Dove CU Fixture")
+        .unwrap_or_else(|| panic!("fixture not listed: {v}"))
+        .clone();
     let target = json!({"action": "capture", "pid": w["pid"], "window_id": w["window_id"]});
 
     // Tree-first capture: rows, no pixels. WinForms shows the window a
@@ -320,13 +346,21 @@ fn windows_fixture_end_to_end() {
     assert_eq!(v["code"], "handoff_required", "{v}");
 
     // One batch: set the name, save, check the result.
-    let (_, cap) = call(&mut c, &mut h, json!({"action": "capture", "pid": w["pid"], "window_id": w["window_id"], "since": "latest"}));
+    let (_, cap) = call(
+        &mut c,
+        &mut h,
+        json!({"action": "capture", "pid": w["pid"], "window_id": w["window_id"], "since": "latest"}),
+    );
     eprintln!("since read:\n{}", cap.text);
     assert!(cap.text.starts_with("capture mode=auto"), "the since read keeps the target:\n{}", cap.text);
-    let (v, out) = call(&mut c, &mut h, json!({"action": "run", "steps": [
-        {"action": "set_value", "element": name, "value": "Grace"},
-        {"action": "click", "element": save, "expect": [{"text": "saved:Grace"}]},
-    ]}));
+    let (v, out) = call(
+        &mut c,
+        &mut h,
+        json!({"action": "run", "steps": [
+            {"action": "set_value", "element": name, "value": "Grace"},
+            {"action": "click", "element": save, "expect": [{"text": "saved:Grace"}]},
+        ]}),
+    );
     assert_eq!(v["ok"], true, "{}", out.text);
 
     // On-device grounding.
@@ -335,7 +369,8 @@ fn windows_fixture_end_to_end() {
     assert_eq!(v["ok"], true, "{}", out.text);
 
     // OCR reads text that exists only as pixels.
-    let (_, shot) = call(&mut c, &mut h, json!({"action": "capture", "pid": w["pid"], "window_id": w["window_id"], "mode": "som"}));
+    let (_, shot) =
+        call(&mut c, &mut h, json!({"action": "capture", "pid": w["pid"], "window_id": w["window_id"], "mode": "som"}));
     assert_eq!(shot.images.len(), 1);
     use base64::Engine as _;
     let raw = base64::engine::general_purpose::STANDARD.decode(&shot.images[0].0).unwrap();
@@ -346,7 +381,11 @@ fn windows_fixture_end_to_end() {
     let mut times = Vec::new();
     for _ in 0..10 {
         let t = Instant::now();
-        call(&mut c, &mut h, json!({"action": "capture", "pid": w["pid"], "window_id": w["window_id"], "query": "Save"}));
+        call(
+            &mut c,
+            &mut h,
+            json!({"action": "capture", "pid": w["pid"], "window_id": w["window_id"], "query": "Save"}),
+        );
         times.push(t.elapsed().as_millis());
     }
     times.sort();
@@ -385,7 +424,11 @@ fn any_os_lists_and_captures() {
 #[cfg(windows)]
 fn running(process: &str) -> bool {
     let out = Command::new("powershell.exe")
-        .args(["-NoProfile", "-Command", &format!("@(Get-Process -Name {process} -ErrorAction SilentlyContinue).Count")])
+        .args([
+            "-NoProfile",
+            "-Command",
+            &format!("@(Get-Process -Name {process} -ErrorAction SilentlyContinue).Count"),
+        ])
         .output()
         .unwrap();
     String::from_utf8_lossy(&out.stdout).trim() != "0"
@@ -423,7 +466,10 @@ fn capture_until(c: &mut Computer<McpStdio>, h: &mut LiveHost, args: Value, need
     }
     // What the driver says at this point, for the failure report.
     if let Ok(ws) = c.cua.list_windows() {
-        eprintln!("backend windows: {:?}", ws.iter().map(|w| (&w.app, &w.title, w.off_screen, w.pid, w.window_id)).collect::<Vec<_>>());
+        eprintln!(
+            "backend windows: {:?}",
+            ws.iter().map(|w| (&w.app, &w.title, w.off_screen, w.pid, w.window_id)).collect::<Vec<_>>()
+        );
     }
     if let Some(t) = c.cua.target.clone() {
         let mut a = serde_json::Map::new();
@@ -495,14 +541,18 @@ fn real_calculator() {
     // Equals (a UWP provider quirk), so the check is a separate step that
     // reads the tree when it has rows, and the OCR rows of Dove's sparse-
     // tree fallback when it does not: what an agent reads either way.
-    let (v, out) = call(&mut c, &mut h, json!({"action": "run", "steps": [
-        {"action": "click", "element": row("Clear")},
-        {"action": "click", "element": row("One")},
-        {"action": "click", "element": row("Two")},
-        {"action": "click", "element": row("Multiply by")},
-        {"action": "click", "element": row("Seven")},
-        {"action": "click", "element": row("Equals")},
-    ]}));
+    let (v, out) = call(
+        &mut c,
+        &mut h,
+        json!({"action": "run", "steps": [
+            {"action": "click", "element": row("Clear")},
+            {"action": "click", "element": row("One")},
+            {"action": "click", "element": row("Two")},
+            {"action": "click", "element": row("Multiply by")},
+            {"action": "click", "element": row("Seven")},
+            {"action": "click", "element": row("Equals")},
+        ]}),
+    );
     if out.text.contains("window_minimized") {
         // Minimized before the batch: the driver refuses rather than click
         // off-screen, and the batch stops at that step.
@@ -519,9 +569,15 @@ fn real_calculator() {
         // reads the 84 there) plus OCR rows. Windows OCR does not read
         // isolated digits, so the test cannot read the result itself.
         let (_, cap) = call(&mut c, &mut h, json!({"action": "capture", "app": "Calculator"}));
-        assert!(cap.text.contains("sparse") && cap.images.len() == 1, "an empty tree brings a screenshot:
-{}", cap.text);
-        eprintln!("(Calculator's tree was empty after Equals: the screenshot fallback was delivered; result not readable by OCR)");
+        assert!(
+            cap.text.contains("sparse") && cap.images.len() == 1,
+            "an empty tree brings a screenshot:
+{}",
+            cap.text
+        );
+        eprintln!(
+            "(Calculator's tree was empty after Equals: the screenshot fallback was delivered; result not readable by OCR)"
+        );
         guard.check("Calculator");
         c.close();
         return;
@@ -560,9 +616,14 @@ fn real_notepad() {
     let mut c = Computer::new(McpStdio::start(&driver_bin()), Config::default());
     let mut h = LiveHost { dir: tempfile::tempdir().unwrap(), reviews: Vec::new() };
 
-    let cap = capture_until(&mut c, &mut h, json!({"action": "capture", "app": "Notepad"}), &format!("{name} - Notepad\""));
+    let cap =
+        capture_until(&mut c, &mut h, json!({"action": "capture", "app": "Notepad"}), &format!("{name} - Notepad\""));
     // Never type into a document we did not create: the window shows ours.
-    assert!(cap.text.contains(&format!("window=\"{name} - Notepad\"")), "the focused tab is not the test file:\n{}", cap.text);
+    assert!(
+        cap.text.contains(&format!("window=\"{name} - Notepad\"")),
+        "the focused tab is not the test file:\n{}",
+        cap.text
+    );
     let editor = find(&cap.text, "Document \"Text editor\"");
     let guard = Guard::new();
 
@@ -589,15 +650,27 @@ fn real_notepad() {
         let (v, out) = call(&mut c, &mut h, json!({"action": "click", "element": file_menu}));
         assert_eq!(v["ok"], true, "{}", out.text);
         let cap = capture_until(&mut c, &mut h, json!({"action": "capture", "app": "Notepad"}), "\"Save");
-        eprintln!("{}", cap.text.lines().filter(|l| l.contains("Save")).collect::<Vec<_>>().join("
-"));
+        eprintln!(
+            "{}",
+            cap.text.lines().filter(|l| l.contains("Save")).collect::<Vec<_>>().join(
+                "
+"
+            )
+        );
         let save = cap
             .text
             .lines()
-            .find(|l| l.contains("\"Save") && !l.contains("Save as") && !l.contains("Save all") && !l.contains("Button"))
+            .find(|l| {
+                l.contains("\"Save") && !l.contains("Save as") && !l.contains("Save all") && !l.contains("Button")
+            })
             .and_then(|l| l.trim().strip_prefix('#')?.split_whitespace().next()?.parse::<u32>().ok())
-            .unwrap_or_else(|| panic!("no Save item:
-{}", cap.text));
+            .unwrap_or_else(|| {
+                panic!(
+                    "no Save item:
+{}",
+                    cap.text
+                )
+            });
         let (v, out) = call(&mut c, &mut h, json!({"action": "click", "element": save}));
         assert_eq!(v["ok"], true, "{}", out.text);
     }
@@ -613,7 +686,8 @@ fn real_notepad() {
     guard.check("Notepad");
 
     // Close only our (saved) tab, with its own Close Tab button.
-    let cap = capture_until(&mut c, &mut h, json!({"action": "capture", "app": "Notepad"}), &format!("{name} - Notepad\""));
+    let cap =
+        capture_until(&mut c, &mut h, json!({"action": "capture", "app": "Notepad"}), &format!("{name} - Notepad\""));
     let close_tab = find(&cap.text, "Button \"Close Tab\"");
     let (v, out) = call(&mut c, &mut h, json!({"action": "click", "element": close_tab}));
     assert_eq!(v["ok"], true, "{}", out.text);
@@ -658,10 +732,15 @@ fn real_paint() {
     call(&mut c, &mut h, json!({"action": "click", "element": pencil}));
     let (_, img) = call(&mut c, &mut h, json!({"action": "capture", "app": "Paint", "mode": "vision"}));
     let dims = img.text.split_whitespace().nth(2).unwrap_or("").to_string();
-    let (w, h_px): (i64, i64) = dims.split_once('x').map(|(a, b)| (a.parse().unwrap_or(0), b.parse().unwrap_or(0))).unwrap_or((0, 0));
+    let (w, h_px): (i64, i64) =
+        dims.split_once('x').map(|(a, b)| (a.parse().unwrap_or(0), b.parse().unwrap_or(0))).unwrap_or((0, 0));
     assert!(w > 200 && h_px > 300, "a usable screenshot: {}", img.text);
-    let (v, out) = call(&mut c, &mut h, json!({"action": "drag",
-        "from_coordinate": [w / 3, h_px * 2 / 3], "to_coordinate": [w * 2 / 3, h_px * 2 / 3]}));
+    let (v, out) = call(
+        &mut c,
+        &mut h,
+        json!({"action": "drag",
+        "from_coordinate": [w / 3, h_px * 2 / 3], "to_coordinate": [w * 2 / 3, h_px * 2 / 3]}),
+    );
     eprintln!("canvas drag: ok={} verdict={}", v["ok"], v["verdict"]);
     assert!(v["verdict"]["decision"].is_string(), "every result carries a verdict: {}", out.text);
     guard.check("Paint");
@@ -686,7 +765,10 @@ fn real_explorer() {
     let mut w = Value::Null;
     for _ in 0..30 {
         let (v, _) = call(&mut c, &mut h, json!({"action": "list_windows"}));
-        if let Some(x) = v["windows"].as_array().and_then(|ws| ws.iter().find(|x| x["title"].as_str().is_some_and(|t| t.starts_with(&title)))) {
+        if let Some(x) = v["windows"]
+            .as_array()
+            .and_then(|ws| ws.iter().find(|x| x["title"].as_str().is_some_and(|t| t.starts_with(&title))))
+        {
             w = x.clone();
             break;
         }
@@ -696,9 +778,19 @@ fn real_explorer() {
     let guard = Guard::new();
     let target = json!({"action": "capture", "pid": w["pid"], "window_id": w["window_id"], "query": "dove-cu-marker"});
     let cap = capture_until(&mut c, &mut h, target, "dove-cu-marker");
-    eprintln!("{}", cap.text.lines().take(12).collect::<Vec<_>>().join("
-"));
-    let full = call(&mut c, &mut h, json!({"action": "capture", "pid": w["pid"], "window_id": w["window_id"], "query": "Close"})).1;
+    eprintln!(
+        "{}",
+        cap.text.lines().take(12).collect::<Vec<_>>().join(
+            "
+"
+        )
+    );
+    let full = call(
+        &mut c,
+        &mut h,
+        json!({"action": "capture", "pid": w["pid"], "window_id": w["window_id"], "query": "Close"}),
+    )
+    .1;
     // Reading never moves the user's focus or pointer.
     guard.check("Explorer");
     // Close that window (and only it) with its own Close button. Explorer
@@ -711,6 +803,3 @@ fn real_explorer() {
     assert!(!v.to_string().contains(&title), "the folder window closed: {v}");
     c.close();
 }
-
-
-

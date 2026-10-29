@@ -55,7 +55,8 @@ impl McpStdio {
     fn request(&mut self, method: &str, params: Value) -> Result<Value, String> {
         let id = self.next;
         self.next += 1;
-        writeln!(self.stdin, "{}", json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params})).map_err(|e| e.to_string())?;
+        writeln!(self.stdin, "{}", json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}))
+            .map_err(|e| e.to_string())?;
         self.stdin.flush().map_err(|e| e.to_string())?;
         let mut line = String::new();
         loop {
@@ -151,7 +152,12 @@ fn main() {
             Ok(v) => {
                 let started = std::time::Instant::now();
                 let o = computer.handle(&v, &mut host);
-                let mut text = format!("[{} ms]{}\n{}", started.elapsed().as_millis(), if o.is_error { " ERROR" } else { "" }, o.text);
+                let mut text = format!(
+                    "[{} ms]{}\n{}",
+                    started.elapsed().as_millis(),
+                    if o.is_error { " ERROR" } else { "" },
+                    o.text
+                );
                 for (data, mime) in &o.images {
                     n += 1;
                     let ext = if mime == "image/jpeg" { "jpg" } else { "png" };

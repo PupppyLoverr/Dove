@@ -37,9 +37,13 @@ pub enum Decision {
     Once,
     /// This call and later ones in the same scope and app, this session.
     Session,
-    Deny { reason: String },
+    Deny {
+        reason: String,
+    },
     /// Nobody can answer (no Dove window, an unattended run): refused.
-    Unavailable { reason: String },
+    Unavailable {
+        reason: String,
+    },
 }
 
 /// Who controls the desktop. `epoch` moves on every take-over and hand-back,

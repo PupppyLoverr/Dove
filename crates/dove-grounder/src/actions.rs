@@ -28,29 +28,11 @@ pub const CLICKABLE_ROLES: &[&str] = &[
     "image",
     "disclosure",
 ];
-pub const DCLICK_ROLES: &[&str] = &[
-    "listitem", "treeitem", "row", "cell", "image", "heading", "option",
-];
-pub const DRAGGABLE_ROLES: &[&str] = &[
-    "listitem", "treeitem", "row", "cell", "image", "tab", "slider", "handle",
-];
-pub const TEXT_ROLES: &[&str] = &[
-    "textfield",
-    "textarea",
-    "searchfield",
-    "textbox",
-    "combobox",
-    "securetextfield",
-    "webarea",
-];
-pub const SELECT_ROLES: &[&str] = &[
-    "combobox",
-    "list",
-    "popupbutton",
-    "select",
-    "dropdown",
-    "radiogroup",
-];
+pub const DCLICK_ROLES: &[&str] = &["listitem", "treeitem", "row", "cell", "image", "heading", "option"];
+pub const DRAGGABLE_ROLES: &[&str] = &["listitem", "treeitem", "row", "cell", "image", "tab", "slider", "handle"];
+pub const TEXT_ROLES: &[&str] =
+    &["textfield", "textarea", "searchfield", "textbox", "combobox", "securetextfield", "webarea"];
+pub const SELECT_ROLES: &[&str] = &["combobox", "list", "popupbutton", "select", "dropdown", "radiogroup"];
 pub const CHECKABLE_ROLES: &[&str] = &["checkbox", "radio", "toggle", "switch"];
 pub const SCROLLABLE_ROLES: &[&str] = &["scrollarea", "webarea", "table", "list", "document"];
 
@@ -68,15 +50,13 @@ pub fn any_actionable(role: &str) -> bool {
 }
 
 const GOAL_STOP: &[&str] = &[
-    "a", "an", "and", "at", "click", "choose", "enable", "follow", "in", "into", "link", "on",
-    "open", "page", "select", "the", "to", "type",
+    "a", "an", "and", "at", "click", "choose", "enable", "follow", "in", "into", "link", "on", "open", "page",
+    "select", "the", "to", "type",
 ];
 const ORDINALS: [(&str, usize); 3] = [("first", 0), ("second", 1), ("third", 2)];
 
 fn goal_words(text: &str) -> HashSet<String> {
-    ascii_words(text)
-        .filter(|w| !GOAL_STOP.contains(&w.as_str()))
-        .collect()
+    ascii_words(text).filter(|w| !GOAL_STOP.contains(&w.as_str())).collect()
 }
 
 /// Score tuple of `_priority_elements` (compared descending).
@@ -107,11 +87,8 @@ fn priority_elements(obs: &Observation) -> Vec<&Element> {
         if !(raw_goal_words.contains(role) || raw_goal_words.contains(&plural)) {
             continue;
         }
-        let mut ordered: Vec<&Element> = elements
-            .iter()
-            .copied()
-            .filter(|el| pystr::lower(&el.role) == role && !el.name.is_empty())
-            .collect();
+        let mut ordered: Vec<&Element> =
+            elements.iter().copied().filter(|el| pystr::lower(&el.role) == role && !el.name.is_empty()).collect();
         sort_by_reading(&mut ordered);
         for (ordinal, index) in ORDINALS {
             if goal.contains(ordinal) && index < ordered.len() {
@@ -124,12 +101,9 @@ fn priority_elements(obs: &Observation) -> Vec<&Element> {
             }
         }
     }
-    let has_named_match = elements
-        .iter()
-        .any(|el| !el.name.is_empty() && goal_words(&el.name).intersection(&gw).next().is_some());
-    let has_role_match = elements
-        .iter()
-        .any(|el| raw_goal_words.contains(&pystr::lower(&el.role)));
+    let has_named_match =
+        elements.iter().any(|el| !el.name.is_empty() && goal_words(&el.name).intersection(&gw).next().is_some());
+    let has_role_match = elements.iter().any(|el| raw_goal_words.contains(&pystr::lower(&el.role)));
     if forced.is_empty() && !has_named_match && !has_role_match {
         return elements;
     }
@@ -152,8 +126,7 @@ fn priority_elements(obs: &Observation) -> Vec<&Element> {
             -x,
         )
     };
-    let mut scored: Vec<(Priority, &Element)> =
-        elements.into_iter().map(|el| (score(el), el)).collect();
+    let mut scored: Vec<(Priority, &Element)> = elements.into_iter().map(|el| (score(el), el)).collect();
     // sorted(..., reverse=True) keeps equal keys in their original order.
     scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(Ordering::Equal));
     scored.into_iter().map(|(_, el)| el).collect()
@@ -200,27 +173,14 @@ pub fn candidate_actions(obs: &Observation) -> Vec<Action> {
         }
     }
     cands.push(Action::new(Verb::Keypress).with_keys(vec![KEYS.to_owned()]));
-    cands.push(Action {
-        wait_ms: 1000,
-        ..Action::new(Verb::Wait)
-    });
+    cands.push(Action { wait_ms: 1000, ..Action::new(Verb::Wait) });
     if let Some(browser) = &obs.browser {
         cands.push(Action::new(Verb::Navigate).with_text(ARG));
-        for verb in [
-            Verb::Back,
-            Verb::Forward,
-            Verb::Refresh,
-            Verb::NewTab,
-            Verb::CloseTab,
-        ] {
+        for verb in [Verb::Back, Verb::Forward, Verb::Refresh, Verb::NewTab, Verb::CloseTab] {
             cands.push(Action::new(verb));
         }
         for tab in browser.tabs.iter().take(8) {
-            cands.push(Action {
-                tab: tab.id.clone(),
-                element_name: tab.title.clone(),
-                ..Action::new(Verb::SwitchTab)
-            });
+            cands.push(Action { tab: tab.id.clone(), element_name: tab.title.clone(), ..Action::new(Verb::SwitchTab) });
         }
     }
     cands.push(Action::new(Verb::Done));

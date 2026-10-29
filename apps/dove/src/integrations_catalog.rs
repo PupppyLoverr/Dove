@@ -331,7 +331,9 @@ mod tests {
         let cua = get("cua").unwrap().server("cua".into(), None);
         assert!(cua.enabled && !cua.is_remote());
         match cua.transport {
-            Transport::Stdio { command, args, .. } => assert_eq!((command.as_str(), args), ("cua", vec!["mcp".to_string()])),
+            Transport::Stdio { command, args, .. } => {
+                assert_eq!((command.as_str(), args), ("cua", vec!["mcp".to_string()]))
+            }
             _ => panic!("stdio"),
         }
     }

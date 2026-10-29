@@ -50,13 +50,19 @@ pub fn save(cache: &Path, name: &str, app: &str, steps: &[Value]) -> Result<Path
 
 pub fn load(cache: &Path, name: &str) -> Result<Replay, String> {
     let path = dir(cache).join(format!("{}.json", slug(name)));
-    let bytes = std::fs::read(&path).map_err(|_| format!("no replay named {:?}; list_replays shows the saved ones", slug(name)))?;
+    let bytes = std::fs::read(&path)
+        .map_err(|_| format!("no replay named {:?}; list_replays shows the saved ones", slug(name)))?;
     let r: Replay = serde_json::from_slice(&bytes).map_err(|e| format!("{} is not a replay: {e}", path.display()))?;
     if r.version != 1 || r.steps.is_empty() || r.steps.len() > 25 {
         return Err(format!("{} is not a usable replay", path.display()));
     }
     // Only batchable input tools, never anything that reads files or runs scripts.
-    if let Some(bad) = r.steps.iter().find(|s| !matches!(s["tool"].as_str(), Some("click" | "type_text" | "press_key" | "hotkey" | "set_value" | "scroll") | None)) {
+    if let Some(bad) = r.steps.iter().find(|s| {
+        !matches!(
+            s["tool"].as_str(),
+            Some("click" | "type_text" | "press_key" | "hotkey" | "set_value" | "scroll") | None
+        )
+    }) {
         return Err(format!("replay {} has an unsupported step {}", r.name, bad["tool"]));
     }
     Ok(r)
@@ -82,10 +88,19 @@ pub fn describe(step: &Value) -> String {
     let a = &step["args"];
     let target = a.get("name").and_then(Value::as_str).map(|n| format!(" {n:?}")).unwrap_or_default();
     match step["tool"].as_str().unwrap_or("") {
-        "type_text" => format!("type {:?}{target}", a.get("text").and_then(Value::as_str).unwrap_or("").chars().take(40).collect::<String>()),
+        "type_text" => format!(
+            "type {:?}{target}",
+            a.get("text").and_then(Value::as_str).unwrap_or("").chars().take(40).collect::<String>()
+        ),
         "set_value" => format!("set{target} to {:?}", a.get("value").and_then(Value::as_str).unwrap_or("")),
         "press_key" => format!("press {}", a.get("key").and_then(Value::as_str).unwrap_or("")),
-        "hotkey" => format!("press {}", a.get("keys").and_then(Value::as_array).map(|k| k.iter().filter_map(Value::as_str).collect::<Vec<_>>().join("+")).unwrap_or_default()),
+        "hotkey" => format!(
+            "press {}",
+            a.get("keys")
+                .and_then(Value::as_array)
+                .map(|k| k.iter().filter_map(Value::as_str).collect::<Vec<_>>().join("+"))
+                .unwrap_or_default()
+        ),
         "scroll" => format!("scroll {}", a.get("direction").and_then(Value::as_str).unwrap_or("down")),
         t => format!("{t}{target}"),
     }

@@ -111,7 +111,9 @@ pub fn elements(env: &Envelope) -> Vec<UiElement> {
 pub fn markdown_elements(text: &str, sid: &str) -> Vec<UiElement> {
     static ROW: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     static VALUE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-    let row = ROW.get_or_init(|| regex::Regex::new(r#"^\s*-\s*\[(\d+)\]\s+(\S+)(?:\s+"((?:[^"\\]|\\.)*)")?(.*)$"#).expect("row regex"));
+    let row = ROW.get_or_init(|| {
+        regex::Regex::new(r#"^\s*-\s*\[(\d+)\]\s+(\S+)(?:\s+"((?:[^"\\]|\\.)*)")?(.*)$"#).expect("row regex")
+    });
     let value = VALUE.get_or_init(|| regex::Regex::new(r#"\bvalue="((?:[^"\\]|\\.)*)""#).expect("value regex"));
     let unescape = |s: &str| s.replace("\\\"", "\"").replace("\\\\", "\\");
     text.lines()

@@ -144,10 +144,9 @@ impl Shaper {
         let (w, h) = dims.unwrap_or((cap.width, cap.height));
         let too_small = dims.is_some_and(|(w, h)| w.min(h) < MIN_IMAGE_SIDE);
         let has_image = raw.is_some() && cap.mode != "ax" && !too_small;
-        let mime = cap
-            .image_mime
-            .clone()
-            .unwrap_or_else(|| if cap.image.as_deref().is_some_and(|b| b.starts_with("/9j/")) { "image/jpeg" } else { "image/png" }.into());
+        let mime = cap.image_mime.clone().unwrap_or_else(|| {
+            if cap.image.as_deref().is_some_and(|b| b.starts_with("/9j/")) { "image/jpeg" } else { "image/png" }.into()
+        });
 
         let mut head = format!("capture mode={}", cap.mode);
         if w > 0 && h > 0 {
@@ -203,7 +202,10 @@ impl Shaper {
         lines.extend(notes.into_iter().map(|n| format!("  ({n})")));
         lines.extend(cap.elements.iter().take(MAX_ROWS).map(|e| format!("  {}", row(e))));
         if cap.elements.len() > MAX_ROWS {
-            lines.push(format!("  … +{} more (narrow with query= or read the saved list)", cap.elements.len() - MAX_ROWS));
+            lines.push(format!(
+                "  … +{} more (narrow with query= or read the saved list)",
+                cap.elements.len() - MAX_ROWS
+            ));
         }
 
         let mut out = Output::default();
@@ -219,7 +221,10 @@ impl Shaper {
             } else {
                 let ext = if mime == "image/jpeg" { ".jpg" } else { ".png" };
                 if let Some(p) = bounded_write(&cache.join("captures"), "capture_", ext, &raw) {
-                    lines.push(format!("  (screenshot saved to {}; share that path if the user asks to see it)", p.display()));
+                    lines.push(format!(
+                        "  (screenshot saved to {}; share that path if the user asks to see it)",
+                        p.display()
+                    ));
                 }
                 out.images.push((cap.image.clone().unwrap_or_default(), mime));
             }
@@ -234,7 +239,15 @@ mod tests {
     use super::*;
 
     fn el(i: u32, label: &str, bounds: (i64, i64, i64, i64)) -> UiElement {
-        UiElement { index: i, role: "Button".into(), label: label.into(), bounds, enabled: true, source: "tree", ..Default::default() }
+        UiElement {
+            index: i,
+            role: "Button".into(),
+            label: label.into(),
+            bounds,
+            enabled: true,
+            source: "tree",
+            ..Default::default()
+        }
     }
 
     fn png(w: u32, h: u32) -> String {

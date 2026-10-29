@@ -15,73 +15,17 @@ use dove_grounder::types::{Action, Bounds, BrowserState, Element, Observation, T
 use std::cmp::Ordering;
 
 // ---------------------------------------------------------- intents.py names
-const SAVE_NAMES: &[&str] = &[
-    "Save",
-    "Save…",
-    "Save Document",
-    "Save File",
-    "Done",
-    "Apply",
-    "Keep",
-    "Save As…",
-    "Save Changes",
-    "✓ Save",
-];
-const CANCEL_NAMES: &[&str] = &[
-    "Cancel",
-    "Close",
-    "Dismiss",
-    "No",
-    "Don't Save",
-    "Discard",
-    "Not Now",
-    "Later",
-    "Skip",
-    "Back",
-];
-const OK_NAMES: &[&str] = &[
-    "OK",
-    "Confirm",
-    "Yes",
-    "Continue",
-    "Accept",
-    "Allow",
-    "Agree",
-    "Next",
-    "Proceed",
-    "Got It",
-    "I Understand",
-];
-const OPEN_NAMES: &[&str] = &[
-    "Open…",
-    "Open File",
-    "Browse…",
-    "Choose File",
-    "Import…",
-    "Upload",
-    "Attach",
-    "Select File",
-    "Add Files",
-];
-const SEND_NAMES: &[&str] = &[
-    "Send",
-    "Submit",
-    "Post",
-    "Share",
-    "Publish",
-    "Reply",
-    "Send Message",
-    "Submit Form",
-];
-const DELETE_NAMES: &[&str] = &[
-    "Delete",
-    "Remove",
-    "Trash",
-    "Move to Trash",
-    "Erase",
-    "Delete Permanently",
-    "Remove Item",
-];
+const SAVE_NAMES: &[&str] =
+    &["Save", "Save…", "Save Document", "Save File", "Done", "Apply", "Keep", "Save As…", "Save Changes", "✓ Save"];
+const CANCEL_NAMES: &[&str] =
+    &["Cancel", "Close", "Dismiss", "No", "Don't Save", "Discard", "Not Now", "Later", "Skip", "Back"];
+const OK_NAMES: &[&str] =
+    &["OK", "Confirm", "Yes", "Continue", "Accept", "Allow", "Agree", "Next", "Proceed", "Got It", "I Understand"];
+const OPEN_NAMES: &[&str] =
+    &["Open…", "Open File", "Browse…", "Choose File", "Import…", "Upload", "Attach", "Select File", "Add Files"];
+const SEND_NAMES: &[&str] = &["Send", "Submit", "Post", "Share", "Publish", "Reply", "Send Message", "Submit Form"];
+const DELETE_NAMES: &[&str] =
+    &["Delete", "Remove", "Trash", "Move to Trash", "Erase", "Delete Permanently", "Remove Item"];
 const UNDO_NAMES: &[&str] = &["Undo", "Revert", "Restore", "Back", "Go Back"];
 
 // ---------------------------------------------------------------- vocab
@@ -143,18 +87,8 @@ const TOGGLE_NAMES: &[&str] = &[
     "Cookies",
     "JavaScript",
 ];
-const COMBO_NAMES: &[&str] = &[
-    "Theme",
-    "Language",
-    "Font Size",
-    "Quality",
-    "Region",
-    "Format",
-    "Resolution",
-    "Sort By",
-    "View",
-    "Duration",
-];
+const COMBO_NAMES: &[&str] =
+    &["Theme", "Language", "Font Size", "Quality", "Region", "Format", "Resolution", "Sort By", "View", "Duration"];
 const TABS: &[&str] = &[
     "Dashboard",
     "Settings",
@@ -169,8 +103,7 @@ const TABS: &[&str] = &[
     "Report",
 ];
 const WINDOWS: &[&str] = &[
-    "Notes", "Finder", "Mail", "Safari", "Terminal", "Settings", "Music", "Photos", "Calendar",
-    "TextEdit", "Preview",
+    "Notes", "Finder", "Mail", "Safari", "Terminal", "Settings", "Music", "Photos", "Calendar", "TextEdit", "Preview",
 ];
 const NAV_ITEMS: &[&str] = &[
     "Home",
@@ -331,46 +264,14 @@ const FILE_NAMES: &[&str] = &[
     "song.mp3",
     "video.mov",
 ];
-const TABLE_COLS: &[&str] = &[
-    "Name", "Date", "Status", "Size", "Owner", "Amount", "Priority", "Modified", "Type", "Score",
-    "Price", "Updated",
-];
-const CONSENT_NAMES: &[&str] = &[
-    "Accept All",
-    "Accept Cookies",
-    "Reject All",
-    "Manage",
-    "Preferences",
-    "Necessary Only",
-    "Agree",
-    "Dismiss",
-];
-const PLAYER_ACTIONS: &[&str] = &[
-    "Play",
-    "Pause",
-    "Mute",
-    "Unmute",
-    "Skip",
-    "Replay",
-    "Fullscreen",
-    "Next Episode",
-    "Volume",
-    "Speed",
-    "Captions",
-];
-const CHAT_ACTIONS: &[&str] = &[
-    "Send",
-    "New Chat",
-    "Attach",
-    "Emoji",
-    "Voice Message",
-    "Edit",
-    "Delete",
-    "Pin",
-    "Search",
-    "Archive",
-    "Mute",
-];
+const TABLE_COLS: &[&str] =
+    &["Name", "Date", "Status", "Size", "Owner", "Amount", "Priority", "Modified", "Type", "Score", "Price", "Updated"];
+const CONSENT_NAMES: &[&str] =
+    &["Accept All", "Accept Cookies", "Reject All", "Manage", "Preferences", "Necessary Only", "Agree", "Dismiss"];
+const PLAYER_ACTIONS: &[&str] =
+    &["Play", "Pause", "Mute", "Unmute", "Skip", "Replay", "Fullscreen", "Next Episode", "Volume", "Speed", "Captions"];
+const CHAT_ACTIONS: &[&str] =
+    &["Send", "New Chat", "Attach", "Emoji", "Voice Message", "Edit", "Delete", "Pin", "Search", "Archive", "Mute"];
 const COLOR_ATTRS: &[&str] = &["green", "red", "blue", "orange", "purple", "gray"];
 
 /// `ZONE_REGIONS`: the y range of each screen zone.
@@ -571,12 +472,7 @@ fn shuffle_renumber(els: &mut [Element], rng: &mut PyRandom) {
 fn screen(rng: &mut PyRandom, n_extra: i64) -> Vec<Element> {
     let mut els: Vec<Element> = Vec::new();
     let mut i = 0usize;
-    let archetype = pick(
-        rng,
-        &[
-            "dialog", "form", "toolbar", "browser", "settings", "editor", "list",
-        ],
-    );
+    let archetype = pick(rng, &["dialog", "form", "toolbar", "browser", "settings", "editor", "list"]);
     match archetype.as_str() {
         "dialog" => {
             let pool = cat(&[OK_NAMES, CANCEL_NAMES, SAVE_NAMES]);
@@ -587,12 +483,7 @@ fn screen(rng: &mut PyRandom, n_extra: i64) -> Vec<Element> {
             }
             let text = pick(
                 rng,
-                &[
-                    "Are you sure?",
-                    "Unsaved changes",
-                    "This action cannot be undone",
-                    "Do you want to continue?",
-                ],
+                &["Are you sure?", "Unsaved changes", "This action cannot be undone", "Do you want to continue?"],
             );
             els.push(el("statictext", &text, i, rng, ""));
         }
@@ -615,12 +506,9 @@ fn screen(rng: &mut PyRandom, n_extra: i64) -> Vec<Element> {
             }
         }
         "browser" => {
-            for (role, nm) in [
-                ("button", "Back"),
-                ("button", "Forward"),
-                ("button", "Reload"),
-                ("searchfield", "Address"),
-            ] {
+            for (role, nm) in
+                [("button", "Back"), ("button", "Forward"), ("button", "Reload"), ("searchfield", "Address")]
+            {
                 els.push(el(role, nm, i, rng, ""));
                 i += 1;
             }
@@ -672,10 +560,7 @@ fn screen(rng: &mut PyRandom, n_extra: i64) -> Vec<Element> {
     // unrelated distractors
     let names = cat(&[NAV_ITEMS, FIELD_NAMES, &[""]]);
     for _ in 0..n_extra {
-        let role = pick(
-            rng,
-            &["statictext", "image", "group", "button", "menuitem", "link"],
-        );
+        let role = pick(rng, &["statictext", "image", "group", "button", "menuitem", "link"]);
         let nm = pick(rng, &names);
         els.push(el(&role, &nm, i, rng, ""));
         i += 1;
@@ -692,8 +577,8 @@ fn screen2(rng: &mut PyRandom) -> Vec<Element> {
     let arch = pick(
         rng,
         &[
-            "shop", "social", "mail", "files", "table", "login", "consent", "player", "chat",
-            "kanban", "wizard", "tabstrip", "radio", "menubar",
+            "shop", "social", "mail", "files", "table", "login", "consent", "player", "chat", "kanban", "wizard",
+            "tabstrip", "radio", "menubar",
         ],
     );
     // `i` always equals `len(els)` in Python's loops.
@@ -716,10 +601,7 @@ fn screen2(rng: &mut PyRandom) -> Vec<Element> {
                 push!(&r, nm, "main");
             }
             push!("link", "See all reviews", "main");
-            let nm = pick(
-                rng,
-                &["Classic Hoodie", "Wireless Mouse", "Desk Lamp", "Sneakers"],
-            );
+            let nm = pick(rng, &["Classic Hoodie", "Wireless Mouse", "Desk Lamp", "Sneakers"]);
             push!("heading", &nm, "main");
         }
         "social" => {
@@ -759,10 +641,7 @@ fn screen2(rng: &mut PyRandom) -> Vec<Element> {
                 let role = pick(rng, &["listitem", "treeitem", "cell"]);
                 push!(&role, nm, "main");
             }
-            let nm = pick(
-                rng,
-                &["New Folder", "Upload", "Download", "Get Info", "Rename"],
-            );
+            let nm = pick(rng, &["New Folder", "Upload", "Download", "Get Info", "Rename"]);
             push!("button", &nm, "main");
             push!("searchfield", "Search files", "nav");
         }
@@ -772,17 +651,8 @@ fn screen2(rng: &mut PyRandom) -> Vec<Element> {
                 push!("column", nm, "nav");
             }
             for _ in 0..rng.randint(3, 7) {
-                let nm = pick(
-                    rng,
-                    &[
-                        "Order #1024",
-                        "Ticket Z-55",
-                        "User alice",
-                        "Item 42",
-                        "Build #918",
-                        "Customer ACME",
-                    ],
-                );
+                let nm =
+                    pick(rng, &["Order #1024", "Ticket Z-55", "User alice", "Item 42", "Build #918", "Customer ACME"]);
                 push!("row", &nm, "main");
             }
         }
@@ -800,11 +670,7 @@ fn screen2(rng: &mut PyRandom) -> Vec<Element> {
             for nm in rng.sample(CONSENT_NAMES, k) {
                 push!("button", nm, "foot");
             }
-            push!(
-                "statictext",
-                "We use cookies to improve your experience",
-                "foot"
-            );
+            push!("statictext", "We use cookies to improve your experience", "foot");
         }
         "player" => {
             let k = rng.randint(4, 7) as usize;
@@ -821,10 +687,7 @@ fn screen2(rng: &mut PyRandom) -> Vec<Element> {
             }
             push!("textarea", "Message", "foot");
             for _ in 0..rng.randint(2, 5) {
-                let nm = pick(
-                    rng,
-                    &["Alice", "Bob", "Team channel", "#general", "Support"],
-                );
+                let nm = pick(rng, &["Alice", "Bob", "Team channel", "#general", "Support"]);
                 push!("listitem", &nm, "side");
             }
         }
@@ -834,17 +697,8 @@ fn screen2(rng: &mut PyRandom) -> Vec<Element> {
                 push!("column", nm, "nav");
             }
             for _ in 0..rng.randint(3, 8) {
-                let nm = pick(
-                    rng,
-                    &[
-                        "Fix login bug",
-                        "Write docs",
-                        "Design mockup",
-                        "Ship v2",
-                        "Review PR",
-                        "Update deps",
-                    ],
-                );
+                let nm =
+                    pick(rng, &["Fix login bug", "Write docs", "Design mockup", "Ship v2", "Review PR", "Update deps"]);
                 push!("listitem", &nm, "main");
             }
             push!("button", "Add card", "foot");
@@ -874,16 +728,8 @@ fn screen2(rng: &mut PyRandom) -> Vec<Element> {
             }
         }
         "radio" => {
-            let group = pick(
-                rng,
-                &["Delivery", "Payment method", "Plan", "Size", "Theme"],
-            );
-            for nm in rng.sample(
-                &[
-                    "Standard", "Express", "Free", "Pro", "Team", "Basic", "Small", "Large",
-                ],
-                3,
-            ) {
+            let group = pick(rng, &["Delivery", "Payment method", "Plan", "Size", "Theme"]);
+            for nm in rng.sample(&["Standard", "Express", "Free", "Pro", "Team", "Basic", "Small", "Large"], 3) {
                 push!("radio", nm, "main");
             }
             push!("radiogroup", &group, "main");
@@ -893,10 +739,7 @@ fn screen2(rng: &mut PyRandom) -> Vec<Element> {
         _ => {
             // menubar
             let k = rng.randint(3, 6) as usize;
-            for nm in rng.sample(
-                &["File", "Edit", "View", "Window", "Help", "Format", "Tools"],
-                k,
-            ) {
+            for nm in rng.sample(&["File", "Edit", "View", "Window", "Help", "Format", "Tools"], k) {
                 push!("menubutton", nm, "nav");
             }
             let pool = cat(&[SAVE_NAMES, CANCEL_NAMES, OPEN_NAMES]);
@@ -966,22 +809,14 @@ fn screen3(rng: &mut PyRandom) -> Vec<Element> {
     }
     for _ in 0..n_main {
         let r = *rng.choice(&kinds);
-        let nm = if rng.random() < 0.9 {
-            rng.choice(&names).clone()
-        } else {
-            String::new()
-        };
+        let nm = if rng.random() < 0.9 { rng.choice(&names).clone() } else { String::new() };
         push!(r, &nm, "main");
     }
     // scatter interactive furniture
     let furniture = cat(&[DENSE_BUTTONS, DENSE_LINKS]);
     for _ in 0..rng.randint(2, 8) {
         let r = pick(rng, &["button", "checkbox", "tab", "heading", "image"]);
-        let nm = if r != "image" {
-            pick(rng, &furniture)
-        } else {
-            String::new()
-        };
+        let nm = if r != "image" { pick(rng, &furniture) } else { String::new() };
         push!(&r, &nm, "main");
     }
     // footer
@@ -1004,23 +839,14 @@ fn obs_browser(rng: &mut PyRandom) -> BrowserState {
         .sample(TABS, 3)
         .into_iter()
         .enumerate()
-        .map(|(i, t)| Tab {
-            id: format!("t{i}"),
-            title: t.to_owned(),
-        })
+        .map(|(i, t)| Tab { id: format!("t{i}"), title: t.to_owned() })
         .collect();
     BrowserState { url, title, tabs }
 }
 
 /// `_obs(els, rng, browser)`: a macOS 1600x1000 observation.
 fn obs(els: Vec<Element>, browser: Option<BrowserState>, goal: String) -> Observation {
-    Observation {
-        goal,
-        elements: els,
-        browser,
-        screen_w: 1600,
-        screen_h: 1000,
-    }
+    Observation { goal, elements: els, browser, screen_w: 1600, screen_h: 1000 }
 }
 
 /// Python's `(bounds.y if bounds else 0, bounds.x if bounds else 0) <`.
@@ -1045,11 +871,7 @@ fn topmost(els: &[Element], idx: &[usize]) -> usize {
 /// share its name the goal can only mean the topmost one.
 fn pick_named(els: &[Element], pool: &[usize], rng: &mut PyRandom) -> Element {
     let mut j = *rng.choice(pool);
-    let same: Vec<usize> = pool
-        .iter()
-        .copied()
-        .filter(|&k| els[k].name == els[j].name)
-        .collect();
+    let same: Vec<usize> = pool.iter().copied().filter(|&k| els[k].name == els[j].name).collect();
     if same.len() > 1 {
         j = topmost(els, &same);
     }
@@ -1058,11 +880,7 @@ fn pick_named(els: &[Element], pool: &[usize], rng: &mut PyRandom) -> Element {
 
 /// `_find(els, pred)`.
 fn find(els: &[Element], pred: impl Fn(&Element) -> bool) -> Vec<usize> {
-    els.iter()
-        .enumerate()
-        .filter(|(_, e)| pred(e))
-        .map(|(i, _)| i)
-        .collect()
+    els.iter().enumerate().filter(|(_, e)| pred(e)).map(|(i, _)| i).collect()
 }
 
 fn role_in(e: &Element, roles: &[&str]) -> bool {
@@ -1110,11 +928,7 @@ fn gen_sample(rng: &mut PyRandom, drag_boost: f64, ord_boost: f64) -> Sample {
         els = screen(rng, n_extra);
     }
     renumber(&mut els);
-    let browser_state = if browser {
-        Some(obs_browser(rng))
-    } else {
-        None
-    };
+    let browser_state = if browser { Some(obs_browser(rng)) } else { None };
 
     let mut r = rng.random();
     if ord_boost != 0.0 && rng.random() < ord_boost {
@@ -1122,11 +936,8 @@ fn gen_sample(rng: &mut PyRandom, drag_boost: f64, ord_boost: f64) -> Sample {
     }
     if drag_boost != 0.0
         && rng.random() < drag_boost
-        && find(&els, |e| {
-            role_in(e, &["listitem", "treeitem", "row", "cell", "image", "tab"])
-                && !e.name.is_empty()
-        })
-        .len()
+        && find(&els, |e| role_in(e, &["listitem", "treeitem", "row", "cell", "image", "tab"]) && !e.name.is_empty())
+            .len()
             >= 2
     {
         r = 0.958;
@@ -1138,20 +949,14 @@ fn gen_sample(rng: &mut PyRandom, drag_boost: f64, ord_boost: f64) -> Sample {
             format!("press the {} teleport key", rng.choice(FIELD_NAMES)),
             format!("enable {} warp drive", rng.choice(TOGGLE_NAMES)),
             format!("open {} quantum editor", rng.choice(WINDOWS)),
-            format!(
-                "type something into the {} transporter",
-                rng.choice(FIELD_NAMES)
-            ),
+            format!("type something into the {} transporter", rng.choice(FIELD_NAMES)),
             // ungroundable visual attributes: abstain (vision's job)
             format!("click the {} button", rng.choice(COLOR_ATTRS)),
             format!("click the {} icon in the corner", rng.choice(COLOR_ATTRS)),
             format!("press the glowing {} button", rng.choice(NAV_ITEMS)),
         ];
         let mut goal = pick_owned(rng, options);
-        if ["xplode", "teleport", "warp", "quantum", "transporter"]
-            .iter()
-            .any(|w| goal.contains(w))
-        {
+        if ["xplode", "teleport", "warp", "quantum", "transporter"].iter().any(|w| goal.contains(w)) {
             goal += &format!(" {}", rng.randint(99, 999));
         }
         let obs = obs(els, browser_state, goal);
@@ -1173,24 +978,13 @@ fn gen_sample(rng: &mut PyRandom, drag_boost: f64, ord_boost: f64) -> Sample {
 
     if r < 0.22 {
         // click named target
-        let names = cat(&[
-            SAVE_NAMES,
-            OK_NAMES,
-            CANCEL_NAMES,
-            OPEN_NAMES,
-            SEND_NAMES,
-            DELETE_NAMES,
-            UNDO_NAMES,
-            NAV_ITEMS,
-        ]);
+        let names =
+            cat(&[SAVE_NAMES, OK_NAMES, CANCEL_NAMES, OPEN_NAMES, SEND_NAMES, DELETE_NAMES, UNDO_NAMES, NAV_ITEMS]);
         let mut tgt = pick(rng, &names);
         let lower = pystr::lower(&tgt);
         let pool = find(&els, |e| pystr::lower(&e.name) == lower);
         if pool.is_empty() {
-            match els
-                .iter()
-                .find(|e| role_in(e, &["button", "link", "menuitem"]) && !e.name.is_empty())
-            {
+            match els.iter().find(|e| role_in(e, &["button", "link", "menuitem"]) && !e.name.is_empty()) {
                 Some(e) => tgt = e.name.clone(),
                 None => return gen_sample(rng, drag_boost, ord_boost),
             }
@@ -1213,12 +1007,7 @@ fn gen_sample(rng: &mut PyRandom, drag_boost: f64, ord_boost: f64) -> Sample {
         verb = Verb::Click;
     } else if r < 0.32 {
         // semantic click (save/confirm/close/send/open/delete/undo)
-        let kind = pick(
-            rng,
-            &[
-                "save", "confirm", "cancel", "send", "open", "delete", "undo",
-            ],
-        );
+        let kind = pick(rng, &["save", "confirm", "cancel", "send", "open", "delete", "undo"]);
         let names: &[&str] = match kind.as_str() {
             "save" => SAVE_NAMES,
             "confirm" => OK_NAMES,
@@ -1241,9 +1030,7 @@ fn gen_sample(rng: &mut PyRandom, drag_boost: f64, ord_boost: f64) -> Sample {
             ],
         );
         let lowered: Vec<String> = names.iter().map(|n| pystr::lower(n)).collect();
-        target_pred = Some(Box::new(move |e: &Element| {
-            lowered.contains(&pystr::lower(&e.name))
-        }));
+        target_pred = Some(Box::new(move |e: &Element| lowered.contains(&pystr::lower(&e.name))));
         verb = Verb::Click;
     } else if r < 0.44 {
         // type into a field
@@ -1254,8 +1041,7 @@ fn gen_sample(rng: &mut PyRandom, drag_boost: f64, ord_boost: f64) -> Sample {
         let fl = pystr::lower(&field);
         let pred: Pred = Box::new(move |e: &Element| {
             let name = pystr::lower(&e.name);
-            (role_in(e, &["textfield", "searchfield", "textarea", "combobox"])
-                && name.contains(&fl))
+            (role_in(e, &["textfield", "searchfield", "textarea", "combobox"]) && name.contains(&fl))
                 || (name.contains(&fl) && e.role == "textfield")
         });
         goal = pick_owned(
@@ -1283,11 +1069,7 @@ fn gen_sample(rng: &mut PyRandom, drag_boost: f64, ord_boost: f64) -> Sample {
             .filter(|(tpl, _)| !browser || !["new tab", "close the tab", "go back"].contains(tpl))
             .collect();
         let (tpl, keys) = *rng.choice(&key_goals);
-        let k = if keys.contains("cmd") {
-            keys.replace("cmd", "command")
-        } else {
-            keys.to_owned()
-        };
+        let k = if keys.contains("cmd") { keys.replace("cmd", "command") } else { keys.to_owned() };
         goal = tpl.replace("{k}", &k);
         verb = Verb::Keypress;
         arg = keys.to_owned();
@@ -1334,16 +1116,10 @@ fn gen_sample(rng: &mut PyRandom, drag_boost: f64, ord_boost: f64) -> Sample {
     } else if r < 0.66 {
         // select option
         let tgt = pick(rng, COMBO_NAMES);
-        let opt = pick(
-            rng,
-            &[
-                "High", "Low", "English", "Dark", "Compact", "Weekly", "1080p", "Latest",
-            ],
-        );
+        let opt = pick(rng, &["High", "Low", "English", "Dark", "Compact", "Weekly", "1080p", "Latest"]);
         let tl = pystr::lower(&tgt);
         let pred: Pred = Box::new(move |e: &Element| {
-            pystr::lower(&e.name).contains(&tl)
-                && role_in(e, &["combobox", "select", "popupbutton"])
+            pystr::lower(&e.name).contains(&tl) && role_in(e, &["combobox", "select", "popupbutton"])
         });
         if find(&els, &pred).is_empty() && rng.random() < 0.6 {
             let n = els.len();
@@ -1380,58 +1156,25 @@ fn gen_sample(rng: &mut PyRandom, drag_boost: f64, ord_boost: f64) -> Sample {
             );
         } else {
             verb = Verb::Keypress;
-            arg = if direction == "down" {
-                "pagedown"
-            } else {
-                "pageup"
-            }
-            .to_owned();
+            arg = if direction == "down" { "pagedown" } else { "pageup" }.to_owned();
             goal = pick_owned(
                 rng,
-                vec![
-                    format!("scroll {direction}"),
-                    format!("page {direction}"),
-                    format!("go {direction} the page"),
-                ],
+                vec![format!("scroll {direction}"), format!("page {direction}"), format!("go {direction} the page")],
             );
         }
     } else if r < 0.78 {
         // wait / done
         if rng.random() < 0.5 {
             verb = Verb::Wait;
-            goal = pick(
-                rng,
-                &[
-                    "wait for the page to load",
-                    "wait a moment",
-                    "pause briefly",
-                    "hold on",
-                    "wait",
-                ],
-            );
+            goal = pick(rng, &["wait for the page to load", "wait a moment", "pause briefly", "hold on", "wait"]);
         } else {
             verb = Verb::Done;
-            goal = pick(
-                rng,
-                &[
-                    "the task is complete",
-                    "nothing else needed",
-                    "you are finished",
-                    "finish up",
-                    "done",
-                ],
-            );
+            goal = pick(rng, &["the task is complete", "nothing else needed", "you are finished", "finish up", "done"]);
         }
     } else if r < 0.90 && browser {
         // browser verbs
-        let bverb = *rng.choice(&[
-            Verb::Navigate,
-            Verb::Back,
-            Verb::Forward,
-            Verb::Refresh,
-            Verb::NewTab,
-            Verb::SwitchTab,
-        ]);
+        let bverb =
+            *rng.choice(&[Verb::Navigate, Verb::Back, Verb::Forward, Verb::Refresh, Verb::NewTab, Verb::SwitchTab]);
         verb = bverb;
         if bverb == Verb::Navigate {
             arg = pick(rng, DOMAINS);
@@ -1472,9 +1215,7 @@ fn gen_sample(rng: &mut PyRandom, drag_boost: f64, ord_boost: f64) -> Sample {
         }
     } else if r < 0.94 {
         // focus field
-        let pool = find(&els, |e| {
-            role_in(e, &["textfield", "searchfield", "textarea"])
-        });
+        let pool = find(&els, |e| role_in(e, &["textfield", "searchfield", "textarea"]));
         if pool.is_empty() {
             return gen_sample(rng, drag_boost, ord_boost);
         }
@@ -1499,9 +1240,7 @@ fn gen_sample(rng: &mut PyRandom, drag_boost: f64, ord_boost: f64) -> Sample {
         );
     } else if r < 0.955 {
         // double-click (open files/items)
-        let pool = find(&els, |e| {
-            role_in(e, &["listitem", "treeitem", "cell", "row", "image"]) && !e.name.is_empty()
-        });
+        let pool = find(&els, |e| role_in(e, &["listitem", "treeitem", "cell", "row", "image"]) && !e.name.is_empty());
         if pool.is_empty() {
             return gen_sample(rng, drag_boost, ord_boost);
         }
@@ -1521,10 +1260,8 @@ fn gen_sample(rng: &mut PyRandom, drag_boost: f64, ord_boost: f64) -> Sample {
         );
     } else if r < 0.965 {
         // drag src -> dst
-        let pool = find(&els, |e| {
-            role_in(e, &["listitem", "treeitem", "row", "cell", "image", "tab"])
-                && !e.name.is_empty()
-        });
+        let pool =
+            find(&els, |e| role_in(e, &["listitem", "treeitem", "row", "cell", "image", "tab"]) && !e.name.is_empty());
         if pool.len() < 2 {
             return gen_sample(rng, drag_boost, ord_boost);
         }
@@ -1533,11 +1270,7 @@ fn gen_sample(rng: &mut PyRandom, drag_boost: f64, ord_boost: f64) -> Sample {
         let mut src = els[src_i].clone();
         let dst = els[dst_i].clone();
         // several elements sharing the source name: the topmost one
-        let same: Vec<usize> = pool
-            .iter()
-            .copied()
-            .filter(|&j| els[j].name == src.name)
-            .collect();
+        let same: Vec<usize> = pool.iter().copied().filter(|&j| els[j].name == src.name).collect();
         if same.len() > 1 {
             src = els[topmost(&els, &same)].clone();
         }
@@ -1557,13 +1290,7 @@ fn gen_sample(rng: &mut PyRandom, drag_boost: f64, ord_boost: f64) -> Sample {
     } else if r < 0.98 {
         // right-click / context menu
         let pool = find(&els, |e| {
-            !e.name.is_empty()
-                && role_in(
-                    e,
-                    &[
-                        "listitem", "treeitem", "cell", "row", "image", "button", "link",
-                    ],
-                )
+            !e.name.is_empty() && role_in(e, &["listitem", "treeitem", "cell", "row", "image", "button", "link"])
         });
         if pool.is_empty() {
             return gen_sample(rng, drag_boost, ord_boost);
@@ -1575,11 +1302,7 @@ fn gen_sample(rng: &mut PyRandom, drag_boost: f64, ord_boost: f64) -> Sample {
         let n = &tgt.name;
         goal = pick_owned(
             rng,
-            vec![
-                format!("right-click {n}"),
-                format!("open the context menu on {n}"),
-                format!("right click on {n}"),
-            ],
+            vec![format!("right-click {n}"), format!("open the context menu on {n}"), format!("right click on {n}")],
         );
     } else if r < 0.987 {
         // positional reference (ordinal among matching role)
@@ -1661,18 +1384,11 @@ fn gen_sample(rng: &mut PyRandom, drag_boost: f64, ord_boost: f64) -> Sample {
         let n = &tgt.name;
         goal = pick_owned(
             rng,
-            vec![
-                format!("choose the {n} option"),
-                format!("select {n}"),
-                format!("pick {n}"),
-                format!("choose {n}"),
-            ],
+            vec![format!("choose the {n} option"), format!("select {n}"), format!("pick {n}"), format!("choose {n}")],
         );
     } else {
         // generic click on any actionable named element
-        let pool = find(&els, |e| {
-            !e.name.is_empty() && role_in(e, &["button", "link", "menuitem", "tab", "listitem"])
-        });
+        let pool = find(&els, |e| !e.name.is_empty() && role_in(e, &["button", "link", "menuitem", "tab", "listitem"]));
         if pool.is_empty() {
             return gen_sample(rng, drag_boost, ord_boost);
         }
@@ -1683,12 +1399,7 @@ fn gen_sample(rng: &mut PyRandom, drag_boost: f64, ord_boost: f64) -> Sample {
         let n = &tgt.name;
         goal = pick_owned(
             rng,
-            vec![
-                format!("click {n}"),
-                format!("press {n}"),
-                format!("open {n}"),
-                format!("select {n}"),
-            ],
+            vec![format!("click {n}"), format!("press {n}"), format!("open {n}"), format!("select {n}")],
         );
     }
 
@@ -1720,13 +1431,7 @@ fn gen_sample(rng: &mut PyRandom, drag_boost: f64, ord_boost: f64) -> Sample {
     if correct_idx.is_none() && !ambiguous {
         kind = "abstain-implicit";
     }
-    Sample {
-        obs,
-        candidates: cands,
-        correct_idx,
-        kind: kind.into(),
-        gold_arg: arg,
-    }
+    Sample { obs, candidates: cands, correct_idx, kind: kind.into(), gold_arg: arg }
 }
 
 /// `_label(cands, obs, verb, pred, arg)`: the index of the gold candidate.
@@ -1738,13 +1443,8 @@ fn label(
     arg: &str,
 ) -> Option<usize> {
     use Verb::*;
-    if matches!(
-        verb,
-        Keypress | Wait | Done | Back | Forward | Refresh | NewTab | Navigate
-    ) {
-        return cands
-            .iter()
-            .position(|a| a.verb == verb && !(verb == Navigate && a.text != ARG));
+    if matches!(verb, Keypress | Wait | Done | Back | Forward | Refresh | NewTab | Navigate) {
+        return cands.iter().position(|a| a.verb == verb && !(verb == Navigate && a.text != ARG));
     }
     if verb == SwitchTab {
         return cands.iter().position(|a| a.verb == verb && a.tab == arg);
@@ -1777,9 +1477,7 @@ pub fn generate(n: usize, seed: u64) -> Vec<Sample> {
 /// `generate(n, seed, drag_boost, ord_boost)`.
 pub fn generate_boosted(n: usize, seed: u64, drag_boost: f64, ord_boost: f64) -> Vec<Sample> {
     let mut rng = PyRandom::new(seed);
-    (0..n)
-        .map(|_| gen_sample(&mut rng, drag_boost, ord_boost))
-        .collect()
+    (0..n).map(|_| gen_sample(&mut rng, drag_boost, ord_boost)).collect()
 }
 
 /// The `semantic_eval` truth for a sample, as `make_goldens.py` records it:

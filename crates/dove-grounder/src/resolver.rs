@@ -4,8 +4,8 @@
 //! session command) and otherwise defers to the ranker.
 
 use crate::actions::{
-    self, any_actionable, has, CHECKABLE_ROLES, CLICKABLE_ROLES, DCLICK_ROLES, SCROLLABLE_ROLES,
-    SELECT_ROLES, TEXT_ROLES,
+    self, any_actionable, has, CHECKABLE_ROLES, CLICKABLE_ROLES, DCLICK_ROLES, SCROLLABLE_ROLES, SELECT_ROLES,
+    TEXT_ROLES,
 };
 use crate::features::{ascii_words, cmp_key, sort_by_reading};
 use crate::infer;
@@ -17,16 +17,15 @@ use std::collections::HashSet;
 use std::sync::LazyLock;
 
 const STOP: &[&str] = &[
-    "a", "an", "and", "are", "as", "at", "be", "by", "can", "do", "does", "for", "go", "i", "in",
-    "into", "is", "it", "its", "me", "my", "of", "on", "or", "our", "please", "that", "the",
-    "their", "then", "this", "to", "us", "was", "we", "with", "you", "your",
+    "a", "an", "and", "are", "as", "at", "be", "by", "can", "do", "does", "for", "go", "i", "in", "into", "is", "it",
+    "its", "me", "my", "of", "on", "or", "our", "please", "that", "the", "their", "then", "this", "to", "us", "was",
+    "we", "with", "you", "your",
 ];
 
 const VERB_WORDS: &[&str] = &[
-    "activate", "check", "choose", "click", "close", "collapse", "disable", "double", "drag",
-    "enable", "enter", "expand", "fill", "follow", "hit", "input", "mark", "open", "pick", "press",
-    "right", "scroll", "search", "select", "submit", "switch", "tap", "toggle", "type", "uncheck",
-    "visit", "write",
+    "activate", "check", "choose", "click", "close", "collapse", "disable", "double", "drag", "enable", "enter",
+    "expand", "fill", "follow", "hit", "input", "mark", "open", "pick", "press", "right", "scroll", "search", "select",
+    "submit", "switch", "tap", "toggle", "type", "uncheck", "visit", "write",
 ];
 
 const ORDINAL_WORDS: [(&str, i64); 10] = [
@@ -86,17 +85,12 @@ const ROLE_ALIAS: &[(&str, &[&str])] = &[
 ];
 
 fn alias(word: &str) -> Option<&'static [&'static str]> {
-    ROLE_ALIAS
-        .iter()
-        .find(|(w, _)| *w == word)
-        .map(|(_, set)| *set)
+    ROLE_ALIAS.iter().find(|(w, _)| *w == word).map(|(_, set)| *set)
 }
 
 /// `_words`: lowercased `[a-z0-9]+` words minus the stop list.
 pub fn words(text: &str) -> HashSet<String> {
-    ascii_words(text)
-        .filter(|w| !STOP.contains(&w.as_str()))
-        .collect()
+    ascii_words(text).filter(|w| !STOP.contains(&w.as_str())).collect()
 }
 
 /// `_words` in first-appearance order, for the one place set order matters.
@@ -119,23 +113,11 @@ struct VerbRe(Regex, Verb);
 static ELEMENT_VERB_RES: LazyLock<Vec<VerbRe>> = LazyLock::new(|| {
     let r = |p: &str, v| VerbRe(py_regex(p, false), v);
     vec![
-        r(
-            r"\b(?:double[ -]?click|two[ -]?click)\w*",
-            Verb::DoubleClick,
-        ),
-        r(
-            r"\b(?:right[ -]?click|secondary[ -]?click|context[ -]?click)\b",
-            Verb::RightClick,
-        ),
-        r(
-            r"\b(?:type|enter|write|fill|search\s+for|look\s+for)\b",
-            Verb::Type,
-        ),
+        r(r"\b(?:double[ -]?click|two[ -]?click)\w*", Verb::DoubleClick),
+        r(r"\b(?:right[ -]?click|secondary[ -]?click|context[ -]?click)\b", Verb::RightClick),
+        r(r"\b(?:type|enter|write|fill|search\s+for|look\s+for)\b", Verb::Type),
         r(r"\b(?:drag|move)\b.*\b(?:onto|to|into|over)\b", Verb::Drag),
-        r(
-            r"\bfocus(?:\s+(?:on|onto|the))?\b|\bput\s+(?:the\s+)?cursor\s+(?:in|into|on)\b",
-            Verb::Focus,
-        ),
+        r(r"\bfocus(?:\s+(?:on|onto|the))?\b|\bput\s+(?:the\s+)?cursor\s+(?:in|into|on)\b", Verb::Focus),
         r(r"\b(?:select|choose|pick)\b", Verb::Select),
         r(r"\b(?:check|mark|tick|uncheck|unmark)\b", Verb::Check),
         r(
@@ -146,10 +128,7 @@ static ELEMENT_VERB_RES: LazyLock<Vec<VerbRe>> = LazyLock::new(|| {
 });
 
 fn intent(goal: &str) -> Option<Verb> {
-    ELEMENT_VERB_RES
-        .iter()
-        .find(|VerbRe(re, _)| re.is_match(goal))
-        .map(|VerbRe(_, v)| *v)
+    ELEMENT_VERB_RES.iter().find(|VerbRe(re, _)| re.is_match(goal)).map(|VerbRe(_, v)| *v)
 }
 
 /// `_role_restriction`: the role set named by the goal's longest role word.
@@ -167,11 +146,7 @@ fn role_restriction(goal: &str) -> Option<&'static [&'static str]> {
         }
     }
     let longest = hits.iter().map(|(n, _)| *n).max()?;
-    let tied: Vec<&'static [&'static str]> = hits
-        .iter()
-        .filter(|(n, _)| *n == longest)
-        .map(|(_, s)| *s)
-        .collect();
+    let tied: Vec<&'static [&'static str]> = hits.iter().filter(|(n, _)| *n == longest).map(|(_, s)| *s).collect();
     let is_subset = |a: &[&str], b: &[&str]| a.iter().all(|r| b.contains(r));
     // A set no tied set strictly contains, first in goal order.
     tied.iter()
@@ -185,13 +160,7 @@ static ORDINAL_RE: LazyLock<Regex> = LazyLock::new(|| {
     // sorted(_ROLE_ALIAS, key=len, reverse=True): stable, so dict order breaks ties.
     let mut names: Vec<&str> = ROLE_ALIAS.iter().map(|(w, _)| *w).collect();
     names.sort_by_key(|w| std::cmp::Reverse(w.len()));
-    py_regex(
-        &format!(
-            r"\b({ord})\s+(?:[a-z0-9]+\s+){{0,2}}({})\b",
-            names.join("|")
-        ),
-        false,
-    )
+    py_regex(&format!(r"\b({ord})\s+(?:[a-z0-9]+\s+){{0,2}}({})\b", names.join("|")), false)
 });
 static NUM_ORD_RE: LazyLock<Regex> = LazyLock::new(|| py_regex(r"^\d+(?:st|nd|rd|th)$", false));
 
@@ -201,9 +170,7 @@ fn ordinal_index(goal: &str, els: &[&Element]) -> Option<i64> {
     let (g1, g2) = (m.get(1).unwrap(), m.get(2).unwrap());
     let ordinal_phrase = pystr::lower(pystr::strip(&goal[g1.start()..g2.start()]));
     if pystr::split(&ordinal_phrase).count() > 1
-        && els
-            .iter()
-            .any(|el| pystr::lower(&el.name).contains(&ordinal_phrase))
+        && els.iter().any(|el| pystr::lower(&el.name).contains(&ordinal_phrase))
     {
         return None;
     }
@@ -250,20 +217,12 @@ fn best_named<'a>(pool: &[&'a Element], goal_words: &HashSet<String>) -> Option<
 }
 
 fn ordinal_target<'a>(pool: &[&'a Element], idx: i64) -> Option<&'a Element> {
-    let mut ordered: Vec<&Element> = pool
-        .iter()
-        .copied()
-        .filter(|e| !e.name.is_empty())
-        .collect();
+    let mut ordered: Vec<&Element> = pool.iter().copied().filter(|e| !e.name.is_empty()).collect();
     if ordered.is_empty() {
         return None;
     }
     sort_by_reading(&mut ordered);
-    let i = if idx >= 0 {
-        idx
-    } else {
-        ordered.len() as i64 - 1
-    };
+    let i = if idx >= 0 { idx } else { ordered.len() as i64 - 1 };
     if 0 <= i && (i as usize) < ordered.len() {
         Some(ordered[i as usize])
     } else {
@@ -298,18 +257,9 @@ const PURE_DONE: &[&str] = &[
     "i",
     "am",
 ];
-const DONE_MARKERS: &[&str] = &[
-    "done",
-    "finish",
-    "finished",
-    "complete",
-    "completed",
-    "wrap",
-];
-const PURE_WAIT: &[&str] = &[
-    "wait", "pause", "hold", "on", "briefly", "moment", "second", "bit", "a", "the", "for",
-    "please",
-];
+const DONE_MARKERS: &[&str] = &["done", "finish", "finished", "complete", "completed", "wrap"];
+const PURE_WAIT: &[&str] =
+    &["wait", "pause", "hold", "on", "briefly", "moment", "second", "bit", "a", "the", "for", "please"];
 const WAIT_MARKERS: &[&str] = &["wait", "pause", "hold"];
 
 static TAB_RE: LazyLock<Regex> = LazyLock::new(|| {
@@ -325,11 +275,7 @@ fn tab_action(obs: &Observation, goal_l: &str) -> Option<Action> {
         return None;
     }
     let m = TAB_RE.captures(goal_l)?;
-    let phrase = m
-        .get(1)
-        .or_else(|| m.get(2))
-        .map(|g| g.as_str())
-        .unwrap_or("");
+    let phrase = m.get(1).or_else(|| m.get(2)).map(|g| g.as_str()).unwrap_or("");
     let want = words(phrase);
     if want.is_empty() {
         return None;
@@ -361,12 +307,10 @@ fn drag_pair(els: &[&Element], goal_l: &str) -> Option<Action> {
     let mut dst: Option<&Element> = None;
     for el in els {
         let nw = words(&el.name);
-        if !nw.is_empty() && subset(&nw, &sw) && src.is_none_or(|s| nw.len() > words(&s.name).len())
-        {
+        if !nw.is_empty() && subset(&nw, &sw) && src.is_none_or(|s| nw.len() > words(&s.name).len()) {
             src = Some(el);
         }
-        if !nw.is_empty() && subset(&nw, &dw) && dst.is_none_or(|d| nw.len() > words(&d.name).len())
-        {
+        if !nw.is_empty() && subset(&nw, &dw) && dst.is_none_or(|d| nw.len() > words(&d.name).len()) {
             dst = Some(el);
         }
     }
@@ -384,38 +328,14 @@ fn keys(list: &[&str]) -> Vec<String> {
 static SHORTCUT_RES: LazyLock<Vec<(Regex, Vec<String>)>> = LazyLock::new(|| {
     let r = |p: &str, k: &[&str]| (py_regex(p, false), keys(k));
     vec![
-        r(
-            r"^(?:please\s+)?undo\s+(?:the\s+)?last\s+action(?:\s+now)?$",
-            &["cmd", "z"],
-        ),
-        r(
-            r"^(?:please\s+)?copy\s+(?:the\s+)?selection(?:\s+now)?$",
-            &["cmd", "c"],
-        ),
-        r(
-            r"^(?:please\s+)?paste\s+(?:the\s+)?clipboard(?:\s+now)?$",
-            &["cmd", "v"],
-        ),
-        r(
-            r"^(?:please\s+)?select\s+all(?:\s+text)?(?:\s+now)?$",
-            &["cmd", "a"],
-        ),
-        r(
-            r"^(?:please\s+)?open\s+spotlight(?:\s+search)?(?:\s+now)?$",
-            &["cmd", "space"],
-        ),
-        r(
-            r"^(?:please\s+)?quit\s+(?:the\s+)?app(?:\s+now)?$",
-            &["cmd", "q"],
-        ),
-        r(
-            r"^(?:please\s+)?find\s+on\s+page(?:\s+now)?$",
-            &["cmd", "f"],
-        ),
-        r(
-            r"^(?:please\s+)?save\s+with\s+keyboard(?:\s+now)?$",
-            &["cmd", "s"],
-        ),
+        r(r"^(?:please\s+)?undo\s+(?:the\s+)?last\s+action(?:\s+now)?$", &["cmd", "z"]),
+        r(r"^(?:please\s+)?copy\s+(?:the\s+)?selection(?:\s+now)?$", &["cmd", "c"]),
+        r(r"^(?:please\s+)?paste\s+(?:the\s+)?clipboard(?:\s+now)?$", &["cmd", "v"]),
+        r(r"^(?:please\s+)?select\s+all(?:\s+text)?(?:\s+now)?$", &["cmd", "a"]),
+        r(r"^(?:please\s+)?open\s+spotlight(?:\s+search)?(?:\s+now)?$", &["cmd", "space"]),
+        r(r"^(?:please\s+)?quit\s+(?:the\s+)?app(?:\s+now)?$", &["cmd", "q"]),
+        r(r"^(?:please\s+)?find\s+on\s+page(?:\s+now)?$", &["cmd", "f"]),
+        r(r"^(?:please\s+)?save\s+with\s+keyboard(?:\s+now)?$", &["cmd", "s"]),
         r(r"^(?:please\s+)?print(?:\s+now)?$", &["cmd", "p"]),
         r(r"^(?:please\s+)?page\s+down(?:\s+now)?$", &["pagedown"]),
         r(r"^(?:please\s+)?page\s+up(?:\s+now)?$", &["pageup"]),
@@ -427,22 +347,12 @@ static SESSION_SHORTCUT_RES: LazyLock<Vec<(Regex, Vec<String>)>> = LazyLock::new
     let r = |p: &str, k: &[&str]| (py_regex(p, false), keys(k));
     vec![
         r(r"^(?:please\s+)?new\s+tab(?:\s+now)?$", &["cmd", "t"]),
-        r(
-            r"^(?:please\s+)?close\s+(?:(?:the|this|current)\s+)?tab(?:\s+now)?$",
-            &["cmd", "w"],
-        ),
-        r(
-            r"^(?:please\s+)?(?:go\s+)?back(?:\s+now)?$",
-            &["alt", "left"],
-        ),
+        r(r"^(?:please\s+)?close\s+(?:(?:the|this|current)\s+)?tab(?:\s+now)?$", &["cmd", "w"]),
+        r(r"^(?:please\s+)?(?:go\s+)?back(?:\s+now)?$", &["alt", "left"]),
     ]
 });
-static SCROLLING_PAGE_RE: LazyLock<Regex> = LazyLock::new(|| {
-    py_regex(
-        r"\bscroll\s+(?:(?:the\s+)?(?:page|list)\s+)?(?:up|down)\b",
-        false,
-    )
-});
+static SCROLLING_PAGE_RE: LazyLock<Regex> =
+    LazyLock::new(|| py_regex(r"\bscroll\s+(?:(?:the\s+)?(?:page|list)\s+)?(?:up|down)\b", false));
 
 /// `shortcut_keys(goal_l, obs)`; `in_browser` is `obs.browser is not None`.
 pub fn shortcut_keys(goal_l: &str, in_browser: bool) -> Option<Vec<String>> {
@@ -465,130 +375,46 @@ pub fn shortcut_keys(goal_l: &str, in_browser: bool) -> Option<Vec<String>> {
     None
 }
 
-static CHORD_RE: LazyLock<Regex> = LazyLock::new(|| {
-    py_regex(
-        r"\b(?:press|hit)\s+(?:the\s+)?([\w +]+?)\s*(?:keys?|arrow keys?)?$",
-        false,
-    )
-});
+static CHORD_RE: LazyLock<Regex> =
+    LazyLock::new(|| py_regex(r"\b(?:press|hit)\s+(?:the\s+)?([\w +]+?)\s*(?:keys?|arrow keys?)?$", false));
 static PLUS_RE: LazyLock<Regex> = LazyLock::new(|| py_regex(r"\s*\+\s*", false));
 static FKEY_RE: LazyLock<Regex> = LazyLock::new(|| py_regex_full(r"f\d{1,2}", false));
 static NEW_TAB_FULL: LazyLock<Regex> =
     LazyLock::new(|| py_regex_full(r"(?:please\s+)?(?:open\s+)?(?:a\s+)?new\s+tab", false));
-static CLOSE_TAB_FULL: LazyLock<Regex> = LazyLock::new(|| {
-    py_regex_full(
-        r"(?:please\s+)?close\s+(?:(?:the|this|current)\s+)?tab",
-        false,
-    )
-});
+static CLOSE_TAB_FULL: LazyLock<Regex> =
+    LazyLock::new(|| py_regex_full(r"(?:please\s+)?close\s+(?:(?:the|this|current)\s+)?tab", false));
 static BACK_FULL: LazyLock<Regex> = LazyLock::new(|| {
-    py_regex_full(
-        r"(?:please\s+)?(?:go\s+)?back|(?:please\s+)?(?:previous page|navigate back)",
-        false,
-    )
+    py_regex_full(r"(?:please\s+)?(?:go\s+)?back|(?:please\s+)?(?:previous page|navigate back)", false)
 });
 static QUOTES_RE: LazyLock<Regex> = LazyLock::new(|| py_regex("\"[^\"]*\"|“[^”]*”|'[^']*'", false));
 static CLICK_INTO_RE: LazyLock<Regex> = LazyLock::new(|| py_regex(r"\bclick (?:in)?to\b", false));
-static SEMANTIC_RE: LazyLock<Regex> = LazyLock::new(|| {
-    py_regex_match(
-        r"^(?:please\s+)?(save|confirm|cancel|send|open|delete|undo)\b",
-        false,
-    )
-});
-static SCROLL_RE: LazyLock<Regex> = LazyLock::new(|| {
-    py_regex(
-        r"\bscroll\s+(?:(?:the\s+)?(?:page|list)\s+)?(up|down|left|right)\b",
-        false,
-    )
-});
-static PAGE_RE: LazyLock<Regex> = LazyLock::new(|| {
-    py_regex(
-        r"\b(?:scroll(?:\s+(?:the\s+)?(?:page|list))?|page|go)\s+(up|down)\b",
-        false,
-    )
-});
+static SEMANTIC_RE: LazyLock<Regex> =
+    LazyLock::new(|| py_regex_match(r"^(?:please\s+)?(save|confirm|cancel|send|open|delete|undo)\b", false));
+static SCROLL_RE: LazyLock<Regex> =
+    LazyLock::new(|| py_regex(r"\bscroll\s+(?:(?:the\s+)?(?:page|list)\s+)?(up|down|left|right)\b", false));
+static PAGE_RE: LazyLock<Regex> =
+    LazyLock::new(|| py_regex(r"\b(?:scroll(?:\s+(?:the\s+)?(?:page|list))?|page|go)\s+(up|down)\b", false));
 static NEW_TAB_RE: LazyLock<Regex> = LazyLock::new(|| py_regex(r"\bnew tab\b", false));
-static CLOSE_TAB_RE: LazyLock<Regex> =
-    LazyLock::new(|| py_regex(r"\bclose (?:the |this |current )?tab\b", false));
+static CLOSE_TAB_RE: LazyLock<Regex> = LazyLock::new(|| py_regex(r"\bclose (?:the |this |current )?tab\b", false));
 static BACK_RE: LazyLock<Regex> = LazyLock::new(|| py_regex(r"\b(?:go )?back\b", false));
-static FORWARD_RE: LazyLock<Regex> =
-    LazyLock::new(|| py_regex(r"\b(?:go )?forward\b|\bnext page\b", false));
+static FORWARD_RE: LazyLock<Regex> = LazyLock::new(|| py_regex(r"\b(?:go )?forward\b|\bnext page\b", false));
 static REFRESH_RE: LazyLock<Regex> = LazyLock::new(|| py_regex(r"\b(?:refresh|reload)\b", false));
 
-const SAVE_NAMES: &[&str] = &[
-    "Save",
-    "Save…",
-    "Save Document",
-    "Save File",
-    "Done",
-    "Apply",
-    "Keep",
-    "Save As…",
-    "Save Changes",
-    "✓ Save",
-];
-const CANCEL_NAMES: &[&str] = &[
-    "Cancel",
-    "Close",
-    "Dismiss",
-    "No",
-    "Don't Save",
-    "Discard",
-    "Not Now",
-    "Later",
-    "Skip",
-    "Back",
-];
-const OK_NAMES: &[&str] = &[
-    "OK",
-    "Confirm",
-    "Yes",
-    "Continue",
-    "Accept",
-    "Allow",
-    "Agree",
-    "Next",
-    "Proceed",
-    "Got It",
-    "I Understand",
-];
-const OPEN_NAMES: &[&str] = &[
-    "Open…",
-    "Open File",
-    "Browse…",
-    "Choose File",
-    "Import…",
-    "Upload",
-    "Attach",
-    "Select File",
-    "Add Files",
-];
-const SEND_NAMES: &[&str] = &[
-    "Send",
-    "Submit",
-    "Post",
-    "Share",
-    "Publish",
-    "Reply",
-    "Send Message",
-    "Submit Form",
-];
-const DELETE_NAMES: &[&str] = &[
-    "Delete",
-    "Remove",
-    "Trash",
-    "Move to Trash",
-    "Erase",
-    "Delete Permanently",
-    "Remove Item",
-];
+const SAVE_NAMES: &[&str] =
+    &["Save", "Save…", "Save Document", "Save File", "Done", "Apply", "Keep", "Save As…", "Save Changes", "✓ Save"];
+const CANCEL_NAMES: &[&str] =
+    &["Cancel", "Close", "Dismiss", "No", "Don't Save", "Discard", "Not Now", "Later", "Skip", "Back"];
+const OK_NAMES: &[&str] =
+    &["OK", "Confirm", "Yes", "Continue", "Accept", "Allow", "Agree", "Next", "Proceed", "Got It", "I Understand"];
+const OPEN_NAMES: &[&str] =
+    &["Open…", "Open File", "Browse…", "Choose File", "Import…", "Upload", "Attach", "Select File", "Add Files"];
+const SEND_NAMES: &[&str] = &["Send", "Submit", "Post", "Share", "Publish", "Reply", "Send Message", "Submit Form"];
+const DELETE_NAMES: &[&str] =
+    &["Delete", "Remove", "Trash", "Move to Trash", "Erase", "Delete Permanently", "Remove Item"];
 const UNDO_NAMES: &[&str] = &["Undo", "Revert", "Restore", "Back", "Go Back"];
 
 fn is_mod(k: &str) -> bool {
-    matches!(
-        k,
-        "cmd" | "command" | "ctrl" | "control" | "alt" | "option" | "shift" | "fn" | "super"
-    )
+    matches!(k, "cmd" | "command" | "ctrl" | "control" | "alt" | "option" | "shift" | "fn" | "super")
 }
 
 fn is_named_key(k: &str) -> bool {
@@ -629,19 +455,12 @@ fn emit(el: &Element, verb: Verb, goal: &str, goal_l: &str) -> Action {
     let role = role.as_str();
     let mut v = verb;
     if v == Verb::Check {
-        v = if has(CHECKABLE_ROLES, role) {
-            Verb::Check
-        } else {
-            Verb::Click
-        };
+        v = if has(CHECKABLE_ROLES, role) { Verb::Check } else { Verb::Click };
     }
     if v == Verb::Select && !has(SELECT_ROLES, role) {
         v = Verb::Click;
     }
-    if v == Verb::Click
-        && CLICK_INTO_RE.is_match(goal_l)
-        && (has(TEXT_ROLES, role) || el.editable())
-    {
+    if v == Verb::Click && CLICK_INTO_RE.is_match(goal_l) && (has(TEXT_ROLES, role) || el.editable()) {
         v = Verb::Focus;
     }
     if matches!(v, Verb::DoubleClick | Verb::RightClick)
@@ -651,9 +470,7 @@ fn emit(el: &Element, verb: Verb, goal: &str, goal_l: &str) -> Action {
     }
     match v {
         Verb::Focus => Action::on(Verb::Focus, el),
-        Verb::Select => {
-            Action::on(Verb::Select, el).with_text(infer::goal_select_arg(goal, &el.name))
-        }
+        Verb::Select => Action::on(Verb::Select, el).with_text(infer::goal_select_arg(goal, &el.name)),
         Verb::Type => Action::on(Verb::Type, el).with_text(infer::goal_text_arg(goal)),
         Verb::Drag => Action::on(Verb::Drag, el).with_text(actions::DST),
         v => Action::on(v, el),
@@ -679,10 +496,7 @@ pub fn resolve(obs: &Observation, goal: &str) -> Option<Action> {
         return Some(Action::new(Verb::Done));
     }
     if !ws.is_empty() && in_set(PURE_WAIT) && meets(WAIT_MARKERS) {
-        return Some(Action {
-            wait_ms: 1000,
-            ..Action::new(Verb::Wait)
-        });
+        return Some(Action { wait_ms: 1000, ..Action::new(Verb::Wait) });
     }
 
     // Explicit key chords.
@@ -702,14 +516,9 @@ pub fn resolve(obs: &Observation, goal: &str) -> Option<Action> {
             .map(str::to_owned)
             .collect();
         if !raw.is_empty()
-            && raw
-                .iter()
-                .all(|k| is_mod(k) || is_named_key(k) || pystr::len(k) == 1 || FKEY_RE.is_match(k))
+            && raw.iter().all(|k| is_mod(k) || is_named_key(k) || pystr::len(k) == 1 || FKEY_RE.is_match(k))
         {
-            return Some(
-                Action::new(Verb::Keypress)
-                    .with_keys(raw.iter().map(|k| canonical_key(k)).collect()),
-            );
+            return Some(Action::new(Verb::Keypress).with_keys(raw.iter().map(|k| canonical_key(k)).collect()));
         }
     }
 
@@ -737,14 +546,9 @@ pub fn resolve(obs: &Observation, goal: &str) -> Option<Action> {
     let mut intent_goal = QUOTES_RE.replace_all(goal_l, " ").into_owned();
     if let Some(named) = best_named(&els, &words(&intent_goal)) {
         if !named.name.is_empty() {
-            let name_re = Regex::new(&format!("(?i){}", regex::escape(&named.name)))
-                .expect("escaped literal");
+            let name_re = Regex::new(&format!("(?i){}", regex::escape(&named.name))).expect("escaped literal");
             if let Some(last) = name_re.find_iter(&intent_goal).last() {
-                intent_goal = format!(
-                    "{} {}",
-                    &intent_goal[..last.start()],
-                    &intent_goal[last.end()..]
-                );
+                intent_goal = format!("{} {}", &intent_goal[..last.start()], &intent_goal[last.end()..]);
             }
         }
     }
@@ -773,30 +577,18 @@ pub fn resolve(obs: &Observation, goal: &str) -> Option<Action> {
 
         // Named element targets.
         let named_pool: Vec<&Element> = if verb == Verb::RightClick {
-            els.iter()
-                .copied()
-                .filter(|e| !e.name.is_empty() && has(DCLICK_ROLES, &pystr::lower(&e.role)))
-                .collect()
+            els.iter().copied().filter(|e| !e.name.is_empty() && has(DCLICK_ROLES, &pystr::lower(&e.role))).collect()
         } else if matches!(verb, Verb::Type | Verb::Focus) {
-            els.iter()
-                .copied()
-                .filter(|e| has(TEXT_ROLES, &pystr::lower(&e.role)) || e.editable())
-                .collect()
+            els.iter().copied().filter(|e| has(TEXT_ROLES, &pystr::lower(&e.role)) || e.editable()).collect()
         } else if role_set.is_none() {
-            els.iter()
-                .copied()
-                .filter(|e| !e.name.is_empty() && any_actionable(&pystr::lower(&e.role)))
-                .collect()
+            els.iter().copied().filter(|e| !e.name.is_empty() && any_actionable(&pystr::lower(&e.role))).collect()
         } else {
             pool.clone()
         };
         let mut el = best_named(&named_pool, &ws);
         if role_set.is_some() && !matches!(verb, Verb::Type | Verb::Focus) {
-            let unrestricted_pool: Vec<&Element> = els
-                .iter()
-                .copied()
-                .filter(|e| !e.name.is_empty() && any_actionable(&pystr::lower(&e.role)))
-                .collect();
+            let unrestricted_pool: Vec<&Element> =
+                els.iter().copied().filter(|e| !e.name.is_empty() && any_actionable(&pystr::lower(&e.role))).collect();
             let unrestricted = best_named(&unrestricted_pool, &ws);
             let replace = match (el, unrestricted) {
                 (None, _) => true,
@@ -843,9 +635,7 @@ pub fn resolve(obs: &Observation, goal: &str) -> Option<Action> {
         let mut matches: Vec<&Element> = Vec::new();
         for el in &els {
             let name = pystr::strip(&el.name);
-            if has(CLICKABLE_ROLES, &pystr::lower(&el.role))
-                && names.iter().any(|n| pystr::casefold_eq(name, n))
-            {
+            if has(CLICKABLE_ROLES, &pystr::lower(&el.role)) && names.iter().any(|n| pystr::casefold_eq(name, n)) {
                 match matches.iter_mut().find(|m| m.id == el.id) {
                     Some(slot) => *slot = el,
                     None => matches.push(el),
@@ -858,9 +648,7 @@ pub fn resolve(obs: &Observation, goal: &str) -> Option<Action> {
     }
 
     // Session-level commands.
-    let has_scrollable = els
-        .iter()
-        .any(|e| has(SCROLLABLE_ROLES, &pystr::lower(&e.role)));
+    let has_scrollable = els.iter().any(|e| has(SCROLLABLE_ROLES, &pystr::lower(&e.role)));
     if let Some(m) = SCROLL_RE.captures(goal_l) {
         if has_scrollable {
             return Some(Action::new(Verb::Scroll).with_direction(&m[1]));

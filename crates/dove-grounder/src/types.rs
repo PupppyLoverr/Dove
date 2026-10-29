@@ -201,14 +201,7 @@ impl Verb {
     }
 
     fn visual(self) -> bool {
-        matches!(
-            self,
-            Verb::ClickXy
-                | Verb::DoubleClickXy
-                | Verb::RightClickXy
-                | Verb::DragXy
-                | Verb::ScrollXy
-        )
+        matches!(self, Verb::ClickXy | Verb::DoubleClickXy | Verb::RightClickXy | Verb::DragXy | Verb::ScrollXy)
     }
 }
 
@@ -253,11 +246,7 @@ impl Action {
 
     /// An action on an element.
     pub fn on(verb: Verb, el: &Element) -> Self {
-        Self {
-            element_id: Some(el.id.clone()),
-            element_name: el.name.clone(),
-            ..Self::new(verb)
-        }
+        Self { element_id: Some(el.id.clone()), element_name: el.name.clone(), ..Self::new(verb) }
     }
 
     pub fn with_text(mut self, text: impl Into<String>) -> Self {
@@ -297,14 +286,10 @@ impl Action {
     }
 
     fn target(&self) -> &str {
-        [
-            self.element_id.as_deref().unwrap_or(""),
-            self.tab.as_str(),
-            self.window.as_str(),
-        ]
-        .into_iter()
-        .find(|s| !s.is_empty())
-        .unwrap_or("-")
+        [self.element_id.as_deref().unwrap_or(""), self.tab.as_str(), self.window.as_str()]
+            .into_iter()
+            .find(|s| !s.is_empty())
+            .unwrap_or("-")
     }
 }
 
@@ -328,14 +313,9 @@ impl fmt::Display for Action {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.verb.visual() {
             return match self.verb {
-                Verb::DragXy => write!(
-                    f,
-                    "drag(({},{})->({},{}))",
-                    fmt0(self.x),
-                    fmt0(self.y),
-                    fmt0(self.x2),
-                    fmt0(self.y2)
-                ),
+                Verb::DragXy => {
+                    write!(f, "drag(({},{})->({},{}))", fmt0(self.x), fmt0(self.y), fmt0(self.x2), fmt0(self.y2))
+                }
                 Verb::ScrollXy => write!(
                     f,
                     "scroll_xy({},{} @ {},{})",
@@ -348,11 +328,7 @@ impl fmt::Display for Action {
             };
         }
         let tgt = self.target();
-        let nm = if self.element_name.is_empty() {
-            String::new()
-        } else {
-            format!("\"{}\"", self.element_name)
-        };
+        let nm = if self.element_name.is_empty() { String::new() } else { format!("\"{}\"", self.element_name) };
         match self.verb {
             Verb::Type => write!(f, "type({tgt} {nm}, \"{}\")", self.text),
             Verb::Keypress => write!(f, "keypress({})", self.keys.join("+")),
