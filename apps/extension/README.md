@@ -83,8 +83,11 @@ agent takes a fresh snapshot instead of clicking the wrong thing.
 
 ## Develop
 
-Load it unpacked: open `chrome://extensions` (or `edge://extensions`), turn on
-Developer mode, **Load unpacked**, pick `apps/extension`. Click the Keplorayx icon to
+Build it with `node build.mjs`, which writes only the files Chrome runs to
+`dist/keplorayx-for-chrome/` and checks every path they reference. Then load it
+unpacked: open `chrome://extensions` (or `edge://extensions`), turn on Developer
+mode, **Load unpacked**, pick `apps/extension/dist/keplorayx-for-chrome`. Loading
+`apps/extension` itself also works while you edit. Click the Keplorayx icon to
 open the side panel, then paste the pairing code from Keplorayx › Settings ›
 Integrations › Keplorayx for Chrome.
 
