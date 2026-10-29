@@ -223,3 +223,16 @@ mod tests {
         assert_eq!(failure("dove-mesh-host: wrong pairing code\n"), "wrong pairing code");
     }
 }
+
+/// `dove node serve` / `dove node pair`: run this computer as a machine in
+/// the foreground (no window), printing a pairing code and a terminal QR.
+/// Needs a prior sign-in (Settings › Remote on a desktop).
+pub fn serve_foreground(show_code: bool) -> anyhow::Result<i32> {
+    let bin = sidecar().ok_or_else(|| anyhow::anyhow!("dove-mesh-host is missing from this build"))?;
+    let mut cmd = Command::new(bin);
+    cmd.arg("--data-dir").arg(data_dir()).arg("serve-node");
+    if !show_code {
+        cmd.arg("--no-code");
+    }
+    Ok(cmd.status()?.code().unwrap_or(1))
+}

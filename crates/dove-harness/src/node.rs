@@ -27,6 +27,9 @@ pub fn main(args: &[String]) -> i32 {
             Ok(0)
         }
         "bridge" => bridge(rest),
+        // This computer as a machine for paired computers, headless.
+        "serve" => crate::paired::serve_foreground(false),
+        "pair" => crate::paired::serve_foreground(true),
         "pipe" => pipe(rest),
         #[cfg(unix)]
         "attach" => session::attach(rest),
@@ -49,6 +52,8 @@ const USAGE: &str = "usage: dove node <command>
   attach <session> [--from <bytes>] -- <program> [args…]   run or reattach a long-lived process
   bridge <provider> <box id> -- <program> [args…]          run on a cloud box over its API
   pipe <host:port>                                        join stdin/stdout to a TCP port
+  pair                                                    serve this computer to paired ones; show a pairing code
+  serve                                                   serve this computer to paired ones
   version                                                 print the version";
 
 /// Split `… -- argv…` into the part before `--` and the argv after it.
