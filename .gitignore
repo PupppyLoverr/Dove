@@ -10,3 +10,4 @@ media/intro/src/node_modules/
 # Mesh (mobile core) workspace + iOS build output
 /mesh/target
 apps/ios/**/xcuserdata/
+/target-check/
