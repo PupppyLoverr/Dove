@@ -1155,20 +1155,22 @@ impl Composer {
 
     // ------------------------------------------------------------ render
 
-    /// Above the new-thread bar, right-aligned: who runs it, in which
-    /// project, on which device.
-    fn render_target_row(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+    /// The chip row under the new-thread plate: teammate, project and
+    /// device on the left, the context and usage meters on the right.
+    fn render_home_chips(&self, hero: bool, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         div()
             .w_full()
-            .h(px(22.0))
-            .px(px(HERO_INSET - 8.0))
+            .h(px(26.0))
+            .px(px(if hero { HERO_INSET - 8.0 } else { 4.0 }))
             .flex()
             .items_center()
-            .justify_end()
             .gap(px(2.0))
-            .when(!self.personas.is_empty(), |d| d.child(self.persona_chip(t, cx)))
             .child(self.project_chip(t, cx))
             .child(self.device_chip(t, cx))
+            .when(!hero && !self.add_dirs.is_empty(), |d| d.child(self.folders_chip(t, cx)))
+            .when(!self.personas.is_empty(), |d| d.child(self.persona_chip(t, cx)))
+            .child(div().flex_1())
+            .child(self.rings(t, cx))
             .into_any_element()
     }
 
@@ -1705,9 +1707,9 @@ impl Composer {
             .justify_center()
             .gap(px(4.0))
             .rounded_full()
-            .bg(if enabled || self.variant == Variant::Hero { t.solid } else { t.wash(0.08) })
+            // Quiet until there is something to send, then the solid disc.
+            .bg(if enabled { t.solid } else { t.wash(0.08) })
             .when(enabled, |d| d.hover(|s| s.opacity(0.88)))
-            .when(!enabled && self.variant == Variant::Hero, |d| d.opacity(0.9))
             .text_color(if enabled { t.on_solid } else { t.text_faint })
             .text_size(ty::META)
             .font_weight(gpui::FontWeight::MEDIUM)
@@ -3184,9 +3186,10 @@ impl Composer {
             .flex_col()
             .gap(px(6.0))
             .capture_key_down(cx.listener(Self::on_key))
-            .when(home && hero, |d| d.child(self.render_target_row(t, cx)))
-            .when(home && !hero, |d| d.child(self.render_context_row(t, cx)))
             .child(box_)
+            // Under the plate, quiet and unfilled: where it runs on the
+            // left, the meters on the right.
+            .when(home, |d| d.child(self.render_home_chips(hero, t, cx)))
             .when(home && hero && !self.add_dirs.is_empty(), |d| d.child(self.render_git_row(t, cx)))
             .children(meta)
             .when_some(self.error.clone(), |d, e| {

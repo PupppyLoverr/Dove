@@ -20,7 +20,7 @@
 //! its own next deadline (a hover delay, a banner's end, the timer).
 //!
 //! QA hooks: `DOVE_NOTCH_STATE=slim|expanded|alert`,
-//! `DOVE_NOTCH_PAGE=home|agents|music|tray|notes|timer|alerts|dev|new`,
+//! `DOVE_NOTCH_PAGE=home|agents|music|tray|notes|timer|alerts|dev|new|call|plan|view:<lens>`,
 //! `DOVE_NOTCH_DEMO=1`, `DOVE_NOTCH_CAPTURABLE=1` (screenshots can see it),
 //! `DOVE_NOTCH_CAPTURED_GLASS=1` (skip composition glass), `DOVE_NOTCH_TIMING=1`
 //! (log transition timings), `DOVE_NOTCH_CYCLE=1` (open and close every 1.6 s).
@@ -49,7 +49,9 @@ use gpui::{
 use gpui_base::input::{InputEvent, InputState, TextareaState};
 
 use crate::island::ipc::{self, ToEngine, ToIsland};
+use crate::island::view::{CallInfo, NotchView, ShowWhat};
 pub use bridge::{NotchHost, Snapshot};
+pub use views::v3::{Asking, Lens, PlanEdit};
 use data::{Clip, Note, Timer, Undo};
 use platform::{Display, Shape};
 use spring::Springs;
@@ -165,6 +167,32 @@ pub enum Page {
     Tab(Tab),
     Agent(TaskId),
     NewAgent,
+    /// Talking to K22 (V3).
+    Call,
+    /// An agent's plan to review.
+    Plan(TaskId),
+    /// A view an agent composed, by id.
+    View(u64),
+    /// A built-in lens.
+    Lens(Lens),
+}
+
+impl Page {
+    /// The wide pages (V3): the island grows to `tk::WIDE_W`.
+    pub fn wide(&self) -> bool {
+        matches!(self, Page::Call | Page::Plan(_) | Page::View(_) | Page::Lens(_))
+    }
+
+    /// The header's title for a page without a tab.
+    pub fn title(&self) -> Option<&'static str> {
+        match self {
+            Page::Call => Some("K22"),
+            Page::Plan(_) => Some("Plan"),
+            Page::View(_) => Some("View"),
+            Page::Lens(l) => Some(l.title()),
+            _ => None,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -350,7 +378,15 @@ impl Geo {
     }
 
     fn from_array(a: [f32; 7]) -> Geo {
-        Geo { y: a[0], w: a[1].max(1.0), h: a[2].max(1.0), r: a[3].max(0.0), dx: a[4], b1: a[5].max(0.0), b2: a[6].max(0.0) }
+        Geo {
+            y: a[0],
+            w: a[1].max(1.0),
+            h: a[2].max(1.0),
+            r: a[3].max(0.0),
+            dx: a[4],
+            b1: a[5].max(0.0),
+            b2: a[6].max(0.0),
+        }
     }
 
     pub fn x(&self) -> f32 {
@@ -402,6 +438,8 @@ pub struct Prefs {
     pub notifications: bool,
     /// Real-time glass (composition), else captured glass.
     pub glass: bool,
+    /// Proactive nudges (an agent waiting on you for a while). Off by default.
+    pub nudges: bool,
     pub display: DisplayPick,
     pub focus: bool,
     pub hidden_tabs: HashSet<Tab>,
@@ -430,6 +468,7 @@ impl Prefs {
             clipboard: store.flag("notch_clipboard", true),
             notifications: store.flag("notch_notifications", true),
             glass: store.flag("notch_glass", false),
+            nudges: store.flag("notch_nudges", false),
             display: if store.setting("notch_display").as_deref() == Some("pointer") {
                 DisplayPick::Pointer
             } else {
@@ -531,6 +570,12 @@ pub enum Hit {
     LinkTimer(TaskId),
     RunAutomation(String),
     Merge(TaskId, u64),
+    /// Talk to K22.
+    Call,
+    Lens(Lens),
+    /// A view from history.
+    View(u64),
+    Plan(TaskId),
 }
 
 /// What a menu item does.
@@ -566,6 +611,16 @@ pub enum MenuAction {
     NewWorktree(bool),
     Merge(TaskId, u64),
     OpenUrl(String),
+    /// K22's agent and model.
+    VoiceAgent(HarnessKind),
+    VoiceModel(Option<String>),
+    Talk,
+    Lens(Lens),
+    OpenView(u64),
+    Glass,
+    Nudges,
+    Focus,
+    TalkAbout(TaskId),
 }
 
 /// A popup banner: it waits until handled or dismissed (suggestions time
@@ -692,6 +747,9 @@ pub struct Inputs {
     pub prompt: Entity<InputState>,
     pub note: Entity<TextareaState>,
     pub command: Entity<InputState>,
+    /// The wide pages' one-line field: a plan step, typing into the call, a
+    /// follow-up to K22.
+    pub line: Entity<InputState>,
 }
 
 pub struct Notch {
@@ -846,6 +904,22 @@ pub struct Notch {
     launched: Option<Instant>,
     next_request: u64,
     msgs: flume::Sender<Msg>,
+
+    // V3.
+    /// The Voice Mode call (from the engine).
+    pub(crate) call: CallInfo,
+    /// Views shown, newest first, and the ones pinned to Home.
+    pub(crate) views: Vec<NotchView>,
+    pub(crate) widgets: Vec<NotchView>,
+    pub(crate) asking: Option<Asking>,
+    pub(crate) plan_edit: Option<PlanEdit>,
+    pub(crate) call_typing: bool,
+    /// The last view action that changes something, against double clicks.
+    pub(crate) last_action: Option<(crate::island::view::ViewAction, Instant)>,
+    /// Plans already announced (by task and request).
+    plans_seen: HashSet<String>,
+    /// Nudges offered (once each), and when an agent started waiting.
+    nudged: HashSet<String>,
 }
 
 /// The window's root view: draws the notch, owns the text fields.
@@ -881,7 +955,8 @@ impl NotchWindow {
             s
         });
         let prompt = field("What should it do?", window, cx);
-        let command = field("Search or type a command…", window, cx);
+        let command = field("Ask K22, or search…", window, cx);
+        let line = field("…", window, cx);
         let note = cx.new(|cx| {
             let mut s =
                 TextareaState::new(window, cx).auto_grow(3, 8).placeholder("Write a note… (- [ ] for a checklist)");
@@ -904,7 +979,9 @@ impl NotchWindow {
         let subs = vec![
             cx.observe(&notch, |_, _, cx| cx.notify()),
             cx.subscribe_in(&message, window, |this, input, ev: &InputEvent, window, cx| match ev {
-                InputEvent::PressEnter { shift: false, .. } => this.notch.update(cx, |n, cx| n.send_message(window, cx)),
+                InputEvent::PressEnter { shift: false, .. } => {
+                    this.notch.update(cx, |n, cx| n.send_message(window, cx))
+                }
                 InputEvent::Change => {
                     let text = input.read(cx).value().to_string();
                     this.notch.update(cx, |n, cx| n.composer_changed(&text, cx));
@@ -921,6 +998,11 @@ impl NotchWindow {
                 InputEvent::Change => this.notch.update(cx, |n, _| n.note_dirty = Some(Instant::now())),
                 _ => {}
             }),
+            cx.subscribe_in(&line, window, |this, _, ev: &InputEvent, window, cx| {
+                if let InputEvent::PressEnter { .. } = ev {
+                    this.notch.update(cx, |n, cx| n.line_enter(window, cx));
+                }
+            }),
             cx.subscribe_in(&command, window, |this, input, ev: &InputEvent, window, cx| {
                 let text = input.read(cx).value().to_string();
                 match ev {
@@ -935,7 +1017,7 @@ impl NotchWindow {
                 }
             }),
         ];
-        let inputs = Inputs { message, prompt, note, command };
+        let inputs = Inputs { message, prompt, note, command, line };
         notch.update(cx, |n, _| n.inputs = Some(inputs));
         NotchWindow { notch, _subs: subs }
     }
@@ -1001,6 +1083,8 @@ pub fn init(store: Arc<Store>, rt: tokio::runtime::Handle, cx: &mut App) -> Opti
                 p => {
                     if let Some(tab) = Tab::from_id(p) {
                         n.page = Page::Tab(tab);
+                    } else if let Some(page) = n.qa_page(p) {
+                        n.page = page;
                     }
                 }
             }
@@ -1059,7 +1143,10 @@ fn run(notch: Entity<Notch>, rx: flume::Receiver<Msg>, cx: &mut App) {
                             None,
                         );
                     }
-                    if cycle && started.elapsed() > Duration::from_secs(3) && cycled.elapsed() > Duration::from_millis(1600) {
+                    if cycle
+                        && started.elapsed() > Duration::from_secs(3)
+                        && cycled.elapsed() > Duration::from_millis(1600)
+                    {
                         cycled = Instant::now();
                         let changed = if n.machine.state == State::Expanded {
                             n.machine.close(State::Hidden, false)
@@ -1080,6 +1167,7 @@ fn run(notch: Entity<Notch>, rx: flume::Receiver<Msg>, cx: &mut App) {
 
 impl Notch {
     fn new(store: Arc<Store>, rt: tokio::runtime::Handle, msgs: flume::Sender<Msg>) -> Self {
+        let widgets = Self::load_widgets(&store);
         let prefs = Prefs::read(&store);
         let data = data::Saved::load(&store);
         let link = ipc::connect(&rt, store.root());
@@ -1196,8 +1284,80 @@ impl Notch {
             launched: None,
             next_request: 1,
             msgs,
+            call: CallInfo::default(),
+            views: Vec::new(),
+            widgets,
+            asking: None,
+            plan_edit: None,
+            call_typing: false,
+            last_action: None,
+            plans_seen: HashSet::new(),
+            nudged: HashSet::new(),
             store,
             rt,
+        }
+    }
+
+    /// A V3 page from `DOVE_NOTCH_PAGE` (`call`, `plan`, `view:<lens>`),
+    /// with demo data under `DOVE_NOTCH_DEMO` so every page can be seen.
+    fn qa_page(&mut self, page: &str) -> Option<Page> {
+        let demo = std::env::var_os("DOVE_NOTCH_DEMO").is_some();
+        match page {
+            "call" => {
+                if demo {
+                    self.call = CallInfo {
+                        live: true,
+                        phase: crate::island::view::CallPhase::Speaking,
+                        target: Some("K22".into()),
+                        lines: vec![
+                            (true, "What's everyone doing?".into()),
+                            (false, "Two agents are working: Claude is fixing the login redirect and Codex is running the tests. One plan is waiting on you.".into()),
+                            (true, "Show me the plan".into()),
+                        ],
+                        partial: Some("and then approve".into()),
+                        level: 0.6,
+                        elapsed_s: 94,
+                        agent: Some(HarnessKind::ClaudeCode),
+                        ..Default::default()
+                    };
+                }
+                Some(Page::Call)
+            }
+            "plan" => {
+                let task = TaskId::new();
+                if demo {
+                    let text = "1. Add a `redirect_to` check in `src/auth/login.rs`\n   - keep the existing session flow\n   - reject absolute URLs to other hosts\n2. Cover it with tests in `tests/login_redirect.rs`\n3. Update docs/AUTH.md with the new rule\n4. Run `cargo test -p auth`";
+                    self.snap.plans.push(crate::island::view::PendingPlan {
+                        task,
+                        request_id: Some("demo".into()),
+                        kind: HarnessKind::ClaudeCode,
+                        title: "Fix the login redirect".into(),
+                        project: "dove".into(),
+                        text: text.into(),
+                        steps: crate::island::view::plan_steps(text),
+                        files: crate::island::view::plan_files(text),
+                    });
+                }
+                Some(Page::Plan(task))
+            }
+            p => {
+                let lens = Lens::from_id(p.strip_prefix("view:")?)?;
+                if demo && matches!(lens, Lens::Status | Lens::Today) {
+                    // A K22 view next to the lens, for the history.
+                    self.views.push(NotchView {
+                        id: 7,
+                        title: "Release status".into(),
+                        subtitle: Some("3 blockers left".into()),
+                        blocks: vec![crate::island::view::Block::Progress {
+                            label: "Release checklist".into(),
+                            value: 0.7,
+                            tone: crate::island::view::Tone::Good,
+                        }],
+                        ..Default::default()
+                    });
+                }
+                Some(Page::Lens(lens))
+            }
         }
     }
 
@@ -1422,7 +1582,16 @@ impl Notch {
         }
         // The open agent view streams its agent's text.
         let watch = match self.page {
-            Page::Agent(id) if self.machine.state == State::Expanded => Some(id),
+            Page::Agent(id) | Page::Plan(id) | Page::Lens(Lens::Agent(id)) if self.machine.state == State::Expanded => {
+                Some(id)
+            }
+            // A view streams what its agent says with it (K22's answer).
+            Page::View(v) if self.machine.state == State::Expanded => self
+                .views
+                .iter()
+                .find(|x| x.id == v)
+                .and_then(|x| x.task)
+                .or(self.asking.as_ref().filter(|a| a.id == v).and_then(|a| a.task)),
             _ => None,
         };
         if watch != self.watching && self.connected() {
@@ -1456,7 +1625,11 @@ impl Notch {
             let cursor = platform::cursor();
             // Heading for the top: make the window now, so opening never
             // waits for it.
-            if !self.shown && self.win.is_none() && !self.opening && self.prefs.enabled && !self.fullscreen
+            if !self.shown
+                && self.win.is_none()
+                && !self.opening
+                && self.prefs.enabled
+                && !self.fullscreen
                 && let Some((x, y)) = cursor
             {
                 let s = display.scale;
@@ -1647,19 +1820,11 @@ impl Notch {
             }
             State::Alert => {
                 let (w, h) = self.banner_size();
-                Geo {
-                    y: tk::TOP_GAP,
-                    w,
-                    h,
-                    r: if h > 60.0 { 28.0 } else { h / 2.0 },
-                    dx: 0.0,
-                    b1: 0.0,
-                    b2: 0.0,
-                }
+                Geo { y: tk::TOP_GAP, w, h, r: if h > 60.0 { 28.0 } else { h / 2.0 }, dx: 0.0, b1: 0.0, b2: 0.0 }
             }
             State::Expanded => Geo {
                 y: tk::TOP_GAP,
-                w: tk::EXPANDED_W,
+                w: self.page_width(),
                 h: self.page_height(),
                 r: tk::R_ISLAND,
                 dx: 0.0,
@@ -1689,7 +1854,13 @@ impl Notch {
         let now = Instant::now();
         let current = Geo::from_array(self.springs.values());
         if let Some(t) = &mut self.timing {
-            *t = Timing { what: format!("{:?} → {state:?}", self.prev_state), at: now, first: None, last_frame: None, max_gap: Duration::ZERO };
+            *t = Timing {
+                what: format!("{:?} → {state:?}", self.prev_state),
+                at: now,
+                first: None,
+                last_frame: None,
+                max_gap: Duration::ZERO,
+            };
         }
         if state == State::Expanded && self.prev_state == State::Slim {
             self.hero = self.hero_for_open();
@@ -1799,8 +1970,8 @@ impl Notch {
             return false;
         }
         let needs = self.snap.agents.iter().any(|a| a.needs_you());
-        let working =
-            self.snap.agents.iter().any(|a| a.status == TaskStatus::Running) || self.snap.flock.iter().any(|f| f.working);
+        let working = self.snap.agents.iter().any(|a| a.status == TaskStatus::Running)
+            || self.snap.flock.iter().any(|f| f.working);
         if self.hero.is_some() {
             return true;
         }
@@ -1835,7 +2006,9 @@ impl Notch {
     // ----- the window -------------------------------------------------------------
 
     fn uses_captured_glass(&self) -> bool {
-        self.prefs.glass && self.transparency && self.win.as_ref().is_some_and(|w| w.glass.is_none() && w.native.is_some())
+        self.prefs.glass
+            && self.transparency
+            && self.win.as_ref().is_some_and(|w| w.glass.is_none() && w.native.is_some())
     }
 
     /// Whether the screen behind is sampled: for captured glass's image, or
@@ -1902,7 +2075,12 @@ impl Notch {
         .detach();
     }
 
-    fn adopt_window(&mut self, handle: WindowHandle<NotchWindow>, native: Option<platform::Handle>, cx: &mut Context<Self>) {
+    fn adopt_window(
+        &mut self,
+        handle: WindowHandle<NotchWindow>,
+        native: Option<platform::Handle>,
+        cx: &mut Context<Self>,
+    ) {
         self.opening = false;
         let glass = native.filter(|_| self.prefs.glass && self.transparency).and_then(|h| glass::Glass::new(h.raw()));
         if let Some(h) = native {
@@ -2071,6 +2249,8 @@ impl Notch {
                     }
                     self.check_usage();
                     self.check_prs();
+                    self.check_plans();
+                    self.check_nudges();
                     self.retarget(cx);
                     cx.notify();
                 }
@@ -2117,12 +2297,134 @@ impl Notch {
                     cx.notify();
                 }
             }
+            ToIsland::Call { call } => {
+                let started = call.live && !self.call.live;
+                let ended = !call.live && self.call.live;
+                if let Some(e) = call.error.clone().filter(|_| !call.live) {
+                    self.toast(e.chars().take(80).collect::<String>());
+                }
+                let keep_error = !call.live && call.error.is_some();
+                self.call = call;
+                if started && self.page != Page::Call {
+                    self.unfold(Page::Call, cx);
+                }
+                if ended {
+                    self.call_typing = false;
+                }
+                if keep_error {
+                    self.unfold(Page::Call, cx);
+                }
+                self.retarget(cx);
+                cx.notify();
+            }
+            ToIsland::View { view } => {
+                let id = view.id;
+                let answers = self.asking.as_ref().is_some_and(|a| a.id == id);
+                let from = view.kind.map(|k| k.label()).unwrap_or("K22");
+                let title = view.title.clone();
+                self.remember_view(view);
+                if answers {
+                    self.asking = None;
+                }
+                if answers || self.call.live || self.page == Page::View(id) {
+                    self.unfold(Page::View(id), cx);
+                } else {
+                    self.flash(FlashKind::Done, format!("{from} · {title}"), None, None);
+                }
+                cx.notify();
+            }
+            ToIsland::Asked { id, result } => {
+                if let Some(a) = self.asking.as_mut().filter(|a| a.id == id) {
+                    match result {
+                        Ok(task) => {
+                            a.task = Some(task);
+                            if let Some(v) = self.views.iter_mut().find(|v| v.id == id) {
+                                v.task = Some(task);
+                            }
+                        }
+                        Err(e) => {
+                            self.asking = None;
+                            self.views.retain(|v| v.id != id);
+                            self.toast(e.chars().take(90).collect::<String>());
+                            if self.page == Page::View(id) {
+                                self.open_page(Page::Tab(Tab::Home), None, cx);
+                            }
+                        }
+                    }
+                }
+                cx.notify();
+            }
+            ToIsland::Show { what } => {
+                let page = match what {
+                    ShowWhat::Call => Page::Call,
+                    ShowWhat::Plan { task } => Page::Plan(task),
+                    ShowWhat::Agent { task } => Page::Agent(task),
+                    ShowWhat::Lens { id } => Page::Lens(Lens::from_id(&id).unwrap_or(Lens::Status)),
+                    ShowWhat::View { id } => Page::View(id),
+                };
+                self.unfold(page, cx);
+            }
             ToIsland::Bye => {
                 self.link = None;
                 self.link_at = Instant::now();
                 self.watching = None;
+                if self.call.live {
+                    self.call = CallInfo::default();
+                }
             }
         }
+    }
+
+    /// A plan that just arrived: a banner offers to review it, once.
+    fn check_plans(&mut self) {
+        let fresh: Vec<_> = self
+            .snap
+            .plans
+            .iter()
+            .filter(|p| p.request_id.is_some())
+            .filter(|p| !self.plans_seen.contains(&format!("{}|{:?}", p.task, p.request_id)))
+            .cloned()
+            .collect();
+        for p in fresh {
+            self.plans_seen.insert(format!("{}|{:?}", p.task, p.request_id));
+            if !self.prefs.focus {
+                self.flash(
+                    FlashKind::Done,
+                    format!("{} has a plan · {} steps · {}", p.kind.label(), p.steps.len(), p.title),
+                    Some(p.kind),
+                    Some(p.task),
+                );
+            }
+        }
+    }
+
+    /// Proactive nudges (Settings › Notifications › Nudges, off by default):
+    /// an agent waiting on you for five minutes, once each.
+    fn check_nudges(&mut self) {
+        if !self.prefs.nudges || self.prefs.focus {
+            return;
+        }
+        let now = dove_core::store::now_ms();
+        let waiting: Vec<_> = self
+            .snap
+            .agents
+            .iter()
+            .filter(|a| a.needs_you() && a.ended_ms.or(a.started_ms).is_some_and(|t| now - t > 5 * 60_000))
+            .map(|a| (a.id, a.kind, a.title.clone()))
+            .collect();
+        for (id, kind, title) in waiting {
+            let key = format!("wait|{id}");
+            if self.nudged.insert(key) {
+                self.flash(FlashKind::Done, format!("{} has waited 5 min on you · {title}", kind.label()), Some(kind), Some(id));
+            }
+        }
+    }
+
+    pub(crate) fn start_timer_mins(&mut self, m: u64, cx: &mut Context<Self>) {
+        self.timer.set(Duration::from_secs(m * 60));
+        self.timer.toggle();
+        self.toast(format!("{m}-minute timer started"));
+        self.open_page(Page::Tab(Tab::Timer), None, cx);
     }
 
     pub(crate) fn connected(&self) -> bool {
@@ -2167,14 +2469,24 @@ impl Notch {
             }
             match (prev, a.status) {
                 (Some(TaskStatus::Running), TaskStatus::Done | TaskStatus::Idle) => {
-                    self.flash(FlashKind::Done, format!("{} finished · {}", a.kind.label(), a.title), Some(a.kind), Some(a.id));
+                    self.flash(
+                        FlashKind::Done,
+                        format!("{} finished · {}", a.kind.label(), a.title),
+                        Some(a.kind),
+                        Some(a.id),
+                    );
                     if self.timer_link == Some(a.id) && self.timer.running() {
                         self.timer.reset();
                         self.timer_link = None;
                     }
                 }
                 (Some(p), TaskStatus::Failed) if p != TaskStatus::Failed => {
-                    self.flash(FlashKind::Failed, format!("{} failed · {}", a.kind.label(), a.title), Some(a.kind), Some(a.id));
+                    self.flash(
+                        FlashKind::Failed,
+                        format!("{} failed · {}", a.kind.label(), a.title),
+                        Some(a.kind),
+                        Some(a.id),
+                    );
                 }
                 _ => {}
             }
@@ -2238,7 +2550,11 @@ impl Notch {
 
     /// Runs `f` with the island's window (for its text fields), when there is
     /// one, after the current update.
-    fn with_window(&mut self, cx: &mut Context<Self>, f: impl FnOnce(&mut Notch, &mut Window, &mut Context<Notch>) + 'static) {
+    fn with_window(
+        &mut self,
+        cx: &mut Context<Self>,
+        f: impl FnOnce(&mut Notch, &mut Window, &mut Context<Notch>) + 'static,
+    ) {
         let Some(handle) = self.win.as_ref().map(|w| w.handle) else { return };
         let this = cx.entity();
         cx.spawn(async move |_, cx| {
@@ -2294,7 +2610,10 @@ impl Notch {
                         1 => i.prompt.update(cx, |s, cx| s.focus(window, cx)),
                         _ => {
                             // The note on show goes into the editor.
-                            let text = n.selected_note.and_then(|id| n.notes.iter().find(|x| x.id == id)).map(|x| x.text.clone());
+                            let text = n
+                                .selected_note
+                                .and_then(|id| n.notes.iter().find(|x| x.id == id))
+                                .map(|x| x.text.clone());
                             i.note.update(cx, |s, cx| {
                                 s.set_value(text.unwrap_or_default(), window, cx);
                                 s.focus(window, cx);
@@ -2388,7 +2707,14 @@ impl Notch {
 
     /// Picks (or types) an answer for the question on show; the last one
     /// sends them all.
-    pub(crate) fn answer_pick(&mut self, task: TaskId, rid: String, choice: String, typed: bool, cx: &mut Context<Self>) {
+    pub(crate) fn answer_pick(
+        &mut self,
+        task: TaskId,
+        rid: String,
+        choice: String,
+        typed: bool,
+        cx: &mut Context<Self>,
+    ) {
         let Some(req) = self.question_of(task).filter(|r| r.request_id == rid).cloned() else { return };
         let n = req.questions.len();
         let a = self.answers.entry(rid.clone()).or_insert_with(|| QAnswer { page: 0, picks: vec![Vec::new(); n] });
@@ -2952,6 +3278,37 @@ impl Notch {
                 self.toast("Merging…");
             }
             MenuAction::OpenUrl(url) => cx.open_url(&url),
+            MenuAction::VoiceAgent(kind) => {
+                self.snap.voice.agent = Some(kind);
+                self.snap.voice.model = None;
+                self.command(ToEngine::SetVoiceAgent { agent: Some(kind), model: None });
+                self.toast(format!("K22 runs on {}", kind.label()));
+            }
+            MenuAction::VoiceModel(model) => {
+                self.snap.voice.model = model.clone();
+                self.command(ToEngine::SetVoiceAgent { agent: self.snap.voice.agent, model });
+                self.toast("Model set");
+            }
+            MenuAction::Talk => self.talk(None, cx),
+            MenuAction::TalkAbout(id) => self.talk(Some(id), cx),
+            MenuAction::Focus => {
+                let on = !self.prefs.focus;
+                self.set_focus_mode(on, cx);
+            }
+            MenuAction::Lens(l) => self.open_page(Page::Lens(l), Some(window), cx),
+            MenuAction::OpenView(id) => self.open_page(Page::View(id), Some(window), cx),
+            MenuAction::Glass => {
+                let on = !self.prefs.glass;
+                self.prefs.glass = on;
+                let _ = self.store.set_setting("notch_glass", if on { "true" } else { "false" });
+                self.toast(if on { "Frosted glass" } else { "Black island" });
+            }
+            MenuAction::Nudges => {
+                let on = !self.prefs.nudges;
+                self.prefs.nudges = on;
+                let _ = self.store.set_setting("notch_nudges", if on { "true" } else { "false" });
+                self.toast(if on { "Nudges on" } else { "Nudges off" });
+            }
         }
         self.retarget(cx);
         cx.notify();
@@ -2998,7 +3355,28 @@ impl Notch {
         // "? question" or "ask question": answered here by the default agent.
         let ask = raw.strip_prefix('?').or_else(|| raw.strip_prefix("ask ")).map(str::trim).filter(|r| !r.is_empty());
         if let Some(question) = ask {
-            out.push((Hit::Ask(question.to_string()), format!("Ask: {question}"), "Ask Dove".into()));
+            out.push((Hit::Ask(question.to_string()), format!("Ask K22: {question}"), "K22".into()));
+        }
+        // Talk, the lenses, views, plans.
+        if ["call", "talk", "voice", "k22"].iter().any(|w| q.starts_with(w)) {
+            let label = if self.call.live { "End the call with K22" } else { "Talk to K22" };
+            out.push((Hit::Call, label.into(), "Voice".into()));
+        }
+        if let Some(lens) = views::v3::Lens::for_question(&q) {
+            out.push((Hit::Lens(lens), format!("Show {}", lens.title().to_lowercase()), "Lens".into()));
+        }
+        for l in [Lens::Status, Lens::Needs, Lens::Today] {
+            if q.len() >= 3 && l.title().to_lowercase().starts_with(&q) && !out.iter().any(|h| h.0 == Hit::Lens(l)) {
+                out.push((Hit::Lens(l), format!("Show {}", l.title().to_lowercase()), "Lens".into()));
+            }
+        }
+        if q.starts_with("plan") {
+            for p in self.snap.plans.iter().take(3) {
+                out.push((Hit::Plan(p.task), format!("Review {}'s plan · {}", p.kind.label(), p.title), "Plan".into()));
+            }
+        }
+        for v in self.views.iter().filter(|v| !v.pending && v.title.to_lowercase().contains(&q)).take(3) {
+            out.push((Hit::View(v.id), v.title.clone(), "View".into()));
         }
         // Actions: "timer 25", "note …", "new …", "capture", "focus", "pin",
         // "stop …", "open …", "ports", "clear clips", "shuffle", "run …".
@@ -3021,7 +3399,11 @@ impl Notch {
         }
         for (verb, stop) in [("stop ", true), ("open ", false)] {
             if let Some(name) = q.strip_prefix(verb).map(str::trim).filter(|n| !n.is_empty()) {
-                for a in self.snap.agents.iter().filter(|a| a.title.to_lowercase().contains(name) || a.kind.label().to_lowercase().contains(name)) {
+                for a in
+                    self.snap.agents.iter().filter(|a| {
+                        a.title.to_lowercase().contains(name) || a.kind.label().to_lowercase().contains(name)
+                    })
+                {
                     if stop && a.status == TaskStatus::Running {
                         out.push((Hit::Stop(a.id), format!("Stop “{}”", a.title), "Agents".into()));
                     } else if !stop {
@@ -3040,7 +3422,11 @@ impl Notch {
         }
         if q.starts_with("merge") {
             for pr in self.snap.prs.iter().filter(|p| p.state == "open" && p.mergeable) {
-                out.push((Hit::Merge(pr.task, pr.number), format!("Merge #{} {}", pr.number, pr.title), "Pull request".into()));
+                out.push((
+                    Hit::Merge(pr.task, pr.number),
+                    format!("Merge #{} {}", pr.number, pr.title),
+                    "Pull request".into(),
+                ));
             }
         }
         if let Some(rest) = self.query.trim().strip_prefix("note ").filter(|r| !r.trim().is_empty()) {
@@ -3080,7 +3466,7 @@ impl Notch {
             }
         }
         if new_prompt.is_none() && ask.is_none() && out.is_empty() {
-            out.push((Hit::Ask(raw.to_string()), format!("Ask: {raw}"), "Ask Dove".into()));
+            out.push((Hit::Ask(raw.to_string()), format!("Ask K22: {raw}"), "K22".into()));
             out.push((Hit::NewAgent(raw.to_string()), format!("Start an agent: {raw}"), "Agents".into()));
         }
         out.truncate(8);
@@ -3109,21 +3495,12 @@ impl Notch {
             }
             Hit::Tab(t) => self.open_page(Page::Tab(t), Some(window), cx),
             Hit::NewAgent(p) => self.new_agent_with(p, Some(window), cx),
-            Hit::Ask(question) => {
-                // The default agent in the default project, answered in the
-                // agent view as it streams.
-                let kind = self.snap.default_agent.or(self.snap.installed.first().copied());
-                let project = self.snap.default_project.or(self.snap.projects.first().map(|p| p.0));
-                match (kind, project) {
-                    (Some(agent), Some(project)) => {
-                        let id = self.next_request;
-                        self.next_request += 1;
-                        self.command(ToEngine::Start { id, agent, project, prompt: question, worktree: false });
-                        self.toast(format!("Asking {}…", agent.label()));
-                    }
-                    _ => self.new_agent_with(question, Some(window), cx),
-                }
-            }
+            // K22 answers in a view (a lens when one fits).
+            Hit::Ask(question) => self.ask_k22(question, cx),
+            Hit::Call => self.talk(None, cx),
+            Hit::Lens(l) => self.open_page(Page::Lens(l), Some(window), cx),
+            Hit::View(id) => self.open_page(Page::View(id), Some(window), cx),
+            Hit::Plan(task) => self.open_page(Page::Plan(task), Some(window), cx),
             Hit::Pin => {
                 let pinned = !self.machine.pinned;
                 self.machine.set_pinned(pinned);
@@ -3305,7 +3682,7 @@ mod tests {
     use super::*;
 
     fn display() -> Display {
-        Display { left: 0, top: 0, width: 2000, scale: 1.25 }
+        Display { left: 0, top: 0, width: 2000, height: 1300, scale: 1.25 }
     }
 
     fn at(cursor: Option<(i32, i32)>) -> Input {

@@ -162,7 +162,7 @@ final class ComposerBar: UIView, UITextViewDelegate, UIGestureRecognizerDelegate
         content.addSubview(thumbsScroll)
 
         var attach = UIButton.Configuration.plain()
-        attach.image = UIImage(systemName: "plus", withConfiguration: UIImage.SymbolConfiguration(pointSize: 15, weight: .semibold))
+        attach.image = K22Icon.image("plus", pointSize: 15)
         attach.baseForegroundColor = Palette.text
         attach.contentInsets = .zero
         attachButton.configuration = attach
@@ -177,7 +177,7 @@ final class ComposerBar: UIView, UITextViewDelegate, UIGestureRecognizerDelegate
         content.addSubview(attachButton)
 
         var mic = UIButton.Configuration.plain()
-        mic.image = UIImage(systemName: "mic", withConfiguration: UIImage.SymbolConfiguration(pointSize: 16, weight: .regular))
+        mic.image = K22Icon.image("microphone", pointSize: 16)
         mic.baseForegroundColor = Palette.secondary
         mic.contentInsets = .zero
         micButton.configuration = mic
@@ -188,7 +188,7 @@ final class ComposerBar: UIView, UITextViewDelegate, UIGestureRecognizerDelegate
         content.addSubview(micButton)
 
         var voice = UIButton.Configuration.plain()
-        voice.image = UIImage(systemName: "waveform", withConfiguration: UIImage.SymbolConfiguration(pointSize: 16, weight: .regular))
+        voice.image = K22Icon.image("waveform", pointSize: 16)
         voice.baseForegroundColor = Palette.secondary
         voice.contentInsets = .zero
         voiceButton.configuration = voice
@@ -490,7 +490,7 @@ final class ComposerBar: UIView, UITextViewDelegate, UIGestureRecognizerDelegate
             if let icon = chip.icon {
                 config.image = icon
             } else if let symbol = chip.symbol {
-                config.image = UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: 11.5, weight: .semibold))
+                config.image = K22Icon.resolve(systemName: symbol, pointSize: 11.5, weight: .semibold)
             }
             config.imagePadding = chip.id == "pr" ? 5 : 6
             // Tinted chips (the PR badge) use the desktop's tone wash: fill
@@ -553,7 +553,7 @@ final class ComposerBar: UIView, UITextViewDelegate, UIGestureRecognizerDelegate
             iv.widthAnchor.constraint(equalToConstant: 56).isActive = true
             iv.heightAnchor.constraint(equalToConstant: 56).isActive = true
             var x = UIButton.Configuration.filled()
-            x.image = UIImage(systemName: "xmark", withConfiguration: UIImage.SymbolConfiguration(pointSize: 8, weight: .bold))
+            x.image = K22Icon.image("close", pointSize: 8)
             x.baseBackgroundColor = UIColor.black.withAlphaComponent(0.55)
             x.baseForegroundColor = .white
             x.cornerStyle = .capsule
@@ -708,10 +708,7 @@ final class ComposerBar: UIView, UITextViewDelegate, UIGestureRecognizerDelegate
 
     private func updateMicButton(active: Bool) {
         var config = UIButton.Configuration.plain()
-        config.image = UIImage(
-            systemName: active ? "mic.fill" : "mic",
-            withConfiguration: UIImage.SymbolConfiguration(pointSize: 16, weight: .regular)
-        )
+        config.image = K22Icon.resolve(systemName: active ? "mic.fill" : "mic", pointSize: 16, weight: .regular)
         config.baseForegroundColor = active ? Palette.accent : Palette.secondary
         config.contentInsets = .zero
         micButton.configuration = config
@@ -779,7 +776,7 @@ final class ComposerBar: UIView, UITextViewDelegate, UIGestureRecognizerDelegate
             config.baseForegroundColor = Palette.background
             config.contentInsets = .zero
         }
-        config.image = UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: action == .stop ? 11 : 15, weight: .bold))
+        config.image = K22Icon.resolve(systemName: symbol, pointSize: action == .stop ? 11 : 15, weight: .bold)
         let changed = currentAction != action
         currentAction = action
         let apply = {
@@ -801,12 +798,12 @@ final class ComposerBar: UIView, UITextViewDelegate, UIGestureRecognizerDelegate
         // Long-press offers the other delivery modes mid-turn.
         if action == .queue {
             var items: [UIMenuElement] = [
-                UIAction(title: "Queue for next turn", image: UIImage(systemName: "text.line.last.and.arrowtriangle.forward")) { [weak self] _ in self?.send(.queue) },
+                UIAction(title: "Queue for next turn", image: K22Icon.image("queue-send")) { [weak self] _ in self?.send(.queue) },
             ]
             if canSteer {
-                items.append(UIAction(title: "Steer now", subtitle: "Deliver into the running turn", image: UIImage(systemName: "arrow.turn.down.right")) { [weak self] _ in self?.send(.steer) })
+                items.append(UIAction(title: "Steer now", subtitle: "Deliver into the running turn", image: K22Icon.image("arrow-turn-down-right")) { [weak self] _ in self?.send(.steer) })
             }
-            items.append(UIAction(title: "Stop and send", image: UIImage(systemName: "stop.circle"), attributes: .destructive) { [weak self] _ in self?.send(.interrupt) })
+            items.append(UIAction(title: "Stop and send", image: K22Icon.image("stop-circle"), attributes: .destructive) { [weak self] _ in self?.send(.interrupt) })
             actionButton.menu = UIMenu(title: "While the agent works", children: items)
             actionButton.showsMenuAsPrimaryAction = false
         } else {

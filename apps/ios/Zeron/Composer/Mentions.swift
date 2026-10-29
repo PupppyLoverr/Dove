@@ -82,7 +82,7 @@ final class MentionSuggestions: UIView {
             var c = UIButton.Configuration.plain()
             let name = file.path.split(separator: "/").last.map(String.init) ?? file.path
             let dir = file.path.components(separatedBy: "/").dropLast().joined(separator: "/")
-            c.image = UIImage(systemName: file.isDir ? "folder" : "doc.text", withConfiguration: UIImage.SymbolConfiguration(pointSize: 13, weight: .medium))
+            c.image = K22Icon.resolve(systemName: file.isDir ? "folder" : "doc.text", pointSize: 13, weight: .medium)
             c.imagePadding = 10
             c.baseForegroundColor = Palette.text
             var title = AttributedString(name)

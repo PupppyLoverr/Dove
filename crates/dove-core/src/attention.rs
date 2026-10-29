@@ -36,6 +36,9 @@ pub struct TaskState {
     /// The latest reply: the assistant's text since the last user message,
     /// its last [`REPLY_MAX`] characters.
     pub reply: String,
+    /// The plan the agent last proposed (`AgentEvent::Plan`), cleared when
+    /// the user next writes.
+    pub plan: Option<String>,
     /// When the current (or last) turn started, in store milliseconds.
     pub turn_started_ms: Option<i64>,
     /// When it ended; `None` while it runs.
@@ -89,7 +92,11 @@ impl Steps {
             parts.push(if files == 1 { "Edited 1 file".to_string() } else { format!("Edited {files} files") });
         }
         if self.commands > 0 {
-            parts.push(if self.commands == 1 { "ran 1 command".into() } else { format!("ran {} commands", self.commands) });
+            parts.push(if self.commands == 1 {
+                "ran 1 command".into()
+            } else {
+                format!("ran {} commands", self.commands)
+            });
         }
         if self.reads + self.searches > 0 {
             parts.push(format!("read {}", self.reads + self.searches));
@@ -127,6 +134,7 @@ impl TaskState {
                 self.activity = None;
                 self.last_error = None;
                 self.reply.clear();
+                self.plan = None;
                 self.steps = Steps::default();
                 self.turn_started_ms = Some(dove_store::now_ms());
                 self.turn_ended_ms = None;
@@ -166,6 +174,7 @@ impl TaskState {
             }
             AgentEvent::PermissionResolved { request_id, .. } => self.pending.retain(|p| &p.request_id != request_id),
             AgentEvent::Todos { items } => self.todos = items.clone(),
+            AgentEvent::Plan { text } => self.plan = Some(text.to_string()),
             AgentEvent::Error { message } => self.last_error = Some(message.to_string()),
             // A turn that ended (or a process that's gone) can't still be
             // waiting on an answer.
@@ -450,7 +459,9 @@ mod tests {
         let mut s = TaskState::default();
         s.observe(&AgentEvent::UserMessage { text: Arc::from("go") });
         assert!(s.turn_started_ms.is_some());
-        for (kind, title) in [(ToolKind::Edit, "Edit a.rs"), (ToolKind::Edit, "Edit b.rs"), (ToolKind::Execute, "cargo test")] {
+        for (kind, title) in
+            [(ToolKind::Edit, "Edit a.rs"), (ToolKind::Edit, "Edit b.rs"), (ToolKind::Execute, "cargo test")]
+        {
             s.observe(&AgentEvent::ToolCall {
                 call_id: title.into(),
                 name: "x".into(),

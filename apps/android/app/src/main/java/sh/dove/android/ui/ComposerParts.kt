@@ -70,7 +70,7 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import sh.dove.android.design.GeistMono
+import sh.dove.android.design.KMono
 import sh.dove.android.design.DoveIcon
 import sh.dove.android.design.DoveIcons
 import uniffi.zeron_core.FileMatch
@@ -285,7 +285,7 @@ fun MentionSuggestions(model: ComposerModel, search: suspend (String) -> List<Fi
                         Column {
                             Text(name, style = MaterialTheme.typography.bodyLargeEmphasized, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             if (dir.isNotEmpty()) {
-                                Text(dir, style = MaterialTheme.typography.bodySmall, fontFamily = GeistMono, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text(dir, style = MaterialTheme.typography.bodySmall, fontFamily = KMono, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             }
                         }
                     }

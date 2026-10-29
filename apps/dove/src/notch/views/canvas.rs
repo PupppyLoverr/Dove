@@ -42,7 +42,9 @@ impl Notch {
 
     pub(crate) fn art(&self, size: f32, radius: f32) -> AnyElement {
         match self.media.as_ref().and_then(|m| m.art.clone()) {
-            Some(a) => img(a).size(px(size)).flex_none().rounded(px(radius)).object_fit(ObjectFit::Cover).into_any_element(),
+            Some(a) => {
+                img(a).size(px(size)).flex_none().rounded(px(radius)).object_fit(ObjectFit::Cover).into_any_element()
+            }
             None => div()
                 .size(px(size))
                 .flex_none()
@@ -65,6 +67,15 @@ impl Notch {
     // ----- slim -----------------------------------------------------------------
 
     pub(crate) fn slim_items(&self) -> Vec<SlimItem> {
+        // A live call, then a plan waiting on you, lead (scrolling skips them).
+        let mut lead = Vec::new();
+        if self.call.live {
+            lead.push(SlimItem::Call);
+        }
+        let plans = self.snap.plans.iter().filter(|p| p.request_id.is_some()).count();
+        if plans > 0 {
+            lead.push(SlimItem::Plan { count: plans });
+        }
         let mut items = Vec::new();
         if self.prefs.slim_agents {
             let mut groups: Vec<(HarnessKind, usize, bool)> = Vec::new();
@@ -92,7 +103,9 @@ impl Notch {
                 let progress = (total > 0).then(|| done as f32 / total as f32);
                 items.push(SlimItem::Agents { groups, progress });
             }
-            if let Some(pr) = self.snap.prs.iter().find(|p| p.state == "open" && matches!(p.checks.as_str(), "pending" | "failing")) {
+            if let Some(pr) =
+                self.snap.prs.iter().find(|p| p.state == "open" && matches!(p.checks.as_str(), "pending" | "failing"))
+            {
                 items.push(SlimItem::Pr { checks: pr.checks.clone() });
             }
         }
@@ -113,7 +126,8 @@ impl Notch {
             let k = self.primary % items.len();
             items.rotate_left(k);
         }
-        items
+        lead.extend(items);
+        lead
     }
 
     /// The slim width (one of three) and how many bubbles.
@@ -121,6 +135,8 @@ impl Notch {
         let items = self.slim_items();
         let width = match items.first() {
             None | Some(SlimItem::Timer) => tk::SLIM_SINGLE,
+            Some(SlimItem::Call) => tk::SLIM_WIDE,
+            Some(SlimItem::Plan { .. }) => tk::SLIM_DUAL,
             Some(SlimItem::Agents { groups, .. }) => {
                 let marks = groups.len().min(3);
                 if marks >= 3 || (marks == 2 && groups.iter().any(|g| g.2)) { tk::SLIM_WIDE } else { tk::SLIM_DUAL }
@@ -133,6 +149,8 @@ impl Notch {
 
     fn slim_leading(&self, item: &SlimItem) -> AnyElement {
         match item {
+            SlimItem::Call => self.wave(16.0),
+            SlimItem::Plan { .. } => icon(icons::LAYERS).size(px(15.0)).text_color(tk::BLUE).into_any_element(),
             SlimItem::Agents { groups, progress } => {
                 let needs = groups.iter().any(|g| g.2);
                 let color = if needs { tk::AMBER } else { tk::BLUE };
@@ -145,7 +163,7 @@ impl Notch {
                             div()
                                 .size(px(22.0))
                                 .rounded_full()
-                                .bg(gpui::hsla(240.0 / 360.0, 0.06, 0.16, 1.0))
+                                .bg(gpui::hsla(0.0, 0.0, 0.17, 1.0))
                                 .border_1()
                                 .border_color(tk::HAIRLINE)
                                 .flex()
@@ -194,9 +212,22 @@ impl Notch {
                 .into_any_element();
         }
         let phrase = |text: String, color: Hsla| {
-            div().text_size(px(tk::T12)).font_weight(FontWeight::MEDIUM).text_color(color).truncate().child(text).into_any_element()
+            div()
+                .text_size(px(tk::T12))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(color)
+                .truncate()
+                .child(text)
+                .into_any_element()
         };
         match item {
+            SlimItem::Call => phrase(
+                format!("{} · {}", self.call.target.clone().unwrap_or_else(|| "K22".into()), self.call.phase.word()),
+                tk::K22,
+            ),
+            SlimItem::Plan { count } => {
+                phrase(if *count == 1 { "Plan ready".into() } else { format!("{count} plans ready") }, tk::BLUE)
+            }
             SlimItem::Agents { groups, .. } => {
                 let n: usize = groups.iter().map(|g| g.1).sum();
                 if groups.iter().any(|g| g.2) {
@@ -234,7 +265,10 @@ impl Notch {
                 .items_center()
                 .justify_center()
                 .gap(px(4.0))
-                .child(link("slim-hide", "Hide for an hour").on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.hide_for_an_hour(cx))))
+                .child(
+                    link("slim-hide", "Hide for an hour")
+                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.hide_for_an_hour(cx))),
+                )
                 .child(link("slim-settings", "Settings").on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                     this.context_menu = false;
                     this.command(ToEngine::OpenSettings);
@@ -245,7 +279,7 @@ impl Notch {
         let items = self.slim_items();
         let (left, right) = match items.first() {
             None => (
-                icon(icons::DOVE_LOGO).size(px(15.0)).text_color(tk::TEXT.opacity(0.6)).into_any_element(),
+                icon(icons::K22_MARK).size(px(15.0)).text_color(tk::TEXT.opacity(0.6)).into_any_element(),
                 div()
                     .text_size(px(tk::T12))
                     .font_weight(FontWeight::MEDIUM)
@@ -293,6 +327,8 @@ impl Notch {
             }
             SlimItem::Pr { checks } => pr_ring(checks, 26.0),
             SlimItem::Note(_) => icon(icons::NOTE_TEXT).size(px(14.0)).text_color(tk::TEXT).into_any_element(),
+            SlimItem::Call => self.wave(12.0),
+            SlimItem::Plan { .. } => icon(icons::LAYERS).size(px(14.0)).text_color(tk::BLUE).into_any_element(),
         };
         div().size_full().flex().items_center().justify_center().child(inner).into_any_element()
     }
@@ -318,7 +354,9 @@ impl Notch {
         if let Some((_, p)) = self.approval() {
             let h = match &p.preview {
                 _ if p.question && p.questions.len() == 1 => 96.0 + 8.0,
-                Some(Preview::Diff { lines, .. }) if !lines.is_empty() => 96.0 + 14.0 * lines.len().min(3) as f32 + 12.0,
+                Some(Preview::Diff { lines, .. }) if !lines.is_empty() => {
+                    96.0 + 14.0 * lines.len().min(3) as f32 + 12.0
+                }
                 Some(Preview::Command(_)) => 96.0 + 28.0,
                 _ => tk::BANNER_H,
             };
@@ -339,7 +377,10 @@ impl Notch {
             let (id, req, kind, title) = (agent.id, req.clone(), agent.kind, agent.title.clone());
             let more = agent.pending.iter().filter(|p| !self.dismissed.contains(&p.request_id)).count();
             let line = if req.question {
-                req.questions.first().map(|q| q.question.clone()).unwrap_or_else(|| format!("{} asks: {}", kind.label(), req.summary))
+                req.questions
+                    .first()
+                    .map(|q| q.question.clone())
+                    .unwrap_or_else(|| format!("{} asks: {}", kind.label(), req.summary))
             } else {
                 format!("{} wants to {}", kind.label(), req.tool.to_lowercase())
             };
@@ -375,11 +416,22 @@ impl Notch {
                                 .flex_1()
                                 .min_w_0()
                                 .cursor_pointer()
-                                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.open_page(Page::Agent(id), Some(window), cx)))
-                                .child(div().text_size(px(tk::T13)).font_weight(FontWeight::SEMIBOLD).text_color(tk::TEXT).truncate().child(title))
+                                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                                    this.open_page(Page::Agent(id), Some(window), cx)
+                                }))
+                                .child(
+                                    div()
+                                        .text_size(px(tk::T13))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(tk::TEXT)
+                                        .truncate()
+                                        .child(title),
+                                )
                                 .child(div().text_size(px(tk::T12)).text_color(tk::DIM).truncate().child(line)),
                         )
-                        .when(more > 1, |d| d.child(div().text_size(px(tk::T11)).text_color(tk::FAINT).child(format!("1 of {more}")))),
+                        .when(more > 1, |d| {
+                            d.child(div().text_size(px(tk::T11)).text_color(tk::FAINT).child(format!("1 of {more}")))
+                        }),
                 )
                 .when_some(req.preview.clone().filter(|_| !req.question), |d, p| d.child(preview(&p, 3)))
                 .child(div().flex_1())
@@ -392,8 +444,12 @@ impl Notch {
         let Some(flash) = &self.flash else { return div().into_any_element() };
         let (glyph, color): (AnyElement, Hsla) = match (flash.kind, flash.agent) {
             (k, Some(kind)) => (avatar(kind, 28.0, None), if k == FlashKind::Failed { tk::RED } else { tk::GREEN }),
-            (FlashKind::Timer, None) => (icon(icons::TIMER).size(px(17.0)).text_color(tk::AMBER).into_any_element(), tk::AMBER),
-            (FlashKind::Failed, None) => (icon(icons::DANGER_TRIANGLE).size(px(17.0)).text_color(tk::RED).into_any_element(), tk::RED),
+            (FlashKind::Timer, None) => {
+                (icon(icons::TIMER).size(px(17.0)).text_color(tk::AMBER).into_any_element(), tk::AMBER)
+            }
+            (FlashKind::Failed, None) => {
+                (icon(icons::DANGER_TRIANGLE).size(px(17.0)).text_color(tk::RED).into_any_element(), tk::RED)
+            }
             _ => (icon(icons::CHECK).size(px(17.0)).text_color(tk::GREEN).into_any_element(), tk::GREEN),
         };
         let task = flash.task;
@@ -415,15 +471,33 @@ impl Notch {
                 }
             }))
             .child(glyph)
-            .child(div().flex_1().min_w_0().truncate().text_size(px(tk::T13)).font_weight(FontWeight::MEDIUM).text_color(tk::TEXT).child(flash.text.clone()))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(px(tk::T13))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(tk::TEXT)
+                    .child(flash.text.clone()),
+            )
             .child(self.dot(color, 7.0, false))
             // The countdown along the bottom.
-            .child(div().absolute().bottom_0().left(px(18.0)).right(px(18.0)).h(px(2.0)).child(bar(left, color.opacity(0.7), 2.0)))
+            .child(div().absolute().bottom_0().left(px(18.0)).right(px(18.0)).h(px(2.0)).child(bar(
+                left,
+                color.opacity(0.7),
+                2.0,
+            )))
             .into_any_element()
     }
 
     /// A popup's head: a glyph in a tinted plate, a title and a line.
-    fn popup_head(glyph: &'static str, color: Hsla, title: impl Into<SharedString>, line: impl Into<SharedString>) -> Div {
+    fn popup_head(
+        glyph: &'static str,
+        color: Hsla,
+        title: impl Into<SharedString>,
+        line: impl Into<SharedString>,
+    ) -> Div {
         div()
             .flex()
             .items_center()
@@ -443,7 +517,14 @@ impl Notch {
                 div()
                     .flex_1()
                     .min_w_0()
-                    .child(div().text_size(px(tk::T13)).font_weight(FontWeight::SEMIBOLD).text_color(tk::TEXT).truncate().child(title.into()))
+                    .child(
+                        div()
+                            .text_size(px(tk::T13))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(tk::TEXT)
+                            .truncate()
+                            .child(title.into()),
+                    )
                     .child(div().text_size(px(tk::T12)).text_color(tk::DIM).truncate().child(line.into())),
             )
     }
@@ -467,15 +548,24 @@ impl Notch {
         let dismiss = |label: &'static str, cx: &mut Context<Self>| {
             link("popup-dismiss", label).on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.dismiss_popup(cx)))
         };
-        let target = self.target_agent().and_then(|id| self.snap.agents.iter().find(|a| a.id == id)).map(|a| (a.id, a.kind));
+        let target =
+            self.target_agent().and_then(|id| self.snap.agents.iter().find(|a| a.id == id)).map(|a| (a.id, a.kind));
         match popup {
             Popup::Usage { meter, .. } => {
                 let color = if meter.used >= 95.0 { tk::RED } else { tk::AMBER };
                 let resets = meter.resets_at.map(|s| format!("Resets {}", until(s * 1000))).unwrap_or_default();
                 Self::popup_shell(
-                    Self::popup_head(icons::CHART, color, format!("{} · {} at {:.0}%", meter.kind.label(), meter.label, meter.used), resets),
+                    Self::popup_head(
+                        icons::CHART,
+                        color,
+                        format!("{} · {} at {:.0}%", meter.kind.label(), meter.label, meter.used),
+                        resets,
+                    ),
                     Some(bar(meter.used as f32 / 100.0, color, 4.0).into_any_element()),
-                    div().child(primary("usage-ok", "Got it").on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.dismiss_popup(cx)))),
+                    div().child(
+                        primary("usage-ok", "Got it")
+                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.dismiss_popup(cx))),
+                    ),
                 )
             }
             Popup::FixError { text } => {
@@ -499,26 +589,35 @@ impl Notch {
                             .child(first)
                             .into_any_element(),
                     ),
-                    div().child(dismiss("Not now", cx)).child(primary("fix-error", label).on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                        this.dismiss_popup(cx);
-                        this.fix_error(text.clone(), Some(window), cx);
-                    }))),
+                    div().child(dismiss("Not now", cx)).child(primary("fix-error", label).on_click(cx.listener(
+                        move |this, _: &ClickEvent, window, cx| {
+                            this.dismiss_popup(cx);
+                            this.fix_error(text.clone(), Some(window), cx);
+                        },
+                    ))),
                 )
             }
             Popup::Dropped { paths } => {
                 let n = paths.len();
-                let name = paths.first().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-                let title = if n == 1 { format!("{name} is in the tray") } else { format!("{n} files are in the tray") };
+                let name = paths
+                    .first()
+                    .and_then(|p| p.file_name())
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                let title =
+                    if n == 1 { format!("{name} is in the tray") } else { format!("{n} files are in the tray") };
                 let mention: String = paths.iter().map(|p| format!("@{} ", p.display())).collect();
                 let send = target.map(|(id, kind)| {
                     let paths = paths.clone();
-                    link("dropped-send", format!("Send to {}", kind.label())).on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        this.dismiss_popup(cx);
-                        this.drop_on_agent(id, &ExternalPaths(paths.clone().into()), cx);
-                    }))
+                    link("dropped-send", format!("Send to {}", kind.label())).on_click(cx.listener(
+                        move |this, _: &ClickEvent, _, cx| {
+                            this.dismiss_popup(cx);
+                            this.drop_on_agent(id, &ExternalPaths(paths.clone().into()), cx);
+                        },
+                    ))
                 });
                 Self::popup_shell(
-                    Self::popup_head(icons::DOCUMENT_ADD, tk::BLUE, title, "Hand them to an agent?"),
+                    Self::popup_head(icons::UPLOAD, tk::BLUE, title, "Hand them to an agent?"),
                     None,
                     div().children(send).child(primary("dropped-start", "Start an agent").on_click(cx.listener(
                         move |this, _: &ClickEvent, window, cx| {
@@ -533,17 +632,22 @@ impl Notch {
                     "The dev server on localhost:{port} ({process}) stopped unexpectedly. Find out why from its output or logs, fix it, and start it again."
                 );
                 Self::popup_shell(
-                    Self::popup_head(icons::SERVER, tk::RED, format!("localhost:{port} stopped"), format!("{process} exited")),
+                    Self::popup_head(
+                        icons::SERVER,
+                        tk::RED,
+                        format!("localhost:{port} stopped"),
+                        format!("{process} exited"),
+                    ),
                     None,
-                    div().child(dismiss("Dismiss", cx)).child(primary("server-fix", "Ask an agent").on_click(cx.listener(
-                        move |this, _: &ClickEvent, window, cx| {
+                    div().child(dismiss("Dismiss", cx)).child(primary("server-fix", "Ask an agent").on_click(
+                        cx.listener(move |this, _: &ClickEvent, window, cx| {
                             this.dismiss_popup(cx);
                             match this.target_agent() {
                                 Some(_) => this.send_to_agent(prompt.clone(), cx),
                                 None => this.new_agent_with(prompt.clone(), Some(window), cx),
                             }
-                        },
-                    ))),
+                        }),
+                    )),
                 )
             }
             Popup::Checks { pr } => {
@@ -567,7 +671,11 @@ impl Notch {
                     Self::popup_head(
                         icons::GIT_MERGE,
                         if passed { tk::GREEN } else { tk::RED },
-                        if passed { format!("Checks passed on #{}", pr.number) } else { format!("Checks failed on #{}", pr.number) },
+                        if passed {
+                            format!("Checks passed on #{}", pr.number)
+                        } else {
+                            format!("Checks failed on #{}", pr.number)
+                        },
                         pr.title.clone(),
                     ),
                     None,
@@ -583,14 +691,20 @@ impl Notch {
                 Self::popup_head(
                     icons::TIMER,
                     tk::AMBER,
-                    if count == 1 { "1 approval waited for you".to_string() } else { format!("{count} approvals waited for you") },
+                    if count == 1 {
+                        "1 approval waited for you".to_string()
+                    } else {
+                        format!("{count} approvals waited for you")
+                    },
                     "They held while your focus timer ran",
                 ),
                 None,
-                div().child(primary("held-review", "Review").on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                    this.dismiss_popup(cx);
-                    this.open_page(Page::Tab(Tab::Agents), Some(window), cx);
-                }))),
+                div().child(primary("held-review", "Review").on_click(cx.listener(
+                    |this, _: &ClickEvent, window, cx| {
+                        this.dismiss_popup(cx);
+                        this.open_page(Page::Tab(Tab::Agents), Some(window), cx);
+                    },
+                ))),
             ),
             Popup::Shot(shot) => self.render_shot(shot, cx),
         }
@@ -613,17 +727,18 @@ impl Notch {
         };
         let marks: Vec<Mark> = shot.marks.iter().copied().chain(shot.drawing).collect();
         let current = shot.tool;
-        let tool_btn = |id: &'static str, glyph: &'static str, tool: ShotTool, name: &'static str, cx: &mut Context<Self>| {
-            let on = current == tool;
-            ibtn(id, glyph, 28.0, if on { tk::TEXT } else { tk::DIM }, name).when(on, |d| d.bg(tk::WASH_ON)).on_click(cx.listener(
-                move |this, _: &ClickEvent, _, cx| {
-                    if let Some(s) = this.shot_mut() {
-                        s.tool = tool;
-                    }
-                    cx.notify();
-                },
-            ))
-        };
+        let tool_btn =
+            |id: &'static str, glyph: &'static str, tool: ShotTool, name: &'static str, cx: &mut Context<Self>| {
+                let on = current == tool;
+                ibtn(id, glyph, 28.0, if on { tk::TEXT } else { tk::DIM }, name)
+                    .when(on, |d| d.bg(tk::WASH_ON))
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        if let Some(s) = this.shot_mut() {
+                            s.tool = tool;
+                        }
+                        cx.notify();
+                    }))
+            };
         div()
             .size_full()
             .relative()
@@ -704,21 +819,32 @@ impl Notch {
                     .flex()
                     .items_center()
                     .gap(px(4.0))
-                    .child(tool_btn("tool-arrow", icons::ARROW_UP_RIGHT, ShotTool::Arrow, "Arrow", cx))
+                    .child(tool_btn("tool-arrow", icons::LINK, ShotTool::Arrow, "Arrow", cx))
                     .child(tool_btn("tool-box", icons::BOX_SELECT, ShotTool::Box, "Box", cx))
                     .child(tool_btn("tool-hl", icons::HIGHLIGHTER, ShotTool::Highlight, "Highlight", cx))
                     .when(!shot.marks.is_empty(), |d| {
-                        d.child(ibtn("tool-undo", icons::UNDO, 28.0, tk::DIM, "Undo mark").on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                            if let Some(s) = this.shot_mut() {
-                                s.marks.pop();
-                            }
-                            cx.notify();
-                        })))
+                        d.child(ibtn("tool-undo", icons::UNDO, 28.0, tk::DIM, "Undo mark").on_click(cx.listener(
+                            |this, _: &ClickEvent, _, cx| {
+                                if let Some(s) = this.shot_mut() {
+                                    s.marks.pop();
+                                }
+                                cx.notify();
+                            },
+                        )))
                     })
                     .child(div().flex_1())
-                    .child(link("shot-discard", "Discard").on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.dismiss_popup(cx))))
-                    .child(pill("shot-keep", "Keep", false).on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.finish_shot(false, cx))))
-                    .child(primary("shot-send", "Send to agent").on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.finish_shot(true, cx)))),
+                    .child(
+                        link("shot-discard", "Discard")
+                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.dismiss_popup(cx))),
+                    )
+                    .child(
+                        pill("shot-keep", "Keep", false)
+                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.finish_shot(false, cx))),
+                    )
+                    .child(
+                        primary("shot-send", "Send to agent")
+                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.finish_shot(true, cx))),
+                    ),
             )
             .into_any_element()
     }
@@ -738,6 +864,10 @@ impl Notch {
             return (tk::HEADER_H + 10.0 + n * 42.0 + BOTTOM).min(tk::EXPANDED_MAX_H);
         }
         let notice = if self.undo.is_some() || self.deny.is_some() || self.stopping.is_some() { 40.0 } else { 0.0 };
+        if let Some(body) = self.v3_body_height() {
+            let menu = self.menu.as_ref().map(|m| m.bottom() + 10.0).unwrap_or(0.0);
+            return (tk::HEADER_H + body + notice + BOTTOM).max(menu).clamp(170.0, self.wide_max_h());
+        }
         let body: f32 = match &self.page {
             Page::Tab(Tab::Home) => {
                 let cards = self.home_cards();
@@ -747,7 +877,8 @@ impl Notch {
                     let shown = cards.len().min(3);
                     let h: f32 = cards.iter().take(3).map(|c| c.height(self)).sum::<f32>() + tk::GAP * (shown as f32 - 1.0);
                     // A sparse Home also shows the shortcut row (pages.rs).
-                    h + if cards.len() > 3 { 36.0 } else { 0.0 } + if cards.len() < 2 { tk::GAP + 56.0 } else { 0.0 }
+                    let chips = if self.snap.automations.iter().any(|a| a.enabled) { tk::GAP + 24.0 } else { 0.0 };
+                    h + if cards.len() > 3 { 36.0 } else { 0.0 } + if cards.len() < 2 { tk::GAP + 56.0 + chips } else { 0.0 }
                 }
             }
             Page::Tab(Tab::Agents) => {
@@ -778,14 +909,23 @@ impl Notch {
                             + if t.steps.is_empty() { 0.0 } else { 24.0 }
                     })
                     .sum();
-                let sent: f32 = self.sent.iter().filter(|m| m.task == *id).map(|m| Self::text_height(&m.text, 48) + 30.0).sum();
+                let sent: f32 =
+                    self.sent.iter().filter(|m| m.task == *id).map(|m| Self::text_height(&m.text, 48) + 30.0).sum();
                 let waiting = self
                     .snap
                     .agents
                     .iter()
                     .find(|a| a.id == *id)
                     .and_then(|a| a.pending.iter().find(|p| !self.dismissed.contains(&p.request_id)))
-                    .map(|p| if p.question { 120.0 } else if p.preview.is_some() { 160.0 } else { 100.0 })
+                    .map(|p| {
+                        if p.question {
+                            120.0
+                        } else if p.preview.is_some() {
+                            160.0
+                        } else {
+                            100.0
+                        }
+                    })
                     .unwrap_or(0.0);
                 let picker = if self.picking { (self.shelf.len().clamp(1, 5) as f32) * 30.0 + 22.0 } else { 0.0 };
                 let attached = if self.attachments.is_empty() { 0.0 } else { 34.0 };
@@ -820,6 +960,8 @@ impl Notch {
                     10.0 + self.ports.len() as f32 * 50.0
                 }
             }
+            // Sized by `v3_body_height` above.
+            Page::Call | Page::Plan(_) | Page::View(_) | Page::Lens(_) => 240.0,
         };
         let menu = self.menu.as_ref().map(|m| m.bottom() + 10.0).unwrap_or(0.0);
         (tk::HEADER_H + body + notice + BOTTOM).max(menu).clamp(170.0, tk::EXPANDED_MAX_H)
@@ -830,34 +972,65 @@ impl Notch {
     fn header(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         const SLOT: f32 = 32.0;
         const STEP: f32 = 36.0;
-        let searching =
-            !self.query.is_empty() || self.inputs.as_ref().is_some_and(|i| i.command.read(cx).focus_handle(cx).is_focused(window));
+        let searching = !self.query.is_empty()
+            || self.inputs.as_ref().is_some_and(|i| i.command.read(cx).focus_handle(cx).is_focused(window));
         let command = self.inputs.as_ref().map(|i| i.command.clone());
         let page_tab = tab_of(&self.page);
-        let mut row = div().id("header").h(px(tk::HEADER_H)).px(px(10.0)).flex().items_center().gap(px(8.0)).on_mouse_down(
-            MouseButton::Right,
-            cx.listener(|this, ev: &MouseDownEvent, _, cx| {
-                let items = this.header_menu();
-                this.open_menu(ev.position, items, cx);
-            }),
-        );
+        let mut row =
+            div().id("header").h(px(tk::HEADER_H)).px(px(10.0)).flex().items_center().gap(px(8.0)).on_mouse_down(
+                MouseButton::Right,
+                cx.listener(|this, ev: &MouseDownEvent, _, cx| {
+                    let items = this.header_menu();
+                    this.open_menu(ev.position, items, cx);
+                }),
+            );
         if !searching {
-            if !page_tab.in_bar() {
+            if let Some(title) = self.page.title() {
+                // A wide page: back, and its name.
+                row = row.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(4.0))
+                        .child(
+                            ibtn("back", icons::ARROW_LEFT, 32.0, tk::DIM, "Back · Esc")
+                                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.go_back(window, cx))),
+                        )
+                        .when(matches!(self.page, Page::Call), |d| {
+                            d.child(icon(icons::K22_MARK).size(px(15.0)).text_color(tk::K22).mr(px(2.0)))
+                        })
+                        .child(
+                            div()
+                                .text_size(px(tk::T13))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(tk::TEXT)
+                                .child(title),
+                        ),
+                );
+            } else if !page_tab.in_bar() {
                 // A page without a tab: back, and its name.
                 row = row.child(
                     div()
                         .flex()
                         .items_center()
                         .gap(px(4.0))
-                        .child(ibtn("back", icons::ARROW_LEFT, 32.0, tk::DIM, "Back · Esc").on_click(cx.listener(
-                            |this, _: &ClickEvent, window, cx| this.go_back(window, cx),
-                        )))
-                        .child(div().text_size(px(tk::T13)).font_weight(FontWeight::SEMIBOLD).text_color(tk::TEXT).child(page_tab.label())),
+                        .child(
+                            ibtn("back", icons::ARROW_LEFT, 32.0, tk::DIM, "Back · Esc")
+                                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.go_back(window, cx))),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(tk::T13))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(tk::TEXT)
+                                .child(page_tab.label()),
+                        ),
                 );
             } else {
                 let tabs = self.prefs.tabs();
                 let at = tabs.iter().position(|t| *t == page_tab).unwrap_or(0) as f32;
-                let from = self.tab_from.and_then(|f| tabs.iter().position(|t| *t == f)).map(|i| i as f32).unwrap_or(at);
+                let from =
+                    self.tab_from.and_then(|f| tabs.iter().position(|t| *t == f)).map(|i| i as f32).unwrap_or(at);
                 let p = (self.page_at.elapsed().as_secs_f32() * 1000.0 / tk::PUCK_MS).min(1.0);
                 // Quick out, soft landing, no bounce.
                 let e = 1.0 - (1.0 - p).powi(4);
@@ -894,12 +1067,20 @@ impl Notch {
                             .cursor_pointer()
                             .hover(|s| s.bg(tk::WASH))
                             .tooltip(tip(format!("{} · {}", t.label(), i + 1)))
-                            .child(icon(glyph(t)).size(px(tk::ICON_HEADER)).text_color(if on { tk::TEXT } else { tk::FAINT }))
-                            .when(t == Tab::Agents && needs, |d| d.child(self.dot(tk::AMBER, 6.0, true).absolute().top(px(5.0)).right(px(5.0))))
+                            .child(icon(glyph(t)).size(px(tk::ICON_HEADER)).text_color(if on {
+                                tk::TEXT
+                            } else {
+                                tk::FAINT
+                            }))
+                            .when(t == Tab::Agents && needs, |d| {
+                                d.child(self.dot(tk::AMBER, 6.0, true).absolute().top(px(5.0)).right(px(5.0)))
+                            })
                             .when(t == Tab::Alerts && self.unread_notices > 0, |d| {
                                 d.child(self.dot(tk::BLUE, 6.0, false).absolute().top(px(5.0)).right(px(5.0)))
                             })
-                            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.open_page(Page::Tab(t), Some(window), cx))),
+                            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                                this.open_page(Page::Tab(t), Some(window), cx)
+                            })),
                     );
                 }
                 row = row.child(strip);
@@ -925,17 +1106,57 @@ impl Notch {
                 );
             }
             if self.prefs.focus {
-                row = row.child(div().id("focus-on").tooltip(tip("Focus mode is on")).child(icon(icons::MOON).size(px(15.0)).text_color(tk::AMBER)));
+                row = row.child(
+                    div()
+                        .id("focus-on")
+                        .tooltip(tip("Focus mode is on"))
+                        .child(icon(icons::MOON).size(px(15.0)).text_color(tk::AMBER)),
+                );
             }
             if self.machine.pinned {
-                row = row.child(div().id("pinned").tooltip(tip("Kept open · Ctrl+P")).child(icon(icons::PIN).size(px(15.0)).text_color(tk::FAINT)));
+                row = row.child(
+                    div()
+                        .id("pinned")
+                        .tooltip(tip("Kept open · Ctrl+P"))
+                        .child(icon(icons::PIN).size(px(15.0)).text_color(tk::FAINT)),
+                );
             }
+        }
+        if !searching {
+            row = row.child(if self.call.live {
+                let t = self.t();
+                div()
+                    .id("talk")
+                    .h(px(32.0))
+                    .px(px(10.0))
+                    .rounded_full()
+                    .bg(tk::RED.opacity(0.16 + 0.10 * breathe(t)))
+                    .hover(|s| s.bg(tk::RED.opacity(0.3)))
+                    .cursor_pointer()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.0))
+                    .tooltip(tip("End the call"))
+                    .child(icon(icons::WAVEFORM).size(px(tk::ICON_ROW)).text_color(tk::RED))
+                    .child(div().text_size(px(tk::T12)).font_weight(FontWeight::MEDIUM).text_color(tk::RED).child("End"))
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        this.command(ToEngine::Call { on: false, task: None });
+                        cx.notify();
+                    }))
+                    .into_any_element()
+            } else {
+                ibtn("talk", icons::WAVEFORM, 32.0, tk::DIM, "Talk to K22")
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.talk(None, cx)))
+                    .into_any_element()
+            });
         }
         row.child(
             div()
                 .id("command")
                 .when(searching, |d| d.flex_1())
-                .when(!searching, |d| d.w(px(32.0)).justify_center().cursor_pointer().tooltip(tip("Search or type a command")))
+                .when(!searching, |d| {
+                    d.w(px(32.0)).justify_center().cursor_pointer().tooltip(tip("Ask K22, or search"))
+                })
                 .h(px(32.0))
                 .px(px(if searching { 12.0 } else { 0.0 }))
                 .rounded_full()
@@ -953,10 +1174,17 @@ impl Notch {
                         cx.notify();
                     }),
                 )
-                .child(icon(icons::MAGNIFER).size(px(tk::ICON_ROW)).text_color(if searching { tk::FAINT } else { tk::DIM }))
+                .child(icon(icons::MAGNIFER).size(px(tk::ICON_ROW)).text_color(if searching {
+                    tk::FAINT
+                } else {
+                    tk::DIM
+                }))
                 // The field stays (at no width) so focus can move into it.
                 .children(command.map(|c| {
-                    div().when(!searching, |d| d.w(px(0.0)).overflow_hidden()).when(searching, |d| d.flex_1().min_w_0()).child(Input::new(&c))
+                    div()
+                        .when(!searching, |d| d.w(px(0.0)).overflow_hidden())
+                        .when(searching, |d| d.flex_1().min_w_0())
+                        .child(Input::new(&c))
                 })),
         )
         .into_any_element()
@@ -966,7 +1194,7 @@ impl Notch {
     pub(crate) fn go_back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let to = match (&self.page, self.back.take()) {
             (_, Some(p)) => p,
-            (Page::Agent(_) | Page::NewAgent, None) => Page::Tab(Tab::Agents),
+            (Page::Agent(_) | Page::NewAgent | Page::Plan(_), None) => Page::Tab(Tab::Agents),
             _ => Page::Tab(Tab::Home),
         };
         self.open_page(to, Some(window), cx);
@@ -1028,6 +1256,10 @@ impl Notch {
                 Page::Tab(Tab::Timer) => self.page_timer(cx),
                 Page::Tab(Tab::Alerts) => self.page_alerts(cx),
                 Page::Tab(Tab::Dev) => self.page_dev(cx),
+                Page::Call => self.page_call(window, cx),
+                Page::Plan(task) => self.page_plan(task, cx),
+                Page::View(id) => self.page_view(id, cx),
+                Page::Lens(lens) => self.page_lens(lens, cx),
             }
         };
         // A page change cross-fades in, rising a little.
@@ -1043,7 +1275,16 @@ impl Notch {
             .flex()
             .flex_col()
             .child(self.header(window, cx))
-            .child(div().flex_1().min_h_0().px(px(tk::PAD)).opacity(fade).relative().top(px((1.0 - fade) * 3.0)).child(body))
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .px(px(tk::PAD))
+                    .opacity(fade)
+                    .relative()
+                    .top(px((1.0 - fade) * 3.0))
+                    .child(body),
+            )
             .children(undo.map(|u| div().px(px(tk::PAD)).child(u)))
             .child(div().h(px(14.0)))
             .into_any_element()
@@ -1146,7 +1387,8 @@ impl Notch {
         let target = Geo::from_array(self.springs.targets());
         let (tw, th) = (target.w, target.h);
         let open = (g.w / tw).min(g.h / th).clamp(0.0, 1.2);
-        let reveal = if state == State::Hidden { 0.0 } else { ((open - tk::REVEAL_AT) / (1.0 - tk::REVEAL_AT)).clamp(0.0, 1.0) };
+        let reveal =
+            if state == State::Hidden { 0.0 } else { ((open - tk::REVEAL_AT) / (1.0 - tk::REVEAL_AT)).clamp(0.0, 1.0) };
         let content = match state {
             State::Hidden => div().into_any_element(),
             State::Slim => self.render_slim(cx),
@@ -1214,14 +1456,11 @@ impl Notch {
                     )
                 })
                 .when_some(glow, |d, c| {
-                    d.child(
-                        div()
-                            .absolute()
-                            .top_0()
-                            .left_0()
-                            .size_full()
-                            .bg(linear_gradient(180.0, linear_color_stop(c, 0.0), linear_color_stop(c.opacity(0.0), 0.7))),
-                    )
+                    d.child(div().absolute().top_0().left_0().size_full().bg(linear_gradient(
+                        180.0,
+                        linear_color_stop(c, 0.0),
+                        linear_color_stop(c.opacity(0.0), 0.7),
+                    )))
                 })
                 // Glass only: light from above, the pane's inner edge and
                 // the specular line along the top.
@@ -1358,6 +1597,14 @@ impl Notch {
                         Some(SlimItem::Music) => Page::Tab(Tab::Music),
                         Some(SlimItem::Timer) => Page::Tab(Tab::Timer),
                         Some(SlimItem::Note(_)) => Page::Tab(Tab::Notes),
+                        Some(SlimItem::Call) => Page::Call,
+                        Some(SlimItem::Plan { .. }) => this
+                            .snap
+                            .plans
+                            .iter()
+                            .find(|p| p.request_id.is_some())
+                            .map(|p| Page::Plan(p.task))
+                            .unwrap_or(Page::Lens(super::v3::Lens::Needs)),
                         _ => Page::Tab(Tab::Agents),
                     };
                     this.open_page(page, Some(window), cx);
@@ -1374,7 +1621,9 @@ impl Notch {
             window.request_animation_frame();
             let inner = match h.kind {
                 HeroKind::Art => self.art(s, (s * 0.2).max(7.0)),
-                HeroKind::Ring => progress_ring(1.0 - self.timer.progress(), s, 2.0 + 2.0 * e, tk::AMBER, div().into_any_element()),
+                HeroKind::Ring => {
+                    progress_ring(1.0 - self.timer.progress(), s, 2.0 + 2.0 * e, tk::AMBER, div().into_any_element())
+                }
             };
             div().absolute().left(px(x)).top(px(y)).size(px(s)).child(inner).into_any_element()
         });
@@ -1398,6 +1647,7 @@ impl Notch {
             i.message.read(cx).focus_handle(cx).is_focused(window)
                 || i.prompt.read(cx).focus_handle(cx).is_focused(window)
                 || i.note.read(cx).focus_handle(cx).is_focused(window)
+                || i.line.read(cx).focus_handle(cx).is_focused(window)
         });
         let in_command = self.inputs.as_ref().is_some_and(|i| i.command.read(cx).focus_handle(cx).is_focused(window));
         if m.control && key == "p" {
@@ -1415,7 +1665,8 @@ impl Notch {
         }
         // The open menu takes the arrows, Enter and Esc.
         if let Some(menu) = &mut self.menu {
-            let actionable: Vec<usize> = menu.items.iter().enumerate().filter(|(_, i)| i.action.is_some()).map(|(i, _)| i).collect();
+            let actionable: Vec<usize> =
+                menu.items.iter().enumerate().filter(|(_, i)| i.action.is_some()).map(|(i, _)| i).collect();
             let mut run = None;
             match key {
                 "escape" => self.menu = None,
@@ -1440,7 +1691,10 @@ impl Notch {
             cx.notify();
             return;
         }
-        let deep = !tab_of(&self.page).in_bar() || matches!(self.page, Page::Agent(_) | Page::NewAgent);
+        if !typing && !in_command && self.plan_key(key, m.alt, cx) {
+            return;
+        }
+        let deep = !tab_of(&self.page).in_bar() || matches!(self.page, Page::Agent(_) | Page::NewAgent) || self.page.wide();
         match key {
             "escape" => {
                 if self.picking {
@@ -1460,7 +1714,9 @@ impl Notch {
                 }
                 cx.notify();
             }
-            "backspace" if !typing && !in_command && self.machine.state == State::Expanded && deep => self.go_back(window, cx),
+            "backspace" if !typing && !in_command && self.machine.state == State::Expanded && deep => {
+                self.go_back(window, cx)
+            }
             "down" | "up" if !self.query.is_empty() => {
                 let n = self.hits().len().max(1);
                 self.hit = if key == "down" { (self.hit + 1) % n } else { (self.hit + n - 1) % n };

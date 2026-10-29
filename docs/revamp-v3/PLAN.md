@@ -155,7 +155,7 @@ Reference shots: Zeron [home](shots/zeron-home-live.png), [Settings › General]
 
 | Aspect | Zeron | Dove | Gap |
 |---|---|---|---|
-| Typography | Geist / Geist Mono. **rem-scaled** (UI size 12–20 px setting). Roles: page 20/26 medium, row title 13/17 medium, description 12/16, markdown 14/22, code 12.5/18. Weights mostly Medium | Geist / Geist Mono. **Fixed px**. 17 sizes (most often 12, 13, 11.5, 12.5, 11). No line-height roles. No size setting | High |
+| Typography | Inter / JetBrains Mono. **rem-scaled** (UI size 12–20 px setting). Roles: page 20/26 medium, row title 13/17 medium, description 12/16, markdown 14/22, code 12.5/18. Weights mostly Medium | Inter / JetBrains Mono. **Fixed px**. 17 sizes (most often 12, 13, 11.5, 12.5, 11). No line-height roles. No size setting | High |
 | Spacing | `SPACE_XS/SM/MD/LG` 4/8/12/16. Settings: section gap 32, row padding 16×12, min height 60 | Magic numbers (8, 12, 6, 10, 13, 14, 4, …) | High |
 | Colour (dark) | bg #060606, surface #0d0d0d, raised #343438. Dialog and overlay mixes. `element_active` = accent α0.18. `accent_wash`. Contrast-checked muted text. Accent violet #8b7cf6 | Same base values (ported from Zeron's fallbacks). Missing dialog and overlay mixes, `element_active`, `accent_wash` and contrast enforcement. Default accent sky | Medium |
 | Colour (light) | #ffffff / #f3f3f5, text #303035, accent #5b43e8 | Light exists; parity unverified | Medium |

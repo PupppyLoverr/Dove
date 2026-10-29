@@ -202,7 +202,7 @@
         '.r{position:fixed;width:28px;height:28px;margin:-14px 0 0 -14px;border-radius:50%;border:2px solid #7c5cff;opacity:0;pointer-events:none}' +
         '.r.on{animation:p .45s ease-out}' +
         '@keyframes p{from{opacity:.9;transform:scale(.3)}to{opacity:0;transform:scale(1.6)}}' +
-        '</style><div class="c"><svg width="22" height="22" viewBox="0 0 24 24"><path d="M4 2l16 9.5-7 1.6L9.6 20z" fill="#7c5cff" stroke="#fff" stroke-width="1.6" stroke-linejoin="round"/></svg><div class="t">Agent</div></div><div class="r"></div>';
+        '</style><div class="c"><svg width="22" height="22" viewBox="0 0 24 24"><path d="M4.5 3.75 19.5 10.125 13.125 12.375 10.35 19.125Z" fill="#7c5cff" stroke="#fff" stroke-width="1.75" stroke-linejoin="round"/></svg><div class="t">Agent</div></div><div class="r"></div>';
       (document.documentElement || document.body).appendChild(host);
       cursorRoot = sh;
     }

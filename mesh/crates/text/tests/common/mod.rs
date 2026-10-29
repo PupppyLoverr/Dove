@@ -1,4 +1,4 @@
-//! Shared fixture: the app's Geist faces (read from crates/ui) plus a deterministic fallback.
+//! Shared fixture: the app's Inter faces (read from crates/ui) plus a deterministic fallback.
 
 #![allow(dead_code)]
 
@@ -71,11 +71,11 @@ impl Fixture {
 
     fn build(with_fallback: bool) -> Self {
         let mut book = FontBook::new();
-        let geist = book.add_face(font_bytes("Geist.ttf")).unwrap();
-        let geist_bold = book.add_face(font_bytes("Geist-Bold.ttf")).unwrap();
-        let mono = book.add_face(font_bytes("GeistMono.ttf")).unwrap();
-        let sans = book.add_style(geist, 15.0, StyleOptions::default());
-        let bold = book.add_style(geist_bold, 15.0, StyleOptions::default());
+        let sans = book.add_face(font_bytes("Inter-Regular.ttf")).unwrap();
+        let sans_bold = book.add_face(font_bytes("Inter-Bold.ttf")).unwrap();
+        let mono = book.add_face(font_bytes("JetBrainsMono-Regular.ttf")).unwrap();
+        let sans = book.add_style(sans, 15.0, StyleOptions::default());
+        let bold = book.add_style(sans_bold, 15.0, StyleOptions::default());
         let mono = book.add_style(
             mono,
             13.0,

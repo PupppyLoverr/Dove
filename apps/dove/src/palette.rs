@@ -64,7 +64,58 @@ impl PaletteItem {
 
 pub enum PaletteEvent {
     Pick(PaletteItem),
+    /// Start a new thread with this text in the composer (Tab).
+    Compose(String),
     Close,
+}
+
+/// Which kind of result the palette lists. ← and → move between them
+/// while the query is empty; the tabs take a click.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Scope {
+    All,
+    Threads,
+    Projects,
+    Files,
+    Actions,
+    Settings,
+}
+
+impl Scope {
+    pub const ALL: [Scope; 6] = [Self::All, Self::Threads, Self::Projects, Self::Files, Self::Actions, Self::Settings];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::All => "All",
+            Self::Threads => "Threads",
+            Self::Projects => "Projects",
+            Self::Files => "Files",
+            Self::Actions => "Actions",
+            Self::Settings => "Settings",
+        }
+    }
+
+    fn admits(self, item: &PaletteItem) -> bool {
+        match self {
+            Self::All => !matches!(item, PaletteItem::File(_)),
+            Self::Threads => matches!(item, PaletteItem::Thread(..)),
+            Self::Projects => matches!(item, PaletteItem::Project(..)),
+            Self::Files => matches!(item, PaletteItem::File(_)),
+            Self::Actions => matches!(item, PaletteItem::Action(..) | PaletteItem::Agent(_) | PaletteItem::Taught(..)),
+            Self::Settings => matches!(item, PaletteItem::Setting(..)),
+        }
+    }
+}
+
+/// The heading a row sits under in the unfiltered "All" list.
+fn section_of(item: &PaletteItem) -> &'static str {
+    match item {
+        PaletteItem::Thread(..) => "Recent",
+        PaletteItem::Project(..) => "Projects",
+        PaletteItem::File(_) => "Files",
+        PaletteItem::Setting(..) => "Settings",
+        _ => "Actions",
+    }
 }
 
 /// Score `text` against every word of `query`; `None` when a word is missing.
@@ -88,6 +139,7 @@ pub struct Palette {
     files: Arc<Vec<String>>,
     input: Entity<InputState>,
     query: String,
+    scope: Scope,
     shown: Vec<PaletteItem>,
     highlight: usize,
     scroll: ScrollHandle,
@@ -139,6 +191,7 @@ impl Palette {
             files: Arc::default(),
             input,
             query: String::new(),
+            scope: Scope::All,
             shown: Vec::new(),
             highlight: 0,
             scroll: ScrollHandle::new(),
@@ -152,21 +205,41 @@ impl Palette {
     fn filter(&mut self) {
         let q = self.query.trim();
         self.highlight = 0;
-        if let Some(files_q) = q.strip_prefix('@') {
+        let files_q = q.strip_prefix('@').or((self.scope == Scope::Files).then_some(q));
+        if let Some(files_q) = files_q {
             let mut scored: Vec<(i32, &String)> =
                 self.files.iter().filter_map(|f| score(f, files_q).map(|s| (s, f))).collect();
             scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.len().cmp(&b.1.len())));
             self.shown = scored.into_iter().take(MAX_ROWS).map(|(_, f)| PaletteItem::File(f.clone())).collect();
             return;
         }
+        let scope = self.scope;
         if q.is_empty() {
-            // Settings are found by searching, not listed up front.
-            self.shown =
-                self.items.iter().filter(|i| !matches!(i, PaletteItem::Setting(..))).take(MAX_ROWS).cloned().collect();
+            // In "All", settings are found by searching, not listed up
+            // front; recent threads lead, then the actions.
+            let mut shown: Vec<PaletteItem> = self
+                .items
+                .iter()
+                .filter(|i| scope.admits(i) && (scope == Scope::Settings || !matches!(i, PaletteItem::Setting(..))))
+                .cloned()
+                .collect();
+            if scope == Scope::All {
+                shown.sort_by_key(|i| match section_of(i) {
+                    "Recent" => 0,
+                    "Actions" => 1,
+                    _ => 2,
+                });
+            }
+            shown.truncate(MAX_ROWS);
+            self.shown = shown;
             return;
         }
-        let mut scored: Vec<(i32, &PaletteItem)> =
-            self.items.iter().filter_map(|i| score(&i.label(), q).map(|s| (s, i))).collect();
+        let mut scored: Vec<(i32, &PaletteItem)> = self
+            .items
+            .iter()
+            .filter(|i| scope.admits(i))
+            .filter_map(|i| score(&i.label(), q).map(|s| (s, i)))
+            .collect();
         scored.sort_by_key(|e| std::cmp::Reverse(e.0));
         self.shown = scored.into_iter().take(MAX_ROWS).map(|(_, i)| i.clone()).collect();
     }
@@ -178,9 +251,25 @@ impl Palette {
         }
     }
 
+    fn set_scope(&mut self, scope: Scope, cx: &mut Context<Self>) {
+        self.scope = scope;
+        self.filter();
+        self.scroll.scroll_to_item(0);
+        cx.notify();
+    }
+
     fn on_key(&mut self, ev: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
         let n = self.shown.len();
+        let empty = self.query.is_empty();
+        let at = Scope::ALL.iter().position(|s| *s == self.scope).unwrap_or(0);
         match ev.keystroke.key.as_str() {
+            "left" if empty => {
+                self.set_scope(Scope::ALL[(at + Scope::ALL.len() - 1) % Scope::ALL.len()], cx);
+            }
+            "right" if empty => {
+                self.set_scope(Scope::ALL[(at + 1) % Scope::ALL.len()], cx);
+            }
+            "tab" => cx.emit(PaletteEvent::Compose(self.query.trim().to_string())),
             "down" if n > 0 => {
                 self.highlight = (self.highlight + 1) % n;
                 self.scroll.scroll_to_item(self.highlight);
@@ -223,23 +312,60 @@ impl Render for Palette {
         crate::perf_trace::count_render("Palette");
         let t = Theme::of(cx).clone();
         let viewport = window.viewport_size();
-        let width = 600.0_f32.min(f32::from(viewport.width) - 32.0).max(280.0);
-        let list_max = (f32::from(viewport.height) - 220.0).clamp(120.0, 380.0);
+        let width = 680.0_f32.min(f32::from(viewport.width) - 32.0).max(280.0);
+        let list_max = (f32::from(viewport.height) - 260.0).clamp(120.0, 420.0);
         let hover = t.wash(0.07);
         let active = popover::row_active_bg(&t);
         let header = div()
-            .min_h(px(48.0))
+            .min_h(px(52.0))
             .flex_none()
-            .px(px(16.0))
+            .px(px(18.0))
             .py(px(8.0))
             .flex()
             .items_center()
             .gap(px(10.0))
-            .border_b_1()
-            .border_color(t.border)
             .child(icon(icons::PALETTE_SEARCH).size(px(16.0)).flex_none().text_color(t.text_muted))
             .child(div().flex_1().min_w_0().text_size(ty::MD).child(Input::new(&self.input)))
-            .child(kit::kbd("Esc", &t));
+            .child(
+                div()
+                    .id("palette-close")
+                    .size(px(24.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(crate::design::radius::ROW))
+                    .cursor_pointer()
+                    .hover(move |s| s.bg(hover))
+                    .child(icon(icons::CLOSE).size(px(14.0)).text_color(t.text_muted))
+                    .on_click(cx.listener(|_, _, _, cx| cx.emit(PaletteEvent::Close))),
+            );
+        let tabs = div()
+            .flex_none()
+            .px(px(12.0))
+            .pb(px(8.0))
+            .flex()
+            .items_center()
+            .gap(px(2.0))
+            .border_b_1()
+            .border_color(t.border)
+            .children(Scope::ALL.into_iter().map(|scope| {
+                let on = scope == self.scope;
+                div()
+                    .id(SharedString::from(format!("pal-tab-{}", scope.label())))
+                    .role(gpui::Role::Tab)
+                    .aria_selected(on)
+                    .h(px(26.0))
+                    .px(px(10.0))
+                    .flex()
+                    .items_center()
+                    .rounded(px(crate::design::radius::ROW))
+                    .text_size(ty::SMALL)
+                    .cursor_pointer()
+                    .when(on, |d| d.bg(active).text_color(t.text).font_weight(gpui::FontWeight::MEDIUM))
+                    .when(!on, |d| d.text_color(t.text_muted).hover(move |s| s.bg(hover)))
+                    .child(scope.label())
+                    .on_click(cx.listener(move |this, _, _, cx| this.set_scope(scope, cx)))
+            }));
         let list = div()
             .id("palette-list")
             .max_h(px(list_max))
@@ -258,10 +384,25 @@ impl Render for Palette {
                     },
                 ))
             })
-            .children(self.shown.iter().enumerate().map(|(i, item)| {
+            .children(self.shown.iter().enumerate().flat_map(|(i, item)| {
                 let selected = i == self.highlight;
                 let item2 = item.clone();
-                div()
+                // Headings only in the unfiltered "All" list.
+                let heading = (self.scope == Scope::All && self.query.is_empty())
+                    .then(|| section_of(item))
+                    .filter(|h| i == 0 || section_of(&self.shown[i - 1]) != *h)
+                    .map(|h| {
+                        div()
+                            .px(px(10.0))
+                            .pt(px(if i == 0 { 4.0 } else { 10.0 }))
+                            .pb(px(4.0))
+                            .text_size(ty::CAPTION)
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .text_color(t.text_faint)
+                            .child(h)
+                            .into_any_element()
+                    });
+                let row = div()
                     .id(("pal-row", i))
                     .role(gpui::Role::ListBoxOption)
                     .aria_selected(selected)
@@ -278,8 +419,17 @@ impl Render for Palette {
                     .when(!selected, |d| d.hover(move |s| s.bg(hover)))
                     .child(div().w(px(16.0)).flex_none().flex().justify_center().child(Self::glyph(item, &t)))
                     .child(div().flex_1().min_w_0().truncate().text_size(ty::BODY).child(item.label()))
-                    .child(div().flex_none().text_size(ty::CAPTION).text_color(t.text_faint).child(item.kind()))
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_size(ty::CAPTION)
+                            .text_color(t.text_faint)
+                            .when(selected, |d| d.child(icon(icons::RETURN).size(px(13.0)).text_color(t.text_muted)))
+                            .when(!selected, |d| d.child(item.kind())),
+                    )
                     .on_click(cx.listener(move |_, _, _, cx| cx.emit(PaletteEvent::Pick(item2.clone()))))
+                    .into_any_element();
+                heading.into_iter().chain([row])
             }));
         let footer = div()
             .flex_none()
@@ -291,9 +441,12 @@ impl Render for Palette {
             .flex_wrap()
             .items_center()
             .gap(px(12.0))
+            .child(popover::key_hint(&t, "Esc", "Close"))
+            .child(popover::key_hint(&t, "← →", "Change type"))
             .child(popover::key_hint(&t, "↑ ↓", "Navigate"))
             .child(popover::key_hint(&t, "↵", "Open"))
-            .child(popover::key_hint(&t, "Esc", "Close"));
+            .child(div().flex_1())
+            .child(popover::key_hint(&t, "Tab", "New thread with this"));
         let card = popover::palette_card(&t, width)
             .id("palette")
             .role(gpui::Role::Dialog)
@@ -301,6 +454,7 @@ impl Render for Palette {
             .track_focus(&self.focus)
             .capture_key_down(cx.listener(Self::on_key))
             .child(header)
+            .child(tabs)
             .child(list)
             .child(footer);
         let weak = cx.weak_entity();
@@ -320,6 +474,15 @@ impl Render for Palette {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scopes_admit_their_own_kind() {
+        let thread = PaletteItem::Thread(TaskId::new(), "Fix it".into(), TaskStatus::Idle);
+        assert!(Scope::All.admits(&thread) && Scope::Threads.admits(&thread));
+        assert!(!Scope::Settings.admits(&thread) && !Scope::Files.admits(&thread));
+        assert!(!Scope::All.admits(&PaletteItem::File("a.rs".into())));
+        assert_eq!(section_of(&PaletteItem::Action("New", "x", "new")), "Actions");
+    }
 
     #[test]
     fn scoring_prefers_early_word_matches() {

@@ -216,14 +216,14 @@ final class SidebarViewController: UIViewController, UISearchResultsUpdating {
         list.navigationItem.searchController = search
         list.navigationItem.hidesSearchBarWhenScrolling = false
         list.navigationItem.preferredSearchBarPlacement = .stacked
-        let settings = UIBarButtonItem(image: UIImage(systemName: "gearshape"), primaryAction: UIAction { [weak self] _ in
+        let settings = UIBarButtonItem(image: K22Icon.image("settings"), primaryAction: UIAction { [weak self] _ in
             self?.router?.showSettings()
         })
         settings.accessibilityLabel = "Settings"
         settings.accessibilityIdentifier = "sidebar-settings"
-        let options = UIBarButtonItem(image: UIImage(systemName: "ellipsis"), menu: list.optionsMenu())
+        let options = UIBarButtonItem(image: K22Icon.image("more-horizontal"), menu: list.optionsMenu())
         options.accessibilityLabel = "Options"
-        let compose = UIBarButtonItem(image: UIImage(systemName: "plus"), primaryAction: UIAction { [weak self] _ in
+        let compose = UIBarButtonItem(image: K22Icon.image("plus"), primaryAction: UIAction { [weak self] _ in
             self?.router?.presentNewSession(prompt: nil)
         })
         compose.style = .prominent

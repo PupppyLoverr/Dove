@@ -16,37 +16,103 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use dove_core::proto::{HarnessKind, PermissionDecision, ProjectId, TaskId};
-use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
+use std::sync::Mutex;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
+use super::view::{CallInfo, NotchView, PlanVerdict, ShowWhat};
 use crate::notch::Snapshot;
 
 /// Island → engine.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "t", rename_all = "snake_case")]
 pub enum ToEngine {
-    Hello { token: String },
-    Send { task: TaskId, text: String },
-    Decide { task: TaskId, request_id: String, decision: PermissionDecision },
-    Stop { task: TaskId },
-    Start { id: u64, agent: HarnessKind, project: ProjectId, prompt: String, worktree: bool },
+    Hello {
+        token: String,
+    },
+    Send {
+        task: TaskId,
+        text: String,
+    },
+    Decide {
+        task: TaskId,
+        request_id: String,
+        decision: PermissionDecision,
+    },
+    Stop {
+        task: TaskId,
+    },
+    Start {
+        id: u64,
+        agent: HarnessKind,
+        project: ProjectId,
+        prompt: String,
+        worktree: bool,
+    },
     /// Shows Dove's window, on `task` if given (opening it if closed).
-    Open { task: Option<TaskId> },
+    Open {
+        task: Option<TaskId>,
+    },
     /// Opens Flock in Dove's window.
     OpenFlock,
     /// Opens Settings › Notifications (where the notch's settings are).
     OpenSettings,
     /// Answers a question request: per question, the chosen labels or text.
-    Answer { task: TaskId, request_id: String, answers: Vec<Vec<String>> },
+    Answer {
+        task: TaskId,
+        request_id: String,
+        answers: Vec<Vec<String>>,
+    },
     /// The island has this agent open: stream its text as it arrives.
-    Watch { task: Option<TaskId> },
+    Watch {
+        task: Option<TaskId>,
+    },
     /// Merges an agent's pull request.
-    Merge { task: TaskId, number: u64 },
+    Merge {
+        task: TaskId,
+        number: u64,
+    },
     /// Runs an automation now.
-    RunAutomation { id: String },
+    RunAutomation {
+        id: String,
+    },
     /// Push-to-talk: the mic pressed (`on`) or released.
-    Dictate { on: bool },
+    Dictate {
+        on: bool,
+    },
+    /// Voice Mode: start a call (about `task`, else with K22) or end it.
+    Call {
+        on: bool,
+        #[serde(default)]
+        task: Option<TaskId>,
+    },
+    CallMute {
+        on: bool,
+    },
+    /// Typed into the call, as if said.
+    CallSay {
+        text: String,
+    },
+    /// Talk to another thread (`None`: K22).
+    CallTarget {
+        task: Option<TaskId>,
+    },
+    /// Ask K22, typed in the notch; it answers in a view (`ToIsland::View`).
+    Ask {
+        id: u64,
+        text: String,
+    },
+    /// Answers an agent's plan.
+    Plan {
+        task: TaskId,
+        request_id: Option<String>,
+        verdict: PlanVerdict,
+    },
+    /// K22's agent and model (Settings › Voice, or the call page).
+    SetVoiceAgent {
+        agent: Option<HarnessKind>,
+        model: Option<String>,
+    },
     /// Quits the engine (and the UI) for good.
     QuitAll,
 }
@@ -55,13 +121,42 @@ pub enum ToEngine {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "t", rename_all = "snake_case")]
 pub enum ToIsland {
-    Snapshot { snap: Snapshot },
-    Started { id: u64, result: Result<TaskId, String> },
+    Snapshot {
+        snap: Snapshot,
+    },
+    Started {
+        id: u64,
+        result: Result<TaskId, String>,
+    },
     /// Push-to-talk: the words so far (`live`), the final words, or why it
     /// couldn't listen.
-    Dictation { text: String, done: bool, error: Option<String> },
+    Dictation {
+        text: String,
+        done: bool,
+        error: Option<String>,
+    },
     /// A merge finished.
-    Merged { task: TaskId, result: Result<(), String> },
+    Merged {
+        task: TaskId,
+        result: Result<(), String>,
+    },
+    /// The Voice Mode call, whenever it changes (`live: false` once over).
+    Call {
+        call: CallInfo,
+    },
+    /// A view to show (a newer one with the same id replaces it).
+    View {
+        view: NotchView,
+    },
+    /// An `Ask`: the K22 thread it went to, or why it couldn't.
+    Asked {
+        id: u64,
+        result: Result<TaskId, String>,
+    },
+    /// Open something (voice: "show me the plan").
+    Show {
+        what: ShowWhat,
+    },
     /// The engine is going away (quit, or nothing left to run).
     Bye,
 }

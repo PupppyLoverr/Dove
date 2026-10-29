@@ -5,18 +5,18 @@ import UIKit
 /// measurement and rendering share one source of truth.
 enum Fonts {
     static let files: [(FaceRole, String)] = [
-        (.sans, "Geist"),
-        (.sansMedium, "Geist-Medium"),
-        (.sansSemibold, "Geist-SemiBold"),
-        (.sansBold, "Geist-Bold"),
-        (.sansItalic, "Geist-Italic"),
-        (.sansMediumItalic, "Geist-MediumItalic"),
-        (.sansSemiboldItalic, "Geist-SemiBoldItalic"),
-        (.sansBoldItalic, "Geist-BoldItalic"),
-        (.mono, "GeistMono"),
-        (.monoMedium, "GeistMono-Medium"),
-        (.monoSemibold, "GeistMono-SemiBold"),
-        (.monoItalic, "GeistMono-Italic"),
+        (.sans, "Inter-Regular"),
+        (.sansMedium, "Inter-Medium"),
+        (.sansSemibold, "Inter-SemiBold"),
+        (.sansBold, "Inter-Bold"),
+        (.sansItalic, "Inter-Italic"),
+        (.sansMediumItalic, "Inter-MediumItalic"),
+        (.sansSemiboldItalic, "Inter-SemiBoldItalic"),
+        (.sansBoldItalic, "Inter-BoldItalic"),
+        (.mono, "JetBrainsMono-Regular"),
+        (.monoMedium, "JetBrainsMono-Medium"),
+        (.monoSemibold, "JetBrainsMono-SemiBold"),
+        (.monoItalic, "JetBrainsMono-Italic"),
     ]
 
     private static let registry: (faces: [FaceData], graphics: [FaceRole: CGFont]) = {

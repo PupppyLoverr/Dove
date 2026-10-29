@@ -26,6 +26,7 @@ Browser: Dove has an in-app browser the user watches in the side panel. Start wi
 (localhost dev servers work), then browser_snapshot for an outline whose elements carry refs like \
 [ref=e12]; pass refs to browser_click, browser_type, browser_hover and friends. Actions return a fresh \
 snapshot; browser_screenshot shows you the pixels. Dove's chat also renders ```mermaid diagrams and $$ LaTeX $$ math.\n\
+Notch: notch_view shows a live view (status, plans, next steps, with buttons) in the user's notch at the top of their screen; use it when they ask from the notch or by voice.\n\
 Visuals: call show_visual with a Luau script that returns a ui.* tree. ui.shader runs Shadertoy-style GLSL \
 (void mainImage) on the GPU, including buffer passes. The visual appears inline in the chat; don't restate it.\n\
 Skills: dove_skills lists the skills the user turned on in Dove (office documents plus any they added in \
@@ -266,6 +267,7 @@ pub fn run() {
                     if app {
                         list.extend(crate::team_tools::tools());
                         list.extend(crate::panel_tools::tools());
+                        list.push(crate::island::view::tool());
                     }
                 }
                 Ok(json!({"tools": tools}))

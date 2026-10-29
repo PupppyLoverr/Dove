@@ -283,9 +283,9 @@ fn check(p: &Prepared, w: f32, ctx: &str) {
 #[test]
 fn random_paragraphs_hold_invariants() {
     let mut fx = Fixture::new();
-    let geist = FaceId(0);
+    let sans = FaceId(0);
     let spaced = fx.style(
-        geist,
+        sans,
         14.0,
         StyleOptions {
             letter_spacing: 1.5,

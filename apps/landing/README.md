@@ -27,4 +27,4 @@ npx wrangler pages deploy apps/landing --project-name dove
 
 ## Credits
 
-Geist and Geist Mono (SIL OFL 1.1), Instrument Serif (SIL OFL 1.1), Solar icons (CC BY 4.0), agent logos are trademarks of their owners and are used to show compatibility.
+Inter 4.1 and JetBrains Mono 2.304 (SIL OFL 1.1), Instrument Serif (SIL OFL 1.1), K22 icons, agent logos are trademarks of their owners and are used to show compatibility.

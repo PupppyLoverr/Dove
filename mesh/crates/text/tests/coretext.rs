@@ -140,9 +140,9 @@ impl Harness {
         let mut fonts = Vec::new();
         let mut styles = Vec::new();
         for (file, label, ligatures) in [
-            ("Geist.ttf", "sans", true),
-            ("Geist-SemiBold.ttf", "semibold", true),
-            ("GeistMono.ttf", "mono", false),
+            ("Inter-Regular.ttf", "sans", true),
+            ("Inter-SemiBold.ttf", "semibold", true),
+            ("JetBrainsMono-Regular.ttf", "mono", false),
         ] {
             let bytes = font_bytes(file);
             let cg =
@@ -689,7 +689,7 @@ fn rust_lines(h: &mut Harness, si: usize, text: &str, w: f32) -> Vec<String> {
 /// `LINE_FIT_EPSILON`.
 #[test]
 fn coretext_fit_slack() {
-    let f = font_at("Geist.ttf", 14.0);
+    let f = font_at("Inter-Regular.ttf", 14.0);
     for first in [
         "xx long ",
         "the quick brown fox ",

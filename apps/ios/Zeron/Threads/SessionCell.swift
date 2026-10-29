@@ -205,7 +205,7 @@ final class FolderCell: UICollectionViewListCell {
 
     func configure(_ vm: FolderRowVM) {
         var c = UIListContentConfiguration.cell()
-        c.image = UIImage(systemName: vm.symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: 16, weight: .regular))
+        c.image = K22Icon.resolve(systemName: vm.symbol, pointSize: 16, weight: .regular)
         c.imageProperties.tintColor = Palette.secondary
         c.imageToTextPadding = 18
         let text = NSMutableAttributedString(string: vm.name, attributes: [.font: Fonts.ui(.sansMedium, TypeScale.size(17)), .foregroundColor: Palette.secondary])
@@ -243,7 +243,7 @@ final class SectionHeaderCell: UICollectionViewListCell {
     static var height: CGFloat { (40 * TypeScale.factor).rounded() }
     private let title = FadingLabel()
     private let count = UILabel()
-    private let chevron = UIImageView(image: UIImage(systemName: "chevron.down", withConfiguration: UIImage.SymbolConfiguration(pointSize: 11, weight: .semibold)))
+    private let chevron = UIImageView(image: K22Icon.image("alt-arrow-down", pointSize: 11))
     private let live = StatusGlyph()
     private var shownCollapsed: Bool?
 

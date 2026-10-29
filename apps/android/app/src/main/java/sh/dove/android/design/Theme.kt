@@ -97,22 +97,26 @@ private val DoveDark = darkColorScheme(
     scrim = Color.Black,
 )
 
-/** Geist, from the same asset bytes the transcript measures. */
-val Geist: FontFamily by lazy {
+/** Inter, from the same asset bytes the transcript measures. */
+val KSans: FontFamily by lazy {
     FontFamily(
-    Font("Geist.ttf", LocalAssets.manager, FontWeight.Normal),
-    Font("Geist-Medium.ttf", LocalAssets.manager, FontWeight.Medium),
-    Font("Geist-SemiBold.ttf", LocalAssets.manager, FontWeight.SemiBold),
-    Font("Geist-Bold.ttf", LocalAssets.manager, FontWeight.Bold),
-    Font("Geist-Italic.ttf", LocalAssets.manager, FontWeight.Normal, FontStyle.Italic),
+        Font("Inter-Regular.ttf", LocalAssets.manager, FontWeight.Normal),
+        Font("Inter-Medium.ttf", LocalAssets.manager, FontWeight.Medium),
+        Font("Inter-SemiBold.ttf", LocalAssets.manager, FontWeight.SemiBold),
+        Font("Inter-Bold.ttf", LocalAssets.manager, FontWeight.Bold),
+        Font("Inter-Italic.ttf", LocalAssets.manager, FontWeight.Normal, FontStyle.Italic),
+        Font("Inter-MediumItalic.ttf", LocalAssets.manager, FontWeight.Medium, FontStyle.Italic),
+        Font("Inter-SemiBoldItalic.ttf", LocalAssets.manager, FontWeight.SemiBold, FontStyle.Italic),
+        Font("Inter-BoldItalic.ttf", LocalAssets.manager, FontWeight.Bold, FontStyle.Italic),
     )
 }
 
-val GeistMono: FontFamily by lazy {
+val KMono: FontFamily by lazy {
     FontFamily(
-    Font("GeistMono.ttf", LocalAssets.manager, FontWeight.Normal),
-    Font("GeistMono-Medium.ttf", LocalAssets.manager, FontWeight.Medium),
-    Font("GeistMono-SemiBold.ttf", LocalAssets.manager, FontWeight.SemiBold),
+        Font("JetBrainsMono-Regular.ttf", LocalAssets.manager, FontWeight.Normal),
+        Font("JetBrainsMono-Medium.ttf", LocalAssets.manager, FontWeight.Medium),
+        Font("JetBrainsMono-SemiBold.ttf", LocalAssets.manager, FontWeight.SemiBold),
+        Font("JetBrainsMono-Italic.ttf", LocalAssets.manager, FontWeight.Normal, FontStyle.Italic),
     )
 }
 
@@ -121,12 +125,12 @@ object LocalAssets {
     lateinit var manager: android.content.res.AssetManager
 }
 
-private fun TextStyle.geist() = copy(fontFamily = Geist)
+private fun TextStyle.ksans() = copy(fontFamily = KSans)
 
 private fun doveTypography(): Typography {
     val base = Typography()
     fun TextStyle.w(weight: FontWeight, tracking: Float? = null) =
-        geist().copy(fontWeight = weight, letterSpacing = tracking?.sp ?: letterSpacing)
+        ksans().copy(fontWeight = weight, letterSpacing = tracking?.sp ?: letterSpacing)
     return Typography(
         displayLarge = base.displayLarge.w(FontWeight.SemiBold, -1.5f),
         displayMedium = base.displayMedium.w(FontWeight.SemiBold, -1.2f),
@@ -137,9 +141,9 @@ private fun doveTypography(): Typography {
         titleLarge = base.titleLarge.w(FontWeight.SemiBold, -0.2f),
         titleMedium = base.titleMedium.w(FontWeight.Medium),
         titleSmall = base.titleSmall.w(FontWeight.Medium),
-        bodyLarge = base.bodyLarge.geist().copy(fontSize = 16.5.sp, lineHeight = 24.sp, letterSpacing = 0.sp),
-        bodyMedium = base.bodyMedium.geist().copy(letterSpacing = 0.sp),
-        bodySmall = base.bodySmall.geist().copy(letterSpacing = 0.sp),
+        bodyLarge = base.bodyLarge.ksans().copy(fontSize = 16.5.sp, lineHeight = 24.sp, letterSpacing = 0.sp),
+        bodyMedium = base.bodyMedium.ksans().copy(letterSpacing = 0.sp),
+        bodySmall = base.bodySmall.ksans().copy(letterSpacing = 0.sp),
         labelLarge = base.labelLarge.w(FontWeight.Medium, 0f),
         labelMedium = base.labelMedium.w(FontWeight.Medium, 0f),
         labelSmall = base.labelSmall.w(FontWeight.Medium, 0f),

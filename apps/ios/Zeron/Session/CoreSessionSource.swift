@@ -230,8 +230,8 @@ final class CoreSessionSource: SessionSource {
         case "pr":
             guard let url = row.pullRequest.flatMap({ URL(string: $0.url) }) else { return nil }
             return UIMenu(title: row.pullRequest?.title ?? "", children: [
-                UIAction(title: "Open Pull Request", image: UIImage(systemName: "safari")) { _ in UIApplication.shared.open(url) },
-                UIAction(title: "Copy Link", image: UIImage(systemName: "link")) { _ in UIPasteboard.general.url = url },
+                UIAction(title: "Open Pull Request", image: K22Icon.image("compass")) { _ in UIApplication.shared.open(url) },
+                UIAction(title: "Copy Link", image: K22Icon.image("link")) { _ in UIPasteboard.general.url = url },
             ])
         default:
             return nil

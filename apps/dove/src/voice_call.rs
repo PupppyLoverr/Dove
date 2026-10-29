@@ -88,6 +88,9 @@ pub struct VoiceCall {
     pub current: Option<TaskId>,
     /// The thread whose reply is being read aloud, and its subscription.
     reading: Option<(TaskId, Subscription)>,
+    /// A reply read from the engine instead of a view (a call with no
+    /// window: the island host feeds it).
+    external: Option<TaskId>,
     chunker: Chunker,
     reply_started: bool,
     call_id: String,
@@ -338,6 +341,7 @@ impl VoiceCall {
             startup_ms: None,
             current,
             reading: None,
+            external: None,
             chunker: Chunker::new(),
             reply_started: false,
             call_id,
@@ -543,34 +547,24 @@ impl VoiceCall {
         self.stop_reading(cx);
         view.update(cx, |v, _| v.set_voice_tap(true));
         let sub = cx.subscribe(view, move |this, _, ev: &TaskViewEvent, cx| match ev {
-            TaskViewEvent::VoiceText(t) => {
-                if !this.reply_started {
-                    this.reply_started = true;
-                    this.call.reply_text_started();
-                }
-                for clause in this.chunker.push(t) {
-                    // The strip shows the reply as it is read.
-                    this.caption = Some(clause.clone().into());
-                    this.push_line(false, &clause, true);
-                    this.call.say(clause);
-                    cx.notify();
-                }
-            }
-            TaskViewEvent::VoiceTurnEnded { failed } => {
-                for clause in this.chunker.finish() {
-                    this.caption = Some(clause.clone().into());
-                    this.push_line(false, &clause, true);
-                    this.call.say(clause);
-                    cx.notify();
-                }
-                if *failed {
-                    this.call.say("That turn ended with an error.");
-                }
-                this.stop_reading(cx);
-            }
+            TaskViewEvent::VoiceText(t) => this.reply_delta(t, cx),
+            TaskViewEvent::VoiceTurnEnded { failed } => this.reply_done(*failed, cx),
             _ => {}
         });
         self.reading = Some((id, sub));
+        self.begin_reply(id);
+    }
+
+    /// Read `id`'s next reply aloud from text the caller feeds in
+    /// ([`Self::reply_delta`], [`Self::reply_done`]): the island host does,
+    /// from the engine, when no window holds the thread.
+    pub fn read_external(&mut self, id: TaskId, cx: &mut Context<Self>) {
+        self.stop_reading(cx);
+        self.external = Some(id);
+        self.begin_reply(id);
+    }
+
+    fn begin_reply(&mut self, id: TaskId) {
         self.conductor.reading_reply(&id.to_string());
         self.reply_started = false;
         self.chunker = Chunker::new();
@@ -579,8 +573,38 @@ impl VoiceCall {
         }
     }
 
+    /// More of the reply being read: spoken clause by clause.
+    pub fn reply_delta(&mut self, t: &str, cx: &mut Context<Self>) {
+        if !self.reply_started {
+            self.reply_started = true;
+            self.call.reply_text_started();
+        }
+        for clause in self.chunker.push(t) {
+            // The strip shows the reply as it is read.
+            self.caption = Some(clause.clone().into());
+            self.push_line(false, &clause, true);
+            self.call.say(clause);
+            cx.notify();
+        }
+    }
+
+    /// The reply's turn ended: say the rest.
+    pub fn reply_done(&mut self, failed: bool, cx: &mut Context<Self>) {
+        for clause in self.chunker.finish() {
+            self.caption = Some(clause.clone().into());
+            self.push_line(false, &clause, true);
+            self.call.say(clause);
+            cx.notify();
+        }
+        if failed {
+            self.call.say("That turn ended with an error.");
+        }
+        self.stop_reading(cx);
+    }
+
     fn stop_reading(&mut self, _cx: &mut Context<Self>) {
         self.reading = None;
+        self.external = None;
         self.reply_line = false;
         self.chunker = Chunker::new();
         self.reply_started = false;
@@ -589,6 +613,38 @@ impl VoiceCall {
     /// The thread being read aloud, so the shell can drop its tap.
     pub fn reading(&self) -> Option<TaskId> {
         self.reading.as_ref().map(|(id, _)| *id)
+    }
+
+    /// The thread being read from the engine, if any.
+    pub fn reading_external(&self) -> Option<TaskId> {
+        self.external
+    }
+
+    /// The call as the notch shows it.
+    pub fn info(&self) -> crate::island::view::CallInfo {
+        crate::island::view::CallInfo {
+            live: true,
+            phase: crate::island::view::CallPhase::of(self.state),
+            target: self.target.as_ref().map(|t| t.to_string()),
+            target_task: self.current,
+            target_kind: None,
+            caption: self.caption.as_ref().map(|c| c.to_string()),
+            partial: self.partial.as_ref().map(|c| c.to_string()),
+            lines: self.lines.iter().map(|l| (l.you, l.text.clone())).collect(),
+            level: (level_step(self.level) as f32 / 8.0).clamp(0.0, 1.0),
+            elapsed_s: self.started.elapsed().as_secs() as u32,
+            error: self.error.as_ref().map(|e| e.to_string()),
+            muted: self.muted,
+            awaiting_click: self.awaiting_click.clone().map(|(id, r)| (id, r)),
+            agent: None,
+            model: None,
+        }
+    }
+
+    /// Ask the conductor about an utterance on a snapshot the caller built.
+    pub fn utterance_effects(&mut self, text: &str, snap: &Snapshot) -> Vec<Effect> {
+        let router = self.router.is_some();
+        self.conductor.utterance(text, snap, router)
     }
 
     /// Refresh diff stats off the UI thread every few seconds.
@@ -672,7 +728,7 @@ pub fn parse_shortstat(s: &str) -> DiffStat {
     d
 }
 
-fn status_of(s: TaskStatus) -> ThreadStatus {
+pub(crate) fn status_of(s: TaskStatus) -> ThreadStatus {
     match s {
         TaskStatus::Running => ThreadStatus::Running,
         TaskStatus::NeedsInput => ThreadStatus::NeedsInput,
@@ -709,6 +765,14 @@ impl Shell {
     /// running. While a call runs, the shortcut in another thread (a pane
     /// beside, a terminal) moves the call there instead of ending it.
     pub fn toggle_voice_call(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // A call the notch started (it runs without this window): the
+        // shortcut or button here ends it, so only one call ever runs.
+        if self.voice_call.is_none()
+            && let Some(other) = strip(cx)
+        {
+            other.update(cx, |v, cx| v.end(cx));
+            return;
+        }
         let here = self.focused_thread(window, cx);
         if let Some(v) = self.voice_call.clone() {
             match here.filter(|id| v.read(cx).current != Some(*id)) {
@@ -857,7 +921,7 @@ impl Shell {
 
     /// Name who the call talks to on its strip: the thread, or the agent a
     /// new thread would start on.
-    fn voice_target(&self, call: &Entity<VoiceCall>, cx: &mut Context<Self>) {
+    pub(crate) fn voice_target(&self, call: &Entity<VoiceCall>, cx: &mut Context<Self>) {
         let current = self.call_thread(call.read(cx));
         let task = current.and_then(|id| self.task(id));
         let working =
@@ -939,7 +1003,18 @@ impl Shell {
             .or(composer.project.as_ref().map(|p| p.id))
             .or(self.home_project)
             .map(|p| p.to_string());
-        let default_agent = Some(composer.harness(cx).id().to_string());
+        // New threads by voice go to K22's agent (Settings › Voice) when one
+        // is picked, else the picker's.
+        let default_agent = Some(
+            self.engine
+                .store
+                .setting("voice_harness")
+                .and_then(|k| HarnessKind::from_id(&k))
+                .filter(|k| self.installed.iter().any(|i| i.kind == *k))
+                .unwrap_or_else(|| composer.harness(cx))
+                .id()
+                .to_string(),
+        );
         Snapshot {
             threads,
             current: current.map(|c| c.to_string()),
@@ -975,14 +1050,20 @@ impl Shell {
         }
     }
 
-    fn voice_heard(&mut self, call: Entity<VoiceCall>, text: String, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn voice_heard(
+        &mut self,
+        call: Entity<VoiceCall>,
+        text: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let snap = self.voice_snapshot(call.read(cx), cx);
         let router = call.read(cx).has_router();
         let effects = call.update(cx, |v, _| v.conductor.utterance(&text, &snap, router));
         self.voice_apply(call, effects, Some(text), window, cx);
     }
 
-    fn voice_observe(&mut self, call: Entity<VoiceCall>, cx: &mut Context<Self>) {
+    pub(crate) fn voice_observe(&mut self, call: Entity<VoiceCall>, cx: &mut Context<Self>) {
         crate::look::note_foreground();
         let folders: Vec<(TaskId, std::path::PathBuf)> = self
             .threads
@@ -1031,7 +1112,7 @@ impl Shell {
         self.threads.get(&id).map(|v| v.read(cx).chat.clone())
     }
 
-    fn voice_apply(
+    pub(crate) fn voice_apply(
         &mut self,
         call: Entity<VoiceCall>,
         effects: Vec<Effect>,

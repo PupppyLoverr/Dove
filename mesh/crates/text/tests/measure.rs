@@ -39,7 +39,7 @@ fn widths_match_rustybuzz_ground_truth() {
         "“quotes” — dash",
     ] {
         let got = fx.width(text, fx.sans);
-        assert_close(got, shaped("Geist.ttf", 15.0, text), text);
+        assert_close(got, shaped("Inter-Regular.ttf", 15.0, text), text);
     }
     let got = fx.width("fn main() -> i32", fx.mono);
     // mono has ligatures off; plain shaping may differ only if the face had liga for this text
@@ -60,16 +60,16 @@ fn kerning_is_applied() {
         let parts = fx.width(a, fx.sans) + fx.width(b, fx.sans);
         whole < parts - 0.01
     });
-    assert!(kerned, "Geist kerns at least one classic pair");
+    assert!(kerned, "Inter kerns at least one classic pair");
 }
 
 #[test]
 fn ligature_toggle_uses_separate_plans() {
     let mut fx = Fixture::new();
-    let geist = FaceId(0);
-    let liga = fx.style(geist, 15.0, StyleOptions::default());
+    let sans = FaceId(0);
+    let liga = fx.style(sans, 15.0, StyleOptions::default());
     let noliga = fx.style(
-        geist,
+        sans,
         15.0,
         StyleOptions {
             ligatures: false,
@@ -184,7 +184,7 @@ fn fallback_graphemes_split_proportionally() {
 fn no_fallback_measures_notdef() {
     let mut fx = Fixture::without_fallback();
     let w = fx.width("中", fx.sans);
-    assert_close(w, shaped("Geist.ttf", 15.0, "中"), "notdef advance");
+    assert_close(w, shaped("Inter-Regular.ttf", 15.0, "中"), "notdef advance");
     assert!(w > 0.0);
 }
 
@@ -211,7 +211,7 @@ fn cache_rebinds_to_a_different_book() {
     fx.prep("some words here");
     assert!(fx.cache.stats().entries > 0);
     let mut other = FontBook::new();
-    let face = other.add_face(font_bytes("GeistMono.ttf")).unwrap();
+    let face = other.add_face(font_bytes("JetBrainsMono-Regular.ttf")).unwrap();
     let style = other.add_style(face, 30.0, StyleOptions::default());
     // Same StyleId(0) in a different book must not reuse the old widths.
     assert_eq!(style, StyleId(0));
@@ -225,7 +225,7 @@ fn cache_rebinds_to_a_different_book() {
     );
     assert_close(
         p.max_content_width(),
-        shaped("GeistMono.ttf", 30.0, "abcd"),
+        shaped("JetBrainsMono-Regular.ttf", 30.0, "abcd"),
         "rebind",
     );
 }
@@ -233,7 +233,7 @@ fn cache_rebinds_to_a_different_book() {
 #[test]
 fn set_fallback_invalidates_cached_widths() {
     let mut book = FontBook::new();
-    let face = book.add_face(font_bytes("Geist.ttf")).unwrap();
+    let face = book.add_face(font_bytes("Inter-Regular.ttf")).unwrap();
     let style = book.add_style(face, 10.0, StyleOptions::default());
     let mut cache = WidthCache::new();
     let spans = [Span::new(0..3, style)];
@@ -259,7 +259,7 @@ fn metrics_and_names() {
     assert!(m.cap_height < m.ascent);
     assert!(m.line_height() >= m.ascent + m.descent);
     let name = fx.book.face_postscript_name(FaceId(0)).unwrap();
-    assert!(name.starts_with("Geist"), "{name}");
+    assert!(name.starts_with("Inter-Regular"), "{name}");
     assert!(fx.book.face_postscript_name(FaceId(99)).is_none());
     assert_eq!(fx.book.style(fx.mono).size, 13.0);
     assert!(!fx.book.style(fx.mono).options.ligatures);

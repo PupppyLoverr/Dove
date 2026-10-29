@@ -28,6 +28,7 @@ mod loaders;
 mod look;
 mod markdown;
 mod markdown_extra;
+mod mascot;
 mod math;
 mod mcp_browser;
 mod mcp_oauth;
@@ -74,6 +75,7 @@ mod voice;
 mod voice_call;
 mod voice_view;
 mod wallpaper;
+mod wallpaper_media;
 mod workspace;
 
 use std::sync::Arc;

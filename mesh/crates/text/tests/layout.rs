@@ -1,4 +1,4 @@
-//! Behavioral layout tests against the real Geist faces (ports the spirit of pretext's
+//! Behavioral layout tests against the real Inter faces (ports the spirit of pretext's
 //! layout.test.ts invariants).
 
 mod common;

@@ -62,9 +62,9 @@ mod imp {
     use windows_sys::Win32::UI::Input::{RAWINPUTDEVICE, RIDEV_INPUTSINK, RegisterRawInputDevices};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         CreateWindowExW, DefWindowProcW, DispatchMessageW, EVENT_OBJECT_LOCATIONCHANGE, EVENT_SYSTEM_FOREGROUND,
-        GetForegroundWindow, GetMessageW, GetWindowThreadProcessId, KillTimer, MSG, OBJID_WINDOW, RegisterClassExW,
-        PostMessageW, SetTimer, TranslateMessage, WINEVENT_OUTOFCONTEXT, WM_APP, WM_CLIPBOARDUPDATE, WM_DISPLAYCHANGE,
-        WM_HOTKEY, WM_INPUT, WM_SETTINGCHANGE, WM_TIMER, WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_POPUP,
+        GetForegroundWindow, GetMessageW, GetWindowThreadProcessId, KillTimer, MSG, OBJID_WINDOW, PostMessageW,
+        RegisterClassExW, SetTimer, TranslateMessage, WINEVENT_OUTOFCONTEXT, WM_APP, WM_CLIPBOARDUPDATE,
+        WM_DISPLAYCHANGE, WM_HOTKEY, WM_INPUT, WM_SETTINGCHANGE, WM_TIMER, WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_POPUP,
     };
 
     static SINK: OnceLock<flume::Sender<Event>> = OnceLock::new();
@@ -341,7 +341,13 @@ mod imp {
         // we own and then destroyed.
         unsafe {
             let mut info: SHFILEINFOW = std::mem::zeroed();
-            let ok = SHGetFileInfoW(wide.as_ptr(), 0, &mut info, size_of::<SHFILEINFOW>() as u32, SHGFI_ICON | SHGFI_LARGEICON);
+            let ok = SHGetFileInfoW(
+                wide.as_ptr(),
+                0,
+                &mut info,
+                size_of::<SHFILEINFOW>() as u32,
+                SHGFI_ICON | SHGFI_LARGEICON,
+            );
             if ok == 0 || info.hIcon.is_null() {
                 return None;
             }
@@ -400,7 +406,8 @@ mod imp {
                 return Vec::new();
             }
             let mut buf = vec![0u8; size as usize];
-            if GetExtendedTcpTable(buf.as_mut_ptr().cast(), &mut size, 0, AF_INET, TCP_TABLE_OWNER_PID_LISTENER, 0) != 0 {
+            if GetExtendedTcpTable(buf.as_mut_ptr().cast(), &mut size, 0, AF_INET, TCP_TABLE_OWNER_PID_LISTENER, 0) != 0
+            {
                 return Vec::new();
             }
             let count = u32::from_ne_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
@@ -428,9 +435,31 @@ mod imp {
         let name = p.trim_end_matches(".exe");
         matches!(
             name,
-            "node" | "bun" | "deno" | "python" | "python3" | "pythonw" | "ruby" | "rails" | "php" | "java" | "dotnet"
-                | "go" | "hugo" | "caddy" | "nginx" | "uvicorn" | "gunicorn" | "flask" | "vite" | "esbuild"
-                | "next-server" | "wrangler" | "workerd" | "cargo" | "trunk"
+            "node"
+                | "bun"
+                | "deno"
+                | "python"
+                | "python3"
+                | "pythonw"
+                | "ruby"
+                | "rails"
+                | "php"
+                | "java"
+                | "dotnet"
+                | "go"
+                | "hugo"
+                | "caddy"
+                | "nginx"
+                | "uvicorn"
+                | "gunicorn"
+                | "flask"
+                | "vite"
+                | "esbuild"
+                | "next-server"
+                | "wrangler"
+                | "workerd"
+                | "cargo"
+                | "trunk"
         ) || name.ends_with("-server")
     }
 
@@ -461,7 +490,9 @@ mod imp {
     /// be restarting).
     pub fn process_alive(pid: u32) -> bool {
         use windows_sys::Win32::Foundation::CloseHandle;
-        use windows_sys::Win32::System::Threading::{GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+        use windows_sys::Win32::System::Threading::{
+            GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
         /// `STILL_ACTIVE`.
         const STILL_ACTIVE: u32 = 259;
         // SAFETY: a query-only handle, closed before returning.

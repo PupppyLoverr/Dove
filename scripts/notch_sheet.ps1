@@ -45,7 +45,7 @@ New-Item -ItemType Directory -Force $dir | Out-Null
 $shots = @()
 foreach ($s in $Screens) {
     $state, $page = $s.Split(':', 2)
-    $home_ = Join-Path $dir "home-$state-$page"
+    $home_ = Join-Path $dir ("home-$state-$page" -replace '[:\\/]', '-')
     if ($DoveHome) { Copy-Item -Recurse $DoveHome $home_ } else { New-Item -ItemType Directory -Force $home_ | Out-Null }
     $envs = @{ DOVE_HOME = $home_; DOVE_NOTCH = '1'; DOVE_NOTCH_STATE = $state; DOVE_NOTCH_PAGE = $page; DOVE_NOTCH_DEMO = '1';
         DOVE_NOTCH_CAPTURABLE = '1'; DOVE_LOG = $(if ($Motion) { 'warn,dove::notch=info' } else { 'warn' })
@@ -58,7 +58,7 @@ foreach ($s in $Screens) {
         foreach ($k in $saved.Keys) { [Environment]::SetEnvironmentVariable($k, $saved[$k], 'Process') }
     }
     Start-Sleep -Seconds $Wait
-    $file = Join-Path $dir ("{0}-{1}.png" -f $state, ($(if ($page) { $page } else { 'x' })))
+    $file = Join-Path $dir ("{0}-{1}.png" -f $state, ($(if ($page) { $page -replace '[:\\/]', '-' } else { 'x' })))
     $bmp = New-Object System.Drawing.Bitmap $w, $h
     $g = [System.Drawing.Graphics]::FromImage($bmp)
     $g.CopyFromScreen($bounds.Left + ($bounds.Width - $w) / 2, $bounds.Top, 0, 0, (New-Object System.Drawing.Size $w, $h))

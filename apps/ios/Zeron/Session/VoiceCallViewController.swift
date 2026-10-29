@@ -475,10 +475,7 @@ final class VoiceCallViewController: UIViewController, @preconcurrency AVSpeechS
         weight: UIImage.SymbolWeight = .medium
     ) {
         var configuration = UIButton.Configuration.plain()
-        configuration.image = UIImage(
-            systemName: symbol,
-            withConfiguration: UIImage.SymbolConfiguration(pointSize: 18, weight: weight)
-        )
+        configuration.image = K22Icon.resolve(systemName: symbol, pointSize: 18, weight: weight)
         configuration.baseForegroundColor = tint
         configuration.contentInsets = .zero
         configuration.cornerStyle = .capsule
@@ -491,10 +488,7 @@ final class VoiceCallViewController: UIViewController, @preconcurrency AVSpeechS
 
     private func updateMuteButton() {
         var configuration = muteButton.configuration ?? UIButton.Configuration.plain()
-        configuration.image = UIImage(
-            systemName: muted ? "mic.slash" : "mic",
-            withConfiguration: UIImage.SymbolConfiguration(pointSize: 18, weight: .medium)
-        )
+        configuration.image = K22Icon.resolve(systemName: muted ? "mic.slash" : "mic", pointSize: 18, weight: .medium)
         configuration.baseForegroundColor = muted ? VoiceCallColors.paper : VoiceCallColors.ink
         muteButton.configuration = configuration
         muteButton.backgroundColor = muted ? VoiceCallColors.ink : VoiceCallColors.inkWithAlpha(0.08)

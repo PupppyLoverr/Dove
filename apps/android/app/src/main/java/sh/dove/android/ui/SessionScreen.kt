@@ -82,8 +82,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import sh.dove.android.core.AppModel
 import sh.dove.android.net.ChatBridge
-import sh.dove.android.design.Geist
-import sh.dove.android.design.GeistMono
+import sh.dove.android.design.KMono
+import sh.dove.android.design.KSans
 import sh.dove.android.transcript.Transcript
 import sh.dove.android.transcript.TranscriptActions
 import sh.dove.android.transcript.TranscriptState
@@ -245,7 +245,7 @@ fun SessionScreen(model: AppModel, chatId: String, onBack: () -> Unit) {
             SelectionContainer {
                 Text(
                     s.text,
-                    fontFamily = if (s.mono) GeistMono else Geist,
+                    fontFamily = if (s.mono) KMono else KSans,
                     style = if (s.mono) MaterialTheme.typography.bodySmall else MaterialTheme.typography.bodyLarge,
                     modifier = Modifier
                         .fillMaxWidth()

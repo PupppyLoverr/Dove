@@ -123,7 +123,6 @@ impl<const N: usize> Springs<N> {
         }
         self.last = None;
     }
-
 }
 
 #[cfg(test)]

@@ -132,15 +132,10 @@ manifest `apps/dove/src/file-icons.json` are copied, through Zeron, from
 `vscode-symbols` at commit `296ef1b62287fb2315cb5651e552e09e8c8e1de8`. The full
 license is kept beside the assets in `apps/dove/assets/file-icons/LICENSE.symbols`.
 
-## Solar Icons (CC BY 4.0)
+## K22 icons
 
-The interface icons in `apps/dove/assets/icons` are "Solar Icons" (Linear) by
-480 Design, licensed under CC BY 4.0
-(https://creativecommons.org/licenses/by/4.0/): most are copied from Zeron's
-icon set (`crates/ui/assets/icons`), the rest taken from the Solar set as
-published (Iconify `solar:*-linear`), some under Dove's own file names
-(`split-rows` is Solar's split-columns turned 90°). A few are glyphs Zeron
-draws in the same style (MIT, see above).
+The interface icons in `apps/dove/assets/icons` (except `brand-*` and `*-mark`)
+are original K22 drawings. They are not Solar or Hugeicons.
 
 Agent brand marks (Claude, OpenAI, Cursor, Devin, Grok, OpenCode, Pi, Hermes,
 Antigravity) identify the respective products and remain the property of their
@@ -216,9 +211,17 @@ Spoken output uses the operating system's own voices (Windows speech
 synthesis, macOS `say`, Linux `espeak-ng`); Dove does not ship voices.
 
 
-## Geist and Geist Mono (SIL OFL 1.1)
+## Inter 4.1 (SIL OFL 1.1)
 
-Copyright Vercel. See `apps/dove/assets/fonts/Geist-OFL.txt`.
+Copyright The Inter Project Authors. See `apps/dove/assets/fonts/Inter-OFL.txt`
+(also shipped beside the faces in `apps/ios/Zeron/Fonts/`,
+`mesh/crates/ui/assets/fonts/` and `apps/landing/assets/fonts/`).
+
+## JetBrains Mono 2.304 (SIL OFL 1.1)
+
+Copyright The JetBrains Mono Project Authors. See
+`apps/dove/assets/fonts/JetBrainsMono-OFL.txt` (also shipped beside the faces
+in the same font directories as Inter).
 
 ## Great Vibes (SIL OFL 1.1)
 

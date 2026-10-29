@@ -77,7 +77,7 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
-import sh.dove.android.design.Geist
+import sh.dove.android.design.KSans
 import sh.dove.android.design.DoveIcon
 import sh.dove.android.design.DoveIcons
 import androidx.compose.foundation.border
@@ -202,7 +202,7 @@ private fun WorkingIndicator(sinceMs: Long?, streaming: Boolean, palette: Transc
                 if (secs > 0) withStyle(SpanStyle(color = Color(palette[ColorRole.TEXT_TERTIARY]))) { append("  " + elapsed(secs)) }
             },
             color = Color(palette[ColorRole.TEXT_SECONDARY]),
-            fontFamily = Geist,
+            fontFamily = KSans,
             fontSize = 13.5.sp,
             style = MaterialTheme.typography.labelLarge.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Medium),
         )

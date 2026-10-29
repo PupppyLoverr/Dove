@@ -740,7 +740,7 @@ impl Workspace {
                 .child(
                     row(
                         "ws-split-right".into(),
-                        glyph(icons::SPLIT_COLUMNS),
+                        glyph(icons::SPLIT_VERTICAL),
                         "Split right".into(),
                         Some("Ctrl+Shift+D"),
                     )
@@ -750,11 +750,16 @@ impl Workspace {
                     })),
                 )
                 .child(
-                    row("ws-split-down".into(), glyph(icons::SPLIT_ROWS), "Split down".into(), Some("Ctrl+Shift+E"))
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.menu = None;
-                            this.split(Axis::Column, window, cx)
-                        })),
+                    row(
+                        "ws-split-down".into(),
+                        glyph(icons::SPLIT_HORIZONTAL),
+                        "Split down".into(),
+                        Some("Ctrl+Shift+E"),
+                    )
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.menu = None;
+                        this.split(Axis::Column, window, cx)
+                    })),
                 );
         }
         // Grids as a row of chips: 2 to 16 panes.
@@ -933,7 +938,7 @@ impl Workspace {
                     .group_hover(group, |s| s.visible())
                     .hover(|s| s.bg(t.wash(0.10)))
                     .tooltip(ui::tip("Close pane"))
-                    .child(icon(icons::CLOSE).size(px(12.0)).text_color(t.text_faint))
+                    .child(icon(icons::SPLIT_CLOSE).size(px(12.0)).text_color(t.text_faint))
                     .on_click(cx.listener(move |this, _, window, cx| this.close(tab, id, window, cx))),
             )
             .into_any_element()
@@ -1034,7 +1039,7 @@ impl Workspace {
                             .when(open, |d| d.bg(t.wash(0.08)))
                             .hover(|s| s.bg(t.wash(0.06)))
                             .tooltip(ui::tip("Split, grid or a new tab"))
-                            .child(icon(icons::SPLIT_COLUMNS).size(px(15.0)).text_color(t.text_muted))
+                            .child(icon(icons::SPLIT_VERTICAL).size(px(15.0)).text_color(t.text_muted))
                             .child(icon(icons::ALT_ARROW_DOWN).size(px(11.0)).text_color(t.text_faint))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.menu = if this.menu == Some(Menu::Split) { None } else { Some(Menu::Split) };

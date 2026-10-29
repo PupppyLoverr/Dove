@@ -21,6 +21,8 @@ use dove_core::{Engine, LiveSession};
 use gpui::{AnyWindowHandle, App, AppContext as _, Entity, Global, Subscription};
 
 use super::ipc::{self, Hub, ToEngine, ToIsland};
+use super::view::{self, NotchView, PlanVerdict};
+use super::{call, k22};
 use crate::notch::{NotchHost, Snapshot, bridge};
 use crate::voice::{Dictation, DictationEvent};
 
@@ -48,6 +50,9 @@ pub struct Host {
     automations: Vec<bridge::AutomationInfo>,
     /// Push-to-talk for the island's composer.
     dictation: Option<(Entity<Dictation>, Subscription)>,
+    /// The notch's latest Ask K22 and the thread it went to: K22's next
+    /// `notch_view` answers it.
+    ask: Option<(u64, TaskId)>,
 }
 
 impl Global for Host {}
@@ -93,7 +98,28 @@ impl Host {
             prs_busy: false,
             automations: Vec::new(),
             dictation: None,
+            ask: None,
         });
+        call::init(cx);
+        // The system-wide Voice Mode shortcut: the notch's call while the
+        // notch runs, else the window's.
+        crate::hotkey::apply(&engine.store);
+        let presses = crate::hotkey::events();
+        cx.spawn(async move |cx| {
+            while presses.recv_async().await.is_ok() {
+                cx.update(Host::hotkey);
+            }
+        })
+        .detach();
+        // `notch_view` and friends from agents (`browser::control`).
+        if let Some(calls) = view::take_calls() {
+            cx.spawn(async move |cx| {
+                while let Ok(c) = calls.recv_async().await {
+                    cx.update(|cx| Host::notch_tool(c, cx));
+                }
+            })
+            .detach();
+        }
         // Commands from islands.
         cx.spawn(async move |cx| {
             while let Ok(msg) = in_rx.recv_async().await {
@@ -133,6 +159,7 @@ impl Host {
     }
 
     fn tick(periodic: bool, cx: &mut App) {
+        call::tick(cx);
         let headless = !Self::window_open(cx);
         if headless {
             // Nobody renders these sessions' events; the transcript has them.
@@ -157,7 +184,8 @@ impl Host {
         if headless && periodic {
             let host = cx.global::<Host>();
             let idle = host.closed_at.is_none_or(|t| t.elapsed() >= IDLE_GRACE);
-            if idle && !Self::busy(&host.engine) {
+            // A call keeps the engine, too.
+            if idle && !Self::busy(&host.engine) && crate::voice_call::strip(cx).is_none() {
                 tracing::info!("headless: nothing left to run; quitting");
                 cx.global::<Host>().hub.broadcast(&ToIsland::Bye);
                 cx.quit();
@@ -168,15 +196,40 @@ impl Host {
     /// Whether the engine has work worth staying for: an agent working or
     /// waiting on the user, or automations the user keeps running.
     pub fn busy(engine: &Engine) -> bool {
-        let working = engine
-            .attention()
-            .all()
-            .iter()
-            .any(|(_, s)| s.live && (matches!(s.status, TaskStatus::Running | TaskStatus::NeedsInput) || !s.pending.is_empty()));
+        let working = engine.attention().all().iter().any(|(_, s)| {
+            s.live && (matches!(s.status, TaskStatus::Running | TaskStatus::NeedsInput) || !s.pending.is_empty())
+        });
         working || engine.store.setting(crate::notify::KEEP_RUNNING).as_deref() == Some("true")
     }
 
-    fn window_open(cx: &App) -> bool {
+    pub(super) fn engine(cx: &App) -> Arc<Engine> {
+        cx.global::<Host>().engine.clone()
+    }
+
+    /// The agent the notch has open (its text streams).
+    pub(super) fn watched(cx: &App) -> Option<TaskId> {
+        cx.global::<Host>().watched
+    }
+
+    pub(super) fn broadcast(msg: &ToIsland, cx: &App) {
+        cx.global::<Host>().hub.broadcast(msg);
+    }
+
+    /// The Voice Mode shortcut was pressed outside the app.
+    fn hotkey(cx: &mut App) {
+        if crate::voice_call::strip(cx).is_some() {
+            call::toggle(false, None, cx);
+        } else if !cx.global::<Host>().hub.is_empty() {
+            call::toggle(true, None, cx);
+        } else {
+            if !Self::window_open(cx) {
+                Self::show(cx);
+            }
+            bridge::with_shell(cx, |s, w, cx| s.toggle_voice_call(w, cx));
+        }
+    }
+
+    pub(super) fn window_open(cx: &App) -> bool {
         cx.try_global::<NotchHost>().is_some_and(|h| h.shell.upgrade().is_some())
     }
 
@@ -202,6 +255,8 @@ impl Host {
         });
         snap.prs = host.prs.clone();
         snap.automations = host.automations.clone();
+        snap.plans = plans(&host.engine);
+        snap.voice = k22::voice_info(&host.engine);
         let host = cx.global_mut::<Host>();
         if host.last.as_ref() == Some(&snap) {
             return;
@@ -210,7 +265,7 @@ impl Host {
         host.last = Some(snap);
     }
 
-    fn run(msg: ToEngine, cx: &mut App) {
+    pub(super) fn run(msg: ToEngine, cx: &mut App) {
         let ui = Self::window_open(cx);
         let engine = cx.global::<Host>().engine.clone();
         match msg {
@@ -292,6 +347,19 @@ impl Host {
                 cx.global_mut::<Host>().automations = bridge::automations(&engine);
             }
             ToEngine::Dictate { on } => Self::dictate(on, cx),
+            ToEngine::Call { on, task } => call::toggle(on, task, cx),
+            ToEngine::CallMute { on } => call::mute(on, cx),
+            ToEngine::CallSay { text } => call::say(text, cx),
+            ToEngine::CallTarget { task } => call::target(task, cx),
+            ToEngine::Ask { id, text } => {
+                let result = Self::k22_send(k22::ask_prompt(&text), cx);
+                if let Ok(task) = &result {
+                    cx.global_mut::<Host>().ask = Some((id, *task));
+                }
+                Self::broadcast(&ToIsland::Asked { id, result }, cx);
+            }
+            ToEngine::Plan { task, request_id, verdict } => Self::answer_plan(task, request_id, verdict, cx),
+            ToEngine::SetVoiceAgent { agent, model } => k22::set_voice_agent(&engine.store, agent, model),
             ToEngine::QuitAll => {
                 tracing::info!("island asked Dove to quit");
                 cx.global::<Host>().hub.broadcast(&ToIsland::Bye);
@@ -300,6 +368,150 @@ impl Host {
         }
         cx.global_mut::<Host>().last = None;
         Self::publish(cx);
+    }
+
+    /// An agent's plan, answered from the notch. Approving answers the plan
+    /// request (plan mode's exit); edits ride along as a message the agent
+    /// follows instead; a rejection keeps it planning, with the reason.
+    fn answer_plan(task: TaskId, request_id: Option<String>, verdict: PlanVerdict, cx: &mut App) {
+        use dove_core::proto::PermissionDecision;
+        let decide = |decision, cx: &mut App| {
+            if let Some(r) = request_id.clone() {
+                Self::run(ToEngine::Decide { task, request_id: r, decision }, cx);
+            }
+        };
+        match verdict {
+            PlanVerdict::Approve => {
+                if request_id.is_some() {
+                    decide(PermissionDecision::AllowOnce, cx);
+                } else {
+                    Self::run(ToEngine::Send { task, text: "The plan looks good. Go ahead.".into() }, cx);
+                }
+            }
+            PlanVerdict::Edited { text } => {
+                decide(PermissionDecision::AllowOnce, cx);
+                Self::run(
+                    ToEngine::Send {
+                        task,
+                        text: format!(
+                            "I approved your plan with edits. Follow this version instead (it replaces yours):\n\n{text}"
+                        ),
+                    },
+                    cx,
+                );
+            }
+            PlanVerdict::Reject { reason } => {
+                decide(PermissionDecision::Deny, cx);
+                let text = if reason.trim().is_empty() {
+                    "Not this plan. Keep planning and propose a better one.".to_string()
+                } else {
+                    format!("Not this plan: {}\n\nRevise it and propose it again.", reason.trim())
+                };
+                Self::run(ToEngine::Send { task, text }, cx);
+            }
+        }
+    }
+
+    /// Sends `text` to today's K22 thread, starting it (on K22's agent and
+    /// model, as the K22 teammate) when there isn't one.
+    pub(super) fn k22_send(text: String, cx: &mut App) -> Result<TaskId, String> {
+        let engine = Self::engine(cx);
+        let agent = k22::voice_agent(&engine).ok_or("Install an agent first (Settings › Agents): K22 runs on one.")?;
+        if let Some(id) = k22::thread(&engine, agent.kind) {
+            Self::run(ToEngine::Send { task: id, text }, cx);
+            return Ok(id);
+        }
+        let project = agent.project.ok_or("Add a project to Keplorayx first: K22 works in one.")?;
+        // Effort only where that model takes it.
+        let models = engine.models(agent.kind);
+        let model = agent.model.as_deref().and_then(|m| models.iter().find(|x| x.id == m)).or(models.first());
+        let reasoning = agent.effort.filter(|e| model.is_some_and(|m| m.reasoning_levels.contains(e)));
+        let run = dove_core::RunSettings { model: agent.model.clone(), reasoning, ..Default::default() };
+        let title = format!("K22 · {}", chrono::Local::now().format("%a %e %b"));
+        let id =
+            Self::start_agent(agent.kind, project, text, false, run, Some(k22::persona(&agent)), Some(title), cx)?;
+        k22::remember(&engine.store, id, agent.kind);
+        Ok(id)
+    }
+
+    /// Starts a thread with explicit run settings and teammate, held by the
+    /// window when it's open, else here.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn start_agent(
+        kind: HarnessKind,
+        project: ProjectId,
+        prompt: String,
+        worktree: bool,
+        run: dove_core::RunSettings,
+        persona: Option<dove_core::store::Persona>,
+        title: Option<String>,
+        cx: &mut App,
+    ) -> Result<TaskId, String> {
+        let engine = Self::engine(cx);
+        let project = engine
+            .store
+            .projects()
+            .ok()
+            .and_then(|ps| ps.into_iter().find(|p| p.id == project))
+            .ok_or("That project is gone.")?;
+        let join = if worktree {
+            let w = dove_core::git::create_worktree(&project.path, &dove_core::git::slug(&prompt), "dove/")
+                .map_err(|e| format!("Couldn't make a worktree: {e}"))?;
+            Some(dove_core::Joined { worktree: Some(w.path), branch: Some(w.branch), base: Some(w.base) })
+        } else {
+            None
+        };
+        let new = dove_core::NewTask {
+            title: title.unwrap_or_else(|| crate::ui::title_from_prompt(&prompt)),
+            prompt,
+            harness: kind,
+            run,
+            join,
+            persona,
+        };
+        let (task, live) = engine.start_task(&project, new).map_err(|e| format!("It didn't start: {e}"))?;
+        let id = task.id;
+        if Self::window_open(cx) {
+            bridge::with_shell(cx, move |s, w, cx| s.adopt_live(live, w, cx));
+        } else {
+            cx.global_mut::<Host>().headless.insert(id, live);
+        }
+        cx.global_mut::<Host>().last = None;
+        Self::publish(cx);
+        Ok(id)
+    }
+
+    /// A `notch_*` tool call from an agent.
+    fn notch_tool(c: view::ToolCall, cx: &mut App) {
+        let engine = Self::engine(cx);
+        let reply = match c.tool.as_str() {
+            "notch_view" => match NotchView::from_args(&c.args) {
+                Err(e) => Err(e),
+                Ok(_) if cx.global::<Host>().hub.is_empty() => {
+                    Err("The notch isn't running, so nothing was shown. Answer in text instead.".into())
+                }
+                Ok(mut v) => {
+                    let task = engine.task_for_session(&c.session).or_else(|| {
+                        let cwd = c.cwd.as_deref()?;
+                        engine.store.projects().ok()?.into_iter().find_map(|p| {
+                            engine.store.tasks(p.id).ok()?.into_iter().find(|t| {
+                                t.worktree.as_ref().is_some_and(|w| w.display().to_string() == cwd)
+                            })
+                        }).map(|t| t.id)
+                    });
+                    v.task = task;
+                    v.kind = task.and_then(|t| engine.store.task(t).ok().flatten()).map(|t| t.harness);
+                    v.id = match (cx.global::<Host>().ask, task) {
+                        (Some((id, asked)), Some(t)) if asked == t => id,
+                        _ => view_id(task, &v.title),
+                    };
+                    Self::broadcast(&ToIsland::View { view: v }, cx);
+                    Ok("Shown in the notch. Reply in a sentence that doesn't restate it.".to_string())
+                }
+            },
+            other => Err(format!("Unknown notch tool: {other}")),
+        };
+        let _ = c.reply.send(reply);
     }
 
     /// Push-to-talk: the mic is pressed or released. A short tap keeps it
@@ -312,8 +524,14 @@ impl Host {
                 let msg = match ev {
                     DictationEvent::Text(t) => Some(ToIsland::Dictation { text: t.clone(), done: true, error: None }),
                     DictationEvent::Live(t) => Some(ToIsland::Dictation { text: t.clone(), done: false, error: None }),
-                    DictationEvent::LiveDone(t) => Some(ToIsland::Dictation { text: t.clone(), done: true, error: None }),
-                    _ => d.read(cx).error.clone().map(|e| ToIsland::Dictation { text: String::new(), done: true, error: Some(e) }),
+                    DictationEvent::LiveDone(t) => {
+                        Some(ToIsland::Dictation { text: t.clone(), done: true, error: None })
+                    }
+                    _ => d.read(cx).error.clone().map(|e| ToIsland::Dictation {
+                        text: String::new(),
+                        done: true,
+                        error: Some(e),
+                    }),
                 };
                 if let Some(m) = msg {
                     cx.global::<Host>().hub.broadcast(&m);
@@ -391,7 +609,9 @@ impl Host {
     fn merge(task: TaskId, number: u64, cx: &mut App) {
         let engine = cx.global::<Host>().engine.clone();
         let Some(wt) = engine.store.task(task).ok().flatten().and_then(|t| t.worktree) else {
-            cx.global::<Host>().hub.broadcast(&ToIsland::Merged { task, result: Err("That thread has no worktree.".into()) });
+            cx.global::<Host>()
+                .hub
+                .broadcast(&ToIsland::Merged { task, result: Err("That thread has no worktree.".into()) });
             return;
         };
         let job = cx
@@ -499,6 +719,42 @@ impl Host {
     }
 }
 
+/// Every plan waiting on the user (or just proposed), newest first.
+fn plans(engine: &Engine) -> Vec<view::PendingPlan> {
+    let mut out = Vec::new();
+    let mut all = engine.attention().all();
+    all.sort_by_key(|(_, s)| std::cmp::Reverse(s.turn_started_ms));
+    for (id, state) in all {
+        if state.pending.is_empty() && state.plan.is_none() {
+            continue;
+        }
+        let Some(task) = engine.store.task(id).ok().flatten() else { continue };
+        let project = engine
+            .store
+            .projects()
+            .ok()
+            .and_then(|ps| ps.into_iter().find(|p| p.id == task.project_id))
+            .map(|p| p.name)
+            .unwrap_or_default();
+        out.extend(view::plans_of(id, task.harness, &task.title, &project, &state));
+        if out.len() >= 6 {
+            break;
+        }
+    }
+    out
+}
+
+/// A view's id when it isn't an answer to an ask: the same agent and title
+/// give the same id, so calling again updates it (the high bit keeps it
+/// apart from the notch's ask ids).
+fn view_id(task: Option<TaskId>, title: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    task.hash(&mut h);
+    title.trim().to_lowercase().hash(&mut h);
+    h.finish() | (1 << 63)
+}
+
 /// Waits for whichever finishes first (both are cancel-safe).
 async fn futures_lite_race<A: std::future::Future, B: std::future::Future>(a: A, b: B) {
     use std::pin::pin;
@@ -506,11 +762,7 @@ async fn futures_lite_race<A: std::future::Future, B: std::future::Future>(a: A,
     let mut a = pin!(a);
     let mut b = pin!(b);
     std::future::poll_fn(|cx| {
-        if a.as_mut().poll(cx).is_ready() || b.as_mut().poll(cx).is_ready() {
-            Poll::Ready(())
-        } else {
-            Poll::Pending
-        }
+        if a.as_mut().poll(cx).is_ready() || b.as_mut().poll(cx).is_ready() { Poll::Ready(()) } else { Poll::Pending }
     })
     .await
 }
@@ -573,5 +825,7 @@ pub fn engine_snapshot(engine: &Engine) -> Snapshot {
         focus: None,
         prs: Vec::new(),
         automations: Vec::new(),
+        plans: Vec::new(),
+        voice: Default::default(),
     }
 }
