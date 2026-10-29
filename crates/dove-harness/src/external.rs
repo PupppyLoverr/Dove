@@ -377,7 +377,7 @@ fn run_request(spec: &SessionSpec, prompt: String, allow_ego: bool) -> RunReques
         resume: spec.resume.clone(),
         attachments: Vec::new(),
         worktree: None,
-        mcp: crate::tool_server(&spec.cwd, &spec.session).map(|s| zeron_proto::McpServer {
+        mcp: crate::tool_server_on(&spec.host, &spec.cwd, &spec.session).map(|s| zeron_proto::McpServer {
             name: s.name,
             command: s.command,
             args: s.args,

@@ -568,7 +568,8 @@ pub(crate) async fn run(spec: SessionSpec, events: flume::Sender<AgentEvent>, co
     let mut prompting = false;
     let mut can_load = false;
     let mut approvals: HashMap<String, (Value, Vec<AcpOption>)> = HashMap::new();
-    let cwd = spec.cwd.to_string_lossy().to_string();
+    // ACP wants the folder as the agent's machine sees it.
+    let cwd = spec.host.absolute_dir(&spec.cwd);
 
     let _ = client
         .request(
@@ -595,10 +596,10 @@ pub(crate) async fn run(spec: SessionSpec, events: flume::Sender<AgentEvent>, co
                                 (Some(sid), true) => {
                                     mapper.replaying = true;
                                     mapper.session_id = Some(sid.clone());
-                                    let _ = client.request("session/load", json!({"sessionId": sid, "cwd": cwd, "mcpServers": crate::acp_mcp_servers(&spec.cwd, &spec.session)}), Purpose::Session).await;
+                                    let _ = client.request("session/load", json!({"sessionId": sid, "cwd": cwd, "mcpServers": crate::acp_mcp_servers(&spec.host, &spec.cwd, &spec.session)}), Purpose::Session).await;
                                 }
                                 _ => {
-                                    let _ = client.request("session/new", json!({"cwd": cwd, "mcpServers": crate::acp_mcp_servers(&spec.cwd, &spec.session)}), Purpose::Session).await;
+                                    let _ = client.request("session/new", json!({"cwd": cwd, "mcpServers": crate::acp_mcp_servers(&spec.host, &spec.cwd, &spec.session)}), Purpose::Session).await;
                                 }
                             }
                         }
@@ -655,7 +656,7 @@ pub(crate) async fn run(spec: SessionSpec, events: flume::Sender<AgentEvent>, co
                                 Purpose::Session if spec.resume.is_some() && mapper.replaying => {
                                     // History could not be loaded: start fresh rather than fail.
                                     mapper.replaying = false;
-                                    let _ = client.request("session/new", json!({"cwd": cwd, "mcpServers": crate::acp_mcp_servers(&spec.cwd, &spec.session)}), Purpose::Session).await;
+                                    let _ = client.request("session/new", json!({"cwd": cwd, "mcpServers": crate::acp_mcp_servers(&spec.host, &spec.cwd, &spec.session)}), Purpose::Session).await;
                                 }
                                 _ => { let _ = child.start_kill(); }
                             }
@@ -819,7 +820,8 @@ pub(crate) async fn discover_models(kind: HarnessKind, program: &std::path::Path
     let mut child = process::spawn(cmd, &exe)?;
     let mut client: Client<()> = Client::new(child.stdin.take().expect("piped stdin"), true);
     let mut stdout = BufReader::new(child.stdout.take().expect("piped stdout")).lines();
-    let cwd = spec.cwd.to_string_lossy().to_string();
+    // ACP wants the folder as the agent's machine sees it.
+    let cwd = spec.host.absolute_dir(&spec.cwd);
     let session = async {
         client
             .request(

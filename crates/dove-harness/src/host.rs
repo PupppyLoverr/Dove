@@ -141,9 +141,45 @@ impl Host {
         match self {
             Host::Local => local.display().to_string(),
             Host::Wsl { .. } => to_wsl_path(&local.display().to_string()),
-            Host::Ssh { .. } | Host::CuaSpace { .. } | Host::Docker { .. } | Host::Sandbox { .. } | Host::Node { .. } => {
+            Host::Ssh { .. }
+            | Host::CuaSpace { .. }
+            | Host::Docker { .. }
+            | Host::Sandbox { .. }
+            | Host::Node { .. } => {
                 local.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| ".".into())
             }
+        }
+    }
+
+    /// The agent's folder on this host as an absolute path (ACP needs one).
+    /// Remote homes aren't known locally, so it is asked once per folder and
+    /// remembered; on failure, the relative folder.
+    pub fn absolute_dir(&self, local: &Path) -> String {
+        use std::collections::HashMap;
+        use std::sync::Mutex;
+        static CACHE: Mutex<Option<HashMap<(String, String), String>>> = Mutex::new(None);
+        let dir = self.remote_dir(local);
+        if !self.needs_sync() {
+            return dir;
+        }
+        let key = (self.slug(), dir.clone());
+        if let Some(hit) = CACHE.lock().ok().and_then(|c| c.as_ref().and_then(|m| m.get(&key).cloned())) {
+            return hit;
+        }
+        let args = ["-c", r#"mkdir -p "$1" && cd "$1" && pwd"#, "dove-dir", dir.as_str()].map(String::from);
+        let inv = self.wrap("sh", &args, ".", false);
+        let found =
+            quiet_output(&inv.program.to_string_lossy(), &inv.args.iter().map(String::as_str).collect::<Vec<_>>())
+                .map(|o| String::from_utf8_lossy(&o).lines().last().unwrap_or("").trim().to_string())
+                .filter(|p| p.starts_with('/'));
+        match found {
+            Some(abs) => {
+                if let Ok(mut c) = CACHE.lock() {
+                    c.get_or_insert_with(HashMap::new).insert(key, abs.clone());
+                }
+                abs
+            }
+            None => dir,
         }
     }
 
@@ -201,12 +237,29 @@ fn ssh_invocation(
                 .map(String::from),
         );
     }
+    let reverse = REVERSE_PORT.load(std::sync::atomic::Ordering::Relaxed);
+    if reverse != 0 {
+        // Not fatal when the remote port is taken: the agent still runs,
+        // only Keplorayx's own tools are missing.
+        a.extend([
+            "-o".into(),
+            "ExitOnForwardFailure=no".into(),
+            "-R".into(),
+            format!("{reverse}:127.0.0.1:{reverse}"),
+        ]);
+    }
     a.extend([target.to_string(), "--".into(), line]);
     Invocation { program: "ssh".into(), args: a, local_cwd: None }
 }
 
 /// What a launcher reads from the `host.json` beside it.
 const LAUNCHER_CONFIG: &str = "host.json";
+/// The app's tool-server port, beside `host.json`.
+const TOOL_PORT_FILE: &str = "tool-port";
+
+/// In a launcher: the port SSH hops reverse-forward for the agent's tool
+/// server (set just before the agent itself starts, not for prepare/sync).
+static REVERSE_PORT: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
 
 /// A local executable that runs `program` on `host`: a hard link to this
 /// very binary, named like the agent, with the host in `host.json` beside
@@ -219,6 +272,14 @@ pub fn launcher(host: &Host, program: &Path) -> anyhow::Result<PathBuf> {
     let dir = std::env::temp_dir().join("dove-hosts").join(host.slug());
     std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
     std::fs::write(dir.join(LAUNCHER_CONFIG), serde_json::to_vec(host)?)?;
+    // The app's tool-server port, so a remote agent's `dove` MCP server can
+    // reach back through a reverse forward.
+    match crate::tool_server_port() {
+        Some(port) => std::fs::write(dir.join(TOOL_PORT_FILE), port.to_string())?,
+        None => {
+            let _ = std::fs::remove_file(dir.join(TOOL_PORT_FILE));
+        }
+    }
     let exe = std::env::current_exe().context("locating Keplorayx's own binary")?;
     let link = dir.join(format!("{stem}{}", std::env::consts::EXE_SUFFIX));
     // Re-link so a launcher follows Dove updates. A launcher another thread
@@ -241,6 +302,7 @@ pub fn run_launcher() -> Option<i32> {
         return None;
     }
     let host: Host = serde_json::from_slice(&std::fs::read(dir.join(LAUNCHER_CONFIG)).ok()?).ok()?;
+    let dir_of_launcher = dir.to_path_buf();
     let program = exe.file_stem()?.to_string_lossy().into_owned();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let cwd = std::env::current_dir().unwrap_or_default();
@@ -263,10 +325,25 @@ pub fn run_launcher() -> Option<i32> {
     let pass: Vec<(String, String)> =
         std::env::vars().filter(|(k, _)| FORWARD_ENV_PREFIXES.iter().any(|p| k.starts_with(p))).collect();
     let (program, args) = with_env(&program, &args, &pass);
-    let mut inv = host.wrap(&program, &args, &dir, false);
     // Agents served over HTTP (`opencode serve --port P --hostname
-    // 127.0.0.1`) listen on the host's loopback; bring that port here.
+    // 127.0.0.1`) listen on the host's loopback; that port comes here below.
     let port = served_port(&args);
+    // On a machine that can drop off (SSH, a box, a Space, a container), run
+    // the agent under `dove node attach` there when possible: it keeps
+    // running through a lost connection and this launcher reattaches. The
+    // same remote `dove` serves Keplorayx's tools to the agent.
+    let attached = port.is_none() && host.needs_sync() && crate::node::remote::ensure(&host);
+    // Only now (not for prepare/sync/install): forward the app's tool-server
+    // port back from the host, so the agent's `dove` MCP server reaches it.
+    if let Some(p) =
+        std::fs::read_to_string(dir_of_launcher.join(TOOL_PORT_FILE)).ok().and_then(|s| s.trim().parse().ok())
+    {
+        REVERSE_PORT.store(p, std::sync::atomic::Ordering::Relaxed);
+    }
+    if attached {
+        return Some(crate::node::remote::run_attached(&host, &dir, &program, &args, RECONNECT_FOR));
+    }
+    let mut inv = host.wrap(&program, &args, &dir, false);
     let mut forward = None;
     match (&host, port) {
         (Host::Ssh { .. } | Host::Sandbox { .. }, Some(p)) if inv.program == Path::new("ssh") => {
@@ -291,12 +368,6 @@ pub fn run_launcher() -> Option<i32> {
         }
         // WSL2 forwards loopback ports to Windows by itself.
         _ => {}
-    }
-    // On a machine that can drop off (SSH, a box, a Space, a container), run
-    // the agent under `dove node attach` there when possible: it keeps
-    // running through a lost connection and this launcher reattaches.
-    if forward.is_none() && port.is_none() && host.needs_sync() && crate::node::remote::ensure(&host) {
-        return Some(crate::node::remote::run_attached(&host, &dir, &program, &args, RECONNECT_FOR));
     }
     let mut cmd = std::process::Command::new(&inv.program);
     cmd.args(&inv.args);
