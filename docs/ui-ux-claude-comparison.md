@@ -2,6 +2,8 @@
 
 Written 2026-10-29 from screenshots of every Keplorayx page (build `integrate/k22` + the top-bar and composer changes of the same day), compared with Claude's desktop app and claude.ai (chat, Projects, Artifacts, Settings, Claude Code). The K22 icon system stays as it is; nothing here changes icons.
 
+The work plan built on this review is [ui-clean-plan.md](ui-clean-plan.md).
+
 Priority: **P0** fix now (a bug or a confusing first impression), **P1** next pass, **P2** polish.
 
 ## What Claude does that we should copy (the short list)
