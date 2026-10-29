@@ -90,6 +90,7 @@ pub fn session_dir(session: &str) -> PathBuf {
 }
 
 /// Read `--from <n>` out of the arguments before `--`.
+#[cfg_attr(not(unix), allow(dead_code))]
 fn parse_from(head: &[String]) -> (Option<&String>, u64) {
     let mut session = None;
     let mut from = 0;
@@ -666,6 +667,7 @@ else echo "need $(uname -s) $(uname -m)"; fi"#;
 }
 
 /// One stdin frame: `u32` big-endian length, then the bytes.
+#[cfg_attr(not(unix), allow(dead_code))]
 fn frame(bytes: &[u8]) -> Vec<u8> {
     let mut f = (bytes.len() as u32).to_be_bytes().to_vec();
     f.extend_from_slice(bytes);
@@ -673,6 +675,7 @@ fn frame(bytes: &[u8]) -> Vec<u8> {
 }
 
 /// The next frame; `None` when the connection closed between frames.
+#[cfg_attr(not(unix), allow(dead_code))]
 fn read_frame(r: &mut impl Read) -> std::io::Result<Option<Vec<u8>>> {
     let mut len = [0u8; 4];
     match r.read_exact(&mut len) {
