@@ -8,13 +8,13 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-use dove_core::proto::{PermissionDecision, TaskId, TaskStatus};
+use dove_core::proto::{ProjectId, TaskId, TaskStatus};
 use dove_core::store::Task;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     Anchor, AnimationExt as _, AnyElement, App, AppContext as _, Context, Entity, Hsla, InteractiveElement as _,
     IntoElement, MouseButton, MouseDownEvent, ParentElement as _, Render, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Subscription, WeakEntity, Window, anchored, deferred, div, hsla, px,
+    Stateful, Div, StatefulInteractiveElement as _, Styled as _, Subscription, WeakEntity, Window, anchored, deferred, div, hsla, px,
 };
 use gpui_base::input::Input;
 
@@ -120,29 +120,6 @@ fn quiet_glyph(
         .child(icon(glyph).size(px(16.0)).text_color(t.text_faint).group_hover(id, |s| s.text_color(t.text)))
 }
 
-/// A quiet label over a group of sidebar rows.
-fn group_label(glyph: &'static str, label: &'static str, t: &Theme) -> gpui::Div {
-    div()
-        .px(px(16.0))
-        .pt(px(6.0))
-        .pb(px(2.0))
-        .flex()
-        .flex_none()
-        .items_center()
-        .gap(px(9.0))
-        .text_size(ty::CAPTION)
-        .text_color(t.text_faint)
-        .child(
-            div()
-                .w(px(16.0))
-                .flex_none()
-                .flex()
-                .justify_center()
-                .child(icon(glyph).size(px(12.0)).text_color(t.text_faint)),
-        )
-        .child(label)
-}
-
 /// Where a thread sorts: what needs you first, then work in flight, then
 /// unread results, failures, and the rest by recency.
 pub fn attention_rank(t: &Task) -> u8 {
@@ -166,6 +143,71 @@ pub fn attention_sort(tasks: &mut [Task]) {
 /// of anything below it (a streaming thread, a keystroke in the composer);
 /// the sidebar re-renders only when the shell itself changed, when one of
 /// its own spinners ticks, or when a working thread's step line moves.
+/// What the sidebar list shows (Projects row and its menu). Persisted as
+/// `sidebar_show` (all / projects / chats / p:<id>), `sidebar_status`
+/// (any / needs / running / failed / done), `sidebar_group` and
+/// `sidebar_archived`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Show {
+    All,
+    Projects,
+    Chats,
+    Project(ProjectId),
+}
+
+#[derive(Clone, Debug)]
+pub struct SidebarFilter {
+    pub show: Show,
+    pub status: String,
+    pub group_by_project: bool,
+    pub archived: bool,
+}
+
+impl SidebarFilter {
+    pub fn read(shell: &Shell) -> Self {
+        let get = |k: &str| shell.engine.store.setting(k);
+        let show = match get("sidebar_show").as_deref() {
+            Some("projects") => Show::Projects,
+            Some("chats") => Show::Chats,
+            Some(v) if v.starts_with("p:") => shell
+                .projects
+                .iter()
+                .find(|p| p.id.to_string() == v[2..])
+                .map_or(Show::All, |p| Show::Project(p.id)),
+            _ => Show::All,
+        };
+        let status = get("sidebar_status").filter(|s| ["needs", "running", "failed", "done"].contains(&s.as_str()));
+        SidebarFilter {
+            show,
+            status: status.unwrap_or_else(|| "any".into()),
+            group_by_project: get("sidebar_group").as_deref() != Some("none"),
+            archived: get("sidebar_archived").as_deref() == Some("true"),
+        }
+    }
+
+    /// Anything narrowing the list (grouping is a layout, not a filter).
+    pub fn is_active(&self) -> bool {
+        self.show != Show::All || self.status != "any" || self.archived
+    }
+
+    pub fn admits(&self, t: &Task, shell: &Shell) -> bool {
+        let place = match self.show {
+            Show::All => true,
+            Show::Projects => !shell.is_chats_project(t.project_id),
+            Show::Chats => shell.is_chats_project(t.project_id),
+            Show::Project(id) => t.project_id == id,
+        };
+        place
+            && match self.status.as_str() {
+                "needs" => t.status == TaskStatus::NeedsInput,
+                "running" => t.status == TaskStatus::Running,
+                "failed" => t.status == TaskStatus::Failed,
+                "done" => t.status == TaskStatus::Done,
+                _ => true,
+            }
+    }
+}
+
 pub struct Sidebar {
     shell: WeakEntity<Shell>,
     /// The step lines the last render showed, per working thread.
@@ -206,63 +248,52 @@ impl Shell {
     pub fn render_sidebar(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let t = Theme::of(cx).clone();
         let compact = self.engine.store.setting("sidebar_density").as_deref() == Some("compact");
-        let grouped = self.engine.store.setting("sidebar_group").as_deref() == Some("project");
+        let filter = SidebarFilter::read(self);
 
-        let nav_item = |id: &'static str,
-                        glyph: &'static str,
-                        label: &'static str,
-                        route: Option<Route>,
-                        badge: Option<AnyElement>,
-                        this: &Self,
-                        cx: &mut Context<Self>| {
-            let selected = route.is_some_and(|r| r == this.route);
+        // The six fixed rows: New, Search, Projects, Artifacts, Customize,
+        // More. 36 px, an 18 px outline glyph, the label; only New rests
+        // filled, so it reads as the primary action.
+        let row = |id: &'static str,
+                   glyph: &'static str,
+                   label: &'static str,
+                   selected: bool,
+                   trailing: Option<AnyElement>| {
             div()
                 .id(id)
                 .group(id)
-                .h(px(32.0))
+                .h(px(36.0))
                 .mx(px(8.0))
-                .px(px(8.0))
+                .px(px(10.0))
                 .flex()
+                .flex_none()
                 .items_center()
-                .gap(px(9.0))
+                .gap(px(10.0))
                 .rounded(px(radius::ROW))
                 .cursor_pointer()
                 .text_size(ty::BODY)
-                .when(selected, |d| d.text_color(t.text).font_weight(gpui::FontWeight::MEDIUM))
-                .when(!selected, |d| {
-                    crate::motion::hover_fade(
-                        d,
-                        SharedString::from(format!("nav-{label}")),
-                        (t.wash(0.0), t.wash(0.0)),
-                        Some((t.text_muted, t.text)),
-                    )
-                })
+                .role(gpui::Role::Button)
+                .aria_label(label)
+                .when(selected, |d| d.bg(ui::selected_bg(&t)).text_color(t.text).font_weight(gpui::FontWeight::MEDIUM))
+                .when(!selected, |d| d.text_color(t.text_muted).hover(|s| s.bg(t.wash(0.05)).text_color(t.text)))
                 .child(
                     icon(glyph)
-                        .size(px(16.0))
+                        .size(px(18.0))
+                        .flex_none()
                         .text_color(if selected { t.text } else { t.text_muted })
                         .group_hover(id, |s| s.text_color(t.text)),
                 )
-                .child(div().flex_1().child(label))
-                .children(badge)
-                .on_click(cx.listener(move |this, _, window, cx| match route {
-                    Some(r) => this.navigate(r, window, cx),
-                    None => this.new_session(window, cx),
-                }))
+                .child(div().flex_1().min_w_0().truncate().child(label))
+                .children(trailing)
         };
-        let drafts = self.tasks.iter().filter(|t| t.status == TaskStatus::Draft).count();
-        let active_threads = self.tasks.iter().filter(|t| t.status != TaskStatus::Draft).count();
-        let running_threads = self.tasks.iter().filter(|t| t.status == TaskStatus::Running).count();
-        // Leads the list as a row. Same hit area as the items under it —
-        // a bordered plate here reads as a button sitting on the list.
-        let new_thread = div()
+        let new_row = div()
             .id("nav-new")
-            .h(px(32.0))
+            .h(px(36.0))
             .mx(px(8.0))
-            .px(px(8.0))
+            .px(px(10.0))
             .flex()
+            .flex_none()
             .items_center()
-            .gap(px(9.0))
+            .gap(px(10.0))
             .rounded(px(radius::ROW))
             .cursor_pointer()
             .text_size(ty::BODY)
@@ -272,97 +303,79 @@ impl Shell {
             .hover(|s| s.bg(t.wash(0.11)))
             .role(gpui::Role::Button)
             .aria_label("New thread")
-            .child(icon(icons::NEW).size(px(15.0)).text_color(t.text))
-            .child(div().flex_1().child("New thread"))
-            .child(kit::kbd(&crate::keymap::pretty("secondary-n"), &t))
+            .child(icon(icons::PLUS).size(px(18.0)).flex_none().text_color(t.text))
+            .child(div().flex_1().child("New"))
+            .when(self.sidebar_w >= 280.0, |d| d.child(kit::kbd(&crate::keymap::pretty("secondary-n"), &t)))
             .on_click(cx.listener(|this, _, window, cx| this.new_session(window, cx)));
+        let artifacts = crate::pages::artifacts::scan(&crate::pages::artifacts::chats_dir(), 999).len();
+        let filter_open = self.sidebar_options_open;
+        let filter_exit = if filter_open { None } else { self.menus.options_exit() };
+        let filter_menu =
+            (filter_open || filter_exit.is_some()).then(|| self.render_filter_menu(&filter, filter_exit, &t, cx));
         let nav = div()
             .flex()
+            .flex_none()
             .flex_col()
-            .gap(px(1.0))
+            .gap(px(2.0))
             .pt(px(8.0))
-            .child(new_thread)
-            .child(nav_item(
-                "nav-threads",
-                icons::CHAT_ROUND_LINE,
-                "Threads",
-                Some(Route::Threads),
-                if running_threads > 0 {
-                    Some(kit::badge(format!("{running_threads} active"), t.busy).into_any_element())
-                } else if active_threads > 0 {
-                    Some(
-                        div()
-                            .text_size(ty::MICRO)
-                            .text_color(t.text_faint)
-                            .child(active_threads.to_string())
-                            .into_any_element(),
+            .child(new_row)
+            .child(row("nav-search", icons::MAGNIFER, "Search", false, None).on_click(cx.listener(
+                |this, _, window, cx| this.open_search(crate::palette::Scope::All, window, cx),
+            )))
+            .child(
+                div()
+                    .relative()
+                    .child(
+                        row(
+                            "nav-projects",
+                            icons::PROJECTS,
+                            "Projects",
+                            filter_open,
+                            filter.is_active().then(|| ui::dot(t.accent, 6.0).into_any_element()),
+                        )
+                        .on_click(cx.listener(|this, _, window, cx| this.toggle_filter_menu(window, cx))),
                     )
-                } else {
-                    None
-                },
-                self,
-                cx,
-            ))
-            .child(nav_item(
-                "nav-kanban",
-                icons::SPLIT_THREE_COLUMNS,
-                "Kanban",
-                Some(Route::Kanban),
-                (drafts > 0).then(|| {
-                    div().text_size(ty::MICRO).text_color(t.text_faint).child(drafts.to_string()).into_any_element()
-                }),
-                self,
-                cx,
-            ))
-            .child(nav_item("nav-flock", icons::TERMINAL, "Flock", Some(Route::Flock), None, self, cx))
-            .child(nav_item(
-                "nav-automations",
-                icons::CLOCK_CIRCLE,
-                "Automations",
-                Some(Route::Automations),
-                (self.inbox_unread > 0).then(|| ui::dot(t.accent, 7.0).into_any_element()),
-                self,
-                cx,
-            ))
-            .child(nav_item("nav-prs", icons::PULL_REQUEST, "Pull requests", Some(Route::PullRequests), None, self, cx))
+                    .children(filter_menu),
+            )
+            .child(
+                row(
+                    "nav-artifacts",
+                    icons::ARTIFACTS,
+                    "Artifacts",
+                    self.route == Route::Artifacts,
+                    (artifacts > 0).then(|| {
+                        div().text_size(ty::MICRO).text_color(t.text_faint).child(artifacts.to_string()).into_any_element()
+                    }),
+                )
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.pages.artifact_open = None;
+                    this.navigate(Route::Artifacts, window, cx);
+                })),
+            )
+            .child(
+                row(
+                    "nav-customize",
+                    icons::CUSTOMIZE,
+                    "Customize",
+                    self.route == Route::Settings
+                        && self.settings.read(cx).section == crate::settings::Section::Appearance,
+                    None,
+                )
+                .on_click(cx.listener(|this, _, window, cx| this.open_settings_section("appearance", window, cx))),
+            )
             .child(self.render_more_item(&t, cx));
 
-        // Needs you: pending approvals and questions.
-        let needs: Vec<Task> = self.needs_you().into_iter().cloned().collect();
-        let needs_section = (!needs.is_empty()).then(|| {
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(4.0))
-                .pt(px(8.0))
-                .child(
-                    div()
-                        .px(px(16.0))
-                        .h(px(26.0))
-                        .flex()
-                        .items_center()
-                        .gap(px(6.0))
-                        .text_size(ty::META)
-                        .font_weight(gpui::FontWeight::MEDIUM)
-                        .text_color(t.warning)
-                        .child(icon(icons::BELL).size(px(13.0)).text_color(t.warning))
-                        .child("Needs you")
-                        .child(kit::badge(needs.len().to_string(), t.warning)),
-                )
-                .children(needs.iter().map(|task| self.render_needs_row(task, &t, cx)))
-        });
-
-        let q = self.search_q.clone();
-        let mut visible: Vec<Task> = self
-            .tasks
-            .iter()
-            .filter(|x| x.status != TaskStatus::Draft)
-            .filter(|x| q.is_empty() || x.title.to_lowercase().contains(&q))
-            .cloned()
-            .collect();
+        // The list: Pinned, one section per project, then Chats (threads
+        // with no folder). Status reads as a word in each row, so there is
+        // no separate Needs-you block.
+        let mut visible: Vec<Task> =
+            self.tasks.iter().filter(|x| x.status != TaskStatus::Draft).filter(|x| filter.admits(x, self)).cloned().collect();
+        if filter.archived {
+            visible.extend(self.archived.iter().filter(|x| filter.admits(x, self)).cloned());
+        }
         attention_sort(&mut visible);
         // Nested threads follow their parent; a parent not in the list
-        // (archived, or filtered out by the search) leaves them on top.
+        // (archived, or filtered out) leaves them on top.
         let parent_of = self.thread_family();
         let shown: HashSet<TaskId> = visible.iter().map(|x| x.id).collect();
         let mut kids: HashMap<TaskId, Vec<Task>> = HashMap::new();
@@ -372,101 +385,6 @@ impl Shell {
             }
         }
         visible.retain(|x| parent_of.get(&x.id).is_none_or(|p| !shown.contains(p)));
-        let show_archived = self.engine.store.setting("sidebar_archived").as_deref() == Some("true");
-
-        // "Threads" reads like the Team header above it: a quiet label and
-        // count, with search and options as trailing glyphs that end on the
-        // same 16 px line as every other trailing mark.
-        let searching = self.search_open || !q.is_empty();
-        let header_button = |id: &'static str, glyph: &'static str, label: &'static str, on: bool| {
-            div()
-                .id(id)
-                .group(id)
-                .size(px(22.0))
-                .flex()
-                .items_center()
-                .justify_center()
-                .cursor_pointer()
-                .role(gpui::Role::Button)
-                .aria_label(label)
-                .tooltip(ui::tip(label))
-                .child(
-                    icon(glyph)
-                        .size(px(14.0))
-                        .text_color(if on { t.text } else { t.text_faint })
-                        .group_hover(id, |s| s.text_color(t.text)),
-                )
-        };
-        let options_exit = if self.sidebar_options_open { None } else { self.menus.options_exit() };
-        let options_menu = (self.sidebar_options_open || options_exit.is_some())
-            .then(|| self.render_options_menu(grouped, compact, show_archived, options_exit, &t, cx));
-        let header = div()
-            .relative()
-            .pt(px(14.0))
-            .flex()
-            .flex_col()
-            .gap(px(4.0))
-            .child(
-                div()
-                    .h(px(26.0))
-                    .mx(px(8.0))
-                    .pl(px(8.0))
-                    .pr(px(4.0))
-                    .flex()
-                    .items_center()
-                    .gap(px(2.0))
-                    .text_size(ty::CAPTION)
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(t.text_faint)
-                    .child(div().flex_1().flex().items_center().gap(px(6.0)).child("Threads").when(
-                        active_threads > 0,
-                        |d| {
-                            d.child(
-                                div().text_size(ty::BADGE).text_color(t.text_faint).child(active_threads.to_string()),
-                            )
-                        },
-                    ))
-                    .child(header_button("sb-search", icons::MAGNIFER, "Search threads", searching).on_click(
-                        cx.listener(|this, _, window, cx| {
-                            this.search_open = true;
-                            this.search.update(cx, |s, cx| s.focus(window, cx));
-                            cx.notify();
-                        }),
-                    ))
-                    .child(
-                        header_button(
-                            "sb-options",
-                            icons::MORE_HORIZONTAL,
-                            "Sidebar options",
-                            self.sidebar_options_open,
-                        )
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            if this.sidebar_options_open {
-                                this.close_menus();
-                            } else {
-                                this.close_menus();
-                                this.sidebar_options_open = true;
-                                this.menu_opened(window, cx);
-                            }
-                            cx.notify();
-                        })),
-                    )
-                    .children(options_menu),
-            )
-            .when(searching, |d| {
-                d.child(
-                    div()
-                        .mx(px(8.0))
-                        .h(px(30.0))
-                        .px(px(8.0))
-                        .flex()
-                        .items_center()
-                        .gap(px(9.0))
-                        .text_size(ty::BODY)
-                        .child(icon(icons::MAGNIFER).size(px(14.0)).text_color(t.text_faint))
-                        .child(div().flex_1().min_w_0().child(Input::new(&self.search))),
-                )
-            });
 
         let mut list = div()
             .id("sb-list")
@@ -477,207 +395,133 @@ impl Shell {
             .flex_col()
             .gap(px(1.0))
             .pb(px(8.0))
-            .pt(px(4.0));
+            .pt(px(10.0));
+        if filter.is_active() {
+            list = list.child(self.render_filter_chip(&filter, &t, cx));
+        }
         if visible.is_empty() {
-            list = list.child(div().px(px(16.0)).py(px(8.0)).text_size(ty::BODY).text_color(t.text_faint).child(
-                if self.projects.is_empty() {
-                    "Add a project to begin"
-                } else if !q.is_empty() {
-                    "No threads match"
+            list = list.child(div().px(px(18.0)).py(px(8.0)).text_size(ty::BODY).text_color(t.text_faint).child(
+                if self.projects.is_empty() && self.tasks.is_empty() {
+                    "Start a thread with New"
+                } else if filter.is_active() {
+                    "No threads match the filter"
                 } else {
                     "No threads yet"
                 },
             ));
         }
-        if grouped {
-            for p in &self.projects {
-                let in_project: Vec<&Task> = visible.iter().filter(|x| x.project_id == p.id).collect();
-                if in_project.is_empty() {
-                    continue;
-                }
-                let key = format!("sidebar_closed.p{}", p.id);
-                let open = self.engine.store.setting(&key).as_deref() != Some("1");
-                list = list.child(self.section_header(
-                    SharedString::from(format!("sb-proj-{}", p.id)),
-                    Some(project_badge(&p.name, 12.0, &t).into_any_element()),
-                    p.name.clone().into(),
-                    in_project.len(),
-                    open,
-                    key,
-                    &t,
-                    cx,
-                ));
-                if open {
-                    for task in in_project {
-                        list = list.children(self.render_branch(task, 0, &kids, compact, &t, cx));
-                    }
+        let section = |list: Stateful<Div>,
+                       id: String,
+                       lead: Option<AnyElement>,
+                       label: String,
+                       tasks: Vec<&Task>,
+                       this: &Self,
+                       cx: &mut Context<Self>| {
+            if tasks.is_empty() {
+                return list;
+            }
+            let key = format!("sidebar_closed.{id}");
+            let open = this.engine.store.setting(&key).as_deref() != Some("1");
+            let mut list = list.child(this.section_header(
+                SharedString::from(format!("sb-{id}")),
+                lead,
+                label.into(),
+                tasks.len(),
+                open,
+                key,
+                &t,
+                cx,
+            ));
+            if open {
+                for task in tasks {
+                    list = list.children(this.render_branch(task, 0, &kids, compact, &t, cx));
                 }
             }
+            list
+        };
+        let pinned: Vec<&Task> = visible.iter().filter(|x| x.pinned).collect();
+        list = section(list, "pinned".into(), None, "Pinned".into(), pinned, self, cx);
+        let rest: Vec<&Task> = visible.iter().filter(|x| !x.pinned).collect();
+        if filter.group_by_project {
+            let projects: Vec<_> = self.projects.iter().filter(|p| !self.is_chats_project(p.id)).cloned().collect();
+            for p in projects.iter() {
+                let in_project: Vec<&Task> = rest.iter().copied().filter(|x| x.project_id == p.id).collect();
+                list = section(list, format!("p{}", p.id), None, p.name.clone(), in_project, self, cx);
+            }
+            let chats: Vec<&Task> = rest.iter().copied().filter(|x| self.is_chats_project(x.project_id)).collect();
+            list = section(list, "chats".into(), None, "Chats".into(), chats, self, cx);
         } else {
-            // Pinned threads lead under their own label; the rest follow.
-            let pinned = visible.iter().filter(|x| x.pinned).count();
-            let key = "sidebar_closed.pinned".to_string();
-            let pins_open = self.engine.store.setting(&key).as_deref() != Some("1");
-            for (n, task) in visible.iter().enumerate() {
-                if n == 0 && pinned > 0 {
-                    list = list.child(self.section_header(
-                        "sb-pinned".into(),
-                        Some(icon(icons::PIN).size(px(12.0)).text_color(t.text_faint).into_any_element()),
-                        "Pinned".into(),
-                        pinned,
-                        pins_open,
-                        key.clone(),
-                        &t,
-                        cx,
-                    ));
-                }
-                if n == pinned && pinned > 0 {
-                    list = list.child(group_label(icons::CHAT_ROUND_LINE, "Recent", &t));
-                }
-                if n < pinned && !pins_open {
-                    continue;
-                }
-                list = list.children(self.render_branch(task, 0, &kids, compact, &t, cx));
-            }
-        }
-        // Archived threads sit on a shelf that folds away (Zeron's archive
-        // disclosure); the full list is one click further, on its page.
-        if show_archived && !self.archived.is_empty() {
-            let shelf_open = self.engine.store.flag("sidebar_archived_open", true);
-            let turn = crate::motion::state_t("sb-shelf", shelf_open, crate::motion::CHEVRON, cx.reduce_motion());
-            list = list.child(
-                div()
-                    .id("sb-shelf")
-                    .mx(px(8.0))
-                    .mt(px(8.0))
-                    .h(px(26.0))
-                    .px(px(8.0))
-                    .flex()
-                    .flex_none()
-                    .items_center()
-                    .gap(px(6.0))
-                    .rounded(px(radius::ROW))
-                    .cursor_pointer()
-                    .text_size(ty::CAPTION)
-                    .text_color(t.text_faint)
-                    .role(gpui::Role::Button)
-                    .aria_expanded(shelf_open)
-                    .aria_label("Archived threads")
-                    .map(|d| {
-                        crate::motion::hover_fade(
-                            d,
-                            "sb-shelf",
-                            (t.wash(0.0), t.wash(0.0)),
-                            Some((t.text_faint, t.text_muted)),
-                        )
-                    })
-                    .child(icon(icons::ARCHIVE_MINIMALISTIC).size(px(13.0)))
-                    .child(div().flex_1().child("Archived"))
-                    .child(div().text_size(ty::BADGE).child(self.archived.len().to_string()))
-                    .child(icon(icons::ALT_ARROW_RIGHT).size(px(11.0)).with_transformation(
-                        gpui::Transformation::rotate(gpui::radians(turn * std::f32::consts::FRAC_PI_2)),
-                    ))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        let _ = this
-                            .engine
-                            .store
-                            .set_setting("sidebar_archived_open", if shelf_open { "false" } else { "true" });
-                        cx.notify();
-                    })),
-            );
-            if shelf_open {
-                let mut shelf = div().flex().flex_col().gap(px(1.0));
-                for task in self.archived.clone().iter().take(20) {
-                    shelf = shelf.child(self.render_row(task, compact, None, &t, cx));
-                }
-                if self.archived.len() > 20 {
-                    shelf = shelf.child(
-                        div()
-                            .id("sb-shelf-all")
-                            .mx(px(8.0))
-                            .h(px(26.0))
-                            .px(px(8.0))
-                            .flex()
-                            .items_center()
-                            .rounded(px(radius::ROW))
-                            .cursor_pointer()
-                            .text_size(ty::CAPTION)
-                            .text_color(t.text_faint)
-                            .hover(|s| s.text_color(t.text_muted))
-                            .child(format!("Show all {} archived", self.archived.len()))
-                            .on_click(cx.listener(|this, _, window, cx| this.navigate(Route::Archived, window, cx))),
-                    );
-                }
-                list = list.child(crate::motion::reveal("sb-shelf-body", shelf));
-            }
+            list = section(list, "recent".into(), None, "Recent".into(), rest, self, cx);
         }
 
+        // Footer: avatar, name · Local, a chevron for the account menu; a
+        // feedback glyph on the right.
+        let account_open = self.account_open;
+        let account_exit = if account_open { None } else { self.menus.account_exit() };
+        let account_menu =
+            (account_open || account_exit.is_some()).then(|| self.render_account_menu(account_exit, &t, cx));
+        let host = ui::host_name();
+        let initial: String = host.chars().find(|c| c.is_alphanumeric()).map_or('D', |c| c.to_ascii_uppercase()).to_string();
         let footer = div()
+            .relative()
+            .flex_none()
             .h(px(52.0))
-            .pl(px(11.0))
-            .pr(px(12.0))
+            .pl(px(10.0))
+            .pr(px(10.0))
             .flex()
             .items_center()
             .gap(px(8.0))
             .child(
                 div()
-                    .id("sb-usage")
+                    .id("sb-account")
                     .flex_1()
                     .min_w_0()
                     .h(px(38.0))
-                    .ml(px(-5.0))
-                    .px(px(5.0))
+                    .px(px(6.0))
                     .flex()
                     .items_center()
                     .gap(px(9.0))
+                    .rounded(px(radius::ROW))
                     .cursor_pointer()
-                    .tooltip(ui::tip("Usage"))
-                    .on_click(cx.listener(|this, _, window, cx| this.navigate(Route::Usage, window, cx)))
-                    .child({
-                        let host = ui::host_name();
-                        let initial: String = host
-                            .chars()
-                            .find(|c| c.is_alphanumeric())
-                            .map_or('D', |c| c.to_ascii_uppercase())
-                            .to_string();
-                        kit::avatar_tile(initial, 0.6, 26.0, &t)
-                    })
+                    .hover(|s| s.bg(t.wash(0.05)))
+                    .when(account_open, |d| d.bg(t.wash(0.07)))
+                    .role(gpui::Role::Button)
+                    .aria_label("Account")
+                    .child(kit::avatar_tile(initial, 0.6, 24.0, &t))
                     .child(
                         div()
                             .flex_1()
                             .min_w_0()
-                            .flex()
-                            .flex_col()
+                            .truncate()
+                            .text_size(ty::BODY)
                             .child(
                                 div()
-                                    .text_size(ty::BODY)
-                                    .font_weight(gpui::FontWeight::MEDIUM)
-                                    .truncate()
-                                    .child(format!("Local · {}", ui::host_name())),
-                            )
-                            .child(
-                                div()
-                                    .text_size(ty::MICRO)
-                                    .text_color(t.text_faint)
-                                    .truncate()
-                                    .child(format!("Today {}", ui::usage_line(&self.today))),
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(5.0))
+                                    .child(div().font_weight(gpui::FontWeight::MEDIUM).text_color(t.text).child(host))
+                                    .child(div().text_color(t.text_faint).child("· Local"))
+                                    .child(icon(icons::ALT_ARROW_DOWN).size(px(12.0)).text_color(t.text_faint)),
                             ),
-                    ),
+                    )
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        let was = this.account_open;
+                        this.close_menus();
+                        if !was {
+                            this.account_open = true;
+                            this.menu_opened(window, cx);
+                        }
+                        cx.notify();
+                    })),
             )
             .child(quiet_glyph(
-                "sb-add-proj",
-                icons::FOLDER_WITH_FILES,
-                "Add project (Ctrl+O)",
+                "sb-feedback",
+                icons::ACTION_DEBUG,
+                "Send feedback",
                 &t,
-                cx.listener(|this, _, _, cx| this.add_project_dialog(cx)),
+                cx.listener(|_, _, _, cx| cx.open_url("https://github.com/PupppyLoverr/Dove/issues/new")),
             ))
-            .child(quiet_glyph(
-                "sb-settings",
-                icons::SETTINGS,
-                "Settings (Ctrl+,)",
-                &t,
-                cx.listener(|this, _, window, cx| this.navigate(Route::Settings, window, cx)),
-            ));
+            .children(account_menu);
 
         let handle = kit::resize_handle("sb-resize", &t, {
             let weak = cx.weak_entity();
@@ -694,8 +538,7 @@ impl Shell {
             .flex()
             .child(
                 // No panel of its own: the sidebar is the window's glass, one
-                // surface with the titlebar above it, and the main card is the
-                // only inset, rounded thing.
+                // surface with the titlebar above it.
                 div()
                     .flex_1()
                     .min_w_0()
@@ -704,10 +547,7 @@ impl Shell {
                     .flex_col()
                     .overflow_hidden()
                     .child(nav)
-                    .child(div().pt(px(14.0)).child(self.render_team_section(&t, cx)))
                     .children(self.render_agents_section(&t, cx))
-                    .children(needs_section)
-                    .child(header)
                     .child(list)
                     .child(footer),
             )
@@ -715,6 +555,185 @@ impl Shell {
             // gutter matches the left one.
             .child(handle.absolute().top_0().right_0())
             .into_any_element()
+    }
+
+    fn toggle_filter_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let was = self.sidebar_options_open;
+        self.close_menus();
+        if !was {
+            self.sidebar_options_open = true;
+            self.menu_opened(window, cx);
+        }
+        cx.notify();
+    }
+
+    /// The sidebar's one filter: which threads (all, projects, chats, one
+    /// project), which status, how they group, and archived ones.
+    fn render_filter_menu(
+        &self,
+        filter: &SidebarFilter,
+        exit: Option<f32>,
+        t: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        use crate::shell_menu::{Item, act};
+        let pick = |id: &'static str, label: String, on: bool, key: &'static str, value: String| {
+            Item::row(
+                id,
+                Some(if on { icons::CHECK } else { icons::LIST }),
+                label,
+                act(move |this, _, _| {
+                    let _ = this.engine.store.set_setting(key, &value);
+                }),
+            )
+            .muted(!on)
+            .keep_open()
+        };
+        let mut items = vec![
+            pick("flt-all", "All threads".into(), filter.show == Show::All, "sidebar_show", "all".into()),
+            pick("flt-proj", "Projects only".into(), filter.show == Show::Projects, "sidebar_show", "projects".into()),
+            pick("flt-chats", "Chats only".into(), filter.show == Show::Chats, "sidebar_show", "chats".into()),
+        ];
+        for p in self.projects.iter().filter(|p| !self.is_chats_project(p.id)) {
+            let on = filter.show == Show::Project(p.id);
+            items.push(pick("flt-p", format!("Only {}", p.name), on, "sidebar_show", format!("p:{}", p.id)));
+        }
+        items.push(Item::Separator);
+        for (id, label, value) in [
+            ("flt-any", "Any status", "any"),
+            ("flt-needs", "Needs you", "needs"),
+            ("flt-run", "Running", "running"),
+            ("flt-failed", "Failed", "failed"),
+            ("flt-done", "Done", "done"),
+        ] {
+            items.push(pick(id, label.into(), filter.status == value, "sidebar_status", value.into()));
+        }
+        items.push(Item::Separator);
+        items.push(pick(
+            "flt-group",
+            "Group by project".into(),
+            filter.group_by_project,
+            "sidebar_group",
+            if filter.group_by_project { "none".into() } else { "project".into() },
+        ));
+        items.push(pick(
+            "flt-arch",
+            "Include archived".into(),
+            filter.archived,
+            "sidebar_archived",
+            if filter.archived { "false".into() } else { "true".into() },
+        ));
+        items.push(Item::Separator);
+        items.push(Item::row("flt-add", Some(icons::DOCUMENT_ADD), "Add project…", act(|this, _, cx| this.add_project_dialog(cx))));
+        let live = exit.is_none();
+        let body = self.menu_list(items, 240.0, live, t, cx);
+        let card = self.menu_surface(t, body, exit);
+        deferred(
+            anchored().anchor(Anchor::TopLeft).snap_to_window_with_margin(px(8.0)).child(
+                div()
+                    .ml(px(self.sidebar_w - 20.0))
+                    .when(live, |d| {
+                        d.on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                            this.close_menus();
+                            cx.notify();
+                        }))
+                    })
+                    .child(card),
+            ),
+        )
+        .with_priority(2)
+        .into_any_element()
+    }
+
+    /// The quiet line that says a filter is on, with one click to clear it.
+    fn render_filter_chip(&self, filter: &SidebarFilter, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let mut parts: Vec<String> = Vec::new();
+        match filter.show {
+            Show::All => {}
+            Show::Projects => parts.push("Projects".into()),
+            Show::Chats => parts.push("Chats".into()),
+            Show::Project(id) => parts.push(self.project(id).map(|p| p.name.clone()).unwrap_or_else(|| "Project".into())),
+        }
+        if filter.status != "any" {
+            parts.push(
+                match filter.status.as_str() {
+                    "needs" => "Needs you",
+                    "running" => "Running",
+                    "failed" => "Failed",
+                    _ => "Done",
+                }
+                .into(),
+            );
+        }
+        if filter.archived {
+            parts.push("Archived".into());
+        }
+        div()
+            .id("sb-filter-chip")
+            .mx(px(16.0))
+            .mb(px(4.0))
+            .h(px(24.0))
+            .px(px(8.0))
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(px(6.0))
+            .rounded(px(radius::ROW))
+            .bg(t.wash(0.06))
+            .cursor_pointer()
+            .text_size(ty::CAPTION)
+            .text_color(t.text_muted)
+            .hover(|s| s.bg(t.wash(0.09)).text_color(t.text))
+            .tooltip(ui::tip("Clear the filter"))
+            .child(icon(icons::TUNING).size(px(12.0)))
+            .child(div().flex_1().min_w_0().truncate().child(parts.join(" · ")))
+            .child(icon(icons::CLOSE).size(px(11.0)))
+            .on_click(cx.listener(|this, _, _, cx| {
+                for (k, v) in [("sidebar_show", "all"), ("sidebar_status", "any"), ("sidebar_archived", "false")] {
+                    let _ = this.engine.store.set_setting(k, v);
+                }
+                cx.notify();
+            }))
+            .into_any_element()
+    }
+
+    /// The footer's account menu: settings, usage, theme, projects.
+    fn render_account_menu(&self, exit: Option<f32>, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        use crate::shell_menu::{Item, act};
+        let usage = format!("Today {}", ui::usage_line(&self.today));
+        let items = vec![
+            Item::row("acc-usage", Some(icons::CLOCK_CIRCLE), usage, act(|this, window, cx| this.navigate(Route::Usage, window, cx))),
+            Item::Separator,
+            Item::row("acc-settings", Some(icons::SETTINGS), "Settings", act(|this, window, cx| this.navigate(Route::Settings, window, cx))),
+            Item::row(
+                "acc-appearance",
+                Some(icons::CUSTOMIZE),
+                "Appearance",
+                act(|this, window, cx| this.open_settings_section("appearance", window, cx)),
+            ),
+            Item::row("acc-project", Some(icons::FOLDER_WITH_FILES), "Add project…", act(|this, _, cx| this.add_project_dialog(cx))),
+            Item::Separator,
+            Item::row("acc-help", Some(icons::KEYBOARD), "Help & shortcuts", act(|this, window, cx| this.navigate(Route::Help, window, cx))),
+        ];
+        let live = exit.is_none();
+        let body = self.menu_list(items, 230.0, live, t, cx);
+        let card = self.menu_surface(t, body, exit);
+        deferred(
+            anchored().anchor(Anchor::BottomLeft).snap_to_window_with_margin(px(8.0)).child(
+                div()
+                    .mb(px(48.0))
+                    .ml(px(8.0))
+                    .when(live, |d| {
+                        d.on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                            this.close_menus();
+                            cx.notify();
+                        }))
+                    })
+                    .child(card),
+            ),
+        )
+        .with_priority(2)
+        .into_any_element()
     }
 
     /// A sidebar section's label: a glyph, the name and a count, with a
@@ -777,33 +796,46 @@ impl Shell {
     }
 
     fn render_more_item(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
-        let selected =
-            matches!(self.route, Route::Agents | Route::Usage | Route::Archived | Route::Settings | Route::Help);
+        let selected = matches!(
+            self.route,
+            Route::Kanban
+                | Route::Flock
+                | Route::Automations
+                | Route::PullRequests
+                | Route::Team
+                | Route::Agents
+                | Route::Usage
+                | Route::Archived
+                | Route::Help
+        ) || (self.route == Route::Settings && self.settings.read(cx).section != crate::settings::Section::Appearance);
         let open = self.more_open;
+        let lit = selected || open;
         let item = div()
             .id("nav-more")
-            .h(px(32.0))
+            .group("nav-more")
+            .h(px(36.0))
             .mx(px(8.0))
-            .px(px(8.0))
+            .px(px(10.0))
             .flex()
+            .flex_none()
             .items_center()
-            .gap(px(9.0))
+            .gap(px(10.0))
             .rounded(px(radius::ROW))
             .cursor_pointer()
             .text_size(ty::BODY)
-            .group("nav-more")
-            .when(selected || open, |d| d.text_color(t.text).font_weight(gpui::FontWeight::MEDIUM))
-            .when(!selected && !open, |d| {
-                crate::motion::hover_fade(d, "nav-more", (t.wash(0.0), t.wash(0.0)), Some((t.text_muted, t.text)))
-            })
+            .role(gpui::Role::Button)
+            .aria_label("More")
+            .aria_expanded(open)
+            .when(lit, |d| d.bg(ui::selected_bg(t)).text_color(t.text).font_weight(gpui::FontWeight::MEDIUM))
+            .when(!lit, |d| d.text_color(t.text_muted).hover(|s| s.bg(t.wash(0.05)).text_color(t.text)))
             .child(
                 icon(icons::MORE_HORIZONTAL)
-                    .size(px(16.0))
-                    .text_color(if selected || open { t.text } else { t.text_muted })
+                    .size(px(18.0))
+                    .flex_none()
+                    .text_color(if lit { t.text } else { t.text_muted })
                     .group_hover("nav-more", |s| s.text_color(t.text)),
             )
             .child(div().flex_1().child("More"))
-            .child(icon(icons::ALT_ARROW_RIGHT).size(px(12.0)).text_color(t.text_faint))
             .on_click(cx.listener(|this, _, window, cx| {
                 if this.more_open {
                     this.close_menus();
@@ -821,9 +853,16 @@ impl Shell {
                 Item::row(id, Some(glyph), label, act(move |this, window, cx| this.navigate(route, window, cx)))
             };
             let items = vec![
+                row("more-kanban", icons::SPLIT_THREE_COLUMNS, "Kanban", Route::Kanban),
+                row("more-flock", icons::TERMINAL, "Flock", Route::Flock),
+                row("more-automations", icons::CLOCK_CIRCLE, "Automations", Route::Automations),
+                row("more-prs", icons::PULL_REQUEST, "Pull requests", Route::PullRequests),
+                Item::Separator,
+                row("more-team", icons::USERS_GROUP, "Team", Route::Team),
                 row("more-agents", icons::BOT, "Agents", Route::Agents),
-                row("more-usage", icons::CLOCK_CIRCLE, "Usage", Route::Usage),
+                Item::Separator,
                 row("more-archived", icons::ARCHIVE_MINIMALISTIC, "Archived", Route::Archived),
+                row("more-usage", icons::CHART, "Usage", Route::Usage),
                 Item::Separator,
                 row("more-settings", icons::SETTINGS, "Settings", Route::Settings),
                 row("more-help", icons::KEYBOARD, "Help & shortcuts", Route::Help),
@@ -848,131 +887,6 @@ impl Shell {
         div().relative().child(item).children(menu).into_any_element()
     }
 
-    fn render_options_menu(
-        &self,
-        grouped: bool,
-        compact: bool,
-        archived: bool,
-        exit: Option<f32>,
-        t: &Theme,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        use crate::shell_menu::{Item, act};
-        // Toggles stay open so several can be flipped in one visit.
-        let toggle = |id: &'static str,
-                      label: &'static str,
-                      on: bool,
-                      key: &'static str,
-                      on_value: &'static str,
-                      off_value: &'static str| {
-            Item::row(
-                id,
-                Some(if on { icons::CHECK } else { icons::LIST }),
-                label,
-                act(move |this, _, _| {
-                    let _ = this.engine.store.set_setting(key, if on { off_value } else { on_value });
-                }),
-            )
-            .muted(!on)
-            .keep_open()
-        };
-        let items = vec![
-            toggle("opt-group", "Group by project", grouped, "sidebar_group", "project", "none"),
-            toggle("opt-compact", "Compact rows", compact, "sidebar_density", "compact", "comfortable"),
-            toggle("opt-archived", "Show archived", archived, "sidebar_archived", "true", "false"),
-            Item::Separator,
-            Item::row(
-                "opt-add",
-                Some(icons::DOCUMENT_ADD),
-                "Add project…",
-                act(|this, _, cx| this.add_project_dialog(cx)),
-            ),
-        ];
-        let live = exit.is_none();
-        let body = self.menu_list(items, 230.0, live, t, cx);
-        let card = self.menu_surface(t, body, exit);
-        deferred(
-            anchored().anchor(Anchor::TopRight).snap_to_window_with_margin(px(8.0)).child(
-                div()
-                    .mt(px(32.0))
-                    .when(live, |d| {
-                        d.on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                            this.close_menus();
-                            cx.notify();
-                        }))
-                    })
-                    .child(card),
-            ),
-        )
-        .with_priority(2)
-        .into_any_element()
-    }
-
-    /// A Needs-you row: the pending approval with inline Allow / Deny, or a
-    /// question that opens the thread.
-    fn render_needs_row(&self, task: &Task, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
-        let id = task.id;
-        let pending = self.task_pending(id, cx);
-        let summary = pending
-            .as_ref()
-            .map(|p| {
-                if p.is_question() {
-                    p.questions.first().map(|q| q.question.clone()).unwrap_or_default()
-                } else {
-                    format!("{}: {}", p.tool, p.summary)
-                }
-            })
-            .unwrap_or_else(|| "Waiting for you".into());
-        let decide = |label: &'static str, d: PermissionDecision, primary: bool, cx: &mut Context<Self>| {
-            let rid = pending.as_ref().map(|p| p.request_id.clone()).unwrap_or_default();
-            let el = if primary {
-                ui::button_primary(SharedString::from(format!("need-{label}-{id}")), label, t).h(px(24.0))
-            } else {
-                ui::button_ghost(SharedString::from(format!("need-{label}-{id}")), label, t).h(px(24.0))
-            };
-            el.text_size(ty::META).on_click(cx.listener(move |this, _, window, cx| {
-                this.task_decide(id, rid.clone(), d, window, cx);
-            }))
-        };
-        let approval = pending.as_ref().is_some_and(|p| !p.is_question());
-        div()
-            .id(SharedString::from(format!("need-{id}")))
-            .mx(px(8.0))
-            .px(px(10.0))
-            .py(px(8.0))
-            .flex()
-            .flex_col()
-            .gap(px(6.0))
-            .rounded(px(radius::ROW))
-            .bg(t.warning.opacity(0.05))
-            .cursor_pointer()
-            .on_click(cx.listener(move |this, _, window, cx| this.open_task(id, window, cx)))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(6.0))
-                    .child(icon(ui::harness_icon(task.harness)).size(px(13.0)).text_color(ui::harness_tint(
-                        task.harness,
-                        t,
-                        t.text_muted,
-                    )))
-                    .child(div().flex_1().min_w_0().truncate().text_size(ty::BODY).child(task.title.clone())),
-            )
-            .child(div().text_size(ty::META).text_color(t.text_muted).line_clamp(2).child(summary))
-            .when(approval, |d| {
-                d.child(
-                    div()
-                        .flex()
-                        .gap(px(4.0))
-                        .child(decide("Allow", PermissionDecision::AllowOnce, true, cx))
-                        .child(decide("Deny", PermissionDecision::Deny, false, cx)),
-                )
-            })
-            .into_any_element()
-    }
-
-    /// `fold`: this thread has nested ones (whether they show, and how many).
     pub(crate) fn render_row(
         &self,
         task: &Task,
@@ -1005,25 +919,35 @@ impl Shell {
                 div().text_size(ty::CAPTION).font_weight(gpui::FontWeight::MEDIUM).text_color(tint).child(word)
             },
         );
-        let archive_group = SharedString::from(format!("row-archive-{id}"));
+        // Hover reveals "···": the same menu as a right-click (rename, pin,
+        // archive, move, delete), so the row itself stays clean.
+        let more_group = SharedString::from(format!("row-more-{id}"));
         let archive_btn = div()
-            .id(archive_group.clone())
-            .group(archive_group.clone())
+            .id(more_group.clone())
+            .group(more_group.clone())
             .size(px(22.0))
             .flex()
             .items_center()
             .justify_center()
-            .tooltip(ui::tip(if archived { "Unarchive" } else { "Archive" }))
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .on_click(cx.listener(move |this, _, window, cx| {
-                cx.stop_propagation();
-                this.set_archived(id, !archived, window, cx);
-            }))
+            .rounded(px(radius::ROW - 2.0))
+            .hover(|s| s.bg(t.wash(0.08)))
+            .tooltip(ui::tip(if archived { "More (archived)" } else { "More" }))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, e: &MouseDownEvent, window, cx| {
+                    cx.stop_propagation();
+                    this.close_menus();
+                    this.menu = Some(ChatMenu { task: id, at: e.position, copy_open: false, confirm_delete: false });
+                    this.menu_opened(window, cx);
+                    cx.notify();
+                }),
+            )
+            .on_click(|_, _, cx| cx.stop_propagation())
             .child(
-                icon(if archived { icons::ARCHIVE_UP_MINIMALISTIC } else { icons::ARCHIVE_MINIMALISTIC })
+                icon(icons::MORE_HORIZONTAL)
                     .size(px(14.0))
                     .text_color(t.text_faint)
-                    .group_hover(archive_group, |s| s.text_color(t.text)),
+                    .group_hover(more_group, |s| s.text_color(t.text)),
             );
 
         // The second line says where the thread stands: what it is doing,

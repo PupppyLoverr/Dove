@@ -1,5 +1,5 @@
-//! Full pages routed from the sidebar: Threads, Kanban, Automations, and the
-//! More pages (Agents, Usage, Archived, Help). They render as `Shell`
+//! Full pages routed from the sidebar: Artifacts, and the More pages
+//! (Kanban, Automations, Agents, Usage, Archived, Help). They render as `Shell`
 //! methods over the shell's state; `PageState` holds their own inputs,
 //! filters and the confirmation dialog they share. Every page follows the
 //! kit's page grammar (`kit::page`): a centred column, a 20/26 headline and
@@ -8,13 +8,13 @@
 
 mod agents;
 mod archived;
+pub mod artifacts;
 mod automations;
 mod help;
 pub mod integrations;
 mod kanban;
 pub mod memory_settings;
 pub mod skills;
-mod threads;
 mod usage;
 
 use std::cell::Cell;
@@ -23,7 +23,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use dove_core::Engine;
-use dove_core::proto::{HarnessKind, ProjectId, TaskId, TaskStatus};
+use dove_core::proto::{HarnessKind, ProjectId, TaskId};
 use dove_core::store::{Automation, AutomationRun, UsageRow};
 use gpui::{
     AnyElement, AppContext as _, Context, Entity, FocusHandle, InteractiveElement as _, IntoElement, KeyDownEvent,
@@ -40,13 +40,6 @@ use crate::ui;
 
 pub use agents::agent_enabled;
 pub use automations::TriggerKind;
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum ThreadSort {
-    Recent,
-    Attention,
-    Title,
-}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum AutoTab {
@@ -76,8 +69,6 @@ pub struct AutoEditor {
 /// A confirmation a page is asking for, shown as a modal over the window.
 #[derive(Clone, Debug, PartialEq)]
 pub enum PageDialog {
-    /// Threads: bulk Delete.
-    DeleteThreads(Vec<TaskId>),
     /// Archived: Delete.
     DeleteArchived(TaskId),
     /// Kanban: the draft editor's Delete.
@@ -91,18 +82,6 @@ pub enum PageDialog {
 }
 
 pub struct PageState {
-    // Threads
-    pub threads_search: Entity<InputState>,
-    pub threads_q: String,
-    pub threads_project: Option<ProjectId>,
-    pub threads_agent: Option<HarnessKind>,
-    pub threads_status: Option<TaskStatus>,
-    pub threads_sort: ThreadSort,
-    pub selected: HashSet<TaskId>,
-    pub sel_project: SelectState,
-    pub sel_agent: SelectState,
-    pub sel_status: SelectState,
-    pub sel_sort: SelectState,
     // Kanban
     pub draft_title: Entity<InputState>,
     pub draft_prompt: Entity<TextareaState>,
@@ -133,6 +112,9 @@ pub struct PageState {
     pub usage_note: Option<String>,
     // Agents
     pub agent_terminal: Option<(HarnessKind, Entity<TerminalView>)>,
+    // Artifacts
+    pub artifact_kind: Option<artifacts::ArtKind>,
+    pub artifact_open: Option<std::path::PathBuf>,
     // Archived
     pub archived_q: String,
     pub archived_search: Entity<InputState>,
@@ -182,34 +164,15 @@ pub(crate) fn textarea(
 
 impl PageState {
     pub fn new(_engine: &Arc<Engine>, window: &mut Window, cx: &mut Context<Shell>) -> Self {
-        let threads_search = input("Search all threads", window, cx);
         let archived_search = input("Search archived threads", window, cx);
-        let subs_threads = cx.subscribe(&threads_search, |this, s, ev: &gpui_base::input::InputEvent, cx| {
-            if matches!(ev, gpui_base::input::InputEvent::Change) {
-                this.pages.threads_q = s.read(cx).value().to_lowercase();
-                cx.notify();
-            }
-        });
         let subs_archived = cx.subscribe(&archived_search, |this, s, ev: &gpui_base::input::InputEvent, cx| {
             if matches!(ev, gpui_base::input::InputEvent::Change) {
                 this.pages.archived_q = s.read(cx).value().to_lowercase();
                 cx.notify();
             }
         });
-        subs_threads.detach();
         subs_archived.detach();
         Self {
-            threads_search,
-            threads_q: String::new(),
-            threads_project: None,
-            threads_agent: None,
-            threads_status: None,
-            threads_sort: ThreadSort::Attention,
-            selected: HashSet::new(),
-            sel_project: SelectState::default(),
-            sel_agent: SelectState::default(),
-            sel_status: SelectState::default(),
-            sel_sort: SelectState::default(),
             draft_title: input("Draft title", window, cx),
             draft_prompt: textarea("What should the agent do?", (3, 10), window, cx),
             adding_draft: false,
@@ -231,6 +194,8 @@ impl PageState {
             usage_days: 30,
             usage_note: None,
             agent_terminal: None,
+            artifact_kind: None,
+            artifact_open: None,
             archived_q: String::new(),
             archived_search,
             team_focus: None,
@@ -332,13 +297,6 @@ impl Shell {
         let Some(dialog) = self.pages.dialog.clone() else { return };
         self.close_page_dialog(window, cx);
         match dialog {
-            PageDialog::DeleteThreads(ids) => {
-                for id in ids {
-                    self.pages.selected.remove(&id);
-                    self.delete_task(id, window, cx);
-                }
-                self.reload(cx);
-            }
             PageDialog::DeleteArchived(id) => self.delete_task(id, window, cx),
             PageDialog::DeleteDraft(id) => {
                 self.pages.adding_draft = false;
@@ -365,15 +323,6 @@ impl Shell {
                 .unwrap_or_else(|| "this thread".into())
         };
         match dialog {
-            PageDialog::DeleteThreads(ids) => (
-                match ids.as_slice() {
-                    [one] => format!("Delete \"{}\"?", title_of(*one)),
-                    _ => format!("Delete {} threads?", ids.len()),
-                },
-                "Their transcripts and worktrees are removed for good. This cannot be undone.".into(),
-                "Delete",
-                true,
-            ),
             PageDialog::DeleteArchived(id) => (
                 format!("Delete \"{}\"?", title_of(*id)),
                 "Its transcript and worktree are removed for good. This cannot be undone.".into(),

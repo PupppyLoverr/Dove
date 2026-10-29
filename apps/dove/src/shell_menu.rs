@@ -101,6 +101,7 @@ impl Item {
 pub enum Which {
     More,
     Options,
+    Account,
     Overflow,
     Context(ChatMenu),
 }
@@ -139,6 +140,10 @@ impl Menus {
         self.exit_of(|w| matches!(w, Which::Options))
     }
 
+    pub fn account_exit(&self) -> Option<f32> {
+        self.exit_of(|w| matches!(w, Which::Account))
+    }
+
     pub fn overflow_exit(&self) -> Option<f32> {
         self.exit_of(|w| matches!(w, Which::Overflow))
     }
@@ -171,6 +176,8 @@ impl Shell {
             Some(Which::More)
         } else if self.sidebar_options_open {
             Some(Which::Options)
+        } else if self.account_open {
+            Some(Which::Account)
         } else if self.tab_overflow_open {
             Some(Which::Overflow)
         } else {
@@ -178,6 +185,7 @@ impl Shell {
         };
         self.more_open = false;
         self.sidebar_options_open = false;
+        self.account_open = false;
         self.tab_overflow_open = false;
         self.menu = None;
         self.menus.hi = None;
@@ -198,7 +206,11 @@ impl Shell {
                 window.request_animation_frame();
             }
         }
-        let open = self.more_open || self.sidebar_options_open || self.tab_overflow_open || self.menu.is_some();
+        let open = self.more_open
+            || self.sidebar_options_open
+            || self.account_open
+            || self.tab_overflow_open
+            || self.menu.is_some();
         if !open && self.menus.focus.is_focused(window) {
             match self.menus.restore.take() {
                 Some(prev) => window.focus(&prev, cx),

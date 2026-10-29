@@ -144,7 +144,9 @@ impl Shell {
     ) -> Option<AnyElement> {
         let current = self.home_project.or_else(|| self.projects.first().map(|p| p.id));
         // The current project first, then the rest as the sidebar has them.
-        let mut projects: Vec<_> = self.projects.to_vec();
+        // Chats (no folder) has its own first row, not a project row.
+        let chats_on = current.is_some_and(|id| self.is_chats_project(id));
+        let mut projects: Vec<_> = self.projects.iter().filter(|p| !self.is_chats_project(p.id)).cloned().collect();
         projects.sort_by_key(|p| Some(p.id) != current);
         projects.truncate(HOME_PROJECTS);
         let card_bg =
@@ -176,7 +178,23 @@ impl Shell {
                 .cursor_pointer()
                 .hover(move |s| s.bg(hover))
         };
-        let mut place = card("home-place");
+        let mut place = card("home-place").child(
+            row("home-no-folder".into())
+                .child(icon(icons::CHAT_ROUND_LINE).size(px(15.0)).text_color(if chats_on { t.text } else { t.text_muted }))
+                .child(div().flex_1().min_w_0().truncate().child("No folder"))
+                .child(div().flex_none().text_size(ty::CAPTION).text_color(t.text_faint).child("Just chat · files go to Artifacts"))
+                .when(chats_on, |d| d.child(icon(icons::CHECK).size(px(14.0)).text_color(t.text)))
+                .on_click(cx.listener(|this, _, _, cx| {
+                    let dir = crate::pages::artifacts::chats_dir();
+                    let _ = std::fs::create_dir_all(&dir);
+                    if let Ok(p) = this.engine.store.add_project(&dir) {
+                        this.reload(cx);
+                        this.set_home_project(p.id, cx);
+                        let projects = this.projects.clone();
+                        this.composer.update(cx, |c, cx| c.set_projects(projects, Some(p.id), cx));
+                    }
+                })),
+        );
         for p in &projects {
             let id = p.id;
             let on = Some(id) == current;

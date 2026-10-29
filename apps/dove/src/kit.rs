@@ -113,37 +113,6 @@ pub fn switch(id: impl Into<ElementId>, on: bool, t: &Theme) -> gpui::Stateful<D
         .child(div().size(px(14.0)).rounded_full().bg(if on { t.on_solid } else { t.text_muted }))
 }
 
-/// A square checkbox with an optional label.
-pub fn checkbox(id: impl Into<ElementId>, on: bool, label: impl Into<SharedString>, t: &Theme) -> gpui::Stateful<Div> {
-    let label: SharedString = label.into();
-    div()
-        .id(id)
-        .role(gpui::Role::CheckBox)
-        .aria_toggled(if on { gpui::Toggled::True } else { gpui::Toggled::False })
-        .aria_label(label.clone())
-        .flex()
-        .items_center()
-        .gap(px(6.0))
-        .cursor_pointer()
-        .text_size(ty::BODY)
-        .text_color(t.text_muted)
-        .hover(|s| s.text_color(t.text))
-        .child(
-            div()
-                .size(px(14.0))
-                .flex()
-                .flex_none()
-                .items_center()
-                .justify_center()
-                .rounded(px(4.0))
-                .border_1()
-                .border_color(if on { t.accent } else { t.border_strong })
-                .when(on, |d| d.bg(t.accent))
-                .when(on, |d| d.child(icon(icons::CHECK).size(px(10.0)).text_color(t.on_solid))),
-        )
-        .child(label)
-}
-
 /// A thread's status: spinner (working), amber dot (needs you), check,
 /// red cross, or a hollow dot.
 pub fn status_glyph(id: impl Into<ElementId>, status: TaskStatus, unread: bool, t: &Theme) -> AnyElement {

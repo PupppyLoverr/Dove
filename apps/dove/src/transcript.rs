@@ -1982,11 +1982,6 @@ impl TaskView {
         cx.notify();
     }
 
-    /// The pending approval or question summary, for "Needs you".
-    pub fn pending(&self) -> Option<PermissionRequest> {
-        self.chat.pending().map(|(_, r)| r.clone())
-    }
-
     pub fn current_step(&self) -> Option<SharedString> {
         self.chat.current_step()
     }

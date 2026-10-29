@@ -137,7 +137,9 @@ struct Fit {
 pub enum Route {
     Home,
     Thread(TaskId),
+    /// Gone as a page: it opens Search on Threads (`navigate`).
     Threads,
+    Artifacts,
     Kanban,
     Automations,
     PullRequests,
@@ -156,6 +158,7 @@ impl Route {
         Some(match id {
             "home" => Route::Home,
             "threads" => Route::Threads,
+            "artifacts" => Route::Artifacts,
             "kanban" => Route::Kanban,
             "automations" => Route::Automations,
             "prs" | "pull-requests" => Route::PullRequests,
@@ -240,6 +243,8 @@ pub struct Shell {
     pub info_open: bool,
     pub more_open: bool,
     pub sidebar_options_open: bool,
+    /// The sidebar footer's account menu.
+    pub account_open: bool,
     /// The "+N" menu of tabs that do not fit the strip.
     pub tab_overflow_open: bool,
     /// Keyboard and exit state of the shell's own menus.
@@ -251,11 +256,6 @@ pub struct Shell {
     pub updates: Vec<crate::updates::Update>,
     pub today: Usage,
     pub error: Option<SharedString>,
-    pub search: Entity<InputState>,
-    pub search_q: String,
-    /// The sidebar's thread filter is showing (it also shows while it holds
-    /// a query).
-    pub search_open: bool,
     pub pages: PageState,
     /// Unread automation runs, for the sidebar dot.
     pub inbox_unread: usize,
@@ -299,12 +299,6 @@ impl Shell {
         let prs = cx.new(|cx| PullRequestsPage::new(engine.clone(), window, cx));
         let workspace = cx.new(|cx| crate::flock::Workspace::new(engine.clone(), cx));
         let settings = cx.new(|cx| crate::settings::SettingsPage::new(engine.clone(), window, cx));
-        let style = ui::input_style(Theme::of(cx));
-        let search = cx.new(|cx| {
-            let mut s = InputState::new(window, cx).placeholder("Search threads");
-            s.set_editor_style(style);
-            s
-        });
         let mut subs = Vec::new();
         subs.push(cx.subscribe(&workspace, |_, _, ev: &crate::flock::WorkspaceEvent, cx| match ev {
             crate::flock::WorkspaceEvent::AgentsChanged => cx.notify(),
@@ -383,18 +377,6 @@ impl Shell {
             }
             PrEvent::HandOff { project, prompt } => this.stage_new_thread(project.clone(), prompt, window, cx),
         }));
-        subs.push(cx.subscribe(&search, |this, s, ev: &InputEvent, cx| match ev {
-            InputEvent::Change => {
-                this.search_q = s.read(cx).value().to_lowercase();
-                cx.notify();
-            }
-            // An empty filter folds away when you leave it.
-            InputEvent::Blur if this.search_q.is_empty() => {
-                this.search_open = false;
-                cx.notify();
-            }
-            _ => {}
-        }));
         if let Some(remote) = crate::remote::Remote::global(cx) {
             subs.push(cx.subscribe_in(&remote, window, |this, remote, ev: &RemoteEvent, window, cx| {
                 this.on_remote(remote.clone(), ev, window, cx)
@@ -466,6 +448,7 @@ impl Shell {
             info_open: false,
             more_open: false,
             sidebar_options_open: false,
+            account_open: false,
             tab_overflow_open: false,
             menus: crate::shell_menu::Menus::new(cx),
             agents_open: false,
@@ -474,9 +457,6 @@ impl Shell {
             updates: Vec::new(),
             today: Usage::default(),
             error: None,
-            search,
-            search_q: String::new(),
-            search_open: false,
             pages,
             inbox_unread: 0,
             focus: cx.focus_handle(),
@@ -948,6 +928,11 @@ impl Shell {
         // Agents live in Settings › Agents (one place for them).
         if route == Route::Agents {
             self.open_settings_section("agents", window, cx);
+            return;
+        }
+        // The Threads page gave way to Search, scoped to threads.
+        if route == Route::Threads {
+            self.open_search(crate::palette::Scope::Threads, window, cx);
             return;
         }
         if route == self.route {
@@ -1905,6 +1890,41 @@ impl Shell {
     }
 
     // ------------------------------------------------------------ palette
+
+    /// Search (the palette), opened on one scope.
+    pub fn open_search(&mut self, scope: crate::palette::Scope, window: &mut Window, cx: &mut Context<Self>) {
+        if self.palette.is_none() {
+            self.open_palette(window, cx);
+        }
+        if let Some(p) = self.palette.clone() {
+            p.update(cx, |p, cx| p.set_scope(scope, cx));
+        }
+    }
+
+    /// The workspace of threads with no folder (`<data>/chats`).
+    pub fn is_chats_project(&self, id: ProjectId) -> bool {
+        let dir = crate::pages::artifacts::chats_dir();
+        let norm = |p: &std::path::Path| p.to_string_lossy().trim_start_matches(r"\?\").to_lowercase();
+        self.project(id).is_some_and(|p| norm(&p.path) == norm(&dir))
+    }
+
+    /// A new thread with no folder: it works in `<data>/chats`, and what it
+    /// makes shows on the Artifacts page.
+    pub fn new_chat_without_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let dir = crate::pages::artifacts::chats_dir();
+        let _ = std::fs::create_dir_all(&dir);
+        match self.engine.store.add_project(&dir) {
+            Ok(p) => {
+                self.reload(cx);
+                self.set_home_project(p.id, cx);
+                self.new_session(window, cx);
+            }
+            Err(e) => {
+                self.error = Some(format!("{e:#}").into());
+                cx.notify();
+            }
+        }
+    }
 
     pub fn open_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.palette.is_some() {
@@ -3230,16 +3250,17 @@ impl Shell {
         let t = Theme::of(cx).clone();
         let viewport_h = f32::from(window.viewport_size().height);
         let kind = crate::wallpaper_media::kind_cached(std::path::Path::new(&path));
-        // A GIF or video loops as attached across the whole column: no
+        // On Home a GIF or video loops as attached across the column: no
         // blur, fade, cut-out or effect, only a light dim (`MOVING_DIM`).
-        // Stills get the hero treatment and the chat frost.
+        // Behind chats and terminals every background is frosted under the
+        // contrast scrim, moving ones still playing, so text stays readable.
         let moving = kind != crate::wallpaper_media::Kind::Still;
         let height = if thread || moving { viewport_h } else { crate::wallpaper::hero_height(viewport_h) };
         let scale = window.scale_factor();
         let playback = self.engine.store.setting("wallpaper_playback").unwrap_or_else(|| "always".into());
         let composer = if home { self.composer_bounds.clone() } else { std::rc::Rc::new(std::cell::Cell::new(None)) };
         let target = (width * scale, height * scale);
-        let art = if moving {
+        let art = if moving && !thread {
             let props = crate::wallpaper_media::BackdropProps {
                 path: path.into(),
                 variant: crate::wallpaper_media::Variant::Hero,
@@ -3253,14 +3274,14 @@ impl Shell {
             let veil = gpui::black().opacity(MOVING_DIM);
             view.update(cx, |b, cx| b.show(props, cx)).then(|| (view.into_any_element(), Some(veil)))
         } else if thread {
-            // A still behind a chat: baked frost under a contrast-solved scrim.
+            // Behind a chat: baked frost under a contrast-solved scrim.
             let blur = self.chat_blur().round() as u32;
             let variant = crate::wallpaper_media::Variant::Frost(blur);
             let props = crate::wallpaper_media::BackdropProps {
                 path: path.clone().into(),
                 variant,
                 target,
-                play: false,
+                play: moving && playback == "always",
                 fade: false,
                 composer: None,
                 opacity: 1.0,
@@ -3357,7 +3378,8 @@ impl Shell {
                 }
                 None => div().into_any_element(),
             },
-            Route::Threads => self.render_threads_page(window, cx),
+            Route::Threads => self.render_home(window, cx),
+            Route::Artifacts => self.render_artifacts_page(window, cx),
             Route::Kanban => self.render_kanban(window, cx),
             Route::Automations => self.render_automations(window, cx),
             Route::PullRequests => self.prs.clone().into_any_element(),

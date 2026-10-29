@@ -1,7 +1,7 @@
 //! Shared presentation primitives. The frost, layer, rounded-clip elements
 //! and the control styles are adapted from Zeron (MIT).
 
-use dove_core::proto::{HarnessKind, TaskStatus, Usage};
+use dove_core::proto::{HarnessKind, Usage};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, AnyView, App, AppContext as _, Bounds, ClickEvent, Context, Corners, Div, Element, GlobalElementId,
@@ -657,16 +657,6 @@ pub fn input_style(theme: &Theme) -> gpui_base::input::InputEditorStyle {
 }
 
 // -------------------------------------------------------------------- data
-
-pub fn status_color(status: TaskStatus, theme: &Theme) -> Hsla {
-    match status {
-        TaskStatus::Running => theme.busy,
-        TaskStatus::NeedsInput => theme.warning,
-        TaskStatus::Done => theme.success,
-        TaskStatus::Failed => theme.danger,
-        TaskStatus::Idle | TaskStatus::Archived | TaskStatus::Draft => theme.text_faint,
-    }
-}
 
 pub fn dot(color: Hsla, size: f32) -> Div {
     div().size(px(size)).rounded_full().bg(color).flex_none()

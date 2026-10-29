@@ -251,7 +251,7 @@ impl Palette {
         }
     }
 
-    fn set_scope(&mut self, scope: Scope, cx: &mut Context<Self>) {
+    pub fn set_scope(&mut self, scope: Scope, cx: &mut Context<Self>) {
         self.scope = scope;
         self.filter();
         self.scroll.scroll_to_item(0);
