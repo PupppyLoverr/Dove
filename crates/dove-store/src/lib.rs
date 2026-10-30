@@ -15,6 +15,7 @@ use parking_lot::Mutex;
 use rusqlite::{Connection, OptionalExtension, params};
 use uuid::Uuid;
 
+pub mod search;
 pub mod transcript;
 
 const SCHEMA: &str = "CREATE TABLE projects (
@@ -228,6 +229,8 @@ pub struct Store {
     /// settings while it renders; this keeps those reads off SQLite and off
     /// the connection lock the engine's writers hold.
     settings: parking_lot::RwLock<std::collections::HashMap<String, String>>,
+    /// Old transcripts have been read into the search index this run.
+    backfilled: Mutex<bool>,
 }
 
 fn has_column(conn: &Connection, table: &str, column: &str) -> Result<bool> {
@@ -323,6 +326,7 @@ fn migrate(conn: &Connection) -> Result<()> {
     if !has_column(conn, "task_links", "request_key")? {
         conn.execute_batch("ALTER TABLE task_links ADD COLUMN request_key TEXT;")?;
     }
+    conn.execute_batch(search::SCHEMA)?;
     Ok(())
 }
 
@@ -354,7 +358,12 @@ impl Store {
             let rows = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
             rows.filter_map(|r| r.ok()).collect()
         };
-        Ok(Self { conn: Mutex::new(conn), root: root.to_path_buf(), settings: parking_lot::RwLock::new(settings) })
+        Ok(Self {
+            conn: Mutex::new(conn),
+            root: root.to_path_buf(),
+            settings: parking_lot::RwLock::new(settings),
+            backfilled: Mutex::new(false),
+        })
     }
 
     pub fn root(&self) -> &Path {
@@ -399,7 +408,10 @@ impl Store {
 
     pub fn insert_task(&self, t: &Task) -> Result<()> {
         let now = now_ms();
-        self.conn.lock().execute(
+        let conn = self.conn.lock();
+        // A new thread is indexed for search as it is recorded.
+        conn.execute("INSERT OR IGNORE INTO search_done (task) VALUES (?1)", [t.id.0.to_string()])?;
+        conn.execute(
             "INSERT INTO tasks (id, project_id, title, harness, model, status, worktree, branch,
                                 native_session_id, base, pinned, created_at, updated_at, prompt, unread, automation)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?11, ?12, ?10, ?10, ?13, ?14, ?15)",
@@ -503,8 +515,18 @@ impl Store {
             conn.execute("DELETE FROM usage WHERE task_id = ?1", [id.0.to_string()])?;
             conn.execute("DELETE FROM tasks WHERE id = ?1", [id.0.to_string()])?;
             conn.execute("DELETE FROM task_prs WHERE task_id = ?1", [id.0.to_string()])?;
+            Self::unindex(&conn, &id.0.to_string())?;
         }
         let _ = std::fs::remove_file(self.transcript_path(id));
+        // Whole tool outputs the transcript pointed at (`<root>/spill`).
+        let prefix = format!("{id}-");
+        if let Ok(dir) = std::fs::read_dir(self.root.join("spill")) {
+            for e in dir.flatten() {
+                if e.file_name().to_string_lossy().starts_with(&prefix) {
+                    let _ = std::fs::remove_file(e.path());
+                }
+            }
+        }
         Ok(())
     }
 

@@ -838,6 +838,7 @@ impl Shell {
                 | Route::Usage
                 | Route::Archived
                 | Route::Help
+                | Route::Races
         ) || (self.route == Route::Settings
             && self.settings.read(cx).section != crate::settings::Section::Appearance);
         let open = self.more_open;
@@ -887,6 +888,7 @@ impl Shell {
             let items = vec![
                 row("more-kanban", icons::SPLIT_THREE_COLUMNS, "Kanban", Route::Kanban),
                 row("more-flock", icons::TERMINAL, "Flock", Route::Flock),
+                row("more-races", icons::BOLT, "Races", Route::Races),
                 row("more-automations", icons::CLOCK_CIRCLE, "Automations", Route::Automations),
                 row("more-prs", icons::PULL_REQUEST, "Pull requests", Route::PullRequests),
                 Item::Separator,

@@ -48,6 +48,7 @@ mod perf_trace;
 mod picker_memory;
 mod pr_view;
 mod pull_requests;
+mod race;
 mod remote;
 mod roll_text;
 mod settings;

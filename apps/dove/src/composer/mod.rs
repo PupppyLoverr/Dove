@@ -78,6 +78,8 @@ pub enum ComposerEvent {
     ProjectChanged(ProjectId),
     /// A project was added or cloned; the app should reload its list.
     ProjectsChanged,
+    /// "Race agents…" was chosen with this draft (see `crate::race`).
+    Race(String),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -613,6 +615,37 @@ impl Composer {
             Some((t, p)) => Some(t.worktree.clone().unwrap_or_else(|| p.path.clone())),
             None => self.project.as_ref().map(|p| p.path.clone()),
         }
+    }
+
+    /// The draft as a prompt to race (see `crate::race`): its text with any
+    /// mentions and attachments, as Send would build it, without sending or
+    /// clearing anything.
+    pub(crate) fn race_draft(&self, cx: &App) -> String {
+        let mut text = self.input.read(cx).value().trim().to_string();
+        if let Some(block) = skills_block(&text) {
+            text = format!("{text}\n\n{block}");
+        }
+        if !self.cards.is_empty() {
+            let computer_use = crate::pages::integrations::load().computer.enabled;
+            if let Some(block) = mentions::block(&self.cards, &self.engine.store, computer_use) {
+                text = format!("{text}\n\n{block}").trim().to_string();
+            }
+        }
+        if !self.attachments.is_empty() {
+            let list = self.attachments.iter().map(|p| format!("- {}", p.display())).collect::<Vec<_>>().join("\n");
+            text = format!("{text}\n\n{ATTACH_HEADER}\n{list}").trim().to_string();
+        }
+        text
+    }
+
+    /// Empty the draft (text, mentions, attachments), as Send does.
+    pub(crate) fn clear_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.input.update(cx, |s, cx| s.set_value("", window, cx));
+        self.attachments.clear();
+        self.cards.clear();
+        self.mention = None;
+        let _ = self.engine.store.set_setting(&self.draft_key(), "");
+        cx.notify();
     }
 
     // ------------------------------------------------------------ actions
@@ -1670,6 +1703,17 @@ impl Composer {
                             }
                         })),
                 )
+                // One prompt, several agents and machines (`crate::race`).
+                .when(self.thread.is_none(), |d| {
+                    d.child(ui::separator(t)).child(
+                        ui::menu_row("att-race", icons::BOLT, "Race agents…", false, t)
+                            .tooltip(ui::tip("Run this prompt with several agents or machines, each in its own worktree, and compare"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.menu = None;
+                                cx.emit(ComposerEvent::Race(this.race_draft(cx)));
+                            })),
+                    )
+                })
                 .child(ui::separator(t))
                 .child(
                     div()

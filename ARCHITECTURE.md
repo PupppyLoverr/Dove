@@ -156,13 +156,17 @@ Everything lives under `~/.dove` (override with `DOVE_HOME`):
 
 ```text
 ~/.dove/
-  dove.db                SQLite: projects, tasks, usage, settings, automations, automation_runs
+  dove.db                SQLite: projects, tasks, usage, settings, automations, automation_runs, search index
   sessions/<task>.jsonl  append-only AgentEvent transcript per task
+  spill/<task>-<call>.txt  whole tool outputs too large to record (the transcript keeps a preview)
 ```
 
 - `tasks` holds title, harness, model, status, worktree, branch and the agent's native session id (used for `--resume` and forks).
 - `usage` keeps one row per turn with input/output/cache tokens and cost (exact when the agent reports it, `estimated` otherwise), which powers the cross-agent usage ledger.
 - `rusqlite` is built `bundled` and pinned to Zeron's version so both dependency graphs link one SQLite.
+- **Tool-output caps** (`dove-core/src/spill.rs`). The recorder caps a tool result over 50 KB, 2000 lines or with a line over 2000 characters before it is stored or forwarded: the transcript keeps the head and tail plus one marker line, the whole text goes to `spill/`, and the transcript's tool chip offers "Open full output".
+- **Search** (`dove-store/src/search.rs`). User messages, assistant text blocks and tool-call titles go into an FTS5 table (`trigram` tokenizer, so substrings and CJK match; one- and two-character queries fall back to `LIKE`) as the recorder writes them. Transcripts from before the index are read once, in the background, on the first search. The command palette (Search) lists message hits under its other matches.
+- **Plan limits** (`dove-core/src/quota.rs`). The Usage page reads the Claude (5-hour, weekly, weekly Opus/Sonnet) and Codex (5-hour, weekly) windows with each CLI's own stored sign-in, read-only, off the UI thread, cached five minutes.
 
 ## Remote control: desktop ⇄ Cloudflare edge ⇄ iOS / Android
 

@@ -421,6 +421,32 @@ pub fn checkout(repo: &Path, branch: &str) -> Result<()> {
     Ok(())
 }
 
+/// Merge `branch` into the branch checked out at `repo` with a merge commit
+/// (`--no-ff`, so the merge is one commit to revert). A conflict or a dirty
+/// checkout fails and is aborted, leaving `repo` as it was; the error carries
+/// git's own explanation.
+pub fn merge(repo: &Path, branch: &str, message: &str) -> Result<()> {
+    let out: Output = git(repo)
+        .args(["merge", "--no-ff", "--no-edit", "-m", message, branch])
+        .output()
+        .context("git is not installed or not on PATH")?;
+    if out.status.success() {
+        return Ok(());
+    }
+    // A conflicted merge leaves MERGE_HEAD; put everything back.
+    let _ = run(repo, &["merge", "--abort"]);
+    let mut why = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let conflicts: Vec<&str> = stdout.lines().filter(|l| l.starts_with("CONFLICT")).collect();
+    if !conflicts.is_empty() {
+        why = format!("{}{}", conflicts.join("\n"), if why.is_empty() { String::new() } else { format!("\n{why}") });
+    }
+    if why.is_empty() {
+        why = stdout.trim().to_string();
+    }
+    bail!("git merge {branch}: {why}")
+}
+
 /// The default branch of `origin` (`main`, `master`, ...), if known.
 pub fn default_branch(repo: &Path) -> Option<String> {
     run(repo, &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"])

@@ -15,6 +15,7 @@ pub mod integrations;
 mod kanban;
 pub mod machines;
 pub mod memory_settings;
+mod race;
 pub mod skills;
 mod usage;
 
@@ -111,6 +112,11 @@ pub struct PageState {
     pub usage_rows: Arc<Vec<UsageRow>>,
     pub usage_days: u32,
     pub usage_note: Option<String>,
+    /// Claude and Codex plan limits, once read (`dove_core::quota`).
+    pub quota: Option<Vec<dove_core::quota::Quota>>,
+    pub quota_loading: bool,
+    /// Bumped by each read, so only the newest schedules the next one.
+    quota_round: u64,
     // Agents
     pub agent_terminal: Option<(HarnessKind, Entity<TerminalView>)>,
     // Artifacts
@@ -194,6 +200,9 @@ impl PageState {
             usage_rows: Arc::default(),
             usage_days: 30,
             usage_note: None,
+            quota: None,
+            quota_loading: false,
+            quota_round: 0,
             agent_terminal: None,
             artifact_kind: None,
             artifact_open: None,
@@ -226,6 +235,38 @@ impl PageState {
             let _ = this.update(cx, |s, cx| {
                 s.pages.usage_rows = Arc::new(rows);
                 cx.notify();
+            });
+        })
+        .detach();
+        self.refresh_quota(cx);
+    }
+
+    /// Read the plan limits off the UI thread (a cached answer comes back at
+    /// once), and again each time it goes stale while Usage stays open.
+    pub fn refresh_quota(&mut self, cx: &mut Context<Shell>) {
+        use dove_core::quota;
+        if let Some(q) = quota::cached(quota::MAX_AGE) {
+            self.quota = Some(q);
+        }
+        if self.quota_loading {
+            return;
+        }
+        self.quota_loading = true;
+        self.quota_round += 1;
+        let round = self.quota_round;
+        let load = cx.background_spawn(async { quota::get() });
+        cx.spawn(async move |this, cx| {
+            let q = load.await;
+            let _ = this.update(cx, |s, cx| {
+                s.pages.quota = Some(q);
+                s.pages.quota_loading = false;
+                cx.notify();
+            });
+            cx.background_executor().timer(quota::MAX_AGE).await;
+            let _ = this.update(cx, |s, cx| {
+                if s.route == crate::shell::Route::Usage && s.pages.quota_round == round {
+                    s.pages.refresh_quota(cx);
+                }
             });
         })
         .detach();

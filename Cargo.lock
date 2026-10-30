@@ -2044,6 +2044,7 @@ name = "dove-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "chrono",
  "dove-git",
  "dove-harness",
@@ -2052,6 +2053,7 @@ dependencies = [
  "flume 0.11.1",
  "parking_lot",
  "regex",
+ "reqwest",
  "serde",
  "serde_json",
  "sha2",

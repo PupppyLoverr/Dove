@@ -88,7 +88,28 @@ pub struct MachinesView {
     /// Paired devices; `None` while loading.
     paired: Option<Vec<dove_core::paired::Device>>,
     clouds: Vec<Cloud>,
+    pairing: Pairing,
     _subs: Vec<Subscription>,
+}
+
+/// The paired-devices section's state.
+#[derive(Default)]
+struct Pairing {
+    /// This computer accepts runs from devices paired with it.
+    node_on: Option<bool>,
+    switching: bool,
+    /// The code and link to show on this computer, or why there isn't one.
+    offer: Option<Result<(String, String), String>>,
+    offering: bool,
+    /// Devices allowed to run on this computer.
+    trusted: Option<Vec<dove_core::paired::Device>>,
+    confirm_revoke: Option<String>,
+    confirm_forget: Option<String>,
+    /// The other computer's link (or `<device> <code>`), pasted here.
+    input: Option<Entity<InputState>>,
+    pairing: bool,
+    /// The result of the last pairing attempt.
+    result: Option<Result<String, String>>,
 }
 
 impl MachinesView {
@@ -126,7 +147,17 @@ impl MachinesView {
                 error: None,
             });
         }
-        Self { loaded: false, generation: 0, hosts: None, paired: None, clouds, _subs: subs }
+        let pair_input = cx.new(|cx| {
+            let mut s = InputState::new(window, cx).placeholder("Paste the pairing link from the other computer");
+            s.set_editor_style(style.clone());
+            s
+        });
+        subs.push(cx.subscribe_in(&pair_input, window, |this, _, ev: &InputEvent, window, cx| match ev {
+            InputEvent::PressEnter { .. } => this.pair_now(window, cx),
+            InputEvent::Change | InputEvent::Focus | InputEvent::Blur => cx.notify(),
+        }));
+        let pairing = Pairing { input: Some(pair_input), ..Default::default() };
+        Self { loaded: false, generation: 0, hosts: None, paired: None, clouds, pairing, _subs: subs }
     }
 
     /// Start discovery and probes the first time the page is shown.
@@ -192,6 +223,7 @@ impl MachinesView {
 
         // Paired devices (and whether this build can pair).
         self.paired = None;
+        self.refresh_pairing(cx);
         let paired = cx.background_spawn(async move { dove_core::paired::devices() });
         cx.spawn(async move |this, cx| {
             let devices = paired.await;
@@ -762,27 +794,302 @@ impl MachinesView {
             .into_any_element()
     }
 
-    /// Paired devices: other computers on the user's account running
-    /// Keplorayx as a machine (or `dove node serve`), listed with whether
-    /// they are online. Pairing itself is enabled once the build has it.
-    fn paired_devices_section(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
-        let pair = ctl::button_sm(t, "mach-pair", "Pair a device", Tone::Filled);
-        let pair = if dove_core::paired::pairing_available() {
-            pair.on_click(cx.listener(|this, _, window, cx| this.start_pairing(window, cx)))
-        } else {
-            ctl::disabled(pair, "Pairing is being set up")
-        };
-        let mut card = page::card(t).child(
-            page::row(t, true)
-                .child(page::row_tile(t, icons::LINK_CHAIN, None))
-                .child(page::row_text(
-                    t,
-                    "Run agents on your other computers",
-                    "Pair a Mac, a desktop or a home server signed in to the same Woozlit account. It connects \
-                     out, so no ports are opened, and its threads keep running when this computer sleeps.",
-                ))
-                .child(pair),
+    /// Re-read whether this computer is a machine and who may use it.
+    fn refresh_pairing(&mut self, cx: &mut Context<Self>) {
+        if !dove_core::paired::pairing_available() {
+            return;
+        }
+        let task = cx
+            .background_spawn(async move { (dove_core::paired::node_enabled(), dove_core::paired::trusted_devices()) });
+        cx.spawn(async move |this, cx| {
+            let (on, trusted) = task.await;
+            let _ = this.update(cx, |v, cx| {
+                v.pairing.node_on = Some(on);
+                v.pairing.trusted = Some(trusted);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Turn "Use this computer as a machine" on or off. On also turns on
+    /// Remote control, whose sidecar is what answers the relay.
+    fn set_node(&mut self, on: bool, cx: &mut Context<Self>) {
+        if self.pairing.switching {
+            return;
+        }
+        self.pairing.switching = true;
+        if on && let Some(remote) = crate::remote::Remote::global(cx) {
+            remote.update(cx, |r, cx| {
+                if !r.enabled() {
+                    r.set_enabled(true, cx);
+                }
+            });
+        }
+        if !on {
+            self.pairing.offer = None;
+        }
+        let task =
+            cx.background_spawn(async move { dove_core::paired::set_node_enabled(on).map_err(|e| format!("{e:#}")) });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |v, cx| {
+                v.pairing.switching = false;
+                match result {
+                    Ok(()) => v.pairing.node_on = Some(on),
+                    Err(e) => v.pairing.offer = Some(Err(format!("Could not change this: {e}"))),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// Show a fresh single-use code and link for another computer to pair.
+    fn show_offer(&mut self, cx: &mut Context<Self>) {
+        if self.pairing.offering {
+            return;
+        }
+        self.pairing.offering = true;
+        let task = cx.background_spawn(async move { dove_core::paired::pairing_offer().map_err(|e| format!("{e:#}")) });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |v, cx| {
+                v.pairing.offering = false;
+                if result.is_ok() {
+                    v.pairing.node_on = Some(true);
+                }
+                v.pairing.offer = Some(result);
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// Pair with the computer whose link (or `<device> <code>`) was pasted.
+    fn pair_now(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(input) = self.pairing.input.clone() else { return };
+        let text = input.read(cx).value().trim().to_string();
+        if text.is_empty() || self.pairing.pairing {
+            return;
+        }
+        self.pairing.pairing = true;
+        self.pairing.result = None;
+        let task = cx.background_spawn(async move {
+            let parts: Vec<&str> = text.split_whitespace().collect();
+            let result = match parts.as_slice() {
+                [uri] if uri.starts_with("keplorayx://") => dove_core::paired::pair_uri(uri),
+                [device, code] => dove_core::paired::pair(device, code),
+                _ => Err(anyhow::anyhow!("paste the pairing link the other computer shows")),
+            };
+            result.map_err(|e| format!("{e:#}"))
+        });
+        input.update(cx, |s, cx| s.set_value("", window, cx));
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |v, cx| {
+                v.pairing.pairing = false;
+                v.pairing.result =
+                    Some(result.map(|()| "Paired. Pick it in the machine chip to run there.".to_string()));
+                v.refresh(cx);
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn revoke(&mut self, device: String, cx: &mut Context<Self>) {
+        if self.pairing.confirm_revoke.as_deref() != Some(device.as_str()) {
+            self.pairing.confirm_revoke = Some(device);
+            cx.notify();
+            return;
+        }
+        self.pairing.confirm_revoke = None;
+        let task = cx.background_spawn(async move { dove_core::paired::revoke(&device) });
+        cx.spawn(async move |this, cx| {
+            let _ = task.await;
+            let _ = this.update(cx, |v, cx| v.refresh_pairing(cx));
+        })
+        .detach();
+    }
+
+    fn forget(&mut self, device: String, cx: &mut Context<Self>) {
+        if self.pairing.confirm_forget.as_deref() != Some(device.as_str()) {
+            self.pairing.confirm_forget = Some(device);
+            cx.notify();
+            return;
+        }
+        self.pairing.confirm_forget = None;
+        let task = cx.background_spawn(async move { dove_core::paired::forget(&device) });
+        cx.spawn(async move |this, cx| {
+            let _ = task.await;
+            let _ = this.update(cx, |v, cx| v.refresh(cx));
+        })
+        .detach();
+    }
+
+    /// Paired devices: this computer as a machine (code, link, who may use
+    /// it) and the other computers this one runs agents on.
+    fn paired_devices_section(&self, t: &Theme, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        let available = dove_core::paired::pairing_available();
+        let p = &self.pairing;
+        let mut card = page::card(t).child(page::row(t, true).child(page::row_tile(t, icons::LINK_CHAIN, None)).child(
+            page::row_text(
+                t,
+                "Run agents on your other computers",
+                "Pair a Mac, a desktop or a home server signed in to the same Keplorayx account. It connects out, \
+                 so no ports are opened, and its threads keep running when this computer sleeps.",
+            ),
+        ));
+        if !available {
+            card =
+                card.child(page::row(t, false).child(
+                    div().flex_1().text_size(ty::META).text_color(t.text_faint).child(
+                        "This build doesn't include the relay client (dove-mesh-host), so pairing is unavailable.",
+                    ),
+                ));
+            return page::section(t, "Paired devices", card).into_any_element();
+        }
+
+        // This computer as a machine.
+        let on = p.node_on.unwrap_or(false);
+        let toggle = ctl::button_sm(
+            t,
+            "mach-node",
+            if on { "Turn off" } else { "Turn on" },
+            if on { Tone::Quiet } else { Tone::Filled },
         );
+        let toggle = if p.switching || p.node_on.is_none() {
+            ctl::disabled(toggle, "Checking…")
+        } else {
+            toggle.on_click(cx.listener(move |this, _, _, cx| this.set_node(!on, cx)))
+        };
+        card = card.child(page::setting_row(
+            t,
+            false,
+            "Use this computer as a machine",
+            if on {
+                "Computers you pair can run agents here. Needs Remote control signed in."
+            } else {
+                "Let your other computers run agents here. You approve each one with a code."
+            },
+            toggle,
+        ));
+        if on {
+            let show = ctl::button_sm(
+                t,
+                "mach-offer",
+                if p.offer.is_some() { "New code" } else { "Show pairing code" },
+                Tone::Filled,
+            );
+            let show = if p.offering {
+                ctl::disabled(show, "Making a code…")
+            } else {
+                show.on_click(cx.listener(|this, _, _, cx| this.show_offer(cx)))
+            };
+            let detail: AnyElement = match &p.offer {
+                Some(Ok((code, uri))) => {
+                    let copy = uri.clone();
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(6.0))
+                        .child(
+                            div()
+                                .text_size(px(22.0))
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .text_color(t.text)
+                                .child(code.clone()),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(6.0))
+                                .child(
+                                    div()
+                                        .text_size(ty::META)
+                                        .text_color(t.text_muted)
+                                        .truncate()
+                                        .max_w(px(360.0))
+                                        .child(uri.clone()),
+                                )
+                                .child(ctl::button_sm(t, "mach-offer-copy", "Copy link", Tone::Quiet).on_click(
+                                    move |_, _, cx| {
+                                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(copy.clone()))
+                                    },
+                                )),
+                        )
+                        .child(div().text_size(ty::META).text_color(t.text_faint).child(
+                            "On the other computer: Settings › Machines › Pair a device, then paste this link. \
+                             It works once, for 10 minutes.",
+                        ))
+                        .into_any_element()
+                }
+                Some(Err(e)) => div().text_size(ty::META).text_color(t.danger).child(e.clone()).into_any_element(),
+                None => div()
+                    .text_size(ty::META)
+                    .text_color(t.text_faint)
+                    .child("Show a code to pair another computer with this one.")
+                    .into_any_element(),
+            };
+            card = card.child(
+                page::row(t, false).child(div().flex_1().min_w_0().child(detail)).child(div().flex_none().child(show)),
+            );
+            for d in p.trusted.iter().flatten() {
+                let device = d.id.clone();
+                let confirming = p.confirm_revoke.as_deref() == Some(d.id.as_str());
+                let name = if d.name.is_empty() { d.id.clone() } else { d.name.clone() };
+                card = card.child(
+                    page::row(t, false)
+                        .child(page::row_tile(t, icons::MONITOR, None))
+                        .child(page::row_text(t, name, "Can run agents on this computer"))
+                        .child(
+                            ctl::button_sm(
+                                t,
+                                SharedString::from(format!("mach-revoke-{}", d.id)),
+                                if confirming { "Revoke for good" } else { "Revoke" },
+                                if confirming { Tone::Danger } else { Tone::Quiet },
+                            )
+                            .on_click(cx.listener(move |this, _, _, cx| this.revoke(device.clone(), cx))),
+                        ),
+                );
+            }
+        }
+
+        // Pair with another computer.
+        if let Some(input) = &p.input {
+            let focused = input.read(cx).focus_handle(cx).is_focused(window);
+            let empty = input.read(cx).value().trim().is_empty();
+            let pair = ctl::button_sm(t, "mach-pair", "Pair", Tone::Filled);
+            let pair = if empty {
+                ctl::disabled(pair, "Paste the link first")
+            } else if p.pairing {
+                ctl::disabled(pair, "Pairing…")
+            } else {
+                pair.on_click(cx.listener(|this, _, window, cx| this.pair_now(window, cx)))
+            };
+            let hint = match &p.result {
+                Some(Ok(m)) => m.clone(),
+                Some(Err(e)) => format!("Couldn't pair: {e}"),
+                None => "Paste the link the other computer shows under \"Use this computer as a machine\"".into(),
+            };
+            card = card.child(page::setting_row(
+                t,
+                false,
+                "Pair a device",
+                hint,
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.0))
+                    .child(ctl::text_field(input, Some(260.0), focused, t).h(px(28.0)).text_size(ty::SMALL))
+                    .child(pair),
+            ));
+        }
+
         match &self.paired {
             None if self.loaded => {
                 card = card.child(
@@ -795,23 +1102,27 @@ impl MachinesView {
                 for d in devices {
                     let (label, color) = if d.online { ("Online", t.success) } else { ("Offline", t.text_faint) };
                     let name = if d.name.is_empty() { d.id.clone() } else { d.name.clone() };
+                    let device = d.id.clone();
+                    let confirming = p.confirm_forget.as_deref() == Some(d.id.as_str());
                     card = card.child(
                         page::row(t, false)
                             .child(page::row_tile(t, icons::MONITOR, None))
-                            .child(page::row_text(t, name, "Paired device"))
-                            .child(status(label, color, t)),
+                            .child(page::row_text(t, name, "Paired computer"))
+                            .child(status(label, color, t))
+                            .child(
+                                ctl::button_sm(
+                                    t,
+                                    SharedString::from(format!("mach-forget-{}", d.id)),
+                                    if confirming { "Forget for good" } else { "Forget" },
+                                    if confirming { Tone::Danger } else { Tone::Quiet },
+                                )
+                                .on_click(cx.listener(move |this, _, _, cx| this.forget(device.clone(), cx))),
+                            ),
                     );
                 }
             }
         }
         page::section(t, "Paired devices", card).into_any_element()
-    }
-
-    /// Start pairing a device. Reached only when
-    /// `dove_core::paired::pairing_available()` is true; the pairing flow
-    /// (code and QR) plugs in here.
-    fn start_pairing(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        cx.notify();
     }
 }
 
@@ -857,6 +1168,6 @@ impl Render for MachinesView {
             .flex_col()
             .child(self.hosts_section(&t))
             .child(self.clouds_section(window, cx))
-            .child(self.paired_devices_section(&t, cx))
+            .child(self.paired_devices_section(&t, window, cx))
     }
 }

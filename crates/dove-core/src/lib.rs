@@ -26,6 +26,9 @@ pub mod digest;
 pub mod memory;
 pub mod mirror;
 pub mod orchestra;
+pub mod quota;
+pub mod race;
+pub mod spill;
 
 pub use dove_git as git;
 pub use dove_harness::Command;
@@ -1189,14 +1192,17 @@ impl Engine {
             // The terminal mirror tails a local transcript; only the chat
             // driver brings remote work back.
             remote: None,
+            search: dove_store::search::LiveIndexer::new(task.id),
         };
         let mut writer = self.store.transcript_writer(task.id).ok();
         let parser = mirror::LineParser::new(kind).since(since);
         Some(mirror::spawn_tail_resolving(self.rt.handle(), path, from, Some(resolve), parser, move |ev| {
-            recorder.record(ev, writer.as_mut());
+            let ev = spill::cap_event(recorder.store.root(), recorder.task, ev);
+            recorder.record(&ev, writer.as_mut());
             if let Some(w) = writer.as_mut() {
                 let _ = w.flush();
             }
+            ev
         }))
     }
 
@@ -1270,6 +1276,7 @@ impl Engine {
                 let host = self.task_host(task.id);
                 host.needs_sync().then(|| (host, self.task_dir(task)))
             },
+            search: dove_store::search::LiveIndexer::new(task.id),
         };
         let stops = self.stops.clone();
         let id = task.id;
@@ -1338,6 +1345,8 @@ struct Recorder {
     /// For an agent on another machine: that host and the local folder its
     /// work is brought back into after every turn.
     remote: Option<(dove_harness::host::Host, PathBuf)>,
+    /// Feeds the search index (`dove_store::search`).
+    search: dove_store::search::LiveIndexer,
 }
 
 impl Recorder {
@@ -1387,6 +1396,9 @@ impl Recorder {
                 },
                 ev = handle.events.recv_async() => {
                     let Ok(ev) = ev else { break };
+                    // Oversized tool output is stored and shown as a preview;
+                    // the whole text goes to `<data>/spill` (see `spill`).
+                    let ev = spill::cap_event(self.store.root(), self.task, ev);
                     self.record(&ev, writer.as_mut());
                     let exited = matches!(ev, AgentEvent::Exited { .. });
                     if matches!(ev, AgentEvent::TurnEnded { .. }) || exited {
@@ -1449,6 +1461,7 @@ impl Recorder {
     fn record(&mut self, ev: &AgentEvent, writer: Option<&mut dove_store::TranscriptWriter>) {
         self.memory.lock().observe(ev);
         self.attention.observe(self.task, ev);
+        self.search.observe(&self.store, ev);
         if let Some(w) = writer {
             if let Err(e) = w.append(ev) {
                 tracing::warn!("transcript append failed: {e:#}");
