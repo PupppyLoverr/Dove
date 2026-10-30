@@ -47,6 +47,7 @@ mod perf_trace;
 mod picker_memory;
 mod pr_view;
 mod pull_requests;
+mod race;
 mod remote;
 mod roll_text;
 mod settings;
@@ -322,6 +323,12 @@ fn main() {
         std::process::exit(code);
     }
     portable_home();
+    // `dove node …`: headless Keplorayx for other machines (session daemon,
+    // provider bridge, port pipe). No window, no store, no GPUI.
+    if std::env::args_os().nth(1).is_some_and(|a| a == "node") {
+        let args: Vec<String> = std::env::args().skip(2).collect();
+        std::process::exit(dove_core::node::main(&args));
+    }
     // `dove --mcp-browser`: the stdio MCP bridge agents spawn to drive the
     // in-app browser. No window, no store.
     if std::env::args_os().nth(1).is_some_and(|a| a == "--mcp-browser") {

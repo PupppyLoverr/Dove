@@ -1,18 +1,21 @@
 //! The command palette (Ctrl+K): threads, projects, agents, actions,
-//! settings rows, and files in the active thread's worktree (type `@`).
+//! settings rows, files in the active thread's worktree (type `@`), and
+//! messages in every thread's transcript (`dove_store::search`).
 //! Fuzzy-ish matching: every query word must appear, earlier and tighter
 //! matches rank higher. It sits on Zeron's `palette_card` over a light
 //! scrim and enters with the dialog motion (opacity + 2 px settle).
 
+use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use dove_core::proto::{HarnessKind, ProjectId, TaskId, TaskStatus};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement as _,
     IntoElement, KeyDownEvent, ParentElement as _, Render, ScrollHandle, SharedString, StatefulInteractiveElement as _,
-    Styled as _, Subscription, Window, div, px,
+    Styled as _, StyledText, Subscription, Window, div, px,
 };
 use gpui_base::input::{Input, InputEvent, InputState};
 
@@ -34,6 +37,18 @@ pub enum PaletteItem {
     Setting(&'static str, &'static str, &'static str),
     /// Rehearse a taught skill: (name, status label).
     Taught(String, &'static str),
+    /// A message in a thread's transcript.
+    Message(MessageHit),
+}
+
+/// A transcript search result, as the palette shows it.
+#[derive(Clone, Debug)]
+pub struct MessageHit {
+    pub task: TaskId,
+    pub title: String,
+    pub snippet: String,
+    pub matched: Option<Range<usize>>,
+    pub ts: i64,
 }
 
 impl PaletteItem {
@@ -46,6 +61,7 @@ impl PaletteItem {
             PaletteItem::File(p) => p.clone(),
             PaletteItem::Setting(_, title, section) => format!("{section}: {title}"),
             PaletteItem::Taught(name, status) => format!("Rehearse skill: {name} ({status})"),
+            PaletteItem::Message(m) => m.snippet.clone(),
         }
     }
 
@@ -58,6 +74,7 @@ impl PaletteItem {
             PaletteItem::File(..) => "File",
             PaletteItem::Setting(..) => "Setting",
             PaletteItem::Taught(..) => "Skill",
+            PaletteItem::Message(..) => "Message",
         }
     }
 }
@@ -98,7 +115,7 @@ impl Scope {
     fn admits(self, item: &PaletteItem) -> bool {
         match self {
             Self::All => !matches!(item, PaletteItem::File(_)),
-            Self::Threads => matches!(item, PaletteItem::Thread(..)),
+            Self::Threads => matches!(item, PaletteItem::Thread(..) | PaletteItem::Message(..)),
             Self::Projects => matches!(item, PaletteItem::Project(..)),
             Self::Files => matches!(item, PaletteItem::File(_)),
             Self::Actions => matches!(item, PaletteItem::Action(..) | PaletteItem::Agent(_) | PaletteItem::Taught(..)),
@@ -111,6 +128,7 @@ impl Scope {
 fn section_of(item: &PaletteItem) -> &'static str {
     match item {
         PaletteItem::Thread(..) => "Recent",
+        PaletteItem::Message(..) => "Messages",
         PaletteItem::Project(..) => "Projects",
         PaletteItem::File(_) => "Files",
         PaletteItem::Setting(..) => "Settings",
@@ -133,6 +151,21 @@ pub fn score(text: &str, query: &str) -> Option<i32> {
 }
 
 const MAX_ROWS: usize = 40;
+/// Message hits listed under the other matches.
+const MAX_MESSAGES: usize = 20;
+/// Typing pause before transcripts are searched.
+const SEARCH_DEBOUNCE: Duration = Duration::from_millis(140);
+
+/// "now", "5m", "3h", "2d" since `ts` (ms).
+fn ago(ts: i64) -> String {
+    let secs = ((dove_core::store::now_ms() - ts) / 1000).max(0);
+    match secs {
+        0..=59 => "now".into(),
+        60..=3599 => format!("{}m ago", secs / 60),
+        3600..=86_399 => format!("{}h ago", secs / 3600),
+        _ => format!("{}d ago", secs / 86_400),
+    }
+}
 
 pub struct Palette {
     items: Vec<PaletteItem>,
@@ -144,6 +177,15 @@ pub struct Palette {
     highlight: usize,
     scroll: ScrollHandle,
     focus: FocusHandle,
+    /// Searches transcripts when set.
+    store: Option<Arc<dove_core::store::Store>>,
+    /// Message hits for `messages_for`.
+    messages: Vec<PaletteItem>,
+    messages_for: String,
+    /// Bumped per keystroke; only the newest search lands.
+    search_round: u64,
+    /// The first search is reading old transcripts into the index.
+    indexing: bool,
     _subs: Vec<Subscription>,
 }
 
@@ -168,6 +210,7 @@ impl Palette {
             InputEvent::Change => {
                 this.query = input.read(cx).value().to_string();
                 this.filter();
+                this.search_messages(cx);
                 cx.notify();
             }
             InputEvent::PressEnter { .. } => this.pick(cx),
@@ -196,10 +239,83 @@ impl Palette {
             highlight: 0,
             scroll: ScrollHandle::new(),
             focus: cx.focus_handle(),
+            store: None,
+            messages: Vec::new(),
+            messages_for: String::new(),
+            search_round: 0,
+            indexing: false,
             _subs: subs,
         };
         this.filter();
         this
+    }
+
+    /// Also search every thread's messages.
+    pub fn with_messages(mut self, store: Arc<dove_core::store::Store>) -> Self {
+        self.store = Some(store);
+        self
+    }
+
+    /// Search transcripts for the query after a short pause, off the UI
+    /// thread. The first search of a run also indexes transcripts written
+    /// before the index existed.
+    fn search_messages(&mut self, cx: &mut Context<Self>) {
+        let Some(store) = self.store.clone() else { return };
+        self.search_round += 1;
+        let round = self.search_round;
+        let q = self.query.trim().to_string();
+        if q.starts_with('@') || q.chars().count() < 2 {
+            self.messages.clear();
+            self.messages_for = q;
+            return;
+        }
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(SEARCH_DEBOUNCE).await;
+            let current = this.update(cx, |p, cx| {
+                let current = p.search_round == round;
+                if current && !store.search_backfilled() {
+                    p.indexing = true;
+                    cx.notify();
+                }
+                current
+            });
+            if !matches!(current, Ok(true)) {
+                return;
+            }
+            let query = q.clone();
+            let hits = cx
+                .background_spawn(async move {
+                    store.backfill_search();
+                    store.search(&query, MAX_MESSAGES)
+                })
+                .await;
+            let _ = this.update(cx, |p, cx| {
+                p.indexing = false;
+                if p.search_round != round {
+                    cx.notify();
+                    return;
+                }
+                p.messages = hits
+                    .into_iter()
+                    .map(|h| {
+                        PaletteItem::Message(MessageHit {
+                            task: h.task,
+                            title: h.title,
+                            snippet: h.snippet,
+                            matched: h.matched,
+                            ts: h.ts,
+                        })
+                    })
+                    .collect();
+                p.messages_for = q;
+                // Keep the row the user had moved to.
+                let keep = p.highlight;
+                p.filter();
+                p.highlight = keep.min(p.shown.len().saturating_sub(1));
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     fn filter(&mut self) {
@@ -242,6 +358,10 @@ impl Palette {
             .collect();
         scored.sort_by_key(|e| std::cmp::Reverse(e.0));
         self.shown = scored.into_iter().take(MAX_ROWS).map(|(_, i)| i.clone()).collect();
+        // Messages follow, while they answer this query.
+        if self.messages_for == q {
+            self.shown.extend(self.messages.iter().filter(|m| scope.admits(m)).cloned());
+        }
     }
 
     fn pick(&mut self, cx: &mut Context<Self>) {
@@ -303,7 +423,37 @@ impl Palette {
             PaletteItem::Taught(..) => {
                 icon(icons::CHECKLIST).size(px(15.0)).text_color(t.text_muted).into_any_element()
             }
+            PaletteItem::Message(_) => {
+                icon(icons::CHAT_SEARCH).size(px(15.0)).text_color(t.text_muted).into_any_element()
+            }
         }
+    }
+
+    /// A message hit: the snippet with its match picked out, then the thread.
+    fn message_body(m: &MessageHit, t: &Theme) -> AnyElement {
+        let snippet = StyledText::new(m.snippet.clone()).with_highlights(m.matched.clone().map(|r| {
+            (
+                r,
+                gpui::HighlightStyle {
+                    font_weight: Some(gpui::FontWeight::SEMIBOLD),
+                    color: Some(t.text),
+                    ..Default::default()
+                },
+            )
+        }));
+        div()
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .gap(px(1.0))
+            .child(div().min_w_0().truncate().text_size(ty::BODY).text_color(t.text_muted).child(snippet))
+            .child(div().min_w_0().truncate().text_size(ty::CAPTION).text_color(t.text_faint).child(format!(
+                "{} · {}",
+                m.title,
+                ago(m.ts)
+            )))
+            .into_any_element()
     }
 }
 
@@ -375,7 +525,7 @@ impl Render for Palette {
             .flex()
             .flex_col()
             .gap(px(2.0))
-            .when(self.shown.is_empty(), |d| {
+            .when(self.shown.is_empty() && !self.indexing, |d| {
                 d.child(div().px(px(10.0)).py(px(14.0)).text_size(ty::BODY).text_color(t.text_faint).child(
                     if self.query.starts_with('@') && self.files.is_empty() {
                         "No files (open a thread first)"
@@ -388,6 +538,7 @@ impl Render for Palette {
                 let selected = i == self.highlight;
                 let item2 = item.clone();
                 // Headings only in the unfiltered "All" list.
+                let message = if let PaletteItem::Message(m) = item { Some(m) } else { None };
                 let heading = (self.scope == Scope::All && self.query.is_empty())
                     .then(|| section_of(item))
                     .filter(|h| i == 0 || section_of(&self.shown[i - 1]) != *h)
@@ -406,7 +557,7 @@ impl Render for Palette {
                     .id(("pal-row", i))
                     .role(gpui::Role::ListBoxOption)
                     .aria_selected(selected)
-                    .h(px(36.0))
+                    .h(px(if message.is_some() { 48.0 } else { 36.0 }))
                     .flex_none()
                     .px(px(10.0))
                     .flex()
@@ -418,7 +569,16 @@ impl Render for Palette {
                     .when(selected, |d| d.bg(active))
                     .when(!selected, |d| d.hover(move |s| s.bg(hover)))
                     .child(div().w(px(16.0)).flex_none().flex().justify_center().child(Self::glyph(item, &t)))
-                    .child(div().flex_1().min_w_0().truncate().text_size(ty::BODY).child(item.label()))
+                    .child(match message {
+                        Some(m) => Self::message_body(m, &t),
+                        None => div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(ty::BODY)
+                            .child(item.label())
+                            .into_any_element(),
+                    })
                     .child(
                         div()
                             .flex_none()
@@ -430,7 +590,17 @@ impl Render for Palette {
                     .on_click(cx.listener(move |_, _, _, cx| cx.emit(PaletteEvent::Pick(item2.clone()))))
                     .into_any_element();
                 heading.into_iter().chain([row])
-            }));
+            }))
+            .when(self.indexing, |d| {
+                d.child(
+                    div()
+                        .px(px(10.0))
+                        .py(px(10.0))
+                        .text_size(ty::META)
+                        .text_color(t.text_faint)
+                        .child("Indexing past threads for message search…"),
+                )
+            });
         let footer = div()
             .flex_none()
             .px(px(16.0))
@@ -482,6 +652,14 @@ mod tests {
         assert!(!Scope::Settings.admits(&thread) && !Scope::Files.admits(&thread));
         assert!(!Scope::All.admits(&PaletteItem::File("a.rs".into())));
         assert_eq!(section_of(&PaletteItem::Action("New", "x", "new")), "Actions");
+        let hit = PaletteItem::Message(MessageHit {
+            task: TaskId::new(),
+            title: "t".into(),
+            snippet: "s".into(),
+            matched: None,
+            ts: 0,
+        });
+        assert!(Scope::All.admits(&hit) && Scope::Threads.admits(&hit) && !Scope::Actions.admits(&hit));
     }
 
     #[test]

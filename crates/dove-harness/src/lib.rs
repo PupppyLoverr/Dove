@@ -11,12 +11,16 @@ pub mod catalog;
 pub mod detect;
 mod external;
 pub mod host;
+pub mod hosts;
 pub use external::defers_prompt;
 pub mod models;
+pub mod node;
 pub mod office_skills;
+pub mod paired;
 pub mod process;
 mod rpc;
 pub mod skills;
+pub mod sync;
 pub mod teach;
 pub mod title;
 pub mod tui;
@@ -148,9 +152,33 @@ fn is_memory_read(tool: &str) -> bool {
     })
 }
 
-/// ACP `mcpServers` for a session in `cwd` with key `session`.
-pub fn acp_mcp_servers(cwd: &std::path::Path, session: &str) -> serde_json::Value {
-    match tool_server(cwd, session) {
+/// [`tool_server`] for an agent running on `host`. On another machine the
+/// server is the `dove` the launcher installed there (`~/.dove/bin/dove`,
+/// see [`node::remote::ensure`]); its calls reach this app through a reverse
+/// SSH forward of the control port. WSL runs the Windows binary directly.
+/// `DOVE_CWD` stays the local folder, which is how the app finds the thread.
+pub fn tool_server_on(host: &host::Host, cwd: &std::path::Path, session: &str) -> Option<ToolServer> {
+    let mut server = tool_server(cwd, session)?;
+    if host.needs_sync() {
+        server.command = "sh".into();
+        let mut args = vec!["-c".to_string(), r#"exec "$HOME/.dove/bin/dove" "$@""#.into(), "dove".into()];
+        args.extend(server.args);
+        server.args = args;
+        // A local path means nothing there.
+        server.env.retain(|(k, _)| k != "DOVE_DATA");
+    }
+    Some(server)
+}
+
+/// The control port of the tool server this app offers, if any.
+pub fn tool_server_port() -> Option<u16> {
+    let server = TOOL_SERVER.read().ok()?.clone()?;
+    server.env.iter().find(|(k, _)| k == "DOVE_BROWSER_PORT").and_then(|(_, v)| v.parse().ok())
+}
+
+/// ACP `mcpServers` for a session in `cwd` with key `session` on `host`.
+pub fn acp_mcp_servers(host: &host::Host, cwd: &std::path::Path, session: &str) -> serde_json::Value {
+    match tool_server_on(host, cwd, session) {
         Some(s) => serde_json::json!([{
             "name": s.name,
             "command": s.command,
@@ -260,6 +288,13 @@ mod tool_server_tests {
         assert!(s.env.iter().any(|(k, v)| k == "DOVE_SESSION" && v == "abc"));
         let s = tool_server(std::path::Path::new("/tmp/x"), "").unwrap();
         assert!(!s.env.iter().any(|(k, _)| k == "DOVE_SESSION"), "no key, no variable");
+        let remote =
+            tool_server_on(&host::Host::Ssh { alias: "b".into() }, std::path::Path::new("/tmp/x"), "abc").unwrap();
+        assert_eq!(remote.command, "sh");
+        assert_eq!(remote.args[2], "dove", "runs the remote binary with the original args after it");
+        assert!(remote.env.iter().any(|(k, v)| k == "DOVE_CWD" && v == "/tmp/x"), "routing stays on the local folder");
+        let wsl = tool_server_on(&host::Host::Wsl { distro: None }, std::path::Path::new("/tmp/x"), "").unwrap();
+        assert_eq!(wsl.command, "dove");
         set_tool_server(None);
     }
 

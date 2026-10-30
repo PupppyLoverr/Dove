@@ -341,7 +341,7 @@ pub(crate) fn spawn_tail(
     path: PathBuf,
     from: u64,
     parser: LineParser,
-    on_event: impl FnMut(&AgentEvent) + Send + 'static,
+    on_event: impl FnMut(AgentEvent) -> AgentEvent + Send + 'static,
 ) -> MirrorSession {
     spawn_tail_resolving(rt, path, from, None::<fn() -> Option<PathBuf>>, parser, on_event)
 }
@@ -356,7 +356,7 @@ pub(crate) fn spawn_tail_resolving<R: Fn() -> Option<PathBuf> + Send + 'static>(
     from: u64,
     resolve: Option<R>,
     mut parser: LineParser,
-    mut on_event: impl FnMut(&AgentEvent) + Send + 'static,
+    mut on_event: impl FnMut(AgentEvent) -> AgentEvent + Send + 'static,
 ) -> MirrorSession {
     let (tx, rx) = flume::unbounded();
     let stop = Arc::new(AtomicBool::new(false));
@@ -400,7 +400,8 @@ pub(crate) fn spawn_tail_resolving<R: Fn() -> Option<PathBuf> + Send + 'static>(
             while let Some(nl) = partial.find('\n') {
                 let line: String = partial.drain(..=nl).collect();
                 for ev in parser.parse(line.trim_end()) {
-                    on_event(&ev);
+                    // The callback records the event and may cap it (spill).
+                    let ev = on_event(ev);
                     let _ = tx.send(ev);
                 }
             }
@@ -496,7 +497,7 @@ mod tests {
         std::fs::write(&path, "{\"type\":\"user\",\"message\":{\"content\":\"old\"}}\n").unwrap();
         let from = std::fs::metadata(&path).unwrap().len();
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let m = spawn_tail(rt.handle(), path.clone(), from, LineParser::new(HarnessKind::ClaudeCode), |_| {});
+        let m = spawn_tail(rt.handle(), path.clone(), from, LineParser::new(HarnessKind::ClaudeCode), |ev| ev);
         use std::io::Write as _;
         let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
         writeln!(f, "{{\"type\":\"user\",\"message\":{{\"content\":\"new\"}}}}").unwrap();

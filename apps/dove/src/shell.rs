@@ -153,6 +153,8 @@ pub enum Route {
     Help,
     Team,
     Flock,
+    /// Race and compare: past races, or one race's compare view.
+    Races,
 }
 
 impl Route {
@@ -172,6 +174,7 @@ impl Route {
             "help" => Route::Help,
             "team" => Route::Team,
             "flock" | "terminals" => Route::Flock,
+            "races" | "race" => Route::Races,
             _ => return None,
         })
     }
@@ -265,6 +268,8 @@ pub struct Shell {
     pub today: Usage,
     pub error: Option<SharedString>,
     pub pages: PageState,
+    /// Races: their records, the start sheet and the compare view's state.
+    pub race: crate::race::RaceState,
     /// Unread automation runs, for the sidebar dot.
     pub inbox_unread: usize,
     pub(crate) focus: FocusHandle,
@@ -322,8 +327,10 @@ impl Shell {
             ComposerEvent::Submit(text) => this.start(text.clone(), window, cx),
             ComposerEvent::OpenUsage => this.navigate(Route::Usage, window, cx),
             ComposerEvent::OpenVoiceSettings => this.open_settings_section("voice", window, cx),
+            ComposerEvent::OpenMachines => this.open_settings_section("machines", window, cx),
             ComposerEvent::ProjectChanged(id) => this.set_home_project(*id, cx),
             ComposerEvent::ProjectsChanged => this.reload(cx),
+            ComposerEvent::Race(text) => this.open_race_sheet(text.clone(), window, cx),
             ComposerEvent::Stop => {}
         }));
         subs.push(cx.subscribe_in(&panel, window, |this, _, ev: &SidePanelEvent, window, cx| match ev {
@@ -470,6 +477,7 @@ impl Shell {
             today: Usage::default(),
             error: None,
             pages,
+            race: Default::default(),
             inbox_unread: 0,
             focus: cx.focus_handle(),
             titlebar_drag: false,
@@ -1020,6 +1028,7 @@ impl Shell {
                 });
             }
             Route::Usage => self.pages.refresh_usage(&self.engine, cx),
+            Route::Races => self.races_shown(cx),
             _ => {}
         }
         if let Route::Thread(id) = prev
@@ -1300,6 +1309,7 @@ impl Shell {
             }
         }
         self.team_on_status(id, s);
+        self.race_on_status(id, s, cx);
         let title = self.task(id).map(|t| t.title.clone()).unwrap_or_default();
         if matches!(s, TaskStatus::Done | TaskStatus::NeedsInput | TaskStatus::Failed) {
             let (headline, tone) = match s {
@@ -1986,7 +1996,8 @@ impl Shell {
         }
         let items = self.palette_items(cx);
         let root = self.task_dir();
-        let palette = cx.new(|cx| Palette::new(items, root, window, cx));
+        let store = self.engine.store.clone();
+        let palette = cx.new(|cx| Palette::new(items, root, window, cx).with_messages(store));
         let sub = cx.subscribe_in(&palette, window, |this, _, ev: &PaletteEvent, window, cx| {
             this.palette = None;
             match ev {
@@ -2055,6 +2066,7 @@ impl Shell {
     fn run_palette(&mut self, item: PaletteItem, window: &mut Window, cx: &mut Context<Self>) {
         match item {
             PaletteItem::Thread(id, _, _) => self.open_task(id, window, cx),
+            PaletteItem::Message(hit) => self.open_task(hit.task, window, cx),
             PaletteItem::Project(id, _) => {
                 self.set_home_project(id, cx);
                 let projects = self.projects.clone();
@@ -3563,6 +3575,7 @@ impl Shell {
             Route::Automations => self.render_automations(window, cx),
             Route::PullRequests => self.prs.clone().into_any_element(),
             Route::Usage => self.render_usage_page(cx),
+            Route::Races => self.render_races_page(cx),
             Route::Archived => self.render_archived_page(cx),
             Route::Settings | Route::Agents => match self.settings.update(cx, |s, cx| s.render_content(window, cx)) {
                 Some(content) => content,
@@ -4142,6 +4155,7 @@ impl Render for Shell {
             // A page's confirmation (Threads, Archived, Kanban, Automations,
             // Team): drawn here so it stays modal whichever route is showing.
             .children(self.render_page_dialog(window, cx))
+            .children(self.render_race_sheet(window, cx))
             // An agent's sign-in or update terminal, over any page.
             .children(self.render_agent_sheet(&t, window, cx))
             .children(self.render_voice_bar(cx))

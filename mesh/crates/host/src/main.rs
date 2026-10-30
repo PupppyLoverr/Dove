@@ -9,12 +9,18 @@
 //! `interrupt` commands into the session doc; the host forwards each command to
 //! the desktop, which runs it on its own harness and reports back.
 //!
+//! Node mode ("Use this computer as a machine", `node.rs`): the sidecar also
+//! serves this device's relay room so paired computers on the same account
+//! can run processes here (`exec`) and pair with a short code (`pair`).
+//! One-shot CLI modes (`exec`, `pair`, `nodes`, `serve-node`, …) share the
+//! same data dir; see [`node::run`].
+//!
 //! Local sessions are only published while the user is signed in and has
 //! turned remote control on; nothing is uploaded otherwise.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -33,6 +39,8 @@ use zeron_doc::{
 use zeron_sync::chat_client::{ChatClient, ChatDocSink, ChatEvent, CheckpointFetcher, RowImportOutcome};
 use zeron_sync::registry::RegistryClient;
 use zeron_sync::{SyncError, UrlProvider};
+
+mod node;
 
 const DEFAULT_EDGE: &str = zeron_client::auth::PRODUCTION_EDGE_URL;
 const PRESENCE_EVERY: Duration = Duration::from_secs(20);
@@ -74,11 +82,28 @@ enum Op {
         ok: bool,
         resolution: Option<String>,
     },
+    /// Node mode on/off (persisted in `node.json`).
+    NodeEnable {
+        enabled: bool,
+    },
+    /// A fresh single-use pairing code + `keplorayx://pair` URI.
+    PairCode,
+    /// Devices paired with this computer.
+    Paired,
+    Revoke {
+        device: String,
+    },
     Shutdown,
 }
 
+/// One-shot CLI modes keep stdout for their own output.
+static QUIET: AtomicBool = AtomicBool::new(false);
+
 fn emit(value: Value) {
     use std::io::Write;
+    if QUIET.load(Ordering::Relaxed) {
+        return;
+    }
     let mut out = std::io::stdout().lock();
     let _ = writeln!(out, "{value}");
     let _ = out.flush();
@@ -151,6 +176,17 @@ impl Bearer {
             return Err(SyncError::JoinRefused("signed out".into()));
         };
         let now = chrono::Utc::now().timestamp() + 60;
+        if woozlit::jwt_expired(&account.access_token, now) {
+            // Another process (the sidecar or a CLI) may have refreshed
+            // already; adopt its tokens rather than spending ours.
+            if let Some(disk) = std::fs::read(&self.path)
+                .ok()
+                .and_then(|raw| serde_json::from_slice::<Account>(&raw).ok())
+                .filter(|disk| disk.user_id == account.user_id && !woozlit::jwt_expired(&disk.access_token, now))
+            {
+                *account = disk;
+            }
+        }
         if woozlit::jwt_expired(&account.access_token, now) && !account.refresh_token.is_empty() {
             let tokens = woozlit::woozlit_refresh(&account.refresh_token)
                 .await
@@ -163,6 +199,41 @@ impl Bearer {
         }
         Ok(account.access_token.clone())
     }
+}
+
+/// The account bearer as the relay's token source.
+struct BearerToken(Bearer);
+
+#[async_trait::async_trait]
+impl zeron_rpc::TokenSource for BearerToken {
+    async fn token(&self) -> Result<String, zeron_rpc::TokenError> {
+        if self.0.account.lock().await.is_none() {
+            return Err(zeron_rpc::TokenError::SignedOut);
+        }
+        self.0.get().await.map_err(|e| zeron_rpc::TokenError::TemporarilyUnavailable(e.to_string()))
+    }
+}
+
+/// The RPC surface a node exposes through its relay: only the readiness
+/// probe. Work arrives on the `exec` stream kind, gated by pairing.
+struct NodeRpc;
+
+#[async_trait::async_trait]
+impl zeron_rpc::RpcService for NodeRpc {
+    async fn handle(&self, method: &str, _params: Value) -> Result<zeron_rpc::RpcReply, zeron_rpc::RpcError> {
+        if method == zeron_rpc::methods::LIST_HARNESSES {
+            Ok(zeron_rpc::RpcReply::Value(json!([])))
+        } else {
+            Err(zeron_rpc::RpcError::UnknownMethod(method.into()))
+        }
+    }
+}
+
+/// Serve this device's relay room with `exec`/`pair` gated by `store`.
+fn spawn_node_relay(edge: &str, store: &Arc<node::NodeStore>, bearer: Bearer) -> zeron_rpc::HostRelay {
+    let mut config = zeron_rpc::HostRelayConfig::new(edge, store.device_id(), Arc::new(BearerToken(bearer)));
+    config.streams = Some(zeron_rpc::node_exec::ExecStreams::new(store.clone()));
+    zeron_rpc::HostRelay::spawn(config, Arc::new(NodeRpc), Arc::new(|_| false))
 }
 
 fn ws_base(edge: &str) -> String {
@@ -307,6 +378,8 @@ struct Host {
     applied_tx: mpsc::UnboundedSender<String>,
     pending_sign_in: Option<String>,
     sign_in_tx: mpsc::UnboundedSender<(String, String)>,
+    node_store: Arc<node::NodeStore>,
+    node_relay: Option<zeron_rpc::HostRelay>,
 }
 
 impl Host {
@@ -325,7 +398,34 @@ impl Host {
             "edge": self.edge,
             "connected": self.registry_client.is_some(),
             "chats": self.rooms.len(),
+            "node": { "enabled": self.node_store.enabled(), "serving": self.node_relay.is_some() },
         }));
+    }
+
+    /// Start or stop serving the relay to match `node.json` (which a CLI
+    /// may have changed). Returns whether anything changed.
+    fn sync_node(&mut self) -> bool {
+        let want = self.node_store.enabled();
+        match (want, self.node_relay.is_some()) {
+            (true, false) => {
+                self.node_relay = Some(spawn_node_relay(&self.edge, &self.node_store, self.bearer.clone()));
+                true
+            }
+            (false, true) => {
+                // Dropping the relay closes the socket and hangs up running processes.
+                self.node_relay = None;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn emit_node(&self) {
+        emit(json!({ "ev": "node", "enabled": self.node_store.enabled(), "serving": self.node_relay.is_some() }));
+    }
+
+    fn emit_paired(&self) {
+        emit(json!({ "ev": "paired", "devices": self.node_store.trusted() }));
     }
 
     async fn sign_in(&mut self) -> Result<()> {
@@ -689,34 +789,72 @@ fn percent_decode(value: &str) -> String {
 }
 
 fn hostname() -> String {
-    std::process::Command::new("scutil")
-        .args(["--get", "ComputerName"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
-        .filter(|s| !s.is_empty())
-        .or_else(|| std::env::var("HOSTNAME").ok())
+    let run = |program: &str, args: &[&str]| {
+        std::process::Command::new(program)
+            .args(args)
+            .stderr(std::process::Stdio::null())
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
+            .filter(|s| !s.is_empty())
+    };
+    let name = if cfg!(target_os = "macos") { run("scutil", &["--get", "ComputerName"]) } else { None };
+    name.or_else(|| std::env::var("HOSTNAME").ok().filter(|s| !s.is_empty()))
+        .or_else(|| {
+            std::fs::read_to_string("/proc/sys/kernel/hostname")
+                .ok()
+                .map(|s| s.trim().to_owned())
+                .filter(|s| !s.is_empty())
+        })
+        .or_else(|| std::env::var("COMPUTERNAME").ok().filter(|s| !s.is_empty()))
+        .or_else(|| run("hostname", &[]))
         .unwrap_or_else(|| "Dove desktop".into())
 }
+
+/// Flags that take no value.
+const SWITCHES: &[&str] = &["json", "no-code"];
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
     let mut data_dir = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default().join(".dove/mesh");
     let mut edge = std::env::var("DOVE_EDGE_URL").unwrap_or_else(|_| DEFAULT_EDGE.into());
+    let mut positionals = Vec::new();
+    let mut flags = HashMap::new();
+    let mut argv = Vec::new();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--data-dir" => data_dir = args.next().map(PathBuf::from).context("--data-dir")?,
             "--edge" => edge = args.next().context("--edge")?,
-            _ => {}
+            "--" => {
+                argv = args.by_ref().collect();
+                break;
+            }
+            flag if flag.starts_with("--") => {
+                let name = flag.trim_start_matches("--");
+                let value = if SWITCHES.contains(&name) { String::new() } else { args.next().unwrap_or_default() };
+                flags.insert(name.to_owned(), value);
+            }
+            _ => positionals.push(arg),
         }
+    }
+    if !positionals.is_empty() {
+        QUIET.store(true, Ordering::Relaxed);
+        let cli = node::Cli { paths: Paths::new(&data_dir), data_dir, edge, positionals, flags, argv };
+        let code = node::run(cli).await;
+        use std::io::Write;
+        let _ = std::io::stdout().flush();
+        // Exit now: a pending read on stdin would otherwise hold the runtime open.
+        std::process::exit(code);
     }
     let paths = Paths::new(&data_dir);
     let account: Option<Account> = std::fs::read(&paths.account).ok().and_then(|raw| serde_json::from_slice(&raw).ok());
     let device_id = device_id(&paths)?;
     let (applied_tx, mut applied_rx) = mpsc::unbounded_channel();
     let (sign_in_tx, mut sign_in_rx) = mpsc::unbounded_channel();
+    let node_store = node::NodeStore::new(&data_dir, device_id.clone(), hostname());
+    node_store.on_paired(|device, name| emit(json!({ "ev": "node_paired", "device": device, "name": name })));
     let mut host = Host {
         edge,
         bearer: Bearer { account: Arc::new(tokio::sync::Mutex::new(account)), path: paths.account.clone() },
@@ -730,7 +868,10 @@ async fn main() -> Result<()> {
         applied_tx,
         pending_sign_in: None,
         sign_in_tx,
+        node_store,
+        node_relay: None,
     };
+    host.sync_node();
     if let Err(err) = host.connect_registry().await {
         emit_error("connect", err);
     }
@@ -738,6 +879,7 @@ async fn main() -> Result<()> {
 
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
     let mut presence = tokio::time::interval(PRESENCE_EVERY);
+    let mut node_poll = tokio::time::interval(Duration::from_secs(2));
     loop {
         tokio::select! {
             line = lines.next_line() => {
@@ -758,6 +900,23 @@ async fn main() -> Result<()> {
                         host.message(chat, id, role, text, streaming).await,
                     Op::CommandDone { chat, id, ok, resolution } =>
                         host.command_done(&chat, &id, ok, resolution.as_deref()),
+                    Op::NodeEnable { enabled } => match host.node_store.set_enabled(enabled) {
+                        Ok(()) => { host.sync_node(); host.emit_node(); Ok(()) }
+                        Err(e) => Err(anyhow!(e)),
+                    },
+                    Op::PairCode => match host.node_store.offer() {
+                        Ok(offer) => {
+                            emit(json!({ "ev": "pair_code", "code": offer.code, "uri": offer.uri,
+                                         "expiresAt": offer.expires_at, "device": host.device_id }));
+                            Ok(())
+                        }
+                        Err(e) => Err(anyhow!(e)),
+                    },
+                    Op::Paired => { host.emit_paired(); Ok(()) }
+                    Op::Revoke { device } => match host.node_store.revoke(&device) {
+                        Ok(_) => { host.emit_paired(); Ok(()) }
+                        Err(e) => Err(anyhow!(e)),
+                    },
                     Op::Shutdown => break,
                 };
                 if let Err(err) = result { emit_error("op", err); }
@@ -767,6 +926,9 @@ async fn main() -> Result<()> {
                 if let Err(err) = host.complete_sign_in(state, token).await {
                     emit_error("sign_in", format!("{err:#}"));
                 }
+            }
+            _ = node_poll.tick() => {
+                if host.sync_node() { host.emit_node(); }
             }
             _ = presence.tick() => {
                 if let Some(client) = &host.registry_client {

@@ -164,6 +164,8 @@ These are planning numbers, not forecasts. They only hold if activation and conv
 
 ## 9. Hermes Agent analysis (`Downloads/cu-research/hermes-agent`)
 
+> Superseded where they disagree by [ENVIRONMENTS.md](ENVIRONMENTS.md) §8, from `hermes-agent@ef75bc7`: Hermes now does integrate Cua Spaces (Cua's own plugin), and `file_sync.py` never syncs the project.
+
 **Cua: Hermes does not integrate Cua Spaces.** Its only Cua use is the local `cua-driver` binary for background computer use (`tools/computer_use/cua_backend*.py`, `plugins/computer_use/cua/`, installed by `hermes computer-use install`). Its "Bot Desktop" is a headless Xfce/TigerVNC screen on the gateway host or inside the Docker/SSH sandbox, streamed to Hermes Desktop for human takeover (logins, 2FA). **Keplorayx driving Cua Spaces directly (local, AWS, GCP, Hetzner, Modal) is a feature Hermes does not have.**
 
 **Execution backends** (`tools/environments/`, chosen by `terminal.backend`): local, ssh (ControlMaster, except on Windows), docker (egress control, cwd mount off by default), modal and daytona and vercel_sandbox (user's own key, snapshot/resume), managed_modal (paid via Nous), singularity as a plugin. `BaseEnvironment` spawns a fresh `bash -c` per command and re-sources a captured shell snapshot; `file_sync.py` pushes files to remote sandboxes; `lifetime_seconds` defaults to 300.

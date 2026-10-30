@@ -53,7 +53,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 /// that races the reaper loses. The frame is 4 bytes and never wakes the DO, so
 /// the only cost of shortening the interval is that the host stays reachable —
 /// and a tight interval is what lets the silence lease below stay short.
-const PING_INTERVAL: Duration = Duration::from_secs(10);
+pub(crate) const PING_INTERVAL: Duration = Duration::from_secs(10);
 /// Silence lease: every ping elicits an auto-pong, so a healthy socket sees
 /// inbound traffic at least once per `PING_INTERVAL`. No inbound frame for a
 /// couple of intervals plus grace = dead socket (half-open TCP after NAT
@@ -63,7 +63,7 @@ const PING_INTERVAL: Duration = Duration::from_secs(10);
 /// an unnoticed drop. Must stay well under the relay's own host-liveness
 /// window (`HOST_LIVENESS_MS`, edge/src/device-room.ts) so a host replaces
 /// its dead socket before the relay gives up on the device.
-const SILENCE_LEASE: Duration = Duration::from_secs(25);
+pub(crate) const SILENCE_LEASE: Duration = Duration::from_secs(25);
 /// App-level end-to-end liveness for the CLIENT link. The transport lease
 /// above proves only the client↔edge leg — the DO's auto-pong answers from
 /// the edge, so a link whose edge↔host leg is dead still looks healthy and
@@ -74,7 +74,7 @@ const SILENCE_LEASE: Duration = Duration::from_secs(25);
 /// before = zombie relay path → drop and redial. Feature-detected: a link
 /// that never echoed (old host) keeps the transport-lease-only behavior, and
 /// inbound RPC frames count as echoes (end-to-end proof either way).
-const ECHO_KIND: &str = "echo";
+pub(crate) const ECHO_KIND: &str = "echo";
 const ECHO_DEADLINE: Duration = Duration::from_secs(20);
 
 // Test seam: the consts above stay the production truth; integration tests
@@ -284,6 +284,26 @@ pub type NudgeHandler = Arc<dyn Fn(String) -> bool + Send + Sync>;
 /// enters the dispatch loop — the engine's pairing gate hooks in here.
 pub type ConnWrapper = Arc<dyn Fn(&str, Arc<dyn RpcService>) -> Arc<dyn RpcService> + Send + Sync>;
 
+/// Stream kinds served beside RPC (e.g. [`crate::node_exec`]'s `exec` and
+/// `pair`). The relay opens one [`RelayStreamSession`] per host socket and
+/// drops it when the socket ends, so per-socket state (running processes)
+/// dies with the session.
+pub trait RelayStreams: Send + Sync + 'static {
+    /// `out` carries encoded frames to the relay; every frame must be
+    /// addressed with `to = connId`.
+    fn session(&self, out: mpsc::Sender<Vec<u8>>) -> Box<dyn RelayStreamSession>;
+}
+
+pub trait RelayStreamSession: Send {
+    /// Whether this session serves frames of `kind`.
+    fn handles(&self, kind: &str) -> bool;
+    /// A frame of a handled kind from client conn `header.from`. Called on
+    /// the relay's dispatch loop: it must not block.
+    fn frame(&mut self, header: DeviceFrameHeader, payload: Vec<u8>);
+    /// The client conn went away (`client_closed` / `client_gone`).
+    fn conn_closed(&mut self, conn_id: &str);
+}
+
 pub struct HostRelayConfig {
     /// Edge base URL (`http(s)://…`; rewritten to `ws(s)` for the socket).
     pub edge_url: String,
@@ -294,6 +314,8 @@ pub struct HostRelayConfig {
     /// Optional per-conn service wrapper (e.g. the phone-pairing gate). When
     /// set, every client conn's RPC surface passes through it first.
     pub wrap_conn: Option<ConnWrapper>,
+    /// Optional non-RPC stream kinds (see [`RelayStreams`]).
+    pub streams: Option<Arc<dyn RelayStreams>>,
 }
 
 impl HostRelayConfig {
@@ -308,6 +330,7 @@ impl HostRelayConfig {
             token,
             retry: Duration::from_secs(5),
             wrap_conn: None,
+            streams: None,
         }
     }
 }
@@ -351,8 +374,13 @@ impl HostRelay {
                         let url = format!("{url}&nudgeAck=1");
                         let started = tokio::time::Instant::now();
                         let outcome = {
-                            let session =
-                                host_session(&url, &service, &on_nudge, &config.wrap_conn);
+                            let session = host_session(
+                                &url,
+                                &service,
+                                &on_nudge,
+                                &config.wrap_conn,
+                                &config.streams,
+                            );
                             tokio::pin!(session);
                             loop {
                                 tokio::select! {
@@ -485,6 +513,7 @@ async fn host_session(
     service: &Arc<dyn RpcService>,
     on_nudge: &NudgeHandler,
     wrap_conn: &Option<ConnWrapper>,
+    streams: &Option<Arc<dyn RelayStreams>>,
 ) -> Result<(), RpcError> {
     let ws = zeron_sync::dial::connect_ws(url)
         .await
@@ -502,9 +531,13 @@ async fn host_session(
         SILENCE_LEASE,
     );
     let mut conns: HashMap<String, VirtualConn> = HashMap::new();
+    let mut extra = streams.as_ref().map(|s| s.session(out_tx.clone()));
     let dispatch = async {
         while let Some(bytes) = in_rx.recv().await {
-            handle_host_frame(&bytes, &mut conns, service, &out_tx, on_nudge, wrap_conn).await;
+            handle_host_frame(
+                &bytes, &mut conns, service, &out_tx, on_nudge, wrap_conn, &mut extra,
+            )
+            .await;
         }
     };
     // Poll the transport even when a virtual RPC connection is backpressured.
@@ -516,7 +549,7 @@ async fn host_session(
     Ok(())
 }
 
-fn binary_frame(frame: WsMessage) -> Option<Vec<u8>> {
+pub(crate) fn binary_frame(frame: WsMessage) -> Option<Vec<u8>> {
     match frame {
         WsMessage::Binary(bytes) => Some(bytes),
         _ => None,
@@ -530,6 +563,7 @@ async fn handle_host_frame(
     out_tx: &mpsc::Sender<Vec<u8>>,
     on_nudge: &NudgeHandler,
     wrap_conn: &Option<ConnWrapper>,
+    extra: &mut Option<Box<dyn RelayStreamSession>>,
 ) {
     let (header, payload) = match decode_device_frame(bytes) {
         Ok(frame) => frame,
@@ -545,6 +579,9 @@ async fn handle_host_frame(
         if let Some(conn_id) = header.from.as_deref().or(header.to.as_deref()) {
             tracing::debug!(conn = %conn_id, %code, "device-room: client conn torn down");
             conns.remove(conn_id);
+            if let Some(extra) = extra.as_mut() {
+                extra.conn_closed(conn_id);
+            }
         }
         return;
     }
@@ -589,7 +626,13 @@ async fn handle_host_frame(
         return;
     }
     if header.k != RPC_KIND {
-        return; // future stream kinds (term, tunnel)
+        if header.from.is_some()
+            && let Some(extra) = extra.as_mut()
+            && extra.handles(&header.k)
+        {
+            extra.frame(header, payload);
+        }
+        return; // other stream kinds (term, tunnel)
     }
     let Some(from) = header.from else {
         return;

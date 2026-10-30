@@ -26,14 +26,20 @@ pub mod digest;
 pub mod memory;
 pub mod mirror;
 pub mod orchestra;
+pub mod quota;
+pub mod race;
+pub mod spill;
 
 pub use dove_git as git;
 pub use dove_harness::Command;
 pub use dove_harness::detect as harness_detect;
 pub use dove_harness::host;
+pub use dove_harness::hosts;
 pub use dove_harness::is_supported as harness_supported;
 pub use dove_harness::models;
+pub use dove_harness::node;
 pub use dove_harness::office_skills;
+pub use dove_harness::paired;
 pub use dove_harness::process as harness_process;
 pub use dove_harness::skills;
 pub use dove_harness::teach;
@@ -281,6 +287,23 @@ pub fn supports_add_dirs(kind: HarnessKind) -> bool {
 
 /// How an event moves a task's status. Shared by the recorder and any UI that
 /// wants to update optimistically from the same stream.
+/// A TUI's arguments minus flags that point at files on this machine
+/// (`--mcp-config <path>`, and `--strict-mcp-config` that goes with it).
+fn without_local_config(args: &[String]) -> Vec<String> {
+    let mut out = Vec::with_capacity(args.len());
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--mcp-config" => {
+                it.next();
+            }
+            "--strict-mcp-config" => {}
+            _ => out.push(a.clone()),
+        }
+    }
+    out
+}
+
 pub fn next_status(event: &AgentEvent) -> Option<TaskStatus> {
     match event {
         AgentEvent::UserMessage { .. } | AgentEvent::PermissionResolved { .. } => Some(TaskStatus::Running),
@@ -1088,7 +1111,15 @@ impl Engine {
             add_dirs: &run.add_dirs,
             session: &session,
         };
-        Ok(tui::command(task.harness, &program, &cwd, &spec))
+        let mut cmd = tui::command(task.harness, &program, &cwd, &spec);
+        let host = self.task_host(task.id);
+        if !host.is_local() {
+            // The launcher wakes and syncs the host, then runs the TUI there
+            // with a TTY. Config files written here mean nothing there.
+            cmd.args = without_local_config(&cmd.args);
+            cmd.program = dove_harness::host::launcher(&host, &cmd.program)?;
+        }
+        Ok(cmd)
     }
 
     /// An agent's TUI for Flock: a fresh session in `cwd`, with Dove's tools
@@ -1158,14 +1189,20 @@ impl Engine {
             shared: self.shared.clone(),
             drivers: self.drivers.clone(),
             memory: self.memory_session(task),
+            // The terminal mirror tails a local transcript; only the chat
+            // driver brings remote work back.
+            remote: None,
+            search: dove_store::search::LiveIndexer::new(task.id),
         };
         let mut writer = self.store.transcript_writer(task.id).ok();
         let parser = mirror::LineParser::new(kind).since(since);
         Some(mirror::spawn_tail_resolving(self.rt.handle(), path, from, Some(resolve), parser, move |ev| {
-            recorder.record(ev, writer.as_mut());
+            let ev = spill::cap_event(recorder.store.root(), recorder.task, ev);
+            recorder.record(&ev, writer.as_mut());
             if let Some(w) = writer.as_mut() {
                 let _ = w.flush();
             }
+            ev
         }))
     }
 
@@ -1235,6 +1272,11 @@ impl Engine {
             shared: self.shared.clone(),
             drivers: self.drivers.clone(),
             memory: self.memory_session(task),
+            remote: {
+                let host = self.task_host(task.id);
+                host.needs_sync().then(|| (host, self.task_dir(task)))
+            },
+            search: dove_store::search::LiveIndexer::new(task.id),
         };
         let stops = self.stops.clone();
         let id = task.id;
@@ -1272,14 +1314,19 @@ impl Engine {
     }
 
     fn memory_session(&self, task: &Task) -> memory::Shared {
-        let cwd = task.worktree.clone().unwrap_or_else(|| {
+        memory::Session::new(self.store.clone(), task.id, task.project_id, task.harness, self.task_dir(task))
+    }
+
+    /// The local folder a task's agent works in: its worktree, else the
+    /// project folder.
+    fn task_dir(&self, task: &Task) -> PathBuf {
+        task.worktree.clone().unwrap_or_else(|| {
             self.store
                 .projects()
                 .ok()
                 .and_then(|ps| ps.into_iter().find(|p| p.id == task.project_id).map(|p| p.path))
                 .unwrap_or_default()
-        });
-        memory::Session::new(self.store.clone(), task.id, task.project_id, task.harness, cwd)
+        })
     }
 }
 
@@ -1295,6 +1342,11 @@ struct Recorder {
     drivers: Arc<parking_lot::Mutex<HashMap<TaskId, Driver>>>,
     /// Memory recall/capture for this session.
     memory: memory::Shared,
+    /// For an agent on another machine: that host and the local folder its
+    /// work is brought back into after every turn.
+    remote: Option<(dove_harness::host::Host, PathBuf)>,
+    /// Feeds the search index (`dove_store::search`).
+    search: dove_store::search::LiveIndexer,
 }
 
 impl Recorder {
@@ -1344,8 +1396,14 @@ impl Recorder {
                 },
                 ev = handle.events.recv_async() => {
                     let Ok(ev) = ev else { break };
+                    // Oversized tool output is stored and shown as a preview;
+                    // the whole text goes to `<data>/spill` (see `spill`).
+                    let ev = spill::cap_event(self.store.root(), self.task, ev);
                     self.record(&ev, writer.as_mut());
                     let exited = matches!(ev, AgentEvent::Exited { .. });
+                    if matches!(ev, AgentEvent::TurnEnded { .. }) || exited {
+                        self.pull_remote_work();
+                    }
                     // Free the chat driver before the UI sees Exited, so the
                     // terminal can claim this same session on the next tick.
                     if exited {
@@ -1374,6 +1432,25 @@ impl Recorder {
         self.release_chat_driver();
     }
 
+    /// Bring the agent's edits on its remote host back into the local folder
+    /// (`dove_harness::sync::pull`), so the diff, history and file views show
+    /// them. Off the async workers; overwrites nothing changed locally.
+    fn pull_remote_work(&self) {
+        let Some((host, local)) = self.remote.clone() else { return };
+        let task = self.task;
+        tokio::task::spawn_blocking(move || {
+            let dir = host.remote_dir(&local);
+            match dove_harness::sync::pull(&host, &local, &dir) {
+                Ok(outcome) => {
+                    if let Some(note) = outcome.note(&host, &dir, false) {
+                        tracing::info!("{task}: {note}");
+                    }
+                }
+                Err(err) => tracing::warn!("{task}: bringing work back from {} failed: {err:#}", host.label()),
+            }
+        });
+    }
+
     fn release_chat_driver(&self) {
         let mut d = self.drivers.lock();
         if d.get(&self.task) == Some(&Driver::Chat) {
@@ -1384,6 +1461,7 @@ impl Recorder {
     fn record(&mut self, ev: &AgentEvent, writer: Option<&mut dove_store::TranscriptWriter>) {
         self.memory.lock().observe(ev);
         self.attention.observe(self.task, ev);
+        self.search.observe(&self.store, ev);
         if let Some(w) = writer {
             if let Err(e) = w.append(ev) {
                 tracing::warn!("transcript append failed: {e:#}");
@@ -1694,5 +1772,16 @@ mod persona_tests {
         assert!(sent.contains("Be terse."));
         assert_eq!(strip_persona(&sent), "Fix the login bug");
         assert_eq!(strip_persona("plain"), "plain");
+    }
+}
+
+#[cfg(test)]
+mod remote_tui_tests {
+    #[test]
+    fn local_config_paths_are_dropped() {
+        let a: Vec<String> = ["--resume", "abc", "--strict-mcp-config", "--mcp-config", "/tmp/x.json", "--model", "m"]
+            .map(String::from)
+            .to_vec();
+        assert_eq!(super::without_local_config(&a), ["--resume", "abc", "--model", "m"].map(String::from).to_vec());
     }
 }

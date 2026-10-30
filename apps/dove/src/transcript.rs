@@ -136,6 +136,9 @@ pub struct Tool {
     /// Lines of a long output left out between its head and tail (the whole
     /// text is on disk; see [`compact_output`]).
     pub elided: usize,
+    /// Where the whole of an output too large to record went (the engine
+    /// kept a preview; see `dove_core::spill`).
+    pub spill: Option<dove_core::spill::Spilled>,
     /// Byte offset of the result in the transcript, when replayed.
     pub disk: Option<u64>,
     pub error: bool,
@@ -1032,6 +1035,7 @@ impl Chat {
                         kind,
                         output: None,
                         elided: 0,
+                        spill: None,
                         disk: None,
                         error: false,
                         diff: diff_from_input(&title, &input).map(Arc::new),
@@ -1082,9 +1086,11 @@ impl Chat {
                                 self.running_agents.remove(p);
                             }
                         }
-                        let (out, elided) = compact_output(&output);
+                        let (body, spill) = dove_core::spill::split(&output);
+                        let (out, elided) = compact_output(body);
                         t.output = Some(out);
                         t.elided = elided;
+                        t.spill = spill;
                         t.disk = disk;
                         t.error = is_error;
                         t.took = t.started.map(|s| s.elapsed());
@@ -2491,7 +2497,7 @@ impl TaskView {
                     if let Some(t) = v.chat.tool_mut(&call)
                         && t.full
                     {
-                        t.output = Some(SharedString::from(out.to_string()));
+                        t.output = Some(SharedString::from(dove_core::spill::split(&out).0.to_string()));
                         t.elided = 0;
                     }
                     if let Some(row) = row {
@@ -3902,6 +3908,33 @@ impl TaskView {
                 })
                 .child("Show less")
         });
+        // The engine kept only a preview of a huge output; the rest is a
+        // file the OS opens.
+        let spilled = tool.spill.as_ref().map(|s| {
+            let path = s.path.clone();
+            div()
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .gap(px(6.0))
+                .text_size(px(tc::LABEL_SIZE))
+                .text_color(t.text_faint)
+                .child(format!("Output truncated ({})", s.size_label()))
+                .child("·")
+                .child(
+                    div()
+                        .id(SharedString::from(format!("tool-spill-{i}-{j}")))
+                        .text_color(t.text_muted)
+                        .cursor_pointer()
+                        .hover(|s| s.text_color(t.text))
+                        .tooltip(ui::tip(path.display().to_string()))
+                        .on_click(move |_, _, cx| {
+                            cx.stop_propagation();
+                            cx.open_with_system(&path);
+                        })
+                        .child("Open full output"),
+                )
+        });
         div()
             .w_full()
             .min_w_0()
@@ -3912,6 +3945,7 @@ impl TaskView {
             .gap(px(6.0))
             .children(parts)
             .children(less)
+            .children(spilled)
             .into_any_element()
     }
 
@@ -5876,6 +5910,7 @@ mod tests {
             kind,
             output: None,
             elided: 0,
+            spill: None,
             disk: None,
             error: false,
             diff: None,
@@ -5956,6 +5991,7 @@ mod tests {
             kind,
             output: None,
             elided: 0,
+            spill: None,
             disk: None,
             error: false,
             diff: None,

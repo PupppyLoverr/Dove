@@ -113,9 +113,7 @@ impl MockEdge {
                         .collect();
                     let parts: Vec<&str> = path.trim_matches('/').split('/').collect();
                     match parts.as_slice() {
-                        ["device", device, "ws"] => {
-                            serve_relay(ws, device.to_string(), query, shared).await
-                        }
+                        ["device", device, "ws"] => serve_relay(ws, device.to_string(), query, shared).await,
                         ["registry", _, "ws"] => proxy(ws, &registry_url).await,
                         ["chat2", chat, "ws"] => {
                             if *shared.refuse_chat.lock().unwrap() {
@@ -128,12 +126,7 @@ impl MockEdge {
                 });
             }
         });
-        Self {
-            registry,
-            port,
-            shared,
-            task,
-        }
+        Self { registry, port, shared, task }
     }
 
     pub fn edge_url(&self) -> String {
@@ -141,13 +134,7 @@ impl MockEdge {
     }
 
     pub fn rows(&self, chat: &str) -> Vec<Row> {
-        self.shared
-            .rooms
-            .lock()
-            .unwrap()
-            .get(chat)
-            .map(|r| r.rows.clone())
-            .unwrap_or_default()
+        self.shared.rooms.lock().unwrap().get(chat).map(|r| r.rows.clone()).unwrap_or_default()
     }
 
     /// Append a host-authored update and broadcast it.
@@ -156,12 +143,7 @@ impl MockEdge {
             let mut rooms = self.shared.rooms.lock().unwrap();
             let room = rooms.entry(chat.to_owned()).or_default();
             let seq = room.rows.len() as u64 + 1;
-            let row = Row {
-                seq,
-                device: device.to_owned(),
-                batch_id: format!("host-{seq}"),
-                bytes,
-            };
+            let row = Row { seq, device: device.to_owned(), batch_id: format!("host-{seq}"), bytes };
             room.rows.push(row.clone());
             row
         };
@@ -171,22 +153,11 @@ impl MockEdge {
     }
 
     pub fn chat_sockets(&self, chat: &str) -> usize {
-        self.shared
-            .sockets
-            .lock()
-            .unwrap()
-            .get(chat)
-            .copied()
-            .unwrap_or(0)
+        self.shared.sockets.lock().unwrap().get(chat).copied().unwrap_or(0)
     }
 
     pub fn relay_host_connected(&self, device: &str) -> bool {
-        self.shared
-            .relays
-            .lock()
-            .unwrap()
-            .get(device)
-            .is_some_and(|r| r.host.is_some())
+        self.shared.relays.lock().unwrap().get(device).is_some_and(|r| r.host.is_some())
     }
 
     pub fn refuse_chat_joins(&self, refuse: bool) {
@@ -239,12 +210,7 @@ fn row_frame(row: &Row) -> Vec<u8> {
 }
 
 async fn serve_chat(ws: Ws, chat: String, shared: Arc<Shared>) {
-    *shared
-        .sockets
-        .lock()
-        .unwrap()
-        .entry(chat.clone())
-        .or_default() += 1;
+    *shared.sockets.lock().unwrap().entry(chat.clone()).or_default() += 1;
     let (mut tx, mut rx) = ws.split();
     let mut broadcasts = shared.tx.subscribe();
     let mut device = String::new();
@@ -376,16 +342,11 @@ fn relay_error(code: &str) -> Vec<u8> {
 
 /// DeviceRoom semantics (edge/src/device-room.ts), as in zeron-rpc's fake.
 async fn serve_relay(ws: Ws, device: String, query: HashMap<String, String>, shared: Arc<Shared>) {
-    use zeron_rpc::device_room::{
-        CLIENT_CLOSED, CLIENT_GONE, HOST_CLOSED, HOST_OFFLINE, RELAY_KIND,
-    };
+    use zeron_rpc::device_room::{CLIENT_CLOSED, CLIENT_GONE, HOST_CLOSED, HOST_OFFLINE, RELAY_KIND};
     use zeron_rpc::{DeviceFrameHeader, decode_device_frame, encode_device_frame};
 
     let is_host = query.get("role").map(String::as_str) == Some("host");
-    let conn_id = query
-        .get("connId")
-        .cloned()
-        .unwrap_or_else(|| "anon".into());
+    let conn_id = query.get("connId").cloned().unwrap_or_else(|| "anon".into());
     let (mut sink, mut stream) = ws.split();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Out>();
     {
@@ -435,9 +396,7 @@ async fn serve_relay(ws: Ws, device: String, query: HashMap<String, String>, sha
                 }
                 None => {
                     let bounce = DeviceFrameHeader::new(header.s, RELAY_KIND);
-                    let _ = tx.send(Out::Frame(
-                        encode_device_frame(&bounce, &relay_error(HOST_OFFLINE)).unwrap(),
-                    ));
+                    let _ = tx.send(Out::Frame(encode_device_frame(&bounce, &relay_error(HOST_OFFLINE)).unwrap()));
                 }
             }
             continue;
@@ -446,15 +405,11 @@ async fn serve_relay(ws: Ws, device: String, query: HashMap<String, String>, sha
         match st.clients.get(&to) {
             Some(client) => {
                 let stripped = DeviceFrameHeader::new(header.s, header.k);
-                let _ = client.send(Out::Frame(
-                    encode_device_frame(&stripped, &payload).unwrap(),
-                ));
+                let _ = client.send(Out::Frame(encode_device_frame(&stripped, &payload).unwrap()));
             }
             None => {
                 let bounce = DeviceFrameHeader::new(header.s, RELAY_KIND).with_to(to);
-                let _ = tx.send(Out::Frame(
-                    encode_device_frame(&bounce, &relay_error(CLIENT_GONE)).unwrap(),
-                ));
+                let _ = tx.send(Out::Frame(encode_device_frame(&bounce, &relay_error(CLIENT_GONE)).unwrap()));
             }
         }
     }
@@ -467,18 +422,14 @@ async fn serve_relay(ws: Ws, device: String, query: HashMap<String, String>, sha
             }
             for client in st.clients.values() {
                 let header = DeviceFrameHeader::new("", RELAY_KIND);
-                let _ = client.send(Out::Frame(
-                    encode_device_frame(&header, &relay_error(HOST_CLOSED)).unwrap(),
-                ));
+                let _ = client.send(Out::Frame(encode_device_frame(&header, &relay_error(HOST_CLOSED)).unwrap()));
             }
         } else {
             st.clients.remove(&conn_id);
             if let Some(host) = &st.host {
                 let mut header = DeviceFrameHeader::new("", RELAY_KIND);
                 header.from = Some(conn_id.clone());
-                let _ = host.send(Out::Frame(
-                    encode_device_frame(&header, &relay_error(CLIENT_CLOSED)).unwrap(),
-                ));
+                let _ = host.send(Out::Frame(encode_device_frame(&header, &relay_error(CLIENT_CLOSED)).unwrap()));
             }
         }
     }
