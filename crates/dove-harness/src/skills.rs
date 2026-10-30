@@ -114,6 +114,15 @@ impl Source {
             Source::Local { .. } => "You",
         }
     }
+
+    /// How much to trust this skill's instructions.
+    pub fn trust(&self) -> &'static str {
+        match self {
+            Source::Bundled => "built-in",
+            Source::Local { .. } => "yours",
+            Source::Git { .. } => "community",
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -577,6 +586,38 @@ pub fn describe(name: Option<&str>) -> Result<String, String> {
     describe_in(&root(), &load(), name)
 }
 
+fn use_path() -> PathBuf {
+    crate::hosts::dove_home().join("skill-use.json")
+}
+
+/// Remember that an agent read `name`, for the curator's stale list.
+fn note_use(name: &str) {
+    let path = use_path();
+    let mut map: BTreeMap<String, i64> =
+        std::fs::read(&path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0);
+    map.insert(name.to_ascii_lowercase(), now);
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Ok(bytes) = serde_json::to_vec(&map) {
+        let _ = std::fs::write(path, bytes);
+    }
+}
+
+/// Enabled skills last read more than 30 days ago. A skill with no record
+/// is not listed: the curator has not seen it used yet.
+fn stale_names(on: &[&Installed]) -> Vec<String> {
+    let map: BTreeMap<String, i64> =
+        std::fs::read(use_path()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0);
+    let month = 30 * 24 * 60 * 60 * 1000;
+    on.iter()
+        .filter(|s| map.get(&s.name).is_some_and(|at| now - *at > month))
+        .map(|s| s.name.clone())
+        .collect()
+}
+
 fn describe_in(root: &Path, reg: &Registry, name: Option<&str>) -> Result<String, String> {
     let on: Vec<&Installed> = reg.skills.iter().filter(|s| s.enabled).collect();
     match name.map(str::trim).filter(|n| !n.is_empty()) {
@@ -589,12 +630,23 @@ fn describe_in(root: &Path, reg: &Registry, name: Option<&str>) -> Result<String
                     "(none are turned on; the user manages them in Keplorayx → Settings → Plugins → Skills)\n",
                 );
             }
-            for s in on {
-                out.push_str(&format!("- {}: {} (folder: {})\n", s.name, s.description, root.join(&s.name).display()));
+            for s in &on {
+                out.push_str(&format!(
+                    "- {}: {} [{}] (folder: {})\n",
+                    s.name,
+                    s.description,
+                    s.source.trust(),
+                    root.join(&s.name).display()
+                ));
+            }
+            let stale = stale_names(&on);
+            if !stale.is_empty() {
+                out.push_str(&format!("\nNot used in 30 days: {}.\n", stale.join(", ")));
             }
             Ok(out)
         }
         Some(n) => {
+            note_use(n);
             let n = n.to_ascii_lowercase();
             let skill = on.iter().find(|s| s.name == n).ok_or_else(|| {
                 format!(

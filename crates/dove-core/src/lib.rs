@@ -28,6 +28,7 @@ pub mod mirror;
 pub mod orchestra;
 pub mod quota;
 pub mod race;
+pub mod reach;
 pub mod spill;
 
 pub use dove_git as git;
@@ -861,6 +862,13 @@ impl Engine {
                     .filter(|p| p.harness.is_some())
                     .and_then(|p| p.model.clone())
                     .or_else(|| a.model.clone()),
+                // Saved when the automation was edited, from the composer's
+                // machine chip. Missing means this computer.
+                host: self
+                    .store
+                    .setting(&format!("automation_host.{}", a.id))
+                    .and_then(|s| serde_json::from_str(&s).ok())
+                    .unwrap_or_default(),
                 ..Default::default()
             },
             join: None,

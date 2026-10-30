@@ -1266,6 +1266,7 @@ impl Shell {
                     }
                 }
                 TaskViewEventKind::Fork => self.fork_task(id, window, cx),
+                TaskViewEventKind::Rewind => self.rewind_turn(id, cx),
                 TaskViewEventKind::ShowChanges => {
                     self.panel_open = true;
                     self.panel.update(cx, |p, cx| p.show(Tab::Changes, window, cx));
@@ -1300,6 +1301,7 @@ impl Shell {
 
     /// A thread's status moved: update the lists, the badge, notifications.
     fn on_status(&mut self, id: TaskId, s: TaskStatus, window: &mut Window, cx: &mut Context<Self>) {
+        let was = self.task(id).map(|t| t.status);
         let visible = self.route == Route::Thread(id) && self.window_active;
         for t in self.tasks.iter_mut().filter(|t| t.id == id) {
             t.status = s;
@@ -1310,7 +1312,19 @@ impl Shell {
         }
         self.team_on_status(id, s);
         self.race_on_status(id, s, cx);
+        if s == TaskStatus::Running && was != Some(TaskStatus::Running) {
+            self.checkpoint_turn(id, cx);
+        }
         let title = self.task(id).map(|t| t.title.clone()).unwrap_or_default();
+        if matches!(s, TaskStatus::Done | TaskStatus::NeedsInput | TaskStatus::Failed) {
+            let headline = match s {
+                TaskStatus::NeedsInput => "Needs you",
+                TaskStatus::Failed => "Failed",
+                _ => "Finished",
+            };
+            let note = format!("{headline}: {title}");
+            cx.background_spawn(async move { dove_core::reach::deliver(&note, &note) }).detach();
+        }
         if matches!(s, TaskStatus::Done | TaskStatus::NeedsInput | TaskStatus::Failed) {
             let (headline, tone) = match s {
                 TaskStatus::NeedsInput => ("Needs you", Tone::Warning),
@@ -1329,6 +1343,66 @@ impl Shell {
         }
         notify::set_badge(window, self.needs_you().len());
         cx.notify();
+    }
+
+    /// Save a shadow git ref of the worktree as a turn starts, so Rewind can
+    /// put tracked files back. Runs off the UI thread.
+    fn checkpoint_turn(&mut self, id: TaskId, cx: &mut Context<Self>) {
+        let Some(task) = self.task(id).cloned() else { return };
+        let dir = task.worktree.clone().or_else(|| self.project(task.project_id).map(|p| p.path.clone()));
+        let Some(dir) = dir else { return };
+        let label = id.to_string();
+        let found = cx.background_spawn(async move { dove_core::git::checkpoint(&dir, &label) });
+        cx.spawn(async move |this, cx| {
+            let Ok(Some(sha)) = found.await else { return };
+            let _ = this.update(cx, |s, _| {
+                let _ = s.engine.store.set_setting(&format!("checkpoint.{id}"), &sha);
+            });
+        })
+        .detach();
+    }
+
+    /// Two clicks: the first arms, the second restores tracked files from the
+    /// checkpoint taken when the current turn started.
+    pub fn rewind_turn(&mut self, id: TaskId, cx: &mut Context<Self>) {
+        let key = format!("rewind-arm.{id}");
+        let now = dove_core::store::now_ms();
+        let armed =
+            self.engine.store.setting(&key).and_then(|s| s.parse::<i64>().ok()).is_some_and(|at| now - at < 8_000);
+        if !armed {
+            let _ = self.engine.store.set_setting(&key, &now.to_string());
+            Toasts::push(
+                cx,
+                "Click Rewind again to restore files from the last checkpoint.",
+                None,
+                Tone::Warning,
+                Some(id),
+            );
+            return;
+        }
+        let _ = self.engine.store.set_setting(&key, "");
+        let Some(sha) = self.engine.store.setting(&format!("checkpoint.{id}")).filter(|s| !s.is_empty()) else {
+            Toasts::push(cx, "No checkpoint yet. One is saved when a turn starts.", None, Tone::Warning, Some(id));
+            return;
+        };
+        let Some(task) = self.task(id).cloned() else { return };
+        let dir = task.worktree.clone().or_else(|| self.project(task.project_id).map(|p| p.path.clone()));
+        let Some(dir) = dir else { return };
+        let work = cx.background_spawn(async move { dove_core::git::rewind_to(&dir, &sha) });
+        cx.spawn(async move |this, cx| {
+            let result = work.await;
+            let _ = this.update(cx, |_, cx| match result {
+                Ok(()) => Toasts::push(
+                    cx,
+                    "Restored tracked files from the checkpoint. New untracked files were left in place.",
+                    None,
+                    Tone::Success,
+                    Some(id),
+                ),
+                Err(e) => Toasts::push(cx, format!("Couldn't rewind: {e:#}"), None, Tone::Danger, Some(id)),
+            });
+        })
+        .detach();
     }
 
     /// Mirror the active thread's plan, subagents and side chats into the

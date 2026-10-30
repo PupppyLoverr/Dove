@@ -47,6 +47,8 @@ sha2 = "0.10"
 zip = { version = "7.2", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 # File icons are embedded deflated (build.rs) and inflated on first use.
 flate2 = "1"
+# Pairing QR in Settings. No image backend: the modules are drawn as squares.
+qrcode = { version = "0.14", default-features = false }
 
 [target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
 tray-icon = "0.24"

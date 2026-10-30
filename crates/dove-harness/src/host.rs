@@ -5,8 +5,10 @@
 //! plumbing, the `AgentEvent` stream and the UI stay exactly as they are.
 //! Nothing here bundles a client: every target costs zero binary size.
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
@@ -585,7 +587,7 @@ pub fn discover() -> Vec<Host> {
 
 /// Running Docker containers, by name.
 pub fn docker_containers() -> Vec<String> {
-    quiet_output("docker", &["ps", "--format", "{{.Names}}"])
+    quiet_output_timeout("docker", &["ps", "--format", "{{.Names}}"], LIST_TIMEOUT)
         .map(|raw| {
             String::from_utf8_lossy(&raw).lines().map(str::trim).filter(|l| !l.is_empty()).map(String::from).collect()
         })
@@ -629,8 +631,14 @@ pub fn sandboxes() -> Vec<Host> {
     found.into_iter().flat_map(|(_, boxes)| boxes).collect()
 }
 
-/// How long [`sandboxes`] waits for the slowest provider.
-const LIST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
+/// How long [`sandboxes`] waits for the slowest provider, and how long a
+/// discovery command (`wsl -l`, `docker ps`, `cua sandbox ls`) may run
+/// before it is skipped. `wsl.exe -l` never returns when the WSL service
+/// is wedged, and that used to hide every other machine.
+const LIST_TIMEOUT: Duration = Duration::from_secs(8);
+/// A live "can it run a command" check. Longer than [`LIST_TIMEOUT`] so a
+/// distro that is still booting can answer.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Can `host` run a command right now? Runs `true` there (a box is not woken
 /// for this; its provider's probe answers instead).
@@ -643,25 +651,29 @@ pub fn probe(host: &Host) -> crate::hosts::Probe {
         };
     }
     let inv = host.wrap("true", &[], ".", false);
-    let mut cmd = std::process::Command::new(&inv.program);
+    let mut cmd = Command::new(&inv.program);
     cmd.args(&inv.args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x0800_0000);
     }
-    match cmd.output() {
+    // A wedged `wsl.exe` or a dead SSH host must not leave the row spinning.
+    // Listing already gives up after [`LIST_TIMEOUT`]; a live check gets a
+    // little longer so a cold distro can still finish booting.
+    match timed_output(&mut cmd, PROBE_TIMEOUT) {
         Ok(out) if out.status.success() => Probe::Ready,
         Ok(out) => {
             Probe::NeedsSetup(String::from_utf8_lossy(&out.stderr).trim().lines().last().unwrap_or("").to_string())
         }
-        Err(err) => Probe::Unavailable(format!("{} is not installed: {err}", inv.program.display())),
+        Err(WaitFail::Spawn(err)) => Probe::Unavailable(format!("{} is not installed: {err}", inv.program.display())),
+        Err(WaitFail::TimedOut) => Probe::Unavailable(format!("{} did not answer", host.label())),
     }
 }
 
 fn quiet_output(program: &str, args: &[&str]) -> Option<Vec<u8>> {
-    let mut cmd = std::process::Command::new(program);
-    cmd.args(args).stdin(Stdio::null()).stderr(Stdio::null());
+    let mut cmd = Command::new(program);
+    cmd.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -671,12 +683,71 @@ fn quiet_output(program: &str, args: &[&str]) -> Option<Vec<u8>> {
     out.status.success().then_some(out.stdout)
 }
 
+/// [`quiet_output`] with a deadline. The child is killed if it is still
+/// running; a kill counts as no answer.
+fn quiet_output_timeout(program: &str, args: &[&str], timeout: Duration) -> Option<Vec<u8>> {
+    let mut cmd = Command::new(program);
+    cmd.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000);
+    }
+    let out = timed_output(&mut cmd, timeout).ok()?;
+    out.status.success().then_some(out.stdout)
+}
+
+enum WaitFail {
+    Spawn(std::io::Error),
+    TimedOut,
+}
+
+/// Run `cmd` and collect stdout and stderr. `TimedOut` means the process was
+/// killed. Stdout is read on another thread so a full pipe cannot stall it.
+fn timed_output(cmd: &mut Command, timeout: Duration) -> Result<std::process::Output, WaitFail> {
+    let mut child = cmd.spawn().map_err(WaitFail::Spawn)?;
+    let stdout = read_pipe(child.stdout.take());
+    let stderr = read_pipe(child.stderr.take());
+    let status = wait_child(&mut child, timeout);
+    let stdout = stdout.join().unwrap_or_default();
+    let stderr = stderr.join().unwrap_or_default();
+    Ok(std::process::Output { status: status?, stdout, stderr })
+}
+
+fn read_pipe<R: Read + Send + 'static>(pipe: Option<R>) -> std::thread::JoinHandle<Vec<u8>> {
+    std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(mut pipe) = pipe {
+            let _ = pipe.read_to_end(&mut buf);
+        }
+        buf
+    })
+}
+
+fn wait_child(child: &mut Child, timeout: Duration) -> Result<std::process::ExitStatus, WaitFail> {
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Ok(status),
+            Ok(None) if started.elapsed() >= timeout => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(WaitFail::TimedOut);
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+            Err(_) => return Err(WaitFail::TimedOut),
+        }
+    }
+}
+
 /// Installed WSL distros, minus Docker Desktop's internal ones.
 pub fn wsl_distros() -> Vec<String> {
     if !cfg!(windows) {
         return Vec::new();
     }
-    quiet_output("wsl.exe", &["-l", "-q"]).map(|raw| parse_wsl_list(&raw)).unwrap_or_default()
+    quiet_output_timeout("wsl.exe", &["-l", "-q"], LIST_TIMEOUT)
+        .map(|raw| parse_wsl_list(&raw))
+        .unwrap_or_default()
 }
 
 /// `wsl -l -q` prints UTF-16LE.
@@ -706,7 +777,7 @@ pub fn ssh_aliases(config: &str) -> Vec<String> {
 
 /// Ready Cua Spaces, from `cua sandbox ls --json`.
 pub fn cua_spaces() -> Vec<String> {
-    quiet_output("cua", &["sandbox", "ls", "--json"])
+    quiet_output_timeout("cua", &["sandbox", "ls", "--json"], LIST_TIMEOUT)
         .and_then(|raw| serde_json::from_slice::<Vec<serde_json::Value>>(&raw).ok())
         .map(|list| parse_cua_spaces(&list))
         .unwrap_or_default()

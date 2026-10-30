@@ -233,6 +233,9 @@ impl zeron_rpc::RpcService for NodeRpc {
 fn spawn_node_relay(edge: &str, store: &Arc<node::NodeStore>, bearer: Bearer) -> zeron_rpc::HostRelay {
     let mut config = zeron_rpc::HostRelayConfig::new(edge, store.device_id(), Arc::new(BearerToken(bearer)));
     config.streams = Some(zeron_rpc::node_exec::ExecStreams::new(store.clone()));
+    // Direct LAN/Tailscale path. The handle is detached: the process lives
+    // as long as the relay, and a bind failure leaves the relay alone.
+    let _direct = zeron_rpc::node_exec::spawn_direct(store.clone());
     zeron_rpc::HostRelay::spawn(config, Arc::new(NodeRpc), Arc::new(|_| false))
 }
 

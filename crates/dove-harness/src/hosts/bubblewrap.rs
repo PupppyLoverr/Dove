@@ -317,6 +317,9 @@ mod tests {
     #[test]
     fn root_kinds() {
         assert_eq!(root_kind(Path::new("/definitely/not/here")), Root::Missing);
+        #[cfg(unix)]
         assert_eq!(root_kind(Path::new("/usr")), Root::Dir);
+        #[cfg(windows)]
+        assert_eq!(root_kind(Path::new(r"C:\Windows")), Root::Dir);
     }
 }

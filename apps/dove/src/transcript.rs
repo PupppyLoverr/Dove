@@ -87,6 +87,8 @@ pub enum TaskViewEvent {
     Native(String),
     /// Fork this thread (from its message actions).
     Fork,
+    /// Restore tracked files to the checkpoint taken when this turn started.
+    Rewind,
     /// Show the side panel's Changes tab.
     ShowChanges,
     /// The thread's first answer arrived; a better title is available.
@@ -4284,6 +4286,14 @@ impl TaskView {
                 d.child(action_button(SharedString::from(format!("fork-{i}")), icons::FORK, "Fork", t).on_click(
                     move |_, _, cx| {
                         let _ = weak.update(cx, |_, cx| cx.emit(TaskViewEvent::Fork));
+                    },
+                ))
+            })
+            .when(last && idle, |d| {
+                let weak = weak.clone();
+                d.child(action_button(SharedString::from(format!("rewind-{i}")), icons::RESTART, "Rewind", t).on_click(
+                    move |_, _, cx| {
+                        let _ = weak.update(cx, |_, cx| cx.emit(TaskViewEvent::Rewind));
                     },
                 ))
             })

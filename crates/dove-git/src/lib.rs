@@ -535,6 +535,51 @@ pub fn log_since(wt: &Path, base: &str, max: usize) -> Result<Vec<String>> {
     Ok(out.lines().map(str::to_string).collect())
 }
 
+/// A shadow ref for one thread: `refs/dove/checkpoints/<label>`. The commit is
+/// the dirty worktree when there is one (`git stash create`, which does not
+/// move HEAD or the index), otherwise HEAD. Rewind restores tracked files
+/// from that commit and leaves the branch where it is.
+pub fn checkpoint(wt: &Path, label: &str) -> Result<Option<String>> {
+    let root = repo_root(wt).unwrap_or_else(|| wt.to_path_buf());
+    let sha = match run(&root, &["stash", "create"]) {
+        Ok(s) if !s.trim().is_empty() => s.trim().to_string(),
+        _ => {
+            let head = run(&root, &["rev-parse", "HEAD"])?;
+            let head = head.trim();
+            if head.is_empty() {
+                return Ok(None);
+            }
+            head.to_string()
+        }
+    };
+    let r = format!("refs/dove/checkpoints/{}", checkpoint_label(label));
+    run(&root, &["update-ref", &r, &sha])?;
+    Ok(Some(sha))
+}
+
+/// Put tracked files back to checkpoint `sha`. Does not move HEAD, and does
+/// not delete untracked files the agent created.
+pub fn rewind_to(wt: &Path, sha: &str) -> Result<()> {
+    let root = repo_root(wt).unwrap_or_else(|| wt.to_path_buf());
+    if !sha.bytes().all(|b| b.is_ascii_hexdigit()) || sha.len() < 7 {
+        bail!("not a commit");
+    }
+    run(&root, &["restore", "--source", sha, "--worktree", "--staged", "."])?;
+    Ok(())
+}
+
+fn checkpoint_label(label: &str) -> String {
+    let mut s: String = label
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+        .take(80)
+        .collect();
+    if s.is_empty() {
+        s.push_str("turn");
+    }
+    s
+}
+
 /// Stage everything and commit. Returns false when there was nothing to commit.
 pub fn commit_all(wt: &Path, message: &str) -> Result<bool> {
     run(wt, &["add", "-A"])?;

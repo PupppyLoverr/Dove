@@ -488,7 +488,12 @@ async fn exec(cli: &Cli, store: &NodeStore) -> i32 {
         Ok(token) => token,
         Err(code) => return code,
     };
-    let dial = Dial { edge_url: cli.edge.clone(), device: device.to_owned(), token };
+    let dial = Dial {
+        edge_url: cli.edge.clone(),
+        device: device.to_owned(),
+        token,
+        direct_name: Some(node.name.clone()),
+    };
     let open = ExecOpen {
         device: store.device_id().to_owned(),
         proof: node.secret,
@@ -514,7 +519,7 @@ async fn pair(cli: &Cli, store: &NodeStore) -> i32 {
         Ok(token) => token,
         Err(code) => return code,
     };
-    let dial = Dial { edge_url: cli.edge.clone(), device: device.clone(), token };
+    let dial = Dial { edge_url: cli.edge.clone(), device: device.clone(), token, direct_name: None };
     let request = PairRequest { code, device: store.device_id().to_owned(), name: store.name().to_owned() };
     match node_exec::pair(&dial, &request).await {
         Ok(grant) => {
@@ -547,7 +552,9 @@ async fn nodes(cli: &Cli, store: &NodeStore) -> i32 {
         let id = node.id.clone();
         async move {
             match token {
-                Some(token) => node_exec::probe(&Dial { edge_url: edge, device: id, token }, timeout).await,
+                Some(token) => {
+                    node_exec::probe(&Dial { edge_url: edge, device: id, token, direct_name: None }, timeout).await
+                }
                 None => false,
             }
         }

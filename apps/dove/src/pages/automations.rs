@@ -226,6 +226,10 @@ impl Shell {
         };
         let _ =
             self.engine.store.set_setting(&format!("automation_persona.{}", a.id), ed.persona.as_deref().unwrap_or(""));
+        let host = self.composer.read(cx).run_settings(cx).host;
+        if let Ok(json) = serde_json::to_string(&host) {
+            let _ = self.engine.store.set_setting(&format!("automation_host.{}", a.id), &json);
+        }
         match self.engine.store.save_automation(&a) {
             Ok(()) => {
                 self.pages.editor = None;
@@ -611,7 +615,8 @@ impl Shell {
             .on_click(cx.listener(|this, _, window, cx| this.open_editor(None, window, cx)));
         let header = div().flex().items_center().gap(px(space::SM)).child(tabs).child(new_btn).into_any_element();
         const TITLE: &str = "Automations";
-        const SUBTITLE: &str = "Prompts that start threads on a schedule or when something happens in a repo.";
+        const SUBTITLE: &str =
+            "Prompts that start threads on a schedule or when something happens in a repo. A run uses the machine selected in the composer when you save it.";
 
         let page: AnyElement = match tab {
             AutoTab::List => {

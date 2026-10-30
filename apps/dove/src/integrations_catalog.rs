@@ -266,6 +266,51 @@ pub fn get(id: &str) -> Option<&'static Entry> {
     CATALOG.iter().find(|e| e.id == id)
 }
 
+/// The npm package a stdio catalog entry installs with `npx`/`npm`, if any.
+pub fn npm_package(entry: &Entry) -> Option<&str> {
+    let Kind::Stdio(cmd, args) = entry.kind else { return None };
+    if cmd != "npx" && cmd != "npm" {
+        return None;
+    }
+    args.iter().copied().find(|a| !a.starts_with('-'))
+}
+
+fn npm_name(spec: &str) -> String {
+    if let Some(rest) = spec.strip_prefix('@')
+        && let Some((scope, name)) = rest.split_once('/')
+    {
+        let name = name.split('@').next().unwrap_or(name);
+        return format!("@{scope}/{name}");
+    }
+    spec.split('@').next().unwrap_or(spec).to_string()
+}
+
+/// Known OSV advisories for an npm package. `Ok(None)` means the registry
+/// reported none. `Err` means the check itself failed (offline, timeout).
+pub fn osv_advisory(spec: &str) -> Result<Option<String>, String> {
+    let name = npm_name(spec);
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(8))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let body = serde_json::json!({ "package": { "name": name, "ecosystem": "npm" } });
+    let resp = client.post("https://api.osv.dev/v1/query").json(&body).send().map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("OSV returned {}", resp.status()));
+    }
+    let v: serde_json::Value = resp.json().map_err(|e| e.to_string())?;
+    let ids: Vec<&str> = v
+        .get("vulns")
+        .and_then(|v| v.as_array())
+        .map(|list| list.iter().filter_map(|v| v.get("id").and_then(|i| i.as_str())).take(3).collect())
+        .unwrap_or_default();
+    if ids.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(format!("{name} has known advisories ({}). It was not installed.", ids.join(", "))))
+    }
+}
+
 impl Entry {
     /// The server config for this entry, with an optional pasted key.
     pub fn server(&self, id: String, key: Option<&str>) -> McpServer {

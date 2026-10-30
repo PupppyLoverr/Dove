@@ -561,6 +561,9 @@ pub struct Dial {
     pub edge_url: String,
     pub device: String,
     pub token: String,
+    /// Hostname to try on the LAN / Tailscale before the relay. Empty skips
+    /// the direct attempt.
+    pub direct_name: Option<String>,
 }
 
 impl std::fmt::Debug for Dial {
@@ -604,7 +607,15 @@ impl Drop for Link {
     }
 }
 
+/// Port the node listens on for a direct LAN or Tailscale connection.
+/// The relay is used when nothing answers here. The pairing secret is still
+/// required; the port does not accept anonymous commands.
+pub const DIRECT_PORT: u16 = 53721;
+
 async fn dial(target: &Dial) -> Result<Link, ExecError> {
+    if let Some(link) = dial_direct(target).await {
+        return Ok(link);
+    }
     let conn = uuid::Uuid::new_v4().to_string();
     let url = device_room_ws_url(
         &target.edge_url,
@@ -619,6 +630,10 @@ async fn dial(target: &Dial) -> Result<Link, ExecError> {
         Ok(Err(err)) => return Err(ExecError::Link(format!("could not reach the relay: {err}"))),
         Err(_) => return Err(ExecError::Link("timed out reaching the relay".into())),
     };
+    Ok(link_from_socket(ws))
+}
+
+fn link_from_socket(ws: zeron_sync::dial::WsStream) -> Link {
     let (tx, wire_rx) = mpsc::channel::<Vec<u8>>(64);
     let (wire_in, rx) = mpsc::channel::<Vec<u8>>(64);
     let task = tokio::spawn(zeron_sync::socket::pump_with_timing(
@@ -630,7 +645,117 @@ async fn dial(target: &Dial) -> Result<Link, ExecError> {
         PING_INTERVAL,
         SILENCE_LEASE,
     ));
-    Ok(Link { tx, rx, task })
+    Link { tx, rx, task }
+}
+
+/// Tailscale peers whose hostname matches `name`, as IP strings.
+fn tailscale_ips(name: &str) -> Vec<String> {
+    let mut cmd = std::process::Command::new("tailscale");
+    cmd.args(["status", "--json"]).stdin(std::process::Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000);
+    }
+    let Ok(out) = cmd.output() else { return Vec::new() };
+    if !out.status.success() {
+        return Vec::new();
+    }
+    let Ok(v) = serde_json::from_slice::<serde_json::Value>(&out.stdout) else { return Vec::new() };
+    let Some(peers) = v.get("Peer").and_then(|p| p.as_object()) else { return Vec::new() };
+    let want = name.to_ascii_lowercase();
+    let mut ips = Vec::new();
+    for peer in peers.values() {
+        let host = peer.get("HostName").and_then(|h| h.as_str()).unwrap_or("");
+        let dns = peer.get("DNSName").and_then(|h| h.as_str()).unwrap_or("");
+        let host_l = host.to_ascii_lowercase();
+        let dns_l = dns.to_ascii_lowercase();
+        if host_l != want && !dns_l.starts_with(&format!("{want}.")) {
+            continue;
+        }
+        if let Some(list) = peer.get("TailscaleIPs").and_then(|i| i.as_array()) {
+            for ip in list.iter().filter_map(|i| i.as_str()) {
+                if ip.contains('.') {
+                    ips.push(ip.to_string());
+                }
+            }
+        }
+    }
+    ips
+}
+
+async fn dial_direct(target: &Dial) -> Option<Link> {
+    let name = target.direct_name.as_deref().filter(|s| !s.is_empty())?;
+    let name = name.to_string();
+    let ips = tokio::time::timeout(
+        Duration::from_secs(1),
+        tokio::task::spawn_blocking(move || tailscale_ips(&name)),
+    )
+    .await
+    .ok()?
+    .ok()?;
+    for ip in ips {
+        let url = format!("ws://{ip}:{DIRECT_PORT}/dove");
+        let Ok(Ok(ws)) =
+            tokio::time::timeout(Duration::from_millis(700), zeron_sync::dial::connect_ws(&url)).await
+        else {
+            continue;
+        };
+        return Some(link_from_socket(ws));
+    }
+    None
+}
+
+/// Listen for a direct connection. A bind failure leaves the relay as the
+/// only path. Dropping the handle stops accepting.
+pub fn spawn_direct(policy: Arc<dyn NodePolicy>) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let listener = match tokio::net::TcpListener::bind(("0.0.0.0", DIRECT_PORT)).await {
+            Ok(listener) => listener,
+            Err(err) => {
+                tracing::info!(%err, "paired-device direct path is not listening; the relay still works");
+                return;
+            }
+        };
+        tracing::info!(port = DIRECT_PORT, "paired-device direct path listening");
+        loop {
+            let Ok((stream, _)) = listener.accept().await else { break };
+            let policy = policy.clone();
+            tokio::spawn(async move {
+                let _ = serve_direct_one(stream, policy).await;
+            });
+        }
+    })
+}
+
+async fn serve_direct_one(stream: tokio::net::TcpStream, policy: Arc<dyn NodePolicy>) -> Result<(), String> {
+    use futures::{SinkExt, StreamExt};
+    let mut ws = tokio_tungstenite::accept_async(stream).await.map_err(|e| e.to_string())?;
+    let (out_tx, mut out_rx) = mpsc::channel::<Vec<u8>>(64);
+    let streams = ExecStreams::new(policy);
+    let mut session = streams.session(out_tx);
+    loop {
+        tokio::select! {
+            incoming = ws.next() => {
+                let Some(Ok(msg)) = incoming else { break };
+                let Some(bytes) = binary_frame(msg) else { continue };
+                let Ok((mut header, payload)) = decode_device_frame(&bytes) else { continue };
+                if header.from.is_none() {
+                    header.from = Some("direct".into());
+                }
+                if session.handles(&header.k) {
+                    session.frame(header, payload);
+                }
+            }
+            bytes = out_rx.recv() => {
+                let Some(bytes) = bytes else { break };
+                if ws.send(WsMessage::Binary(bytes.into())).await.is_err() {
+                    break;
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn frame(kind: &str, stream: &str, payload: &[u8]) -> Vec<u8> {
@@ -901,6 +1026,7 @@ mod tests {
             edge_url: "https://e".into(),
             device: "d".into(),
             token: "secret-token".into(),
+            direct_name: None,
         };
         assert!(!format!("{dial:?}").contains("secret-token"));
     }

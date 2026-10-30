@@ -29,6 +29,18 @@ fn signed_in(dir: &Path) {
 fn cmd(edge: &str, dir: &Path) -> Command {
     let mut c = Command::new(BIN);
     c.env("DOVE_EDGE_URL", edge).arg("--data-dir").arg(dir).kill_on_drop(true);
+    // The script uses `sh`, `cat`, `pwd`, `sleep` and `touch`. Git for Windows
+    // ships those; this machine's PATH does not.
+    #[cfg(windows)]
+    {
+        let git = PathBuf::from(r"C:\Program Files\Git\usr\bin");
+        if git.join("sh.exe").is_file() {
+            let mut path = git.into_os_string();
+            path.push(";");
+            path.push(std::env::var_os("PATH").unwrap_or_default());
+            c.env("PATH", path);
+        }
+    }
     c
 }
 
@@ -143,7 +155,12 @@ async fn pair_exec_refuse_revoke_over_the_relay() {
 
     // Processes start in the node's home directory... unless the caller names one.
     let out = run(&url, &laptop_dir, &["exec", "--device", &node_id, "--cwd", "/", "--", "pwd"], b"").await;
-    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "/");
+    let pwd = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    // Git's pwd on Windows prints the MSYS path of the drive root.
+    #[cfg(unix)]
+    assert_eq!(pwd, "/");
+    #[cfg(windows)]
+    assert!(pwd == "/c" || pwd.eq_ignore_ascii_case("c:\\") || pwd.eq_ignore_ascii_case("c:/"), "{pwd}");
 
     // The code was single use.
     let out = run(&url, &stranger_dir, &["pair", "--uri", &uri], b"").await;

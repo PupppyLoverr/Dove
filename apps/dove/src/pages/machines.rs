@@ -996,6 +996,7 @@ impl MachinesView {
                         .flex()
                         .flex_col()
                         .gap(px(6.0))
+                        .child(qr_card(uri))
                         .child(
                             div()
                                 .text_size(px(22.0))
@@ -1124,6 +1125,33 @@ impl MachinesView {
         }
         page::section(t, "Paired devices", card).into_any_element()
     }
+}
+
+/// A scannable QR of the pairing link. Black on white, which is what
+/// cameras expect, even when the rest of the window is dark.
+fn qr_card(uri: &str) -> AnyElement {
+    let Ok(code) = qrcode::QrCode::new(uri.as_bytes()) else {
+        return div().text_size(ty::META).child("Couldn't draw a QR for this link.").into_any_element();
+    };
+    let n = code.width();
+    let cell = 4.0;
+    let mut col = div()
+        .flex()
+        .flex_col()
+        .flex_none()
+        .p(px(8.0))
+        .bg(gpui::rgb(0xffffff))
+        .rounded(px(8.0));
+    for y in 0..n {
+        let mut row = div().flex().flex_row().h(px(cell));
+        for x in 0..n {
+            let dark = code[(x, y)] == qrcode::Color::Dark;
+            let fill = if dark { gpui::rgb(0x000000) } else { gpui::rgb(0xffffff) };
+            row = row.child(div().w(px(cell)).h(px(cell)).bg(fill));
+        }
+        col = col.child(row);
+    }
+    col.into_any_element()
 }
 
 /// A machine's row glyph, title and kind.

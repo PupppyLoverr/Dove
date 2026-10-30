@@ -18,7 +18,7 @@ use crate::assets::icons;
 use crate::design::{radius, space, ty};
 use crate::integrations_catalog::{self as catalog, Auth, Entry};
 use crate::kit::controls::{self as ctl, Segment, Tone};
-use crate::kit::{page, popover};
+use crate::kit::{Toasts, page, popover};
 use crate::theme::Theme;
 use crate::ui;
 
@@ -213,12 +213,44 @@ impl IntegrationsView {
         self.persist(cx);
     }
 
+    /// Ask OSV about an npm package, then connect. A known advisory stops
+    /// the install. A failed check (offline) still connects and says so.
+    fn connect_after_osv(&mut self, entry: &'static Entry, spec: String, cx: &mut Context<Self>) {
+        let task = cx.background_spawn(async move { catalog::osv_advisory(&spec) });
+        cx.spawn(async move |this, cx| {
+            let advisory = task.await;
+            let _ = this.update(cx, |view, cx| match advisory {
+                Ok(Some(why)) => Toasts::push(cx, why, None, crate::kit::Tone::Danger, None),
+                Ok(None) => {
+                    let id = super::unique_id(entry.id, &view.config.ids());
+                    view.add_server(entry.server(id, None), cx);
+                }
+                Err(e) => {
+                    Toasts::push(
+                        cx,
+                        format!("OSV check didn't run ({e}). Connecting anyway."),
+                        None,
+                        crate::kit::Tone::Warning,
+                        None,
+                    );
+                    let id = super::unique_id(entry.id, &view.config.ids());
+                    view.add_server(entry.server(id, None), cx);
+                }
+            });
+        })
+        .detach();
+    }
+
     /// "Connect" on a catalog entry.
     pub(super) fn connect(&mut self, entry: &'static Entry, window: &mut Window, cx: &mut Context<Self>) {
         match entry.auth {
             Auth::None | Auth::OAuth => {
-                let id = super::unique_id(entry.id, &self.config.ids());
-                self.add_server(entry.server(id, None), cx);
+                if let Some(spec) = catalog::npm_package(entry) {
+                    self.connect_after_osv(entry, spec.to_string(), cx);
+                } else {
+                    let id = super::unique_id(entry.id, &self.config.ids());
+                    self.add_server(entry.server(id, None), cx);
+                }
             }
             Auth::OAuthOrKey { label, .. } | Auth::Key { label, .. } | Auth::OptionalKey { label, .. } => {
                 let style = ui::input_style(Theme::of(cx));

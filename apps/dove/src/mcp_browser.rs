@@ -34,7 +34,8 @@ Settings › Plugins › Skills). For .pdf, .pptx, .xlsx or .docx work, call dov
 {\"name\": \"pdf\"|\"pptx\"|\"xlsx\"|\"docx\"} first. Each office skill ships a ready script (python-docx, python-pptx, openpyxl, reportlab, pypdf) you run with \
 `uv run <script>`; it gives real layouts, styles, formulas and charts. The user previews and edits the result \
 in Dove's file panel.
-Web tasks: before browsing, call dove_skills with {\"name\": \"dove-browser\"} (or read the dove-browser skill) and follow it; it prefers ego lite, the user's own browser, when installed.";
+Web tasks: before browsing, call dove_skills with {\"name\": \"dove-browser\"} (or read the dove-browser skill) and follow it; it prefers ego lite, the user's own browser, when installed.\n\
+Integrations with many tools (Cua's 156, and any server past a couple of dozen) are not listed. Call tool_search with a query, then tool_call with the name it returns.";
 
 /// `dove_skills`: every skill that is on in Settings › Plugins › Skills (the bundled
 /// office, dove-browser and dove-memory skills plus any the user installed
@@ -1012,11 +1013,35 @@ pub(crate) mod upstream {
             if self.computer.is_some() {
                 tools.push(dove_computer::schema::schema());
             }
+            let hidden = crowded_prefixes(&tools);
+            if hidden.is_empty() {
+                return tools;
+            }
+            tools.retain(|t| {
+                let name = t.get("name").and_then(Value::as_str).unwrap_or("");
+                match name.split_once("__") {
+                    Some((prefix, _)) => !hidden.iter().any(|p| p == prefix),
+                    None => true,
+                }
+            });
+            tools.push(tool_search_schema());
+            tools.push(tool_call_schema());
             tools
         }
 
         pub fn call(&mut self, tool: &str, args: Value) -> Value {
             self.start();
+            if tool == "tool_search" {
+                return tool_search_result(&self.live, args.get("query").and_then(Value::as_str).unwrap_or(""));
+            }
+            if tool == "tool_call" {
+                let name = args.get("name").and_then(Value::as_str).unwrap_or("");
+                if name.is_empty() || name == "tool_call" || name == "tool_search" {
+                    return error("tool_call needs the tool name tool_search returned");
+                }
+                let inner = args.get("arguments").cloned().unwrap_or(json!({}));
+                return self.call(name, inner);
+            }
             if tool == dove_computer::schema::NAME {
                 return match self.computer.as_mut() {
                     Some(c) => c.handle(&args, &mut crate::computer_host::AppHost::new()).to_mcp(),
@@ -1151,6 +1176,77 @@ pub(crate) mod upstream {
         let suffix = format!("_{:06x}", hash & 0xff_ffff);
         let keep = MAX_TOOL_NAME - suffix.len();
         format!("{}{suffix}", &full[..keep])
+    }
+
+    /// Prefixes with more than this many tools are hidden behind tool_search.
+    const CROWD: usize = 24;
+
+    fn crowded_prefixes(tools: &[Value]) -> Vec<String> {
+        let mut counts: Vec<(String, usize)> = Vec::new();
+        for t in tools {
+            let Some(name) = t.get("name").and_then(Value::as_str) else { continue };
+            let Some((prefix, _)) = name.split_once("__") else { continue };
+            if let Some((_, n)) = counts.iter_mut().find(|(p, _)| p == prefix) {
+                *n += 1;
+            } else {
+                counts.push((prefix.to_string(), 1));
+            }
+        }
+        counts.into_iter().filter(|(_, n)| *n > CROWD).map(|(p, _)| p).collect()
+    }
+
+    fn tool_search_schema() -> Value {
+        json!({
+            "name": "tool_search",
+            "description": "Find a tool whose integration is too large to list (Cua, and any server with many tools). Returns up to 12 names and descriptions.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "query": { "type": "string" } },
+                "required": ["query"]
+            }
+        })
+    }
+
+    fn tool_call_schema() -> Value {
+        json!({
+            "name": "tool_call",
+            "description": "Call a tool tool_search returned. `name` is the full name (for example cua__list_spaces). `arguments` is that tool's arguments.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string" },
+                    "arguments": { "type": "object" }
+                },
+                "required": ["name"]
+            }
+        })
+    }
+
+    fn tool_search_result(live: &[Live], query: &str) -> Value {
+        let q = query.to_ascii_lowercase();
+        let mut hits = Vec::new();
+        for server in live {
+            for t in &server.tools {
+                let name = t.get("name").and_then(Value::as_str).unwrap_or("");
+                let desc = t.get("description").and_then(Value::as_str).unwrap_or("");
+                let hay = format!("{name} {desc}").to_ascii_lowercase();
+                if q.is_empty() || hay.contains(&q) {
+                    hits.push(format!("{name} — {desc}"));
+                }
+                if hits.len() == 12 {
+                    break;
+                }
+            }
+            if hits.len() == 12 {
+                break;
+            }
+        }
+        let text = if hits.is_empty() {
+            "No matching tools.".to_string()
+        } else {
+            hits.join("\n")
+        };
+        json!({"content": [{"type": "text", "text": text}]})
     }
 
     fn error(text: &str) -> Value {
