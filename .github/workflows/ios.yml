@@ -1,9 +1,8 @@
 name: iPhone
 
-# Simulator build of the Keplorayx iPhone app. The icon label is Keplorayx.
-# The Xcode product is still Zeron.app (that name is the Swift module).
-# A phone install needs an Apple developer team; this artifact is the
-# simulator app.
+# Keplorayx.ipa is unsigned so Sideloadly can re-sign it with an Apple ID.
+# The Swift module is still named Zeron. The app on the home screen is Keplorayx.
+# It needs iOS 26.
 
 on:
   workflow_dispatch:
@@ -40,11 +39,53 @@ jobs:
             build
       - name: Pack
         run: |
-          APP="$GITHUB_WORKSPACE/build/ios/Build/Products/Debug-iphonesimulator/Zeron.app"
+          APP="$GITHUB_WORKSPACE/build/ios/Build/Products/Debug-iphonesimulator/Keplorayx.app"
           test -d "$APP"
           ditto -c -k --keepParent "$APP" "$GITHUB_WORKSPACE/Keplorayx-iOS-Simulator.zip"
       - uses: actions/upload-artifact@v4
         with:
           name: Keplorayx-iOS-Simulator
           path: Keplorayx-iOS-Simulator.zip
+          if-no-files-found: error
+
+  ipa:
+    runs-on: macos-26
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: mesh
+          shared-key: ios-device
+      - name: Build
+        working-directory: apps/ios
+        run: |
+          xcodebuild \
+            -project Zeron.xcodeproj \
+            -scheme Zeron \
+            -configuration Debug \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$GITHUB_WORKSPACE/build/ipa" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            ARCHS=arm64 \
+            ONLY_ACTIVE_ARCH=YES \
+            build
+      - name: Pack IPA
+        run: |
+          APP="$GITHUB_WORKSPACE/build/ipa/Build/Products/Debug-iphoneos/Keplorayx.app"
+          test -d "$APP"
+          STAGE="$GITHUB_WORKSPACE/build/ipa-stage"
+          mkdir -p "$STAGE/Payload"
+          cp -R "$APP" "$STAGE/Payload/Keplorayx.app"
+          (cd "$STAGE" && zip -r -y "$GITHUB_WORKSPACE/Keplorayx.ipa" Payload)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Keplorayx-ipa
+          path: Keplorayx.ipa
           if-no-files-found: error
