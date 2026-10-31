@@ -1,9 +1,13 @@
-# Zeron for iOS
+# Keplorayx for iPhone
 
-A UIKit viewport onto the zeron mesh, built on the Rust mobile core. The phone
-is a **peer device**: it mirrors the workspace registry, joins per-chat session
-rooms, and drives remote engines through the durable command ledger. No agent
-runs on the phone.
+The phone app. It keeps the Zeron iOS app's screens (MIT, copyright 2026 Wing;
+see `LICENSE`). Sign-in is Woozlit, and sessions sync through
+`https://cosmos-edge.cosmos-edge.workers.dev`. The icon label is Keplorayx.
+The Xcode target is still named Zeron, which is the module name.
+
+The phone is a **peer device**: it mirrors the account's sessions, joins each
+chat's room, and drives the computer that owns the session. No agent runs on
+the phone.
 
 **Rust decides what to paint and where; Swift paints, scrolls and handles
 gestures.** Everything in Rust is platform-neutral — the future Android app

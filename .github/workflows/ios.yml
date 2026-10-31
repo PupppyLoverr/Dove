@@ -1,0 +1,48 @@
+name: iPhone
+
+# Simulator build of the Keplorayx iPhone app. The icon label is Keplorayx.
+# The Xcode product is still Zeron.app (that name is the Swift module).
+# A phone install needs an Apple developer team; this artifact is the
+# simulator app.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  simulator:
+    runs-on: macos-26
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios-sim
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: mesh
+          shared-key: ios-sim
+      - name: Xcode
+        run: |
+          xcodebuild -version
+          xcodebuild -showsdks
+      - name: Build
+        working-directory: apps/ios
+        run: |
+          xcodebuild \
+            -project Zeron.xcodeproj \
+            -scheme Zeron \
+            -configuration Debug \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath "$GITHUB_WORKSPACE/build/ios" \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+      - name: Pack
+        run: |
+          APP="$GITHUB_WORKSPACE/build/ios/Build/Products/Debug-iphonesimulator/Zeron.app"
+          test -d "$APP"
+          ditto -c -k --keepParent "$APP" "$GITHUB_WORKSPACE/Keplorayx-iOS-Simulator.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Keplorayx-iOS-Simulator
+          path: Keplorayx-iOS-Simulator.zip
+          if-no-files-found: error
