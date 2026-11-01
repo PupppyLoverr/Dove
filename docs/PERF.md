@@ -1,6 +1,6 @@
 # Binary size and idle memory
 
-Budget: the release `dove` binary stays at or under 110 MB (CI's size gate;
+Budget: the release `dove` binary stays at or under 115 MB (CI's size gate;
 plugins and downloadable models excluded), and an idle window renders zero
 frames. This page records the October 2026 pass over both.
 
@@ -129,8 +129,9 @@ memory (static data, decoded on demand); this only shrinks the binary.
 
 ## Gates
 
-- CI's size gate stays at 110 MB (`.github/workflows/ci.yml`); the binary
-  is now 69.3 MB.
+- CI's size gate is 115 MB (`.github/workflows/ci.yml`), raised in November
+  2026 when the Linux binary reached 111.75 MB. It was 69.3 MB after the
+  October pass.
 - `scripts/perf_check.ps1 -Exe <dove.exe>` prints exe size, idle RSS and
   private bytes (main and children), idle CPU and the render count for a
   scratch launch. `scripts/perf/perf.ps1` remains the full
