@@ -228,7 +228,10 @@ final class MoreViewController: UIViewController, UICollectionViewDelegate {
     private func syncRow() -> Row {
         var title = "Synced"
         var online = true
-        if let state = app.connectivity?.state {
+        if app.isDemo {
+            title = "Sample data, not synced"
+            online = false
+        } else if let state = app.connectivity?.state {
             switch state {
             case .offline:
                 title = "Offline. Sends are saved until you reconnect"

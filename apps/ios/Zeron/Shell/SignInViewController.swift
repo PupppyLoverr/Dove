@@ -34,6 +34,7 @@ final class SignInViewController: UIViewController, ASWebAuthenticationPresentat
     private let secondary = UIButton(type: .system)
     private let skip = UIButton(type: .system)
     private let dots = UIStackView()
+    private var dotRow: UIView?
     private var session: ASWebAuthenticationSession?
     /// `pages.count` is the sign-in page.
     private var index = 0
@@ -104,14 +105,21 @@ final class SignInViewController: UIViewController, ASWebAuthenticationPresentat
             dots.addArrangedSubview(dot)
         }
 
-        let bottom = UIStackView(arrangedSubviews: [status, dots, primary, secondary])
+        // Centred in a row of their own: a filling stack would stretch the last.
+        dots.translatesAutoresizingMaskIntoConstraints = false
+        let dotRow = UIView()
+        dotRow.addSubview(dots)
+        NSLayoutConstraint.activate([
+            dots.centerXAnchor.constraint(equalTo: dotRow.centerXAnchor),
+            dots.topAnchor.constraint(equalTo: dotRow.topAnchor),
+            dots.bottomAnchor.constraint(equalTo: dotRow.bottomAnchor),
+        ])
+        self.dotRow = dotRow
+        let bottom = UIStackView(arrangedSubviews: [status, dotRow, primary, secondary])
         bottom.axis = .vertical
         bottom.alignment = .fill
         bottom.spacing = 14
         bottom.setCustomSpacing(4, after: primary)
-        dots.setContentHuggingPriority(.required, for: .vertical)
-        let dotRow = dots
-        dotRow.alignment = .center
         for v in [copy, bottom, skip] as [UIView] {
             v.translatesAutoresizingMaskIntoConstraints = false
             view.addSubview(v)
@@ -154,7 +162,7 @@ final class SignInViewController: UIViewController, ASWebAuthenticationPresentat
         mark.isHidden = i != 0 && !onSignIn
         skip.isHidden = onSignIn
         secondary.isHidden = !onSignIn
-        dots.isHidden = UserDefaults.standard.bool(forKey: Self.seenKey)
+        dotRow?.isHidden = UserDefaults.standard.bool(forKey: Self.seenKey)
         for (k, dot) in dots.arrangedSubviews.enumerated() {
             dot.backgroundColor = UIColor(white: 1, alpha: k == i ? 0.9 : 0.25)
         }
