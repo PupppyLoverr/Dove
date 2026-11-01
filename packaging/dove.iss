@@ -60,4 +60,4 @@ Name: "{group}\Keplorayx"; Filename: "{app}\dove.exe"
 Name: "{autodesktop}\Keplorayx"; Filename: "{app}\dove.exe"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\dove.exe"; Description: "{cm:LaunchProgram,Dove}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\dove.exe"; Description: "{cm:LaunchProgram,Keplorayx}"; Flags: nowait postinstall skipifsilent

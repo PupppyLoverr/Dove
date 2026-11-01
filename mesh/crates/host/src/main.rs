@@ -52,6 +52,8 @@ const PRESENCE_EVERY: Duration = Duration::from_secs(20);
 enum Op {
     Status,
     SignIn,
+    /// The user gave up waiting for the browser.
+    CancelSignIn,
     SignOut,
     Space {
         id: String,
@@ -91,6 +93,12 @@ enum Op {
     },
     /// Send the account registry's chats to the desktop again.
     ListSessions,
+    /// Remove one chat from the account, on every device.
+    DeleteChat {
+        id: String,
+    },
+    /// Remove every chat from the account, on every device.
+    DeleteAllChats,
     /// Node mode on/off (persisted in `node.json`).
     NodeEnable {
         enabled: bool,
@@ -637,8 +645,10 @@ impl Host {
         let callback = format!("http://127.0.0.1:{port}/callback?state={state}");
         let url = format!("{}/login?desktop=1&callback={}", woozlit::WOOZLIT_ORIGIN, enc(&callback));
         let tx = self.sign_in_tx.clone();
+        let expected = state;
         tokio::spawn(async move {
             // One-shot loopback: the browser lands here with ?state=…&token=….
+            // Anything else on this port is answered and ignored.
             let deadline = tokio::time::sleep(Duration::from_secs(600));
             tokio::pin!(deadline);
             loop {
@@ -660,20 +670,21 @@ impl Host {
                             params.get("state").cloned().unwrap_or_default(),
                             params.get("token").or_else(|| params.get("code")).cloned().unwrap_or_default(),
                         );
-                        let body = if token.is_empty() {
-                            "Sign-in did not complete. Return to Dove and try again."
+                        let accepted = !token.is_empty() && state == expected;
+                        let body = if accepted {
+                            "Signed in to Keplorayx. You can close this tab."
                         } else {
-                            "Signed in to Dove. You can close this tab."
+                            "Sign-in did not complete. Return to Keplorayx and try again."
                         };
                         let page = format!(
-                            "<!doctype html><meta charset=utf-8><title>Dove</title><body style=\"font:15px -apple-system,system-ui;display:grid;place-items:center;height:90vh;color:#111\"><p>{body}</p>"
+                            "<!doctype html><meta charset=utf-8><title>Keplorayx</title><body style=\"font:15px -apple-system,system-ui;display:grid;place-items:center;height:90vh;color:#111\"><p>{body}</p>"
                         );
                         let response = format!(
                             "HTTP/1.1 200 OK\r\ncontent-type: text/html; charset=utf-8\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{page}",
                             page.len()
                         );
                         let _ = socket.write_all(response.as_bytes()).await;
-                        if !token.is_empty() {
+                        if accepted {
                             let _ = tx.send((state, token));
                             return;
                         }
@@ -687,7 +698,7 @@ impl Host {
 
     async fn complete_sign_in(&mut self, state: String, token: String) -> Result<()> {
         if self.pending_sign_in.take().as_deref() != Some(state.as_str()) {
-            return Err(anyhow!("sign-in state mismatch — start again from Dove"));
+            return Err(anyhow!("That sign-in was canceled or expired. Start again from Keplorayx."));
         }
         let session = woozlit::woozlit_exchange(&token).await.context("Woozlit exchange")?;
         let account = Account {
@@ -896,6 +907,43 @@ impl Host {
         self.mutate_registry(|doc| Ok(doc.upsert_chat(&chat)?))?;
         self.ensure_room(&id).await?;
         Ok(())
+    }
+
+    /// Tombstone these chats in the registry, which every device applies,
+    /// and leave their rooms. The desktop gets the shorter list back.
+    async fn delete_chats(&mut self, ids: Vec<String>) -> Result<()> {
+        if self.registry_client.is_none() {
+            return Err(anyhow!("Not connected to your account, so nothing was deleted from it."));
+        }
+        let mut deleted = 0usize;
+        for id in &ids {
+            let existed = {
+                let mut doc = self.registry.lock().unwrap();
+                doc.delete_chat(id)?
+            };
+            if existed {
+                deleted += 1;
+            }
+            self.pulls.remove(id);
+            if let Some(room) = self.rooms.remove(id)
+                && let Some(client) = room.client.lock().unwrap().take()
+            {
+                tokio::spawn(client.shutdown());
+            }
+        }
+        if let Some(client) = &self.registry_client {
+            client.nudge();
+        }
+        emit(json!({ "ev": "cloud_deleted", "count": deleted }));
+        if let Ok(doc) = self.registry.lock() {
+            emit_account_sessions(&doc, &self.device_id);
+        }
+        Ok(())
+    }
+
+    async fn delete_all_chats(&mut self) -> Result<()> {
+        let ids: Vec<String> = self.registry.lock().unwrap().read_chats()?.into_iter().map(|chat| chat.id).collect();
+        self.delete_chats(ids).await
     }
 
     async fn ensure_room(&mut self, chat: &str) -> Result<()> {
@@ -1206,6 +1254,7 @@ async fn main() -> Result<()> {
                 let result = match op {
                     Op::Status => { host.status().await; Ok(()) }
                     Op::SignIn => host.sign_in().await,
+                    Op::CancelSignIn => { host.pending_sign_in = None; host.status().await; Ok(()) }
                     Op::SignOut => { host.sign_out().await; Ok(()) }
                     Op::Space { id, path, name } => host.upsert_space(id, path, name).await,
                     Op::Chat { id, space_id, title, cwd, branch, preview, archived } =>
@@ -1221,6 +1270,8 @@ async fn main() -> Result<()> {
                         }
                         Ok(())
                     }
+                    Op::DeleteChat { id } => host.delete_chats(vec![id]).await,
+                    Op::DeleteAllChats => host.delete_all_chats().await,
                     Op::NodeEnable { enabled } => match host.node_store.set_enabled(enabled) {
                         Ok(()) => { host.sync_node(); host.emit_node(); Ok(()) }
                         Err(e) => Err(anyhow!(e)),

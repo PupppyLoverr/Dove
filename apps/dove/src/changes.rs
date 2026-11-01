@@ -73,6 +73,8 @@ pub struct Changes {
     init_error: Option<SharedString>,
     message: Entity<InputState>,
     delivery: Delivery,
+    /// Load on the next paint: nothing runs git for a tab nobody is looking at.
+    stale: bool,
     _load: Option<gpui::Task<()>>,
     _subs: Vec<Subscription>,
 }
@@ -111,6 +113,7 @@ impl Changes {
             init_error: None,
             message,
             delivery: Delivery { gh: github::gh_available(), ..Default::default() },
+            stale: false,
             _load: None,
             _subs: vec![sub],
         }
@@ -137,7 +140,15 @@ impl Changes {
         self.clear(cx);
         let title = title.to_string();
         self.message.update(cx, |s, cx| s.set_value(title, window, cx));
-        self.refresh(cx);
+        self._load = None;
+        self.loading = true;
+        self.invalidate(cx);
+    }
+
+    /// Reload when next on screen.
+    pub fn invalidate(&mut self, cx: &mut Context<Self>) {
+        self.stale = true;
+        cx.notify();
     }
 
     pub fn show_commit(
@@ -179,6 +190,7 @@ impl Changes {
     }
 
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
+        self.stale = false;
         let Some((dir, base)) = self.target.clone() else {
             cx.notify();
             return;
@@ -187,6 +199,7 @@ impl Changes {
         let gh = self.delivery.gh;
         let commit = self.commit.clone();
         let work = cx.background_spawn(async move {
+            let _slot = crate::git_slots::slot().await;
             let files = match commit.as_deref() {
                 Some(sha) => git::commit_diff(&dir, sha),
                 // Before the first commit HEAD names nothing: everything in
@@ -578,6 +591,11 @@ impl Changes {
 impl Render for Changes {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::perf_trace::count_render("Changes");
+        if self.stale {
+            self.stale = false;
+            let this = cx.entity();
+            cx.defer(move |cx| this.update(cx, |v, cx| v.refresh(cx)));
+        }
         let t = Theme::of(cx).clone();
         let quiet = |text: SharedString| {
             div()

@@ -28,6 +28,7 @@ impl Glass {
 #[cfg(windows)]
 mod imp {
     use std::cell::RefCell;
+    use std::mem::ManuallyDrop;
 
     use windows::System::DispatcherQueueController;
     use windows::UI::Composition::Desktop::DesktopWindowTarget;
@@ -44,8 +45,10 @@ mod imp {
 
     thread_local! {
         /// Composition needs a dispatcher queue on the UI thread; one for
-        /// the island's life.
-        static QUEUE: RefCell<Option<DispatcherQueueController>> = const { RefCell::new(None) };
+        /// the island's life. Never dropped: at exit the thread-local would
+        /// release it after CoreMessaging has torn down, an access violation
+        /// in coremessaging.dll on every close. The process is ending anyway.
+        static QUEUE: RefCell<Option<ManuallyDrop<DispatcherQueueController>>> = const { RefCell::new(None) };
     }
 
     fn ensure_queue() -> windows_core::Result<()> {
@@ -61,7 +64,7 @@ mod imp {
             // SAFETY: creates a queue for this (the UI) thread, kept alive
             // in QUEUE.
             let controller = unsafe { CreateDispatcherQueueController(options)? };
-            *q.borrow_mut() = Some(controller);
+            *q.borrow_mut() = Some(ManuallyDrop::new(controller));
             Ok(())
         })
     }

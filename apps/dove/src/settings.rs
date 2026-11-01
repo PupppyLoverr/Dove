@@ -69,6 +69,8 @@ pub enum SettingsEvent {
     Rescan,
     /// Leave Settings (Back, or Escape).
     Close,
+    /// Delete every session, on this computer, from the account, or both.
+    WipeSessions { local: bool, cloud: bool },
 }
 
 impl Section {
@@ -453,6 +455,8 @@ pub struct SettingsPage {
     recording: Option<&'static str>,
     devices: Vec<(String, String)>,
     data_size: Option<u64>,
+    /// The wipe button waiting for its second click: (local, cloud).
+    wipe_armed: Option<(bool, bool)>,
     integrations: Entity<crate::pages::integrations::IntegrationsView>,
     machines: Entity<crate::pages::machines::MachinesView>,
     /// Held here; Plugins (the integrations view) draws them.
@@ -609,6 +613,7 @@ impl SettingsPage {
             recording: None,
             devices: Vec::new(),
             data_size: None,
+            wipe_armed: None,
             integrations,
             machines,
             _skills: skills,
@@ -3419,7 +3424,106 @@ impl SettingsPage {
                 "Transcripts, credentials and settings stay on this machine.",
                 page::badge_tone("Zero telemetry", t.success),
             ));
-        page::section(t, "Local data", card).into_any_element()
+        let local_count = {
+            let store = &self.engine.store;
+            let active: usize =
+                store.projects().unwrap_or_default().iter().map(|p| store.tasks(p.id).unwrap_or_default().len()).sum();
+            active + store.archived_tasks(100_000).unwrap_or_default().len()
+        };
+        let (signed_in, cloud_count) = crate::remote::Remote::global(cx)
+            .map(|r| {
+                let r = r.read(cx);
+                (r.status.signed_in, r.account_sessions)
+            })
+            .unwrap_or((false, None));
+        let plural = |n: usize| if n == 1 { "" } else { "s" };
+        let armed = self.wipe_armed;
+        // Two clicks: the first arms the button, which then says exactly what
+        // the second will do. Anything else disarms it.
+        let wipe = |id: &'static str, kind: (bool, bool), idle: String, sure: String, cx: &mut Context<Self>| {
+            let on = armed == Some(kind);
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.0))
+                .when(on, |d| {
+                    d.child(ctl::button_sm(t, "wipe-cancel", "Cancel", Tone::Quiet).on_click(cx.listener(
+                        |this, _, _, cx| {
+                            this.wipe_armed = None;
+                            cx.notify();
+                        },
+                    )))
+                })
+                .child(
+                    ctl::button_sm(t, id, if on { sure } else { idle }, Tone::Filled)
+                        .when(on, |d| d.bg(t.danger).text_color(gpui::white()))
+                        .when(!on, |d| d.text_color(t.danger))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if this.wipe_armed == Some(kind) {
+                                this.wipe_armed = None;
+                                cx.emit(SettingsEvent::WipeSessions { local: kind.0, cloud: kind.1 });
+                            } else {
+                                this.wipe_armed = Some(kind);
+                            }
+                            cx.notify();
+                        })),
+                )
+        };
+        let local_row = wipe(
+            "wipe-local",
+            (true, false),
+            "Delete…".into(),
+            format!("Delete {local_count} session{}", plural(local_count)),
+            cx,
+        );
+        let mut sessions = page::card(t).child(self.srow(
+            t,
+            true,
+            "wipe_local",
+            "Clear this computer",
+            "Deletes every thread here with its transcript, and its worktree with any uncommitted work. Copies on your account stay.",
+            local_row,
+        ));
+        if signed_in {
+            let n = cloud_count.unwrap_or(0);
+            let cloud_row = wipe(
+                "wipe-cloud",
+                (false, true),
+                "Delete…".into(),
+                format!("Delete {n} synced session{}", plural(n)),
+                cx,
+            );
+            let both_row = wipe(
+                "wipe-both",
+                (true, true),
+                "Delete…".into(),
+                format!("Delete {local_count} here and {n} synced"),
+                cx,
+            );
+            sessions = sessions
+                .child(self.srow(
+                    t,
+                    false,
+                    "wipe_cloud",
+                    "Clear your account",
+                    "Removes every synced session from your account, on all your devices. Threads on this computer stay here and stop syncing.",
+                    cloud_row,
+                ))
+                .child(self.srow(
+                    t,
+                    false,
+                    "wipe_both",
+                    "Clear everything",
+                    "Both of the above.",
+                    both_row,
+                ));
+        }
+        div()
+            .flex()
+            .flex_col()
+            .child(page::section(t, "Local data", card))
+            .child(page::section(t, "Delete sessions", sessions))
+            .into_any_element()
     }
 
     fn remote(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {

@@ -1243,11 +1243,7 @@ pub(crate) mod upstream {
                 break;
             }
         }
-        let text = if hits.is_empty() {
-            "No matching tools.".to_string()
-        } else {
-            hits.join("\n")
-        };
+        let text = if hits.is_empty() { "No matching tools.".to_string() } else { hits.join("\n") };
         json!({"content": [{"type": "text", "text": text}]})
     }
 

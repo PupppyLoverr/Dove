@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Dove-<version>-<arch>.dmg: Dove.app (from scripts/macos/bundle.sh) beside an
+# Keplorayx-<version>-<arch>.dmg: Keplorayx.app (from scripts/macos/bundle.sh) beside an
 # Applications link, to drag across. The app is ad-hoc signed, not notarized:
 # the first launch needs right-click > Open (or
-# `xattr -dr com.apple.quarantine /Applications/Dove.app`).
+# `xattr -dr com.apple.quarantine /Applications/Keplorayx.app`).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 OUT="${OUT:-$ROOT/packaging/out}"
@@ -13,15 +13,15 @@ ARCH="$(uname -m)"
 if [[ -z "${SKIP_BUNDLE:-}" ]]; then
   "$ROOT/scripts/macos/bundle.sh"
 fi
-APP="$ROOT/target/release/Dove.app"
+APP="$ROOT/target/release/Keplorayx.app"
 [[ -d "$APP" ]] || { echo "missing $APP" >&2; exit 1; }
 
 mkdir -p "$OUT"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
-cp -R "$APP" "$WORK/Dove.app"
+cp -R "$APP" "$WORK/Keplorayx.app"
 ln -s /Applications "$WORK/Applications"
-DMG="$OUT/Dove-${VERSION}-${ARCH}.dmg"
+DMG="$OUT/Keplorayx-${VERSION}-${ARCH}.dmg"
 rm -f "$DMG"
-hdiutil create -volname "Dove" -srcfolder "$WORK" -ov -format UDZO "$DMG"
+hdiutil create -volname "Keplorayx" -srcfolder "$WORK" -ov -format UDZO "$DMG"
 echo "dmg: $DMG"

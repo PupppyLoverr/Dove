@@ -615,8 +615,7 @@ impl Shell {
             .on_click(cx.listener(|this, _, window, cx| this.open_editor(None, window, cx)));
         let header = div().flex().items_center().gap(px(space::SM)).child(tabs).child(new_btn).into_any_element();
         const TITLE: &str = "Automations";
-        const SUBTITLE: &str =
-            "Prompts that start threads on a schedule or when something happens in a repo. A run uses the machine selected in the composer when you save it.";
+        const SUBTITLE: &str = "Prompts that start threads on a schedule or when something happens in a repo. A run uses the machine selected in the composer when you save it.";
 
         let page: AnyElement = match tab {
             AutoTab::List => {

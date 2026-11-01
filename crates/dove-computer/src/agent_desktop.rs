@@ -30,9 +30,9 @@ pub fn binary() -> Option<PathBuf> {
         }
     }
     let name = if cfg!(windows) { "agent-desktop.exe" } else { "agent-desktop" };
-    let home = std::env::var_os("DOVE_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(|h| PathBuf::from(h).join(".dove")))?;
+    let home = std::env::var_os("DOVE_HOME").map(PathBuf::from).or_else(|| {
+        std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(|h| PathBuf::from(h).join(".dove"))
+    })?;
     let path = home.join("plugins").join("agent-desktop").join(name);
     path.is_file().then_some(path)
 }
@@ -79,11 +79,8 @@ fn snapshot(bin: &Path) -> Result<Value, DesktopError> {
     if let Ok(mut refs) = REFS.lock() {
         *refs = rows.iter().map(|(r, _)| r.clone()).collect();
     }
-    let elements: Vec<Value> = rows
-        .iter()
-        .enumerate()
-        .map(|(i, (r#ref, name))| json!({"index": i, "ref": r#ref, "name": name}))
-        .collect();
+    let elements: Vec<Value> =
+        rows.iter().enumerate().map(|(i, (r#ref, name))| json!({"index": i, "ref": r#ref, "name": name})).collect();
     Ok(json!({
         "ok": true,
         "action": "capture",
@@ -114,8 +111,7 @@ fn r#ref_of(args: &Value) -> Result<String, DesktopError> {
         .and_then(Value::as_u64)
         .or_else(|| args.get("element").and_then(Value::as_u64))
         .ok_or_else(|| DesktopError::Failed("capture first, then click or type by index".into()))?;
-    REFS
-        .lock()
+    REFS.lock()
         .ok()
         .and_then(|refs| refs.get(index as usize).cloned())
         .ok_or_else(|| DesktopError::Failed("that row is not in the last agent-desktop snapshot".into()))
@@ -124,7 +120,9 @@ fn r#ref_of(args: &Value) -> Result<String, DesktopError> {
 fn run(bin: &Path, args: &[&str]) -> Result<Value, DesktopError> {
     let out = Command::new(bin).args(args).output().map_err(|err| {
         if err.kind() == std::io::ErrorKind::NotFound || err.raw_os_error() == Some(5) {
-            DesktopError::Blocked(format!("agent-desktop did not start ({err}). Windows may be blocking the unsigned plugin."))
+            DesktopError::Blocked(format!(
+                "agent-desktop did not start ({err}). Windows may be blocking the unsigned plugin."
+            ))
         } else {
             DesktopError::Failed(err.to_string())
         }

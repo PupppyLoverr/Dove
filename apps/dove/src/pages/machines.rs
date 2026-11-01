@@ -1159,13 +1159,7 @@ fn qr_card(uri: &str) -> AnyElement {
     };
     let n = code.width();
     let cell = 4.0;
-    let mut col = div()
-        .flex()
-        .flex_col()
-        .flex_none()
-        .p(px(8.0))
-        .bg(gpui::rgb(0xffffff))
-        .rounded(px(8.0));
+    let mut col = div().flex().flex_col().flex_none().p(px(8.0)).bg(gpui::rgb(0xffffff)).rounded(px(8.0));
     for y in 0..n {
         let mut row = div().flex().flex_row().h(px(cell));
         for x in 0..n {
@@ -1251,14 +1245,11 @@ impl MachinesView {
                     .await;
                 match polled {
                     Ok(Some(token)) => {
-                        let saved = cx
-                            .background_spawn(async move { Keys::store("github", &token).is_ok() })
-                            .await;
+                        let saved = cx.background_spawn(async move { Keys::store("github", &token).is_ok() }).await;
                         let _ = this.update(cx, |v, cx| {
                             v.github_connected = saved;
                             v.github_user_code = None;
-                            v.github_error =
-                                (!saved).then(|| "Could not save the GitHub connection.".to_string());
+                            v.github_error = (!saved).then(|| "Could not save the GitHub connection.".to_string());
                             cx.notify();
                         });
                         return;
@@ -1287,12 +1278,14 @@ impl MachinesView {
         } else {
             "Not connected. Device flow, then install the cosmos-ade GitHub App.".to_string()
         };
-        let connect = ctl::button_sm(t, "github-connect", if self.github_busy { "Starting…" } else { "Connect GitHub" }, Tone::Quiet);
+        let connect = ctl::button_sm(
+            t,
+            "github-connect",
+            if self.github_busy { "Starting…" } else { "Connect GitHub" },
+            Tone::Quiet,
+        );
         let connect = if self.github_busy || self.github_connected || self.github_user_code.is_some() {
-            ctl::disabled(
-                connect,
-                if self.github_connected { "Already connected" } else { "Waiting for GitHub" },
-            )
+            ctl::disabled(connect, if self.github_connected { "Already connected" } else { "Waiting for GitHub" })
         } else {
             connect.on_click(cx.listener(|this, _, _, cx| this.connect_github(cx)))
         };

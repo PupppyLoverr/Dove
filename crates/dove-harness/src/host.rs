@@ -745,9 +745,7 @@ pub fn wsl_distros() -> Vec<String> {
     if !cfg!(windows) {
         return Vec::new();
     }
-    quiet_output_timeout("wsl.exe", &["-l", "-q"], LIST_TIMEOUT)
-        .map(|raw| parse_wsl_list(&raw))
-        .unwrap_or_default()
+    quiet_output_timeout("wsl.exe", &["-l", "-q"], LIST_TIMEOUT).map(|raw| parse_wsl_list(&raw)).unwrap_or_default()
 }
 
 /// `wsl -l -q` prints UTF-16LE.

@@ -60,7 +60,7 @@ const CHIP_FADE: f32 = 36.0;
 /// The explorer column at the dock's right edge: Zeron's default width, and
 /// the narrowest it gets before it steps aside.
 pub const EXPLORER_W: f32 = 286.0;
-pub const EXPLORER_MIN: f32 = 200.0;
+pub const EXPLORER_MIN: f32 = 220.0;
 /// A pane header's height (split panes, and every thread pane).
 const PANE_HEAD: f32 = 34.0;
 
@@ -82,6 +82,8 @@ pub enum Surface {
     Changes,
     History,
     Files,
+    /// One open file, Zeron's per-file tab.
+    File(u64),
     Plan,
     Browser(u64),
     Terminal(u64),
@@ -217,7 +219,7 @@ impl Surface {
         match self {
             Surface::Changes => Tab::Changes,
             Surface::History => Tab::History,
-            Surface::Files => Tab::Files,
+            Surface::Files | Surface::File(_) => Tab::Files,
             Surface::Plan => Tab::Plan,
             Surface::Browser(_) => Tab::Browser,
             Surface::Terminal(_) => Tab::Terminal,
@@ -290,6 +292,8 @@ struct ThreadPanel {
     next_pane: PaneId,
     browsers: HashMap<u64, (Entity<BrowserSurface>, Subscription)>,
     terminals: HashMap<u64, Entity<TerminalView>>,
+    /// Open files: the view, its path, and its events.
+    files: HashMap<u64, (Entity<FilesPanel>, String, Subscription)>,
     chats: HashMap<u64, (Entity<SideChat>, Subscription)>,
     subagents: HashMap<u64, (Entity<TaskView>, Subscription)>,
     /// Other threads shown in panes, and saved ones waiting for their view.
@@ -309,6 +313,7 @@ impl Default for ThreadPanel {
             next_pane: 1,
             browsers: HashMap::new(),
             terminals: HashMap::new(),
+            files: HashMap::new(),
             chats: HashMap::new(),
             subagents: HashMap::new(),
             threads: HashMap::new(),
@@ -406,6 +411,7 @@ fn surface_spec(s: Surface, p: &ThreadPanel, cx: &gpui::App) -> Option<String> {
         Surface::Changes => "changes".into(),
         Surface::History => "history".into(),
         Surface::Files => "files".into(),
+        Surface::File(id) => format!("file:{}", p.files.get(&id)?.1),
         Surface::Plan => "plan".into(),
         Surface::Subagents => "subagents".into(),
         Surface::Chats => "chats".into(),
@@ -422,6 +428,9 @@ fn surface_spec(s: Surface, p: &ThreadPanel, cx: &gpui::App) -> Option<String> {
 
 /// The kind (and a browser's address) for a saved surface.
 fn spec_tab(spec: &str) -> Option<(Tab, Option<String>)> {
+    if let Some(path) = spec.strip_prefix("file:") {
+        return Some((Tab::Files, Some(path.to_string())));
+    }
     if let Some(url) = spec.strip_prefix("browser:") {
         return Some((Tab::Browser, Some(url.to_string())));
     }
@@ -595,7 +604,11 @@ impl EventEmitter<SidePanelEvent> for SidePanel {}
 impl SidePanel {
     pub fn new(engine: Arc<Engine>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let changes = cx.new(|cx| Changes::new(window, cx));
-        let files = cx.new(|cx| FilesPanel::new(window, cx));
+        let files = cx.new(|cx| {
+            let mut panel = FilesPanel::new(window, cx);
+            panel.explorer = true;
+            panel
+        });
         let explorer = cx.new(|cx| {
             let mut panel = FilesPanel::new(window, cx);
             panel.explorer = true;
@@ -620,17 +633,15 @@ impl SidePanel {
             cx.subscribe(&changes, |_, _, ev: &ChangesEvent, cx| match ev {
                 ChangesEvent::SendToAgent(text) => cx.emit(SidePanelEvent::SendToAgent(text.clone())),
             }),
-            cx.subscribe(&files, |_, _, ev: &FilesEvent, cx| match ev {
-                FilesEvent::AskAgent(text) => cx.emit(SidePanelEvent::SendToAgent(text.clone())),
-                FilesEvent::Open(_) => {}
-            }),
         ];
-        subs.push(cx.subscribe_in(&explorer, window, |this, _, ev: &FilesEvent, window, cx| {
-            if let FilesEvent::Open(path) = ev {
-                cx.emit(SidePanelEvent::ShowBody);
-                this.open_path(path, None, window, cx);
-            }
-        }));
+        for tree in [&files, &explorer] {
+            subs.push(cx.subscribe_in(tree, window, |this, _, ev: &FilesEvent, window, cx| {
+                if let FilesEvent::Open(path) = ev {
+                    cx.emit(SidePanelEvent::ShowBody);
+                    this.open_path(path, None, window, cx);
+                }
+            }));
+        }
         subs.push(cx.subscribe_in(&git_history, window, |this, _, ev: &HistoryEvent, window, cx| match ev {
             HistoryEvent::OpenCommit { sha, subject } => {
                 let Some(dir) = this.dir.clone() else { return };
@@ -1060,13 +1071,17 @@ impl SidePanel {
     /// terminal, else the thread's own (moved here if another pane has it).
     fn put(&mut self, ask: PanelAsk, window: &mut Window, cx: &mut Context<Self>) {
         let k = ask.kind;
+        if let (Tab::Files, Some(path)) = (k, ask.path.as_deref()) {
+            self.open_path(path, ask.line, window, cx);
+            return;
+        }
         if matches!(k, Tab::Browser | Tab::Terminal) {
             self.open(k, ask.url, window, cx);
             return;
         }
-        let existing = self
-            .panel_ref()
-            .and_then(|p| p.tabs.iter().copied().find(|s| s.kind() == k && !matches!(s, Surface::Subagent(_))));
+        let existing = self.panel_ref().and_then(|p| {
+            p.tabs.iter().copied().find(|s| s.kind() == k && !matches!(s, Surface::Subagent(_) | Surface::File(_)))
+        });
         match existing {
             Some(s) => self.place_here(s, window, cx),
             None => self.open(k, None, window, cx),
@@ -1260,18 +1275,19 @@ impl SidePanel {
         }
     }
 
+    /// The work changed: whichever of these is on screen reloads.
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
-        self.changes.update(cx, |c, cx| c.refresh(cx));
-        self.files.update(cx, |f, cx| f.refresh(cx));
-        self.explorer.update(cx, |f, cx| f.refresh(cx));
-        self.git_history.update(cx, |h, cx| h.refresh(cx));
+        self.changes.update(cx, |c, cx| c.invalidate(cx));
+        self.files.update(cx, |f, cx| f.invalidate(cx));
+        self.explorer.update(cx, |f, cx| f.invalidate(cx));
+        self.git_history.update(cx, |h, cx| h.invalidate(cx));
     }
 
     /// Show a surface of `kind`, opening one if the thread has none.
     pub fn show(&mut self, kind: Tab, window: &mut Window, cx: &mut Context<Self>) {
-        let existing = self
-            .panel_ref()
-            .and_then(|p| p.tabs.iter().copied().find(|s| s.kind() == kind && !matches!(s, Surface::Subagent(_))));
+        let existing = self.panel_ref().and_then(|p| {
+            p.tabs.iter().copied().find(|s| s.kind() == kind && !matches!(s, Surface::Subagent(_) | Surface::File(_)))
+        });
         match existing {
             Some(s) => self.activate(s, window, cx),
             None => self.open(kind, None, window, cx),
@@ -1281,6 +1297,11 @@ impl SidePanel {
     /// Open a new surface of `kind` (browsers and terminals can repeat).
     pub fn open(&mut self, kind: Tab, url: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
         self.plus_open = false;
+        // A saved file tab comes back through here with its path.
+        if let (Tab::Files, Some(path)) = (kind, url.as_deref()) {
+            self.open_path(path, None, window, cx);
+            return;
+        }
         let surface = match kind {
             // Threads come in by drag, with their view (`place_thread`).
             Tab::Thread => return,
@@ -1411,6 +1432,9 @@ impl SidePanel {
             Surface::SideChat(id) => {
                 p.chats.remove(&id);
             }
+            Surface::File(id) => {
+                p.files.remove(&id);
+            }
             Surface::Subagent(id) => {
                 p.subagents.remove(&id);
             }
@@ -1456,9 +1480,41 @@ impl SidePanel {
         self.open(Tab::Terminal, None, window, cx);
     }
 
+    /// Show a file in its own tab, reusing the tab it already has.
     pub fn open_path(&mut self, path: &str, line: Option<u32>, window: &mut Window, cx: &mut Context<Self>) {
-        self.show(Tab::Files, window, cx);
-        self.files.update(cx, |f, cx| f.open_path(path, line, cx));
+        self.plus_open = false;
+        let existing = self.panel_ref().and_then(|p| {
+            p.files.iter().find(|(_, (_, known, _))| known == path).map(|(id, (view, ..))| (*id, view.clone()))
+        });
+        let (id, view) = match existing {
+            Some(found) => found,
+            None => {
+                let id = self.next_id;
+                self.next_id += 1;
+                let root = self.dir.clone();
+                let view = cx.new(|cx| FilesPanel::file_tab(root, window, cx));
+                let sub = cx.subscribe_in(&view, window, move |this, _, ev: &FilesEvent, window, cx| match ev {
+                    FilesEvent::AskAgent(text) => cx.emit(SidePanelEvent::SendToAgent(text.clone())),
+                    FilesEvent::CloseTab => this.close(Surface::File(id), window, cx),
+                    FilesEvent::Open(_) => {}
+                });
+                let Some(p) = self.panel() else { return };
+                p.files.insert(id, (view.clone(), path.to_string(), sub));
+                p.tabs.push(Surface::File(id));
+                (id, view)
+            }
+        };
+        view.update(cx, |f, cx| f.open_path(path, line, cx));
+        self.activate(Surface::File(id), window, cx);
+    }
+
+    /// What runs alongside the thread, for its card: subagents as (call,
+    /// title, running) and side chats as (thread, title, running).
+    pub fn lanes(&self) -> (Vec<(String, String, bool)>, Vec<(TaskId, String, bool)>) {
+        (
+            self.subagents.iter().map(|a| (a.id.clone(), a.title.clone(), a.running)).collect(),
+            self.side_chats.iter().map(|c| (c.id, c.title.clone(), c.status == TaskStatus::Running)).collect(),
+        )
     }
 
     /// Show the chat of the subagent spawned by `call` in `source` (the
@@ -1731,7 +1787,7 @@ impl SidePanel {
     }
 
     /// Local dev-server URLs the thread's terminals have printed.
-    fn detected_urls(&self, cx: &gpui::App) -> Vec<String> {
+    pub(crate) fn detected_urls(&self, cx: &gpui::App) -> Vec<String> {
         let Some(p) = self.panel_ref() else { return Vec::new() };
         let mut out: Vec<String> = Vec::new();
         for t in p.terminals.values() {
@@ -1788,10 +1844,11 @@ impl SidePanel {
                 let n = self.changes.read(cx).summary().0;
                 if n > 0 { format!("Diffs · {n}").into() } else { "Diffs".into() }
             }
-            Surface::Files => match self.files.read(cx).preview_path() {
-                Some(path) => path.rsplit('/').next().unwrap_or(path).to_string().into(),
-                None => "Files".into(),
-            },
+            Surface::File(id) => self
+                .panel_ref()
+                .and_then(|p| p.files.get(&id))
+                .map(|(_, path, _)| path.replace('\\', "/").rsplit('/').next().unwrap_or("File").to_string().into())
+                .unwrap_or_else(|| "File".into()),
             Surface::Plan if !self.todos.is_empty() => {
                 let done = self.todos.iter().filter(|x| x.status == TodoStatus::Completed).count();
                 format!("Plan · {done}/{}", self.todos.len()).into()
@@ -1837,7 +1894,7 @@ impl SidePanel {
                 _ => None,
             };
             let preview = match s {
-                Surface::Files => self.files.read(cx).preview_path().map(str::to_string),
+                Surface::File(id) => self.panel_ref().and_then(|p| p.files.get(&id)).map(|(_, path, _)| path.clone()),
                 _ => None,
             };
             let lead: AnyElement = if loading {
@@ -2039,9 +2096,9 @@ impl SidePanel {
             cx.notify();
             return;
         }
-        let existing = self
-            .panel_ref()
-            .and_then(|p| p.tabs.iter().copied().find(|s| s.kind() == k && !matches!(s, Surface::Subagent(_))));
+        let existing = self.panel_ref().and_then(|p| {
+            p.tabs.iter().copied().find(|s| s.kind() == k && !matches!(s, Surface::Subagent(_) | Surface::File(_)))
+        });
         match existing {
             Some(s) if !matches!(k, Tab::Browser | Tab::Terminal | Tab::SideChat) => self.place_here(s, window, cx),
             _ => self.open(k, None, window, cx),
@@ -2159,33 +2216,30 @@ impl SidePanel {
         let offered = self.offered();
         let count = offered.len();
         let hi = self.plus_hi;
-        let mut list = div()
-            .id("surface-list")
-            .w(px(200.0))
-            .flex()
-            .flex_col()
-            .track_focus(&self.plus_focus)
-            .on_key_down(cx.listener(move |this, e: &gpui::KeyDownEvent, window, cx| {
-                match e.keystroke.key.as_str() {
-                    "up" | "left" => {
-                        this.plus_hi = Some(this.plus_hi.map_or(0, |at| at.saturating_sub(1)));
-                    }
-                    "down" | "right" => {
-                        this.plus_hi = Some(this.plus_hi.map_or(0, |at| (at + 1).min(count - 1)));
-                    }
-                    "home" => this.plus_hi = Some(0),
-                    "end" => this.plus_hi = Some(count - 1),
-                    "enter" | "space" => {
-                        if let Some(k) = this.plus_hi.and_then(|i| this.offered().get(i).copied()) {
-                            this.pick(k, window, cx);
+        let mut list =
+            div().id("surface-list").w(px(200.0)).flex().flex_col().track_focus(&self.plus_focus).on_key_down(
+                cx.listener(move |this, e: &gpui::KeyDownEvent, window, cx| {
+                    match e.keystroke.key.as_str() {
+                        "up" | "left" => {
+                            this.plus_hi = Some(this.plus_hi.map_or(0, |at| at.saturating_sub(1)));
                         }
+                        "down" | "right" => {
+                            this.plus_hi = Some(this.plus_hi.map_or(0, |at| (at + 1).min(count - 1)));
+                        }
+                        "home" => this.plus_hi = Some(0),
+                        "end" => this.plus_hi = Some(count - 1),
+                        "enter" | "space" => {
+                            if let Some(k) = this.plus_hi.and_then(|i| this.offered().get(i).copied()) {
+                                this.pick(k, window, cx);
+                            }
+                        }
+                        "escape" => this.plus_open = false,
+                        _ => return,
                     }
-                    "escape" => this.plus_open = false,
-                    _ => return,
-                }
-                cx.stop_propagation();
-                cx.notify();
-            }));
+                    cx.stop_propagation();
+                    cx.notify();
+                }),
+            );
         for (i, k) in offered.into_iter().enumerate() {
             list = list.child(
                 kit::popover::menu_item(
@@ -2269,11 +2323,7 @@ impl SidePanel {
                 .tooltip(ui::tip(k.blurb()))
                 .child(icon(k.glyph()).size(px(15.0)).flex_none().text_color(muted))
                 .child(
-                    div()
-                        .text_size(ty::BODY)
-                        .font_weight(gpui::FontWeight::MEDIUM)
-                        .text_color(text)
-                        .child(k.label()),
+                    div().text_size(ty::BODY).font_weight(gpui::FontWeight::MEDIUM).text_color(text).child(k.label()),
                 )
                 .on_click(cx.listener(move |this, _, window, cx| this.pick(k, window, cx)))
         });
@@ -2724,6 +2774,10 @@ impl SidePanel {
                 AnyView::from(self.changes.clone()).cached(StyleRefinement::default().size_full()).into_any_element()
             }
             Some(Surface::Files) => self.files.clone().into_any_element(),
+            Some(Surface::File(id)) => match self.panel_ref().and_then(|p| p.files.get(&id)) {
+                Some((view, ..)) => view.clone().into_any_element(),
+                None => self.render_picker(&t, cx),
+            },
             Some(Surface::History) => AnyView::from(self.git_history.clone())
                 .cached(StyleRefinement::default().size_full())
                 .into_any_element(),
@@ -3096,9 +3150,7 @@ impl Render for SidePanel {
             .size_full()
             .flex()
             .flex_row()
-            .when(self.body_on, |d| {
-                d.child(div().relative().flex_1().min_w_0().h_full().child(probe).child(body))
-            })
+            .when(self.body_on, |d| d.child(div().relative().flex_1().min_w_0().h_full().child(probe).child(body)))
             .when(self.explorer_w > 0.0, |d| {
                 d.child(
                     div()

@@ -612,10 +612,7 @@ fn stale_names(on: &[&Installed]) -> Vec<String> {
         std::fs::read(use_path()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
     let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0);
     let month = 30 * 24 * 60 * 60 * 1000;
-    on.iter()
-        .filter(|s| map.get(&s.name).is_some_and(|at| now - *at > month))
-        .map(|s| s.name.clone())
-        .collect()
+    on.iter().filter(|s| map.get(&s.name).is_some_and(|at| now - *at > month)).map(|s| s.name.clone()).collect()
 }
 
 fn describe_in(root: &Path, reg: &Registry, name: Option<&str>) -> Result<String, String> {

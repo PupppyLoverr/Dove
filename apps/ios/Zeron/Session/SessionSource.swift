@@ -106,6 +106,23 @@ final class FixtureSessionSource: SessionSource {
     private var timer: Timer?
     private let fixture = layoutFixtureMarkdown()
 
+    /// A session that would not open: says so, and takes no messages.
+    private var unavailable = false
+
+    static func unavailable() -> FixtureSessionSource {
+        let source = FixtureSessionSource(title: "Unavailable", subtitle: "")
+        source.unavailable = true
+        source.chrome.chips = []
+        source.chrome.placeholder = "Session unavailable"
+        source.entries = [DebugEntry(
+            id: "a0",
+            user: false,
+            text: "This session couldn't be opened. It may have been deleted, or your computer may be offline. Go back and try again.",
+            streaming: false
+        )]
+        return source
+    }
+
     init(title: String, subtitle: String) {
         chrome.title = title
         chrome.subtitle = subtitle
@@ -139,6 +156,7 @@ final class FixtureSessionSource: SessionSource {
     }
 
     func send(text: String, images: [StagedImage], mode: DeliveryMode) -> Bool {
+        if unavailable { return false }
         if chrome.running, mode == .queue {
             update { $0.queue.append(.init(id: UUID().uuidString, text: text, thumbnail: images.first?.thumbnail, gate: nil)) }
             return true

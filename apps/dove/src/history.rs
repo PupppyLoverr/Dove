@@ -50,6 +50,8 @@ pub struct GitHistory {
     init_error: Option<SharedString>,
     /// The commit last opened as a diff, kept highlighted.
     selected: Option<String>,
+    /// Load on the next paint: nothing runs git for a tab nobody is looking at.
+    stale: bool,
     _load: Option<gpui::Task<()>>,
     /// Typing settles for a moment before the log is searched again.
     _debounce: Option<gpui::Task<()>>,
@@ -103,6 +105,7 @@ impl GitHistory {
             initializing: false,
             init_error: None,
             selected: None,
+            stale: false,
             _load: None,
             _debounce: None,
             _sub,
@@ -118,10 +121,18 @@ impl GitHistory {
         self.selected = None;
         self.commits = Arc::default();
         self.note = None;
-        self.refresh(cx);
+        self._load = None;
+        self.invalidate(cx);
+    }
+
+    /// Reload when next on screen.
+    pub fn invalidate(&mut self, cx: &mut Context<Self>) {
+        self.stale = true;
+        cx.notify();
     }
 
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
+        self.stale = false;
         let Some(root) = self.root.clone() else {
             self.commits = Arc::default();
             self.note = Some(Note::Text("Open a thread to see its history.".into()));
@@ -130,6 +141,7 @@ impl GitHistory {
         };
         let q = self.query.clone();
         let work = cx.background_spawn(async move {
+            let _slot = crate::git_slots::slot().await;
             let result = git::history(&root, &q, LIMIT);
             // Only an empty or failed log needs to know why.
             let repo = match &result {
@@ -458,6 +470,11 @@ fn paint_graph(
 impl Render for GitHistory {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::perf_trace::count_render("GitHistory");
+        if self.stale {
+            self.stale = false;
+            let this = cx.entity();
+            cx.defer(move |cx| this.update(cx, |h, cx| h.refresh(cx)));
+        }
         let t = Theme::of(cx).clone();
         let search = div()
             .mx(px(8.0))

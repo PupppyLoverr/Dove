@@ -43,6 +43,14 @@ mimalloc = { version = "0.1", default-features = false }
 opt-level = 1
 [profile.dev.package."*"]
 opt-level = 2
+# GPUI's own asserts abort the process (a duplicate accessibility id closes the
+# window); a debug build should stay up the way a release build does.
+[profile.dev.package.gpui]
+debug-assertions = false
+overflow-checks = false
+# Generates its inspector code only where GPUI has the inspector, so they match.
+[profile.dev.package.gpui-base]
+debug-assertions = false
 
 [profile.release]
 lto = "fat"

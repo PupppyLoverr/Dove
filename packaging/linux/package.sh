@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Linux packages from release binaries already built:
-#   dove_<version>_amd64.deb         (apt install ./dove_*.deb)
+#   keplorayx_<version>_amd64.deb    (apt install ./keplorayx_*.deb)
 #   Keplorayx-<version>-x86_64.AppImage   (chmod +x and run; uses the system's
 #                                     GTK/WebKit, Vulkan and Wayland/X11 libs)
-#   dove-<version>-linux-x86_64.tar.gz
+#   keplorayx-<version>-linux-x86_64.tar.gz
 # Needs: dpkg-deb; APPIMAGETOOL pointing at appimagetool for the AppImage.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -58,12 +58,12 @@ Description: Keplorayx (K22), a desktop environment for coding agents
  Runs Claude Code, Codex, Gemini and other agent CLIs side by side, with
  threads, diffs, a terminal and a built-in browser.
 CONTROL
-dpkg-deb --root-owner-group --build "$DEB" "$OUT/dove_${VERSION}_amd64.deb"
+dpkg-deb --root-owner-group --build "$DEB" "$OUT/keplorayx_${VERSION}_amd64.deb"
 
 # tar.gz: the same tree, relative to a prefix.
 TAR="$WORK/tar/dove-${VERSION}"
 stage "$TAR"
-tar -C "$WORK/tar" -czf "$OUT/dove-${VERSION}-linux-x86_64.tar.gz" "dove-${VERSION}"
+tar -C "$WORK/tar" -czf "$OUT/keplorayx-${VERSION}-linux-x86_64.tar.gz" "dove-${VERSION}"
 
 # AppImage
 if [[ -n "${APPIMAGETOOL:-}" ]]; then

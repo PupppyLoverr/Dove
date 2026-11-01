@@ -581,7 +581,7 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         use crate::shell_menu::{Item, act};
-        let pick = |id: &'static str, label: String, on: bool, key: &'static str, value: String| {
+        let pick = |id: SharedString, label: String, on: bool, key: &'static str, value: String| {
             Item::row(
                 id,
                 Some(if on { icons::CHECK } else { icons::LIST }),
@@ -594,13 +594,26 @@ impl Shell {
             .keep_open()
         };
         let mut items = vec![
-            pick("flt-all", "All threads".into(), filter.show == Show::All, "sidebar_show", "all".into()),
-            pick("flt-proj", "Projects only".into(), filter.show == Show::Projects, "sidebar_show", "projects".into()),
-            pick("flt-chats", "Chats only".into(), filter.show == Show::Chats, "sidebar_show", "chats".into()),
+            pick("flt-all".into(), "All threads".into(), filter.show == Show::All, "sidebar_show", "all".into()),
+            pick(
+                "flt-proj".into(),
+                "Projects only".into(),
+                filter.show == Show::Projects,
+                "sidebar_show",
+                "projects".into(),
+            ),
+            pick("flt-chats".into(), "Chats only".into(), filter.show == Show::Chats, "sidebar_show", "chats".into()),
         ];
         for p in self.projects.iter().filter(|p| !self.is_chats_project(p.id)) {
             let on = filter.show == Show::Project(p.id);
-            items.push(pick("flt-p", format!("Only {}", p.name), on, "sidebar_show", format!("p:{}", p.id)));
+            // Each row needs its own id: GPUI aborts a debug build on a duplicate.
+            items.push(pick(
+                format!("flt-p-{}", p.id).into(),
+                format!("Only {}", p.name),
+                on,
+                "sidebar_show",
+                format!("p:{}", p.id),
+            ));
         }
         items.push(Item::Separator);
         for (id, label, value) in [
@@ -610,18 +623,18 @@ impl Shell {
             ("flt-failed", "Failed", "failed"),
             ("flt-done", "Done", "done"),
         ] {
-            items.push(pick(id, label.into(), filter.status == value, "sidebar_status", value.into()));
+            items.push(pick(id.into(), label.into(), filter.status == value, "sidebar_status", value.into()));
         }
         items.push(Item::Separator);
         items.push(pick(
-            "flt-group",
+            "flt-group".into(),
             "Group by project".into(),
             filter.group_by_project,
             "sidebar_group",
             if filter.group_by_project { "none".into() } else { "project".into() },
         ));
         items.push(pick(
-            "flt-arch",
+            "flt-arch".into(),
             "Include archived".into(),
             filter.archived,
             "sidebar_archived",
@@ -713,13 +726,18 @@ impl Shell {
         use crate::shell_menu::{Item, act};
         let usage = format!("Today {}", ui::usage_line(&self.today));
         let mut items = Vec::new();
-        if self.sync_postponed {
-            items.push(Item::row(
-                "acc-sync",
-                Some(icons::CLOUD),
-                "Sync is ready",
-                act(|this, _, cx| this.reopen_sync_offer(cx)),
-            ));
+        // Postponed, or an earlier "Start fresh" left work on this computer.
+        let held_back = self.engine.store.setting(crate::remote::SYNC_CLAIM).as_deref() == Some("fresh")
+            && crate::remote::Remote::global(cx).is_some_and(|r| r.read(cx).status.signed_in)
+            && self.local_sessions_to_bring() > 0;
+        if self.sync_postponed || held_back {
+            let label: SharedString = if self.sync_postponed {
+                "Sync is ready".into()
+            } else {
+                let n = self.local_sessions_to_bring();
+                format!("Sync {n} session{} from this computer", if n == 1 { "" } else { "s" }).into()
+            };
+            items.push(Item::row("acc-sync", Some(icons::CLOUD), label, act(|this, _, cx| this.reopen_sync_offer(cx))));
             items.push(Item::Separator);
         }
         items.extend([
@@ -984,7 +1002,7 @@ impl Shell {
                 cx.listener(move |this, e: &MouseDownEvent, window, cx| {
                     cx.stop_propagation();
                     this.close_menus();
-                    this.menu = Some(ChatMenu { task: id, at: e.position, copy_open: false, confirm_delete: false });
+                    this.menu = Some(ChatMenu { task: id, at: e.position, copy_open: false, confirm_delete: None });
                     this.menu_opened(window, cx);
                     cx.notify();
                 }),
@@ -1016,6 +1034,8 @@ impl Shell {
         let renaming_now = renaming.is_some();
         let row = div()
             .id(SharedString::from(format!("row-{id}")))
+            .role(gpui::Role::Button)
+            .aria_label(SharedString::from(task.title.clone()))
             .group(group.clone())
             .h(px(if compact { 32.0 } else { 34.0 }))
             .mx(px(8.0))
@@ -1175,7 +1195,7 @@ impl Shell {
                 MouseButton::Right,
                 cx.listener(move |this, e: &MouseDownEvent, window, cx| {
                     this.close_menus();
-                    this.menu = Some(ChatMenu { task: id, at: e.position, copy_open: false, confirm_delete: false });
+                    this.menu = Some(ChatMenu { task: id, at: e.position, copy_open: false, confirm_delete: None });
                     this.menu_opened(window, cx);
                     cx.notify();
                 }),

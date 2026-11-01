@@ -52,6 +52,23 @@ const HEADER_BUTTON: f32 = 28.0;
 const HEADER_GAP: f32 = 4.0;
 /// From the last action to the caption buttons or the window edge.
 const BAR_EDGE_INSET: f32 = 6.0;
+/// Zeron's session card: its width, its inset from the column's edge, the gap
+/// it keeps from the reading column, and the gutters that column keeps.
+const INFO_WIDTH: f32 = 272.0;
+const INFO_INSET: f32 = 12.0;
+const INFO_GAP: f32 = 24.0;
+const READING_GUTTER: f32 = 48.0;
+
+/// Room the chat holds free for the thread card, in a column `main` wide:
+/// nothing while the centred reading column already clears it, else just
+/// enough to shift the column left. `None` once that would narrow the column,
+/// and the card floats over the chat instead. Zeron's `session_card_reserve`.
+fn info_reserve(main: f32) -> Option<f32> {
+    let reading = crate::design::conversation_width();
+    let card_left = main - INFO_WIDTH - INFO_INSET;
+    let reserve = (main + reading - 2.0 * (card_left - INFO_GAP)).max(0.0);
+    (main - reserve - 2.0 * READING_GUTTER >= reading - 0.5).then_some(reserve)
+}
 
 fn harness_from_account(id: Option<&str>) -> HarnessKind {
     match id.unwrap_or("") {
@@ -197,10 +214,28 @@ fn cloud_notice(state: &str) -> &'static str {
 #[derive(Clone, PartialEq)]
 enum SyncOffer {
     Closed,
+    /// Sign-in is open in the browser; this page moves on by itself.
+    Waiting,
     Ready,
-    Switching { bring: bool },
-    Importing { done: usize, total: usize, title: Option<String> },
-    Done { imported: usize, skipped: usize, bring: bool },
+    Switching {
+        bring: bool,
+    },
+    /// This computer's sessions going up to the account.
+    Uploading {
+        done: usize,
+        total: usize,
+        title: Option<String>,
+    },
+    Importing {
+        done: usize,
+        total: usize,
+        title: Option<String>,
+    },
+    Done {
+        imported: usize,
+        skipped: usize,
+        bring: bool,
+    },
     Failed(String),
 }
 
@@ -249,6 +284,7 @@ const SIDE_GLASS_OVER_ART: f32 = 0.42;
 /// the window is wide enough. The least recently opened column hides first,
 /// except that an expanded dock (the user's takeover) outranks the sidebar.
 /// Each column is `(open, opened_at)`.
+#[cfg(test)]
 pub(crate) fn panel_fit(
     viewport: f32,
     sidebar_w: f32,
@@ -256,11 +292,23 @@ pub(crate) fn panel_fit(
     dock: (bool, u64),
     expanded: bool,
 ) -> (bool, bool) {
+    panel_fit_floor(viewport, sidebar_w, sidebar, dock, PANEL_FLOOR, expanded)
+}
+
+/// [`panel_fit`] for a dock of `dock_floor`: the surfaces, the explorer or both.
+pub(crate) fn panel_fit_floor(
+    viewport: f32,
+    sidebar_w: f32,
+    sidebar: (bool, u64),
+    dock: (bool, u64),
+    dock_floor: f32,
+    expanded: bool,
+) -> (bool, bool) {
     let mut cols = [sidebar, dock];
     loop {
         let takeover = expanded && cols[1].0;
         let need = if cols[0].0 { sidebar_w } else { 0.0 }
-            + if cols[1].0 { PANEL_FLOOR } else { 0.0 }
+            + if cols[1].0 { dock_floor } else { 0.0 }
             + if takeover { 0.0 } else { CENTER_MIN };
         if need <= viewport {
             return (cols[0].0, cols[1].0);
@@ -398,7 +446,18 @@ pub struct ChatMenu {
     pub task: TaskId,
     pub at: Point<Pixels>,
     pub copy_open: bool,
-    pub confirm_delete: bool,
+    /// The delete row waiting for its second click.
+    pub confirm_delete: Option<DeleteScope>,
+}
+
+/// Where a session is deleted from.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DeleteScope {
+    /// This computer. A copy on the account stays there.
+    Local,
+    /// The account, on every device. This computer's copy stays.
+    Cloud,
+    Everywhere,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -521,6 +580,8 @@ pub struct Shell {
     was_signed_in: bool,
     /// Account chats that arrived before the user answered the offer.
     pending_account: Option<(String, serde_json::Value)>,
+    /// Sessions "Bring my work" sent up, for the wizard's last page.
+    sync_uploaded: usize,
     sync_importing: bool,
     sync_import_gen: u64,
 }
@@ -616,6 +677,9 @@ impl Shell {
                 crate::settings::SettingsEvent::SignIn(kind) => this.sign_in(*kind, cx),
                 crate::settings::SettingsEvent::Rescan => this.rescan(cx),
                 crate::settings::SettingsEvent::Close => this.close_settings(window, cx),
+                crate::settings::SettingsEvent::WipeSessions { local, cloud } => {
+                    this.wipe_sessions(*local, *cloud, window, cx)
+                }
             },
         ));
         // The shell draws the settings page's parts itself (its sections in
@@ -737,6 +801,7 @@ impl Shell {
             sync_postponed: false,
             was_signed_in: false,
             pending_account: None,
+            sync_uploaded: 0,
             sync_importing: false,
             sync_import_gen: 0,
         };
@@ -757,6 +822,22 @@ impl Shell {
             if std::env::var("DOVE_TERMINAL").is_ok_and(|v| v == "1") {
                 this.toggle_view_mode(window, cx);
             }
+        }
+        // `DOVE_STRESS_THREADS=<rounds>`: open and close threads in turn, to
+        // watch memory across many switches (QA of leaks).
+        if let Some(rounds) = std::env::var("DOVE_STRESS_THREADS").ok().and_then(|v| v.parse::<usize>().ok()) {
+            let ids: Vec<TaskId> = this.tasks.iter().take(24).map(|t| t.id).collect();
+            cx.spawn_in(window, async move |this, cx| {
+                for _ in 0..rounds {
+                    for id in &ids {
+                        cx.background_executor().timer(Duration::from_millis(350)).await;
+                        let _ = this.update_in(cx, |this, window, cx| this.open_task(*id, window, cx));
+                        cx.background_executor().timer(Duration::from_millis(350)).await;
+                        let _ = this.update_in(cx, |this, window, cx| this.close_tab(*id, window, cx));
+                    }
+                }
+            })
+            .detach();
         }
         // `DOVE_BESIDE=<id>[,<id>…]`: open threads beside the open one, as a
         // drop on the conversation would (QA of split view).
@@ -813,6 +894,36 @@ impl Shell {
         // `DOVE_INFO=1`: open the thread's info card (QA).
         if std::env::var("DOVE_INFO").is_ok_and(|v| v == "1") {
             this.info_open = true;
+        }
+        // `DOVE_QA_DELETE=wipe-local|wipe-cloud|wipe-both|local|cloud|both|menu`:
+        // what Settings' mass delete and a session's menu do, on the first
+        // listed thread where it takes one (QA, on a scratch home).
+        if let Ok(what) = std::env::var("DOVE_QA_DELETE") {
+            cx.spawn_in(window, async move |this, cx| {
+                cx.background_executor().timer(Duration::from_secs(3)).await;
+                let _ = this.update_in(cx, |this, window, cx| {
+                    let first = this.tasks.first().map(|t| t.id);
+                    match (what.as_str(), first) {
+                        ("wipe-local", _) => this.wipe_sessions(true, false, window, cx),
+                        ("wipe-cloud", _) => this.wipe_sessions(false, true, window, cx),
+                        ("wipe-both", _) => this.wipe_sessions(true, true, window, cx),
+                        ("local", Some(id)) => this.delete_session(id, DeleteScope::Local, window, cx),
+                        ("cloud", Some(id)) => this.delete_session(id, DeleteScope::Cloud, window, cx),
+                        ("both", Some(id)) => this.delete_session(id, DeleteScope::Everywhere, window, cx),
+                        ("menu", Some(id)) => {
+                            this.menu = Some(ChatMenu {
+                                task: id,
+                                at: gpui::point(px(180.0), px(420.0)),
+                                copy_open: false,
+                                confirm_delete: None,
+                            });
+                            cx.notify();
+                        }
+                        _ => {}
+                    }
+                });
+            })
+            .detach();
         }
         // `DOVE_PICKER=1`: open the visible composer's model picker (QA).
         if std::env::var("DOVE_PICKER").is_ok_and(|v| v == "1") {
@@ -1391,6 +1502,10 @@ impl Shell {
                 self.adopt_account_transcript(*task, messages.clone(), cx);
                 return;
             }
+            RemoteEvent::Upload { done, total, title } => {
+                self.on_sync_upload(*done, *total, title.clone(), cx);
+                return;
+            }
             RemoteEvent::Changed => {
                 self.consider_sync_offer(cx);
                 return;
@@ -1442,7 +1557,19 @@ impl Shell {
             }
         }
         self.was_signed_in = status.signed_in;
-        if let SyncOffer::Switching { .. } = self.sync_offer
+        if status.signing_in && matches!(self.sync_offer, SyncOffer::Closed) {
+            self.sync_offer = SyncOffer::Waiting;
+            cx.notify();
+        }
+        if matches!(self.sync_offer, SyncOffer::Waiting) {
+            let finished = status.signed_in && status.connected;
+            let gave_up = !status.signing_in && !status.signed_in && status.error.is_none();
+            if finished || gave_up {
+                self.sync_offer = SyncOffer::Closed;
+            }
+            cx.notify();
+        }
+        if matches!(self.sync_offer, SyncOffer::Switching { .. } | SyncOffer::Uploading { .. })
             && let Some(err) = status.error.clone()
         {
             self.sync_offer = SyncOffer::Failed(err);
@@ -1452,42 +1579,76 @@ impl Shell {
         if sync_offer_due(status.signed_in, status.connected, seen, self.sync_postponed)
             && matches!(self.sync_offer, SyncOffer::Closed)
         {
-            self.sync_offer = SyncOffer::Ready;
-            cx.notify();
+            self.open_sync_ready(cx);
         }
+    }
+
+    /// The offer, with the account's list on its way so it can say how much
+    /// is coming down as well as how much would go up.
+    fn open_sync_ready(&mut self, cx: &mut Context<Self>) {
+        self.sync_offer = SyncOffer::Ready;
+        if let Some(remote) = crate::remote::Remote::global(cx) {
+            remote.read(cx).request_sessions();
+        }
+        cx.notify();
     }
 
     fn choose_sync(&mut self, bring: bool, cx: &mut Context<Self>) {
         self.sync_offer = SyncOffer::Switching { bring };
+        self.sync_uploaded = 0;
         if let Some(remote) = crate::remote::Remote::global(cx) {
-            remote.update(cx, |r, _| {
+            remote.update(cx, |r, cx| {
                 if bring {
-                    r.bring_work();
+                    r.bring_work(cx);
                 } else {
                     r.start_fresh();
                 }
             });
         }
-        if let Some((device, chats)) = self.pending_account.take() {
-            self.play_import(device, chats, bring, cx);
-        } else {
-            // The registry list can be slow. The card must not sit on
-            // "Setting up sync" if that list never arrives.
-            cx.spawn(async move |this, cx| {
-                cx.background_executor().timer(Duration::from_secs(8)).await;
-                let _ = this.update(cx, |shell, cx| {
-                    if !matches!(shell.sync_offer, SyncOffer::Switching { .. }) {
-                        return;
-                    }
-                    if let Some((device, chats)) = shell.pending_account.take() {
-                        shell.play_import(device, chats, bring, cx);
-                    } else {
-                        shell.sync_offer = SyncOffer::Done { imported: 0, skipped: 0, bring };
-                        cx.notify();
-                    }
-                });
-            })
-            .detach();
+        if !bring {
+            match self.pending_account.take() {
+                Some((device, chats)) => self.play_import(device, chats, bring, cx),
+                None => self.arm_sync_timeout(bring, cx),
+            }
+        }
+        cx.notify();
+    }
+
+    /// The registry list can be slow. The page must not sit on "Setting up
+    /// sync" if that list never arrives.
+    fn arm_sync_timeout(&mut self, bring: bool, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(Duration::from_secs(8)).await;
+            let _ = this.update(cx, |shell, cx| {
+                if !matches!(shell.sync_offer, SyncOffer::Switching { .. }) {
+                    return;
+                }
+                if let Some((device, chats)) = shell.pending_account.take() {
+                    shell.play_import(device, chats, bring, cx);
+                } else {
+                    shell.sync_offer = SyncOffer::Done { imported: 0, skipped: 0, bring };
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// "Uploading session N of M", then on to whatever the account has.
+    fn on_sync_upload(&mut self, done: usize, total: usize, title: Option<String>, cx: &mut Context<Self>) {
+        if !matches!(self.sync_offer, SyncOffer::Switching { bring: true } | SyncOffer::Uploading { .. }) {
+            return;
+        }
+        if done < total {
+            self.sync_offer = SyncOffer::Uploading { done, total, title };
+            cx.notify();
+            return;
+        }
+        self.sync_uploaded = total;
+        self.sync_offer = SyncOffer::Switching { bring: true };
+        match self.pending_account.take() {
+            Some((device, chats)) => self.play_import(device, chats, true, cx),
+            None => self.arm_sync_timeout(true, cx),
         }
         cx.notify();
     }
@@ -1501,8 +1662,7 @@ impl Shell {
     pub(crate) fn reopen_sync_offer(&mut self, cx: &mut Context<Self>) {
         self.account_open = false;
         self.sync_postponed = false;
-        self.sync_offer = SyncOffer::Ready;
-        cx.notify();
+        self.open_sync_ready(cx);
     }
 
     /// Account chats from the registry. Before the offer is answered they
@@ -1513,8 +1673,10 @@ impl Shell {
             self.sync_offer,
             SyncOffer::Switching { .. } | SyncOffer::Importing { .. } | SyncOffer::Done { .. }
         );
-        if !seen && !wizard {
+        let asking = matches!(self.sync_offer, SyncOffer::Ready | SyncOffer::Waiting | SyncOffer::Uploading { .. });
+        if (!seen && !wizard) || asking {
             self.pending_account = Some((device, chats));
+            cx.notify();
             return;
         }
         if self.sync_importing {
@@ -1648,6 +1810,10 @@ impl Shell {
             return (AdoptKind::Ignored, None, None);
         };
         let store = self.engine.store.clone();
+        // Deleted from this computer on purpose: the account's copy stays there.
+        if store.setting(&format!("account_skip.{id}")).as_deref() == Some("1") {
+            return (AdoptKind::Ignored, None, None);
+        }
         let owner = chat.get("deviceId").and_then(|v| v.as_str()).unwrap_or("").to_string();
         let remote_owned = !owner.is_empty() && owner != device;
         let archived = chat.get("archived").and_then(|v| v.as_bool()).unwrap_or(false);
@@ -1744,7 +1910,10 @@ impl Shell {
         }
         let local = self.engine.store.read_transcript(task);
         let local_flat = !local.iter().any(|event| {
-            matches!(event, dove_core::proto::AgentEvent::ThinkingDelta { .. } | dove_core::proto::AgentEvent::ToolCall { .. })
+            matches!(
+                event,
+                dove_core::proto::AgentEvent::ThinkingDelta { .. } | dove_core::proto::AgentEvent::ToolCall { .. }
+            )
         });
         if !local.is_empty() && !(local_flat && synced_has_structure(&list)) {
             return;
@@ -2376,6 +2545,9 @@ impl Shell {
         self.explorer_open = open;
         let _ = self.engine.store.set_setting("explorer_open", if open { "true" } else { "false" });
         if open {
+            // The newest column: short of room, the others give way to it.
+            self.fit.seq += 1;
+            self.fit.panel_at = self.fit.seq;
             self.panel.update(cx, |p, cx| p.refresh(cx));
         }
         cx.notify();
@@ -2401,11 +2573,15 @@ impl Shell {
         }
         f.sidebar_was = self.sidebar_open;
         f.panel_was = right_open;
-        f.shown = panel_fit(
+        let explorer = self.explorer_open && matches!(self.route, Route::Thread(_));
+        let dock_floor = if self.panel_open { PANEL_FLOOR } else { 0.0 }
+            + if explorer { crate::side_panel::EXPLORER_MIN } else { 0.0 };
+        f.shown = panel_fit_floor(
             viewport,
             self.sidebar_w,
             (self.sidebar_open, f.sidebar_at),
             (in_thread && right_open, f.panel_at),
+            dock_floor,
             expanded,
         );
     }
@@ -2490,7 +2666,23 @@ impl Shell {
 
     pub fn delete_task(&mut self, id: TaskId, window: &mut Window, cx: &mut Context<Self>) {
         let Some(task) = self.task(id).cloned() else { return };
-        let Some(project) = self.project(task.project_id).cloned() else { return };
+        let project = self.project(task.project_id).cloned();
+        self.close_for_delete(id, window, cx);
+        let engine = self.engine.clone();
+        // Removing a worktree can take a moment; do it off the UI thread.
+        cx.background_spawn(async move {
+            let _slot = crate::git_slots::slot().await;
+            if let Err(e) = engine.delete_task(&task, project.as_ref()) {
+                tracing::warn!("delete: {e:#}");
+            }
+        })
+        .detach();
+        self.menu = None;
+        cx.notify();
+    }
+
+    /// Stop a thread that is about to be deleted and take it off the screen.
+    fn close_for_delete(&mut self, id: TaskId, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(v) = self.threads.remove(&id) {
             v.update(cx, |v, cx| v.shutdown(cx));
         }
@@ -2501,17 +2693,77 @@ impl Shell {
         }
         self.back.retain(|r| *r != Route::Thread(id));
         self.forward.retain(|r| *r != Route::Thread(id));
-        let engine = self.engine.clone();
-        // Removing a worktree can take a moment; do it off the UI thread.
-        cx.background_spawn(async move {
-            if let Err(e) = engine.delete_task(&task, &project) {
-                tracing::warn!("delete: {e:#}");
-            }
-        })
-        .detach();
         self.tasks.retain(|t| t.id != id);
         self.archived.retain(|t| t.id != id);
+    }
+
+    /// Delete one session from this computer, the account, or both.
+    pub fn delete_session(&mut self, id: TaskId, scope: DeleteScope, window: &mut Window, cx: &mut Context<Self>) {
+        let remote = crate::remote::Remote::global(cx);
+        if let Some(remote) = remote {
+            remote.update(cx, |r, _| {
+                if scope != DeleteScope::Local {
+                    r.delete_from_account(id);
+                }
+                if scope != DeleteScope::Cloud {
+                    r.forget_locally(id);
+                }
+            });
+        }
+        if scope == DeleteScope::Cloud {
+            self.menu = None;
+            cx.notify();
+        } else {
+            self.delete_task(id, window, cx);
+        }
+    }
+
+    /// Settings' mass delete: every session on this computer, on the account,
+    /// or both.
+    fn wipe_sessions(&mut self, local: bool, cloud: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let remote = crate::remote::Remote::global(cx);
+        if cloud && let Some(remote) = &remote {
+            remote.update(cx, |r, _| r.delete_all_from_account());
+        }
+        if !local {
+            self.reload(cx);
+            return;
+        }
+        // The Archived page lists 200; this takes them all.
+        let store = self.engine.store.clone();
+        let mut doomed = store.all_tasks().unwrap_or_default();
+        doomed.extend(store.archived_tasks(usize::MAX >> 1).unwrap_or_default());
+        if let Some(remote) = &remote {
+            remote.update(cx, |r, _| doomed.iter().for_each(|t| r.forget_locally(t.id)));
+        }
+        let doomed: Vec<(Task, Option<Project>)> = doomed
+            .into_iter()
+            .map(|t| {
+                let project = self.project(t.project_id).cloned();
+                (t, project)
+            })
+            .collect();
+        for (task, _) in &doomed {
+            self.close_for_delete(task.id, window, cx);
+        }
+        self.tasks.clear();
+        self.archived.clear();
         self.menu = None;
+        // One after another on one thread, and the list reloads only once
+        // nothing it would read is about to go.
+        let engine = self.engine.clone();
+        let work = cx.background_spawn(async move {
+            for (task, project) in &doomed {
+                if let Err(e) = engine.delete_task(task, project.as_ref()) {
+                    tracing::warn!("delete: {e:#}");
+                }
+            }
+        });
+        cx.spawn(async move |this, cx| {
+            work.await;
+            let _ = this.update(cx, |this, cx| this.reload(cx));
+        })
+        .detach();
         cx.notify();
     }
 
@@ -2989,7 +3241,7 @@ impl Shell {
                 cx.listener(move |this, e: &gpui::MouseDownEvent, window, cx| {
                     cx.stop_propagation();
                     this.close_menus();
-                    this.menu = Some(ChatMenu { task: id, at: e.position, copy_open: false, confirm_delete: false });
+                    this.menu = Some(ChatMenu { task: id, at: e.position, copy_open: false, confirm_delete: None });
                     this.menu_opened(window, cx);
                     cx.notify();
                 }),
@@ -3125,7 +3377,8 @@ impl Shell {
             div().min_w_0().pl(px(if side { 16.0 } else { 4.0 })).child(title).into_any_element()
         };
         let strip = body_open.then(|| {
-            let total = if takeover { viewport - if side { self.sidebar_w } else { 0.0 } } else { self.panel_width(window) };
+            let total =
+                if takeover { viewport - if side { self.sidebar_w } else { 0.0 } } else { self.panel_width(window) };
             let width = if dock_left && !takeover { total } else { total - right_pad - controls_w };
             let width = width.min(viewport - cluster_w - right_pad - controls_w).max(0.0);
             div()
@@ -3135,6 +3388,10 @@ impl Shell {
                 .pt(px(Theme::TITLEBAR_TOP_PAD))
                 .child(self.panel.update(cx, |panel, cx| panel.render_strip(cx)))
         });
+        let running_lanes = {
+            let (subagents, chats) = self.panel.read(cx).lanes();
+            subagents.iter().any(|a| a.2) || chats.iter().any(|c| c.2)
+        };
         // The thread card's toggle ends the chat's stretch of the bar.
         let info_toggle = (in_thread && !takeover).then(|| {
             let open = self.info_open;
@@ -3148,6 +3405,10 @@ impl Shell {
                 }),
             )
             .when(open, |d| d.bg(crate::theme::wash(0.09)))
+            // Subagents and side chats at work, seen from the closed card too.
+            .when(running_lanes, |d| {
+                d.relative().child(div().absolute().top(px(5.0)).right(px(5.0)).child(ui::dot(t.busy, 5.0)))
+            })
         });
         let files_toggle = in_thread.then(|| {
             let open = panel_open && explorer_w > 0.0;
@@ -3178,7 +3439,9 @@ impl Shell {
         // the same surface as the page. Everywhere else it is the solid bar.
         let home_art = matches!(self.route, Route::Home) && self.has_wallpaper();
         let thread_art = self.full_art_route() && self.has_wallpaper();
-        let solid = !home_art && !thread_art;
+        // On glass the bar has no fill at all: the window's one surface runs
+        // from the top edge down, with no band above the chat.
+        let solid = !home_art && !thread_art && !t.is_frost();
         let surface = (!takeover).then(|| {
             div()
                 .flex_1()
@@ -3617,19 +3880,31 @@ impl Shell {
         row.child(div().relative().flex_none().child(button).children(menu)).into_any_element()
     }
 
-    /// Local sessions this computer would upload. Another device's sessions,
-    /// and threads held back by "Start fresh", do not count.
-    fn local_sessions_to_bring(&self) -> usize {
+    /// Local sessions this computer would upload. Another device's sessions
+    /// do not count; ones an earlier "Start fresh" held back do, since
+    /// "Bring my work" releases them.
+    pub(crate) fn local_sessions_to_bring(&self) -> usize {
         let counts = |tasks: &[Task]| {
             tasks
                 .iter()
-                .filter(|task| {
-                    self.engine.store.setting(&format!("account_device.{}", task.id)).is_none()
-                        && self.engine.store.setting(&format!("account_held.{}", task.id)).as_deref() != Some("1")
-                })
+                .filter(|task| self.engine.store.setting(&format!("account_device.{}", task.id)).is_none())
                 .count()
         };
         counts(&self.tasks) + counts(&self.archived)
+    }
+
+    /// Sessions on the account that this computer does not have yet.
+    fn account_sessions_waiting(&self) -> usize {
+        let Some((_, chats)) = &self.pending_account else { return 0 };
+        let Some(rows) = chats.as_array() else { return 0 };
+        rows.iter()
+            .filter(|chat| {
+                chat.get("id")
+                    .and_then(|v| v.as_str())
+                    .and_then(TaskId::parse)
+                    .is_some_and(|id| self.engine.store.task(id).ok().flatten().is_none())
+            })
+            .count()
     }
 
     pub(crate) fn account_detail(&self, cx: &gpui::App) -> String {
@@ -3646,90 +3921,29 @@ impl Shell {
         status.email.clone().unwrap_or_else(|| "Signed in".into())
     }
 
-    /// Zeron's post-login wizard: bring this computer's sessions up, or
-    /// start from the account's sessions only.
+    /// Zeron's sign-in pages: finish in the browser, then bring this
+    /// computer's sessions up or start fresh, with the counts and progress as
+    /// it goes. A page of its own on the window's surface, not a dialog.
     fn render_sync_offer(&mut self, t: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
         if matches!(self.sync_offer, SyncOffer::Closed) {
             return None;
         }
-        let email = crate::remote::Remote::global(cx)
-            .and_then(|remote| remote.read(cx).status.email.clone())
-            .map(|email| format!("Signed in as {email}"))
-            .unwrap_or_else(|| "You're signed in".into());
+        let status = crate::remote::Remote::global(cx).map(|remote| remote.read(cx).status.clone()).unwrap_or_default();
+        let plural = |n: usize| if n == 1 { "" } else { "s" };
         let phrase = local_work_phrase(self.local_sessions_to_bring());
-        let (title, subtitle): (SharedString, SharedString) = match &self.sync_offer {
-            SyncOffer::Ready => (
-                "Sync is ready".into(),
-                match &phrase {
-                    Some(phrase) => {
-                        format!("Bring {phrase} from this device into your synced workspace, or start it fresh.").into()
-                    }
-                    None => "Keplorayx can switch to your synced workspace now.".into(),
-                },
-            ),
-            SyncOffer::Switching { bring } => (
-                "Setting up sync".into(),
-                if *bring {
-                    "Handing the engine over to your account. Your local sessions come along next.".into()
-                } else {
-                    "Handing the engine over to your account.".into()
-                },
-            ),
-            SyncOffer::Importing { done, total, .. } => {
-                let label: SharedString = if *total == 0 {
-                    "Looking for local sessions…".into()
-                } else {
-                    format!("Importing session {} of {total}", (*done + 1).min(*total)).into()
-                };
-                ("Bringing your work over".into(), label)
-            }
-            SyncOffer::Done { imported, skipped, bring } => {
-                let subtitle = match (*bring, *imported, *skipped) {
-                    (_, 0, 0) => "Your synced workspace is ready.".into(),
-                    (true, n, 0) => format!(
-                        "{n} session{} from your account {} on this computer. This computer's sessions went up with them.",
-                        if n == 1 { "" } else { "s" },
-                        if n == 1 { "is" } else { "are" },
-                    ),
-                    (false, n, 0) => format!(
-                        "{n} session{} from your account {} on this computer.",
-                        if n == 1 { "" } else { "s" },
-                        if n == 1 { "is" } else { "are" },
-                    ),
-                    (_, n, s) => {
-                        format!("{n} session{} imported, {s} already present.", if n == 1 { "" } else { "s" },)
-                    }
-                };
-                ("Your work is synced".into(), subtitle.into())
-            }
-            SyncOffer::Failed(_) => (
-                "Import didn't finish".into(),
-                "Anything already imported is kept; retrying only copies what's missing.".into(),
-            ),
-            SyncOffer::Closed => return None,
+        let waiting = self.account_sessions_waiting();
+        let uploaded = self.sync_uploaded;
+        let signed_in_line =
+            status.email.clone().map_or_else(|| "You're signed in".to_string(), |e| format!("Signed in as {e}"));
+        let check = || icon(icons::CHECK).size(px(14.0)).text_color(t.success).into_any_element();
+        let spin = |id: &'static str| kit::spinner(id, 12.0, t.text_muted).into_any_element();
+        let line = |leading: AnyElement, text: String, strong: bool| sync_status_block(t, leading, text, strong);
+        // The way back on the left, the way forward on the right.
+        let ghost = |id: &'static str, label: &'static str, click: fn(&mut Shell, &mut Context<Shell>)| {
+            sync_ghost(t, id, label).on_click(cx.listener(move |this, _, _, cx| click(this, cx))).into_any_element()
         };
-        let ghost = |id, label: &'static str, click: fn(&mut Shell, &mut Context<Shell>)| {
-            div()
-                .id(id)
-                .px(px(14.0))
-                .py(px(8.0))
-                .rounded(px(radius::ROW))
-                .bg(t.wash(0.08))
-                .cursor_pointer()
-                .child(label)
-                .on_click(cx.listener(move |this, _, _, cx| click(this, cx)))
-        };
-        let primary = |id, label: &'static str, click: fn(&mut Shell, &mut Context<Shell>)| {
-            div()
-                .id(id)
-                .px(px(14.0))
-                .py(px(8.0))
-                .rounded(px(radius::ROW))
-                .bg(t.accent)
-                .text_color(t.surface)
-                .cursor_pointer()
-                .child(label)
-                .on_click(cx.listener(move |this, _, _, cx| click(this, cx)))
+        let primary = |id: &'static str, label: &'static str, click: fn(&mut Shell, &mut Context<Shell>)| {
+            sync_primary(t, id, label).on_click(cx.listener(move |this, _, _, cx| click(this, cx))).into_any_element()
         };
         let bring = |this: &mut Shell, cx: &mut Context<Shell>| this.choose_sync(true, cx);
         let fresh = |this: &mut Shell, cx: &mut Context<Shell>| this.choose_sync(false, cx);
@@ -3738,95 +3952,259 @@ impl Shell {
             this.sync_offer = SyncOffer::Closed;
             cx.notify();
         };
-        let retry = |this: &mut Shell, cx: &mut Context<Shell>| {
-            this.sync_offer = SyncOffer::Ready;
+        let retry = |this: &mut Shell, cx: &mut Context<Shell>| this.choose_sync(true, cx);
+        let cancel = |this: &mut Shell, cx: &mut Context<Shell>| {
+            this.sync_offer = SyncOffer::Closed;
+            if let Some(remote) = crate::remote::Remote::global(cx) {
+                remote.update(cx, |r, cx| r.cancel_sign_in(cx));
+            }
             cx.notify();
         };
-        let actions = match &self.sync_offer {
-            SyncOffer::Ready if phrase.is_some() => div()
-                .flex()
-                .gap(px(8.0))
-                .justify_end()
-                .child(ghost("sync-switch-later", "Later", later))
-                .child(ghost("sync-switch-fresh", "Start fresh", fresh))
-                .child(primary("sync-switch-import", "Bring my work", bring)),
-            SyncOffer::Ready => div()
-                .flex()
-                .gap(px(8.0))
-                .justify_end()
-                .child(ghost("sync-switch-later", "Later", later))
-                .child(primary("sync-switch-now", "Switch now", fresh)),
-            SyncOffer::Done { .. } => div().flex().justify_end().child(primary("sync-switch-done", "Continue", done)),
-            SyncOffer::Failed(_) => div()
-                .flex()
-                .gap(px(8.0))
-                .justify_end()
-                .child(ghost("import-failed-dismiss", "Later", later))
-                .child(primary("import-failed-retry", "Try again", retry)),
-            _ => div(),
+        let again = |_: &mut Shell, cx: &mut Context<Shell>| {
+            if let Some(remote) = crate::remote::Remote::global(cx) {
+                remote.update(cx, |r, cx| r.sign_in(cx));
+            }
         };
-        let fraction = match &self.sync_offer {
-            SyncOffer::Importing { done, total, .. } if *total > 0 => (*done as f32 / *total as f32).clamp(0.04, 1.0),
-            SyncOffer::Importing { .. } => 0.04,
-            _ => 0.0,
-        };
-        let current = match &self.sync_offer {
-            SyncOffer::Importing { title, .. } => title.clone(),
-            _ => None,
-        };
-        let error = match &self.sync_offer {
-            SyncOffer::Failed(message) => Some(message.clone()),
-            _ => None,
-        };
-        Some(
+        let progress = |fraction: f32, current: Option<String>| {
             div()
-                .absolute()
-                .size_full()
+                .mt(px(28.0))
+                .rounded(px(10.0))
+                .bg(t.wash(0.04))
+                .px(px(16.0))
+                .py(px(12.0))
+                .min_h(px(44.0))
                 .flex()
-                .items_center()
+                .flex_col()
                 .justify_center()
-                .bg(t.wash(0.45))
+                .gap(px(10.0))
+                .when_some(current, |d, current| {
+                    d.child(div().truncate().text_size(px(12.5)).text_color(t.text_muted).child(current))
+                })
                 .child(
                     div()
-                        .w(px(460.0))
-                        .p(px(20.0))
+                        .h(px(4.0))
+                        .w_full()
+                        .rounded(px(2.0))
+                        .bg(t.wash(0.12))
+                        .child(div().h_full().rounded(px(2.0)).bg(t.accent_strong).w(relative(fraction.max(0.04)))),
+                )
+                .into_any_element()
+        };
+        let share =
+            |done: usize, total: usize| if total == 0 { 0.0 } else { (done as f32 / total as f32).clamp(0.0, 1.0) };
+
+        let (key, title, subtitle, blocks, back, forward): (
+            &'static str,
+            &'static str,
+            String,
+            Vec<AnyElement>,
+            Option<AnyElement>,
+            Vec<AnyElement>,
+        ) = match &self.sync_offer {
+            SyncOffer::Closed => return None,
+            SyncOffer::Waiting => {
+                let block = match &status.error {
+                    Some(error) => div()
+                        .mt(px(28.0))
+                        .px(px(8.0))
+                        .text_size(px(12.0))
+                        .line_height(px(17.0))
+                        .text_color(t.danger)
+                        .child(error.clone())
+                        .into_any_element(),
+                    None if status.signed_in => {
+                        line(spin("sync-waiting-spin"), "Connecting to your account…".into(), false)
+                    }
+                    None => line(spin("sync-waiting-spin"), "Waiting for your browser…".into(), false),
+                };
+                (
+                    "sync-waiting",
+                    "Finish logging in",
+                    "We opened your browser to log in to Woozlit. Come back when you're done, this page moves on by itself.".into(),
+                    vec![block],
+                    Some(ghost("sync-enable-cancel", "Cancel", cancel)),
+                    vec![primary("sync-enable-open-browser", "Open browser again", again)],
+                )
+            }
+            SyncOffer::Ready => {
+                let mut blocks = vec![line(check(), signed_in_line, true)];
+                if waiting > 0 {
+                    blocks.push(
+                        div()
+                            // Stacked on the block above, not a section away.
+                            .mt(px(-20.0))
+                            .child(line(
+                                icon(icons::CLOUD).size(px(14.0)).text_color(t.text_muted).into_any_element(),
+                                format!(
+                                    "{waiting} session{} on your account will come to this computer.",
+                                    plural(waiting)
+                                ),
+                                false,
+                            ))
+                            .into_any_element(),
+                    );
+                }
+                let subtitle = match &phrase {
+                    Some(phrase) => {
+                        format!("Bring {phrase} from this device into your synced workspace, or start it fresh.")
+                    }
+                    None => "Keplorayx can switch to your synced workspace now.".into(),
+                };
+                let forward = if phrase.is_some() {
+                    vec![
+                        ghost("sync-switch-fresh", "Start fresh", fresh),
+                        primary("sync-switch-import", "Bring my work", bring),
+                    ]
+                } else {
+                    vec![primary("sync-switch-now", "Switch now", fresh)]
+                };
+                (
+                    "sync-ready",
+                    "Sync is ready",
+                    subtitle,
+                    blocks,
+                    Some(ghost("sync-switch-later", "Later", later)),
+                    forward,
+                )
+            }
+            SyncOffer::Switching { bring } => (
+                "sync-switching",
+                "Setting up sync",
+                if *bring {
+                    "Handing your sessions over to your account. They come along next.".into()
+                } else {
+                    "Connecting this computer to your account.".into()
+                },
+                vec![line(spin("sync-switching-spin"), "Switching to your synced workspace…".into(), false)],
+                None,
+                Vec::new(),
+            ),
+            SyncOffer::Uploading { done, total, title } => (
+                "sync-uploading",
+                "Bringing your work over",
+                format!("Uploading session {} of {total}", (*done + 1).min(*total)),
+                vec![progress(share(*done, *total), title.clone())],
+                None,
+                Vec::new(),
+            ),
+            SyncOffer::Importing { done, total, title } => (
+                "sync-importing",
+                "Bringing your work over",
+                if *total == 0 {
+                    "Looking for your sessions…".into()
+                } else {
+                    format!("Importing session {} of {total}", (*done + 1).min(*total))
+                },
+                vec![progress(share(*done, *total), title.clone())],
+                None,
+                Vec::new(),
+            ),
+            SyncOffer::Done { imported, skipped, .. } => {
+                let (imported, skipped) = (*imported, *skipped);
+                let subtitle = match (uploaded, imported) {
+                    (0, 0) if skipped == 0 => "Your synced workspace is ready.".to_string(),
+                    (0, 0) => format!("{skipped} session{} already here.", plural(skipped)),
+                    (up, 0) => format!("{up} session{} moved into your synced workspace.", plural(up)),
+                    (0, down) => format!("{down} session{} from your account now on this computer.", plural(down)),
+                    (up, down) => format!(
+                        "{up} session{} moved into your synced workspace, {down} came down from your account.",
+                        plural(up)
+                    ),
+                };
+                (
+                    "sync-done",
+                    "Your work is synced",
+                    subtitle,
+                    Vec::new(),
+                    None,
+                    vec![primary("sync-switch-done", "Continue", done)],
+                )
+            }
+            SyncOffer::Failed(message) => (
+                "sync-failed",
+                "Import didn't finish",
+                "Anything already imported is kept; retrying only copies what's missing.".into(),
+                vec![
+                    div()
+                        .mt(px(12.0))
+                        .px(px(8.0))
+                        .text_size(px(12.0))
+                        .line_height(px(17.0))
+                        .text_color(t.danger)
+                        .child(message.clone())
+                        .into_any_element(),
+                ],
+                Some(ghost("import-failed-dismiss", "Later", later)),
+                vec![primary("import-failed-retry", "Retry import", retry)],
+            ),
+        };
+        let column = div()
+            .w_full()
+            .max_w(px(640.0))
+            .px(px(40.0))
+            .flex()
+            .flex_col()
+            .child(crate::motion::fade_quick(
+                key,
+                div()
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .px(px(4.0))
+                            .text_size(px(20.0))
+                            .line_height(px(26.0))
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .text_color(t.text)
+                            .child(title),
+                    )
+                    .child(
+                        div()
+                            .mt(px(4.0))
+                            .px(px(4.0))
+                            .min_w_0()
+                            .text_size(px(13.0))
+                            .line_height(px(17.0))
+                            .text_color(t.text_muted)
+                            .child(subtitle),
+                    )
+                    .children(blocks),
+            ))
+            .child(
+                div()
+                    .flex_none()
+                    .pt(px(24.0))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(div().children(back.map(|b| div().ml(px(-8.0)).child(b))))
+                    .child(div().flex().items_center().gap(px(8.0)).children(forward)),
+            );
+        let strip = self.drag_region(
+            "sync-titlebar",
+            div().absolute().top_0().left_0().right_0().h(px(Theme::TITLEBAR_HEIGHT)),
+            cx,
+        );
+        Some(
+            div()
+                .id("sync-page")
+                .absolute()
+                .inset_0()
+                .occlude()
+                .bg(t.surface)
+                .child(strip)
+                .child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .pt(px(Theme::TITLEBAR_HEIGHT))
+                        .pb(px(Theme::TITLEBAR_HEIGHT / 2.0))
                         .flex()
                         .flex_col()
-                        .gap(px(12.0))
-                        .rounded(px(radius::CARD))
-                        .bg(t.surface)
-                        .border_1()
-                        .border_color(t.border)
-                        .shadow_lg()
-                        .child(div().text_size(ty::TITLE).child(title))
-                        .child(div().text_size(ty::BODY).text_color(t.text_muted).child(subtitle))
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap(px(8.0))
-                                .text_size(ty::SMALL)
-                                .text_color(t.text)
-                                .child(icon(icons::QUEUE_CHECK).size(px(14.0)).text_color(t.accent))
-                                .child(email),
-                        )
-                        .when(fraction > 0.0, |card| {
-                            card.child(
-                                div()
-                                    .h(px(4.0))
-                                    .w_full()
-                                    .rounded(px(2.0))
-                                    .bg(t.wash(0.12))
-                                    .child(div().h_full().rounded(px(2.0)).bg(t.accent).w(relative(fraction))),
-                            )
-                        })
-                        .when_some(current, |card, current| {
-                            card.child(div().text_size(ty::SMALL).text_color(t.text_muted).child(current))
-                        })
-                        .when_some(error, |card, error| {
-                            card.child(div().text_size(ty::SMALL).text_color(t.danger).child(error))
-                        })
-                        .child(actions),
+                        .items_center()
+                        .justify_center()
+                        .child(column),
                 )
                 .into_any_element(),
         )
@@ -3863,10 +4241,8 @@ impl Shell {
             .text_color(t.surface)
             .cursor_pointer()
             .child("Log in")
-            .on_click(cx.listener(|this, _, window, cx| {
+            .on_click(cx.listener(|this, _, _, cx| {
                 let _ = this.engine.store.set_setting("first_run_seen", "1");
-                this.navigate(Route::Settings, window, cx);
-                this.settings.update(cx, |s, cx| s.show_section("remote", cx));
                 if let Some(remote) = crate::remote::Remote::global(cx) {
                     remote.update(cx, |r, cx| r.sign_in(cx));
                 }
@@ -3879,7 +4255,7 @@ impl Shell {
                 .flex()
                 .items_center()
                 .justify_center()
-                .bg(t.wash(0.45))
+                .bg(gpui::hsla(0.0, 0.0, 0.0, if t.appearance.is_dark() { 0.55 } else { 0.32 }))
                 .child(
                     div()
                         .w(px(420.0))
@@ -3988,7 +4364,7 @@ impl Shell {
                 .py(px(5.0))
                 .flex()
                 .items_center()
-                .gap(px(10.0))
+                .gap(px(8.0))
                 .rounded(px(kit::popover::MENU_ITEM_RADIUS))
                 .text_size(ty::BODY)
                 .text_color(t.text)
@@ -3999,57 +4375,8 @@ impl Shell {
             (Some(u), Some(w)) if w > 0 => Some((u as f32 / w as f32).clamp(0.0, 1.0)),
             _ => None,
         };
-        // One card per subject. Folded, a card is one line that says the
-        // number that matters; the fold is remembered per card.
-        let card = |key: &'static str,
-                    title: &'static str,
-                    summary: Option<AnyElement>,
-                    body: Vec<AnyElement>,
-                    this: &Self,
-                    cx: &mut Context<Self>| {
-            let setting = format!("info_closed.{key}");
-            let open = this.engine.store.setting(&setting).as_deref() != Some("1");
-            let turn = crate::motion::state_t(key, open, crate::motion::CHEVRON, cx.reduce_motion());
-            div()
-                .flex()
-                .flex_col()
-                .rounded(px(crate::design::radius::CARD))
-                .border_1()
-                .border_color(t.border)
-                .bg(t.glass_overlay())
-                .shadow_md()
-                .p(px(4.0))
-                .child(
-                    div()
-                        .id(SharedString::from(format!("info-head-{key}")))
-                        .h(px(30.0))
-                        .px(px(8.0))
-                        .flex()
-                        .items_center()
-                        .gap(px(6.0))
-                        .rounded(px(kit::popover::MENU_ITEM_RADIUS))
-                        .cursor_pointer()
-                        .hover(|s| s.bg(t.wash(0.05)))
-                        .text_size(ty::BODY)
-                        .font_weight(gpui::FontWeight::MEDIUM)
-                        .text_color(t.text)
-                        .child(title)
-                        .child(
-                            icon(icons::ALT_ARROW_RIGHT).size(px(10.0)).text_color(t.text_faint).with_transformation(
-                                gpui::Transformation::rotate(gpui::radians(turn * std::f32::consts::FRAC_PI_2)),
-                            ),
-                        )
-                        .child(div().flex_1())
-                        .children(summary)
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            let _ = this.engine.store.set_setting(&setting, if open { "1" } else { "0" });
-                            cx.notify();
-                        })),
-                )
-                .when(open, |d| d.children(body))
-        };
         let meter = |p: f32| {
-            div().w(px(36.0)).h(px(4.0)).rounded_full().bg(t.wash(0.12)).child(
+            div().flex_none().w(px(36.0)).h(px(4.0)).rounded_full().bg(t.wash(0.12)).child(
                 div().h_full().w(relative(p)).rounded_full().bg(if p >= 0.95 {
                     t.danger
                 } else if p >= 0.8 {
@@ -4059,7 +4386,6 @@ impl Shell {
                 }),
             )
         };
-        let quiet = |text: String| div().text_size(ty::META).text_color(t.text_faint).child(text).into_any_element();
 
         let mut env = vec![
             fact(icons::LAPTOP, format!("Local · {}", ui::host_name())).into_any_element(),
@@ -4076,10 +4402,8 @@ impl Shell {
         if let Some(b) = task.branch.clone() {
             env.push(fact(icons::GIT_BRANCH, b).into_any_element());
         }
-        let environment = card("env", "Environment", task.branch.clone().map(quiet), env, self, cx);
-
         let mut ctx_rows = vec![
-            fact(icons::CLOCK_CIRCLE, context_line).into_any_element(),
+            fact(icons::CLOCK_CIRCLE, context_line).children(context_pct.map(meter)).into_any_element(),
             fact(ui::harness_icon(task.harness), model).into_any_element(),
             fact(icons::KEY_MINIMALISTIC, format!("Permissions · {mode_name}")).into_any_element(),
         ];
@@ -4089,17 +4413,6 @@ impl Shell {
         if let Some(cost) = usage.cost_usd {
             ctx_rows.push(fact(icons::TAG, format!("${cost:.2} this thread")).into_any_element());
         }
-        let ctx_summary = context_pct.map(|p| {
-            div()
-                .flex()
-                .items_center()
-                .gap(px(8.0))
-                .child(div().text_size(ty::META).text_color(t.text_muted).child(format!("{:.0}%", p * 100.0)))
-                .child(meter(p))
-                .into_any_element()
-        });
-        let context_card = card("context", "Context", ctx_summary, ctx_rows, self, cx);
-
         let mut change_rows = Vec::new();
         if files > 0 {
             change_rows.push(
@@ -4120,7 +4433,8 @@ impl Shell {
                     .on_click(cx.listener(|this, _, window, cx| this.show_panel(Tab::Changes, window, cx)))
                     .child(icon(icons::FILE_CODE).size(px(15.0)).flex_none().text_color(t.text_muted))
                     .child(div().flex_1().min_w_0().truncate().child(format!("{files} files changed")))
-                    .child(div().text_size(ty::META).text_color(t.text_faint).child("Review"))
+                    .child(div().flex_none().text_size(ty::META).text_color(t.success).child(format!("+{adds}")))
+                    .child(div().flex_none().text_size(ty::META).text_color(t.danger).child(format!("−{dels}")))
                     .into_any_element(),
             );
         }
@@ -4169,19 +4483,6 @@ impl Shell {
                     .into_any_element(),
             );
         }
-        let changes_card = (!change_rows.is_empty()).then(|| {
-            let summary = (files > 0).then(|| {
-                div()
-                    .flex()
-                    .gap(px(6.0))
-                    .text_size(ty::META)
-                    .child(div().text_color(t.success).child(format!("+{adds}")))
-                    .child(div().text_color(t.danger).child(format!("−{dels}")))
-                    .into_any_element()
-            });
-            card("changes", "Changes", summary, change_rows, self, cx)
-        });
-
         let actions = vec![
             ui::menu_row("info-view", icons::TERMINAL, "Switch Chat / Terminal (Ctrl+`)", false, t)
                 .on_click(cx.listener(|this, _, window, cx| this.toggle_view_mode(window, cx)))
@@ -4223,21 +4524,67 @@ impl Shell {
                 .on_click(cx.listener(move |this, _, _, cx| this.copy(path_s.clone(), cx)))
                 .into_any_element(),
         ];
-        let actions_card = card("actions", "Actions", None, actions, self, cx);
+        // Zeron's lanes and ports: what runs alongside the thread, and the
+        // servers its terminals started. Each one opens what it names.
+        let (subagents, side_chats) = self.panel.read(cx).lanes();
+        let mut lanes: Vec<AnyElement> = Vec::new();
+        for (i, (call, title, running)) in subagents.into_iter().enumerate() {
+            lanes.push(
+                ui::menu_row(SharedString::from(format!("info-sub-{i}")), icons::FORK, title, false, t)
+                    .when(running, |d| d.child(ui::dot(t.busy, 6.0)))
+                    .on_click(move |_, window, cx| {
+                        window.dispatch_action(Box::new(crate::actions::OpenSubagent { call: call.clone() }), cx);
+                    })
+                    .into_any_element(),
+            );
+        }
+        for (chat, title, running) in side_chats {
+            lanes.push(
+                ui::menu_row(SharedString::from(format!("info-chat-{chat}")), icons::CHAT_ROUND_LINE, title, false, t)
+                    .when(running, |d| d.child(ui::dot(t.busy, 6.0)))
+                    .on_click(cx.listener(move |this, _, window, cx| this.navigate(Route::Thread(chat), window, cx)))
+                    .into_any_element(),
+            );
+        }
+        let ports: Vec<AnyElement> = self
+            .panel
+            .read(cx)
+            .detected_urls(cx)
+            .into_iter()
+            .take(6)
+            .enumerate()
+            .map(|(i, url)| {
+                let label = url.trim_start_matches("http://").trim_start_matches("https://").to_string();
+                ui::menu_row(SharedString::from(format!("info-port-{i}")), icons::GLOBE, label, false, t)
+                    .tooltip(ui::tip("Open in the browser panel"))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.show_panel(Tab::Browser, window, cx);
+                        let url = url.clone();
+                        this.panel.update(cx, |p, cx| p.open(Tab::Browser, Some(url), window, cx));
+                    }))
+                    .into_any_element()
+            })
+            .collect();
 
-        let sheet = div()
+        // Zeron's session card: one frosted card, plain rows, a hairline
+        // between what it is and what you can do with it.
+        let section = |rows: Vec<AnyElement>| div().flex().flex_col().gap(px(2.0)).children(rows);
+        let body = div()
             .id("thread-info")
-            .w(px(300.0))
+            .w(px(INFO_WIDTH))
             .max_h(px(620.0))
             .flex()
             .flex_col()
-            .gap(px(8.0))
             .overflow_y_scroll()
-            .child(environment)
-            .child(context_card)
-            .children(changes_card)
-            .child(actions_card);
-        sheet.into_any_element()
+            .child(section(env))
+            .child(ui::separator(t))
+            .child(section(ctx_rows))
+            .when(!change_rows.is_empty(), |d| d.child(ui::separator(t)).child(section(change_rows)))
+            .when(!lanes.is_empty(), |d| d.child(ui::separator(t)).child(section(lanes)))
+            .when(!ports.is_empty(), |d| d.child(ui::separator(t)).child(section(ports)))
+            .child(ui::separator(t))
+            .child(section(actions));
+        ui::frosted(kit::popover::CARD_RADIUS, 16.0, kit::popover::card(t).child(body)).into_any_element()
     }
 
     fn render_menu_overlay(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -4304,28 +4651,59 @@ impl Shell {
             }
         }
         items.push(Item::Separator);
-        items.push(if menu.confirm_delete {
-            Item::row(
-                "cm-delete-confirm",
-                Some(icons::TRASH_BIN_MINIMALISTIC),
-                "Click to delete for good",
-                act(move |this, window, cx| this.delete_task(id, window, cx)),
-            )
-            .danger()
+        // Signed in, a session can live in two places, so delete says which.
+        let signed_in = crate::remote::Remote::global(cx).is_some_and(|r| r.read(cx).status.signed_in);
+        let scopes: &[(DeleteScope, &'static str, &'static str, &'static str, &'static str)] = if signed_in {
+            &[
+                (
+                    DeleteScope::Local,
+                    "cm-delete",
+                    "Delete from this computer…",
+                    "cm-delete-confirm",
+                    "Click to delete from this computer",
+                ),
+                (
+                    DeleteScope::Cloud,
+                    "cm-delete-cloud",
+                    "Delete from cloud…",
+                    "cm-delete-cloud-confirm",
+                    "Click to delete from your account",
+                ),
+                (
+                    DeleteScope::Everywhere,
+                    "cm-delete-all",
+                    "Delete everywhere…",
+                    "cm-delete-all-confirm",
+                    "Click to delete everywhere",
+                ),
+            ]
         } else {
-            Item::row(
-                "cm-delete",
-                Some(icons::TRASH_BIN_MINIMALISTIC),
-                "Delete…",
-                act(|this, _, _| {
-                    if let Some(m) = &mut this.menu {
-                        m.confirm_delete = true;
-                    }
-                }),
-            )
-            .danger()
-            .keep_open()
-        });
+            &[(DeleteScope::Local, "cm-delete", "Delete…", "cm-delete-confirm", "Click to delete for good")]
+        };
+        for &(scope, row, label, sure_row, sure) in scopes {
+            items.push(if menu.confirm_delete == Some(scope) {
+                Item::row(
+                    sure_row,
+                    Some(icons::TRASH_BIN_MINIMALISTIC),
+                    sure,
+                    act(move |this, window, cx| this.delete_session(id, scope, window, cx)),
+                )
+                .danger()
+            } else {
+                Item::row(
+                    row,
+                    Some(icons::TRASH_BIN_MINIMALISTIC),
+                    label,
+                    act(move |this, _, _| {
+                        if let Some(m) = &mut this.menu {
+                            m.confirm_delete = Some(scope);
+                        }
+                    }),
+                )
+                .danger()
+                .keep_open()
+            });
+        }
         let live = exit.is_none();
         let body = self.menu_list(items, 240.0, live, &t, cx);
         let card = self.menu_surface(&t, body, exit);
@@ -4525,48 +4903,6 @@ impl Shell {
                 .when_some(art, |d, (view, scrim)| {
                     d.child(div().absolute().top_0().left_0().right_0().h(px(height)).child(view))
                         .when_some(scrim, |d, veil| d.child(div().absolute().inset_0().bg(veil)))
-                })
-                .into_any_element(),
-        )
-    }
-
-    /// The wallpaper's frost under the left sidebar, cut from a window-size
-    /// copy so it lines up with a thread's full-window frost (the same cached
-    /// clip, which this also warms before a chat opens), under the chat's
-    /// contrast scrim. Until it lands the strip is the page colour.
-    fn sidebar_frost(&mut self, width: f32, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let path = self.wallpaper_path()?;
-        let t = Theme::of(cx).clone();
-        let viewport = window.viewport_size();
-        let (vw, vh) = (f32::from(viewport.width), f32::from(viewport.height));
-        let target = (vw * window.scale_factor(), vh * window.scale_factor());
-        let variant = crate::wallpaper_media::Variant::Frost(self.chat_blur().round() as u32);
-        let props = crate::wallpaper_media::BackdropProps {
-            path: path.clone().into(),
-            variant,
-            target,
-            play: false,
-            fade: false,
-            composer: None,
-            opacity: 1.0,
-        };
-        let view = window.use_keyed_state("sidebar-frost", cx, crate::wallpaper_media::Backdrop::new);
-        let ready = view.update(cx, |b, cx| b.show(props, cx));
-        let bright = crate::wallpaper_media::clip(std::path::Path::new(&path), variant, target, true, cx)
-            .map_or(1.0, |c| c.bright);
-        let scrim = t.bg.opacity(self.chat_scrim(bright, &t));
-        Some(
-            div()
-                .absolute()
-                .top_0()
-                .bottom_0()
-                .left_0()
-                .w(px(width))
-                .overflow_hidden()
-                .bg(t.bg)
-                .when(ready, |d| {
-                    d.child(div().absolute().top_0().left_0().w(px(vw)).h(px(vh)).child(view))
-                        .child(div().absolute().inset_0().bg(scrim))
                 })
                 .into_any_element(),
         )
@@ -4892,7 +5228,13 @@ impl Render for Shell {
 
         let home_art = matches!(self.route, Route::Home) && self.has_wallpaper();
         let thread_art = self.full_art_route() && self.has_wallpaper();
-        let info_gutter = self.info_open && in_thread && !expanded;
+        // Beside the chat when it clears the reading column; over it when not.
+        let chat_w = f32::from(window.viewport_size().width)
+            - if sidebar_shown { self.sidebar_w } else { 0.0 }
+            - if panel_open { panel_w } else { 0.0 };
+        let info_gutter =
+            if self.info_open && in_thread && !expanded { info_reserve(chat_w) } else { None }.unwrap_or(0.0);
+        let info_floats = self.info_open && in_thread && !expanded && info_reserve(chat_w).is_none();
         if let Some(thread) = self.active_thread().cloned() {
             thread.update(cx, |view, cx| {
                 view.chat.update(cx, |chat, _| chat.info_reserve = info_gutter);
@@ -4914,23 +5256,17 @@ impl Render for Shell {
                     .flex_1()
                     .min_w_0()
                     .h_full()
-                    .when(!home_art && !thread_art, |d| d.bg(t.bg))
+                    .when(!home_art && !thread_art && !t.is_frost(), |d| d.bg(t.bg))
                     .overflow_hidden()
                     .child(div().size_full().flex().child(div().flex_1().min_w_0().h_full().child(center)))
             })
         };
         // The sidebar takes the wallpaper's colour when one is set.
         let hue = self.wallpaper_hue(cx);
-        // The dock is content, not chrome: it sits on the chat's plane (the
-        // page colour, carrying the wallpaper's hue when one is set), and
-        // over a thread's frost it shares the chat's frost with nothing on
-        // top, so a thread shows two tones, not three materials.
-        let dock_fill = (!thread_art).then(|| match hue {
-            Some(h) => t.wallpaper_tinted(t.bg, h),
-            None => t.bg,
-        });
+        // Zeron's dock: its flush panel fill over the window glass. Over a
+        // thread's frost it shares the chat's frost with nothing on top.
+        let dock_fill = (!thread_art).then(|| t.panel_bg());
         let chrome = move |d: gpui::Div| d.when_some(dock_fill, |d, fill| d.bg(fill));
-        let seam = t.wash(0.06);
         let dock_layer = panel_open.then(|| {
             let inner = if sidebar_shown { self.sidebar_w } else { 0.0 };
             chrome(div())
@@ -4956,25 +5292,15 @@ impl Render for Shell {
                     )
                 })
         });
-        // The left sidebar is glass. Without a wallpaper it is Zeron's: the
-        // sidebar tint straight over the window's desktop blur. With one, the
-        // picture runs under it as the chat's frost (a thread's full-window
-        // frost, or its own strip elsewhere) under the chat's scrim, with a
-        // light glass tint in the picture's hue on top, so the sidebar reads
-        // as part of the same surface instead of a separate slab.
+        // The left sidebar is Zeron's: the window glass with a 5% wash and a
+        // hairline. Only a thread's full-window frost needs its own tint, in
+        // the picture's hue, to read as a pane of glass over the art.
         let side_shown = sidebar_shown || in_settings;
-        let has_wallpaper = self.has_wallpaper();
         let side_fill = match hue {
-            Some(h) if has_wallpaper => {
-                let g = t.wallpaper_tinted(t.sidebar_glass(), h);
-                g.opacity(SIDE_GLASS_OVER_ART)
-            }
-            _ if has_wallpaper => t.sidebar_glass().opacity(SIDE_GLASS_OVER_ART),
-            _ => t.sidebar_glass(),
+            _ if !thread_art => t.wash(0.05),
+            Some(h) => t.wallpaper_tinted(t.sidebar_glass(), h).opacity(SIDE_GLASS_OVER_ART),
+            None => t.sidebar_glass().opacity(SIDE_GLASS_OVER_ART),
         };
-        let side_frost = (side_shown && has_wallpaper && !thread_art)
-            .then(|| self.sidebar_frost(self.sidebar_w, window, cx))
-            .flatten();
         let side_layer = side_shown.then(|| {
             div()
                 .absolute()
@@ -4984,15 +5310,15 @@ impl Render for Shell {
                 .w(px(self.sidebar_w))
                 .bg(side_fill)
                 .border_r_1()
-                .border_color(seam)
+                .border_color(t.border)
         });
-        // The shell's glass, everywhere but under the sidebar.
+        // The shell's glass: the whole window, sidebar included.
         let plane = div()
             .absolute()
             .top_0()
             .bottom_0()
             .right_0()
-            .left(px(if side_shown { self.sidebar_w } else { 0.0 }))
+            .left(px(if side_shown && thread_art { self.sidebar_w } else { 0.0 }))
             .bg(t.glass());
 
         let menu = self.render_menu_overlay(cx);
@@ -5204,7 +5530,6 @@ impl Render for Shell {
                 let art_width = (f32::from(window.viewport_size().width) - art_left - art_right).max(1.0);
                 self.wallpaper_layer(art_left, art_width, window, cx)
             })
-            .children(side_frost)
             .children(side_layer)
             .children(dock_layer)
             .children(panel_ghost)
@@ -5236,12 +5561,22 @@ impl Render for Shell {
             .children(self.render_voice_bar(cx))
             .children((self.info_open && in_thread && !expanded).then(|| self.active_task().cloned()).flatten().map(
                 |task| {
-                    let right = if panel_open && !dock_left { panel_w + 14.0 } else { 14.0 };
+                    let right = if panel_open && !dock_left { panel_w + INFO_INSET } else { INFO_INSET };
                     div()
                         .absolute()
                         .top(px(Theme::TITLEBAR_HEIGHT + 8.0))
                         .right(px(right))
-                        .child(self.render_info_card(&task, &t, cx))
+                        // Floating over the chat, a click anywhere else closes it.
+                        .when(info_floats, |d| {
+                            d.on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                                this.info_open = false;
+                                cx.notify();
+                            }))
+                        })
+                        .child(crate::motion::fade_quick(
+                            "thread-card-in",
+                            div().child(self.render_info_card(&task, &t, cx)),
+                        ))
                 },
             ))
             // Caption buttons sit on the window itself, above the titlebar's
@@ -5455,4 +5790,65 @@ mod tests {
         assert_eq!(local_work_phrase(1).as_deref(), Some("the 1 session"));
         assert_eq!(local_work_phrase(3).as_deref(), Some("the 3 sessions"));
     }
+}
+
+/// One block holding a single quiet line, as on Zeron's sign-in pages: where
+/// sync stands, what the sign-in is waiting on.
+fn sync_status_block(t: &Theme, leading: AnyElement, text: String, strong: bool) -> AnyElement {
+    div()
+        .mt(px(28.0))
+        .rounded(px(10.0))
+        .bg(t.wash(0.04))
+        .px(px(16.0))
+        .py(px(10.0))
+        .min_h(px(44.0))
+        .flex()
+        .items_center()
+        .gap(px(10.0))
+        .child(div().flex_none().flex().items_center().child(leading))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .text_size(px(12.5))
+                .line_height(px(17.0))
+                .text_color(if strong { t.text } else { t.text_muted })
+                .child(text),
+        )
+        .into_any_element()
+}
+
+/// Zeron's primary page button: a near-white plate with a near-black label.
+fn sync_primary(t: &Theme, id: &'static str, label: &'static str) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .px(px(14.0))
+        .py(px(6.0))
+        .rounded(px(8.0))
+        .bg(t.text)
+        .text_size(px(13.0))
+        .font_weight(gpui::FontWeight::MEDIUM)
+        .text_color(t.on_solid)
+        .cursor_pointer()
+        .hover(|s| s.opacity(0.9))
+        .role(gpui::Role::Button)
+        .aria_label(label)
+        .child(label)
+}
+
+/// Zeron's ghost page button: muted text, a wash on hover.
+fn sync_ghost(t: &Theme, id: &'static str, label: &'static str) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .px(px(12.0))
+        .py(px(6.0))
+        .rounded(px(8.0))
+        .text_size(px(13.0))
+        .text_color(crate::motion::hover_blend(id, t.text_muted, t.text))
+        .bg(crate::motion::hover_blend(id, crate::theme::wash(0.0), crate::theme::ink(0.06)))
+        .on_hover(crate::motion::hover_listener(id))
+        .cursor_pointer()
+        .role(gpui::Role::Button)
+        .aria_label(label)
+        .child(label)
 }

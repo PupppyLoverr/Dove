@@ -255,6 +255,8 @@ pub struct Composer {
     home_dock: bool,
     /// A thread's composer draws the same bottom bar as the new-thread dock.
     dock_bar: bool,
+    /// The docked bar's width last frame, for what its footer can hold.
+    dock_width: std::rc::Rc<std::cell::Cell<f32>>,
     /// The usage card under the pointer, if any.
     meter: Option<Meter>,
     /// Bumped when the pointer enters a meter, so a leave-timer cannot
@@ -385,6 +387,7 @@ impl Composer {
             dragging_files: false,
             home_dock: false,
             dock_bar: false,
+            dock_width: Default::default(),
             meter: None,
             meter_gen: 0,
             cache_slot: None,
@@ -1093,7 +1096,10 @@ impl Composer {
             return;
         }
         self.files_root = Some(root.clone());
-        let load = cx.background_spawn(async move { dove_core::git::list_files(&root).unwrap_or_default() });
+        let load = cx.background_spawn(async move {
+            let _slot = crate::git_slots::slot().await;
+            dove_core::git::list_files(&root).unwrap_or_default()
+        });
         cx.spawn(async move |this, cx| {
             let files = load.await;
             let _ = this.update(cx, |c, cx| {
@@ -1222,33 +1228,53 @@ impl Composer {
 
     /// The chip row under the new-thread plate: teammate, project and
     /// device on the left, the context and usage meters on the right.
-    fn render_home_chips(&self, hero: bool, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+    fn render_home_chips(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         div()
             .w_full()
             .h(px(26.0))
-            .px(px(if hero { HERO_INSET - 8.0 } else { 4.0 }))
+            .px(px(4.0))
             .flex()
             .items_center()
             .gap(px(2.0))
             .child(self.project_chip(t, cx))
             .child(self.device_chip(t, cx))
-            .when(!hero && !self.add_dirs.is_empty(), |d| d.child(self.folders_chip(t, cx)))
+            .when(!self.add_dirs.is_empty(), |d| d.child(self.folders_chip(t, cx)))
             .when(!self.personas.is_empty(), |d| d.child(self.persona_chip(t, cx)))
             .child(div().flex_1())
             .child(self.rings(t, cx))
             .into_any_element()
     }
 
-    /// Below the new-thread bar, once an extra folder has been added.
-    fn render_git_row(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+    /// Above Zeron's centred card: the project and device it starts on.
+    fn render_target_row(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         div()
             .w_full()
-            .h(px(22.0))
-            .px(px(HERO_INSET - 8.0))
+            .h(px(HERO_SELECTOR_H))
+            .px(px(10.0))
+            .flex()
+            .items_center()
+            .justify_end()
+            .gap(px(2.0))
+            .when(!self.personas.is_empty(), |d| d.child(self.persona_chip(t, cx)))
+            .child(self.project_chip(t, cx))
+            .child(self.device_chip(t, cx))
+            .into_any_element()
+    }
+
+    /// Below it: the permission mode, any extra folders, and the meters.
+    fn render_hero_footer(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .w_full()
+            .h(px(HERO_SELECTOR_H + 4.0))
+            .px(px(10.0))
             .flex()
             .items_center()
             .gap(px(2.0))
-            .child(self.folders_chip(t, cx))
+            .child(div().flex_none().child(self.dock_mode(t, cx)))
+            .children(self.orchestrate_chip(t, cx).map(|c| div().flex_none().child(c)))
+            .when(!self.add_dirs.is_empty(), |d| d.child(self.folders_chip(t, cx)))
+            .child(div().flex_1())
+            .child(self.rings(t, cx))
             .into_any_element()
     }
 
@@ -1421,14 +1447,9 @@ impl Composer {
 
     fn device_chip(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let current = self.current_host();
-        let chip = ui::footer_chip(
-            "composer-device",
-            self.chip_icon(),
-            self.chip_label(),
-            self.menu == Some(Menu::Device),
-            t,
-        )
-        .on_click(cx.listener(|this, _, _, cx| this.open_device_menu(cx)));
+        let chip =
+            ui::footer_chip("composer-device", self.chip_icon(), self.chip_label(), self.menu == Some(Menu::Device), t)
+                .on_click(cx.listener(|this, _, _, cx| this.open_device_menu(cx)));
         let menu = (self.menu == Some(Menu::Device)).then(|| {
             let mut rows = div().w(px(280.0)).max_h(px(380.0)).flex().flex_col();
             if self.thread.is_some() {
@@ -2532,11 +2553,17 @@ const HERO_CORNER: f32 = 12.0;
 /// text and controls share one centre), the row's side insets, and the
 /// footer under it. Tucked or open, the bar keeps these.
 const DOCK_H: f32 = 50.0;
+/// Zeron's centred card: its corner, and the selector rows around it.
+const HERO_RADIUS: f32 = 26.0;
+const HERO_SELECTOR_H: f32 = 20.0;
 const DOCK_LINE: f32 = ui::ROUND_BUTTON;
 const DOCK_PAD_L: f32 = 4.0;
 const DOCK_PAD_R: f32 = 6.0;
-const DOCK_FOOTER_H: f32 = 26.0;
+const DOCK_FOOTER_H: f32 = 24.0;
 const DOCK_GAP: f32 = 4.0;
+/// Below this the footer drops the folder and orchestration chips, so the
+/// mode and the model keep their labels instead of colliding.
+const DOCK_FOOTER_FULL: f32 = 460.0;
 
 impl Composer {
     /// Threads, and Home placed at the bottom, use Claude's one-line pill;
@@ -3096,6 +3123,7 @@ impl Composer {
         let bar = ui::frosted(radius, t.composer_blur().max(22.0), bar);
         // The footer's ends line up with the bar's: the folder glyph under the
         // `+`, the usage ring centred under the last button (mic or send).
+        let roomy = self.dock_width.get() <= 0.0 || self.dock_width.get() >= DOCK_FOOTER_FULL;
         let footer = div()
             .w_full()
             .h(px(DOCK_FOOTER_H))
@@ -3104,13 +3132,30 @@ impl Composer {
             .flex()
             .items_center()
             .gap(px(2.0))
-            .child(self.dock_mode(t, cx))
-            .children(self.orchestrate_chip(t, cx))
-            .child(div().w(px(1.0)).h(px(10.0)).mx(px(6.0)).bg(t.border))
-            .child(self.place_chip(t, cx))
-            .child(div().flex_1())
-            .child(div().flex_none().max_w(px(240.0)).child(self.picker.clone()))
-            .child(self.meter_chip(Meter::Plan, t, cx));
+            .child(div().flex_none().child(self.dock_mode(t, cx)))
+            .when(roomy, |d| {
+                d.children(self.orchestrate_chip(t, cx))
+                    .child(div().flex_none().w(px(1.0)).h(px(10.0)).mx(px(6.0)).bg(t.border))
+                    .child(div().flex_none().child(self.place_chip(t, cx)))
+            })
+            .child(div().flex_1().min_w(px(4.0)))
+            .child(div().flex_shrink(1.0).min_w_0().max_w(px(240.0)).overflow_hidden().child(self.picker.clone()))
+            .child(div().flex_none().child(self.meter_chip(Meter::Plan, t, cx)));
+        // Measured here, so the footer can answer to the column it is in.
+        let width = self.dock_width.clone();
+        let me = cx.entity_id();
+        let measure = gpui::canvas(
+            move |b, _, cx| {
+                let w = f32::from(b.size.width);
+                if (width.get() - w).abs() > 0.5 {
+                    width.set(w);
+                    cx.defer(move |cx| cx.notify(me));
+                }
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .inset_0();
         div()
             .id("composer")
             .relative()
@@ -3119,6 +3164,7 @@ impl Composer {
             .flex_col()
             .gap(px(DOCK_GAP))
             .capture_key_down(cx.listener(Self::on_key))
+            .child(measure)
             .when(self.menu == Some(Menu::Place), |d| {
                 d.child(div().absolute().top_0().left(relative(0.5)).child(self.place_card(t, cx)))
             })
@@ -3194,7 +3240,7 @@ impl Composer {
         let staged = self.queue.len() + self.attachments.len() + self.cards.len() > 0;
         // Both are Zeron's 26 px plate; the hero's corner is also concentric
         // with its send disc (14 + 12).
-        let radius = crate::design::radius::COMPOSER;
+        let radius = if hero { HERO_RADIUS } else { crate::design::radius::COMPOSER };
         let edge = t.composer_border();
         // The plate looks the same in every permission mode; the mode chip
         // under it says which one is on.
@@ -3205,7 +3251,8 @@ impl Composer {
         } else {
             edge
         };
-        let fill = if hero { t.composer_hero_bg() } else { t.composer_bg() };
+        // Zeron's surface: its 15% tint over the blur on dark glass.
+        let fill = t.composer_bg();
         // The material (glass, acrylic or opaque) is shared; only the
         // layout differs between the hero and the pill.
         let surface = div()
@@ -3237,16 +3284,14 @@ impl Composer {
             .children(self.render_attachments(t, cx));
 
         let box_ = if hero {
-            // A short glass bar: the prompt on top, attach on the left, the
-            // model picker and send on the right.
+            // Zeron's card: the prompt on top, then attach on the left and the
+            // model, voice and send on the right.
             surface
-                .min_h(px(120.0))
                 .when(staged, |d| d.child(staged_rows.px(px(14.0)).pt(px(12.0))))
                 .child(
                     div()
                         .w_full()
-                        .flex_1()
-                        .min_h(px(64.0))
+                        .min_h(px(PLATE_MIN_H))
                         .px(px(HERO_INSET - 1.0))
                         .pt(px(16.0))
                         .pb(px(4.0))
@@ -3267,8 +3312,6 @@ impl Composer {
                         .items_center()
                         .gap(px(2.0))
                         .child(self.attach_button(icons::PAPERCLIP, ui::ROUND_BUTTON, t, cx))
-                        .child(div().flex_none().child(self.dock_mode(t, cx)))
-                        .children(self.orchestrate_chip(t, cx).map(|c| div().flex_none().child(c)))
                         .child(div().flex_1())
                         .child(div().min_w_0().max_w(px(240.0)).overflow_hidden().child(self.picker.clone()))
                         .child(self.mic_button(ui::ROUND_BUTTON, t, cx))
@@ -3344,11 +3387,14 @@ impl Composer {
             .flex_col()
             .gap(px(6.0))
             .capture_key_down(cx.listener(Self::on_key))
+            // Zeron's centred card: where it runs above, right-aligned, and
+            // how it runs below.
+            .when(home && hero, |d| d.child(self.render_target_row(t, cx)))
             .child(box_)
+            .when(home && hero, |d| d.child(self.render_hero_footer(t, cx)))
             // Under the plate, quiet and unfilled: where it runs on the
             // left, the meters on the right.
-            .when(home, |d| d.child(self.render_home_chips(hero, t, cx)))
-            .when(home && hero && !self.add_dirs.is_empty(), |d| d.child(self.render_git_row(t, cx)))
+            .when(home && !hero, |d| d.child(self.render_home_chips(t, cx)))
             .children(meta)
             .when_some(self.notice.clone(), |d, note| {
                 d.child(div().px(px(8.0)).text_size(ty::META).text_color(t.text_muted).child(note))

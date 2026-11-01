@@ -60,12 +60,21 @@ pub enum RemoteEvent {
         task: TaskId,
         messages: Value,
     },
+    /// "Bring my work": how far this computer's sessions have gone up.
+    /// `done == total` is the last one.
+    Upload {
+        done: usize,
+        total: usize,
+        title: Option<String>,
+    },
     Changed,
 }
 
 pub struct Remote {
     engine: Arc<Engine>,
     pub status: RemoteStatus,
+    /// Sessions on the account, once the registry has said.
+    pub account_sessions: Option<usize>,
     child: Option<Child>,
     stdin: Option<Arc<Mutex<ChildStdin>>>,
     last_publish: HashMap<TaskId, Instant>,
@@ -141,6 +150,7 @@ impl Remote {
         let e = cx.new(|_| Remote {
             engine,
             status: RemoteStatus::default(),
+            account_sessions: None,
             child: None,
             stdin: None,
             last_publish: HashMap::new(),
@@ -265,6 +275,16 @@ impl Remote {
         self.status.signing_in = true;
         self.status.error = None;
         self.send(json!({ "op": "sign_in" }));
+        cx.emit(RemoteEvent::Changed);
+        cx.notify();
+    }
+
+    /// Stop waiting for the browser. A late answer from it is refused.
+    pub fn cancel_sign_in(&mut self, cx: &mut Context<Self>) {
+        self.send(json!({ "op": "cancel_sign_in" }));
+        self.status.signing_in = false;
+        self.status.error = None;
+        cx.emit(RemoteEvent::Changed);
         cx.notify();
     }
 
@@ -273,11 +293,36 @@ impl Remote {
     }
 
     /// Publish this computer's sessions, then ask for the account's list.
-    pub fn bring_work(&mut self) {
+    /// Sessions an earlier "Start fresh" held back come along too.
+    pub fn bring_work(&mut self, cx: &mut Context<Self>) {
         let _ = self.engine.store.set_setting(SYNC_CLAIM, "bring");
         let _ = self.engine.store.set_setting(SYNC_OFFER_SEEN, "1");
-        self.publish_all();
-        self.request_sessions();
+        self.release_held();
+        let (tx, rx) = flume::unbounded::<(usize, usize, Option<String>)>();
+        self.publish_all(Some(tx));
+        cx.spawn(async move |this, cx| {
+            while let Ok((done, total, title)) = rx.recv_async().await {
+                let _ = this.update(cx, |_, cx| cx.emit(RemoteEvent::Upload { done, total, title }));
+                if done >= total {
+                    return;
+                }
+            }
+            // The helper is gone, or there was nothing to read.
+            let _ = this.update(cx, |_, cx| cx.emit(RemoteEvent::Upload { done: 0, total: 0, title: None }));
+        })
+        .detach();
+    }
+
+    fn release_held(&self) {
+        let Ok(projects) = self.engine.store.projects() else { return };
+        let active = projects.iter().flat_map(|p| self.engine.store.tasks(p.id).unwrap_or_default());
+        let archived = self.engine.store.archived_tasks(10_000).unwrap_or_default();
+        for task in active.chain(archived) {
+            let key = format!("account_held.{}", task.id);
+            if self.engine.store.setting(&key).is_some() {
+                let _ = self.engine.store.set_setting(&key, "");
+            }
+        }
     }
 
     /// Pull the account's sessions. Threads already on this computer stay
@@ -323,8 +368,31 @@ impl Remote {
         )
     }
 
+    /// Remove `id` from the account on every device. This computer's copy
+    /// stays, and stops uploading so it cannot come back.
+    pub fn delete_from_account(&mut self, id: TaskId) {
+        self.hold_task(id);
+        self.send(json!({ "op": "delete_chat", "id": id.to_string() }));
+    }
+
+    /// Remove every session from the account. Threads on this computer stay
+    /// and stop uploading; ones started later sync as usual.
+    pub fn delete_all_from_account(&mut self) {
+        self.hold_existing();
+        self.send(json!({ "op": "delete_all_chats" }));
+    }
+
+    /// This computer no longer wants `id`: the account's copy, if it keeps
+    /// one, must not be written back here.
+    pub fn forget_locally(&self, id: TaskId) {
+        let _ = self.engine.store.set_setting(&format!("account_skip.{id}"), "1");
+    }
+
     pub fn sign_out(&mut self, cx: &mut Context<Self>) {
         self.send(json!({ "op": "sign_out" }));
+        // The next sign-in asks again what to do with this computer's work.
+        let _ = self.engine.store.set_setting(SYNC_OFFER_SEEN, "");
+        let _ = self.engine.store.set_setting(SYNC_CLAIM, "");
         cx.notify();
     }
 
@@ -347,7 +415,7 @@ impl Remote {
                 if self.status.connected
                     && matches!(self.engine.store.setting(SYNC_CLAIM).as_deref(), Some("bring") | Some("fresh"))
                 {
-                    self.publish_all();
+                    self.publish_all(None);
                 }
             }
             "connected" => {
@@ -366,6 +434,7 @@ impl Remote {
             "account_sessions" => {
                 let device = s("deviceId").unwrap_or_default();
                 let chats = ev.get("chats").cloned().unwrap_or(Value::Null);
+                self.account_sessions = chats.as_array().map(Vec::len);
                 cx.emit(RemoteEvent::AccountSessions { device, chats });
             }
             "account_transcript" => {
@@ -404,7 +473,8 @@ impl Remote {
     }
 
     /// Publish every project and session row, plus recent transcripts.
-    fn publish_all(&mut self) {
+    /// `progress`, for the wizard, hears each session as it goes up.
+    fn publish_all(&mut self, progress: Option<flume::Sender<(usize, usize, Option<String>)>>) {
         let Some(stdin) = self.stdin.clone() else { return };
         let engine = self.engine.clone();
         let mine = self.status.device_id.clone().unwrap_or_default();
@@ -427,13 +497,24 @@ impl Remote {
                     if !may_publish_session(Some("bring"), held, owner.as_deref(), &mine) {
                         continue;
                     }
-                    recent.push((t.updated_at, t.id));
+                    recent.push((t.updated_at, t.id, t.title.clone()));
                     write_line(&stdin, chat_row(&t, p));
                 }
             }
             recent.sort_by_key(|e| std::cmp::Reverse(e.0));
-            for (_, id) in recent.into_iter().take(HISTORY_SESSIONS) {
-                publish_transcript(&engine, &stdin, &feeds, id, false);
+            let total = recent.len();
+            for (i, (_, id, title)) in recent.into_iter().enumerate() {
+                if let Some(tx) = &progress {
+                    let _ = tx.send((i, total, Some(title)));
+                }
+                if i < HISTORY_SESSIONS {
+                    publish_transcript(&engine, &stdin, &feeds, id, false);
+                }
+            }
+            if let Some(tx) = &progress {
+                // After every row, so the list that comes back includes them.
+                write_line(&stdin, json!({ "op": "list_sessions" }));
+                let _ = tx.send((total, total, None));
             }
         });
     }
@@ -546,9 +627,12 @@ impl Fold {
                     touched = true;
                 }
                 AgentEvent::ToolResult { call_id, output, is_error } => {
-                    if let Some(part) = self.open_parts.iter_mut().rev().find(|part| {
-                        part.get("callId").and_then(Value::as_str) == Some(call_id.as_str())
-                    }) {
+                    if let Some(part) = self
+                        .open_parts
+                        .iter_mut()
+                        .rev()
+                        .find(|part| part.get("callId").and_then(Value::as_str) == Some(call_id.as_str()))
+                    {
                         part["output"] = json!(output.as_ref());
                         part["isError"] = json!(is_error);
                         touched = true;

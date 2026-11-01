@@ -234,13 +234,13 @@ impl Theme {
                 appearance,
                 accent_choice,
                 surface_style,
-                // Charcoal planes, one step apart: canvas, sidebar, card,
-                // menu, raised. Colour is kept for meaning.
-                bg: grey(0x16),
-                surface: grey(0x1b),
-                surface_raised: grey(0x2b),
-                surface_card: grey(0x1e),
-                surface_overlay: grey(0x25),
+                // Zeron's dark tokens, sampled from its app: main panel
+                // #060606, shell and sidebar #0d0d0d.
+                bg: grey(6),
+                surface: grey(13),
+                surface_raised: neutral(0.235),
+                surface_card: grey(0x0e),
+                surface_overlay: grey(0x16),
                 element_hover: hsla(0.0, 0.0, 0.92, 0.11),
                 border: hsla(0.0, 0.0, 1.0, 0.08),
                 border_strong: hsla(0.0, 0.0, 1.0, 0.14),
@@ -248,14 +248,14 @@ impl Theme {
                 text_muted: neutral(0.708),
                 text_faint: neutral(0.556),
                 solid: neutral(0.922),
-                on_solid: grey(0x16),
+                on_solid: grey(0x0e),
                 accent: primary,
                 accent_strong: strong,
                 danger: oklch(0.704, 0.191, 22.216),
                 warning: oklch(0.828, 0.189, 84.429),
                 success: oklch(0.765, 0.177, 163.223),
                 busy: primary,
-                surface_dialog: grey(0x23),
+                surface_dialog: grey(0x10),
                 element_active: primary.opacity(0.18),
                 accent_wash: primary.opacity(0.22),
                 danger_muted: mix(oklch(0.704, 0.191, 22.216), neutral(0.922), 0.28),
@@ -475,8 +475,8 @@ impl Theme {
             return self.border_strong;
         }
         match (self.surface_style, self.appearance) {
-            (Surface::Glass, Appearance::Dark) => hsla(210.0 / 360.0, 0.18, 0.78, 0.11),
-            (Surface::Glass, Appearance::Light) => hsla(210.0 / 360.0, 0.18, 0.32, 0.12),
+            (Surface::Glass, Appearance::Dark) => hsla(210.0 / 360.0, 0.18, 0.78, 0.09),
+            (Surface::Glass, Appearance::Light) => hsla(210.0 / 360.0, 0.18, 0.32, 0.10),
             (_, Appearance::Dark) => hsla(0.0, 0.0, 1.0, 0.08),
             (_, Appearance::Light) => hsla(0.0, 0.0, 0.0, 0.09),
         }

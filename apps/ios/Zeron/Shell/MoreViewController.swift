@@ -240,13 +240,14 @@ final class MoreViewController: UIViewController, UICollectionViewDelegate {
                 title = "Reconnecting…"
                 online = false
             case .disabled:
-                title = "Sample data, not synced"
+                title = "Sync is off"
                 online = false
             case .connected:
                 break
             }
         }
-        return Row(id: "sync", title: title, subtitle: "Through your Keplorayx account", symbol: "cloud", accessory: .dot(online))
+        let subtitle = app.isDemo ? "Sign in to see your own sessions" : "Through your Keplorayx account"
+        return Row(id: "sync", title: title, subtitle: subtitle, symbol: "cloud", accessory: .dot(online))
     }
 
     func collectionView(_ collectionView: UICollectionView, didSelectItemAt path: IndexPath) {

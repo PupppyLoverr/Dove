@@ -1613,7 +1613,8 @@ pub struct TaskView {
     scroll_edge: bool,
     /// The info card is open, so stream content clears it. The scrollbar
     /// stays on the column edge either way.
-    pub(crate) info_reserve: bool,
+    /// Room the rows hold free on their right for the docked thread card.
+    pub(crate) info_reserve: f32,
     /// A user message just jumped to, briefly highlighted.
     flash: Option<usize>,
     /// User rows whose recalled-memories chip is open.
@@ -1883,7 +1884,7 @@ impl TaskView {
             rail_tick: Vec::new(),
             rail_room: Default::default(),
             scroll_edge: false,
-            info_reserve: false,
+            info_reserve: 0.0,
             flash: None,
             recall_open: Default::default(),
             remember_open: None,
@@ -2868,7 +2869,7 @@ impl TaskView {
             .flex()
             .justify_center()
             .pl(px(28.0))
-            .pr(px(if self.info_reserve { 312.0 } else { 28.0 }))
+            .pr(px(28.0 + self.info_reserve))
             .child(div().w_full().max_w(px(crate::design::conversation_width())).child(body))
     }
 
@@ -4752,7 +4753,7 @@ impl TaskView {
             .flex()
             .justify_center()
             .pl(px(24.0))
-            .pr(px(if self.info_reserve { 308.0 } else { 24.0 }))
+            .pr(px(24.0 + self.info_reserve))
             .child(
                 div()
                     .relative()
@@ -5253,7 +5254,7 @@ impl Render for TaskView {
             .flex()
             .justify_center()
             .pl(px(24.0))
-            .pr(px(if self.info_reserve { 308.0 } else { 24.0 }))
+            .pr(px(24.0 + self.info_reserve))
             .pt(px(STATUS_STRIP_PAD.0))
             .pb(px(STATUS_STRIP_PAD.1))
             .child(div().w_full().max_w(px(composer::plate_width())).child(self.render_status_strip(&t)));

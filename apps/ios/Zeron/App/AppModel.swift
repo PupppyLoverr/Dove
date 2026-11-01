@@ -445,7 +445,7 @@ final class AppModel {
 
     func sessionSource(_ chatId: String) -> SessionSource {
         guard let client, let handle = try? client.openSession(chatId: chatId) else {
-            return FixtureSessionSource(title: "Unavailable", subtitle: "")
+            return FixtureSessionSource.unavailable()
         }
         return CoreSessionSource(app: self, client: client, handle: handle, chatId: chatId)
     }

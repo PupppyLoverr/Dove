@@ -31,10 +31,22 @@ use crate::wallpaper::{Motion, alpha_mask, drop_retired, placement, retire};
 /// Video files, decoded through ffmpeg.
 pub const VIDEO_EXTS: [&str; 5] = ["mp4", "webm", "mov", "mkv", "m4v"];
 
-/// Frames a full-size (home) clip may hold, in bytes.
-const HERO_BUDGET: usize = 192 * 1024 * 1024;
+/// Frames a full-size (home) clip may hold, in bytes. Each frame also has a
+/// copy on the GPU, so this counts twice in the process's footprint.
+const HERO_BUDGET: usize = 72 * 1024 * 1024;
 /// Frames a chat frost may hold, in bytes.
-const FROST_BUDGET: usize = 64 * 1024 * 1024;
+const FROST_BUDGET: usize = 32 * 1024 * 1024;
+/// How much of the area's resolution an animated full-size clip is decoded
+/// at. A moving picture hides the softness, and it is what keeps the whole
+/// loop in the budget instead of every fifth frame.
+const ANIMATED_SCALE: f32 = 0.6;
+/// Clips kept per class. Thumbnails (Settings' recents) are classed apart: in
+/// one shared list they evicted the wallpaper, which re-decoded, refreshed
+/// the window and evicted them in turn, without end.
+const CACHE_LARGE: usize = 3;
+const CACHE_SMALL: usize = 12;
+/// A clip this wide or narrower counts as a thumbnail.
+const SMALL_EDGE: u32 = 640;
 /// Longest stretch of a video that is decoded, in seconds.
 const VIDEO_SECONDS: u32 = 30;
 /// A frame shorter than this is shown this long (browsers do the same, so
@@ -88,16 +100,21 @@ pub fn kind_of(path: &Path) -> Kind {
 /// [`kind_of`], remembered per path for a few seconds: a render asks often
 /// and the answer reads the file's header.
 pub fn kind_cached(path: &Path) -> Kind {
-    static SEEN: Mutex<Option<(PathBuf, Kind, Instant)>> = Mutex::new(None);
+    // Several paths at once (the wallpaper and Settings' recents), or each
+    // render would read a file's header on the UI thread.
+    static SEEN: Mutex<Vec<(PathBuf, Kind, Instant)>> = Mutex::new(Vec::new());
     let Ok(mut seen) = SEEN.lock() else { return kind_of(path) };
-    if let Some((p, k, at)) = seen.as_ref()
-        && p == path
-        && at.elapsed() < Duration::from_secs(5)
+    if let Some((_, k, at)) = seen.iter().find(|(p, ..)| p == path)
+        && at.elapsed() < Duration::from_secs(30)
     {
         return *k;
     }
     let k = kind_of(path);
-    *seen = Some((path.to_path_buf(), k, Instant::now()));
+    seen.retain(|(p, ..)| p != path);
+    if seen.len() >= 16 {
+        seen.remove(0);
+    }
+    seen.push((path.to_path_buf(), k, Instant::now()));
     k
 }
 
@@ -483,6 +500,12 @@ struct Key {
     animate: bool,
 }
 
+impl Key {
+    fn is_small(&self) -> bool {
+        self.target.0 <= SMALL_EDGE && matches!(self.variant, Variant::Hero) && !self.animate
+    }
+}
+
 type Slot = Arc<Mutex<Option<Arc<Clip>>>>;
 struct Entry {
     key: Key,
@@ -526,10 +549,13 @@ pub fn clip(path: &Path, variant: Variant, target: (f32, f32), animate: bool, cx
         let mut entries = CACHE.lock().ok()?;
         entries.push(Entry { key: key.clone(), slot: slot.clone(), fallback: stale.clone() });
         let mut gone = Vec::new();
-        while entries.len() > 4 {
-            let e = entries.remove(0);
-            gone.extend(e.slot.lock().ok().and_then(|s| s.clone()).map(|c| c.image.clone()));
-            gone.extend(e.fallback.map(|c| c.image.clone()));
+        for (small, cap) in [(false, CACHE_LARGE), (true, CACHE_SMALL)] {
+            while entries.iter().filter(|e| e.key.is_small() == small).count() > cap {
+                let Some(i) = entries.iter().position(|e| e.key.is_small() == small) else { break };
+                let e = entries.remove(i);
+                gone.extend(e.slot.lock().ok().and_then(|s| s.clone()).map(|c| c.image.clone()));
+                gone.extend(e.fallback.map(|c| c.image.clone()));
+            }
         }
         retire(gone);
     }
@@ -590,7 +616,17 @@ fn decode(key: &Key) -> Option<Frames> {
     }
     let _ = fps;
     match kind_of(&key.path) {
-        Kind::Animated => decode_animated(&key.path, target, budget, &*look),
+        Kind::Animated => {
+            // The frost is already a fraction of the screen.
+            let area = match key.variant {
+                Variant::Hero => {
+                    let s = |v: u32| ((v as f32 * ANIMATED_SCALE) as u32).max(64);
+                    (s(target.0), s(target.1))
+                }
+                Variant::Frost(_) => target,
+            };
+            decode_animated(&key.path, area, budget, &*look)
+        }
         // A video's clip is its first frame (the scrim's brightness, and
         // what shows while paused); [`Backdrop`] streams the moving frames.
         Kind::Still | Kind::Video => decode_still(&key.path, target, &*look),
@@ -857,8 +893,9 @@ mod tests {
         assert!((shape - 2400.0 / 1300.0).abs() < 0.02, "{shape}");
         // A big source still comes down to the area.
         assert_eq!(cover_within(&RgbaImage::new(3840, 2160), (1920, 1080)).dimensions(), (1920, 1080));
-        // 301 frames of it fit the full-size budget whole.
-        assert!(301 * out.as_raw().len() < HERO_BUDGET);
+        // 200 frames of it fit the full-size budget whole; a longer clip
+        // keeps fewer frames rather than more memory.
+        assert!(200 * out.as_raw().len() < HERO_BUDGET);
     }
 
     #[test]

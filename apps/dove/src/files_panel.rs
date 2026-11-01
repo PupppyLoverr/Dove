@@ -26,8 +26,10 @@ use crate::ui;
 
 pub enum FilesEvent {
     AskAgent(String),
-    /// The explorer column picked a file: the dock shows it.
+    /// The tree picked a file: the dock gives it a tab.
     Open(String),
+    /// A file tab's Back: close the tab.
+    CloseTab,
 }
 
 fn is_image(path: &str) -> bool {
@@ -79,6 +81,8 @@ pub struct FilesPanel {
     /// The docked explorer column: only the tree, and a picked file opens
     /// in the dock instead of replacing it.
     pub explorer: bool,
+    /// One file's tab: no tree behind the preview.
+    viewer: bool,
     root: Option<PathBuf>,
     files: Arc<Vec<String>>,
     /// Git status per path (and a dot for folders holding changes).
@@ -97,6 +101,8 @@ pub struct FilesPanel {
     office_status: Option<String>,
     office_width: std::rc::Rc<std::cell::Cell<f32>>,
     _office_subs: Vec<Subscription>,
+    /// List on the next paint: nothing runs git for a tab nobody is looking at.
+    stale: bool,
     _load: Option<gpui::Task<()>>,
     _sub: Subscription,
 }
@@ -118,6 +124,7 @@ impl FilesPanel {
         });
         Self {
             explorer: false,
+            viewer: false,
             root: None,
             files: Arc::default(),
             git_marks: Arc::default(),
@@ -133,14 +140,18 @@ impl FilesPanel {
             office_status: None,
             office_width: Default::default(),
             _office_subs: Vec::new(),
+            stale: false,
             _load: None,
             _sub,
         }
     }
 
-    /// The file being shown, relative to the root.
-    pub fn preview_path(&self) -> Option<&str> {
-        self.preview.as_ref().map(|p| p.path.as_str())
+    /// A tab showing one file of `root`, without listing the project.
+    pub fn file_tab(root: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let mut panel = Self::new(window, cx);
+        panel.viewer = true;
+        panel.root = root;
+        panel
     }
 
     pub fn set_root(&mut self, root: Option<PathBuf>, cx: &mut Context<Self>) {
@@ -150,10 +161,18 @@ impl FilesPanel {
         self.root = root;
         self.collapsed.clear();
         self.preview = None;
-        self.refresh(cx);
+        self._load = None;
+        self.invalidate(cx);
+    }
+
+    /// List again when next on screen.
+    pub fn invalidate(&mut self, cx: &mut Context<Self>) {
+        self.stale = true;
+        cx.notify();
     }
 
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
+        self.stale = false;
         let Some(root) = self.root.clone() else {
             self.files = Arc::default();
             self.rebuild();
@@ -161,6 +180,7 @@ impl FilesPanel {
             return;
         };
         let work = cx.background_spawn(async move {
+            let _slot = crate::git_slots::slot().await;
             let files = dove_core::git::list_files(&root).unwrap_or_default();
             let status = dove_core::git::status(&root).unwrap_or_default();
             (files, status)
@@ -348,6 +368,10 @@ impl FilesPanel {
     }
 
     fn close_preview(&mut self, cx: &mut Context<Self>) {
+        if self.viewer {
+            cx.emit(FilesEvent::CloseTab);
+            return;
+        }
         self.preview = None;
         self.editor = None;
         cx.notify();
@@ -965,6 +989,11 @@ pub(crate) fn file_type_icon(path: &str, dir: bool, t: &Theme) -> gpui::Img {
 impl Render for FilesPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::perf_trace::count_render("FilesPanel");
+        if self.stale {
+            self.stale = false;
+            let this = cx.entity();
+            cx.defer(move |cx| this.update(cx, |p, cx| p.refresh(cx)));
+        }
         let t = Theme::of(cx).clone();
         if self.preview.is_some() {
             return self.render_preview(&t, window, cx);

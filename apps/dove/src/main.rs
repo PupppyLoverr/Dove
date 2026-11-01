@@ -16,6 +16,7 @@ mod ego;
 mod file_icons;
 mod files_panel;
 mod flock;
+mod git_slots;
 mod history;
 mod home;
 mod hotkey;
@@ -56,6 +57,7 @@ mod shell_menu;
 mod side_chat;
 mod side_panel;
 mod sidebar;
+mod smooth_scroll;
 mod split;
 mod supermemory;
 mod surface_chrome;
@@ -249,15 +251,17 @@ impl Render for Root {
     fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         crate::perf_trace::count_render("Root");
         perf_trace::mark_first_render(window);
-        div()
-            .relative()
-            .size_full()
-            .when(perf_trace::input_enabled(), |d| {
-                d.capture_key_down(|e, window, _| perf_trace::key_down(&e.keystroke.unparse(), window))
-            })
-            .child(self.shell.clone())
-            .child(self.toasts.clone())
-            .children(self.intro.clone())
+        smooth_scroll::smooth_scroll(
+            div()
+                .relative()
+                .size_full()
+                .when(perf_trace::input_enabled(), |d| {
+                    d.capture_key_down(|e, window, _| perf_trace::key_down(&e.keystroke.unparse(), window))
+                })
+                .child(self.shell.clone())
+                .child(self.toasts.clone())
+                .children(self.intro.clone()),
+        )
     }
 }
 
@@ -316,6 +320,18 @@ fn portable_home() {
     }
 }
 
+/// Keep the last panic in `<data>/crash.log`: a windowed app has no stderr,
+/// and a panic on a window callback ends the process.
+fn log_panics() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let path = dove_core::hosts::dove_home().join("crash.log");
+        let trace = std::backtrace::Backtrace::force_capture();
+        let _ = std::fs::write(path, format!("{info}\n\n{trace}\n"));
+        previous(info);
+    }));
+}
+
 fn main() {
     // Started as a remote-host launcher (`dove-hosts/<host>/<agent>`): hop to
     // WSL, SSH or a Cua Space and exit, before any window or store exists.
@@ -323,6 +339,7 @@ fn main() {
         std::process::exit(code);
     }
     portable_home();
+    log_panics();
     // `dove node …`: headless Keplorayx for other machines (session daemon,
     // provider bridge, port pipe). No window, no store, no GPUI.
     if std::env::args_os().nth(1).is_some_and(|a| a == "node") {
