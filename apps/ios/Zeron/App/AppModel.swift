@@ -192,6 +192,13 @@ final class AppModel {
         await MainActor.run { onSignedIn?() }
     }
 
+    /// Look around with sample sessions, no account needed. Signing out
+    /// returns to sign-in.
+    func startDemo() {
+        guard start(.demo(options: Self.demoOptions())) else { return }
+        onSignedIn?()
+    }
+
     /// The user signing out: this device forgets the account's local docs.
     func signOut() {
         forgetOnSignOut = true

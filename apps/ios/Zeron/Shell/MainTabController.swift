@@ -17,7 +17,7 @@ final class MainTabController: UITabBarController, UITabBarControllerDelegate, A
         super.viewDidLoad()
         view.backgroundColor = Palette.background
         // The selected tab reads through the glass pill + label weight; the
-        // violet accent made it shout.
+        // accent made it shout.
         tabBar.tintColor = Palette.text
         tabBarMinimizeBehavior = .onScrollDown
 

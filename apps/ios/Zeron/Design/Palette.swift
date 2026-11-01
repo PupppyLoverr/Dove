@@ -1,7 +1,7 @@
 import UIKit
 
 /// App palette. Light is a warm paper grey, dark is true black; accents are a
-/// single teal. Colors are paint-only — nothing here affects layout.
+/// single sky blue. Colors are paint-only — nothing here affects layout.
 enum Palette {
     static func dynamic(_ light: UInt32, _ dark: UInt32, alpha: CGFloat = 1) -> UIColor {
         UIColor { traits in
@@ -9,7 +9,7 @@ enum Palette {
         }
     }
 
-    // Zeron Light / Zeron Dark (crates/theme builtins): cool neutrals, violet accent.
+    // Keplorayx light and dark: cool neutrals, the desktop's sky accent.
     static let background = dynamic(0xF3F3F5, 0x060606)
     /// The open session's row in the iPad sidebar.
     static let rowActive = dual(UIColor(white: 1, alpha: 0.9), UIColor(white: 1, alpha: 0.06))
@@ -18,10 +18,10 @@ enum Palette {
     static let secondary = dynamic(0x62626A, 0xA9A9AE)
     static let tertiary = dynamic(0x97979F, 0x6B6B72)
     static let hairline = dynamic(0xE2E2E6, 0x1E1E22)
-    static let accent = dynamic(0x5B43E8, 0x8B7CF6)
+    static let accent = dynamic(0x0A6FC2, 0x38B6F4)
     /// Translucent control fill that reads on glass in both modes.
     static let controlFill = dynamic(0x27272C, 0xE8E8EA, alpha: 0.075)
-    static let accentSoft = dynamic(0x5B43E8, 0x8B7CF6, alpha: 0.12)
+    static let accentSoft = dynamic(0x0A6FC2, 0x38B6F4, alpha: 0.12)
     static let danger = dynamic(0xDC2626, 0xF87171)
     static let success = dynamic(0x15803D, 0x34D399)
     static let warning = dynamic(0xA16207, 0xFACC15)
@@ -60,13 +60,13 @@ enum Palette {
         case .codeText: dynamic(0x303035, 0xE8E8EA)
         case .codeBackground: codeBackground
         case .codeBorder: codeBorder
-        case .quoteBar: dynamic(0x5B43E8, 0x8B7CF6, alpha: 0.45)
+        case .quoteBar: dynamic(0x0A6FC2, 0x38B6F4, alpha: 0.45)
         case .rule: hairline
         case .tableBorder: dynamic(0xE2E2E6, 0x232327)
         case .tableHeaderBackground: dynamic(0xF3F3F5, 0x121215)
         case .userBubble: userBubble
         case .chipBackground: chip
-        case .syntaxKeyword: dynamic(0x5B43E8, 0x8B7CF6)
+        case .syntaxKeyword: dynamic(0x0A6FC2, 0x38B6F4)
         case .syntaxString: dynamic(0x15803D, 0x34D399)
         case .syntaxComment: dynamic(0x6B7280, 0x92929A)
         case .syntaxNumber, .syntaxConstant: dynamic(0xA16207, 0xFACC15)
@@ -91,7 +91,7 @@ enum Palette {
         case .diffDelWash: dynamic(0xDC2626, 0xF87171, alpha: 0.055)
         case .diffAddBar: dynamic(0x15803D, 0x34D399, alpha: 0.55)
         case .diffDelBar: dynamic(0xDC2626, 0xF87171, alpha: 0.55)
-        case .diffHunk: dual(UIColor(hex: 0x5B43E8, alpha: 0.07), UIColor(hex: 0x8B7CF6, alpha: 0.08))
+        case .diffHunk: dual(UIColor(hex: 0x0A6FC2, alpha: 0.07), UIColor(hex: 0x38B6F4, alpha: 0.08))
         }
     }
 }

@@ -185,9 +185,15 @@ final class MoreViewController: UIViewController, UICollectionViewDelegate {
         s.appendSections(["Account"])
         s.appendItems([
             Row(id: "account", title: app.accountName, subtitle: app.accountDetail, symbol: "person.crop.circle", accessory: .none),
+            syncRow(),
         ])
-        s.appendSections(["Devices"])
-        s.appendItems(app.hostOptions.map { Row(id: "device:\($0.id)", title: $0.name, subtitle: $0.online ? "Online" : "Offline", symbol: "desktopcomputer", accessory: .dot($0.online)) })
+        s.appendSections(["Your computers"])
+        let hosts = app.hostOptions
+        if hosts.isEmpty {
+            s.appendItems([Row(id: "device:none", title: "No computers yet", subtitle: "Sign in to Keplorayx on your computer with this account to control it from here.", symbol: "desktopcomputer", accessory: .none)])
+        } else {
+            s.appendItems(hosts.map { Row(id: "device:\($0.id)", title: $0.name, subtitle: $0.online ? "Online, ready for your sessions" : "Offline", symbol: "desktopcomputer", accessory: .dot($0.online)) })
+        }
         s.appendSections(["Notifications"])
         s.appendItems(notificationRows())
         s.appendSections(["Appearance"])
@@ -211,9 +217,33 @@ final class MoreViewController: UIViewController, UICollectionViewDelegate {
         s.appendItems(wall)
         s.appendSections(["Sessions"])
         s.appendItems([Row(id: "archived", title: "Archived Sessions", symbol: "archivebox")])
+        s.appendSections(["About"])
+        s.appendItems([Row(id: "replay", title: "Replay the Intro", subtitle: "Shown the next time you sign in", symbol: "sparkle", accessory: .none)])
         s.appendSections([" "])
         s.appendItems([Row(id: "signout", title: "Sign Out", symbol: "rectangle.portrait.and.arrow.right", accessory: .none, destructive: true)])
         dataSource.apply(s, animatingDifferences: false)
+    }
+
+    /// How this phone's link to the account stands.
+    private func syncRow() -> Row {
+        var title = "Synced"
+        var online = true
+        if let state = app.connectivity?.state {
+            switch state {
+            case .offline:
+                title = "Offline. Sends are saved until you reconnect"
+                online = false
+            case .reconnecting:
+                title = "Reconnecting…"
+                online = false
+            case .disabled:
+                title = "Sample data, not synced"
+                online = false
+            case .connected:
+                break
+            }
+        }
+        return Row(id: "sync", title: title, subtitle: "Through your Keplorayx account", symbol: "cloud", accessory: .dot(online))
     }
 
     func collectionView(_ collectionView: UICollectionView, didSelectItemAt path: IndexPath) {
@@ -239,6 +269,9 @@ final class MoreViewController: UIViewController, UICollectionViewDelegate {
             present(sheet, animated: true)
         case "wallpaper:remove":
             WallpaperStore.remove()
+        case "replay":
+            UserDefaults.standard.set(false, forKey: SignInViewController.seenKey)
+            Toast.show("The intro will play the next time you sign in", in: view.window)
         case "archived":
             navigationController?.pushViewController(FolderViewController(app: app, folder: FolderRowVM(id: "archived", name: "Archived", count: 0, symbol: "archivebox")), animated: true)
         case "signout":

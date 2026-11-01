@@ -356,7 +356,27 @@ class SessionsViewController: SessionListController {
             out.append((f.id, f.name, [], app.sessions(inFolder: f.id)))
         }
         out.append(("recent", out.isEmpty ? nil : "Recent", [], app.frontPage.sessions))
+        setNeedsUpdateContentUnavailableConfiguration()
         return out
+    }
+
+    /// Fresh from sign-in the list is empty for a moment, or for good on a new
+    /// account: say what will appear here.
+    override func updateContentUnavailableConfiguration(using state: UIContentUnavailableConfigurationState) {
+        guard query.isEmpty, app.frontPage.sessions.isEmpty, app.frontPage.folders.isEmpty else {
+            contentUnavailableConfiguration = nil
+            return
+        }
+        var empty = UIContentUnavailableConfiguration.empty()
+        empty.image = K22Icon.image("k22-mark", pointSize: 40)
+        empty.imageProperties.tintColor = Palette.tertiary
+        empty.text = "No sessions yet"
+        empty.textProperties.font = Fonts.ui(.sansSemibold, 17)
+        empty.textProperties.color = Palette.text
+        empty.secondaryText = "Sessions from your computers appear here as they sync. Start one with New session."
+        empty.secondaryTextProperties.font = Fonts.ui(.sans, 14)
+        empty.secondaryTextProperties.color = Palette.secondary
+        contentUnavailableConfiguration = empty
     }
 
     override func viewDidLayoutSubviews() {
