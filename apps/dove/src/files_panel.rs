@@ -26,6 +26,8 @@ use crate::ui;
 
 pub enum FilesEvent {
     AskAgent(String),
+    /// The explorer column picked a file: the dock shows it.
+    Open(String),
 }
 
 fn is_image(path: &str) -> bool {
@@ -74,6 +76,9 @@ struct Preview {
 impl EventEmitter<FilesEvent> for FilesPanel {}
 
 pub struct FilesPanel {
+    /// The docked explorer column: only the tree, and a picked file opens
+    /// in the dock instead of replacing it.
+    pub explorer: bool,
     root: Option<PathBuf>,
     files: Arc<Vec<String>>,
     /// Git status per path (and a dot for folders holding changes).
@@ -112,6 +117,7 @@ impl FilesPanel {
             }
         });
         Self {
+            explorer: false,
             root: None,
             files: Arc::default(),
             git_marks: Arc::default(),
@@ -130,6 +136,11 @@ impl FilesPanel {
             _load: None,
             _sub,
         }
+    }
+
+    /// The file being shown, relative to the root.
+    pub fn preview_path(&self) -> Option<&str> {
+        self.preview.as_ref().map(|p| p.path.as_str())
     }
 
     pub fn set_root(&mut self, root: Option<PathBuf>, cx: &mut Context<Self>) {
@@ -959,37 +970,21 @@ impl Render for FilesPanel {
             return self.render_preview(&t, window, cx);
         }
         let file_count = self.files.len();
-        let search = div()
-            .m(px(8.0))
-            .flex()
-            .items_center()
-            .gap(px(6.0))
+        // Zeron's secondary header: the shared toolbar under the title strip.
+        let search = crate::surface_chrome::toolbar(&t)
             .child(
-                div()
-                    .flex_1()
-                    .h(px(30.0))
-                    .px(px(8.0))
-                    .flex()
-                    .items_center()
-                    .gap(px(6.0))
-                    .rounded(px(radius::RADIUS))
-                    .bg(t.wash(0.05))
-                    .border_1()
-                    .border_color(t.border)
-                    .text_size(ty::BODY)
-                    .child(icon(icons::MAGNIFER).size(px(14.0)).text_color(t.text_faint))
-                    .child(div().flex_1().child(Input::new(&self.search)))
+                crate::surface_chrome::input()
+                    .child(icon(icons::MAGNIFER).size(px(12.0)).flex_none().text_color(t.text_faint))
+                    .child(div().flex_1().min_w_0().child(Input::new(&self.search)))
                     .when(file_count > 0, |d| {
                         d.child(div().text_size(ty::MICRO).text_color(t.text_faint).child(format!("{file_count}")))
                     }),
             )
-            .child(ui::icon_button(
-                "files-refresh",
-                icons::REFRESH,
-                "Refresh workspace files",
-                &t,
-                cx.listener(|this, _, _, cx| this.refresh(cx)),
-            ));
+            .child(
+                crate::surface_chrome::toolbar_button("files-refresh", "Refresh workspace files")
+                    .child(icon(icons::REFRESH).size(px(crate::surface_chrome::ICON_SIZE)).text_color(t.text_muted))
+                    .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
+            );
 
         let entries = self.visible.clone();
         let marks = self.git_marks.clone();
@@ -1071,7 +1066,13 @@ impl Render for FilesPanel {
                             })
                             .on_click(move |_, _, cx| {
                                 let _ = weak.update(cx, |p, cx| {
-                                    if dir { p.toggle_dir(&path, cx) } else { p.open_path(&path, None, cx) }
+                                    if dir {
+                                        p.toggle_dir(&path, cx)
+                                    } else if p.explorer {
+                                        cx.emit(FilesEvent::Open(path.clone()))
+                                    } else {
+                                        p.open_path(&path, None, cx)
+                                    }
                                 });
                             })
                             .into_any_element()

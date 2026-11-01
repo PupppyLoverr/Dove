@@ -47,6 +47,11 @@ pub const PANEL_W: f32 = 520.0;
 const CENTER_MIN: f32 = 300.0;
 /// Narrowest the dock gets.
 const PANEL_FLOOR: f32 = 360.0;
+/// The title bar's right-hand actions, as Zeron sizes them.
+const HEADER_BUTTON: f32 = 28.0;
+const HEADER_GAP: f32 = 4.0;
+/// From the last action to the caption buttons or the window edge.
+const BAR_EDGE_INSET: f32 = 6.0;
 
 fn harness_from_account(id: Option<&str>) -> HarnessKind {
     match id.unwrap_or("") {
@@ -268,8 +273,8 @@ pub(crate) fn panel_fit(
     }
 }
 
-/// A title-bar control. Hover only darkens the glyph; a filled plate here
-/// reads as a button sitting on the column.
+/// A size-24 title-bar control (Zeron's `window_control_button`): the plate
+/// fades in on hover.
 fn quiet_bar_button(
     id: &'static str,
     label: &'static str,
@@ -283,13 +288,47 @@ fn quiet_bar_button(
         .flex()
         .items_center()
         .justify_center()
+        .rounded(px(6.0))
         .cursor_pointer()
+        .bg(crate::motion::hover_blend(id, crate::theme::wash(0.0), crate::theme::wash(0.11)))
         .occlude()
         .role(gpui::Role::Button)
         .aria_label(label)
         .tooltip(ui::tip(label))
         .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
         .on_hover(crate::motion::hover_listener(id))
+        .on_click(move |e, window, cx| {
+            cx.stop_propagation();
+            on_click(e, window, cx);
+        })
+        .child(child)
+}
+
+/// A size-28 action at the right of the title bar (Zeron's
+/// `header_icon_button`): the thread card, files and panel toggles.
+fn header_icon_button(
+    id: &'static str,
+    label: &'static str,
+    child: impl IntoElement,
+    on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
+) -> gpui::Stateful<gpui::Div> {
+    let key = format!("header-icon-{id}");
+    div()
+        .id(id)
+        .size(px(HEADER_BUTTON))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(6.0))
+        .cursor_pointer()
+        .bg(crate::motion::hover_blend(&key, crate::theme::wash(0.0), crate::theme::wash(0.11)))
+        .on_hover(crate::motion::hover_listener(key))
+        .occlude()
+        .role(gpui::Role::Button)
+        .aria_label(label)
+        .tooltip(ui::tip(label))
+        .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
         .on_click(move |e, window, cx| {
             cx.stop_propagation();
             on_click(e, window, cx);
@@ -400,6 +439,8 @@ pub struct Shell {
     pub sidebar_open: bool,
     pub sidebar_w: f32,
     pub panel_open: bool,
+    /// The explorer column at the dock's right edge, toggled on its own.
+    explorer_open: bool,
     pub panel_w: f32,
     resize: Option<(Edge, Pixels, f32)>,
     /// The limit the current drag presses against, and the seam's nudge
@@ -532,6 +573,12 @@ impl Shell {
                 let _ = this.engine.store.set_setting("panel_side", if *left { "left" } else { "right" });
                 cx.notify();
             }
+            SidePanelEvent::ShowExplorer => this.set_explorer(true, cx),
+            SidePanelEvent::ShowBody => {
+                this.panel_open = true;
+                let _ = this.engine.store.set_setting("panel_open", "true");
+                cx.notify();
+            }
             SidePanelEvent::Close => {
                 this.panel_open = false;
                 let _ = this.engine.store.set_setting("panel_open", "false");
@@ -613,6 +660,9 @@ impl Shell {
             sidebar_open: store.setting("sidebar_open").as_deref() != Some("false"),
             sidebar_w: num("sidebar_width", SIDEBAR_W, 208.0, 400.0),
             panel_open: store.setting("panel_open").as_deref() == Some("true"),
+            // `DOVE_EXPLORER=1` opens the explorer column.
+            explorer_open: std::env::var_os("DOVE_EXPLORER").is_some()
+                || store.setting("explorer_open").as_deref() == Some("true"),
             panel_w: num("panel_width", PANEL_W, PANEL_FLOOR, 4000.0),
             resize: None,
             resize_pressing: None,
@@ -2317,10 +2367,24 @@ impl Shell {
         self.sidebar_open && self.fit.shown.0
     }
 
+    /// Either of the dock's columns is open.
+    fn right_open(&self) -> bool {
+        self.panel_open || (self.explorer_open && matches!(self.route, Route::Thread(_)))
+    }
+
+    fn set_explorer(&mut self, open: bool, cx: &mut Context<Self>) {
+        self.explorer_open = open;
+        let _ = self.engine.store.set_setting("explorer_open", if open { "true" } else { "false" });
+        if open {
+            self.panel.update(cx, |p, cx| p.refresh(cx));
+        }
+        cx.notify();
+    }
+
     /// The dock is open and the window has room for it.
     /// The side panel shows (it steps aside while the call view is up).
     fn panel_shown(&self) -> bool {
-        self.panel_open && self.fit.shown.1 && !self.call_view_shown
+        self.right_open() && self.fit.shown.1 && !self.call_view_shown
     }
 
     /// Stamp columns that just opened and decide what fits this frame.
@@ -2330,23 +2394,24 @@ impl Shell {
             f.seq += 1;
             f.sidebar_at = f.seq;
         }
-        if self.panel_open && !f.panel_was {
+        let right_open = self.panel_open || (self.explorer_open && matches!(self.route, Route::Thread(_)));
+        if right_open && !f.panel_was {
             f.seq += 1;
             f.panel_at = f.seq;
         }
         f.sidebar_was = self.sidebar_open;
-        f.panel_was = self.panel_open;
+        f.panel_was = right_open;
         f.shown = panel_fit(
             viewport,
             self.sidebar_w,
             (self.sidebar_open, f.sidebar_at),
-            (in_thread && self.panel_open, f.panel_at),
+            (in_thread && right_open, f.panel_at),
             expanded,
         );
     }
 
     pub fn toggle_panel(&mut self, cx: &mut Context<Self>) {
-        if self.panel_open && matches!(self.route, Route::Thread(_)) && !self.fit.shown.1 {
+        if self.right_open() && matches!(self.route, Route::Thread(_)) && !self.fit.shown.1 {
             // Hidden for want of room: bring it back (the sidebar gives way).
             self.fit.seq += 1;
             self.fit.panel_at = self.fit.seq;
@@ -2377,37 +2442,6 @@ impl Shell {
             self.toggle_panel(cx);
         }
         self.panel.update(cx, |p, cx| p.command(cmd, window, cx));
-    }
-
-    /// The titlebar's Pull request button, while the open thread has one:
-    /// the PR glyph in its state's colour; it opens (or closes) the tab.
-    fn render_pr_button(&self, t: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let task = self.active_task()?;
-        if !self.pr_links.contains_key(&task.id) {
-            return None;
-        }
-        let (target, detail) = self.panel.read(cx).pr(cx)?;
-        let showing = self.panel_open && self.panel.read(cx).showing(crate::side_panel::Surface::PullRequest);
-        let color = match &detail {
-            Some(d) => crate::pr_view::status_style(d, t).1,
-            None => crate::motion::hover_blend("tb-pr", t.text_muted, t.text),
-        };
-        let _ = target;
-        Some(
-            quiet_bar_button(
-                "tb-pr",
-                "Pull request",
-                icon(icons::PULL_REQUEST).size(px(16.0)).text_color(color),
-                cx.listener(move |this, _, window, cx| {
-                    if showing {
-                        this.toggle_panel(cx);
-                    } else {
-                        this.show_panel(Tab::PullRequest, window, cx);
-                    }
-                }),
-            )
-            .into_any_element(),
-        )
     }
 
     pub fn show_panel(&mut self, tab: Tab, window: &mut Window, cx: &mut Context<Self>) {
@@ -2928,67 +2962,47 @@ impl Shell {
         let Route::Thread(id) = self.route else { return div().into_any_element() };
         let Some(task) = self.task(id).cloned() else { return div().into_any_element() };
         let mark = match self.persona_for(id) {
-            Some(p) => crate::team::avatar(p, 15.0, t).into_any_element(),
+            Some(p) => crate::team::avatar(p, 14.0, t).into_any_element(),
             None => icon(ui::harness_icon(task.harness))
                 .size(px(14.0))
                 .text_color(ui::harness_tint(task.harness, t, t.text_muted))
                 .into_any_element(),
         };
-        let status = kit::status_mark(SharedString::from(format!("tb-st-{id}")), task.status, task.unread, t);
+        // Zeron's title: the agent's mark and the name. Double-click renames;
+        // right-click opens the thread's menu, as its sidebar row does.
         div()
             .id("tb-title")
             .h(px(28.0))
             .min_w_0()
-            .px(px(6.0))
             .flex()
             .items_center()
-            .gap(px(8.0))
-            .rounded(px(8.0))
+            .gap(px(6.0))
             .occlude()
-            .cursor_pointer()
-            .map(|d| crate::motion::hover_fade(d, "tb-title", (t.wash(0.0), t.wash(0.05)), None))
             .tooltip(ui::tip(format!("{} (double-click to rename)", task.title)))
             .on_click(cx.listener(move |this, e: &gpui::ClickEvent, window, cx| {
                 if e.click_count() == 2 {
                     this.begin_rename(id, window, cx);
                 }
             }))
-            .children(status)
-            .child(div().flex_none().size(px(16.0)).flex().items_center().justify_center().child(mark))
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this, e: &gpui::MouseDownEvent, window, cx| {
+                    cx.stop_propagation();
+                    this.close_menus();
+                    this.menu = Some(ChatMenu { task: id, at: e.position, copy_open: false, confirm_delete: false });
+                    this.menu_opened(window, cx);
+                    cx.notify();
+                }),
+            )
+            .child(div().flex_none().flex().items_center().justify_center().child(mark))
             .child(
                 div()
                     .min_w_0()
                     .truncate()
-                    .text_size(ty::BODY)
+                    .text_size(px(12.0))
                     .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(t.text)
+                    .text_color(t.text.opacity(0.85))
                     .child(task.title.clone()),
-            )
-            // Claude's ⌄ after the title: the thread's menu (rename, pin,
-            // fork, archive, copy…), the same one its sidebar row opens.
-            .child(
-                div()
-                    .id("tb-title-menu")
-                    .size(px(20.0))
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded(px(6.0))
-                    .hover(|s| s.bg(t.wash(0.08)))
-                    .tooltip(ui::tip("Thread menu"))
-                    .child(icon(icons::CHEVRON_DOWN).size(px(12.0)).text_color(t.text_muted))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, e: &gpui::MouseDownEvent, window, cx| {
-                            cx.stop_propagation();
-                            this.close_menus();
-                            this.menu =
-                                Some(ChatMenu { task: id, at: e.position, copy_open: false, confirm_delete: false });
-                            this.menu_opened(window, cx);
-                            cx.notify();
-                        }),
-                    ),
             )
             .into_any_element()
     }
@@ -3036,7 +3050,9 @@ impl Shell {
         let cluster = div()
             .flex()
             .flex_none()
+            .h_full()
             .items_center()
+            .pt(px(Theme::TITLEBAR_TOP_PAD))
             .pl(px(left_pad))
             .when(side, |d| d.w(px(self.sidebar_w)))
             .when(!side, |d| d.pr(px(8.0)))
@@ -3066,7 +3082,7 @@ impl Shell {
             // The new-thread page is where `+` leads, so it shows neither.
             .when(!tabs_on && self.route != Route::Home, |d| {
                 let color = crate::motion::hover_blend("tb-new", t.text_muted, t.text);
-                d.child(div().w(px(2.0))).child(quiet_bar_button(
+                d.child(div().w(px(8.0))).child(quiet_bar_button(
                     "tb-new",
                     "New thread (Ctrl+N)",
                     icon(icons::PLUS).size(px(16.0)).text_color(color),
@@ -3077,107 +3093,130 @@ impl Shell {
         let in_thread = matches!(self.route, Route::Thread(_));
         let flock = self.route == Route::Flock;
         let panel_open = (in_thread || flock) && self.panel_shown();
-        // What the tabs get: the bar minus the cluster, the switch, the
-        // tools and the caption buttons. The dock's own controls live in its
-        // header, not here.
-        let cluster_w = if side {
-            self.sidebar_w
+        let body_open = panel_open && self.panel_open;
+        let takeover = body_open && self.panel.read(cx).expanded;
+        let dock_left = self.panel_left();
+        let viewport = f32::from(window.viewport_size().width);
+        // Zeron's trailing layout: the explorer and panel toggles are fixed
+        // right-edge anchors (over the explorer column when it is open), and
+        // the surface tabs fill from the panel's seam up to them.
+        let right_pad = ui::caption_reserve() + BAR_EDGE_INSET;
+        let slots = if in_thread {
+            HEADER_BUTTON * 2.0 + HEADER_GAP
+        } else if flock {
+            HEADER_BUTTON
         } else {
-            // Toggle, group gap, back, 2 px, forward, trailing pad.
-            left_pad + ui::BUTTON * 3.0 + 8.0 + 2.0 + 8.0
+            0.0
         };
-        let tools_w = 16.0
-            + if in_thread { (ui::BUTTON + 2.0) * 8.0 } else { 0.0 }
-            + if flock && !panel_open { ui::BUTTON + 4.0 } else { 0.0 }
-            + ui::caption_reserve();
-        let room = f32::from(window.viewport_size().width) - cluster_w - tools_w;
+        let explorer_w = if panel_open { self.explorer_width(window) } else { 0.0 };
+        let controls_w = (explorer_w - right_pad).max(slots);
+        // Toggle, group gap, back, 2 px, forward, group gap, `+`, trailing pad.
+        let cluster_w = if side { self.sidebar_w } else { left_pad + ui::BUTTON * 3.0 + 8.0 + 2.0 + 8.0 + 8.0 };
+        let tools_w = if in_thread { HEADER_BUTTON + 8.0 } else { 0.0 } + controls_w + right_pad;
+        let room = viewport - cluster_w - tools_w;
         let tabs = if flock {
             self.workspace.update(cx, |w, cx| w.render_bar(cx))
         } else if tabs_on {
             self.render_tabs(room, &t, cx)
         } else {
-            self.render_bar_title(&t, cx)
+            // The chat column's 16 px gutter, or a 12 px group gap past the
+            // cluster when the sidebar is closed (the cluster pads 8).
+            let title = self.render_bar_title(&t, cx);
+            div().min_w_0().pl(px(if side { 16.0 } else { 4.0 })).child(title).into_any_element()
         };
-        // Claude's bar: Chat | Terminal beside the title; on the right the
-        // thread's info and the panels (the open one lit), the rest under ⋯.
-        let switch = in_thread
-            .then(|| self.active_thread().cloned().map(|v| v.update(cx, |v, cx| v.view_switch(&t, cx))))
-            .flatten();
-        let dock_left = self.panel_left();
-        let takeover = panel_open && self.panel.read(cx).expanded;
-        let strip = panel_open.then(|| {
-            let w = if takeover {
-                (f32::from(window.viewport_size().width) - if side { self.sidebar_w } else { 0.0 }).max(1.0)
-            } else {
-                self.panel_w
-            };
+        let strip = body_open.then(|| {
+            let total = if takeover { viewport - if side { self.sidebar_w } else { 0.0 } } else { self.panel_width(window) };
+            let width = if dock_left && !takeover { total } else { total - right_pad - controls_w };
+            let width = width.min(viewport - cluster_w - right_pad - controls_w).max(0.0);
             div()
-                .w(px(w))
+                .w(px(width))
                 .h_full()
                 .flex_none()
+                .pt(px(Theme::TITLEBAR_TOP_PAD))
                 .child(self.panel.update(cx, |panel, cx| panel.render_strip(cx)))
         });
-        let right_tools = div()
-            .flex()
-            .flex_none()
-            .items_center()
-            .gap(px(4.0))
-            .pl(px(8.0))
-            .when(!panel_open, |d| d.pr(px(ui::caption_reserve() + 8.0)))
-            .when(in_thread && !takeover, |d| {
-                d.child(
-                    div()
-                        .h(px(28.0))
-                        .flex()
-                        .items_center()
-                        .gap(px(2.0))
-                        .when_some(self.render_pr_button(&t, cx), |d, b| d.child(b))
-                        .child(self.render_info_button(cx)),
-                )
-            })
-            .when(in_thread && !panel_open, |d| {
-                let color = crate::motion::hover_blend("tb-panel", t.text_muted, t.text);
-                d.child(quiet_bar_button(
-                    "tb-panel",
-                    "Side panel (Ctrl+\\)",
-                    ui::sidebar_glyph(0.0, true, 16.0, color),
-                    cx.listener(|this, _, _, cx| this.toggle_panel(cx)),
-                ))
-            })
-            // Flock keeps only the panel toggle: no thread info to show.
-            .when(flock && !panel_open, |d| {
-                let color = crate::motion::hover_blend("tb-panel", t.text_muted, t.text);
-                d.child(quiet_bar_button(
-                    "tb-panel",
-                    "Side panel: browser, diffs, files… (Ctrl+\\)",
-                    ui::sidebar_glyph(0.0, true, 16.0, color),
-                    cx.listener(|this, _, _, cx| this.toggle_panel(cx)),
-                ))
-            });
+        // The thread card's toggle ends the chat's stretch of the bar.
+        let info_toggle = (in_thread && !takeover).then(|| {
+            let open = self.info_open;
+            header_icon_button(
+                "tb-info",
+                if open { "Hide thread details" } else { "Show thread details" },
+                ui::corner_card_glyph(16.0, t.text_muted),
+                cx.listener(|this, _, _, cx| {
+                    this.info_open = !this.info_open;
+                    cx.notify();
+                }),
+            )
+            .when(open, |d| d.bg(crate::theme::wash(0.09)))
+        });
+        let files_toggle = in_thread.then(|| {
+            let open = panel_open && explorer_w > 0.0;
+            let label = if open { "Hide files panel" } else { "Show files panel" };
+            header_icon_button(
+                "tb-files",
+                label,
+                icon(icons::FOLDER_TREE).size(px(16.0)).text_color(t.text_muted),
+                cx.listener(move |this, _, _, cx| this.set_explorer(!open, cx)),
+            )
+            .when(open, |d| d.bg(crate::theme::wash(0.09)))
+        });
+        let panel_toggle = (in_thread || flock).then(|| {
+            header_icon_button(
+                "tb-panel",
+                "Toggle side panel (Ctrl+\\)",
+                ui::sidebar_glyph(
+                    crate::motion::state_t("tb-panel", body_open, crate::motion::GLYPH_STATE, cx.reduce_motion()),
+                    true,
+                    16.0,
+                    t.text_muted,
+                ),
+                cx.listener(|this, _, _, cx| this.toggle_panel(cx)),
+            )
+        });
         // Over artwork the strip stays clear: the picture (and, in a thread,
         // its frost) is already painted for this column, so the tabs sit on
         // the same surface as the page. Everywhere else it is the solid bar.
         let home_art = matches!(self.route, Route::Home) && self.has_wallpaper();
         let thread_art = self.full_art_route() && self.has_wallpaper();
-        let surface = div()
-            .flex_1()
-            .min_w_0()
+        let solid = !home_art && !thread_art;
+        let surface = (!takeover).then(|| {
+            div()
+                .flex_1()
+                .min_w_0()
+                .h_full()
+                .when(solid, |d| d.bg(t.bg))
+                .pt(px(Theme::TITLEBAR_TOP_PAD))
+                .pr(px(8.0))
+                .flex()
+                .items_center()
+                .gap(px(8.0))
+                .child(div().flex_1().min_w_0().h_full().flex().items_center().child(tabs))
+                .children(info_toggle)
+        });
+        // The anchors and the caption clearance. Over the dock its own fill
+        // shows through; over the chat they carry the chat's.
+        let anchors = div()
+            .w(px(controls_w + right_pad))
             .h_full()
-            .when(!home_art && !thread_art, |d| d.bg(t.bg))
+            .flex_none()
+            .when(solid && (!panel_open || dock_left), |d| d.bg(t.bg))
+            .pt(px(Theme::TITLEBAR_TOP_PAD))
+            .pr(px(right_pad))
             .flex()
             .items_center()
-            .children(switch.map(|s| div().flex_none().pl(px(4.0)).pr(px(6.0)).child(s)))
-            .child(div().flex_1().min_w_0().h_full().flex().items_center().child(tabs))
-            .child(right_tools);
+            .justify_end()
+            .gap(px(HEADER_GAP))
+            .children(files_toggle)
+            .children(panel_toggle);
         let bar = div()
             .relative()
             .h(px(Theme::TITLEBAR_HEIGHT))
             .flex()
             .items_center()
-            .when(!side && !home_art && !thread_art, |d| d.bg(t.bg))
+            .when(!side && solid, |d| d.bg(t.bg))
             .child(cluster);
-        let bar = if dock_left { bar.children(strip).child(surface) } else { bar.child(surface).children(strip) };
-        let bar = self.drag_region("titlebar", bar, cx);
+        let bar = if dock_left { bar.children(strip).children(surface) } else { bar.children(surface).children(strip) };
+        let bar = self.drag_region("titlebar", bar.child(anchors), cx);
         div().relative().flex_none().child(bar).into_any_element()
     }
 
@@ -3576,24 +3615,6 @@ impl Shell {
             .with_priority(2)
         });
         row.child(div().relative().flex_none().child(button).children(menu)).into_any_element()
-    }
-
-    fn render_info_button(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let t = Theme::of(cx).clone();
-        let open = self.info_open;
-        let rest = if open { t.text } else { t.text_muted };
-        div()
-            .relative()
-            .child(quiet_bar_button(
-                "tb-info",
-                "Thread info",
-                icon(icons::INFO_CIRCLE).text_color(crate::motion::hover_blend("tb-info", rest, t.text)),
-                cx.listener(|this, _, _, cx| {
-                    this.info_open = !this.info_open;
-                    cx.notify();
-                }),
-            ))
-            .into_any_element()
     }
 
     /// Local sessions this computer would upload. Another device's sessions,
@@ -4162,6 +4183,9 @@ impl Shell {
         });
 
         let actions = vec![
+            ui::menu_row("info-view", icons::TERMINAL, "Switch Chat / Terminal (Ctrl+`)", false, t)
+                .on_click(cx.listener(|this, _, window, cx| this.toggle_view_mode(window, cx)))
+                .into_any_element(),
             ui::menu_row("info-side", icons::PLUS, "New side chat", false, t)
                 .on_click(cx.listener(|this, _, window, cx| this.side_chat(window, cx)))
                 .into_any_element(),
@@ -4736,14 +4760,19 @@ impl Render for Shell {
         // some are open.
         let bare = matches!(self.route, Route::Home)
             && (self.tabs.is_empty() || !self.engine.store.flag("topbar_tabs", false));
-        let wants_expand = self.panel.read(cx).expanded;
+        let wants_expand = self.panel.read(cx).expanded && self.panel_open;
         self.update_fit(f32::from(window.viewport_size().width), docked, wants_expand);
         let panel_open = docked && self.panel_shown();
         let expanded = panel_open && wants_expand;
         let sidebar_shown = self.sidebar_shown();
         // Web views are native windows: the call view hides them.
-        let panel_live = panel_open && !self.call_view_shown;
-        self.panel.update(cx, |p, cx| p.sync(panel_live, self.resize.is_some(), cx));
+        let panel_live = panel_open && self.panel_open && !self.call_view_shown;
+        let body_on = self.panel_open;
+        let explorer_w = if panel_open { self.explorer_width(window) } else { 0.0 };
+        self.panel.update(cx, |p, cx| {
+            p.set_columns(body_on, explorer_w, cx);
+            p.sync(panel_live, self.resize.is_some(), cx)
+        });
         let topbar = (!bare).then(|| self.render_topbar(window, cx));
         // With no title bar, the sidebar starts below the floating window
         // controls instead of running under them.
@@ -4834,7 +4863,7 @@ impl Render for Shell {
                 .h_full()
                 .when(!expanded, |d| d.w(px(panel_w)).flex_none())
                 .when(expanded, |d| d.flex_1().min_w_0())
-                .when(!expanded, |d| {
+                .when(!expanded && body_on, |d| {
                     d.child(
                         div()
                             .absolute()
@@ -4847,7 +4876,7 @@ impl Render for Shell {
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(|this, e: &gpui::MouseDownEvent, window, cx| {
-                                    this.resize = Some((Edge::Panel, e.position.x, this.panel_width(window)));
+                                    this.resize = Some((Edge::Panel, e.position.x, this.panel_body_width(window)));
                                     cx.stop_propagation();
                                 }),
                             ),
@@ -4912,7 +4941,20 @@ impl Render for Shell {
                 .when(dock_left && !expanded, |d| d.left(px(inner)))
                 .when(!expanded, |d| d.w(px(panel_w)))
                 .when(expanded, |d| d.left(px(inner)))
-                .when(!expanded, |d| if dock_left { d.border_r_1() } else { d.border_l_1() }.border_color(seam))
+                .when(!expanded, |d| if dock_left { d.border_r_1() } else { d.border_l_1() }.border_color(t.border))
+                // The explorer's hairline runs up through the title bar too.
+                .when(explorer_w > 0.0 && body_on, |d| {
+                    d.child(
+                        div()
+                            .absolute()
+                            .top_0()
+                            .right_0()
+                            .h(px(Theme::TITLEBAR_HEIGHT))
+                            .w(px(explorer_w))
+                            .border_l_1()
+                            .border_color(t.border),
+                    )
+                })
         });
         // The left sidebar is glass. Without a wallpaper it is Zeron's: the
         // sidebar tint straight over the window's desktop blur. With one, the
@@ -5220,15 +5262,39 @@ impl Render for Shell {
 }
 
 impl Shell {
-    /// The dock's laid-out width: the saved width, narrowed so the chat
-    /// column keeps `CENTER_MIN`. The titlebar strip and the dock both use
-    /// it, so they stay one column.
+    /// The dock's laid-out width, its columns together. The titlebar strip
+    /// and the dock both use it, so they stay one column.
     pub(crate) fn panel_width(&self, window: &Window) -> f32 {
+        let explorer = self.explorer_width(window);
+        let body = if self.panel_open || explorer <= 0.0 { self.panel_body_width(window) } else { 0.0 };
+        body + explorer
+    }
+
+    /// The surfaces' width: the saved width, narrowed so the chat column
+    /// keeps `CENTER_MIN`.
+    fn panel_body_width(&self, window: &Window) -> f32 {
         self.panel_w.min(self.panel_room(window)).max(PANEL_FLOOR)
     }
 
-    /// The widest the dock can be while the chat column keeps `CENTER_MIN`.
+    /// The explorer column, while it is open and fits beside the chat. Short
+    /// of room the tree narrows before the chat or the surfaces do.
+    fn explorer_width(&self, window: &Window) -> f32 {
+        use crate::side_panel::{EXPLORER_MIN, EXPLORER_W};
+        let room = self.room_beside_chat(window) - if self.panel_open { PANEL_FLOOR } else { 0.0 };
+        if self.explorer_open && matches!(self.route, Route::Thread(_)) && room >= EXPLORER_MIN {
+            room.min(EXPLORER_W)
+        } else {
+            0.0
+        }
+    }
+
+    /// The widest the surfaces can be while the chat column keeps
+    /// `CENTER_MIN` and the explorer its width.
     fn panel_room(&self, window: &Window) -> f32 {
+        self.room_beside_chat(window) - self.explorer_width(window)
+    }
+
+    fn room_beside_chat(&self, window: &Window) -> f32 {
         let total = f32::from(window.viewport_size().width);
         let left = if self.sidebar_shown() || self.route == Route::Settings { self.sidebar_w } else { 0.0 };
         total - left - CENTER_MIN

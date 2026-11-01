@@ -129,20 +129,6 @@ pub fn status_glyph(id: impl Into<ElementId>, status: TaskStatus, unread: bool, 
     }
 }
 
-/// The sidebar's status mark: only what asks for attention (working,
-/// waiting on you, an unread result, a failure, a draft). A thread that is
-/// done and read, or idle, shows nothing, so a calm list stays calm.
-pub fn status_mark(id: impl Into<ElementId>, status: TaskStatus, unread: bool, t: &Theme) -> Option<AnyElement> {
-    match status {
-        TaskStatus::Running => Some(spinner(id, 12.0, t.busy).into_any_element()),
-        TaskStatus::NeedsInput => Some(ui::dot(t.warning, 7.0).into_any_element()),
-        TaskStatus::Done if unread => Some(ui::dot(t.accent, 7.0).into_any_element()),
-        TaskStatus::Failed => Some(icon(icons::CLOSE).size(px(11.0)).text_color(t.danger).into_any_element()),
-        TaskStatus::Draft => Some(icon(icons::PEN).size(px(11.0)).text_color(t.text_faint).into_any_element()),
-        TaskStatus::Done | TaskStatus::Idle | TaskStatus::Archived => None,
-    }
-}
-
 /// The working indicator: a faint ring with a bright arc turning once per
 /// [`crate::motion::SPIN_PERIOD`], drawn as two strokes. It runs on the
 /// shared 30 Hz pulse clock (see `motion::pulse`), so a spinner re-renders
