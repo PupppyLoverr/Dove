@@ -48,6 +48,180 @@ const CENTER_MIN: f32 = 300.0;
 /// Narrowest the dock gets.
 const PANEL_FLOOR: f32 = 360.0;
 
+fn harness_from_account(id: Option<&str>) -> HarnessKind {
+    match id.unwrap_or("") {
+        "claude" | "claude-code" => HarnessKind::ClaudeCode,
+        "opencode" => HarnessKind::OpenCode,
+        other => HarnessKind::from_id(other).unwrap_or(HarnessKind::ClaudeCode),
+    }
+}
+
+fn synced_plain(message: &serde_json::Value) -> String {
+    if let Some(parts) = message.get("parts").and_then(|p| p.as_array()) {
+        let text: String = parts
+            .iter()
+            .filter(|part| part.get("kind").and_then(|k| k.as_str()) == Some("text"))
+            .filter_map(|part| part.get("text").and_then(|t| t.as_str()))
+            .collect::<Vec<_>>()
+            .join("");
+        if !text.is_empty() {
+            return text;
+        }
+    }
+    message.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string()
+}
+
+fn synced_has_structure(messages: &[serde_json::Value]) -> bool {
+    messages.iter().any(|message| {
+        message.get("parts").and_then(|p| p.as_array()).is_some_and(|parts| {
+            parts.iter().any(|part| matches!(part.get("kind").and_then(|k| k.as_str()), Some("reasoning" | "tool")))
+        })
+    })
+}
+
+fn tool_from_part(part: &serde_json::Value) -> (String, String, serde_json::Value, String, Option<String>, bool) {
+    if let Some(call) = part.get("call") {
+        let kind = call.get("kind").and_then(|k| k.as_str()).unwrap_or("unknown");
+        let title = match kind {
+            "exec" => call.get("command"),
+            "readFile" | "writeFile" | "editFile" | "applyPatch" => call.get("path"),
+            "search" | "glob" => call.get("pattern"),
+            "webFetch" => call.get("url"),
+            "webSearch" => call.get("query"),
+            "mcp" => call.get("tool"),
+            _ => call.get("name"),
+        }
+        .and_then(|v| v.as_str())
+        .unwrap_or(kind);
+        let name = match kind {
+            "exec" => "Execute",
+            "readFile" => "Read",
+            "writeFile" | "editFile" | "applyPatch" => "Edit",
+            "search" | "glob" => "Search",
+            "webFetch" | "webSearch" => "Fetch",
+            "mcp" => call.get("tool").and_then(|v| v.as_str()).unwrap_or("tool"),
+            _ => call.get("name").and_then(|v| v.as_str()).unwrap_or("tool"),
+        };
+        let id = part.get("id").and_then(|v| v.as_str()).unwrap_or("tool").to_string();
+        let output = part.get("output").and_then(|v| v.as_str()).map(str::to_owned);
+        let is_error = part.get("isError").and_then(|v| v.as_bool()).unwrap_or(false);
+        return (name.to_string(), title.to_string(), call.clone(), id, output, is_error);
+    }
+    let name = part.get("name").and_then(|v| v.as_str()).unwrap_or("tool").to_string();
+    let title = part.get("title").and_then(|v| v.as_str()).unwrap_or(&name).to_string();
+    let id = part.get("callId").and_then(|v| v.as_str()).unwrap_or("tool").to_string();
+    let input = part.get("input").cloned().unwrap_or(serde_json::Value::Null);
+    let output = part.get("output").and_then(|v| v.as_str()).map(str::to_owned);
+    let is_error = part.get("isError").and_then(|v| v.as_bool()).unwrap_or(false);
+    (name, title, input, id, output, is_error)
+}
+
+fn events_from_synced(message: &serde_json::Value) -> Vec<dove_core::proto::AgentEvent> {
+    use dove_core::proto::{AgentEvent, ToolKind};
+    use std::sync::Arc;
+    let role = message.get("role").and_then(|v| v.as_str()).unwrap_or("");
+    if role == "user" {
+        let text = synced_plain(message);
+        if text.trim().is_empty() {
+            return Vec::new();
+        }
+        return vec![AgentEvent::UserMessage { text: text.into() }];
+    }
+    if role != "assistant" {
+        return Vec::new();
+    }
+    let mut events = Vec::new();
+    if let Some(parts) = message.get("parts").and_then(|p| p.as_array()) {
+        for part in parts {
+            match part.get("kind").and_then(|k| k.as_str()) {
+                Some("text") => {
+                    let text: Arc<str> = part.get("text").and_then(|v| v.as_str()).unwrap_or("").into();
+                    if !text.trim().is_empty() {
+                        events.push(AgentEvent::TextDelta { text });
+                    }
+                }
+                Some("reasoning") => {
+                    let text: Arc<str> = part
+                        .get("reasoning")
+                        .or_else(|| part.get("text"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .into();
+                    if !text.trim().is_empty() {
+                        events.push(AgentEvent::ThinkingDelta { text });
+                    }
+                }
+                Some("tool") => {
+                    let (name, title, input, call_id, output, is_error) = tool_from_part(part);
+                    events.push(AgentEvent::ToolCall {
+                        call_id: call_id.clone(),
+                        name: name.clone(),
+                        kind: ToolKind::classify(&name),
+                        title: title.into(),
+                        input,
+                    });
+                    if let Some(output) = output {
+                        events.push(AgentEvent::ToolResult { call_id, output: output.into(), is_error });
+                    }
+                }
+                _ => {}
+            }
+        }
+    } else {
+        let text = synced_plain(message);
+        if !text.trim().is_empty() {
+            events.push(AgentEvent::TextDelta { text: text.into() });
+        }
+    }
+    if !events.is_empty() {
+        events.push(AgentEvent::BlockEnd);
+        events.push(AgentEvent::TurnEnded { usage: None, is_error: false });
+    }
+    events
+}
+
+fn cloud_notice(state: &str) -> &'static str {
+    match state {
+        "sleeping" | "stopping" => "This session's Cloud machine is asleep — it wakes when you send",
+        _ => "Starting a Cloud machine for this session…",
+    }
+}
+
+/// Post-login sync wizard. The first-run card is a different question
+/// (use this computer, or log in). This offer appears after sign-in.
+#[derive(Clone, PartialEq)]
+enum SyncOffer {
+    Closed,
+    Ready,
+    Switching { bring: bool },
+    Importing { done: usize, total: usize, title: Option<String> },
+    Done { imported: usize, skipped: usize, bring: bool },
+    Failed(String),
+}
+
+/// Shown once sign-in has reached the registry, until the user answers.
+/// `first_run_seen` is not an input: staying local does not dismiss this.
+fn sync_offer_due(signed_in: bool, connected: bool, seen: bool, postponed: bool) -> bool {
+    signed_in && connected && !seen && !postponed
+}
+
+/// Zeron's offer line: what "Bring my work" would upload. `None` when this
+/// computer has no local sessions, and the button becomes "Switch now".
+fn local_work_phrase(sessions: usize) -> Option<String> {
+    match sessions {
+        0 => None,
+        1 => Some("the 1 session".into()),
+        n => Some(format!("the {n} sessions")),
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AdoptKind {
+    Imported,
+    Skipped,
+    Ignored,
+}
+
 /// A thread's picture is a baked frost (see `wallpaper_media`): blurred
 /// until only colour remains, under a scrim that starts at this dim and
 /// rises until text reads. Zeron's frosted-wallpaper recipe.
@@ -247,6 +421,10 @@ pub struct Shell {
     pub menu: Option<ChatMenu>,
     pub rename: Option<(TaskId, Entity<InputState>)>,
     pub info_open: bool,
+    /// The sidebar row under the pointer, and the one whose hover card is
+    /// allowed to show (the card waits ~550 ms so a sweep does not flash).
+    pub hover_task: Option<dove_core::proto::TaskId>,
+    pub hover_ready: Option<dove_core::proto::TaskId>,
     pub more_open: bool,
     pub sidebar_options_open: bool,
     /// The sidebar footer's account menu.
@@ -295,6 +473,15 @@ pub struct Shell {
     pub(crate) team: crate::orchestra::TeamState,
     /// Threads beside each open thread in the chat area (`split.rs`).
     pub(crate) companions: HashMap<TaskId, Vec<TaskId>>,
+    /// The post-login "Sync is ready" wizard.
+    sync_offer: SyncOffer,
+    /// "Later" hides it until the next launch, or until the account menu reopens it.
+    pub(crate) sync_postponed: bool,
+    was_signed_in: bool,
+    /// Account chats that arrived before the user answered the offer.
+    pending_account: Option<(String, serde_json::Value)>,
+    sync_importing: bool,
+    sync_import_gen: u64,
 }
 
 impl Shell {
@@ -463,6 +650,8 @@ impl Shell {
             menu: None,
             rename: None,
             info_open: false,
+            hover_task: None,
+            hover_ready: None,
             more_open: false,
             sidebar_options_open: false,
             account_open: false,
@@ -494,6 +683,12 @@ impl Shell {
             _computer_hotkey: None,
             team: Default::default(),
             companions: HashMap::new(),
+            sync_offer: SyncOffer::Closed,
+            sync_postponed: false,
+            was_signed_in: false,
+            pending_account: None,
+            sync_importing: false,
+            sync_import_gen: 0,
         };
         this.reload(cx);
         this.tabs.retain(|id| this.tasks.iter().any(|t| t.id == *id));
@@ -504,6 +699,7 @@ impl Shell {
         this.start_voice_hotkey(window, cx);
         this.start_computer_hotkey(window, cx);
         crate::composer::focus(&this.composer, window, cx);
+        this.consider_sync_offer(cx);
         // `DOVE_OPEN_THREAD=<id>`: start on a thread (QA and scripting).
         if let Some(id) = std::env::var("DOVE_OPEN_THREAD").ok().and_then(|s| uuid_task(&s)) {
             this.open_task(id, window, cx);
@@ -1133,8 +1329,24 @@ impl Shell {
         }
     }
 
-    /// A command queued from the Dove phone app for one of this desktop's sessions.
+    /// A command queued from the phone, or the account's sessions arriving
+    /// from the edge after sign-in.
     fn on_remote(&mut self, remote: Entity<Remote>, ev: &RemoteEvent, window: &mut Window, cx: &mut Context<Self>) {
+        match ev {
+            RemoteEvent::AccountSessions { device, chats } => {
+                self.receive_account_sessions(device.clone(), chats.clone(), cx);
+                return;
+            }
+            RemoteEvent::AccountTranscript { task, messages } => {
+                self.adopt_account_transcript(*task, messages.clone(), cx);
+                return;
+            }
+            RemoteEvent::Changed => {
+                self.consider_sync_offer(cx);
+                return;
+            }
+            RemoteEvent::Command { .. } => {}
+        }
         let RemoteEvent::Command { task, id, command } = ev else { return };
         let chat = task.to_string();
         let Some(t) = self.task(*task).cloned() else {
@@ -1162,6 +1374,365 @@ impl Shell {
         }
         remote.read(cx).command_done(&chat, id, true, None);
         cx.notify();
+    }
+
+    /// Open the offer once the registry is up, unless it was already answered
+    /// or postponed this launch. `first_run_seen` does not apply.
+    fn consider_sync_offer(&mut self, cx: &mut Context<Self>) {
+        let Some(remote) = crate::remote::Remote::global(cx) else { return };
+        let (status, seen) = {
+            let remote = remote.read(cx);
+            (remote.status.clone(), remote.offer_seen())
+        };
+        if self.was_signed_in && !status.signed_in {
+            self.sync_postponed = false;
+            if matches!(self.sync_offer, SyncOffer::Ready) {
+                self.sync_offer = SyncOffer::Closed;
+                cx.notify();
+            }
+        }
+        self.was_signed_in = status.signed_in;
+        if let SyncOffer::Switching { .. } = self.sync_offer
+            && let Some(err) = status.error.clone()
+        {
+            self.sync_offer = SyncOffer::Failed(err);
+            cx.notify();
+            return;
+        }
+        if sync_offer_due(status.signed_in, status.connected, seen, self.sync_postponed)
+            && matches!(self.sync_offer, SyncOffer::Closed)
+        {
+            self.sync_offer = SyncOffer::Ready;
+            cx.notify();
+        }
+    }
+
+    fn choose_sync(&mut self, bring: bool, cx: &mut Context<Self>) {
+        self.sync_offer = SyncOffer::Switching { bring };
+        if let Some(remote) = crate::remote::Remote::global(cx) {
+            remote.update(cx, |r, _| {
+                if bring {
+                    r.bring_work();
+                } else {
+                    r.start_fresh();
+                }
+            });
+        }
+        if let Some((device, chats)) = self.pending_account.take() {
+            self.play_import(device, chats, bring, cx);
+        } else {
+            // The registry list can be slow. The card must not sit on
+            // "Setting up sync" if that list never arrives.
+            cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(Duration::from_secs(8)).await;
+                let _ = this.update(cx, |shell, cx| {
+                    if !matches!(shell.sync_offer, SyncOffer::Switching { .. }) {
+                        return;
+                    }
+                    if let Some((device, chats)) = shell.pending_account.take() {
+                        shell.play_import(device, chats, bring, cx);
+                    } else {
+                        shell.sync_offer = SyncOffer::Done { imported: 0, skipped: 0, bring };
+                        cx.notify();
+                    }
+                });
+            })
+            .detach();
+        }
+        cx.notify();
+    }
+
+    fn postpone_sync(&mut self, cx: &mut Context<Self>) {
+        self.sync_postponed = true;
+        self.sync_offer = SyncOffer::Closed;
+        cx.notify();
+    }
+
+    pub(crate) fn reopen_sync_offer(&mut self, cx: &mut Context<Self>) {
+        self.account_open = false;
+        self.sync_postponed = false;
+        self.sync_offer = SyncOffer::Ready;
+        cx.notify();
+    }
+
+    /// Account chats from the registry. Before the offer is answered they
+    /// wait. After it, they are written onto this computer.
+    fn receive_account_sessions(&mut self, device: String, chats: serde_json::Value, cx: &mut Context<Self>) {
+        let seen = self.engine.store.setting(crate::remote::SYNC_OFFER_SEEN).as_deref() == Some("1");
+        let wizard = matches!(
+            self.sync_offer,
+            SyncOffer::Switching { .. } | SyncOffer::Importing { .. } | SyncOffer::Done { .. }
+        );
+        if !seen && !wizard {
+            self.pending_account = Some((device, chats));
+            return;
+        }
+        if self.sync_importing {
+            self.pending_account = Some((device, chats));
+            return;
+        }
+        if let SyncOffer::Switching { bring } = self.sync_offer {
+            self.play_import(device, chats, bring, cx);
+            return;
+        }
+        if let SyncOffer::Done { imported: 0, bring, .. } = self.sync_offer
+            && chats.as_array().is_some_and(|rows| !rows.is_empty())
+        {
+            self.play_import(device, chats, bring, cx);
+            return;
+        }
+        if matches!(self.sync_offer, SyncOffer::Closed | SyncOffer::Done { .. } | SyncOffer::Failed(_)) {
+            let _ = self.import_account_sessions(device, chats, cx);
+        }
+    }
+
+    /// Walk the account list on screen: "Importing session N of M".
+    fn play_import(&mut self, device: String, chats: serde_json::Value, bring: bool, cx: &mut Context<Self>) {
+        let Some(list) = chats.as_array().cloned() else {
+            self.sync_offer = SyncOffer::Done { imported: 0, skipped: 0, bring };
+            cx.notify();
+            return;
+        };
+        let total = list.len();
+        self.sync_importing = true;
+        self.sync_import_gen = self.sync_import_gen.wrapping_add(1);
+        let generation = self.sync_import_gen;
+        self.sync_offer = SyncOffer::Importing { done: 0, total, title: None };
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let mut imported = 0usize;
+            let mut skipped = 0usize;
+            let mut pulls = Vec::new();
+            let mut parents = Vec::new();
+            for (i, chat) in list.into_iter().enumerate() {
+                let title = chat.get("title").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(str::to_owned);
+                let step = this.update(cx, |shell, _cx| {
+                    if shell.sync_import_gen != generation {
+                        return None;
+                    }
+                    shell.sync_offer = SyncOffer::Importing { done: i, total, title: title.clone() };
+                    Some(shell.adopt_account_chat(&device, &chat))
+                });
+                let Ok(Some(adopted)) = step else { return };
+                match adopted.0 {
+                    AdoptKind::Imported => imported += 1,
+                    AdoptKind::Skipped => skipped += 1,
+                    AdoptKind::Ignored => {}
+                }
+                if let Some(id) = adopted.1 {
+                    pulls.push(id);
+                }
+                if let Some(pair) = adopted.2 {
+                    parents.push(pair);
+                }
+                cx.background_executor().timer(Duration::from_millis(30)).await;
+            }
+            let _ = this.update(cx, |shell, cx| {
+                if shell.sync_import_gen != generation {
+                    return;
+                }
+                shell.finish_account_links(&parents, &pulls, cx);
+                shell.sync_importing = false;
+                if imported > 0 || !pulls.is_empty() {
+                    shell.reload(cx);
+                }
+                if let Some((device, chats)) = shell.pending_account.take() {
+                    let more = chats.as_array().is_some_and(|rows| !rows.is_empty());
+                    if imported == 0 && more {
+                        shell.play_import(device, chats, bring, cx);
+                        return;
+                    }
+                    let _ = shell.import_account_sessions(device, chats, cx);
+                }
+                shell.sync_offer = SyncOffer::Done { imported, skipped, bring };
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Sessions already on the Woozlit account. Ones this computer does not
+    /// have yet are recorded locally. Ones that live on another device are
+    /// marked so this computer does not claim them, and their transcript is
+    /// pulled from the chat room.
+    fn import_account_sessions(
+        &mut self,
+        device: String,
+        chats: serde_json::Value,
+        cx: &mut Context<Self>,
+    ) -> (usize, usize) {
+        let Some(list) = chats.as_array() else { return (0, 0) };
+        let mut imported = 0;
+        let mut skipped = 0;
+        let mut pulls = Vec::new();
+        let mut parents = Vec::new();
+        for chat in list {
+            let (kind, pull, parent) = self.adopt_account_chat(&device, chat);
+            match kind {
+                AdoptKind::Imported => imported += 1,
+                AdoptKind::Skipped => skipped += 1,
+                AdoptKind::Ignored => {}
+            }
+            if let Some(id) = pull {
+                pulls.push(id);
+            }
+            if let Some(pair) = parent {
+                parents.push(pair);
+            }
+        }
+        let changed = imported > 0 || !pulls.is_empty();
+        self.finish_account_links(&parents, &pulls, cx);
+        if changed {
+            self.reload(cx);
+        }
+        (imported, skipped)
+    }
+
+    /// One registry chat. `(kind, pull this transcript, link child→parent)`.
+    fn adopt_account_chat(
+        &mut self,
+        device: &str,
+        chat: &serde_json::Value,
+    ) -> (AdoptKind, Option<TaskId>, Option<(TaskId, TaskId)>) {
+        let Some(id) = chat.get("id").and_then(|v| v.as_str()).and_then(TaskId::parse) else {
+            return (AdoptKind::Ignored, None, None);
+        };
+        let store = self.engine.store.clone();
+        let owner = chat.get("deviceId").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let remote_owned = !owner.is_empty() && owner != device;
+        let archived = chat.get("archived").and_then(|v| v.as_bool()).unwrap_or(false);
+        let parent =
+            chat.get("parentChatId").and_then(|v| v.as_str()).and_then(TaskId::parse).map(|parent| (id, parent));
+        if store.task(id).ok().flatten().is_some() {
+            let mut pull = None;
+            if remote_owned {
+                let _ = store.set_setting(&format!("account_device.{id}"), &owner);
+                if !archived && store.read_transcript(id).is_empty() {
+                    pull = Some(id);
+                }
+            }
+            return (AdoptKind::Skipped, pull, parent);
+        }
+        let cwd = chat.get("cwd").and_then(|v| v.as_str()).unwrap_or("");
+        let path = if !cwd.is_empty() && std::path::Path::new(cwd).exists() {
+            std::path::PathBuf::from(cwd)
+        } else {
+            let dir = dove_core::hosts::dove_home().join("account");
+            let _ = std::fs::create_dir_all(&dir);
+            dir
+        };
+        let Ok(project) = store.add_project(&path) else {
+            return (AdoptKind::Ignored, None, None);
+        };
+        let title =
+            chat.get("title").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or("Session").to_string();
+        let task = Task {
+            id,
+            project_id: project.id,
+            title,
+            harness: harness_from_account(chat.get("harness").and_then(|v| v.as_str())),
+            model: None,
+            status: if archived { TaskStatus::Archived } else { TaskStatus::Idle },
+            worktree: None,
+            branch: chat.get("branch").and_then(|v| v.as_str()).map(str::to_owned),
+            native_session_id: None,
+            base: None,
+            pinned: false,
+            updated_at: dove_core::store::now_ms(),
+            prompt: chat.get("preview").and_then(|v| v.as_str()).map(str::to_owned),
+            unread: !archived && remote_owned,
+            automation: None,
+        };
+        if store.insert_task(&task).is_err() {
+            return (AdoptKind::Ignored, None, None);
+        }
+        let pull = if remote_owned {
+            let _ = store.set_setting(&format!("account_device.{id}"), &owner);
+            (!archived).then_some(id)
+        } else {
+            None
+        };
+        (AdoptKind::Imported, pull, parent)
+    }
+
+    fn finish_account_links(&mut self, parents: &[(TaskId, TaskId)], pulls: &[TaskId], cx: &mut Context<Self>) {
+        let store = self.engine.store.clone();
+        for (child, parent) in parents {
+            if store.task(*parent).ok().flatten().is_some() {
+                let _ = store.link_task(*child, *parent, dove_core::store::LinkKind::Delegate, false);
+            }
+        }
+        if pulls.is_empty() {
+            return;
+        }
+        if let Some(remote) = crate::remote::Remote::global(cx) {
+            remote.update(cx, |r, _| {
+                for id in pulls {
+                    let events = store.read_transcript(*id);
+                    let flat = events.is_empty()
+                        || !events.iter().any(|event| {
+                            matches!(
+                                event,
+                                dove_core::proto::AgentEvent::ThinkingDelta { .. }
+                                    | dove_core::proto::AgentEvent::ToolCall { .. }
+                            )
+                        });
+                    if flat {
+                        r.pull_chat(&id.to_string());
+                    }
+                }
+            });
+        }
+    }
+
+    /// Write an account transcript that this computer does not have yet, then
+    /// show it if that session is already open.
+    fn adopt_account_transcript(&mut self, task: TaskId, messages: serde_json::Value, cx: &mut Context<Self>) {
+        let Some(list) = messages.as_array().cloned() else { return };
+        if list.is_empty() {
+            return;
+        }
+        let local = self.engine.store.read_transcript(task);
+        let local_flat = !local.iter().any(|event| {
+            matches!(event, dove_core::proto::AgentEvent::ThinkingDelta { .. } | dove_core::proto::AgentEvent::ToolCall { .. })
+        });
+        if !local.is_empty() && !(local_flat && synced_has_structure(&list)) {
+            return;
+        }
+        let store = self.engine.store.clone();
+        cx.spawn(async move |this, cx| {
+            let wrote = cx
+                .background_spawn(async move {
+                    use std::io::Write;
+                    let path = store.transcript_path(task);
+                    if let Some(dir) = path.parent() {
+                        std::fs::create_dir_all(dir).ok()?;
+                    }
+                    let mut file = std::fs::File::create(&path).ok()?;
+                    let mut any = false;
+                    for message in &list {
+                        for event in events_from_synced(message) {
+                            serde_json::to_writer(&mut file, &event).ok()?;
+                            file.write_all(b"\n").ok()?;
+                            any = true;
+                        }
+                    }
+                    file.flush().ok()?;
+                    any.then_some(())
+                })
+                .await;
+            if wrote.is_none() {
+                return;
+            }
+            let _ = this.update(cx, |shell, cx| {
+                if let Some(view) = shell.threads.get(&task) {
+                    view.update(cx, |thread, cx| {
+                        thread.chat.update(cx, |chat, cx| chat.reload_saved(cx));
+                    });
+                }
+            });
+        })
+        .detach();
     }
 
     /// Whether thread `id`'s view must stay: its tab is open, it is the
@@ -1556,10 +2127,44 @@ impl Shell {
     // ------------------------------------------------------------ actions
 
     pub(crate) fn start(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
-        let (project, run, harness, persona) = {
+        let (project, run, harness, persona, cloud) = {
             let c = self.composer.read(cx);
-            (c.project.clone(), c.run_settings(cx), c.harness(cx), c.persona.clone())
+            (c.project.clone(), c.run_settings(cx), c.harness(cx), c.persona.clone(), c.cloud)
         };
+        if cloud {
+            let Some(project) = project.or_else(|| self.home_project.and_then(|id| self.project(id)).cloned()) else {
+                self.error = Some("Add a project first.".into());
+                cx.notify();
+                return;
+            };
+            let new = NewTask {
+                title: ui::title_from_prompt(&text),
+                prompt: text.clone(),
+                harness,
+                run,
+                join: self.join.as_ref().map(|(_, j)| j.clone()),
+                persona,
+            };
+            match self.engine.create_thread(&project, new) {
+                Ok((task, _)) => {
+                    let id = task.id;
+                    let _ = self.engine.store.set_setting(&format!("cloud_state.{id}"), "starting");
+                    let _ = self.engine.store.set_prompt(id, &text);
+                    self.error = None;
+                    self.join = None;
+                    self.tasks.insert(0, task.clone());
+                    self.make_thread(task, project, None, window, cx);
+                    self.navigate(Route::Thread(id), window, cx);
+                    Toasts::push(cx, cloud_notice("starting"), None, Tone::Info, Some(id));
+                }
+                Err(e) => {
+                    crate::composer::set_text(&self.composer, &text, window, cx);
+                    self.error = Some(format!("{e:#}").into());
+                }
+            }
+            cx.notify();
+            return;
+        }
         let Some(project) = project.or_else(|| self.home_project.and_then(|id| self.project(id)).cloned()) else {
             self.error = Some("Add a project first.".into());
             cx.notify();
@@ -2498,14 +3103,28 @@ impl Shell {
         let switch = in_thread
             .then(|| self.active_thread().cloned().map(|v| v.update(cx, |v, cx| v.view_switch(&t, cx))))
             .flatten();
+        let dock_left = self.panel_left();
+        let takeover = panel_open && self.panel.read(cx).expanded;
+        let strip = panel_open.then(|| {
+            let w = if takeover {
+                (f32::from(window.viewport_size().width) - if side { self.sidebar_w } else { 0.0 }).max(1.0)
+            } else {
+                self.panel_w
+            };
+            div()
+                .w(px(w))
+                .h_full()
+                .flex_none()
+                .child(self.panel.update(cx, |panel, cx| panel.render_strip(cx)))
+        });
         let right_tools = div()
             .flex()
             .flex_none()
             .items_center()
             .gap(px(4.0))
             .pl(px(8.0))
-            .pr(px(ui::caption_reserve() + 8.0))
-            .when(in_thread, |d| {
+            .when(!panel_open, |d| d.pr(px(ui::caption_reserve() + 8.0)))
+            .when(in_thread && !takeover, |d| {
                 d.child(
                     div()
                         .h(px(28.0))
@@ -2513,9 +3132,17 @@ impl Shell {
                         .items_center()
                         .gap(px(2.0))
                         .when_some(self.render_pr_button(&t, cx), |d, b| d.child(b))
-                        .child(self.render_info_button(cx))
-                        .child(self.render_dock_tabs(panel_open, &t, cx)),
+                        .child(self.render_info_button(cx)),
                 )
+            })
+            .when(in_thread && !panel_open, |d| {
+                let color = crate::motion::hover_blend("tb-panel", t.text_muted, t.text);
+                d.child(quiet_bar_button(
+                    "tb-panel",
+                    "Side panel (Ctrl+\\)",
+                    ui::sidebar_glyph(0.0, true, 16.0, color),
+                    cx.listener(|this, _, _, cx| this.toggle_panel(cx)),
+                ))
             })
             // Flock keeps only the panel toggle: no thread info to show.
             .when(flock && !panel_open, |d| {
@@ -2548,8 +3175,8 @@ impl Shell {
             .flex()
             .items_center()
             .when(!side && !home_art && !thread_art, |d| d.bg(t.bg))
-            .child(cluster)
-            .child(surface);
+            .child(cluster);
+        let bar = if dock_left { bar.children(strip).child(surface) } else { bar.child(surface).children(strip) };
         let bar = self.drag_region("titlebar", bar, cx);
         div().relative().flex_none().child(bar).into_any_element()
     }
@@ -2866,6 +3493,7 @@ impl Shell {
     /// The dock tabs on the bar: the main ones as buttons, the rest in a ⋯
     /// menu. A button opens the dock on that tab, or closes the dock when
     /// that tab is already what it shows.
+    #[allow(dead_code)]
     fn render_dock_tabs(&mut self, panel_open: bool, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         use crate::shell_menu::{Item, act};
         const MAIN: [Tab; 4] = [Tab::Terminal, Tab::Changes, Tab::Browser, Tab::Files];
@@ -2966,6 +3594,332 @@ impl Shell {
                 }),
             ))
             .into_any_element()
+    }
+
+    /// Local sessions this computer would upload. Another device's sessions,
+    /// and threads held back by "Start fresh", do not count.
+    fn local_sessions_to_bring(&self) -> usize {
+        let counts = |tasks: &[Task]| {
+            tasks
+                .iter()
+                .filter(|task| {
+                    self.engine.store.setting(&format!("account_device.{}", task.id)).is_none()
+                        && self.engine.store.setting(&format!("account_held.{}", task.id)).as_deref() != Some("1")
+                })
+                .count()
+        };
+        counts(&self.tasks) + counts(&self.archived)
+    }
+
+    pub(crate) fn account_detail(&self, cx: &gpui::App) -> String {
+        let Some(remote) = crate::remote::Remote::global(cx) else {
+            return "Local".into();
+        };
+        let status = &remote.read(cx).status;
+        if !status.signed_in {
+            return "Local".into();
+        }
+        if self.sync_postponed || matches!(self.sync_offer, SyncOffer::Ready) {
+            return "Sync is ready".into();
+        }
+        status.email.clone().unwrap_or_else(|| "Signed in".into())
+    }
+
+    /// Zeron's post-login wizard: bring this computer's sessions up, or
+    /// start from the account's sessions only.
+    fn render_sync_offer(&mut self, t: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if matches!(self.sync_offer, SyncOffer::Closed) {
+            return None;
+        }
+        let email = crate::remote::Remote::global(cx)
+            .and_then(|remote| remote.read(cx).status.email.clone())
+            .map(|email| format!("Signed in as {email}"))
+            .unwrap_or_else(|| "You're signed in".into());
+        let phrase = local_work_phrase(self.local_sessions_to_bring());
+        let (title, subtitle): (SharedString, SharedString) = match &self.sync_offer {
+            SyncOffer::Ready => (
+                "Sync is ready".into(),
+                match &phrase {
+                    Some(phrase) => {
+                        format!("Bring {phrase} from this device into your synced workspace, or start it fresh.").into()
+                    }
+                    None => "Keplorayx can switch to your synced workspace now.".into(),
+                },
+            ),
+            SyncOffer::Switching { bring } => (
+                "Setting up sync".into(),
+                if *bring {
+                    "Handing the engine over to your account. Your local sessions come along next.".into()
+                } else {
+                    "Handing the engine over to your account.".into()
+                },
+            ),
+            SyncOffer::Importing { done, total, .. } => {
+                let label: SharedString = if *total == 0 {
+                    "Looking for local sessions…".into()
+                } else {
+                    format!("Importing session {} of {total}", (*done + 1).min(*total)).into()
+                };
+                ("Bringing your work over".into(), label)
+            }
+            SyncOffer::Done { imported, skipped, bring } => {
+                let subtitle = match (*bring, *imported, *skipped) {
+                    (_, 0, 0) => "Your synced workspace is ready.".into(),
+                    (true, n, 0) => format!(
+                        "{n} session{} from your account {} on this computer. This computer's sessions went up with them.",
+                        if n == 1 { "" } else { "s" },
+                        if n == 1 { "is" } else { "are" },
+                    ),
+                    (false, n, 0) => format!(
+                        "{n} session{} from your account {} on this computer.",
+                        if n == 1 { "" } else { "s" },
+                        if n == 1 { "is" } else { "are" },
+                    ),
+                    (_, n, s) => {
+                        format!("{n} session{} imported, {s} already present.", if n == 1 { "" } else { "s" },)
+                    }
+                };
+                ("Your work is synced".into(), subtitle.into())
+            }
+            SyncOffer::Failed(_) => (
+                "Import didn't finish".into(),
+                "Anything already imported is kept; retrying only copies what's missing.".into(),
+            ),
+            SyncOffer::Closed => return None,
+        };
+        let ghost = |id, label: &'static str, click: fn(&mut Shell, &mut Context<Shell>)| {
+            div()
+                .id(id)
+                .px(px(14.0))
+                .py(px(8.0))
+                .rounded(px(radius::ROW))
+                .bg(t.wash(0.08))
+                .cursor_pointer()
+                .child(label)
+                .on_click(cx.listener(move |this, _, _, cx| click(this, cx)))
+        };
+        let primary = |id, label: &'static str, click: fn(&mut Shell, &mut Context<Shell>)| {
+            div()
+                .id(id)
+                .px(px(14.0))
+                .py(px(8.0))
+                .rounded(px(radius::ROW))
+                .bg(t.accent)
+                .text_color(t.surface)
+                .cursor_pointer()
+                .child(label)
+                .on_click(cx.listener(move |this, _, _, cx| click(this, cx)))
+        };
+        let bring = |this: &mut Shell, cx: &mut Context<Shell>| this.choose_sync(true, cx);
+        let fresh = |this: &mut Shell, cx: &mut Context<Shell>| this.choose_sync(false, cx);
+        let later = |this: &mut Shell, cx: &mut Context<Shell>| this.postpone_sync(cx);
+        let done = |this: &mut Shell, cx: &mut Context<Shell>| {
+            this.sync_offer = SyncOffer::Closed;
+            cx.notify();
+        };
+        let retry = |this: &mut Shell, cx: &mut Context<Shell>| {
+            this.sync_offer = SyncOffer::Ready;
+            cx.notify();
+        };
+        let actions = match &self.sync_offer {
+            SyncOffer::Ready if phrase.is_some() => div()
+                .flex()
+                .gap(px(8.0))
+                .justify_end()
+                .child(ghost("sync-switch-later", "Later", later))
+                .child(ghost("sync-switch-fresh", "Start fresh", fresh))
+                .child(primary("sync-switch-import", "Bring my work", bring)),
+            SyncOffer::Ready => div()
+                .flex()
+                .gap(px(8.0))
+                .justify_end()
+                .child(ghost("sync-switch-later", "Later", later))
+                .child(primary("sync-switch-now", "Switch now", fresh)),
+            SyncOffer::Done { .. } => div().flex().justify_end().child(primary("sync-switch-done", "Continue", done)),
+            SyncOffer::Failed(_) => div()
+                .flex()
+                .gap(px(8.0))
+                .justify_end()
+                .child(ghost("import-failed-dismiss", "Later", later))
+                .child(primary("import-failed-retry", "Try again", retry)),
+            _ => div(),
+        };
+        let fraction = match &self.sync_offer {
+            SyncOffer::Importing { done, total, .. } if *total > 0 => (*done as f32 / *total as f32).clamp(0.04, 1.0),
+            SyncOffer::Importing { .. } => 0.04,
+            _ => 0.0,
+        };
+        let current = match &self.sync_offer {
+            SyncOffer::Importing { title, .. } => title.clone(),
+            _ => None,
+        };
+        let error = match &self.sync_offer {
+            SyncOffer::Failed(message) => Some(message.clone()),
+            _ => None,
+        };
+        Some(
+            div()
+                .absolute()
+                .size_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(t.wash(0.45))
+                .child(
+                    div()
+                        .w(px(460.0))
+                        .p(px(20.0))
+                        .flex()
+                        .flex_col()
+                        .gap(px(12.0))
+                        .rounded(px(radius::CARD))
+                        .bg(t.surface)
+                        .border_1()
+                        .border_color(t.border)
+                        .shadow_lg()
+                        .child(div().text_size(ty::TITLE).child(title))
+                        .child(div().text_size(ty::BODY).text_color(t.text_muted).child(subtitle))
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(8.0))
+                                .text_size(ty::SMALL)
+                                .text_color(t.text)
+                                .child(icon(icons::QUEUE_CHECK).size(px(14.0)).text_color(t.accent))
+                                .child(email),
+                        )
+                        .when(fraction > 0.0, |card| {
+                            card.child(
+                                div()
+                                    .h(px(4.0))
+                                    .w_full()
+                                    .rounded(px(2.0))
+                                    .bg(t.wash(0.12))
+                                    .child(div().h_full().rounded(px(2.0)).bg(t.accent).w(relative(fraction))),
+                            )
+                        })
+                        .when_some(current, |card, current| {
+                            card.child(div().text_size(ty::SMALL).text_color(t.text_muted).child(current))
+                        })
+                        .when_some(error, |card, error| {
+                            card.child(div().text_size(ty::SMALL).text_color(t.danger).child(error))
+                        })
+                        .child(actions),
+                )
+                .into_any_element(),
+        )
+    }
+
+    /// Shown once, and only when no Woozlit session is stored. Use locally
+    /// stays on this computer. Log in is what a phone or another computer needs.
+    fn render_first_run(&self, t: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let home = dove_core::hosts::dove_home();
+        let signed_in = home.join("mesh").join("account.json").is_file()
+            || home.join("account.json").is_file()
+            || home.join("session.json").is_file();
+        if signed_in || self.engine.store.setting("first_run_seen").as_deref() == Some("1") {
+            return None;
+        }
+        let stay = div()
+            .id("first-run-local")
+            .px(px(14.0))
+            .py(px(8.0))
+            .rounded(px(radius::ROW))
+            .bg(t.wash(0.08))
+            .cursor_pointer()
+            .child("Use locally")
+            .on_click(cx.listener(|this, _, _, cx| {
+                let _ = this.engine.store.set_setting("first_run_seen", "1");
+                cx.notify();
+            }));
+        let login = div()
+            .id("first-run-login")
+            .px(px(14.0))
+            .py(px(8.0))
+            .rounded(px(radius::ROW))
+            .bg(t.accent)
+            .text_color(t.surface)
+            .cursor_pointer()
+            .child("Log in")
+            .on_click(cx.listener(|this, _, window, cx| {
+                let _ = this.engine.store.set_setting("first_run_seen", "1");
+                this.navigate(Route::Settings, window, cx);
+                this.settings.update(cx, |s, cx| s.show_section("remote", cx));
+                if let Some(remote) = crate::remote::Remote::global(cx) {
+                    remote.update(cx, |r, cx| r.sign_in(cx));
+                }
+                cx.notify();
+            }));
+        Some(
+            div()
+                .absolute()
+                .size_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(t.wash(0.45))
+                .child(
+                    div()
+                        .w(px(420.0))
+                        .p(px(20.0))
+                        .flex()
+                        .flex_col()
+                        .gap(px(12.0))
+                        .rounded(px(radius::CARD))
+                        .bg(t.surface)
+                        .border_1()
+                        .border_color(t.border)
+                        .shadow_lg()
+                        .child(div().text_size(ty::TITLE).child("Keplorayx"))
+                        .child(div().text_size(ty::BODY).text_color(t.text_muted).child(
+                            "Use this computer only, or log in with Woozlit so a phone and other devices can connect.",
+                        ))
+                        .child(div().flex().gap(px(8.0)).justify_end().child(stay).child(login)),
+                )
+                .into_any_element(),
+        )
+    }
+
+    /// The sidebar hover card: the full name, harness, folder, branch, and
+    /// worktree. It appears only after the pointer has rested on that row.
+    fn render_session_hover(&self, t: &Theme, _cx: &mut Context<Self>) -> Option<AnyElement> {
+        let id = self.hover_ready?;
+        if self.hover_task != Some(id) {
+            return None;
+        }
+        let task = self.tasks.iter().find(|task| task.id == id)?;
+        let project = self.project(task.project_id);
+        let folder = project.map(|p| p.path.display().to_string()).unwrap_or_default();
+        let branch = task.branch.clone().unwrap_or_else(|| "No branch".into());
+        let worktree = task.worktree.as_ref().map(|p| p.display().to_string());
+        let pr = self.pr_links.get(&id).cloned();
+        Some(
+            deferred(
+                div()
+                    .absolute()
+                    .left(px(self.sidebar_w + 8.0))
+                    .top(px(Theme::TITLEBAR_HEIGHT + 48.0))
+                    .w(px(284.0))
+                    .p(px(12.0))
+                    .flex()
+                    .flex_col()
+                    .gap(px(6.0))
+                    .rounded(px(radius::CARD))
+                    .bg(t.surface)
+                    .border_1()
+                    .border_color(t.border)
+                    .shadow_md()
+                    .text_size(ty::SMALL)
+                    .child(div().text_size(ty::BODY).child(task.title.clone()))
+                    .child(div().text_color(t.text_muted).child(task.harness.label()))
+                    .child(div().text_color(t.text_faint).child(folder))
+                    .child(div().text_color(t.text_faint).child(branch))
+                    .when_some(worktree, |d, w| d.child(div().text_color(t.text_faint).child(w)))
+                    .when_some(pr, |d, url| d.child(div().text_color(t.accent).child(url))),
+            )
+            .into_any_element(),
+        )
     }
 
     fn render_info_card(&self, task: &Task, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
@@ -3499,7 +4453,9 @@ impl Shell {
                 path: path.clone().into(),
                 variant,
                 target,
-                play: moving && playback == "always",
+                // Moving wallpaper plays on Home only. A chat keeps the still
+                // frame so a video does not decode while the window sits idle.
+                play: false,
                 fade: false,
                 composer: None,
                 opacity: 1.0,
@@ -4228,6 +5184,9 @@ impl Render for Shell {
             .children(palette)
             // A page's confirmation (Threads, Archived, Kanban, Automations,
             // Team): drawn here so it stays modal whichever route is showing.
+            .children(self.render_first_run(&t, cx))
+            .children(self.render_sync_offer(&t, cx))
+            .children(self.render_session_hover(&t, cx))
             .children(self.render_page_dialog(window, cx))
             .children(self.render_race_sheet(window, cx))
             // An agent's sign-in or update terminal, over any page.
@@ -4413,5 +5372,21 @@ mod tests {
     fn closed_columns_stay_closed() {
         assert_eq!(panel_fit(2000.0, 264.0, (false, 0), (false, 0), false), (false, false));
         assert_eq!(panel_fit(200.0, 264.0, (true, 0), (true, 0), false), (false, false));
+    }
+
+    #[test]
+    fn sync_offer_follows_sign_in_not_first_run() {
+        assert!(!sync_offer_due(false, true, false, false));
+        assert!(!sync_offer_due(true, false, false, false));
+        assert!(sync_offer_due(true, true, false, false));
+        assert!(!sync_offer_due(true, true, true, false));
+        assert!(!sync_offer_due(true, true, false, true));
+    }
+
+    #[test]
+    fn work_phrase_matches_the_offer_copy() {
+        assert_eq!(local_work_phrase(0), None);
+        assert_eq!(local_work_phrase(1).as_deref(), Some("the 1 session"));
+        assert_eq!(local_work_phrase(3).as_deref(), Some("the 3 sessions"));
     }
 }

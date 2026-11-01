@@ -21,6 +21,7 @@ use dove_store::{Automation, Project, Store, Task};
 use parking_lot::RwLock;
 
 pub mod attention;
+pub mod cloud_session;
 pub mod automation;
 pub mod digest;
 pub mod memory;
@@ -35,6 +36,7 @@ pub use dove_git as git;
 pub use dove_harness::Command;
 pub use dove_harness::detect as harness_detect;
 pub use dove_harness::host;
+pub use dove_harness::github_app;
 pub use dove_harness::hosts;
 pub use dove_harness::is_supported as harness_supported;
 pub use dove_harness::models;

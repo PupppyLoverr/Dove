@@ -56,6 +56,10 @@ pub struct Settings {
     /// Expose the driver's own tools (`computer__*`) instead of the one
     /// `computer` tool, for debugging the driver itself.
     pub raw_tools: bool,
+    /// `cua` (default) or `agent-desktop`.
+    pub backend: String,
+    /// SHA-256 of the agent-desktop binary in the plugins folder.
+    pub agent_desktop_sha256: String,
 }
 
 impl Default for Settings {
@@ -67,6 +71,8 @@ impl Default for Settings {
             denied_apps: Vec::new(),
             approvals: "ask".into(),
             raw_tools: false,
+            backend: "cua".into(),
+            agent_desktop_sha256: String::new(),
         }
     }
 }

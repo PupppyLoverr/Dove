@@ -117,9 +117,13 @@ nucleo-matcher = "0.3"
 # Distribution profile (scripts/package-linux.sh): thin LTO buys most of fat
 # LTO's size/speed win at a fraction of the link time; strip debug symbols.
 # One codegen unit lets LLVM optimize across the whole crate graph.
+# Size-first: the Windows package is dove.exe plus this host, and that
+# folder has to stay under the 110 MB gate.
 lto = "thin"
 codegen-units = 1
 strip = "symbols"
+opt-level = "z"
+panic = "abort"
 
 [profile.fastrel]
 # Release-quality test build without the thin-LTO link time. Same opt-level

@@ -383,6 +383,22 @@ impl IntegrationsView {
             t,
         ));
 
+        let desktop = self.config.computer.backend == "agent-desktop";
+        let (d_left, d_switch) = toggle(desktop, None, "int-cu-desktop", t);
+        card = card.child(line(
+            "Agent-desktop",
+            if desktop {
+                "Native apps go through agent-desktop when that plugin is present and its hash matches. cua-driver stays the fallback. The browser and Cua Spaces are unchanged."
+            } else {
+                "Off. Computer use stays on cua-driver."
+            },
+            d_left.child(ctl::on_toggle(d_switch, cx, move |this, _, cx| {
+                this.config.computer.backend = if desktop { "cua".into() } else { "agent-desktop".into() };
+                this.persist(cx);
+            })),
+            t,
+        ));
+
         // Raw driver tools, for debugging the driver itself.
         let raw = self.config.computer.raw_tools;
         let (w_left, w_switch) = toggle(raw, None, "int-cu-raw", t);

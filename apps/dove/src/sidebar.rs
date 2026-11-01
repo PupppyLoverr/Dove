@@ -504,7 +504,7 @@ impl Shell {
                                 .items_center()
                                 .gap(px(5.0))
                                 .child(div().font_weight(gpui::FontWeight::MEDIUM).text_color(t.text).child(host))
-                                .child(div().text_color(t.text_faint).child("· Local"))
+                                .child(div().text_color(t.text_faint).child(format!("· {}", self.account_detail(cx))))
                                 .child(icon(icons::ALT_ARROW_DOWN).size(px(12.0)).text_color(t.text_faint)),
                         ),
                     )
@@ -712,7 +712,17 @@ impl Shell {
     fn render_account_menu(&self, exit: Option<f32>, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         use crate::shell_menu::{Item, act};
         let usage = format!("Today {}", ui::usage_line(&self.today));
-        let items = vec![
+        let mut items = Vec::new();
+        if self.sync_postponed {
+            items.push(Item::row(
+                "acc-sync",
+                Some(icons::CLOUD),
+                "Sync is ready",
+                act(|this, _, cx| this.reopen_sync_offer(cx)),
+            ));
+            items.push(Item::Separator);
+        }
+        items.extend([
             Item::row(
                 "acc-usage",
                 Some(icons::CLOCK_CIRCLE),
@@ -745,7 +755,7 @@ impl Shell {
                 "Help & shortcuts",
                 act(|this, window, cx| this.navigate(Route::Help, window, cx)),
             ),
-        ];
+        ]);
         let live = exit.is_none();
         let body = self.menu_list(items, 230.0, live, t, cx);
         let card = self.menu_surface(t, body, exit);
@@ -926,6 +936,7 @@ impl Shell {
         task: &Task,
         compact: bool,
         fold: Option<(bool, usize)>,
+        nest: bool,
         t: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -942,15 +953,19 @@ impl Shell {
         // Claude's rows: the title only. A thread that needs a look says so in
         // a coloured word; quiet rows show nothing there (the agent, project
         // and age are the tooltip).
-        let corner = match task.status {
-            TaskStatus::NeedsInput => Some(("Waiting", t.warning)),
-            TaskStatus::Failed => Some(("Failed", t.danger)),
-            TaskStatus::Running => Some(("Running", t.busy)),
-            _ => None,
-        }
-        .map_or_else(div, |(word, tint)| {
-            div().text_size(ty::CAPTION).font_weight(gpui::FontWeight::MEDIUM).text_color(tint).child(word)
-        });
+        let corner: AnyElement = match task.status {
+            TaskStatus::NeedsInput => div()
+                .text_size(ty::CAPTION)
+                .font_weight(gpui::FontWeight::MEDIUM)
+                .text_color(t.warning)
+                .child("Waiting")
+                .into_any_element(),
+            TaskStatus::Failed => div().size(px(6.0)).rounded_full().bg(t.danger).into_any_element(),
+            TaskStatus::Running => {
+                kit::spinner(SharedString::from(format!("row-spin-{id}")), 12.0, t.busy).into_any_element()
+            }
+            _ => div().into_any_element(),
+        };
         // Hover reveals "···": the same menu as a right-click (rename, pin,
         // archive, move, delete), so the row itself stays clean.
         let more_group = SharedString::from(format!("row-more-{id}"));
@@ -1031,10 +1046,11 @@ impl Shell {
             // thread gets a small accent dot in the margin.
             .child(
                 div()
-                    .w(px(6.0))
+                    .w(px(if nest { 16.0 } else { 6.0 }))
                     .flex_none()
                     .flex()
                     .justify_center()
+                    .when(nest, |d| d.child(icon(icons::CHAT_ROUND_LINE).size(px(12.0)).text_color(t.text_faint)))
                     .when(task.unread && !selected, |d| d.child(div().size(px(6.0)).rounded_full().bg(t.accent))),
             )
             .when_some(self.persona_for(id), |d, p| d.child(crate::team::avatar(p, 16.0, t)))
@@ -1126,6 +1142,28 @@ impl Shell {
                     cx.new(|_| d.clone())
                 })
             })
+            .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                if *hovered {
+                    this.hover_task = Some(id);
+                    let ready = this.hover_ready;
+                    cx.spawn(async move |this, cx| {
+                        if ready.is_none() {
+                            cx.background_executor().timer(std::time::Duration::from_millis(550)).await;
+                        }
+                        let _ = this.update(cx, |this, cx| {
+                            if this.hover_task == Some(id) {
+                                this.hover_ready = Some(id);
+                                cx.notify();
+                            }
+                        });
+                    })
+                    .detach();
+                } else if this.hover_task == Some(id) {
+                    this.hover_task = None;
+                    this.hover_ready = None;
+                    cx.notify();
+                }
+            }))
             .on_click(cx.listener(move |this, e: &gpui::ClickEvent, window, cx| {
                 if e.click_count() == 2 {
                     this.begin_rename(id, window, cx);
@@ -1196,7 +1234,7 @@ impl Shell {
                     }) || subs.iter().any(|s| s.running)
                 }
             };
-        let row = self.render_row(task, compact, (count > 0).then_some((open, count)), t, cx);
+        let row = self.render_row(task, compact, (count > 0).then_some((open, count)), depth > 0, t, cx);
         let mut out = vec![div().pl(px(14.0 * depth as f32)).child(row).into_any_element()];
         if open {
             for c in &children {

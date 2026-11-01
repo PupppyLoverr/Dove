@@ -11,6 +11,7 @@ pub mod catalog;
 pub mod detect;
 mod external;
 pub mod host;
+pub mod github_app;
 pub mod hosts;
 pub use external::defers_prompt;
 pub mod models;

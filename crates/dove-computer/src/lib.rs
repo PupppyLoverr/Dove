@@ -9,6 +9,7 @@
 //! batched `run` steps, on-device grounding (`act`, NEXI-CUA-1), OCR rows
 //! for sparse trees, signed-identity app rules and replays.
 
+pub mod agent_desktop;
 pub mod capture;
 pub mod computer;
 pub mod cua;

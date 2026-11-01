@@ -20,6 +20,8 @@ use gpui::{App, AppContext as _, Context, Entity, EventEmitter, Global};
 use serde_json::{Value, json};
 
 const ENABLED_KEY: &str = "remote_enabled";
+pub(crate) const SYNC_OFFER_SEEN: &str = "sync_offer_seen";
+pub(crate) const SYNC_CLAIM: &str = "sync_claim";
 const REPUBLISH_EVERY: Duration = Duration::from_millis(600);
 /// Sessions whose history is published on connect (newest first).
 const HISTORY_SESSIONS: usize = 40;
@@ -43,7 +45,21 @@ pub enum RemoteCommand {
 
 #[derive(Debug, Clone)]
 pub enum RemoteEvent {
-    Command { task: TaskId, id: String, command: RemoteCommand },
+    Command {
+        task: TaskId,
+        id: String,
+        command: RemoteCommand,
+    },
+    /// Chats already on the account, from the edge registry.
+    AccountSessions {
+        device: String,
+        chats: Value,
+    },
+    /// Messages for one of those chats, from its room.
+    AccountTranscript {
+        task: TaskId,
+        messages: Value,
+    },
     Changed,
 }
 
@@ -63,21 +79,60 @@ impl EventEmitter<RemoteEvent> for Remote {}
 struct RemoteGlobal(Entity<Remote>);
 impl Global for RemoteGlobal {}
 
+/// The raw host error names every protocol command. The screen should not.
+fn friendly_host_error(message: &str) -> String {
+    if message.contains("unknown variant") || message.contains("list_sessions") {
+        "Restart Keplorayx so the sync helper can read your account.".into()
+    } else if message.chars().count() > 180 {
+        message.chars().take(180).collect()
+    } else {
+        message.to_string()
+    }
+}
+
 fn host_binary() -> Option<PathBuf> {
     if let Some(p) = std::env::var_os("DOVE_MESH_HOST").map(PathBuf::from).filter(|p| p.exists()) {
         return Some(p);
     }
     let name = if cfg!(windows) { "dove-mesh-host.exe" } else { "dove-mesh-host" };
-    let exe = std::env::current_exe().ok()?;
-    let dir = exe.parent()?;
-    let mut candidates = vec![dir.join(name), dir.join("../Resources").join(name)];
-    // Dev checkout: target/<profile>/dove → mesh/target/<profile>/dove-mesh-host.
-    for ancestor in dir.ancestors().take(4) {
-        for profile in ["release", "debug"] {
-            candidates.push(ancestor.join("mesh/target").join(profile).join(name));
+    let mut candidates = Vec::new();
+    // Dev checkout compiled from apps/dove. The mesh host is a separate
+    // workspace, so it is not next to dove.exe when CARGO_TARGET_DIR points
+    // outside the repo (the warm target dir).
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    if let Some(repo) = manifest.parent().and_then(|p| p.parent()) {
+        for profile in ["debug", "release"] {
+            candidates.push(repo.join("mesh").join("target").join(profile).join(name));
         }
     }
-    candidates.into_iter().find(|p| p.exists())
+    if let Some(dir) = std::env::current_exe().ok().and_then(|exe| exe.parent().map(|d| d.to_path_buf())) {
+        // Same target directory (mesh built with the same CARGO_TARGET_DIR).
+        candidates.push(dir.join(name));
+        candidates.push(dir.join("../Resources").join(name));
+        for ancestor in dir.ancestors().take(12) {
+            for profile in ["debug", "release"] {
+                candidates.push(ancestor.join("mesh").join("target").join(profile).join(name));
+            }
+        }
+    }
+    // The checkout's mesh/target copy can be older than the one built beside
+    // dove.exe. The newest file is the one that understands list_sessions.
+    candidates.into_iter().filter(|p| p.is_file()).max_by_key(|p| p.metadata().and_then(|m| m.modified()).ok())
+}
+
+/// Whether this computer may upload `task`. Undecided (the offer is still
+/// open) uploads nothing. "Start fresh" keeps the threads that already
+/// lived here (`held`). A session owned by another device is never claimed.
+pub(crate) fn may_publish_session(claim: Option<&str>, held: bool, owner: Option<&str>, mine: &str) -> bool {
+    if held {
+        return false;
+    }
+    if let Some(owner) = owner.map(str::trim).filter(|s| !s.is_empty())
+        && (mine.is_empty() || owner != mine)
+    {
+        return false;
+    }
+    matches!(claim, Some("bring") | Some("fresh"))
 }
 
 impl Remote {
@@ -202,10 +257,70 @@ impl Remote {
         if self.child.is_none() {
             self.set_enabled(true, cx);
         }
+        if self.child.is_none() {
+            self.status.signing_in = false;
+            cx.notify();
+            return;
+        }
         self.status.signing_in = true;
         self.status.error = None;
         self.send(json!({ "op": "sign_in" }));
         cx.notify();
+    }
+
+    pub fn offer_seen(&self) -> bool {
+        self.engine.store.setting(SYNC_OFFER_SEEN).as_deref() == Some("1")
+    }
+
+    /// Publish this computer's sessions, then ask for the account's list.
+    pub fn bring_work(&mut self) {
+        let _ = self.engine.store.set_setting(SYNC_CLAIM, "bring");
+        let _ = self.engine.store.set_setting(SYNC_OFFER_SEEN, "1");
+        self.publish_all();
+        self.request_sessions();
+    }
+
+    /// Pull the account's sessions. Threads already on this computer stay
+    /// here and are not uploaded.
+    pub fn start_fresh(&mut self) {
+        self.hold_existing();
+        let _ = self.engine.store.set_setting(SYNC_CLAIM, "fresh");
+        let _ = self.engine.store.set_setting(SYNC_OFFER_SEEN, "1");
+        self.request_sessions();
+    }
+
+    /// Ask the host to send the registry's chats again.
+    pub fn request_sessions(&self) {
+        self.send(json!({ "op": "list_sessions" }));
+    }
+
+    fn hold_existing(&self) {
+        let Ok(projects) = self.engine.store.projects() else { return };
+        for project in projects {
+            for task in self.engine.store.tasks(project.id).unwrap_or_default() {
+                self.hold_task(task.id);
+            }
+        }
+        for task in self.engine.store.archived_tasks(10_000).unwrap_or_default() {
+            self.hold_task(task.id);
+        }
+    }
+
+    fn hold_task(&self, id: TaskId) {
+        let owner = format!("account_device.{id}");
+        if self.engine.store.setting(&owner).is_some() {
+            return;
+        }
+        let _ = self.engine.store.set_setting(&format!("account_held.{id}"), "1");
+    }
+
+    fn publishes(&self, id: TaskId) -> bool {
+        may_publish_session(
+            self.engine.store.setting(SYNC_CLAIM).as_deref(),
+            self.engine.store.setting(&format!("account_held.{id}")).as_deref() == Some("1"),
+            self.engine.store.setting(&format!("account_device.{id}")).as_deref(),
+            self.status.device_id.as_deref().unwrap_or(""),
+        )
     }
 
     pub fn sign_out(&mut self, cx: &mut Context<Self>) {
@@ -224,7 +339,14 @@ impl Remote {
                 if self.status.signed_in {
                     self.status.signing_in = false;
                 }
-                if self.status.connected {
+                // Uploading waits for the offer. Connecting alone must not
+                // claim this computer's threads.
+                // "fresh" still publishes sessions created after the choice.
+                // Held threads (the ones that were already here) are skipped
+                // inside publish_all.
+                if self.status.connected
+                    && matches!(self.engine.store.setting(SYNC_CLAIM).as_deref(), Some("bring") | Some("fresh"))
+                {
                     self.publish_all();
                 }
             }
@@ -239,7 +361,18 @@ impl Remote {
             }
             "error" => {
                 self.status.signing_in = false;
-                self.status.error = s("message");
+                self.status.error = s("message").map(|message| friendly_host_error(&message));
+            }
+            "account_sessions" => {
+                let device = s("deviceId").unwrap_or_default();
+                let chats = ev.get("chats").cloned().unwrap_or(Value::Null);
+                cx.emit(RemoteEvent::AccountSessions { device, chats });
+            }
+            "account_transcript" => {
+                let Some(chat) = s("chat") else { return };
+                let Some(task) = TaskId::parse(&chat) else { return };
+                let messages = ev.get("messages").cloned().unwrap_or(Value::Null);
+                cx.emit(RemoteEvent::AccountTranscript { task, messages });
             }
             "command" => {
                 let (Some(chat), Some(id)) = (s("chat"), s("id")) else { return };
@@ -260,6 +393,12 @@ impl Remote {
         cx.notify();
     }
 
+    /// Ask the host for a session's messages. Used for chats that belong to
+    /// another device on this account.
+    pub fn pull_chat(&self, chat: &str) {
+        self.send(json!({ "op": "pull_chat", "id": chat }));
+    }
+
     pub fn command_done(&self, chat: &str, id: &str, ok: bool, resolution: Option<&str>) {
         self.send(json!({ "op": "command_done", "chat": chat, "id": id, "ok": ok, "resolution": resolution }));
     }
@@ -268,6 +407,7 @@ impl Remote {
     fn publish_all(&mut self) {
         let Some(stdin) = self.stdin.clone() else { return };
         let engine = self.engine.clone();
+        let mine = self.status.device_id.clone().unwrap_or_default();
         // A fresh connection gets every turn again (publishing is idempotent).
         if let Ok(mut f) = self.feeds.lock() {
             f.clear();
@@ -282,6 +422,11 @@ impl Remote {
                     json!({ "op": "space", "id": p.id.to_string(), "path": p.path.to_string_lossy(), "name": p.name }),
                 );
                 for t in engine.store.tasks(p.id).unwrap_or_default() {
+                    let held = engine.store.setting(&format!("account_held.{}", t.id)).as_deref() == Some("1");
+                    let owner = engine.store.setting(&format!("account_device.{}", t.id));
+                    if !may_publish_session(Some("bring"), held, owner.as_deref(), &mine) {
+                        continue;
+                    }
                     recent.push((t.updated_at, t.id));
                     write_line(&stdin, chat_row(&t, p));
                 }
@@ -295,7 +440,7 @@ impl Remote {
 
     /// Called by a session view after it applies a batch of live events.
     pub fn observe(&mut self, task: TaskId, events: &[AgentEvent]) {
-        if !self.status.connected || self.stdin.is_none() {
+        if !self.status.connected || self.stdin.is_none() || !self.publishes(task) {
             return;
         }
         let finished = events.iter().any(|e| matches!(e, AgentEvent::TurnEnded { .. } | AgentEvent::Exited { .. }));
@@ -349,6 +494,10 @@ pub struct Fold {
     events: usize,
     /// The assistant turn still streaming: (id, text).
     open: Option<(String, String)>,
+    /// Parts of the open assistant turn. Reasoning and tools are not prose.
+    open_parts: Vec<Value>,
+    /// Parts of turns already closed, keyed by the turn id.
+    part_of: HashMap<String, Vec<Value>>,
 }
 
 impl Fold {
@@ -369,6 +518,7 @@ impl Fold {
                     if let Some((id, text)) = self.open.take()
                         && touched
                     {
+                        self.part_of.insert(id.clone(), std::mem::take(&mut self.open_parts));
                         put(&mut out, (id, "assistant", text, false));
                     }
                     touched = false;
@@ -376,15 +526,37 @@ impl Fold {
                 }
                 AgentEvent::TextDelta { text } => {
                     self.open.get_or_insert_with(|| (format!("a{i}"), String::new())).1.push_str(text);
+                    append_part(&mut self.open_parts, "text", text);
                     touched = true;
                 }
-                AgentEvent::ToolCall { title, .. } => {
-                    let line = format!("\n\n`{}`\n\n", title.trim());
-                    self.open.get_or_insert_with(|| (format!("a{i}"), String::new())).1.push_str(&line);
+                AgentEvent::ThinkingDelta { text } => {
+                    self.open.get_or_insert_with(|| (format!("a{i}"), String::new()));
+                    append_part(&mut self.open_parts, "reasoning", text);
                     touched = true;
+                }
+                AgentEvent::ToolCall { call_id, name, title, input, .. } => {
+                    self.open.get_or_insert_with(|| (format!("a{i}"), String::new()));
+                    self.open_parts.push(json!({
+                        "kind": "tool",
+                        "callId": call_id,
+                        "name": name,
+                        "title": title,
+                        "input": input,
+                    }));
+                    touched = true;
+                }
+                AgentEvent::ToolResult { call_id, output, is_error } => {
+                    if let Some(part) = self.open_parts.iter_mut().rev().find(|part| {
+                        part.get("callId").and_then(Value::as_str) == Some(call_id.as_str())
+                    }) {
+                        part["output"] = json!(output.as_ref());
+                        part["isError"] = json!(is_error);
+                        touched = true;
+                    }
                 }
                 AgentEvent::TurnEnded { .. } | AgentEvent::Exited { .. } => {
                     if let Some((id, text)) = self.open.take() {
+                        self.part_of.insert(id.clone(), std::mem::take(&mut self.open_parts));
                         put(&mut out, (id, "assistant", text, false));
                     }
                     touched = false;
@@ -394,10 +566,29 @@ impl Fold {
         }
         self.events += events.len();
         if touched && let Some((id, text)) = &self.open {
+            self.part_of.insert(id.clone(), self.open_parts.clone());
             put(&mut out, (id.clone(), "assistant", text.clone(), true));
         }
         out
     }
+
+    fn parts_of(&self, id: &str) -> Vec<Value> {
+        self.part_of.get(id).cloned().unwrap_or_default()
+    }
+}
+
+fn append_part(parts: &mut Vec<Value>, kind: &str, text: &str) {
+    let key = if kind == "reasoning" { "reasoning" } else { "text" };
+    if let Some(last) = parts.last_mut()
+        && last.get("kind").and_then(Value::as_str) == Some(kind)
+        && let Some(existing) = last.get_mut(key)
+    {
+        if let Some(s) = existing.as_str() {
+            *existing = json!(format!("{s}{text}"));
+        }
+        return;
+    }
+    parts.push(json!({ "kind": kind, key: text }));
 }
 
 /// A whole transcript folded into chat turns.
@@ -427,13 +618,14 @@ fn publish_transcript(engine: &Engine, stdin: &Arc<Mutex<ChildStdin>>, feeds: &F
     feed.offset = next;
     let chat = task.to_string();
     for (id, role, text, open) in feed.fold.push(&events) {
+        let parts = feed.fold.parts_of(&id);
         let text = text.trim().to_owned();
-        if text.is_empty() {
+        if text.is_empty() && parts.is_empty() {
             continue;
         }
         write_line(
             stdin,
-            json!({ "op": "message", "chat": chat, "id": format!("{chat}-{id}"), "role": role, "text": text, "streaming": open && live }),
+            json!({ "op": "message", "chat": chat, "id": format!("{chat}-{id}"), "role": role, "text": text, "parts": parts, "streaming": open && live }),
         );
     }
 }
@@ -496,5 +688,16 @@ mod tests {
         // Ids match a fold of the whole transcript.
         let whole: Vec<String> = fold_turns(&events).into_iter().map(|t| t.0).collect();
         assert_eq!(whole, ["u0", "a1", "u4", "a5"]);
+    }
+
+    #[test]
+    fn offer_gates_upload() {
+        assert!(!may_publish_session(None, false, None, "desktop"));
+        assert!(!may_publish_session(Some("fresh"), true, None, "desktop"));
+        assert!(may_publish_session(Some("fresh"), false, None, "desktop"));
+        assert!(may_publish_session(Some("bring"), false, None, "desktop"));
+        assert!(!may_publish_session(Some("bring"), false, Some("phone"), "desktop"));
+        assert!(may_publish_session(Some("bring"), false, Some("desktop"), "desktop"));
+        assert!(!may_publish_session(Some("bring"), true, None, "desktop"));
     }
 }

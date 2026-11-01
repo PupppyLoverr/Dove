@@ -1595,6 +1595,9 @@ pub struct TaskView {
     live: Option<LiveSession>,
     chat: Chat,
     loading: bool,
+    /// Bumped each time the transcript is loaded from disk, so a late empty
+    /// load cannot replace one that already saw the account's messages.
+    load_gen: u64,
     older: Option<Older>,
     followers: Followers,
     list: ListState,
@@ -1871,6 +1874,7 @@ impl TaskView {
             live: None,
             chat,
             loading: true,
+            load_gen: 0,
             older: None,
             followers: Default::default(),
             list,
@@ -2004,15 +2008,29 @@ impl TaskView {
         live
     }
 
+    /// Load the transcript again when an account sync just wrote it and this
+    /// view is still empty.
+    pub(crate) fn reload_saved(&mut self, cx: &mut Context<Self>) {
+        if !self.chat.rows.is_empty() {
+            return;
+        }
+        self.load_transcript(None, cx);
+    }
+
     /// Replay the transcript's tail off-thread (older history is hydrated
     /// as the user scrolls up), then attach the live session.
     fn load_transcript(&mut self, live: Option<LiveSession>, cx: &mut Context<Self>) {
         let store = self.engine.store.clone();
         let id = self.task.id;
+        self.load_gen = self.load_gen.wrapping_add(1);
+        let generation = self.load_gen;
         let build = cx.background_spawn(async move { load_tail(&store, id) });
         cx.spawn(async move |this, cx| {
             let (mut chat, older) = build.await;
             let _ = this.update(cx, |v, cx| {
+                if v.load_gen != generation {
+                    return;
+                }
                 chat.usage = v.chat.usage;
                 if chat.rate_limits.is_empty() {
                     chat.rate_limits = std::mem::take(&mut v.chat.rate_limits);

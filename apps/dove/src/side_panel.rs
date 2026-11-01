@@ -1392,7 +1392,11 @@ impl SidePanel {
         }
         let Some(p) = self.panel() else { return };
         p.drop_surface(surface, ix);
+        let empty = p.tabs.is_empty();
         self.layout_dirty = true;
+        if empty {
+            cx.emit(SidePanelEvent::Close);
+        }
         cx.notify();
     }
 
@@ -1915,7 +1919,7 @@ impl SidePanel {
                 )
             })
             .when(!tabs.is_empty(), |d| d.child(div().flex_1().min_w_0().child(strip)))
-            .when(!tabs.is_empty(), |d| d.child(plus))
+            .child(plus)
             .when(!tabs.is_empty() && single, |d| d.child(self.split_menu_button("panel-split", None, &t, cx)))
             .child(self.render_place_button(&t, cx))
             .child(
@@ -3133,18 +3137,9 @@ impl Render for SidePanel {
             .flex()
             .flex_col()
             .child(probe)
-            // Claude's panel header: what is open (or "Panels"), its
-            // actions, then move, expand and close, in one row under the
-            // window's bar.
-            .child(
-                div().h(px(HEADER_H)).flex_none().border_b_1().border_color(t.wash(0.06)).child(self.render_strip(cx)),
-            )
             .child(div().flex_1().min_h_0().child(body))
     }
 }
-
-/// The dock header's height (Claude's panel header).
-const HEADER_H: f32 = 40.0;
 
 #[cfg(test)]
 mod tests {

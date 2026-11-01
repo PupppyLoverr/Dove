@@ -39,6 +39,11 @@ pub struct Config {
     pub approvals: Approvals,
     /// The NEXI-CUA-1 ranker for `act`; None: the resolver alone.
     pub grounder: Option<Arc<Grounder>>,
+    /// Opt-in agent-desktop backend. cua-driver remains the fallback.
+    pub agent_desktop: bool,
+    /// Expected SHA-256 of a plugins-folder agent-desktop. Empty allows only
+    /// `DOVE_AGENT_DESKTOP`.
+    pub agent_desktop_sha256: String,
 }
 
 /// Names a model reaches for that are not actions, with the real one.
@@ -164,6 +169,18 @@ impl<D: Driver> Computer<D> {
         }
         if let Some(why) = self.hard_block(&action, args) {
             return err(&action, "blocked", why);
+        }
+        if self.config.agent_desktop && crate::agent_desktop::usable(&self.config.agent_desktop_sha256) {
+            match crate::agent_desktop::try_action(&action, args) {
+                Ok(value) => return Output::json(&value),
+                Err(crate::agent_desktop::DesktopError::Missing) => {}
+                Err(crate::agent_desktop::DesktopError::Blocked(message)) => {
+                    return err(&action, "plugin_blocked", message);
+                }
+                Err(crate::agent_desktop::DesktopError::Failed(message)) => {
+                    return err(&action, "driver_unavailable", message);
+                }
+            }
         }
         if !self.started {
             if let Err(e) = self.cua.start() {

@@ -71,9 +71,10 @@ pub fn kind_of(path: &Path) -> Kind {
     }
     let open = || std::fs::File::open(path).ok().map(std::io::BufReader::new);
     let animated = match e.as_str() {
-        "gif" => open()
-            .and_then(|r| image::codecs::gif::GifDecoder::new(r).ok())
-            .is_some_and(|d| d.into_frames().take(2).count() > 1),
+        // A GIF is treated as animated from the extension. Decoding frames
+        // here runs on the UI thread (kind_cached is called from render), and
+        // a bad frame used to abort the process.
+        "gif" => true,
         "png" | "apng" => {
             open().and_then(|r| image::codecs::png::PngDecoder::new(r).ok()).and_then(|d| d.is_apng().ok())
                 == Some(true)

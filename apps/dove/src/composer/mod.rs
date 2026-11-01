@@ -225,6 +225,8 @@ pub struct Composer {
     pub add_dirs: Vec<PathBuf>,
     /// Where a new thread's agent runs (a thread keeps its own host).
     host: dove_core::host::Host,
+    /// The next thread stays on Cloud. It is not run on this computer.
+    pub cloud: bool,
     /// Machines found when the device menu last opened; `None` while looking.
     hosts: Option<Vec<dove_core::host::Host>>,
     attachments: Vec<PathBuf>,
@@ -244,6 +246,9 @@ pub struct Composer {
     files_root: Option<PathBuf>,
     clone_url: Option<Entity<InputState>>,
     error: Option<SharedString>,
+    /// Cloud state, shown in the quiet color. A send on that thread does not
+    /// run an agent on this computer.
+    notice: Option<SharedString>,
     draft_gen: u64,
     dragging_files: bool,
     /// The new-thread page is using the bottom-center bar.
@@ -259,6 +264,13 @@ pub struct Composer {
     /// the host lays it out at, and the host to repaint when it changes.
     cache_slot: Option<(Rc<Cell<f32>>, EntityId)>,
     _subs: Vec<Subscription>,
+}
+
+fn cloud_line(state: &str) -> &'static str {
+    match state {
+        "sleeping" | "stopping" => "This session's Cloud machine is asleep — it wakes when you send",
+        _ => "Starting a Cloud machine for this session…",
+    }
 }
 
 impl EventEmitter<ComposerEvent> for Composer {}
@@ -352,6 +364,7 @@ impl Composer {
             projects: Vec::new(),
             add_dirs: Vec::new(),
             host: dove_core::host::Host::Local,
+            cloud: false,
             hosts: None,
             attachments: Vec::new(),
             cards: Vec::new(),
@@ -367,6 +380,7 @@ impl Composer {
             files_root: None,
             clone_url: None,
             error: None,
+            notice: None,
             draft_gen: 0,
             dragging_files: false,
             home_dock: false,
@@ -427,6 +441,11 @@ impl Composer {
         });
         this.add_dirs = engine.add_dirs(task.id);
         this.host = engine.task_host(task.id);
+        this.cloud = engine.store.setting(&format!("cloud_state.{}", task.id)).is_some();
+        if this.cloud {
+            let state = engine.store.setting(&format!("cloud_state.{}", task.id)).unwrap_or_default();
+            this.notice = Some(cloud_line(&state).into());
+        }
         this.thread = Some((task.clone(), project.clone()));
         this.project = Some(project.clone());
         if let Some(m) = engine.store.setting(&format!("mode.{}", task.id)) {
@@ -655,6 +674,14 @@ impl Composer {
             return;
         }
         if text.is_empty() && self.attachments.is_empty() && self.cards.is_empty() {
+            return;
+        }
+        if self.on_cloud() {
+            if let Some((task, _)) = &self.thread {
+                let _ = self.engine.store.set_setting(&format!("cloud_state.{}", task.id), "starting");
+            }
+            self.notice = Some(cloud_line("starting").into());
+            cx.notify();
             return;
         }
         if let Some(block) = skills_block(&text) {
@@ -1371,16 +1398,33 @@ impl Composer {
 
     fn pick_host(&mut self, host: dove_core::host::Host, cx: &mut Context<Self>) {
         self.host = host;
+        self.cloud = false;
+        self.notice = None;
         self.menu = None;
         cx.notify();
+    }
+
+    fn on_cloud(&self) -> bool {
+        if let Some((task, _)) = &self.thread {
+            return self.engine.store.setting(&format!("cloud_state.{}", task.id)).is_some();
+        }
+        self.cloud
+    }
+
+    fn chip_label(&self) -> String {
+        if self.on_cloud() { "Cloud".into() } else { Self::host_label(&self.current_host()) }
+    }
+
+    fn chip_icon(&self) -> &'static str {
+        if self.on_cloud() { icons::CLOUD } else { Self::host_icon(&self.current_host()) }
     }
 
     fn device_chip(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let current = self.current_host();
         let chip = ui::footer_chip(
             "composer-device",
-            Self::host_icon(&current),
-            Self::host_label(&current),
+            self.chip_icon(),
+            self.chip_label(),
             self.menu == Some(Menu::Device),
             t,
         )
@@ -1443,6 +1487,20 @@ impl Composer {
                             ),
                         );
                 }
+                let on_cloud = self.cloud;
+                rows = rows.child(
+                    ui::menu_row("dev-cloud", icons::CLOUD, "Cloud", false, t)
+                        .when(on_cloud, |d| d.child(icon(icons::CHECK).size(px(14.0)).text_color(t.accent)))
+                        .tooltip(ui::tip(
+                            "This session stays on Cloud. It does not run on this computer. It needs a Woozlit login.",
+                        ))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.cloud = true;
+                            this.notice = Some(cloud_line("starting").into());
+                            this.menu = None;
+                            cx.notify();
+                        })),
+                );
                 rows = rows.child(ui::separator(t)).child(
                     ui::menu_row("dev-add", icons::ADD_CIRCLE, "Add a machine…", false, t)
                         .tooltip(ui::tip("Settings › Machines: SSH, containers, cloud providers, paired devices"))
@@ -3066,6 +3124,9 @@ impl Composer {
             })
             .child(bar)
             .child(footer)
+            .when_some(self.notice.clone(), |d, note| {
+                d.child(div().px(px(8.0)).text_size(ty::META).text_color(t.text_muted).child(note))
+            })
             .when_some(self.error.clone(), |d, e| {
                 d.child(
                     div()
@@ -3289,6 +3350,9 @@ impl Composer {
             .when(home, |d| d.child(self.render_home_chips(hero, t, cx)))
             .when(home && hero && !self.add_dirs.is_empty(), |d| d.child(self.render_git_row(t, cx)))
             .children(meta)
+            .when_some(self.notice.clone(), |d, note| {
+                d.child(div().px(px(8.0)).text_size(ty::META).text_color(t.text_muted).child(note))
+            })
             .when_some(self.error.clone(), |d, e| {
                 d.child(
                     div()

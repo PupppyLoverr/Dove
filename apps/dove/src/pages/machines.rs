@@ -88,6 +88,13 @@ pub struct MachinesView {
     /// Paired devices; `None` while loading.
     paired: Option<Vec<dove_core::paired::Device>>,
     clouds: Vec<Cloud>,
+    /// The GitHub device-flow code the user types. The device code itself
+    /// stays off this struct once polling starts.
+    github_user_code: Option<String>,
+    github_uri: Option<String>,
+    github_connected: bool,
+    github_busy: bool,
+    github_error: Option<String>,
     pairing: Pairing,
     _subs: Vec<Subscription>,
 }
@@ -157,7 +164,20 @@ impl MachinesView {
             InputEvent::Change | InputEvent::Focus | InputEvent::Blur => cx.notify(),
         }));
         let pairing = Pairing { input: Some(pair_input), ..Default::default() };
-        Self { loaded: false, generation: 0, hosts: None, paired: None, clouds, pairing, _subs: subs }
+        Self {
+            loaded: false,
+            generation: 0,
+            hosts: None,
+            paired: None,
+            clouds,
+            github_user_code: None,
+            github_uri: None,
+            github_connected: Keys::load().has("github"),
+            github_busy: false,
+            github_error: None,
+            pairing,
+            _subs: subs,
+        }
     }
 
     /// Start discovery and probes the first time the page is shown.
@@ -716,8 +736,12 @@ impl MachinesView {
                     }
                     let new =
                         ctl::button_sm(t, id("new"), if c.creating { "Creating…" } else { "New box" }, Tone::Filled);
+                    // Probe::Ready is the test. Until the provider answers, the
+                    // button does not pretend a box can be created.
                     let new = if c.creating {
                         ctl::disabled(new, "Creating a box; this can take a minute")
+                    } else if !matches!(c.probe, Some(Probe::Ready)) {
+                        ctl::disabled(new, "Connect this provider and test it before creating a box")
                     } else {
                         new.child(icon(icons::PLUS).size(px(12.0)))
                             .on_click(cx.listener(move |this, _, _, cx| this.create_box(i, cx)))
@@ -1187,6 +1211,120 @@ fn status(label: &'static str, color: Hsla, t: &Theme) -> gpui::Div {
         .child(label)
 }
 
+impl MachinesView {
+    fn connect_github(&mut self, cx: &mut Context<Self>) {
+        if self.github_busy {
+            return;
+        }
+        self.github_busy = true;
+        self.github_error = None;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let started = cx.background_spawn(async { dove_core::github_app::device_start() }).await;
+            let start = match started {
+                Ok(start) => start,
+                Err(e) => {
+                    let msg = e.to_string();
+                    let _ = this.update(cx, |v, cx| {
+                        v.github_busy = false;
+                        v.github_error = Some(msg);
+                        cx.notify();
+                    });
+                    return;
+                }
+            };
+            let device = start.device_code.clone();
+            let interval = start.interval;
+            let _ = this.update(cx, |v, cx| {
+                v.github_user_code = Some(start.user_code);
+                v.github_uri = Some(start.verification_uri);
+                v.github_busy = false;
+                cx.notify();
+            });
+            for _ in 0..40 {
+                cx.background_executor().timer(std::time::Duration::from_secs(interval)).await;
+                let polled = cx
+                    .background_spawn({
+                        let device = device.clone();
+                        async move { dove_core::github_app::device_poll(&device) }
+                    })
+                    .await;
+                match polled {
+                    Ok(Some(token)) => {
+                        let saved = cx
+                            .background_spawn(async move { Keys::store("github", &token).is_ok() })
+                            .await;
+                        let _ = this.update(cx, |v, cx| {
+                            v.github_connected = saved;
+                            v.github_user_code = None;
+                            v.github_error =
+                                (!saved).then(|| "Could not save the GitHub connection.".to_string());
+                            cx.notify();
+                        });
+                        return;
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        let msg = e.to_string();
+                        let _ = this.update(cx, |v, cx| {
+                            v.github_user_code = None;
+                            v.github_error = Some(msg);
+                            cx.notify();
+                        });
+                        return;
+                    }
+                }
+            }
+        })
+        .detach();
+    }
+
+    fn github_section(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let status = if self.github_connected {
+            "Connected. The token stays on this computer and is not shown.".to_string()
+        } else if let Some(code) = &self.github_user_code {
+            format!("Enter {code} on GitHub")
+        } else {
+            "Not connected. Device flow, then install the cosmos-ade GitHub App.".to_string()
+        };
+        let connect = ctl::button_sm(t, "github-connect", if self.github_busy { "Starting…" } else { "Connect GitHub" }, Tone::Quiet);
+        let connect = if self.github_busy || self.github_connected || self.github_user_code.is_some() {
+            ctl::disabled(
+                connect,
+                if self.github_connected { "Already connected" } else { "Waiting for GitHub" },
+            )
+        } else {
+            connect.on_click(cx.listener(|this, _, _, cx| this.connect_github(cx)))
+        };
+        let install = ctl::button_sm(t, "github-install", "Install the App", Tone::Quiet)
+            .on_click(cx.listener(|_, _, _, cx| cx.open_url(dove_core::github_app::INSTALL_URL)));
+        page::section(
+            t,
+            "GitHub",
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(8.0))
+                .child(div().text_size(ty::SMALL).text_color(t.text_muted).child(status))
+                .when_some(self.github_uri.clone(), |d, uri| {
+                    let open = uri.clone();
+                    d.child(
+                        div()
+                            .id("github-open-code")
+                            .cursor_pointer()
+                            .text_size(ty::SMALL)
+                            .text_color(t.accent)
+                            .child(uri)
+                            .on_click(move |_, _, cx| cx.open_url(&open)),
+                    )
+                })
+                .child(div().flex().gap(px(8.0)).child(connect).child(install))
+                .when_some(self.github_error.clone(), |d, e| d.child(page::error_strip(t, e))),
+        )
+        .into_any_element()
+    }
+}
+
 impl Render for MachinesView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::perf_trace::count_render("MachinesView");
@@ -1196,6 +1334,7 @@ impl Render for MachinesView {
             .flex_col()
             .child(self.hosts_section(&t))
             .child(self.clouds_section(window, cx))
+            .child(self.github_section(&t, cx))
             .child(self.paired_devices_section(&t, window, cx))
     }
 }

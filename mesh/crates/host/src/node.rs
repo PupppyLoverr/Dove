@@ -488,12 +488,8 @@ async fn exec(cli: &Cli, store: &NodeStore) -> i32 {
         Ok(token) => token,
         Err(code) => return code,
     };
-    let dial = Dial {
-        edge_url: cli.edge.clone(),
-        device: device.to_owned(),
-        token,
-        direct_name: Some(node.name.clone()),
-    };
+    let dial =
+        Dial { edge_url: cli.edge.clone(), device: device.to_owned(), token, direct_name: Some(node.name.clone()) };
     let open = ExecOpen {
         device: store.device_id().to_owned(),
         proof: node.secret,

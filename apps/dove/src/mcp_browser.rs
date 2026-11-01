@@ -1002,6 +1002,8 @@ pub(crate) mod upstream {
                         dove_computer::Approvals::Ask
                     },
                     grounder: s.ranker.then(|| dove_grounder::service::embedded(Duration::from_secs(300))),
+                    agent_desktop: s.backend == "agent-desktop",
+                    agent_desktop_sha256: s.agent_desktop_sha256.clone(),
                 };
                 self.computer = Some(dove_computer::Computer::new(ServerDriver { server: live.server, tools }, config));
             }

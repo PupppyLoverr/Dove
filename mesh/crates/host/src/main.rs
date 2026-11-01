@@ -37,7 +37,7 @@ use zeron_doc::{
     SessionDoc, SessionMessageEntry,
 };
 use zeron_sync::chat_client::{ChatClient, ChatDocSink, ChatEvent, CheckpointFetcher, RowImportOutcome};
-use zeron_sync::registry::RegistryClient;
+use zeron_sync::registry::{RegistryClient, RegistryEvent, RegistryTransport, RegistryTuning};
 use zeron_sync::{SyncError, UrlProvider};
 
 mod node;
@@ -75,6 +75,9 @@ enum Op {
         text: String,
         #[serde(default)]
         streaming: bool,
+        /// Structured parts. Text-only messages omit this.
+        #[serde(default)]
+        parts: Vec<Value>,
     },
     CommandDone {
         chat: String,
@@ -82,6 +85,12 @@ enum Op {
         ok: bool,
         resolution: Option<String>,
     },
+    /// Read one account session's transcript from its chat room.
+    PullChat {
+        id: String,
+    },
+    /// Send the account registry's chats to the desktop again.
+    ListSessions,
     /// Node mode on/off (persisted in `node.json`).
     NodeEnable {
         enabled: bool,
@@ -111,6 +120,129 @@ fn emit(value: Value) {
 
 fn emit_error(context: &str, err: impl std::fmt::Display) {
     emit(json!({ "ev": "error", "context": context, "message": err.to_string() }));
+}
+
+/// Text stays prose. Reasoning and tool calls stay their own parts, so a
+/// phone and another computer do not paint thoughts as a reply or drop tools.
+fn message_parts(id: &str, text: &str, raw: &[Value]) -> Vec<MessagePart> {
+    if raw.is_empty() {
+        return vec![MessagePart::Text { id: format!("{id}:text"), text: text.to_string() }];
+    }
+    let built: Vec<MessagePart> = raw
+        .iter()
+        .enumerate()
+        .filter_map(|(i, part)| {
+            if part.get("call").is_some() {
+                return serde_json::from_value(part.clone()).ok();
+            }
+            let kind = part.get("kind").and_then(Value::as_str)?;
+            let body = part
+                .get(if kind == "reasoning" { "reasoning" } else { "text" })
+                .or_else(|| part.get("text"))
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            match kind {
+                "text" => Some(MessagePart::Text { id: format!("{id}:t{i}"), text: body }),
+                "reasoning" => Some(MessagePart::Reasoning { id: format!("{id}:r{i}"), text: body }),
+                "tool" => {
+                    let name = part.get("name").and_then(Value::as_str).unwrap_or("tool");
+                    let title = part.get("title").and_then(Value::as_str).unwrap_or(name);
+                    let call = match name {
+                        "Read" | "read" => zeron_proto::ToolCall::ReadFile { path: title.to_string() },
+                        "Edit" | "edit" | "Write" | "write" => zeron_proto::ToolCall::EditFile {
+                            path: title.to_string(),
+                            old_string: None,
+                            new_string: None,
+                        },
+                        "Execute" | "execute" | "Bash" | "bash" => {
+                            zeron_proto::ToolCall::Exec { command: title.to_string() }
+                        }
+                        "Search" | "search" => zeron_proto::ToolCall::Search {
+                            pattern: title.to_string(),
+                            path: None,
+                        },
+                        "Fetch" | "fetch" => zeron_proto::ToolCall::WebFetch {
+                            url: title.to_string(),
+                            prompt: None,
+                        },
+                        _ => zeron_proto::ToolCall::Unknown {
+                            name: name.to_string(),
+                            input: part.get("input").cloned(),
+                        },
+                    };
+                    let output = part.get("output").and_then(Value::as_str).map(str::to_owned);
+                    Some(MessagePart::Tool {
+                        id: part.get("callId").and_then(Value::as_str).unwrap_or("tool").to_string(),
+                        call,
+                        is_error: part.get("isError").and_then(Value::as_bool).unwrap_or(false),
+                        resolved: output.is_some(),
+                        output,
+                        diff: None,
+                        output_ref: None,
+                        output_bytes: None,
+                        diff_ref: None,
+                        diff_stats: None,
+                        subagent_ref: None,
+                        subagent_status: None,
+                        subagent_tail: None,
+                    })
+                }
+                _ => serde_json::from_value(part.clone()).ok(),
+            }
+        })
+        .collect();
+    if built.is_empty() {
+        vec![MessagePart::Text { id: format!("{id}:text"), text: text.to_string() }]
+    } else {
+        built
+    }
+}
+
+/// Every chat in the account registry. The desktop imports the ones it does
+/// not already have. No tokens, no seat secrets.
+/// The account document's part shape: a thought lives in `reasoning`, not `text`.
+fn part_wire(part: &MessagePart) -> Value {
+    match part {
+        MessagePart::Text { id, text } => json!({ "id": id, "kind": "text", "text": text }),
+        MessagePart::Reasoning { id, text } => json!({ "id": id, "kind": "reasoning", "reasoning": text }),
+        MessagePart::Tool { id, call, is_error, resolved, output, .. } => json!({
+            "id": id,
+            "kind": "tool",
+            "call": call,
+            "isError": if *resolved { Some(*is_error) } else { None::<bool> },
+            "output": output,
+        }),
+        MessagePart::Error { id, message } => json!({ "id": id, "kind": "error", "message": message }),
+        other => serde_json::to_value(other).unwrap_or(Value::Null),
+    }
+}
+
+fn emit_account_sessions(doc: &RegistryDoc, device_id: &str) {
+    let Ok(chats) = doc.read_chats() else { return };
+    let rows: Vec<Value> = chats
+        .into_iter()
+        .filter(|chat| !chat.id.is_empty())
+        .map(|chat| {
+            let harness = chat
+                .config
+                .as_ref()
+                .and_then(|cfg| serde_json::to_value(&cfg.harness).ok().and_then(|v| v.as_str().map(str::to_owned)));
+            json!({
+                "id": chat.id,
+                "title": chat.title,
+                "cwd": chat.cwd,
+                "branch": chat.branch,
+                "spaceId": chat.space_id,
+                "deviceId": chat.device_id,
+                "archived": chat.archived,
+                "preview": chat.last_message_preview,
+                "parentChatId": chat.parent_chat_id,
+                "harness": harness,
+            })
+        })
+        .collect();
+    emit(json!({ "ev": "account_sessions", "deviceId": device_id, "chats": rows }));
 }
 
 // ── persisted account session ───────────────────────────────────────────────
@@ -281,6 +413,69 @@ impl UrlProvider for RoomUrl {
     }
 }
 
+/// Plain-HTTPS registry pull/push. The token stays in the Authorization
+/// header, not the URL.
+struct HttpRegistry {
+    bearer: Bearer,
+    edge: String,
+    org: String,
+    device: String,
+    http: reqwest::Client,
+}
+
+fn registry_http(edge: &str, org: &str, device: &str, leaf: &str, since: Option<u64>) -> String {
+    let mut url = format!("{}/registry/{}/{}?device={}", edge.trim_end_matches('/'), enc(org), leaf, enc(device));
+    if let Some(since) = since {
+        url.push_str(&format!("&since={since}&beat=1"));
+    }
+    url
+}
+
+impl RegistryTransport for HttpRegistry {
+    fn fetch(&self, since: u64) -> BoxFuture<'static, Result<String, SyncError>> {
+        let (bearer, http, url) = (
+            self.bearer.clone(),
+            self.http.clone(),
+            registry_http(&self.edge, &self.org, &self.device, "rows", Some(since)),
+        );
+        Box::pin(async move {
+            let token = bearer.get().await?;
+            let response = http
+                .get(url)
+                .bearer_auth(token)
+                .timeout(Duration::from_secs(30))
+                .send()
+                .await
+                .map_err(|e| SyncError::WebSocket(e.to_string()))?;
+            if !response.status().is_success() {
+                return Err(SyncError::Protocol(format!("registry pull http {}", response.status())));
+            }
+            response.text().await.map_err(|e| SyncError::WebSocket(e.to_string()))
+        })
+    }
+
+    fn push(&self, body: String) -> BoxFuture<'static, Result<String, SyncError>> {
+        let (bearer, http, url) =
+            (self.bearer.clone(), self.http.clone(), registry_http(&self.edge, &self.org, &self.device, "push", None));
+        Box::pin(async move {
+            let token = bearer.get().await?;
+            let response = http
+                .post(url)
+                .bearer_auth(token)
+                .header("content-type", "application/json")
+                .body(body)
+                .timeout(Duration::from_secs(30))
+                .send()
+                .await
+                .map_err(|e| SyncError::WebSocket(e.to_string()))?;
+            if !response.status().is_success() {
+                return Err(SyncError::Protocol(format!("registry push http {}", response.status())));
+            }
+            response.text().await.map_err(|e| SyncError::WebSocket(e.to_string()))
+        })
+    }
+}
+
 struct Checkpoint {
     bearer: Bearer,
     url: String,
@@ -383,6 +578,9 @@ struct Host {
     sign_in_tx: mpsc::UnboundedSender<(String, String)>,
     node_store: Arc<node::NodeStore>,
     node_relay: Option<zeron_rpc::HostRelay>,
+    /// Chats whose transcript was empty when pulled. The next applied row
+    /// re-sends it, so a pull that beat the checkpoint still lands.
+    pulls: HashSet<String>,
 }
 
 impl Host {
@@ -533,9 +731,25 @@ impl Host {
             room: format!("registry/{}", enc(&org)),
             device: self.device_id.clone(),
         });
-        let client = RegistryClient::connect_via(provider, self.registry.clone(), &self.device_id)
-            .await
-            .map_err(|e| anyhow!("registry: {e}"))?;
+        // WebSocket plus the plain-HTTPS pull/push Zeron uses. A network that
+        // drops the upgrade still syncs, and the client exists as soon as the
+        // pull is in flight so the desktop can offer sync.
+        let transport = Arc::new(HttpRegistry {
+            bearer: self.bearer.clone(),
+            edge: self.edge.clone(),
+            org: org.clone(),
+            device: self.device_id.clone(),
+            http: self.http.clone(),
+        });
+        let client = RegistryClient::connect_via_transport(
+            provider,
+            self.registry.clone(),
+            &self.device_id,
+            RegistryTuning::default(),
+            transport,
+        )
+        .await
+        .map_err(|e| anyhow!("registry: {e}"))?;
         {
             let mut doc = self.registry.lock().unwrap();
             let device: zeron_proto::Device = serde_json::from_value(json!({
@@ -551,8 +765,89 @@ impl Host {
         }
         client.nudge();
         client.set_presence(chrono::Utc::now().timestamp_millis());
+        // The account's sessions live in this registry. When the edge applies
+        // rows (this computer's and every other device's), tell the desktop.
+        let mut watch = client.events();
+        let registry = self.registry.clone();
+        let device = self.device_id.clone();
+        tokio::spawn(async move {
+            // The pull is in flight when the client is returned. Read again
+            // shortly so a fast Applied that landed before this subscribe, or
+            // a pull that finishes without us noticing, still reaches the desktop.
+            tokio::time::sleep(Duration::from_millis(900)).await;
+            if let Ok(doc) = registry.lock()
+                && doc.read_chats().map(|chats| !chats.is_empty()).unwrap_or(false)
+            {
+                emit_account_sessions(&doc, &device);
+            }
+            loop {
+                match watch.recv().await {
+                    Ok(RegistryEvent::Applied | RegistryEvent::Connected) => {
+                        tokio::time::sleep(Duration::from_millis(400)).await;
+                        while watch.try_recv().is_ok() {}
+                        if let Ok(doc) = registry.lock() {
+                            emit_account_sessions(&doc, &device);
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(_) => break,
+                    _ => {}
+                }
+            }
+        });
         self.registry_client = Some(client);
+        // The HTTPS pull is still in flight on a fresh client. An empty
+        // snapshot here would tell the desktop the account has no sessions
+        // before the rows arrive. Applied emits the real list.
+        if let Ok(doc) = self.registry.lock()
+            && doc.read_chats().map(|chats| !chats.is_empty()).unwrap_or(false)
+        {
+            emit_account_sessions(&doc, &self.device_id);
+        }
         emit(json!({ "ev": "connected", "deviceId": self.device_id }));
+        Ok(())
+    }
+
+    fn transcript_messages(&self, id: &str) -> Vec<Value> {
+        let Some(room) = self.rooms.get(id) else { return Vec::new() };
+        room.doc
+            .read_entries()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|entry| {
+                let role = match entry.role {
+                    MessageRole::User => "user",
+                    MessageRole::Assistant => "assistant",
+                    MessageRole::System => return None,
+                };
+                let parts: Vec<Value> = entry.parts.iter().map(part_wire).collect();
+                if parts.is_empty() {
+                    return None;
+                }
+                Some(json!({ "id": entry.id, "role": role, "parts": parts }))
+            })
+            .collect()
+    }
+
+    fn emit_transcript(&mut self, id: &str) {
+        let messages = self.transcript_messages(id);
+        if !messages.is_empty() {
+            self.pulls.remove(id);
+        }
+        emit(json!({ "ev": "account_transcript", "chat": id, "messages": messages }));
+    }
+
+    /// Join the chat room and send its messages to the desktop. The desktop
+    /// writes them only when it has no local transcript.
+    async fn pull_chat(&mut self, id: String) -> Result<()> {
+        if self.registry_client.is_none() {
+            return Ok(());
+        }
+        self.ensure_room(&id).await?;
+        if self.transcript_messages(&id).is_empty() {
+            self.pulls.insert(id.clone());
+        }
+        self.emit_transcript(&id);
         Ok(())
     }
 
@@ -677,14 +972,22 @@ impl Host {
         Ok(())
     }
 
-    async fn message(&mut self, chat: String, id: String, role: String, text: String, streaming: bool) -> Result<()> {
+    async fn message(
+        &mut self,
+        chat: String,
+        id: String,
+        role: String,
+        text: String,
+        streaming: bool,
+        raw_parts: Vec<Value>,
+    ) -> Result<()> {
         if self.registry_client.is_none() {
             return Ok(());
         }
         self.ensure_room(&chat).await?;
         let device = self.device_id.clone();
         let room = self.rooms.get_mut(&chat).expect("room");
-        let parts = vec![MessagePart::Text { id: format!("{id}:text"), text }];
+        let parts = message_parts(&id, &text, &raw_parts);
         if role == "user" {
             if room.doc.find_entry(&id).is_none() {
                 room.doc.push_message(&SessionMessageEntry {
@@ -699,6 +1002,13 @@ impl Host {
                 })?;
             }
             return Ok(());
+        }
+        if let Some((_, written)) = room.doc.find_entry(&id) {
+            let kept = written.iter().any(|part| matches!(part, MessagePart::Reasoning { .. } | MessagePart::Tool { .. }));
+            let flat = parts.iter().all(|part| matches!(part, MessagePart::Text { .. }));
+            if kept && flat {
+                return Ok(());
+            }
         }
         if !streaming
             && !room.writers.contains_key(&id)
@@ -873,6 +1183,7 @@ async fn main() -> Result<()> {
         sign_in_tx,
         node_store,
         node_relay: None,
+        pulls: HashSet::new(),
     };
     host.sync_node();
     if let Err(err) = host.connect_registry().await {
@@ -899,10 +1210,17 @@ async fn main() -> Result<()> {
                     Op::Space { id, path, name } => host.upsert_space(id, path, name).await,
                     Op::Chat { id, space_id, title, cwd, branch, preview, archived } =>
                         host.upsert_chat(id, space_id, title, cwd, branch, preview, archived).await,
-                    Op::Message { chat, id, role, text, streaming } =>
-                        host.message(chat, id, role, text, streaming).await,
+                    Op::Message { chat, id, role, text, streaming, parts } =>
+                        host.message(chat, id, role, text, streaming, parts).await,
                     Op::CommandDone { chat, id, ok, resolution } =>
                         host.command_done(&chat, &id, ok, resolution.as_deref()),
+                    Op::PullChat { id } => host.pull_chat(id).await,
+                    Op::ListSessions => {
+                        if let Ok(doc) = host.registry.lock() {
+                            emit_account_sessions(&doc, &host.device_id);
+                        }
+                        Ok(())
+                    }
                     Op::NodeEnable { enabled } => match host.node_store.set_enabled(enabled) {
                         Ok(()) => { host.sync_node(); host.emit_node(); Ok(()) }
                         Err(e) => Err(anyhow!(e)),
@@ -924,7 +1242,12 @@ async fn main() -> Result<()> {
                 };
                 if let Err(err) = result { emit_error("op", err); }
             }
-            Some(chat) = applied_rx.recv() => host.forward_commands(&chat),
+            Some(chat) = applied_rx.recv() => {
+                host.forward_commands(&chat);
+                if host.pulls.contains(&chat) {
+                    host.emit_transcript(&chat);
+                }
+            }
             Some((state, token)) = sign_in_rx.recv() => {
                 if let Err(err) = host.complete_sign_in(state, token).await {
                     emit_error("sign_in", format!("{err:#}"));
