@@ -215,6 +215,22 @@ final class SessionFlowTests: XCTestCase {
         XCTAssertTrue(app.navigationBars["Sessions"].waitForExistence(timeout: 5))
     }
 
+    func testLongToastShowsItsWholeMessage() {
+        let app = launch(["-route", "more"])
+        XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 10))
+        let replay = app.cells["settings-replay"]
+        for _ in 0..<8 where !replay.exists || !replay.isHittable {
+            app.collectionViews.firstMatch.swipeUp(velocity: .slow)
+        }
+        replay.tap()
+        let text = app.staticTexts["toast-text"]
+        XCTAssertTrue(text.waitForExistence(timeout: 5))
+        sleep(1)
+        snapshot(app, "long-toast")
+        XCTAssertGreaterThan(text.frame.height, 30, "the message wraps instead of being cut off")
+        XCTAssertLessThanOrEqual(text.frame.maxX, app.windows.firstMatch.frame.maxX)
+    }
+
     func testNewSessionFromAccessory() {
         let app = launch()
         let accessory = app.buttons["new-session"]

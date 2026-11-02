@@ -69,6 +69,7 @@ final class SessionViewController: UIViewController, UIGestureRecognizerDelegate
         setContentScrollView(list, for: .top)
         list.topEdgeEffect.style = .soft
         list.bottomEdgeEffect.isHidden = true
+        addTopFade(above: list)
 
         composer.attachMenu = { [weak self] in
             guard let self else { return UIMenu() }
