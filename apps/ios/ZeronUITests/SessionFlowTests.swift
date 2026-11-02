@@ -275,6 +275,7 @@ final class SessionFlowTests: XCTestCase {
         let undo = app.buttons["toast-action"]
         XCTAssertTrue(undo.waitForExistence(timeout: 3))
         snapshot(app, "archive-undo")
+        XCTAssertLessThan(app.staticTexts["toast-text"].frame.height, 30, "a short message stays on one line")
         undo.tap()
         XCTAssertTrue(app.cells["session-chat-deploy"].waitForExistence(timeout: 5), "unarchived session returns")
     }
