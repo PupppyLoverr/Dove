@@ -51,7 +51,9 @@ final class SessionViewController: UIViewController, UIGestureRecognizerDelegate
         // The title and "project @ device" head the ⋯ menu instead of
         // crowding the bar.
         navigationItem.titleView = UIView()
-        navigationItem.rightBarButtonItem = UIBarButtonItem(image: K22Icon.resolve(systemName: "ellipsis"), menu: sessionMenu(title: "", subtitle: ""))
+        // The system ellipsis: with a drawn K22 glyph the menu item loses its
+        // accessibility identity and UI tests can't find "session-menu".
+        navigationItem.rightBarButtonItem = UIBarButtonItem(image: UIImage(systemName: "ellipsis"), menu: sessionMenu(title: "", subtitle: ""))
         navigationItem.rightBarButtonItem?.accessibilityIdentifier = "session-menu"
         companionsItem = UIBarButtonItem(image: K22Icon.resolve(systemName: "square.stack.3d.up"), primaryAction: UIAction { [weak self] _ in
             self?.showCompanions(section: nil)
