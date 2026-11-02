@@ -19,6 +19,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use futures::{SinkExt, StreamExt};
 use serde_json::json;
@@ -52,6 +53,10 @@ struct Shared {
     /// Refuse chat2 joins (outage simulation).
     refuse_chat: Mutex<bool>,
     relays: Mutex<HashMap<String, RelayState>>,
+    nudge_status: Mutex<u16>,
+    nudge_status_by_chat: Mutex<HashMap<String, u16>>,
+    nudges: Mutex<Vec<(String, usize)>>,
+    host_hints: Mutex<HashMap<String, String>>,
 }
 
 enum Out {
@@ -85,16 +90,88 @@ impl MockEdge {
             sockets: Mutex::new(HashMap::new()),
             refuse_chat: Mutex::new(false),
             relays: Mutex::new(HashMap::new()),
+            nudge_status: Mutex::new(200),
+            nudge_status_by_chat: Mutex::new(HashMap::new()),
+            nudges: Mutex::new(Vec::new()),
+            host_hints: Mutex::new(HashMap::new()),
         });
         let accept_shared = shared.clone();
         let task = tokio::spawn(async move {
             loop {
-                let Ok((stream, _)) = listener.accept().await else {
+                let Ok((mut stream, _)) = listener.accept().await else {
                     return;
                 };
                 let shared = accept_shared.clone();
                 let registry_url = registry_url.clone();
                 tokio::spawn(async move {
+                    let mut first = [0u8; 4];
+                    if stream.peek(&mut first).await.is_ok() && first[0] == b'P' {
+                        let mut request = Vec::new();
+                        let mut buf = [0u8; 4096];
+                        loop {
+                            let Ok(n) = stream.read(&mut buf).await else {
+                                return;
+                            };
+                            if n == 0 {
+                                return;
+                            }
+                            request.extend_from_slice(&buf[..n]);
+                            let Some(end) = request.windows(4).position(|b| b == b"\r\n\r\n")
+                            else {
+                                continue;
+                            };
+                            let headers = String::from_utf8_lossy(&request[..end]);
+                            let length = headers
+                                .lines()
+                                .find_map(|line| {
+                                    let (key, value) = line.split_once(':')?;
+                                    key.eq_ignore_ascii_case("content-length")
+                                        .then(|| value.trim().parse::<usize>().ok())
+                                        .flatten()
+                                })
+                                .unwrap_or(0);
+                            if request.len() < end + 4 + length {
+                                continue;
+                            }
+                            if headers
+                                .lines()
+                                .next()
+                                .is_some_and(|l| l.contains("/nudge "))
+                            {
+                                let mut nudge_chat = None;
+                                if let Ok(body) = serde_json::from_slice::<serde_json::Value>(
+                                    &request[end + 4..end + 4 + length],
+                                ) {
+                                    if let Some(chat) = body["chatId"].as_str() {
+                                        nudge_chat = Some(chat.to_owned());
+                                        let rows = shared
+                                            .rooms
+                                            .lock()
+                                            .unwrap()
+                                            .get(chat)
+                                            .map_or(0, |r| r.rows.len());
+                                        shared.nudges.lock().unwrap().push((chat.to_owned(), rows));
+                                    }
+                                }
+                                let status = nudge_chat
+                                    .as_ref()
+                                    .and_then(|chat| {
+                                        shared
+                                            .nudge_status_by_chat
+                                            .lock()
+                                            .unwrap()
+                                            .get(chat)
+                                            .copied()
+                                    })
+                                    .unwrap_or_else(|| *shared.nudge_status.lock().unwrap());
+                                let response = format!(
+                                    "HTTP/1.1 {status} Test\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}"
+                                );
+                                let _ = stream.write_all(response.as_bytes()).await;
+                            }
+                            return;
+                        }
+                    }
                     let path = Arc::new(Mutex::new(String::new()));
                     let seen = path.clone();
                     let callback = move |request: &Request, response: Response| {
@@ -113,11 +190,20 @@ impl MockEdge {
                         .collect();
                     let parts: Vec<&str> = path.trim_matches('/').split('/').collect();
                     match parts.as_slice() {
-                        ["device", device, "ws"] => serve_relay(ws, device.to_string(), query, shared).await,
+                        ["device", device, "ws"] => {
+                            serve_relay(ws, device.to_string(), query, shared).await
+                        }
                         ["registry", _, "ws"] => proxy(ws, &registry_url).await,
                         ["chat2", chat, "ws"] => {
                             if *shared.refuse_chat.lock().unwrap() {
                                 return;
+                            }
+                            if let Some(host) = query.get("hostDevice") {
+                                shared
+                                    .host_hints
+                                    .lock()
+                                    .unwrap()
+                                    .insert(chat.to_string(), host.clone());
                             }
                             serve_chat(ws, chat.to_string(), shared).await
                         }
@@ -126,7 +212,49 @@ impl MockEdge {
                 });
             }
         });
-        Self { registry, port, shared, task }
+        Self {
+            registry,
+            port,
+            shared,
+            task,
+        }
+    }
+
+    pub fn nudge_status(&self, status: u16) {
+        *self.shared.nudge_status.lock().unwrap() = status;
+    }
+
+    pub fn host_hint(&self, chat: &str) -> Option<String> {
+        self.shared.host_hints.lock().unwrap().get(chat).cloned()
+    }
+
+    pub fn nudge_status_for(&self, chat: &str, status: u16) {
+        self.shared
+            .nudge_status_by_chat
+            .lock()
+            .unwrap()
+            .insert(chat.to_owned(), status);
+    }
+
+    pub fn nudges(&self, chat: &str) -> usize {
+        self.shared
+            .nudges
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(id, _)| id == chat)
+            .count()
+    }
+
+    pub fn last_nudge_row_count(&self, chat: &str) -> Option<usize> {
+        self.shared
+            .nudges
+            .lock()
+            .unwrap()
+            .iter()
+            .rev()
+            .find(|(id, _)| id == chat)
+            .map(|(_, rows)| *rows)
     }
 
     pub fn edge_url(&self) -> String {
@@ -134,7 +262,13 @@ impl MockEdge {
     }
 
     pub fn rows(&self, chat: &str) -> Vec<Row> {
-        self.shared.rooms.lock().unwrap().get(chat).map(|r| r.rows.clone()).unwrap_or_default()
+        self.shared
+            .rooms
+            .lock()
+            .unwrap()
+            .get(chat)
+            .map(|r| r.rows.clone())
+            .unwrap_or_default()
     }
 
     /// Append a host-authored update and broadcast it.
@@ -143,7 +277,12 @@ impl MockEdge {
             let mut rooms = self.shared.rooms.lock().unwrap();
             let room = rooms.entry(chat.to_owned()).or_default();
             let seq = room.rows.len() as u64 + 1;
-            let row = Row { seq, device: device.to_owned(), batch_id: format!("host-{seq}"), bytes };
+            let row = Row {
+                seq,
+                device: device.to_owned(),
+                batch_id: format!("host-{seq}"),
+                bytes,
+            };
             room.rows.push(row.clone());
             row
         };
@@ -153,11 +292,22 @@ impl MockEdge {
     }
 
     pub fn chat_sockets(&self, chat: &str) -> usize {
-        self.shared.sockets.lock().unwrap().get(chat).copied().unwrap_or(0)
+        self.shared
+            .sockets
+            .lock()
+            .unwrap()
+            .get(chat)
+            .copied()
+            .unwrap_or(0)
     }
 
     pub fn relay_host_connected(&self, device: &str) -> bool {
-        self.shared.relays.lock().unwrap().get(device).is_some_and(|r| r.host.is_some())
+        self.shared
+            .relays
+            .lock()
+            .unwrap()
+            .get(device)
+            .is_some_and(|r| r.host.is_some())
     }
 
     pub fn refuse_chat_joins(&self, refuse: bool) {
@@ -210,7 +360,12 @@ fn row_frame(row: &Row) -> Vec<u8> {
 }
 
 async fn serve_chat(ws: Ws, chat: String, shared: Arc<Shared>) {
-    *shared.sockets.lock().unwrap().entry(chat.clone()).or_default() += 1;
+    *shared
+        .sockets
+        .lock()
+        .unwrap()
+        .entry(chat.clone())
+        .or_default() += 1;
     let (mut tx, mut rx) = ws.split();
     let mut broadcasts = shared.tx.subscribe();
     let mut device = String::new();
@@ -342,11 +497,16 @@ fn relay_error(code: &str) -> Vec<u8> {
 
 /// DeviceRoom semantics (edge/src/device-room.ts), as in zeron-rpc's fake.
 async fn serve_relay(ws: Ws, device: String, query: HashMap<String, String>, shared: Arc<Shared>) {
-    use zeron_rpc::device_room::{CLIENT_CLOSED, CLIENT_GONE, HOST_CLOSED, HOST_OFFLINE, RELAY_KIND};
+    use zeron_rpc::device_room::{
+        CLIENT_CLOSED, CLIENT_GONE, HOST_CLOSED, HOST_OFFLINE, RELAY_KIND,
+    };
     use zeron_rpc::{DeviceFrameHeader, decode_device_frame, encode_device_frame};
 
     let is_host = query.get("role").map(String::as_str) == Some("host");
-    let conn_id = query.get("connId").cloned().unwrap_or_else(|| "anon".into());
+    let conn_id = query
+        .get("connId")
+        .cloned()
+        .unwrap_or_else(|| "anon".into());
     let (mut sink, mut stream) = ws.split();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Out>();
     {
@@ -396,7 +556,9 @@ async fn serve_relay(ws: Ws, device: String, query: HashMap<String, String>, sha
                 }
                 None => {
                     let bounce = DeviceFrameHeader::new(header.s, RELAY_KIND);
-                    let _ = tx.send(Out::Frame(encode_device_frame(&bounce, &relay_error(HOST_OFFLINE)).unwrap()));
+                    let _ = tx.send(Out::Frame(
+                        encode_device_frame(&bounce, &relay_error(HOST_OFFLINE)).unwrap(),
+                    ));
                 }
             }
             continue;
@@ -405,11 +567,15 @@ async fn serve_relay(ws: Ws, device: String, query: HashMap<String, String>, sha
         match st.clients.get(&to) {
             Some(client) => {
                 let stripped = DeviceFrameHeader::new(header.s, header.k);
-                let _ = client.send(Out::Frame(encode_device_frame(&stripped, &payload).unwrap()));
+                let _ = client.send(Out::Frame(
+                    encode_device_frame(&stripped, &payload).unwrap(),
+                ));
             }
             None => {
                 let bounce = DeviceFrameHeader::new(header.s, RELAY_KIND).with_to(to);
-                let _ = tx.send(Out::Frame(encode_device_frame(&bounce, &relay_error(CLIENT_GONE)).unwrap()));
+                let _ = tx.send(Out::Frame(
+                    encode_device_frame(&bounce, &relay_error(CLIENT_GONE)).unwrap(),
+                ));
             }
         }
     }
@@ -422,14 +588,18 @@ async fn serve_relay(ws: Ws, device: String, query: HashMap<String, String>, sha
             }
             for client in st.clients.values() {
                 let header = DeviceFrameHeader::new("", RELAY_KIND);
-                let _ = client.send(Out::Frame(encode_device_frame(&header, &relay_error(HOST_CLOSED)).unwrap()));
+                let _ = client.send(Out::Frame(
+                    encode_device_frame(&header, &relay_error(HOST_CLOSED)).unwrap(),
+                ));
             }
         } else {
             st.clients.remove(&conn_id);
             if let Some(host) = &st.host {
                 let mut header = DeviceFrameHeader::new("", RELAY_KIND);
                 header.from = Some(conn_id.clone());
-                let _ = host.send(Out::Frame(encode_device_frame(&header, &relay_error(CLIENT_CLOSED)).unwrap()));
+                let _ = host.send(Out::Frame(
+                    encode_device_frame(&header, &relay_error(CLIENT_CLOSED)).unwrap(),
+                ));
             }
         }
     }

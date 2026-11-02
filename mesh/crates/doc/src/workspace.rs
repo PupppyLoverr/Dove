@@ -7,7 +7,7 @@
 //! to the *same* row settle field-by-field LWW (exactly right for renames/archives):
 //! - `devices`: LoroMap keyed by deviceId → row map {id, name, platform, lastSeenAt}
 //! - `spaces`: LoroMap keyed by spaceId → row map {id, deviceId, path, name?,
-//!   gitDetected, gitCheckedAt?, checkoutId?, createdAt}
+//!   gitDetected, gitCheckedAt?, checkoutId?, repositoryId?, createdAt}
 //! - `chats`: LoroMap keyed by chatId → row map {id, deviceId, title?, archived, cwd?,
 //!   branch?, checkoutId?, config?(json), lastMessagePreview?, lastMessageAt?, createdAt,
 //!   harnessSessionId?, harnessSessionCwd?, spaceId?, lastSeenAt?}
@@ -170,6 +170,8 @@ impl WorkspaceDoc {
         row.insert("gitDetected", space.git_detected)?;
         set_opt_ms(&row, "gitCheckedAt", space.git_checked_at)?;
         set_opt_str(&row, "checkoutId", space.checkout_id.as_deref())?;
+        set_opt_str(&row, "repositoryId", space.repository_id.as_deref())?;
+        set_opt_str(&row, "githubRepo", space.github_repo.as_deref())?;
         row.insert("createdAt", space.created_at.timestamp_millis())?;
         self.doc.commit();
         Ok(())
@@ -208,6 +210,8 @@ impl WorkspaceDoc {
         space_id: &str,
         detected: bool,
         checkout_id: Option<&str>,
+        repository_id: Option<&str>,
+        github_repo: Option<&str>,
         checked_at: DateTime<Utc>,
     ) -> Result<bool, DocError> {
         let Some(row) = self.existing_row("spaces", space_id) else {
@@ -215,6 +219,8 @@ impl WorkspaceDoc {
         };
         row.insert("gitDetected", detected)?;
         set_opt_str(&row, "checkoutId", checkout_id)?;
+        set_opt_str(&row, "repositoryId", repository_id)?;
+        set_opt_str(&row, "githubRepo", github_repo)?;
         row.insert("gitCheckedAt", checked_at.timestamp_millis())?;
         self.doc.commit();
         Ok(true)
@@ -282,24 +288,15 @@ impl WorkspaceDoc {
             "harnessSessionCwd",
             chat.harness_session_cwd.as_deref(),
         )?;
+        set_opt_str(
+            &row,
+            "harnessSessionHarness",
+            chat.harness_session_harness.as_deref(),
+        )?;
         set_opt_str(&row, "spaceId", chat.space_id.as_deref())?;
+        set_opt_str(&row, "parentChatId", chat.parent_chat_id.as_deref())?;
         set_opt_ms(&row, "lastSeenAt", chat.last_seen_at)?;
         set_opt_str(&row, "parentChatId", chat.parent_chat_id.as_deref())?;
-        match &chat.cloud_seat {
-            Some(seat) => row.insert("cloudSeat", LoroValue::from(serde_json::to_value(seat)?))?,
-            None => row.delete("cloudSeat")?,
-        }
-        match &chat.cloud_run {
-            Some(run) => row.insert("cloudRun", LoroValue::from(serde_json::to_value(run)?))?,
-            None => row.delete("cloudRun")?,
-        }
-        match &chat.cloud_backup {
-            Some(backup) => row.insert(
-                "cloudBackup",
-                LoroValue::from(serde_json::to_value(backup)?),
-            )?,
-            None => row.delete("cloudBackup")?,
-        }
         self.doc.commit();
         Ok(())
     }
@@ -444,12 +441,14 @@ impl WorkspaceDoc {
         chat_id: &str,
         session_id: &str,
         cwd: &str,
+        harness: Option<&str>,
     ) -> Result<bool, DocError> {
         let Some(row) = self.existing_row("chats", chat_id) else {
             return Ok(false);
         };
         row.insert("harnessSessionId", session_id)?;
         row.insert("harnessSessionCwd", cwd)?;
+        set_opt_str(&row, "harnessSessionHarness", harness)?;
         self.doc.commit();
         Ok(true)
     }
@@ -498,6 +497,21 @@ impl WorkspaceDoc {
         )?;
         set_opt_ms(&row, "startedAt", session.started_at)?;
         row.insert("updatedAt", session.updated_at.timestamp_millis())?;
+        row.insert("runningSubagents", i64::from(session.running_subagents))?;
+        match session.last_turn_outcome {
+            Some(outcome) => row.insert(
+                "lastTurnOutcome",
+                LoroValue::from(serde_json::to_value(outcome)?),
+            )?,
+            None => row.delete("lastTurnOutcome")?,
+        }
+        match &session.terminal_activity {
+            Some(activity) => row.insert(
+                "terminalActivity",
+                LoroValue::from(serde_json::to_value(activity)?),
+            )?,
+            None => row.delete("terminalActivity")?,
+        }
         self.doc.commit();
         Ok(())
     }
@@ -669,6 +683,9 @@ pub(crate) struct RawSpace {
     #[serde(default)]
     checkout_id: Option<String>,
     #[serde(default)]
+    repository_id: Option<String>,
+    github_repo: Option<String>,
+    #[serde(default)]
     created_at: i64,
 }
 
@@ -682,6 +699,8 @@ impl From<RawSpace> for Space {
             git_detected: raw.git_detected,
             git_checked_at: raw.git_checked_at.map(dt),
             checkout_id: raw.checkout_id,
+            repository_id: raw.repository_id,
+            github_repo: raw.github_repo,
             created_at: dt(raw.created_at),
         }
     }
@@ -723,6 +742,8 @@ pub(crate) struct RawChat {
     #[serde(default)]
     harness_session_cwd: Option<String>,
     #[serde(default)]
+    harness_session_harness: Option<String>,
+    #[serde(default)]
     space_id: Option<String>,
     #[serde(default)]
     last_seen_at: Option<i64>,
@@ -730,12 +751,6 @@ pub(crate) struct RawChat {
     room_gen: Option<u32>,
     #[serde(default)]
     parent_chat_id: Option<String>,
-    #[serde(default)]
-    cloud_seat: Option<zeron_proto::CloudSeatBinding>,
-    #[serde(default)]
-    cloud_run: Option<zeron_proto::CloudRun>,
-    #[serde(default)]
-    cloud_backup: Option<zeron_proto::CloudBackupPointer>,
 }
 
 /// Decode a chat row's `config` leniently: unknown enum values (a newer
@@ -773,13 +788,11 @@ impl From<RawChat> for Chat {
             created_at: dt(raw.created_at),
             harness_session_id: raw.harness_session_id,
             harness_session_cwd: raw.harness_session_cwd,
+            harness_session_harness: raw.harness_session_harness,
             space_id: raw.space_id,
             last_seen_at: raw.last_seen_at.map(dt),
             room_gen: raw.room_gen,
             parent_chat_id: raw.parent_chat_id,
-            cloud_seat: raw.cloud_seat,
-            cloud_run: raw.cloud_run,
-            cloud_backup: raw.cloud_backup,
         }
     }
 }
@@ -787,6 +800,10 @@ impl From<RawChat> for Chat {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RawSession {
+    #[serde(default)]
+    last_turn_outcome: Option<zeron_proto::NativeTurnOutcome>,
+    #[serde(default)]
+    terminal_activity: Option<zeron_proto::TerminalActivity>,
     #[serde(default)]
     last_completed_turn: Option<String>,
     chat_id: String,
@@ -796,6 +813,10 @@ pub(crate) struct RawSession {
     started_at: Option<i64>,
     #[serde(default)]
     updated_at: i64,
+    #[serde(default)]
+    running_subagents: u32,
+    #[serde(default)]
+    background_tasks: Vec<zeron_proto::BackgroundTask>,
 }
 
 impl From<RawSession> for Session {
@@ -807,6 +828,10 @@ impl From<RawSession> for Session {
             status: raw.status,
             started_at: raw.started_at.map(dt),
             updated_at: dt(raw.updated_at),
+            last_turn_outcome: raw.last_turn_outcome,
+            terminal_activity: raw.terminal_activity,
+            running_subagents: raw.running_subagents,
+            background_tasks: raw.background_tasks,
         }
     }
 }
@@ -879,16 +904,16 @@ mod tests {
                 reasoning: None,
                 model_options: Default::default(),
                 sandbox: SandboxLevel::WorkspaceWrite,
+                access: Default::default(),
+                plan: false,
             }),
             last_message_preview: None,
             last_message_at: None,
             created_at: ts(2_000),
             harness_session_id: None,
             harness_session_cwd: None,
+            harness_session_harness: None,
             parent_chat_id: Some("parent-chat".into()),
-            cloud_seat: None,
-            cloud_run: None,
-            cloud_backup: None,
             space_id: None,
             last_seen_at: None,
             room_gen: None,
@@ -904,6 +929,8 @@ mod tests {
             git_detected: false,
             git_checked_at: None,
             checkout_id: None,
+            repository_id: None,
+            github_repo: None,
             created_at: ts(1_500),
         }
     }
@@ -916,6 +943,10 @@ mod tests {
             status,
             started_at: Some(ts(3_000)),
             updated_at: ts(3_500),
+            last_turn_outcome: None,
+            terminal_activity: None,
+            running_subagents: 0,
+            background_tasks: Vec::new(),
         }
     }
 
@@ -947,6 +978,8 @@ mod tests {
             reasoning: Some(zeron_proto::ReasoningLevel::XHigh),
             model_options: options,
             sandbox: SandboxLevel::WorkspaceWrite,
+            access: Default::default(),
+            plan: false,
         };
         assert!(ws.set_chat_config("chat-1", &config).unwrap());
         let row = ws.chat("chat-1").unwrap().expect("row exists");
@@ -1010,6 +1043,14 @@ mod tests {
             vec![session("chat-1", "dev-a", SessionStatus::Working)]
         );
 
+        // The running-subagent count rides the row and survives the round trip.
+        let mut busy = session("chat-1", "dev-a", SessionStatus::Working);
+        busy.running_subagents = 4;
+        ws.upsert_session(&busy).unwrap();
+        assert_eq!(ws.read_sessions().unwrap(), vec![busy]);
+        ws.upsert_session(&session("chat-1", "dev-a", SessionStatus::Working))
+            .unwrap();
+
         // Upsert refreshes in place — no duplicate rows, cleared options removed.
         let mut updated = chat("chat-1", "dev-a");
         updated.title = None;
@@ -1020,49 +1061,6 @@ mod tests {
         assert_eq!(chats.len(), 1);
         assert_eq!(chats[0].title, None);
         assert_eq!(chats[0].last_message_preview.as_deref(), Some("hello"));
-    }
-
-    #[test]
-    fn cloud_metadata_survives_workspace_chat_upserts() {
-        let ws = WorkspaceDoc::new();
-        let mut original = chat("chat-1", "dev-a");
-        original.cloud_run = Some(zeron_proto::CloudRun {
-            id: "run-1".into(),
-            chat_id: "chat-1".into(),
-            seat_id: "seat-1".into(),
-            command: None,
-            status: zeron_proto::CloudRunStatus::Working,
-            log_path: Some("/home/seat/run.log".into()),
-            remote_ref: Some("123".into()),
-            mirrored_bytes: 12,
-            remote_cursor: Some("7".into()),
-            entry_id: Some("entry-1".into()),
-            error: None,
-            workspace: Some("/workspace/chat-1".into()),
-            harness: None,
-            model: None,
-            harness_session: None,
-            prompt: None,
-            started_at: ts(1_000),
-            finished_at: None,
-            updated_at: ts(2_000),
-        });
-        original.cloud_backup = Some(zeron_proto::CloudBackupPointer {
-            seat_id: "seat-1".into(),
-            device_id: "dev-a".into(),
-            path: "seat-backups/chat-1.tar.gz".into(),
-            bytes: Some(128),
-            created_at: ts(2_000),
-        });
-        ws.upsert_chat(&original).unwrap();
-
-        let mut updated = ws.read_chats().unwrap().remove(0);
-        updated.archived = true;
-        ws.upsert_chat(&updated).unwrap();
-
-        let row = ws.read_chats().unwrap().remove(0);
-        assert_eq!(row.cloud_run, original.cloud_run);
-        assert_eq!(row.cloud_backup, original.cloud_backup);
     }
 
     #[test]
@@ -1165,17 +1163,32 @@ mod tests {
         assert_eq!(ws.space("sp-1").unwrap().unwrap().display_name(), "project");
 
         assert!(
-            ws.set_space_git("sp-1", true, Some("checkout-abc"), ts(4_000))
-                .unwrap()
+            ws.set_space_git(
+                "sp-1",
+                true,
+                Some("checkout-abc"),
+                Some("github.com/owner/project"),
+                Some("acme/app"),
+                ts(4_000),
+            )
+            .unwrap()
         );
         let row = ws.space("sp-1").unwrap().unwrap();
         assert!(row.git_detected);
         assert_eq!(row.checkout_id.as_deref(), Some("checkout-abc"));
+        assert_eq!(
+            row.repository_id.as_deref(),
+            Some("github.com/owner/project")
+        );
+        assert_eq!(row.github_repo.as_deref(), Some("acme/app"));
         assert_eq!(row.git_checked_at, Some(ts(4_000)));
 
         // Unknown rows report false, never invent rows.
         assert!(!ws.rename_space("nope", Some("x")).unwrap());
-        assert!(!ws.set_space_git("nope", true, None, ts(1)).unwrap());
+        assert!(
+            !ws.set_space_git("nope", true, None, None, None, ts(1))
+                .unwrap()
+        );
     }
 
     #[test]

@@ -30,8 +30,8 @@ pub enum ClientEvent {
     ComposerChanged { chat_id: String, revision: u64 },
     /// Graced connectivity posture changed.
     ConnectivityChanged(Connectivity),
-    /// The auth token pair rotated — persist it (Keychain) now; the old
-    /// refresh token is already spent.
+    /// The WorkOS pair rotated — persist it (Keychain) now; the old refresh
+    /// token is already spent.
     AuthRefreshed(AuthTokens),
     /// The session cannot be refreshed any more (refresh token rejected) —
     /// the platform should sign out and show sign-in.

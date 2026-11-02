@@ -36,6 +36,13 @@ protocol RowViewDelegate: AnyObject {
     func rowView(_ view: RowView, toggleDetail detail: UInt64, open: Bool)
     func rowView(_ view: RowView, open url: URL)
     func rowView(_ view: RowView, imageFor reference: String, into imageView: UIImageView)
+    /// The live view for an agent visual (kept across row reuse).
+    func rowView(_ view: RowView, visualFor id: String) -> UIView?
+    /// A row's button (`sign-in` on an error card).
+    func rowView(_ view: RowView, perform action: String)
+    /// A subagent card was tapped: its transcript doc, title, and whether it
+    /// still runs.
+    func rowView(_ view: RowView, openSubagent docId: String, title: String, running: Bool)
 }
 
 /// A reusable transcript row: canvas + horizontal scrollers + native widgets.
@@ -53,7 +60,7 @@ final class RowView: UIView {
             textElement?.accessibilityFrameInContainerSpace = bounds
             // Controls and links first: accessibility hit-testing takes the
             // first match, and the row's text element spans the whole row.
-            return widgetViews.filter { $0 is UIControl || $0.gestureRecognizers?.isEmpty == false }
+            return widgetViews.filter { $0 is UIControl || $0 is VisualView || $0.gestureRecognizers?.isEmpty == false }
                 + positionedLinkElements()
                 + (textElement.map { [$0] } ?? [])
         }
@@ -67,7 +74,9 @@ final class RowView: UIView {
     private func rebuildLinkElements(_ d: RowDisplay) {
         linkElements = d.links.map { l in
             let e = UIAccessibilityElement(accessibilityContainer: self)
-            e.accessibilityLabel = URL(string: l.url)?.host() ?? l.url
+            let url = URL(string: l.url)
+            // A caption over a message between chats opens the other chat.
+            e.accessibilityLabel = url?.scheme == "zeron-chat" ? "Open chat" : url?.host() ?? l.url
             e.accessibilityValue = l.url
             e.accessibilityTraits = .link
             e.accessibilityIdentifier = "transcript-link"
@@ -94,6 +103,17 @@ final class RowView: UIView {
     var uploadProgress: Double? {
         didSet { if uploadProgress != oldValue { uploadRings.forEach { $0.progress = uploadProgress } } }
     }
+    /// Pooled rows stay in the list, hidden: their visuals pause.
+    override var isHidden: Bool {
+        didSet { if isHidden != oldValue { updateVisuals() } }
+    }
+
+    private func updateVisuals() {
+        for case let visual as VisualView in widgetViews where visual.superview === self {
+            visual.active = !isHidden
+        }
+    }
+
     var key: UInt64 { model?.display.key ?? 0 }
     var version: UInt64 { model?.display.version ?? 0 }
     var kind: RowKind = .markdown
@@ -148,8 +168,10 @@ final class RowView: UIView {
         case .markdown: "row-markdown"
         case .tools: "row-tools"
         case .chip: "row-chip"
+        case .notice: "row-notice"
         case .image: "row-image"
         case .working: "row-working"
+        case .visual: "row-visual"
         }
         element.accessibilityTraits = .staticText
         element.accessibilityFrameInContainerSpace = bounds
@@ -192,7 +214,11 @@ final class RowView: UIView {
 
     private func layoutWidgets(_ d: RowDisplay) {
         uploadRings.removeAll()
-        for v in widgetViews { v.removeFromSuperview() }
+        // Only views still here: a visual's view moves between rows, and a
+        // row reused later mustn't pull it out of the one showing it now.
+        for v in widgetViews where v.superview === self || scrollers.contains(where: { $0 === v.superview }) {
+            v.removeFromSuperview()
+        }
         widgetViews.removeAll(keepingCapacity: true)
         for w in d.widgets {
             let rect = CGRect(x: CGFloat(w.x), y: CGFloat(w.y), width: CGFloat(w.w), height: CGFloat(w.h))
@@ -255,7 +281,7 @@ final class RowView: UIView {
                     iv = UIImageView(image: asset)
                     iv.contentMode = .scaleAspectFit
                 } else {
-                    iv = UIImageView(image: K22Icon.resolve(systemName: name, pointSize: rect.height * 0.8, weight: .medium))
+                    iv = UIImageView(image: K22Icon.resolve(systemName: name, withConfiguration: UIImage.SymbolConfiguration(pointSize: rect.height * 0.8, weight: .medium)))
                     iv.contentMode = .center
                 }
                 iv.tintColor = Palette.color(color)
@@ -275,8 +301,45 @@ final class RowView: UIView {
                     self.delegate?.rowView(self, toggleDetail: detail, open: open)
                 }, for: .touchUpInside)
                 view = b
+            case let .action(action, label):
+                var c = UIButton.Configuration.filled()
+                c.title = label
+                c.cornerStyle = .capsule
+                c.baseBackgroundColor = Palette.color(.dangerSoft)
+                c.baseForegroundColor = Palette.background
+                c.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 12, bottom: 0, trailing: 12)
+                c.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { a in
+                    var a = a
+                    a.font = Fonts.ui(.sansSemibold, 14)
+                    return a
+                }
+                let b = UIButton(configuration: c, primaryAction: UIAction { [weak self] _ in
+                    guard let self else { return }
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    self.delegate?.rowView(self, perform: action)
+                })
+                b.accessibilityIdentifier = "transcript-action-\(action)"
+                view = b
+            case let .subagent(docId, title, running, failed):
+                let card = SubagentCardControl()
+                card.accessibilityTraits = .button
+                card.accessibilityLabel = "Subagent: \(title)"
+                card.accessibilityValue = running ? "Working" : failed ? "Failed" : "Done"
+                card.accessibilityIdentifier = "subagent-card"
+                card.isEnabled = docId != nil
+                if let docId {
+                    card.addAction(UIAction { [weak self] _ in
+                        guard let self else { return }
+                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                        self.delegate?.rowView(self, openSubagent: docId, title: title, running: running)
+                    }, for: .touchUpInside)
+                }
+                view = card
             case .shimmer:
                 view = ShimmerView(model: model!, rect: rect)
+            case let .visual(id):
+                view = delegate?.rowView(self, visualFor: id) ?? UIView()
+                (view as? VisualView)?.active = !isHidden
             }
             view.frame = rect
             host.addSubview(view)
@@ -288,6 +351,13 @@ final class RowView: UIView {
 
     static func asset(_ name: String) -> UIImage? {
         if let hit = assets[name] { return hit }
+        // `brand:<harness>`: a provider's logo (a switch seam's), drawn large
+        // and scaled down; tinted marks keep their colour.
+        if name.hasPrefix("brand:") {
+            let image = BrandMarks.image(for: String(name.dropFirst("brand:".count)), side: 32)
+            assets[name] = image
+            return image
+        }
         let image = (name.hasPrefix("tool-") || name.hasPrefix("fileicon-")) ? UIImage(named: name) : nil
         assets[name] = image
         return image
@@ -322,7 +392,7 @@ final class CopyButton: UIButton {
         self.payload = payload
         super.init(frame: .zero)
         let config = UIImage.SymbolConfiguration(pointSize: 13, weight: .medium)
-        setImage(K22Icon.image("copy"), for: .normal)
+        setImage(K22Icon.resolve(systemName: "square.on.square", withConfiguration: config), for: .normal)
         tintColor = Palette.tertiary
         accessibilityLabel = "Copy code"
         addAction(UIAction { [weak self] _ in self?.copy() }, for: .touchUpInside)
@@ -334,10 +404,10 @@ final class CopyButton: UIButton {
         UIPasteboard.general.string = payload
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
         let config = UIImage.SymbolConfiguration(pointSize: 13, weight: .semibold)
-        setImage(K22Icon.image("check"), for: .normal)
+        setImage(K22Icon.resolve(systemName: "checkmark", withConfiguration: config), for: .normal)
         tintColor = Palette.accent
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) { [weak self] in
-            self?.setImage(K22Icon.image("copy", pointSize: 13), for: .normal)
+            self?.setImage(K22Icon.resolve(systemName: "square.on.square", withConfiguration: UIImage.SymbolConfiguration(pointSize: 13, weight: .medium)), for: .normal)
             self?.tintColor = Palette.tertiary
         }
     }
@@ -350,7 +420,7 @@ final class DisclosureControl: UIControl {
         accessibilityTraits = .button
         accessibilityLabel = expanded ? "Collapse" : "Expand"
         guard chevron else { return }
-        let iv = UIImageView(image: K22Icon.image("alt-arrow-right", pointSize: 10))
+        let iv = UIImageView(image: K22Icon.resolve(systemName: "chevron.right", withConfiguration: UIImage.SymbolConfiguration(pointSize: 10, weight: .semibold)))
         iv.tintColor = Palette.tertiary
         iv.transform = expanded ? CGAffineTransform(rotationAngle: .pi / 2) : .identity
         iv.tag = 1
@@ -382,7 +452,7 @@ final class ToolStatusView: UIView {
             grid.autoresizingMask = [.flexibleWidth, .flexibleHeight]
             addSubview(grid)
         } else {
-            let iv = UIImageView(image: K22Icon.resolve(systemName: failed ? "xmark" : "checkmark", pointSize: 10, weight: .bold))
+            let iv = UIImageView(image: K22Icon.resolve(systemName: failed ? "xmark" : "checkmark", withConfiguration: UIImage.SymbolConfiguration(pointSize: 10, weight: .bold)))
             iv.tintColor = failed ? Palette.danger : Palette.tertiary
             iv.contentMode = .center
             iv.autoresizingMask = [.flexibleWidth, .flexibleHeight]

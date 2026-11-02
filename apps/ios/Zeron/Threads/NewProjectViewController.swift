@@ -35,12 +35,11 @@ final class NewProjectViewController: UIViewController, UICollectionViewDelegate
         collectionView.backgroundColor = .clear
         collectionView.delegate = self
         view.addSubview(collectionView)
-        addTopFade(above: collectionView)
         let reg = UICollectionView.CellRegistration<UICollectionViewListCell, String> { [weak self] cell, _, name in
             guard let entry = self?.listing?.entries.first(where: { $0.name == name }) else {
                 var c = UIListContentConfiguration.cell()
                 c.text = name == ".." ? "Parent Folder" : name
-                c.image = K22Icon.image("arrow-turn-left-up")
+                c.image = K22Icon.resolve(systemName: "arrow.turn.left.up")
                 cell.contentConfiguration = c
                 return
             }
@@ -87,7 +86,7 @@ final class NewProjectViewController: UIViewController, UICollectionViewDelegate
         let hosts = app.hostOptions
         device = hosts.first(where: \.online) ?? hosts.first
         navigationItem.rightBarButtonItem = UIBarButtonItem(title: device?.name ?? "No hosts", menu: UIMenu(title: "Device", children: hosts.map { h in
-            UIAction(title: h.name, subtitle: h.online ? "Online" : "Offline", image: K22Icon.image("monitor")) { [weak self] _ in
+            UIAction(title: h.name, subtitle: h.online ? "Online" : "Offline", image: K22Icon.resolve(systemName: "desktopcomputer")) { [weak self] _ in
                 self?.device = h
                 self?.navigationItem.rightBarButtonItem?.title = h.name
                 self?.load(nil)

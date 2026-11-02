@@ -16,20 +16,20 @@ final class AttachmentPicker: NSObject, PHPickerViewControllerDelegate, UIImageP
 
     static func menu(host: UIViewController, limit: Int, completion: @escaping ([StagedImage]) -> Void) -> UIMenu {
         var items: [UIMenuElement] = [
-            UIAction(title: "Photo Library", image: K22Icon.image("gallery")) { _ in
+            UIAction(title: "Photo Library", image: K22Icon.resolve(systemName: "photo.on.rectangle")) { _ in
                 AttachmentPicker(host: host, completion: completion).presentPhotos(limit: limit)
             },
         ]
         if UIImagePickerController.isSourceTypeAvailable(.camera) {
-            items.append(UIAction(title: "Take Photo", image: K22Icon.image("camera")) { _ in
+            items.append(UIAction(title: "Take Photo", image: K22Icon.resolve(systemName: "camera")) { _ in
                 AttachmentPicker(host: host, completion: completion).presentCamera()
             })
         }
-        items.append(UIAction(title: "Choose File", image: K22Icon.image("folder")) { _ in
+        items.append(UIAction(title: "Choose File", image: K22Icon.resolve(systemName: "folder")) { _ in
             AttachmentPicker(host: host, completion: completion).presentFiles()
         })
         if UIPasteboard.general.hasImages {
-            items.append(UIAction(title: "Paste Image", image: K22Icon.image("clipboard")) { _ in
+            items.append(UIAction(title: "Paste Image", image: K22Icon.resolve(systemName: "doc.on.clipboard")) { _ in
                 let staged = UIPasteboard.general.images?.compactMap { AttachmentPicker.stage(image: $0) } ?? []
                 completion(staged)
             })

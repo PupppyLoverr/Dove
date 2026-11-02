@@ -53,11 +53,17 @@
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Attach photos to messages.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Dictate messages and talk to your agent in voice mode.</string>
-	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>Turns your voice into text on this iPhone for dictation and voice mode.</string>
+	<string>Dictate messages, and talk to your agents in voice calls through the computer running them.</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+	</array>
+	<key>NSSupportsLiveActivities</key>
+	<true/>
 	<key>NSCameraUsageDescription</key>
 	<string>Take photos to attach to messages.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Terminals connect straight to your computer on the same network, so typing shows up without a round trip through the internet.</string>
 	<key>UILaunchScreen</key>
 	<dict>
 		<key>UIColorName</key>

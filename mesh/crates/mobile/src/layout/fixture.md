@@ -7,7 +7,7 @@ before it is shown, so scrolling never guesses. Inline `code spans` get chips,
 ## Steps
 
 1. Parse markdown incrementally (`IncrementalParser::append`).
-2. Measure with `rustybuzz` on the bundled Inter faces.
+2. Measure with `rustybuzz` on the bundled Geist faces.
    - Nested bullet with a very/long/path/that/must/wrap/somewhere/in/the/middle/because/it/is/too/wide.rs
    - Another nested item
 3. Paint at Rust positions.
@@ -32,6 +32,11 @@ fn main() {
 | zeron-text | measurement + line breaking | 3,100 |
 | zeron-markdown | incremental parse | 1,700 |
 | zeron-mobile | layout + FFI | 1,400 |
+
+Math sits on the line: $E = mc^2$, $\frac{a}{b}$ and $\sum_{i=1}^{n} x_i$ grow
+their lines only as much as they need.
+
+$$\int_0^\infty e^{-x^2}\,dx = \frac{\sqrt{\pi}}{2}$$
 
 ---
 

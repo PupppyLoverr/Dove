@@ -6,6 +6,7 @@ struct SessionChrome: Equatable {
     enum Banner: Equatable {
         case none
         case working(since: Date?, word: String)
+        case sending
         case offline
         case reconnecting(in: Int)
         case notDelivered
@@ -75,17 +76,16 @@ protocol SessionSource: AnyObject {
     func finishEdit(text: String?) async
     /// Menu for a composer chip (model, effort, branch…), or nil.
     func chipMenu(_ id: String) -> UIMenu?
-    /// Models available to the session's fixed harness.
-    func models() async -> [ModelChoice]
-    func selectModel(_ model: ModelChoice)
+    /// The model picker sheet, when this source has one (else the model
+    /// chip's menu).
+    func modelPicker() -> UIViewController?
+    /// Where this chat's provider signs in (an error card's "Log in").
+    func signInTarget() -> AgentAccountsViewController.Target?
     func loadImage(_ reference: String, into view: UIImageView)
+    /// An attachment's picture, for opening it full size (an image chip).
+    func image(_ reference: String) async -> UIImage?
     /// Workspace files for `@` mentions.
     func searchFiles(_ query: String) async -> [FileMatch]
-}
-
-extension SessionSource {
-    func models() async -> [ModelChoice] { [] }
-    func selectModel(_ model: ModelChoice) {}
 }
 
 enum QueueAction {
@@ -105,23 +105,6 @@ final class FixtureSessionSource: SessionSource {
     private var entries: [DebugEntry] = []
     private var timer: Timer?
     private let fixture = layoutFixtureMarkdown()
-
-    /// A session that would not open: says so, and takes no messages.
-    private var unavailable = false
-
-    static func unavailable() -> FixtureSessionSource {
-        let source = FixtureSessionSource(title: "Unavailable", subtitle: "")
-        source.unavailable = true
-        source.chrome.chips = []
-        source.chrome.placeholder = "Session unavailable"
-        source.entries = [DebugEntry(
-            id: "a0",
-            user: false,
-            text: "This session couldn't be opened. It may have been deleted, or your computer may be offline. Go back and try again.",
-            streaming: false
-        )]
-        return source
-    }
 
     init(title: String, subtitle: String) {
         chrome.title = title
@@ -156,7 +139,6 @@ final class FixtureSessionSource: SessionSource {
     }
 
     func send(text: String, images: [StagedImage], mode: DeliveryMode) -> Bool {
-        if unavailable { return false }
         if chrome.running, mode == .queue {
             update { $0.queue.append(.init(id: UUID().uuidString, text: text, thumbnail: images.first?.thumbnail, gate: nil)) }
             return true
@@ -253,5 +235,13 @@ final class FixtureSessionSource: SessionSource {
         }
     }
     func loadImage(_ reference: String, into view: UIImageView) {}
+    func image(_ reference: String) async -> UIImage? { nil }
     func searchFiles(_ query: String) async -> [FileMatch] { [] }
+}
+
+extension SessionSource {
+    /// Nothing was ever sent or queued here.
+    var isUnused: Bool { false }
+    func modelPicker() -> UIViewController? { nil }
+    func signInTarget() -> AgentAccountsViewController.Target? { nil }
 }

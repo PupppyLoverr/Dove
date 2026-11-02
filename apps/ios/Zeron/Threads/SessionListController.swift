@@ -12,7 +12,6 @@ class SessionListController: UIViewController, UICollectionViewDelegate {
 
     let app: AppModel
     var collectionView: UICollectionView!
-    private var topFade: TopFadeOverlay!
     var dataSource: UICollectionViewDiffableDataSource<String, Item>!
     private(set) var sessions: [String: SessionRowVM] = [:]
     private(set) var folders: [String: FolderRowVM] = [:]
@@ -34,6 +33,9 @@ class SessionListController: UIViewController, UICollectionViewDelegate {
     }
     /// Headers are disclosure rows that fold their section (front page).
     var collapsible = false
+    /// Long-press drags a session between the list's sections (front page);
+    /// `dropTarget` names what each section means as a destination.
+    var movesAcrossSections = false
     private(set) var collapsed = Set(UserDefaults.standard.stringArray(forKey: "collapsedSections") ?? [])
     private var headerStates: [String: SectionHeaderCell.State] = [:]
 
@@ -57,10 +59,13 @@ class SessionListController: UIViewController, UICollectionViewDelegate {
         collectionView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         collectionView.backgroundColor = .clear
         collectionView.delegate = self
+        if movesAcrossSections {
+            collectionView.dragDelegate = self
+            collectionView.dropDelegate = self
+            // Off by default on iPhone.
+            collectionView.dragInteractionEnabled = true
+        }
         view.addSubview(collectionView)
-        // Clear at rest: the front page's wallpaper sits behind the bar.
-        topFade = addTopFade(above: collectionView)
-        topFade.alpha = 0
 
         let sessionReg = UICollectionView.CellRegistration<SessionCell, String> { [weak self] cell, path, id in
             guard let self, let vm = self.sessions[id] else { return }
@@ -170,7 +175,6 @@ class SessionListController: UIViewController, UICollectionViewDelegate {
     func listDidScroll(_ scrollView: UIScrollView) {}
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
-        topFade.alpha = min(1, max(0, (scrollView.contentOffset.y + scrollView.adjustedContentInset.top) / 16))
         listDidScroll(scrollView)
     }
 
@@ -205,13 +209,21 @@ class SessionListController: UIViewController, UICollectionViewDelegate {
     /// Long-press actions for a collapsible section header.
     func headerMenu(_ id: String) -> UIMenu? { nil }
 
+    /// What dropping a dragged session into list section `id` means; nil
+    /// where sessions can't be dropped.
+    func dropTarget(_ id: String) -> SessionDropTarget? { nil }
+
     func openSession(_ id: String) {
         // iPad: sessions open beside the sidebar.
         if let split = splitViewController as? SplitRootController, !split.isCollapsed {
             split.openSession(id)
             return
         }
-        navigationController?.pushViewController(SessionViewController(app: app, chatId: id), animated: true)
+        guard let session = SessionViewController(app: app, chatId: id) else {
+            mainShell?.showSessionOpenError()
+            return
+        }
+        navigationController?.pushViewController(session, animated: true)
     }
 
     func openFolder(_ id: String) {
@@ -244,7 +256,7 @@ class SessionListController: UIViewController, UICollectionViewDelegate {
                 self?.app.unarchive(id)
                 done(true)
             }
-            restore.image = K22Icon.image("upload")
+            restore.image = K22Icon.resolve(systemName: "tray.and.arrow.up.fill")
             restore.backgroundColor = Palette.accent
             return UISwipeActionsConfiguration(actions: [restore])
         }
@@ -252,13 +264,13 @@ class SessionListController: UIViewController, UICollectionViewDelegate {
             self?.app.archive(id)
             done(true)
         }
-        archive.image = K22Icon.image("archive-minimalistic")
+        archive.image = K22Icon.resolve(systemName: "archivebox.fill")
         archive.backgroundColor = Palette.secondary
         let move = UIContextualAction(style: .normal, title: "Move") { [weak self] _, view, done in
             self?.presentMoveMenu(id, from: view)
             done(true)
         }
-        move.image = K22Icon.image("folder")
+        move.image = K22Icon.resolve(systemName: "folder.fill")
         move.backgroundColor = UIColor(hex: 0x5E6AD2)
         return UISwipeActionsConfiguration(actions: [archive, move])
     }
@@ -272,28 +284,36 @@ class SessionListController: UIViewController, UICollectionViewDelegate {
             guard let self else { return nil }
             if self.archivedRows {
                 return UIMenu(children: [
-                    UIAction(title: "Unarchive", image: K22Icon.image("upload")) { _ in self.app.unarchive(id) },
-                    UIAction(title: "Rename…", image: K22Icon.image("pen")) { _ in self.rename(id) },
+                    UIAction(title: "Unarchive", image: K22Icon.resolve(systemName: "tray.and.arrow.up")) { _ in self.app.unarchive(id) },
+                    UIAction(title: "Rename…", image: K22Icon.resolve(systemName: "pencil")) { _ in self.rename(id) },
+                    self.deleteAction(id),
                 ])
             }
             return UIMenu(children: [
                 UIAction(title: vm.pinned ? "Unpin" : "Pin", image: K22Icon.resolve(systemName: vm.pinned ? "pin.slash" : "pin")) { _ in self.app.setPinned(id, !vm.pinned) },
                 self.moveMenu(id),
-                UIAction(title: "Rename…", image: K22Icon.image("pen")) { _ in self.rename(id) },
-                UIAction(title: "Archive", image: K22Icon.image("archive-minimalistic"), attributes: .destructive) { _ in self.app.archive(id) },
+                UIAction(title: "Rename…", image: K22Icon.resolve(systemName: "pencil")) { _ in self.rename(id) },
+                UIAction(title: "Archive", image: K22Icon.resolve(systemName: "archivebox")) { _ in self.app.archive(id) },
+                self.deleteAction(id),
             ])
+        }
+    }
+
+    private func deleteAction(_ id: String) -> UIAction {
+        UIAction(title: "Delete", image: K22Icon.resolve(systemName: "trash"), attributes: .destructive) { [weak self] _ in
+            self?.confirmDelete(app: self?.app, id) {}
         }
     }
 
     func moveMenu(_ id: String) -> UIMenu {
         var items: [UIMenuElement] = app.frontPage.folders.filter { $0.id != "pinned" }.map { f in
-            UIAction(title: f.name, image: K22Icon.image("folder")) { [weak self] _ in self?.app.move(id, toSection: f.id) }
+            UIAction(title: f.name, image: K22Icon.resolve(systemName: "folder")) { [weak self] _ in self?.app.move(id, toSection: f.id) }
         }
-        items.append(UIAction(title: "No Section", image: K22Icon.image("tray")) { [weak self] _ in self?.app.move(id, toSection: nil) })
-        items.append(UIAction(title: "New Section…", image: K22Icon.image("folder-add")) { [weak self] _ in
+        items.append(UIAction(title: "No Section", image: K22Icon.resolve(systemName: "tray")) { [weak self] _ in self?.app.move(id, toSection: nil) })
+        items.append(UIAction(title: "New Section…", image: K22Icon.resolve(systemName: "folder.badge.plus")) { [weak self] _ in
             self?.promptForSection { name in self?.app.createSection(name) }
         })
-        return UIMenu(title: "Move to Section", image: K22Icon.image("folder"), children: items)
+        return UIMenu(title: "Move to Section", image: K22Icon.resolve(systemName: "folder"), children: items)
     }
 
     private func presentMoveMenu(_ id: String, from view: UIView) {
@@ -330,6 +350,117 @@ class SessionListController: UIViewController, UICollectionViewDelegate {
     }
 }
 
+/// Where a dragged session lands. Pinned and the user's sections keep a placed
+/// order (shared with desktop); Recent is by activity, so only membership moves.
+enum SessionDropTarget: Equatable {
+    case pinned
+    case section(String)
+    case recent
+}
+
+// MARK: Drag between sections
+
+extension SessionListController: UICollectionViewDragDelegate, UICollectionViewDropDelegate {
+    func collectionView(_ collectionView: UICollectionView, itemsForBeginning session: UIDragSession, at indexPath: IndexPath) -> [UIDragItem] {
+        guard let id = sessionId(indexPath), dropTarget(listSection(of: indexPath)) != nil else { return [] }
+        let item = UIDragItem(itemProvider: NSItemProvider())
+        item.localObject = id
+        return [item]
+    }
+
+    func collectionView(_ collectionView: UICollectionView, canHandle session: UIDropSession) -> Bool {
+        session.localDragSession?.items.first?.localObject is String
+    }
+
+    func collectionView(_ collectionView: UICollectionView, dropSessionDidUpdate session: UIDropSession, withDestinationIndexPath destinationIndexPath: IndexPath?) -> UICollectionViewDropProposal {
+        guard let id = session.localDragSession?.items.first?.localObject as? String,
+              let path = destinationIndexPath,
+              let slot = dropSlot(for: id, at: path)
+        else { return UICollectionViewDropProposal(operation: .cancel) }
+        // Recent sorts by activity: a drag within it has nothing to place.
+        if slot.target == .recent, currentTarget(of: id) == .recent {
+            return UICollectionViewDropProposal(operation: .cancel)
+        }
+        return UICollectionViewDropProposal(operation: .move, intent: .insertAtDestinationIndexPath)
+    }
+
+    func collectionView(_ collectionView: UICollectionView, performDropWith coordinator: UICollectionViewDropCoordinator) {
+        guard let item = coordinator.items.first,
+              let id = item.dragItem.localObject as? String,
+              let path = coordinator.destinationIndexPath,
+              let slot = dropSlot(for: id, at: path)
+        else { return }
+        let source = currentTarget(of: id)
+        if slot.target == .recent, source == .recent { return }
+        // Show the row in its slot at once; the synced state follows. A
+        // folded destination opens, as desktop's does, to show where it went.
+        var snapshot = dataSource.snapshot()
+        let section = snapshot.sectionIdentifiers[path.section]
+        if collapsed.remove(section) != nil {
+            UserDefaults.standard.set(Array(collapsed), forKey: "collapsedSections")
+        }
+        snapshot.deleteItems([.session(id)])
+        if slot.index > 0 {
+            snapshot.insertItems([.session(id)], afterItem: slot.items[slot.index - 1])
+        } else if let first = slot.items.first {
+            snapshot.insertItems([.session(id)], beforeItem: first)
+        } else {
+            snapshot.appendItems([.session(id)], toSection: section)
+        }
+        dataSource.apply(snapshot, animatingDifferences: false)
+        coordinator.drop(item.dragItem, toItemAt: IndexPath(item: slot.index, section: path.section))
+        UISelectionFeedbackGenerator().selectionChanged()
+
+        switch slot.target {
+        case .pinned:
+            if source == .pinned {
+                app.movePin(id, after: slot.after, before: slot.before)
+            } else {
+                app.pin(id, after: slot.after, before: slot.before)
+            }
+        case let .section(sectionId):
+            app.place(id, inSection: sectionId, after: slot.after, before: slot.before)
+        case .recent:
+            if source == .pinned {
+                app.setPinned(id, false)
+            } else {
+                app.move(id, toSection: nil)
+            }
+        }
+    }
+
+    private func listSection(of path: IndexPath) -> String {
+        dataSource.snapshot().sectionIdentifiers[path.section]
+    }
+
+    /// The destination the session sits in now.
+    private func currentTarget(of id: String) -> SessionDropTarget? {
+        dataSource.snapshot().sectionIdentifier(containingItem: .session(id)).flatMap(dropTarget)
+    }
+
+    /// Where a drop at `path` places `id`: the destination, the section's items
+    /// without the dragged row, the row's index among them, and its session
+    /// neighbours. A drop above a section's header has no slot.
+    private func dropSlot(for id: String, at path: IndexPath) -> (target: SessionDropTarget, items: [Item], index: Int, after: String?, before: String?)? {
+        let snapshot = dataSource.snapshot()
+        guard path.section < snapshot.numberOfSections else { return nil }
+        let section = snapshot.sectionIdentifiers[path.section]
+        guard let target = dropTarget(section) else { return nil }
+        let items = snapshot.itemIdentifiers(inSection: section).filter { $0 != .session(id) }
+        let headed: Int
+        if case .header = items.first { headed = 1 } else { headed = 0 }
+        if path.item < headed { return nil }
+        let index = min(path.item, items.count)
+        func session(_ item: Item?) -> String? {
+            if case let .session(id) = item { return id }
+            return nil
+        }
+        let after = index > 0 ? session(items[index - 1]) : nil
+        let before = index < items.count ? session(items[index]) : nil
+        return (target, items, index, after, before)
+    }
+}
+
 /// Front page, laid out like the desktop sidebar: Pinned and the user's
 /// sections inline as foldable groups, then everything else under Recent.
 /// Fold state persists; long-press a header for its actions.
@@ -343,13 +474,36 @@ class SessionsViewController: SessionListController {
 
     override func viewDidLoad() {
         collapsible = true
+        movesAcrossSections = true
         super.viewDidLoad()
         let backdrop = UIView()
         backdrop.addSubview(wallpaper)
         collectionView.backgroundView = backdrop
         title = "Sessions"
         navigationItem.largeTitleDisplayMode = .always
-        navigationItem.rightBarButtonItem = UIBarButtonItem(image: K22Icon.image("more-horizontal"), menu: optionsMenu())
+        navigationItem.rightBarButtonItem = UIBarButtonItem(image: K22Icon.resolve(systemName: "ellipsis"), menu: optionsMenu())
+    }
+
+    /// iPhone: search lives in the bottom bar (the system's toolbar-integrated
+    /// field) and filters this list in place.
+    func enableToolbarSearch() {
+        guard navigationItem.searchController == nil else { return }
+        let search = UISearchController(searchResultsController: nil)
+        search.searchResultsUpdater = self
+        search.obscuresBackgroundDuringPresentation = false
+        search.searchBar.placeholder = "Search"
+        navigationItem.searchController = search
+        navigationItem.preferredSearchBarPlacement = .integrated
+        navigationItem.searchBarPlacementAllowsToolbarIntegration = true
+        // Otherwise the list opens scrolled past the large title.
+        navigationItem.hidesSearchBarWhenScrolling = false
+    }
+
+    func activateSearch() {
+        navigationItem.searchController?.isActive = true
+        DispatchQueue.main.async { [weak self] in
+            self?.navigationItem.searchController?.searchBar.becomeFirstResponder()
+        }
     }
 
     override func buildSections() -> [(id: String, header: String?, folders: [FolderRowVM], sessions: [SessionRowVM])] {
@@ -360,28 +514,14 @@ class SessionsViewController: SessionListController {
         for f in app.frontPage.folders {
             out.append((f.id, f.name, [], app.sessions(inFolder: f.id)))
         }
-        out.append(("recent", out.isEmpty ? nil : "Recent", [], app.frontPage.sessions))
-        setNeedsUpdateContentUnavailableConfiguration()
-        return out
-    }
-
-    /// Fresh from sign-in the list is empty for a moment, or for good on a new
-    /// account: say what will appear here.
-    override func updateContentUnavailableConfiguration(using state: UIContentUnavailableConfigurationState) {
-        guard query.isEmpty, app.frontPage.sessions.isEmpty, app.frontPage.folders.isEmpty else {
-            contentUnavailableConfiguration = nil
-            return
+        if app.groupByProject {
+            for g in app.frontPage.projectGroups {
+                out.append((g.id, g.name, [], g.sessions))
+            }
+            return out
         }
-        var empty = UIContentUnavailableConfiguration.empty()
-        empty.image = K22Icon.image("k22-mark", pointSize: 40)
-        empty.imageProperties.tintColor = Palette.tertiary
-        empty.text = "No sessions yet"
-        empty.textProperties.font = Fonts.ui(.sansSemibold, 17)
-        empty.textProperties.color = Palette.text
-        empty.secondaryText = "Sessions from your computers appear here as they sync. Start one with New session."
-        empty.secondaryTextProperties.font = Fonts.ui(.sans, 14)
-        empty.secondaryTextProperties.color = Palette.secondary
-        contentUnavailableConfiguration = empty
+        out.append(("recent", out.isEmpty ? nil : "Recent", [], app.frontPage.sessions))
+        return out
     }
 
     override func viewDidLayoutSubviews() {
@@ -395,20 +535,30 @@ class SessionsViewController: SessionListController {
         wallpaper.scrollFade = 1 - max(0, travel) / max(1, wallpaper.bounds.height * 0.6)
     }
 
+    override func dropTarget(_ id: String) -> SessionDropTarget? {
+        // Search results and project groups aren't places a session is put.
+        guard query.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
+        switch id {
+        case "pinned": return .pinned
+        case "recent": return .recent
+        default: return app.frontPage.folders.contains { $0.id == id } ? .section(id) : nil
+        }
+    }
+
     override func headerMenu(_ id: String) -> UIMenu? {
         if id == "recent" { return nil }
         guard let folder = app.frontPage.folders.first(where: { $0.id == id }) else { return nil }
-        let open = UIAction(title: "Open", image: K22Icon.image("arrow-up-right")) { [weak self] _ in self?.openFolder(id) }
+        let open = UIAction(title: "Open", image: K22Icon.resolve(systemName: "arrow.up.right")) { [weak self] _ in self?.openFolder(id) }
         if id == "pinned" {
             return UIMenu(children: [
                 open,
-                UIAction(title: "Reorder…", image: K22Icon.image("sort-vertical")) { [weak self] _ in self?.openFolder(id) },
+                UIAction(title: "Reorder…", image: K22Icon.resolve(systemName: "arrow.up.arrow.down")) { [weak self] _ in self?.openFolder(id) },
             ])
         }
         return UIMenu(children: [
             open,
-            UIAction(title: "Rename Section…", image: K22Icon.image("pen")) { [weak self] _ in self?.renameSection(folder) },
-            UIAction(title: "Delete Section", image: K22Icon.image("trash-bin-minimalistic"), attributes: .destructive) { [weak self] _ in self?.app.deleteSection(id) },
+            UIAction(title: "Rename Section…", image: K22Icon.resolve(systemName: "pencil")) { [weak self] _ in self?.renameSection(folder) },
+            UIAction(title: "Delete Section", image: K22Icon.resolve(systemName: "trash"), attributes: .destructive) { [weak self] _ in self?.app.deleteSection(id) },
         ])
     }
 
@@ -425,14 +575,23 @@ class SessionsViewController: SessionListController {
 
     func optionsMenu() -> UIMenu {
         UIMenu(children: [
-            UIAction(title: "New Section…", image: K22Icon.image("folder-add")) { [weak self] _ in
+            UIAction(title: "New Section…", image: K22Icon.resolve(systemName: "folder.badge.plus")) { [weak self] _ in
                 self?.promptForSection { name in self?.app.createSection(name) }
             },
-            UIAction(title: "Collapse All", image: K22Icon.image("fold-vertical")) { [weak self] _ in
+            UIAction(title: "Collapse All", image: K22Icon.resolve(systemName: "rectangle.compress.vertical")) { [weak self] _ in
                 guard let self else { return }
-                for f in self.app.frontPage.folders where !self.collapsed.contains(f.id) { self.toggleSection(f.id) }
+                var ids = self.app.frontPage.folders.map(\.id)
+                if self.app.groupByProject { ids += self.app.frontPage.projectGroups.map(\.id) }
+                for id in ids where !self.collapsed.contains(id) { self.toggleSection(id) }
             },
-            UIAction(title: "Archived", image: K22Icon.image("archive-minimalistic")) { [weak self] _ in
+            // Rebuilt on each open: Settings flips it too.
+            UIDeferredMenuElement.uncached { [weak self] done in
+                guard let app = self?.app else { return done([]) }
+                done([UIAction(title: "Group by Project", image: K22Icon.resolve(systemName: "square.stack.3d.up"), state: app.groupByProject ? .on : .off) { _ in
+                    app.groupByProject.toggle()
+                }])
+            },
+            UIAction(title: "Archived", image: K22Icon.resolve(systemName: "archivebox")) { [weak self] _ in
                 guard let self else { return }
                 self.navigationController?.pushViewController(FolderViewController(app: self.app, folder: FolderRowVM(id: "archived", name: "Archived", count: 0, symbol: "archivebox")), animated: true)
             },
@@ -447,6 +606,8 @@ final class FolderViewController: SessionListController {
     init(app: AppModel, folder: FolderRowVM) {
         self.folder = folder
         super.init(app: app)
+        // The front page's bottom bar is the front page's alone.
+        hidesBottomBarWhenPushed = true
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -464,9 +625,9 @@ final class FolderViewController: SessionListController {
             dataSource.reorderingHandlers.canReorderItem = { _ in true }
             dataSource.reorderingHandlers.didReorder = { [weak self] tx in self?.pinsReordered(tx) }
         } else if folder.id != "archived" {
-            navigationItem.rightBarButtonItem = UIBarButtonItem(image: K22Icon.image("more-horizontal"), menu: UIMenu(children: [
-                UIAction(title: "Rename Section…", image: K22Icon.image("pen")) { [weak self] _ in self?.renameSection() },
-                UIAction(title: "Delete Section", image: K22Icon.image("trash-bin-minimalistic"), attributes: .destructive) { [weak self] _ in self?.deleteSection() },
+            navigationItem.rightBarButtonItem = UIBarButtonItem(image: K22Icon.resolve(systemName: "ellipsis"), menu: UIMenu(children: [
+                UIAction(title: "Rename Section…", image: K22Icon.resolve(systemName: "pencil")) { [weak self] _ in self?.renameSection() },
+                UIAction(title: "Delete Section", image: K22Icon.resolve(systemName: "trash"), attributes: .destructive) { [weak self] _ in self?.deleteSection() },
             ]))
         }
     }
@@ -516,6 +677,12 @@ final class FolderViewController: SessionListController {
         // iPad presents action sheets as popovers: anchor it to the ⋯ button.
         alert.popoverPresentationController?.barButtonItem = navigationItem.rightBarButtonItem
         present(alert, animated: true)
+    }
+}
+
+extension SessionsViewController: UISearchResultsUpdating {
+    func updateSearchResults(for searchController: UISearchController) {
+        query = searchController.searchBar.text ?? ""
     }
 }
 

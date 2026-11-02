@@ -61,7 +61,6 @@ final class ComposerBar: UIView, UITextViewDelegate, UIGestureRecognizerDelegate
     var onStop: (() -> Void)?
     var attachMenu: (() -> UIMenu)?
     var onChipTap: ((String, UIView) -> Void)?
-    var onVoice: (() -> Void)? { didSet { updateVoiceButtonVisibility() } }
     var onHeightChange: (() -> Void)?
     var onFocusChange: ((Bool) -> Void)?
     /// `@` file search (nil disables mentions).
@@ -92,8 +91,6 @@ final class ComposerBar: UIView, UITextViewDelegate, UIGestureRecognizerDelegate
     private let glass = Glass.surface(interactive: false, radius: 25)
     private let placeholderLabel = UILabel()
     private let attachButton = UIButton(type: .system)
-    private let micButton = UIButton(type: .system)
-    private let voiceButton = UIButton(type: .system)
     private let actionButton = UIButton(type: .system)
     private let thumbs = UIStackView()
     private let thumbsScroll = FadingScrollView()
@@ -103,7 +100,6 @@ final class ComposerBar: UIView, UITextViewDelegate, UIGestureRecognizerDelegate
     private var textHeight: NSLayoutConstraint!
     private var thumbsHeight: NSLayoutConstraint!
     private var toolbarHeight: NSLayoutConstraint!
-    private var voiceWidthConstraint: NSLayoutConstraint!
     private var compactConstraints: [NSLayoutConstraint] = []
     private var cardConstraints: [NSLayoutConstraint] = []
     private(set) var isCard = false
@@ -112,13 +108,6 @@ final class ComposerBar: UIView, UITextViewDelegate, UIGestureRecognizerDelegate
     private let suggestions = MentionSuggestions()
     private var mentionQuery: (range: NSRange, query: String)?
     private var mentionTask: Task<Void, Never>?
-    private let dictation = Dictation()
-    private var dictationStartTask: Task<Void, Never>?
-    private var dictationStarting = false
-    private var dictationActive = false
-    private var dictationAnchor = 0
-    private var dictationPartialLength = 0
-    private var insertingDictation = false
 
     private let font = Fonts.ui(.sans, UIFontMetrics(forTextStyle: .body).scaledValue(for: 16.5))
     private var maxLines: Int {
@@ -128,6 +117,8 @@ final class ComposerBar: UIView, UITextViewDelegate, UIGestureRecognizerDelegate
     }
     private static let control: CGFloat = 34
     private static let compactHeight: CGFloat = 50
+    /// The bar's height at rest: one line, no attachments.
+    static var restHeight: CGFloat { compactHeight }
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -135,13 +126,6 @@ final class ComposerBar: UIView, UITextViewDelegate, UIGestureRecognizerDelegate
     }
 
     required init?(coder: NSCoder) { fatalError() }
-
-    deinit {
-        dictationStartTask?.cancel()
-        MainActor.assumeIsolated {
-            dictation.stop()
-        }
-    }
 
     private func build() {
         glass.translatesAutoresizingMaskIntoConstraints = false
@@ -161,9 +145,11 @@ final class ComposerBar: UIView, UITextViewDelegate, UIGestureRecognizerDelegate
         thumbsScroll.addSubview(thumbs)
         content.addSubview(thumbsScroll)
 
-        var attach = UIButton.Configuration.plain()
-        attach.image = K22Icon.image("plus", pointSize: 15)
+        var attach = UIButton.Configuration.filled()
+        attach.image = K22Icon.resolve(systemName: "plus", withConfiguration: UIImage.SymbolConfiguration(pointSize: 15, weight: .semibold))
         attach.baseForegroundColor = Palette.text
+        attach.baseBackgroundColor = Palette.controlFill
+        attach.cornerStyle = .capsule
         attach.contentInsets = .zero
         attachButton.configuration = attach
         attachButton.accessibilityLabel = "Attach"
@@ -175,33 +161,6 @@ final class ComposerBar: UIView, UITextViewDelegate, UIGestureRecognizerDelegate
         }])
         attachButton.showsMenuAsPrimaryAction = true
         content.addSubview(attachButton)
-
-        var mic = UIButton.Configuration.plain()
-        mic.image = K22Icon.image("microphone", pointSize: 16)
-        mic.baseForegroundColor = Palette.secondary
-        mic.contentInsets = .zero
-        micButton.configuration = mic
-        micButton.accessibilityIdentifier = "composer-mic"
-        micButton.accessibilityLabel = "Dictate"
-        micButton.translatesAutoresizingMaskIntoConstraints = false
-        micButton.addAction(UIAction { [weak self] _ in self?.toggleDictation() }, for: .touchUpInside)
-        content.addSubview(micButton)
-
-        var voice = UIButton.Configuration.plain()
-        voice.image = K22Icon.image("waveform", pointSize: 16)
-        voice.baseForegroundColor = Palette.secondary
-        voice.contentInsets = .zero
-        voiceButton.configuration = voice
-        voiceButton.accessibilityIdentifier = "composer-voice"
-        voiceButton.accessibilityLabel = "Voice mode"
-        voiceButton.translatesAutoresizingMaskIntoConstraints = false
-        voiceButton.isHidden = onVoice == nil
-        voiceButton.addAction(UIAction { [weak self] _ in
-            guard let self else { return }
-            self.stopDictation()
-            self.onVoice?()
-        }, for: .touchUpInside)
-        content.addSubview(voiceButton)
 
         textView.font = font
         textView.textColor = Palette.text
@@ -244,7 +203,6 @@ final class ComposerBar: UIView, UITextViewDelegate, UIGestureRecognizerDelegate
         content.addSubview(actionButton)
 
         let c = Self.control
-        voiceWidthConstraint = voiceButton.widthAnchor.constraint(equalToConstant: onVoice == nil ? 0 : 32)
         textHeight = textView.heightAnchor.constraint(equalToConstant: Self.compactHeight)
         thumbsHeight = thumbsScroll.heightAnchor.constraint(equalToConstant: 0)
         toolbarHeight = toolbar.heightAnchor.constraint(equalToConstant: 0)
@@ -278,15 +236,11 @@ final class ComposerBar: UIView, UITextViewDelegate, UIGestureRecognizerDelegate
 
             attachButton.widthAnchor.constraint(equalToConstant: c),
             attachButton.heightAnchor.constraint(equalToConstant: c),
-            micButton.widthAnchor.constraint(equalToConstant: 32),
-            micButton.heightAnchor.constraint(equalToConstant: c),
-            voiceWidthConstraint,
-            voiceButton.heightAnchor.constraint(equalToConstant: c),
             actionButton.heightAnchor.constraint(equalToConstant: c),
             actionButton.widthAnchor.constraint(greaterThanOrEqualToConstant: c),
 
             chipScroll.leadingAnchor.constraint(equalTo: attachButton.trailingAnchor, constant: 8),
-            chipScroll.trailingAnchor.constraint(equalTo: micButton.leadingAnchor, constant: -2),
+            chipScroll.trailingAnchor.constraint(equalTo: actionButton.leadingAnchor, constant: -8),
             chipScroll.centerYAnchor.constraint(equalTo: toolbar.centerYAnchor),
             chipScroll.heightAnchor.constraint(equalToConstant: c),
             chipStrip.topAnchor.constraint(equalTo: chipScroll.contentLayoutGuide.topAnchor),
@@ -301,12 +255,8 @@ final class ComposerBar: UIView, UITextViewDelegate, UIGestureRecognizerDelegate
             attachButton.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -8),
             actionButton.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -8),
             actionButton.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -8),
-            voiceButton.trailingAnchor.constraint(equalTo: actionButton.leadingAnchor, constant: -2),
-            voiceButton.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -8),
-            micButton.trailingAnchor.constraint(equalTo: voiceButton.leadingAnchor, constant: -2),
-            micButton.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -8),
             textView.leadingAnchor.constraint(equalTo: attachButton.trailingAnchor, constant: 10),
-            textView.trailingAnchor.constraint(equalTo: micButton.leadingAnchor, constant: -6),
+            textView.trailingAnchor.constraint(equalTo: actionButton.leadingAnchor, constant: -8),
         ]
         // Card: full-width text, controls in the toolbar row.
         cardConstraints = [
@@ -314,10 +264,6 @@ final class ComposerBar: UIView, UITextViewDelegate, UIGestureRecognizerDelegate
             attachButton.centerYAnchor.constraint(equalTo: toolbar.centerYAnchor),
             actionButton.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -10),
             actionButton.centerYAnchor.constraint(equalTo: toolbar.centerYAnchor),
-            voiceButton.trailingAnchor.constraint(equalTo: actionButton.leadingAnchor, constant: -2),
-            voiceButton.centerYAnchor.constraint(equalTo: toolbar.centerYAnchor),
-            micButton.trailingAnchor.constraint(equalTo: voiceButton.leadingAnchor, constant: -2),
-            micButton.centerYAnchor.constraint(equalTo: toolbar.centerYAnchor),
             textView.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16),
             textView.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
         ]
@@ -329,14 +275,7 @@ final class ComposerBar: UIView, UITextViewDelegate, UIGestureRecognizerDelegate
         refreshAction(animated: false)
     }
 
-    private func updateVoiceButtonVisibility() {
-        guard voiceWidthConstraint != nil else { return }
-        voiceButton.isHidden = onVoice == nil
-        voiceWidthConstraint.constant = onVoice == nil ? 0 : 32
-        setNeedsLayout()
-    }
-
-    /// Taps on controls (attach, dictation, voice, chips, send) are theirs: focusing would
+    /// Taps on controls (attach, chips, send) are theirs: focusing would
     /// morph the capsule under the finger and cancel the control's menu.
     func gestureRecognizer(_ g: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
         var v = touch.view
@@ -490,7 +429,7 @@ final class ComposerBar: UIView, UITextViewDelegate, UIGestureRecognizerDelegate
             if let icon = chip.icon {
                 config.image = icon
             } else if let symbol = chip.symbol {
-                config.image = K22Icon.resolve(systemName: symbol, pointSize: 11.5, weight: .semibold)
+                config.image = K22Icon.resolve(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: 11.5, weight: .semibold))
             }
             config.imagePadding = chip.id == "pr" ? 5 : 6
             // Tinted chips (the PR badge) use the desktop's tone wash: fill
@@ -553,7 +492,7 @@ final class ComposerBar: UIView, UITextViewDelegate, UIGestureRecognizerDelegate
             iv.widthAnchor.constraint(equalToConstant: 56).isActive = true
             iv.heightAnchor.constraint(equalToConstant: 56).isActive = true
             var x = UIButton.Configuration.filled()
-            x.image = K22Icon.image("close", pointSize: 8)
+            x.image = K22Icon.resolve(systemName: "xmark", withConfiguration: UIImage.SymbolConfiguration(pointSize: 8, weight: .bold))
             x.baseBackgroundColor = UIColor.black.withAlphaComponent(0.55)
             x.baseForegroundColor = .white
             x.cornerStyle = .capsule
@@ -588,13 +527,7 @@ final class ComposerBar: UIView, UITextViewDelegate, UIGestureRecognizerDelegate
     }
 
     func textViewDidChangeSelection(_ textView: UITextView) {
-        if dictationActive && !insertingDictation { stopDictation() }
         if mentionQuery != nil { updateMentionQuery() }
-    }
-
-    func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText text: String) -> Bool {
-        if dictationActive || dictationStarting { stopDictation() }
-        return true
     }
 
     private func recomputeTextHeight() {
@@ -644,112 +577,6 @@ final class ComposerBar: UIView, UITextViewDelegate, UIGestureRecognizerDelegate
         !textView.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !images.isEmpty
     }
 
-    private func toggleDictation() {
-        if dictationActive || dictationStarting {
-            stopDictation()
-        } else {
-            startDictation()
-        }
-    }
-
-    private func startDictation() {
-        dictationAnchor = textView.selectedRange.location
-        dictationPartialLength = textView.selectedRange.length
-        dictationStarting = true
-        dictationStartTask = Task { @MainActor [weak self] in
-            guard let self else { return }
-            do {
-                try await self.dictation.start(
-                    onText: { [weak self] text in self?.insertDictationText(text) },
-                    onEnd: { [weak self] error in self?.dictationEnded(error) }
-                )
-                guard self.dictationStarting else { return }
-                self.dictationStarting = false
-                self.dictationActive = true
-                self.dictationStartTask = nil
-                self.updateMicButton(active: true)
-                UIImpactFeedbackGenerator(style: .light).impactOccurred()
-            } catch {
-                guard !Task.isCancelled else { return }
-                self.dictationStarting = false
-                self.dictationStartTask = nil
-                if (error as? DictationError) == .permissionDenied {
-                    self.presentSpeechSettingsAlert()
-                } else {
-                    Toast.show((error as? DictationError)?.message ?? "Dictation isn't available right now", in: self.window)
-                }
-            }
-        }
-    }
-
-    private func stopDictation() {
-        guard dictationActive || dictationStarting else { return }
-        let wasActive = dictationActive
-        dictationStarting = false
-        dictationStartTask?.cancel()
-        dictationStartTask = nil
-        dictation.stop()
-        if !wasActive {
-            updateMicButton(active: false)
-        }
-    }
-
-    private func dictationEnded(_ error: Error?) {
-        let wasActive = dictationActive
-        dictationStarting = false
-        dictationActive = false
-        dictationStartTask = nil
-        updateMicButton(active: false)
-        if wasActive { UIImpactFeedbackGenerator(style: .light).impactOccurred() }
-        if let error, (error as? DictationError) == .permissionDenied {
-            presentSpeechSettingsAlert()
-        }
-    }
-
-    private func updateMicButton(active: Bool) {
-        var config = UIButton.Configuration.plain()
-        config.image = K22Icon.resolve(systemName: active ? "mic.fill" : "mic", pointSize: 16, weight: .regular)
-        config.baseForegroundColor = active ? Palette.accent : Palette.secondary
-        config.contentInsets = .zero
-        micButton.configuration = config
-        micButton.accessibilityLabel = active ? "Stop dictation" : "Dictate"
-        micButton.imageView?.removeAllSymbolEffects()
-        if active && !UIAccessibility.isReduceMotionEnabled {
-            micButton.imageView?.addSymbolEffect(.pulse, options: .repeating)
-        }
-    }
-
-    private func insertDictationText(_ text: String) {
-        guard !text.isEmpty else { return }
-        let current = textView.text as NSString
-        let location = min(dictationAnchor, current.length)
-        let length = min(dictationPartialLength, current.length - location)
-        let range = NSRange(location: location, length: length)
-        insertingDictation = true
-        textView.text = current.replacingCharacters(in: range, with: text)
-        dictationPartialLength = (text as NSString).length
-        textView.selectedRange = NSRange(location: location + dictationPartialLength, length: 0)
-        textChanged()
-        styleMentions()
-        updateMentionQuery()
-        insertingDictation = false
-    }
-
-    private func presentSpeechSettingsAlert() {
-        guard let viewController = findViewController() else { return }
-        let alert = UIAlertController(
-            title: "Microphone or Speech Recognition access is off",
-            message: nil,
-            preferredStyle: .alert
-        )
-        alert.addAction(UIAlertAction(title: "Open Settings", style: .default) { _ in
-            guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
-            UIApplication.shared.open(url)
-        })
-        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        viewController.present(alert, animated: true)
-    }
-
     private func refreshAction(animated: Bool) {
         let action: Action = running ? (hasContent ? .queue : .stop) : .send
         let enabled = action == .stop || hasContent
@@ -776,7 +603,7 @@ final class ComposerBar: UIView, UITextViewDelegate, UIGestureRecognizerDelegate
             config.baseForegroundColor = Palette.background
             config.contentInsets = .zero
         }
-        config.image = K22Icon.resolve(systemName: symbol, pointSize: action == .stop ? 11 : 15, weight: .bold)
+        config.image = K22Icon.resolve(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: action == .stop ? 11 : 15, weight: .bold))
         let changed = currentAction != action
         currentAction = action
         let apply = {
@@ -798,12 +625,12 @@ final class ComposerBar: UIView, UITextViewDelegate, UIGestureRecognizerDelegate
         // Long-press offers the other delivery modes mid-turn.
         if action == .queue {
             var items: [UIMenuElement] = [
-                UIAction(title: "Queue for next turn", image: K22Icon.image("queue-send")) { [weak self] _ in self?.send(.queue) },
+                UIAction(title: "Queue for next turn", image: K22Icon.resolve(systemName: "text.line.last.and.arrowtriangle.forward")) { [weak self] _ in self?.send(.queue) },
             ]
             if canSteer {
-                items.append(UIAction(title: "Steer now", subtitle: "Deliver into the running turn", image: K22Icon.image("arrow-turn-down-right")) { [weak self] _ in self?.send(.steer) })
+                items.append(UIAction(title: "Steer now", subtitle: "Deliver into the running turn", image: K22Icon.resolve(systemName: "arrow.turn.down.right")) { [weak self] _ in self?.send(.steer) })
             }
-            items.append(UIAction(title: "Stop and send", image: K22Icon.image("stop-circle"), attributes: .destructive) { [weak self] _ in self?.send(.interrupt) })
+            items.append(UIAction(title: "Stop and send", image: K22Icon.resolve(systemName: "stop.circle"), attributes: .destructive) { [weak self] _ in self?.send(.interrupt) })
             actionButton.menu = UIMenu(title: "While the agent works", children: items)
             actionButton.showsMenuAsPrimaryAction = false
         } else {
@@ -825,7 +652,6 @@ final class ComposerBar: UIView, UITextViewDelegate, UIGestureRecognizerDelegate
 
     private func send(_ mode: DeliveryMode) {
         guard hasContent else { return }
-        stopDictation()
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         let body = mentions.encode(textView.text.trimmingCharacters(in: .whitespacesAndNewlines))
         let staged = images

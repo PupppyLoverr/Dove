@@ -6,7 +6,7 @@
 use serde::{Deserialize, Serialize};
 
 use zeron_proto::{
-    AgentEvent, PLAN_TOOL_NAME, SUBAGENT_INPUT_KEEP, ToolCall, ToolDiff, UserInputQuestion,
+    AgentEvent, SUBAGENT_INPUT_KEEP, ToolCall, ToolDiff, UserInputAnswer, UserInputQuestion,
 };
 
 use crate::constants::MSG_INLINE_MAX;
@@ -136,6 +136,14 @@ pub enum MessagePart {
         name: String,
         mime_type: String,
     },
+    /// An agent-authored visual (`show_visual`): a Luau script stored on the
+    /// host at `path`, rendered natively. Old desktop builds' unknown-kind
+    /// fallback yields an empty text part (invisible); iOS drops unknown kinds.
+    Visual {
+        id: String,
+        path: String,
+        title: String,
+    },
     /// Model thinking. Carries its body in a dedicated doc field (`reasoning`,
     /// never `text`) so pre-reasoning desktop builds — whose unknown-kind
     /// fallback renders `text` as prose — degrade to an invisible empty text
@@ -201,6 +209,12 @@ pub enum MessagePart {
         questions: Vec<UserInputQuestion>,
         #[serde(default)]
         resolved: bool,
+        /// What the person answered, stamped by the host as the run received
+        /// it. Presence is the record, like a tool part's `isError`: `[]` when
+        /// the questions closed unanswered, absent while pending and on parts
+        /// written before answers were recorded (old readers ignore it).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        answers: Option<Vec<UserInputAnswer>>,
     },
     Error {
         id: String,
@@ -220,6 +234,24 @@ pub enum MessagePart {
         /// source does not rewrite history.
         source_title: String,
     },
+    /// The seam where a chat changed provider: the turns above ran on
+    /// `from`, the turns below run on `to`. Written by the host engine when
+    /// the first run after a harness change is dispatched. Labels are
+    /// display names ("Claude Code", "Codex"), frozen as of the switch.
+    /// `from_harness` / `to_harness` are the harness slugs (`claude-code`,
+    /// `codex`, ...) the UI draws provider logos from; absent on a seam written
+    /// without them. Old builds' unknown-kind fallback yields an invisible empty
+    /// text part.
+    #[serde(rename_all = "camelCase")]
+    Switch {
+        id: String,
+        from: String,
+        to: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from_harness: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        to_harness: Option<String>,
+    },
 }
 
 impl MessagePart {
@@ -227,11 +259,13 @@ impl MessagePart {
         match self {
             MessagePart::Text { id, .. }
             | MessagePart::Image { id, .. }
+            | MessagePart::Visual { id, .. }
             | MessagePart::Reasoning { id, .. }
             | MessagePart::Tool { id, .. }
             | MessagePart::Input { id, .. }
             | MessagePart::Error { id, .. }
-            | MessagePart::Fork { id, .. } => id,
+            | MessagePart::Fork { id, .. }
+            | MessagePart::Switch { id, .. } => id,
         }
     }
 
@@ -254,8 +288,13 @@ impl MessagePart {
                         .as_ref()
                         .map_or(0, |s| serde_json::to_vec(s).map_or(0, |v| v.len()))
             }
-            MessagePart::Input { questions, .. } => {
+            MessagePart::Input {
+                questions, answers, ..
+            } => {
                 serde_json::to_vec(questions).map_or(0, |v| v.len())
+                    + answers
+                        .as_ref()
+                        .map_or(0, |a| serde_json::to_vec(a).map_or(0, |v| v.len()))
             }
             MessagePart::Image {
                 id,
@@ -263,12 +302,14 @@ impl MessagePart {
                 name,
                 mime_type,
             } => id.len() + path.len() + name.len() + mime_type.len(),
+            MessagePart::Visual { id, path, title } => id.len() + path.len() + title.len(),
             MessagePart::Error { message, .. } => message.len(),
             MessagePart::Fork {
                 source_chat_id,
                 source_title,
                 ..
             } => source_chat_id.len() + source_title.len(),
+            MessagePart::Switch { from, to, .. } => from.len() + to.len(),
         }
     }
 }
@@ -284,7 +325,8 @@ impl MessagePart {
 ///   (a tool call in between breaks the text block).
 /// - `ToolCall` appends, or refreshes in place when the id already exists (SDK retry idempotence).
 /// - `ToolResult` marks the matching tool part resolved / errored in place.
-/// - `InputRequested` appends an input part; `InputResolved` marks it resolved.
+/// - `InputRequested` appends an input part; `InputResolved` marks it resolved and records the
+///   answers it carries.
 /// - `Error` and `Done{error}` become visible error parts.
 pub fn fold_event_into_parts(out: &mut Vec<MessagePart>, event: &AgentEvent) {
     match event {
@@ -318,6 +360,18 @@ pub fn fold_event_into_parts(out: &mut Vec<MessagePart>, event: &AgentEvent) {
                 *existing = image;
             } else {
                 out.push(image);
+            }
+        }
+        AgentEvent::Visual { id, path, title } => {
+            let visual = MessagePart::Visual {
+                id: id.clone(),
+                path: path.clone(),
+                title: title.clone(),
+            };
+            if let Some(existing) = out.iter_mut().find(|p| p.id() == id) {
+                *existing = visual;
+            } else {
+                out.push(visual);
             }
         }
         AgentEvent::ReasoningDelta { text } => {
@@ -409,19 +463,29 @@ pub fn fold_event_into_parts(out: &mut Vec<MessagePart>, event: &AgentEvent) {
                     request_id: request_id.clone(),
                     questions: questions.clone(),
                     resolved: false,
+                    answers: None,
                 });
             }
         }
-        AgentEvent::InputResolved { request_id } => {
+        AgentEvent::InputResolved {
+            request_id,
+            answers,
+        } => {
             for p in out.iter_mut() {
                 if let MessagePart::Input {
                     request_id: rid,
                     resolved,
+                    answers: recorded,
                     ..
                 } = p
                     && rid == request_id
                 {
                     *resolved = true;
+                    // An event from before answers were recorded knows
+                    // nothing about them: leave the part's record alone.
+                    if let Some(answers) = answers {
+                        *recorded = Some(answers.clone());
+                    }
                 }
             }
         }
@@ -499,6 +563,7 @@ pub fn fold_event_into_parts(out: &mut Vec<MessagePart>, event: &AgentEvent) {
         // subagent sink writes it), never a part of the assistant message.
         AgentEvent::AssistantMessageCompleted { .. }
         | AgentEvent::Usage { .. }
+        | AgentEvent::PlanUsage { .. }
         | AgentEvent::ContextUsage { .. }
         | AgentEvent::AvailableCommands { .. }
         | AgentEvent::UserMessage { .. } => {}
@@ -590,7 +655,7 @@ pub fn sanitize_tool_call(call: &ToolCall) -> ToolCall {
         },
         ToolCall::Unknown { name, .. } => ToolCall::Unknown {
             name: name.clone(),
-            input: spawn_badge(call).or_else(|| plan_badge(call)),
+            input: spawn_badge(call),
         },
         other => other.clone(),
     }
@@ -621,23 +686,6 @@ fn spawn_badge(call: &ToolCall) -> Option<serde_json::Value> {
         })
         .collect();
     (!kept.is_empty()).then(|| serde_json::Value::Object(kept))
-}
-
-/// The plan document itself is the payload a [`PLAN_TOOL_NAME`] call exists
-/// to deliver — the docked plan surface reads `input["plan"]` back, so the
-/// render-parts policy keeps exactly that key (adapters normalize every
-/// plan-doc call to `{"plan": "<markdown>"}` before it reaches the doc).
-/// `None` for any other `Unknown`, keeping this a whitelist like
-/// [`spawn_badge`].
-fn plan_badge(call: &ToolCall) -> Option<serde_json::Value> {
-    let ToolCall::Unknown { name, input } = call else {
-        return None;
-    };
-    if name != PLAN_TOOL_NAME {
-        return None;
-    }
-    let plan = input.as_ref()?.get("plan")?.as_str()?.trim().to_owned();
-    (!plan.is_empty()).then(|| serde_json::json!({ "plan": plan }))
 }
 
 /// Deterministic continuation id: `"{root}#c{n}"`.
@@ -763,6 +811,71 @@ mod tests {
             &parts[2],
             MessagePart::Reasoning { id, text } if id == "r2" && text == "more"
         ));
+    }
+
+    #[test]
+    fn input_resolution_records_what_the_run_received() {
+        let asked = |id: &str| AgentEvent::InputRequested {
+            request_id: id.into(),
+            questions: vec![],
+        };
+        let picked = vec![UserInputAnswer {
+            question_id: "q".into(),
+            labels: vec!["B".into()],
+        }];
+        let mut parts = Vec::new();
+        for id in ["answered", "closed", "legacy"] {
+            fold_event_into_parts(&mut parts, &asked(id));
+        }
+        assert!(matches!(
+            &parts[0],
+            MessagePart::Input { answers: None, .. }
+        ));
+        fold_event_into_parts(
+            &mut parts,
+            &AgentEvent::InputResolved {
+                request_id: "answered".into(),
+                answers: Some(picked.clone()),
+            },
+        );
+        fold_event_into_parts(
+            &mut parts,
+            &AgentEvent::InputResolved {
+                request_id: "closed".into(),
+                answers: Some(vec![]),
+            },
+        );
+        // An event from before answers were recorded resolves the part but
+        // records nothing.
+        fold_event_into_parts(
+            &mut parts,
+            &AgentEvent::InputResolved {
+                request_id: "legacy".into(),
+                answers: None,
+            },
+        );
+        let recorded: Vec<_> = parts
+            .iter()
+            .map(|p| match p {
+                MessagePart::Input {
+                    resolved, answers, ..
+                } => (*resolved, answers.clone()),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            recorded,
+            vec![(true, Some(picked)), (true, Some(vec![])), (true, None)]
+        );
+        // The splitter counts answers toward the entry's byte budget.
+        let bare = MessagePart::Input {
+            id: "i".into(),
+            request_id: "i".into(),
+            questions: vec![],
+            resolved: true,
+            answers: None,
+        };
+        assert!(parts[0].byte_len() > bare.byte_len());
     }
 
     #[test]
@@ -978,111 +1091,6 @@ mod tests {
             }
         );
         assert_eq!(clean.subagent_model(), None);
-    }
-
-    /// The plan document is the call's whole payload: sanitize keeps exactly
-    /// `{"plan": <markdown>}` on a PLAN_TOOL_NAME unknown (whitespace trimmed,
-    /// everything else dropped), and a plan-named call with no usable plan
-    /// keeps no input at all. Still a fixpoint.
-    #[test]
-    fn sanitize_keeps_the_plan_payload_and_only_the_plan() {
-        let call = ToolCall::Unknown {
-            name: PLAN_TOOL_NAME.into(),
-            input: Some(serde_json::json!({
-                "plan": "  # Steps\n- one  ",
-                "extra": "goes away",
-            })),
-        };
-        let clean = sanitize_tool_call(&call);
-        assert_eq!(
-            clean,
-            ToolCall::Unknown {
-                name: PLAN_TOOL_NAME.into(),
-                input: Some(serde_json::json!({ "plan": "# Steps\n- one" })),
-            }
-        );
-        assert_eq!(sanitize_tool_call(&clean), clean);
-
-        for input in [
-            None,
-            Some(serde_json::json!({ "extra": "no plan key" })),
-            Some(serde_json::json!({ "plan": "   " })),
-            Some(serde_json::json!({ "plan": 7 })),
-        ] {
-            let call = ToolCall::Unknown {
-                name: PLAN_TOOL_NAME.into(),
-                input,
-            };
-            assert_eq!(
-                sanitize_tool_call(&call),
-                ToolCall::Unknown {
-                    name: PLAN_TOOL_NAME.into(),
-                    input: None,
-                }
-            );
-        }
-        // The name gates the key: a `plan` field on a non-plan call still
-        // strips like any other unknown input.
-        let call = ToolCall::Unknown {
-            name: "write_file".into(),
-            input: Some(serde_json::json!({ "plan": "not a plan call" })),
-        };
-        assert_eq!(
-            sanitize_tool_call(&call),
-            ToolCall::Unknown {
-                name: "write_file".into(),
-                input: None,
-            }
-        );
-    }
-
-    /// A Plan doc call folding through the parts map lands like any other
-    /// tool: resolved on its result, refreshable in place under the shared
-    /// live-plan id while partials stream.
-    #[test]
-    fn plan_doc_part_refreshes_in_place_and_resolves() {
-        let mut parts = Vec::new();
-        let call = |markdown: &str| AgentEvent::ToolCall {
-            id: zeron_proto::LIVE_PLAN_TOOL_ID.into(),
-            call: ToolCall::Unknown {
-                name: PLAN_TOOL_NAME.into(),
-                input: Some(serde_json::json!({ "plan": markdown })),
-            },
-        };
-        fold_event_into_parts(&mut parts, &call("# draft"));
-        assert_eq!(parts.len(), 1);
-        assert!(matches!(
-            &parts[0],
-            MessagePart::Tool {
-                resolved: false,
-                ..
-            }
-        ));
-        fold_event_into_parts(&mut parts, &call("# draft\n- more"));
-        assert_eq!(parts.len(), 1);
-        fold_event_into_parts(
-            &mut parts,
-            &AgentEvent::ToolResult {
-                id: zeron_proto::LIVE_PLAN_TOOL_ID.into(),
-                is_error: false,
-                output: None,
-                diff: None,
-            },
-        );
-        assert_eq!(parts.len(), 1);
-        assert!(matches!(
-            &parts[0],
-            MessagePart::Tool {
-                resolved: true,
-                call: ToolCall::Unknown { name, input },
-                ..
-            } if name == PLAN_TOOL_NAME
-                && input
-                    .as_ref()
-                    .and_then(|i| i.get("plan"))
-                    .and_then(serde_json::Value::as_str)
-                    == Some("# draft\n- more")
-        ));
     }
 
     #[test]

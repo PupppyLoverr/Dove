@@ -2,8 +2,8 @@ import UIKit
 
 /// Status colors, as the desktop sidebar tints them (`status_dot_color`).
 enum StatusTone {
-    static let working = Palette.dynamic(0x0A6FC2, 0x38B6F4, alpha: 0.55)
-    static let input = Palette.dynamic(0xA16207, 0xFACC15, alpha: 0.85)
+    static let working = Palette.dynamic(0x5B43E8, 0x8B7CF6, alpha: 0.55)
+    static let input = Palette.dynamic(0x5B43E8, 0x8B7CF6, alpha: 0.6)
     static let failed = Palette.dynamic(0xDC2626, 0xF87171, alpha: 0.65)
     static let done = Palette.dynamic(0x15803D, 0x34D399, alpha: 0.9)
     static let idle = Palette.dynamic(0x000000, 0xFFFFFF, alpha: 0.14)
@@ -12,7 +12,7 @@ enum StatusTone {
 }
 
 /// The desktop's status glyphs:
-/// - `.spinner`: the sidebar's mini glyph spinner — a 2×3 grid of sky blue
+/// - `.spinner`: the sidebar's mini glyph spinner — a 2×3 grid of violet
 ///   circles whose brightness chases around the ring (750 ms).
 /// - `.trailer`: the transcript's 3×3 gradient spinner (pastel rows).
 /// - `.dot`: a static 6 pt circle (every non-working state).
@@ -52,9 +52,9 @@ final class StatusGlyph: UIView {
     // → 3.5 / 1.5; trailer 2.5 / 1.25 → 3.5 / 1.75; dot 6 → 7.
     private static let ring = [[0, 1], [5, 2], [4, 3]]
     private static let glyphTints = [
-        Palette.dynamic(0x2F8FD6, 0x7CCBF7),
-        Palette.dynamic(0x0A6FC2, 0x38B6F4),
-        Palette.dynamic(0x07538F, 0x1F8CC9),
+        Palette.dynamic(0x7965EC, 0xABA1F9),
+        Palette.dynamic(0x5B43E8, 0x8B7CF6),
+        Palette.dynamic(0x4332AC, 0x7266CA),
     ]
     private static let trailerTints = [UIColor(hex: 0xB6D3EF), UIColor(hex: 0xEDB185), UIColor(hex: 0xF888A0)]
 

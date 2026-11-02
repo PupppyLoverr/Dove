@@ -3,10 +3,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use futures::{SinkExt, StreamExt};
+use futures::StreamExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
-use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tokio_tungstenite::tungstenite::handshake::server::{
     ErrorResponse, Request as HandshakeRequest, Response as HandshakeResponse,
 };
@@ -136,12 +135,20 @@ async fn handle_request(
 }
 
 /// Accept WebSocket connections forever, serving each with `service`.
-pub async fn serve_ws_listener(listener: TcpListener, service: Arc<dyn RpcService>) {
+///
+/// Every handshake must present `Authorization: Bearer {token}` — the
+/// per-start secret the engine published at `{data_dir}/ipc-token`
+/// ([`crate::ipc_auth`]). Loopback alone is not an identity: any local
+/// process (another OS user, a sandboxed app, a container sharing the host
+/// network) can open this port, and the engine behind it can start agents and
+/// broker vault grants.
+pub async fn serve_ws_listener(listener: TcpListener, service: Arc<dyn RpcService>, token: String) {
+    let token: Arc<str> = token.into();
     loop {
         match listener.accept().await {
             Ok((stream, peer)) => {
                 tracing::debug!(%peer, "rpc: connection accepted");
-                tokio::spawn(serve_ws_socket(stream, service.clone()));
+                tokio::spawn(serve_ws_socket(stream, service.clone(), token.clone()));
             }
             Err(err) => {
                 tracing::warn!(error = %err, "rpc: accept failed");
@@ -151,104 +158,75 @@ pub async fn serve_ws_listener(listener: TcpListener, service: Arc<dyn RpcServic
     }
 }
 
-async fn serve_ws_socket(stream: TcpStream, service: Arc<dyn RpcService>) {
-    // Native viewports dial this socket with a bare `connect_async` and send
-    // no `Origin` header. A browser always attaches `Origin` to a WebSocket
-    // handshake and cannot forge or suppress it from script, and WebSockets
-    // are exempt from the Same-Origin Policy — so rejecting any handshake
-    // that carries a non-loopback `Origin` keeps a page the user happens to
-    // visit from reaching this local socket. Keep this check.
+async fn serve_ws_socket(stream: TcpStream, service: Arc<dyn RpcService>, token: Arc<str>) {
+    // Two independent gates, both required:
     //
-    // Loopback origins (`http://localhost:*`, `http://127.0.0.1:*`,
-    // `http://[::1]:*`) are admitted: a page served by a local server is
-    // equivalent in privilege to a local process, which can already dial
-    // this socket without any Origin at all. React Native / Expo Go clients
-    // always send `Origin: http://localhost:8081` and cannot suppress it,
-    // so without this carve-out the mobile app can never pair locally.
+    // 1. Origin. Native viewports dial this socket without an `Origin`
+    //    header. A browser always attaches `Origin` to a WebSocket handshake
+    //    and cannot forge or suppress it from script, and WebSockets are
+    //    exempt from the Same-Origin Policy — so only rejecting any handshake
+    //    that carries `Origin` keeps a page the user happens to visit from
+    //    reaching this local socket. Keep this check.
+    // 2. Bearer. Any local process can still dial without `Origin`; only one
+    //    that can read the owner-only `{data_dir}/ipc-token` knows the token.
+    //    Compared in constant time; the presented value is never logged.
     //
     // The large `Err` (ErrorResponse) is the shape tungstenite's Callback
     // trait requires; it can't be boxed away here.
     #[allow(clippy::result_large_err)]
-    let reject_cross_origin = |req: &HandshakeRequest, resp: HandshakeResponse| {
+    let authorize = |req: &HandshakeRequest, resp: HandshakeResponse| {
         if let Some(origin) = req.headers().get("origin") {
-            let origin_str = String::from_utf8_lossy(origin.as_bytes());
-            if !origin_is_loopback(&origin_str) {
-                tracing::warn!(
-                    origin = %origin_str,
-                    "rpc: rejecting handshake carrying a non-local Origin header (cross-origin browser dial)"
-                );
-                let mut err =
-                    ErrorResponse::new(Some("origin not allowed on local IPC".to_string()));
-                *err.status_mut() = StatusCode::FORBIDDEN;
-                return Err(err);
-            }
+            tracing::warn!(
+                origin = %String::from_utf8_lossy(origin.as_bytes()),
+                "rpc: rejecting handshake carrying an Origin header (cross-origin browser dial)"
+            );
+            let mut err = ErrorResponse::new(Some("origin not allowed on local IPC".to_string()));
+            *err.status_mut() = StatusCode::FORBIDDEN;
+            return Err(err);
+        }
+        let presented = req
+            .headers()
+            .get(tokio_tungstenite::tungstenite::http::header::AUTHORIZATION)
+            .map(|value| value.as_bytes());
+        if !crate::ipc_auth::bearer_matches(&token, presented) {
+            tracing::warn!(
+                presented = presented.is_some(),
+                "rpc: rejecting IPC handshake without the engine's bearer token"
+            );
+            let mut err = ErrorResponse::new(Some(
+                "missing or wrong IPC token (see {data_dir}/ipc-token)".to_string(),
+            ));
+            *err.status_mut() = StatusCode::UNAUTHORIZED;
+            return Err(err);
         }
         Ok(resp)
     };
-    let ws = match tokio_tungstenite::accept_hdr_async(stream, reject_cross_origin).await {
+    // Keystrokes and their echoes are tiny frames: Nagle would hold each one
+    // behind the peer's delayed ACK of the previous.
+    let _ = stream.set_nodelay(true);
+    let ws = match tokio_tungstenite::accept_hdr_async_with_config(
+        stream,
+        authorize,
+        Some(crate::ws::config()),
+    )
+    .await
+    {
         Ok(ws) => ws,
         Err(err) => {
             tracing::warn!(error = %err, "rpc: websocket handshake failed");
             return;
         }
     };
-    let (mut sink, mut ws_stream) = ws.split();
-    let (out_tx, mut out_rx) = mpsc::channel::<String>(256);
+    let (out_tx, out_rx) = mpsc::channel::<String>(256);
     let (in_tx, in_rx) = mpsc::channel::<String>(256);
 
     // Pump: socket <-> string channels. Ends when either side closes.
     let pump = tokio::spawn(async move {
-        loop {
-            tokio::select! {
-                frame = out_rx.recv() => match frame {
-                    Some(text) => {
-                        if sink.send(WsMessage::Text(text)).await.is_err() {
-                            break;
-                        }
-                    }
-                    None => {
-                        let _ = sink.send(WsMessage::Close(None)).await;
-                        break;
-                    }
-                },
-                message = ws_stream.next() => match message {
-                    Some(Ok(WsMessage::Text(text))) => {
-                        if in_tx.send(text).await.is_err() {
-                            break;
-                        }
-                    }
-                    Some(Ok(WsMessage::Close(_))) | Some(Err(_)) | None => break,
-                    Some(Ok(_)) => {} // ping/pong/binary — ignored
-                },
-            }
+        if let Some(reason) = crate::ws::pump(ws, out_rx, in_tx).await {
+            tracing::warn!(%reason, "rpc: lost a viewport connection");
         }
     });
 
     serve_connection(service, out_tx, in_rx).await;
     pump.abort();
-}
-
-/// Whether an `Origin` header value names a loopback host (`localhost`,
-/// `127.0.0.1`, `[::1]` — any scheme, any port). Pages served from a local
-/// server are as privileged as any local process, which needs no Origin to
-/// reach this socket, so admitting them does not widen the threat surface.
-/// Anything else is treated as a remote web page and rejected.
-fn origin_is_loopback(origin: &str) -> bool {
-    let authority = origin
-        .split("://")
-        .nth(1)
-        .unwrap_or(origin)
-        .split('/')
-        .next()
-        .unwrap_or("");
-    // authority is `host`, `host:port`, `[v6]`, or `[v6]:port`.
-    let host = if let Some(rest) = authority.strip_prefix('[') {
-        rest.split(']').next().unwrap_or("")
-    } else {
-        authority.split(':').next().unwrap_or("")
-    };
-    host.eq_ignore_ascii_case("localhost")
-        || host.ends_with(".localhost")
-        || host == "127.0.0.1"
-        || host == "::1"
 }

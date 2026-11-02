@@ -74,11 +74,26 @@ enum K22Icon {
 
     static func resolve(systemName: String, pointSize: CGFloat? = nil, weight: UIImage.SymbolWeight = .medium) -> UIImage? {
         if let asset = sfToAsset[systemName] {
-            return image(asset, pointSize: pointSize)
+            return image(asset, pointSize: pointSize ?? symbolSide(systemName, nil))
         }
         if let pointSize {
             return UIImage(systemName: systemName, withConfiguration: UIImage.SymbolConfiguration(pointSize: pointSize, weight: weight))
         }
         return UIImage(systemName: systemName)
+    }
+
+    /// A call site written for SF Symbols with a configuration: the K22
+    /// glyph drawn as big as the symbol would have been, else the symbol.
+    static func resolve(systemName: String, withConfiguration configuration: UIImage.Configuration?) -> UIImage? {
+        if let asset = sfToAsset[systemName] {
+            return image(asset, pointSize: symbolSide(systemName, configuration))
+        }
+        return UIImage(systemName: systemName, withConfiguration: configuration)
+    }
+
+    /// How big the SF Symbol a K22 glyph stands in for draws.
+    private static func symbolSide(_ systemName: String, _ configuration: UIImage.Configuration?) -> CGFloat? {
+        guard let symbol = UIImage(systemName: systemName, withConfiguration: configuration) else { return nil }
+        return max(symbol.size.width, symbol.size.height)
     }
 }

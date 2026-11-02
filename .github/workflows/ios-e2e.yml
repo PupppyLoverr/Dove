@@ -1,0 +1,65 @@
+name: iPhone E2E
+
+on:
+  push:
+    branches: ["qa/ios-e2e", "feat/ios-zeron-latest"]
+
+jobs:
+  test:
+    runs-on: macos-26
+    timeout-minutes: 170
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios-sim
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: mesh
+          shared-key: ios-sim
+      - name: Test on the simulator
+        continue-on-error: true
+        working-directory: apps/ios
+        run: |
+          RUNTIME="$(xcrun simctl list runtimes -j | python3 -c 'import json,sys; print([r["identifier"] for r in json.load(sys.stdin)["runtimes"] if r["isAvailable"] and "iOS" in r["name"]][-1])')"
+          TYPE="$(xcrun simctl list devicetypes -j | python3 -c 'import json,sys; t=[d["identifier"] for d in json.load(sys.stdin)["devicetypes"] if "iPhone" in d["name"] and "Pro" in d["name"] and "Max" not in d["name"]]; print(t[-1])')"
+          DEV="$(xcrun simctl create e2e "$TYPE" "$RUNTIME")"
+          xcrun simctl boot "$DEV"
+          xcrun simctl bootstatus "$DEV" -b
+          xcrun simctl ui "$DEV" appearance dark
+          xcodebuild test \
+            -project Zeron.xcodeproj \
+            -scheme Zeron \
+            -configuration Debug \
+            -destination "platform=iOS Simulator,id=$DEV" \
+            -derivedDataPath "$GITHUB_WORKSPACE/build/ios" \
+            -resultBundlePath "$GITHUB_WORKSPACE/e2e.xcresult" \
+            -parallel-testing-enabled NO \
+            -test-timeouts-enabled YES \
+            -default-test-execution-time-allowance 300 \
+            -maximum-test-execution-time-allowance 420 \
+            -only-testing:ZeronUITests/KeplorayxWalkthroughTests \
+            -only-testing:ZeronUITests/SessionFlowTests \
+            -only-testing:ZeronUITests/TransitionTourTests \
+            -only-testing:ZeronTests \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY=- \
+            CODE_SIGNING_REQUIRED=NO \
+            DEVELOPMENT_TEAM= \
+            ARCHS=arm64 \
+            ONLY_ACTIVE_ARCH=YES 2>&1 | tail -n 400
+      - name: Export
+        if: always()
+        run: |
+          mkdir -p e2e-raw e2e-out
+          test -d e2e.xcresult || exit 0
+          xcrun xcresulttool get test-results summary --path e2e.xcresult > e2e-out/summary.json || true
+          xcrun xcresulttool get test-results tests --path e2e.xcresult > e2e-out/tests.json || true
+          xcrun xcresulttool export attachments --path e2e.xcresult --output-path e2e-raw || true
+          python3 .github/workflows/ios-e2e-export.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: iPhone-E2E
+          path: e2e-out
+          retention-days: 7

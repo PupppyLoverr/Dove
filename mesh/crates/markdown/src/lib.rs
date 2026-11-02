@@ -11,4 +11,5 @@ pub mod parser;
 
 pub use parser::{
     Block, BlockTree, IncrementalParser, InlineRun, InlineStyle, TopBlock, parse_full,
+    parse_message,
 };

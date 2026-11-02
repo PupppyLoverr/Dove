@@ -11,17 +11,12 @@ final class TranscriptLabViewController: UIViewController {
     private let meter = HitchMeter()
     private var entries: [DebugEntry] = []
     private var streamTimer: Timer?
-    private var compactObserver: NSObjectProtocol?
     private let fixture = layoutFixtureMarkdown()
 
     override func viewDidLoad() {
         super.viewDidLoad()
         title = "Transcript Lab"
         view.backgroundColor = Palette.background
-        engine.setCompact(enabled: TranscriptSettings.compact)
-        compactObserver = NotificationCenter.default.addObserver(forName: TranscriptSettings.didChange, object: nil, queue: .main) { [weak self] _ in
-            self?.engine.setCompact(enabled: TranscriptSettings.compact)
-        }
         list.frame = view.bounds
         list.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         view.addSubview(list)
@@ -80,10 +75,6 @@ final class TranscriptLabViewController: UIViewController {
         if args.contains("-autoscroll") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in self?.autoscroll() }
         }
-    }
-
-    deinit {
-        if let compactObserver { NotificationCenter.default.removeObserver(compactObserver) }
     }
 
     override func viewDidAppear(_ animated: Bool) {
