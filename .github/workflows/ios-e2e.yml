@@ -47,7 +47,12 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             DEVELOPMENT_TEAM= \
             ARCHS=arm64 \
-            ONLY_ACTIVE_ARCH=YES 2>&1 | tail -n 400
+            ONLY_ACTIVE_ARCH=YES > "$GITHUB_WORKSPACE/e2e-test.log" 2>&1 || status=$?
+          tail -n 200 "$GITHUB_WORKSPACE/e2e-test.log"
+          echo "::group::Failures"
+          grep -E ": error: |Test Case .* failed" "$GITHUB_WORKSPACE/e2e-test.log" || true
+          echo "::endgroup::"
+          exit "${status:-0}"
       - name: Export
         if: always()
         run: |
