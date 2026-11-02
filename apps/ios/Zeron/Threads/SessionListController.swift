@@ -12,6 +12,7 @@ class SessionListController: UIViewController, UICollectionViewDelegate {
 
     let app: AppModel
     var collectionView: UICollectionView!
+    private var topFade: TopFadeOverlay!
     var dataSource: UICollectionViewDiffableDataSource<String, Item>!
     private(set) var sessions: [String: SessionRowVM] = [:]
     private(set) var folders: [String: FolderRowVM] = [:]
@@ -57,6 +58,9 @@ class SessionListController: UIViewController, UICollectionViewDelegate {
         collectionView.backgroundColor = .clear
         collectionView.delegate = self
         view.addSubview(collectionView)
+        // Clear at rest: the front page's wallpaper sits behind the bar.
+        topFade = addTopFade(above: collectionView)
+        topFade.alpha = 0
 
         let sessionReg = UICollectionView.CellRegistration<SessionCell, String> { [weak self] cell, path, id in
             guard let self, let vm = self.sessions[id] else { return }
@@ -166,6 +170,7 @@ class SessionListController: UIViewController, UICollectionViewDelegate {
     func listDidScroll(_ scrollView: UIScrollView) {}
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        topFade.alpha = min(1, max(0, (scrollView.contentOffset.y + scrollView.adjustedContentInset.top) / 16))
         listDidScroll(scrollView)
     }
 

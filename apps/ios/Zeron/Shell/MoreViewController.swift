@@ -45,6 +45,7 @@ final class MoreViewController: UIViewController, UICollectionViewDelegate {
         collectionView.backgroundColor = .clear
         collectionView.delegate = self
         view.addSubview(collectionView)
+        addTopFade(above: collectionView)
 
         let cell = UICollectionView.CellRegistration<UICollectionViewListCell, Row> { [weak self] cell, _, row in
             var c = UIListContentConfiguration.subtitleCell()

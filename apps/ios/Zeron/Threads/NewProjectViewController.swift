@@ -35,6 +35,7 @@ final class NewProjectViewController: UIViewController, UICollectionViewDelegate
         collectionView.backgroundColor = .clear
         collectionView.delegate = self
         view.addSubview(collectionView)
+        addTopFade(above: collectionView)
         let reg = UICollectionView.CellRegistration<UICollectionViewListCell, String> { [weak self] cell, _, name in
             guard let entry = self?.listing?.entries.first(where: { $0.name == name }) else {
                 var c = UIListContentConfiguration.cell()

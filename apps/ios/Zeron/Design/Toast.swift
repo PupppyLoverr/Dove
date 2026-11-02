@@ -52,6 +52,10 @@ final class Toast: UIView {
         label.text = text
         label.font = Fonts.ui(.sansMedium, 15)
         label.textColor = Palette.text
+        // Long messages wrap; a toast is its whole message.
+        label.numberOfLines = 0
+        label.textAlignment = action == nil ? .center : .natural
+        label.accessibilityIdentifier = "toast-text"
         let stack = UIStackView(arrangedSubviews: [label])
         stack.spacing = 14
         stack.alignment = .center
@@ -70,6 +74,8 @@ final class Toast: UIView {
                 self?.dismiss(animated: true)
             })
             b.accessibilityIdentifier = "toast-action"
+            b.setContentCompressionResistancePriority(.required, for: .horizontal)
+            b.setContentHuggingPriority(.required, for: .horizontal)
             stack.addArrangedSubview(b)
         }
         stack.translatesAutoresizingMaskIntoConstraints = false
