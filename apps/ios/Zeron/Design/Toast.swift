@@ -10,7 +10,7 @@ final class Toast: UIView {
     static func show(_ text: String, action: String? = nil, in window: UIWindow?, handler: (() -> Void)? = nil) {
         guard let window else { return }
         current?.dismiss(animated: false)
-        let toast = Toast(text: text, action: action, handler: handler)
+        let toast = Toast(text: text, action: action, maxWidth: window.bounds.width - 48, handler: handler)
         toast.translatesAutoresizingMaskIntoConstraints = false
         window.addSubview(toast)
         // Sit just above the bottom chrome actually on screen (the "New
@@ -44,7 +44,7 @@ final class Toast: UIView {
         return top
     }
 
-    private init(text: String, action: String?, handler: (() -> Void)?) {
+    private init(text: String, action: String?, maxWidth: CGFloat, handler: (() -> Void)?) {
         super.init(frame: .zero)
         glass.translatesAutoresizingMaskIntoConstraints = false
         addSubview(glass)
@@ -59,6 +59,8 @@ final class Toast: UIView {
         let stack = UIStackView(arrangedSubviews: [label])
         stack.spacing = 14
         stack.alignment = .center
+        // Wrap at the room actually left, so short messages stay on one line.
+        var labelWidth = maxWidth - 40
         if let action {
             var c = UIButton.Configuration.plain()
             c.title = action
@@ -77,7 +79,9 @@ final class Toast: UIView {
             b.setContentCompressionResistancePriority(.required, for: .horizontal)
             b.setContentHuggingPriority(.required, for: .horizontal)
             stack.addArrangedSubview(b)
+            labelWidth -= stack.spacing + b.intrinsicContentSize.width
         }
+        label.preferredMaxLayoutWidth = labelWidth
         stack.translatesAutoresizingMaskIntoConstraints = false
         glass.contentView.addSubview(stack)
         NSLayoutConstraint.activate([
