@@ -68,7 +68,7 @@ jobs:
           shot sessions 8 -demo
           shot settings 8 -demo -route more
           shot new-session 8 -demo -route new
-          shot chat 10 -demo -route chat:demo
+          shot chat 10 -demo -route chat:chat-veil
       - uses: actions/upload-artifact@v4
         if: always()
         with:
