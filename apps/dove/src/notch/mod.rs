@@ -368,10 +368,25 @@ pub struct Geo {
 }
 
 impl Geo {
-    /// Tucked above the screen's top edge.
-    pub const HIDDEN: Geo = Geo { y: -18.0, w: 12.0, h: 12.0, r: 6.0, dx: 0.0, b1: 0.0, b2: 0.0 };
-    /// The dot that drops out of the edge before the island opens.
-    pub const DOT: Geo = Geo { y: tk::TOP_GAP + 2.0, w: 14.0, h: 14.0, r: 7.0, dx: 0.0, b1: 0.0, b2: 0.0 };
+    /// Tucked away: above the screen's top edge for the pill, folded into
+    /// it for the notch.
+    pub fn hidden() -> Geo {
+        if tk::attached() {
+            Geo { y: 0.0, w: 72.0, h: 0.0, r: 0.0, dx: 0.0, b1: 0.0, b2: 0.0 }
+        } else {
+            Geo { y: -18.0, w: 12.0, h: 12.0, r: 6.0, dx: 0.0, b1: 0.0, b2: 0.0 }
+        }
+    }
+
+    /// Where opening starts and closing ends: a dot that drops out of the
+    /// edge for the pill, a sliver of the edge for the notch.
+    pub fn dot() -> Geo {
+        if tk::attached() {
+            Geo { y: 0.0, w: 96.0, h: 5.0, r: 2.5, dx: 0.0, b1: 0.0, b2: 0.0 }
+        } else {
+            Geo { y: tk::TOP_GAP + 2.0, w: 14.0, h: 14.0, r: 7.0, dx: 0.0, b1: 0.0, b2: 0.0 }
+        }
+    }
 
     fn to_array(self) -> [f32; 7] {
         [self.y, self.w, self.h, self.r, self.dx, self.b1, self.b2]
@@ -395,11 +410,19 @@ impl Geo {
 
     /// The island, then its bubbles (each born from the island's edge).
     pub fn shapes(&self) -> Vec<Shape> {
-        let mut v = vec![Shape { x: self.x(), y: self.y, w: self.w, h: self.h, r: self.r.min(self.h / 2.0) }];
+        let r = self.r.min(self.h / 2.0);
+        // The notch runs its top corners up past the screen's edge, so only
+        // the bottom ones show, and adds its shoulders.
+        let island = if tk::attached() {
+            Shape { x: self.x(), y: self.y - r, w: self.w, h: self.h + r, r, ear: tk::ear(r).min(self.h) }
+        } else {
+            Shape { x: self.x(), y: self.y, w: self.w, h: self.h, r, ear: 0.0 }
+        };
+        let mut v = vec![island];
         let mut x = self.x() + self.w + tk::BUBBLE_GAP;
         for b in [self.b1, self.b2] {
             if b > 1.0 {
-                v.push(Shape { x, y: self.y + (self.h - b) / 2.0, w: b, h: b, r: b / 2.0 });
+                v.push(Shape { x, y: self.y + (self.h - b) / 2.0, w: b, h: b, r: b / 2.0, ear: 0.0 });
                 x += b + tk::BUBBLE_GAP;
             }
         }
@@ -448,6 +471,9 @@ pub struct Prefs {
     pub slim_music: bool,
     pub slim_timer: bool,
     pub slim_note: bool,
+    /// Hung from the screen's edge (the notch) rather than floating (the
+    /// pill).
+    pub attached: bool,
 }
 
 impl Prefs {
@@ -480,6 +506,11 @@ impl Prefs {
             slim_music: store.flag("notch_slim_music", true),
             slim_timer: store.flag("notch_slim_timer", true),
             slim_note: store.flag("notch_slim_note", true),
+            attached: {
+                let attached = store.setting("notch_shape").as_deref() != Some("island");
+                tk::set_attached(attached);
+                attached
+            },
         }
     }
 
@@ -899,6 +930,8 @@ pub struct Notch {
     /// The line to Dove's engine (`None` while Dove isn't running), what
     /// waits to go over it, and when it was last tried.
     link: Option<ipc::Link>,
+    /// QA demo data stands in for Keplorayx (`DOVE_NOTCH_DEMO`).
+    demo: bool,
     queue: Vec<ToEngine>,
     link_at: Instant,
     launched: Option<Instant>,
@@ -1036,7 +1069,13 @@ pub fn init(store: Arc<Store>, rt: tokio::runtime::Handle, cx: &mut App) -> Opti
         return None;
     }
     let (tx, rx) = flume::unbounded::<Msg>();
-    let notch = cx.new(|_| Notch::new(store, rt, tx.clone()));
+    let notch = cx.new(|_| {
+        let mut n = Notch::new(store, rt, tx.clone());
+        if n.demo {
+            n.seed_demo();
+        }
+        n
+    });
     // Every source forwards into one channel the loop sleeps on.
     let platform_events = win::events();
     let t = tx.clone();
@@ -1179,7 +1218,7 @@ impl Notch {
             fullscreen: false,
             transparency: win::transparency_on(),
             hide_until: None,
-            springs: Springs::new(Geo::HIDDEN.to_array(), tk::SPRING_OPEN.0, tk::SPRING_OPEN.1),
+            springs: Springs::new(Geo::hidden().to_array(), tk::SPRING_OPEN.0, tk::SPRING_OPEN.1),
             pending_target: None,
             dot_until: None,
             lift_at: None,
@@ -1279,6 +1318,7 @@ impl Notch {
             luma_shown: 0.3,
             luma_frame: Instant::now(),
             link,
+            demo: std::env::var_os("DOVE_NOTCH_DEMO").is_some(),
             queue: Vec::new(),
             link_at: Instant::now(),
             launched: None,
@@ -1485,8 +1525,12 @@ impl Notch {
             self.prefs_at = now;
             let prefs = Prefs::read(&self.store);
             if prefs != self.prefs {
+                let reshaped = prefs.attached != self.prefs.attached;
                 self.prefs = prefs;
                 dirty = true;
+                if reshaped && self.machine.state != State::Hidden {
+                    self.springs.set_targets(self.target().to_array());
+                }
             }
         }
         if self.hide_until.is_some_and(|t| now >= t) {
@@ -1616,7 +1660,7 @@ impl Notch {
         if self.lift_at.is_some_and(|t| now >= t) {
             self.lift_at = None;
             if self.machine.state == State::Hidden {
-                self.springs.set_targets(Geo::HIDDEN.to_array());
+                self.springs.set_targets(Geo::hidden().to_array());
                 dirty = true;
             }
         }
@@ -1805,11 +1849,11 @@ impl Notch {
     /// The shape the current state and content want.
     fn target(&self) -> Geo {
         let mut g = match self.machine.state {
-            State::Hidden => return Geo::HIDDEN,
+            State::Hidden => return Geo::hidden(),
             State::Slim => {
                 let (w, bubbles) = self.slim_size();
                 Geo {
-                    y: tk::TOP_GAP,
+                    y: tk::top_gap(),
                     w,
                     h: tk::SLIM_H,
                     r: tk::SLIM_H / 2.0,
@@ -1820,10 +1864,10 @@ impl Notch {
             }
             State::Alert => {
                 let (w, h) = self.banner_size();
-                Geo { y: tk::TOP_GAP, w, h, r: if h > 60.0 { 28.0 } else { h / 2.0 }, dx: 0.0, b1: 0.0, b2: 0.0 }
+                Geo { y: tk::top_gap(), w, h, r: if h > 60.0 { 28.0 } else { h / 2.0 }, dx: 0.0, b1: 0.0, b2: 0.0 }
             }
             State::Expanded => Geo {
-                y: tk::TOP_GAP,
+                y: tk::top_gap(),
                 w: self.page_width(),
                 h: self.page_height(),
                 r: tk::R_ISLAND,
@@ -1868,7 +1912,7 @@ impl Notch {
         self.prev_state = state;
         if state == State::Hidden {
             self.springs.tune(tk::SPRING_CLOSE);
-            self.springs.set_targets(Geo::DOT.to_array());
+            self.springs.set_targets(Geo::dot().to_array());
             self.pending_target = None;
             self.dot_until = None;
             self.lift_at = Some(now + Duration::from_millis(90));
@@ -1882,7 +1926,7 @@ impl Notch {
                 self.backdrop_at = None;
                 self.native(cx, |h, d| h.place(d, tk::CANVAS_W, tk::CANVAS_H));
             }
-            let opening = current.h <= Geo::DOT.h + 2.0;
+            let opening = current.h <= Geo::dot().h + 2.0;
             let target = self.target();
             self.pending_target = None;
             self.dot_until = None;
@@ -1890,8 +1934,10 @@ impl Notch {
                 // The dot drops as it grows: the spring starts just above the
                 // edge, so the drop is the first part of the motion, not a
                 // step before it.
-                let mut seed = Geo::DOT;
-                seed.y = tk::TOP_GAP - 10.0;
+                let mut seed = Geo::dot();
+                if !tk::attached() {
+                    seed.y = tk::TOP_GAP - 10.0;
+                }
                 self.springs.place(seed.to_array());
                 self.springs.tune(tk::SPRING_OPEN);
             } else {
@@ -1917,7 +1963,7 @@ impl Notch {
                 self.springs.set_targets(g.to_array());
             }
             if state == State::Hidden {
-                self.springs.set_targets(Geo::HIDDEN.to_array());
+                self.springs.set_targets(Geo::hidden().to_array());
             }
             self.dot_until = None;
             self.lift_at = None;
@@ -2433,7 +2479,107 @@ impl Notch {
     }
 
     pub(crate) fn connected(&self) -> bool {
-        self.link.is_some()
+        self.link.is_some() || self.demo
+    }
+
+    /// QA (`DOVE_NOTCH_DEMO`): agents at work, one waiting on you, a song,
+    /// the tray and notes, so every screen shows what it looks like in use.
+    fn seed_demo(&mut self) {
+        use bridge::{Agent, Pending, Preview};
+        let now = dove_core::store::now_ms();
+        let agent = |title: &str, kind: HarnessKind, project: &str, status: TaskStatus| Agent {
+            id: TaskId::new(),
+            title: title.into(),
+            kind,
+            project: project.into(),
+            status,
+            live: true,
+            activity: None,
+            pending: Vec::new(),
+            todos: None,
+            teammate: None,
+            updated_at: now,
+            reply: String::new(),
+            branch: None,
+            worktree: false,
+            started_ms: Some(now - 4 * 60_000),
+            ended_ms: None,
+            steps: String::new(),
+            cost: None,
+            steers: true,
+            todo_list: Vec::new(),
+        };
+        let mut claude = agent("Fix the login redirect", HarnessKind::ClaudeCode, "dove", TaskStatus::Running);
+        claude.activity = Some("Editing auth/redirect.rs".into());
+        claude.todos = Some((3, 5));
+        claude.branch = Some("fix/login-redirect".into());
+        claude.steps = "Edited 3 files · ran 2 commands".into();
+        claude.todo_list = vec![
+            ("Find where the redirect is built".into(), "completed".into()),
+            ("Keep the return path through sign-in".into(), "completed".into()),
+            ("Reject redirects to other hosts".into(), "completed".into()),
+            ("Add a test for the open redirect".into(), "in_progress".into()),
+            ("Run the auth tests".into(), "pending".into()),
+        ];
+        claude.reply = "The redirect now keeps the page you came from, and only accepts paths on our own host.".into();
+        let mut codex = agent("Run the test suite", HarnessKind::Codex, "dove", TaskStatus::NeedsInput);
+        codex.activity = Some("Waiting to run a command".into());
+        codex.pending = vec![Pending {
+            request_id: "demo-1".into(),
+            tool: "Bash".into(),
+            summary: "Run cargo test -p auth".into(),
+            question: false,
+            safe: true,
+            preview: Some(Preview::Command("cargo test -p auth --all-features".into())),
+            questions: Vec::new(),
+        }];
+        // `DOVE_NOTCH_DEMO=calm`: nothing waiting on you, for the slim island.
+        if std::env::var("DOVE_NOTCH_DEMO").as_deref() == Ok("calm") {
+            codex.pending.clear();
+            codex.status = TaskStatus::Running;
+            codex.activity = Some("Running cargo test".into());
+        }
+        let mut gemini = agent("Write the release notes", HarnessKind::Gemini, "landing", TaskStatus::Done);
+        gemini.live = false;
+        gemini.ended_ms = Some(now - 12 * 60_000);
+        gemini.steps = "Edited 1 file".into();
+        gemini.reply = "Release notes for beta 4 are in docs/release-notes-beta-4.md.".into();
+        self.snap.installed = vec![HarnessKind::ClaudeCode, HarnessKind::Codex, HarnessKind::Gemini];
+        self.snap.agents = vec![codex, claude, gemini];
+        self.media = Some(media::Media {
+            app: "Spotify".into(),
+            app_id: "Spotify.exe".into(),
+            title: "Midnight City".into(),
+            artist: "M83".into(),
+            playing: true,
+            position: Duration::from_secs(97),
+            duration: Duration::from_secs(243),
+            at: Instant::now(),
+            art: None,
+            backdrop: None,
+            tint: None,
+            can_seek: true,
+            shuffle: Some(false),
+        });
+        if self.clips.is_empty() {
+            self.clips = vec![
+                Clip::text("https://github.com/PupppyLoverr/Dove/pull/412".into()),
+                Clip::text("cargo test -p auth --all-features".into()),
+                Clip::text("Ship the notch revamp before the beta 4 build.".into()),
+            ];
+        }
+        if self.notes.is_empty() {
+            self.notes = vec![
+                Note::new(
+                    "Beta 4
+- [x] Notch shape
+- [ ] iPhone sign-in
+- [ ] Release notes"
+                        .into(),
+                ),
+                Note::new("Ask about the Windows installer signing".into()),
+            ];
+        }
     }
 
     /// Agents working or waiting on the user right now.
@@ -2670,7 +2816,7 @@ impl Notch {
         self.picking = false;
         self.stick = true;
         if !self.connected() {
-            self.toast("Starting Dove…");
+            self.toast("Starting Keplorayx…");
         }
         self.retarget(cx);
         cx.notify();
@@ -3336,8 +3482,8 @@ impl Notch {
             _ => return None,
         };
         let (from, to) = match kind {
-            HeroKind::Art => ((slim_x + 8.0, tk::TOP_GAP + 7.0, 22.0), views::music_art_rect()),
-            HeroKind::Ring => ((slim_x + 8.0, tk::TOP_GAP + 6.0, 24.0), views::timer_ring_rect()),
+            HeroKind::Art => ((slim_x + 8.0, tk::top_gap() + 7.0, 22.0), views::music_art_rect()),
+            HeroKind::Ring => ((slim_x + 8.0, tk::top_gap() + 6.0, 24.0), views::timer_ring_rect()),
         };
         Some(Hero { kind, from, to, at: Instant::now() })
     }

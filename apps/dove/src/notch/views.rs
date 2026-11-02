@@ -71,13 +71,13 @@ pub fn tab_of(page: &Page) -> Tab {
 /// art that flies there from the slim island.
 pub fn music_art_rect() -> (f32, f32, f32) {
     let x = (tk::CANVAS_W - tk::EXPANDED_W) / 2.0 + tk::PAD + 12.0;
-    (x, tk::TOP_GAP + tk::HEADER_H + 12.0, 88.0)
+    (x, tk::top_gap() + tk::HEADER_H + 12.0, 88.0)
 }
 
 /// Where the timer page draws its ring.
 pub fn timer_ring_rect() -> (f32, f32, f32) {
     let x = (tk::CANVAS_W - tk::EXPANDED_W) / 2.0 + tk::PAD + (tk::EXPANDED_W - 2.0 * tk::PAD - 120.0) / 2.0;
-    (x, tk::TOP_GAP + tk::HEADER_H + 8.0, 120.0)
+    (x, tk::top_gap() + tk::HEADER_H + 8.0, 120.0)
 }
 
 fn glyph(t: Tab) -> &'static str {
@@ -958,7 +958,17 @@ impl HomeCard {
             HomeCard::Automations => {
                 24.0 + n.snap.automations.iter().filter(|a| a.enabled).take(2).count() as f32 * 38.0
             }
-            HomeCard::Note => 76.0,
+            HomeCard::Note => {
+                let note = n.notes.iter().find(|x| x.pinned).or(n.notes.first());
+                match note.filter(|x| x.checklist().is_some()) {
+                    // The title, up to two open items and the progress line.
+                    Some(x) => {
+                        let open = x.text.lines().filter(|l| l.trim_start().starts_with("- [ ]")).count().min(2);
+                        28.0 + 21.0 + open as f32 * 20.0 + 10.0
+                    }
+                    None => 76.0,
+                }
+            }
             HomeCard::Clips => 24.0 + n.clips.len().min(3) as f32 * 26.0,
         }
     }
@@ -1037,7 +1047,7 @@ mod tests {
     fn hero_targets_sit_inside_the_expanded_island() {
         let (x, y, s) = music_art_rect();
         let left = (tk::CANVAS_W - tk::EXPANDED_W) / 2.0;
-        assert!(x > left && x + s < left + tk::EXPANDED_W && y > tk::TOP_GAP);
+        assert!(x > left && x + s < left + tk::EXPANDED_W && y > tk::top_gap());
         let (x, _, s) = timer_ring_rect();
         assert!((x + s / 2.0 - tk::CANVAS_W / 2.0).abs() < 1.0, "the ring is centered");
     }

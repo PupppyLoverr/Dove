@@ -25,6 +25,8 @@ param(
     [string]$DoveHome = '',
     [int]$Wait = 6,
     [switch]$Motion,
+    # DOVE_NOTCH_DEMO: '1' has an agent waiting on you, 'calm' has none.
+    [string]$Demo = '1',
     [string[]]$Screens = @('slim:', 'alert:', 'expanded:home', 'expanded:agents', 'expanded:music', 'expanded:tray',
         'expanded:notes', 'expanded:timer', 'expanded:alerts', 'expanded:dev', 'expanded:new')
 )
@@ -47,7 +49,7 @@ foreach ($s in $Screens) {
     $state, $page = $s.Split(':', 2)
     $home_ = Join-Path $dir ("home-$state-$page" -replace '[:\\/]', '-')
     if ($DoveHome) { Copy-Item -Recurse $DoveHome $home_ } else { New-Item -ItemType Directory -Force $home_ | Out-Null }
-    $envs = @{ DOVE_HOME = $home_; DOVE_NOTCH = '1'; DOVE_NOTCH_STATE = $state; DOVE_NOTCH_PAGE = $page; DOVE_NOTCH_DEMO = '1';
+    $envs = @{ DOVE_HOME = $home_; DOVE_NOTCH = '1'; DOVE_NOTCH_STATE = $state; DOVE_NOTCH_PAGE = $page; DOVE_NOTCH_DEMO = $Demo;
         DOVE_NOTCH_CAPTURABLE = '1'; DOVE_LOG = $(if ($Motion) { 'warn,dove::notch=info' } else { 'warn' })
         DOVE_NOTCH_TIMING = $(if ($Motion) { '1' } else { '' }) }
     $saved = @{}

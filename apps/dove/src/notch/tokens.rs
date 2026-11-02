@@ -101,14 +101,41 @@ pub const ICON_HEADER: f32 = 18.0;
 /// The window: a fixed canvas the island moves and morphs in.
 pub const CANVAS_W: f32 = 720.0;
 pub const CANVAS_H: f32 = 660.0;
-/// The island floats this far below the screen's top edge.
+/// The floating island sits this far below the screen's top edge.
 pub const TOP_GAP: f32 = 8.0;
 pub const SLIM_H: f32 = 36.0;
+
+/// The island's shape (Settings › Notch › Shape): a notch hung from the
+/// screen's top edge, flat on top with curved shoulders (the default), or
+/// a pill floating below it.
+static ATTACHED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+pub fn set_attached(on: bool) {
+    ATTACHED.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn attached() -> bool {
+    ATTACHED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Where the island's top sits: the screen's edge for the notch, a gap
+/// below it for the pill.
+pub fn top_gap() -> f32 {
+    if attached() { 0.0 } else { TOP_GAP }
+}
+
+/// The notch's shoulders: concave curves joining it to the screen's edge,
+/// in proportion to the corner below them.
+pub fn ear(r: f32) -> f32 {
+    if attached() { (r * 0.5).clamp(8.0, 14.0) } else { 0.0 }
+}
 /// The slim island's three widths: one activity, two, or a wide one.
 pub const SLIM_SINGLE: f32 = 196.0;
 pub const SLIM_DUAL: f32 = 264.0;
 pub const SLIM_WIDE: f32 = 320.0;
 pub const BUBBLE: f32 = 36.0;
+/// A second or third activity inside the notch: its glyph and gap.
+pub const SLIM_GLYPH: f32 = 32.0;
 pub const BUBBLE_GAP: f32 = 6.0;
 pub const BANNER_W: f32 = 384.0;
 pub const BANNER_H: f32 = 96.0;

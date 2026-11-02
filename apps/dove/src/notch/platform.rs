@@ -33,6 +33,9 @@ pub struct Shape {
     pub w: f32,
     pub h: f32,
     pub r: f32,
+    /// The notch's shoulders (0 for a pill or a bubble): squares this big
+    /// on each side of the visible top, `y + r`.
+    pub ear: f32,
 }
 
 #[cfg(windows)]
@@ -182,6 +185,17 @@ mod windows {
                     let part = CreateRoundRectRgn(x, y, x + w + 1, y + h + 1, d, d);
                     CombineRgn(all, all, part, RGN_OR);
                     DeleteObject(part);
+                    if s.ear > 0.0 {
+                        // The shoulders are painted as curves; their squares
+                        // only need to be inside the window.
+                        let e = (s.ear * scale).ceil() as i32;
+                        let top = ((s.y + s.r) * scale).round() as i32;
+                        for left in [x - e, x + w] {
+                            let ear = CreateRectRgn(left, top, left + e + 1, top + e);
+                            CombineRgn(all, all, ear, RGN_OR);
+                            DeleteObject(ear);
+                        }
+                    }
                 }
                 if SetWindowRgn(self.hwnd(), all, 1) == 0 {
                     DeleteObject(all);

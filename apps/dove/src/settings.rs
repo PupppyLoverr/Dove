@@ -295,6 +295,7 @@ const INDEX: &[Entry] = &[
     e(Section::Notifications, "notch_glass", "Frosted glass", "notch glass blur acrylic transparent solid"),
     e(Section::Notifications, "notch_focus", "Focus mode", "notch focus do not disturb quiet banners"),
     e(Section::Notifications, "notch_display", "Display", "notch display monitor screen pointer main"),
+    e(Section::Notifications, "notch_shape", "Shape", "notch shape island floating pill attached edge dynamic"),
     e(Section::Notifications, "notch_slim_items", "In the slim island", "notch slim agents music timer pinned note"),
     e(Section::Notifications, "notch_hidden_tabs", "Tabs", "notch tabs hide show agents music tray notifications"),
     e(Section::Voice, "voice_model", "Dictation model", "voice dictation parakeet nvidia model download speech"),
@@ -2203,6 +2204,7 @@ impl SettingsPage {
         let glass = self.flag("notch_glass", false);
         let focus = self.flag("notch_focus", false);
         let pointer = self.get("notch_display").as_deref() == Some("pointer");
+        let floating = self.get("notch_shape").as_deref() == Some("island");
         let hidden: Vec<String> = self
             .get("notch_hidden_tabs")
             .unwrap_or_default()
@@ -2308,6 +2310,25 @@ impl SettingsPage {
                             let _ = this.update(cx, |p, cx| {
                                 p.set("notch_display", if i == 1 { "pointer" } else { "primary" }, cx)
                             });
+                        }
+                    },
+                ),
+            ))
+            .child(self.srow(
+                t,
+                false,
+                "notch_shape",
+                "Shape",
+                "A notch hung from the top of the screen, or an island floating just below it.",
+                ctl::segmented(
+                    t,
+                    "set-notch-shape",
+                    vec![ctl::Segment::new("Notch"), ctl::Segment::new("Floating island")],
+                    usize::from(floating),
+                    {
+                        let this = this.clone();
+                        move |i, _, cx| {
+                            let _ = this.update(cx, |p, cx| p.set("notch_shape", if i == 1 { "island" } else { "notch" }, cx));
                         }
                     },
                 ),

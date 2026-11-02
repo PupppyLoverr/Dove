@@ -348,7 +348,7 @@ impl Notch {
                 )
                 .child(link("open-dove", "Open Keplorayx").on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                     this.command(ToEngine::Open { task: None });
-                    this.toast("Opening Dove…");
+                    this.toast("Opening Keplorayx…");
                     cx.notify();
                 })))
                 .into_any_element(),
@@ -626,13 +626,7 @@ impl Notch {
                                 None => String::new(),
                             })),
                     )
-                    .child(
-                        div()
-                            .text_size(px(tk::T12))
-                            .text_color(tk::DIM)
-                            .line_clamp(2)
-                            .child(n.text.lines().skip(1).collect::<Vec<_>>().join(" ")),
-                    )
+                    .child(note_glance(&n))
                     .into_any_element()
             }
             HomeCard::Clips => {
@@ -690,14 +684,9 @@ impl Notch {
                 .into_any_element();
         }
         let key = self.key();
-        let mut col = div()
-            .id("agents")
-            .size_full()
-            .overflow_y_scroll()
-            .flex()
-            .flex_col()
-            .gap(px(2.0))
-            .child(div().h(px(32.0)).flex().items_center().px(px(4.0)).child(div().flex_1()).child(new));
+        let mut col = div().id("agents").size_full().overflow_y_scroll().flex().flex_col().gap(px(2.0));
+        // New agent rides on the first group's heading, not a row of its own.
+        let mut new = Some(new);
         let mut index = 0;
         let groups: [(&str, Vec<&Agent>); 3] = [
             ("Needs you", self.snap.agents.iter().filter(|a| a.needs_you()).collect()),
@@ -711,14 +700,34 @@ impl Notch {
             if agents.is_empty() {
                 continue;
             }
-            col = col.child(div().pt(px(6.0)).pb(px(2.0)).px(px(8.0)).child(section(label)));
+            col = col.child(
+                div()
+                    .pt(px(6.0))
+                    .pb(px(2.0))
+                    .px(px(8.0))
+                    .flex()
+                    .items_center()
+                    .child(section(label))
+                    .child(div().flex_1())
+                    .children(new.take()),
+            );
             for a in agents {
                 col = col.child(rise(self.agent_row(a, index, cx), (key, index), index));
                 index += 1;
             }
         }
         if !self.snap.flock.is_empty() {
-            col = col.child(div().pt(px(6.0)).pb(px(2.0)).px(px(8.0)).child(section("Flock")));
+            col = col.child(
+                div()
+                    .pt(px(6.0))
+                    .pb(px(2.0))
+                    .px(px(8.0))
+                    .flex()
+                    .items_center()
+                    .child(section("Flock"))
+                    .child(div().flex_1())
+                    .children(new.take()),
+            );
             for (i, f) in self.snap.flock.iter().enumerate() {
                 let (label, color) = if f.needs_input {
                     ("Needs you", tk::AMBER)
@@ -2431,4 +2440,33 @@ impl Notch {
         }
         col.into_any_element()
     }
+}
+
+/// A note at a glance: a checklist's next open items as rows with empty
+/// ticks (and how far along it is), else its first lines of text.
+fn note_glance(n: &crate::notch::data::Note) -> AnyElement {
+    let lines: Vec<&str> = n.text.lines().skip_while(|l| l.trim().is_empty()).skip(1).collect();
+    if let Some((done, total)) = n.checklist() {
+        let open: Vec<String> = lines
+            .iter()
+            .filter_map(|l| l.trim_start().strip_prefix("- [ ]"))
+            .map(|t| t.trim().to_string())
+            .take(2)
+            .collect();
+        let mut col = div().flex().flex_col().gap(px(4.0)).pt(px(2.0));
+        for item in open {
+            col = col.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .child(div().flex_none().size(px(12.0)).rounded_full().border_1().border_color(tk::FAINT))
+                    .child(div().min_w_0().truncate().text_size(px(tk::T12)).text_color(tk::DIM).child(item)),
+            );
+        }
+        return col
+            .child(div().pt(px(4.0)).child(bar(done as f32 / total.max(1) as f32, tk::TEXT.opacity(0.7), 2.0)))
+            .into_any_element();
+    }
+    div().text_size(px(tk::T12)).text_color(tk::DIM).line_clamp(2).child(lines.join(" ")).into_any_element()
 }

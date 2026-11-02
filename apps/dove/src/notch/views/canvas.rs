@@ -144,7 +144,14 @@ impl Notch {
             Some(SlimItem::Pr { .. } | SlimItem::Music | SlimItem::Note(_)) => tk::SLIM_DUAL,
         };
         let width = if self.context_menu { tk::SLIM_WIDE } else { width };
-        (width, items.len().saturating_sub(1).min(2))
+        let extra = items.len().saturating_sub(1).min(2);
+        // The notch keeps its other activities inside, beside the trailing
+        // value, rather than as bubbles hanging off the bezel.
+        if tk::attached() {
+            let width = if self.context_menu { width } else { width + extra as f32 * tk::SLIM_GLYPH };
+            return (width, 0);
+        }
+        (width, extra)
     }
 
     fn slim_leading(&self, item: &SlimItem) -> AnyElement {
@@ -304,7 +311,21 @@ impl Notch {
             .gap(px(10.0))
             .when(count > 1, |d| d.tooltip(tip(format!("{count} agents"))))
             .child(div().flex_none().child(left))
-            .child(div().min_w_0().flex().justify_end().child(right))
+            .child(
+                div()
+                    .min_w_0()
+                    .flex()
+                    .items_center()
+                    .justify_end()
+                    .gap(px(10.0))
+                    .when(tk::attached(), |d| {
+                        d.children(
+                            (0..items.len().saturating_sub(1).min(2))
+                                .map(|i| div().flex_none().size(px(tk::SLIM_GLYPH - 6.0)).child(self.render_bubble(i))),
+                        )
+                    })
+                    .child(div().min_w_0().flex().justify_end().child(right)),
+            )
             .into_any_element()
     }
 
@@ -345,7 +366,7 @@ impl Notch {
             dh = 250.0;
             dw = 250.0 * w / h;
         }
-        (x0 + (max_w - dw) / 2.0, tk::TOP_GAP + 14.0, dw, dh)
+        (x0 + (max_w - dw) / 2.0, tk::top_gap() + 14.0, dw, dh)
     }
 
     /// The banner's size: wide for a screenshot, taller with a preview.
@@ -357,7 +378,7 @@ impl Notch {
                 Some(Preview::Diff { lines, .. }) if !lines.is_empty() => {
                     96.0 + 14.0 * lines.len().min(3) as f32 + 12.0
                 }
-                Some(Preview::Command(_)) => 96.0 + 28.0,
+                Some(Preview::Command(_)) => 96.0 + 44.0,
                 _ => tk::BANNER_H,
             };
             return (tk::BANNER_W, h.max(menu));
@@ -381,8 +402,10 @@ impl Notch {
                     .first()
                     .map(|q| q.question.clone())
                     .unwrap_or_else(|| format!("{} asks: {}", kind.label(), req.summary))
+            } else if !req.summary.trim().is_empty() {
+                format!("{} · {}", kind.label(), req.summary.trim())
             } else {
-                format!("{} wants to {}", kind.label(), req.tool.to_lowercase())
+                format!("{} wants to use {}", kind.label(), req.tool)
             };
             return div()
                 .size_full()
@@ -747,7 +770,7 @@ impl Notch {
                     .id("shot")
                     .absolute()
                     .left(px(x - island_x))
-                    .top(px(y - tk::TOP_GAP))
+                    .top(px(y - tk::top_gap()))
                     .w(px(w))
                     .h(px(h))
                     .rounded(px(12.0))
@@ -898,7 +921,7 @@ impl Notch {
                     .count() as f32;
                     let rows = (self.snap.agents.len() + self.snap.flock.len()) as f32;
                     let limits = if self.snap.limits.iter().any(|m| m.used >= 50.0) { 30.0 } else { 0.0 };
-                    34.0 + groups * 26.0 + rows * (tk::ROW_H + 2.0) + limits
+                    10.0 + groups * 26.0 + rows * (tk::ROW_H + 2.0) + limits
                 }
             }
             Page::Agent(id) => {
@@ -937,7 +960,7 @@ impl Notch {
             Page::NewAgent => 40.0 + 12.0 + 22.0 + 12.0 + tk::CONTROL_H + 24.0,
             Page::Tab(Tab::Music) => {
                 if self.media.is_some() {
-                    204.0
+                    224.0
                 } else {
                     130.0
                 }
@@ -1425,7 +1448,9 @@ impl Notch {
         let backdrop = self.backdrop.clone().filter(|_| frosted && !composition);
         let glow = self.glow();
         let needs = self.approval().is_some() && state != State::Expanded;
-        let border = if needs {
+        // The notch is part of the bezel: no outline. Waiting on you shows in
+        // what it says instead.
+        let border = if needs && !tk::attached() {
             tk::AMBER.opacity(0.35 + 0.35 * breathe(self.t()))
         } else if frosted {
             tk::RIM
@@ -1503,6 +1528,7 @@ impl Notch {
                 })
         };
         let r = g.r.min(g.h / 2.0);
+        let attached = tk::attached();
         let this = cx.entity().downgrade();
         let island = glass(div(), g.x(), g.y, r)
             .id("island")
@@ -1511,7 +1537,8 @@ impl Notch {
             .top(px(g.y))
             .w(px(g.w))
             .h(px(g.h))
-            .rounded(px(r))
+            .when(attached, |d| d.rounded_b(px(r)))
+            .when(!attached, |d| d.rounded(px(r)))
             .overflow_hidden()
             .text_color(tk::TEXT)
             .on_hover(move |hovered, _, cx| {
@@ -1646,12 +1673,44 @@ impl Notch {
             };
             div().absolute().left(px(x)).top(px(y)).size(px(s)).child(inner).into_any_element()
         });
+        // The notch's shoulders: concave curves from the screen's edge into
+        // its sides, so it reads as cut from the bezel rather than laid on it.
+        let ear = tk::ear(r).min(g.h);
+        let shoulders = (attached && ear >= 1.0 && g.h > 2.0).then(|| {
+            let (left, right, y, fill) = (g.x(), g.x() + g.w, g.y, top);
+            gpui::canvas(
+                |_, _, _| {},
+                move |bounds, _, window, _| {
+                    let o = bounds.origin;
+                    let p = |x: f32, y: f32| point(o.x + px(x), o.y + px(y));
+                    // A circle's quarter as a cubic: the control arms' length.
+                    let k = 0.5523 * ear;
+                    for (side, dir) in [(left, -1.0_f32), (right, 1.0)] {
+                        let outer = side + dir * ear;
+                        let mut pb = gpui::PathBuilder::fill();
+                        pb.move_to(p(outer, y));
+                        pb.line_to(p(side, y));
+                        pb.line_to(p(side, y + ear));
+                        pb.cubic_bezier_to(p(outer, y), p(side, y + ear - k), p(outer - dir * k, y));
+                        pb.close();
+                        if let Ok(path) = pb.build() {
+                            window.paint_path(path, fill);
+                        }
+                    }
+                },
+            )
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+        });
         div()
             .id("notch-canvas")
             .w(px(tk::CANVAS_W))
             .h(px(tk::CANVAS_H))
             .relative()
             .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| this.on_key(ev, window, cx)))
+            .children(shoulders)
             .child(island)
             .children(bubbles)
             .children(hero)
