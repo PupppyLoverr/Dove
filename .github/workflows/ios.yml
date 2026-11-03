@@ -99,7 +99,7 @@ jobs:
           xcodebuild \
             -project Zeron.xcodeproj \
             -scheme Zeron \
-            -configuration Debug \
+            -configuration Release \
             -sdk iphoneos \
             -destination 'generic/platform=iOS' \
             -derivedDataPath "$GITHUB_WORKSPACE/build/ipa" \
@@ -111,7 +111,7 @@ jobs:
             build
       - name: Pack IPA
         run: |
-          APP="$GITHUB_WORKSPACE/build/ipa/Build/Products/Debug-iphoneos/Keplorayx.app"
+          APP="$GITHUB_WORKSPACE/build/ipa/Build/Products/Release-iphoneos/Keplorayx.app"
           test -d "$APP"
           STAGE="$GITHUB_WORKSPACE/build/ipa-stage"
           mkdir -p "$STAGE/Payload"
