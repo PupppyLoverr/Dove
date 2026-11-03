@@ -1064,12 +1064,23 @@ impl Notch {
                 }
                 let puck_x = if crate::motion::reduced_now() { at * STEP } else { (from + (at - from) * e) * STEP };
                 let needs = self.approval().is_some();
-                let mut strip = div()
-                    .relative()
-                    .flex()
-                    .items_center()
-                    .gap(px(STEP - SLOT))
-                    .child(div().absolute().left(px(puck_x)).top_0().size(px(SLOT)).rounded_full().bg(tk::WASH_ON));
+                // The tabs sit in a recessed track; the puck is a raised, lit
+                // bead that slides along it.
+                let mut strip = div().relative().flex().items_center().gap(px(STEP - SLOT)).child(
+                    div()
+                        .absolute()
+                        .left(px(puck_x))
+                        .top_0()
+                        .size(px(SLOT))
+                        .rounded_full()
+                        .bg(linear_gradient(
+                            180.0,
+                            linear_color_stop(tk::PUCK_TOP, 0.0),
+                            linear_color_stop(tk::PUCK_BOTTOM, 1.0),
+                        ))
+                        .border_1()
+                        .border_color(tk::CARD_EDGE),
+                );
                 for (i, t) in tabs.iter().copied().enumerate() {
                     let on = t == page_tab;
                     strip = strip.child(
@@ -1100,7 +1111,7 @@ impl Notch {
                             })),
                     );
                 }
-                row = row.child(strip);
+                row = row.child(div().p(px(2.0)).rounded_full().bg(tk::TRACK).child(strip));
             }
             row = row.child(div().flex_1());
             if let Some((text, at)) = self.toast.as_ref() {
@@ -1457,6 +1468,8 @@ impl Notch {
         } else {
             tk::NONE
         };
+        // The lip brightens and breathes while an agent waits on you.
+        let lip = if needs { Hsla { a: 0.4 + 0.5 * breathe(self.t()), ..tk::LIP } } else { tk::LIP };
         let grain = frosted.then(grain);
         let glass = move |d: Div, left: f32, y: f32, r: f32| {
             d.border_1()
@@ -1495,6 +1508,35 @@ impl Notch {
                         linear_color_stop(c, 0.0),
                         linear_color_stop(c.opacity(0.0), 0.7),
                     )))
+                })
+                // Solid only: light pooling on the notch's floor and a thin
+                // lip of light along its bottom edge, so the black reads as
+                // a sculpted part of the bezel rather than a cut-out.
+                .when(!frosted, |d| {
+                    d.child(div().absolute().bottom_0().left_0().right_0().h(px(r * 1.6)).bg(linear_gradient(
+                        180.0,
+                        linear_color_stop(tk::FLOOR.opacity(0.0), 0.0),
+                        linear_color_stop(tk::FLOOR, 1.0),
+                    )))
+                    .child(
+                        div()
+                            .absolute()
+                            .bottom_0()
+                            .left(px(r * 0.8))
+                            .right(px(r * 0.8))
+                            .h(px(1.0))
+                            .flex()
+                            .child(div().flex_1().h_full().bg(linear_gradient(
+                                90.0,
+                                linear_color_stop(lip.opacity(0.0), 0.0),
+                                linear_color_stop(lip, 1.0),
+                            )))
+                            .child(div().flex_1().h_full().bg(linear_gradient(
+                                90.0,
+                                linear_color_stop(lip, 0.0),
+                                linear_color_stop(lip.opacity(0.0), 1.0),
+                            ))),
+                    )
                 })
                 // Glass only: light from above, the pane's inner edge and
                 // the specular line along the top.

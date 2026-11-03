@@ -361,9 +361,14 @@ fn empty(glyph: &'static str, title: impl Into<SharedString>, hint: impl Into<Sh
         .child(div().max_w(px(340.0)).text_center().text_size(px(tk::T11)).text_color(tk::FAINT).child(hint.into()))
 }
 
-/// A card: a lighter pane on the glass with a faint edge.
+/// A card's fill: lighter at the top, as if lit from above.
+fn card_fill() -> gpui::Background {
+    linear_gradient(180.0, linear_color_stop(tk::CARD_TOP, 0.0), linear_color_stop(tk::CARD_BOTTOM, 1.0))
+}
+
+/// A card: a lighter pane, lit from above, with a hairline edge.
 fn card() -> Div {
-    div().p(px(12.0)).rounded(px(tk::R_CARD)).bg(tk::CARD)
+    div().p(px(12.0)).rounded(px(tk::R_CARD)).bg(card_fill()).border_1().border_color(tk::CARD_EDGE)
 }
 
 fn bar(p: f32, color: Hsla, height: f32) -> Div {

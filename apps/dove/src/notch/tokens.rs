@@ -16,6 +16,19 @@ pub const FAINT: Hsla = hsla(0.0, 0.0, 1.0, 0.42);
 pub const GHOST: Hsla = hsla(0.0, 0.0, 1.0, 0.26);
 /// Cards: a flat raised surface on the black, no edge.
 pub const CARD: Hsla = hsla(0.0, 0.0, 1.0, 0.06);
+/// Cards are lit from above (top, bottom) with a hairline edge, so they read
+/// as polished panes set into the black rather than grey boxes.
+pub const CARD_TOP: Hsla = hsla(0.0, 0.0, 1.0, 0.085);
+pub const CARD_BOTTOM: Hsla = hsla(0.0, 0.0, 1.0, 0.04);
+pub const CARD_EDGE: Hsla = hsla(0.0, 0.0, 1.0, 0.07);
+/// The solid notch's lip: a thin line of light along its bottom edge, bright
+/// in the middle and gone at the corners, and a faint floor glow above it.
+pub const LIP: Hsla = hsla(0.0, 0.0, 1.0, 0.30);
+pub const FLOOR: Hsla = hsla(0.0, 0.0, 1.0, 0.045);
+/// The tab bar's recessed track and the raised puck that slides in it.
+pub const TRACK: Hsla = hsla(0.0, 0.0, 1.0, 0.05);
+pub const PUCK_TOP: Hsla = hsla(0.0, 0.0, 1.0, 0.22);
+pub const PUCK_BOTTOM: Hsla = hsla(0.0, 0.0, 1.0, 0.12);
 pub const NONE: Hsla = hsla(0.0, 0.0, 0.0, 0.0);
 pub const WASH: Hsla = hsla(0.0, 0.0, 1.0, 0.08);
 pub const WASH_HOVER: Hsla = hsla(0.0, 0.0, 1.0, 0.13);
@@ -141,7 +154,7 @@ pub const BANNER_W: f32 = 384.0;
 pub const BANNER_H: f32 = 96.0;
 pub const FLASH_H: f32 = 52.0;
 pub const EXPANDED_W: f32 = 468.0;
-pub const EXPANDED_MAX_H: f32 = 404.0;
+pub const EXPANDED_MAX_H: f32 = 440.0;
 /// The wide island: the call, a plan, a view (V3), up to this tall, and
 /// never past this share of the display's height.
 pub const WIDE_W: f32 = 640.0;
