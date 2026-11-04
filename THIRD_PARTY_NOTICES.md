@@ -22,6 +22,19 @@ the file-type icon resolver (`apps/dove/src/file_icons.rs`, from
 the VS Code theme import (`apps/dove/src/themes/`, from `crates/theme`). Each
 built-in notes the upstream theme it was curated from, with its license.
 
+The zgx interface (`apps/keplorayx`) ports mechanisms, not looks, from Zeron's
+zgx app (`apps/zgx`): the Windows Transparency effects watcher
+(`apps/keplorayx/src/transparency.rs`, from `apps/zgx/src/transparency.rs`),
+the pattern of publishing a streaming reply as a small draft beside a
+transcript reconciled by id (`apps/keplorayx/src/host.rs`, after
+`apps/zgx/src/chat.rs`), the concentric-corner arithmetic
+(`apps/keplorayx/ui/kx/shape.luau`, after `ui/ds/control.luau`), and the
+single reduce-motion check with distance-scaled durations
+(`apps/keplorayx/ui/kx/motion.luau`, after `ui/ds/motion.luau`). Orbit's
+tokens, palette, type, icons and components are Keplorayx's own. Its
+fonts are Inter and JetBrains Mono (OFL, below), copied into
+`apps/keplorayx/fonts/` with their licences.
+
 > Permission is hereby granted, free of charge, to any person obtaining a copy
 > of this software and associated documentation files (the "Software"), to deal
 > in the Software without restriction, including without limitation the rights
@@ -117,6 +130,14 @@ The common MIT permission notice for the adaptations above follows:
 The pinned Shades of Purple license additionally says that anything built with
 it should also be MIT licensed. Zeron, from which this palette is ported, is
 MIT-licensed.
+
+## zgx (MIT)
+
+Copyright (c) 2026 zgx contributors. https://github.com/zeronsh/zgx
+
+`apps/keplorayx` is built on zgx (`zgx`, `zgx-desktop`, `zgx-script`,
+`zgx-run`), pinned by git revision in the workspace `Cargo.toml`. MIT, as
+Zeron's notice above.
 
 ## zui / GPUI (Apache-2.0)
 

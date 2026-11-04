@@ -1,0 +1,7 @@
+{
+	"languageMode": "strict",
+	"aliases": {
+		"kx": "./kx",
+		"screens": "./screens"
+	}
+}

@@ -1,0 +1,41 @@
+[package]
+name = "keplorayx"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Keplorayx (K22) on zgx: a Luau interface over Dove's engine"
+
+[[bin]]
+name = "keplorayx"
+path = "src/main.rs"
+
+[dependencies]
+dove-core = { workspace = true }
+dove-proto = { workspace = true }
+dove-store = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+flume = "0.11"
+zgx = { workspace = true }
+# `terminal`: `ui.terminal`, drawn by zgx. `webkitgtk`: Linux's web views.
+zgx-desktop = { workspace = true, features = ["mimalloc", "terminal", "webkitgtk"] }
+# `inspect`: devtools for `zgx inspect` and its MCP server (asked for with
+# --inspect). `i18n`: localized messages.
+zgx-script = { workspace = true, features = ["inspect", "i18n"] }
+# `fetch`: zgx's own transport for `ui.fetch` and remote images.
+zgx-run = { workspace = true, features = ["fetch"] }
+
+[target.'cfg(windows)'.dependencies]
+# `webview2`: `ui.webview` as WebView2 pages in the window's DirectComposition
+# tree (Windows 11 ships the runtime).
+zgx-desktop = { workspace = true, features = ["webview2"] }
+# Transparency effects, read and watched in the registry (src/transparency.rs).
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Registry"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Ghostty draws terminals on macOS (needs Zig 0.16 to build).
+zgx-desktop = { workspace = true, features = ["ghostty"] }
+
+[dev-dependencies]
+serde_json = { workspace = true }
