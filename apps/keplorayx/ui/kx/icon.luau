@@ -83,7 +83,9 @@ function M.Icon(props: Props): Node
 		-- A glyph says nothing a screen reader needs unless it stands alone.
 		aria_hidden = props.label == nil,
 		label = props.label,
-		tint = if props.mark then nil else (props.color or "currentColor"),
+		-- A mark keeps its own colours unless it's given one (an agent's
+		-- light); a glyph takes the text's.
+		tint = if props.mark then props.color else (props.color or "currentColor"),
 	}
 end
 

@@ -11,6 +11,7 @@ local surface = require("@kx/surface")
 local rows = require("@kx/rows")
 local controls = require("@kx/controls")
 local overlays = require("@kx/overlays")
+local status = require("@kx/status")
 
 return {
 	setup = tokens.setup,
@@ -43,8 +44,16 @@ return {
 	float_style = surface.float_style,
 	lip = surface.lip,
 
+	status = status,
+	StatusIcon = status.StatusIcon,
+	StatusDot = status.StatusDot,
+	Spinner = status.Spinner,
+	Working = status.Working,
+	tree_line = require("@kx/tree_line"),
+
 	Row = rows.Row,
 	AgentMark = rows.AgentMark,
+	MARKS = rows.MARKS,
 	Kbd = rows.Kbd,
 	Empty = rows.Empty,
 

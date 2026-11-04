@@ -101,11 +101,88 @@ function store.decide(request_id: string, decision: string, answers: { { string 
 	ui.invoke("kx.decide", { request_id = request_id, decision = decision, answers = answers })
 end
 
-function store.send(text: string, project: string?): any
+-- `harness`: the agent a new thread uses; `access`: "ask", "edits" or
+-- "full" (how much it may do before it asks).
+function store.send(text: string, project: string?, harness: string?, access: string?, persona: string?): any
 	if stubbed() then
 		return ui.sleep(0)
 	end
-	return ui.call("kx.send", { text = text, project = project })
+	return ui.call("kx.send", { text = text, project = project, harness = harness, access = access, persona = persona })
+end
+
+-- A call the host answers, or the fixture's own `stub[name](arg)` (or
+-- `fallback`) when a fixture stands in.
+local function call(name: string, arg: any, fallback: any): any
+	if stubbed() then
+		local ok, data = pcall(require, "@fixtures/" .. fixture_name)
+		local stubs = if ok and type(data) == "table" then (data :: any).stubs else nil
+		if not stubs then
+			local has, common = pcall(require, "@fixtures/common")
+			stubs = if has then (common :: any).stubs else nil
+		end
+		local f = stubs and stubs[name]
+		local value = if f then f(arg) else fallback
+		-- Settled already: `after` answers at once, `await` returns it.
+		return {
+			after = function(self: any, done: (any) -> (), _failed: any)
+				done(value)
+				return self
+			end,
+			await = function(_self: any)
+				return value
+			end,
+		}
+	end
+	return ui.call(name, arg)
+end
+store.call = call
+
+-- A project's folder, one level: { name, path, dir, size } sorted folders
+-- first. `path` is relative to the project's root ("" for the root).
+function store.list_dir(project: string?, path: string): any
+	return call("kx.list_dir", { project = project, path = path }, {})
+end
+
+-- A file's text (capped), with its language by extension.
+function store.read_file(project: string?, path: string): any
+	return call("kx.read_file", { project = project, path = path }, { text = "", lang = "" })
+end
+
+-- The project's history: the last commits, newest first, each with its
+-- parents (for the graph), its refs, author, when and subject.
+function store.history(project: string?): any
+	return call("kx.history", { project = project }, {})
+end
+
+-- The pull requests for the project's GitHub remote (gh, when it's there).
+function store.pulls(project: string?): any
+	return call("kx.pulls", { project = project }, {})
+end
+
+-- The app's settings, as Dove keeps them (its settings.json), read and
+-- written by key.
+function store.settings(): any
+	return call("kx.settings", nil, {})
+end
+
+function store.set_setting(key: string, value: any): any
+	return call("kx.set_setting", { key = key, value = value }, true)
+end
+
+-- The team: the agents installed on this device, with whether each is
+-- signed in, and the orchestra's lanes.
+function store.team(): any
+	return call("kx.team", nil, { agents = {}, members = {} })
+end
+
+function store.save_member(member: { [string]: any }): any
+	return call("kx.save_member", member, "fx")
+end
+
+function store.delete_member(id: string)
+	if not stubbed() then
+		ui.invoke("kx.delete_member", id)
+	end
 end
 
 function store.add_project(path: string): any

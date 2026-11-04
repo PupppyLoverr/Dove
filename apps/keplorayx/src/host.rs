@@ -269,6 +269,9 @@ pub fn install(cx: &mut WindowContext, host: &ScriptHost, engine: Arc<Engine>) {
         async move { send(&tasks, &s, req).await.map(|()| Value::Nil) }
     });
 
+    let (engine, s) = (state.borrow().engine.clone(), state.clone());
+    crate::panels::install(host, engine, move || s.borrow().open);
+
     if first {
         start_scheduler(&cx.tasks, &state);
     }
@@ -327,7 +330,7 @@ fn parse_task(value: &Value) -> Option<TaskId> {
 }
 
 /// `f` on a thread of its own, its answer awaited.
-async fn off_thread<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Option<T> {
+pub(crate) async fn off_thread<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Option<T> {
     let (tell, heard) = flume::bounded(1);
     std::thread::spawn(move || {
         let _ = tell.send(f());
@@ -504,6 +507,15 @@ async fn send(tasks: &zgx_desktop::TaskSpawner, state: &Host, req: Value) -> Res
         _ => None,
     });
     let harness = req.field("harness").and_then(text_of);
+    // How much a new thread's agent may do before it asks (the composer's
+    // access chip).
+    let mode = match req.field("access").and_then(text_of).as_deref() {
+        Some("edits") => dove_proto::PermissionMode::AcceptEdits,
+        Some("full") => dove_proto::PermissionMode::Bypass,
+        _ => dove_proto::PermissionMode::Default,
+    };
+    // The teammate a new thread runs as (Team › Start a thread), by id.
+    let persona = req.field("persona").and_then(text_of).filter(|p| !p.is_empty());
     // Starting or resuming spawns the harness: on a thread.
     let started = off_thread(move || -> anyhow::Result<LiveSession> {
         match open {
@@ -523,14 +535,22 @@ async fn send(tasks: &zgx_desktop::TaskSpawner, state: &Host, req: Value) -> Res
                     None => projects.into_iter().next(),
                 }
                 .ok_or_else(|| anyhow::anyhow!("no project: add one first"))?;
-                // The agent asked for, if it's installed; else the first that is.
+                let persona = match persona {
+                    Some(id) => engine.store.personas()?.into_iter().find(|p| p.id == id),
+                    None => None,
+                };
+                // The agent asked for (or the teammate's own), if it's
+                // installed; else the first that is.
                 let installed = engine.installed();
+                let harness = harness.or_else(|| persona.as_ref().and_then(|p| p.harness).map(|h| h.id().to_string()));
                 let harness = harness
                     .and_then(|id| installed.iter().find(|i| i.kind.id() == id).map(|i| i.kind))
                     .or_else(|| installed.first().map(|i| i.kind))
                     .ok_or_else(|| anyhow::anyhow!("no agent installed"))?;
                 let title: String = text.lines().next().unwrap_or("").chars().take(60).collect();
-                let new = NewTask { title, prompt: text, harness, run: RunSettings::default(), join: None, persona: None };
+                let run = RunSettings { mode, ..RunSettings::default() };
+                let run = RunSettings { model: persona.as_ref().and_then(|p| p.model.clone()), ..run };
+                let new = NewTask { title, prompt: text, harness, run, join: None, persona };
                 engine.start_task(&project, new).map(|(_, session)| session)
             }
         }

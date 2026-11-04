@@ -1,12 +1,12 @@
 --!strict
--- The Ray bar: one pill for everything. Type to ask an agent; start with
--- `>` for a command, `@` to mention a project or an agent, `/` for the
--- agent's own commands. What matches arrives as a live list under the
--- pill; ↑ ↓ move through it, Enter takes it, Escape steps back.
---
--- On Home it sits alone, centred, with the project and agent it will use
--- as chips inside it. In a thread it is the composer: the same pill, its
--- send turning to Stop while the agent works.
+-- The Ray bar: one composer for everything, shaped as Zeron's is (ds/
+-- composer, composer_dock; MIT, see THIRD_PARTY_NOTICES.md): a pill with a
+-- round + at its start, the field, the microphone and a round send; under
+-- it, a quiet line of what the message will use (where it runs, the
+-- project, the agent). Type to ask an agent; start with `>` for a command,
+-- `@` to mention a project or an agent, `/` for the agent's own commands.
+-- What matches arrives as a live list by the pill; ↑ ↓ move through it,
+-- Enter takes it, Escape steps back.
 --
 --   Ray { place = "home" }     Ray { place = "thread" }
 
@@ -25,6 +25,18 @@ local failure = ui.state("ray.failure", "")
 -- The project and agent a new thread will use (Home): the last chosen.
 M.project = ui.persist("ray.project", "")
 M.agent = ui.persist("ray.agent", "")
+-- How much a new thread's agent may do before it asks: "ask" (ask first),
+-- "edits" (edit files freely, ask before commands), "full".
+M.access = ui.persist("ray.access", "ask")
+-- The teammate a new thread runs as (Team › Start a thread), for the next
+-- thread only.
+M.persona = ui.state("ray.persona", nil :: { id: string, name: string }?)
+
+local ACCESS = {
+	ask = { icon = "shield-check", label = "Ask first" },
+	edits = { icon = "pen", label = "Edit files" },
+	full = { icon = "bolt", label = "Full access" },
+}
 
 local function mode(): string
 	local t = text:get()
@@ -82,14 +94,32 @@ end
 -- The commands `>` offers.
 local function commands(): { Result }
 	local list: { Result } = {
-		{ id = "new", icon = "pen-new-square", title = "New thread", hint = "Ctrl N", run = function()
+		{ id = "new", icon = "pen-new-square", title = "New thread", hint = "Ctrl+N", run = function()
 			nav.go("home")
 			store.home()
 		end },
-		{ id = "inbox", icon = "inbox", title = "Open the Inbox", run = function()
+		{ id = "inbox", icon = "inbox", title = "Open the Inbox", hint = "Ctrl+I", run = function()
 			nav.go("inbox")
 		end },
-		{ id = "settings", icon = "settings-minimalistic", title = "Open Settings", hint = "Ctrl ,", run = function()
+		{ id = "team", icon = "users-group", title = "Open Team", run = function()
+			nav.go("team")
+		end },
+		{ id = "files", icon = "folder-with-files", title = "Browse the project's files", hint = "Ctrl+P", run = function()
+			require("@screens/panel").show("files")
+		end },
+		{ id = "browser", icon = "global", title = "Open the browser", hint = "Ctrl+Shift+B", run = function()
+			require("@screens/panel").show("browser")
+		end },
+		{ id = "changes", icon = "file-diff", title = "Review the changes", hint = "Ctrl+J", run = function()
+			require("@screens/panel").show("changes")
+		end },
+		{ id = "terminal", icon = "terminal", title = "Open a terminal", hint = "Ctrl+`", run = function()
+			require("@screens/panel").show("terminal")
+		end },
+		{ id = "history", icon = "git-branch", title = "Show the project's history", run = function()
+			require("@screens/panel").show("history")
+		end },
+		{ id = "settings", icon = "settings-minimalistic", title = "Open Settings", hint = "Ctrl+,", run = function()
 			nav.go("settings")
 		end },
 		{ id = "night", icon = "moon", title = "Theme: Night", run = function()
@@ -117,7 +147,7 @@ local function mentions(): { Result }
 		end })
 	end
 	for _, a in store.agents:get() do
-		table.insert(list, { id = `a:{a.id}`, icon = "bot", title = a.label, hint = "agent", run = function()
+		table.insert(list, { id = `a:{a.id}`, icon = kx.MARKS[a.id] or "bot", title = a.label, hint = "agent", run = function()
 			M.agent:set(a.id)
 			text:set("")
 		end })
@@ -162,9 +192,11 @@ local function send()
 	sending:set(true)
 	failure:set("")
 	local project = M.project:peek()
-	store.send(t, if project ~= "" then project else nil):after(function()
+	local persona = M.persona:peek()
+	store.send(t, if project ~= "" then project else nil, agent_id(), M.access:peek(), if persona then persona.id else nil):after(function()
 		text:set("")
 		sending:set(false)
+		M.persona:set(nil)
 		nav.go("thread")
 	end, function(why: any)
 		failure:set(tostring(if type(why) == "table" then why.message else why))
@@ -250,36 +282,42 @@ local function result_row(r: Result, i: number): Node
 end
 
 local PLACEHOLDER = {
-	ask = "Ask an agent, or type > for commands",
+	ask = "Ask anything, @ to mention, > for commands",
 	command = "Run a command",
 	mention = "Mention a project or an agent",
 	slash = "An agent command",
 }
 
-local MODE_ICON = { ask = "ray", command = "command", mention = "link", slash = "code" }
-
--- A chip inside the pill: what a new thread will use, and a menu to change it.
-local function chip(icon: string, label: () -> string, open: State<boolean>, items: () -> { Node }): Node
+-- A chip under the pill: a quiet word for what the message will use, and
+-- a menu to change it.
+local function chip(lead: Node, label: () -> string, open: State<boolean>, items: () -> { Node }): Node
 	return kx.Menu {
 		open = open,
 		label = "Choose",
 		build = function()
 			return ui.column { w_full = true, table.unpack(items()) }
 		end,
-		anchor = kx.Button {
-			tone = "ghost",
-			size = "xs",
-			shape = "pill",
+		anchor = ui.button {
+			h = 24,
+			px = "$kx.space.tight",
+			gap = "$space.1",
+			items = "center",
+			rounded = "$radius.md",
+			bg = "#00000000",
+			color = "$text.secondary",
+			hover = { bg = "$hover", color = "$text.primary" },
+			cursor = "pointer",
 			on_click = ui.toggle(open),
-			kx.Icon { name = icon, size = 14 },
-			ui.text { label, literal = true, truncate = true, max_w = 160 },
-			kx.Icon { name = "alt-arrow-down", size = 12 },
+			lead,
+			ui.text { label, literal = true, truncate = true, max_w = 200, text_size = "$font.size.sm" },
 		},
 	}
 end
 
 local project_open = ui.state("ray.project_open", false)
 local agent_open = ui.state("ray.agent_open", false)
+local access_open = ui.state("ray.access_open", false)
+local plus_open = ui.state("ray.plus_open", false)
 
 local function pick_folder()
 	ui.task(function()
@@ -309,6 +347,42 @@ end
 
 M.pick_folder = pick_folder
 
+-- Files attached to the next message: their paths, put into it as
+-- mentions the agent reads (every harness reads a path it's given).
+local function attach()
+	ui.task(function()
+		local files: any = ui.open_files({ title = "Attach files", multiple = true }):await()
+		if not files then
+			return
+		end
+		local parts: { string } = {}
+		for _, f in files do
+			table.insert(parts, `@{f.path}`)
+		end
+		if #parts > 0 then
+			local t = text:peek()
+			text:set((if t == "" then "" else t .. " ") .. table.concat(parts, " ") .. " ")
+		end
+	end)
+end
+
+-- Windows' own voice typing (Win+H) into the field that has focus.
+local function dictate(field: any)
+	local el = field:peek()
+	if el then
+		el:focus()
+	end
+	pcall(ui.invoke, "kx.dictate")
+end
+
+local function round(props: { [any]: any }): Node
+	local p = table.clone(props)
+	p.shape = "pill"
+	p.icon = true
+	p.size = p.size or "sm"
+	return kx.Button(p)
+end
+
 function M.Ray(props: { place: "home" | "thread" }): Node
 	local home = props.place == "home"
 	local field_ref = ui.ref()
@@ -325,11 +399,146 @@ function M.Ray(props: { place: "home" | "thread" }): Node
 		local t = store.thread:get()
 		return not home and t ~= nil and t.running
 	end
-	local chips = if home
-		then ui.row {
-			gap = "$space.1",
-			items = "center",
-			chip("folder", function()
+	local plus = kx.Menu {
+		open = plus_open,
+		label = "Add",
+		build = function()
+			return ui.column {
+				w_full = true,
+				kx.MenuItem { "Attach files…", icon = "paperclip", on_click = attach },
+				kx.MenuItem { "Add a project folder…", icon = "folder-add", on_click = pick_folder },
+				kx.MenuItem { "Mention a project or agent", icon = "link", on_click = function()
+					text:set("@")
+					local el = field_ref:peek()
+					if el then
+						el:focus()
+					end
+				end },
+				kx.MenuItem { "Run a command", icon = "command", on_click = function()
+					text:set(">")
+					local el = field_ref:peek()
+					if el then
+						el:focus()
+					end
+				end },
+			}
+		end,
+		anchor = round {
+			tone = "secondary",
+			label = "Add",
+			on_click = ui.toggle(plus_open),
+			kx.Icon { name = "plus", size = 16 },
+		},
+	}
+	local pill = ui.row {
+		w_full = true,
+		items = "end",
+		gap = "$space.2",
+		p = "$space.2",
+		rounded = "$kx.pill.radius",
+		bg = "$surface.raised",
+		border = 1,
+		border_color = "$border",
+		shadow = "$shadow.md",
+		plus,
+		ui.textarea {
+			ref = field_ref,
+			value = text,
+			label = if home then "Ask" else "Reply",
+			placeholder = function()
+				return if home then PLACEHOLDER[mode()] else "Reply, @ to mention, > for commands"
+			end,
+			placeholder_color = "$text.tertiary",
+			caret_color = "$text.primary",
+			wrap = true,
+			grow = 1,
+			min_w = 0,
+			-- As tall as its lines, from one to eight, then it scrolls.
+			h = function(): number
+				local t = text:get()
+				local lines = 1
+				for _ in string.gmatch(t, "\n") do
+					lines += 1
+				end
+				-- A long line wraps: about 76 characters a line here.
+				lines += math.floor(#t / 76)
+				return math.clamp(lines, 1, 8) * 20 + 8
+			end,
+			py = "$space.1",
+			px = 0,
+			bg = "#00000000",
+			border = 0,
+			focus = { border = 0, outline = 0 },
+			text_size = "$font.size.lg",
+			line_height = "$font.line.lg",
+			on_key = on_key,
+		},
+		round {
+			tone = "ghost",
+			label = "Dictate (Win+H)",
+			tooltip = "Speak instead  Win+H",
+			on_click = function()
+				dictate(field_ref)
+			end,
+			kx.Icon { name = "microphone", size = 16 },
+		},
+		ui.show(
+			running,
+			round {
+				tone = "secondary",
+				label = "Stop",
+				tooltip = "Stop  Esc",
+				on_click = store.interrupt,
+				kx.Icon { name = "stop", size = 12 },
+			},
+			round {
+				label = "Send",
+				busy = sending,
+				disabled = function()
+					return string.match(text:get(), "^%s*$") ~= nil
+				end,
+				on_click = send,
+				kx.Icon { name = "arrow-up", size = 16 },
+			}
+		),
+	}
+	-- Under the pill: where it runs and with what.
+	local under = ui.row {
+		w_full = true,
+		items = "center",
+		gap = "$space.1",
+		px = "$space.2",
+		h = 28,
+		chip(
+			kx.Icon {
+				name = function()
+					return ACCESS[M.access:get()].icon
+				end,
+				size = 13,
+			},
+			function()
+				return ACCESS[M.access:get()].label
+			end,
+			access_open,
+			function()
+				local items: { Node } = {}
+				for _, id in { "ask", "edits", "full" } do
+					table.insert(items, kx.MenuItem {
+						ACCESS[id].label,
+						icon = ACCESS[id].icon,
+						checked = function()
+							return M.access:get() == id
+						end,
+						on_click = function()
+							M.access:set(id)
+						end,
+					})
+				end
+				return items
+			end
+		),
+		if home
+			then chip(kx.Icon { name = "folder", size = 13 }, function()
 				return project_name(M.project:get())
 			end, project_open, function()
 				local items: { Node } = {}
@@ -347,14 +556,58 @@ function M.Ray(props: { place: "home" | "thread" }): Node
 				end
 				table.insert(items, kx.MenuItem { "Add a folder…", icon = "folder-add", on_click = pick_folder })
 				return items
-			end),
-			chip("bot", function()
+			end)
+			else nil,
+		ui.show(function()
+			return home and M.persona:get() ~= nil
+		end, ui.button {
+			h = 24,
+			px = "$kx.space.tight",
+			gap = "$space.1",
+			items = "center",
+			rounded = "$radius.md",
+			bg = "$kx.secondary.bg",
+			color = "$text.primary",
+			cursor = "pointer",
+			tooltip = "Runs as this teammate. Click to clear.",
+			on_click = function()
+				M.persona:set(nil)
+			end,
+			kx.Icon { name = "teammate", size = 13 },
+			ui.text {
+				function()
+					local p = M.persona:get()
+					return if p then `as {p.name}` else ""
+				end,
+				literal = true,
+				text_size = "$font.size.sm",
+			},
+			kx.Icon { name = "close", size = 11 },
+		}),
+		ui.div { grow = 1 },
+		ui.show(function()
+			return failure:get() ~= ""
+		end, ui.text {
+			function()
+				return failure:get()
+			end,
+			literal = true,
+			text_size = "$font.size.xs",
+			color = "$danger",
+			truncate = true,
+			max_w = 280,
+		}),
+		if home
+			then chip(ui.presence(agent_id, function(id: string)
+				return kx.AgentMark { agent = id, size = 13 }
+			end), function()
 				return agent_label(agent_id())
 			end, agent_open, function()
 				local items: { Node } = {}
 				for _, a in store.agents:peek() do
 					table.insert(items, kx.MenuItem {
 						a.label,
+						icon = kx.MARKS[a.id] or "bot",
 						checked = function()
 							return agent_id() == a.id
 						end,
@@ -364,118 +617,29 @@ function M.Ray(props: { place: "home" | "thread" }): Node
 					})
 				end
 				return items
-			end),
-		}
-		else nil
-	local pill = kx.Pill {
-		w_full = true,
-		items = "end",
-		ui.column {
-			grow = 1,
-			min_w = 0,
-			gap = "$space.1",
-			ui.row {
-				w_full = true,
-				items = "start",
-				gap = "$space.2",
-				pl = "$space.2",
-				pt = "$kx.space.snug",
-				ui.column {
-					color = function()
-						return if mode() == "ask" then "$text.tertiary" else "$accent"
-					end,
-					pt = "$kx.space.hair",
-					kx.Icon {
-						name = function()
-							return MODE_ICON[mode()] or "ray"
-						end,
-						size = 16,
-					},
-				},
-				ui.textarea {
-					ref = field_ref,
-					value = text,
-					label = if home then "Ask" else "Reply",
-					placeholder = function()
-						return if home then PLACEHOLDER[mode()] else "Reply, or type > for commands"
-					end,
-					placeholder_color = "$text.tertiary",
-					caret_color = "$accent",
-					wrap = true,
-					grow = 1,
-					min_w = 0,
-					-- As tall as its lines, from one to eight, then it scrolls.
-					h = function(): number
-						local t = text:get()
-						local lines = 1
-						for _ in string.gmatch(t, "\n") do
-							lines += 1
-						end
-						-- A long line wraps: about 72 characters a line here.
-						lines += math.floor(#t / 72)
-						return math.clamp(lines, 1, 8) * 21 + 4
-					end,
-					p = 0,
-					bg = "#00000000",
-					border = 0,
-					focus = { border = 0, outline = 0 },
-					text_size = "$font.size.md",
-					line_height = "$font.line.md",
-					on_key = on_key,
-				},
-			},
-			ui.row {
-				w_full = true,
-				items = "center",
+			end)
+			else ui.row {
 				gap = "$space.1",
-				pb = "$kx.space.hair",
-				chips,
-				ui.div { grow = 1 },
-				ui.show(function()
-					return failure:get() ~= ""
-				end, ui.text {
+				items = "center",
+				px = "$kx.space.tight",
+				color = "$text.tertiary",
+				ui.text {
 					function()
-						return failure:get()
+						local t = store.thread:get()
+						return if t then t.harness else ""
 					end,
 					literal = true,
-					text_size = "$font.size.xs",
-					color = "$danger",
-					truncate = true,
-					max_w = 280,
-				}),
+					text_size = "$font.size.sm",
+				},
 			},
-		},
-		ui.show(
-			running,
-			kx.Button {
-				tone = "secondary",
-				shape = "pill",
-				icon = true,
-				size = "md",
-				label = "Stop",
-				on_click = store.interrupt,
-				kx.Icon { name = "stop", size = 14 },
-			},
-			kx.Button {
-				shape = "pill",
-				icon = true,
-				size = "md",
-				label = "Send",
-				busy = sending,
-				disabled = function()
-					return string.match(text:get(), "^%s*$") ~= nil
-				end,
-				on_click = send,
-				kx.Icon { name = "arrow-up", size = 16 },
-			}
-		),
 	}
 	return ui.column {
 		w_full = true,
 		relative = true,
 		pill,
-		-- What matches, under the pill (above it in a thread, where the pill
-		-- sits at the window's foot).
+		under,
+		-- What matches, by the pill (under it on Home, above it in a thread,
+		-- where the pill sits at the window's foot).
 		ui.show(
 			function()
 				return #results:get() > 0
@@ -486,7 +650,7 @@ function M.Ray(props: { place: "home" | "thread" }): Node
 				right = 0,
 				top = if home then "100%" else nil,
 				bottom = if home then nil else "100%",
-				mt = if home then "$space.2" else nil,
+				mt = if home then "$space.1" else nil,
 				mb = if home then nil else "$space.2",
 				z = 10,
 				max_h = 320,
@@ -502,7 +666,7 @@ function M.Ray(props: { place: "home" | "thread" }): Node
 	}
 end
 
--- Home's three first prompts, for the project chosen.
+-- Home's first prompts, for the project chosen.
 function M.suggest(t: string)
 	text:set(t)
 	nav.ray_focus:set(nav.ray_focus:peek() + 1)

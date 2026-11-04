@@ -1,7 +1,8 @@
 --!strict
--- Home: the Ray bar alone, centred, and a line of greeting above it. With
--- no project yet, one calm way in: choose a folder. Under the bar, three
--- first prompts for the project it will use, and what's under way.
+-- Home: a new thread, as Zeron's new chat sits (screens/chat/home; MIT, see
+-- THIRD_PARTY_NOTICES.md): a greeting set large in the serif, the
+-- composer alone under it, three first prompts, and what's under way. With
+-- no project yet, one calm way in: choose a folder.
 
 local kx = require("@kx")
 local store = require("@kx/store")
@@ -33,7 +34,7 @@ local SUGGESTIONS = {
 
 local function suggestion(s: { icon: string, text: string }): Node
 	return kx.Button {
-		tone = "ghost",
+		tone = "secondary",
 		size = "sm",
 		shape = "pill",
 		on_click = function()
@@ -65,15 +66,7 @@ local function busy_row(t: store.Thread): Node
 			nav.go("thread")
 			store.open(get().id)
 		end,
-		kx.AgentMark {
-			agent = get().harness_id,
-			live = function()
-				return get().status == "running"
-			end,
-			needs_you = function()
-				return get().status == "needs_you"
-			end,
-		},
+		kx.AgentMark { agent = get().harness_id, size = 14 },
 		ui.text {
 			function()
 				return get().title
@@ -85,14 +78,17 @@ local function busy_row(t: store.Thread): Node
 		},
 		ui.text {
 			function()
-				local t = get()
-				return if t.status == "needs_you" then "needs you" else t.harness
+				return get().harness
 			end,
 			literal = true,
 			text_size = "$font.size.xs",
-			color = function()
-				return if get().status == "needs_you" then "$kx.attention" else "$text.tertiary"
+			color = "$text.tertiary",
+		},
+		kx.StatusIcon {
+			kind = function()
+				return kx.status.kind_of(get().status)
 			end,
+			size = 15,
 		},
 	}
 end
@@ -102,8 +98,16 @@ local function no_project(): Node
 		w_full = true,
 		items = "center",
 		gap = "$space.3",
-		ui.column { color = "$accent", mb = "$space.2", kx.Icon { name = "orbit", size = 40 } },
-		kx.Title { "Welcome to Keplorayx", literal = true, align = "center" },
+		ui.column { color = "$text.primary", mb = "$space.2", kx.Icon { name = "orbit", size = 36 } },
+		ui.text {
+			"Welcome to Keplorayx",
+			literal = true,
+			align = "center",
+			font = "$kx.display",
+			text_size = "$kx.hero.size",
+			line_height = "$kx.hero.line",
+			letter_spacing = "$kx.hero.tracking",
+		},
 		kx.Body {
 			"Choose a folder to work in. Your agents run there, on this device; nothing leaves it unless you connect something that does.",
 			literal = true,
@@ -139,7 +143,7 @@ function M.view(): Node
 		pb = "$space.8",
 		ui.column {
 			w_full = true,
-			max_w = 640,
+			max_w = 720,
 			gap = "$space.5",
 			ui.show(
 				has_project,
@@ -150,7 +154,15 @@ function M.view(): Node
 						w_full = true,
 						gap = "$space.1",
 						items = "center",
-						kx.Title { greeting(), literal = true, align = "center" },
+						ui.text {
+							greeting(),
+							literal = true,
+							align = "center",
+							font = "$kx.display",
+							text_size = "$kx.hero.size",
+							line_height = "$kx.hero.line",
+							letter_spacing = "$kx.hero.tracking",
+						},
 						kx.Caption { "What should your agents work on?", literal = true, align = "center" },
 					},
 					ray.Ray { place = "home" },

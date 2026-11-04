@@ -1,91 +1,119 @@
 {
 	// Orbit, night. Saving this file restyles every open window in place.
 	//
-	// A deep night sky: blue-black neutrals, cool starlight for text, and
-	// depth from light rather than lines (what is nearer is a little
-	// brighter, its edge catches light along the top). One luminous accent
-	// per agent (kx.agent.*), and one warm colour, kx.attention, spent only
-	// on what needs you.
+	// Charcoal glass, as Zeron's dark is (its values, credited in
+	// THIRD_PARTY_NOTICES.md): depth reads by light, not shadow. What is
+	// nearer is lighter, its edge a faint even hairline; shadows sit under it
+	// soft, felt more than seen. The window is a deep scrim over the
+	// system's blur, letting the desktop's colour through. Keplorayx's own
+	// light is a dusty starlight blue, spent sparingly; the one warm colour,
+	// kx.attention, is spent only on what needs you.
 	"name": "orbit-night",
 	"type": "dark",
 	"extends": "zgx-dark",
 	"tokens": {
-		// The window: a deep scrim over the system backdrop (Mica).
-		"background": "#06080ed6",
-		"glass.tint": "#06080ed6",
+		"background": "#0b0b0dcc",
+		"glass.tint": "#0b0b0dcc",
 		"glass.blur": 28,
+		"popover.bg": "#2a2a2f",
 		"surface": {
-			"sunken": "#02030799",
-			"base": "#b8c6ff08",
-			"raised": "#b8c6ff0f",
-			"overlay": "#0c1020ec"
+			"sunken": "#000000c2",
+			"base": "#ffffff08",
+			"raised": "#ffffff0f",
+			"overlay": "#1b1b1ee0"
 		},
-		"popover.bg": "#151a2b",
 		"text": {
-			// Starlight: a cool white. Muted text is the same light, dimmer,
-			// so it takes the colour of whatever it sits on.
-			"primary": "#e7ebf5",
-			"secondary": "alpha({text.primary}, 0.64)",
+			// Muted text is the primary at less opacity, not a grey: it takes
+			// the colour of whatever is behind it.
+			"primary": "#ededef",
+			"secondary": "alpha({text.primary}, 0.6)",
 			"tertiary": "alpha({text.primary}, 0.42)",
-			"disabled": "alpha({text.primary}, 0.26)"
+			"disabled": "alpha({text.primary}, 0.28)"
 		},
-		"border": "#b8c6ff16",
-		"border.subtle": "#b8c6ff0b",
-		"border.strong": "#b8c6ff30",
-		// Kepler's blue: the app's own light, before any agent's.
-		"accent": "#86a8ff",
-		"accent.hover": "#9ab7ff",
-		"accent.text": "#060914",
-		"danger": "#ff8189",
-		"warning": "#f2c86b",
-		"success": "#6fd6ad",
-		"info": "#86a8ff",
-		// One wash for hover, press and selection: light laid over light.
-		"hover": "#c8d4ff0d",
-		"pressed": "#c8d4ff18",
-		"selection": "#86a8ff40",
-		"selection.item": "#c8d4ff14",
-		"focus.ring": "alpha({accent}, 0.7)",
+		"border": "#ffffff12",
+		"border.subtle": "#ffffff0a",
+		"border.strong": "#ffffff2e",
+		// Kepler: starlight blue, dusty on dark glass (a saturated blue there
+		// reads as a link).
+		"accent": "#7f97c9",
+		"accent.hover": "#8ea4d2",
+		"accent.text": "#ffffff",
+		"danger": "#f87171",
+		"warning": "#facc15",
+		"success": "#34d399",
+		"info": "#60a5fa",
+		// One wash for hover, press and selection: a breath of light.
+		"hover": "#ffffff0d",
+		"pressed": "#ffffff17",
+		"selection": "alpha({accent}, 0.32)",
+		"selection.item": "#ffffff1a",
+		"backdrop": "#00000059",
+		"focus.ring": "alpha({accent}, 0.6)",
 		"scrollbar": {
 			"track": "#00000000",
-			"thumb": "alpha({text.primary}, 0.18)",
-			"thumb.active": "alpha({text.primary}, 0.36)"
+			"thumb": "alpha({text.primary}, 0.26)",
+			"thumb.active": "alpha({text.primary}, 0.44)"
 		},
 		"font": {
-			"sans": "Inter",
-			"mono": "JetBrains Mono",
-			"size": { "xs": 11, "sm": 12.5, "md": 13.5, "lg": 15, "xl": 19, "xxl": 26 },
-			"line": { "xs": 16, "sm": 18, "md": 21, "lg": 23, "xl": 26, "xxl": 32 }
+			"sans": "Geist",
+			"mono": "Geist Mono",
+			"size": { "xs": 11, "sm": 12, "md": 13, "lg": 15, "xl": 20, "xxl": 28 },
+			"line": { "xs": 14, "sm": 16, "md": 18, "lg": 20, "xl": 26, "xxl": 34 }
 		},
-		// The lens family: soft, never pill-like except where a pill is meant.
-		"radius": { "sm": 6, "md": 9, "lg": 13, "xl": 18 },
+		"space": { "1": 4, "2": 8, "3": 12, "4": 16, "5": 24, "6": 32, "7": 48, "8": 64 },
+		"radius": { "sm": 4, "md": 6, "lg": 8, "xl": 12 },
 		"control.height": 32,
 		"shadow": {
-			"sm": "0 1 2 0 #00000066",
-			"md": "0 6 18 -4 #0000008c",
-			"lg": "0 18 48 -12 #000000b3"
+			"sm": "0 1 2 0 #00000059",
+			"md": "0 4 12 0 #00000066",
+			"lg": "0 12 32 0 #00000080"
 		},
 		"motion": {
-			"duration": { "fast": 140, "normal": 220, "slow": 360 },
+			"duration": { "fast": 120, "normal": 180, "slow": 240 },
 			"ease": {
-				// Orbit's one curve: eases in, overshoots a breath, settles.
-				"standard": "cubicBezier(0.22, 1.12, 0.36, 1)",
-				"enter": "cubicBezier(0.16, 1.18, 0.3, 1)",
-				"exit": "cubicBezier(0.4, 0, 0.8, 0.4)"
+				"standard": "cubicBezier(0.2, 0, 0, 1)",
+				"enter": "cubicBezier(0.16, 1, 0.3, 1)",
+				"exit": "cubicBezier(0.4, 0, 1, 1)"
 			}
 		},
 		"kx": {
-			"display": "Inter Display",
-			"solid": "#080b14",
-			// The warm colour, reserved for "this needs you".
-			"attention": "#ffb366",
-			"glow.attention": "0 0 14 1 alpha({kx.attention}, 0.55)",
-			"attention.soft": "alpha({kx.attention}, 0.16)",
-			// The lip of light along a lifted surface's top edge.
-			"lip": "#dfe6ff24",
-			"lip.strong": "#dfe6ff3d",
-			// The night behind it all, for the intro and Constellation.
-			"sky": { "deep": "#03040a", "mid": "#0a1024", "glow": "#1a2550" }
+			"display": "Instrument Serif",
+			"solid": "#0e0e10",
+			"attention": "#f5b45f",
+			"glow.attention": "0 0 12 0 alpha({kx.attention}, 0.4)",
+			"attention.soft": "alpha({kx.attention}, 0.14)",
+			// A raised thing's edge: even all round, no light along its top.
+			"lip": "#ffffff0d",
+			"lip.strong": "#ffffff1f",
+			"lift": "0 1 3 0 #00000066",
+			"well": { "edge": "#ffffff17" },
+			// A primary button: the lightest thing on the glass.
+			"primary": { "bg": "#ededef", "hover": "#ffffff", "text": "#0e0e10" },
+			"secondary": { "bg": "#ffffff14", "hover": "#ffffff1f" },
+			// The lines of a tree (a project's threads, a turn's tools).
+			"tree": "alpha({text.primary}, 0.16)",
+			// An agent's status: a hue a state, light steps on the dark.
+			"status": {
+				"working": "{text.secondary}",
+				"input": "#818cf8",
+				"approval": "#fbbf24",
+				"done": "#34d399",
+				"failed": "#f87171",
+				"idle": "#9ca3af"
+			},
+			// Code: pale steps of one perceived lightness, so no hue shouts on
+			// dark glass (Zeron's syntax palette).
+			"syntax": {
+				"keyword": "#c4b5fd", "function": "#93c5fd", "type": "#fcd34d",
+				"string": "#86efac", "escape": "#67e8f9", "regex": "#5eead4",
+				"number": "#fdba74", "constant": "#fdba74", "macro": "#f0abfc",
+				"property": "#fecdd3", "variable": "#f9a8d4", "attribute": "#fde047",
+				"label": "#a5b4fc", "tag": "#fca5a5", "heading": "#c4b5fd", "link": "#93c5fd",
+				"emphasis": "#f9a8d4", "strong": "#fed7aa",
+				"inserted": "#4ade80", "deleted": "#f87171", "hunk": "#c4b5fd"
+			},
+			"git": { "modified": "#fbbf24", "added": "#4ade80", "untracked": "#34d399", "deleted": "#f87171" },
+			"sky": { "deep": "#050506", "mid": "#0e0e12", "glow": "#2a3350" }
 		}
 	}
 }

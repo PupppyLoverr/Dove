@@ -1,77 +1,104 @@
 {
-	// Orbit, dawn: the same instrument by daylight. Paper-cool neutrals,
-	// ink for text, the same accent and attention roles, deepened to read
-	// on a light ground.
+	// Orbit, dawn: paper glass, as Zeron's light is (its values, credited in
+	// THIRD_PARTY_NOTICES.md). Depth reads by white and line: what is nearer
+	// is whiter, its edge a faint dark hairline, its shadow small and soft.
+	// Washes darken rather than lighten.
 	"name": "orbit-dawn",
 	"type": "light",
 	"extends": "zgx-light",
 	"tokens": {
-		"background": "#f4f6fbe8",
-		"glass.tint": "#f4f6fbe8",
+		"background": "#f5f5f7b8",
+		"glass.tint": "#f5f5f7b8",
 		"glass.blur": 28,
-		"surface": {
-			"sunken": "#0b143a0a",
-			"base": "#ffffff8c",
-			"raised": "#ffffffd9",
-			"overlay": "#fbfcfff2"
-		},
 		"popover.bg": "#ffffff",
+		"surface": {
+			"sunken": "#0000000d",
+			"base": "#ffffff66",
+			"raised": "#ffffffc7",
+			"overlay": "#fcfcfde6"
+		},
 		"text": {
-			"primary": "#0e1424",
+			"primary": "#1b1b1d",
 			"secondary": "alpha({text.primary}, 0.64)",
-			"tertiary": "alpha({text.primary}, 0.44)",
+			"tertiary": "alpha({text.primary}, 0.45)",
 			"disabled": "alpha({text.primary}, 0.28)"
 		},
-		"border": "#0b143a17",
-		"border.subtle": "#0b143a0c",
-		"border.strong": "#0b143a2e",
-		"accent": "#3d63e0",
-		"accent.hover": "#3457cc",
+		"border": "#00000024",
+		"border.subtle": "#00000017",
+		"border.strong": "#0000002e",
+		"accent": "#3f5fb8",
+		"accent.hover": "#3653a6",
 		"accent.text": "#ffffff",
-		"danger": "#d6334a",
-		"warning": "#b07a00",
-		"success": "#178a62",
-		"info": "#3d63e0",
-		"hover": "#0b143a0a",
-		"pressed": "#0b143a14",
-		"selection": "#3d63e033",
-		"selection.item": "#0b143a0f",
+		"danger": "#dc2626",
+		"warning": "#b45309",
+		"success": "#059669",
+		"info": "#2563eb",
+		"hover": "#0000000a",
+		"pressed": "#00000012",
+		"selection": "alpha({accent}, 0.2)",
+		"selection.item": "#ffffffeb",
+		"selection.inactive": "alpha({text.primary}, 0.12)",
+		"backdrop": "#0000002e",
 		"focus.ring": "alpha({accent}, 0.6)",
 		"scrollbar": {
 			"track": "#00000000",
-			"thumb": "alpha({text.primary}, 0.2)",
-			"thumb.active": "alpha({text.primary}, 0.38)"
+			"thumb": "alpha({text.primary}, 0.26)",
+			"thumb.active": "alpha({text.primary}, 0.44)"
 		},
 		"font": {
-			"sans": "Inter",
-			"mono": "JetBrains Mono",
-			"size": { "xs": 11, "sm": 12.5, "md": 13.5, "lg": 15, "xl": 19, "xxl": 26 },
-			"line": { "xs": 16, "sm": 18, "md": 21, "lg": 23, "xl": 26, "xxl": 32 }
+			"sans": "Geist",
+			"mono": "Geist Mono",
+			"size": { "xs": 11, "sm": 12, "md": 13, "lg": 15, "xl": 20, "xxl": 28 },
+			"line": { "xs": 14, "sm": 16, "md": 18, "lg": 20, "xl": 26, "xxl": 34 }
 		},
-		"radius": { "sm": 6, "md": 9, "lg": 13, "xl": 18 },
+		"space": { "1": 4, "2": 8, "3": 12, "4": 16, "5": 24, "6": 32, "7": 48, "8": 64 },
+		"radius": { "sm": 4, "md": 6, "lg": 8, "xl": 12 },
 		"control.height": 32,
 		"shadow": {
-			"sm": "0 1 2 0 #0b143a14",
-			"md": "0 6 18 -6 #0b143a24",
-			"lg": "0 18 48 -14 #0b143a33"
+			"sm": "0 1 2 0 #0000000f",
+			"md": "0 4 12 0 #00000014",
+			"lg": "0 12 32 0 #0000001f"
 		},
 		"motion": {
-			"duration": { "fast": 140, "normal": 220, "slow": 360 },
+			"duration": { "fast": 120, "normal": 180, "slow": 240 },
 			"ease": {
-				"standard": "cubicBezier(0.22, 1.12, 0.36, 1)",
-				"enter": "cubicBezier(0.16, 1.18, 0.3, 1)",
-				"exit": "cubicBezier(0.4, 0, 0.8, 0.4)"
+				"standard": "cubicBezier(0.2, 0, 0, 1)",
+				"enter": "cubicBezier(0.16, 1, 0.3, 1)",
+				"exit": "cubicBezier(0.4, 0, 1, 1)"
 			}
 		},
 		"kx": {
-			"display": "Inter Display",
-			"solid": "#f3f5fa",
-			"attention": "#d9730d",
-			"glow.attention": "0 0 14 1 alpha({kx.attention}, 0.55)",
-			"attention.soft": "alpha({kx.attention}, 0.14)",
-			"lip": "#ffffffcc",
-			"lip.strong": "#ffffff",
-			"sky": { "deep": "#e9eefb", "mid": "#dbe4fa", "glow": "#c3d2f7" }
+			"display": "Instrument Serif",
+			"solid": "#f5f5f7",
+			"attention": "#c2620a",
+			"glow.attention": "0 0 12 0 alpha({kx.attention}, 0.35)",
+			"attention.soft": "alpha({kx.attention}, 0.12)",
+			"lip": "#0000000f",
+			"lip.strong": "#0000001f",
+			"lift": "0 1 2 0 #0000000f",
+			"well": { "edge": "#00000017" },
+			"primary": { "bg": "#1b1b1d", "hover": "#000000", "text": "#ffffff" },
+			"secondary": { "bg": "#0000000d", "hover": "#00000017" },
+			"tree": "alpha({text.primary}, 0.18)",
+			"status": {
+				"working": "{text.secondary}",
+				"input": "#4f46e5",
+				"approval": "#d97706",
+				"done": "#059669",
+				"failed": "#dc2626",
+				"idle": "#6b7280"
+			},
+			"syntax": {
+				"keyword": "#7c3aed", "function": "#2563eb", "type": "#b45309",
+				"string": "#15803d", "escape": "#0e7490", "regex": "#0f766e",
+				"number": "#c2410c", "constant": "#c2410c", "macro": "#a21caf",
+				"property": "#be123c", "variable": "#be185d", "attribute": "#a16207",
+				"label": "#4338ca", "tag": "#b91c1c", "heading": "#7c3aed", "link": "#2563eb",
+				"emphasis": "#be185d", "strong": "#c2410c",
+				"inserted": "#16a34a", "deleted": "#dc2626", "hunk": "#7c3aed"
+			},
+			"git": { "modified": "#b45309", "added": "#16a34a", "untracked": "#059669", "deleted": "#dc2626" },
+			"sky": { "deep": "#ececf0", "mid": "#e2e3ea", "glow": "#c9d3ec" }
 		}
 	}
 }

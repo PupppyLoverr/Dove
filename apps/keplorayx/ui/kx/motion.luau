@@ -37,9 +37,9 @@ end
 M.FADE = 120
 
 -- The curves, by name: the themes say what each is.
-M.EASE = "cubicBezier(0.22, 1.12, 0.36, 1)"
-M.ENTER = "cubicBezier(0.16, 1.18, 0.3, 1)"
-M.EXIT = "cubicBezier(0.4, 0, 0.8, 0.4)"
+M.EASE = "cubicBezier(0.2, 0, 0, 1)"
+M.ENTER = "cubicBezier(0.16, 1, 0.3, 1)"
+M.EXIT = "cubicBezier(0.4, 0, 1, 1)"
 -- A fade has no overshoot to show: plain ease-out.
 M.FADE_EASE = "out(3)"
 
@@ -94,7 +94,52 @@ function M.spring(target: any, opts: any): any
 	return if M.reduced_now() then target else ui.spring(target, opts)
 end
 
+-- ── Loops that run only while seen ─────────────────────────────────────
+-- A node whose loop (`start(el)`'s animation) plays only while it can be
+-- seen, and never with motion reduced; out of sight (a collapsed sidebar,
+-- a closed panel) it stops. The animation runs in the engine, not through
+-- a script state, so a pulse redraws the one element and nothing else
+-- (Zeron's `looping`, MIT; see THIRD_PARTY_NOTICES.md). The loop is held
+-- weakly: held strongly it would hold its element, the element this node,
+-- a cycle no collector sees.
+function M.looping(props: any, start: (el: Element) -> any, make: ((any) -> Node)?): Node
+	local held = setmetatable({}, { __mode = "v" }) :: { anim: any }
+	props.on_visible = function(visible: boolean, el: Element)
+		if visible then
+			if not held.anim and not M.reduced_now() then
+				held.anim = start(el)
+			end
+		elseif held.anim then
+			held.anim:cancel()
+			held.anim = nil
+		end
+	end
+	return (make or ui.div)(props)
+end
+
+-- Every pulse's pace, so the frames that draw one draw them all: dimming
+-- and brightening in six steps each way at 30 frames a second, each held
+-- for a rest that draws nothing.
+M.PULSE = { duration = 220, rest = 900, fps = 30 }
+
+-- `props` (a container's) dimming to `low` and back while it's seen.
+function M.pulse(props: any, low: number?, make: ((any) -> Node)?): Node
+	return M.looping(props, function(el)
+		return anime.animate(el, {
+			opacity = { 1, low or 0.5 },
+			duration = M.PULSE.duration,
+			ease = "steps(6)",
+			loop = true,
+			alternate = true,
+			loopDelay = M.PULSE.rest,
+			frameRate = M.PULSE.fps,
+		})
+	end, make)
+end
+
 -- ── The breath ─────────────────────────────────────────────────────────
+-- (Kept for the intro and Constellation's sky, which draw every frame
+-- anyway; everything else pulses with `pulse`, which costs no script work.)
 -- One clock for every live indicator, so they all glow in step. It runs
 -- only while an indicator is mounted (each holds it from its component and
 -- lets go as it unmounts), at 30 frames a second, and stands still with

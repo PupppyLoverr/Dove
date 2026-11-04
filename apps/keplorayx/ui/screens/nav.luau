@@ -5,7 +5,7 @@
 
 local M = {}
 
-export type Route = "home" | "thread" | "inbox" | "settings" | "constellation"
+export type Route = "home" | "thread" | "inbox" | "settings" | "constellation" | "team" | "files"
 
 M.route = ui.state("nav.route", "home" :: Route)
 
@@ -15,6 +15,28 @@ M.ray_focus = ui.state("nav.ray_focus", 0)
 -- The Ray bar's mode, set by its leading character or a shortcut:
 -- `ask` (a prompt), `command` (>), `mention` (@), `slash` (/).
 M.ray_mode = ui.state("nav.ray_mode", "ask")
+
+-- Kept across launches; with a fixture standing in, for the run only (the
+-- design PNGs must not depend on a run before them).
+local fixture = (ui.shared("dev.fixture", "") :: any):peek() ~= ""
+local function kept<T>(key: string, default: T): State<T>
+	return if fixture then ui.state(key, default) else ui.persist(key, default)
+end
+
+-- The sidebar shown or folded away (Ctrl+B).
+M.sidebar_open = kept("kx.sidebar_open", true)
+
+-- Threads pinned to the sidebar's top, by id (yours, on this device).
+M.pinned = kept("kx.pinned", {} :: { [string]: boolean })
+
+-- Projects folded in the sidebar, by id.
+M.folded = kept("kx.folded", {} :: { [string]: boolean })
+
+function M.toggle_pin(id: string)
+	local next = table.clone(M.pinned:peek())
+	next[id] = if next[id] then nil else true
+	M.pinned:set(next)
+end
 
 -- The room a title bar's right end leaves for the window's caption buttons
 -- (Windows: minimise, maximise, close), when it is the one under them.

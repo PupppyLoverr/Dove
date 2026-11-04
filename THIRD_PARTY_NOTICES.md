@@ -22,18 +22,31 @@ the file-type icon resolver (`apps/dove/src/file_icons.rs`, from
 the VS Code theme import (`apps/dove/src/themes/`, from `crates/theme`). Each
 built-in notes the upstream theme it was curated from, with its license.
 
-The zgx interface (`apps/keplorayx`) ports mechanisms, not looks, from Zeron's
-zgx app (`apps/zgx`): the Windows Transparency effects watcher
-(`apps/keplorayx/src/transparency.rs`, from `apps/zgx/src/transparency.rs`),
-the pattern of publishing a streaming reply as a small draft beside a
-transcript reconciled by id (`apps/keplorayx/src/host.rs`, after
-`apps/zgx/src/chat.rs`), the concentric-corner arithmetic
-(`apps/keplorayx/ui/kx/shape.luau`, after `ui/ds/control.luau`), and the
-single reduce-motion check with distance-scaled durations
-(`apps/keplorayx/ui/kx/motion.luau`, after `ui/ds/motion.luau`). Orbit's
-tokens, palette, type, icons and components are Keplorayx's own. Its
-fonts are Inter and JetBrains Mono (OFL, below), copied into
-`apps/keplorayx/fonts/` with their licences.
+The zgx interface (`apps/keplorayx`) is ported in large part from Zeron's
+zgx app (`apps/zgx`):
+
+- **Mechanisms:** the Windows Transparency effects watcher
+  (`src/transparency.rs`, from `apps/zgx/src/transparency.rs`); a streaming
+  reply published as a small draft beside a transcript reconciled by id
+  (`src/host.rs`, after `apps/zgx/src/chat.rs`); the concentric-corner
+  arithmetic (`ui/kx/shape.luau`, after `ui/ds/control.luau`); the single
+  reduce-motion check, distance-scaled durations and loops that run only
+  while seen (`ui/kx/motion.luau`, after `ui/ds/motion.luau` and
+  `ui/ds/status.luau`).
+- **Code, ported with changes:** the status glyphs and the working ring's
+  shader (`ui/kx/status.luau`, from `ui/ds/status.luau`); the tree line
+  (`ui/kx/tree_line.luau`, from `ui/ds/tree_line.luau`); the syntax
+  highlighter (`ui/kx/syntax/`, from `ui/ds/syntax/`); the browser's address
+  rules (`ui/screens/browser_api.luau`, from `ui/screens/panel/browser_api.luau`);
+  the button recipe (`ui/kx/button.luau`, from `ui/ds/button.luau`).
+- **Look:** the dark and light themes' values (`ui/kx/themes/*.json`, after
+  `ui/ds/themes/zeron-*.json`, with Keplorayx's own accent and attention
+  colour) and the layout of the sidebar, composer, transcript, side panel and
+  Settings (after `ui/ds/sidebar.luau`, `composer.luau`, `transcript.luau`,
+  `screens/panel/` and `screens/settings/`).
+
+Each file names what it took. Its fonts are Geist, Geist Mono and Instrument
+Serif (OFL, below), copied with their licences into `apps/keplorayx/fonts/`.
 
 > Permission is hereby granted, free of charge, to any person obtaining a copy
 > of this software and associated documentation files (the "Software"), to deal
@@ -245,6 +258,18 @@ Copyright The Inter Project Authors. See `apps/dove/assets/fonts/Inter-OFL.txt`
 Copyright The JetBrains Mono Project Authors. See
 `apps/dove/assets/fonts/JetBrainsMono-OFL.txt` (also shipped beside the faces
 in the same font directories as Inter).
+
+## Geist and Geist Mono (SIL OFL 1.1)
+
+Copyright 2024 The Geist Project Authors (https://github.com/vercel/geist-font).
+`apps/keplorayx` sets its interface in them, copied through Zeron. See
+`apps/keplorayx/fonts/Geist-OFL.txt`.
+
+## Instrument Serif (SIL OFL 1.1)
+
+Copyright 2022 The Instrument Serif Project Authors
+(https://github.com/Instrument/instrument-serif). `apps/keplorayx` sets its few
+large words in it. See `apps/keplorayx/fonts/InstrumentSerif-OFL.txt`.
 
 ## Great Vibes (SIL OFL 1.1)
 

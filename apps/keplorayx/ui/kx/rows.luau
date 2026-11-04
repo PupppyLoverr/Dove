@@ -29,6 +29,8 @@ local function read(v: any): any
 	return v
 end
 
+-- Zeron's row (ds/list_row, session_row; MIT): a compact row is 30 points,
+-- a regular one 32, a two-line one 46; one wash, selection a firmer one.
 local ROW = ui.variants {
 	base = {
 		w_full = true,
@@ -38,17 +40,32 @@ local ROW = ui.variants {
 		py = 0,
 		bg = "#00000000",
 		cursor = "pointer",
-		rounded = "$kx.menu.row",
+		rounded = "$radius.lg",
 		hover = { bg = "$hover" },
 		active = { bg = "$pressed" },
 		focus = { outline = 2, outline_color = "$focus.ring", outline_offset = -2 },
 	},
 	variants = {
 		selected = { [true] = { bg = "$selection.item", hover = { bg = "$selection.item" } }, [false] = {} },
-		size = { sm = { h = 28 }, md = { h = 34 }, lg = { h = 48, py = "$space.1" } },
+		size = { sm = { h = 30 }, md = { h = 32 }, lg = { h = 46, py = "$space.1" } },
 	},
 	defaults = { selected = false, size = "md" },
 }
+
+-- Each agent's mark in the icon library (its own glyph, in its light).
+M.MARKS = {
+	claude_code = "claude-mark",
+	codex = "openai-mark",
+	cursor = "cursor-mark",
+	devin = "devin-mark",
+	grok = "grok-mark",
+	hermes = "hermes-mark",
+	open_code = "opencode-mark",
+	pi = "pi-mark",
+	antigravity = "antigravity-mark",
+	copilot = "brand-github",
+	kimi = "k22-mark",
+} :: { [string]: string }
 
 function M.Row(props: P): Node
 	local p = table.clone(props)
@@ -67,30 +84,57 @@ function M.Row(props: P): Node
 	return ui.button(p)
 end
 
+-- An agent's mark: its own glyph in its light (a star for an agent without
+-- one). `size` is the glyph's; `dot = true` draws the small round light
+-- alone (Constellation, a chip). Live, it pulses on the engine's clock (no
+-- script work); needing you, it turns warm.
 function M.AgentMark(props: P): Node
-	local size = props.size or 8
+	local size = props.size or 14
 	local colour = tokens.agent(props.agent)
 	local live, needs = props.live, props.needs_you
-	local glow = if live then motion.breath(0.45, 1) else nil
-	return ui.div {
-		w = size,
-		h = size,
-		shrink = 0,
-		rounded = "$radius.full",
-		aria_hidden = true,
-		bg = function()
-			return if needs and read(needs) then "$kx.attention" else colour
-		end,
-		opacity = function(): number
-			if needs and read(needs) then
-				return 1
-			end
-			if glow and read(live) then
-				return glow()
-			end
-			return 0.85
-		end,
-	}
+	local function warm(): boolean
+		return needs ~= nil and read(needs) == true
+	end
+	local body: P
+	if props.dot then
+		body = {
+			w = size,
+			h = size,
+			shrink = 0,
+			rounded = "$radius.full",
+			aria_hidden = true,
+			bg = function()
+				return if warm() then "$kx.attention" else colour
+			end,
+		}
+	else
+		body = {
+			w = size,
+			h = size,
+			shrink = 0,
+			items = "center",
+			justify = "center",
+			aria_hidden = true,
+			color = function()
+				return if warm() then "$kx.attention" else colour
+			end,
+			-- A brand's mark is drawn as itself (`mark`), Orbit's star as a glyph.
+			if M.MARKS[props.agent or ""]
+				then icon.Icon { mark = M.MARKS[props.agent or ""], size = size, color = "currentColor" }
+				else icon.Icon { name = "star-four", size = size },
+		}
+	end
+	if live == nil then
+		return ui.column(body)
+	end
+	-- Live: the pulse runs only while it shows (motion.looping), so a
+	-- resting row costs nothing.
+	return ui.switch(function(): string
+		return if read(live) and not warm() then "live" else "still"
+	end, {
+		live = motion.pulse(table.clone(body), 0.45, ui.column),
+		still = ui.column(body),
+	})
 end
 
 function M.Kbd(props: P): Node

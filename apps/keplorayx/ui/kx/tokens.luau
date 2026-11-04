@@ -60,10 +60,26 @@ function M.setup()
 			-- An agent's or the accent's light laid softly behind something.
 			["accent.soft"] = "alpha({accent}, 0.14)",
 			glyph = { stroke = 1.25 },
-			["lip"] = "alpha({text.primary}, 0.12)",
-			["lip.strong"] = "alpha({text.primary}, 0.22)",
-			["lip.inset"] = "0 1 0 0 {kx.lip}",
-			["lip.inset_strong"] = "0 1 0 0 {kx.lip.strong}",
+			-- A raised thing's edge: an even hairline all round (Zeron's rule:
+			-- no highlight along its top), drawn as a one-point inset ring.
+			["lip"] = "alpha({text.primary}, 0.06)",
+			["lip.strong"] = "alpha({text.primary}, 0.12)",
+			["lip.inset"] = "0 0 0 1 {kx.lip}",
+			["lip.inset_strong"] = "0 0 0 1 {kx.lip.strong}",
+			lift = "{shadow.sm}",
+			well = { edge = "{border}" },
+			-- The one way on: the lightest thing on the glass (darkest at dawn).
+			primary = { bg = "{text.primary}", hover = "{text.primary}", text = "{background}" },
+			secondary = { bg = "{surface.raised}", hover = "{hover}" },
+			tree = "alpha({text.primary}, 0.16)",
+			status = {
+				working = "{text.secondary}",
+				input = "{info}",
+				approval = "{warning}",
+				done = "{success}",
+				failed = "{danger}",
+				idle = "{text.tertiary}",
+			},
 			sky = { deep = "{background}", mid = "{surface.sunken}", glow = "{accent}" },
 			agent = agents,
 			-- A diff's added and removed lines: their colours, washed.
@@ -84,8 +100,10 @@ function M.setup()
 			-- The window's own geometry.
 			titlebar = 44,
 			sidebar = 272,
-			-- The display face, for headings and the wordmark.
+			-- The display face, for the few words said large.
 			display = "{font.sans}",
+			-- A greeting's size, set in the display face.
+			hero = { size = 40, line = 44, tracking = -0.4 },
 			-- Numbers that change in place (timers, costs): the UI face; the
 			-- figures are kept tabular where they're drawn.
 			numeric = "{font.sans}",
@@ -100,17 +118,40 @@ function M.setup()
 			pill = { radius = "{radius.xl}", inset = 6 },
 			card = { radius = "{radius.xl}", inset = "{space.2}" },
 			-- Syntax, in roles of the theme's own colours.
+			-- Syntax, in roles (kx/syntax, Zeron's highlighter): the themes
+			-- give each its hue; these defaults fall back on the theme's own.
 			syntax = {
+				text = "alpha({text.primary}, 0.9)",
 				keyword = "{accent}",
-				string = "{success}",
-				number = "{warning}",
-				comment = "{text.tertiary}",
 				["function"] = "{info}",
-				type = "{accent}",
-				punctuation = "{text.secondary}",
+				type = "{warning}",
+				string = "{success}",
+				escape = "{info}",
+				regex = "{success}",
+				number = "{warning}",
+				constant = "{warning}",
+				macro = "{accent}",
+				property = "{text.primary}",
+				variable = "{text.primary}",
+				attribute = "{warning}",
+				label = "{accent}",
+				tag = "{danger}",
+				comment = "alpha({text.primary}, 0.46)",
+				operator = "alpha({text.primary}, 0.66)",
+				punctuation = "alpha({text.primary}, 0.5)",
+				heading = "{accent}",
+				link = "{info}",
+				url = "alpha({text.primary}, 0.42)",
+				emphasis = "{text.primary}",
+				strong = "{text.primary}",
+				quote = "alpha({text.primary}, 0.6)",
 				inserted = "{success}",
 				deleted = "{danger}",
+				hunk = "{accent}",
+				meta = "alpha({text.primary}, 0.6)",
 			},
+			-- A file's git mark in a tree.
+			git = { modified = "{warning}", added = "{success}", untracked = "{success}", deleted = "{danger}" },
 		},
 	}
 	ui.theme.load("kx/themes/orbit-night.json")

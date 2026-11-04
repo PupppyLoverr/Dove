@@ -35,7 +35,11 @@ function M.MenuItem(props: P): Node
 		local name = p.icon
 		p.icon = nil
 		local label = p[1]
-		p[1] = icon.Icon { name = name, size = 16, color = "$text.secondary" }
+		-- An agent's or a brand's mark is drawn as itself.
+		local mark = type(name) == "string" and (string.match(name, "%-mark$") ~= nil or string.sub(name, 1, 6) == "brand-")
+		p[1] = if mark
+			then icon.Icon { mark = name, size = 16 }
+			else icon.Icon { name = name, size = 16, color = "$text.secondary" }
 		p[2] = ui.text { label, literal = true, grow = 1 }
 		p.label = p.label or label
 	end
@@ -62,10 +66,9 @@ function M.Dialog(props: P): Node
 		table.insert(children, ui.text {
 			title,
 			literal = true,
-			font = "$kx.display",
 			text_size = "$font.size.lg",
 			line_height = "$font.line.lg",
-			weight = "$font.weight.semibold",
+			weight = "$font.weight.medium",
 			heading = 2,
 		})
 	end

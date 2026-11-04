@@ -18,6 +18,9 @@ anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 flume = "0.11"
+serde_json = { workspace = true }
+# The Files panel's preview of Office documents (src/preview.rs).
+zip = { version = "7", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 zgx = { workspace = true }
 # `terminal`: `ui.terminal`, drawn by zgx. `webkitgtk`: Linux's web views.
 zgx-desktop = { workspace = true, features = ["mimalloc", "terminal", "webkitgtk"] }
@@ -32,11 +35,13 @@ zgx-run = { workspace = true, features = ["fetch"] }
 # tree (Windows 11 ships the runtime).
 zgx-desktop = { workspace = true, features = ["webview2"] }
 # Transparency effects, read and watched in the registry (src/transparency.rs).
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Registry", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Registry", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse"] }
+
+# The tray icon and its menu (src/platform.rs).
+[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
+tray-icon = "0.24"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Ghostty draws terminals on macOS (needs Zig 0.16 to build).
 zgx-desktop = { workspace = true, features = ["ghostty"] }
 
-[dev-dependencies]
-serde_json = { workspace = true }

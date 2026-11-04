@@ -69,6 +69,38 @@ ui.command {
 	end,
 }
 ui.command {
+	id = "files",
+	title = "Files",
+	key = "ctrl+p",
+	run = function()
+		require("@screens/panel").toggle("files")
+	end,
+}
+ui.command {
+	id = "browser",
+	title = "Browser",
+	key = "ctrl+shift+b",
+	run = function()
+		require("@screens/panel").toggle("browser")
+	end,
+}
+ui.command {
+	id = "sidebar",
+	title = "Show or hide the sidebar",
+	key = "ctrl+b",
+	run = function()
+		nav.sidebar_open:set(not nav.sidebar_open:peek())
+	end,
+}
+ui.command {
+	id = "team",
+	title = "Team",
+	key = "ctrl+shift+t",
+	run = function()
+		nav.go("team")
+	end,
+}
+ui.command {
 	id = "constellation",
 	title = "Constellation",
 	key = "ctrl+shift+o",
@@ -107,6 +139,70 @@ if ok_focus and store.fixture == "" then
 	end)
 end
 
+-- The tray and the keys from any app (src/platform.rs) ask through
+-- `kx.shell` ("<word>#<n>"): open, ask (a new thread, the composer
+-- focused), inbox, settings; allow and deny answer the oldest request
+-- waiting on you, wherever it is.
+local ok_shell, shell = pcall(ui.shared, "kx.shell", "")
+if ok_shell and store.fixture == "" then
+	ui.effect(function()
+		local v = (shell :: any):get() :: string
+		local word = string.match(v, "^(.-)#")
+		if word == "ask" then
+			nav.go("home")
+			store.home()
+			nav.focus_ray()
+		elseif word == "inbox" then
+			nav.go("inbox")
+		elseif word == "settings" then
+			nav.go("settings")
+		elseif word == "allow" or word == "deny" then
+			local waiting = (ui.shared("kx.attention", {}) :: any):peek()
+			local first = waiting and waiting[1]
+			if first then
+				ui.invoke("kx.decide_for", {
+					thread_id = first.thread_id,
+					request_id = first.request_id,
+					decision = if word == "allow" then "allow_once" else "deny",
+				})
+			end
+		end
+	end)
+end
+
+-- A word from the system when a thread needs you, or finishes while the
+-- window is away (Settings › Notifications says which).
+local notify_needs = ui.persist("kx.notify.needs", true)
+local notify_done = ui.persist("kx.notify.done", true)
+local seen_status: { [string]: string } = {}
+if store.fixture == "" then
+	ui.effect(function()
+		local threads = store.threads:get()
+		local first = next(seen_status) == nil
+		for _, t in threads do
+			local was = seen_status[t.id]
+			seen_status[t.id] = t.status
+			if not first and was ~= t.status and not ui.window.focused:peek() then
+				if t.status == "needs_you" and notify_needs:peek() then
+					pcall(ui.notify, { title = `{t.harness} needs you`, body = t.title })
+				elseif was == "running" and t.status == "done" and notify_done:peek() then
+					pcall(ui.notify, { title = `{t.harness} finished`, body = t.title })
+				end
+			end
+		end
+	end)
+	-- The taskbar's badge: how many wait on you.
+	ui.effect(function()
+		local n = 0
+		for _, t in store.threads:get() do
+			if t.status == "needs_you" then
+				n += 1
+			end
+		end
+		pcall(ui.badge, if n > 0 then tostring(n) else nil)
+	end)
+end
+
 -- Y and N answer what the open thread waits on, when focus isn't in a field.
 local function answer(e: any): boolean?
 	local a = store.approval:peek()
@@ -129,7 +225,9 @@ local pages = {
 	inbox = ui.column { grow = 1, min_w = 0, h_full = true, inbox.view() },
 	settings = ui.column { grow = 1, min_w = 0, h_full = true, settings.view() },
 	constellation = ui.column { grow = 1, min_w = 0, h_full = true, constellation.view() },
+	team = ui.column { grow = 1, min_w = 0, h_full = true, require("@screens/team").view() },
 }
+local panel = require("@screens/panel")
 
 -- A folder dropped on the window becomes a project (a file, its folder).
 local dragging = ui.state("app.dragging", false)
@@ -170,14 +268,30 @@ local drop_veil = ui.column {
 	kx.Label { "Drop a folder to work in it", literal = true },
 }
 
--- Home's own title bar: nothing but room to drag and the caption buttons.
+-- Home's own title bar: room to drag, the caption buttons, and with the
+-- sidebar hidden, the way to bring it back.
 local home_bar = ui.row {
 	absolute = true,
 	top = 0,
 	left = 0,
 	right = 0,
 	h = "$kx.titlebar",
+	px = "$space.4",
+	items = "center",
 	window_drag = true,
+	ui.show(function()
+		return not nav.sidebar_open:get()
+	end, kx.Button {
+		tone = "ghost",
+		size = "sm",
+		icon = true,
+		label = "Show the sidebar (Ctrl+B)",
+		tooltip = "Show the sidebar  Ctrl+B",
+		on_click = function()
+			nav.sidebar_open:set(true)
+		end,
+		kx.Icon { name = "sidebar", size = 16 },
+	}),
 }
 
 return ui.row {
@@ -197,11 +311,22 @@ return ui.row {
 		min_w = 0,
 		h_full = true,
 		relative = true,
+		overflow = "hidden",
 		ui.show(function()
 			return nav.route:get() == "home"
 		end, home_bar),
 		ui.switch(nav.route, pages, pages.home),
 	},
+	-- The panel, beside whatever page shows (Files, the Browser, …).
+	ui.presence(function()
+		return if panel.open:get() and nav.route:get() ~= "settings" then "open" else nil
+	end, function()
+		return panel.view()
+	end, {
+		h_full = true,
+		enter = { opacity = { 0, 1 }, x = { 24, 0 }, duration = 220, ease = kx.motion.ENTER },
+		exit = { opacity = { 1, 0 }, x = { 0, 16 }, duration = 120 },
+	}),
 	ui.show(dragging, drop_veil),
 	kx.Toasts {},
 }

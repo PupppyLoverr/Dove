@@ -24,13 +24,15 @@ local function with(props: P, base: P): Node
 	return ui.text(p)
 end
 
+-- The display face (Instrument Serif) has one weight: a title is set large
+-- and regular, never bolded.
 function M.Title(props: P): Node
 	return with(props, {
 		font = "$kx.display",
 		text_size = "$font.size.xxl",
 		line_height = "$font.line.xxl",
-		weight = "$font.weight.semibold",
-		letter_spacing = -0.4,
+		weight = "$font.weight.regular",
+		letter_spacing = -0.2,
 		color = "$text.primary",
 		heading = 1,
 	})
@@ -38,11 +40,11 @@ end
 
 function M.Heading(props: P): Node
 	return with(props, {
-		font = "$kx.display",
+		font = "$font.sans",
 		text_size = "$font.size.lg",
 		line_height = "$font.line.lg",
-		weight = "$font.weight.semibold",
-		letter_spacing = -0.15,
+		weight = "$font.weight.medium",
+		letter_spacing = -0.1,
 		color = "$text.primary",
 		heading = 2,
 	})
