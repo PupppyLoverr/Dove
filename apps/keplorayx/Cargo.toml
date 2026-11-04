@@ -13,6 +13,7 @@ path = "src/main.rs"
 dove-core = { workspace = true }
 dove-proto = { workspace = true }
 dove-store = { workspace = true }
+dove-git = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

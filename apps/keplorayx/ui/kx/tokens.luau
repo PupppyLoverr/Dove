@@ -66,6 +66,8 @@ function M.setup()
 			["lip.inset_strong"] = "0 1 0 0 {kx.lip.strong}",
 			sky = { deep = "{background}", mid = "{surface.sunken}", glow = "{accent}" },
 			agent = agents,
+			-- A diff's added and removed lines: their colours, washed.
+			diff = { add = "alpha({success}, 0.12)", del = "alpha({danger}, 0.12)" },
 			-- What veils the window under a drop.
 			veil = "alpha({background}, 0.86)",
 			-- A switch's knob: the brightest thing on any ground.

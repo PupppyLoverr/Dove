@@ -36,11 +36,17 @@ param(
     # Keep the machine's PATH (real agent CLIs are then detected, and the
     # startup model-catalog refresh runs). Default: a minimal PATH, so only
     # the fake agent runs and numbers are repeatable.
-    [switch]$RealPath
+    [switch]$RealPath,
+    # Which app: `dove` (the GPUI build: DOVE_FRAME_STATS, DOVE_INPUT_TRACE)
+    # or `kx` (keplorayx on zgx: frames from ZGX_PRESENT_LOG's DXGI present
+    # count; zgx has no Windows input trace, so key latency is n/a).
+    # Default: from the exe's name.
+    [string]$Kind = ""
 )
 
 $ErrorActionPreference = 'Stop'
 $Exe = (Resolve-Path $Exe).Path
+if (-not $Kind) { $Kind = if ([IO.Path]::GetFileName($Exe) -like 'keplorayx*') { 'kx' } else { 'dove' } }
 $FakeAgent = (Resolve-Path $FakeAgent).Path
 New-Item -ItemType Directory -Force $OutDir | Out-Null
 
@@ -126,6 +132,16 @@ function Cpu-Between($a, $b, [double]$sec) {
     $res
 }
 
+# keplorayx: DXGI's cumulative present count, as ZGX_PRESENT_LOG last
+# reported it ("dxgi shown present=N ...").
+function Present-Count([string]$log) {
+    $last = 0
+    foreach ($line in Get-Content $log -ErrorAction SilentlyContinue) {
+        if ($line -match 'dxgi shown present=(\d+)') { $last = [int64]$Matches[1] }
+    }
+    $last
+}
+
 function Count-Renders([string]$log, [datetime]$from, [datetime]$to) {
     # tracing lines: "2026-10-15T20:01:02.123456Z  INFO dove::frames: shell renders in the last second: 3"
     $total = 0
@@ -180,6 +196,7 @@ function Start-Dove([string]$doveHome, [string]$errLog, [string]$outLog) {
         DOVE_HOME = $doveHome; DOVE_SKIP_INTRO = '1'; DOVE_NO_ACTIVATE = $(if ($Activate) { '' } else { '1' })
         DOVE_STARTUP_TRACE = '1'; DOVE_INPUT_TRACE = '1'; DOVE_FRAME_STATS = '1'; ZED_MEASUREMENTS = '1'
         DOVE_WINDOW_TITLE = 'Dove perf'; DOVE_LOG = 'warn,dove=info'
+        ZGX_PRESENT_LOG = $(if ($Kind -eq 'kx') { '1' } else { '' }); KX_LOG = 'warn'
         FAKE_AGENT_SECS = '150'; FAKE_AGENT_CPS = '240'; FAKE_AGENT_CHUNK = '12'; FAKE_AGENT_TOOL_EVERY = '6'
     }
     if (-not $RealPath) { $envs['PATH'] = "$env:SystemRoot\System32;$env:SystemRoot;$(Split-Path (Get-Command git).Source)" }
@@ -200,7 +217,7 @@ function Stop-Tree([int]$RootId) {
 }
 
 $exeName = [IO.Path]::GetFileName($Exe).ToLowerInvariant()
-$results = [ordered]@{ exe = $Exe; started = (Get-Date).ToString('s'); focused = [bool]$Activate; real_path = [bool]$RealPath; runs = @() }
+$results = [ordered]@{ exe = $Exe; kind = $Kind; started = (Get-Date).ToString('s'); focused = [bool]$Activate; real_path = [bool]$RealPath; runs = @() }
 
 foreach ($n in $Sessions) {
     Write-Host "== $n session(s)"
@@ -237,10 +254,11 @@ foreach ($n in $Sessions) {
 
     # 3. Idle, after the launch work and the caret's blink have settled.
     Start-Sleep -Seconds 20
-    $a = Sample-Processes $p.Id $exeName; $t0 = Get-Date
+    $a = Sample-Processes $p.Id $exeName; $t0 = Get-Date; $f0 = Present-Count $errLog
     Start-Sleep -Seconds $IdleSec
-    $b = Sample-Processes $p.Id $exeName; $t1 = Get-Date
-    $idle = [ordered]@{ cpu = (Cpu-Between $a $b $IdleSec); renders_per_sec = [math]::Round((Count-Renders $errLog $t0 $t1) / $IdleSec, 2); memory = (Summarize-Memory $b) }
+    $b = Sample-Processes $p.Id $exeName; $t1 = Get-Date; $f1 = Present-Count $errLog
+    $idleRenders = if ($Kind -eq 'kx') { $f1 - $f0 } else { Count-Renders $errLog $t0 $t1 }
+    $idle = [ordered]@{ cpu = (Cpu-Between $a $b $IdleSec); renders_per_sec = [math]::Round($idleRenders / $IdleSec, 2); memory = (Summarize-Memory $b) }
 
     # 4. Sessions start on the scheduler's first tick (60 s after launch).
     $deadline = $launch.AddSeconds(100)
@@ -249,24 +267,26 @@ foreach ($n in $Sessions) {
     Start-Sleep -Seconds 5
 
     # 5. Streaming: CPU/RAM sample with key presses in the middle.
-    $a = Sample-Processes $p.Id $exeName; $t0 = Get-Date
+    $a = Sample-Processes $p.Id $exeName; $t0 = Get-Date; $f0 = Present-Count $errLog
     Start-Sleep -Seconds 5
     Post-Keys $hwnd $Keys
     $rest = $StreamSampleSec - ((Get-Date) - $t0).TotalSeconds
     if ($rest -gt 0) { Start-Sleep -Milliseconds ([int]($rest * 1000)) }
-    $b = Sample-Processes $p.Id $exeName; $t1 = Get-Date
+    $b = Sample-Processes $p.Id $exeName; $t1 = Get-Date; $f1 = Present-Count $errLog
     $streamSec = ($t1 - $t0).TotalSeconds
-    $stream = [ordered]@{ sessions_started = $started; cpu = (Cpu-Between $a $b $streamSec); renders_per_sec = [math]::Round((Count-Renders $errLog $t0 $t1) / $streamSec, 2); memory = (Summarize-Memory $b) }
+    $streamRenders = if ($Kind -eq 'kx') { $f1 - $f0 } else { Count-Renders $errLog $t0 $t1 }
+    $stream = [ordered]@{ sessions_started = $started; cpu = (Cpu-Between $a $b $streamSec); renders_per_sec = [math]::Round($streamRenders / $streamSec, 2); memory = (Summarize-Memory $b) }
 
     # 6. After the turns end (FAKE_AGENT_SECS = 150): idle again.
     # Turns last FAKE_AGENT_SECS (150 s) from the first tick (~60 s after launch).
     $until = $launch.AddSeconds(60 + 160)
     while ((Get-Date) -lt $until) { Start-Sleep -Seconds 2 }
     Start-Sleep -Seconds 10
-    $a = Sample-Processes $p.Id $exeName; $t0 = Get-Date
+    $a = Sample-Processes $p.Id $exeName; $t0 = Get-Date; $f0 = Present-Count $errLog
     Start-Sleep -Seconds $IdleSec
-    $b = Sample-Processes $p.Id $exeName; $t1 = Get-Date
-    $after = [ordered]@{ cpu = (Cpu-Between $a $b $IdleSec); renders_per_sec = [math]::Round((Count-Renders $errLog $t0 $t1) / $IdleSec, 2); memory = (Summarize-Memory $b) }
+    $b = Sample-Processes $p.Id $exeName; $t1 = Get-Date; $f1 = Present-Count $errLog
+    $afterRenders = if ($Kind -eq 'kx') { $f1 - $f0 } else { Count-Renders $errLog $t0 $t1 }
+    $after = [ordered]@{ cpu = (Cpu-Between $a $b $IdleSec); renders_per_sec = [math]::Round($afterRenders / $IdleSec, 2); memory = (Summarize-Memory $b) }
 
     Stop-Tree $p.Id
     Start-Sleep -Seconds 2
@@ -278,7 +298,7 @@ foreach ($n in $Sessions) {
 }
 
 # Markdown summary.
-$md = @("# Dove perf run $($results.started)", "", "exe: ``$Exe``  focused: $($results.focused)  real PATH: $($results.real_path)", "",
+$md = @("# Perf run $($results.started) ($Kind)", "", "exe: ``$Exe``  focused: $($results.focused)  real PATH: $($results.real_path)", "",
     "| Sessions | Window (ms) | First frame (ms) | Idle CPU main % | Idle renders/s | Stream CPU main % | Stream CPU Dove other % | Stream renders/s | Dove own private MB (stream) | Harness private MB (stream) | Key->frame p50 / p99 (ms) | After CPU main % | After renders/s |",
     "|---|---|---|---|---|---|---|---|---|---|---|---|---|")
 foreach ($r in $results.runs) {

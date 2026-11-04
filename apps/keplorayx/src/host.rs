@@ -24,6 +24,9 @@
 //!   kx.decide({ request_id, decision = "allow_once" | "allow_always" | "deny", answers? })
 //!                                   an action: answer what the open thread waits on
 //!   kx.add_project(path)            add a folder as a project; its id
+//!   kx.changes()                    the open thread's changes against where it
+//!                                   started: { { path, status, added, removed,
+//!                                   hunks = { { header, lines = { { kind, old, new, text } } } } } }
 //!
 //! A live session's events fold into its thread's transcript whether it's
 //! open or not; only the open one's reach the window, and then only what
@@ -147,6 +150,39 @@ pub fn install(cx: &mut WindowContext, host: &ScriptHost, engine: Arc<Engine>) {
                 .map_err(|e| format!("{e:#}"))?;
             spawn_refresh(&tasks, &s);
             Ok(Value::from(added.id.0.to_string().as_str()))
+        }
+    });
+
+    let s = state.clone();
+    host.async_action("kx.changes", move |_| {
+        let s = s.clone();
+        async move {
+            let (engine, open) = {
+                let st = s.borrow();
+                (st.engine.clone(), st.open)
+            };
+            let Some(id) = open else { return Ok(Value::List(Rc::from([]))) };
+            let files = off_thread(move || -> anyhow::Result<Vec<dove_git::diff::FileDiff>> {
+                let task = engine.store.task(id)?.ok_or_else(|| anyhow::anyhow!("missing"))?;
+                let project = engine
+                    .store
+                    .projects()?
+                    .into_iter()
+                    .find(|p| p.id == task.project_id)
+                    .ok_or_else(|| anyhow::anyhow!("no project"))?;
+                // A worktree's diff is against the commit it started from;
+                // a thread in the project itself, against HEAD.
+                let dir = task.worktree.clone().unwrap_or(project.path.clone());
+                let base = task.base.clone().unwrap_or_else(|| "HEAD".to_string());
+                if dove_git::repo_root(&dir).is_none() {
+                    return Ok(Vec::new());
+                }
+                dove_git::changes(&dir, &base)
+            })
+            .await
+            .ok_or("failed")?
+            .map_err(|e| format!("{e:#}"))?;
+            Ok(Value::List(files.iter().map(file_value).collect()))
         }
     });
 
@@ -521,6 +557,61 @@ fn entry_value(e: &Entry) -> Value {
         ));
     }
     Value::record(fields)
+}
+
+/// The most lines of one file's diff sent to the window: a review shows the
+/// rest by opening the file.
+const DIFF_LINES: usize = 600;
+
+fn file_value(f: &dove_git::diff::FileDiff) -> Value {
+    use dove_git::diff::{FileStatus, LineKind};
+    let mut budget = DIFF_LINES;
+    let hunks = f
+        .hunks
+        .iter()
+        .filter_map(|h| {
+            if budget == 0 {
+                return None;
+            }
+            let take = h.lines.len().min(budget);
+            budget -= take;
+            let lines = h.lines[..take]
+                .iter()
+                .map(|l| {
+                    Value::record([
+                        (
+                            "kind",
+                            Value::from(match l.kind {
+                                LineKind::Added => "add",
+                                LineKind::Removed => "del",
+                                LineKind::Context => "ctx",
+                            }),
+                        ),
+                        ("old", l.old_no.map_or(Value::Nil, |n| Value::from(f64::from(n)))),
+                        ("new", l.new_no.map_or(Value::Nil, |n| Value::from(f64::from(n)))),
+                        ("text", Value::from(&*l.text)),
+                    ])
+                })
+                .collect();
+            Some(Value::record([("header", Value::from(&*h.header)), ("lines", Value::List(lines))]))
+        })
+        .collect();
+    Value::record([
+        ("path", Value::from(f.path.as_str())),
+        (
+            "status",
+            Value::from(match f.status {
+                FileStatus::Added => "added",
+                FileStatus::Deleted => "deleted",
+                FileStatus::Modified => "modified",
+                FileStatus::Renamed => "renamed",
+            }),
+        ),
+        ("binary", Value::from(f.binary)),
+        ("added", Value::from(f64::from(f.additions))),
+        ("removed", Value::from(f64::from(f.deletions))),
+        ("hunks", Value::List(hunks)),
+    ])
 }
 
 fn approval_value(pending: Option<&Pending>) -> Value {

@@ -9,6 +9,8 @@
 local kx = require("@kx")
 local store = require("@kx/store")
 local ray = require("@screens/ray")
+local changes = require("@screens/changes")
+local nav = require("@screens/nav")
 
 type Entry = store.Entry
 
@@ -292,10 +294,9 @@ local header = ui.row {
 	items = "center",
 	px = "$space.5",
 	gap = "$space.3",
+	-- Under the caption buttons only while no panel stands to its right.
 	pr = function()
-		local area, buttons = ui.window.titlebar_area:get(), ui.window.controls:get()
-		local inset = if area and buttons and buttons.x >= area.x + area.width then buttons.width + 12 else 12
-		return ui.raw(inset, "clears the window's caption buttons, which the system places")
+		return if changes.open:get() then "$space.3" else nav.caption_inset()
 	end,
 	ui.text {
 		function()
@@ -322,9 +323,45 @@ local header = ui.row {
 		text_size = "$font.size.sm",
 		color = "$text.tertiary",
 	},
+	ui.div { grow = 1 },
+	kx.Tooltip(
+		kx.Button {
+			tone = "ghost",
+			size = "sm",
+			icon = true,
+			label = "Changes",
+			on_click = ui.toggle(changes.open),
+			kx.Icon {
+				name = "file-diff",
+				size = 16,
+				color = function()
+					return if changes.open:get() then "$accent" else "$text.secondary"
+				end,
+			},
+		},
+		"Changes  Ctrl J"
+	),
 }
 
 function M.view(): Node
+	return ui.row {
+		grow = 1,
+		min_w = 0,
+		h_full = true,
+		M.column(),
+		ui.presence(function()
+			return if changes.open:get() then "open" else nil
+		end, function()
+			return changes.view()
+		end, {
+			h_full = true,
+			enter = { opacity = { 0, 1 }, x = { 24, 0 }, duration = 240, ease = kx.motion.ENTER },
+			exit = { opacity = { 1, 0 }, x = { 0, 16 }, duration = 140 },
+		}),
+	}
+end
+
+function M.column(): Node
 	return ui.column {
 		grow = 1,
 		min_w = 0,

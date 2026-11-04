@@ -16,6 +16,14 @@ M.ray_focus = ui.state("nav.ray_focus", 0)
 -- `ask` (a prompt), `command` (>), `mention` (@), `slash` (/).
 M.ray_mode = ui.state("nav.ray_mode", "ask")
 
+-- The room a title bar's right end leaves for the window's caption buttons
+-- (Windows: minimise, maximise, close), when it is the one under them.
+function M.caption_inset(): any
+	local area, buttons = ui.window.titlebar_area:get(), ui.window.controls:get()
+	local inset = if area and buttons and buttons.x >= area.x + area.width then buttons.width + 12 else 12
+	return ui.raw(inset, "clears the window's caption buttons, which the system places")
+end
+
 function M.go(route: Route)
 	M.route:set(route)
 end

@@ -52,6 +52,15 @@ ui.command {
 	end,
 }
 ui.command {
+	id = "changes",
+	title = "Changes",
+	key = "ctrl+j",
+	run = function()
+		local changes = require("@screens/changes")
+		changes.open:set(not changes.open:peek())
+	end,
+}
+ui.command {
 	id = "inbox",
 	title = "Inbox",
 	key = "ctrl+i",

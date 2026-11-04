@@ -56,5 +56,47 @@ return {
 			},
 		},
 	},
+	changes = {
+		{
+			path = "apps/keplorayx/src/island.rs",
+			status = "added",
+			binary = false,
+			added = 84,
+			removed = 0,
+			hunks = {
+				{
+					header = "@@ -0,0 +1,12 @@",
+					lines = {
+						{ kind = "add", new = 1, text = "//! The notch on zgx: an overlay window over the display's top edge," },
+						{ kind = "add", new = 2, text = "//! always on top, click-through until you hover it." },
+						{ kind = "add", new = 3, text = "" },
+						{ kind = "add", new = 4, text = "pub fn open(cx: &mut WindowContext, attention: Shared) {" },
+						{ kind = "add", new = 5, text = "    let window = cx.windows.open(overlay(), move |cx| notch(cx, attention));" },
+						{ kind = "add", new = 6, text = "    window.set_pointer_passthrough(true);" },
+						{ kind = "add", new = 7, text = "}" },
+					},
+				},
+			},
+		},
+		{
+			path = "apps/keplorayx/ui/notch.luau",
+			status = "modified",
+			binary = false,
+			added = 12,
+			removed = 3,
+			hunks = {
+				{
+					header = "@@ -40,9 +40,18 @@ local function reply()",
+					lines = {
+						{ kind = "ctx", old = 40, new = 40, text = "local function send()" },
+						{ kind = "del", old = 41, text = "\tfield:blur()" },
+						{ kind = "add", new = 41, text = "\t-- Keep the caret: the next reply follows at once." },
+						{ kind = "add", new = 42, text = "\tfield:focus()" },
+						{ kind = "ctx", old = 42, new = 43, text = "\ttext:set(\"\")" },
+					},
+				},
+			},
+		},
+	},
 	draft = { id = "a2", kind = "assistant", text = "Focus now stays in the reply field: after a send, the field clears and keeps the caret, so" },
 }

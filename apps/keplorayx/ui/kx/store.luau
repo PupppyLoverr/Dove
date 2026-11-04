@@ -51,6 +51,8 @@ if fixture_name ~= "" then
 	store.approval = ui.state("fx.approval", f.approval :: Approval?)
 	store.agents = ui.state("fx.agents", (f.agents or {}) :: { Agent })
 	store.route = f.route
+	-- The fixture as written, for a screen's own state (a panel open).
+	store.fixture_data = f
 else
 	store.threads = ui.shared("kx.threads", {} :: { Thread })
 	store.projects = ui.shared("kx.projects", {} :: { Project })
@@ -111,6 +113,18 @@ function store.add_project(path: string): any
 		return ui.sleep(0)
 	end
 	return ui.call("kx.add_project", path)
+end
+
+-- The open thread's changes (screens/changes), to `done(files)` or
+-- `failed(why)` once read.
+function store.changes(done: (any) -> (), failed: (any) -> ())
+	if stubbed() then
+		local ok, data = pcall(require, "@fixtures/" .. fixture_name)
+		local list = if ok and type(data) == "table" then (data :: any).changes else nil
+		done(list or {})
+		return
+	end
+	ui.call("kx.changes", nil):after(done, failed)
 end
 
 -- A thread is the open one.
