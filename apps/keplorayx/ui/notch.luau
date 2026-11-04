@@ -8,7 +8,6 @@
 ui.theme.strict("warn")
 local kx = require("@kx")
 kx.setup()
-ui.theme.set("orbit-night")
 
 local store = require("@kx/store")
 
@@ -110,6 +109,8 @@ local waiting = ui.row {
 }
 
 return ui.row {
+	-- Always night, whatever the app's theme: it sits over the screen's edge.
+	theme = "orbit-night",
 	w_full = true,
 	h_full = true,
 	justify = "center",

@@ -34,13 +34,15 @@ function M.scope(): () -> any
 	return function()
 		local id = M.chosen:get()
 		if id == "kepler" then
-			return nil
+			-- The theme as it is (a nil scope would be zgx's own).
+			return ui.theme.current:get()
 		end
 		local s = M.star(id)
 		local kind = ui.theme.kind()
 		local dark = not (kind == "light" or kind == "high-contrast-light")
 		local colour = if dark then s.night else s.dawn
-		return { accent = colour, ["accent.hover"] = colour, info = colour }
+		-- Over the theme in use: a scope without one starts from zgx's own.
+		return { theme = ui.theme.current:get(), accent = colour, ["accent.hover"] = colour, info = colour }
 	end
 end
 

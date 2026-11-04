@@ -8,7 +8,6 @@
 ui.theme.strict("warn")
 local kx = require("@kx")
 kx.setup()
-ui.theme.set("orbit-night")
 
 local W = (ui.shared("intro.width", 720) :: any):peek() :: number
 local H = (ui.shared("intro.height", 520) :: any):peek() :: number
@@ -124,6 +123,8 @@ local function stars(): Node
 end
 
 return ui.column {
+	-- First Light is always night.
+	theme = "orbit-night",
 	ref = root,
 	w_full = true,
 	h_full = true,
@@ -161,7 +162,8 @@ return ui.column {
 		border_color = "$accent",
 		opacity = tw(ui.computed(function(): number
 			local p = phase:get()
-			return if p >= 2 and p < 5 then 1 else 0
+			-- Only as it closes in: at rest it would cross the words.
+			return if p == 4 then 1 else 0
 		end), 400),
 		pointer_events = false,
 	},

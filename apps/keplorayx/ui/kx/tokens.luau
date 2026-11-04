@@ -115,7 +115,15 @@ function M.setup()
 	}
 	ui.theme.load("kx/themes/orbit-night.json")
 	ui.theme.load("kx/themes/orbit-dawn.json")
-	ui.theme.follow_system { dark = "orbit-night", light = "orbit-dawn" }
+	-- Which theme shows is the app's choice (Settings, setup), not every
+	-- window's: a second window (the notch) must not reset it. Until a
+	-- choice is made, the system's.
+	ui.theme.default("orbit-night")
+	-- The window's chrome follows: caption buttons readable on dawn's paper.
+	ui.effect(function()
+		local kind = ui.theme.kind()
+		pcall(ui.invoke, "appearance", not (kind == "light" or kind == "high-contrast-light"))
+	end)
 
 	-- Corners made from others, made again as the theme changes: inner =
 	-- outer − inset, always.

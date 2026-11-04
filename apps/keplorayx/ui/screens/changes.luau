@@ -14,7 +14,8 @@ export type File = { path: string, status: string, binary: boolean, added: numbe
 
 local M = {}
 
-M.open = ui.persist("changes.open", false)
+-- Kept across launches; a fixture's own, so one doesn't leak into the next.
+M.open = if store.fixture ~= "" then ui.state("changes.open", false) else ui.persist("changes.open", false)
 
 -- Development: a fixture may ask for the panel open.
 local fx = (store :: any).fixture_data

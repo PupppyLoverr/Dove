@@ -103,7 +103,11 @@ end
 
 ui.effect(function()
 	local s = scheme:get()
-	if s == "system" then
+	-- Development: the theme the host was asked for wins (tools/shot.ps1).
+	local dev = (ui.shared("dev.theme", "") :: any):get() :: string
+	if dev ~= "" then
+		ui.theme.set(dev)
+	elseif s == "system" then
 		ui.theme.follow_system { dark = "orbit-night", light = "orbit-dawn" }
 	else
 		ui.theme.set(s)

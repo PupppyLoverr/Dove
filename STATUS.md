@@ -13,11 +13,12 @@ cargo run -p keplorayx -- main             # the main window
 cargo run -p keplorayx -- gallery          # Orbit's workbench: every token and component
 cargo run -p keplorayx -- onboarding       # setup on its own
 cargo run -p keplorayx -- intro            # First Light's arrival over the desktop
+cargo run -p keplorayx -- notch            # the notch on its own
 ```
 
 - **Data:** `%LOCALAPPDATA%\keplorayx-zgx-dev`, unless `DOVE_HOME` says otherwise.
 - **Builds:** `C:/dvw/target-kx-zgx`.
-- **Without agents:** `KX_FIXTURE=<name>` runs any screen on stand-in data, from `ui/fixtures/`: `first_run`, `home`, `thread`, `approval`, `review`, `inbox`, `settings`, `constellation`.
+- **Without agents:** `KX_FIXTURE=<name>` runs any screen on stand-in data, from `ui/fixtures/`: `first_run`, `home`, `thread`, `approval`, `review`, `terminal`, `inbox`, `settings`, `constellation`, `notch`, `notch_quiet`.
 - **One setup step:** `KX_STEP=<step>` opens setup on that step.
 
 ## What's done
@@ -27,7 +28,7 @@ cargo run -p keplorayx -- intro            # First Light's arrival over the desk
 - **Host:** Dove's engine runs in process. One Inset-titlebar window sits over Mica, and transcripts stream from live sessions.
 - **Automations:** they run on Dove's minute schedule, ported from the GPUI shell.
 - **Tests:**
-  - `cargo test -p keplorayx`: the transcript fold, including the new approval test.
+  - `cargo test -p keplorayx`: **5 passed**, the transcript fold including approvals.
   - `cargo test --workspace --exclude keplorayx`: **898 passed, 0 failed**.
 
 ### Phase B: Orbit, the design system ✅ (first pass)
@@ -39,7 +40,8 @@ cargo run -p keplorayx -- intro            # First Light's arrival over the desk
 - **Icons:** Dove's library refined into one set with an optical stroke, plus 17 new glyphs drawn for Keplorayx. Made by `tools/icons.py`; see the gallery's Icons page.
 - **Components:** Button, Field, Switch, Segmented, Pill, Row, AgentMark, Kbd, Empty, Card, Float, Menu, Popover, Dialog, Tooltip, toasts.
 - **Gallery:** `-- gallery`, both themes. PNGs in `apps/keplorayx/docs/design/shots/gallery-*`.
-- **Lint:** `zgx lint ui` reports 0 errors and 0 warnings. The design lint runs on every entry.
+- **Lint:** `zgx lint ui` reports 0 errors and 0 warnings across 45 files. The design lint runs on every entry.
+- **PNGs:** every screen in night and dawn, in `apps/keplorayx/docs/design/shots/`.
 
 ### Phase C: daily use ✅ (core)
 - **Sidebar:** the way in, then threads by project led by each agent's star, then Settings and "Local only" at the foot.
@@ -51,6 +53,14 @@ cargo run -p keplorayx -- intro            # First Light's arrival over the desk
 
 ### Phase D: panels (started)
 - **Changes panel** (Ctrl+J): the open thread's diff against where it started, file by file, with hunks in mono.
+
+### Phase F: the notch (first version)
+- **The capsule:** sits at the top centre over every window (`src/notch.rs`, `notch.luau`, `KX_NOTCH=0` turns it off).
+- **At rest:** the working agents' stars, breathing in step.
+- **When an agent waits:** its lip turns warm and it shows "Codex wants to run Bash", with Allow and Deny.
+- **A click** brings the main window to that thread.
+- **Shared sessions:** a process-wide hub in `host.rs` gives every window the same live sessions, and the scheduler now runs once per process.
+- **Not ported:** Dove's raw-input hover, media, tray, global hotkey and quick-reply typing.
 
 ### Phase E: the rest (started)
 - **First Light** (`intro.luau`, `onboarding.luau`, `src/intro.rs`):
@@ -68,14 +78,34 @@ cargo run -p keplorayx -- intro            # First Light's arrival over the desk
 - **E:**
   - not started: the ~10k lines of Dove's settings pages, Team and orchestra, voice, Live visuals, wallpaper, computer-use review, notifications;
   - not wired: the Woozlit sign-in (designed and kept, but the button is disabled until the sidecar bridge moves into `crates/dove-app`).
-- **F:** the notch and island are not started. Setup has a preview of it.
+- **F:** see above. The tray, global hotkey, media and typed quick replies aren't ported.
+- **Checked only by screenshots and load tests, not by clicking through:**
+  - First Light's Begin hand-off (prepare, reveal, done);
+  - adding a project by folder picker or drop;
+  - the notch's Allow/Deny against a live agent;
+  - the terminal with a real shell;
+  - sending a real prompt to a real agent from the Ray bar. The fake-agent streams in the perf runs did start and stream.
+
+  Please try those first.
+- **Window chrome in dawn:** the caption buttons are faint in the screenshots. The window is now told its appearance, but the PNGs may not capture the system's drawing; check it live.
 - **Phase 1 extraction** (`crates/dove-app`): not done. Until then, Dove's MCP bridge (`--mcp-browser`) isn't served by `keplorayx`, so agents start without the browser tools.
 - **Not built tonight:** macOS and Linux, as you asked. The code keeps them cfg-gated: Windows-only pieces sit behind `cfg(windows)`, and the Cargo features for macOS and Linux are in place.
 - **`zgx check ui`** needs `luau-lsp`, which isn't installed. I didn't download it unasked. `zgx lint ui` passes, and every screen was loaded and shot.
 
-## Performance
+## Performance (RAM and CPU, Windows)
 
-(Filled in below once both runs finished.)
+The full write-up and raw data are in `apps/keplorayx/docs/perf/`. It compares keplorayx **debug** with Dove's **GPUI release** build, using 1, 5 and 10 fake-agent sessions.
+
+| Sessions | Own RAM streaming (kx / Dove) | Main CPU streaming (kx / Dove) | Idle CPU (kx / Dove) | Idle frames/s (kx) |
+|---|---|---|---|---|
+| 1 | **105.5 / 139.0 MB** | 7.0 / 3.1 % | 0.31 / 0.52 % | **0** |
+| 5 | **110.0 / 157.6 MB** | 8.0 / 3.8 % | 0.21 / 0.00 % | **0** |
+| 10 | **116.5 / 171.8 MB** | 9.3 / 6.1 % | 0.31 / 0.21 % | **0** |
+
+- **Memory:** 25 to 32 % less than Dove, and it grows a third as fast with sessions.
+- **Idle:** **zero frames at idle**, which meets the gate.
+- **Streaming CPU is higher.** keplorayx holds a flat 40 frames a second while anything streams. That's the next thing to chase, with a release build, since this was debug against release.
+- **Not measured:** key latency (zgx has no Windows input trace yet). There's also no release binary yet for the 115 MB size gate (debug only tonight, as asked).
 
 ## Where things are
 

@@ -302,6 +302,14 @@ fn script_host(cx: &mut WindowContext, entry: &str) -> ScriptHost {
     transparency::install(cx, &host);
     let window = cx.window.clone();
     host.action("close", move |_| window.close());
+    // The window's own chrome (its caption buttons, its Mica) in the theme's
+    // appearance: `true` dark, `false` light.
+    let window = cx.window.clone();
+    host.action("appearance", move |dark| {
+        use zgx::theme::Appearance;
+        let dark = matches!(dark, Value::Bool(true));
+        window.set_theme(Some(if dark { Appearance::Dark } else { Appearance::Light }));
+    });
     host
 }
 

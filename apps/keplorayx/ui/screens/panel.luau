@@ -12,10 +12,10 @@ local M = {}
 
 -- Open or not lives with Changes (its refresh listens), the tab here.
 M.open = changes.open
-M.tab = ui.persist("panel.tab", "changes")
+local store = require("@kx/store")
+M.tab = if store.fixture ~= "" then ui.state("panel.tab", "changes") else ui.persist("panel.tab", "changes")
 
 -- Development: a fixture may ask for a tab.
-local store = require("@kx/store")
 local fx = (store :: any).fixture_data
 if fx and fx.panel_tab then
 	M.tab:set(fx.panel_tab)
