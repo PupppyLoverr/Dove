@@ -2639,6 +2639,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "dove-core",
+ "dove-git",
  "dove-proto",
  "dove-store",
  "flume",
