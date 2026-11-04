@@ -1,0 +1,76 @@
+{
+	// Orbit, dawn: the same instrument by daylight. Paper-cool neutrals,
+	// ink for text, the same accent and attention roles, deepened to read
+	// on a light ground.
+	"name": "orbit-dawn",
+	"type": "light",
+	"extends": "zgx-light",
+	"tokens": {
+		"background": "#f4f6fbe8",
+		"glass.tint": "#f4f6fbe8",
+		"glass.blur": 28,
+		"surface": {
+			"sunken": "#0b143a0a",
+			"base": "#ffffff8c",
+			"raised": "#ffffffd9",
+			"overlay": "#fbfcfff2"
+		},
+		"popover.bg": "#ffffff",
+		"text": {
+			"primary": "#0e1424",
+			"secondary": "alpha({text.primary}, 0.64)",
+			"tertiary": "alpha({text.primary}, 0.44)",
+			"disabled": "alpha({text.primary}, 0.28)"
+		},
+		"border": "#0b143a17",
+		"border.subtle": "#0b143a0c",
+		"border.strong": "#0b143a2e",
+		"accent": "#3d63e0",
+		"accent.hover": "#3457cc",
+		"accent.text": "#ffffff",
+		"danger": "#d6334a",
+		"warning": "#b07a00",
+		"success": "#178a62",
+		"info": "#3d63e0",
+		"hover": "#0b143a0a",
+		"pressed": "#0b143a14",
+		"selection": "#3d63e033",
+		"selection.item": "#0b143a0f",
+		"focus.ring": "alpha({accent}, 0.6)",
+		"scrollbar": {
+			"track": "#00000000",
+			"thumb": "alpha({text.primary}, 0.2)",
+			"thumb.active": "alpha({text.primary}, 0.38)"
+		},
+		"font": {
+			"sans": "Inter",
+			"mono": "JetBrains Mono",
+			"size": { "xs": 11, "sm": 12.5, "md": 13.5, "lg": 15, "xl": 19, "xxl": 26 },
+			"line": { "xs": 16, "sm": 18, "md": 21, "lg": 23, "xl": 26, "xxl": 32 }
+		},
+		"radius": { "sm": 6, "md": 9, "lg": 13, "xl": 18 },
+		"control.height": 32,
+		"shadow": {
+			"sm": "0 1 2 0 #0b143a14",
+			"md": "0 6 18 -6 #0b143a24",
+			"lg": "0 18 48 -14 #0b143a33"
+		},
+		"motion": {
+			"duration": { "fast": 140, "normal": 220, "slow": 360 },
+			"ease": {
+				"standard": "cubicBezier(0.22, 1.12, 0.36, 1)",
+				"enter": "cubicBezier(0.16, 1.18, 0.3, 1)",
+				"exit": "cubicBezier(0.4, 0, 0.8, 0.4)"
+			}
+		},
+		"kx": {
+			"display": "Inter Display",
+			"solid": "#f3f5fa",
+			"attention": "#d9730d",
+			"attention.soft": "alpha({kx.attention}, 0.14)",
+			"lip": "#ffffffcc",
+			"lip.strong": "#ffffff",
+			"sky": { "deep": "#e9eefb", "mid": "#dbe4fa", "glow": "#c3d2f7" }
+		}
+	}
+}
