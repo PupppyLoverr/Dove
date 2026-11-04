@@ -1,0 +1,4 @@
+# This clone builds apart from the GPUI Dove checkout: its own target folder,
+# never C:/dvw/target-ui-v4.
+[build]
+target-dir = "C:/dvw/target-kx-zgx"

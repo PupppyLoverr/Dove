@@ -1,14 +1,17 @@
 [workspace]
 resolver = "3"
-members = ["crates/*", "apps/dove"]
-exclude = ["mesh", "apps/ios", "apps/android", "apps/landing", "apps/extension"]
+# apps/dove is the GPUI app this branch replaces: kept out of the build, read
+# only as the reference while its UI-free modules move into crates/dove-app.
+members = ["crates/*", "apps/keplorayx"]
+exclude = ["mesh", "apps/dove", "apps/ios", "apps/android", "apps/landing", "apps/extension"]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/PupppyLoverr/Dove"
-rust-version = "1.90"
+# zgx's own minimum.
+rust-version = "1.95"
 
 [workspace.dependencies]
 dove-proto = { path = "crates/dove-proto" }
@@ -30,27 +33,20 @@ rusqlite = { version = "0.32.1", features = ["bundled"] }
 which = "8"
 parking_lot = "0.12"
 tempfile = "3"
-# GPUI: zeronsh/zui (Zed's GPUI plus backdrop blur, edge fades and rounded
-# clipping), with gpui-base from zeronsh/gpui-component pinned to the same rev.
-# This is the exact pair Zeron ships on Windows, macOS and Linux.
-gpui = { git = "https://github.com/zeronsh/zui", rev = "361ff20b919fdfb80199ee6d9aed725300cb7d54" }
-gpui_platform = { git = "https://github.com/zeronsh/zui", rev = "361ff20b919fdfb80199ee6d9aed725300cb7d54", features = ["wayland", "x11", "font-kit", "runtime_shaders"] }
-gpui-base = { git = "https://github.com/zeronsh/gpui-component", rev = "701ca97af7983bf85343d2d1d404ab528b18ec96" }
 mimalloc = { version = "0.1", default-features = false }
+# zgx, pinned to the revision the Windows port (zeron `windows/zgx-parity`)
+# builds against. Move every pin below together.
+zgx = { git = "https://github.com/zeronsh/zgx", rev = "f01b47a00a6f5e9386b5fd7fb35dcdbef4991e93" }
+zgx-desktop = { git = "https://github.com/zeronsh/zgx", rev = "f01b47a00a6f5e9386b5fd7fb35dcdbef4991e93" }
+zgx-script = { git = "https://github.com/zeronsh/zgx", rev = "f01b47a00a6f5e9386b5fd7fb35dcdbef4991e93" }
+zgx-run = { git = "https://github.com/zeronsh/zgx", rev = "f01b47a00a6f5e9386b5fd7fb35dcdbef4991e93", default-features = false }
 
 [profile.dev]
-# Keep debug builds usable: GPUI is painfully slow unoptimized.
 opt-level = 1
+# zgx is slow unoptimized: optimize dependencies, keep the app quick to build.
 [profile.dev.package."*"]
-opt-level = 2
-# GPUI's own asserts abort the process (a duplicate accessibility id closes the
-# window); a debug build should stay up the way a release build does.
-[profile.dev.package.gpui]
-debug-assertions = false
-overflow-checks = false
-# Generates its inspector code only where GPUI has the inspector, so they match.
-[profile.dev.package.gpui-base]
-debug-assertions = false
+opt-level = 3
+debug = "line-tables-only"
 
 [profile.release]
 lto = "fat"
@@ -59,7 +55,14 @@ strip = true
 panic = "abort"
 opt-level = 3
 
-# A vendored copy of gpui-base with one behavior change (caret stops blinking
-# when idle, so an idle window renders zero frames). See vendor/README.md.
-[patch."https://github.com/zeronsh/gpui-component"]
-gpui-base = { path = "vendor/gpui-base" }
+# zgx's own patches (its root Cargo.toml): a git dependency does not bring
+# them, so every consumer repeats them. With GPUI gone from this workspace
+# they reach nothing else.
+[patch.crates-io]
+wgpu-hal = { git = "https://github.com/zeronsh/zgx", rev = "f01b47a00a6f5e9386b5fd7fb35dcdbef4991e93" }
+winit = { git = "https://github.com/zeronsh/zgx", rev = "f01b47a00a6f5e9386b5fd7fb35dcdbef4991e93" }
+accesskit_macos = { git = "https://github.com/zeronsh/zgx", rev = "f01b47a00a6f5e9386b5fd7fb35dcdbef4991e93" }
+accesskit_consumer = { git = "https://github.com/zeronsh/zgx", rev = "f01b47a00a6f5e9386b5fd7fb35dcdbef4991e93" }
+accesskit_atspi_common = { git = "https://github.com/zeronsh/zgx", rev = "f01b47a00a6f5e9386b5fd7fb35dcdbef4991e93" }
+accesskit_unix = { git = "https://github.com/zeronsh/zgx", rev = "f01b47a00a6f5e9386b5fd7fb35dcdbef4991e93" }
+accesskit_windows = { git = "https://github.com/zeronsh/zgx", rev = "f01b47a00a6f5e9386b5fd7fb35dcdbef4991e93" }
