@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   Dove performance harness: startup, idle, streaming (1/5/10 concurrent
   sessions with the fake agent), input latency and RAM split by process class.
@@ -38,8 +38,8 @@ param(
     # the fake agent runs and numbers are repeatable.
     [switch]$RealPath,
     # Which app: `dove` (the GPUI build: DOVE_FRAME_STATS, DOVE_INPUT_TRACE)
-    # or `kx` (keplorayx on zgx: frames from ZGX_PRESENT_LOG's DXGI present
-    # count; zgx has no Windows input trace, so key latency is n/a).
+    # or `kx` (keplorayx on zgx: frames from ZGX_PRESENT_LOG's render
+    # render lines; zgx has no Windows input trace, so key latency is n/a).
     # Default: from the exe's name.
     [string]$Kind = ""
 )
@@ -132,14 +132,10 @@ function Cpu-Between($a, $b, [double]$sec) {
     $res
 }
 
-# keplorayx: DXGI's cumulative present count, as ZGX_PRESENT_LOG last
-# reported it ("dxgi shown present=N ...").
+# keplorayx: frames rendered so far, as ZGX_PRESENT_LOG has logged them
+# ("PRESENT <time> render forced=… rects=…", one a frame).
 function Present-Count([string]$log) {
-    $last = 0
-    foreach ($line in Get-Content $log -ErrorAction SilentlyContinue) {
-        if ($line -match 'dxgi shown present=(\d+)') { $last = [int64]$Matches[1] }
-    }
-    $last
+    @(Select-String -Path $log -Pattern '^PRESENT \S+ render ' -ErrorAction SilentlyContinue).Count
 }
 
 function Count-Renders([string]$log, [datetime]$from, [datetime]$to) {

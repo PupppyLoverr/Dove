@@ -10,6 +10,7 @@ local store = require("@kx/store")
 local M = {}
 
 local section = ui.persist("settings.section", "appearance")
+local accent = require("@kx/accent")
 local scheme = ui.persist("settings.scheme", "system")
 
 ui.effect(function()
@@ -89,6 +90,45 @@ local function appearance(): Node
 				"The window shows a soft blur of what's behind it. Off, surfaces are solid.",
 				kx.Switch { value = kx.material.frosted, label = "Frosted glass" }
 			)
+		),
+		group(
+			"Your star",
+			setting("Accent", "The app's own light: the way on, focus, what's chosen.", (function(): Node
+				local stars: { Node } = {}
+				for _, s in accent.STARS do
+					table.insert(stars, kx.Button {
+						tone = "ghost",
+						size = "sm",
+						icon = true,
+						label = s.name,
+						tooltip = s.name,
+						on_click = function()
+							accent.chosen:set(s.id)
+						end,
+						ui.column {
+							color = function()
+								local kind = ui.theme.kind()
+								local dark = not (kind == "light" or kind == "high-contrast-light")
+								return ui.raw(if dark then s.night else s.dawn, "each star shows its own colour")
+							end,
+							opacity = function()
+								return if accent.chosen:get() == s.id then 1 else 0.55
+							end,
+							kx.Icon { name = "star-four", size = 18 },
+						},
+					})
+				end
+				return ui.row { gap = "$kx.space.hair", table.unpack(stars) }
+			end)()),
+			kx.Rule {},
+			setting("Setup", "Walk through First Light again.", kx.Button {
+				tone = "secondary",
+				size = "sm",
+				on_click = function()
+					ui.invoke("app.onboarding")
+				end,
+				"Open setup",
+			})
 		),
 		group(
 			"Motion",

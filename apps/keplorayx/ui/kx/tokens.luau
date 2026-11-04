@@ -68,6 +68,11 @@ function M.setup()
 			agent = agents,
 			-- A diff's added and removed lines: their colours, washed.
 			diff = { add = "alpha({success}, 0.12)", del = "alpha({danger}, 0.12)" },
+			-- The soft light round a body that's live, or needs you.
+			glow = {
+				live = "0 0 10 0 alpha({accent}, 0.45)",
+				attention = "0 0 14 1 alpha({warning}, 0.55)",
+			},
 			-- What veils the window under a drop.
 			veil = "alpha({background}, 0.86)",
 			-- A switch's knob: the brightest thing on any ground.

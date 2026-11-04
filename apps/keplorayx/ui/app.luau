@@ -15,6 +15,7 @@ local thread = require("@screens/thread")
 local inbox = require("@screens/inbox")
 local settings = require("@screens/settings")
 local ray = require("@screens/ray")
+local constellation = require("@screens/constellation")
 
 -- Development: a fixture's own starting route and theme (tools/shot.ps1).
 if store.fixture ~= "" then
@@ -56,8 +57,31 @@ ui.command {
 	title = "Changes",
 	key = "ctrl+j",
 	run = function()
-		local changes = require("@screens/changes")
-		changes.open:set(not changes.open:peek())
+		require("@screens/panel").toggle("changes")
+	end,
+}
+ui.command {
+	id = "terminal",
+	title = "Terminal",
+	key = "ctrl+`",
+	run = function()
+		require("@screens/panel").toggle("terminal")
+	end,
+}
+ui.command {
+	id = "constellation",
+	title = "Constellation",
+	key = "ctrl+shift+o",
+	run = function()
+		nav.go(if nav.route:peek() == "constellation" then "home" else "constellation")
+	end,
+}
+ui.command {
+	id = "zoom-out",
+	title = "Zoom out to every thread",
+	key = "ctrl+-",
+	run = function()
+		nav.go("constellation")
 	end,
 }
 ui.command {
@@ -68,6 +92,20 @@ ui.command {
 		nav.go("inbox")
 	end,
 }
+
+-- The notch asked for a thread ("<id>#<n>", n so the same thread twice is
+-- two asks): open it.
+local ok_focus, notch_focus = pcall(ui.shared, "notch.focus", "")
+if ok_focus and store.fixture == "" then
+	ui.effect(function()
+		local v = (notch_focus :: any):get() :: string
+		local id = string.match(v, "^(.-)#")
+		if id and id ~= "" then
+			nav.go("thread")
+			store.open(id)
+		end
+	end)
+end
 
 -- Y and N answer what the open thread waits on, when focus isn't in a field.
 local function answer(e: any): boolean?
@@ -90,6 +128,7 @@ local pages = {
 	thread = ui.column { grow = 1, min_w = 0, h_full = true, thread.view() },
 	inbox = ui.column { grow = 1, min_w = 0, h_full = true, inbox.view() },
 	settings = ui.column { grow = 1, min_w = 0, h_full = true, settings.view() },
+	constellation = ui.column { grow = 1, min_w = 0, h_full = true, constellation.view() },
 }
 
 -- A folder dropped on the window becomes a project (a file, its folder).
@@ -145,6 +184,7 @@ return ui.row {
 	w_full = true,
 	h_full = true,
 	relative = true,
+	theme = kx.accent.scope(),
 	bg = kx.material.window_bg(),
 	on_key = answer,
 	on_file_drop = on_drop,

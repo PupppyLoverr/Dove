@@ -67,6 +67,7 @@
 			"display": "Inter Display",
 			"solid": "#f3f5fa",
 			"attention": "#d9730d",
+			"glow.attention": "0 0 14 1 alpha({kx.attention}, 0.55)",
 			"attention.soft": "alpha({kx.attention}, 0.14)",
 			"lip": "#ffffffcc",
 			"lip.strong": "#ffffff",

@@ -224,6 +224,9 @@ function M.view(): Node
 			way_in("magnifer", "Search", "Ctrl K", function()
 				nav.focus_ray()
 			end),
+			way_in("constellation", "Constellation", "Ctrl −", function()
+				nav.go("constellation")
+			end),
 		},
 		-- The threads.
 		ui.scroll {

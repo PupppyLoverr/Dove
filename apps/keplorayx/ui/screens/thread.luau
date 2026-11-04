@@ -10,6 +10,7 @@ local kx = require("@kx")
 local store = require("@kx/store")
 local ray = require("@screens/ray")
 local changes = require("@screens/changes")
+local panel = require("@screens/panel")
 local nav = require("@screens/nav")
 
 type Entry = store.Entry
@@ -330,7 +331,9 @@ local header = ui.row {
 			size = "sm",
 			icon = true,
 			label = "Changes",
-			on_click = ui.toggle(changes.open),
+			on_click = function()
+				panel.toggle("changes")
+			end,
 			kx.Icon {
 				name = "file-diff",
 				size = 16,
@@ -352,7 +355,7 @@ function M.view(): Node
 		ui.presence(function()
 			return if changes.open:get() then "open" else nil
 		end, function()
-			return changes.view()
+			return panel.view()
 		end, {
 			h_full = true,
 			enter = { opacity = { 0, 1 }, x = { 24, 0 }, duration = 240, ease = kx.motion.ENTER },

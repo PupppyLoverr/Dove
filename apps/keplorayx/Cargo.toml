@@ -32,7 +32,7 @@ zgx-run = { workspace = true, features = ["fetch"] }
 # tree (Windows 11 ships the runtime).
 zgx-desktop = { workspace = true, features = ["webview2"] }
 # Transparency effects, read and watched in the registry (src/transparency.rs).
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Registry"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Registry", "Win32_UI_WindowsAndMessaging"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Ghostty draws terminals on macOS (needs Zig 0.16 to build).

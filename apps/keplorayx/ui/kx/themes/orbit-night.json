@@ -79,6 +79,7 @@
 			"solid": "#080b14",
 			// The warm colour, reserved for "this needs you".
 			"attention": "#ffb366",
+			"glow.attention": "0 0 14 1 alpha({kx.attention}, 0.55)",
 			"attention.soft": "alpha({kx.attention}, 0.16)",
 			// The lip of light along a lifted surface's top edge.
 			"lip": "#dfe6ff24",

@@ -3,29 +3,45 @@
 //! windows, runs Dove's engine in this process and answers the scripts'
 //! calls (src/host.rs).
 //!
-//! Run: cargo run -p keplorayx -- [main | gallery] [--inspect]
+//! Run: cargo run -p keplorayx -- [main | gallery | intro | onboarding | notch] [--inspect]
+//!
+//! A first run (no `kx.onboarded` in the store) opens with First Light, the
+//! intro and setup (src/intro.rs); `DOVE_SKIP_INTRO=1` goes straight to the
+//! main window.
 //!
 //! A development build keeps its data apart from the shipping Dove's
 //! (`~/.dove`): `%LOCALAPPDATA%\keplorayx-zgx-dev` unless `DOVE_HOME` says
 //! otherwise, so its threads, agents and settings never meet a running Dove's.
 
 mod host;
+mod intro;
+mod notch;
 mod transcript;
 mod transparency;
 
-use std::{path::PathBuf, time::Duration};
+use std::{path::PathBuf, rc::Rc, sync::Arc, time::Duration};
 
 use zgx::compose::component;
 use zgx_desktop::{Application, FontData, Glass, GlassMaterial, Titlebar, WindowContext, WindowOptions};
-use zgx_script::ScriptHost;
+use zgx_script::{ScriptHost, Value};
 
 /// Where `ui.persist` keeps its files.
 const APP_ID: &str = "keplorayx-zgx";
 
+#[derive(Clone, Copy, PartialEq)]
 enum Screen {
     Main,
     Gallery,
+    /// First Light: the overlay, handing off to setup.
+    Intro,
+    /// Setup on its own (development, or the intro skipped).
+    Onboarding,
+    /// The notch on its own (development: its fixtures and PNGs).
+    Notch,
 }
+
+/// The store's word that setup has been finished once.
+const ONBOARDED: &str = "kx.onboarded";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // For scripts/perf: when main began, and (once the first view is built)
@@ -54,14 +70,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         unsafe { std::env::set_var("DOVE_HOME", dev_home()) };
     }
 
-    let mut screen = Screen::Main;
+    let mut screen = None;
     let mut inspect = false;
     for arg in std::env::args().skip(1) {
         match arg.as_str() {
-            "main" => screen = Screen::Main,
-            "gallery" => screen = Screen::Gallery,
+            "main" => screen = Some(Screen::Main),
+            "gallery" => screen = Some(Screen::Gallery),
+            "intro" => screen = Some(Screen::Intro),
+            "onboarding" => screen = Some(Screen::Onboarding),
+            "notch" => screen = Some(Screen::Notch),
             "--inspect" => inspect = true,
-            other => return Err(format!("unknown argument `{other}`: expected main, gallery or --inspect").into()),
+            other => {
+                return Err(
+                    format!("unknown argument `{other}`: expected main, gallery, intro, onboarding or --inspect").into()
+                );
+            }
         }
     }
 
@@ -79,22 +102,48 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
-    let entry = match screen {
-        Screen::Main => "app.luau",
-        Screen::Gallery => "gallery.luau",
-    };
+    // No screen asked for: First Light the first time, the main window after.
+    let screen = screen.unwrap_or_else(|| {
+        let skip = std::env::var_os("DOVE_SKIP_INTRO").is_some_and(|v| v == "1");
+        if skip || engine.store.setting(ONBOARDED).is_some() { Screen::Main } else { Screen::Intro }
+    });
+
+    let entry = entry(screen);
     zgx_script::compile_ahead(&ui_dir().join(entry), &[("kx", ui_dir().join("kx").as_path())]);
 
     let mut application = Application::new();
     for font in fonts() {
         application = application.font(font?);
     }
-    application.window(window(&screen)).run(move |cx| {
-        let host = script_host(cx, entry);
-        if let Screen::Main = screen {
-            host::install(cx, &host, engine.clone());
+    let options = match screen {
+        Screen::Intro => intro::overlay_window(),
+        Screen::Onboarding => intro::setup_window(),
+        Screen::Notch => notch::window(),
+        _ => window(screen),
+    };
+    application.window(options).run(move |cx| {
+        match screen {
+            Screen::Main => open_main(cx, engine.clone(), inspect),
+            Screen::Gallery => {
+                let host = script_host(cx, entry);
+                serve(cx, host, entry, inspect);
+            }
+            Screen::Onboarding => {
+                let host = open_onboarding(cx, engine.clone());
+                host.shared("onboarding.arrived", true);
+            }
+            Screen::Notch => {
+                notch::open(cx, engine.clone(), |_| {});
+            }
+            Screen::Intro => {
+                let host = script_host(cx, entry);
+                let engine = engine.clone();
+                let setup: Rc<dyn Fn(&mut WindowContext) -> ScriptHost> =
+                    Rc::new(move |cx| open_onboarding(cx, engine.clone()));
+                intro::install(cx, &host, setup);
+                serve(cx, host, entry, inspect);
+            }
         }
-        serve(cx, host, entry, inspect);
         if std::env::var_os("DOVE_STARTUP_TRACE").is_some() {
             eprintln!(
                 "dove-startup: main_unix_ms={started_unix_ms} first_render_ms={:.1}",
@@ -103,6 +152,70 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     })?;
     Ok(())
+}
+
+fn entry(screen: Screen) -> &'static str {
+    match screen {
+        Screen::Main => "app.luau",
+        Screen::Gallery => "gallery.luau",
+        Screen::Intro => "intro.luau",
+        Screen::Onboarding => "onboarding.luau",
+        Screen::Notch => "notch.luau",
+    }
+}
+
+/// The main window's content in `cx`: the engine's host and app.luau.
+fn open_main(cx: &mut WindowContext, engine: Arc<dove_core::Engine>, inspect: bool) {
+    let host = script_host(cx, "app.luau");
+    host::install(cx, &host, engine.clone());
+    // The notch, over every window: a click on it brings this window forward
+    // on the thread it showed (`notch.focus`, which app.luau follows).
+    let focus_thread = host.shared("notch.focus", "");
+    if notch::enabled() {
+        let main_window = cx.window.clone();
+        let engine = engine.clone();
+        cx.windows.open(notch::window(), move |cx| {
+            let (window, focus) = (main_window.clone(), focus_thread.clone());
+            let asked = std::cell::Cell::new(0u32);
+            notch::open(cx, engine.clone(), move |thread| {
+                window.request_focus();
+                if let Some(id) = thread {
+                    asked.set(asked.get() + 1);
+                    focus.set(Value::from(format!("{id}#{}", asked.get()).as_str()));
+                }
+            });
+        });
+    }
+    // Settings › Appearance › Open setup: First Light's steps again, in a
+    // window of their own.
+    let windows = cx.windows.clone();
+    host.action("app.onboarding", move |_| {
+        let engine = engine.clone();
+        windows.open(intro::setup_window(), move |cx| {
+            let host = open_onboarding(cx, engine.clone());
+            host.shared("onboarding.arrived", true);
+        });
+    });
+    serve(cx, host, "app.luau", inspect);
+}
+
+/// Setup in `cx`: the engine's host (agents, projects) and onboarding.luau.
+/// Finishing it records that it's done, opens the main window and closes
+/// this one.
+fn open_onboarding(cx: &mut WindowContext, engine: Arc<dove_core::Engine>) -> ScriptHost {
+    let host = script_host(cx, "onboarding.luau");
+    host::install(cx, &host, engine.clone());
+    let (window, windows) = (cx.window.clone(), cx.windows.clone());
+    host.action("onboarding.finish", move |_| {
+        let _ = engine.store.set_setting(ONBOARDED, "1");
+        let engine = engine.clone();
+        windows.open(self::window(Screen::Main), move |cx| open_main(cx, engine.clone(), false));
+        window.close();
+    });
+    let dev_step = std::env::var("KX_STEP").unwrap_or_default();
+    host.shared("onboarding.step", dev_step.as_str());
+    serve(cx, host.clone(), "onboarding.luau", false);
+    host
 }
 
 /// Orbit's type (all OFL, `fonts/`): Inter for the interface, Inter Display
@@ -134,10 +247,10 @@ fn dev_home() -> PathBuf {
 
 /// Keplorayx's window: an inset title bar with the system's caption buttons,
 /// over the system backdrop (Mica on Windows 11), which the theme tints.
-fn window(screen: &Screen) -> WindowOptions {
+fn window(screen: Screen) -> WindowOptions {
     let (title, autosave) = match screen {
-        Screen::Main => ("Keplorayx", "keplorayx-main"),
         Screen::Gallery => ("Keplorayx · Gallery", "keplorayx-gallery"),
+        _ => ("Keplorayx", "keplorayx-main"),
     };
     // Development: a fixed size for the design PNGs (`KX_SIZE=1240x820`).
     let (width, height) = std::env::var("KX_SIZE")
@@ -177,6 +290,9 @@ fn script_host(cx: &mut WindowContext, entry: &str) -> ScriptHost {
     host.window_zoom(&cx.ui);
     host.window_size(cx.viewport.clone());
     host.shared("platform", std::env::consts::OS);
+    // zgx's popup windows have no system backdrop on Windows yet, so menus
+    // and popovers draw solid there (zgx-asks/popup-glass-windows).
+    host.shared("system.popups_blur", !cfg!(windows));
     // Development: open on a gallery page, in a theme, or on a fixture
     // (tools/shot.ps1 sets these for the design PNGs).
     for (key, var) in [("dev.page", "KX_PAGE"), ("dev.theme", "KX_THEME"), ("dev.fixture", "KX_FIXTURE")] {

@@ -173,97 +173,85 @@ local function file_row(f: File): Node
 	}
 end
 
-function M.view(): Node
-	return ui.column {
-		w = 440,
-		shrink = 0,
-		h_full = true,
-		bg = function()
-			return if kx.material.see_through() then "$surface.sunken" else "$kx.solid"
-		end,
-		border_sides = { 0, 0, 0, 1 },
-		border_color = "$border.subtle",
-		ui.row {
-			h = "$kx.titlebar",
-			w_full = true,
-			pl = "$space.4",
-			pr = nav.caption_inset,
-			gap = "$space.2",
-			items = "center",
-			window_drag = true,
-			kx.Label { "Changes", literal = true },
-			ui.text {
-				function()
-					local t = totals:get()
-					return if t.count == 0 then "" else `{t.count} {if t.count == 1 then "file" else "files"}`
-				end,
-				literal = true,
-				text_size = "$font.size.sm",
-				color = "$text.tertiary",
-			},
-			ui.div { grow = 1 },
-			ui.text {
-				function()
-					return `+{totals:get().added}`
-				end,
-				literal = true,
-				tabular = true,
-				text_size = "$font.size.sm",
-				color = "$success",
-			},
-			ui.text {
-				function()
-					return `−{totals:get().removed}`
-				end,
-				literal = true,
-				tabular = true,
-				text_size = "$font.size.sm",
-				color = "$danger",
-			},
-			kx.Button {
-				tone = "ghost",
-				size = "xs",
-				icon = true,
-				label = "Refresh",
-				busy = loading,
-				on_click = M.refresh,
-				kx.Icon { name = "refresh", size = 14 },
-			},
+-- The totals and Refresh, for the panel's header.
+function M.summary(): Node
+	return ui.row {
+		gap = "$space.2",
+		items = "center",
+		ui.text {
+			function()
+				local t = totals:get()
+				return if t.count == 0 then "" else `{t.count} {if t.count == 1 then "file" else "files"}`
+			end,
+			literal = true,
+			text_size = "$font.size.sm",
+			color = "$text.tertiary",
 		},
-		ui.scroll {
-			grow = 1,
-			min_h = 0,
-			w_full = true,
-			px = "$space.2",
-			pb = "$space.4",
+		ui.text {
+			function()
+				return `+{totals:get().added}`
+			end,
+			literal = true,
+			tabular = true,
+			text_size = "$font.size.sm",
+			color = "$success",
+		},
+		ui.text {
+			function()
+				return `−{totals:get().removed}`
+			end,
+			literal = true,
+			tabular = true,
+			text_size = "$font.size.sm",
+			color = "$danger",
+		},
+		kx.Button {
+			tone = "ghost",
+			size = "xs",
+			icon = true,
+			label = "Refresh",
+			busy = loading,
+			on_click = M.refresh,
+			kx.Icon { name = "refresh", size = 14 },
+		},
+	}
+end
+
+-- The files, each opening to its hunks.
+function M.list(): Node
+	return ui.scroll {
+		grow = 1,
+		min_h = 0,
+		w_full = true,
+		px = "$space.2",
+		pb = "$space.4",
+		ui.show(
+			function()
+				return failure:get() ~= ""
+			end,
+			kx.Empty {
+				icon = "danger-triangle",
+				title = "Couldn't read the changes",
+				hint = failure:peek(),
+			},
 			ui.show(
 				function()
-					return failure:get() ~= ""
+					return #files:get() > 0
 				end,
-				kx.Empty {
-					icon = "danger-triangle",
-					title = "Couldn't read the changes",
-					hint = failure:peek(),
-				},
-				ui.show(
-					function()
-						return #files:get() > 0
+				ui.each(files, file_row, {
+					key = function(f: File)
+						return f.path
 					end,
-					ui.each(files, file_row, {
-						key = function(f: File)
-							return f.path
-						end,
-						w_full = true,
-						gap = "$kx.space.hair",
-					}),
-					kx.Empty {
-						icon = "file-diff",
-						title = "No changes yet",
-						hint = "What this thread changes shows here, file by file.",
-					}
-				)
-			),
-		},
+					w_full = true,
+					gap = "$kx.space.hair",
+				}),
+				kx.Empty {
+					icon = "file-diff",
+					title = "No changes yet",
+					hint = "What this thread changes shows here, file by file.",
+				}
+			)
+		),
 	}
 end
 

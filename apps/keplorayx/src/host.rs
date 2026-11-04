@@ -13,6 +13,8 @@
 //!   `kx.approval`  what the open thread's agent waits on you for:
 //!                  { request_id, tool, summary, questions = { { text, options } } }, nil for nothing
 //!   `kx.agents`    the agents installed: { { id, label } }
+//!   `kx.attention` every thread waiting on you, across windows (the notch):
+//!                  { { thread_id, title, harness, harness_id, request_id, tool, summary } }
 //!
 //! Calls:
 //!   kx.open(id)                     an action: open that thread
@@ -24,9 +26,16 @@
 //!   kx.decide({ request_id, decision = "allow_once" | "allow_always" | "deny", answers? })
 //!                                   an action: answer what the open thread waits on
 //!   kx.add_project(path)            add a folder as a project; its id
+//!   kx.decide_for({ thread_id, request_id, decision })
+//!                                   an action: answer one thread's request (the notch)
 //!   kx.changes()                    the open thread's changes against where it
 //!                                   started: { { path, status, added, removed,
 //!                                   hunks = { { header, lines = { { kind, old, new, text } } } } } }
+//!
+//! Every window that installs this shares one hub: the live sessions, the
+//! automation scheduler (one a process, however many windows are open), and
+//! the thread list, published to each window's `kx.threads`. Which thread is
+//! open is each window's own.
 //!
 //! A live session's events fold into its thread's transcript whether it's
 //! open or not; only the open one's reach the window, and then only what
@@ -34,7 +43,12 @@
 //! published again only when an entry comes, goes or changes, which
 //! `Shared::set` reconciles by `id` so the rest keep their rows.
 
-use std::{cell::RefCell, collections::HashMap, rc::Rc, sync::Arc};
+use std::{
+    cell::RefCell,
+    collections::HashMap,
+    rc::{Rc, Weak},
+    sync::Arc,
+};
 
 use dove_core::{Command, Engine, LiveSession, NewTask, RunSettings};
 use dove_proto::TaskId;
@@ -49,12 +63,51 @@ struct Live {
     fold: Rc<RefCell<Fold>>,
 }
 
+type LiveMap = Rc<RefCell<HashMap<TaskId, Live>>>;
+
+/// What every window shares.
+struct Hub {
+    live: LiveMap,
+    /// Each window's state, while it lasts.
+    windows: Vec<Weak<RefCell<State>>>,
+}
+
+thread_local! {
+    static HUB: RefCell<Option<Hub>> = const { RefCell::new(None) };
+}
+
+/// The process's live sessions, and whether this is the first window (which
+/// starts the scheduler).
+fn join_hub() -> (LiveMap, bool) {
+    HUB.with(|hub| {
+        let mut hub = hub.borrow_mut();
+        match &*hub {
+            Some(h) => (h.live.clone(), false),
+            None => {
+                let live: LiveMap = Rc::default();
+                *hub = Some(Hub { live: live.clone(), windows: Vec::new() });
+                (live, true)
+            }
+        }
+    })
+}
+
+/// Every window's state that's still open.
+fn windows() -> Vec<Host> {
+    HUB.with(|hub| {
+        let mut hub = hub.borrow_mut();
+        let Some(h) = hub.as_mut() else { return Vec::new() };
+        h.windows.retain(|w| w.strong_count() > 0);
+        h.windows.iter().filter_map(Weak::upgrade).collect()
+    })
+}
+
 struct State {
     engine: Arc<Engine>,
     open: Option<TaskId>,
     /// The open thread's transcript when it has no live session.
     replayed: Option<Rc<RefCell<Fold>>>,
-    live: HashMap<TaskId, Live>,
+    live: LiveMap,
     threads: Shared,
     projects: Shared,
     thread: Shared,
@@ -62,16 +115,18 @@ struct State {
     draft: Shared,
     approval: Shared,
     agents: Shared,
+    attention: Shared,
 }
 
 type Host = Rc<RefCell<State>>;
 
 pub fn install(cx: &mut WindowContext, host: &ScriptHost, engine: Arc<Engine>) {
+    let (live, first) = join_hub();
     let state: Host = Rc::new(RefCell::new(State {
         engine,
         open: None,
         replayed: None,
-        live: HashMap::new(),
+        live,
         threads: host.shared("kx.threads", Value::List(Rc::from([]))),
         projects: host.shared("kx.projects", Value::List(Rc::from([]))),
         thread: host.shared("kx.thread", Value::Nil),
@@ -79,7 +134,13 @@ pub fn install(cx: &mut WindowContext, host: &ScriptHost, engine: Arc<Engine>) {
         draft: host.shared("kx.draft", draft_value(None)),
         approval: host.shared("kx.approval", Value::Nil),
         agents: host.shared("kx.agents", Value::List(Rc::from([]))),
+        attention: host.shared("kx.attention", Value::List(Rc::from([]))),
     }));
+    HUB.with(|hub| {
+        if let Some(h) = hub.borrow_mut().as_mut() {
+            h.windows.push(Rc::downgrade(&state));
+        }
+    });
     refresh_threads(cx, &state);
 
     let (s, tasks) = (state.clone(), cx.tasks.clone());
@@ -111,7 +172,8 @@ pub fn install(cx: &mut WindowContext, host: &ScriptHost, engine: Arc<Engine>) {
     host.action("kx.decide", move |req| {
         let st = s.borrow();
         let Some(id) = st.open else { return };
-        let Some(live) = st.live.get(&id) else { return };
+        let live_map = st.live.borrow();
+        let Some(live) = live_map.get(&id) else { return };
         let Some(request_id) = req.field("request_id").and_then(text_of) else { return };
         let command = match req.field("answers") {
             Some(Value::List(answers)) => Command::Answer {
@@ -134,6 +196,21 @@ pub fn install(cx: &mut WindowContext, host: &ScriptHost, engine: Arc<Engine>) {
             }
         };
         live.session.send(command);
+    });
+
+    let s = state.clone();
+    host.action("kx.decide_for", move |req| {
+        let st = s.borrow();
+        let Some(id) = req.field("thread_id").and_then(parse_task) else { return };
+        let Some(request_id) = req.field("request_id").and_then(text_of) else { return };
+        let decision = match req.field("decision").and_then(text_of).as_deref() {
+            Some("allow_always") => dove_proto::PermissionDecision::AllowAlways,
+            Some("deny") => dove_proto::PermissionDecision::Deny,
+            _ => dove_proto::PermissionDecision::AllowOnce,
+        };
+        if let Some(live) = st.live.borrow().get(&id) {
+            live.session.send(Command::Permission { request_id, decision });
+        }
     });
 
     let (s, tasks) = (state.clone(), cx.tasks.clone());
@@ -192,7 +269,9 @@ pub fn install(cx: &mut WindowContext, host: &ScriptHost, engine: Arc<Engine>) {
         async move { send(&tasks, &s, req).await.map(|()| Value::Nil) }
     });
 
-    start_scheduler(&cx.tasks, &state);
+    if first {
+        start_scheduler(&cx.tasks, &state);
+    }
 }
 
 /// Runs automations as Dove's shell does: schedules every minute, event
@@ -275,7 +354,46 @@ fn spawn_refresh(tasks: &zgx_desktop::TaskSpawner, state: &Host) {
         .await;
         let Some((projects, threads, agents)) = read else { return };
         let names: HashMap<_, _> = projects.iter().map(|p| (p.id, p.name.clone())).collect();
-        let st = s.borrow();
+        let mut all = windows();
+        if !all.iter().any(|w| Rc::ptr_eq(w, &s)) {
+            all.push(s.clone());
+        }
+        for w in all {
+            publish_lists(&w.borrow(), &names, &projects, &threads, &agents);
+        }
+    });
+}
+
+fn publish_lists(
+    st: &State,
+    names: &HashMap<dove_proto::ProjectId, String>,
+    projects: &[dove_store::Project],
+    threads: &[dove_store::Task],
+    agents: &[dove_proto::HarnessKind],
+) {
+    {
+        // What waits on you, across every live thread.
+        let titles: HashMap<_, _> = threads.iter().map(|t| (t.id, t)).collect();
+        let waiting: Vec<Value> = st
+            .live
+            .borrow()
+            .iter()
+            .filter_map(|(id, l)| {
+                let f = l.fold.borrow();
+                let p = f.pending.as_ref()?;
+                let t = titles.get(id)?;
+                Some(Value::record([
+                    ("thread_id", Value::from(id.0.to_string().as_str())),
+                    ("title", Value::from(t.title.as_str())),
+                    ("harness", Value::from(t.harness.label())),
+                    ("harness_id", Value::from(t.harness.id())),
+                    ("request_id", Value::from(p.request_id.as_str())),
+                    ("tool", Value::from(p.tool.as_str())),
+                    ("summary", Value::from(p.summary.as_str())),
+                ]))
+            })
+            .collect();
+        st.attention.set(Value::List(waiting.into()));
         st.agents.set(Value::List(
             agents
                 .iter()
@@ -298,7 +416,7 @@ fn spawn_refresh(tasks: &zgx_desktop::TaskSpawner, state: &Host) {
             threads
                 .iter()
                 .map(|t| {
-                    let (live, needs_you) = st.live.get(&t.id).map_or((false, false), |l| {
+                    let (live, needs_you) = st.live.borrow().get(&t.id).map_or((false, false), |l| {
                         let f = l.fold.borrow();
                         (f.running, f.pending.is_some())
                     });
@@ -323,7 +441,7 @@ fn spawn_refresh(tasks: &zgx_desktop::TaskSpawner, state: &Host) {
                 })
                 .collect(),
         ));
-    });
+    }
 }
 
 fn open(tasks: &zgx_desktop::TaskSpawner, state: &Host, id: TaskId) {
@@ -333,7 +451,7 @@ fn open(tasks: &zgx_desktop::TaskSpawner, state: &Host, id: TaskId) {
         st.replayed = None;
         st.draft.set(draft_value(None));
     }
-    if state.borrow().live.contains_key(&id) {
+    if state.borrow().live.borrow().contains_key(&id) {
         publish(state, Change::Entries);
         return;
     }
@@ -376,7 +494,7 @@ async fn send(tasks: &zgx_desktop::TaskSpawner, state: &Host, req: Value) -> Res
     };
     // The open thread's session takes it as it is.
     if let Some(id) = open
-        && let Some(live) = state.borrow().live.get(&id)
+        && let Some(live) = state.borrow().live.borrow().get(&id)
         && live.session.send(Command::Send(text.clone()))
     {
         return Ok(());
@@ -451,7 +569,7 @@ fn follow(tasks: &zgx_desktop::TaskSpawner, state: &Host, session: LiveSession) 
             .map(|f| Rc::new(RefCell::new(std::mem::take(&mut *f.borrow_mut()))))
             .unwrap_or_default()
     };
-    state.borrow_mut().live.insert(id, Live { session: session.clone(), fold: fold.clone() });
+    state.borrow().live.borrow_mut().insert(id, Live { session: session.clone(), fold: fold.clone() });
     let s = state.clone();
     let tasks_for_refresh = tasks.clone();
     tasks.spawn(async move {
@@ -475,7 +593,8 @@ fn follow(tasks: &zgx_desktop::TaskSpawner, state: &Host, session: LiveSession) 
         }
         // The session ended: its transcript stays, as a replay.
         let mut st = s.borrow_mut();
-        if let Some(live) = st.live.remove(&id)
+        let removed = st.live.borrow_mut().remove(&id);
+        if let Some(live) = removed
             && st.open == Some(id)
         {
             live.fold.borrow_mut().running = false;
@@ -490,8 +609,9 @@ fn follow(tasks: &zgx_desktop::TaskSpawner, state: &Host, session: LiveSession) 
 fn publish(state: &Host, change: Change) {
     let st = state.borrow();
     let Some(id) = st.open else { return };
-    let fold = match st.live.get(&id) {
-        Some(live) => live.fold.clone(),
+    let live_fold = st.live.borrow().get(&id).map(|l| l.fold.clone());
+    let fold = match live_fold {
+        Some(fold) => fold,
         None => match &st.replayed {
             Some(fold) => fold.clone(),
             None => return,

@@ -5,7 +5,7 @@
 
 local M = {}
 
-export type Route = "home" | "thread" | "inbox" | "settings"
+export type Route = "home" | "thread" | "inbox" | "settings" | "constellation"
 
 M.route = ui.state("nav.route", "home" :: Route)
 

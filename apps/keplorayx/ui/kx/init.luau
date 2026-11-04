@@ -22,6 +22,7 @@ return {
 	shape = require("@kx/shape"),
 	material = require("@kx/material"),
 	prefers = require("@kx/prefers"),
+	accent = require("@kx/accent"),
 	icons = icon,
 
 	Button = button.Button,
