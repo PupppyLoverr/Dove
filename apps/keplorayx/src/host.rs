@@ -10,12 +10,20 @@
 //!   `kx.thread`    the open thread: { id, title, project, harness, running, status }, nil for none
 //!   `kx.entries`   its transcript (src/transcript.rs), keyed by `id`
 //!   `kx.draft`     the block being written: { id, kind, text }
+//!   `kx.approval`  what the open thread's agent waits on you for:
+//!                  { request_id, tool, summary, questions = { { text, options } } }, nil for nothing
+//!   `kx.agents`    the agents installed: { { id, label } }
 //!
 //! Calls:
 //!   kx.open(id)                     an action: open that thread
 //!   kx.new()                        an action: no thread open (Home)
-//!   kx.send({ text, project? })     run a message in the open thread, or a new one
+//!   kx.send({ text, project?, harness? })
+//!                                   run a message in the open thread, or a new
+//!                                   one (in that project, with that agent)
 //!   kx.interrupt()                  an action: stop the open thread's turn
+//!   kx.decide({ request_id, decision = "allow_once" | "allow_always" | "deny", answers? })
+//!                                   an action: answer what the open thread waits on
+//!   kx.add_project(path)            add a folder as a project; its id
 //!
 //! A live session's events fold into its thread's transcript whether it's
 //! open or not; only the open one's reach the window, and then only what
@@ -30,7 +38,7 @@ use dove_proto::TaskId;
 use zgx_desktop::WindowContext;
 use zgx_script::{ScriptHost, Shared, Value};
 
-use crate::transcript::{Change, Draft, Entry, Fold};
+use crate::transcript::{Change, Draft, Entry, Fold, Pending};
 
 /// A thread with a running harness.
 struct Live {
@@ -49,6 +57,8 @@ struct State {
     thread: Shared,
     entries: Shared,
     draft: Shared,
+    approval: Shared,
+    agents: Shared,
 }
 
 type Host = Rc<RefCell<State>>;
@@ -64,6 +74,8 @@ pub fn install(cx: &mut WindowContext, host: &ScriptHost, engine: Arc<Engine>) {
         thread: host.shared("kx.thread", Value::Nil),
         entries: host.shared("kx.entries", Value::List(Rc::from([]))),
         draft: host.shared("kx.draft", draft_value(None)),
+        approval: host.shared("kx.approval", Value::Nil),
+        agents: host.shared("kx.agents", Value::List(Rc::from([]))),
     }));
     refresh_threads(cx, &state);
 
@@ -81,6 +93,7 @@ pub fn install(cx: &mut WindowContext, host: &ScriptHost, engine: Arc<Engine>) {
         st.thread.set(Value::Nil);
         st.entries.set(Value::List(Rc::from([])));
         st.draft.set(draft_value(None));
+        st.approval.set(Value::Nil);
     });
 
     let s = state.clone();
@@ -88,6 +101,52 @@ pub fn install(cx: &mut WindowContext, host: &ScriptHost, engine: Arc<Engine>) {
         let st = s.borrow();
         if let Some(id) = st.open {
             st.engine.interrupt(id);
+        }
+    });
+
+    let s = state.clone();
+    host.action("kx.decide", move |req| {
+        let st = s.borrow();
+        let Some(id) = st.open else { return };
+        let Some(live) = st.live.get(&id) else { return };
+        let Some(request_id) = req.field("request_id").and_then(text_of) else { return };
+        let command = match req.field("answers") {
+            Some(Value::List(answers)) => Command::Answer {
+                request_id,
+                answers: answers
+                    .iter()
+                    .map(|a| match a {
+                        Value::List(picked) => picked.iter().filter_map(text_of).collect(),
+                        other => text_of(other).into_iter().collect(),
+                    })
+                    .collect(),
+            },
+            _ => {
+                let decision = match req.field("decision").and_then(text_of).as_deref() {
+                    Some("allow_always") => dove_proto::PermissionDecision::AllowAlways,
+                    Some("deny") => dove_proto::PermissionDecision::Deny,
+                    _ => dove_proto::PermissionDecision::AllowOnce,
+                };
+                Command::Permission { request_id, decision }
+            }
+        };
+        live.session.send(command);
+    });
+
+    let (s, tasks) = (state.clone(), cx.tasks.clone());
+    host.async_action("kx.add_project", move |path| {
+        let (s, tasks) = (s.clone(), tasks.clone());
+        async move {
+            let Some(path) = text_of(&path).filter(|p| !p.is_empty()) else {
+                return Err("no folder".to_string());
+            };
+            let engine = s.borrow().engine.clone();
+            let added = off_thread(move || engine.store.add_project(std::path::Path::new(&path)))
+                .await
+                .ok_or("failed")?
+                .map_err(|e| format!("{e:#}"))?;
+            spawn_refresh(&tasks, &s);
+            Ok(Value::from(added.id.0.to_string().as_str()))
         }
     });
 
@@ -140,6 +199,13 @@ fn start_scheduler(tasks: &zgx_desktop::TaskSpawner, state: &Host) {
     });
 }
 
+fn text_of(value: &Value) -> Option<String> {
+    match value {
+        Value::Str(s) => Some(s.to_string()),
+        _ => None,
+    }
+}
+
 fn parse_task(value: &Value) -> Option<TaskId> {
     let Value::Str(id) = value else { return None };
     id.parse().ok().map(TaskId)
@@ -167,12 +233,19 @@ fn spawn_refresh(tasks: &zgx_desktop::TaskSpawner, state: &Host) {
             let projects = engine.store.projects().unwrap_or_default();
             let mut threads = engine.store.all_tasks().unwrap_or_default();
             threads.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
-            (projects, threads)
+            let agents: Vec<_> = engine.installed().into_iter().map(|i| i.kind).collect();
+            (projects, threads, agents)
         })
         .await;
-        let Some((projects, threads)) = read else { return };
+        let Some((projects, threads, agents)) = read else { return };
         let names: HashMap<_, _> = projects.iter().map(|p| (p.id, p.name.clone())).collect();
         let st = s.borrow();
+        st.agents.set(Value::List(
+            agents
+                .iter()
+                .map(|k| Value::record([("id", Value::from(k.id())), ("label", Value::from(k.label()))]))
+                .collect(),
+        ));
         st.projects.set(Value::List(
             projects
                 .iter()
@@ -189,13 +262,25 @@ fn spawn_refresh(tasks: &zgx_desktop::TaskSpawner, state: &Host) {
             threads
                 .iter()
                 .map(|t| {
-                    let live = st.live.get(&t.id).is_some_and(|l| l.fold.borrow().running);
+                    let (live, needs_you) = st.live.get(&t.id).map_or((false, false), |l| {
+                        let f = l.fold.borrow();
+                        (f.running, f.pending.is_some())
+                    });
+                    let status = if needs_you {
+                        "needs_you"
+                    } else if live {
+                        "running"
+                    } else {
+                        t.status.id()
+                    };
                     Value::record([
                         ("id", Value::from(t.id.0.to_string().as_str())),
                         ("title", Value::from(t.title.as_str())),
                         ("project", Value::from(names.get(&t.project_id).map(String::as_str).unwrap_or(""))),
-                        ("status", Value::from(if live { "running" } else { t.status.id() })),
+                        ("project_id", Value::from(t.project_id.0.to_string().as_str())),
+                        ("status", Value::from(status)),
                         ("harness", Value::from(t.harness.label())),
+                        ("harness_id", Value::from(t.harness.id())),
                         ("updated", Value::from(t.updated_at as f64)),
                         ("unread", Value::from(t.unread)),
                     ])
@@ -264,6 +349,7 @@ async fn send(tasks: &zgx_desktop::TaskSpawner, state: &Host, req: Value) -> Res
         Value::Str(s) => Some(s.to_string()),
         _ => None,
     });
+    let harness = req.field("harness").and_then(text_of);
     // Starting or resuming spawns the harness: on a thread.
     let started = off_thread(move || -> anyhow::Result<LiveSession> {
         match open {
@@ -283,10 +369,11 @@ async fn send(tasks: &zgx_desktop::TaskSpawner, state: &Host, req: Value) -> Res
                     None => projects.into_iter().next(),
                 }
                 .ok_or_else(|| anyhow::anyhow!("no project: add one first"))?;
-                let harness = engine
-                    .installed()
-                    .first()
-                    .map(|i| i.kind)
+                // The agent asked for, if it's installed; else the first that is.
+                let installed = engine.installed();
+                let harness = harness
+                    .and_then(|id| installed.iter().find(|i| i.kind.id() == id).map(|i| i.kind))
+                    .or_else(|| installed.first().map(|i| i.kind))
                     .ok_or_else(|| anyhow::anyhow!("no agent installed"))?;
                 let title: String = text.lines().next().unwrap_or("").chars().take(60).collect();
                 let new = NewTask { title, prompt: text, harness, run: RunSettings::default(), join: None, persona: None };
@@ -334,6 +421,7 @@ fn follow(tasks: &zgx_desktop::TaskSpawner, state: &Host, session: LiveSession) 
     tasks.spawn(async move {
         while let Ok(event) = session.events.recv_async().await {
             // Everything ready now, folded at once: one publish a burst.
+            let waited = fold.borrow().pending.is_some();
             let mut change = fold.borrow_mut().apply(&event);
             let mut ended = matches!(event, dove_proto::AgentEvent::TurnEnded { .. });
             while let Ok(event) = session.events.try_recv() {
@@ -343,7 +431,9 @@ fn follow(tasks: &zgx_desktop::TaskSpawner, state: &Host, session: LiveSession) 
             if s.borrow().open == Some(id) {
                 publish(&s, change);
             }
-            if ended {
+            // A turn ending, or the agent starting or stopping waiting on
+            // you, changes its row in the sidebar.
+            if ended || fold.borrow().pending.is_some() != waited {
                 spawn_refresh(&tasks_for_refresh, &s);
             }
         }
@@ -388,6 +478,7 @@ fn publish(state: &Host, change: Change) {
     }
     if change != Change::None {
         st.draft.set(draft_value(fold.draft.as_ref()));
+        st.approval.set(approval_value(fold.pending.as_ref()));
     }
 }
 
@@ -430,6 +521,29 @@ fn entry_value(e: &Entry) -> Value {
         ));
     }
     Value::record(fields)
+}
+
+fn approval_value(pending: Option<&Pending>) -> Value {
+    let Some(p) = pending else { return Value::Nil };
+    Value::record([
+        ("request_id", Value::from(p.request_id.as_str())),
+        ("tool", Value::from(p.tool.as_str())),
+        ("summary", Value::from(p.summary.as_str())),
+        (
+            "questions",
+            Value::List(
+                p.questions
+                    .iter()
+                    .map(|(text, options)| {
+                        Value::record([
+                            ("text", Value::from(text.as_str())),
+                            ("options", Value::List(options.iter().map(|o| Value::from(o.as_str())).collect())),
+                        ])
+                    })
+                    .collect(),
+            ),
+        ),
+    ])
 }
 
 fn draft_value(draft: Option<&Draft>) -> Value {

@@ -2,6 +2,7 @@
 	"languageMode": "strict",
 	"aliases": {
 		"kx": "./kx",
-		"screens": "./screens"
+		"screens": "./screens",
+		"fixtures": "./fixtures"
 	}
 }

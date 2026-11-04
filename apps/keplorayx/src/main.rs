@@ -28,6 +28,13 @@ enum Screen {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // For scripts/perf: when main began, and (once the first view is built)
+    // how long that took. `DOVE_STARTUP_TRACE=1`.
+    let started = std::time::Instant::now();
+    let started_unix_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
     // Before any thread starts: the environment is still this thread's alone.
     // Windows has no HOME, only USERPROFILE, and the scripts' `~` reads HOME.
     #[cfg(windows)]
@@ -88,6 +95,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             host::install(cx, &host, engine.clone());
         }
         serve(cx, host, entry, inspect);
+        if std::env::var_os("DOVE_STARTUP_TRACE").is_some() {
+            eprintln!(
+                "dove-startup: main_unix_ms={started_unix_ms} first_render_ms={:.1}",
+                started.elapsed().as_secs_f64() * 1e3
+            );
+        }
     })?;
     Ok(())
 }

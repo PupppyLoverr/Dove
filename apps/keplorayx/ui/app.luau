@@ -1,295 +1,158 @@
 --!strict
--- Keplorayx's main window. Phase A's proof: threads, a transcript that
--- streams, a composer. The look is a placeholder on zgx's standard tokens
--- until the Orbit design system (ui/kx) lands from Paper.
-
-local store = require("@kx/store")
-type Entry = store.Entry
+-- Keplorayx's main window: the sidebar, and one of Home (the Ray bar), a
+-- thread, the Inbox or Settings beside it. Everything is Orbit (ui/kx);
+-- the engine reaches it through kx/store.
 
 ui.theme.strict("warn")
+local kx = require("@kx")
+kx.setup()
 
-local TITLE_H = 44
-local SIDEBAR_W = 264
+local store = require("@kx/store")
+local nav = require("@screens/nav")
+local sidebar = require("@screens/sidebar")
+local home = require("@screens/home")
+local thread = require("@screens/thread")
+local inbox = require("@screens/inbox")
+local settings = require("@screens/settings")
+local ray = require("@screens/ray")
 
--- ── Sidebar ────────────────────────────────────────────────────────────
-
-local function thread_row(t: store.Thread, _i: number, row: any)
-	return ui.button {
-		variant = "ghost",
-		w_full = true,
-		justify = "start",
-		px = "$space.3",
-		py = "$space.2",
-		rounded = "$radius.md",
-		bg = function()
-			local open = store.thread:get()
-			return if open and open.id == row:get().id then "$selected" else "transparent"
-		end,
-		on_click = function()
-			store.open(row:get().id)
-		end,
-		ui.column {
-			grow = 1,
-			gap = 2,
-			items = "start",
-			ui.text {
-				function()
-					return row:get().title
-				end,
-				literal = true,
-				truncate = true,
-				w_full = true,
-			},
-			ui.text {
-				function()
-					local r = row:get()
-					return `{r.project} · {r.status}`
-				end,
-				literal = true,
-				truncate = true,
-				w_full = true,
-				color = "$text.tertiary",
-				text_size = "$font.size.sm",
-			},
-		},
-	}
+-- Development: a fixture's own starting route and theme (tools/shot.ps1).
+if store.fixture ~= "" then
+	local route = store.route or (if store.thread:peek() then "thread" else "home")
+	nav.route:set(route)
+end
+local dev_theme = (ui.shared("dev.theme", "") :: any):peek() :: string
+if dev_theme ~= "" then
+	ui.theme.set(dev_theme)
 end
 
-local sidebar = ui.column {
-	w = SIDEBAR_W,
-	h_full = true,
-	bg = "$surface.sunken",
-	ui.row {
-		h = TITLE_H,
-		w_full = true,
-		window_drag = true,
-		items = "center",
-		px = "$space.4",
-		ui.text { "Keplorayx", weight = 600 },
-	},
-	ui.row {
-		px = "$space.3",
-		pb = "$space.2",
-		ui.button {
-			variant = "ghost",
-			w_full = true,
-			justify = "start",
-			on_click = store.home,
-			"New thread",
-		},
-	},
-	ui.list {
-		data = store.threads,
-		key = function(t: store.Thread)
-			return t.id
-		end,
-		height = 52,
-		w_full = true,
-		grow = 1,
-		px = "$space.2",
-		row = thread_row,
-	},
-}
-
--- ── Transcript ─────────────────────────────────────────────────────────
-
--- The entries, and the block being written as one more row at the end (its
--- text read live by that row alone, so a streamed word writes no list).
-local draft_id = ui.computed(function()
-	return store.draft:get().id
-end)
-local rows = ui.computed(function()
-	local entries = store.entries:get()
-	local id = draft_id:get()
-	if id == "" then
-		return entries
-	end
-	local all = table.clone(entries)
-	table.insert(all, { id = "draft:" .. id, kind = "draft", text = "" })
-	return all
-end)
-
-local function tool_row(e: Entry)
-	local tool = e.tool :: store.Tool
-	return ui.column {
-		w_full = true,
-		gap = 4,
-		px = "$space.3",
-		py = "$space.2",
-		rounded = "$radius.md",
-		border = 1,
-		border_color = "$border.subtle",
-		ui.row {
-			gap = "$space.2",
-			ui.text { tool.name, literal = true, weight = 600, text_size = "$font.size.sm" },
-			ui.text { e.text, literal = true, truncate = true, grow = 1, color = "$text.secondary", text_size = "$font.size.sm" },
-			ui.text { tool.state, literal = true, color = "$text.tertiary", text_size = "$font.size.sm" },
-		},
-	}
-end
-
-local function entry_row(e: Entry)
-	local body
-	if e.kind == "user" then
-		body = ui.row {
-			w_full = true,
-			justify = "end",
-			ui.column {
-				max_w = "80%",
-				px = "$space.3",
-				py = "$space.2",
-				rounded = "$radius.lg",
-				bg = "$surface.raised",
-				ui.text { e.text, literal = true, wrap = true, selectable = true },
-			},
-		}
-	elseif e.kind == "tool" then
-		body = tool_row(e)
-	elseif e.kind == "draft" then
-		body = ui.markdown_view {
-			function()
-				return store.draft:get().text
-			end,
-			w_full = true,
-		}
-	elseif e.kind == "thinking" then
-		body = ui.text { e.text, literal = true, wrap = true, color = "$text.tertiary", italic = true }
-	elseif e.kind == "error" then
-		body = ui.text { e.text, literal = true, wrap = true, color = "$danger" }
-	elseif e.kind == "notice" then
-		body = ui.text { e.text, literal = true, wrap = true, color = "$text.secondary", text_size = "$font.size.sm" }
-	else
-		body = ui.markdown_view { e.text, w_full = true }
-	end
-	return ui.column { w_full = true, py = "$space.2", body }
-end
-
-local transcript = ui.list {
-	data = rows,
-	key = function(e: Entry)
-		return e.id
+-- The window's commands: in the menu, and their keys wherever focus is.
+ui.command {
+	id = "new-thread",
+	title = "New thread",
+	key = "ctrl+n",
+	run = function()
+		nav.go("home")
+		store.home()
+		nav.focus_ray()
 	end,
-	row = entry_row,
-	measured = true,
-	follow = true,
-	height = 64,
-	w_full = true,
-	grow = 1,
-	px = "$space.6",
-	scrollbar = true,
-	overscroll = "contain",
+}
+ui.command {
+	id = "search",
+	title = "Search and commands",
+	key = "ctrl+k",
+	run = nav.focus_ray,
+}
+ui.command {
+	id = "settings",
+	title = "Settings",
+	key = "ctrl+,",
+	run = function()
+		nav.go("settings")
+	end,
+}
+ui.command {
+	id = "inbox",
+	title = "Inbox",
+	key = "ctrl+i",
+	run = function()
+		nav.go("inbox")
+	end,
 }
 
--- ── Composer ───────────────────────────────────────────────────────────
-
-local message = ui.state("message", "")
-local sending = ui.state("sending", false)
-local failure = ui.state("failure", "")
-
-local function send()
-	local text = message:peek()
-	if text:match("^%s*$") or sending:peek() then
-		return
+-- Y and N answer what the open thread waits on, when focus isn't in a field.
+local function answer(e: any): boolean?
+	local a = store.approval:peek()
+	if not a or nav.route:peek() ~= "thread" or e.editing or e.ctrl or e.meta or e.alt then
+		return nil
 	end
-	sending:set(true)
-	failure:set("")
-	store.send(text):after(function()
-		message:set("")
-		sending:set(false)
-	end, function(why: string)
-		failure:set(why)
-		sending:set(false)
-	end)
+	if e.key == "y" then
+		store.decide(a.request_id, "allow_once")
+		return true
+	elseif e.key == "n" then
+		store.decide(a.request_id, "deny")
+		return true
+	end
+	return nil
 end
 
-local composer = ui.column {
-	w_full = true,
-	px = "$space.6",
-	pb = "$space.4",
-	gap = "$space.2",
-	ui.show(function()
-		return failure:get() ~= ""
-	end, ui.text { "{failure}", color = "$danger", text_size = "$font.size.sm" }),
-	ui.row {
-		w_full = true,
-		gap = "$space.2",
-		items = "end",
-		p = "$space.2",
-		rounded = "$radius.lg",
-		bg = "$surface.raised",
-		ui.textarea {
-			value = message,
-			label = "Message",
-			placeholder = "Ask an agent…",
-			wrap = true,
-			grow = 1,
-			h = 72,
-			bg = "transparent",
-			on_key = function(e)
-				if e.key == "Enter" and not e.shift then
-					send()
-					return true
-				end
-				return nil
-			end,
-		},
-		ui.show(function()
-			local t = store.thread:get()
-			return t ~= nil and t.running
-		end, ui.button { on_click = store.interrupt, "Stop" }, ui.button {
-			variant = "primary",
-			disabled = function()
-				return sending:get()
-			end,
-			on_click = send,
-			"Send",
-		}),
-	},
+local pages = {
+	home = ui.column { grow = 1, min_w = 0, h_full = true, home.view() },
+	thread = ui.column { grow = 1, min_w = 0, h_full = true, thread.view() },
+	inbox = ui.column { grow = 1, min_w = 0, h_full = true, inbox.view() },
+	settings = ui.column { grow = 1, min_w = 0, h_full = true, settings.view() },
 }
 
--- ── The window ─────────────────────────────────────────────────────────
+-- A folder dropped on the window becomes a project (a file, its folder).
+local dragging = ui.state("app.dragging", false)
+local function on_drop(files: { any })
+	dragging:set(false)
+	for _, f in files do
+		local path: string = f.path
+		if f.type ~= nil and f.type ~= "" then
+			path = string.match(path, "^(.*)[/\\][^/\\]+$") or path
+		end
+		store.add_project(path):after(function(id: any)
+			if type(id) == "string" then
+				ray.project:set(id)
+			end
+			kx.toast { title = `Added {string.match(path, "([^/\\]+)$") or path}` }
+		end, function()
+			kx.toast { title = "That couldn't be added", body = path, kind = "error" }
+		end)
+	end
+end
 
-local title_bar = ui.row {
-	h = TITLE_H,
-	w_full = true,
-	window_drag = true,
+local drop_veil = ui.column {
+	absolute = true,
+	top = 0,
+	left = 0,
+	right = 0,
+	bottom = 0,
 	items = "center",
-	px = "$space.4",
-	pr = function()
-		local area, buttons = ui.window.titlebar_area:get(), ui.window.controls:get()
-		local inset = if area and buttons and buttons.x >= area.x + area.width then buttons.width + 12 else 12
-		return ui.raw(inset, "clears the window's caption buttons, which the system places")
-	end,
-	ui.text {
-		function()
-			local t = store.thread:get()
-			return if t then t.title else "New thread"
-		end,
-		literal = true,
-		truncate = true,
-		weight = 600,
-	},
-	ui.text {
-		function()
-			local t = store.thread:get()
-			return if t and t.status ~= "" then "  " .. t.status else ""
-		end,
-		literal = true,
-		color = "$text.tertiary",
-		text_size = "$font.size.sm",
-	},
+	justify = "center",
+	gap = "$space.2",
+	pointer_events = false,
+	bg = "$kx.veil",
+	border = 2,
+	border_dash = { 6, 6 },
+	border_color = "$accent",
+	rounded = "$radius.xl",
+	ui.column { color = "$accent", kx.Icon { name = "folder-add", size = 32 } },
+	kx.Label { "Drop a folder to work in it", literal = true },
+}
+
+-- Home's own title bar: nothing but room to drag and the caption buttons.
+local home_bar = ui.row {
+	absolute = true,
+	top = 0,
+	left = 0,
+	right = 0,
+	h = "$kx.titlebar",
+	window_drag = true,
 }
 
 return ui.row {
 	w_full = true,
 	h_full = true,
-	sidebar,
+	relative = true,
+	bg = kx.material.window_bg(),
+	on_key = answer,
+	on_file_drop = on_drop,
+	on_file_hover = function(over: boolean)
+		dragging:set(over)
+	end,
+	sidebar.view(),
 	ui.column {
 		grow = 1,
+		min_w = 0,
 		h_full = true,
-		bg = "$surface",
-		title_bar,
-		transcript,
-		composer,
+		relative = true,
+		ui.show(function()
+			return nav.route:get() == "home"
+		end, home_bar),
+		ui.switch(nav.route, pages, pages.home),
 	},
+	ui.show(dragging, drop_veil),
+	kx.Toasts {},
 }

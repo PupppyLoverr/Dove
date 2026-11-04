@@ -135,7 +135,7 @@ end
 local function type_page(): Node
 	return ui.column {
 		gap = "$space.5",
-		max_w = "$kx.measure",
+		max_w = kx.MEASURE,
 		kx.Title { "Good evening, Ravi", literal = true },
 		kx.Heading { "Three agents are working", literal = true },
 		kx.Body {

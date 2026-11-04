@@ -14,6 +14,9 @@ local overlays = require("@kx/overlays")
 
 return {
 	setup = tokens.setup,
+	-- The reading measure in points (about 68 characters of the body face):
+	-- sizes take numbers, so this is the number the theme's token holds.
+	MEASURE = 680,
 	tokens = tokens,
 	motion = require("@kx/motion"),
 	shape = require("@kx/shape"),

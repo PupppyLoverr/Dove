@@ -78,6 +78,16 @@ pub struct Draft {
     pub text: String,
 }
 
+/// What the agent is waiting on you for: a tool to run, or questions.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Pending {
+    pub request_id: String,
+    pub tool: String,
+    pub summary: String,
+    /// Each question's text and its options' labels (none for a tool).
+    pub questions: Vec<(String, Vec<String>)>,
+}
+
 /// What an event changed, so the host publishes no more than that.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Change {
@@ -109,6 +119,8 @@ pub struct Fold {
     pub running: bool,
     /// The harness's status line while it works.
     pub status: String,
+    /// What it waits on you for, if anything.
+    pub pending: Option<Pending>,
     next: u64,
 }
 
@@ -128,6 +140,7 @@ impl Fold {
         // isn't now (a live session says so again if it is).
         fold.running = false;
         fold.status.clear();
+        fold.pending = None;
         fold
     }
 
@@ -238,6 +251,28 @@ impl Fold {
                     None => Change::None,
                 }
             }
+            AgentEvent::PermissionRequested(request) => {
+                self.close();
+                self.pending = Some(Pending {
+                    request_id: request.request_id.clone(),
+                    tool: request.tool.clone(),
+                    summary: request.summary.to_string(),
+                    questions: request
+                        .questions
+                        .iter()
+                        .map(|q| (q.question.clone(), q.options.clone()))
+                        .collect(),
+                });
+                Change::Entries
+            }
+            AgentEvent::PermissionResolved { request_id, .. } => {
+                if self.pending.as_ref().is_some_and(|p| &p.request_id == request_id) {
+                    self.pending = None;
+                    Change::Entries
+                } else {
+                    Change::None
+                }
+            }
             AgentEvent::Notice { text } => self.push(Kind::Notice, text.to_string(), None),
             AgentEvent::Error { message } => self.push(Kind::Error, message.to_string(), None),
             AgentEvent::Status { text } => {
@@ -247,6 +282,7 @@ impl Fold {
             AgentEvent::TurnEnded { .. } | AgentEvent::Exited { .. } => {
                 self.running = false;
                 self.status.clear();
+                self.pending = None;
                 self.close();
                 Change::Entries
             }
@@ -294,6 +330,39 @@ mod tests {
 
     fn text(s: &str) -> AgentEvent {
         AgentEvent::TextDelta { text: Arc::from(s) }
+    }
+
+    #[test]
+    fn a_permission_waits_until_it_is_answered_or_the_turn_ends() {
+        let mut fold = Fold::new();
+        let ask = |id: &str| {
+            AgentEvent::PermissionRequested(dove_proto::PermissionRequest {
+                request_id: id.into(),
+                tool: "Bash".into(),
+                summary: Arc::from("cargo test"),
+                input: serde_json::Value::Null,
+                questions: Vec::new(),
+            })
+        };
+        fold.apply(&AgentEvent::UserMessage { text: Arc::from("go") });
+        assert_eq!(fold.apply(&ask("r1")), Change::Entries);
+        assert_eq!(fold.pending.as_ref().map(|p| p.summary.as_str()), Some("cargo test"));
+        // Another request's answer leaves this one waiting.
+        let other = AgentEvent::PermissionResolved {
+            request_id: "r0".into(),
+            decision: dove_proto::PermissionDecision::AllowOnce,
+        };
+        assert_eq!(fold.apply(&other), Change::None);
+        assert!(fold.pending.is_some());
+        let answered = AgentEvent::PermissionResolved {
+            request_id: "r1".into(),
+            decision: dove_proto::PermissionDecision::AllowOnce,
+        };
+        assert_eq!(fold.apply(&answered), Change::Entries);
+        assert!(fold.pending.is_none());
+        fold.apply(&ask("r2"));
+        fold.apply(&AgentEvent::TurnEnded { usage: None, is_error: false });
+        assert!(fold.pending.is_none());
     }
 
     #[test]

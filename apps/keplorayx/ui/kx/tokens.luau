@@ -66,6 +66,8 @@ function M.setup()
 			["lip.inset_strong"] = "0 1 0 0 {kx.lip.strong}",
 			sky = { deep = "{background}", mid = "{surface.sunken}", glow = "{accent}" },
 			agent = agents,
+			-- What veils the window under a drop.
+			veil = "alpha({background}, 0.86)",
 			-- A switch's knob: the brightest thing on any ground.
 			knob = "#ffffff",
 			-- The window's ground when it isn't glass.
