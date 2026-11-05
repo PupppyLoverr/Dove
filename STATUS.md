@@ -2,7 +2,7 @@
 
 Branch `zgx/phase-a` in `C:\dev\keplorayx-zgx`, local only. Nothing is pushed, and `zgx/main` is untouched. The original Dove folder and `C:/dvw/target-ui-v4` were never written to.
 
-This page says what works, what's partial and what's next. Each claim is backed by something you can run or a PNG you can look at.
+This page says what works, what's partial and what's next. Each claim is backed by something you can run or a PNG in `apps/keplorayx/docs/design/shots/`.
 
 ## Run it
 
@@ -10,119 +10,70 @@ This page says what works, what's partial and what's next. Each claim is backed 
 cargo build -p keplorayx -p dove-escrow
 cargo run -p keplorayx                     # First Light on a first run, else the main window
 cargo run -p keplorayx -- main             # the main window
-cargo run -p keplorayx -- gallery          # Orbit's workbench: every token and component
+cargo run -p keplorayx -- gallery          # Orbit's workbench
 cargo run -p keplorayx -- onboarding       # setup on its own
-cargo run -p keplorayx -- intro            # First Light's arrival over the desktop
 cargo run -p keplorayx -- notch            # the notch on its own
 ```
 
 - **Data:** `%LOCALAPPDATA%\keplorayx-zgx-dev`, unless `DOVE_HOME` says otherwise.
 - **Builds:** `C:/dvw/target-kx-zgx`.
-- **Without agents:** `KX_FIXTURE=<name>` runs any screen on stand-in data, from `ui/fixtures/`: `first_run`, `home`, `thread`, `approval`, `review`, `terminal`, `inbox`, `settings`, `constellation`, `notch`, `notch_quiet`.
-- **One setup step:** `KX_STEP=<step>` opens setup on that step.
+- **Without agents:** `KX_FIXTURE=<name>` runs a screen on stand-in data (`ui/fixtures/`): `home`, `thread`, `approval`, `review`, `files`, `browser`, `history`, `pulls`, `terminal`, `inbox`, `team`, `settings`, `constellation`, `first_run`, `notch`.
+- **Off for tests:** `KX_NOTCH=0` (the notch), `KX_TRAY=0` (the tray and the keys from any app).
+
+## The look: Zeron's, in Keplorayx's words
+
+The interface is now built on **Zeron's design system, vendored whole** as `apps/keplorayx/ui/ds` (MIT, credited in `THIRD_PARTY_NOTICES.md`), with its strings reworded for Keplorayx (threads, not chats or sessions). Its tokens take their values from Orbit's two themes (`ui/kx/themes`: Zeron's charcoal and paper glass with Keplorayx's starlight accent and warm attention colour). Its icons draw Keplorayx's own glyph wherever one has the name. Type is Geist and Geist Mono, with Instrument Serif for the few large words.
+
+| Part | What it is now |
+|---|---|
+| **Sidebar** | Zeron's `ds/sidebar`, worn as Dove's was: New thread as a lifted button with its keys, Search, Inbox, Constellation, Team; threads on two lines (agent mark, title, `project · branch`), the corner saying working, waiting on you, failed, done unseen, or how long ago. Pinned first. Its "…" menu groups by project, one line a thread, and the rest of Zeron's choices. Ctrl+B folds it. |
+| **Composer** | Zeron's `ds/composer`: the draft over +, the microphone and Send; under it the access mode (with plan mode), the project (or the thread's branch) and the model. |
+| **Model picker** | Zeron's, fed from the engine (`kx.models`): a tab for each installed agent, its models, an effort slider. Picking a model picks its agent. |
+| **Approvals and questions** | Inside the composer, as Zeron asks them (Deny, Always allow, Allow; a question's options, or say something else). Y and N still answer from the keys. |
+| **Thread** | Zeron's `ds/transcript`: your bubbles at the right, each reply's tools grouped between its words, the working line with its rolling word and clock, virtualized and following the end. |
+| **Home** | A night sky under Zeron's dither (four skies, five effects; Settings › Appearance), the greeting in the serif, the composer over it with its tray. |
+| **Ctrl+K** | Zeron's command palette over threads, actions, places and settings (Theme ›, Sky ›, toggles). |
+| **Page and panel** | Two cards set into the window, as Zeron sets them and as Dove's page sat. |
 
 ## What's done
 
-### Phase A: proof run ✅
-- **Workspace:** GPUI is removed, zgx is pinned at `f01b47a0`, and builds go to their own folder.
-- **Host:** Dove's engine runs in process. One Inset-titlebar window sits over Mica, and transcripts stream from live sessions.
-- **Automations:** they run on Dove's minute schedule, ported from the GPUI shell.
-- **Tests:**
-  - `cargo test -p keplorayx`: **5 passed**, the transcript fold including approvals.
-  - `cargo test --workspace --exclude keplorayx`: **898 passed, 0 failed**.
+### The engine and windows (Phases A and C) ✅
+- Dove's engine runs in process; transcripts stream from live sessions; automations run on the minute schedule.
+- Remote-host launchers and `keplorayx node …` work as Dove's did.
+- Inbox, Constellation, accent stars and First Light (overlay and six setup steps) as before.
 
-### Phase B: Orbit, the design system ✅ (first pass)
-- **Themes:** night and dawn (`ui/kx/themes/*.json`), restyling in place as they're saved.
-- **Tokens:** Keplorayx's own (`kx.*`), declared in standard terms so any theme styles them.
-- **Type:** Inter, Inter Display and JetBrains Mono, bundled under `fonts/` (OFL).
-- **Motion:** one reduce-motion check, Orbit's settle-and-overshoot curve, and one shared breath clock that runs only while something is live.
-- **Shape:** concentric corners (`kx/shape`), and the lip of light along every lifted surface.
-- **Icons:** Dove's library refined into one set with an optical stroke, plus 17 new glyphs drawn for Keplorayx. Made by `tools/icons.py`; see the gallery's Icons page.
-- **Components:** Button, Field, Switch, Segmented, Pill, Row, AgentMark, Kbd, Empty, Card, Float, Menu, Popover, Dialog, Tooltip, toasts.
-- **Gallery:** `-- gallery`, both themes. PNGs in `apps/keplorayx/docs/design/shots/gallery-*`.
-- **Lint:** `zgx lint ui` reports 0 errors and 0 warnings across 45 files. The design lint runs on every entry.
-- **PNGs:** every screen in night and dawn, in `apps/keplorayx/docs/design/shots/`.
+### Panels (Phase D) ✅
+One at a time beside any page, under a row of icon tabs; the panel's edge drags its width.
+- **Changes** (Ctrl+J): the thread's diff against where it started.
+- **Files** (Ctrl+P): the project's tree with git marks, find-a-file, and a viewer: code highlighted by Zeron's highlighter, pictures, Office documents' words (Word, PowerPoint, Excel), anything else opened in its own app.
+- **Browser** (Ctrl+Shift+B): a real page (WebView2 on Windows) with Back, Forward, Reload and the address (words search); one page a project, kept with its history.
+- **Terminal** (Ctrl+`): a shell in the project.
+- **History**: the commit graph, refs and tags, find a commit; a click copies its id.
+- **Pull requests**: the project's, through `gh` (it says so when `gh` is missing).
 
-### Phase C: daily use ✅ (core)
-- **Sidebar:** the way in, then threads by project led by each agent's star, then Settings and "Local only" at the foot.
-- **Home:** a greeting, the **Ray bar** (ask; `>` commands; `@` projects and agents; `/` agent commands), the project and agent chips, three first prompts, and what's under way. A first run gets one way in (choose or drop a folder).
-- **Threads as beats:** prompt, thinking, tools on a spine with +/− file chips, and the reply at a ~68-character measure as the draft streams.
-- **Approvals:** a warm card above the composer (Y allows, N denies).
-- **Inbox:** what needs you, then what finished (J/K to move).
-- **Settings:** Appearance, Agents, Privacy and account, Shortcuts, About.
+### Settings, Team, account (Phase E) ✅
+- **Settings:** General (your name, setup again, keys from any app), Appearance (theme, glass, your star, the sky and its effect, motion), Agents (installed, default access), Notifications, Shortcuts, Account, Privacy and data (where it lives, what leaves), About.
+- **Team** (Ctrl+Shift+T): the agents Keplorayx knows, installed or not; teammates (Dove's personas) with a name, role, preferred agent and brief; **Start a thread** runs one as that teammate.
+- **Account:** the Woozlit sign-in, unchanged: the `dove-mesh-host` sidecar signs in through the browser. Sign-in only. Publishing threads to your phone stays off until the "bring or fresh" offer is ported.
+- **Notifications:** the system's word when a thread needs you or finishes while you're away; the taskbar badge counts what waits.
 
-### Phase D: panels (started)
-- **Changes panel** (Ctrl+J): the open thread's diff against where it started, file by file, with hunks in mono.
+### Beside the desktop (Phase F) ✅
+- **The tray:** open, New thread, Inbox, Settings, Quit.
+- **Keys from any app (Windows):** Ctrl+Alt+Space asks; Ctrl+Alt+A and Ctrl+Alt+D allow or deny what an agent waits on.
+- **Voice:** the microphone types by Windows' voice typing (Win+H).
+- **The notch** at the top of the screen, as before.
 
-### Phase F: the notch (first version)
-- **The capsule:** sits at the top centre over every window (`src/notch.rs`, `notch.luau`, `KX_NOTCH=0` turns it off).
-- **At rest:** the working agents' stars, breathing in step.
-- **When an agent waits:** its lip turns warm and it shows "Codex wants to run Bash", with Allow and Deny.
-- **A click** brings the main window to that thread.
-- **Shared sessions:** a process-wide hub in `host.rs` gives every window the same live sessions, and the scheduler now runs once per process.
-- **Not ported:** Dove's raw-input hover, media, tray, global hotkey and quick-reply typing.
+## Checks
 
-### Phase E: the rest (started)
-- **First Light** (`intro.luau`, `onboarding.luau`, `src/intro.rs`):
-  - the overlay's arrival, then the hand-off to setup (prepare, reveal, arrived, done);
-  - six steps: welcome (name, light, your star), your agents (ready, or install with a copyable command), your first project, your team, the notch and shortcuts, privacy;
-  - it ends in the main window, and Settings opens setup again.
-- **Constellation** (Ctrl+− or Ctrl+Shift+O): every thread as a body in orbit around its project.
-- **Accent stars:** pick yours at setup or in Settings.
+- `zgx lint ui`: **0 errors, 0 warnings in 211 files** (the vendored design system included).
+- `cargo test -p keplorayx`: **9 passed** (transcript fold, panel paths, Office text).
+- Every fixture above and every window (gallery, onboarding, intro, notch) loads with no script error.
+- Hardware numbers: `apps/keplorayx/docs/perf/README.md`.
 
-## What's not done yet (honestly)
+## Not done yet (honestly)
 
-- **D:**
-  - not started: the terminal and flock, the WebView2 browser, files, PR view, history graph, office previews, Peek;
-  - the Review deck is just the Changes panel so far.
-- **E:**
-  - not started: the ~10k lines of Dove's settings pages, Team and orchestra, voice, Live visuals, wallpaper, computer-use review, notifications;
-  - not wired: the Woozlit sign-in (designed and kept, but the button is disabled until the sidecar bridge moves into `crates/dove-app`).
-- **F:** see above. The tray, global hotkey, media and typed quick replies aren't ported.
-- **Checked only by screenshots and load tests, not by clicking through:**
-  - First Light's Begin hand-off (prepare, reveal, done);
-  - adding a project by folder picker or drop;
-  - the notch's Allow/Deny against a live agent;
-  - the terminal with a real shell;
-  - sending a real prompt to a real agent from the Ray bar. The fake-agent streams in the perf runs did start and stream.
-
-  Please try those first.
-- **Window chrome in dawn:** the caption buttons are faint in the screenshots. The window is now told its appearance, but the PNGs may not capture the system's drawing; check it live.
-- **Phase 1 extraction** (`crates/dove-app`): not done. Until then, Dove's MCP bridge (`--mcp-browser`) isn't served by `keplorayx`, so agents start without the browser tools.
-- **Not built tonight:** macOS and Linux, as you asked. The code keeps them cfg-gated: Windows-only pieces sit behind `cfg(windows)`, and the Cargo features for macOS and Linux are in place.
-- **`zgx check ui`** needs `luau-lsp`, which isn't installed. I didn't download it unasked. `zgx lint ui` passes, and every screen was loaded and shot.
-
-## Performance (RAM and CPU, Windows)
-
-The full write-up and raw data are in `apps/keplorayx/docs/perf/`. It compares keplorayx **debug** with Dove's **GPUI release** build, using 1, 5 and 10 fake-agent sessions.
-
-| Sessions | Own RAM streaming (kx / Dove) | Main CPU streaming (kx / Dove) | Idle CPU (kx / Dove) | Idle frames/s (kx) |
-|---|---|---|---|---|
-| 1 | **105.5 / 139.0 MB** | 7.0 / 3.1 % | 0.31 / 0.52 % | **0** |
-| 5 | **110.0 / 157.6 MB** | 8.0 / 3.8 % | 0.21 / 0.00 % | **0** |
-| 10 | **116.5 / 171.8 MB** | 9.3 / 6.1 % | 0.31 / 0.21 % | **0** |
-
-- **Memory:** 25 to 32 % less than Dove, and it grows a third as fast with sessions.
-- **Idle:** **zero frames at idle**, which meets the gate.
-- **Streaming CPU is higher.** keplorayx holds a flat 40 frames a second while anything streams. That's the next thing to chase, with a release build, since this was debug against release.
-- **Not measured:** key latency (zgx has no Windows input trace yet). There's also no release binary yet for the 115 MB size gate (debug only tonight, as asked).
-
-## Where things are
-
-- `apps/keplorayx/src/`: the host.
-  - `main.rs`: modes and windows.
-  - `host.rs`: the engine for the scripts.
-  - `transcript.rs`: the fold.
-  - `intro.rs`: First Light's hand-off.
-- `apps/keplorayx/ui/`: the interface.
-  - `kx/`: Orbit.
-  - `screens/`: the screens.
-  - `fixtures/`: stand-in data.
-  - `app.luau`, `gallery.luau`, `onboarding.luau`, `intro.luau`.
-- `apps/keplorayx/docs/design/`: the two studies and `shots/` (the PNGs).
-- `apps/keplorayx/zgx-asks/`: zgx gaps found, each with a repro and its workaround.
-- `apps/keplorayx/tools/`:
-  - `shot.ps1`, `shots.ps1`: design PNGs;
-  - `smoke.ps1`: launch and read errors;
-  - `icons.py`: the icon library.
-- `scripts/perf/perf.ps1 -Kind kx`: the RAM/CPU harness, which now measures keplorayx too.
+- **Dove's MCP bridge (`--mcp-browser`):** not served, so agents start without Keplorayx's own tools (driving the panel's browser, the team tools). It's tied to Dove's GPUI browser and integration pages; it needs the Phase 1 extraction into `crates/dove-app`.
+- **Remote control:** signing in works; publishing threads to the phone (the "bring or fresh" offer) isn't ported.
+- **Clicked through by hand:** composer sends, the model picker's choice reaching a real agent, approvals from the composer, Files/Browser/History against a real project, the tray and keys. Built, loaded and screenshotted on fixtures; please try them live first.
+- **Global keys on macOS and Linux, and the tray on Linux:** cfg-gated stubs. Nothing was built for macOS or Linux, as asked.
+- **The gallery** still shows Orbit's own components, not the vendored ones.

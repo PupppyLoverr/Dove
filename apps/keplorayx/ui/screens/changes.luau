@@ -71,6 +71,8 @@ local totals = ui.computed(function()
 	end
 	return { added = a, removed = r, count = #files:get() }
 end)
+-- (The panel's home says them beside the thread's branch.)
+M.totals = totals
 
 local LINE_BG: { [string]: string } = { add = "$kx.diff.add", del = "$kx.diff.del", ctx = "#00000000" }
 local LINE_FG: { [string]: string } = { add = "$text.primary", del = "$text.primary", ctx = "$text.secondary" }

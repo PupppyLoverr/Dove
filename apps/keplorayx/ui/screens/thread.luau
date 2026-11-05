@@ -29,81 +29,38 @@ local function thread_kind(): Status.Kind
 	return if t.running then "working" else "done"
 end
 
-local function panel_button(tab: string, icon: string, label: string): Node
-	return kx.Button {
-		tone = "ghost",
-		size = "sm",
-		icon = true,
-		label = label,
-		tooltip = label,
-		on_click = function()
-			panel.toggle(tab)
-		end,
-		kx.Icon {
-			name = icon,
-			size = 16,
-			color = function()
-				return if changes.open:get() and panel.tab:get() == tab then "$text.primary" else "$text.tertiary"
-			end,
-		},
-	}
-end
-
+-- The title bar's line over the page: room to move the window by, and,
+-- with the sidebar folded away (nothing else then says which thread this
+-- is), the thread's state and title, past the title bar's own controls.
+local TitleBar = require("@ds/title_bar")
 local header = ui.row {
-	h = "$kx.titlebar",
+	h = 40,
 	w_full = true,
+	shrink = 0,
 	window_drag = true,
 	items = "center",
-	px = "$space.4",
 	gap = "$space.2",
-	pr = function()
-		return if changes.open:get() then "$space.3" else nav.caption_inset()
+	pl = function(): any
+		local ok, x = pcall(TitleBar.controls_end)
+		return ui.raw(if ok and type(x) == "number" then x + 8 else 120, "past the title bar's controls")
 	end,
-	ui.show(function()
-		return not nav.sidebar_open:get()
-	end, kx.Button {
-		tone = "ghost",
-		size = "sm",
-		icon = true,
-		label = "Show the sidebar (Ctrl+B)",
-		tooltip = "Show the sidebar  Ctrl+B",
-		on_click = function()
-			nav.sidebar_open:set(true)
-		end,
-		kx.Icon { name = "sidebar", size = 16 },
+	ui.show(nav.sidebar_collapsed, ui.row {
+		gap = "$space.2",
+		items = "center",
+		min_w = 0,
+		kx.StatusIcon { kind = thread_kind, size = 14 },
+		ui.text {
+			function()
+				local t = store.thread:get()
+				return if t then t.title else ""
+			end,
+			literal = true,
+			truncate = true,
+			min_w = 0,
+			text_size = "$font.size.md",
+			weight = "$font.weight.medium",
+		},
 	}),
-	kx.StatusIcon { kind = thread_kind, size = 15 },
-	ui.text {
-		function()
-			local t = store.thread:get()
-			return if t then t.title else ""
-		end,
-		literal = true,
-		truncate = true,
-		min_w = 0,
-		weight = "$font.weight.medium",
-	},
-	ui.text {
-		function()
-			local t = store.thread:get()
-			if not t then
-				return ""
-			end
-			return if t.running and t.status ~= "" then `{t.harness} · {t.status}` else t.harness
-		end,
-		literal = true,
-		truncate = true,
-		min_w = 0,
-		shrink = 2,
-		max_w = 320,
-		text_size = "$font.size.sm",
-		color = "$text.tertiary",
-	},
-	ui.div { grow = 1 },
-	panel_button("files", "folder-with-files", "Files  Ctrl+P"),
-	panel_button("browser", "global", "Browser  Ctrl+Shift+B"),
-	panel_button("terminal", "terminal", "Terminal  Ctrl+`"),
-	panel_button("changes", "file-diff", "Changes  Ctrl+J"),
 }
 
 -- (The panel beside it is the window's: app.luau.)

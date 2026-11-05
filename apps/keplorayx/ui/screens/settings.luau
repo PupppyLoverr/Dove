@@ -39,54 +39,41 @@ local SECTIONS = {
 	{ id = "about", title = "About", icon = "info-circle" },
 }
 
+-- Zeron's settings pieces (ds/settings): a page at a reading width, its
+-- sections under small titles, each a card of rows with hairlines between.
+local Settings = require("@ds/settings")
+
 local function setting(title: string, hint: string?, control: Node?): Node
-	return ui.row {
-		w_full = true,
-		gap = "$space.4",
-		items = "center",
-		py = "$space.3",
-		min_h = 52,
-		ui.column {
-			grow = 1,
-			min_w = 0,
-			gap = "$kx.space.hair",
-			ui.text { title, literal = true, text_size = "$font.size.md" },
-			if hint then kx.Caption { hint, literal = true, wrap = true } else nil,
-		},
-		control,
-	}
+	return Settings.Row { label = title, description = hint, control = control }
 end
 
 local function group(title: string?, ...: Node): Node
-	local rows: { Node } = {}
+	local section: { [any]: any } = { title = title }
+	local card: { [any]: any } = {}
 	for i, r in { ... } do
-		if i > 1 then
-			table.insert(rows, kx.Rule {})
-		end
-		table.insert(rows, r)
+		card[i] = r
 	end
-	return ui.column {
-		w_full = true,
-		gap = "$space.2",
-		if title then ui.text { title, literal = true, text_size = "$font.size.sm", color = "$text.tertiary", px = "$space.1" } else nil,
-		ui.column {
-			w_full = true,
-			px = "$space.4",
-			rounded = "$radius.xl",
-			bg = "$surface.base",
-			inset_shadow = "$kx.lip.inset",
-			table.unpack(rows),
-		},
-	}
+	section[1] = Settings.Group(card)
+	return Settings.Section(section)
 end
 
+local DESCRIPTIONS: { [string]: string } = {
+	General = "You, and Keplorayx beside your other apps.",
+	Appearance = "How Keplorayx looks: its light, its glass, your star, the sky.",
+	Agents = "The agents on this computer, and what a new thread may do.",
+	Notifications = "When Keplorayx says something while you're away.",
+	Shortcuts = "Every key, in the window and from anywhere.",
+	Account = "Your Keplorayx account, optional.",
+	["Privacy and data"] = "What stays on this computer, and what leaves it.",
+	About = "Keplorayx, and what it's built on.",
+}
+
 local function page(title: string, ...: Node): Node
-	return ui.column {
-		w_full = true,
-		gap = "$space.6",
-		ui.text { title, literal = true, text_size = "$font.size.xl", weight = "$font.weight.medium" },
-		...,
-	}
+	local p: { [any]: any } = { title = title, description = DESCRIPTIONS[title] }
+	for i, child in { ... } do
+		p[i] = child
+	end
+	return Settings.Page(p)
 end
 
 -- A setting Dove's store keeps (read once, written as it changes).
@@ -567,48 +554,47 @@ local PAGES: { [string]: () -> Node } = {
 	about = about,
 }
 
+-- Settings' pages, in the sidebar's place while Settings shows (Zeron's
+-- way: one list down the side, never two): Back first, then each page.
+function M.nav(): Node
+	local nav = require("@screens/nav")
+	local items: { any } = {}
+	for _, s in SECTIONS do
+		table.insert(items, { value = s.id, label = s.title, icon = s.icon })
+	end
+	return Settings.Nav {
+		value = section,
+		items = items,
+		width = nav.sidebar_width,
+		top = 40,
+		lead = { { value = "::back", label = "Back to threads", icon = "arrow-left" } },
+		on_choose = function(value: any)
+			if value == "::back" then
+				nav.go("home")
+			else
+				section:set(value)
+			end
+		end,
+	}
+end
+
 function M.view(): Node
 	load_stored()
-	local items: { Node } = {}
-	for _, s in SECTIONS do
-		table.insert(items, kx.Row {
-			size = "sm",
-			selected = function()
-				return section:get() == s.id
-			end,
-			on_click = function()
-				section:set(s.id)
-			end,
-			ui.column { color = "$text.secondary", kx.Icon { name = s.icon, size = 16 } },
-			ui.text { s.title, literal = true, grow = 1, text_size = "$font.size.md" },
-		})
-	end
 	local pages: { [string]: Node } = {}
 	for id, build in PAGES do
 		pages[id] = ui.column { w_full = true, build() }
 	end
-	return ui.column {
+	return ui.scroll {
 		grow = 1,
 		min_w = 0,
 		h_full = true,
-		ui.row { h = "$kx.titlebar", w_full = true, window_drag = true },
-		ui.row {
-			grow = 1,
-			min_h = 0,
+		ui.column {
 			w_full = true,
-			ui.column { w = 220, shrink = 0, px = "$space.3", gap = "$kx.space.hair", table.unpack(items) },
-			ui.scroll {
-				grow = 1,
-				min_w = 0,
-				h_full = true,
-				ui.column {
-					w_full = true,
-					max_w = 680,
-					px = "$space.6",
-					pb = "$space.8",
-					ui.switch(section, pages),
-				},
-			},
+			items = "center",
+			pt = "$space.7",
+			px = "$space.6",
+			pb = "$space.8",
+			ui.switch(section, pages),
 		},
 	}
 end

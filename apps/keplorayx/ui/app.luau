@@ -71,6 +71,26 @@ ui.command {
 	end,
 }
 ui.command {
+	id = "panel",
+	title = "Show or hide the panel",
+	key = "ctrl+\\",
+	run = function()
+		require("@screens/panel").toggle_panel()
+	end,
+}
+ui.command {
+	id = "back",
+	title = "Back",
+	key = "alt+left",
+	run = nav.back,
+}
+ui.command {
+	id = "forward",
+	title = "Forward",
+	key = "alt+right",
+	run = nav.forward,
+}
+ui.command {
 	id = "files",
 	title = "Files",
 	key = "ctrl+p",
@@ -270,31 +290,86 @@ local drop_veil = ui.column {
 	kx.Label { "Drop a folder to work in it", literal = true },
 }
 
--- Home's own title bar: room to drag, the caption buttons, and with the
--- sidebar hidden, the way to bring it back.
-local home_bar = ui.row {
+-- The title bar: Zeron's (ds/title_bar), one for the window, hung over its
+-- top. At its left the sidebar's toggle, back and forward; at its right the
+-- panel's toggle (the corner card: a card in a frame's top right, as
+-- Zeron draws it). Over Home's sky, an island of glass gathers behind them.
+local TitleBar = require("@ds/title_bar")
+
+local function corner_card(size: number): Node
+	local s = size / 24
+	local function raw(v: number): any
+		return ui.raw(v, "the glyph's own geometry, scaled from its 24-unit source")
+	end
+	return ui.div {
+		w = size,
+		h = size,
+		shrink = 0,
+		ui.div {
+			absolute = true,
+			left = raw(2.2 * s),
+			top = raw(3.2 * s),
+			w = raw(19.6 * s),
+			h = raw(17.6 * s),
+			rounded = raw(4.8 * s),
+			border = 1.5,
+			border_color = "$text.secondary",
+		},
+		ui.div {
+			absolute = true,
+			right = raw(6.5 * s),
+			top = raw(7.5 * s),
+			w = raw(5.5 * s),
+			h = raw(4.5 * s),
+			rounded = raw(0.9 * s),
+			bg = function()
+				return if panel.open:get() then "$text.secondary" else "#00000000"
+			end,
+			border = 1.2,
+			border_color = "$text.secondary",
+		},
+	}
+end
+
+local function over_sky(): boolean
+	return nav.route:get() == "home" and require("@screens/home").sky:get() ~= "none"
+end
+
+local title_bar = ui.div {
 	absolute = true,
 	top = 0,
 	left = 0,
 	right = 0,
-	h = "$kx.titlebar",
-	px = "$space.4",
-	items = "center",
-	window_drag = true,
-	ui.show(function()
-		return not nav.sidebar_open:get()
-	end, kx.Button {
-		tone = "ghost",
-		size = "sm",
-		icon = true,
-		label = "Show the sidebar (Ctrl+B)",
-		tooltip = "Show the sidebar  Ctrl+B",
-		on_click = function()
-			nav.sidebar_open:set(true)
+	z = 20,
+	TitleBar {
+		collapsed = nav.sidebar_collapsed,
+		can_back = nav.can_back,
+		can_forward = nav.can_forward,
+		on_back = nav.back,
+		on_forward = nav.forward,
+		island = function(): boolean
+			return nav.sidebar_collapsed:get() and over_sky()
 		end,
-		kx.Icon { name = "sidebar", size = 16 },
-	}),
+		actions_island = over_sky,
+		actions = ui.show(function()
+			return nav.route:get() ~= "settings"
+		end, TitleBar.control(
+			"Show or hide the panel (Ctrl+\\)",
+			ui.column { color = "$text.secondary", corner_card(18) },
+			nil,
+			panel.toggle_panel
+		)),
+	},
 }
+
+-- What stands at the window's left: the sidebar, or (in Settings) Settings'
+-- own pages, as Zeron's settings take the sidebar's place.
+local left = ui.switch(function(): string
+	return if nav.route:get() == "settings" then "settings" else "sidebar"
+end, {
+	sidebar = sidebar.view(),
+	settings = settings.nav(),
+})
 
 return ui.row {
 	w_full = true,
@@ -307,7 +382,7 @@ return ui.row {
 	on_file_hover = function(over: boolean)
 		dragging:set(over)
 	end,
-	sidebar.view(),
+	left,
 	-- The page: a card set into the window (Zeron's, as Dove's was), lighter
 	-- than the glass round it, its corner the window's less the gap.
 	ui.column {
@@ -324,9 +399,6 @@ return ui.row {
 		bg = "$zeron.inset.bg",
 		border = 1,
 		border_color = "$zeron.inset.edge",
-		ui.show(function()
-			return nav.route:get() == "home"
-		end, home_bar),
 		ui.switch(nav.route, pages, pages.home),
 	},
 	-- The panel, beside whatever page shows (Files, the Browser, …).
@@ -340,6 +412,7 @@ return ui.row {
 		exit = { opacity = { 1, 0 }, x = { 0, 16 }, duration = 120 },
 	}),
 	ui.show(dragging, drop_veil),
+	title_bar,
 	kx.Toasts {},
 	require("@screens/palette").view(),
 }

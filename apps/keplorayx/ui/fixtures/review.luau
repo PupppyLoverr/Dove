@@ -1,6 +1,6 @@
 --!strict
--- The thread with its Changes panel open.
+-- The thread with the panel open on its Changes.
 local thread = require("@fixtures/thread")
 local f = table.clone(thread :: any)
-f.changes_open = true
+f.panel_tab = "changes"
 return f

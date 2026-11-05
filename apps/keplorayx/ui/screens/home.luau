@@ -1,8 +1,8 @@
 --!strict
 -- Home: a new thread, as Zeron's new chat sits (screens/chat/home; MIT, see
--- THIRD_PARTY_NOTICES.md): a greeting set large in the serif, the
--- composer alone under it, three first prompts, and what's under way. With
--- no project yet, one calm way in: choose a folder.
+-- THIRD_PARTY_NOTICES.md): a night sky, a greeting set large in the
+-- serif, and the composer alone under it. With no project yet, one calm way
+-- in: choose a folder.
 
 local kx = require("@kx")
 local store = require("@kx/store")
@@ -24,73 +24,6 @@ local function greeting(): string
 		return "Good afternoon"
 	end
 	return "Good evening"
-end
-
-local SUGGESTIONS = {
-	{ icon = "magnifer", text = "Explain how this project is put together" },
-	{ icon = "checklist", text = "Find and fix the flakiest test" },
-	{ icon = "pen", text = "Tidy what changed since yesterday" },
-}
-
-local function suggestion(s: { icon: string, text: string }): Node
-	return kx.Button {
-		tone = "secondary",
-		size = "sm",
-		shape = "pill",
-		on_click = function()
-			ray.suggest(s.text)
-		end,
-		kx.Icon { name = s.icon, size = 14 },
-		ui.text { s.text, literal = true },
-	}
-end
-
--- What's under way: the threads working or waiting, as a quiet line each.
-local busy = ui.computed(function(): { store.Thread }
-	local out = {}
-	for _, t in store.threads:get() do
-		if t.status == "running" or t.status == "needs_you" then
-			table.insert(out, t)
-		end
-	end
-	return out
-end)
-
-local function busy_row(t: store.Thread): Node
-	local function get()
-		return t
-	end
-	return kx.Row {
-		size = "sm",
-		on_click = function()
-			nav.go("thread")
-			store.open(get().id)
-		end,
-		kx.AgentMark { agent = get().harness_id, size = 14 },
-		ui.text {
-			function()
-				return get().title
-			end,
-			literal = true,
-			grow = 1,
-			truncate = true,
-			color = "$text.secondary",
-		},
-		ui.text {
-			function()
-				return get().harness
-			end,
-			literal = true,
-			text_size = "$font.size.xs",
-			color = "$text.tertiary",
-		},
-		kx.StatusIcon {
-			kind = function()
-				return kx.status.kind_of(get().status)
-			end,
-			size = 15,
-		},
-	}
 end
 
 local function no_project(): Node
@@ -210,30 +143,7 @@ function M.view(): Node
 						},
 					},
 					ray.Ray { place = "home" },
-					ui.row {
-						w_full = true,
-						flex_wrap = true,
-						justify = "center",
-						gap = "$space.1",
-						suggestion(SUGGESTIONS[1]),
-						suggestion(SUGGESTIONS[2]),
-						suggestion(SUGGESTIONS[3]),
-					},
-					ui.show(function()
-						return #busy:get() > 0
-					end, ui.column {
-						w_full = true,
-						mt = "$space.4",
-						gap = "$kx.space.hair",
-						kx.Hint { "Under way", literal = true, px = "$space.2", pb = "$space.1" },
-						ui.each(busy, busy_row, {
-							key = function(t: store.Thread)
-								return t.id
-							end,
-							w_full = true,
-							gap = "$kx.space.hair",
-						}),
-					}),
+					-- (Nothing else: what's under way is the sidebar's to say.)
 				},
 				no_project()
 			),

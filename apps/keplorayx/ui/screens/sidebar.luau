@@ -97,7 +97,6 @@ end)
 
 -- The way in, as rows under Search.
 local PAGES = {
-	{ plugin = "kx", id = "inbox", title = "Inbox", icon = "inbox" },
 	{ plugin = "kx", id = "constellation", title = "Constellation", icon = "constellation" },
 	{ plugin = "kx", id = "team", title = "Team", icon = "users-group" },
 }

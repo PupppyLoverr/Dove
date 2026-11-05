@@ -80,6 +80,67 @@ function M.go(route: Route)
 	M.route:set(route)
 end
 
+-- ── Back and forward (the title bar's arrows) ──────────────────────────
+-- Every place you've been: a route, and on a thread, which. Moving by the
+-- arrows walks it without adding to it.
+type Place = { route: Route, thread: string? }
+local places = ui.state("nav.places", {} :: { Place })
+local at = ui.state("nav.at", 0)
+local walking = false
+
+local function same(a: Place?, b: Place?): boolean
+	return a ~= nil and b ~= nil and a.route == b.route and a.thread == b.thread
+end
+
+ui.effect(function()
+	local store = require("@kx/store")
+	local t = store.thread:get()
+	local here: Place = { route = M.route:get(), thread = if M.route:get() == "thread" and t then t.id else nil }
+	if walking then
+		return
+	end
+	local list, i = places:peek(), at:peek()
+	if same(list[i], here) then
+		return
+	end
+	local next = table.move(list, 1, i, 1, {})
+	table.insert(next, here)
+	-- (The last hundred are plenty.)
+	if #next > 100 then
+		table.remove(next, 1)
+	end
+	places:set(next)
+	at:set(#next)
+end)
+
+local function walk(by: number)
+	local list, i = places:peek(), at:peek() + by
+	local p = list[i]
+	if not p then
+		return
+	end
+	walking = true
+	at:set(i)
+	M.route:set(p.route)
+	if p.thread then
+		require("@kx/store").open(p.thread)
+	end
+	walking = false
+end
+
+function M.can_back(): boolean
+	return at:get() > 1
+end
+function M.can_forward(): boolean
+	return at:get() < #places:get()
+end
+function M.back()
+	walk(-1)
+end
+function M.forward()
+	walk(1)
+end
+
 function M.focus_ray()
 	if M.route:peek() ~= "thread" then
 		M.route:set("home")
