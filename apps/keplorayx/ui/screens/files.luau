@@ -27,6 +27,13 @@ local doc = ui.state("files.doc", nil :: any)
 type Listing = { name: string, root: string, files: string, statuses: { [string]: string } }
 local listing = ui.state("files.listing", nil :: Listing?)
 local failure = ui.state("files.failure", "")
+-- The floating tree, narrow: out while nothing is open.
+local drawer = ui.state("files.drawer", true)
+ui.effect(function()
+	if doc:get() == nil and not drawer:peek() then
+		drawer:set(true)
+	end
+end)
 
 local function load()
 	store.list_files(nil):after(function(l: any)
@@ -62,6 +69,11 @@ local function pane(l: Listing): Node
 	FileTree.statuses(model, l.statuses or {})
 	return FilesPane {
 		shown = shown,
+		-- The pane decides by its width: wide, the tree beside the file;
+		-- narrow, the tree floats over it, out while no file is open and
+		-- put away as one is picked (Zeron's drawer).
+		drawer = drawer,
+		width = 220,
 		tree = {
 			model = model,
 			active = active,

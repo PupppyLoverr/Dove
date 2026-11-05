@@ -345,7 +345,8 @@ local function strip_right(): any
 	local ok, right = pcall(function(): number
 		return require("@ds/title_bar").window_buttons_right()
 	end)
-	return ui.raw(if ok and type(right) == "number" then right + 8 else 12, "clears the window's own buttons")
+	-- (And the panel's own toggle, which the bar stands beside them.)
+	return ui.raw(if ok and type(right) == "number" then right + 44 else 48, "clears the window's own buttons and the panel's toggle")
 end
 
 function M.view(): Node
