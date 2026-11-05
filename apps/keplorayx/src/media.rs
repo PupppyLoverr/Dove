@@ -30,7 +30,11 @@ pub enum Control {
 type Update = (Option<Json>, Option<(String, u32, u32, Vec<u8>)>);
 
 struct Source {
-    updates: flume::Receiver<Update>,
+    /// Each window's own line: every update goes to all of them (one
+    /// queue shared would hand each update to one window only).
+    windows: std::sync::Mutex<Vec<flume::Sender<Update>>>,
+    /// The latest, and the latest cover, for a window that opens later.
+    last: std::sync::Mutex<(Option<Json>, Option<(String, u32, u32, Vec<u8>)>)>,
     commands: flume::Sender<Control>,
 }
 
@@ -38,7 +42,7 @@ struct Source {
 fn source() -> &'static Source {
     static SOURCE: OnceLock<Source> = OnceLock::new();
     SOURCE.get_or_init(|| {
-        let (tx, updates) = flume::unbounded();
+        let (tx, updates) = flume::unbounded::<Update>();
         let (commands, rx) = flume::unbounded();
         #[cfg(windows)]
         {
@@ -46,14 +50,43 @@ fn source() -> &'static Source {
         }
         #[cfg(not(windows))]
         std::mem::forget((tx, rx));
-        Source { updates, commands }
+        let _ = std::thread::Builder::new().name("kx-media-out".into()).spawn(move || {
+            while let Ok(update) = updates.recv() {
+                let source = source();
+                if let Ok(mut last) = source.last.lock() {
+                    last.0 = update.0.clone();
+                    if update.1.is_some() {
+                        last.1 = update.1.clone();
+                    }
+                }
+                if let Ok(mut windows) = source.windows.lock() {
+                    windows.retain(|w| w.send(update.clone()).is_ok());
+                }
+            }
+        });
+        Source { windows: Default::default(), last: Default::default(), commands }
     })
+}
+
+/// A line of updates for one window, starting from what plays now.
+fn subscribe() -> flume::Receiver<Update> {
+    let source = source();
+    let (tx, rx) = flume::unbounded();
+    if let Ok(last) = source.last.lock()
+        && (last.0.is_some() || last.1.is_some())
+    {
+        let _ = tx.send(last.clone());
+    }
+    if let Ok(mut windows) = source.windows.lock() {
+        windows.push(tx);
+    }
+    rx
 }
 
 /// `kx.media` and `media.control` in this window.
 pub fn install(cx: &mut WindowContext, host: &ScriptHost) {
     let shared = host.shared("kx.media", Value::Nil);
-    let updates = source().updates.clone();
+    let updates = subscribe();
     let host_for_art = host.clone();
     cx.tasks.spawn(async move {
         while let Ok((now, cover)) = updates.recv_async().await {

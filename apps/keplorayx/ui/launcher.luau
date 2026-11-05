@@ -34,6 +34,12 @@ end
 
 -- Summoned (the key, the tray, the notch): the field again, empty.
 local summoned: State<number> = ui.shared("launcher.summoned", 0)
+-- What plays (src/media.rs): played, paused and skipped from the list.
+local media: State<any> = if store.fixture ~= ""
+	then ui.state("fx.media", { title = "Weightless", artist = "Marconi Union", playing = true })
+	else ui.shared("kx.media", nil)
+-- What you picked lately, first again the next time.
+local recent = ui.persist("launcher.recent", {} :: { string })
 ui.effect(function()
 	if summoned:get() > 0 then
 		mode:set("find")
@@ -326,6 +332,18 @@ local function root_items(): { any }
 		{ id = "kx:windows", label = "Switch window", section = "Keplorayx", icon = "window-restore", pinned = true, page = page_of("windows", "Switch window", "window", "Find a window") },
 		{ id = "kx:snippets", label = "Snippets", section = "Keplorayx", icon = "note-text", page = snippet_page },
 	}
+	local m = media:get()
+	if m and (m.title or "") ~= "" then
+		local now = if (m.artist or "") ~= "" then `{m.title} · {m.artist}` else m.title
+		local function control(what: string): () -> ()
+			return function()
+				pcall(ui.invoke, "media.control", what)
+			end
+		end
+		table.insert(out, { id = "media:play", label = if m.playing then "Pause" else "Play", hint = now, keywords = "music media song track pause play", section = "Now playing", icon = if m.playing then "media-pause" else "media-play", pinned = true, verb = if m.playing then "Pause" else "Play", run = control("play") })
+		table.insert(out, { id = "media:next", label = "Next track", hint = now, keywords = "music media song skip", section = "Now playing", icon = "media-next", run = control("next") })
+		table.insert(out, { id = "media:previous", label = "Previous track", hint = now, keywords = "music media song back", section = "Now playing", icon = "media-previous", run = control("previous") })
+	end
 	for _, l in LINKS do
 		table.insert(out, { id = `link:{l.name}`, label = `Search {l.name}`, section = "Quick links", icon = "link", page = link_page(l) })
 	end
@@ -461,7 +479,7 @@ return ui.column {
 					rounded = "$radius.xl",
 					bg = "$zeron.menu.solid",
 					shadow = "$shadow.lg",
-					CommandPalette.Inline { open = open, root = root :: any },
+					CommandPalette.Inline { open = open, root = root :: any, recent = recent },
 				}
 			),
 		}

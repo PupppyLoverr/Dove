@@ -136,6 +136,8 @@ pub fn build(cx: &mut WindowContext, engine: Arc<dove_core::Engine>, main: impl 
         let host = crate::script_host(cx, "launcher.luau");
         crate::host::install(cx, &host, engine.clone());
         crate::clock::install(cx, &host);
+        // What's playing, to play, pause and skip from here.
+        crate::media::install(cx, &host);
         host.window_state(&cx.ui);
         let summoned = host.shared("launcher.summoned", 0.);
         LAUNCHER.with(|l| *l.borrow_mut() = Some((cx.window.clone(), summoned)));
