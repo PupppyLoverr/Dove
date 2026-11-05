@@ -76,12 +76,20 @@ pub fn open(
     cx: &mut WindowContext,
     engine: Arc<dove_core::Engine>,
     focus: impl Fn(Option<String>) + 'static,
+    inspect: bool,
 ) -> zgx_script::ScriptHost {
     let host = crate::script_host(cx, "notch.luau");
     crate::host::install(cx, &host, engine);
     crate::clock::install(cx, &host);
     // At rest, a click asks: the launcher, over everything (src/launcher.rs).
     host.action("notch.ask", |_| crate::launcher::summon());
+    // The Tray's Show: a file in its folder.
+    host.action("notch.reveal", |path| {
+        if let zgx_script::Value::Str(path) = path {
+            #[cfg(windows)]
+            let _ = std::process::Command::new("explorer").arg(format!("/select,{path}")).spawn();
+        }
+    });
     host.action("notch.focus", move |thread| {
         let id = match thread {
             zgx_script::Value::Str(s) => Some(s.to_string()),
@@ -99,7 +107,7 @@ pub fn open(
     });
     host.function("widget.playing", |_| zgx_script::Value::from(crate::launcher::now_playing().as_str()));
     reveal(cx, &host);
-    crate::serve(cx, host.clone(), "notch.luau", false);
+    crate::serve(cx, host.clone(), "notch.luau", inspect);
     host
 }
 

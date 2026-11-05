@@ -102,6 +102,38 @@ end
 
 -- ── What it says ───────────────────────────────────────────────────────
 
+-- What happened, newest first (the Alerts tab, as Dove's Notifications):
+-- each its kind ("done", "failed", "asked"), its thread and when.
+type Alert = { kind: string, thread: string, title: string, at: number }
+local alerts = if fixture
+	then ui.state("notch.alerts.fx", {
+		{ kind = "asked", thread = "t2", title = "Approve: run the store migration", at = os.time() - 120 },
+		{ kind = "done", thread = "t3", title = "Tidy the settings pages", at = os.time() - 900 },
+		{ kind = "failed", thread = "t4", title = "Fix the flaky sign-in redirect", at = os.time() - 3600 },
+	} :: { Alert })
+	else ui.persist("notch.alerts", {} :: { Alert })
+local function remember(kind: string, thread: string, title: string)
+	local list = table.clone(alerts:peek())
+	table.insert(list, 1, { kind = kind, thread = thread, title = title, at = os.time() })
+	while #list > 30 do
+		table.remove(list)
+	end
+	alerts:set(list)
+end
+-- (An agent asking: once each time it starts waiting.)
+local asked_seen: { [string]: boolean } = {}
+ui.effect(function()
+	local now: { [string]: boolean } = {}
+	for _, w in attention:get() do
+		local key = w.thread_id .. ":" .. w.request_id
+		now[key] = true
+		if not asked_seen[key] then
+			remember("asked", w.thread_id, `{w.harness} wants to run {w.tool}: {w.title}`)
+		end
+	end
+	asked_seen = now
+end)
+
 -- A thread finishing or failing, said for a few seconds (as Dove's flash).
 type Flash = { id: string, title: string, harness_id: string, failed: boolean }
 local flash = ui.state("notch.flash", nil :: Flash?)
@@ -114,6 +146,7 @@ ui.effect(function()
 		if primed and was == "running" and (t.status == "done" or t.status == "failed") then
 			local f: Flash = { id = t.id, title = t.title, harness_id = t.harness_id, failed = t.status == "failed" }
 			flash:set(f)
+			remember(if f.failed then "failed" else "done", t.id, t.title)
 			ui.after(5000, function()
 				if flash:peek() == f then
 					flash:set(nil)
@@ -706,10 +739,182 @@ local function timer(): Node
 	}
 end
 
+-- The tray (Dove's): files dropped on the island, kept until you take them
+-- away; each opened, or shown in its folder.
+type Kept = { path: string, name: string }
+local tray = if fixture
+	then ui.state("notch.tray.fx", { { path = "C:/Users/you/Desktop/brief.pdf", name = "brief.pdf" }, { path = "C:/Users/you/Downloads/shot.png", name = "shot.png" } } :: { Kept })
+	else ui.persist("notch.tray", {} :: { Kept })
+local function keep(files: { any })
+	local list = table.clone(tray:peek())
+	for _, f in files or {} do
+		local path = f.path or ""
+		if path ~= "" then
+			local here = false
+			for _, k in list do
+				if k.path == path then
+					here = true
+				end
+			end
+			if not here then
+				table.insert(list, 1, { path = path, name = f.name or string.match(path, "[^/\\]+$") or path })
+			end
+		end
+	end
+	tray:set(list)
+end
+
+local function ago(at: number): string
+	local d = os.time() - at
+	if d < 60 then
+		return "now"
+	elseif d < 3600 then
+		return `{math.floor(d / 60)}m`
+	elseif d < 86400 then
+		return `{math.floor(d / 3600)}h`
+	end
+	return `{math.floor(d / 86400)}d`
+end
+
+local function tray_page(): Node
+	return ui.column {
+		w_full = true,
+		h_full = true,
+		gap = "$space.2",
+		ui.show(
+			function()
+				return #tray:get() > 0
+			end,
+			ui.scroll {
+				w_full = true,
+				grow = 1,
+				ui.column {
+					w_full = true,
+					gap = 2,
+					ui.each(tray, function(k: Kept): Node
+						return ui.row {
+							w_full = true,
+							gap = "$space.2",
+							items = "center",
+							px = "$space.2",
+							py = 4,
+							rounded = "$radius.md",
+							hover = { bg = "$kx.accent.soft" },
+							kx.Icon { name = "document", size = 14 },
+							ui.text { k.name, literal = true, truncate = true, grow = 1, min_w = 0, text_size = "$font.size.sm" },
+							kx.Button { tone = "ghost", size = "xs", on_click = function()
+								pcall(ui.invoke, "open_url", k.path)
+							end, "Open" },
+							kx.Button { tone = "ghost", size = "xs", on_click = function()
+								pcall(ui.invoke, "notch.reveal", k.path)
+							end, "Show" },
+							kx.Button { tone = "ghost", size = "xs", icon = true, label = "Take it away", on_click = function()
+								local list = {}
+								for _, x in tray:peek() do
+									if x.path ~= k.path then
+										table.insert(list, x)
+									end
+								end
+								tray:set(list)
+							end, kx.Icon { name = "close", size = 12 } },
+						}
+					end, {
+						key = function(k: Kept)
+							return k.path
+						end,
+					}),
+				},
+			},
+			ui.column {
+				w_full = true,
+				grow = 1,
+				items = "center",
+				justify = "center",
+				gap = "$space.2",
+				color = "$text.tertiary",
+				kx.Icon { name = "tray", size = 28 },
+				ui.text { "Drop files here to keep them close", literal = true, text_size = "$font.size.sm", color = "$text.secondary" },
+				ui.text { "Drag them to the top of the screen; the island opens to take them.", literal = true, text_size = "$font.size.xs", color = "$text.tertiary" },
+			}
+		),
+	}
+end
+
+local function alerts_page(): Node
+	return ui.column {
+		w_full = true,
+		h_full = true,
+		gap = "$space.2",
+		ui.show(
+			function()
+				return #alerts:get() > 0
+			end,
+			ui.column {
+				w_full = true,
+				grow = 1,
+				gap = "$space.2",
+				ui.row {
+					w_full = true,
+					justify = "between",
+					items = "center",
+					px = "$space.2",
+					ui.text { "Recent", literal = true, text_size = "$font.size.xs", weight = "$font.weight.medium", color = "$text.tertiary" },
+					kx.Button { tone = "ghost", size = "xs", on_click = function()
+						alerts:set({})
+					end, "Clear" },
+				},
+				ui.scroll {
+					w_full = true,
+					grow = 1,
+					ui.column {
+						w_full = true,
+						gap = 2,
+						ui.each(alerts, function(a: Alert): Node
+							return ui.button {
+								w_full = true,
+								gap = "$space.2",
+								items = "center",
+								px = "$space.2",
+								py = 5,
+								rounded = "$radius.md",
+								bg = "#00000000",
+								hover = { bg = "$kx.accent.soft" },
+								on_click = function()
+									open_thread(a.thread)
+								end,
+								kx.StatusIcon { kind = if a.kind == "failed" then "failed" elseif a.kind == "asked" then "approval" else "done", size = 13 },
+								ui.text { a.title, literal = true, truncate = true, grow = 1, min_w = 0, text_size = "$font.size.sm" },
+								ui.text { ago(a.at), literal = true, text_size = "$font.size.xs", color = "$text.tertiary", tabular = true },
+							}
+						end, {
+							key = function(a: Alert)
+								return `{a.thread}:{a.at}:{a.kind}`
+							end,
+						}),
+					},
+				},
+			},
+			ui.column {
+				w_full = true,
+				grow = 1,
+				items = "center",
+				justify = "center",
+				gap = "$space.2",
+				color = "$text.tertiary",
+				kx.Icon { name = "bell", size = 28 },
+				ui.text { "Nothing yet", literal = true, text_size = "$font.size.sm", color = "$text.secondary" },
+				ui.text { "Finishes, failures and what agents ask land here.", literal = true, text_size = "$font.size.xs", color = "$text.tertiary" },
+			}
+		),
+	}
+end
+
 local TABS = {
 	{ id = "home", label = "Home", icon = "home" },
 	{ id = "agents", label = "Agents", icon = "bot" },
 	{ id = "music", label = "Music", icon = "music-note" },
+	{ id = "tray", label = "Tray", icon = "tray" },
+	{ id = "alerts", label = "Alerts", icon = "bell" },
 	{ id = "notes", label = "Notes", icon = "note-text" },
 	{ id = "timer", label = "Timer", icon = "timer" },
 }
@@ -737,7 +942,9 @@ local function tabs(): Node
 					tab:set(t.id)
 				end,
 				kx.Icon { name = t.icon, size = 13 },
-				ui.text { t.label, literal = true, text_size = "$font.size.xs", weight = "$font.weight.medium" },
+				ui.show(function()
+					return tab:get() == t.id
+				end, ui.text { t.label, literal = true, text_size = "$font.size.xs", weight = "$font.weight.medium" }),
 			}
 		)
 	end
@@ -761,6 +968,10 @@ local function page(id: string): Node
 		}
 	elseif id == "timer" then
 		return timer()
+	elseif id == "tray" then
+		return tray_page()
+	elseif id == "alerts" then
+		return alerts_page()
 	end
 	return home()
 end
@@ -858,6 +1069,11 @@ return ui.row {
 	h_full = true,
 	justify = "center",
 	items = "start",
+	on_file_drop = function(files: { any })
+		keep(files)
+		tab:set("tray")
+		expanded:set(true)
+	end,
 	ui.presence(state, view, {
 		enter = { opacity = { 0, 1 }, scale = { 0.97, 1 }, duration = 220, ease = "cubicBezier(0.34, 1.3, 0.64, 1)" },
 		exit = { opacity = { 1, 0 }, duration = 110, ease = kx.motion.EXIT },

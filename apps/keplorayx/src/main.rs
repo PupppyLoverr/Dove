@@ -171,13 +171,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut application = Application::new();
     // Windows shows toasts (a thread needs you, one finished) for an app's
     // identity: without one every notification failed.
-    application = match application.application_id("com.keplorayx.app") {
-        Ok(app) => app,
-        Err(e) => {
-            tracing::warn!("application id: {e:?}");
-            Application::new()
-        }
-    };
+    // The id is also one instance: a second launch hands itself to the
+    // first and quits. The development screens (the notch, the launcher on
+    // their own) have none; a test run beside the real app names its own.
+    if matches!(screen, Screen::Main | Screen::Intro | Screen::Onboarding) {
+        let id = std::env::var("KX_APP_ID").unwrap_or_else(|_| "com.keplorayx.app".into());
+        application = match application.application_id(id) {
+            Ok(app) => app,
+            Err(e) => {
+                tracing::warn!("application id: {e:?}");
+                Application::new()
+            }
+        };
+    }
     for font in fonts() {
         application = application.font(font?);
     }
@@ -200,7 +206,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 host.shared("onboarding.arrived", true);
             }
             Screen::Notch => {
-                notch::open(cx, engine.clone(), |_| {});
+                notch::open(cx, engine.clone(), |_| {}, inspect);
             }
             Screen::Launcher => {
                 launcher::clipboard::watch();
@@ -300,7 +306,7 @@ fn open_main(cx: &mut WindowContext, engine: Arc<dove_core::Engine>, inspect: bo
                     asked.set(asked.get() + 1);
                     focus.set(Value::from(format!("{id}#{}", asked.get()).as_str()));
                 }
-            });
+            }, false);
         }));
     }
     // The tray and the keys that reach Keplorayx from any app, once a
