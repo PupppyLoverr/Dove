@@ -102,16 +102,16 @@
 			},
 			"selected": {
 				"bg": "#ffffffeb",
-				"ring": "#00000033",
+				"ring": "alpha({accent}, 0.3)",
 				"highlight": "0 0 0 0 #00000000",
 				"lift": "0 0 0 0 #00000000",
 				// Flat, as sidebar rows (Linear's, Vercel's, macOS's): a dark
 				// wash a step above hover (4%), reading on glass and opaque alike.
-				"flat": { "bg": "#00000012" }
+				"flat": { "bg": "alpha({accent}, 0.1)" }
 			},
 			"segmented": { "thumb": "#ffffff8c" },
 			// Near-black, lifting a shade under the pointer, deepest pressed.
-			"primary": { "bg": "#1b1b1d", "hover": "#2d2d31", "active": "#000000", "text": "#ffffff" },
+			"primary": { "bg": "#18213a", "hover": "#243052", "active": "#0b1122", "text": "#ffffff" },
 			// Beside it: a fill of black, firmer as it is touched.
 			"secondary": { "bg": "#0000000d", "hover": "#00000014", "active": "#0000001c" },
 			// Destructive: red filled, deepening as it is touched.
@@ -120,7 +120,7 @@
 			// Menus and dropdowns: a faint cool grey over macOS's popover
 			// material (near-opaque white in light), so it reads as frost, not
 			// a white sheet.
-			"menu": { "tint": "#eceef273", "solid": "#fbfbfc", "shadow": "0 18 48 0 #0000001c", "selected": "#0000000f" },
+			"menu": { "tint": "#eceef273", "solid": "#fbfbfc", "shadow": "0 18 48 0 #0000001c", "selected": "alpha({accent}, 0.1)" },
 			// The composer: whiter glass than the window, a cool slate
 			// hairline; opaque, white on a soft shadow.
 			// Line glyphs a touch heavier than dark's 1.17: dark lines on
@@ -166,7 +166,8 @@
 			// stays light), the picture lifted off it by a soft shadow so a
 			// white screenshot keeps its edge.
 			"lightbox": { "scrim": "#f3f3f5eb", "shadow": "0 10 40 0 #00000024" },
-			"composer": { "tint": "#ffffff8c", "solid": "#ffffff", "edge": "#3b475a1f", "shadow": "0 10 28 0 #00000017" },
+			"composer": { "tint": "#ffffff99", "solid": "#ffffff", "edge": "alpha({accent}, 0.22)", "shadow": "0 12 34 0 #1b2a5a1f" },
+			"prose": { "bubble": { "bg": "alpha({accent}, 0.1)" } },
 			// A field: whiter than the window (as the composer is), its edge a
 			// cool hairline that firms under the pointer. Not a grey well:
 			// grey on pale glass reads as disabled.

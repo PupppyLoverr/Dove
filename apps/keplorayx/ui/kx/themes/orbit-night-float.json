@@ -1,0 +1,13 @@
+{
+	// Orbit, night, for windows that float over everything on their own (the
+	// launcher): a dialog's dim behind it would fill the whole window as a
+	// dark box, so there is none.
+	"name": "orbit-night-float",
+	"type": "dark",
+	"extends": "orbit-night",
+	"tokens": {
+		"backdrop": "#00000000",
+		// (No glass under it here: the card stands on its own.)
+		"zeron": { "menu": { "tint": "#14161ef5" } }
+	}
+}

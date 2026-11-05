@@ -19,6 +19,7 @@ mod host;
 mod intro;
 mod launcher;
 mod mcp;
+mod media;
 mod notch;
 mod panels;
 mod platform;

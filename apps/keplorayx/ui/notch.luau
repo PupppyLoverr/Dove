@@ -1,8 +1,12 @@
 --!strict
--- The notch: Keplorayx's island, hanging from the top edge of the screen
--- over every window, as Dove's Dynamic Island was (its notch/: hidden, slim,
--- alert and expanded). Its window is only as big as what shows (src/notch.rs
--- `notch.size`), and lets clicks through unless it's something to click.
+-- The notch: Keplorayx's island at the top of the screen, over every
+-- window, as Dove's Dynamic Island was (its notch/: hidden, slim, alert and
+-- expanded). Its window is only as big as what shows (src/notch.rs
+-- `notch.size`), on the main window's frosted glass (Acrylic under the
+-- theme's tint, the system's round corners), and lets clicks through unless
+-- it's something to click. Music is what Windows' media controls report
+-- (src/media.rs `kx.media`): its cover, title and artist, where it is, and
+-- its keys.
 --
 -- - **Hidden:** nothing at all; while an agent waits on you, a thin warm line
 --   at the edge where the island comes from.
@@ -33,6 +37,32 @@ local near: State<boolean> = if fixture then ui.state("fx.near", true) else ui.s
 local now: State<Now> = if fixture
 	then ui.state("fx.now", { hour = 21, minute = 42, weekday = "Thursday", day = 5, month = "November" } :: Now)
 	else ui.shared("kx.now", { hour = 0, minute = 0, weekday = "", day = 0, month = "" } :: Now)
+
+-- What's playing (src/media.rs), and its place now (moved on by the clock
+-- while it plays, each second the island shows it).
+type Media = { app: string, title: string, artist: string, playing: boolean, position: number, duration: number, at: number, cover: string }
+local media: State<Media?> = if fixture
+	then ui.state("fx.media", ((store :: any).fixture_data.media) :: Media?)
+	else ui.shared("kx.media", nil :: Media?)
+local tick = ui.state("notch.tick", 0)
+local function position(): number
+	tick:get()
+	local m = media:get()
+	if not m then
+		return 0
+	end
+	local p = if m.playing then m.position + (os.time() - m.at) else m.position
+	return if m.duration > 0 then math.min(p, m.duration) else p
+end
+local function mmss(t: number): string
+	t = math.max(0, math.floor(t))
+	return string.format("%d:%02d", math.floor(t / 60), t % 60)
+end
+local function control(what: any)
+	if not fixture then
+		pcall(ui.invoke, "media.control", what)
+	end
+end
 
 local first = ui.computed(function(): Waiting?
 	return attention:get()[1]
@@ -119,13 +149,31 @@ local state = ui.computed(function(): string
 end)
 
 -- Each state's window: its size in points, and whether it takes clicks.
-local SIZES: { [string]: { w: number, h: number, interactive: boolean } } = {
-	hidden = { w = 120, h = 6, interactive = false },
-	slim = { w = 480, h = 64, interactive = true },
-	alert = { w = 520, h = 84, interactive = true },
-	flash = { w = 420, h = 64, interactive = true },
-	expanded = { w = 620, h = 420, interactive = true },
+-- (A few points down from the screen's edge, as an island floats.)
+local SIZES: { [string]: { w: number, h: number, top: number, interactive: boolean, glass: boolean } } = {
+	hidden = { w = 120, h = 4, top = 0, interactive = false, glass = false },
+	slim = { w = 440, h = 46, top = 8, interactive = true, glass = true },
+	alert = { w = 500, h = 62, top = 8, interactive = true, glass = true },
+	flash = { w = 400, h = 52, top = 8, interactive = true, glass = true },
+	expanded = { w = 600, h = 392, top = 8, interactive = true, glass = true },
 }
+
+-- The clock, while music shows and plays.
+local function ticking()
+	local s = state:peek()
+	local m = media:peek()
+	if m and m.playing and (s == "expanded" or s == "slim") then
+		tick:set(tick:peek() + 1)
+		ui.after(1000, ticking)
+	end
+end
+ui.effect(function()
+	state:get()
+	local m = media:get()
+	if m and m.playing then
+		ui.after(1000, ticking)
+	end
+end)
 ui.effect(function()
 	local s = SIZES[state:get()]
 	pcall(ui.invoke, "notch.size", s)
@@ -206,6 +254,60 @@ local function asking(w: () -> Waiting?, compact: boolean): Node
 	}
 end
 
+-- ── Music's pieces ───────────────────────────────────────────────────
+
+local function key(icon: string, what: string, name: string, size: number?): Node
+	return ui.button {
+		w = (size or 16) + 16,
+		h = (size or 16) + 16,
+		rounded = "$radius.full",
+		items = "center",
+		justify = "center",
+		bg = "#00000000",
+		hover = { bg = "$kx.accent.soft" },
+		label = name,
+		on_click = function()
+			control(what)
+		end,
+		kx.Icon { name = icon, size = size or 16 },
+	}
+end
+
+local function cover(size: number): Node
+	return ui.presence(function(): string
+		local m = media:get()
+		return if m and m.cover ~= "" then m.cover else ""
+	end, function(src: string): Node
+		if src == "" then
+			return ui.column {
+				w = size,
+				h = size,
+				rounded = "$radius.lg",
+				bg = "$kx.accent.soft",
+				items = "center",
+				justify = "center",
+				color = "$accent",
+				shrink = 0,
+				kx.Icon { name = "music-note", size = math.floor(size * 0.4) },
+			}
+		end
+		return ui.image { src = src, w = size, h = size, rounded = "$radius.lg", fit = "cover", shrink = 0 }
+	end)
+end
+
+local function song(part: string): () -> string
+	return function()
+		local m = media:get()
+		if not m then
+			return if part == "title" then "Nothing playing" else "Play something in Spotify, a browser or Media Player"
+		end
+		if part == "title" then
+			return m.title
+		end
+		return if m.artist ~= "" then `{m.artist} · {m.app}` else m.app
+	end
+end
+
 -- ── Slim ───────────────────────────────────────────────────────────────
 
 local slim_resting = ui.row {
@@ -250,8 +352,24 @@ local slim_kind = ui.computed(function(): string
 	if first:get() then
 		return "waiting"
 	end
-	return if #working:get() > 0 then "working" else "resting"
+	if #working:get() > 0 then
+		return "working"
+	end
+	local m = media:get()
+	return if m and m.playing then "music" else "resting"
 end)
+
+local slim_music = ui.row {
+	gap = "$space.3",
+	items = "center",
+	cover(24),
+	ui.text { song("title"), literal = true, truncate = true, max_w = 220, weight = "$font.weight.medium", text_size = "$font.size.sm" },
+	quiet(function()
+		local m = media:get()
+		return if m then m.artist else ""
+	end),
+	key("media-pause", "play", "Pause", 14),
+}
 
 local function slim(): Node
 	return ui.presence(slim_kind, function(kind: string): Node
@@ -263,7 +381,7 @@ local function slim(): Node
 				end, true),
 			}
 		end
-		return if kind == "working" then slim_working else slim_resting
+		return if kind == "working" then slim_working elseif kind == "music" then slim_music else slim_resting
 	end, { enter = { opacity = { 0, 1 }, duration = 160 }, exit = { opacity = { 1, 0 }, duration = 90 } })
 end
 
@@ -323,72 +441,96 @@ local function ask()
 	end)
 end
 
-local playing = ui.state("notch.playing", "")
-local function read_playing()
-	if fixture then
-		return
-	end
-	local ok, v = pcall(ui.call_sync, "widget.playing")
-	if ok and type(v) == "string" and v ~= playing:peek() then
-		playing:set(v)
-	end
-end
-ui.effect(function()
-	if state:get() == "expanded" then
-		read_playing()
-	end
-end)
-
-local function media(icon: string, what: string, name: string): Node
-	return kx.Button {
-		tone = "ghost",
-		size = "sm",
-		icon = true,
-		label = name,
-		on_click = function()
-			pcall(ui.invoke, "widget.media", what)
-			ui.after(600, read_playing)
-		end,
-		kx.Icon { name = icon, size = 16 },
+local function progress(): Node
+	return ui.column {
+		gap = 4,
+		w_full = true,
+		ui.div {
+			h = 4,
+			w_full = true,
+			rounded = "$radius.full",
+			bg = "$kx.accent.soft",
+			on_click = function(e: any)
+				local m = media:peek()
+				if m and m.duration > 0 and e and e.local_x and e.width then
+					control({ seek = e.local_x / e.width })
+				end
+			end,
+			ui.div {
+				h_full = true,
+				rounded = "$radius.full",
+				bg = "$text.primary",
+				w = function()
+					local m = media:get()
+					local f = if m and m.duration > 0 then position() / m.duration else 0
+					return ui.raw(math.max(4, f * 540), "where the track is")
+				end,
+				max_w = "100%",
+			},
+		},
+		ui.row {
+			w_full = true,
+			justify = "between",
+			quiet(function()
+				return mmss(position())
+			end, "$font.size.xs"),
+			quiet(function()
+				local m = media:get()
+				return if m and m.duration > 0 then mmss(m.duration) else ""
+			end, "$font.size.xs"),
+		},
 	}
 end
 
-local function song(part: number): () -> string
-	return function()
-		local p = playing:get()
-		if p == "" then
-			return if part == 1 then "Nothing playing" else "Spotify, VLC, foobar2000…"
-		end
-		local artist, title = string.match(p, "^(.-) %- (.+)$")
-		return if part == 1 then (title or p) else (artist or "")
-	end
-end
-
 local function music_row(big: boolean): Node
+	if not big then
+		return ui.row {
+			gap = "$space.3",
+			items = "center",
+			w_full = true,
+			cover(36),
+			ui.column {
+				grow = 1,
+				min_w = 0,
+				ui.text { song("title"), literal = true, truncate = true, weight = "$font.weight.medium", text_size = "$font.size.sm" },
+				quiet(song("by"), "$font.size.xs"),
+			},
+			key("media-previous", "previous", "Previous"),
+			key(if (media:peek() or { playing = false }).playing then "media-pause" else "media-play", "play", "Play or pause"),
+			key("media-next", "next", "Next"),
+		}
+	end
 	return ui.row {
-		gap = "$space.3",
+		gap = "$space.5",
 		items = "center",
 		w_full = true,
-		ui.column {
-			w = if big then 56 else 36,
-			h = if big then 56 else 36,
-			rounded = "$radius.lg",
-			bg = "$kx.accent.soft",
-			items = "center",
-			justify = "center",
-			color = "$accent",
-			shrink = 0,
-			kx.Icon { name = "music-note", size = if big then 22 else 16 },
-		},
+		pt = "$space.2",
+		cover(128),
 		ui.column {
 			grow = 1,
 			min_w = 0,
-			ui.text { song(1), literal = true, truncate = true, weight = "$font.weight.medium", text_size = "$font.size.sm" },
-			quiet(song(2), "$font.size.xs"),
+			gap = "$space.3",
+			ui.column {
+				gap = 2,
+				ui.text { song("title"), literal = true, truncate = true, weight = "$font.weight.semibold", text_size = "$font.size.lg" },
+				quiet(song("by")),
+			},
+			progress(),
+			ui.row {
+				gap = "$space.2",
+				items = "center",
+				justify = "center",
+				w_full = true,
+				key("media-previous", "previous", "Previous", 18),
+				ui.presence(function(): string
+					local m = media:get()
+					return if m and m.playing then "pause" else "play"
+				end, function(k: string): Node
+					return key(if k == "pause" then "media-pause" else "media-play", "play", "Play or pause", 22)
+				end),
+				key("media-next", "next", "Next", 18),
+			},
 		},
-		media("media-previous", "previous", "Previous"),
-		media("media-play", "play", "Play or pause"),
-		media("media-next", "next", "Next"),
 	}
 end
 
@@ -655,24 +797,20 @@ end
 
 -- ── The island ─────────────────────────────────────────────────────────
 
--- Its glass: night, whatever the app's theme; the top tucked above the
--- window's edge so only its lower curve shows, as a notch's.
+-- Its glass: the window's (Acrylic, its corners the system's round), the
+-- theme's tint over it as on the main window; a hairline of light at its
+-- edge, warm while something waits.
 local function island(content: Node, props: { [string]: any }?): Node
 	local p: { [any]: any } = {
-		mt = ui.raw(-28, "the top corners tucked above the screen's edge"),
-		pt = ui.raw(28, "the content below the tucked edge"),
-		px = "$space.5",
-		pb = "$space.2",
-		rounded = 24,
-		bg = "$kx.sky.deep",
+		w_full = true,
+		h_full = true,
+		px = "$space.4",
+		bg = "$background",
+		rounded = 8,
 		border = 1,
 		border_color = function()
 			return if first:get() then "$kx.attention.soft" else "$border.subtle"
 		end,
-		inset_shadow = function()
-			return if first:get() then "$kx.lip.inset_strong" else "$kx.lip.inset"
-		end,
-		shadow = "$shadow.lg",
 		items = "center",
 		justify = "center",
 		content,
@@ -688,42 +826,41 @@ local function view(kind: string): Node
 		return ui.show(first, ui.div { w = 96, h = 3, rounded = 3, bg = "$kx.attention", opacity = glow })
 	elseif kind == "slim" then
 		return ui.button {
+			w_full = true,
+			h_full = true,
 			on_click = function()
 				expanded:set(true)
 			end,
 			label = "Keplorayx: open the island",
-			island(slim(), { h = 64 + 28 - 8 }),
+			island(slim()),
 		}
 	elseif kind == "alert" then
-		return ui.column { w = 500, island(asking(function()
+		return island(asking(function()
 			return first:get()
-		end, false), { w_full = true, h = 84 + 28 - 8 }) }
+		end, false))
 	elseif kind == "flash" then
 		return ui.button {
+			w_full = true,
+			h_full = true,
 			on_click = function()
 				local f = flash:peek()
 				open_thread(if f and f.id ~= "timer" then f.id else nil)
 			end,
 			label = "Open the thread",
-			island(flash_view(), { h = 64 + 28 - 8 }),
+			island(flash_view()),
 		}
 	end
-	return ui.column {
-		w = 600,
-		h = 404,
-		island(expanded_view(), { w_full = true, h_full = true, items = "start", justify = "start", pt = ui.raw(28 + 12, "below the tucked edge, and room") }),
-	}
+	return island(expanded_view(), { items = "start", justify = "start", p = "$space.5" })
 end
 
 return ui.row {
-	theme = "orbit-night",
 	w_full = true,
 	h_full = true,
 	justify = "center",
 	items = "start",
 	ui.presence(state, view, {
-		enter = { y = { -40, 0 }, opacity = { 0, 1 }, scale = { 0.96, 1 }, duration = 260, ease = "cubicBezier(0.34, 1.4, 0.64, 1)" },
-		exit = { y = { 0, -30 }, opacity = { 1, 0 }, duration = 140, ease = kx.motion.EXIT },
+		enter = { opacity = { 0, 1 }, scale = { 0.97, 1 }, duration = 220, ease = "cubicBezier(0.34, 1.3, 0.64, 1)" },
+		exit = { opacity = { 1, 0 }, duration = 110, ease = kx.motion.EXIT },
 		mode = "wait",
 	}),
 }

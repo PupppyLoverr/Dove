@@ -160,6 +160,8 @@ function M.setup()
 	}
 	ui.theme.load("kx/themes/orbit-night.json")
 	ui.theme.load("kx/themes/orbit-dawn.json")
+	ui.theme.load("kx/themes/orbit-night-float.json")
+	ui.theme.load("kx/themes/orbit-dawn-float.json")
 	-- Which theme shows is the app's choice (Settings, setup), not every
 	-- window's: a second window (the notch) must not reset it. Until a
 	-- choice is made, the system's.

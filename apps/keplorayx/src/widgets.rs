@@ -352,6 +352,7 @@ pub fn start(cx: &mut WindowContext, engine: Arc<dove_core::Engine>, main: impl 
         crate::visuals::install(cx, &host);
         install(&host);
         system::install(cx, &host);
+        crate::media::install(cx, &host);
         let to_main = main.clone();
         host.action("widget.main", move |thread| {
             to_main(match thread {

@@ -89,6 +89,8 @@ pub fn open(
         };
         focus(id);
     });
+    // What's playing, from Windows' media controls, and its keys (src/media.rs).
+    crate::media::install(cx, &host);
     // The Music tab's keys and what's playing (src/widgets.rs).
     host.action("widget.media", |what| {
         if let zgx_script::Value::Str(what) = what {
@@ -126,14 +128,21 @@ fn reveal(cx: &mut WindowContext, host: &zgx_script::ScriptHost) {
         };
         let (w, h) = (n("w").max(1.), n("h").max(1.));
         let interactive = matches!(req.field("interactive"), Some(zgx_script::Value::Bool(true)));
+        let frosted = matches!(req.field("glass"), Some(zgx_script::Value::Bool(true)));
+        let top = n("top");
         let scale = system_scale();
         let (pw, ph) = ((w * scale).round(), (h * scale).round());
-        let left = (screen_width() - pw) / 2.;
+        let (left, top) = ((screen_width() - pw) / 2., (top * scale).round());
         if let Ok(mut r) = RECT.lock() {
-            *r = (left, 0., pw, ph);
+            *r = (left, top, pw, ph);
         }
-        resize.set_bounds(WindowBounds { position: Some((left as i32, 0)), size: (pw as u32, ph as u32) });
+        resize.set_bounds(WindowBounds { position: Some((left as i32, top as i32)), size: (pw as u32, ph as u32) });
         resize.set_pointer_passthrough(!interactive);
+        // The island is the main window's frosted glass (a blur of what's
+        // behind it, the theme's tint over it), its corners the system's
+        // round; hidden, no glass, so nothing shows but the hint.
+        resize.set_glass(frosted.then(|| zgx_desktop::Glass::new(zgx_desktop::GlassMaterial::Hud).plain()));
+        round_corners();
     });
     let (tell, heard) = flume::unbounded::<bool>();
     std::thread::Builder::new()
@@ -146,6 +155,27 @@ fn reveal(cx: &mut WindowContext, host: &zgx_script::ScriptHost) {
         }
     });
 }
+
+/// Windows 11's rounded corners on the island's window.
+#[cfg(windows)]
+fn round_corners() {
+    use windows_sys::Win32::{
+        Graphics::Dwm::{DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND, DwmSetWindowAttribute},
+        UI::WindowsAndMessaging::FindWindowW,
+    };
+    let title: Vec<u16> = "Keplorayx notch".encode_utf16().chain([0]).collect();
+    // SAFETY: our own window; a plain attribute.
+    unsafe {
+        let h = FindWindowW(std::ptr::null(), title.as_ptr());
+        if !h.is_null() {
+            let pref = DWMWCP_ROUND;
+            DwmSetWindowAttribute(h, DWMWA_WINDOW_CORNER_PREFERENCE as u32, (&pref as *const i32).cast(), 4);
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn round_corners() {}
 
 #[cfg(windows)]
 fn screen_width() -> f64 {

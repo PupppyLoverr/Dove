@@ -2128,7 +2128,14 @@ local function type_path(): boolean
 	return f ~= nil and f()
 end
 
-return setmetatable({ type_path = type_path }, {
+-- (Keplorayx) The palette without its modal: the card alone, for a window
+-- of its own (the launcher), where a modal's dim would fill the window.
+local Inline = ui.component(function(props: Props): Node
+	local recent = props.recent or ui.use_state({} :: { string })
+	return Body { open = props.open, root = props.root, recent_state = recent }
+end)
+
+return setmetatable({ type_path = type_path, Inline = Inline }, {
 	__call = function(_, props: Props): Node
 		return Palette(props)
 	end,

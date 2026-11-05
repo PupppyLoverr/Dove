@@ -687,6 +687,12 @@ fn variable_list<K: Eq + std::hash::Hash + Clone + 'static>(
                     .into_iter()
                     .map(|(index, top, row_height)| (key(index), index, top, row_height))
                     .collect();
+                // (Keplorayx: a key repeated is shown once, its first row,
+                // rather than aborting the app.)
+                let keys: Vec<_> = {
+                    let mut seen = std::collections::HashSet::new();
+                    keys.into_iter().filter(|(key, ..)| seen.insert(key.clone())).collect()
+                };
                 // Rows kept are stamped with this run: one shown twice is a
                 // key repeated, and those left unstamped go below.
                 run += 1;

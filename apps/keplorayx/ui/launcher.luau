@@ -436,6 +436,10 @@ local function answer(): Node
 	})
 end
 
+-- The palette's card alone (no modal: its dim would fill this window), in
+-- the float variant of your theme: a card that stands without glass.
+local kind = ui.theme.kind()
+local float_theme = if kind == "light" or kind == "high-contrast-light" then "orbit-dawn-float" else "orbit-night-float"
 return ui.column {
 	w_full = true,
 	h_full = true,
@@ -445,6 +449,21 @@ return ui.column {
 			return mode:get() == "answer"
 		end,
 		ui.column { pt = ui.raw(88, "level with the palette's card"), answer() },
-		CommandPalette { open = open, root = root :: any }
+		ui.column {
+			theme = float_theme,
+			pt = ui.raw(88, "where the palette's card sits"),
+			ui.show(
+				open,
+				-- (Its card is glass made for a window's blur; here nothing
+				-- is blurred under it, so a solid night stands behind it.)
+				ui.column {
+					w = 640,
+					rounded = "$radius.xl",
+					bg = "$zeron.menu.solid",
+					shadow = "$shadow.lg",
+					CommandPalette.Inline { open = open, root = root :: any },
+				}
+			),
+		}
 	),
 }

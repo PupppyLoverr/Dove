@@ -138,18 +138,19 @@
 				"on": "alpha({accent}, 0.78)",
 				"knob_lift": "0 1 2 0 #00000059"
 			},
-			// Selected: lighter, a firmer edge.
+			// Selected: Orbit's starlight, faint, a firmer edge of it
+			// (Keplorayx's own, where Zeron's is grey).
 			"selected": {
-				"bg": "#ffffff1c",
-				"ring": "#ffffff14",
+				"bg": "alpha({accent}, 0.18)",
+				"ring": "alpha({accent}, 0.26)",
 				"highlight": "0 0 0 0 #00000000",
 				"lift": "0 2 6 0 #00000073",
 				// Flat, as Zeron's sidebar rows: the shared wash alone.
-				"flat": { "bg": "#ebebeb24" }
+				"flat": { "bg": "alpha({accent}, 0.15)" }
 			},
 			// The way on: near-white, brighter under the pointer, sinking
 			// when pressed.
-			"primary": { "bg": "#ececee", "hover": "#ffffff", "active": "#d2d2d7", "text": "#0b0b0c" },
+			"primary": { "bg": "#dfe6f6", "hover": "#eef2fb", "active": "#c6d1ea", "text": "#0a1022" },
 			// Beside it: a fill of white, firmer as it is touched.
 			"secondary": { "bg": "#ffffff14", "hover": "#ffffff1f", "active": "#ffffff29" },
 			// Destructive: red filled; lighter under the pointer in dark, deeper in light.
@@ -157,14 +158,14 @@
 			"accent.active": "#6f86b8",
 			// Menus and dropdowns: a deep charcoal over macOS's popover material
 			// (a light grey frost in dark), so it reads as our dark glass.
-			"menu": { "tint": "#111113a6", "solid": "#1c1c1f", "shadow": "0 20 56 0 #00000052", "selected": "#ebebeb17" },
+			"menu": { "tint": "#10121aa6", "solid": "#1a1c24", "shadow": "0 20 56 0 #00000059", "selected": "alpha({accent}, 0.16)" },
 			// A search's matched letters: the accent's wash firmer than light's
 			// (a faint violet on charcoal all but vanishes).
 			"match": { "wash": "alpha({accent}, 0.34)" },
 			// A field: cut into the glass (a darker wash than the window, as
 			// the composer sits), its edge a faint light hairline that firms
 			// under the pointer.
-			"field": { "bg": "#00000038", "hover": "#0000004d", "edge": "#ffffff14", "edge_hover": "#ffffff26" },
+			"field": { "bg": "#00000038", "hover": "#0000004d", "edge": "alpha({accent}, 0.14)", "edge_hover": "alpha({accent}, 0.3)" },
 			"check": { "bg": "#00000038", "edge": "#ffffff38" },
 			// Tones: the palette's 300s and 400s, pale enough to read on dark
 			// glass; their washes a touch firmer than light's (a faint hue
@@ -197,7 +198,10 @@
 			// The lightbox: a deep scrim over a blur of the window, the picture
 			// on it with no edge of its own (dark reads it by light).
 			"lightbox": { "scrim": "#060607e0", "shadow": "0 0 0 0 #00000000" },
-			"composer": { "tint": "#08080a59", "solid": "#18181b", "edge": "#c7d2de17", "shadow": "0 12 32 0 #00000066" }
+			// The composer: night glass with a starlit edge and a deeper glow.
+			"composer": { "tint": "#090c1466", "solid": "#171a23", "edge": "alpha({accent}, 0.24)", "shadow": "0 16 44 0 #050a1a8c" },
+			// Your messages: starlight, not grey.
+			"prose": { "bubble": { "bg": "alpha({accent}, 0.2)" } }
 		},
 		"kx": {
 			"display": "Instrument Serif",

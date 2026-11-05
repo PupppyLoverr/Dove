@@ -256,7 +256,7 @@ fn search(q: &str, roots: &[PathBuf]) -> Json {
         for (i, text) in clipboard::recent().into_iter().take(5).enumerate() {
             out.push((-(i as f64), clip_item(&text)));
         }
-        return Json::Array(out.into_iter().map(|(_, j)| j).collect());
+        return Json::Array(unique(out));
     }
     for app in apps() {
         if let Some(s) = score(q, &app.name) {
@@ -283,8 +283,14 @@ fn search(q: &str, roots: &[PathBuf]) -> Json {
         }
     }
     out.sort_by(|a, b| b.0.total_cmp(&a.0));
-    out.truncate(40);
-    Json::Array(out.into_iter().map(|(_, j)| j).collect())
+    Json::Array(unique(out).into_iter().take(40).collect())
+}
+
+/// Each row once, by its id (the palette's list keys its rows by id: a row
+/// twice would abort zgx).
+fn unique(rows: Vec<(f64, Json)>) -> Vec<Json> {
+    let mut seen = std::collections::HashSet::new();
+    rows.into_iter().map(|(_, j)| j).filter(|j| seen.insert(j["id"].as_str().unwrap_or_default().to_string())).collect()
 }
 
 /// One kind alone, all of it that answers `q` (nothing typed: all of it):
@@ -310,7 +316,7 @@ fn only_of(kind: &str, q: &str) -> Json {
         _ => {}
     }
     out.sort_by(|a, b| b.0.total_cmp(&a.0));
-    Json::Array(out.into_iter().map(|(_, j)| j).collect())
+    Json::Array(unique(out))
 }
 
 fn clip_item(text: &str) -> Json {
@@ -470,14 +476,17 @@ fn files(roots: &[PathBuf]) -> Vec<PathBuf> {
     }
     places.extend(roots.iter().cloned());
     const SKIP: &[&str] = &["node_modules", "target", ".git", "dist", "build", ".venv", "__pycache__", ".next"];
+    // (A project inside one of these, or one inside another, is walked
+    // once: each file listed once, as a list's rows must be.)
     let mut list = Vec::new();
+    let mut seen = std::collections::HashSet::new();
     for place in places {
         let walk = walkdir::WalkDir::new(&place).max_depth(5).into_iter().filter_entry(|e| {
             let n = e.file_name().to_string_lossy();
             !(n.starts_with('.') && e.depth() > 0) && !SKIP.contains(&n.as_ref())
         });
         for entry in walk.flatten().take(8000) {
-            if entry.depth() > 0 {
+            if entry.depth() > 0 && seen.insert(entry.path().to_path_buf()) {
                 list.push(entry.into_path());
             }
         }
