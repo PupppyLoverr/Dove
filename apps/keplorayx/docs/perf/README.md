@@ -1,48 +1,39 @@
 # RAM and CPU: keplorayx on zgx against the GPUI build
 
-Measured on 2026-11-04, on this Windows 11 machine, with `scripts/perf/perf.ps1`. Each run starts 1, 5 or 10 fake-agent sessions on the scheduler's first tick and measures idle, then streaming, then idle again after the sessions.
+Measured on 2026-11-05 on this Windows 11 machine with `scripts/perf/perf.ps1 -Kind kx`. Each run starts 1, 5 or 10 fake-agent sessions on the scheduler's first tick, then measures idle, streaming, and idle again after the sessions. The window is visible but not focused.
 
-The window is visible but not focused, as the harness does by default. The full tables are `keplorayx-debug.md` and `dove-gpui-release.md`, with the raw data in the `.json` files beside them.
+The builds compared:
+- **keplorayx:** a **debug** build (`C:/dvw/target-kx-zgx/debug/keplorayx.exe`), with Zeron's design system vendored (`ui/ds`) and the notch window open.
+- **Dove (GPUI):** its **release** build, `C:/dvw/target-ui-v4/release/dove.exe`, measured on 2026-11-04 against a scratch `DOVE_HOME`, read-only.
 
-- **keplorayx:** a **debug** build (dev profile, optimised with debuginfo), `C:/dvw/target-kx-zgx/debug/keplorayx.exe`, 70 MB. It includes the notch window.
-- **Dove (GPUI):** the **release** build in `C:/dvw/target-ui-v4/release/dove.exe`, 105 MB. It was run read-only against a scratch `DOVE_HOME`.
+## The final build (Zeron's shell, composer, sidebar, transcript, panel)
 
-| Sessions | | Own private RAM, streaming | Main CPU, streaming (% of a core) | Main CPU idle | Main CPU after | Frames/s idle | Window shown |
-|---|---|---|---|---|---|---|---|
-| 1 | keplorayx | **105.5 MB** | 7.0 | 0.31 | 0.42 | **0** | 803 ms |
-| 1 | Dove | 139.0 MB (+0.9 % other) | 3.1 | 0.52 | 0.52 | n/a | 667 ms |
-| 5 | keplorayx | **110.0 MB** | 8.0 | 0.21 | 0.52 | **0** | 828 ms |
-| 5 | Dove | 157.6 MB (+1.1 % other) | 3.8 | 0.00 | 0.31 | n/a | 583 ms |
-| 10 | keplorayx | **116.5 MB** | 9.3 | 0.31 | 0.31 | **0** | 736 ms |
-| 10 | Dove | 171.8 MB (+1.1 % other) | 6.1 | 0.21 | 0.21 | n/a | 725 ms |
+| Sessions | Own private RAM, streaming | Main CPU, streaming | Frames/s, streaming | Main CPU idle | Frames/s idle | Main CPU after |
+|---|---|---|---|---|---|---|
+| 1 | 183.9 MB (Dove 139.0) | 5.2 % (Dove 3.1) | 4.0 | 0.83 % | **0** | 0.52 % |
+| 5 | 186.0 MB (Dove 157.6) | 5.8 % (Dove 3.8) | 4.2 | 1.67 % | **0** | 1.25 % |
+| 10 | 197.8 MB (Dove 171.8) | 16.0 % (Dove 6.1) | 20.7 | 0.62 % | **0** | 0.73 % |
+
+The run just before the shell rework, with Zeron's composer, sidebar and transcript already in, measured streaming CPU at 3.0 / 4.6 / 7.0 % and memory at 148 / 196 / 181 MB.
 
 ## What it says
 
-- **Memory: keplorayx uses 25 to 32 % less**, and it grows more slowly with sessions: +11 MB from 1 to 10 sessions, against Dove's +33 MB.
-- **Idle:**
-  - keplorayx draws **no frames at all** when nothing moves, before and after the sessions (`ZGX_PRESENT_LOG`). That meets the "idle frames = 0" gate.
-  - Idle CPU is a fraction of a percent for both.
-- **Streaming CPU is higher.** keplorayx's main process uses about 2 to 4 points more than Dove's, and it renders a steady 40 frames a second while anything streams.
-  - The 40 is flat whatever the session count, which points at a frame cap or one animation, not per-token work.
-  - Two caveats on the comparison:
-    1. keplorayx here is a debug build against Dove's release build.
-    2. Dove's work is split: about 1 % of it sits in a helper process ("other" above).
-
-  Next steps: a release build of keplorayx, then finding what holds 40 frames a second while streaming. Candidates are the breath clock (30 fps when a live indicator is on screen) and the transcript's `follow`.
-- **Window shown:** keplorayx's window takes about 0.1 to 0.2 s longer to appear. Most of that is the debug build loading its scripts before the first frame.
+- **Idle draws nothing.** Zero frames at idle, before and after the sessions, in every run.
+- **Streaming no longer draws a steady 40 frames a second.** The script-driven breath clock is gone; status rings now run on the GPU and only while seen. At 1 and 5 sessions the window draws about 4 frames a second while agents stream, and CPU is within 1–2 points of Dove's release build.
+- **At 10 sessions it's heavier.** About 21 frames a second and 16 % CPU (the previous run measured 7 %). This run varies more than the others, and the debug build is being compared with Dove's release, but it needs a look: likely the sidebar's rows and the transcript's working line all updating as ten threads move at once.
+- **Memory went up.** It's now 25–45 MB more than Dove. Before the design system was vendored it was 25–32 % less. Zeron's components, their strings and their assets load into the scripts' heap. Loading only the components a screen uses, or a release build, should bring some of it back. That's not measured yet.
 
 ## Not measured
 
-- **Key latency:** zgx has no Windows input trace yet (`zgx-asks/input-trace-windows`), so it reads n/a for keplorayx.
-- **Dove's frame rate:** n/a, because its release build doesn't emit `DOVE_FRAME_STATS`.
-- **Binary size gate (115 MB):** the release keplorayx binary wasn't built tonight (debug only, as asked). The debug binary is 70 MB.
+- **Key latency:** zgx has no Windows input trace yet, so it reads n/a.
+- **A release build of keplorayx:** not built (debug only, as asked).
 
 ## Run it again
 
 ```powershell
 cargo build -p keplorayx -p dove-escrow
 cargo build --release --manifest-path scripts/perf/fake-agent/Cargo.toml
-& scripts\perf\perf.ps1 -Exe C:\dvw\target-kx-zgx\debug\keplorayx.exe -FakeAgent C:\dvw\target-kx-zgx\release\dove-fake-agent.exe -Sessions @(1,5,10)
+& scripts\perf\perf.ps1 -Kind kx -Exe C:\dvw\target-kx-zgx\debug\keplorayx.exe -FakeAgent C:\dvw\target-kx-zgx\release\dove-fake-agent.exe -Sessions @(1,5,10)
 ```
 
-Run it from inside PowerShell, as above. Through `powershell -File`, `-Sessions 1,5,10` arrives as the one number 1510, so pass `@(1,5,10)` from a PowerShell prompt.
+Run it from inside PowerShell, as above. Through `powershell -File`, `-Sessions 1,5,10` arrives as the one number 1510.
