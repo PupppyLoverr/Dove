@@ -30,6 +30,8 @@ public class KxShot {
   [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
   // Off the screen, unfocused: a capture never comes in front of you.
   [DllImport("user32.dll")] static extern bool IsIconic(IntPtr h);
+  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
   [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr h, int cmd);
   // Minimized meanwhile: shown again without taking focus, still away.
   public static bool Unfold(IntPtr h) { if (!IsIconic(h)) return false; ShowWindow(h, 4); Away(h); return true; }
@@ -78,11 +80,13 @@ $env:KX_FIXTURE = $Fixture
 $env:KX_SIZE = "${Width}x${Height}"
 $env:KX_SOLID = "1"
 $err = "$env:TEMP\kx-shot.err"
+# Whatever you were using keeps the keys: a capture never takes them.
+$yours = [KxShot]::GetForegroundWindow()
 $p = Start-Process -FilePath $Exe -ArgumentList @($Mode) -PassThru -RedirectStandardError $err -RedirectStandardOutput "$env:TEMP\kx-shot.out"
 $hwnd = [IntPtr]::Zero
 $sw = [Diagnostics.Stopwatch]::StartNew()
 while ($hwnd -eq [IntPtr]::Zero -and $sw.ElapsedMilliseconds -lt 30000) { Start-Sleep -Milliseconds 100; $hwnd = [KxShot]::Find([uint32]$p.Id) }
-if ($hwnd -ne [IntPtr]::Zero) { [KxShot]::Away($hwnd) }
+if ($hwnd -ne [IntPtr]::Zero) { [KxShot]::Away($hwnd); [void][KxShot]::SetForegroundWindow($yours) }
 if ($hwnd -eq [IntPtr]::Zero) { "no window"; Get-Content $err -TotalCount 30; Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue; exit 1 }
 Start-Sleep -Seconds $Seconds
 $hwnd = [KxShot]::Find([uint32]$p.Id)

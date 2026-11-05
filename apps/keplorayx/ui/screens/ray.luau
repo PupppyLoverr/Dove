@@ -23,7 +23,9 @@ local M = {}
 
 export type Result = { id: string, icon: string, title: string, hint: string?, run: () -> () }
 
-local text = ui.state("ray.text", "")
+-- The draft: kept across launches, so one not yet sent is never lost
+-- (a fixture's stays its own run's).
+local text = if store.fixture ~= "" then ui.state("ray.text", "") else ui.persist("ray.draft", "")
 local active = ui.state("ray.active", 1)
 local sending = ui.state("ray.sending", false)
 local notice = ui.state("ray.notice", nil :: any)
@@ -402,27 +404,40 @@ local function result_row(r: Result, i: number): Node
 	}
 end
 
-function M.Ray(props: { place: "home" | "thread" }): Node
+-- `variant` (Home): "center", opened out mid-page, its menus opening down;
+-- "bottom", opened out at the foot; "slim", one line at the foot that
+-- opens out as the draft outgrows it.
+function M.Ray(props: { place: "home" | "thread", variant: string? }): Node
+	local variant = props.variant or "center"
+	-- What matches floats under the pill mid-page, else over it.
+	local below = props.place == "home" and variant == "center"
 	local home = props.place == "home"
-	-- Ctrl+K (or Search) asks for focus.
+	-- Asked for (Ctrl+N, Search) it takes the keys; and on a new thread it
+	-- has them from the start, so you can just type.
 	ui.effect(function()
 		if nav.ray_focus:get() > 0 then
 			focus:set(focus:peek() + 1)
 		end
 	end)
+	if home then
+		focus:set(focus:peek() + 1)
+	end
 	local running = ui.computed(function(): boolean
 		local t = store.thread:get()
 		return not home and t ~= nil and t.running
 	end)
 	local composer = Composer {
 		value = text,
-		placeholder = if home then "Ask anything, @ to mention, > for commands" else "Reply, or > for commands",
-		keep = `kx.ray.{props.place}`,
-		expanded = home,
-		menus_below = home,
+		placeholder = if not home then "Reply, or > for commands"
+			elseif variant == "slim" then "Ask anything…"
+			else "Ask anything, @ to mention, > for commands",
+		keep = `kx.ray.{props.place}.{variant}`,
+		expanded = home and variant ~= "slim",
+		menus_below = home and variant == "center",
 		-- Over Home's sky the pill's glass runs on under its chips.
 		over_art = function(): boolean
-			return home and require("@screens/home").sky:get() ~= "none"
+			-- (The sky fades out toward the foot: only mid-page is it behind.)
+			return home and variant == "center" and require("@screens/home").sky:get() ~= "none"
 		end,
 		running = running,
 		access = M.access,
@@ -527,10 +542,10 @@ function M.Ray(props: { place: "home" | "thread" }): Node
 				absolute = true,
 				left = 0,
 				right = 0,
-				top = if home then "100%" else nil,
-				bottom = if home then nil else "100%",
-				mt = if home then "$space.1" else nil,
-				mb = if home then nil else "$space.2",
+				top = if below then "100%" else nil,
+				bottom = if below then nil else "100%",
+				mt = if below then "$space.1" else nil,
+				mb = if below then nil else "$space.2",
 				z = 10,
 				max_h = 320,
 				ui.each(results, result_row, {

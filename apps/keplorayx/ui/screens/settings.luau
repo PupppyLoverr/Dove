@@ -192,6 +192,16 @@ local function appearance(): Node
 		group(
 			"New thread",
 			setting(
+				"Composer",
+				"In the middle under the greeting, or at the foot as in a thread; slim is one line until you write more.",
+				kx.Segmented {
+					value = require("@screens/home").place,
+					label = "Composer",
+					width = 96,
+					options = require("@screens/home").PLACES,
+				}
+			),
+			setting(
 				"Sky",
 				"What a new thread sits over.",
 				kx.Segmented {

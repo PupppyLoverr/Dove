@@ -118,6 +118,28 @@ local function sky_page(): any
 	return { id = "sky", title = "Sky", items = items }
 end
 
+local function composer_page(): any
+	local home = require("@screens/home")
+	local ICON: { [string]: string } = { center = "layout-three-pane", bottom = "arrow-down", slim = "text-cursor" }
+	local items: { any } = {}
+	for _, p in home.PLACES do
+		table.insert(items, {
+			id = `composer:{p.value}`,
+			label = p.label,
+			section = "Composer",
+			icon = ICON[p.value],
+			checked = function()
+				return home.place:get() == p.value
+			end,
+			run = function()
+				home.place:set(p.value)
+				nav.go("home")
+			end,
+		})
+	end
+	return { id = "composer", title = "Composer", items = items }
+end
+
 local function commands(): { any }
 	return {
 		{ id = "new", label = "New thread", section = "Actions", icon = "pen-new-square", shortcut = "ctrl+n", pinned = true, run = function()
@@ -142,6 +164,7 @@ local function commands(): { any }
 		{ id = "constellation", label = "Constellation", section = "Go to", icon = "constellation", run = go("constellation") },
 		{ id = "settings", label = "Settings", section = "Go to", icon = "settings", shortcut = "ctrl+,", run = go("settings") },
 		{ id = "theme", label = "Theme", section = "Settings", icon = "palette", keywords = "dark light night dawn appearance", page = theme_page },
+		{ id = "composer", label = "Where a new thread's composer sits", section = "Settings", icon = "layout-three-pane", keywords = "centre center bottom slim position", page = composer_page },
 		{ id = "sky", label = "Sky behind a new thread", section = "Settings", icon = "gallery", keywords = "wallpaper background art", page = sky_page },
 		{ id = "motion", label = "Reduce motion", section = "Settings", icon = "waveform", toggle = kx.motion.reduce },
 		{ id = "glass", label = "Frosted glass", section = "Settings", icon = "layers", keywords = "transparency blur", toggle = kx.material.frosted },
