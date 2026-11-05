@@ -110,15 +110,21 @@ local next_id = 0
 function M.toast(t: { title: string, body: string?, kind: string?, duration: number? })
 	next_id += 1
 	local id = next_id
-	local list = table.clone(toasts:peek())
+	-- The same toast again replaces the one showing, not stacks on it.
+	local list = {}
+	for _, x in toasts:peek() do
+		if x.title ~= t.title or x.body ~= t.body then
+			table.insert(list, x)
+		end
+	end
 	table.insert(list, { id = id, title = t.title, body = t.body, kind = t.kind })
 	while #list > 3 do
 		table.remove(list, 1)
 	end
 	toasts:set(list)
-	-- An error waits for you; anything else goes on its own.
-	if t.kind ~= "error" then
-		ui.after(t.duration or 3200, function()
+	-- An error stays longer; everything goes on its own.
+	do
+		ui.after(t.duration or if t.kind == "error" then 7000 else 3200, function()
 			local now = {}
 			for _, x in toasts:peek() do
 				if x.id ~= id then

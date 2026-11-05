@@ -249,13 +249,20 @@ local function pick_folder()
 		if not folder then
 			return
 		end
-		-- The handle hides its path: a file in it shows where it is.
-		local entries = folder:list("", { limit = 1, files = true }):await()
+		-- The handle hides its path: a file in it shows where it is, its
+		-- full path less its path inside. Anywhere in it, not only at its
+		-- top (a project's top can hold folders alone).
+		local entries = folder:list("", { recursive = true, limit = 400, files = true }):await()
 		local path: string? = nil
-		local first = entries and entries[1]
-		if first and first.file then
-			local full: string = first.file.path
-			path = string.sub(full, 1, #full - #first.path - 1)
+		for _, e in entries or {} do
+			if e.file and e.file.path then
+				local full: string = e.file.path
+				local inside = string.gsub(e.path, "/", "\\")
+				if string.sub(string.gsub(full, "/", "\\"), -#inside) == inside then
+					path = string.sub(full, 1, #full - #inside - 1)
+					break
+				end
+			end
 		end
 		if not path then
 			kx.toast { title = "That folder is empty", body = "Add a file to it first", kind = "error" }
