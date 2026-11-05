@@ -55,7 +55,6 @@ local locale = require("@self/locale")
 local SessionRow = require("@self/session_row")
 local People = require("@self/people")
 local EditorMenu = require("@self/editor_menu")
-local Kbd = require("@self/kbd")
 
 -- The page's split chats (screens/shell/split, which keeps these):
 -- the chats side by side now, each row of theirs selected; and whether a
@@ -2006,33 +2005,19 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 		w_full = true,
 		gap = "$zeron.list.gap",
 		shrink = 0,
-		-- Keplorayx: New thread as Dove's sidebar had it, a lifted button with
-		-- its key in caps, the one bordered thing at the top.
-		ui.column {
-			w_full = true,
-			shrink = 0,
-			rounded = "$radius.lg",
-			bg = "$surface.base",
-			border = 1,
-			border_color = "$border",
-			mb = "$space.1",
-			row {
-				name = function(): string
-					return locale.s("ds.sidebar.new_chat")
-				end,
-				lead = Icon { name = "pen-new-square", size = 16 },
-				words = line(
-					label(function(): string
-						return locale.s("ds.sidebar.new_chat")
-					end, nil, "$font.weight.medium"),
-					if is_island then nil else Kbd { keys = "cmd+n", tone = "quiet" }
-				),
-				on_click = function()
-					if props.on_new then
-						props.on_new(nil)
-					end
-				end,
-			},
+		row {
+			name = function(): string
+				return locale.s("ds.sidebar.new_chat")
+			end,
+			lead = Icon { name = "plus", size = 16 },
+			words = line(label(function(): string
+				return locale.s("ds.sidebar.new_chat")
+			end, nil, "$font.weight.medium"), hint(ui.shortcut_text("cmd+n"))),
+			on_click = function()
+				if props.on_new then
+					props.on_new(nil)
+				end
+			end,
 		},
 		row {
 			name = function(): string

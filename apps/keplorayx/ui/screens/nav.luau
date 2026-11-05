@@ -37,22 +37,20 @@ M.sidebar_open = {
 		M.sidebar_collapsed:set(not open)
 	end,
 } :: any
--- Its density: two lines a thread (Dove's), or one.
-M.sidebar_compact = kept("kx.sidebar_compact", false)
--- Its width, dragged at its edge.
-M.sidebar_width = kept("kx.sidebar_width", 272)
--- How it's grouped: one list of threads (Dove's) unless you choose
--- otherwise in its view menu.
-M.sidebar_organize = kept("kx.sidebar_organize", {} :: any)
+-- Its density: one line a thread (Zeron's), or two.
+M.sidebar_compact = kept("kx.sb.compact", true)
+-- Its width, dragged at its edge (Zeron's 256 to start).
+M.sidebar_width = kept("kx.sb.width", 256)
+-- How it's grouped: by project, each project's threads on its tree's line
+-- (Zeron's), unless you choose otherwise in its view menu.
+M.sidebar_organize = kept("kx.sb.organize", { "project" } :: any)
 
--- What a thread's row shows (its view menu's Show): its branch and project
--- under its title, its pull request and its agent's mark, as Dove's rows;
--- no project tile beside the title.
+-- What a thread's row shows (its view menu's Show), as Zeron's rows.
 M.sidebar_details = {
 	branch = kept("kx.sidebar.branch", true),
 	pr = kept("kx.sidebar.pr", true),
 	harness = kept("kx.sidebar.harness", true),
-	project_icon = kept("kx.sidebar.project_icon", false),
+	project_icon = kept("kx.sb.project_icon", true),
 	location = kept("kx.sidebar.location", true),
 }
 

@@ -12,8 +12,8 @@
 	"type": "dark",
 	"extends": "zgx-dark",
 	"tokens": {
-		"background": "#0b0b0dcc",
-		"glass.tint": "#0b0b0dcc",
+		"background": "#0b0b0d99",
+		"glass.tint": "#0b0b0d99",
 		"glass.blur": 28,
 		"popover.bg": "#2a2a2f",
 		"surface": {

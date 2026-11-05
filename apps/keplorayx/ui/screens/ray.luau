@@ -59,21 +59,38 @@ local MARK: { [string]: string } = {
 	hermes = "hermes",
 }
 
+-- Its models, as the engine lists them (src/panels.rs `kx.models`).
+local models = ui.state("ray.models", {} :: { any })
 -- The picker's tabs: every installed agent.
 local harnesses = ui.computed(function(): { any }
+	-- (Only agents with models to pick: a tab with none is a dead end. An
+	-- agent with no mark of Zeron's draws its initial.)
+	local with: { [string]: boolean } = {}
+	for _, m in models:get() do
+		with[m.harness] = true
+	end
 	local out: { any } = {}
 	for _, a in store.agents:get() do
-		table.insert(out, { id = a.id, label = a.label, mark = MARK[a.id] or "claude" })
+		if with[a.id] then
+			table.insert(out, { id = a.id, label = a.label, mark = MARK[a.id] })
+		end
 	end
 	return out
 end)
 
--- Its models, as the engine lists them (src/panels.rs `kx.models`).
-local models = ui.state("ray.models", {} :: { any })
 store.call("kx.models", nil, {}):after(function(list: any)
 	models:set(list or {})
-	-- No model chosen yet: the first agent's first.
-	if M.model:peek() == nil and list and list[1] then
+	-- No model chosen yet, or one this computer no longer has (its agent
+	-- gone, its catalog changed): the first agent's first.
+	local chosen = M.model:peek()
+	local here = false
+	for _, m in list or {} do
+		if m.value == chosen then
+			here = true
+			break
+		end
+	end
+	if not here and list and list[1] then
 		M.model:set(list[1].value)
 		M.effort:set(list[1].effort)
 	end
@@ -313,9 +330,20 @@ local project_list = ui.computed(function(): { any }
 end)
 local project_choice = ui.state("ray.project_choice", nil :: string?)
 ui.effect(function()
+	-- The last chosen, while it's still a project here (one removed, or a
+	-- data folder changed, leaves an id the engine no longer has); else the
+	-- first.
 	local id = M.project:get()
-	if id == "" then
-		local first = store.projects:get()[1]
+	local projects = store.projects:get()
+	local known = false
+	for _, p in projects do
+		if p.id == id then
+			known = true
+			break
+		end
+	end
+	if not known then
+		local first = projects[1]
 		id = if first then first.id else ""
 	end
 	project_choice:set(if id ~= "" then id else nil)

@@ -158,7 +158,7 @@ function M.view(): Node
 			return { id = "you", name = if n ~= "" then n else "You" }
 		end,
 		-- Room for the window's title bar over its top.
-		top = 40,
+		top = 38,
 		pages = pages,
 		on_page = function(p: any)
 			nav.go(p.id)

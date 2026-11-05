@@ -37,6 +37,13 @@ function M.popups_see_through(): boolean
 	return M.see_through() and (popups_blur == nil or popups_blur:get())
 end
 
+-- The window's backdrop follows: frosted, a blur of the desktop (Acrylic on
+-- Windows); not, Mica's quiet tint under a solid ground.
+ui.effect(function()
+	local on = M.see_through()
+	pcall(ui.invoke, "glass", on)
+end)
+
 -- The window's own ground: the theme's scrim over the system backdrop,
 -- or, solid, the night (or dawn) itself.
 function M.window_bg(): () -> string

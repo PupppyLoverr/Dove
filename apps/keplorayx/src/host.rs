@@ -558,8 +558,11 @@ async fn send(tasks: &zgx_desktop::TaskSpawner, state: &Host, req: Value) -> Res
                 // installed; else the first that is.
                 let installed = engine.installed();
                 let harness = harness.or_else(|| persona.as_ref().and_then(|p| p.harness).map(|h| h.id().to_string()));
+                // (By id, not only among those found on PATH: an agent set to
+                // a program of its own in Settings is as good; the engine
+                // finds its program either way.)
                 let harness = harness
-                    .and_then(|id| installed.iter().find(|i| i.kind.id() == id).map(|i| i.kind))
+                    .and_then(|id| dove_proto::HarnessKind::from_id(&id))
                     .or_else(|| installed.first().map(|i| i.kind))
                     .ok_or_else(|| anyhow::anyhow!("no agent installed"))?;
                 let title: String = text.lines().next().unwrap_or("").chars().take(60).collect();
@@ -577,7 +580,17 @@ async fn send(tasks: &zgx_desktop::TaskSpawner, state: &Host, req: Value) -> Res
     .await
     .ok_or("failed")?
     .map_err(|e| format!("{e:#}"))?;
+    let id = started.task;
     attach(tasks, state, started);
+    // The open thread, said as such (its title and agent, running): a new
+    // one's sidebar row, its composer's Stop and its panel all read it.
+    let engine = state.borrow().engine.clone();
+    if let Some(Ok(Some(task))) = off_thread(move || engine.store.task(id)).await {
+        let st = state.borrow();
+        if st.open == Some(id) {
+            st.thread.set(thread_value(&task.id, &task.title, task.harness.label(), true, ""));
+        }
+    }
     spawn_refresh(tasks, state);
     Ok(())
 }

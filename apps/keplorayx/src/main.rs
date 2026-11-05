@@ -116,13 +116,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let root = dove_store::default_root();
     let engine = dove_core::Engine::new(root)?;
-    // Which agents are installed: PATH lookups, off the window's way.
-    {
-        let engine = engine.clone();
-        std::thread::spawn(move || {
-            engine.rescan_harnesses();
-        });
-    }
+    // Which agents are installed, before any window asks: PATH lookups
+    // alone, no process started. (Done on a thread, the first window's
+    // list was published before it finished: no agents, nothing to chat
+    // with, until something else refreshed it.)
+    engine.rescan_harnesses();
 
     // No screen asked for: First Light the first time, the main window after.
     let screen = screen.unwrap_or_else(|| {
@@ -194,6 +192,13 @@ fn open_main(cx: &mut WindowContext, engine: Arc<dove_core::Engine>, inspect: bo
     let host = script_host(cx, "app.luau");
     host::install(cx, &host, engine.clone());
     account::install(&host, &cx.tasks, engine.clone());
+    // Frosted glass on or off (Settings › Appearance): the main window's
+    // backdrop follows it. (Its own windows only: the notch and First
+    // Light's overlay keep theirs.)
+    let window = cx.window.clone();
+    host.action("glass", move |on| {
+        window.set_glass(Some(frost(matches!(on, Value::Bool(true)))));
+    });
     host.shared("kx.data_dir", engine.store.root().to_string_lossy().as_ref());
     // The notch, over every window: a click on it brings this window forward
     // on the thread it showed (`notch.focus`, which app.luau follows).
@@ -291,6 +296,15 @@ fn fonts() -> impl Iterator<Item = Result<FontData, Box<dyn std::error::Error>>>
 }
 
 /// A development build's data: apart from the shipping app's `~/.dove`.
+/// The window's glass: frosted, a blur of the desktop behind it (Windows'
+/// Acrylic, which zgx gives its heads-up material; macOS's own vibrancy
+/// under a window's background); or, not frosted, Windows' Mica, which
+/// only tints (the content paints itself solid then anyway).
+fn frost(frosted: bool) -> Glass {
+    let material = if cfg!(windows) && frosted { GlassMaterial::Hud } else { GlassMaterial::UnderWindowBackground };
+    Glass::new(material).plain()
+}
+
 /// Opens `target` (an http(s) address or a file's path) in the system's app
 /// for it. Nothing else: no other scheme is handed to the shell.
 pub fn open_external(target: &str) {
@@ -340,7 +354,7 @@ fn window(screen: Screen) -> WindowOptions {
         frame_autosave: std::env::var_os("KX_SIZE").is_none().then(|| autosave.into()),
         decorations: cfg!(target_os = "macos"),
         titlebar: Titlebar::Inset,
-        glass: Some(Glass::new(GlassMaterial::UnderWindowBackground).plain()),
+        glass: Some(frost(true)),
         ..Default::default()
     }
 }
