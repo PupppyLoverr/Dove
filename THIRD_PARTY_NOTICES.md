@@ -45,6 +45,15 @@ zgx app (`apps/zgx`):
   Settings (after `ui/ds/sidebar.luau`, `composer.luau`, `transcript.luau`,
   `screens/panel/` and `screens/settings/`).
 
+- **Vendored whole:** Zeron's design system, `ui/ds/` (its components:
+  the composer and model picker, the sidebar, the transcript, the command
+  palette, the wallpaper and the rest), with its English strings
+  (`ui/locales/en.json`, reworded for Keplorayx) and the assets it draws
+  (`ui/assets/icons`, `composer`, `lightbox`, `art`, and four skies from
+  `assets/cards`). Changed where marked "Keplorayx": its themes are Orbit's,
+  its icons draw Keplorayx's own glyphs where there is one of the name, and
+  the sidebar's New thread is Dove's lifted button.
+
 Each file names what it took. Its fonts are Geist, Geist Mono and Instrument
 Serif (OFL, below), copied with their licences into `apps/keplorayx/fonts/`.
 

@@ -129,6 +129,41 @@ local function no_project(): Node
 	}
 end
 
+-- The sky behind a new thread (Zeron's new-chat wallpaper, ds/wallpaper):
+-- one of a few night skies under an effect, faded from the top to nothing
+-- at its foot. Settings › Appearance chooses both; "none" is the bare glass.
+M.SKIES = {
+	{ value = "violet-dusk", label = "Dusk" },
+	{ value = "aurora", label = "Aurora" },
+	{ value = "saturnine", label = "Saturn" },
+	{ value = "black-hole", label = "Event horizon" },
+	{ value = "none", label = "None" },
+}
+M.sky = ui.persist("kx.sky", "violet-dusk")
+M.sky_effect = ui.persist("kx.sky_effect", "dither")
+
+local function sky(): Node
+	local wallpaper = require("@ds/wallpaper")
+	return ui.column {
+		absolute = true,
+		left = 0,
+		right = 0,
+		top = 0,
+		bottom = 0,
+		pointer_events = "none",
+		wallpaper.Wallpaper {
+			effect = M.sky_effect,
+			key = function(): string
+				local s = M.sky:get()
+				return if s == "none" then "" else s
+			end,
+			content = function(key: string): Node
+				return wallpaper.Picture { src = `assets/cards/{key}/sky.webp`, w = 576, h = 768, y = 0.35 }
+			end,
+		},
+	}
+end
+
 function M.view(): Node
 	local has_project = ui.computed(function()
 		return #store.projects:get() > 0
@@ -137,8 +172,10 @@ function M.view(): Node
 		grow = 1,
 		w_full = true,
 		h_full = true,
+		relative = true,
 		items = "center",
 		justify = "center",
+		sky(),
 		px = "$space.6",
 		pb = "$space.8",
 		ui.column {
@@ -163,7 +200,6 @@ function M.view(): Node
 							line_height = "$kx.hero.line",
 							letter_spacing = "$kx.hero.tracking",
 						},
-						kx.Caption { "What should your agents work on?", literal = true, align = "center" },
 					},
 					ray.Ray { place = "home" },
 					ui.row {

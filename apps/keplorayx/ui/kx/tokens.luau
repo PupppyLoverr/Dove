@@ -41,6 +41,10 @@ function M.setup()
 		return
 	end
 	ready = true
+	-- The vendored design system (ui/ds, Zeron's): its words' catalog, then
+	-- its tokens declared (their values come from Orbit's themes, below).
+	require("@ds/locale")
+	require("@ds/tokens").setup()
 	local agents: { [string]: string } = {}
 	for id, colour in M.AGENTS do
 		agents[id] = colour

@@ -23,8 +23,38 @@ local function kept<T>(key: string, default: T): State<T>
 	return if fixture then ui.state(key, default) else ui.persist(key, default)
 end
 
--- The sidebar shown or folded away (Ctrl+B).
-M.sidebar_open = kept("kx.sidebar_open", true)
+-- The sidebar folded away (Ctrl+B), as ds/sidebar takes it; and the same
+-- read the other way round, for the buttons that bring it back.
+M.sidebar_collapsed = kept("kx.sidebar_collapsed", false)
+M.sidebar_open = {
+	get = function(_): boolean
+		return not M.sidebar_collapsed:get()
+	end,
+	peek = function(_): boolean
+		return not M.sidebar_collapsed:peek()
+	end,
+	set = function(_, open: boolean)
+		M.sidebar_collapsed:set(not open)
+	end,
+} :: any
+-- Its density: two lines a thread (Dove's), or one.
+M.sidebar_compact = kept("kx.sidebar_compact", false)
+-- Its width, dragged at its edge.
+M.sidebar_width = kept("kx.sidebar_width", 272)
+-- How it's grouped: one list of threads (Dove's) unless you choose
+-- otherwise in its view menu.
+M.sidebar_organize = kept("kx.sidebar_organize", {} :: any)
+
+-- What a thread's row shows (its view menu's Show): its branch and project
+-- under its title, its pull request and its agent's mark, as Dove's rows;
+-- no project tile beside the title.
+M.sidebar_details = {
+	branch = kept("kx.sidebar.branch", true),
+	pr = kept("kx.sidebar.pr", true),
+	harness = kept("kx.sidebar.harness", true),
+	project_icon = kept("kx.sidebar.project_icon", false),
+	location = kept("kx.sidebar.location", true),
+}
 
 -- Threads pinned to the sidebar's top, by id (yours, on this device).
 M.pinned = kept("kx.pinned", {} :: { [string]: boolean })

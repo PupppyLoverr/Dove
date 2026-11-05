@@ -42,7 +42,9 @@ ui.command {
 	id = "search",
 	title = "Search and commands",
 	key = "ctrl+k",
-	run = nav.focus_ray,
+	run = function()
+		require("@screens/palette").toggle()
+	end,
 }
 ui.command {
 	id = "settings",
@@ -329,4 +331,5 @@ return ui.row {
 	}),
 	ui.show(dragging, drop_veil),
 	kx.Toasts {},
+	require("@screens/palette").view(),
 }

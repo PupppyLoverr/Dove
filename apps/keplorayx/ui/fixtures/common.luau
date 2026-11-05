@@ -32,6 +32,7 @@ local function thread(id: string, title: string, p: number, agent: string, label
 		harness_id = agent,
 		updated = NOW - ago * MIN,
 		unread = unread == true,
+		branch = if p == 1 then "zgx/phase-a" elseif p == 2 then "main" else "",
 	}
 end
 
@@ -109,6 +110,21 @@ M.stubs = {
 				{ id = "m1", name = "Iris", role = "Reviewer", avatar = "", hue = 0.6, harness = "codex", instructions = "Reads every diff twice. Asks for a test before anything ships." },
 				{ id = "m2", name = "Theo", role = "Frontend lead", avatar = "", hue = 0.3, harness = "claude_code", instructions = "Keeps the interface calm and fast; no layout in a hot path." },
 			},
+		}
+	end,
+	["kx.models"] = function()
+		local efforts = {
+			{ value = "low", label = "Low" },
+			{ value = "medium", label = "Medium" },
+			{ value = "high", label = "High" },
+			{ value = "x_high", label = "Extra high" },
+		}
+		return {
+			{ value = "claude_code:opus", label = "Opus 5.5", harness = "claude_code", efforts = efforts, effort = "high" },
+			{ value = "claude_code:sonnet", label = "Sonnet 5.5", harness = "claude_code", efforts = efforts, effort = "medium" },
+			{ value = "codex:gpt-5.5", label = "GPT-5.5", harness = "codex", efforts = efforts, effort = "medium" },
+			{ value = "gemini:pro", label = "Gemini 3 Pro", harness = "gemini", efforts = {}, effort = nil },
+			{ value = "open_code:default", label = "Default", harness = "open_code", efforts = {}, effort = nil },
 		}
 	end,
 	["kx.settings"] = function()

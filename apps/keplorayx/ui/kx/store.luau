@@ -14,6 +14,11 @@ export type Thread = {
 	harness_id: string,
 	updated: number,
 	unread: boolean,
+	-- Where it works and with what (the host gives these; a fixture may not).
+	branch: string?,
+	model: string?,
+	pinned: boolean?,
+	worktree: boolean?,
 }
 
 export type Project = { id: string, name: string, path: string }
@@ -101,13 +106,17 @@ function store.decide(request_id: string, decision: string, answers: { { string 
 	ui.invoke("kx.decide", { request_id = request_id, decision = decision, answers = answers })
 end
 
--- `harness`: the agent a new thread uses; `access`: "ask", "edits" or
--- "full" (how much it may do before it asks).
-function store.send(text: string, project: string?, harness: string?, access: string?, persona: string?): any
+-- What a new thread uses: `project`, `harness` (the agent), `model`
+-- ("<agent>:<model>"), `effort`, `access` ("supervised", "edits", "full" or
+-- "plan": how much it may do before it asks) and `persona` (a teammate).
+-- In a thread, the message goes to it as it is.
+function store.send(text: string, with: { [string]: any }?): any
 	if stubbed() then
 		return ui.sleep(0)
 	end
-	return ui.call("kx.send", { text = text, project = project, harness = harness, access = access, persona = persona })
+	local req = table.clone(with or {})
+	req.text = text
+	return ui.call("kx.send", req)
 end
 
 -- A call the host answers, or the fixture's own `stub[name](arg)` (or

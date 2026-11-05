@@ -113,6 +113,39 @@ pub fn install(host: &ScriptHost, engine: Arc<Engine>, open: impl Fn() -> Option
         }
     });
 
+    // The model picker's catalog: every installed agent's models, each with
+    // its reasoning levels (as their ids) and the one it starts on.
+    let e = engine.clone();
+    host.async_action("kx.models", move |_| {
+        let engine = e.clone();
+        async move {
+            off_thread(move || -> Result<Json, String> {
+                let mut models = Vec::new();
+                for kind in engine.installed().into_iter().map(|i| i.kind) {
+                    for m in engine.models(kind) {
+                        let efforts: Vec<Json> = m
+                            .reasoning_levels
+                            .iter()
+                            .map(|l| json!({ "value": serde_json::to_value(l).unwrap_or(Json::Null), "label": l.label() }))
+                            .collect();
+                        let effort = efforts.iter().find(|l| l["value"] == "medium").or(efforts.first()).map(|l| l["value"].clone());
+                        models.push(json!({
+                            "value": format!("{}:{}", kind.id(), m.id),
+                            "label": m.label,
+                            "harness": kind.id(),
+                            "efforts": efforts,
+                            "effort": effort,
+                        }));
+                    }
+                }
+                Ok(Json::Array(models))
+            })
+            .await
+            .ok_or("failed")?
+            .map(|j| to_value(&j))
+        }
+    });
+
     let e = engine.clone();
     host.async_action("kx.settings", move |_| {
         let engine = e.clone();

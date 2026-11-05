@@ -131,7 +131,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let entry = entry(screen);
-    zgx_script::compile_ahead(&ui_dir().join(entry), &[("kx", ui_dir().join("kx").as_path())]);
+    zgx_script::compile_ahead(
+        &ui_dir().join(entry),
+        &[("kx", ui_dir().join("kx").as_path()), ("ds", ui_dir().join("ds").as_path())],
+    );
 
     let mut application = Application::new();
     for font in fonts() {

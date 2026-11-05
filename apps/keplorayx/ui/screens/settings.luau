@@ -203,6 +203,35 @@ local function appearance(): Node
 			end)())
 		),
 		group(
+			"New thread",
+			setting(
+				"Sky",
+				"What a new thread sits over.",
+				kx.Segmented {
+					value = require("@screens/home").sky,
+					label = "Sky",
+					width = 72,
+					options = require("@screens/home").SKIES,
+				}
+			),
+			setting(
+				"Effect",
+				"How the sky is drawn.",
+				kx.Segmented {
+					value = require("@screens/home").sky_effect,
+					label = "Effect",
+					width = 72,
+					options = {
+						{ label = "Dither", value = "dither" },
+						{ label = "ASCII", value = "ascii" },
+						{ label = "Halftone", value = "halftone" },
+						{ label = "Lines", value = "scanlines" },
+						{ label = "None", value = "none" },
+					},
+				}
+			)
+		),
+		group(
 			"Motion",
 			setting(
 				"Reduce motion",
@@ -259,7 +288,7 @@ local function agents(): Node
 					label = "Access",
 					width = 84,
 					options = {
-						{ label = "Ask first", value = "ask" },
+						{ label = "Ask first", value = "supervised" },
 						{ label = "Edit files", value = "edits" },
 						{ label = "Full", value = "full" },
 					},

@@ -1,15 +1,16 @@
 --!strict
--- The sidebar, on Zeron's shell (ds/sidebar, session_row; MIT, see
--- THIRD_PARTY_NOTICES.md): the way in (New thread, Search, Inbox,
--- Constellation), what you pinned, then every project with its threads
--- hanging from it on a tree's line. Each thread is led by its agent's mark,
--- in its light, and ends in what it's doing: the working ring, a warm
--- glyph when it needs you, a check when it's done, else how long ago. A
--- project folds; past five threads the rest wait behind "Show more". You
--- and Settings sit at the foot, with where your data lives.
+-- The sidebar: Zeron's (ds/sidebar, vendored; MIT, see
+-- THIRD_PARTY_NOTICES.md), worn as Dove's was. New thread on top as a
+-- lifted button with its key, then Search and the way in (Inbox,
+-- Constellation, Team); then the threads on two lines, as Dove listed
+-- them: its agent's mark, its title, and "project · branch" under it, its
+-- corner saying what it's doing (the working ring, a question or an
+-- approval waiting on you, a failure, work done you haven't seen) or how
+-- long ago it moved. Pinned threads lead. Its view menu ("…") groups by
+-- project, folds to one line a thread, and the rest of Zeron's choices; it
+-- folds away whole with Ctrl+B. You and Settings at the foot.
 
-local kx = require("@kx")
-local Status = require("@kx/status")
+local Sidebar = require("@ds/sidebar")
 local store = require("@kx/store")
 local nav = require("@screens/nav")
 
@@ -17,544 +18,173 @@ type Thread = store.Thread
 
 local M = {}
 
--- A row's height, where its tree's arm meets it, and the trunk's x.
-local ROW_H, TRUNK_X, ARM_TIP, BEND = 30, 17, 30, 6
-local SHOWN = 5
+-- Each agent's mark, as the design system names them.
+local MARK: { [string]: string } = {
+	claude_code = "claude",
+	codex = "openai",
+	cursor = "cursor",
+	grok = "grok",
+	devin = "devin",
+	open_code = "opencode",
+	antigravity = "antigravity",
+	pi = "pi",
+	hermes = "hermes",
+}
 
--- "2m", "3h", "4d", "4 Nov": as short as it can say it.
-local function ago(ms: number): string
-	local now = if store.fixture ~= "" then 1762300000000 else os.time() * 1000
-	local s = math.max(0, (now - ms) / 1000)
-	if s < 60 then
-		return "now"
-	elseif s < 3600 then
-		return `{math.floor(s / 60)}m`
-	elseif s < 86400 then
-		return `{math.floor(s / 3600)}h`
-	elseif s < 7 * 86400 then
-		return `{math.floor(s / 86400)}d`
+-- A thread's state, as its corner says it: nothing for one at rest.
+local function kind(t: Thread): string?
+	if t.status == "needs_you" then
+		return "approval"
+	elseif t.status == "running" then
+		return "working"
+	elseif t.status == "failed" then
+		return if t.unread then "failed" else nil
+	elseif t.unread and (t.status == "done" or t.status == "finished") then
+		return "done"
 	end
-	return os.date("%d %b", math.floor(ms / 1000)) :: string
+	return nil
 end
 
-local function kind(t: Thread): Status.Kind
-	return kx.status.kind_of(t.status)
-end
-
--- The row's end: the ring or a glyph while there's news, else the time.
-local function trailing(get: () -> Thread): Node
-	return ui.switch(function(): string
-		local k = kind(get())
-		return if k == "idle" or (k == "done" and not get().unread) then "time" else "status"
-	end, {
-		status = kx.StatusIcon {
-			kind = function()
-				return kind(get())
-			end,
-			size = 15,
-		},
-		time = ui.text {
-			function()
-				return ago(get().updated)
-			end,
-			literal = true,
-			shrink = 0,
-			tabular = true,
-			text_size = "$font.size.xs",
-			color = "$text.tertiary",
-		},
-	})
-end
-
--- A thread's right-click: zgx's own menu, of Orbit's items.
-local function context_menu(get: () -> Thread): { Node }
-	local id = get().id
+local function session(t: Thread): any
 	return {
-		kx.MenuItem {
+		id = t.id,
+		title = t.title,
+		status = kind(t),
+		-- (ms in the store; the sidebar counts in seconds.)
+		time = math.floor(t.updated / 1000),
+		agent = MARK[t.harness_id],
+		branch = if t.branch and t.branch ~= "" then t.branch else nil,
+		created = math.floor(t.updated / 1000),
+	}
+end
+
+-- Pinned: the store's flag (Dove's), or yours on this device.
+local function pinned(t: Thread): boolean
+	return t.pinned == true or nav.pinned:get()[t.id] == true
+end
+
+local projects = ui.computed(function(): { any }
+	local by: { [string]: any } = {}
+	local out: { any } = {}
+	for _, p in store.projects:get() do
+		local g = { id = p.id, name = p.name, sessions = {} }
+		by[p.id] = g
+		table.insert(out, g)
+	end
+	for _, t in store.threads:get() do
+		if not pinned(t) then
+			local g = by[t.project_id]
+			if not g then
+				g = { id = t.project_id, name = t.project, sessions = {} }
+				by[t.project_id] = g
+				table.insert(out, g)
+			end
+			table.insert(g.sessions, session(t))
+		end
+	end
+	return out
+end)
+
+local pinned_list = ui.computed(function(): { any }
+	local out: { any } = {}
+	for _, t in store.threads:get() do
+		if pinned(t) then
+			table.insert(out, session(t))
+		end
+	end
+	return out
+end)
+
+-- The way in, as rows under Search.
+local PAGES = {
+	{ plugin = "kx", id = "inbox", title = "Inbox", icon = "inbox" },
+	{ plugin = "kx", id = "constellation", title = "Constellation", icon = "constellation" },
+	{ plugin = "kx", id = "team", title = "Team", icon = "users-group" },
+}
+local pages = ui.state("sidebar.pages", PAGES)
+
+local profile_name = ui.persist("kx.profile.name", "")
+
+-- Which thread shows: the open one's id, and choosing one opens it.
+local selected = ui.state("sidebar.selected", nil :: string?)
+ui.effect(function()
+	local t = store.thread:get()
+	local id = if t and nav.route:get() == "thread" then t.id else nil
+	if selected:peek() ~= id then
+		selected:set(id)
+	end
+end)
+ui.effect(function()
+	local id = selected:get()
+	local t = store.thread:peek()
+	if id and (not t or t.id ~= id or nav.route:peek() ~= "thread") then
+		nav.go("thread")
+		store.open(id)
+	end
+end)
+
+local function menu(id: string): { any }?
+	local is_pinned = nav.pinned:peek()[id] == true
+	return {
+		{
+			label = if is_pinned then "Unpin" else "Pin to the top",
 			icon = "pin",
-			if nav.pinned:peek()[id] then "Unpin" else "Pin to the top",
 			on_click = function()
 				nav.toggle_pin(id)
 			end,
 		},
-		kx.MenuItem {
+		{
+			label = "Open",
 			icon = "arrow-up-right",
-			"Open",
 			on_click = function()
-				nav.go("thread")
-				store.open(id)
-			end,
-		},
-		kx.MenuItem {
-			icon = "copy",
-			"Copy the title",
-			on_click = function()
-				ui.clipboard.write(get().title)
+				selected:set(id)
 			end,
 		},
 	}
 end
-
--- A thread's row. `branch`: on a project's tree (its arm drawn to the
--- mark), and `last` ends the trunk at it.
-local function thread_row(get: () -> Thread, branch: boolean, last: (() -> boolean)?): Node
-	local body = kx.Row {
-		size = "sm",
-		pl = if branch then ui.raw(ARM_TIP + 2, "clears the tree's arm") else nil,
-		label = function()
-			return get().title
-		end,
-		selected = function()
-			return store.is_open(get().id)
-		end,
-		on_click = function()
-			nav.go("thread")
-			store.open(get().id)
-		end,
-		context_menu = function(_e: any)
-			return context_menu(get)
-		end,
-		kx.AgentMark {
-			agent = get().harness_id,
-			size = 14,
-			live = function()
-				return get().status == "running"
-			end,
-			needs_you = function()
-				return get().status == "needs_you"
-			end,
-		},
-		ui.text {
-			function()
-				return get().title
-			end,
-			literal = true,
-			truncate = true,
-			grow = 1,
-			min_w = 0,
-			text_size = "$font.size.md",
-			weight = function()
-				return if get().unread then "$font.weight.medium" else "$font.weight.regular"
-			end,
-			color = function()
-				local t = get()
-				return if t.status == "done" and not t.unread then "$text.secondary" else "$text.primary"
-			end,
-		},
-		trailing(get),
-	}
-	if not branch then
-		return body
-	end
-	return ui.div {
-		relative = true,
-		w_full = true,
-		shrink = 0,
-		body,
-		ui.canvas {
-			absolute = true,
-			left = 0,
-			top = 0,
-			bottom = 0,
-			w = ARM_TIP,
-			pointer_events = "none",
-			draw = function(c: any, _: number, h: number)
-				c:fill(
-					kx.tree_line.branch {
-						x = TRUNK_X,
-						mid = ROW_H / 2,
-						tip = ARM_TIP - 4,
-						h = h,
-						bend = BEND,
-						on = not (last and last()),
-					},
-					"$kx.tree"
-				)
-			end,
-		},
-	}
-end
-
--- The threads, grouped under their projects in the order they last moved;
--- pinned threads lead, apart.
-type Group = { id: string, name: string, threads: { Thread } }
-local grouped = ui.computed(function(): { pinned: { Thread }, groups: { Group } }
-	local pins = nav.pinned:get()
-	local pinned: { Thread } = {}
-	local out: { Group } = {}
-	local by: { [string]: Group } = {}
-	for _, t in store.threads:get() do
-		if pins[t.id] then
-			table.insert(pinned, t)
-			continue
-		end
-		local g = by[t.project_id]
-		if not g then
-			g = { id = t.project_id, name = t.project, threads = {} }
-			by[t.project_id] = g
-			table.insert(out, g)
-		end
-		table.insert(g.threads, t)
-	end
-	return { pinned = pinned, groups = out }
-end)
-
-local pinned_list = ui.computed(function(): { Thread }
-	return grouped:get().pinned
-end)
-local group_list = ui.computed(function(): { Group }
-	return grouped:get().groups
-end)
-
-local function by_id(t: Thread): string
-	return t.id
-end
-
--- A project's tile: its initial on a lifted square, in the light of the
--- agent it last worked with.
-local function tile(g: Group): Node
-	local first = g.threads[1]
-	return ui.row {
-		w = 18,
-		h = 18,
-		shrink = 0,
-		rounded = "$radius.md",
-		bg = "$kx.secondary.bg",
-		items = "center",
-		justify = "center",
-		ui.text {
-			string.upper(string.sub(g.name, 1, 1)),
-			literal = true,
-			text_size = "$font.size.xs",
-			weight = "$font.weight.semibold",
-			color = kx.tokens.agent(if first then first.harness_id else nil),
-		},
-	}
-end
-
-local function group_view(g: Group): Node
-	local expanded = ui.state(`sidebar.more.{g.id}`, false)
-	local function folded(): boolean
-		return nav.folded:get()[g.id] == true
-	end
-	local shown = ui.computed(function(): { Thread }
-		if expanded:get() or #g.threads <= SHOWN then
-			return g.threads
-		end
-		return table.move(g.threads, 1, SHOWN, 1, {})
-	end)
-	local hidden = #g.threads - SHOWN
-	local function row(t: Thread): Node
-		return thread_row(function()
-			return t
-		end, true, function()
-			local list = shown:get()
-			return list[#list].id == t.id and hidden <= 0
-		end)
-	end
-	return ui.column {
-		w_full = true,
-		kx.Row {
-			size = "sm",
-			label = g.name,
-			on_click = function()
-				local next = table.clone(nav.folded:peek())
-				next[g.id] = if next[g.id] then nil else true
-				nav.folded:set(next)
-			end,
-			tile(g),
-			ui.text {
-				g.name,
-				literal = true,
-				truncate = true,
-				grow = 1,
-				min_w = 0,
-				text_size = "$font.size.md",
-				weight = "$font.weight.medium",
-			},
-			ui.column {
-				color = "$text.tertiary",
-				rotate = function(): number
-					return if folded() then -90 else 0
-				end,
-				kx.Icon { name = "chevron-down", size = 12 },
-			},
-		},
-		ui.show(
-			function()
-				return not folded()
-			end,
-			ui.column {
-				w_full = true,
-				ui.each(shown, row, {
-					key = by_id,
-					w_full = true,
-					animate = { duration = 220, ease = kx.motion.EASE },
-					enter = { opacity = { 0, 1 }, duration = 180 },
-					exit = { opacity = { 1, 0 }, duration = 120 },
-				}),
-				if hidden > 0
-					then kx.Row {
-						size = "sm",
-						pl = ui.raw(ARM_TIP + 2, "clears the tree's arm"),
-						on_click = function()
-							expanded:set(not expanded:peek())
-						end,
-						ui.column {
-							color = "$text.tertiary",
-							rotate = function(): number
-								return if expanded:get() then 180 else 0
-							end,
-							kx.Icon { name = "chevron-down", size = 12 },
-						},
-						ui.text {
-							function()
-								return if expanded:get() then "Show less" else `Show {hidden} more`
-							end,
-							literal = true,
-							text_size = "$font.size.sm",
-							color = "$text.tertiary",
-						},
-					}
-					else nil,
-			}
-		),
-	}
-end
-
-local waiting = ui.computed(function(): number
-	local n = 0
-	for _, t in store.threads:get() do
-		if t.status == "needs_you" then
-			n += 1
-		end
-	end
-	return n
-end)
-
-local function way_in(icon: string, label: string, route: string?, keys: string, on_click: () -> (), trailing_node: Node?): Node
-	return kx.Row {
-		size = "sm",
-		label = label,
-		on_click = on_click,
-		selected = if route
-			then function()
-				return nav.route:get() == route
-			end
-			else nil,
-		ui.column { color = "$text.secondary", kx.Icon { name = icon, size = 16 } },
-		ui.text { label, literal = true, grow = 1, text_size = "$font.size.md" },
-		trailing_node or kx.Hint { keys, literal = true },
-	}
-end
-
-local function section(title: string): Node
-	return ui.text {
-		title,
-		literal = true,
-		px = "$space.2",
-		pt = "$space.4",
-		pb = "$space.1",
-		text_size = "$font.size.sm",
-		color = "$text.tertiary",
-	}
-end
-
-local function count_badge(n: () -> number): Node
-	return ui.row {
-		h = 18,
-		min_w = 18,
-		px = "$kx.space.tight",
-		rounded = "$radius.full",
-		bg = "$kx.attention.soft",
-		items = "center",
-		justify = "center",
-		ui.text {
-			function()
-				return tostring(n())
-			end,
-			literal = true,
-			tabular = true,
-			text_size = "$font.size.xs",
-			weight = "$font.weight.semibold",
-			color = "$kx.attention",
-		},
-	}
-end
-
-local profile_name = ui.persist("kx.profile.name", "")
 
 function M.view(): Node
-	local empty = ui.computed(function()
-		return #store.threads:get() == 0
-	end)
-	local width = kx.motion.tween(
-		ui.computed(function(): number
-			return if nav.sidebar_open:get() then 272 else 0
-		end),
-		kx.motion.move(272)
-	)
-	return ui.column {
-		w = width,
-		h_full = true,
-		shrink = 0,
-		overflow = "hidden",
-		ui.column {
-			w = "$kx.sidebar",
-			h_full = true,
-			-- Where the title bar is: the brand, and the fold.
-			ui.row {
-				h = "$kx.titlebar",
-				w_full = true,
-				pl = "$space.4",
-				pr = "$space.2",
-				gap = "$space.2",
-				items = "center",
-				window_drag = true,
-				ui.column { color = "$text.primary", kx.Icon { name = "orbit", size = 16, label = "Keplorayx" } },
-				ui.text {
-					"Keplorayx",
-					literal = true,
-					grow = 1,
-					weight = "$font.weight.medium",
-					text_size = "$font.size.md",
-				},
-				kx.Button {
-					tone = "ghost",
-					size = "sm",
-					icon = true,
-					label = "Hide the sidebar (Ctrl+B)",
-					tooltip = "Hide the sidebar  Ctrl+B",
-					on_click = function()
-						nav.sidebar_open:set(false)
-					end,
-					kx.Icon { name = "sidebar", size = 16 },
-				},
-			},
-			ui.column {
-				w_full = true,
-				px = "$space.2",
-				way_in("pen-new-square", "New thread", "home", "Ctrl+N", function()
-					nav.go("home")
-					store.home()
-				end),
-				way_in("magnifer", "Search", nil, "Ctrl+K", function()
-					nav.focus_ray()
-				end),
-				way_in(
-					"inbox",
-					"Inbox",
-					"inbox",
-					"",
-					function()
-						nav.go("inbox")
-					end,
-					ui.show(function()
-						return waiting:get() > 0
-					end, count_badge(function()
-						return waiting:get()
-					end))
-				),
-				way_in("constellation", "Constellation", "constellation", "Ctrl+−", function()
-					nav.go("constellation")
-				end),
-				way_in("users-group", "Team", "team", "", function()
-					nav.go("team")
-				end),
-			},
-			ui.scroll {
-				grow = 1,
-				w_full = true,
-				min_h = 0,
-				px = "$space.2",
-				ui.show(
-					empty,
-					kx.Empty {
-						icon = "constellation",
-						title = "No threads yet",
-						hint = "Ask anything from Home. Each agent shows up here in its own light.",
-					},
-					ui.column {
-						w_full = true,
-						pb = "$space.4",
-						ui.show(function()
-							return #pinned_list:get() > 0
-						end, ui.column {
-							w_full = true,
-							section("Pinned"),
-							ui.each(pinned_list, function(t: Thread)
-								return thread_row(function()
-									return t
-								end, false)
-							end, { key = by_id, w_full = true }),
-						}),
-						section("Projects"),
-						ui.each(group_list, group_view, {
-							key = function(g: Group)
-								return g.id
-							end,
-							w_full = true,
-							gap = "$kx.space.hair",
-						}),
-					}
-				),
-			},
-			-- The foot: you, Settings, and where your data lives.
-			ui.column {
-				w_full = true,
-				px = "$space.2",
-				py = "$space.2",
-				gap = "$kx.space.hair",
-				kx.Row {
-					size = "md",
-					label = "Settings",
-					selected = function()
-						return nav.route:get() == "settings"
-					end,
-					on_click = function()
-						nav.go("settings")
-					end,
-					ui.row {
-						w = 22,
-						h = 22,
-						shrink = 0,
-						rounded = "$radius.full",
-						bg = "$accent",
-						items = "center",
-						justify = "center",
-						ui.text {
-							function()
-								local n = profile_name:get()
-								return if n ~= "" then string.upper(string.sub(n, 1, 1)) else "K"
-							end,
-							literal = true,
-							text_size = "$font.size.xs",
-							weight = "$font.weight.semibold",
-							color = "$accent.text",
-						},
-					},
-					ui.text {
-						function()
-							local n = profile_name:get()
-							return if n ~= "" then n else "You"
-						end,
-						literal = true,
-						grow = 1,
-						truncate = true,
-						text_size = "$font.size.md",
-					},
-					ui.column { color = "$text.tertiary", kx.Icon { name = "settings", size = 15 } },
-				},
-				ui.row {
-					px = "$space.2",
-					h = 22,
-					gap = "$space.2",
-					items = "center",
-					ui.column { color = "$text.tertiary", kx.Icon { name = "local-only", size = 13 } },
-					kx.Hint { "Local only · on this device", literal = true, truncate = true },
-				},
-			},
-		},
+	return Sidebar {
+		compact = nav.sidebar_compact,
+		collapsed = nav.sidebar_collapsed,
+		width = nav.sidebar_width,
+		organize = nav.sidebar_organize,
+		details = nav.sidebar_details :: any,
+		folded = nav.folded,
+		selected = selected,
+		pinned = pinned_list,
+		projects = projects,
+		user = function()
+			local n = profile_name:get()
+			return { id = "you", name = if n ~= "" then n else "You" }
+		end,
+		-- Room for the window's title bar over its top.
+		top = 40,
+		pages = pages,
+		on_page = function(p: any)
+			nav.go(p.id)
+		end,
+		on_new = function(project: string?)
+			if project then
+				require("@screens/ray").project:set(project)
+			end
+			nav.go("home")
+			store.home()
+			nav.focus_ray()
+		end,
+		on_search = function()
+			require("@screens/palette").toggle()
+		end,
+		on_settings = function()
+			nav.go(if nav.route:peek() == "settings" then "home" else "settings")
+		end,
+		settings_open = function(): boolean
+			return nav.route:get() == "settings"
+		end,
+		on_user = function()
+			nav.go("settings")
+		end,
+		menu = menu,
 	}
 end
 

@@ -440,6 +440,10 @@ fn publish_lists(
                         ("harness_id", Value::from(t.harness.id())),
                         ("updated", Value::from(t.updated_at as f64)),
                         ("unread", Value::from(t.unread)),
+                        ("branch", Value::from(t.branch.as_deref().unwrap_or(""))),
+                        ("model", Value::from(t.model.as_deref().unwrap_or(""))),
+                        ("pinned", Value::from(t.pinned)),
+                        ("worktree", Value::from(t.worktree.is_some())),
                     ])
                 })
                 .collect(),
@@ -512,8 +516,19 @@ async fn send(tasks: &zgx_desktop::TaskSpawner, state: &Host, req: Value) -> Res
     let mode = match req.field("access").and_then(text_of).as_deref() {
         Some("edits") => dove_proto::PermissionMode::AcceptEdits,
         Some("full") => dove_proto::PermissionMode::Bypass,
+        Some("plan") => dove_proto::PermissionMode::Plan,
         _ => dove_proto::PermissionMode::Default,
     };
+    // The model ("<agent>:<model>", the picker's) and how hard it thinks.
+    let model = req
+        .field("model")
+        .and_then(text_of)
+        .and_then(|m| m.split_once(':').map(|(_, id)| id.to_string()))
+        .filter(|m| !m.is_empty());
+    let reasoning = req
+        .field("effort")
+        .and_then(text_of)
+        .and_then(|e| serde_json::from_value::<dove_proto::ReasoningLevel>(serde_json::Value::String(e)).ok());
     // The teammate a new thread runs as (Team › Start a thread), by id.
     let persona = req.field("persona").and_then(text_of).filter(|p| !p.is_empty());
     // Starting or resuming spawns the harness: on a thread.
@@ -549,7 +564,11 @@ async fn send(tasks: &zgx_desktop::TaskSpawner, state: &Host, req: Value) -> Res
                     .ok_or_else(|| anyhow::anyhow!("no agent installed"))?;
                 let title: String = text.lines().next().unwrap_or("").chars().take(60).collect();
                 let run = RunSettings { mode, ..RunSettings::default() };
-                let run = RunSettings { model: persona.as_ref().and_then(|p| p.model.clone()), ..run };
+                let run = RunSettings {
+                    model: model.or_else(|| persona.as_ref().and_then(|p| p.model.clone())),
+                    reasoning,
+                    ..run
+                };
                 let new = NewTask { title, prompt: text, harness, run, join: None, persona };
                 engine.start_task(&project, new).map(|(_, session)| session)
             }
