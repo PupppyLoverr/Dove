@@ -400,10 +400,13 @@ fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
 
 // ── The window's side ──────────────────────────────────────────────────
 
+/// A host that loads plugins, its list and its plugins' settings.
+type Loader = (ScriptHost, Shared, Shared);
+
 thread_local! {
     /// The hosts that load plugins (the main window's), and the list each
     /// publishes: told again whenever a plugin changes.
-    static HOSTS: RefCell<Vec<(ScriptHost, Shared, Shared)>> = const { RefCell::new(Vec::new()) };
+    static HOSTS: RefCell<Vec<Loader>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Loads the plugins again everywhere, and says so: after an allow, an
@@ -449,7 +452,7 @@ pub fn install(host: &ScriptHost, engine: Arc<dove_core::Engine>) {
         let (Some(Value::Str(plugin)), Some(Value::Str(id))) = (req.field("plugin"), req.field("id")) else { return };
         let Some(m) = installed().into_iter().filter_map(|(_, m)| m.ok()).find(|m| m.id == plugin.as_ref()) else { return };
         let Some(s) = m.settings.iter().find(|s| s["id"].as_str() == Some(id.as_ref())) else { return };
-        let value = req.field("value").map(|v| crate::widgets::value_json(v)).unwrap_or(Json::Null);
+        let value = req.field("value").map(crate::widgets::value_json).unwrap_or(Json::Null);
         let Some(value) = fit(s, &value) else { return };
         let mut all = values(&e);
         all.entry(m.id.clone()).or_default().insert(id.to_string(), value);

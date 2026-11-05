@@ -456,7 +456,7 @@ fn spawn_refresh(tasks: &zgx_desktop::TaskSpawner, state: &Host) {
         let read = off_thread(move || {
             let projects = engine.store.projects().unwrap_or_default();
             let mut threads = engine.store.all_tasks().unwrap_or_default();
-            threads.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+            threads.sort_by_key(|t| std::cmp::Reverse(t.updated_at));
             let agents: Vec<_> = engine.installed().into_iter().map(|i| i.kind).collect();
             (projects, threads, agents)
         })

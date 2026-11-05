@@ -34,7 +34,7 @@ struct Source {
     /// queue shared would hand each update to one window only).
     windows: std::sync::Mutex<Vec<flume::Sender<Update>>>,
     /// The latest, and the latest cover, for a window that opens later.
-    last: std::sync::Mutex<(Option<Json>, Option<(String, u32, u32, Vec<u8>)>)>,
+    last: std::sync::Mutex<Update>,
     commands: flume::Sender<Control>,
 }
 
@@ -273,7 +273,7 @@ mod session {
         }
     }
 
-    fn read(s: &Session, cover_key: &mut String) -> (Option<Json>, Option<(String, u32, u32, Vec<u8>)>) {
+    fn read(s: &Session, cover_key: &mut String) -> super::Update {
         let Some(props) = s.TryGetMediaPropertiesAsync().ok().and_then(|op| op.get().ok()) else {
             return (None, None);
         };
