@@ -12,7 +12,7 @@ use std::sync::Arc;
 use zgx_desktop::{WindowBounds, WindowContext, WindowLevel, WindowOptions};
 
 /// The capsule's window, in points: room for its widest state.
-pub const SIZE: (f64, f64) = (460., 56.);
+pub const SIZE: (f64, f64) = (520., 72.);
 
 /// Whether the notch opens beside the main window.
 pub fn enabled() -> bool {
@@ -46,7 +46,7 @@ fn top_centre() -> Option<WindowBounds> {
     }
     let scale = system_scale();
     let (w, h) = ((SIZE.0 * scale) as u32, (SIZE.1 * scale) as u32);
-    Some(WindowBounds { position: Some(((screen - w as i32) / 2, 6)), size: (w, h) })
+    Some(WindowBounds { position: Some(((screen - w as i32) / 2, 0)), size: (w, h) })
 }
 
 /// The primary display's scale (1.25 at 120 dpi), for placing a window in
@@ -89,6 +89,70 @@ pub fn open(
         };
         focus(id);
     });
+    reveal(cx, &host);
     crate::serve(cx, host.clone(), "notch.luau", false);
     host
+}
+
+/// The notch shows only when you reach for it: the pointer at the screen's
+/// top edge, over where it sits (`notch.near`, true), and while the pointer
+/// stays on it; it goes again soon after the pointer leaves. Hidden, its
+/// window lets every click through to what's under it. A thread watches the
+/// pointer (a plain query, ten times a second).
+fn reveal(cx: &mut WindowContext, host: &zgx_script::ScriptHost) {
+    let near = host.shared("notch.near", false);
+    let window = cx.window.clone();
+    window.set_pointer_passthrough(true);
+    let (tell, heard) = flume::unbounded::<bool>();
+    std::thread::Builder::new()
+        .name("kx-notch-reveal".into())
+        .spawn(move || watch(tell))
+        .ok();
+    cx.tasks.spawn(async move {
+        while let Ok(now) = heard.recv_async().await {
+            window.set_pointer_passthrough(!now);
+            near.set(zgx_script::Value::Bool(now));
+        }
+    });
+}
+
+#[cfg(windows)]
+fn watch(tell: flume::Sender<bool>) {
+    use windows_sys::Win32::{Foundation::POINT, UI::WindowsAndMessaging::{GetCursorPos, GetSystemMetrics, SM_CXSCREEN}};
+    let scale = system_scale();
+    let (w, h) = (SIZE.0 * scale, SIZE.1 * scale);
+    let mut shown = false;
+    let mut away = 0u32;
+    loop {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let mut p = POINT { x: 0, y: 0 };
+        // SAFETY: plain queries.
+        let (ok, screen) = unsafe { (GetCursorPos(&mut p), GetSystemMetrics(SM_CXSCREEN)) };
+        if ok == 0 || screen <= 0 {
+            continue;
+        }
+        let left = (screen as f64 - w) / 2.;
+        let (x, y) = (p.x as f64, p.y as f64);
+        // Reaching for it: the top few pixels, over it (a little wider).
+        let reach = y <= 4. * scale && x >= left - 40. * scale && x <= left + w + 40. * scale;
+        // On it, once it shows (with a little room round it).
+        let over = y <= h + 12. * scale && x >= left - 12. * scale && x <= left + w + 12. * scale;
+        let now = if shown {
+            if over { away = 0; true } else { away += 1; away < 5 }
+        } else {
+            reach
+        };
+        if now != shown {
+            shown = now;
+            if tell.send(now).is_err() {
+                break;
+            }
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn watch(tell: flume::Sender<bool>) {
+    // Elsewhere: always shown, as before.
+    let _ = tell.send(true);
 }

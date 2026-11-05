@@ -236,14 +236,100 @@ mod keys {
         WindowsAndMessaging::{GetMessageW, MSG, WM_HOTKEY},
     };
 
-    // (id, modifiers, key, what.) Alt+Space is the launcher's, as Raycast's
-    // and PowerToys Run's; taken by another launcher, it warns and goes without.
-    const KEYS: [(i32, u32, u32, Shell); 4] = [
+    // (id, modifiers, key, what.)
+    const KEYS: [(i32, u32, u32, Shell); 3] = [
         (1, MOD_CONTROL | MOD_ALT, VK_SPACE as u32, Shell::Ask),
         (2, MOD_CONTROL | MOD_ALT, b'A' as u32, Shell::Allow),
         (3, MOD_CONTROL | MOD_ALT, b'D' as u32, Shell::Deny),
-        (4, MOD_ALT, VK_SPACE as u32, Shell::Launcher),
     ];
+
+    /// Alt+Space, the launcher's. Windows keeps it for every window's system
+    /// menu, so a registered hot key doesn't reliably get it: a low-level
+    /// keyboard hook does, as PowerToys Run's does. It takes the press (the
+    /// system menu doesn't open) and taps a key that means nothing, so the
+    /// lone Alt left behind doesn't open a menu bar.
+    mod launcher_key {
+        use super::Shell;
+        use std::sync::{
+            OnceLock,
+            atomic::{AtomicBool, Ordering},
+        };
+        use windows_sys::Win32::{
+            Foundation::{LPARAM, LRESULT, WPARAM},
+            UI::{
+                Input::KeyboardAndMouse::{
+                    GetAsyncKeyState, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, SendInput,
+                    VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SPACE,
+                },
+                WindowsAndMessaging::{
+                    CallNextHookEx, HC_ACTION, KBDLLHOOKSTRUCT, LLKHF_INJECTED, SetWindowsHookExW, WH_KEYBOARD_LL,
+                    WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
+                },
+            },
+        };
+
+        static TELL: OnceLock<flume::Sender<Shell>> = OnceLock::new();
+        /// A Space taken: its release is taken too.
+        static TAKEN: AtomicBool = AtomicBool::new(false);
+
+        fn down(vk: u16) -> bool {
+            // SAFETY: a plain query.
+            unsafe { GetAsyncKeyState(vk as i32) as u16 & 0x8000 != 0 }
+        }
+
+        unsafe extern "system" fn hook(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+            if code == HC_ACTION as i32 {
+                // SAFETY: for WH_KEYBOARD_LL, lparam is a KBDLLHOOKSTRUCT.
+                let k = unsafe { &*(lparam as *const KBDLLHOOKSTRUCT) };
+                let msg = wparam as u32;
+                if k.vkCode == VK_SPACE as u32 && k.flags & LLKHF_INJECTED == 0 {
+                    if (msg == WM_SYSKEYDOWN || msg == WM_KEYDOWN)
+                        && down(VK_MENU)
+                        && !down(VK_CONTROL)
+                        && !down(VK_LWIN)
+                        && !down(VK_RWIN)
+                    {
+                        if !TAKEN.swap(true, Ordering::Relaxed) {
+                            if let Some(tell) = TELL.get() {
+                                let _ = tell.send(Shell::Launcher);
+                            }
+                            mask_alt();
+                        }
+                        return 1;
+                    }
+                    if (msg == WM_SYSKEYUP || msg == WM_KEYUP) && TAKEN.swap(false, Ordering::Relaxed) {
+                        return 1;
+                    }
+                }
+            }
+            // SAFETY: passing the event on, as every hook must.
+            unsafe { CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam) }
+        }
+
+        /// A press and release of 0xE8, a key that means nothing: Alt is no
+        /// longer pressed alone.
+        fn mask_alt() {
+            let key = |up: bool| INPUT {
+                r#type: INPUT_KEYBOARD,
+                Anonymous: INPUT_0 {
+                    ki: KEYBDINPUT { wVk: 0xE8, wScan: 0, dwFlags: if up { KEYEVENTF_KEYUP } else { 0 }, time: 0, dwExtraInfo: 0 },
+                },
+            };
+            let inputs = [key(false), key(true)];
+            // SAFETY: two well-formed keyboard inputs.
+            unsafe { SendInput(inputs.len() as u32, inputs.as_ptr(), std::mem::size_of::<INPUT>() as i32) };
+        }
+
+        /// On the calling thread, which must pump messages.
+        pub fn install(tell: flume::Sender<Shell>) {
+            let _ = TELL.set(tell);
+            // SAFETY: a low-level hook needs no module or thread.
+            let h = unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook), std::ptr::null_mut(), 0) };
+            if h.is_null() {
+                tracing::warn!("the launcher's key (Alt+Space) couldn't be hooked");
+            }
+        }
+    }
 
     /// A thread of its own registers the keys and waits for them: a hot key
     /// registered with no window arrives in its thread's queue.
@@ -251,6 +337,7 @@ mod keys {
         std::thread::Builder::new()
             .name("kx-keys".into())
             .spawn(move || {
+                launcher_key::install(tell.clone());
                 for (id, mods, vk, _) in KEYS {
                     // SAFETY: registering a hot key for this thread's queue.
                     if unsafe { RegisterHotKey(std::ptr::null_mut(), id, mods | MOD_NOREPEAT, vk) } == 0 {
