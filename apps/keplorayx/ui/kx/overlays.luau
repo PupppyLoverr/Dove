@@ -108,6 +108,11 @@ local toasts = ui.state("kx.toasts", {} :: { Toast })
 local next_id = 0
 
 function M.toast(t: { title: string, body: string?, kind: string?, duration: number? })
+	-- (Past every id showing: each script that requires this module counts
+	-- on its own, and two toasts with one id would be one row.)
+	for _, x in toasts:peek() do
+		next_id = math.max(next_id, x.id)
+	end
 	next_id += 1
 	local id = next_id
 	-- The same toast again replaces the one showing, not stacks on it.

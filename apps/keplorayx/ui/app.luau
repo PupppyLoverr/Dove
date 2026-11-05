@@ -208,6 +208,14 @@ end
 local notify_needs = ui.persist("kx.notify.needs", true)
 local notify_done = ui.persist("kx.notify.done", true)
 local notify_background = ui.persist("kx.notify.background", true)
+-- A plugin's note (its SDK's kx.toast), said as ours, its name first.
+local plugin_toast = ui.shared("kx.plugin_toast", nil :: any)
+ui.effect(function()
+	local t = plugin_toast:get()
+	if type(t) == "table" and type(t.title) == "string" then
+		kx.toast { title = t.title, body = t.body }
+	end
+end)
 local seen_status: { [string]: string } = {}
 -- Whether this window is the one you're in (src/main.rs publishes it).
 local function window_active(): boolean

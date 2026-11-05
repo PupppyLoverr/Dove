@@ -630,6 +630,7 @@ type PluginRow = {
 	mention: string?,
 	tools: boolean?,
 	requires: any?,
+	settings: { any }?,
 }
 local plugin_list: State<{ PluginRow }> = if store.fixture ~= ""
 	then ui.state("fx.plugins", {
@@ -652,8 +653,13 @@ local plugin_list: State<{ PluginRow }> = if store.fixture ~= ""
 			permissions = { { id = "ui.add", says = "Add to Keplorayx's window" } },
 			installed = true,
 			on = true,
-		},
-	} :: { PluginRow })
+				settings = {
+					{ id = "show", kind = "switch", label = "Show the timer", description = "Under the sidebar's actions.", value = true },
+					{ id = "length", kind = "number", label = "Length", min = 5, max = 90, unit = "min", value = 25 },
+					{ id = "sound", kind = "choice", label = "Sound", style = "segmented", options = { { value = "bell", label = "Bell" }, { value = "none", label = "None" } }, value = "bell" },
+				},
+			},
+		} :: { PluginRow })
 	else ui.shared("kx.plugins", {} :: { PluginRow })
 
 local plugins_tab = ui.state("plugins.tab", "installed")
@@ -776,6 +782,58 @@ local function plugin_row(p: PluginRow): Node
 	}
 end
 
+-- A plugin's settings (its manifest's, Zeron's kinds), drawn with
+-- Settings' own rows: you set them, it reads them.
+local function plugin_setting(p: PluginRow, def: any): Node
+	local value = ui.state(`plugins.set.{p.id}.{def.id}`, def.value)
+	local first = true
+	ui.effect(function()
+		local v = value:get()
+		if first then
+			first = false
+			return
+		end
+		pcall(ui.invoke, "kx.plugins.set", { plugin = p.id, id = def.id, value = v })
+	end)
+	local control: Node
+	if def.kind == "switch" then
+		control = ds.Switch { value = value, label = def.label }
+	elseif def.kind == "number" then
+		control = ds.NumberStepper { value = value, min = def.min, max = def.max, step = def.step or 1, unit = def.unit }
+	elseif def.kind == "choice" then
+		local options = {}
+		for _, o in def.options or {} do
+			table.insert(options, { value = o.value, label = o.label or tostring(o.value) })
+		end
+		control = if def.style == "segmented" then ds.Segmented { value = value, options = options } else ds.Select { value = value, options = options, w = 200 }
+	else
+		control = ds.TextField { value = value, placeholder = def.placeholder or "", size = "sm", w = 240 }
+	end
+	return setting(def.label, def.description or "", control)
+end
+
+-- The plugins on with settings: a section each, titled with its name.
+local configurable = ui.computed(function(): { PluginRow }
+	local out = {}
+	for _, p in plugin_list:get() do
+		if p.installed and p.on and #(p.settings or {}) > 0 then
+			table.insert(out, p)
+		end
+	end
+	return out
+end)
+
+local function plugin_settings(p: PluginRow): Node
+	local rows = {}
+	for _, def in p.settings or {} do
+		table.insert(rows, plugin_setting(p, def))
+	end
+	return Settings.Section {
+		title = p.name,
+		Settings.Group(rows),
+	}
+end
+
 local function plugin_list_of(found: State<{ PluginRow }>): Node
 	return ds.Settings.Each(found, plugin_row, {
 		key = function(p: PluginRow): string
@@ -846,6 +904,21 @@ local function plugins_page(): Node
 					local found = if t == "library" then library_found:get() else installed_found:get()
 					return if #found > 0 then `list:{t}` else `list:{t}:nothing`
 				end, plugins_body, { w_full = true, enter = { opacity = { 0, 1 }, duration = 120 }, exit = { opacity = 0, duration = 60 }, mode = "wait" }),
+				ui.show(function()
+					return plugins_tab:get() == "installed"
+				end, ui.column {
+					w_full = true,
+					gap = "$space.4",
+					ui.each(configurable, plugin_settings, {
+						key = function(p: PluginRow): string
+							local ids = {}
+							for _, d in p.settings or {} do
+								table.insert(ids, d.id)
+							end
+							return `{p.id}:{table.concat(ids, ",")}`
+						end,
+					}),
+				}),
 				Settings.Section {
 					title = "Make your own",
 					Settings.Group {

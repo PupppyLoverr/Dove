@@ -22,9 +22,15 @@
 //!     "mention": "computer",            (an @-mention the composer offers)
 //!     "mcp": { "command": "cua-driver", "args": ["mcp"] } }
 //!
+//! Settings, as Zeron's (the manifest's `settings`: switch, choice, text,
+//! number): Settings › Plugins draws them under the plugin, you set them,
+//! the plugin reads them (`kx.plugin_settings`, by plugin id; its SDK's
+//! `kx.setting(id)`). A value never set reads its default.
+//!
 //! Scripts see `kx.plugins` (the list, for Settings), and call
 //! `kx.plugins.allow({ id, on })`, `kx.plugins.install(id)` (from the
-//! catalog), `kx.plugins.remove(id)`, `kx.plugins.folder()`.
+//! catalog), `kx.plugins.remove(id)`, `kx.plugins.folder()`,
+//! `kx.plugins.set({ plugin, id, value })`.
 
 use std::{
     cell::RefCell,
@@ -52,6 +58,10 @@ pub fn catalog_dir() -> PathBuf {
 const MANIFEST: &str = "kx-plugin.json";
 /// The store's key for what you allowed: `{ id: [permissions] }`.
 const ALLOWED: &str = "kx.plugins.allowed";
+/// The store's key for what you set: `{ plugin: { setting: value } }`.
+const VALUES: &str = "kx.plugins.values";
+/// Zeron's helpers for a plugin, ours: a copy goes in each plugin made.
+const SDK: &str = include_str!("../plugins-sdk/kx.luau");
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct Mcp {
@@ -86,6 +96,112 @@ pub struct Manifest {
     /// `cua-driver`): a page to open.
     #[serde(default)]
     pub requires: Option<Json>,
+    /// What you can set for it (Zeron's `settings`).
+    #[serde(default)]
+    pub settings: Vec<Json>,
+}
+
+/// The kinds of setting Settings draws.
+const SETTING_KINDS: &[&str] = &["switch", "choice", "text", "number"];
+
+/// Why a manifest's settings don't read, if they don't.
+fn check_settings(settings: &[Json]) -> Result<(), String> {
+    let mut seen = std::collections::HashSet::new();
+    for s in settings {
+        let id = s["id"].as_str().unwrap_or_default();
+        if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c)) {
+            return Err(format!("setting `{id}`: an id of letters, digits and - _ ."));
+        }
+        if !seen.insert(id.to_string()) {
+            return Err(format!("setting `{id}` twice"));
+        }
+        let kind = s["kind"].as_str().unwrap_or_default();
+        if !SETTING_KINDS.contains(&kind) {
+            return Err(format!("setting `{id}`: kind is one of {}", SETTING_KINDS.join(", ")));
+        }
+        if s["label"].as_str().unwrap_or_default().is_empty() {
+            return Err(format!("setting `{id}`: a label"));
+        }
+        if kind == "choice" && s["options"].as_array().is_none_or(|o| o.is_empty()) {
+            return Err(format!("setting `{id}`: a choice needs options"));
+        }
+    }
+    Ok(())
+}
+
+/// A setting's default: its own, else the kind's.
+fn default_of(s: &Json) -> Json {
+    if !s["default"].is_null() {
+        return s["default"].clone();
+    }
+    match s["kind"].as_str() {
+        Some("switch") => Json::Bool(false),
+        Some("number") => s["min"].as_f64().map(Json::from).unwrap_or(Json::from(0)),
+        Some("choice") => s["options"][0]["value"].clone(),
+        _ => Json::from(""),
+    }
+}
+
+/// `value` as setting `s` keeps it, or None when it doesn't fit.
+fn fit(s: &Json, value: &Json) -> Option<Json> {
+    match s["kind"].as_str()? {
+        "switch" => value.as_bool().map(Json::Bool),
+        "text" => value.as_str().map(|t| Json::from(t.chars().take(2000).collect::<String>())),
+        "number" => {
+            let mut n = value.as_f64()?;
+            if let Some(min) = s["min"].as_f64() {
+                n = n.max(min);
+            }
+            if let Some(max) = s["max"].as_f64() {
+                n = n.min(max);
+            }
+            Some(Json::from(n))
+        }
+        "choice" => s["options"].as_array()?.iter().any(|o| &o["value"] == value).then(|| value.clone()),
+        _ => None,
+    }
+}
+
+fn values(engine: &dove_core::Engine) -> BTreeMap<String, BTreeMap<String, Json>> {
+    engine.store.setting(VALUES).and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+}
+
+/// Each plugin's settings as it reads them: what you set where it still
+/// fits, else the default.
+fn settings_of(m: &Manifest, set: Option<&BTreeMap<String, Json>>) -> serde_json::Map<String, Json> {
+    m.settings
+        .iter()
+        .filter_map(|s| {
+            let id = s["id"].as_str()?;
+            let value = set.and_then(|v| v.get(id)).and_then(|v| fit(s, v)).unwrap_or_else(|| default_of(s));
+            Some((id.to_string(), value))
+        })
+        .collect()
+}
+
+/// Its settings as Settings draws them: each with its value now.
+fn with_values(m: &Manifest, set: Option<&BTreeMap<String, Json>>) -> Vec<Json> {
+    let now = settings_of(m, set);
+    m.settings
+        .iter()
+        .map(|s| {
+            let mut s = s.clone();
+            s["value"] = now.get(s["id"].as_str().unwrap_or_default()).cloned().unwrap_or(Json::Null);
+            s
+        })
+        .collect()
+}
+
+/// `kx.plugin_settings`: `{ plugin: { setting: value } }` for those installed.
+pub fn settings_json(engine: &dove_core::Engine) -> Json {
+    let all = values(engine);
+    Json::Object(
+        installed()
+            .into_iter()
+            .filter_map(|(_, m)| m.ok())
+            .map(|m| (m.id.clone(), Json::Object(settings_of(&m, all.get(&m.id)))))
+            .collect(),
+    )
 }
 
 fn version() -> String {
@@ -132,6 +248,7 @@ pub fn read_manifest(folder: &Path) -> Result<Manifest, String> {
     if m.mcp.is_some() && !m.permissions.iter().any(|p| p == "tools") {
         return Err("`mcp` needs the `tools` permission".into());
     }
+    check_settings(&m.settings)?;
     Ok(m)
 }
 
@@ -220,6 +337,7 @@ pub fn servers(engine: &dove_core::Engine) -> Vec<(String, Mcp, PathBuf)> {
 /// Settings' list: installed and the catalog's, each as the page shows it.
 pub fn list_json(engine: &dove_core::Engine) -> Json {
     let allowed = allowed(engine);
+    let all = values(engine);
     let mut out = Vec::new();
     let mut ids = Vec::new();
     for (folder, m) in installed() {
@@ -239,6 +357,7 @@ pub fn list_json(engine: &dove_core::Engine) -> Json {
                     "tools": m.mcp.is_some(),
                     "requires": m.requires,
                     "folder": folder.display().to_string(),
+                    "settings": with_values(&m, all.get(&m.id)),
                 }));
             }
             Err(error) => out.push(json!({
@@ -284,17 +403,19 @@ fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
 thread_local! {
     /// The hosts that load plugins (the main window's), and the list each
     /// publishes: told again whenever a plugin changes.
-    static HOSTS: RefCell<Vec<(ScriptHost, Shared)>> = const { RefCell::new(Vec::new()) };
+    static HOSTS: RefCell<Vec<(ScriptHost, Shared, Shared)>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Loads the plugins again everywhere, and says so: after an allow, an
 /// install, a removal, or an agent's change.
 pub fn reload_all(engine: &dove_core::Engine) {
     let list = crate::panels::to_value(&list_json(engine));
+    let settings = crate::panels::to_value(&settings_json(engine));
     let plugins = loaded(engine);
     HOSTS.with(|hosts| {
-        for (host, shared) in hosts.borrow().iter() {
+        for (host, shared, set) in hosts.borrow().iter() {
             host.set_plugins(plugins.clone());
+            set.set(settings.clone());
             if let Err(e) = host.reload() {
                 tracing::warn!("plugins: reload: {e}");
             }
@@ -312,10 +433,35 @@ pub fn install(host: &ScriptHost, engine: Arc<dove_core::Engine>) {
     host.expose_action("kx.open", Some(Capability::Named("navigate".into())));
     host.expose_shared("ray.compose", Some(Capability::Named("compose".into())));
     host.expose_shared_read("kx.now", None);
+    // Each plugin's settings (no secrets: every plugin reads this).
+    host.expose_shared_read("kx.plugin_settings", None);
+    // A short note in the window (the SDK's kx.toast).
+    host.expose_shared("kx.plugin_toast", None);
     host.reserve_prefix("kx");
     host.set_plugins(loaded(&engine));
     let shared = host.shared("kx.plugins", crate::panels::to_value(&list_json(&engine)));
-    HOSTS.with(|h| h.borrow_mut().push((host.clone(), shared)));
+    let set = host.shared("kx.plugin_settings", crate::panels::to_value(&settings_json(&engine)));
+    HOSTS.with(|h| h.borrow_mut().push((host.clone(), shared, set)));
+
+    // A setting you changed: kept, and every plugin told (no reload).
+    let e = engine.clone();
+    host.action("kx.plugins.set", move |req| {
+        let (Some(Value::Str(plugin)), Some(Value::Str(id))) = (req.field("plugin"), req.field("id")) else { return };
+        let Some(m) = installed().into_iter().filter_map(|(_, m)| m.ok()).find(|m| m.id == plugin.as_ref()) else { return };
+        let Some(s) = m.settings.iter().find(|s| s["id"].as_str() == Some(id.as_ref())) else { return };
+        let value = req.field("value").map(|v| crate::widgets::value_json(v)).unwrap_or(Json::Null);
+        let Some(value) = fit(s, &value) else { return };
+        let mut all = values(&e);
+        all.entry(m.id.clone()).or_default().insert(id.to_string(), value);
+        let _ = e.store.set_setting(VALUES, &serde_json::to_string(&all).unwrap_or_default());
+        let (list, settings) = (crate::panels::to_value(&list_json(&e)), crate::panels::to_value(&settings_json(&e)));
+        HOSTS.with(|hosts| {
+            for (_, shared, set) in hosts.borrow().iter() {
+                set.set(settings.clone());
+                shared.set(list.clone());
+            }
+        });
+    });
 
     let e = engine.clone();
     host.action("kx.plugins.allow", move |req| {
@@ -353,6 +499,11 @@ pub fn install(host: &ScriptHost, engine: Arc<dove_core::Engine>) {
         map.remove(id.as_ref());
         set_allowed(&e, &map);
         let _ = std::fs::remove_dir_all(dir().join(id.as_ref()));
+        // What you set for it goes with it.
+        let mut all = values(&e);
+        if all.remove(id.as_ref()).is_some() {
+            let _ = e.store.set_setting(VALUES, &serde_json::to_string(&all).unwrap_or_default());
+        }
         reload_all(&e);
     });
     host.action("kx.plugins.folder", |_| crate::open_external(&dir().to_string_lossy()));
@@ -378,12 +529,15 @@ pub fn create(args: &Json) -> Result<String, String> {
         "description": args["description"].as_str().unwrap_or(""),
         "entry": "init.luau",
         "permissions": args["permissions"].as_array().cloned().unwrap_or_default(),
+        "settings": args["settings"].as_array().cloned().unwrap_or_default(),
     });
     std::fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
     std::fs::write(folder.join(MANIFEST), serde_json::to_string_pretty(&manifest).unwrap_or_default())
         .map_err(|e| e.to_string())?;
     std::fs::write(folder.join("init.luau"), args["code"].as_str().unwrap_or("-- Your plugin.\n"))
         .map_err(|e| e.to_string())?;
+    // The helpers: `local kx = require("./kx")("<id>")`.
+    std::fs::write(folder.join("kx.luau"), SDK).map_err(|e| e.to_string())?;
     read_manifest(&folder)?;
     Ok(format!(
         "Created `{id}` in {}. The person allows it in Settings › Plugins before it runs; then it reloads on each change.",
@@ -427,7 +581,7 @@ pub fn list_text(engine: &dove_core::Engine) -> String {
     let mut text = serde_json::to_string_pretty(&list_json(engine)).unwrap_or_default();
     // What failed as the window loaded them (a plugin's own error names it).
     let errors: Vec<String> = HOSTS.with(|hosts| {
-        hosts.borrow().iter().filter_map(|(host, _)| host.error().with_untracked(Clone::clone)).collect()
+        hosts.borrow().iter().filter_map(|(host, _, _)| host.error().with_untracked(Clone::clone)).collect()
     });
     if !errors.is_empty() {
         text.push_str("
@@ -438,4 +592,23 @@ Errors:
 "));
     }
     text
+}
+
+#[cfg(test)]
+mod settings_tests {
+    use super::*;
+
+    #[test]
+    fn values_fit_their_setting_or_fall_back() {
+        let number = json!({ "id": "n", "kind": "number", "label": "N", "min": 5, "max": 90 });
+        assert_eq!(fit(&number, &json!(200)), Some(json!(90.0)));
+        assert_eq!(fit(&number, &json!("x")), None);
+        assert_eq!(default_of(&number), json!(5.0));
+        let choice = json!({ "id": "c", "kind": "choice", "label": "C", "options": [{ "value": "a" }, { "value": "b" }] });
+        assert_eq!(fit(&choice, &json!("b")), Some(json!("b")));
+        assert_eq!(fit(&choice, &json!("z")), None);
+        assert_eq!(default_of(&choice), json!("a"));
+        assert!(check_settings(&[json!({ "id": "x", "kind": "colour", "label": "X" })]).is_err());
+        assert!(check_settings(&[choice.clone(), choice]).is_err());
+    }
 }
