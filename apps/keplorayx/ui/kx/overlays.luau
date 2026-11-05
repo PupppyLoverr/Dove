@@ -152,11 +152,16 @@ local function toast_row(t: Toast)
 end
 
 function M.Toasts(_props: P?): Node
+	-- The whole window, its toasts at the foot (a column given only its
+	-- foot laid them out at the top, under the notch).
 	return ui.column {
 		absolute = true,
 		left = 0,
 		right = 0,
-		bottom = "$space.5",
+		top = 0,
+		bottom = 0,
+		justify = "end",
+		pb = "$space.8",
 		items = "center",
 		gap = "$space.2",
 		pointer_events = false,

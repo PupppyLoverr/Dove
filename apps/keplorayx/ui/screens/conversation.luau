@@ -64,6 +64,31 @@ local function is_step(e: Entry): boolean
 	return e.kind == "tool" or e.kind == "thinking"
 end
 
+-- A display tool's call (Keplorayx's `show_visual`, `show_image`, however
+-- the agent's harness spells the name): what it showed, from the line its
+-- result ends with (src/mcp.rs), as the transcript's block. Nil for any
+-- other tool, or one that failed (that stays a tool row, its error in it).
+local function shown(e: Entry): any?
+	local t = e.tool
+	if e.kind ~= "tool" or not t or t.state == "failed" then
+		return nil
+	end
+	local name = t.name
+	local visual = string.find(name, "show_visual$") ~= nil
+	local image = string.find(name, "show_image$") ~= nil
+	if not visual and not image then
+		return nil
+	end
+	local kind, id, a, b = string.match(t.output, "%[(%a+) (%S+) | ([^|]*) |? ?([^%]]*)%]%s*$")
+	if visual and kind == "visual" and id then
+		-- (A fixture's carries its script.)
+		return { id = id, kind = "visual", title = string.match(a, "^%s*(.-)%s*$"), path = b, source = (t :: any).source }
+	elseif image and kind == "image" and id then
+		return { id = "img:" .. e.id, kind = "images", images = { { id = id, path = a, name = "" } } }
+	end
+	return nil
+end
+
 -- The messages, made again as an entry comes, goes or changes (never as a
 -- word streams: that's `draft`).
 M.messages = ui.computed(function(): { any }
@@ -80,6 +105,10 @@ M.messages = ui.computed(function(): { any }
 		if e.kind == "user" then
 			reply, group = nil, nil
 			table.insert(out, { id = e.id, role = "user", text = e.text })
+		elseif shown(e) then
+			ensure_reply(e.id)
+			group = nil
+			table.insert(reply.blocks, shown(e))
 		elseif is_step(e) then
 			ensure_reply(e.id)
 			if not group then

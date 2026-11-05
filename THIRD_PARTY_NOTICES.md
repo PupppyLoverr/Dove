@@ -53,6 +53,14 @@ zgx app (`apps/zgx`):
   `assets/cards`). Changed where marked "Keplorayx": its themes are Orbit's,
   its icons draw Keplorayx's own glyphs where there is one of the name, and
   the sidebar's New thread is Dove's lifted button.
+- **Agent visuals (generative UI):** Zeron's sandboxed visual runtime,
+  vendored whole as `crates/visual` (`zeron-visual`); its host,
+  `apps/keplorayx/src/visuals.rs`, ported from `apps/zgx/src/visuals.rs`
+  without the GPU renderer, with Zeron's pixel helpers (`apps/zgx/pixels`)
+  inlined; and `show_visual`'s description, after `crates/mcp/src/tools.rs`.
+- **Plugins:** Keplorayx's plugin model (`src/plugins.rs`: a folder with a
+  manifest and `init.luau`, permissions allowed once, agents making plugins
+  with tools) follows Zeron's `docs/plugins.md` and `src/plugins/`.
 
 Each file names what it took. Its fonts are Geist, Geist Mono and Instrument
 Serif (OFL, below), copied with their licences into `apps/keplorayx/fonts/`.

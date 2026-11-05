@@ -164,8 +164,19 @@ local function commands(): { Result }
 	}
 end
 
+-- Allowed plugins with a mention (@computer): the agent reads it as leave
+-- to use that plugin's tools.
+local plugins: State<{ any }> = if store.fixture ~= "" then ui.state("fx.plugins.mentions", {}) else ui.shared("kx.plugins", {})
+
 local function mentions(): { Result }
 	local list: { Result } = {}
+	for _, p in plugins:get() do
+		if p.on and type(p.mention) == "string" then
+			table.insert(list, { id = `m:{p.id}`, icon = "widget", title = `@{p.mention}`, hint = p.name, run = function()
+				text:set(`@{p.mention} `)
+			end })
+		end
+	end
 	for _, p in store.projects:get() do
 		table.insert(list, { id = `p:{p.id}`, icon = "folder", title = p.name, hint = "project", run = function()
 			M.project:set(p.id)

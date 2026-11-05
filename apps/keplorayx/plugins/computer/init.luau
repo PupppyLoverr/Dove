@@ -1,0 +1,3 @@
+-- Computer use: its tools reach agents through Keplorayx's bridge (the
+-- manifest's `mcp`: Cua's driver). Here, in the window, it only says it's
+-- on: nothing more to draw.

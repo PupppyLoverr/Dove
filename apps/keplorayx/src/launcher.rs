@@ -509,6 +509,8 @@ pub mod clipboard {
 
 // ── Windows open now ────────────────────────────────────────────────────
 
+pub use windows::now_playing;
+
 mod windows {
     pub struct Open {
         pub id: isize,
@@ -558,6 +560,52 @@ mod windows {
         // SAFETY: the callback only reads windows and pushes to `out`.
         unsafe { EnumWindows(Some(each), &mut out as *mut _ as LPARAM) };
         out
+    }
+
+    /// A music player's window title while it plays ("Artist - Song"): the
+    /// players whose window says so (Spotify, foobar2000, VLC, AIMP,
+    /// MusicBee, iTunes).
+    #[cfg(windows)]
+    pub fn now_playing() -> String {
+        use windows_sys::Win32::{
+            Foundation::{CloseHandle, HWND},
+            System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW},
+            UI::WindowsAndMessaging::GetWindowThreadProcessId,
+        };
+        const PLAYERS: &[&str] = &["spotify.exe", "foobar2000.exe", "vlc.exe", "aimp.exe", "musicbee.exe", "itunes.exe"];
+        for w in list() {
+            if !w.title.contains(" - ") {
+                continue;
+            }
+            let mut pid = 0u32;
+            // SAFETY: a window we just listed.
+            unsafe { GetWindowThreadProcessId(w.id as HWND, &mut pid) };
+            // SAFETY: a query-only handle, closed below.
+            let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+            if process.is_null() {
+                continue;
+            }
+            let mut buf = [0u16; 512];
+            let mut len = buf.len() as u32;
+            // SAFETY: a buffer and its length in characters.
+            let ok = unsafe { QueryFullProcessImageNameW(process, 0, buf.as_mut_ptr(), &mut len) };
+            // SAFETY: the handle opened above.
+            unsafe { CloseHandle(process) };
+            if ok == 0 {
+                continue;
+            }
+            let exe = String::from_utf16_lossy(&buf[..len as usize]).to_lowercase();
+            if PLAYERS.iter().any(|p| exe.ends_with(p)) {
+                // (VLC's "Song - VLC media player".)
+                return w.title.trim_end_matches(" - VLC media player").to_string();
+            }
+        }
+        String::new()
+    }
+
+    #[cfg(not(windows))]
+    pub fn now_playing() -> String {
+        String::new()
     }
 
     #[cfg(windows)]

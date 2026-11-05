@@ -18,12 +18,16 @@ mod clock;
 mod host;
 mod intro;
 mod launcher;
+mod mcp;
 mod notch;
 mod panels;
 mod platform;
+mod plugins;
 mod preview;
 mod transcript;
 mod transparency;
+mod visuals;
+mod widgets;
 
 use std::{path::PathBuf, rc::Rc, sync::Arc, time::Duration};
 
@@ -56,6 +60,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // WSL, SSH or a Cua Space and exit, before any window or store exists.
     if let Some(code) = dove_core::host::run_launcher() {
         std::process::exit(code);
+    }
+    // `keplorayx mcp`: Keplorayx's tools on an agent's stdio (src/mcp.rs),
+    // relaying to the running app. No window, no store.
+    if std::env::args_os().nth(1).is_some_and(|a| a == "mcp") {
+        std::process::exit(mcp::serve_stdio());
     }
     // `keplorayx node …`: the headless engine other machines run (session
     // daemon, provider bridge, port pipe). No window, no store.
@@ -223,8 +232,11 @@ fn open_main(cx: &mut WindowContext, engine: Arc<dove_core::Engine>, inspect: bo
     host::install(cx, &host, engine.clone());
     account::install(&host, &cx.tasks, engine.clone());
     clock::install(cx, &host);
-    // `ui.window.active` and `shown`: notifications only while you're away.
-    host.window_state(&cx.ui);
+    // `ui.window.active` and `shown` (notifications only while you're away),
+    // and agents' visuals in the transcript.
+    visuals::install(cx, &host);
+    widgets::install(&host);
+    plugins::install(&host, engine.clone());
     // Frosted glass on or off (Settings › Appearance): the main window's
     // backdrop follows it. (Its own windows only: the notch and First
     // Light's overlay keep theirs.)
@@ -238,17 +250,29 @@ fn open_main(cx: &mut WindowContext, engine: Arc<dove_core::Engine>, inspect: bo
     let focus_thread = host.shared("notch.focus", "");
     // The launcher (Alt+Space), made hidden: what it opens in Keplorayx
     // brings this window forward, on its thread.
-    {
+    let to_main = {
         let (window, focus) = (cx.window.clone(), focus_thread.clone());
         let asked = Rc::new(std::cell::Cell::new(0u32));
-        launcher::open(cx, engine.clone(), move |thread| {
+        move |thread: Option<String>| {
             window.set_visible(true);
             window.request_focus();
             if let Some(id) = thread {
                 asked.set(asked.get() + 1);
                 focus.set(Value::from(format!("{id}#{}", asked.get()).as_str()));
             }
-        });
+        }
+    };
+    launcher::open(cx, engine.clone(), to_main.clone());
+    // Keplorayx's own tools for the agents it starts (src/mcp.rs), and the
+    // desktop widgets: once a process.
+    thread_local! {
+        static BRIDGE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+    if !BRIDGE.with(|b| b.replace(true)) {
+        if let Some(calls) = mcp::start() {
+            mcp::answer(engine.clone(), calls, &cx.tasks);
+        }
+        widgets::start(cx, engine.clone(), to_main.clone());
     }
     let mut notch_window = None;
     if notch::enabled() {
@@ -459,7 +483,7 @@ fn window(screen: Screen) -> WindowOptions {
 }
 
 /// The scripts: this crate's `ui/`, or `KX_UI` (a frozen copy for a test rig).
-fn ui_dir() -> PathBuf {
+pub(crate) fn ui_dir() -> PathBuf {
     match std::env::var_os("KX_UI") {
         Some(dir) if !dir.is_empty() => PathBuf::from(dir),
         _ => PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("ui"),
@@ -468,7 +492,7 @@ fn ui_dir() -> PathBuf {
 
 /// A host for the script `entry` under `ui/`, with what every window gives
 /// its scripts.
-fn script_host(cx: &mut WindowContext, entry: &str) -> ScriptHost {
+pub(crate) fn script_host(cx: &mut WindowContext, entry: &str) -> ScriptHost {
     let host = ScriptHost::new(&cx.ui.runtime, ui_dir().join(entry)).app_id(APP_ID);
     zgx_run::install_fetcher(&host);
     host.window_chrome(cx.window_info.titlebar_area.clone(), cx.window_info.controls.clone());
@@ -505,7 +529,7 @@ fn script_host(cx: &mut WindowContext, entry: &str) -> ScriptHost {
 }
 
 /// Mounts the script, reloads it as it's saved, and serves devtools when asked.
-fn serve(cx: &mut WindowContext, host: ScriptHost, entry: &str, inspect: bool) {
+pub(crate) fn serve(cx: &mut WindowContext, host: ScriptHost, entry: &str, inspect: bool) {
     if let Err(error) = host.reload() {
         eprintln!("keplorayx: {entry}: {error}");
     }

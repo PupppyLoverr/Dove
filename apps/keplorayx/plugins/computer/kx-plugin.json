@@ -1,0 +1,32 @@
+{
+  "id": "computer",
+  "name": "Computer use",
+  "version": "0.1.0",
+  "description": "Lets any agent see and work this computer's apps and browser, with @computer in the composer. Runs Cua's driver (cua mcp): accessibility tree first, screenshots only when needed.",
+  "entry": "init.luau",
+  "permissions": [
+    "tools",
+    "compose"
+  ],
+  "mention": "computer",
+  "requires": {
+    "program": "cua",
+    "install": "https://cua.ai",
+    "then": [
+      "cua do-host-consent",
+      "cua do switch host"
+    ],
+    "says": "Install Cua's CLI, then allow it to act on this computer once (cua do-host-consent) and choose this computer (cua do switch host)."
+  },
+  "mcp": {
+    "command": "cua",
+    "args": [
+      "mcp",
+      "--permissions",
+      "computer:all",
+      "--sandbox",
+      "host"
+    ],
+    "instructions": "Computer use (the Computer use plugin, `computer_*` tools): the person allowed you to operate their computer's apps and browser when they ask for it (@computer in their message). Be fast and frugal: read `computer_get_accessibility_tree` (scoped to the window) before any screenshot, act on elements from it with `computer_accessibility_act` rather than pixels, batch what you've already decided, and take a screenshot only to check a visual result or when the tree lacks what you need. Never enter passwords, payment or identity details; ask the person to. Confirm before anything irreversible (sending, buying, deleting)."
+  }
+}

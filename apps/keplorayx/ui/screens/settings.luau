@@ -34,6 +34,8 @@ local SECTIONS = {
 	{ id = "agents", title = "Agents", icon = "bot" },
 	{ id = "notifications", title = "Notifications", icon = "bell" },
 	{ id = "shortcuts", title = "Shortcuts", icon = "keyboard" },
+	{ id = "plugins", title = "Plugins", icon = "widget-add" },
+	{ id = "widgets", title = "Widgets", icon = "widget" },
 	{ id = "account", title = "Account", icon = "user" },
 	{ id = "data", title = "Privacy and data", icon = "local-only" },
 	{ id = "about", title = "About", icon = "info-circle" },
@@ -64,6 +66,8 @@ local DESCRIPTIONS: { [string]: string } = {
 	Notifications = "When Keplorayx says something while you're away.",
 	Shortcuts = "Every key, in the window and from anywhere.",
 	Account = "Your Keplorayx account, optional.",
+	Plugins = "What you add to Keplorayx. A plugin runs only once you allow it, with exactly what it asked for.",
+	Widgets = "Small windows on your desktop. You and your agents can add, change and move them.",
 	["Privacy and data"] = "What stays on this computer, and what leaves it.",
 	About = "Keplorayx, and what it's built on.",
 }
@@ -564,6 +568,255 @@ local function data(): Node
 	)
 end
 
+-- ── Plugins (src/plugins.rs) ───────────────────────────────────────────
+type PluginRow = {
+	id: string,
+	name: string,
+	version: string?,
+	description: string?,
+	permissions: { { id: string, says: string } },
+	installed: boolean,
+	on: boolean,
+	asks_more: boolean?,
+	error: string?,
+	mention: string?,
+	tools: boolean?,
+}
+local plugin_list: State<{ PluginRow }> = if store.fixture ~= ""
+	then ui.state("fx.plugins", {
+		{
+			id = "computer",
+			name = "Computer use",
+			version = "0.1.0",
+			description = "Lets any agent see and work your computer's apps and browser: @computer in the composer.",
+			permissions = { { id = "tools", says = "Give agents tools (a program of its own)" } },
+			installed = false,
+			on = false,
+			mention = "computer",
+			tools = true,
+		},
+		{
+			id = "focus-timer",
+			name = "Focus timer",
+			version = "1.0.0",
+			description = "A timer in the thread's header.",
+			permissions = { { id = "ui.add", says = "Add to Keplorayx's window" } },
+			installed = true,
+			on = true,
+		},
+	} :: { PluginRow })
+	else ui.shared("kx.plugins", {} :: { PluginRow })
+
+local function plugin_row(p: PluginRow): Node
+	local says: { string } = {}
+	for _, perm in p.permissions or {} do
+		table.insert(says, perm.says)
+	end
+	local hint = p.error
+		or ((if p.asks_more then "It asks for more than you allowed: allow it again. " else "") .. (p.description or "") .. (if #says > 0
+			then "\n" .. table.concat(says, " · ")
+			else ""))
+	local control: Node
+	if not p.installed then
+		control = kx.Button {
+			tone = "secondary",
+			size = "sm",
+			on_click = function()
+				pcall(ui.invoke, "kx.plugins.install", p.id)
+				kx.toast { title = `{p.name} installed`, body = "Allow it to turn it on." }
+			end,
+			"Install",
+		}
+	elseif p.error then
+		control = kx.Button {
+			tone = "ghost",
+			size = "sm",
+			on_click = function()
+				pcall(ui.invoke, "kx.plugins.remove", p.id)
+			end,
+			"Remove",
+		}
+	else
+		control = ui.row {
+			gap = "$space.2",
+			items = "center",
+			kx.Button {
+				tone = "ghost",
+				size = "sm",
+				on_click = function()
+					pcall(ui.invoke, "kx.plugins.remove", p.id)
+					kx.toast { title = `{p.name} removed` }
+				end,
+				"Remove",
+			},
+			kx.Switch {
+				value = ui.state(`plugins.on.{p.id}`, p.on),
+				label = `Allow {p.name}`,
+				on_change = function(on: boolean)
+					pcall(ui.invoke, "kx.plugins.allow", { id = p.id, on = on })
+				end,
+			},
+		}
+	end
+	local name = if p.version then `{p.name} {p.version}` else p.name
+	return setting(name, hint, control)
+end
+
+local function plugin_rows(installed: boolean): State<{ PluginRow }>
+	return ui.computed(function(): { PluginRow }
+		local out = {}
+		for _, p in plugin_list:get() do
+			if p.installed == installed then
+				table.insert(out, p)
+			end
+		end
+		return out
+	end)
+end
+
+local function plugin_list_of(rows: State<{ PluginRow }>, empty: string): Node
+	return ui.show(
+		function()
+			return #rows:get() > 0
+		end,
+		ui.column {
+			w_full = true,
+			ui.each(rows, plugin_row, {
+				key = function(p: PluginRow)
+					return `{p.id}:{p.on}:{p.installed}:{p.error or ""}`
+				end,
+			}),
+		},
+		setting(empty, nil, nil)
+	)
+end
+
+local function plugins_page(): Node
+	return page(
+		"Plugins",
+		group("Installed", plugin_list_of(plugin_rows(true), "None yet")),
+		group("From Keplorayx", plugin_list_of(plugin_rows(false), "Nothing more to install")),
+		group(
+			nil,
+			setting(
+				"Make your own",
+				"Ask an agent: it can create and edit plugins with Keplorayx's tools. Or put a folder with kx-plugin.json and init.luau in the plugins folder.",
+				kx.Button {
+					tone = "secondary",
+					size = "sm",
+					on_click = function()
+						pcall(ui.invoke, "kx.plugins.folder")
+					end,
+					"Open the folder",
+				}
+			)
+		)
+	)
+end
+
+-- ── Widgets (src/widgets.rs) ────────────────────────────────────────────
+type WidgetRow = { id: string, kind: string, variant: string, title: string?, on_top: boolean? }
+local widget_list: State<{ WidgetRow }> = if store.fixture ~= ""
+	then ui.state("fx.widgets", {
+		{ id = "w1", kind = "clock", variant = "digital" },
+		{ id = "w2", kind = "calendar", variant = "agenda" },
+	} :: { WidgetRow })
+	else ui.shared("kx.widgets", {} :: { WidgetRow })
+
+local WIDGET_KINDS = {
+	{ id = "clock", label = "Clock", variants = { "digital", "analog", "world", "small" } },
+	{ id = "calendar", label = "Calendar", variants = { "agenda", "month", "small" } },
+	{ id = "agents", label = "Agents at work", variants = { "medium", "small", "large" } },
+	{ id = "threads", label = "Recent threads", variants = { "medium", "small", "large" } },
+	{ id = "ask", label = "Quick ask", variants = { "medium" } },
+	{ id = "usage", label = "Usage", variants = { "medium", "small", "large" } },
+	{ id = "system", label = "CPU and memory", variants = { "bars", "small", "graph" } },
+	{ id = "music", label = "Now playing", variants = { "medium", "small" } },
+	{ id = "note", label = "Note", variants = { "medium", "small", "large" } },
+}
+
+local function kind_of(id: string): any?
+	for _, k in WIDGET_KINDS do
+		if k.id == id then
+			return k
+		end
+	end
+	return nil
+end
+
+local function widget_row(w: WidgetRow): Node
+	local k = kind_of(w.kind)
+	local options: { any } = {}
+	for _, v in (if k then k.variants else {}) do
+		table.insert(options, { label = string.upper(string.sub(v, 1, 1)) .. string.sub(v, 2), value = v })
+	end
+	local variant = ui.state(`widgets.variant.{w.id}`, w.variant)
+	return setting(
+		w.title or (if k then k.label elseif w.kind == "custom" then "Made by an agent" else w.kind),
+		if w.on_top then "Floats over your windows" else "On the desktop",
+		ui.row {
+			gap = "$space.2",
+			items = "center",
+			if #options > 1
+				then kx.Segmented {
+					value = variant,
+					label = "Variant",
+					options = options,
+					on_change = function(v: string)
+						pcall(ui.invoke, "kx.widget.set", { id = w.id, kind = w.kind, variant = v })
+					end,
+				}
+				else nil,
+			kx.Button {
+				tone = "ghost",
+				size = "sm",
+				on_click = function()
+					pcall(ui.invoke, "kx.widget.remove", w.id)
+				end,
+				"Remove",
+			},
+		}
+	)
+end
+
+local function widgets_page(): Node
+	local add_row: { [any]: any } = { gap = "$space.2", wrap = true, w_full = true, py = "$space.3", px = "$space.4" }
+	for _, k in WIDGET_KINDS do
+		table.insert(
+			add_row,
+			kx.Button {
+				tone = "secondary",
+				size = "sm",
+				on_click = function()
+					pcall(ui.invoke, "kx.widget.set", { kind = k.id, variant = k.variants[1] })
+				end,
+				k.label,
+			}
+		)
+	end
+	return page(
+		"Widgets",
+		group(
+			"On your desktop",
+			ui.show(
+				function()
+					return #widget_list:get() > 0
+				end,
+				ui.column {
+					w_full = true,
+					ui.each(widget_list, widget_row, {
+						key = function(w: WidgetRow)
+							return `{w.id}:{w.variant}`
+						end,
+					}),
+				},
+				setting("None yet", "Add one below, or ask an agent to put a clock and your calendar on the desktop.", nil)
+			)
+		),
+		group("Add", ui.row(add_row))
+	)
+end
+
 local function about(): Node
 	return page(
 		"About",
@@ -597,6 +850,8 @@ local PAGES: { [string]: () -> Node } = {
 	notifications = notifications,
 	shortcuts = shortcuts,
 	account = account,
+	plugins = plugins_page,
+	widgets = widgets_page,
 	data = data,
 	about = about,
 }

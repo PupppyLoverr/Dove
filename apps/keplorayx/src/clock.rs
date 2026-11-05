@@ -3,7 +3,7 @@
 //! wakes once a minute, no more). For the notch at rest and the widgets.
 //!
 //!   kx.now = { hour, minute, weekday ("Thursday"), day, month ("November"),
-//!              month_n, year, date ("2026-11-05"), unix }
+//!              month_n, year, date ("2026-11-05"), tomorrow, unix }
 
 use chrono::{Datelike as _, Local, Timelike as _};
 use serde_json::json;
@@ -21,6 +21,7 @@ fn now() -> serde_json::Value {
         "month_n": t.month(),
         "year": t.year(),
         "date": t.format("%Y-%m-%d").to_string(),
+        "tomorrow": (t.date_naive() + chrono::Days::new(1)).format("%Y-%m-%d").to_string(),
         "unix": t.timestamp(),
     })
 }
