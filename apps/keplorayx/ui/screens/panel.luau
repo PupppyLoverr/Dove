@@ -192,6 +192,47 @@ end)
 -- ── The home ───────────────────────────────────────────────────────────
 
 -- The open thread's place: its project and branch.
+-- The project's other threads (Zeron's lanes): the latest few, each a click
+-- away.
+local siblings = ui.computed(function(): { store.Thread }
+	local t = store.thread:get()
+	if not t then
+		return {}
+	end
+	local project = nil
+	for _, th in store.threads:get() do
+		if th.id == t.id then
+			project = th.project_id
+		end
+	end
+	local out = {}
+	for _, th in store.threads:get() do
+		if th.project_id == project and th.id ~= t.id then
+			table.insert(out, th)
+			if #out >= 5 then
+				break
+			end
+		end
+	end
+	return out
+end)
+
+local function sibling_row(th: store.Thread): Node
+	return PanelHome.Row {
+		icon = kx.AgentMark { agent = th.harness_id, size = 14 },
+		label = th.title,
+		tooltip = "Open this thread",
+		on_click = function()
+			require("@screens/nav").go("thread")
+			store.open(th.id)
+		end,
+		trail = if th.status == "running"
+			then kx.Spinner { size = 12 }
+			elseif th.status == "needs_you" then ui.div { w = 6, h = 6, rounded = "$radius.full", bg = "$kx.attention" }
+			else nil,
+	}
+end
+
 local place = ui.computed(function(): { project: string, branch: string }?
 	local t = store.thread:get()
 	if not t then
@@ -274,6 +315,20 @@ local function home(): Node
 						},
 					},
 				},
+			}),
+			ui.show(function()
+				return #siblings:get() > 0
+			end, ui.column {
+				w_full = true,
+				gap = "$kx.space.hair",
+				pb = "$space.3",
+				PanelHome.Heading { label = "In this project" },
+				ui.each(siblings, sibling_row, {
+					key = function(th: store.Thread)
+						return `{th.id}:{th.status}`
+					end,
+					gap = "$kx.space.hair",
+				}),
 			}),
 			PanelHome.Heading { label = "Open here" },
 			table.unpack(choices),

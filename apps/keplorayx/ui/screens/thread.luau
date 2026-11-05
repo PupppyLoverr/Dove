@@ -29,11 +29,25 @@ local function thread_kind(): Status.Kind
 	return if t.running then "working" else "done"
 end
 
--- The title bar's line over the page: room to move the window by, and,
--- with the sidebar folded away (nothing else then says which thread this
--- is), the thread's state and title, past the title bar's own controls.
+-- The thread's head, as Zeron's (its screens/shell/page.luau): on the title
+-- bar's line, always, its agent's mark (or its state while it works or
+-- waits) and its title, small and quiet; past the title bar's controls when
+-- the sidebar is folded away. Room to move the window by.
 local TitleBar = require("@ds/title_bar")
+local function agent_id(): string
+	local t = store.thread:get()
+	if not t then
+		return ""
+	end
+	for _, th in store.threads:get() do
+		if th.id == t.id then
+			return th.harness_id
+		end
+	end
+	return ""
+end
 local header = ui.row {
+	id = "session-header",
 	h = 40,
 	w_full = true,
 	shrink = 0,
@@ -41,24 +55,31 @@ local header = ui.row {
 	items = "center",
 	gap = "$space.2",
 	pl = nav.bar_left,
-
-	ui.show(nav.sidebar_collapsed, ui.row {
-		gap = "$space.2",
-		items = "center",
+	pr = ui.raw(150, "the title bar's controls at the right"),
+	ui.presence(function(): string
+		local k = thread_kind()
+		return if k == "working" or k == "approval" then k else "mark:" .. agent_id()
+	end, function(key: string): Node
+		local agent = string.match(key, "^mark:(.*)$")
+		if agent then
+			return if agent ~= "" then kx.AgentMark { agent = agent, size = 14 } else ui.div {}
+		end
+		return kx.StatusIcon { kind = key :: any, size = 14 }
+	end),
+	ui.text {
+		id = "page-title",
+		function()
+			local t = store.thread:get()
+			return if t then t.title else ""
+		end,
+		literal = true,
+		truncate = true,
 		min_w = 0,
-		kx.StatusIcon { kind = thread_kind, size = 14 },
-		ui.text {
-			function()
-				local t = store.thread:get()
-				return if t then t.title else ""
-			end,
-			literal = true,
-			truncate = true,
-			min_w = 0,
-			text_size = "$font.size.md",
-			weight = "$font.weight.medium",
-		},
-	}),
+		grow = 1,
+		text_size = "$font.size.sm",
+		weight = "$font.weight.medium",
+		color = "$text.secondary",
+	},
 }
 
 -- (The panel beside it is the window's: app.luau.)
