@@ -256,6 +256,7 @@ end
 -- ── The queue (Zeron's): what you send while the agent works waits in
 -- the composer's dock, each thread its own, and goes as its turn ends.
 -- Send now, edit, remove or reorder it there. ─────────────────────────────
+local send_with = if store.fixture ~= "" then ui.state("kx.send_with.fx", "enter") else ui.persist("kx.send_with", "enter")
 local queues = ui.state("ray.queues", {} :: { [string]: { any } })
 local queued_n = 0
 local function open_id(): string?
@@ -583,6 +584,10 @@ function M.Ray(props: { place: "home" | "thread", variant: string? }): Node
 		return not home and t ~= nil and t.running
 	end)
 	local composer = Composer {
+		-- Settings › General › Send messages with.
+		send_with = function(): string
+			return send_with:get()
+		end,
 		value = text,
 		placeholder = if not home then "Reply, or > for commands"
 			elseif variant == "slim" then "Ask anything…"

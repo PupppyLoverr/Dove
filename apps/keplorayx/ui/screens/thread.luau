@@ -16,6 +16,8 @@ local nav = require("@screens/nav")
 
 local M = {}
 
+local width = ui.persist("kx.conversation_width", "default")
+
 -- ── The page ───────────────────────────────────────────────────────────
 
 local function thread_kind(): Status.Kind
@@ -107,7 +109,11 @@ function M.column(): Node
 				return Transcript {
 					messages = conversation.messages,
 					draft = conversation.draft,
-					measure = kx.MEASURE,
+					-- Settings › Appearance › Conversation width.
+					measure = function(): number
+						local w = width:get()
+						return if w == "narrow" then 600 elseif w == "wide" then 860 else kx.MEASURE
+					end,
 				}
 			end)({}),
 		},

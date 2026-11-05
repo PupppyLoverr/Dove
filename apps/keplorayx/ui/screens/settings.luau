@@ -29,17 +29,19 @@ ui.effect(function()
 	end
 end)
 
+-- Settings' pages under Zeron's headings (its screens/shell/settings: a
+-- heading where the group changes, down the list).
 local SECTIONS = {
-	{ id = "general", title = "General", icon = "settings-minimalistic" },
-	{ id = "appearance", title = "Appearance", icon = "palette-search" },
-	{ id = "agents", title = "Agents", icon = "bot" },
-	{ id = "notifications", title = "Notifications", icon = "bell" },
-	{ id = "shortcuts", title = "Shortcuts", icon = "keyboard" },
-	{ id = "plugins", title = "Plugins", icon = "widget-add" },
-	{ id = "widgets", title = "Widgets", icon = "widget" },
-	{ id = "account", title = "Account", icon = "user" },
-	{ id = "data", title = "Privacy and data", icon = "local-only" },
-	{ id = "about", title = "About", icon = "info-circle" },
+	{ id = "general", title = "General", icon = "settings-minimalistic", group = "Personal" },
+	{ id = "appearance", title = "Appearance", icon = "palette-search", group = "Personal" },
+	{ id = "notifications", title = "Notifications", icon = "bell", group = "Personal" },
+	{ id = "shortcuts", title = "Shortcuts", icon = "keyboard", group = "Personal" },
+	{ id = "account", title = "Account", icon = "user", group = "Personal" },
+	{ id = "agents", title = "Providers", icon = "bot", group = "Agents" },
+	{ id = "plugins", title = "Plugins", icon = "widget-add", group = "Customize" },
+	{ id = "widgets", title = "Widgets", icon = "widget", group = "Customize" },
+	{ id = "data", title = "Privacy and data", icon = "local-only", group = "Keplorayx" },
+	{ id = "about", title = "About & updates", icon = "info-circle", group = "Keplorayx" },
 }
 
 -- Zeron's settings pieces (ds/settings): a page at a reading width, its
@@ -63,14 +65,14 @@ end
 local DESCRIPTIONS: { [string]: string } = {
 	General = "You, and Keplorayx beside your other apps.",
 	Appearance = "How Keplorayx looks: its light, its glass, your star, the sky.",
-	Agents = "The agents on this computer, and what a new thread may do.",
+	Providers = "The agents on this computer, and what a new thread may do.",
 	Notifications = "When Keplorayx says something while you're away.",
 	Shortcuts = "Every key, in the window and from anywhere.",
 	Account = "Your Keplorayx account, optional.",
 	Plugins = "What you add to Keplorayx. A plugin runs only once you allow it, with exactly what it asked for.",
 	Widgets = "Small windows on your desktop. You and your agents can add, change and move them.",
 	["Privacy and data"] = "What stays on this computer, and what leaves it.",
-	About = "Keplorayx, and what it's built on.",
+	["About & updates"] = "Keplorayx, and what it's built on.",
 }
 
 local function page(title: string, ...: Node): Node
@@ -110,6 +112,21 @@ local function general(): Node
 		"General",
 		group(
 			nil,
+			setting(
+				"Send messages with",
+				"Enter, or Ctrl+Enter (then Enter starts a new line).",
+				kx.Segmented {
+					value = ui.persist("kx.send_with", "enter"),
+					label = "Send messages with",
+					width = 96,
+					options = { { label = "Enter", value = "enter" }, { label = "Ctrl+Enter", value = "mod_enter" } },
+				}
+			),
+			setting(
+				"Compact mode",
+				"A thread a line in the sidebar; off, two (its project and branch under it).",
+				kx.Switch { value = require("@screens/nav").sidebar_compact, label = "Compact mode" }
+			),
 			setting("Your name", "What Keplorayx calls you, here and in your teammates' briefs.", kx.Field {
 				value = name,
 				placeholder = "Your name",
@@ -179,6 +196,23 @@ end
 local function appearance(): Node
 	return page(
 		"Appearance",
+		group(
+			"Reading",
+			setting(
+				"Conversation width",
+				"How wide a thread's replies run.",
+				kx.Segmented {
+					value = ui.persist("kx.conversation_width", "default"),
+					label = "Conversation width",
+					width = 84,
+					options = {
+						{ label = "Narrow", value = "narrow" },
+						{ label = "Default", value = "default" },
+						{ label = "Wide", value = "wide" },
+					},
+				}
+			)
+		),
 		group(
 			"Theme",
 			setting(
@@ -346,16 +380,21 @@ local function notifications(): Node
 	return page(
 		"Notifications",
 		group(
-			nil,
+			"Desktop",
 			setting(
-				"When an agent needs you",
-				"A word from the system while Keplorayx is in the background.",
-				kx.Switch { value = ui.persist("kx.notify.needs", true), label = "When an agent needs you" }
+				"Input required",
+				"When an agent asks you something or waits for your approval.",
+				kx.Switch { value = ui.persist("kx.notify.needs", true), label = "Input required" }
 			),
 			setting(
-				"When a thread finishes",
-				"Only while you're away from the window.",
-				kx.Switch { value = ui.persist("kx.notify.done", true), label = "When a thread finishes" }
+				"Task completed",
+				"When a thread finishes its turn.",
+				kx.Switch { value = ui.persist("kx.notify.done", true), label = "Task completed" }
+			),
+			setting(
+				"Only when in the background",
+				"Off, they come while you're looking at Keplorayx too.",
+				kx.Switch { value = ui.persist("kx.notify.background", true), label = "Only when in the background" }
 			)
 		),
 		kx.Caption { "The taskbar's badge counts the threads waiting on you.", literal = true, wrap = true }
@@ -374,11 +413,13 @@ local SHORTCUTS = {
 	{ "Team", "Ctrl Shift T" },
 	{ "Constellation", "Ctrl −" },
 	{ "Settings", "Ctrl ," },
+	{ "Open a thread in the sidebar", "Ctrl 1 to 9" },
 	{ "Allow what an agent asks", "Y" },
 	{ "Deny it", "N" },
 }
 
 local GLOBAL = {
+	{ "The launcher, from any app", "Alt Space" },
 	{ "Ask, from any app", "Ctrl Alt Space" },
 	{ "Allow, from any app", "Ctrl Alt A" },
 	{ "Deny, from any app", "Ctrl Alt D" },
@@ -1034,7 +1075,12 @@ local PAGES: { [string]: () -> Node } = {
 function M.nav(): Node
 	local nav = require("@screens/nav")
 	local items: { any } = {}
+	local last: string? = nil
 	for _, s in SECTIONS do
+		if s.group ~= last then
+			table.insert(items, { heading = s.group })
+			last = s.group
+		end
 		table.insert(items, { value = s.id, label = s.title, icon = s.icon })
 	end
 	return Settings.Nav {
