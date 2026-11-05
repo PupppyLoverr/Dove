@@ -424,5 +424,18 @@ pub fn read_file(args: &Json) -> Result<String, String> {
 }
 
 pub fn list_text(engine: &dove_core::Engine) -> String {
-    serde_json::to_string_pretty(&list_json(engine)).unwrap_or_default()
+    let mut text = serde_json::to_string_pretty(&list_json(engine)).unwrap_or_default();
+    // What failed as the window loaded them (a plugin's own error names it).
+    let errors: Vec<String> = HOSTS.with(|hosts| {
+        hosts.borrow().iter().filter_map(|(host, _)| host.error().with_untracked(Clone::clone)).collect()
+    });
+    if !errors.is_empty() {
+        text.push_str("
+
+Errors:
+");
+        text.push_str(&errors.join("
+"));
+    }
+    text
 }

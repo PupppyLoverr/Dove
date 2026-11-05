@@ -86,7 +86,7 @@ fn tools() -> Json {
           "inputSchema": obj(json!({ "path": { "type": "string" } }), &["path"]) },
         { "name": "list_plugins", "description": "Keplorayx's plugins: installed (and whether the person allowed them) and the catalog's.",
           "inputSchema": obj(json!({}), &[]) },
-        { "name": "create_plugin", "description": "Make a Keplorayx plugin: a folder with kx-plugin.json and init.luau, run by zgx in a sandbox in Keplorayx's window. The person allows it in Settings › Plugins before it runs. Permissions: ui.add, ui.change, sessions.read, messages.read, navigate, compose, network, clipboard, files, web, windows, terminals. init.luau uses zgx's `ui` (ui.contribute { target = \"#…\", after = node }, ui.shared(\"kx.threads\") with sessions.read, ui.shared(\"kx.now\")).",
+        { "name": "create_plugin", "description": "Make a Keplorayx plugin: a folder with kx-plugin.json and init.luau, run by zgx in a sandbox in Keplorayx's window. The person allows it in Settings › Plugins before it runs. Permissions: ui.add, ui.change, sessions.read, messages.read, navigate, compose, network, clipboard, files, web, windows, terminals. init.luau uses zgx's `ui` (ui.contribute { target = \"#sidebar\", after = ui.text { … } }: a node, not a function; an element by its id, as #sidebar; a wrong target or code comes back from reload_plugins as its error), ui.shared(\"kx.threads\") with sessions.read, ui.shared(\"kx.now\")).",
           "inputSchema": obj(json!({
             "id": { "type": "string" }, "name": { "type": "string" }, "description": { "type": "string" },
             "permissions": { "type": "array", "items": { "type": "string" } },
