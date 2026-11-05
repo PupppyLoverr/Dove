@@ -153,6 +153,14 @@ local function sky(): Node
 		pointer_events = "none",
 		wallpaper.Wallpaper {
 			effect = M.sky_effect,
+			-- Laid the window's width from the right, so it holds still as
+			-- the sidebar comes and goes, and always reaches the page's left.
+			width = function(): number
+				local ok, size = pcall(function(): any
+					return (ui :: any).window.size:get()
+				end)
+				return if ok and type(size) == "table" and size.width then size.width else 1600
+			end,
 			key = function(): string
 				local s = M.sky:get()
 				return if s == "none" then "" else s

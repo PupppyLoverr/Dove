@@ -128,18 +128,27 @@ end
 
 function M.view(): Node
 	return ui.column {
+		-- As wide as it was dragged, short of leaving the page less than a
+		-- readable column beside the sidebar.
 		w = function(): number
-			return M.width:get()
+			local ok, size = pcall(function(): any
+				return (ui :: any).window.size:get()
+			end)
+			local window = if ok and type(size) == "table" and size.width then size.width else 1240
+			local sidebar = if nav.sidebar_collapsed:get() then 0 else nav.sidebar_width:get()
+			-- (A page narrower than about 460 points stops reading well.)
+			return math.max(320, math.min(M.width:get(), window - sidebar - 460))
 		end,
 		shrink = 0,
-		h_full = true,
 		relative = true,
 		overflow = "hidden",
-		bg = function()
-			return if kx.material.see_through() then "$surface.base" else "$kx.solid"
-		end,
-		border_sides = { 0, 0, 0, 1 },
-		border_color = "$border.subtle",
+		-- A second card beside the page's, as Zeron sets the panel.
+		my = "$zeron.inset.gap",
+		mr = "$zeron.inset.gap",
+		rounded = "$zeron.inset.radius",
+		bg = "$zeron.inset.bg",
+		border = 1,
+		border_color = "$zeron.inset.edge",
 		edge(),
 		ui.row {
 			h = "$kx.titlebar",

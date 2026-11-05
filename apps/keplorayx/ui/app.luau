@@ -308,12 +308,22 @@ return ui.row {
 		dragging:set(over)
 	end,
 	sidebar.view(),
+	-- The page: a card set into the window (Zeron's, as Dove's was), lighter
+	-- than the glass round it, its corner the window's less the gap.
 	ui.column {
 		grow = 1,
+		-- From nothing, it takes the room the sidebar and panel leave: its
+		-- content's width never pushes the window wider.
+		basis = 0,
 		min_w = 0,
-		h_full = true,
 		relative = true,
 		overflow = "hidden",
+		my = "$zeron.inset.gap",
+		mr = "$zeron.inset.gap",
+		rounded = "$zeron.inset.radius",
+		bg = "$zeron.inset.bg",
+		border = 1,
+		border_color = "$zeron.inset.edge",
 		ui.show(function()
 			return nav.route:get() == "home"
 		end, home_bar),

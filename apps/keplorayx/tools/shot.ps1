@@ -1,4 +1,4 @@
-# Screenshot a keplorayx window to a PNG: launch it against a scratch
+﻿# Screenshot a keplorayx window to a PNG: launch it against a scratch
 # DOVE_HOME, wait for it to settle, capture its window (PrintWindow with
 # PW_RENDERFULLCONTENT, so the composition and glass are in it), close it.
 #
@@ -27,6 +27,13 @@ public class KxShot {
   [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
   [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
   [DllImport("user32.dll")] static extern bool PrintWindow(IntPtr h, IntPtr hdc, uint flags);
+  [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
+  // Off the screen, unfocused: a capture never comes in front of you.
+  [DllImport("user32.dll")] static extern bool IsIconic(IntPtr h);
+  [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr h, int cmd);
+  // Minimized meanwhile: shown again without taking focus, still away.
+  public static bool Unfold(IntPtr h) { if (!IsIconic(h)) return false; ShowWindow(h, 4); Away(h); return true; }
+  public static void Away(IntPtr h) { SetWindowPos(h, IntPtr.Zero, -6000, 40, 0, 0, 0x0001 | 0x0004 | 0x0010); }
   [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out RECT r);
   [StructLayout(LayoutKind.Sequential)] struct RECT { public int Left, Top, Right, Bottom; }
   [DllImport("user32.dll")] static extern bool SetProcessDpiAwarenessContext(IntPtr value);
@@ -75,9 +82,11 @@ $p = Start-Process -FilePath $Exe -ArgumentList @($Mode) -PassThru -RedirectStan
 $hwnd = [IntPtr]::Zero
 $sw = [Diagnostics.Stopwatch]::StartNew()
 while ($hwnd -eq [IntPtr]::Zero -and $sw.ElapsedMilliseconds -lt 30000) { Start-Sleep -Milliseconds 100; $hwnd = [KxShot]::Find([uint32]$p.Id) }
+if ($hwnd -ne [IntPtr]::Zero) { [KxShot]::Away($hwnd) }
 if ($hwnd -eq [IntPtr]::Zero) { "no window"; Get-Content $err -TotalCount 30; Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue; exit 1 }
 Start-Sleep -Seconds $Seconds
 $hwnd = [KxShot]::Find([uint32]$p.Id)
+if ([KxShot]::Unfold($hwnd)) { Start-Sleep -Seconds 2; $hwnd = [KxShot]::Find([uint32]$p.Id) }
 $dir = Split-Path -Parent $Out
 if ($dir) { New-Item -ItemType Directory -Force $dir | Out-Null }
 $full = if ([IO.Path]::IsPathRooted($Out)) { [IO.Path]::GetFullPath($Out) } else { [IO.Path]::GetFullPath((Join-Path (Get-Location) $Out)) }
