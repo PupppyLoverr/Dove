@@ -1,0 +1,8 @@
+{
+	"name": "Notes",
+	"version": "1.0.0",
+	"author": "zterm",
+	"description": "A notepad in a pane, kept per pane across launches.",
+	"permissions": [],
+	"panels": [{ "id": "notes", "title": "Notes", "description": "A notepad for this pane" }]
+}

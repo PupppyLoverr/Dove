@@ -1,0 +1,1140 @@
+//! Where text can be selected (CSS `user-select`) and how a selection shows
+//! on it. Both are rare, kept beside the nodes: a scene without selectable
+//! text pays a length check for them.
+use super::{
+    COMPOSITE, Color, NodeId, NodeKind, PAINTED, Rect, Scene, Transform, clipped_bounds,
+    own_visible,
+};
+use std::collections::HashMap;
+
+/// A text selection's highlight on one text node: rectangles from its box's
+/// origin, painted under its glyphs and within its box, with their corner
+/// `radius`; with `text_color`, the glyphs whose centres they hold paint in
+/// it (CSS `::selection { color }`), from the glyphs already laid out.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TextHighlight {
+    /// The highlight's fill colour.
+    pub color: Color,
+    /// The highlighted rectangles, from the text box's origin.
+    pub rects: Vec<Rect>,
+    /// The colour the glyphs they hold paint in; `None` keeps the glyphs' own.
+    pub text_color: Option<Color>,
+    /// The rectangles' corner radius.
+    pub radius: f32,
+}
+impl TextHighlight {
+    /// The colour a glyph centred at (`x`, `y`) in the node's box paints in,
+    /// if the selection recolours it.
+    pub fn glyph_color(&self, x: f32, y: f32) -> Option<Color> {
+        self.text_color.filter(|_| {
+            self.rects
+                .iter()
+                .any(|r| x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height)
+        })
+    }
+    /// Its rectangles at (`x`, `y`) as one shape, on whole pixels of a target
+    /// of `scale` pixels a point: lines that touch share an edge, with no
+    /// seam or overlap between them; outer corners round by `radius` (at most
+    /// half the line), and where a line's run meets a longer one the corner
+    /// curves the other way, in a `Fillet`. A step too short for the radius
+    /// takes half of it each way, as Zed and VS Code draw it.
+    pub fn pieces(&self, x: f32, y: f32, scale: f32) -> Vec<HighlightPiece> {
+        let mut pieces = Vec::with_capacity(self.rects.len() * 2);
+        shape_pieces(&self.rects, self.radius, (x, y), scale, &mut pieces);
+        pieces
+    }
+}
+
+/// `TextHighlight::pieces` of `rects` rounded by `radius`, into `pieces`.
+fn shape_pieces(
+    rects: &[Rect],
+    radius: f32,
+    (x, y): (f32, f32),
+    scale: f32,
+    pieces: &mut Vec<HighlightPiece>,
+) {
+    let snap = |value: f32| (value * scale).round() / scale;
+    let pixel = 1. / scale;
+    let mut rects = rects.to_vec();
+    rects.sort_by(|a, b| a.y.total_cmp(&b.y).then(a.x.total_cmp(&b.x)));
+    let mut rows: Vec<HighlightRow> = Vec::new();
+    let mut runs: Vec<(f32, f32)> = Vec::new();
+    for r in rects {
+        let left = snap(x + r.x);
+        let right = snap(x + r.x + r.width).max(left + pixel);
+        let (mut top, bottom) = (snap(y + r.y), snap(y + r.y + r.height));
+        match rows.last_mut() {
+            // Another run of the line: mixed-direction text.
+            Some(row) if y + r.y + r.height * 0.5 < row.bottom => {
+                match runs.last_mut() {
+                    Some(last) if left <= last.1 + pixel => last.1 = last.1.max(right),
+                    _ => {
+                        runs.push((left, right));
+                        row.runs.end += 1;
+                    }
+                }
+                continue;
+            }
+            // Touching, or overlapping in a tight line height: one edge.
+            Some(row) if top <= row.bottom + pixel => {
+                row.bottom = snap((row.bottom + top) * 0.5);
+                top = row.bottom;
+            }
+            _ => {}
+        }
+        if bottom > top {
+            rows.push(HighlightRow {
+                top,
+                bottom,
+                runs: runs.len()..runs.len() + 1,
+            });
+            runs.push((left, right));
+        }
+    }
+    for (i, row) in rows.iter().enumerate() {
+        let above = i
+            .checked_sub(1)
+            .map(|k| &rows[k])
+            .filter(|above| above.bottom == row.top);
+        let below = rows.get(i + 1).filter(|below| below.top == row.bottom);
+        let height = row.bottom - row.top;
+        let radius = radius.min(height * 0.5);
+        let own = &runs[row.runs.clone()];
+        for (k, &run) in own.iter().enumerate() {
+            let (left, right) = run;
+            // Before the next run along its line, if any.
+            let room_left = k.checked_sub(1).map_or(f32::MAX, |k| left - own[k].1);
+            let room_right = own.get(k + 1).map_or(f32::MAX, |next| next.0 - right);
+            let mut radii = [radius.min((right - left) * 0.5); 4];
+            let corners = [(above, true), (above, false), (below, false), (below, true)];
+            for (corner, (neighbour, is_left)) in corners.into_iter().enumerate() {
+                let reach =
+                    neighbour.and_then(|n| neighbour_reach(&runs[n.runs.clone()], run, is_left));
+                match reach {
+                    None => {}
+                    Some(reach) if reach < 0. => radii[corner] = radii[corner].min(-reach * 0.5),
+                    Some(reach) => {
+                        radii[corner] = 0.;
+                        let room = if is_left { room_left } else { room_right };
+                        let curve = radius.min(reach * 0.5).min(room * 0.5);
+                        let curve = (curve * scale).floor() / scale;
+                        if curve <= 0. {
+                            continue;
+                        }
+                        let x = if is_left { left - curve } else { right };
+                        let is_top = corner < 2;
+                        let y = if is_top { row.top } else { row.bottom - curve };
+                        pieces.push(HighlightPiece::Fillet {
+                            rect: Rect::new(x, y, curve, curve),
+                            centre: (
+                                if is_left { x } else { x + curve },
+                                if is_top { y + curve } else { y },
+                            ),
+                            radius: curve,
+                        });
+                    }
+                }
+            }
+            pieces.push(HighlightPiece::Run {
+                rect: Rect::new(left, row.top, right - left, height),
+                radii,
+            });
+        }
+    }
+}
+
+/// A piece of a rounded highlight's shape (`TextHighlight::pieces`). Pieces
+/// never overlap, so a translucent colour stays even across them.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum HighlightPiece {
+    /// A line's run, with its corner radii (top left, top right, bottom
+    /// right, bottom left).
+    Run {
+        /// Where it is.
+        rect: Rect,
+        /// Its corners.
+        radii: [f32; 4],
+    },
+    /// The curve in the corner where a run meets a longer one: `rect` filled
+    /// but for the circle of `radius` around `centre`, a corner of `rect`.
+    Fillet {
+        /// The square it fills.
+        rect: Rect,
+        /// The circle's centre.
+        centre: (f32, f32),
+        /// The circle's radius, `rect`'s side.
+        radius: f32,
+    },
+}
+
+/// A line of a highlight: its edges, and its runs in `TextHighlight::pieces`.
+struct HighlightRow {
+    top: f32,
+    bottom: f32,
+    runs: std::ops::Range<usize>,
+}
+
+/// How far past the run's left or right edge the first run it touches among
+/// `neighbours` (the line above or below, in order) reaches: negative if it
+/// stops short, `None` if none touches it.
+fn neighbour_reach(neighbours: &[(f32, f32)], run: (f32, f32), left: bool) -> Option<f32> {
+    let mut touching = neighbours.iter().filter(|n| n.0 < run.1 && n.1 > run.0);
+    if left {
+        touching.next().map(|n| run.0 - n.0)
+    } else {
+        touching.next_back().map(|n| n.1 - run.1)
+    }
+}
+
+/// A mark behind a text node's glyphs, apart from its selection: a find
+/// match's (`Scene::set_text_marks`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TextMark {
+    /// Its rectangle, from the text box's origin.
+    pub rect: Rect,
+    /// Its fill.
+    pub color: Color,
+}
+
+/// A node's drop shadow (CSS's `filter: drop-shadow`): what its subtree
+/// paints, again under it, moved by `offset`, blurred and in `color`, by
+/// its alpha rather than its box (`Scene::set_drop_shadow`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DropShadow {
+    /// How far it is moved from what casts it, in points.
+    pub offset: Transform,
+    /// The blur's Gaussian sigma, in points; 0 draws it sharp.
+    pub blur: f32,
+    /// Its colour: what casts it shows its shape in it, its alpha times
+    /// this one's.
+    pub color: Color,
+}
+impl DropShadow {
+    /// Where it can paint, for a subtree painting in `ink`.
+    pub(crate) fn ink(&self, ink: Rect) -> Rect {
+        ink.translated(self.offset).expand(self.blur.max(0.) * 3.)
+    }
+}
+
+/// A text node's shadow (CSS's `text-shadow`): its glyphs again, under
+/// them, moved by `offset` and painted in `color`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TextShadow {
+    /// How far it is moved from the glyphs, in points.
+    pub offset: Transform,
+    /// The blur's Gaussian sigma, in points; 0 draws it sharp.
+    pub blur: f32,
+    /// Its colour.
+    pub color: Color,
+}
+impl TextShadow {
+    /// Where it can paint, for text whose glyphs paint in `ink`.
+    fn ink(&self, ink: Rect) -> Rect {
+        ink.translated(self.offset).expand(self.blur.max(0.) * 3.)
+    }
+}
+
+#[derive(Default)]
+pub(super) struct Selectable {
+    /// `Scene::set_user_select`'s settings.
+    user_select: HashMap<NodeId, bool>,
+    /// How many of them allow selection: none keeps cursors as they were.
+    allowed: usize,
+    highlights: HashMap<NodeId, TextHighlight>,
+    /// Each text's marks, and if they are drawn as shapes
+    /// (`Scene::set_text_mark_shapes`) where each shape's marks end and their
+    /// radius.
+    marks: HashMap<NodeId, (Vec<TextMark>, Option<Box<MarkShapes>>)>,
+}
+/// Where each shape of a text's marks ends, and their radius.
+type MarkShapes = (Vec<usize>, f32);
+impl Selectable {
+    /// Whether anything allows selection.
+    pub(super) fn any(&self) -> bool {
+        self.allowed > 0
+    }
+    /// `id` is gone.
+    pub(super) fn forget(&mut self, id: NodeId) {
+        if !self.user_select.is_empty() && self.user_select.remove(&id) == Some(true) {
+            self.allowed -= 1;
+        }
+        if !self.highlights.is_empty() {
+            self.highlights.remove(&id);
+        }
+        if !self.marks.is_empty() {
+            self.marks.remove(&id);
+        }
+    }
+}
+
+/// A selectable text node `Scene::selectable_text` visits.
+#[derive(Clone, Copy, Debug)]
+pub struct TextLeaf {
+    /// The text node.
+    pub id: NodeId,
+    /// Its box, translated (scrolling included).
+    pub bounds: Rect,
+    /// What of it shows within its ancestors' clips and the viewport.
+    pub visible: Option<Rect>,
+}
+
+impl Scene {
+    /// CSS `user-select`: `Some(true)` lets the pointer select the text in
+    /// `id`'s subtree, `Some(false)` keeps it from doing so (`none`), and
+    /// `None` takes what `id`'s parent has (the default: nothing is).
+    pub fn set_user_select(&mut self, id: NodeId, select: Option<bool>) {
+        if !self.contains(id) {
+            return;
+        }
+        let state = &mut self.selectable;
+        let old = match select {
+            Some(value) => state.user_select.insert(id, value),
+            None => state.user_select.remove(&id),
+        };
+        if old == select {
+            return;
+        }
+        state.allowed =
+            state.allowed + usize::from(select == Some(true)) - usize::from(old == Some(true));
+        // The cursor over it changes.
+        self.geometry_revision = self.geometry_revision.wrapping_add(1);
+    }
+    /// `id`'s own `user_select` setting.
+    pub fn user_select(&self, id: NodeId) -> Option<bool> {
+        if self.selectable.user_select.is_empty() {
+            return None;
+        }
+        self.selectable.user_select.get(&id).copied()
+    }
+    /// Whether the pointer can select text in `id`: its own `user_select`
+    /// or its nearest ancestor's that has one.
+    pub fn is_selectable(&self, id: NodeId) -> bool {
+        self.selection_root(id).is_some()
+    }
+    /// The node a selection made in `id` stays within (and select-all
+    /// selects): the outermost of the ancestors, `id` included, that allow
+    /// selection without one between them that forbids it. `None` if `id`
+    /// is not selectable.
+    pub fn selection_root(&self, id: NodeId) -> Option<NodeId> {
+        if self.selectable.allowed == 0 || !self.contains(id) {
+            return None;
+        }
+        let mut root = None;
+        for node in std::iter::once(id).chain(self.ancestors(id)) {
+            match self.selectable.user_select.get(&node) {
+                Some(true) => root = Some(node),
+                Some(false) => return root,
+                None => {}
+            }
+        }
+        root
+    }
+    /// Show (or with `None` stop showing) a selection on text node `id`.
+    /// Repaints only where the highlight changed; nothing is laid out.
+    pub fn set_text_highlight(&mut self, id: NodeId, highlight: Option<TextHighlight>) {
+        if !self.contains(id) || self.selectable.highlights.get(&id) == highlight.as_ref() {
+            return;
+        }
+        let old = match highlight {
+            Some(highlight) => self.selectable.highlights.insert(id, highlight),
+            None => self.selectable.highlights.remove(&id),
+        };
+        let new = self.selectable.highlights.get(&id);
+        // A change of colour or shape repaints all of it; otherwise what was
+        // or is highlighted, but not both.
+        let look = |h: &TextHighlight| (h.color, h.text_color, h.radius.to_bits());
+        let recolored = old.as_ref().map(look) != new.map(look);
+        let changed: Vec<Rect> = match (&old, new) {
+            (Some(old), Some(new)) if !recolored => old
+                .rects
+                .iter()
+                .filter(|r| !new.rects.contains(r))
+                .chain(new.rects.iter().filter(|r| !old.rects.contains(r)))
+                .copied()
+                .collect(),
+            _ => old
+                .iter()
+                .chain(new)
+                .flat_map(|h| h.rects.iter().copied())
+                .collect(),
+        };
+        // The lines beside them round to meet them.
+        let reach = new.or(old.as_ref()).map_or(0., |h| h.radius);
+        let changed: Vec<Rect> = match reach > 0. {
+            true => changed.iter().map(|r| r.expand(reach + 1.)).collect(),
+            false => changed,
+        };
+        self.damage_text_rects(id, &changed);
+        // Its layers repaint; its own retained glyphs stay as they are.
+        self.invalidate(id, PAINTED);
+    }
+    /// Paint `shadows` under the glyphs of text node `id`, or of the text
+    /// inside node `id` (inherited, as CSS's: the nearest set wins), the
+    /// first on top; none: no more. Nothing is laid out; the next flush
+    /// repaints where they were and where they go (`damage_text_shadows`).
+    pub fn set_text_shadows(&mut self, id: NodeId, shadows: Option<std::sync::Arc<[TextShadow]>>) {
+        let shadows = shadows.filter(|shadows| !shadows.is_empty());
+        let held = self
+            .cold
+            .as_ref()
+            .and_then(|cold| cold.text_shadows.get(&id));
+        if !self.contains(id) || held == shadows.as_ref() {
+            return;
+        }
+        let maps = self.cold.get_or_insert_default();
+        match shadows {
+            Some(shadows) => maps.text_shadows.insert(id, shadows),
+            None => maps.text_shadows.remove(&id),
+        };
+        self.sync_cold(id);
+        self.invalidate(id, PAINTED);
+    }
+    /// Sample node `id`'s image, or its background image, and those of the
+    /// nodes in it, as `rendering` says (CSS's `image-rendering`, inherited
+    /// as CSS's is): `Pixelated`, the nearest pixel. (`Auto` takes back what
+    /// `id` said, not what a node around it says.)
+    pub fn set_image_rendering(&mut self, id: NodeId, rendering: crate::image::ImageRendering) {
+        let held = self
+            .cold
+            .as_ref()
+            .and_then(|cold| cold.image_rendering.get(&id))
+            .copied()
+            .unwrap_or_default();
+        if !self.contains(id) || held == rendering {
+            return;
+        }
+        let maps = self.cold.get_or_insert_default();
+        match rendering {
+            crate::image::ImageRendering::Auto => maps.image_rendering.remove(&id),
+            rendering => maps.image_rendering.insert(id, rendering),
+        };
+        self.sync_cold(id);
+        self.invalidate(id, PAINTED);
+        // The pictures in it take it too (an image view's own node is
+        // inside the box its style is on): drawn again.
+        let mut inside = self.children(id).to_vec();
+        while let Some(node) = inside.pop() {
+            if matches!(self.kind(node), NodeKind::Image(_)) {
+                self.invalidate(node, PAINTED);
+            }
+            inside.extend_from_slice(self.children(node));
+        }
+    }
+    /// Draw node `id`'s outline (`QuadStyle::outline`) dashed or dotted
+    /// (CSS's `outline-style`), or solid (`BorderStyle::Solid`, the default).
+    pub fn set_outline_style(&mut self, id: NodeId, style: crate::decoration::BorderStyle) {
+        let held = self
+            .cold
+            .as_ref()
+            .and_then(|cold| cold.outline_styles.get(&id))
+            .copied()
+            .unwrap_or_default();
+        if !self.contains(id) || held == style {
+            return;
+        }
+        let maps = self.cold.get_or_insert_default();
+        match style {
+            crate::decoration::BorderStyle::Solid => maps.outline_styles.remove(&id),
+            style => maps.outline_styles.insert(id, style),
+        };
+        self.sync_cold(id);
+        self.invalidate(id, PAINTED);
+    }
+    /// Draw node `id`'s image in nine pieces as `slice` cuts it (a
+    /// nine-patch, `ImageSlice`); `None`: whole, as it fits.
+    pub fn set_image_slice(&mut self, id: NodeId, slice: Option<crate::image::ImageSlice>) {
+        let held = self
+            .cold
+            .as_ref()
+            .and_then(|cold| cold.image_slices.get(&id))
+            .copied();
+        if !self.contains(id) || held == slice {
+            return;
+        }
+        let maps = self.cold.get_or_insert_default();
+        match slice {
+            Some(slice) => maps.image_slices.insert(id, slice),
+            None => maps.image_slices.remove(&id),
+        };
+        self.sync_cold(id);
+        self.invalidate(id, PAINTED);
+    }
+    /// Whether any node's image is drawn in nine pieces.
+    #[inline(always)]
+    pub fn has_image_slices(&self) -> bool {
+        self.cold
+            .as_ref()
+            .is_some_and(|cold| !cold.image_slices.is_empty())
+    }
+    /// How node `id`'s image is cut into nine pieces (`set_image_slice`).
+    pub fn image_slice(&self, id: NodeId) -> Option<crate::image::ImageSlice> {
+        self.cold
+            .as_ref()
+            .and_then(|cold| cold.image_slices.get(&id))
+            .copied()
+    }
+    /// Whether any node's image is sampled other than smoothly.
+    #[inline(always)]
+    pub fn has_image_rendering(&self) -> bool {
+        self.cold
+            .as_ref()
+            .is_some_and(|cold| !cold.image_rendering.is_empty())
+    }
+    /// How node `id`'s image is sampled (`set_image_rendering`): as it says,
+    /// else as the nearest node around it says. An image view's picture is
+    /// a node inside the box its style is on.
+    pub fn image_rendering(&self, id: NodeId) -> crate::image::ImageRendering {
+        let Some(cold) = self
+            .cold
+            .as_ref()
+            .filter(|cold| !cold.image_rendering.is_empty())
+        else {
+            return Default::default();
+        };
+        std::iter::once(id)
+            .chain(self.ancestors(id))
+            .find_map(|node| cold.image_rendering.get(&node).copied())
+            .unwrap_or_default()
+    }
+    /// Whether any node's outline is dashed or dotted.
+    #[inline(always)]
+    pub fn has_outline_styles(&self) -> bool {
+        self.cold
+            .as_ref()
+            .is_some_and(|cold| !cold.outline_styles.is_empty())
+    }
+    /// How node `id`'s outline is drawn (`set_outline_style`).
+    pub fn outline_style(&self, id: NodeId) -> crate::decoration::BorderStyle {
+        self.cold
+            .as_ref()
+            .and_then(|cold| cold.outline_styles.get(&id))
+            .copied()
+            .unwrap_or_default()
+    }
+    /// Paint `id` outside its parent's fade (`Style::fade_edges` and the
+    /// like): a scroll view's scrollbar, which its rows fading out at the
+    /// view's edges don't take. Its parent's own fade alone: one around the
+    /// parent still fades it.
+    pub(crate) fn set_outside_fade(&mut self, id: NodeId) {
+        if !self.contains(id) {
+            return;
+        }
+        // (Set as it mounts, before it paints: nothing to damage. No cold
+        // bit, which would cost its parent's special children a walk.)
+        let fades = &mut self.cold.get_or_insert_default().outside_fade;
+        fades.insert(id, super::OutsideFade);
+        if fades.len() >= 64 && fades.len().is_power_of_two() {
+            let slots = &self.slots;
+            fades.retain(|id, _| {
+                slots
+                    .get(id.index as usize)
+                    .is_some_and(|s| s.generation == id.generation && s.node.is_some())
+            });
+        }
+    }
+    /// Whether `id` paints outside its parent's fade (`set_outside_fade`).
+    pub(crate) fn outside_fade(&self, id: NodeId) -> bool {
+        self.cold
+            .as_ref()
+            .is_some_and(|cold| cold.outside_fade.contains_key(&id))
+    }
+    /// Whether any node paints outside its parent's fade.
+    #[inline(always)]
+    pub(crate) fn has_outside_fade(&self) -> bool {
+        self.cold
+            .as_ref()
+            .is_some_and(|cold| !cold.outside_fade.is_empty())
+    }
+    /// Show node `id`'s subtree through `gradient`'s alpha over its box, at
+    /// whatever size it is laid out (CSS's `mask-image` with a gradient),
+    /// in place of an image mask; `None`: no more mask. Its image is made at
+    /// the next flush, and again whenever the box's size changes.
+    pub fn set_mask_gradient(&mut self, id: NodeId, gradient: Option<crate::decoration::Gradient>) {
+        let held = self
+            .cold
+            .as_ref()
+            .and_then(|cold| cold.mask_gradients.get(&id))
+            .map(|(gradient, _)| gradient);
+        if !self.contains(id) || held == gradient.as_ref() {
+            return;
+        }
+        let had = held.is_some();
+        let maps = self.cold.get_or_insert_default();
+        match gradient {
+            // Made at the next flush, at the box's size then.
+            Some(gradient) => {
+                maps.mask_gradients.insert(id, (gradient, (-1., -1.)));
+            }
+            None => {
+                maps.mask_gradients.remove(&id);
+                if had {
+                    self.set_mask(id, None);
+                }
+            }
+        }
+        self.sync_cold(id);
+        self.invalidate(id, PAINTED);
+    }
+    /// Node `id`'s gradient mask (`set_mask_gradient`), if it has one.
+    pub fn mask_gradient(&self, id: NodeId) -> Option<&crate::decoration::Gradient> {
+        self.cold
+            .as_ref()
+            .and_then(|cold| cold.mask_gradients.get(&id))
+            .map(|(gradient, _)| gradient)
+    }
+    /// Fill text node `id`'s glyphs with `gradient` over its box rather than
+    /// its colour (CSS's `background-clip: text`); `None`: its colour again.
+    /// It paints as a cached layer while it has one: its glyphs drawn, then
+    /// the gradient kept where they are; its selection, highlights and
+    /// shadows behind, as plain text has them. Text alone: on another
+    /// node, nothing.
+    pub fn set_text_gradient(&mut self, id: NodeId, gradient: Option<crate::decoration::Gradient>) {
+        if !self.contains(id) {
+            return;
+        }
+        // A box (a decorated text's, styled before its label mounts): held
+        // for its text, which takes it at the next flush
+        // (`place_mask_gradients`); none, and its text has none either.
+        if !self.is_text(id) {
+            match gradient {
+                Some(gradient) => {
+                    let fill = crate::scene::TextGradient {
+                        gradient,
+                        made: (-1., -1.),
+                        image: None,
+                    };
+                    self.cold
+                        .get_or_insert_default()
+                        .text_gradients
+                        .insert(id, fill);
+                }
+                None => {
+                    if let Some(cold) = &mut self.cold {
+                        cold.text_gradients.remove(&id);
+                    }
+                    if let [label] = self.children(id)
+                        && self.is_text(*label)
+                    {
+                        let label = *label;
+                        self.set_text_gradient(label, None);
+                    }
+                }
+            }
+            self.sync_cold(id);
+            return;
+        }
+        let held = self
+            .cold
+            .as_ref()
+            .and_then(|cold| cold.text_gradients.get(&id))
+            .map(|fill| &fill.gradient);
+        if held == gradient.as_ref() {
+            return;
+        }
+        self.damage_subtree(id);
+        let filled = gradient.is_some();
+        let maps = self.cold.get_or_insert_default();
+        match gradient {
+            Some(gradient) => maps.text_gradients.insert(
+                id,
+                crate::scene::TextGradient {
+                    gradient,
+                    made: (-1., -1.),
+                    image: None,
+                },
+            ),
+            None => maps.text_gradients.remove(&id),
+        };
+        self.sync_cold(id);
+        // A drop shadow keeps it a layer too.
+        let extra = filled || self.drop_shadow(id).is_some();
+        let node = self.node_mut(id);
+        node.relayer(extra);
+        if filled && !std::mem::replace(&mut node.promoted, true) {
+            self.promoted_count += 1;
+        }
+        self.invalidate(id, PAINTED | COMPOSITE);
+    }
+    /// Whether `id` is plain or rich text.
+    pub(crate) fn is_text(&self, id: NodeId) -> bool {
+        matches!(
+            self.node(id).kind,
+            NodeKind::Text { .. } | NodeKind::RichText { .. }
+        )
+    }
+    /// Text node `id`'s gradient fill (`set_text_gradient`), if it has one.
+    pub fn text_gradient(&self, id: NodeId) -> Option<&crate::decoration::Gradient> {
+        self.cold
+            .as_ref()
+            .filter(|cold| !cold.text_gradients.is_empty())
+            .and_then(|cold| cold.text_gradients.get(&id))
+            .map(|fill| &fill.gradient)
+    }
+    /// Its gradient's colours over text node `id`'s box as last laid out
+    /// (`set_text_gradient`): what the renderer keeps where its glyphs are.
+    pub fn text_gradient_image(
+        &self,
+        id: NodeId,
+    ) -> Option<&std::sync::Arc<crate::image::ImageData>> {
+        self.cold
+            .as_ref()
+            .and_then(|cold| cold.text_gradients.get(&id))
+            .and_then(|fill| fill.image.as_ref())
+    }
+    /// Whether any text is filled with a gradient.
+    #[inline(always)]
+    pub fn has_text_gradients(&self) -> bool {
+        self.cold
+            .as_ref()
+            .is_some_and(|cold| !cold.text_gradients.is_empty())
+    }
+    /// Paint node `id`'s subtree again under itself as `shadow` says (CSS's
+    /// `filter: drop-shadow`): its shape by its alpha, moved, blurred and in
+    /// the shadow's colour; `None`: no more. It paints as a cached layer
+    /// while it has one, and the shadow is that layer's, blurred once: a
+    /// shadow moved or recoloured composites again without repainting it.
+    pub fn set_drop_shadow(&mut self, id: NodeId, shadow: Option<DropShadow>) {
+        let shadow = shadow.filter(|shadow| shadow.color.3 > 0);
+        let held = self
+            .cold
+            .as_ref()
+            .and_then(|cold| cold.drop_shadows.get(&id));
+        if !self.contains(id) || held == shadow.as_ref() {
+            return;
+        }
+        self.damage_subtree(id);
+        let shadowed = shadow.is_some();
+        let maps = self.cold.get_or_insert_default();
+        let had = match shadow {
+            Some(shadow) => maps.drop_shadows.insert(id, shadow),
+            None => maps.drop_shadows.remove(&id),
+        }
+        .is_some();
+        // Its damage spreads (`descend`), as a content blur's does.
+        match (had, shadowed) {
+            (false, true) => self.filtered.set(self.filtered.get() + 1),
+            (true, false) => self.filtered.set(self.filtered.get() - 1),
+            _ => {}
+        }
+        self.sync_cold(id);
+        // A text gradient keeps it a layer too.
+        let extra = shadowed || self.text_gradient(id).is_some();
+        let node = self.node_mut(id);
+        node.relayer(extra);
+        if shadowed && !std::mem::replace(&mut node.promoted, true) {
+            self.promoted_count += 1;
+        }
+        // Damaged where it reached, then where it reaches (as `set_effects`).
+        self.invalidate(id, COMPOSITE);
+        self.damage_subtree(id);
+    }
+    /// Whether any node has a drop shadow.
+    #[inline(always)]
+    pub fn has_drop_shadows(&self) -> bool {
+        self.cold
+            .as_ref()
+            .is_some_and(|cold| !cold.drop_shadows.is_empty())
+    }
+    /// Node `id`'s drop shadow (`set_drop_shadow`), if it has one.
+    #[inline]
+    pub fn drop_shadow(&self, id: NodeId) -> Option<&DropShadow> {
+        self.cold
+            .as_ref()
+            .filter(|cold| !cold.drop_shadows.is_empty())
+            .and_then(|cold| cold.drop_shadows.get(&id))
+    }
+    /// Whether any node has text shadows.
+    #[inline(always)]
+    pub fn has_text_shadows(&self) -> bool {
+        self.cold
+            .as_ref()
+            .is_some_and(|cold| !cold.text_shadows.is_empty())
+    }
+    pub(super) fn has_own_text_shadows(&self, id: NodeId) -> bool {
+        self.cold
+            .as_ref()
+            .is_some_and(|cold| cold.text_shadows.contains_key(&id))
+    }
+    /// Whether a shadow was shown last flush.
+    #[inline(always)]
+    pub(super) fn text_shadows_shown(&self) -> bool {
+        self.cold
+            .as_ref()
+            .is_some_and(|cold| !cold.shadows_shown.is_empty())
+    }
+    /// Text node `id`'s shadows, its own or the nearest set around it, the
+    /// first on top; empty for none.
+    pub fn text_shadows(&self, id: NodeId) -> &[TextShadow] {
+        let Some(cold) = self
+            .cold
+            .as_ref()
+            .filter(|cold| !cold.text_shadows.is_empty())
+        else {
+            return &[];
+        };
+        if !self.contains(id) {
+            return &[];
+        }
+        std::iter::once(id)
+            .chain(self.ancestors(id))
+            .find_map(|node| cold.text_shadows.get(&node))
+            .map_or(&[], |shadows| shadows)
+    }
+    /// Where each shadowed text's shadows show now, against where they
+    /// showed last flush: both are damage where they differ. Only scenes
+    /// with shadows ask, so the text damage paths stay as they were.
+    #[cold]
+    #[inline(never)]
+    pub(super) fn damage_text_shadows(&mut self) {
+        let mut texts = Vec::new();
+        let owners: Vec<NodeId> = self
+            .cold
+            .as_ref()
+            .map(|cold| cold.text_shadows.keys().copied().collect())
+            .unwrap_or_default();
+        for node in owners {
+            if !self.contains(node) {
+                continue;
+            }
+            let mut stack = vec![node];
+            while let Some(id) = stack.pop() {
+                match self.node(id).kind {
+                    NodeKind::Text { .. } | NodeKind::RichText { .. } => texts.push(id),
+                    _ => stack.extend(self.children(id).iter().copied()),
+                }
+            }
+        }
+        let mut now = super::NodeMap::default();
+        for text in texts {
+            let shadows = self.text_shadows(text);
+            if shadows.is_empty() || !self.shown(text) {
+                continue;
+            }
+            let bounds = self.world_bounds(text);
+            let reach = shadows
+                .iter()
+                .fold(bounds, |all, shadow| all.union(shadow.ink(bounds)));
+            now.insert(text, self.window_rect(text, reach));
+        }
+        let maps = self.cold.get_or_insert_default();
+        let was = std::mem::take(&mut maps.shadows_shown);
+        let changed: Vec<Rect> = was
+            .iter()
+            .filter(|(text, rect)| now.get(*text) != Some(*rect))
+            .chain(
+                now.iter()
+                    .filter(|(text, rect)| was.get(*text) != Some(*rect)),
+            )
+            .map(|(_, rect)| *rect)
+            .collect();
+        // `add_damage`'s body here, not a call: one more caller changes how
+        // it inlines into the hot paths that call it.
+        for rect in changed {
+            self.add_damage_as::<false>(rect);
+        }
+        self.cold.get_or_insert_default().shadows_shown = now;
+    }
+    /// The selection highlight shown on text node `id`, if any.
+    pub fn text_highlight(&self, id: NodeId) -> Option<&TextHighlight> {
+        if self.selectable.highlights.is_empty() {
+            return None;
+        }
+        self.selectable.highlights.get(&id)
+    }
+    /// Show `marks` behind text node `id`'s glyphs, under its selection (none:
+    /// no more). Repaints only where they changed; nothing is laid out.
+    pub fn set_text_marks(&mut self, id: NodeId, marks: Vec<TextMark>) {
+        self.set_marks(id, marks, None);
+    }
+    /// `set_text_marks` with the marks drawn as shapes, as a selection is
+    /// (`TextHighlight::pieces`): the marks before each of `ends` (a find
+    /// match's lines, ascending, the last `marks.len()`) are one shape,
+    /// rounded by `radius`, in its first mark's colour.
+    pub fn set_text_mark_shapes(
+        &mut self,
+        id: NodeId,
+        marks: Vec<TextMark>,
+        ends: Vec<usize>,
+        radius: f32,
+    ) {
+        self.set_marks(id, marks, Some((ends, radius.max(0.))));
+    }
+    fn set_marks(&mut self, id: NodeId, marks: Vec<TextMark>, shapes: Option<(Vec<usize>, f32)>) {
+        let held = self.selectable.marks.get(&id);
+        let old = held.map_or(&[][..], |(marks, _)| marks.as_slice());
+        let old_shapes = held.and_then(|(_, shapes)| shapes.as_deref());
+        if !self.contains(id) || (old == marks.as_slice() && old_shapes == shapes.as_ref()) {
+            return;
+        }
+        // A shape's corners meet its neighbours': around what changed.
+        let reach = old_shapes
+            .into_iter()
+            .chain(shapes.as_ref())
+            .map(|(_, radius)| radius + 1.)
+            .fold(0., f32::max);
+        let changed: Vec<Rect> = old
+            .iter()
+            .filter(|m| !marks.contains(m) || reach > 0.)
+            .chain(marks.iter().filter(|m| !old.contains(m) || reach > 0.))
+            .map(|m| m.rect.expand(reach))
+            .collect();
+        if marks.is_empty() {
+            self.selectable.marks.remove(&id);
+        } else {
+            self.selectable
+                .marks
+                .insert(id, (marks, shapes.map(Box::new)));
+        }
+        self.damage_text_rects(id, &changed);
+        self.invalidate(id, PAINTED);
+    }
+    /// Text node `id`'s marks as pieces of shapes at (`x`, `y`), on whole
+    /// pixels of a target of `scale` pixels a point, each with its colour:
+    /// `None` if they were not set as shapes (`set_text_mark_shapes`).
+    pub fn text_mark_pieces(
+        &self,
+        id: NodeId,
+        x: f32,
+        y: f32,
+        scale: f32,
+    ) -> Option<Vec<(HighlightPiece, Color)>> {
+        let (_, shapes) = self.selectable.marks.get(&id)?;
+        let (ends, radius) = shapes.as_deref()?;
+        let marks = self.text_marks(id);
+        let mut out = Vec::with_capacity(marks.len() * 2);
+        let mut pieces = Vec::new();
+        let mut start = 0;
+        for &end in ends {
+            let Some(shape) = marks.get(start..end.min(marks.len())) else {
+                break;
+            };
+            if let Some(first) = shape.first() {
+                let rects: Vec<Rect> = shape.iter().map(|m| m.rect).collect();
+                shape_pieces(&rects, *radius, (x, y), scale, &mut pieces);
+                out.extend(pieces.drain(..).map(|piece| (piece, first.color)));
+            }
+            start = end;
+        }
+        Some(out)
+    }
+    /// The marks shown behind text node `id`'s glyphs.
+    pub fn text_marks(&self, id: NodeId) -> &[TextMark] {
+        if self.selectable.marks.is_empty() {
+            return &[];
+        }
+        (self.selectable.marks.get(&id)).map_or(&[], |(marks, _)| marks.as_slice())
+    }
+    /// The text nodes showing marks.
+    pub fn marked_text(&self) -> impl Iterator<Item = NodeId> + '_ {
+        self.selectable.marks.keys().copied()
+    }
+    /// Whether any text shows a selection: renderers look no further if not.
+    pub fn has_text_highlights(&self) -> bool {
+        !self.selectable.highlights.is_empty()
+    }
+    /// What a highlight adds to a text node's ink.
+    pub(super) fn highlight_ink(&self, id: NodeId, bounds: Rect, ink: Rect) -> Rect {
+        let origin = Transform {
+            x: bounds.x,
+            y: bounds.y,
+        };
+        let ink = self
+            .text_marks(id)
+            .iter()
+            .fold(ink, |ink, m| ink.union(m.rect.translated(origin)));
+        match self.text_highlight(id) {
+            Some(highlight) => highlight.rects.iter().fold(ink, |ink, r| {
+                ink.union(r.translated(Transform {
+                    x: bounds.x,
+                    y: bounds.y,
+                }))
+            }),
+            None => ink,
+        }
+    }
+    #[cold]
+    #[inline(never)]
+    fn damage_text_pending(&mut self, id: NodeId, rects: &[Rect]) {
+        self.finish_pending_children();
+        self.damage_text_rects(id, rects);
+    }
+    fn damage_text_rects(&mut self, id: NodeId, rects: &[Rect]) {
+        if rects.is_empty() || self.damage_is_full() || !self.shown(id) {
+            return;
+        }
+        // Placed in a transformed or filtered layer: all of it.
+        let special = self.transformed + self.filtered.get();
+        if special > 0 {
+            if (special as isize) < 0 {
+                return self.damage_text_pending(id, rects);
+            }
+            self.damage_subtree(id);
+            return;
+        }
+        let (bounds, effects, clip) = self.world(id);
+        if effects.opacity <= 0. {
+            return;
+        }
+        let clip = clip.unwrap_or(self.viewport);
+        let origin = Transform {
+            x: bounds.x,
+            y: bounds.y,
+        };
+        for rect in rects {
+            if let Some(rect) = rect.translated(origin).intersection(clip) {
+                self.add_damage(rect);
+            }
+        }
+    }
+    /// The cursor selectable text shows under the pointer: the I-beam, over
+    /// a text node in a selectable region that sets no cursor of its own
+    /// between them. `None` leaves it to explicit cursors and roles.
+    pub(super) fn selection_cursor(&self, hit: NodeId) -> Option<crate::cursor::Cursor> {
+        if self.selectable.allowed == 0
+            || !matches!(
+                self.node(hit).kind,
+                NodeKind::Text { .. } | NodeKind::RichText { .. }
+            )
+        {
+            return None;
+        }
+        for node in std::iter::once(hit).chain(self.ancestors(hit)) {
+            if self.node(node).cursor.is_some() {
+                return None;
+            }
+            match self.selectable.user_select.get(&node) {
+                Some(true) => return Some(crate::cursor::Cursor::Text),
+                Some(false) => return None,
+                None => {}
+            }
+        }
+        None
+    }
+    /// Visit the selectable text under `root` in document order: displayed,
+    /// not transparent, not in an inert or `user_select(false)` subtree, nor
+    /// under a node `skip` excludes (an editor, which selects on its own).
+    pub fn selectable_text(
+        &self,
+        root: NodeId,
+        mut skip: impl FnMut(NodeId) -> bool,
+        mut visit: impl FnMut(TextLeaf),
+    ) {
+        self.settle_children();
+        if !self.contains(root) {
+            return;
+        }
+        let (origin, clip) = match self.node(root).parent {
+            Some(parent) => {
+                let (bounds, _, clip) = self.world(parent);
+                let node = self.node(parent);
+                (
+                    Transform {
+                        x: bounds.x - node.bounds.x,
+                        y: bounds.y - node.bounds.y,
+                    },
+                    clipped_bounds(clip, bounds, &node.style),
+                )
+            }
+            None => (Transform::default(), Some(self.viewport)),
+        };
+        let mut stack = vec![(root, origin, clip)];
+        while let Some((id, parent, clip)) = stack.pop() {
+            let node = self.node(id);
+            if !own_visible(&node.style)
+                || node.effects.opacity <= 0.
+                || (id != root && self.selectable.user_select.get(&id) == Some(&false))
+                || self.inert.contains(&id)
+                || (id != root && skip(id))
+            {
+                continue;
+            }
+            let transform = Transform {
+                x: parent.x + node.transform.x,
+                y: parent.y + node.transform.y,
+            };
+            let bounds = node.bounds.translated(transform);
+            if matches!(node.kind, NodeKind::Text { .. } | NodeKind::RichText { .. }) {
+                visit(TextLeaf {
+                    id,
+                    bounds,
+                    visible: clip.and_then(|clip| bounds.intersection(clip)),
+                });
+            }
+            let inner = clipped_bounds(clip, bounds, &node.style);
+            stack.extend(
+                self.children_raw(node)
+                    .iter()
+                    .rev()
+                    .map(|child| (*child, transform, inner)),
+            );
+        }
+    }
+    /// Window point (`x`, `y`) in the space `id` is laid out in (its
+    /// `bounds`, translated): mapped through the inverse of each local
+    /// transform (scale, rotation, skew) from the root down, `id`'s own
+    /// included, as hit testing maps it. `None` where one is singular.
+    /// Without transforms in the scene, the point itself.
+    pub fn point_in(&self, id: NodeId, x: f32, y: f32) -> Option<(f32, f32)> {
+        if self.transformed == 0 || !self.contains(id) {
+            return Some((x, y));
+        }
+        let mut path: Vec<NodeId> = std::iter::once(id).chain(self.ancestors(id)).collect();
+        path.reverse();
+        let (mut translation, mut point) = (Transform::default(), (x, y));
+        for node in path {
+            let node = self.node(node);
+            translation.x += node.transform.x;
+            translation.y += node.transform.y;
+            if node.transformed() {
+                let bounds = node.bounds.translated(translation);
+                point = node.projective(bounds).inverse()?.point(point.0, point.1);
+            }
+        }
+        Some(point)
+    }
+    /// Window point (`x`, `y`) in `id`'s box, from its top-left corner as
+    /// laid out: `point_in`, so the same place however it is transformed or
+    /// zoomed, and hit testing and it agree on what lies under a pointer.
+    pub fn local_point(&self, id: NodeId, x: f32, y: f32) -> (f32, f32) {
+        let bounds = self.bounds(id);
+        let (x, y) = self.point_in(id, x, y).unwrap_or((x, y));
+        (x - bounds.x, y - bounds.y)
+    }
+    /// A movement of (`dx`, `dy`) window points at window point (`x`, `y`),
+    /// in `id`'s own points: a wheel's or a drag's, which a zoomed or scaled
+    /// box takes as larger or smaller. Without transforms, itself.
+    pub fn local_delta(&self, id: NodeId, (x, y): (f32, f32), (dx, dy): (f32, f32)) -> (f32, f32) {
+        if self.transformed == 0 {
+            return (dx, dy);
+        }
+        match (self.point_in(id, x, y), self.point_in(id, x + dx, y + dy)) {
+            (Some(from), Some(to)) => (to.0 - from.0, to.1 - from.1),
+            _ => (dx, dy),
+        }
+    }
+    /// Order `a` and `b` as a document would: an ancestor before what it
+    /// holds, siblings as their parent orders them. Both must be in the
+    /// scene.
+    pub fn document_order(&self, a: NodeId, b: NodeId) -> std::cmp::Ordering {
+        use std::cmp::Ordering;
+        if a == b {
+            return Ordering::Equal;
+        }
+        let path = |id: NodeId| {
+            let mut path: Vec<NodeId> = std::iter::once(id).chain(self.ancestors(id)).collect();
+            path.reverse();
+            path
+        };
+        let (pa, pb) = (path(a), path(b));
+        let shared = pa.iter().zip(&pb).take_while(|(x, y)| x == y).count();
+        match (pa.get(shared), pb.get(shared)) {
+            (None, _) => Ordering::Less,
+            (_, None) => Ordering::Greater,
+            (Some(x), Some(y)) => {
+                let siblings = self.children_of(self.node(pa[shared - 1]));
+                let index = |id| siblings.iter().position(|c| c == id);
+                index(x).cmp(&index(y))
+            }
+        }
+    }
+}

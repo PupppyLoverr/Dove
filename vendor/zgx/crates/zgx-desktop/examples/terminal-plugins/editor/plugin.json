@@ -1,0 +1,8 @@
+{
+	"name": "Editor",
+	"version": "1.0.0",
+	"author": "zterm",
+	"description": "A text editor in a pane: open a file, edit it with line numbers, save it with ⌘S.",
+	"permissions": ["files"],
+	"panels": [{ "id": "editor", "title": "Editor", "description": "Edit a file" }]
+}

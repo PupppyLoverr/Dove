@@ -3,7 +3,7 @@ resolver = "3"
 # apps/dove is the GPUI app this branch replaces: kept out of the build, read
 # only as the reference while its UI-free modules move into crates/dove-app.
 members = ["crates/*", "apps/keplorayx"]
-exclude = ["mesh", "apps/dove", "apps/ios", "apps/android", "apps/landing", "apps/extension"]
+exclude = ["mesh", "vendor/zgx", "apps/dove", "apps/ios", "apps/android", "apps/landing", "apps/extension"]
 
 [workspace.package]
 version = "0.1.0"
@@ -59,10 +59,36 @@ opt-level = 3
 # them, so every consumer repeats them. With GPUI gone from this workspace
 # they reach nothing else.
 [patch.crates-io]
-wgpu-hal = { git = "https://github.com/zeronsh/zgx", rev = "f01b47a00a6f5e9386b5fd7fb35dcdbef4991e93" }
-winit = { git = "https://github.com/zeronsh/zgx", rev = "f01b47a00a6f5e9386b5fd7fb35dcdbef4991e93" }
-accesskit_macos = { git = "https://github.com/zeronsh/zgx", rev = "f01b47a00a6f5e9386b5fd7fb35dcdbef4991e93" }
-accesskit_consumer = { git = "https://github.com/zeronsh/zgx", rev = "f01b47a00a6f5e9386b5fd7fb35dcdbef4991e93" }
-accesskit_atspi_common = { git = "https://github.com/zeronsh/zgx", rev = "f01b47a00a6f5e9386b5fd7fb35dcdbef4991e93" }
-accesskit_unix = { git = "https://github.com/zeronsh/zgx", rev = "f01b47a00a6f5e9386b5fd7fb35dcdbef4991e93" }
-accesskit_windows = { git = "https://github.com/zeronsh/zgx", rev = "f01b47a00a6f5e9386b5fd7fb35dcdbef4991e93" }
+wgpu-hal = { path = "vendor/zgx/vendor/wgpu-hal" }
+winit = { path = "vendor/zgx/vendor/winit" }
+accesskit_macos = { path = "vendor/zgx/vendor/accesskit_macos" }
+accesskit_consumer = { path = "vendor/zgx/vendor/accesskit_consumer" }
+accesskit_atspi_common = { path = "vendor/zgx/vendor/accesskit_atspi_common" }
+accesskit_unix = { path = "vendor/zgx/vendor/accesskit_unix" }
+accesskit_windows = { path = "vendor/zgx/vendor/accesskit_windows" }
+
+# zgx itself, vendored at the pinned revision (vendor/zgx) with one fix:
+# an input method asking where a removed field is no longer aborts the app
+# (vendor/zgx/crates/zgx/src/widgets.rs, marked "Keplorayx").
+[patch."https://github.com/zeronsh/zgx"]
+zgx = { path = "vendor/zgx/crates/zgx" }
+zgx-desktop = { path = "vendor/zgx/crates/zgx-desktop" }
+zgx-script = { path = "vendor/zgx/crates/zgx-script" }
+zgx-run = { path = "vendor/zgx/crates/zgx-run" }
+zgx-components = { path = "vendor/zgx/crates/zgx-components" }
+zgx-gpu = { path = "vendor/zgx/crates/zgx-gpu" }
+zgx-terminal = { path = "vendor/zgx/crates/zgx-terminal" }
+zgx-ghostty-sys = { path = "vendor/zgx/crates/zgx-ghostty-sys" }
+zgx-alacritty-terminal = { path = "vendor/zgx/vendor/alacritty-terminal" }
+zgx-cosmic-text = { path = "vendor/zgx/vendor/cosmic-text" }
+zgx-harfrust = { path = "vendor/zgx/vendor/harfrust" }
+zgx-mlua = { path = "vendor/zgx/vendor/mlua" }
+zgx-taffy = { path = "vendor/zgx/vendor/taffy" }
+zgx-zune-jpeg = { path = "vendor/zgx/vendor/zune-jpeg" }
+wgpu-hal = { path = "vendor/zgx/vendor/wgpu-hal" }
+winit = { path = "vendor/zgx/vendor/winit" }
+accesskit_macos = { path = "vendor/zgx/vendor/accesskit_macos" }
+accesskit_consumer = { path = "vendor/zgx/vendor/accesskit_consumer" }
+accesskit_atspi_common = { path = "vendor/zgx/vendor/accesskit_atspi_common" }
+accesskit_unix = { path = "vendor/zgx/vendor/accesskit_unix" }
+accesskit_windows = { path = "vendor/zgx/vendor/accesskit_windows" }

@@ -1,0 +1,8 @@
+{
+	"name": "Hacker News",
+	"version": "1.1.0",
+	"author": "zterm",
+	"description": "Hacker News in a pane: the feeds, threaded discussions you can fold, the articles themselves, and the people who wrote them.",
+	"permissions": ["network", "web"],
+	"panels": [{ "id": "front-page", "title": "Hacker News", "description": "Stories, discussions and articles" }]
+}

@@ -1,0 +1,70 @@
+//! Editors. One test binary for the area (see AGENTS.md):
+//! a test file goes in the group for its area, listed here.
+#[path = "../composition_editors.rs"]
+mod composition_editors;
+#[path = "../composition_read_only.rs"]
+mod composition_read_only;
+#[path = "../composition_virtual_keyboard.rs"]
+mod composition_virtual_keyboard;
+#[path = "../editor_accessible_selection.rs"]
+mod editor_accessible_selection;
+#[path = "../editor_answer_history.rs"]
+mod editor_answer_history;
+#[path = "../editor_autocorrect.rs"]
+mod editor_autocorrect;
+#[path = "../editor_autoscroll.rs"]
+mod editor_autoscroll;
+#[path = "../editor_blur_selection.rs"]
+mod editor_blur_selection;
+#[path = "../editor_caret_blink.rs"]
+mod editor_caret_blink;
+#[path = "../editor_caret_width.rs"]
+mod editor_caret_width;
+#[path = "../editor_code.rs"]
+mod editor_code;
+#[path = "../editor_context_menu.rs"]
+mod editor_context_menu;
+#[path = "../editor_external_edits.rs"]
+mod editor_external_edits;
+#[path = "../editor_hints.rs"]
+mod editor_hints;
+#[path = "../editor_ingress_normalization.rs"]
+mod editor_ingress_normalization;
+#[path = "../editor_input_mode.rs"]
+mod editor_input_mode;
+#[path = "../editor_long_documents.rs"]
+mod editor_long_documents;
+#[path = "../editor_model_normalization.rs"]
+mod editor_model_normalization;
+#[path = "../editor_native_caret.rs"]
+mod editor_native_caret;
+#[path = "../editor_paging.rs"]
+mod editor_paging;
+#[path = "../editor_pointer_selection.rs"]
+mod editor_pointer_selection;
+#[path = "../editor_primary_paste.rs"]
+mod editor_primary_paste;
+#[path = "../editor_read_only.rs"]
+mod editor_read_only;
+#[path = "../editor_selection_theme.rs"]
+mod editor_selection_theme;
+#[path = "../editor_shape_reuse.rs"]
+mod editor_shape_reuse;
+#[path = "../editor_spans.rs"]
+mod editor_spans;
+#[path = "../editor_streamed_value.rs"]
+mod editor_streamed_value;
+#[path = "../editor_streaming_history.rs"]
+mod editor_streaming_history;
+#[path = "../editor_text_drag.rs"]
+mod editor_text_drag;
+#[path = "../editor_text_drag_windows.rs"]
+mod editor_text_drag_windows;
+#[path = "../editor_theme_marks.rs"]
+mod editor_theme_marks;
+#[path = "../editor_undo_keys.rs"]
+mod editor_undo_keys;
+#[path = "../editor_wrap_navigation.rs"]
+mod editor_wrap_navigation;
+#[path = "../ime_clauses.rs"]
+mod ime_clauses;

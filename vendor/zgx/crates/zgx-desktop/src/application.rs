@@ -1,0 +1,9198 @@
+//! Winit desktop host: GPU rendering, native accessibility, clipboard and IME.
+use crate::{accessibility::AccessibilityTree, presentation_retry::Presentation};
+use std::{
+    cell::{Cell, RefCell},
+    collections::{HashMap, VecDeque},
+    error::Error,
+    future::Future,
+    pin::Pin,
+    rc::Rc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
+use winit::{
+    application::ApplicationHandler,
+    dpi::{LogicalPosition, LogicalSize, PhysicalSize},
+    event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent},
+    event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy},
+    keyboard::{Key as WKey, KeyCode, NamedKey, PhysicalKey},
+    raw_window_handle::{HasDisplayHandle, RawDisplayHandle},
+    window::{CursorIcon, Window, WindowId},
+};
+use zgx::{
+    frame::{Frame, FrameClock},
+    input::{InputEvent, Key, Modifiers, PointerButton},
+    native_view::PointerStep,
+    reactive::Signal,
+    scene::{NodeId, Rect},
+    semantics::Role,
+    task::LocalExecutor,
+    widgets::Ui,
+};
+use zgx_gpu::{GpuContext, GpuRenderer};
+
+/// How a window is made: its title, size, chrome and placement.
+#[derive(Clone, Debug)]
+pub struct WindowOptions {
+    /// The title in its title bar, window menu and accessibility tree.
+    pub title: String,
+    /// Logical client width.
+    pub width: f64,
+    /// Logical client height.
+    pub height: f64,
+    /// Whether the window is transparent where zgx paints nothing.
+    pub transparent: bool,
+    /// Whether the person can resize it.
+    pub resizable: bool,
+    /// Whether it has the platform's title bar and frame.
+    pub decorations: bool,
+    /// Whether it opens fullscreen.
+    pub fullscreen: bool,
+    /// Logical minimum client size.
+    pub min_size: Option<(f64, f64)>,
+    /// Logical maximum client size. A window of fixed size that stays
+    /// `resizable` gives `min_size` and `max_size` the same: on macOS its
+    /// size then still reads as settable, so window managers (Raycast,
+    /// Rectangle) can move it, which they refuse for a window that isn't
+    /// resizable.
+    pub max_size: Option<(f64, f64)>,
+    /// Initial physical bounds. Placement remains compositor policy on Wayland.
+    pub bounds: Option<crate::WindowBounds>,
+    /// The display it opens on; `None` lets the platform choose.
+    pub display: Option<crate::DisplaySelector>,
+    /// Upper bound on animation frames per second (see [`zgx::frame`]), for
+    /// example to save power. Input-driven redraws are not limited. `None`
+    /// follows the display.
+    pub max_frame_rate: Option<f64>,
+    /// The title bar's style (macOS and Windows; other platforms keep theirs).
+    pub titlebar: crate::Titlebar,
+    /// A frosted desktop behind the window (macOS; Windows 11 as Acrylic or
+    /// Mica): the window is then transparent, whatever `transparent` says.
+    pub glass: Option<crate::Glass>,
+    /// Open with this point of the content (logical) under the pointer
+    /// (macOS, Windows): a tab torn off its window (`View::on_drag_outside`)
+    /// opens where it was dropped, the tab under the pointer.
+    pub under_pointer: Option<(f64, f64)>,
+    /// AppKit's window tabs (macOS): as the user's setting says unless set.
+    /// Windows has no window tabs: there it does nothing.
+    pub tabbing: crate::Tabbing,
+    /// Windows with the same identifier tab together (macOS); by default,
+    /// all of the app's. Nothing elsewhere.
+    pub tabbing_identifier: Option<String>,
+    /// Save the window's frame under this name as it moves and resizes, and
+    /// open where it was left (macOS's frame autosave; on Windows its
+    /// placement, maximized or not, in the registry, reopened only where a
+    /// monitor still shows its title bar; on Linux the same in
+    /// `$XDG_STATE_HOME/zgx/<executable>/frames`, its size and maximized
+    /// state alone on Wayland).
+    pub frame_autosave: Option<String>,
+    /// Where it stands among windows: over every app's ordinary windows with
+    /// `WindowLevel::AlwaysOnTop` (a floating panel, an intro playing over
+    /// whatever is open).
+    pub level: crate::WindowLevel,
+    /// The platform's shadow around the window (macOS; Windows' frameless
+    /// windows). A transparent window drawing an overlay of its own goes
+    /// without, or the shadow outlines the empty window.
+    pub shadow: bool,
+    /// Placed over its display's whole frame (the selected display, else the
+    /// primary), rather than in a fullscreen space of its own: transparent
+    /// and frameless, a layer over the desktop and the windows on it.
+    pub covers_display: bool,
+    /// Shown as it is made (the default). False: made hidden, its content
+    /// laid out and its first frame drawn meanwhile, so that
+    /// `WindowHandle::set_visible(true)` shows it whole at once, its
+    /// changes since drawn before it appears; hidden, it draws nothing more.
+    /// Wayland maps a window as it first draws: there its first frame is
+    /// drawn as it shows. X11 keeps no picture of an unmapped window: there
+    /// its background shows from its mapping to its first frame.
+    pub visible: bool,
+}
+impl WindowOptions {
+    /// Whether the window is transparent where zgx paints nothing.
+    pub fn is_transparent(&self) -> bool {
+        self.transparent || self.glass.is_some()
+    }
+}
+impl Default for WindowOptions {
+    fn default() -> Self {
+        Self {
+            title: "zgx".into(),
+            width: 960.,
+            height: 720.,
+            transparent: false,
+            resizable: true,
+            decorations: true,
+            fullscreen: false,
+            min_size: None,
+            max_size: None,
+            bounds: None,
+            display: None,
+            max_frame_rate: None,
+            titlebar: crate::Titlebar::Standard,
+            glass: None,
+            under_pointer: None,
+            tabbing: crate::Tabbing::Automatic,
+            tabbing_identifier: None,
+            frame_autosave: None,
+            level: crate::WindowLevel::Normal,
+            shadow: true,
+            covers_display: false,
+            visible: true,
+        }
+    }
+}
+#[derive(Debug)]
+enum Event {
+    Quit,
+    /// An event, with the token of the launch that sent it (Linux).
+    Application(crate::ApplicationEvent, Option<String>),
+    MenuAction(u64, crate::MenuAction),
+    MenuFallback(u64, crate::MenuAction),
+    MenusChanged,
+    /// A font was replaced (`WindowFactory::replace_font`): every window's
+    /// text shapes and draws again.
+    FontsReplaced,
+    /// Pixels a frame went without were decoded (`zgx::image::set_decoded_wake`):
+    /// windows that waited for them draw again whole.
+    ImagesDecoded,
+    #[cfg(target_os = "linux")]
+    NativeFiles(u64, crate::wayland_data::FileEvent),
+    /// The desktop's appearance settings changed (`linux_appearance`).
+    #[cfg(target_os = "linux")]
+    AppearanceChanged,
+    #[cfg(target_os = "macos")]
+    NativeMenuAction(crate::MenuAction),
+    /// AppKit said a window goes into or out of full screen, or is there
+    /// (`window_chrome::watch_full_screen`).
+    #[cfg(target_os = "macos")]
+    FullScreen,
+    Wake(u64),
+    /// The window's zoom changed (`Ui::set_zoom`): its content scale follows.
+    Zoom(u64),
+    /// A sleep on another thread is now the earliest timer: see `zgx::timer::host`.
+    Timers,
+    Redraw(u64),
+    /// A native display refresh (macOS and Windows; other platforms use timers).
+    #[cfg(any(target_os = "macos", windows))]
+    Frame(u64, Frame),
+    Open,
+    Accessibility(accesskit_winit::Event),
+    Close(u64),
+    RequestClose(u64),
+    WindowCommand(u64, WindowCommand),
+    /// Pointer input over one of the window's popup windows.
+    Popup(u64, crate::popup_window::PopupInput),
+    /// The pointer reached something in the window that opens a popup: have
+    /// a popup window ready (`Ui::on_popup_soon`).
+    PopupSoon(u64),
+    /// The platform's drag, handed it by the window as the drag left it
+    /// (`native_drag`).
+    NativeDrag(u64, crate::native_drag::NativeDrag),
+}
+/// Commands are queued onto the UI thread; the operating system may decline requests.
+#[derive(Debug)]
+enum WindowCommand {
+    Glass(Option<crate::Glass>),
+    Theme(Option<zgx::theme::Appearance>),
+    Bounds(crate::WindowBounds),
+    PointerPassthrough(bool),
+    Level(crate::WindowLevel),
+    Shadow(bool),
+    Fullscreen(bool),
+    Decorations(bool),
+    MinSize(Option<(f64, f64)>),
+    MaxSize(Option<(f64, f64)>),
+    Drag,
+    RefreshInfo,
+    Title(String),
+    Size(f64, f64),
+    Minimized(bool),
+    Maximized(bool),
+    Visible(bool),
+    Focus,
+    MaxFrameRate(Option<f64>),
+    LoseGpu,
+    Composition(std::sync::mpsc::Sender<crate::WindowComposition>),
+    ContextMenu {
+        entries: Vec<crate::AppMenuEntry>,
+        x: f64,
+        y: f64,
+    },
+}
+#[derive(Debug)]
+struct WindowState {
+    visible: bool,
+    minimized: bool,
+    maximized: bool,
+    focus_requested: bool,
+    /// The light or dark the app asked of the window (`set_theme`), kept
+    /// for a window made again; none: the system's.
+    theme: Option<zgx::theme::Appearance>,
+}
+impl Default for WindowState {
+    fn default() -> Self {
+        Self {
+            visible: true,
+            minimized: false,
+            maximized: false,
+            focus_requested: false,
+            theme: None,
+        }
+    }
+}
+impl WindowState {
+    fn apply(&mut self, options: &mut WindowOptions, command: &WindowCommand) {
+        match command {
+            WindowCommand::Glass(glass) => options.glass = *glass,
+            WindowCommand::Theme(theme) => self.theme = *theme,
+            WindowCommand::Bounds(bounds) => options.bounds = Some(*bounds),
+            WindowCommand::Fullscreen(value) => options.fullscreen = *value,
+            WindowCommand::Decorations(value) => options.decorations = *value,
+            WindowCommand::PointerPassthrough(_) => {}
+            WindowCommand::Level(level) => options.level = *level,
+            WindowCommand::Shadow(value) => options.shadow = *value,
+            WindowCommand::MinSize(value) => options.min_size = *value,
+            WindowCommand::MaxSize(value) => options.max_size = *value,
+            WindowCommand::Drag
+            | WindowCommand::RefreshInfo
+            | WindowCommand::LoseGpu
+            | WindowCommand::Composition(_)
+            | WindowCommand::ContextMenu { .. } => {}
+            WindowCommand::Title(title) => options.title.clone_from(title),
+            WindowCommand::Size(width, height) => {
+                options.width = *width;
+                options.height = *height;
+            }
+            WindowCommand::Minimized(value) => self.minimized = *value,
+            WindowCommand::Maximized(value) => self.maximized = *value,
+            WindowCommand::Visible(value) => self.visible = *value,
+            WindowCommand::Focus => self.focus_requested = true,
+            WindowCommand::MaxFrameRate(hz) => options.max_frame_rate = *hz,
+        }
+    }
+}
+fn valid_window_size(width: f64, height: f64) -> bool {
+    [width, height]
+        .into_iter()
+        .all(|value| value.is_finite() && value > 0. && value <= u32::MAX as f64)
+}
+impl From<accesskit_winit::Event> for Event {
+    fn from(e: accesskit_winit::Event) -> Self {
+        Self::Accessibility(e)
+    }
+}
+type FutureTask = Pin<Box<dyn Future<Output = ()>>>;
+/// Runs futures on a window's UI thread. Clones share the queue; spawning
+/// does nothing once the window has closed.
+#[derive(Clone)]
+pub struct TaskSpawner {
+    pending: Rc<RefCell<VecDeque<FutureTask>>>,
+    proxy: EventLoopProxy<Event>,
+    token: u64,
+    closed: Arc<AtomicBool>,
+}
+impl TaskSpawner {
+    /// Cancel automatically when the returned guard is dropped. This works even
+    /// before the event loop drains the pending queue, and wakes sleeping tasks.
+    ///
+    /// ```no_run
+    /// # fn mount(cx:&mut zgx_desktop::WindowContext,scope:&mut zgx::view::ViewScope) {
+    /// let title=cx.ui.signal(String::from("Loading"));
+    /// scope.retain(cx.tasks.spawn_scoped(async move {
+    ///     zgx::timer::sleep(std::time::Duration::from_secs(1)).await;
+    ///     title.set(String::from("Ready"));
+    /// }));
+    /// # }
+    /// ```
+    pub fn spawn_scoped(&self, future: impl Future<Output = ()> + 'static) -> crate::ScopedTask {
+        let (guard, task) = crate::scoped_task::cancellable(future);
+        self.spawn(task);
+        guard
+    }
+    /// Run `future` on the UI thread until it finishes or the window closes.
+    /// Use [`TaskSpawner::spawn_scoped`] for a task that a view can cancel.
+    pub fn spawn(&self, future: impl Future<Output = ()> + 'static) {
+        if self.closed.load(Ordering::Acquire) {
+            return;
+        }
+        self.pending.borrow_mut().push_back(Box::pin(future));
+        let _ = self.proxy.send_event(Event::Wake(self.token));
+    }
+}
+/// A handle addresses exactly one native window and becomes inert once it closes.
+#[derive(Clone)]
+pub struct WindowHandle {
+    proxy: EventLoopProxy<Event>,
+    token: u64,
+    closed: Arc<AtomicBool>,
+}
+impl WindowHandle {
+    /// Move and resize the window. A zero width or height is ignored.
+    pub fn set_bounds(&self, bounds: crate::WindowBounds) {
+        if bounds.size.0 > 0 && bounds.size.1 > 0 {
+            self.command(WindowCommand::Bounds(bounds));
+        }
+    }
+    /// Enter or leave fullscreen.
+    pub fn set_fullscreen(&self, fullscreen: bool) {
+        self.command(WindowCommand::Fullscreen(fullscreen));
+    }
+    /// Show or hide the platform's title bar and frame.
+    pub fn set_decorations(&self, decorations: bool) {
+        self.command(WindowCommand::Decorations(decorations));
+    }
+    /// Let the real pointer pass through to whatever lies behind the window
+    /// (a tool's window that must not hear the person's mouse); input
+    /// dispatched to it in code still arrives.
+    pub fn set_pointer_passthrough(&self, passthrough: bool) {
+        self.command(WindowCommand::PointerPassthrough(passthrough));
+    }
+    /// Stand over every app's ordinary windows, or among them again (see
+    /// `WindowOptions::level`).
+    pub fn set_level(&self, level: crate::WindowLevel) {
+        self.command(WindowCommand::Level(level));
+    }
+    /// Show `glass` behind the window in place of its glass (`None`: no
+    /// glass), as `WindowOptions::glass` asks at its start. The content
+    /// shows it only where the window is transparent: a window that will
+    /// gain glass later is made `transparent` (or with glass) to begin
+    /// with. A window stays as transparent as it was made: with `None`,
+    /// what is behind it shows through, unblurred, where its content paints
+    /// nothing or paints translucent, so an app that drops its glass paints
+    /// its background opaque (its theme's `background`). A window made
+    /// again keeps it.
+    pub fn set_glass(&self, glass: Option<crate::Glass>) {
+        self.command(WindowCommand::Glass(glass));
+    }
+    /// Show the window light or dark whatever the system shows (`None`:
+    /// as the system does again): its title bar and controls, and zgx's
+    /// themes that follow the system (`Themes::follow_system`). A window
+    /// made again keeps it.
+    pub fn set_theme(&self, theme: Option<zgx::theme::Appearance>) {
+        self.command(WindowCommand::Theme(theme));
+    }
+    /// Show or drop the platform's shadow (see `WindowOptions::shadow`).
+    pub fn set_shadow(&self, shadow: bool) {
+        self.command(WindowCommand::Shadow(shadow));
+    }
+    /// The smallest logical client size the person can resize to; `None`
+    /// removes the limit. A size that isn't finite and positive is ignored.
+    pub fn set_min_inner_size(&self, size: Option<(f64, f64)>) {
+        if size.is_none_or(|(w, h)| valid_window_size(w, h)) {
+            self.command(WindowCommand::MinSize(size));
+        }
+    }
+    /// The largest logical client size the person can resize to; `None`
+    /// removes the limit. A size that isn't finite and positive is ignored.
+    pub fn set_max_inner_size(&self, size: Option<(f64, f64)>) {
+        if size.is_none_or(|(w, h)| valid_window_size(w, h)) {
+            self.command(WindowCommand::MaxSize(size));
+        }
+    }
+    /// Start a native move gesture from a primary-pointer press on a custom titlebar.
+    /// Rejections are reported through WindowInfo::last_request_error.
+    pub fn drag_window(&self) {
+        self.command(WindowCommand::Drag);
+    }
+    /// Read the window's bounds, displays and capabilities into
+    /// [`crate::WindowInfo`] again.
+    pub fn refresh_window_info(&self) {
+        self.command(WindowCommand::RefreshInfo);
+    }
+    /// Lose the window's GPU device, as a driver reset or a removed GPU
+    /// would, for tests of recovery: the window makes a new renderer and
+    /// draws on. Other windows on the same device recover alike.
+    pub fn debug_lose_gpu(&self) {
+        self.command(WindowCommand::LoseGpu);
+    }
+    /// What the window server composites of the window, read in the
+    /// process once the window handles the request (see
+    /// [`crate::WindowComposition`]); nothing arrives for a closed window.
+    pub fn debug_composition(&self) -> std::sync::mpsc::Receiver<crate::WindowComposition> {
+        let (send, receive) = std::sync::mpsc::channel();
+        self.command(WindowCommand::Composition(send));
+        receive
+    }
+    /// Queue a validated application menu action for this window's focused UI.
+    pub fn dispatch_menu_action(&self, action: impl Into<crate::MenuAction>) {
+        if !self.is_closed() {
+            let _ = self
+                .proxy
+                .send_event(Event::MenuAction(self.token, action.into()));
+        }
+    }
+    fn command(&self, command: WindowCommand) {
+        if !self.is_closed() {
+            let _ = self
+                .proxy
+                .send_event(Event::WindowCommand(self.token, command));
+        }
+    }
+    /// Show `entries` as a native pop-up menu at `(x, y)`, in points from the
+    /// top left of the window's content (macOS; elsewhere it does nothing).
+    /// A chosen item arrives through the window's menu action handler, and
+    /// the press that opened the menu ends when it closes.
+    pub fn show_context_menu(&self, entries: Vec<crate::AppMenuEntry>, x: f64, y: f64) {
+        self.command(WindowCommand::ContextMenu { entries, x, y });
+    }
+    /// Change the native and accessible window title, including while suspended.
+    pub fn set_title(&self, title: impl Into<String>) {
+        self.command(WindowCommand::Title(title.into()));
+    }
+    /// Request a logical client size. Invalid dimensions are ignored. The compositor
+    /// may constrain the request; `WindowContext::viewport` reports the actual size.
+    pub fn set_inner_size(&self, width: f64, height: f64) {
+        if valid_window_size(width, height) {
+            self.command(WindowCommand::Size(width, height));
+        }
+    }
+    /// Request minimization or restoration. Some compositors cannot unminimize windows.
+    pub fn set_minimized(&self, minimized: bool) {
+        self.command(WindowCommand::Minimized(minimized));
+    }
+    /// Request maximization or restoration.
+    pub fn set_maximized(&self, maximized: bool) {
+        self.command(WindowCommand::Maximized(maximized));
+    }
+    /// Show or hide this window. Visibility requests persist through native recreation.
+    /// Wayland does not support changing visibility after creation.
+    pub fn set_visible(&self, visible: bool) {
+        self.command(WindowCommand::Visible(visible));
+    }
+    /// Cap animation frames per second, or `None` to follow the display.
+    pub fn set_max_frame_rate(&self, hz: Option<f64>) {
+        self.command(WindowCommand::MaxFrameRate(hz));
+    }
+    /// Ask the window manager to activate this window. Focus stealing prevention can
+    /// reject this request; it does not change zgx's focused control directly.
+    /// Currently unsupported on Wayland.
+    pub fn request_focus(&self) {
+        self.command(WindowCommand::Focus);
+    }
+
+    /// Ask the application close policy, as if the native close button was pressed.
+    pub fn request_close(&self) {
+        if !self.is_closed() {
+            let _ = self.proxy.send_event(Event::RequestClose(self.token));
+        }
+    }
+    /// Close this window immediately, bypassing the close-request policy.
+    pub fn close(&self) {
+        if !self.closed.swap(true, Ordering::AcqRel) {
+            let _ = self.proxy.send_event(Event::Close(self.token));
+        }
+    }
+    /// Whether the window has closed; a closed handle ignores every request.
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::Acquire)
+    }
+    /// Repaint the whole window on its next frame.
+    pub fn request_redraw(&self) {
+        if !self.closed.load(Ordering::Acquire) {
+            let _ = self.proxy.send_event(Event::Redraw(self.token));
+        }
+    }
+    /// Run the window's loop once: what changed since (input dispatched
+    /// from elsewhere, state set off the loop) is laid out and painted as
+    /// a frame of its own would be, its damage alone.
+    pub fn wake(&self) {
+        if !self.closed.load(Ordering::Acquire) {
+            let _ = self.proxy.send_event(Event::Wake(self.token));
+        }
+    }
+}
+type WindowBuilder = Box<dyn FnOnce(&mut WindowContext)>;
+struct WindowRequest {
+    options: WindowOptions,
+    state: WindowState,
+    handle: WindowHandle,
+    build: WindowBuilder,
+}
+/// Creates independent windows on the application's UI thread. Each owns its
+/// scene, input focus, task executor, accessibility adapter, and GPU surface.
+#[derive(Clone)]
+pub struct WindowFactory {
+    #[cfg(target_os = "linux")]
+    file_routes: crate::wayland_data::Routes,
+    /// The application's desktop file ID (`Application::desktop_id`, else
+    /// its `application_id`): its windows' Wayland app_id and X11 class,
+    /// what docks match to its desktop file.
+    #[cfg(target_os = "linux")]
+    application_id: Option<Rc<str>>,
+    /// The launcher's token (XDG activation on Wayland, startup
+    /// notification on X11), for the next window made.
+    #[cfg(target_os = "linux")]
+    activation: Rc<RefCell<Option<winit::window::ActivationToken>>>,
+    /// The app's fonts (`Application::font`, `WindowFactory::replace_font`).
+    fonts: Rc<RefCell<Vec<zgx_gpu::text::FontData>>>,
+    /// The language the app's text is in (`set_text_language`), for the
+    /// GPU contexts made later too.
+    text_language: Rc<RefCell<Option<String>>>,
+    menus: Rc<RefCell<Vec<crate::AppMenu>>>,
+    /// What the last `set_menus` left out, and why: said again only as it
+    /// changes, as an app sets its menus at every state change.
+    menus_left_out: Rc<RefCell<Vec<String>>>,
+    /// The keystrokes the app keeps whatever has the keyboard
+    /// (`set_reserved_shortcuts`).
+    reserved: Rc<RefCell<Vec<zgx::actions::Keystroke>>>,
+    pending: Rc<RefCell<VecDeque<WindowRequest>>>,
+    next: Rc<Cell<u64>>,
+    alive: Rc<Cell<bool>>,
+    clipboard: Rc<RefCell<Option<crate::clipboard::Clipboard>>>,
+    gpu_contexts: Rc<RefCell<Vec<GpuContext>>>,
+    /// macOS and Windows: the first GPU context, made on a thread of its
+    /// own while the first window is (`make_renderer` takes it).
+    #[cfg(any(target_os = "macos", windows))]
+    early_gpu: Rc<RefCell<Option<zgx_gpu::PendingGpuContext>>>,
+    proxy: EventLoopProxy<Event>,
+    /// What every window's `Ui` runs on: one runtime, so state one window
+    /// shows the others follow (`Ui::with_runtime`).
+    runtime: zgx::reactive::Runtime,
+}
+impl WindowFactory {
+    /// Shape the families `font` holds with it, in every window from now on,
+    /// in place of the font they had (a bundled font registered with
+    /// `Application::font`, or a system one): their text measures, lays out
+    /// and draws again. A family not had before is added. Costs nothing
+    /// until called.
+    pub fn replace_font(&self, font: zgx_gpu::text::FontData) -> Result<(), &'static str> {
+        if !self.alive.get() {
+            return Err("application is closed");
+        }
+        {
+            let mut fonts = self.fonts.borrow_mut();
+            fonts.retain(|old| !old.families().iter().any(|f| font.families().contains(f)));
+            fonts.push(font.clone());
+        }
+        for context in self.gpu_contexts.borrow().iter() {
+            context.replace_font(&font);
+        }
+        self.proxy
+            .send_event(Event::FontsReplaced)
+            .map_err(|_| "application event loop is closed")
+    }
+    /// Shape every window's text as in `language` from now on (an i18n
+    /// locale; `None`: the system's), as CSS's `lang` on a document's root:
+    /// Han characters take that language's fonts, a Japanese app's kanji a
+    /// Japanese face where an English system would give them a Chinese one.
+    /// Every text measures, lays out and draws again. Costs nothing until
+    /// called; zgx-script calls it as its `ui.i18n` locale changes.
+    pub fn set_text_language(&self, language: Option<String>) -> Result<(), &'static str> {
+        if !self.alive.get() {
+            return Err("application is closed");
+        }
+        if *self.text_language.borrow() == language {
+            return Ok(());
+        }
+        for context in self.gpu_contexts.borrow().iter() {
+            context.set_text_language(language.as_deref());
+        }
+        *self.text_language.borrow_mut() = language;
+        self.proxy
+            .send_event(Event::FontsReplaced)
+            .map_err(|_| "application event loop is closed")
+    }
+    /// Replace the application's menus, **for every window at once**: the
+    /// macOS menu bar, each window's bar elsewhere, and the shortcuts they
+    /// bind in every window, existing and future. One window's call (a
+    /// sheet's, a plugin's panel) replaces the main window's menus too, so
+    /// pass the whole app's each time, never one window's part.
+    ///
+    /// What can't be shown is left out and the rest shown, so one bad item
+    /// never costs the bar: a menu or item with no label, an item whose
+    /// action is another's, and an accelerator no key names (⌘é) or that
+    /// another item has, dropped from its item alone. Each is written on
+    /// stderr (`zgx: menus: …`) as it first appears. An error only when the
+    /// application is closed.
+    pub fn set_menus(&self, menus: Vec<crate::AppMenu>) -> Result<(), crate::AppMenuError> {
+        if !self.alive.get() {
+            return Err(crate::AppMenuError("application is closed".into()));
+        }
+        let (menus, left_out) = crate::app_menu::sanitize(menus);
+        {
+            let mut said = self.menus_left_out.borrow_mut();
+            for problem in left_out.iter().filter(|problem| !said.contains(problem)) {
+                eprintln!("zgx: menus: {problem}");
+            }
+            *said = left_out;
+        }
+        *self.menus.borrow_mut() = menus;
+        self.proxy
+            .send_event(Event::MenusChanged)
+            .map_err(|_| crate::AppMenuError("application event loop is closed".into()))
+    }
+    /// Keep `shortcuts` the app's whatever has the keyboard, for existing
+    /// and future windows: the menu items and key bindings on them come
+    /// before a focused web page or terminal (as a browser keeps ⌘T from
+    /// its pages), where other shortcuts reach the app only if the page or
+    /// terminal leaves them alone. Each call replaces the last.
+    pub fn set_reserved_shortcuts(
+        &self,
+        shortcuts: Vec<crate::MenuAccelerator>,
+    ) -> Result<(), crate::AppMenuError> {
+        if !self.alive.get() {
+            return Err(crate::AppMenuError("application is closed".into()));
+        }
+        *self.reserved.borrow_mut() = shortcuts.into_iter().map(|key| key.0).collect();
+        self.proxy
+            .send_event(Event::MenusChanged)
+            .map_err(|_| crate::AppMenuError("application event loop is closed".into()))
+    }
+    /// The application menu model, as last set.
+    pub fn menus(&self) -> Vec<crate::AppMenu> {
+        self.menus.borrow().clone()
+    }
+    /// Update command state without changing its label, shortcut or position.
+    pub fn set_menu_state(
+        &self,
+        action: impl Into<crate::MenuAction>,
+        enabled: Option<bool>,
+        checked: Option<bool>,
+    ) -> Result<(), crate::AppMenuError> {
+        let mut menus = self.menus();
+        if !crate::app_menu::update_entry(&mut menus, &action.into(), enabled, checked) {
+            return Err(crate::AppMenuError("unknown menu action".into()));
+        }
+        self.set_menus(menus)
+    }
+
+    /// Exit the application, including when it is retained with no open windows.
+    pub fn quit(&self) {
+        if self.alive.get() {
+            let _ = self.proxy.send_event(Event::Quit);
+        }
+    }
+    fn allocate(&self) -> WindowHandle {
+        let token = self.next.get();
+        self.next
+            .set(token.checked_add(1).expect("window IDs exhausted"));
+        WindowHandle {
+            proxy: self.proxy.clone(),
+            token,
+            closed: Arc::new(AtomicBool::new(false)),
+        }
+    }
+    /// Open a window with `options`; `build` mounts its content once the
+    /// native window exists. On a closed application the handle is already
+    /// closed.
+    pub fn open(
+        &self,
+        options: WindowOptions,
+        build: impl FnOnce(&mut WindowContext) + 'static,
+    ) -> WindowHandle {
+        let handle = self.allocate();
+        if !self.alive.get() {
+            handle.closed.store(true, Ordering::Release);
+            return handle;
+        }
+        let state = WindowState {
+            visible: options.visible,
+            ..Default::default()
+        };
+        self.pending.borrow_mut().push_back(WindowRequest {
+            options,
+            state,
+            handle: handle.clone(),
+            build: Box::new(build),
+        });
+        let _ = self.proxy.send_event(Event::Open);
+        handle
+    }
+}
+/// What a window's content is built with: its UI, its native services and
+/// handles to it and the application.
+pub struct WindowContext {
+    /// The window's native file dialogs and prompts.
+    pub dialogs: crate::FileDialogs,
+    /// The window's bounds, displays and capabilities, kept current.
+    pub window_info: crate::WindowInfo,
+    /// While the window goes into or out of full screen (macOS's
+    /// animation), which way and about how long it takes; `None` otherwise,
+    /// and always on Linux and Windows. `window_info.fullscreen` says
+    /// whether it is in full screen, on every platform.
+    pub full_screen_transition: Signal<Option<crate::FullScreenTransition>>,
+    menu_model: Signal<Vec<crate::AppMenu>>,
+    /// The window's UI: its scene, input and reactive runtime.
+    pub ui: Ui,
+    /// Runs futures on the window's UI thread.
+    pub tasks: TaskSpawner,
+    /// This window.
+    pub window: WindowHandle,
+    /// Opens other windows and holds the application menu.
+    pub windows: WindowFactory,
+    /// Logical viewport dimensions; reactive layouts update on resize and scale changes.
+    pub viewport: Signal<(f32, f32)>,
+    /// Display-paced animation frames for this window. Components reach it
+    /// through `Context::frames`.
+    pub frames: FrameClock,
+    /// The layout inspector (`zgx::inspect`): Ctrl+Option+Cmd+I on macOS,
+    /// Ctrl+Alt+Shift+I elsewhere, or `ZGX_INSPECT=1`, toggles it; call
+    /// `set_enabled` to turn it on from code. Components reach it as a
+    /// service (`Context::try_service`), as `zgx-script` does to label
+    /// what it creates. Off, it costs nothing.
+    pub inspector: zgx::inspect::Inspector,
+    natives: zgx::native_view::NativeViews,
+    #[allow(dead_code)]
+    native_diagnostics: crate::native_host::NativeDiagnosticsHandle,
+    close_requested: Option<Box<dyn FnMut() -> bool>>,
+    closed: Option<Box<dyn FnOnce()>>,
+    menu_action: Option<Box<dyn FnMut(crate::MenuAction)>>,
+}
+impl WindowContext {
+    /// Application command fallback after focused component action routing.
+    pub fn on_menu_action(&mut self, handler: impl FnMut(crate::MenuAction) + 'static) {
+        self.menu_action = Some(Box::new(handler));
+    }
+    /// A rendered menu bar for Linux; macOS normally uses the system menu bar.
+    pub fn app_menu_bar(&self) -> zgx::compose::View {
+        let window = self.window.clone();
+        let model = self.menu_model.clone();
+        zgx::compose::switch(
+            move || model.get(),
+            move |menus, _| {
+                let window = window.clone();
+                crate::app_menu_bar(menus, move |action| window.dispatch_menu_action(action))
+                    .expect("application menu was validated")
+            },
+        )
+    }
+    /// Ask for a file to open, then call `callback` with it. Dropping the
+    /// returned task cancels the delivery.
+    pub fn prompt_open_file(
+        &self,
+        options: crate::FileDialogOptions,
+        callback: impl FnOnce(crate::FileDialogResult<std::path::PathBuf>) + 'static,
+    ) -> crate::ScopedTask {
+        let dialogs = self.dialogs.clone();
+        self.tasks.spawn_scoped(async move {
+            callback(dialogs.open_file(options).await);
+        })
+    }
+    /// Ask for a destination to save to, then call `callback` with it. Nothing
+    /// is written. Dropping the returned task cancels the delivery.
+    pub fn prompt_save_file(
+        &self,
+        options: crate::FileDialogOptions,
+        callback: impl FnOnce(crate::FileDialogResult<std::path::PathBuf>) + 'static,
+    ) -> crate::ScopedTask {
+        let dialogs = self.dialogs.clone();
+        self.tasks.spawn_scoped(async move {
+            callback(dialogs.save_file(options).await);
+        })
+    }
+    /// Ask for a folder, then call `callback` with it. Dropping the returned
+    /// task cancels the delivery.
+    pub fn prompt_open_folder(
+        &self,
+        options: crate::FileDialogOptions,
+        callback: impl FnOnce(crate::FileDialogResult<std::path::PathBuf>) + 'static,
+    ) -> crate::ScopedTask {
+        let dialogs = self.dialogs.clone();
+        self.tasks.spawn_scoped(async move {
+            callback(dialogs.open_folder(options).await);
+        })
+    }
+    /// Mount declarative components with this window's scoped async executor.
+    pub fn render(&mut self, view: zgx::compose::View) -> zgx::compose::ViewHandle {
+        let tasks = self.tasks.clone();
+        let runner = zgx::compose::TaskRunner::new(move |future| {
+            zgx::compose::TaskToken::new(tasks.spawn_scoped(future), |task| task.is_finished())
+        });
+        // The clipboard and file dialogs, for what asks (zgx-script's
+        // `ui.clipboard`, `ui.open_files`).
+        let platform = zgx::platform::PlatformService(Rc::new(crate::platform::Desktop {
+            clipboard: self.windows.clipboard.clone(),
+            dialogs: self.dialogs.clone(),
+            windows: Some(self.windows.clone()),
+        }));
+        // Pages as images of WebKitGTK's (`web_view` asks it first).
+        #[cfg(all(target_os = "linux", feature = "webkitgtk"))]
+        let view = zgx::compose::provide(
+            crate::native_host::webkitgtk::page_views(self.windows.clipboard.clone(), {
+                let dialogs = self.dialogs.clone();
+                Rc::new(move || {
+                    dialogs
+                        .window()
+                        .and_then(|window| crate::x11_nudge::xid(&window))
+                })
+            }),
+            view,
+        );
+        // Terminals zgx draws, where Ghostty doesn't.
+        #[cfg(all(
+            feature = "terminal",
+            not(all(target_os = "macos", feature = "ghostty"))
+        ))]
+        let view = zgx::compose::provide(
+            zgx::terminal::TerminalRenderer::new(zgx_terminal::terminal_view),
+            view,
+        );
+        self.ui.render(zgx::compose::provide(
+            self.frames.clone(),
+            zgx::compose::provide(
+                runner,
+                zgx::compose::provide(
+                    self.natives.clone(),
+                    zgx::compose::provide(
+                        self.inspector.clone(),
+                        zgx::compose::provide(platform, view),
+                    ),
+                ),
+            ),
+        ))
+    }
+    /// This window's mounted native views (web pages): provided to the
+    /// components `render` mounts, as `web_view` uses it.
+    pub fn native_views(&self) -> zgx::native_view::NativeViews {
+        self.natives.clone()
+    }
+    /// The live AppKit state of this window's native views (for fixtures
+    /// and diagnostics); empty until a native view first shows.
+    #[cfg(target_os = "macos")]
+    pub fn native_diagnostics(&self) -> crate::NativeDiagnostics {
+        self.native_diagnostics.clone()
+    }
+
+    /// Return false to keep the window open, for example while asking about unsaved data.
+    pub fn on_close_requested(&mut self, handler: impl FnMut() -> bool + 'static) {
+        self.close_requested = Some(Box::new(handler));
+    }
+    /// Called once before UI state is disposed. Pending tasks are cancelled
+    /// on closure. Each handler given runs, in the order given: a second
+    /// doesn't replace the first.
+    pub fn on_closed(&mut self, handler: impl FnOnce() + 'static) {
+        self.closed = Some(then(self.closed.take(), handler));
+    }
+}
+/// `first`, if there is one, then `next`.
+fn then(first: Option<Box<dyn FnOnce()>>, next: impl FnOnce() + 'static) -> Box<dyn FnOnce()> {
+    match first {
+        Some(first) => Box::new(move || {
+            first();
+            next();
+        }),
+        None => Box::new(next),
+    }
+}
+/// A desktop application: its fonts, first window, menus and native
+/// events. [`Application::run`] starts the event loop.
+pub struct Application {
+    fonts: Vec<zgx_gpu::text::FontData>,
+    options: WindowOptions,
+    menus: Vec<crate::AppMenu>,
+    reserved: Vec<zgx::actions::Keystroke>,
+    application_id: Option<String>,
+    // Read on Linux only.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    desktop_id: Option<String>,
+    application_event: Option<ApplicationEventHandler>,
+    quit_on_last_window_close: bool,
+}
+type ApplicationEventHandler = Box<dyn FnMut(crate::ApplicationEvent, &WindowFactory)>;
+impl Application {
+    /// An application with the default window, no menus and no application
+    /// ID, which quits when its last window closes.
+    pub fn new() -> Self {
+        // Dates' "today" is the local one.
+        zgx::local_time::set_offset(crate::local_time::offset);
+        // Localized text follows the user's preferred languages.
+        #[cfg(any(target_os = "macos", windows))]
+        zgx::i18n::set_system_languages(crate::system_colors::preferred_languages);
+        #[cfg(feature = "mimalloc")]
+        zgx::idle::set_heap_returns_whole_runs();
+        Self {
+            fonts: Vec::new(),
+            options: WindowOptions::default(),
+            menus: Vec::new(),
+            reserved: Vec::new(),
+            application_id: None,
+            desktop_id: None,
+            application_event: None,
+            quit_on_last_window_close: true,
+        }
+    }
+    /// Register a bundled font for every window before native text is shaped.
+    pub fn font(mut self, font: zgx_gpu::text::FontData) -> Self {
+        self.fonts.push(font);
+        self
+    }
+    /// The first window's options.
+    pub fn window(mut self, options: WindowOptions) -> Self {
+        self.options = options;
+        self
+    }
+    /// The application menu, for every window: what can't be shown is left
+    /// out and said on stderr, as `WindowFactory::set_menus` does.
+    pub fn menus(mut self, menus: Vec<crate::AppMenu>) -> Result<Self, crate::AppMenuError> {
+        let (menus, left_out) = crate::app_menu::sanitize(menus);
+        for problem in &left_out {
+            eprintln!("zgx: menus: {problem}");
+        }
+        self.menus = menus;
+        Ok(self)
+    }
+    /// The keystrokes the app keeps whatever has the keyboard (see
+    /// `WindowFactory::set_reserved_shortcuts`).
+    pub fn reserved_shortcuts(mut self, shortcuts: Vec<crate::MenuAccelerator>) -> Self {
+        self.reserved = shortcuts.into_iter().map(|key| key.0).collect();
+        self
+    }
+    /// Register native URL/reopen delivery. Linux exports org.freedesktop.Application;
+    /// macOS owns GetURL, OpenDocuments, and Reopen AppleEvent routes for the
+    /// event loop lifetime while preserving its NSApplication delegate. Do not
+    /// install competing handlers for these routes while this service is active.
+    /// On Linux it is also the windows' Wayland app_id and X11 class, and on
+    /// X11 the name of their icon in the icon theme (else the executable's).
+    pub fn application_id(
+        mut self,
+        id: impl Into<String>,
+    ) -> Result<Self, crate::ApplicationEventError> {
+        let id = id.into();
+        crate::native_events::validate_id(&id)?;
+        self.application_id = Some(id);
+        Ok(self)
+    }
+    /// The app's desktop file ID on Linux (`id.desktop` names its desktop
+    /// file): its windows' Wayland app_id and X11 class, which docks and
+    /// task switchers match to that file for its name and icon, and on X11
+    /// its icon's name in the icon theme. Without it, the
+    /// [application id](Application::application_id), else the executable's
+    /// name. Unlike the application id it registers nothing on D-Bus, and
+    /// needs no reverse-DNS form: an app run by a shared executable (a
+    /// script host) is told apart by it. Elsewhere it does nothing.
+    pub fn desktop_id(mut self, id: impl Into<String>) -> Self {
+        self.desktop_id = Some(id.into());
+        self
+    }
+    /// Call `handler` for each URL or reopen request the system delivers
+    /// (requires [`Application::application_id`]).
+    pub fn on_application_event(
+        mut self,
+        handler: impl FnMut(crate::ApplicationEvent, &WindowFactory) + 'static,
+    ) -> Self {
+        self.application_event = Some(Box::new(handler));
+        self
+    }
+    /// Windows: whether editors take input methods and text services through
+    /// the Text Services Framework (the default: a text store they read,
+    /// reconversion, input scopes, each clause underlined) or through winit's
+    /// IMM32 path (`false`), the older interface, without them
+    /// (docs/windows.md). For every window; one where the framework does not
+    /// start uses IMM32. `ZGX_TSF=0` or `ZGX_TSF=1` in the environment
+    /// overrides it, for the user. Elsewhere it does nothing.
+    pub fn text_services(self, on: bool) -> Self {
+        #[cfg(windows)]
+        crate::tsf::ENABLED.store(on, std::sync::atomic::Ordering::Relaxed);
+        #[cfg(not(windows))]
+        let _ = on;
+        self
+    }
+    /// Retain the event loop for native reopen/open-URL delivery after the last
+    /// window closes. Call WindowFactory::quit to terminate a retained app.
+    pub fn quit_on_last_window_close(mut self, quit: bool) -> Self {
+        self.quit_on_last_window_close = quit;
+        self
+    }
+    /// Run the event loop: open the first window, `build` its content, and
+    /// return once the application quits.
+    pub fn run(self, build: impl FnOnce(&mut WindowContext)) -> Result<(), Box<dyn Error>> {
+        zgx::profile::mark("run");
+        // Who the app is to the system's notifications and badge.
+        crate::notify::set_identity(crate::notify::Identity {
+            application_id: self.application_id.clone(),
+            desktop_id: self.desktop_id.clone(),
+            name: std::env::current_exe()
+                .ok()
+                .and_then(|exe| Some(exe.file_stem()?.to_string_lossy().into_owned()))
+                .unwrap_or_default(),
+        });
+        // The GPU device, its pipelines and the fonts are made beside the
+        // launch and the first window, which hold the main thread
+        // meanwhile. Metal's adapter draws to any window, and Windows takes
+        // the adapter DXGI ranks first, so neither needs a window to find
+        // it: on Windows, opening the device is most of a start (190 ms of
+        // 300 on an RTX 4090), and this put the first content 16 to 24 ms
+        // sooner. Linux makes it with the first window, as it chooses an
+        // adapter by its surface (and GL needs its display).
+        #[cfg(any(target_os = "macos", windows))]
+        let early_gpu = zgx_gpu::GpuContext::prepare_in_background();
+        let mut event_loop = EventLoop::<Event>::with_user_event();
+        // zgx installs a menu bar of its own (`app_menu`) as it resumes:
+        // winit's would be made at launch only to be replaced, and would
+        // take AppKit's Services menu meanwhile.
+        #[cfg(target_os = "macos")]
+        winit::platform::macos::EventLoopBuilderExtMacOS::with_default_menu(&mut event_loop, false);
+        let event_loop = event_loop.build()?;
+        zgx::profile::mark("event loop");
+        zgx::memory::set_hosted();
+        let proxy = event_loop.create_proxy();
+        let native_events = if let Some(id) = &self.application_id {
+            let wake = proxy.clone();
+            let events = crate::native_events::NativeApplicationEvents::new(
+                id,
+                Arc::new(move |event, token| {
+                    let _ = wake.send_event(Event::Application(event, token));
+                }),
+            )?;
+            // Windows: another instance runs and took this launch's files
+            // and URLs; this one opens nothing.
+            let Some(events) = events else {
+                return Ok(());
+            };
+            Some(events)
+        } else {
+            None
+        };
+        #[cfg(target_os = "macos")]
+        {
+            let wake = proxy.clone();
+            muda::MenuEvent::set_event_handler(Some(move |event: muda::MenuEvent| {
+                let _ = wake.send_event(Event::NativeMenuAction(crate::MenuAction(event.id.0)));
+            }));
+            // With none of the app's own, still the application and Window
+            // menus every Mac app has: checked now, made once the first frame
+            // shows (`WindowManager::install_menu_bar`).
+            crate::app_menu::validate(&self.menus)?;
+        }
+        let factory = WindowFactory {
+            fonts: Rc::new(RefCell::new(self.fonts)),
+            text_language: Rc::default(),
+            #[cfg(target_os = "linux")]
+            file_routes: Default::default(),
+            #[cfg(target_os = "linux")]
+            application_id: self
+                .desktop_id
+                .as_deref()
+                .or(self.application_id.as_deref())
+                .map(Rc::from),
+            #[cfg(target_os = "linux")]
+            activation: Rc::default(),
+            menus: Rc::new(RefCell::new(self.menus)),
+            menus_left_out: Rc::default(),
+            reserved: Rc::new(RefCell::new(self.reserved)),
+            pending: Rc::new(RefCell::new(VecDeque::new())),
+            next: Rc::new(Cell::new(1)),
+            alive: Rc::new(Cell::new(true)),
+            clipboard: Rc::new(RefCell::new(None)),
+            gpu_contexts: Rc::new(RefCell::new(Vec::new())),
+            #[cfg(any(target_os = "macos", windows))]
+            early_gpu: Rc::new(RefCell::new(Some(early_gpu))),
+            proxy: proxy.clone(),
+            runtime: zgx::reactive::Runtime::new(),
+        };
+        zgx::profile::mark("menus");
+        let handle = factory.allocate();
+        let token = handle.token;
+        let mut root = Host::new(self.options, handle, factory.clone());
+        build(&mut root.context);
+        zgx::profile::mark("app built");
+        // Timers fire as the loop wakes for its own deadlines, without a
+        // scheduler thread waking it with a message per timer.
+        let timers = {
+            let (wake, ui_thread) = (proxy.clone(), std::thread::current().id());
+            zgx::timer::host(move || {
+                if std::thread::current().id() != ui_thread {
+                    let _ = wake.send_event(Event::Timers);
+                }
+            })
+        };
+        let mut host = WindowManager {
+            #[cfg(target_os = "linux")]
+            native_data: None,
+            #[cfg(target_os = "linux")]
+            appearance: None,
+            _native_events: native_events,
+            application_event: self.application_event,
+            quit_on_last_window_close: self.quit_on_last_window_close,
+            #[cfg(target_os = "macos")]
+            native_menu: None,
+            #[cfg(target_os = "macos")]
+            menu_bar_due: Some(std::time::Instant::now() + MENU_BAR_LATEST),
+            hosts: HashMap::from([(token, root)]),
+            panics: Vec::new(),
+            native: HashMap::new(),
+            drag_over: Cell::new(None),
+            carrying: None,
+            #[cfg(target_os = "linux")]
+            last_focused: None,
+            #[cfg(target_os = "linux")]
+            pending_move: HeldMove::default(),
+            factory,
+            active: false,
+            error: None,
+            timers,
+        };
+        event_loop.run_app(&mut host)?;
+        if let Some(e) = host.error.take() {
+            return Err(e.into());
+        }
+        Ok(())
+    }
+}
+impl Default for Application {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+/// `ZGX_RENDER_WHEN_COVERED=1`: a covered window goes on drawing, for test
+/// sessions: input and hot reloads don't stall, and automated UI and memory
+/// tests needn't have the screen to themselves. Never by default: a window
+/// nobody can see does no work. No effect on Windows, where winit reports no
+/// `Occluded` and a covered window goes on drawing with or without it.
+static RENDER_WHEN_COVERED: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+    zgx::env::var_os("ZGX_RENDER_WHEN_COVERED").is_some_and(|v| !v.is_empty() && v != "0")
+});
+/// A window that has presented nothing for this long releases animation-only
+/// renderer memory.
+const TRIM_DELAY: std::time::Duration = std::time::Duration::from_millis(1500);
+/// A window idle this long past that gives back a glyph atlas it grew: what
+/// it costs is a slow first frame, for someone who has been away a while.
+const ATLAS_TRIM_DELAY: std::time::Duration = std::time::Duration::from_secs(30);
+/// A window's frame is saved this long after it last moved or resized
+/// (`frame_autosave`, Linux): once for a drag, not for each of its steps.
+#[cfg(target_os = "linux")]
+const FRAME_SAVE_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
+/// Frames presented this close together are a steady run.
+#[cfg(target_os = "macos")]
+const STEADY_GAP: std::time::Duration = std::time::Duration::from_millis(50);
+/// Sleep until `at`: a long sleep ends up to a millisecond or two late (the
+/// kernel coalesces timers in proportion to their length), so the last
+/// stretch is a short one of its own.
+#[cfg(target_os = "macos")]
+fn sleep_until(at: std::time::Instant) {
+    const SHORT: std::time::Duration = std::time::Duration::from_micros(1500);
+    let now = std::time::Instant::now();
+    if at > now + SHORT {
+        std::thread::sleep(at - now - SHORT);
+    }
+    let now = std::time::Instant::now();
+    if at > now {
+        std::thread::sleep(at - now);
+    }
+}
+/// Frames the display link paces at a fast refresh (120 Hz) are ready about
+/// 1.5 ms before a refresh point, the link firing about 2.5 ms before it:
+/// the window server shows them on the refresh after it. A few are ready
+/// earlier, up to about 3 ms before, and show on that one instead, so two
+/// frames land in one refresh and the next shows nothing new. Those few wait
+/// until `ALIGN_AT` before the point, with the rest (`align_wait`); later
+/// ones and frames at slower refreshes (whose handover the latch decides)
+/// go at once.
+#[cfg(any(target_os = "macos", test))]
+const ALIGN_EARLY: std::time::Duration = std::time::Duration::from_micros(1850);
+/// The earliest a frame waits: one ready sooner is a refresh early anyway.
+#[cfg(any(target_os = "macos", test))]
+const ALIGN_LATEST: std::time::Duration = std::time::Duration::from_micros(4500);
+/// Where an early frame waits until, before the refresh point.
+#[cfg(any(target_os = "macos", test))]
+const ALIGN_AT: std::time::Duration = std::time::Duration::from_micros(1600);
+/// The slowest refresh period frames align at (below 60 Hz's 16.7 ms).
+#[cfg(any(target_os = "macos", test))]
+const ALIGN_PERIOD: std::time::Duration = std::time::Duration::from_millis(12);
+/// How long a frame paced by the display link, `left` before the next
+/// refresh point of a refresh `period` long, waits before it is handed over
+/// `ZGX_NATIVE_CARET=0`: the editor paints the caret, blinking through
+/// frames, as before Core Animation drew it (2026-10-27).
+/// When a GPU view's plane frame owed is drawn again if the wake its
+/// drawable brings (`Host::draw_owed_planes`) did not come.
+#[cfg(target_os = "macos")]
+const PLANE_RETRY: std::time::Duration = std::time::Duration::from_millis(100);
+#[cfg(target_os = "macos")]
+static NATIVE_CARET: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| zgx::env::var_os("ZGX_NATIVE_CARET").is_none_or(|v| v != "0"));
+
+/// Give the renderer the caret Core Animation draws (`Ui::native_caret`),
+/// once for each change: its box from window points to the view's (the
+/// window's zoom undone) on the pixels the editor's would fill (those whose
+/// centres it covers, as the GPU fills a rectangle), shown or hidden as the
+/// document's blink says.
+#[cfg(target_os = "macos")]
+fn sync_caret(
+    ui: &zgx::widgets::Ui,
+    renderer: &mut GpuRenderer,
+    applied: &mut Option<u64>,
+    scale: f64,
+) {
+    let (serial, caret) = ui.native_caret();
+    if *applied == Some(serial) {
+        return;
+    }
+    *applied = Some(serial);
+    // `scale`, the window's pixels a point, holds its zoom: a view point is
+    // `scale / zoom` pixels.
+    let view = scale / ui.zoom();
+    // A pixel's edge: where pixels from `at` (window points) on are filled.
+    let edge = |at: f32| (f64::from(at) * scale - 0.5).ceil() / view;
+    renderer.set_caret(caret.map(|caret| {
+        let rect = caret.rect;
+        let zgx::scene::Color(r, g, b, a) = caret.color;
+        let (left, top) = (edge(rect.x), edge(rect.y));
+        let (right, bottom) = (edge(rect.x + rect.width), edge(rect.y + rect.height));
+        zgx_gpu::present_log::log(|| {
+            format!("caret {rect:?} scale={scale} -> {left},{top} {right},{bottom}")
+        });
+        zgx_gpu::Caret {
+            rect: (left, top, right - left, bottom - top),
+            color: [r, g, b, a].map(|channel| f64::from(channel) / 255.),
+            shown: caret.shown,
+        }
+    }));
+}
+
+/// (see `ALIGN_EARLY`).
+#[cfg(any(target_os = "macos", test))]
+fn align_wait(
+    left: std::time::Duration,
+    period: std::time::Duration,
+) -> Option<std::time::Duration> {
+    (period < ALIGN_PERIOD && left > ALIGN_EARLY && left < ALIGN_LATEST).then(|| left - ALIGN_AT)
+}
+/// How long after a resize frames skip the refresh-point wait (the renderer
+/// presents on the plain layer for as long: `zgx_gpu`'s `RESIZE_SETTLE`).
+#[cfg(target_os = "macos")]
+const RESIZE_SETTLE: std::time::Duration = std::time::Duration::from_millis(500);
+/// How long after input frames stay at the display's full rate: a press's
+/// release spring or a hover fade that follows input keeps its frames too.
+#[cfg(any(target_os = "macos", windows))]
+const INPUT_FULL_RATE: std::time::Duration = std::time::Duration::from_millis(250);
+/// The refresh point steady frames present at (see `Host::refresh_grid`),
+/// and when they render before it.
+#[cfg(target_os = "macos")]
+#[derive(Default)]
+struct Latch {
+    /// When the last steady frame was ready, and when it presented.
+    last: Option<(std::time::Instant, std::time::Instant)>,
+    /// Frames in a row ready comfortably before their point while keeping
+    /// a later cadence.
+    early: u8,
+    /// How long after it could start a frame starts rendering (`hold`).
+    offset: std::time::Duration,
+    /// The most a frame could wait before rendering and still be ready by
+    /// its point, as last held.
+    room: std::time::Duration,
+    /// When the frame being drawn started rendering, and how long frames
+    /// lately took from there until ready (the most, forgotten over seconds).
+    started: Option<std::time::Instant>,
+    work: std::time::Duration,
+    /// The GPU time of an unhindered frame: the least seen lately.
+    clean: Option<std::time::Duration>,
+    /// Frames since one the GPU held up.
+    since_held: u8,
+    /// The point the frame rendering after a delay was held for, and frames
+    /// left before holding again after one missed it.
+    planned: Option<std::time::Instant>,
+    resting: u8,
+    /// How long the frame rendering was held (`hold`).
+    held: std::time::Duration,
+}
+#[cfg(target_os = "macos")]
+impl Latch {
+    /// How long before a refresh shows a frame presents. At 2.3 ms a
+    /// dashboard repainting most of its window still missed refreshes (2% of
+    /// intervals late, p99 28 ms); at 2 ms none (p99 21 ms), lighter windows
+    /// alike or better. Closer than 2 ms gained nothing.
+    const LEAD: std::time::Duration = std::time::Duration::from_micros(2000);
+    /// How early before its point a frame must be ready, `RETURN` frames in a
+    /// row, before a later cadence gives way to the coming point: a stream
+    /// ready near a point, some frames just before and some just after, all
+    /// wait for the next.
+    const KEEP: std::time::Duration = std::time::Duration::from_micros(1500);
+    const RETURN: u8 = 8;
+    /// How far frames the GPU held up move their successors (`ran`).
+    const STEP: std::time::Duration = std::time::Duration::from_millis(2);
+    /// Frames rendered at once after a held one missed its refresh.
+    const REST: u8 = 120;
+    /// When a frame complete at `now` presents, on the refresh grid through
+    /// `origin` with `period`.
+    fn decide(
+        &mut self,
+        now: std::time::Instant,
+        origin: std::time::Instant,
+        period: std::time::Duration,
+    ) -> std::time::Instant {
+        if let Some(started) = self.started.take() {
+            self.work = now
+                .saturating_duration_since(started)
+                .max(self.work.mul_f64(0.99));
+        }
+        // Decided as if rendered when it could have been: held frames would
+        // otherwise come ready milliseconds apart from one to the next, and
+        // count whole refreshes between them wrongly. Past that point by
+        // now (slower than any frame lately), the next on the grid.
+        let ready = now
+            .checked_sub(std::mem::take(&mut self.held))
+            .unwrap_or(now);
+        let (mut at, early, kept) = self.choose(ready, origin, period);
+        let chosen = at;
+        while at < now {
+            at += period;
+        }
+        self.early = early;
+        // Why it waits, for devtools (`zgx inspect frames`).
+        if kept {
+            zgx::profile::note(|| {
+                format!(
+                    "waited a refresh more to keep the last frame's cadence, until {} frames \
+                     in a row are ready {:.1} ms before their refresh ({early} so far)",
+                    Self::RETURN,
+                    Self::KEEP.as_secs_f64() * 1e3
+                )
+            });
+        }
+        if at > chosen {
+            zgx::profile::note(|| {
+                format!(
+                    "missed its refresh: ready {:.2} ms after the point it was to hand over at",
+                    now.saturating_duration_since(chosen).as_secs_f64() * 1e3
+                )
+            });
+        }
+        // Held into a later refresh than planned: hold none for a while.
+        if self
+            .planned
+            .take()
+            .is_some_and(|planned| at > planned + period / 2)
+        {
+            zgx::profile::note(|| {
+                format!(
+                    "rendered too late for the refresh it was held for: frames render at once \
+                     for the next {}",
+                    Self::REST
+                )
+            });
+            self.offset = std::time::Duration::ZERO;
+            self.resting = Self::REST;
+        }
+        self.last = Some((ready, at));
+        at
+    }
+    /// The point a frame ready at `ready` presents at, the count of frames
+    /// comfortably early on a later cadence that it leaves, and whether that
+    /// cadence put it a refresh later than it could have shown.
+    fn choose(
+        &self,
+        ready: std::time::Instant,
+        origin: std::time::Instant,
+        period: std::time::Duration,
+    ) -> (std::time::Instant, u8, bool) {
+        // The phase of `ready` on the grid, either side of `origin`.
+        let period_ns = period.as_nanos().max(1);
+        let since = match ready.checked_duration_since(origin) {
+            Some(after) => after.as_nanos() % period_ns,
+            None => (period_ns - origin.duration_since(ready).as_nanos() % period_ns) % period_ns,
+        };
+        let phase = std::time::Duration::from_nanos(since as u64);
+        let point = ready - phase + period.saturating_sub(Self::LEAD);
+        let first = if point >= ready {
+            point
+        } else {
+            point + period
+        };
+        // A later cadence (the last frame's, whole refreshes after it) holds
+        // until frames come comfortably early, several in a row.
+        let late = self.last.is_some_and(|(last, at)| {
+            let refreshes = (ready.saturating_duration_since(last).as_secs_f64()
+                / period.as_secs_f64())
+            .round();
+            let cadence = at + period.mul_f64(refreshes);
+            cadence > first + period / 2 && cadence < first + period * 3 / 2
+        });
+        let early = if late && first - ready >= Self::KEEP {
+            self.early + 1
+        } else {
+            0
+        };
+        if late && early < Self::RETURN {
+            (first + period, early, true)
+        } else {
+            (first, 0, false)
+        }
+    }
+    /// When a frame that could start rendering at `now` does. It waits for
+    /// its point once rendered anyway; rendering later within the wait, still
+    /// `KEEP` ahead of the point it would have had (going by the longest any
+    /// frame took lately), shows it on the same refresh. The point is still
+    /// chosen once the frame is ready (`decide`); a held frame that misses it
+    /// (work beyond any lately) stops holding for a couple of seconds.
+    ///
+    /// The window server composites other windows' changes on the GPU at
+    /// their own times, a millisecond or more of work on a 5K display, and a
+    /// frame rendering through it takes several times as long: beside a 30
+    /// Hz animation, every other frame of a 60 Hz stream ran 1–1.4 ms instead
+    /// of 0.3. Frames the GPU holds up (`ran`) move the time their successors
+    /// render within the wait until they are not: a dashboard's stream in
+    /// Metal System Trace went from a median 39 to 21 ms of GPU per second.
+    fn hold(
+        &mut self,
+        now: std::time::Instant,
+        origin: std::time::Instant,
+        period: std::time::Duration,
+    ) -> std::time::Instant {
+        let ready = now + self.work;
+        let (point, _, _) = self.choose(ready, origin, period);
+        self.room = point
+            .saturating_duration_since(ready)
+            .saturating_sub(Self::KEEP);
+        if self.offset > self.room || self.resting > 0 {
+            self.offset = std::time::Duration::ZERO;
+        }
+        self.resting = self.resting.saturating_sub(1);
+        self.planned = (!self.offset.is_zero()).then_some(point);
+        self.held = self.offset;
+        now + self.offset
+    }
+    /// The frame that started rendering at `at` (after `hold`).
+    fn rendering(&mut self, at: std::time::Instant) {
+        self.started = Some(at);
+    }
+    /// How long the GPU took to run the frame just presented: well over the
+    /// least lately, twice within a few frames, is another client's rhythm.
+    fn ran(&mut self, gpu: std::time::Duration) {
+        let clean = self.clean.map_or(gpu, |clean| gpu.min(clean.mul_f64(1.02)));
+        self.clean = Some(clean);
+        if gpu <= clean.mul_f64(1.5) + std::time::Duration::from_micros(50) {
+            self.since_held = self.since_held.saturating_add(1);
+            return;
+        }
+        if self.since_held < 4 && self.resting == 0 {
+            self.offset += Self::STEP;
+            if self.offset > self.room {
+                self.offset = std::time::Duration::ZERO;
+            }
+        }
+        self.since_held = 0;
+    }
+}
+/// After the first presented frame, when to release startup's freed heap.
+const STARTUP_TRIM_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StartupTrim {
+    Pending,
+    At(std::time::Instant),
+    Done,
+}
+/// The system's light or dark appearance, as zgx's themes take it.
+/// The window theme for zgx's `theme`.
+fn native_theme(theme: zgx::theme::Appearance) -> winit::window::Theme {
+    match theme {
+        zgx::theme::Appearance::Light => winit::window::Theme::Light,
+        zgx::theme::Appearance::Dark => winit::window::Theme::Dark,
+    }
+}
+fn appearance_of(theme: winit::window::Theme) -> zgx::theme::Appearance {
+    match theme {
+        winit::window::Theme::Light => zgx::theme::Appearance::Light,
+        winit::window::Theme::Dark => zgx::theme::Appearance::Dark,
+    }
+}
+struct Host {
+    #[cfg(target_os = "linux")]
+    file_surface: Option<u32>,
+    menu_binding: zgx::actions::KeymapBinding,
+    _menu_listener: zgx::input::InputBinding,
+    options: WindowOptions,
+    state: WindowState,
+    context: WindowContext,
+    window: Option<Arc<Window>>,
+    renderer: Option<GpuRenderer>,
+    /// When to try making a renderer again after the GPU device was lost
+    /// (`recover_renderer`), while none could be made.
+    renderer_retry: Option<std::time::Instant>,
+    /// The banner saying something failed (`show_error`), once one has.
+    error_banner: Option<(Signal<String>, zgx::compose::ViewHandle)>,
+    /// The window's frame's and the popup host's last contained panics,
+    /// and the damaged frames tried (`contain::run`).
+    render_fault: Option<crate::contain::Fault>,
+    popups_fault: Option<crate::contain::Fault>,
+    _layout_issues: zgx::issues::IssueListener,
+    /// What its listener heard, for its own banner (`show_issues`).
+    issues: crate::contain::WindowIssues,
+    frames_tried: u64,
+    adapter: Option<accesskit_winit::Adapter>,
+    tree: AccessibilityTree,
+    proxy: EventLoopProxy<Event>,
+    tasks: LocalExecutor,
+    pending: Rc<RefCell<VecDeque<FutureTask>>>,
+    clipboard: Rc<RefCell<Option<crate::clipboard::Clipboard>>>,
+    /// The editor selection last published as the primary selection.
+    #[cfg(target_os = "linux")]
+    primary: Option<String>,
+    /// Where a press in a `window_drag` region was, until the pointer moves
+    /// far enough from it to move the window, or is let go: a click.
+    #[cfg(target_os = "linux")]
+    title_press: Option<(f32, f32)>,
+    cursor: (f32, f32),
+    /// Where winit last put the pointer, while a popup's input has moved
+    /// `cursor` since (`own_event`).
+    window_cursor: WindowCursor,
+    pending_file_drops: crate::file_drop::FileDropBatch,
+    /// The files dragged over the window, while they are: a drag holds the
+    /// pointer, and each move it reports (`CursorMoved`) hovers them where
+    /// it now is, so what would take them follows it.
+    hovered_files: Vec<std::path::PathBuf>,
+    modifiers: Modifiers,
+    ime_active: bool,
+    ime_restart: crate::native_ime::RestartBarrier,
+    ime_cancellation: crate::native_ime::CancellationTracker,
+    native_focused: bool,
+    x11: bool,
+    /// The scale its content draws at: the display's times the window's
+    /// zoom (`Ui::zoom`), the display's itself at 100%.
+    scale_factor: f64,
+    /// The display's scale: window frames, sizes and screen positions.
+    display_scale: f64,
+    /// What the window last showed, and its scale, for `Ui::snapshot`.
+    #[cfg(target_os = "macos")]
+    shown: std::rc::Rc<std::cell::RefCell<Option<(zgx_gpu::ShownFrame, f64)>>>,
+    /// The next frame repaints the whole window, and its popups.
+    force: bool,
+    /// The next frame repaints the whole window, but its popups only as
+    /// they changed: on Wayland (`frame_paced`), a frame the compositor
+    /// grants (`RedrawRequested`) or one put off until it does. Its popups'
+    /// surfaces keep their contents, and each popup frame drawn again for
+    /// nothing is one more to wait for (`popup_window::wayland`).
+    redraw_whole: bool,
+    presentation: Presentation,
+    native_occluded: bool,
+    frame_paced: bool,
+    /// `zgx::gpu_view::plane_frames` as last drawn (`GpuRenderer::render_planes`).
+    plane_frames: u64,
+    /// When planes' frames were last drawn: once a refresh at most.
+    #[cfg(target_os = "macos")]
+    planes_drawn_at: Option<std::time::Instant>,
+    /// When to draw again a plane's frame left for a tick (its last drawable
+    /// not yet shown: `GpuRenderer::planes_owed`), though nothing else asks.
+    plane_retry: Option<std::time::Instant>,
+    /// Until when input keeps frames at the display's full rate (`INPUT_FULL_RATE`).
+    #[cfg(any(target_os = "macos", windows))]
+    input_until: Option<std::time::Instant>,
+    /// Input changed the scene since the last frame: drawn at once rather
+    /// than at the next tick (Windows: any input; macOS: typing).
+    #[cfg(any(target_os = "macos", windows))]
+    input_arrived: bool,
+    /// Windows: the frame being drawn shows input (it presents at once).
+    #[cfg(windows)]
+    input_draw: bool,
+    /// Windows: the last frame waited out the compositor's latch
+    /// (`frame_source::latch_wait`).
+    #[cfg(windows)]
+    latch_holding: bool,
+    /// A hidden window's next frame draws all the same (`show_drawn`): its
+    /// first, as it is made hidden, and the one that shows it.
+    draw_hidden: bool,
+    /// Made hidden on Wayland and not yet shown: there a window maps as it
+    /// first draws, so it draws nothing until it is shown, and then its
+    /// first frame maps it whole.
+    unmapped: bool,
+    present_ready: bool,
+    frames: FrameClock,
+    #[cfg(any(target_os = "macos", windows))]
+    display_link: Option<crate::frame_source::DisplayLink>,
+    /// `Titlebar::Inset`'s caption buttons (Windows, Linux) and an
+    /// undecorated window's resize bands (Linux).
+    #[cfg(any(windows, target_os = "linux"))]
+    caption: Option<crate::window_chrome::CaptionHost>,
+    /// The resize an undecorated window's edge under the pointer would
+    /// start (Linux): content hears nothing there.
+    #[cfg(target_os = "linux")]
+    resize_edge: Option<winit::window::ResizeDirection>,
+    /// The pointer has been over a popup window of this one (X11): winit
+    /// may not report its move back, so a press asks where it is.
+    #[cfg(target_os = "linux")]
+    had_popups: bool,
+    /// When the display link last delivered a refresh, aligning `frame_timer`
+    /// to its grid: until `VSYNC_RESYNC` later the timer paces frames and the
+    /// link (a thread spinning to each refresh) stays stopped.
+    #[cfg(target_os = "macos")]
+    vsync_synced: Option<std::time::Instant>,
+    /// Frames are wanted and the aligned timer paces them.
+    #[cfg(target_os = "macos")]
+    vsync_paced: bool,
+    /// The display link paces frames at the display's full rate.
+    #[cfg(target_os = "macos")]
+    link_paced: bool,
+    /// When a frame was last presented, and the cadence steady frames keep
+    /// (see `Host::refresh_grid`).
+    #[cfg(target_os = "macos")]
+    presented_at: Option<std::time::Instant>,
+    /// The `Ui::native_caret` change the renderer was last given
+    /// (`sync_caret`): each is applied once.
+    #[cfg(target_os = "macos")]
+    caret_applied: Option<u64>,
+    /// When the window last changed size: live-resize frames are drawn
+    /// inside AppKit's resize transaction, which shows them with the new
+    /// frame, so they skip the refresh-point wait (`refresh_grid`) that
+    /// would hold the next resize step back.
+    #[cfg(target_os = "macos")]
+    resized_at: Option<std::time::Instant>,
+    /// The window's size as AppKit last reported it (`Resized`, sent for
+    /// every change of the content view's frame): asking every frame
+    /// costs a walk of the window's frame views. None until reported.
+    #[cfg(target_os = "macos")]
+    reported_size: Option<PhysicalSize<u32>>,
+    #[cfg(target_os = "macos")]
+    latch: Latch,
+    frame_timer: crate::frame_source::FrameTimer,
+    frame_interval: std::time::Duration,
+    /// The display the window shows on and its rate (`refresh_frame_interval`).
+    #[cfg(target_os = "macos")]
+    display_key: String,
+    /// Ticks skipped to put drawables back in phase (`rephased`), and the
+    /// latest frames' starts, kept for its log only.
+    #[cfg(target_os = "macos")]
+    rephases: u64,
+    #[cfg(target_os = "macos")]
+    frame_starts: std::collections::VecDeque<std::time::Instant>,
+    /// A display refresh arrived since the last paint. While the display link
+    /// runs, paints wait for it so input between refreshes cannot present
+    /// extra frames (which would queue drawables and block the UI thread).
+    frame_arrived: bool,
+    /// The frame being drawn is the one a display refresh asked for (not
+    /// input's, drawn at once): it may wait to be handed over (`align_wait`).
+    #[cfg(target_os = "macos")]
+    refresh_frame: bool,
+    /// When to release animation-only renderer memory if nothing presents
+    /// before then (see `GpuRenderer::trim`).
+    trim_at: Option<std::time::Instant>,
+    /// When kept images' decoded pixels go, `TRIM_DELAY` past the last
+    /// upload, whether or not the window keeps presenting (an animated page).
+    release_images_at: Option<std::time::Instant>,
+    /// `trim_at` is for the glyph atlas (`ATLAS_TRIM_DELAY`).
+    trim_atlas: bool,
+    /// When to save the window's frame (`frame_autosave`, Linux): once its
+    /// moves and resizes settle.
+    frame_save_at: Option<std::time::Instant>,
+    startup_trim: StartupTrim,
+    /// Timer tick (no native source) or watchdog deadline (native source).
+    frame_deadline: Option<std::time::Instant>,
+    /// When frames started being wanted, or the last native tick since.
+    frame_heartbeat: Option<std::time::Instant>,
+    /// A Wayland redraw is pending on the compositor's frame callback.
+    frame_redraw_requested: bool,
+    focus_memory: crate::focus_memory::FocusMemory,
+    last_accessibility: Option<(u64, Option<NodeId>)>,
+    accessibility_geometry_dirty: bool,
+    /// A reader asked to scroll a node in: the tree its new place is in
+    /// goes out at once, not paced as geometry is.
+    accessibility_revealed: bool,
+    /// The popups' layer revisions, summed: what changes in them damages
+    /// nothing in this window (`Scene::set_popup`), so their geometry is
+    /// dirty when these move.
+    popup_revisions: u64,
+    /// Geometry alone reaches assistive technology at most every 100 ms.
+    accessibility_pacer: crate::accessibility::GeometryPacer,
+    /// The display text selection last published as the primary selection.
+    #[cfg(target_os = "linux")]
+    primary_revision: u64,
+    native_cursor: Option<CursorIcon>,
+    /// A page's image cursor the window shows (`sync_cursor`).
+    #[cfg(all(target_os = "linux", feature = "webkitgtk"))]
+    page_cursor: Option<crate::native_host::webkitgtk::WindowCursor>,
+    /// The window's cursor rects are off (see `disable_cursor_rects`).
+    #[cfg(target_os = "macos")]
+    cursor_rects_off: bool,
+    cursor_query: Option<((f32, f32), u64, Option<zgx::cursor::Cursor>)>,
+    /// The pointer is over this window. Outside it, the cursor shape does not
+    /// matter, so animating geometry need not be hit-tested every frame.
+    pointer_inside: bool,
+    ime_geometry: Option<Rect>,
+    ime_target: Option<NodeId>,
+    /// A password field has the keyboard (`native_ime::password_focused`):
+    /// on macOS, secure keyboard entry is on meanwhile.
+    password: bool,
+    gpu_stats: Option<crate::gpu_stats::GpuStatsLog>,
+    /// `ZGX_DAMAGE_CHECK=1`: compare every damaged frame with a full
+    /// repaint and report stale pixels (slow; for debugging damage).
+    damage_check: Option<u64>,
+    /// Wheel and trackpad motion waiting for display refreshes.
+    scroll: crate::scroll_resample::ScrollResampler,
+    /// Fingers and pens on the screen, as the pointer.
+    touch: crate::touch::Touches,
+    /// What had focus before a finger pressed, for a pan to give it back.
+    touch_focus: Option<zgx::scene::NodeId>,
+    /// The last press was a finger's or a pen's, not a mouse's: an editor
+    /// it focuses brings up the touch keyboard.
+    #[cfg(windows)]
+    touch_last: bool,
+    /// zgx brought the touch keyboard up, and puts it away.
+    #[cfg(windows)]
+    touch_keyboard: bool,
+    /// Windows' Text Services Framework for this window (unless
+    /// `text_services(false)` or `ZGX_TSF=0`), made
+    /// when an editor first takes an input method; `tsf_tried` once tried.
+    #[cfg(windows)]
+    tsf: Option<crate::tsf::Tsf>,
+    #[cfg(windows)]
+    tsf_tried: bool,
+    /// Where the trackpad's scroll gesture is: what its phases report
+    /// (`InputEvent::ScrollGesture`, for elastic scrolling).
+    trackpad: Trackpad,
+    /// Devtools' wheel recordings, and what they play back (`Ui::wheel_tape`).
+    wheel_tape: std::rc::Rc<std::cell::RefCell<crate::wheel_tape::Tape>>,
+    /// Native views (web pages) over and under this window's zgx content.
+    native: crate::native_host::NativeHost,
+    /// Popups shown past the window, in windows of their own.
+    popups: crate::popup_window::PopupHost,
+    /// Its drag handed to the platform (`native_drag`).
+    native_drag: crate::native_drag::Handoff,
+    /// It was in fullscreen as its geometry last changed: popups close as
+    /// it goes in or out.
+    popups_fullscreen: bool,
+    /// The full-screen transition it last began (`window_chrome::FullScreenNote`):
+    /// a `Settled` of an earlier one leaves a newer one be.
+    #[cfg(target_os = "macos")]
+    full_screen_seq: u64,
+    /// The title bar's area and buttons as they were when the window last
+    /// began going into full screen: where they are once it is out again.
+    #[cfg(target_os = "macos")]
+    chrome_out: Option<crate::window_info::Chrome>,
+    /// Its content's top-left in global coordinates, and its number with
+    /// the window server (macOS), for drags between windows: kept as the
+    /// window moves, so a drag asks AppKit nothing as it moves.
+    content_origin: Option<(f64, f64)>,
+    window_number: Option<isize>,
+    /// Where the pointer held the window as a drag moving it began
+    /// (`View::drag_moves_window`), in its coordinates.
+    window_grab: Option<(f32, f32)>,
+    /// Where the window server has put its frame's top-left that AppKit
+    /// has yet to hear (`window_place::move_to`).
+    window_pending: Option<(f64, f64)>,
+    /// The theme's `background` when it changes, for the renderer's clear
+    /// colour, and the effect that watches it.
+    theme_background: Rc<std::cell::Cell<Option<zgx::scene::Color>>>,
+    applied_background: Option<zgx::scene::Color>,
+    _background_effect: Option<zgx::reactive::Effect>,
+}
+impl Host {
+    fn new(options: WindowOptions, handle: WindowHandle, windows: WindowFactory) -> Self {
+        let proxy = handle.proxy.clone();
+        let wake = proxy.clone();
+        let token = handle.token;
+        let pending = Rc::new(RefCell::new(VecDeque::new()));
+        let ui = Ui::with_runtime(
+            windows.runtime.clone(),
+            options.width as f32,
+            options.height as f32,
+        );
+        // No reader has asked for the window's tree yet: names and values
+        // made from state wait for one (`InitialTreeRequested`).
+        ui.set_assistive_technology(false);
+        // A layout that doesn't settle is reported, and the app goes on.
+        ui.contain_layout_feedback();
+        // Each issue logged once, and kept for this window's banner alone.
+        let (layout_issues, issues) = crate::contain::window_issues(&ui.runtime);
+        let viewport = ui.signal((options.width as f32, options.height as f32));
+        let frames = FrameClock::new();
+        frames.set_max_rate(options.max_frame_rate);
+        let window_info = crate::WindowInfo::new(&ui, options.width, options.height);
+        let clipboard = windows.clipboard.clone();
+        let root = ui.scene.borrow().root();
+        let menu_model = ui.signal(windows.menus());
+        let menu_binding = ui.input.bind_keys(
+            root,
+            crate::app_menu::keymap(&windows.menus(), &windows.reserved.borrow()),
+        );
+        let fallback = proxy.clone();
+        let menus = windows.menus.clone();
+        let closed = handle.closed.clone();
+        let menu_listener = ui.input.listen(root, move |event| {
+            if event.phase == zgx::input::EventPhase::Capture
+                || event.default_prevented()
+                || closed.load(Ordering::Acquire)
+            {
+                return;
+            }
+            if let InputEvent::Action(action) = &event.event
+                && let Some(action) = action.downcast_ref::<crate::MenuAction>()
+                && crate::app_menu::enabled_action(&menus.borrow(), action)
+            {
+                let _ = fallback.send_event(Event::MenuFallback(token, action.clone()));
+                event.prevent_default();
+            }
+        });
+        let native = crate::native_host::NativeHost::new(&ui, {
+            let wake = proxy.clone();
+            move || {
+                let _ = wake.send_event(Event::Wake(token));
+            }
+        });
+        // Kept images' pixels decoded off the main thread: the windows that
+        // went without them draw again (`Event::ImagesDecoded`).
+        {
+            let wake = proxy.clone();
+            zgx::image::set_decoded_wake(move || {
+                let _ = wake.send_event(Event::ImagesDecoded);
+            });
+        }
+        let popups = crate::popup_window::PopupHost::new({
+            let proxy = proxy.clone();
+            move |input| {
+                let _ = proxy.send_event(Event::Popup(token, input));
+            }
+        });
+        // Where popups have windows of their own, one is readied as the
+        // pointer reaches a trigger.
+        if crate::popup_window::enabled() {
+            let proxy = proxy.clone();
+            ui.on_popup_soon(move || {
+                let _ = proxy.send_event(Event::PopupSoon(token));
+            });
+            // Drag previews too, moved with the pointer (`PopupHost::follow`).
+            ui.set_popup_previews(cfg!(any(target_os = "macos", windows)));
+        }
+        // How long a drag rests on a destination before it springs open:
+        // the system's spring-loading delay (Accessibility settings).
+        #[cfg(target_os = "macos")]
+        ui.input.set_spring_delay(spring_delay());
+        // Pictures of what the window showed (`Ui::snapshot`): a region of
+        // its last frame, read when asked.
+        #[cfg(target_os = "macos")]
+        let shown: std::rc::Rc<std::cell::RefCell<Option<(zgx_gpu::ShownFrame, f64)>>> =
+            std::rc::Rc::default();
+        #[cfg(target_os = "macos")]
+        {
+            let shown = shown.clone();
+            ui.on_snapshot(move |rect, max_width| {
+                let shown = shown.borrow();
+                let (frame, scale) = shown.as_ref()?;
+                let (x, y, w, h) = snapshot_region(rect, *scale);
+                let (w, h, bgra) = frame.read(x, y, w, h)?;
+                let (w, h) = (w as usize, h as usize);
+                crate::thumbnail::image(&bgra, w, h, w * 4, max_width as usize)
+            });
+            // A popup is in a surface of its own, past the window or not.
+            let frames = popups.frames();
+            ui.on_popup_snapshot(move |root, rect, max_width| {
+                let frames = frames.borrow();
+                let (_, frame, scale, shown) = frames.iter().find(|frame| frame.0 == root)?;
+                let inside = zgx::scene::Rect::new(
+                    rect.x - shown.x,
+                    rect.y - shown.y,
+                    rect.width,
+                    rect.height,
+                );
+                let (x, y, w, h) = snapshot_region(inside, f64::from(*scale));
+                let (w, h, bgra) = frame.read(x, y, w, h)?;
+                let (w, h) = (w as usize, h as usize);
+                crate::thumbnail::image(&bgra, w, h, w * 4, max_width as usize)
+            });
+        }
+        // Devtools record and replay wheel input through this window's own
+        // path (`Ui::wheel_tape`); asked nothing, it does nothing.
+        let wheel_tape: std::rc::Rc<std::cell::RefCell<crate::wheel_tape::Tape>> =
+            std::rc::Rc::default();
+        {
+            let tape = wheel_tape.clone();
+            let handle = handle.clone();
+            ui.on_wheel_tape(move |request| {
+                let mut tape = tape.borrow_mut();
+                match request {
+                    zgx::widgets::WheelTape::Record => {
+                        tape.record();
+                        Ok("recording".into())
+                    }
+                    zgx::widgets::WheelTape::Stop => tape.stop(),
+                    zgx::widgets::WheelTape::Play { tape: text, at } => {
+                        let entries = crate::wheel_tape::parse(&text)?;
+                        let (count, last) = (entries.len(), entries.last().map(|e| e.after));
+                        tape.play(std::time::Instant::now(), entries, at);
+                        // The loop wakes for the first event, and paints what it
+                        // changes: `request_redraw` would repaint the whole
+                        // window, which a wheel does not (a measured gesture's
+                        // first frame read as a whole repaint).
+                        handle.wake();
+                        Ok(format!(
+                            "playing {count} events over {:.0} ms",
+                            last.unwrap_or_default().as_secs_f64() * 1e3
+                        ))
+                    }
+                }
+            });
+        }
+        let inspector = zgx::inspect::Inspector::new();
+        {
+            let handle = handle.clone();
+            inspector.set_wake(move || handle.request_redraw());
+        }
+        let full_screen_transition = ui.signal(None);
+        let context = WindowContext {
+            inspector,
+            natives: native.natives.clone(),
+            native_diagnostics: native.diagnostics.clone(),
+            window_info,
+            full_screen_transition,
+            menu_model,
+            dialogs: crate::FileDialogs::new(handle.clone()),
+            menu_action: None,
+            ui,
+            viewport,
+            frames: frames.clone(),
+            close_requested: None,
+            closed: None,
+            tasks: TaskSpawner {
+                pending: pending.clone(),
+                proxy: proxy.clone(),
+                token,
+                closed: handle.closed.clone(),
+            },
+            window: handle,
+            windows,
+        };
+        Self {
+            #[cfg(target_os = "linux")]
+            file_surface: None,
+            menu_binding,
+            _menu_listener: menu_listener,
+            state: WindowState {
+                visible: options.visible,
+                ..Default::default()
+            },
+            options,
+            context,
+            window: None,
+            renderer: None,
+            renderer_retry: None,
+            error_banner: None,
+            render_fault: None,
+            popups_fault: None,
+            _layout_issues: layout_issues,
+            issues: issues.clone(),
+            frames_tried: 0,
+            adapter: None,
+            tree: AccessibilityTree::new(),
+            proxy,
+            tasks: {
+                // Wakes on the UI thread happen inside an event-loop callback,
+                // and `about_to_wait` polls ready tasks afterwards. Only other
+                // threads (timers, dialogs) need to wake the loop.
+                let ui_thread = std::thread::current().id();
+                LocalExecutor::with_wake(move || {
+                    if std::thread::current().id() != ui_thread {
+                        let _ = wake.send_event(Event::Wake(token));
+                    }
+                })
+            },
+            pending,
+            clipboard,
+            #[cfg(target_os = "linux")]
+            primary: None,
+            #[cfg(target_os = "linux")]
+            title_press: None,
+            cursor: (0., 0.),
+            window_cursor: WindowCursor::default(),
+            scroll: Default::default(),
+            touch: Default::default(),
+            touch_focus: None,
+            #[cfg(windows)]
+            touch_last: false,
+            #[cfg(windows)]
+            touch_keyboard: false,
+            #[cfg(windows)]
+            tsf: None,
+            #[cfg(windows)]
+            tsf_tried: false,
+            trackpad: Trackpad::Idle,
+            wheel_tape,
+            pending_file_drops: Default::default(),
+            hovered_files: Vec::new(),
+            modifiers: Modifiers::default(),
+            ime_active: false,
+            ime_restart: Default::default(),
+            ime_cancellation: Default::default(),
+            native_focused: false,
+            x11: false,
+            scale_factor: 1.,
+            display_scale: 1.,
+            #[cfg(target_os = "macos")]
+            shown,
+            force: true,
+            redraw_whole: false,
+            presentation: Presentation::default(),
+            native_occluded: false,
+            frame_paced: false,
+            plane_frames: 0,
+            #[cfg(target_os = "macos")]
+            planes_drawn_at: None,
+            plane_retry: None,
+            #[cfg(any(target_os = "macos", windows))]
+            input_until: None,
+            #[cfg(any(target_os = "macos", windows))]
+            input_arrived: false,
+            #[cfg(windows)]
+            input_draw: false,
+            #[cfg(windows)]
+            latch_holding: false,
+            draw_hidden: false,
+            unmapped: false,
+            present_ready: false,
+            gpu_stats: crate::gpu_stats::GpuStatsLog::from_env(),
+            damage_check: zgx::env::var_os("ZGX_DAMAGE_CHECK").map(|_| 0),
+            frames,
+            #[cfg(any(target_os = "macos", windows))]
+            display_link: None,
+            #[cfg(any(windows, target_os = "linux"))]
+            caption: None,
+            #[cfg(target_os = "linux")]
+            resize_edge: None,
+            #[cfg(target_os = "linux")]
+            had_popups: false,
+            #[cfg(target_os = "macos")]
+            vsync_synced: None,
+            #[cfg(target_os = "macos")]
+            vsync_paced: false,
+            #[cfg(target_os = "macos")]
+            link_paced: false,
+            #[cfg(target_os = "macos")]
+            presented_at: None,
+            #[cfg(target_os = "macos")]
+            caret_applied: None,
+            #[cfg(target_os = "macos")]
+            resized_at: None,
+            #[cfg(target_os = "macos")]
+            reported_size: None,
+            #[cfg(target_os = "macos")]
+            latch: Latch::default(),
+            frame_arrived: false,
+            #[cfg(target_os = "macos")]
+            refresh_frame: false,
+            trim_at: None,
+            release_images_at: None,
+            trim_atlas: false,
+            frame_save_at: None,
+            startup_trim: StartupTrim::Pending,
+            frame_timer: crate::frame_source::FrameTimer::new(std::time::Instant::now()),
+            frame_interval: crate::frame_source::DEFAULT_INTERVAL,
+            #[cfg(target_os = "macos")]
+            display_key: String::new(),
+            #[cfg(target_os = "macos")]
+            rephases: 0,
+            #[cfg(target_os = "macos")]
+            frame_starts: std::collections::VecDeque::new(),
+            frame_deadline: None,
+            frame_heartbeat: None,
+            frame_redraw_requested: false,
+            focus_memory: crate::focus_memory::FocusMemory::default(),
+            last_accessibility: None,
+            accessibility_geometry_dirty: true,
+            accessibility_revealed: false,
+            popup_revisions: 0,
+            accessibility_pacer: Default::default(),
+            #[cfg(target_os = "linux")]
+            primary_revision: 0,
+            native_cursor: None,
+            #[cfg(all(target_os = "linux", feature = "webkitgtk"))]
+            page_cursor: None,
+            #[cfg(target_os = "macos")]
+            cursor_rects_off: false,
+            cursor_query: None,
+            pointer_inside: false,
+            ime_geometry: None,
+            ime_target: None,
+            password: false,
+            native,
+            popups,
+            native_drag: Default::default(),
+            popups_fullscreen: false,
+            #[cfg(target_os = "macos")]
+            full_screen_seq: 0,
+            #[cfg(target_os = "macos")]
+            chrome_out: None,
+            content_origin: None,
+            window_number: None,
+            window_grab: None,
+            window_pending: None,
+            theme_background: Rc::default(),
+            applied_background: None,
+            _background_effect: None,
+        }
+    }
+    fn dispatch(&mut self, event: InputEvent) -> Result<(), zgx::widgets::LayoutFeedbackError> {
+        self.dispatch_prevented(event).map(|_| ())
+    }
+    /// Carry out what a touch asked (`touch::Step`).
+    fn touch_steps(
+        &mut self,
+        steps: Vec<crate::touch::Step>,
+    ) -> Result<(), zgx::widgets::LayoutFeedbackError> {
+        for step in steps {
+            match step {
+                crate::touch::Step::Dispatch(event) => self.dispatch(event)?,
+                crate::touch::Step::Unpress => {
+                    self.dispatch(InputEvent::PointerCancel)?;
+                    let ui = &self.context.ui;
+                    if ui.input.focused() != self.touch_focus {
+                        ui.input.focus(&ui.scene, self.touch_focus);
+                    }
+                }
+                crate::touch::Step::TryPan { x, y, dx, dy } => {
+                    let panned = self.dispatch_prevented(InputEvent::Scroll {
+                        x,
+                        y,
+                        delta_x: dx,
+                        delta_y: dy,
+                    })?;
+                    let next = self.touch.decided(panned);
+                    self.touch_steps(next)?;
+                }
+            }
+        }
+        Ok(())
+    }
+    /// After a scroll: a gesture that became a swipe between pages is
+    /// AppKit's to track from its next scroll (`swipes`).
+    fn after_scroll(&self) {
+        #[cfg(all(target_os = "macos", zgx_winit_patched))]
+        crate::swipes::after_scroll(&self.context.ui, self.window.as_deref());
+    }
+    fn dispatch_prevented(
+        &mut self,
+        event: InputEvent,
+    ) -> Result<bool, zgx::widgets::LayoutFeedbackError> {
+        // Input shows on the next refresh even while the only animations run at a
+        // reduced rate (a 12 fps dither): see `sync_frames`.
+        #[cfg(any(target_os = "macos", windows))]
+        {
+            self.input_until = Some(std::time::Instant::now() + INPUT_FULL_RATE);
+        }
+        #[cfg(windows)]
+        {
+            self.input_arrived = true;
+        }
+        // macOS: typing draws at once even mid-animation (see `process`);
+        // pointer motion and scrolling keep the refresh's pace.
+        #[cfg(target_os = "macos")]
+        if matches!(
+            event,
+            InputEvent::KeyDown { .. }
+                | InputEvent::Text(_)
+                | InputEvent::ImePreedit { .. }
+                | InputEvent::ImeCommit(_)
+        ) {
+            self.input_arrived = true;
+        }
+        let result = self
+            .context
+            .ui
+            .try_dispatch_with_modifiers(event, self.modifiers)?;
+        if result.focus_changed {
+            self.ime_active = false;
+        }
+        #[cfg(target_os = "linux")]
+        self.publish_primary();
+        Ok(result.default_prevented)
+    }
+    /// Selected display text becomes the primary selection (what a middle
+    /// click pastes) once a gesture settles, as X11 and Wayland apps do.
+    #[cfg(target_os = "linux")]
+    fn publish_primary(&mut self) {
+        let ui = &self.context.ui;
+        let revision = ui.text_selection_revision();
+        if revision == self.primary_revision || ui.is_selecting_text() {
+            return;
+        }
+        self.primary_revision = revision;
+        if !ui.has_text_selection() {
+            return;
+        }
+        let text = ui.selected_text();
+        if let Some(clipboard) = self.clipboard.borrow_mut().as_mut() {
+            let _ = clipboard.set_primary_text(text);
+        }
+    }
+    fn sync_accessibility(&mut self) {
+        let state = (
+            self.context.ui.semantics.borrow().revision(),
+            self.context.ui.input.focused(),
+        );
+        let focused = self
+            .last_accessibility
+            .is_none_or(|(_, focus)| focus != state.1);
+        let semantics = self
+            .last_accessibility
+            .is_none_or(|(revision, _)| revision != state.0);
+        let geometry = self.accessibility_geometry_dirty;
+        // Nothing reads the tree (AccessKit then builds none): nothing to
+        // pace, no wake for it.
+        if !self.context.ui.assistive_technology() {
+            if focused || semantics || geometry {
+                self.last_accessibility = Some(state);
+                self.accessibility_geometry_dirty = false;
+            }
+            return;
+        }
+        // Focus, and what a screen reader speaks (names, values, selection)
+        // while one runs, go out at once. Other clients (the touch keyboard's
+        // host, voice access) read names as they need them: for them names
+        // and values are paced as geometry is, and a dashboard's live values
+        // no longer rebuild the tree every frame.
+        let urgent = crate::accessibility::urgent(
+            focused,
+            std::mem::take(&mut self.accessibility_revealed),
+            semantics,
+            crate::accessibility::screen_reader,
+        );
+        if !self.accessibility_pacer.update_now(
+            std::time::Instant::now(),
+            urgent,
+            geometry || semantics,
+        ) {
+            return;
+        }
+        self.last_accessibility = Some(state);
+        self.accessibility_geometry_dirty = false;
+        if let (Some(adapter), Some(_)) = (&mut self.adapter, &self.window) {
+            let ui = &self.context.ui;
+            adapter.update_if_active(|| {
+                self.tree.update(
+                    &ui.scene.borrow(),
+                    &ui.semantics.borrow(),
+                    ui.input.focused(),
+                    &self.options.title,
+                    self.scale_factor,
+                )
+            });
+        }
+    }
+    /// What AppKit said of this window's full screen (`phase`, of the
+    /// transition numbered `seq`, its animation about `duration` long):
+    /// `full_screen_transition` begins or ends with it, and once it ends
+    /// the window's full screen and title bar buttons are read again
+    /// (`WindowInfo::fullscreen`, `controls`: none in full screen).
+    #[cfg(target_os = "macos")]
+    fn full_screen(
+        &mut self,
+        phase: crate::window_info::FullScreenPhase,
+        duration: std::time::Duration,
+        seq: u64,
+    ) {
+        use crate::window_info::FullScreenPhase;
+        if matches!(
+            phase,
+            FullScreenPhase::WillEnter | FullScreenPhase::WillExit
+        ) {
+            self.full_screen_seq = seq;
+        } else if phase == FullScreenPhase::Settled && seq != self.full_screen_seq {
+            return;
+        }
+        // The title bar's area and buttons, where they end up, before the
+        // transition says it begins (a slide timed to it reads its target):
+        // none going in; going out, where they were before going in (the
+        // window takes its frame back). Once it is there, as the window has
+        // them, before the transition says it is over.
+        let info = &self.context.window_info;
+        match phase {
+            FullScreenPhase::WillEnter => {
+                self.chrome_out = Some(info.chrome());
+                info.set_chrome((None, None));
+            }
+            FullScreenPhase::WillExit => {
+                if let Some(out) = self.chrome_out {
+                    info.set_chrome(out);
+                }
+            }
+            _ => {}
+        }
+        let mut covered = false;
+        if phase.settles()
+            && let Some(window) = &self.window
+        {
+            info.refresh(window, self.options.titlebar);
+            // Covered after all, once the transition is over: an occlusion
+            // it went on drawing through is counted now.
+            covered = !*RENDER_WHEN_COVERED
+                && !self.native_occluded
+                && crate::window_chrome::occluded(window) == Some(true);
+        }
+        let transition = phase.transition(duration);
+        let signal = &self.context.full_screen_transition;
+        if signal.with_untracked(|now| *now != transition) {
+            signal.set(transition);
+        }
+        if covered {
+            self.occlude();
+        }
+    }
+    /// Minimized, or on a Space no longer shown: its menus and popovers
+    /// close, as AppKit's do (they would show again with it, still open),
+    /// and it stops presenting until it shows again.
+    fn occlude(&mut self) {
+        self.context.ui.dismiss_popups();
+        self.context.ui.cancel_interactions();
+        self.native_occluded = true;
+        self.context.ui.set_presented(false);
+        self.presentation.occlude();
+    }
+    /// Whether the window is going into or out of full screen (macOS).
+    fn in_full_screen_transition(&self) -> bool {
+        self.context
+            .full_screen_transition
+            .with_untracked(Option::is_some)
+    }
+    /// The title bar's area and buttons to show while the window's geometry
+    /// changes, if not as AppKit has them: through a full-screen transition,
+    /// where they end up (`full_screen`).
+    fn chrome_held(&self) -> Option<crate::window_info::Chrome> {
+        #[cfg(target_os = "macos")]
+        {
+            crate::window_info::held_chrome(
+                self.context
+                    .full_screen_transition
+                    .with_untracked(|now| *now),
+                self.chrome_out,
+            )
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            None
+        }
+    }
+    fn sync_ime_cancellation(&mut self) {
+        let password = crate::native_ime::password_focused(&self.context.ui, self.native_focused);
+        if password != std::mem::replace(&mut self.password, password) {
+            #[cfg(target_os = "macos")]
+            crate::native_ime::secure_input(password);
+        }
+        // Update native permission before event delivery and before hidden-window
+        // drawing gates. Read-only editors retain logical focus but no IME context.
+        let editor = crate::native_ime::editable_editor(&self.context.ui, self.native_focused);
+        // A page's editable, where no editor of zgx's has focus: the page's
+        // box takes the input method (`webkitgtk::ime_page`).
+        #[cfg(all(target_os = "linux", feature = "webkitgtk"))]
+        let page = (editor.is_none() && self.native_focused)
+            .then(|| crate::native_host::webkitgtk::ime_page(&self.context.ui))
+            .flatten();
+        #[cfg(not(all(target_os = "linux", feature = "webkitgtk")))]
+        let page: Option<NodeId> = None;
+        let target = editor.as_ref().map(|editor| editor.node).or(page);
+        // What kind of text it takes, for the input method (Wayland's content
+        // purpose; Windows' input scope through the framework, `tsf.rs`).
+        let purpose = crate::native_ime::ime_purpose(
+            editor
+                .as_ref()
+                .map_or(zgx::text_edit::InputMode::Text, |editor| {
+                    editor.input_mode()
+                }),
+        );
+        // A field with its own keys (`InputMode::None`) shows no touch keyboard.
+        #[cfg(windows)]
+        let keyboard = target.is_some()
+            && editor
+                .as_ref()
+                .is_none_or(|editor| editor.input_mode() != zgx::text_edit::InputMode::None);
+        // On Windows with the Text Services Framework, it takes the editor
+        // instead of IMM32's context (`tsf.rs`).
+        #[cfg(windows)]
+        if let Some(window) = &self.window
+            && target.is_some()
+            && !std::mem::replace(&mut self.tsf_tried, true)
+        {
+            self.tsf = crate::tsf::Tsf::for_window(window, self.scale_factor);
+        }
+        #[cfg(windows)]
+        if let Some(tsf) = &mut self.tsf {
+            if target != self.ime_target {
+                tsf.focus(editor);
+                self.ime_target = target;
+                if let Some(window) = &self.window {
+                    if keyboard && self.touch_last {
+                        self.touch_keyboard = crate::input_pane::show(window);
+                    } else if !keyboard && std::mem::take(&mut self.touch_keyboard) {
+                        crate::input_pane::hide(window);
+                    }
+                }
+            }
+            tsf.after_dispatch();
+            return;
+        }
+        #[cfg(not(windows))]
+        let _ = editor;
+        if let Some(window) = &self.window
+            && target != self.ime_target
+        {
+            self.ime_restart
+                .target_changed(self.ime_target, target, self.ime_active);
+            self.ime_active = false;
+            self.ime_geometry = None;
+            if self.ime_target.is_some() {
+                window.set_ime_allowed(false);
+                crate::native_ime::discard_native_composition(window);
+            }
+            if target.is_some() {
+                window.set_ime_purpose(purpose);
+                window.set_ime_allowed(true);
+            }
+            #[cfg(windows)]
+            if keyboard && self.touch_last {
+                self.touch_keyboard = crate::input_pane::show(window);
+            } else if !keyboard && std::mem::take(&mut self.touch_keyboard) {
+                crate::input_pane::hide(window);
+            }
+            self.ime_target = target;
+        }
+        if page.is_none()
+            && self.ime_cancellation.sync(
+                &self.context.ui,
+                self.native_focused,
+                self.ime_target,
+                &mut self.ime_restart,
+                &mut self.ime_active,
+            )
+        {
+            self.ime_geometry = None;
+            if let Some(window) = &self.window {
+                window.set_ime_allowed(false);
+                crate::native_ime::discard_native_composition(window);
+                window.set_ime_allowed(true);
+            }
+        }
+    }
+    fn draw(&mut self) -> Result<(), Box<dyn Error>> {
+        if self
+            .renderer_retry
+            .is_some_and(|at| at <= std::time::Instant::now())
+        {
+            self.recover_renderer();
+        }
+        match self.draw_frame() {
+            Err(error)
+                if error
+                    .downcast_ref::<zgx_gpu::GpuError>()
+                    .is_some_and(zgx_gpu::GpuError::is_device_lost) =>
+            {
+                eprintln!("zgx: {error}; making a new renderer");
+                self.recover_renderer();
+                Ok(())
+            }
+            // Whatever else a frame's GPU work returns (a present, a plane's
+            // frame, a popup's): this frame ends, and the next is whole. A
+            // new error is tried again at once, one that repeats when
+            // something changes.
+            Err(error) if error.is::<zgx_gpu::GpuError>() => {
+                let error = error.downcast_ref::<zgx_gpu::GpuError>().unwrap();
+                let news = crate::contain::failed(
+                    &mut self.render_fault,
+                    self.frames_tried,
+                    std::time::Instant::now(),
+                    "the window's frame",
+                    error,
+                );
+                crate::contain::report_issues(&self.context.ui.runtime);
+                self.show_issues();
+                self.force = true;
+                if news && let Some(window) = &self.window {
+                    window.request_redraw();
+                }
+                Ok(())
+            }
+            other => other,
+        }
+    }
+    fn draw_frame(&mut self) -> Result<(), Box<dyn Error>> {
+        #[cfg(target_os = "macos")]
+        {
+            let now = std::time::Instant::now();
+            if let Some(renderer) = &mut self.renderer {
+                renderer.set_frame_start(now);
+            }
+            if cfg!(debug_assertions) || zgx::profile::enabled() {
+                self.frame_starts.push_back(now);
+                if self.frame_starts.len() > 32 {
+                    self.frame_starts.pop_front();
+                }
+            }
+        }
+        self.sync_ime_cancellation();
+        let Some(window) = self.window.clone() else {
+            self.context.ui.cancel_interactions();
+            return Ok(());
+        };
+        #[cfg(target_os = "macos")]
+        let size = *self
+            .reported_size
+            .get_or_insert_with(|| window.inner_size());
+        #[cfg(not(target_os = "macos"))]
+        let size = window.inner_size();
+        let visible = match (self.draw_hidden, self.unmapped) {
+            (true, _) => Some(true),
+            (false, true) => Some(false),
+            (false, false) => window.is_visible(),
+        };
+        // X11's minimized query is a synchronous property roundtrip. Focused
+        // windows cannot be minimized, and known-hidden windows need no query.
+        let minimized = if window.has_focus()
+            || visible == Some(false)
+            || self.native_occluded
+            || size.width == 0
+            || size.height == 0
+        {
+            None
+        } else {
+            window.is_minimized()
+        };
+        if !self.presentation.render_allowed(
+            (size.width, size.height),
+            visible,
+            minimized,
+            self.native_occluded,
+        ) {
+            self.context.ui.cancel_interactions();
+            return Ok(());
+        }
+        // The caret is Core Animation's where frames show through the
+        // renderer's layer and no native view splits them into planes.
+        #[cfg(target_os = "macos")]
+        self.context.ui.set_native_caret(
+            *NATIVE_CARET
+                && !self.native.active()
+                && self
+                    .renderer
+                    .as_ref()
+                    .is_some_and(GpuRenderer::shows_carets),
+        );
+        self.context
+            .ui
+            .advance_interactions(std::time::Instant::now())?;
+        self.context.ui.try_prepare_frame()?;
+        // What preparing it held back from the window (`Ui::contain_layout_feedback`).
+        for message in crate::contain::take_reported() {
+            self.show_error(&message);
+        }
+        self.show_issues();
+        // A large removal's effects are freed a chunk per frame (`Ui::reclaim`,
+        // as the frame is prepared): frames keep coming until they are.
+        if self.context.ui.reclaiming() {
+            window.request_redraw();
+        }
+        // The layout inspector's overlay and warnings follow layout (and
+        // the pointer); off, this is one flag.
+        if self.context.inspector.active() {
+            let pointer = self.pointer_inside.then_some(self.cursor);
+            self.context.inspector.update(&self.context.ui, pointer);
+        }
+        self.sync_ime_cancellation();
+        if let Some(color) = self.theme_background.take()
+            && self.applied_background != Some(color)
+            && let Some(renderer) = &mut self.renderer
+        {
+            self.applied_background = Some(color);
+            renderer.set_background(color);
+            self.force = true;
+            self.hidden_background(&window, color);
+        }
+        let scene = self.context.ui.scene.clone();
+        let mut scene = scene.borrow_mut();
+        let report = scene.flush();
+        let popup_revisions = scene.popups().iter().fold(0u64, |sum, root| {
+            sum.wrapping_add(scene.layer_revision(*root))
+        });
+        self.accessibility_geometry_dirty |= !report.damage.is_empty()
+            || std::mem::replace(&mut self.popup_revisions, popup_revisions) != popup_revisions;
+        let full = [scene.bounds(scene.root())];
+        let forced = self.force || self.redraw_whole;
+        let popups_forced = self.force;
+        // Painting only what changed can be switched off, to compare
+        // (`zgx inspect switch partial_repaint off`): a frame that changes
+        // anything then paints the whole window.
+        let whole = !zgx::switches::PARTIAL_REPAINT.on() && !report.damage.is_empty();
+        let damage = if forced || whole {
+            &full[..]
+        } else {
+            &report.damage
+        };
+        // Native views: split this frame's paint into the planes under and
+        // over them; paint moving between planes repaints on both.
+        let planned = match &mut self.renderer {
+            Some(renderer) if self.native.active() => {
+                let zoom = self.context.ui.zoom() as f32;
+                self.native
+                    .plan(&scene, &window, renderer, self.scale_factor as f32, zoom)?
+            }
+            _ => Vec::new(),
+        };
+        let extended;
+        let damage = if planned.is_empty() || forced {
+            damage
+        } else {
+            extended = [damage, &planned[..]].concat();
+            &extended[..]
+        };
+        // Panics contained in this frame's pieces (`contain::run`), and
+        // whether the window's own frame was left undrawn by one.
+        let mut faults: Vec<String> = Vec::new();
+        let mut undrawn = false;
+        if !damage.is_empty() {
+            if self.frame_paced && !self.present_ready {
+                // Layout/model work proceeds, but defer GPU work until a frame
+                // is granted. A full repaint retains damage across scene flushes.
+                self.redraw_whole = true;
+                window.request_redraw();
+            } else {
+                // Steady frames render at a time of their own within their
+                // wait for the refresh point (`Latch::hold`).
+                #[cfg(target_os = "macos")]
+                if let Some((origin, period)) = self.refresh_grid() {
+                    let at = self.latch.hold(std::time::Instant::now(), origin, period);
+                    let _wait = zgx::profile::span(zgx::profile::Phase::Wait);
+                    sleep_until(at);
+                    self.latch.rendering(std::time::Instant::now());
+                }
+                if let Some(renderer) = &mut self.renderer {
+                    zgx_gpu::present_log::log(|| {
+                        format!("render forced={forced} rects={}", damage.len())
+                    });
+                    // A panic in it skips the window's frames (their damage
+                    // kept: the next drawn is whole) until it changes,
+                    // reported once; the rest of the app runs on. So does an
+                    // error no frame can go on through.
+                    self.frames_tried += 1;
+                    let rendered = crate::contain::run_frame(
+                        &mut self.render_fault,
+                        self.frames_tried,
+                        std::time::Instant::now(),
+                        "the window's frame",
+                        |message| faults.push(message.to_string()),
+                        || renderer.render(&scene, damage),
+                    );
+                    for issue in renderer.take_issues() {
+                        crate::contain::queue_issue(issue);
+                    }
+                    crate::contain::report_issues(&self.context.ui.runtime);
+                    if let Some(stats) = rendered {
+                        let stats = stats?;
+                        first_mark(&FIRST_RENDER, "first frame rendered");
+                        self.native.render(&scene, damage)?;
+                        if let Some(frame) = &mut self.damage_check {
+                            *frame += 1;
+                            check_damage(
+                                renderer,
+                                &scene,
+                                damage,
+                                &full,
+                                size.width as usize,
+                                *frame,
+                            )?;
+                        }
+                        if let Some(log) = &mut self.gpu_stats {
+                            log.record(stats, renderer);
+                        }
+                        self.presentation.damaged();
+                    } else {
+                        undrawn = true;
+                    }
+                }
+                self.force = undrawn;
+                self.redraw_whole = false;
+            }
+        }
+        // GPU views on planes of their own: their new frames, which damage
+        // nothing in the window (each presents itself). One a refresh at
+        // most: a frame input asks for while the display link runs waits for
+        // its next refresh (a plane's next drawable would else wait on the
+        // main thread), however many come before it.
+        #[cfg(target_os = "macos")]
+        let planes_due = !self
+            .display_link
+            .as_ref()
+            .is_some_and(|link| link.running())
+            || self
+                .planes_drawn_at
+                .is_none_or(|at| at.elapsed() >= self.frame_interval / 2);
+        #[cfg(not(target_os = "macos"))]
+        let planes_due = true;
+        let plane_frames = zgx::gpu_view::plane_frames();
+        // A frame left for a tick draws as soon as there is room: it is the
+        // one due, not one more.
+        if (plane_frames != self.plane_frames && planes_due || self.plane_retry.is_some())
+            && !(self.frame_paced && !self.present_ready)
+            && let Some(renderer) = &mut self.renderer
+        {
+            self.plane_frames = plane_frames;
+            renderer.render_planes(&scene)?;
+            // Drawn, not left for a tick: the next waits a half refresh.
+            #[cfg(target_os = "macos")]
+            if !renderer.planes_owed() {
+                self.planes_drawn_at = Some(std::time::Instant::now());
+            }
+        }
+        // A plane's frame owed: drawn when its drawable comes (the wake), or,
+        // that missed, `PLANE_RETRY` on, so an animating view never stalls in
+        // a window drawing nothing else.
+        #[cfg(target_os = "macos")]
+        {
+            self.plane_retry = self
+                .renderer
+                .as_ref()
+                .is_some_and(|renderer| renderer.planes_owed())
+                .then(|| std::time::Instant::now() + PLANE_RETRY);
+        }
+        if self.presentation.ready(std::time::Instant::now()) && self.renderer.is_some() {
+            if self.frame_paced && !self.present_ready {
+                // winit withholds RedrawRequested until the compositor grants a
+                // new frame. A covered surface must never block vkQueuePresent
+                // on the shared UI thread. Keep its rendered target and damage.
+                window.request_redraw();
+            } else {
+                // Steady frames show at a set point in a refresh (`refresh_grid`),
+                // waited for once the frame is complete, just before it is
+                // handed over.
+                #[cfg(target_os = "macos")]
+                let grid = self.refresh_grid();
+                #[cfg(target_os = "macos")]
+                let latch = &mut self.latch;
+                // A frame the link paces at full rate, ready early, waits
+                // to land on the refresh the others do (`align_wait`); not
+                // while a resize settles (frames then show at once, with the
+                // window's new size).
+                #[cfg(target_os = "macos")]
+                let link = self
+                    .display_link
+                    .as_ref()
+                    .filter(|_| grid.is_none() && self.link_paced && self.refresh_frame)
+                    .filter(|_| {
+                        self.resized_at
+                            .is_none_or(|at| at.elapsed() >= RESIZE_SETTLE)
+                    });
+                // With native views, both planes and the views' geometry
+                // change in one transaction (committed when it drops).
+                let transaction = self.native.begin();
+                self.native.present_overlay()?;
+                // Checked above; `self` is borrowed in between, so no `if let`.
+                #[allow(clippy::unnecessary_unwrap)]
+                let renderer = self.renderer.as_mut().expect("checked above");
+                // Windows: a frame of the app's own timing ready near the
+                // compositor's latch waits until just past it, as macOS's
+                // steady frames keep to the refresh grid (input shows at
+                // once; `zgx inspect switch refresh_grid off`: never waits).
+                #[cfg(windows)]
+                let hold = (!std::mem::take(&mut self.input_draw)
+                    && zgx::switches::REFRESH_GRID.on())
+                .then(crate::frame_source::refresh_phase)
+                .flatten()
+                .and_then(|(phase, period)| {
+                    crate::frame_source::latch_wait(phase, period, self.latch_holding)
+                });
+                #[cfg(windows)]
+                {
+                    self.latch_holding = hold.is_some();
+                }
+                let status = renderer.present_with_notify(|| {
+                    window.pre_present_notify();
+                    #[cfg(windows)]
+                    if let Some(wait) = hold {
+                        let _wait = zgx::profile::span(zgx::profile::Phase::Wait);
+                        crate::frame_source::sleep_precisely(wait);
+                    }
+                    #[cfg(target_os = "macos")]
+                    if let Some((origin, period)) = grid {
+                        let at = latch.decide(std::time::Instant::now(), origin, period);
+                        let _wait = zgx::profile::span(zgx::profile::Phase::Wait);
+                        sleep_until(at);
+                    }
+                    #[cfg(target_os = "macos")]
+                    if let Some(link) = link
+                        && let Some((phase, period)) =
+                            link.refresh_phase(crate::frame_source::VSYNC_RESYNC * 3)
+                        && let Some(wait) = align_wait(period.saturating_sub(phase), period)
+                    {
+                        zgx::profile::note(|| {
+                            "ready early: waited to hand over with the display link's other \
+                             frames, so two don't land on one refresh"
+                                .into()
+                        });
+                        // One wakeup, not `sleep_until`'s two: running late
+                        // only moves it nearer the point, still before it.
+                        std::thread::sleep(wait);
+                    }
+                })?;
+                // In the frame's transaction: the editor's caret and Core
+                // Animation's never show together, nor neither.
+                #[cfg(target_os = "macos")]
+                sync_caret(
+                    &self.context.ui,
+                    renderer,
+                    &mut self.caret_applied,
+                    self.scale_factor,
+                );
+                self.native.apply();
+                FIRST_PRESENT.call_once(|| {
+                    let mark = first_present_mark();
+                    zgx::profile::mark(&mark);
+                    // `ZGX_SHADER_LOG=1`: the same line alone, for a probe
+                    // timing starts (ZGX_PROFILE's spans would slow them).
+                    if zgx::env::var_os("ZGX_SHADER_LOG").is_some_and(|v| v != "0") {
+                        eprintln!("zgx: {mark}");
+                    }
+                });
+                // Commits the transaction (macOS; elsewhere there is none).
+                #[allow(dropping_copy_types)]
+                drop(transaction);
+                #[cfg(target_os = "macos")]
+                {
+                    self.presented_at = Some(std::time::Instant::now());
+                    // What it shows now, for `Ui::snapshot` (the last frame's
+                    // surface is the renderer's to reuse again).
+                    *self.shown.borrow_mut() = renderer
+                        .shown_frame()
+                        .map(|frame| (frame, self.scale_factor));
+                    if let Some(gpu) = renderer.take_gpu_time() {
+                        zgx::profile::gpu_time(gpu);
+                        if grid.is_some() {
+                            self.latch.ran(gpu);
+                        }
+                    }
+                }
+                if status == zgx_gpu::PresentationStatus::Presented {
+                    self.present_ready = false;
+                    let now = std::time::Instant::now();
+                    self.trim_at = Some(now + TRIM_DELAY);
+                    if renderer.take_images_uploaded() {
+                        self.release_images_at = Some(now + TRIM_DELAY);
+                    }
+                    self.trim_atlas = false;
+                    // Startup's garbage (shader compilation, first layout)
+                    // is freed once, even if the window never goes idle.
+                    if self.startup_trim == StartupTrim::Pending {
+                        self.startup_trim = StartupTrim::At(now + STARTUP_TRIM_DELAY);
+                    }
+                }
+                self.presentation
+                    .completed(status, std::time::Instant::now());
+            }
+        }
+        // A caret moved or restarted with nothing to draw: alone.
+        #[cfg(target_os = "macos")]
+        if let Some(renderer) = &mut self.renderer {
+            sync_caret(
+                &self.context.ui,
+                renderer,
+                &mut self.caret_applied,
+                self.scale_factor,
+            );
+        }
+        // Popups past the window: their own frames, in their own windows
+        // (nothing at all while none shows).
+        if let Some(renderer) = &self.renderer
+            && (self.popups.showing() || !scene.popups().is_empty())
+        {
+            let full = popups_forced || report.damage.first() == full.first();
+            // Each popup's frame is contained (`contain::run`); what else
+            // the host does (placing, materials) is contained as a whole.
+            self.frames_tried += 1;
+            let popups = &mut self.popups;
+            let updated = crate::contain::run(
+                &mut self.popups_fault,
+                self.frames_tried,
+                std::time::Instant::now(),
+                "the popups' update",
+                |message| faults.push(message.to_string()),
+                || {
+                    popups.update(
+                        &window,
+                        &scene,
+                        &self.context.ui.semantics.borrow(),
+                        &renderer.context(),
+                        self.scale_factor as f32,
+                        full,
+                        self.context.ui.input.drag_state().as_ref(),
+                        self.context.ui.input.take_drag_ended(),
+                        // Where a popup takes the pointer, as the window's hit
+                        // test has it (`popup_window::wayland::input_rect`).
+                        &|node| {
+                            let input = &self.context.ui.input;
+                            let options = input.options(node);
+                            if options.is_some_and(|options| options.pass_through) {
+                                Some(false)
+                            } else if input.has_listeners(node)
+                                || options.is_some_and(|options| options.disabled)
+                            {
+                                Some(true)
+                            } else {
+                                None
+                            }
+                        },
+                    )
+                },
+            );
+            if let Some(updated) = updated {
+                updated?;
+            }
+            crate::contain::report_issues(&self.context.ui.runtime);
+            faults.extend(crate::contain::take_reported());
+        }
+        drop(scene);
+        // Banners for what was contained, now that nothing is borrowed.
+        for message in faults {
+            self.show_error(&message);
+        }
+        self.show_issues();
+        // Native geometry that changed without zgx pixels to show with it.
+        self.native.flush();
+        self.sync_cursor(&window);
+        self.sync_ime_area(&window);
+        self.sync_accessibility();
+        Ok(())
+    }
+    /// Set the window's cursor: the captured or hovered node's, a page's, or
+    /// none over a native view (which sets its own).
+    fn sync_cursor(&mut self, window: &Window) {
+        let ui = &self.context.ui;
+        let pointer = ui
+            .input
+            .captured()
+            .or(ui.input.hovered())
+            .filter(|id| ui.input.is_enabled(&ui.scene.borrow(), *id));
+        let role = pointer.and_then(|id| ui.semantics.borrow().get(id).map(|node| node.role));
+        let scene = ui.scene.borrow();
+        let revision = scene.interaction_revision();
+        if self.pointer_inside
+            && self
+                .cursor_query
+                .as_ref()
+                .is_none_or(|(point, version, _)| *point != self.cursor || *version != revision)
+        {
+            self.cursor_query = Some((
+                self.cursor,
+                revision,
+                scene.cursor_at(self.cursor.0, self.cursor.1),
+            ));
+        }
+        let explicit = ui
+            .input
+            .captured()
+            .and_then(|id| scene.contains(id).then(|| scene.cursor_for(id)).flatten())
+            .or(self.cursor_query.and_then(|(_, _, cursor)| cursor));
+        drop(scene);
+        let cursor = explicit
+            .map(native_cursor)
+            .unwrap_or_else(|| cursor_for_role(role));
+        // Over a native view, the view sets the cursor.
+        let over_native = self.native.pointer_over_native()
+            || ui
+                .input
+                .hovered()
+                .is_some_and(|node| self.native.is_native(node));
+        // Over an undecorated window's resize band, the band sets it.
+        #[cfg(target_os = "linux")]
+        let over_native = over_native || self.resize_edge.is_some();
+        #[cfg(target_os = "macos")]
+        if !std::mem::replace(&mut self.cursor_rects_off, true) {
+            crate::native_host::disable_cursor_rects(window);
+        }
+        // A page's own image (`cursor: url(…)`), made for the window as the
+        // page set it (`sync_page_cursor`).
+        #[cfg(all(target_os = "linux", feature = "webkitgtk"))]
+        {
+            let page = (!over_native)
+                .then(|| crate::native_host::webkitgtk::hovered_cursor(ui))
+                .flatten();
+            if let Some(own) = page {
+                if self.page_cursor.as_ref() != Some(&own) {
+                    match &own {
+                        crate::native_host::webkitgtk::WindowCursor::Custom(custom) => {
+                            window.set_cursor(custom.clone())
+                        }
+                        crate::native_host::webkitgtk::WindowCursor::X11(cursor) => {
+                            crate::x11_nudge::define_cursor(window, *cursor)
+                        }
+                    }
+                    self.page_cursor = Some(own);
+                }
+                self.native_cursor = None;
+                return;
+            }
+            if let Some(own) = self.page_cursor.take() {
+                // winit set none of it: shown again, its own cursor is.
+                if matches!(own, crate::native_host::webkitgtk::WindowCursor::X11(_)) {
+                    window.set_cursor_visible(false);
+                    window.set_cursor_visible(true);
+                }
+                self.native_cursor = None;
+            }
+        }
+        if over_native {
+            self.native_cursor = None;
+        } else if Some(cursor) != self.native_cursor {
+            // Only when zgx's own choice changes, so at a page's edge it never
+            // takes back a cursor the page has just set.
+            #[cfg(target_os = "macos")]
+            crate::native_host::set_cursor(window, cursor);
+            #[cfg(not(target_os = "macos"))]
+            window.set_cursor(cursor);
+            self.native_cursor = Some(cursor);
+        }
+    }
+    /// A page's cursor changed, maybe with no frame to come (WebKit sets it
+    /// after its web process placed the pointer): its image, if it is one,
+    /// made a cursor of the window's, and the window's cursor set now.
+    #[cfg(all(target_os = "linux", feature = "webkitgtk"))]
+    fn sync_page_cursor(&mut self, event_loop: &ActiveEventLoop) {
+        if !crate::native_host::webkitgtk::cursor_changed(&self.context.ui) {
+            return;
+        }
+        crate::native_host::webkitgtk::make_cursors(&self.context.ui, |source| {
+            event_loop.create_custom_cursor(source)
+        });
+        if let Some(window) = self.window.clone() {
+            self.sync_cursor(&window);
+        }
+    }
+    /// Tell the input method where the focused editor or page edits.
+    fn sync_ime_area(&mut self, window: &Window) {
+        let ui = &self.context.ui;
+        let editor = crate::native_ime::editable_editor(ui, self.native_focused);
+        // The clause an input method converts, else the caret, where they
+        // show (zoomed too): where its candidates go, as under a native
+        // field's marked text.
+        let caret = editor.as_ref().map(|editor| editor.input_method_area());
+        #[cfg(all(target_os = "linux", feature = "webkitgtk"))]
+        let caret = caret.or_else(|| crate::native_host::webkitgtk::ime_area(ui));
+        // Wayland's text input: a new area committed while an input method's
+        // updates are in flight moves the state serial on, so the compositor
+        // takes those updates as stale and drops them (a burst of typing
+        // stopped at its first preedit). While a composition shows, the area
+        // stays where it began, the caret then, as candidates stay under a
+        // native field's marked text; the composition ending moves it again.
+        #[cfg(target_os = "linux")]
+        let caret = if !self.x11
+            && self.ime_geometry.is_some()
+            && editor
+                .as_ref()
+                .is_some_and(|editor| editor.editor.borrow().preedit().is_some())
+        {
+            self.ime_geometry
+        } else {
+            caret
+        };
+        if caret != self.ime_geometry {
+            // The Text Services Framework asks where (`GetTextExt`) when told.
+            #[cfg(windows)]
+            if let Some(tsf) = &self.tsf {
+                tsf.layout_changed();
+                tsf.after_dispatch();
+            }
+            if let Some(r) = caret {
+                // XIM takes a baseline spot and ignores the supplied rectangle
+                // height; Wayland/macOS consume the actual caret rectangle.
+                let y = if self.x11 { r.y + r.height } else { r.y };
+                zgx_gpu::present_log::log(|| format!("ime area {r:?}"));
+                window.set_ime_cursor_area(
+                    LogicalPosition::new(r.x as f64, y as f64)
+                        .to_physical::<f64>(self.scale_factor),
+                    LogicalSize::new(r.width.max(1.) as f64, r.height as f64)
+                        .to_physical::<f64>(self.scale_factor),
+                );
+                // winit's X11 sends the spot when it next handles an event.
+                #[cfg(target_os = "linux")]
+                if self.x11 {
+                    crate::x11_nudge::nudge(window);
+                }
+            }
+            self.ime_geometry = caret;
+        }
+    }
+    /// X11's and Wayland's primary selection follows what is selected in
+    /// the focused editor, published as each selection settles (a pointer
+    /// gesture ends, a key changes it). A password field publishes nothing.
+    #[cfg(target_os = "linux")]
+    fn publish_editor_primary(&mut self) {
+        let Some(editor) = self.context.ui.focused_editor() else {
+            return;
+        };
+        let text = editor.copy();
+        if text.is_empty() || self.primary.as_deref() == Some(text.as_str()) {
+            return;
+        }
+        if let Some(clipboard) = self.clipboard.borrow_mut().as_mut()
+            && clipboard.set_primary_text(text.clone()).is_ok()
+        {
+            self.primary = Some(text);
+        }
+    }
+    /// A middle press put an editor's caret under the pointer: the primary
+    /// selection goes in there, and the editor takes focus.
+    #[cfg(target_os = "linux")]
+    fn paste_primary(&mut self, node: NodeId) {
+        let Some(editor) = self.context.ui.editor(node) else {
+            return;
+        };
+        let text = self
+            .clipboard
+            .borrow_mut()
+            .as_mut()
+            .and_then(|clipboard| clipboard.get_primary_text().ok());
+        if let Some(text) = text.filter(|text| !text.is_empty()) {
+            self.context
+                .ui
+                .input
+                .focus(&self.context.ui.scene, Some(node));
+            self.context.ui.paste_into(&editor, Some(&text));
+        }
+    }
+    /// ⌃⌘D: the selection's definition over it (Look Up), as AppKit's
+    /// text views show it: a focused field's selection, else selected
+    /// display text.
+    #[cfg(target_os = "macos")]
+    fn look_up_key(&mut self, key: &Key) -> bool {
+        let m = self.modifiers;
+        let chord = m.control && m.meta && !m.alt && !m.shift;
+        if !chord || !matches!(key, Key::Character(k) if k.eq_ignore_ascii_case("d")) {
+            return false;
+        }
+        let platform = zgx::platform::PlatformService(Rc::new(crate::platform::Desktop {
+            clipboard: self.context.windows.clipboard.clone(),
+            dialogs: self.context.dialogs.clone(),
+            windows: None,
+        }));
+        match self.context.ui.focused_editor() {
+            Some(editor) => editor.look_up(&platform),
+            None => self.context.ui.look_up_selection(&platform),
+        }
+    }
+    /// What a standard edit item does, as its shortcut does it: the
+    /// clipboard's commands as `clipboard_command`, Select All on the
+    /// focused editor, Undo and Redo as their keys to it. Whether anything
+    /// took it.
+    fn standard_edit(&mut self, item: crate::app_menu::StandardItem) -> bool {
+        use crate::app_menu::StandardItem;
+        let undo = |shift| InputEvent::KeyDown {
+            key: Key::Character("z".into()),
+            modifiers: zgx::input::Modifiers {
+                shift,
+                control: !cfg!(target_os = "macos"),
+                meta: cfg!(target_os = "macos"),
+                alt: false,
+            },
+            repeat: false,
+        };
+        match item {
+            StandardItem::Copy => self.clipboard_command("c"),
+            StandardItem::Cut => self.clipboard_command("x"),
+            StandardItem::Paste => self.clipboard_command("v"),
+            StandardItem::SelectAll => self
+                .context
+                .ui
+                .focused_editor()
+                .map(|editor| editor.select_all())
+                .is_some(),
+            StandardItem::Undo | StandardItem::Redo => {
+                self.context.ui.focused_editor().is_some()
+                    && self
+                        .dispatch_prevented(undo(item == StandardItem::Redo))
+                        .unwrap_or(false)
+            }
+        }
+    }
+    fn clipboard_key(&mut self, key: &Key) -> bool {
+        #[cfg(windows)]
+        let alias = windows_clipboard_alias(key, self.modifiers);
+        #[cfg(not(windows))]
+        let alias: Option<&str> = None;
+        let k: &str = match (alias, key) {
+            (Some(k), _) => k,
+            (None, Key::Character(k)) if self.modifiers.primary_shortcut() => k,
+            _ => return false,
+        };
+        // Shift+Delete with nothing selected deletes, as without Shift.
+        if alias == Some("x")
+            && self
+                .context
+                .ui
+                .focused_editor()
+                .is_none_or(|editor| editor.copy().is_empty())
+        {
+            return false;
+        }
+        let k = k.to_owned();
+        self.clipboard_command(&k)
+    }
+    /// Copy (`c`), cut (`x`) or paste (`v`) in the focused editor, or copy
+    /// the selected display text; whether anything took it.
+    fn clipboard_command(&mut self, k: &str) -> bool {
+        let Some(editor) = self.context.ui.focused_editor() else {
+            // Selected display text (`View::selectable`) copies.
+            if !k.eq_ignore_ascii_case("c") || !self.context.ui.has_text_selection() {
+                return false;
+            }
+            let (text, html) = (
+                self.context.ui.selected_text(),
+                self.context.ui.selected_html(),
+            );
+            if let Some(clipboard) = self.clipboard.borrow_mut().as_mut() {
+                let _ = clipboard.set_rich_text(text, html);
+            }
+            return true;
+        };
+        if !["c", "x", "v"].iter().any(|v| k.eq_ignore_ascii_case(v)) {
+            return false;
+        }
+        if k.eq_ignore_ascii_case("v") {
+            let text = match self.clipboard.borrow_mut().as_mut() {
+                Some(clipboard) => clipboard.get_text().ok(),
+                None => return true,
+            };
+            // With the clipboard let go: what hears the paste may read it.
+            self.context.ui.paste_into(&editor, text.as_deref());
+            return true;
+        }
+        let mut clipboard = self.clipboard.borrow_mut();
+        let Some(clipboard) = clipboard.as_mut() else {
+            return true;
+        };
+        {
+            let text = editor.copy();
+            if !text.is_empty() && clipboard.set_text(text).is_ok() && k.eq_ignore_ascii_case("x") {
+                editor.cut();
+            }
+        }
+        true
+    }
+    fn accessibility_action(&mut self, request: accesskit::ActionRequest) {
+        let Some(node) = self.tree.scene_node(request.target_node) else {
+            return;
+        };
+        if !self.context.ui.scene.borrow().contains(node) {
+            return;
+        }
+        if crate::accessibility::scroll_action(&self.context.ui, node, request.action) {
+            return;
+        }
+        match request.action {
+            accesskit::Action::Focus => {
+                self.context
+                    .ui
+                    .input
+                    .focus(&self.context.ui.scene, Some(node));
+            }
+            accesskit::Action::ScrollIntoView => {
+                self.context.ui.scroll_into_view(node);
+                self.accessibility_revealed = true;
+            }
+            accesskit::Action::Click => {
+                self.context.ui.input.dispatch_to(
+                    &self.context.ui.scene,
+                    node,
+                    InputEvent::Activate,
+                );
+            }
+            accesskit::Action::SetValue => match request.data {
+                Some(accesskit::ActionData::Value(value)) => {
+                    self.context.ui.set_accessible_value(node, &value);
+                }
+                Some(accesskit::ActionData::NumericValue(value)) => {
+                    self.context.ui.set_accessible_numeric_value(node, value);
+                }
+                _ => {}
+            },
+            accesskit::Action::SetTextSelection => {
+                if let Some(accesskit::ActionData::SetTextSelection(selection)) = request.data {
+                    match self.tree.resolve_selection(&selection) {
+                        Some((owner, anchor, focus)) if owner == node => {
+                            self.context
+                                .ui
+                                .set_accessible_text_selection(node, anchor, focus);
+                        }
+                        // Across a selectable region's labels.
+                        _ => {
+                            if let Some((anchor, focus)) =
+                                self.tree.resolve_document_selection(&selection)
+                            {
+                                self.context.ui.select_accessible_text(anchor, focus);
+                            }
+                        }
+                    }
+                }
+            }
+            accesskit::Action::Increment => {
+                self.context.ui.input.dispatch_to(
+                    &self.context.ui.scene,
+                    node,
+                    InputEvent::Increment,
+                );
+            }
+            accesskit::Action::Decrement => {
+                self.context.ui.input.dispatch_to(
+                    &self.context.ui.scene,
+                    node,
+                    InputEvent::Decrement,
+                );
+            }
+            _ => {}
+        }
+        self.sync_ime_cancellation();
+    }
+}
+impl Host {
+    /// A renderer for `window`: on a context another window made, when its
+    /// adapter suits the window, else on one of its own, which the app's
+    /// fonts are installed in and other windows may share.
+    /// A GPU view's plane frame owed, drawn now its drawable has come
+    /// (`GpuRenderer::planes_room`), with nothing else of the window's.
+    #[cfg(target_os = "macos")]
+    fn draw_owed_planes(&mut self) {
+        if self.plane_retry.is_none() {
+            return;
+        }
+        let scene = self.context.ui.scene.clone();
+        let Some(renderer) = self
+            .renderer
+            .as_mut()
+            .filter(|renderer| renderer.planes_room())
+        else {
+            return;
+        };
+        if renderer.render_planes(&scene.borrow()).is_err() {
+            return;
+        }
+        self.plane_retry = renderer
+            .planes_owed()
+            .then(|| std::time::Instant::now() + PLANE_RETRY);
+        if self.plane_retry.is_none() {
+            self.planes_drawn_at = Some(std::time::Instant::now());
+        }
+    }
+    /// Wakes this window's loop from another thread, when a GPU view's plane
+    /// has room for a frame it owes (`GpuRenderer::set_plane_waker`).
+    #[cfg(target_os = "macos")]
+    fn plane_waker(&self) -> zgx_gpu::PlaneWaker {
+        let proxy = std::sync::Mutex::new(self.proxy.clone());
+        let token = self.context.window.token;
+        Arc::new(move || {
+            if let Ok(proxy) = proxy.lock() {
+                let _ = proxy.send_event(Event::Wake(token));
+            }
+        })
+    }
+    fn make_renderer(&mut self, window: &Arc<Window>) -> Result<GpuRenderer, Box<dyn Error>> {
+        // The context made while the window was (`Application::run`): the
+        // first shared one. Failing, a context is made for the window as
+        // without it, so errors come as they always did.
+        #[cfg(any(target_os = "macos", windows))]
+        let early = self.context.windows.early_gpu.borrow_mut().take();
+        #[cfg(any(target_os = "macos", windows))]
+        if let Some(Ok(context)) = early.map(zgx_gpu::PendingGpuContext::join) {
+            for font in self.context.windows.fonts.borrow().iter() {
+                font.install(&mut context.text_system().borrow_mut());
+            }
+            if let Some(language) = &*self.context.windows.text_language.borrow() {
+                context.set_text_language(Some(language));
+            }
+            self.context.windows.gpu_contexts.borrow_mut().push(context);
+        }
+        // Opaque unless it may show what is behind: on Windows the
+        // compositor then copies its frames instead of blending them.
+        let transparent = self.options.is_transparent();
+        let contexts = self.context.windows.gpu_contexts.borrow().clone();
+        for context in contexts {
+            match (self.native).renderer_for(window.clone(), Some(&context), transparent) {
+                Ok(renderer) => return Ok(renderer),
+                Err(error) if error.is_surface_incompatible() => continue,
+                Err(error) => return Err(error.into()),
+            }
+        }
+        let renderer = (self.native).renderer_for(window.clone(), None, transparent)?;
+        for font in self.context.windows.fonts.borrow().iter() {
+            font.install(&mut renderer.text_system().borrow_mut());
+        }
+        if let Some(language) = &*self.context.windows.text_language.borrow() {
+            renderer.context().set_text_language(Some(language));
+        }
+        self.context
+            .windows
+            .gpu_contexts
+            .borrow_mut()
+            .push(renderer.context());
+        Ok(renderer)
+    }
+    /// This window's issues since the last call: errors in its banner, and
+    /// what the renderer went on without (`IssueKind::Degraded`) there in
+    /// debug builds alone; release builds have logged them, once.
+    fn show_issues(&mut self) {
+        for message in crate::contain::banner(&self.issues, cfg!(debug_assertions)) {
+            self.show_error(&message);
+        }
+    }
+    /// Say in the window that something failed (a contained panic): a
+    /// banner over its content, read out by assistive technology, which a
+    /// click dismisses; a later failure replaces its text.
+    fn show_error(&mut self, message: &str) {
+        let text = format!("Something went wrong: {message}");
+        if let Some((shown, _)) = &self.error_banner {
+            shown.set(text);
+        } else {
+            let shown = self.context.ui.signal(text);
+            let (read, hide, hidden) = (shown.clone(), shown.clone(), shown.clone());
+            use zgx::{
+                compose::div,
+                style::{Styled, Styles},
+            };
+            let view = self.context.ui.mount(
+                div()
+                    .absolute()
+                    .top(8.)
+                    .left(8.)
+                    .right(8.)
+                    .p(10.)
+                    .rounded(8.)
+                    .bg(zgx::style::rgb(0x6b2222))
+                    .text_color(zgx::style::rgb(0xffffff))
+                    .text_size(13.)
+                    .live(zgx::semantics::Live::Assertive)
+                    .reactive_style(move || {
+                        if hidden.get().is_empty() {
+                            Styles::new().hidden()
+                        } else {
+                            Styles::new()
+                        }
+                    })
+                    .on_click(move || {
+                        hide.set(String::new());
+                    })
+                    .child(zgx::compose::text_signal(move || read.get())),
+            );
+            self.error_banner = Some((shown, view));
+        }
+        if let Some(window) = &self.window {
+            window.request_redraw();
+        }
+    }
+    /// The GPU device was lost (a driver reset, a GPU removed): a renderer
+    /// on a new context, its text and background set up again, and the
+    /// window drawn in full. Until one can be made, the window keeps its
+    /// state and tries again a second later.
+    fn recover_renderer(&mut self) {
+        self.renderer_retry = None;
+        let Some(window) = self.window.clone() else {
+            return;
+        };
+        self.renderer = None;
+        #[cfg(target_os = "macos")]
+        {
+            self.caret_applied = None;
+        }
+        self.context
+            .windows
+            .gpu_contexts
+            .borrow_mut()
+            .retain(|context| context.lost().is_none());
+        match self.make_renderer(&window) {
+            Ok(mut renderer) => {
+                renderer.set_scale_factor(self.scale_factor as f32);
+                #[cfg(target_os = "macos")]
+                renderer.set_zoom(self.context.ui.zoom());
+                if self.options.is_transparent() {
+                    renderer.set_background(zgx::scene::Color(0, 0, 0, 0));
+                } else if let Some(background) = self.applied_background {
+                    renderer.set_background(background);
+                }
+                renderer.install_text(&mut self.context.ui.scene.borrow_mut());
+                self.context.ui.refresh_text_geometry();
+                #[cfg(target_os = "macos")]
+                renderer.set_display_key(&self.display_key);
+                #[cfg(target_os = "macos")]
+                renderer.set_plane_waker(self.plane_waker());
+                self.renderer = Some(renderer);
+                self.force = true;
+                eprintln!("zgx: drawing again on a new GPU renderer");
+                window.request_redraw();
+            }
+            Err(error) => {
+                eprintln!("zgx: no GPU renderer yet ({error}); trying again");
+                self.renderer_retry =
+                    Some(std::time::Instant::now() + std::time::Duration::from_secs(1));
+            }
+        }
+    }
+    /// Save the window's frame under its `frame_autosave` name (Linux; macOS
+    /// and Windows save their own): the frame it had when last neither
+    /// maximized nor fullscreen, and whether it is maximized. Fullscreen,
+    /// the frame saved before stands.
+    fn save_frame(&self) {
+        #[cfg(target_os = "linux")]
+        if let (Some(window), Some(name), Some(bounds)) = (
+            &self.window,
+            &self.options.frame_autosave,
+            self.options.bounds,
+        ) && window.fullscreen().is_none()
+        {
+            crate::window_place::save(name, bounds, window.is_maximized());
+        }
+    }
+    fn create_window(&mut self, event_loop: &ActiveEventLoop) -> Result<(), Box<dyn Error>> {
+        if self.window.is_some() {
+            return Ok(());
+        }
+        let attributes = crate::window_info::attributes(
+            &self.options,
+            event_loop,
+            #[cfg(target_os = "linux")]
+            self.context.windows.application_id.as_deref(),
+            #[cfg(target_os = "linux")]
+            self.context.windows.activation.borrow_mut().take(),
+        )?;
+        // Left maximized, a Wayland window is maximized from its first
+        // configure, at the saved size to restore to: it never shows at
+        // that size first (see `opens_maximized`).
+        #[cfg(target_os = "linux")]
+        let opened_maximized = event_loop
+            .display_handle()
+            .is_ok_and(|handle| matches!(handle.as_raw(), RawDisplayHandle::Wayland(_)))
+            .then(|| crate::window_place::opens_maximized(&self.options))
+            .flatten();
+        #[cfg(target_os = "linux")]
+        let attributes = match opened_maximized {
+            Some((width, height)) => attributes
+                .with_inner_size(PhysicalSize::new(width, height))
+                .with_maximized(true),
+            None => attributes,
+        };
+        let window = Arc::new(event_loop.create_window(attributes)?);
+        // Made again, it keeps the light or dark it was asked for.
+        if let Some(theme) = self.state.theme {
+            window.set_theme(Some(native_theme(theme)));
+        }
+        #[cfg(target_os = "macos")]
+        {
+            content_never_moves_window();
+            mouse_down::watch();
+        }
+        let sized = self.options.bounds;
+        let placed = crate::window_place::place(
+            &window,
+            self.options.under_pointer.take(),
+            sized.is_some_and(|bounds| bounds.position.is_some()) || self.options.display.is_some(),
+            &self.options,
+        );
+        // Left maximized, it opens so (`frame_autosave`).
+        self.state.maximized |= placed.maximized;
+        let radius =
+            crate::window_chrome::apply(&window, self.options.titlebar, self.options.glass);
+        // Opened zoomed: its buttons where the zoomed title bar has them.
+        let zoom = self.context.ui.zoom();
+        if zoom != 1. {
+            crate::window_chrome::zoom_buttons(&window, self.options.titlebar, zoom);
+        }
+        // A saved frame keeps its size.
+        if self.options.titlebar != crate::Titlebar::Standard && !placed.restored {
+            // Content now spans the title bar: the window shrinks to give
+            // it the size asked for.
+            let _ = match sized {
+                Some(bounds) => {
+                    window.request_inner_size(PhysicalSize::new(bounds.size.0, bounds.size.1))
+                }
+                None => window
+                    .request_inner_size(LogicalSize::new(self.options.width, self.options.height)),
+            };
+        }
+        // X11: the app's icon from the icon theme (Wayland's compositor
+        // takes its desktop file's).
+        #[cfg(target_os = "linux")]
+        if window.display_handle().is_ok_and(|handle| {
+            matches!(
+                handle.as_raw(),
+                RawDisplayHandle::Xlib(_) | RawDisplayHandle::Xcb(_)
+            )
+        }) {
+            crate::linux_icon::apply(&window, self.context.windows.application_id.as_deref());
+        }
+        // X11 shows a window past its screen; the app's own bounds stand.
+        #[cfg(target_os = "linux")]
+        if sized.is_none()
+            && window.display_handle().is_ok_and(|handle| {
+                matches!(
+                    handle.as_raw(),
+                    RawDisplayHandle::Xlib(_) | RawDisplayHandle::Xcb(_)
+                )
+            })
+        {
+            crate::x11_work_area::fit(
+                &window,
+                self.options.min_size,
+                self.options.decorations && self.options.titlebar == crate::Titlebar::Standard,
+            );
+        }
+        self.context.window_info.corner_radius.set(radius);
+        // Windows shows a window past its screen; the app's own bounds stand.
+        #[cfg(windows)]
+        if sized.is_none() {
+            crate::window_chrome::fit_work_area(&window, self.options.min_size);
+        }
+        #[cfg(windows)]
+        {
+            let proxy = self.proxy.clone();
+            let token = self.context.window.token;
+            self.caption =
+                crate::window_chrome::CaptionHost::new(&window, &self.context.ui, move || {
+                    let _ = proxy.send_event(Event::Wake(token));
+                });
+        }
+        #[cfg(target_os = "linux")]
+        {
+            self.caption = crate::window_chrome::CaptionHost::new(
+                &window,
+                &self.context.ui,
+                self.options.titlebar,
+                self.context.window.clone(),
+            );
+        }
+        self.x11 = window.display_handle().is_ok_and(|handle| {
+            matches!(
+                handle.as_raw(),
+                RawDisplayHandle::Xlib(_) | RawDisplayHandle::Xcb(_)
+            )
+        });
+        #[cfg(target_os = "linux")]
+        if self.x11 {
+            crate::x11_settings::enable();
+            // The session's interface font (XFCE's), ahead of the portal's,
+            // as GTK takes it on X11: before the renderer loads the fonts.
+            if let Some(family) = crate::x11_settings::current().font {
+                zgx_gpu::set_desktop_sans_serif(Some(family));
+            }
+        }
+        // X11 drag previews show in windows of their own too, moved by the
+        // server as the pointer moves (`PopupHost::follow`).
+        #[cfg(target_os = "linux")]
+        self.context
+            .ui
+            .set_popup_previews(self.x11 && crate::popup_window::enabled());
+        // ZGX_ACCESSIBILITY=0: no provider at all, to size what assistive
+        // clients cost (a measurement's diagnostic: users get one).
+        let adapter = zgx::env::var_os("ZGX_ACCESSIBILITY")
+            .is_none_or(|value| value != "0")
+            .then(|| {
+                accesskit_winit::Adapter::with_event_loop_proxy(
+                    event_loop,
+                    &window,
+                    self.proxy.clone(),
+                )
+            });
+        zgx::profile::mark("window created");
+        let mut renderer = self.make_renderer(&window)?;
+        zgx::profile::mark("renderer made");
+        self.display_scale = window.scale_factor();
+        // At the zoom it was left at, kept with its frame (before the zoom's
+        // host is told of changes: nothing to apply yet).
+        if let Some(zoom) = self
+            .options
+            .frame_autosave
+            .as_deref()
+            .and_then(crate::zoom_store::load)
+        {
+            self.context.ui.set_zoom(zoom);
+        }
+        // Its zoom, for its popups' windows: restored, or set by the app
+        // before its window was made (which `apply_zoom` then finds already
+        // applied, and returns before telling them).
+        crate::popup_window::set_zoom(window.id(), self.context.ui.zoom());
+        self.scale_factor = self.content_scale();
+        renderer.set_scale_factor(self.scale_factor as f32);
+        #[cfg(target_os = "macos")]
+        renderer.set_zoom(self.context.ui.zoom());
+        self.context
+            .ui
+            .scene
+            .borrow_mut()
+            .set_pixel_scale(self.scale_factor as f32);
+        // Its first frame lays out at the size it opened at (a display it
+        // covers, bounds, a saved frame, the platform's choice), not at the
+        // size asked for and again as `Resized` reports it: one layout, and
+        // the app never sees a size the window never had.
+        let size = window.inner_size();
+        if apply_viewport(
+            &mut self.options,
+            &self.context.ui,
+            &self.context.viewport,
+            size,
+            self.scale_factor,
+        ) {
+            renderer.resize(size.width, size.height);
+        }
+        let themes = self.context.ui.theme().clone();
+        // Glass windows are transparent too (`WindowOptions::is_transparent`).
+        if self.options.is_transparent() {
+            renderer.set_background(zgx::scene::Color(0, 0, 0, 0));
+        } else {
+            let background = themes.root().color_untracked(zgx::theme::tok::BACKGROUND);
+            renderer.set_background(background);
+            self.applied_background = Some(background);
+            self.hidden_background(&window, background);
+            if self._background_effect.is_none() {
+                // The clear colour follows the theme: the effect hands a new
+                // background to the next frame and asks for that frame.
+                let theme = themes.root().clone();
+                let pending = self.theme_background.clone();
+                let redraw = window.clone();
+                let mut first = true;
+                self._background_effect = Some(self.context.ui.runtime.effect(move || {
+                    let color = theme.color(zgx::theme::tok::BACKGROUND);
+                    if !std::mem::take(&mut first) {
+                        pending.set(Some(color));
+                        redraw.request_redraw();
+                    }
+                }));
+            }
+        }
+        if let Some(appearance) = window.theme() {
+            themes.set_system_appearance(appearance_of(appearance));
+        }
+        crate::system_colors::sync(&self.context.ui);
+        crate::scrollers::sync(&self.context.ui);
+        // A trackpad pushed past an edge stretches it, as AppKit's views do.
+        self.context
+            .ui
+            .set_elastic_scrolling(cfg!(target_os = "macos"));
+        renderer.install_text(&mut self.context.ui.scene.borrow_mut());
+        self.context.ui.refresh_text_geometry();
+        zgx::profile::mark("text installed");
+        #[cfg(target_os = "macos")]
+        renderer.set_display_key(&self.display_key);
+        #[cfg(target_os = "macos")]
+        renderer.set_plane_waker(self.plane_waker());
+        self.renderer = Some(renderer);
+        self.adapter = adapter;
+        window.set_maximized(self.state.maximized);
+        // Not shown yet, an X11 window's state is its own to set.
+        #[cfg(target_os = "linux")]
+        if self.state.maximized {
+            crate::window_place::maximize_hidden(&window);
+        }
+        if self.options.bounds.is_none() {
+            // Opened maximized, its frame is the one it restores to.
+            #[cfg(target_os = "linux")]
+            if let Some(size) = opened_maximized {
+                self.options.bounds = Some(crate::WindowBounds {
+                    position: None,
+                    size,
+                });
+            }
+            if self.options.bounds.is_none() {
+                self.options.bounds = Some(crate::WindowBounds::read(&window));
+            }
+        }
+        if self.options.fullscreen {
+            let display = self
+                .options
+                .display
+                .as_ref()
+                .and_then(|selector| crate::window_info::select_monitor(event_loop, selector));
+            window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(display)));
+        }
+        window.set_visible(self.state.visible);
+        if self.state.minimized {
+            window.set_minimized(true);
+        }
+        if self.state.focus_requested {
+            window.focus_window();
+            self.state.focus_requested = false;
+        }
+        window.request_redraw();
+        #[cfg(target_os = "linux")]
+        self.context
+            .dialogs
+            .set_display(event_loop.owned_display_handle());
+        self.context.dialogs.attach(Some(&window));
+        self.context
+            .window_info
+            .refresh(&window, self.options.titlebar);
+        self.context
+            .ui
+            .set_popup_screens(crate::popup_window::popup_screens(&window));
+        self.content_origin = crate::popup_window::content_origin(&window);
+        self.window_number = crate::popup_window::window_number(&window);
+        self.frame_paced = matches!(
+            window.display_handle().map(|h| h.as_raw()),
+            Ok(RawDisplayHandle::Wayland(_))
+        );
+        self.present_ready = false;
+        self.refresh_frame_interval(&window);
+
+        #[cfg(target_os = "linux")]
+        {
+            use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+            if let Ok(handle) = window.window_handle()
+                && let RawWindowHandle::Wayland(handle) = handle.as_raw()
+            {
+                // SAFETY: winit's live wl_surface proxy, which `window` keeps
+                // for this call; the id is read from it at once and not kept
+                // (the protocol id is a number).
+                let object = unsafe {
+                    wayland_backend::sys::client::ObjectId::from_ptr(<wayland_client::protocol::wl_surface::WlSurface as wayland_client::Proxy>::interface(),handle.surface.as_ptr().cast())
+                };
+                if let Ok(object) = object {
+                    let id = object.protocol_id();
+                    self.context
+                        .windows
+                        .file_routes
+                        .lock()
+                        .unwrap()
+                        .insert(id, self.context.window.token);
+                    self.file_surface = Some(id);
+                }
+            }
+        }
+        #[cfg(all(target_os = "macos", zgx_winit_patched))]
+        crate::services::add(window.id(), &self.context.ui);
+        #[cfg(all(target_os = "macos", zgx_winit_patched))]
+        {
+            let (proxy, token) = (self.proxy.clone(), self.context.window.token);
+            crate::swipes::add(&window, &self.context.ui, move || {
+                let _ = proxy.send_event(Event::Wake(token));
+            });
+        }
+        #[cfg(all(
+            any(target_os = "macos", windows, target_os = "linux"),
+            zgx_winit_patched
+        ))]
+        {
+            let (proxy, token) = (self.proxy.clone(), self.context.window.token);
+            crate::text_drop::add(&window, &self.context.ui, move || {
+                let _ = proxy.send_event(Event::Wake(token));
+            });
+        }
+        {
+            let (proxy, token) = (self.proxy.clone(), self.context.window.token);
+            self.context.ui.on_zoom(move || {
+                let _ = proxy.send_event(Event::Zoom(token));
+            });
+        }
+        self.window = Some(window);
+        #[cfg(target_os = "macos")]
+        {
+            self.reported_size = None;
+        }
+        self.context
+            .ui
+            .set_presented(self.state.visible && !self.state.minimized && !self.native_occluded);
+
+        self.tree.reset();
+        self.last_accessibility = None;
+        // Made hidden: its first frame drawn now, so it shows whole.
+        if !self.state.visible {
+            self.unmapped = self.frame_paced;
+            self.draw_hidden_frame()?;
+        }
+        Ok(())
+    }
+    /// Draw a frame while the window is hidden (`WindowOptions::visible`):
+    /// as it is made, so that it shows whole, and just before it shows, with
+    /// what changed while it was hidden. Not on Wayland, where a window shows
+    /// as it first draws: there it draws nothing until shown (`unmapped`).
+    /// A hidden X11 window shows `color` from its mapping until its first
+    /// frame after (`window_place::set_background`); shown windows, and
+    /// other platforms, have nothing to do.
+    fn hidden_background(&self, window: &Window, color: zgx::scene::Color) {
+        #[cfg(target_os = "linux")]
+        if !self.state.visible && !self.frame_paced {
+            crate::window_place::set_background(window, color);
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = (window, color);
+    }
+    fn draw_hidden_frame(&mut self) -> Result<(), Box<dyn Error>> {
+        if self.frame_paced {
+            return Ok(());
+        }
+        self.draw_hidden = true;
+        let drawn = self.draw();
+        self.draw_hidden = false;
+        drawn
+    }
+    fn command(&mut self, command: WindowCommand) {
+        self.state.apply(&mut self.options, &command);
+        if matches!(command, WindowCommand::Title(_)) {
+            self.last_accessibility = None;
+        }
+        if let WindowCommand::MaxFrameRate(hz) = command {
+            self.frames.set_max_rate(hz);
+        }
+        let Some(window) = &self.window else { return };
+        match command {
+            WindowCommand::Bounds(bounds) => {
+                if let Some((x, y)) = bounds.position {
+                    if self.context.window_info.capabilities.get().placement {
+                        window.set_outer_position(winit::dpi::PhysicalPosition::new(x, y));
+                        self.context.window_info.last_request_error.set(None);
+                    } else {
+                        self.context.window_info.last_request_error.set(Some(
+                            "global window placement is unavailable on this backend".into(),
+                        ));
+                    }
+                }
+                let minimum = self
+                    .options
+                    .min_size
+                    .map(|(w, h)| LogicalSize::new(w, h).to_physical::<u32>(self.display_scale));
+                let size = minimum.map_or(PhysicalSize::new(bounds.size.0, bounds.size.1), |min| {
+                    PhysicalSize::new(bounds.size.0.max(min.width), bounds.size.1.max(min.height))
+                });
+                let _ = window.request_inner_size(size);
+            }
+            WindowCommand::Fullscreen(value) => {
+                window.set_fullscreen(value.then_some(winit::window::Fullscreen::Borderless(None)))
+            }
+            WindowCommand::ContextMenu { entries, x, y } => {
+                #[cfg(target_os = "macos")]
+                {
+                    let shown = crate::app_menu::show_context_menu(window, &entries, x, y);
+                    self.context
+                        .window_info
+                        .last_request_error
+                        .set(shown.err().map(|e| e.0));
+                    // The menu's own tracking took the mouse-up: end the press that opened it.
+                    self.context
+                        .ui
+                        .dispatch(zgx::input::InputEvent::PointerCancel);
+                    // And it showed its own cursor: set zgx's again.
+                    self.native_cursor = None;
+                }
+                #[cfg(not(target_os = "macos"))]
+                let _ = (entries, x, y);
+            }
+            WindowCommand::Glass(glass) => {
+                crate::window_chrome::set_glass(window, glass);
+                window.request_redraw();
+            }
+            WindowCommand::Theme(theme) => {
+                window.set_theme(theme.map(native_theme));
+                if let Some(appearance) = theme.or_else(|| window.theme().map(appearance_of)) {
+                    self.context.ui.theme().set_system_appearance(appearance);
+                }
+            }
+            WindowCommand::Decorations(value) => window.set_decorations(value),
+            WindowCommand::PointerPassthrough(value) => {
+                let _ = window.set_cursor_hittest(!value);
+            }
+            WindowCommand::Level(level) => window.set_window_level(level.winit()),
+            WindowCommand::Shadow(value) => crate::window_info::set_shadow(window, value),
+            WindowCommand::MaxSize(value) => {
+                window.set_max_inner_size(value.map(|(w, h)| LogicalSize::new(w, h)))
+            }
+            WindowCommand::MinSize(value) => {
+                window.set_min_inner_size(value.map(|(w, h)| LogicalSize::new(w, h)))
+            }
+            WindowCommand::Drag => {
+                #[cfg(target_os = "macos")]
+                if mouse_down::drag(window) {
+                    return;
+                }
+                self.context
+                    .window_info
+                    .last_request_error
+                    .set(window.drag_window().err().map(|e| e.to_string()));
+            }
+            WindowCommand::RefreshInfo => self
+                .context
+                .window_info
+                .refresh(window, self.options.titlebar),
+            WindowCommand::Composition(reply) => {
+                let _ = reply.send(crate::composition::read(window, self.renderer.as_ref()));
+            }
+            WindowCommand::LoseGpu => {
+                if let Some(renderer) = &self.renderer {
+                    renderer.context().debug_lose_device();
+                }
+                window.request_redraw();
+            }
+            WindowCommand::Title(title) => window.set_title(&title),
+            WindowCommand::Size(width, height) => {
+                let (width, height) = self
+                    .options
+                    .min_size
+                    .map_or((width, height), |(min_w, min_h)| {
+                        (width.max(min_w), height.max(min_h))
+                    });
+                let (width, height) = self
+                    .options
+                    .max_size
+                    .map_or((width, height), |(max_w, max_h)| {
+                        (width.min(max_w), height.min(max_h))
+                    });
+                if let Some(size) = window.request_inner_size(
+                    LogicalSize::new(width, height).to_physical::<u32>(self.display_scale),
+                ) && apply_viewport(
+                    &mut self.options,
+                    &self.context.ui,
+                    &self.context.viewport,
+                    size,
+                    self.scale_factor,
+                ) {
+                    if let Some(renderer) = &mut self.renderer {
+                        renderer.resize(size.width, size.height);
+                    }
+                    self.force = true;
+                    self.presentation.expose();
+                }
+            }
+            WindowCommand::Minimized(value) => {
+                if value {
+                    self.context.ui.cancel_interactions();
+                }
+                window.set_minimized(value);
+                self.context
+                    .ui
+                    .set_presented(self.state.visible && !value && !self.native_occluded);
+            }
+            WindowCommand::Maximized(value) => window.set_maximized(value),
+            WindowCommand::Visible(value) => {
+                if !value {
+                    self.context.ui.cancel_interactions();
+                }
+                let window = window.clone();
+                let showing = value && window.is_visible() == Some(false);
+                if value {
+                    self.unmapped = false;
+                }
+                self.context
+                    .ui
+                    .set_presented(value && !self.state.minimized && !self.native_occluded);
+                // Shown from hidden: what changed while it was hidden is
+                // drawn first, so it appears whole (`WindowOptions::visible`).
+                if showing && let Err(error) = self.draw_hidden_frame() {
+                    eprintln!("zgx: {error}");
+                }
+                window.set_visible(value);
+                if showing {
+                    zgx_gpu::present_log::log(|| "window shown".into());
+                    zgx::profile::mark("window shown");
+                    self.presentation.expose();
+                } else if value {
+                    self.presentation.expose();
+                    self.force = true;
+                    window.request_redraw();
+                }
+            }
+            WindowCommand::Focus => {
+                window.focus_window();
+                self.state.focus_requested = false;
+            }
+            // Applies without a native window too: the clock outlives it.
+            WindowCommand::MaxFrameRate(_) => {}
+        }
+    }
+    /// The pointer at (`x`, `y`): over an undecorated window's resize band
+    /// (Linux), show the resize cursor while the content hears the pointer
+    /// leave. Whether it is over one; none while a press is held.
+    #[cfg(target_os = "linux")]
+    fn resize_band(&mut self, x: f32, y: f32) -> Result<bool, zgx::widgets::LayoutFeedbackError> {
+        let input = &self.context.ui.input;
+        let held = input.captured().is_some() || input.is_dragging();
+        let edge = self
+            .caption
+            .as_ref()
+            .filter(|_| !held)
+            .and_then(|caption| caption.edge(x, y, self.scale_factor));
+        let was = std::mem::replace(&mut self.resize_edge, edge);
+        if was == edge {
+            return Ok(edge.is_some());
+        }
+        if let Some(window) = &self.window {
+            match edge {
+                Some(direction) => {
+                    window.set_cursor(crate::window_chrome::resize_cursor(direction))
+                }
+                // Back on the content: its cursor, at the next frame.
+                None => window.request_redraw(),
+            }
+        }
+        self.native_cursor = None;
+        if was.is_none() {
+            self.dispatch(InputEvent::PointerLeave)?;
+        }
+        Ok(edge.is_some())
+    }
+
+    /// A press in a `window_drag` region: move the window, or what a double
+    /// click on its title bar does.
+    fn window_gesture(
+        &mut self,
+        gesture: zgx::widgets::WindowGesture,
+    ) -> Result<(), zgx::widgets::LayoutFeedbackError> {
+        use zgx::widgets::WindowGesture;
+        let Some(window) = self.window.clone() else {
+            return Ok(());
+        };
+        #[cfg(target_os = "macos")]
+        {
+            // AppKit's own count: zgx's press tracking ends with a drag.
+            if gesture == WindowGesture::Menu {
+                // No window menu on macOS.
+            } else if gesture == WindowGesture::DoubleClick || mouse_down::click_count() == 2 {
+                crate::window_chrome::double_click(&window);
+            } else if mouse_down::drag(&window) {
+                // The window server has the press now: AppKit sends no
+                // release for it.
+                self.dispatch(InputEvent::PointerCancel)?;
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        match gesture {
+            // On Linux the window manager or compositor takes the pointer
+            // once asked to move the window, release and all: a click (the
+            // first of a double click) would become a move. As GTK's and
+            // Chromium's title bars, the move waits for the pointer to
+            // move away while held (`title_press_moved`).
+            #[cfg(target_os = "linux")]
+            WindowGesture::Drag => self.title_press = Some(self.cursor),
+            #[cfg(not(target_os = "linux"))]
+            WindowGesture::Drag => {
+                self.context
+                    .window_info
+                    .last_request_error
+                    .set(window.drag_window().err().map(|e| e.to_string()));
+            }
+            #[cfg(target_os = "linux")]
+            WindowGesture::DoubleClick => {
+                use crate::window_chrome::TitlebarAction;
+                match TitlebarAction::current() {
+                    TitlebarAction::ToggleMaximize => crate::window_chrome::double_click(&window),
+                    TitlebarAction::Minimize => window.set_minimized(true),
+                    TitlebarAction::Menu => window.show_window_menu(
+                        LogicalPosition::new(f64::from(self.cursor.0), f64::from(self.cursor.1))
+                            .to_physical::<f64>(self.scale_factor),
+                    ),
+                    TitlebarAction::Nothing => {}
+                }
+            }
+            #[cfg(not(target_os = "linux"))]
+            WindowGesture::DoubleClick => crate::window_chrome::double_click(&window),
+            WindowGesture::Menu => window.show_window_menu(
+                LogicalPosition::new(f64::from(self.cursor.0), f64::from(self.cursor.1))
+                    .to_physical::<f64>(self.scale_factor),
+            ),
+        }
+        Ok(())
+    }
+    /// The pointer moved, held, from a press in a `window_drag` region: past
+    /// the drag threshold (as a drag starts), the window manager moves the
+    /// window from here, holding the pointer until it is let go, so zgx's
+    /// press ends now.
+    #[cfg(target_os = "linux")]
+    fn title_press_moved(&mut self) {
+        let Some((x, y)) = self.title_press else {
+            return;
+        };
+        let (dx, dy) = (self.cursor.0 - x, self.cursor.1 - y);
+        if dx.hypot(dy) <= self.context.ui.input.drag_threshold() {
+            return;
+        }
+        self.title_press = None;
+        if let Some(window) = self.window.clone() {
+            self.context
+                .window_info
+                .last_request_error
+                .set(window.drag_window().err().map(|e| e.to_string()));
+        }
+        self.context.ui.cancel_interactions();
+    }
+    fn deactivate(&mut self) {
+        self.context.ui.cancel_interactions();
+        self.context.ui.set_window_active(false);
+        // A window at the back hears no pointer moves: what it hovered
+        // has its leave now, not when the pointer next moves over it.
+        self.native.pointer_left();
+        self.context
+            .ui
+            .input
+            .dispatch(&self.context.ui.scene, InputEvent::PointerLeave);
+        self.native_focused = false;
+        self.ime_active = false;
+        self.ime_restart = Default::default();
+        self.ime_cancellation = Default::default();
+        if self.ime_target.take().is_some()
+            && let Some(window) = &self.window
+        {
+            window.set_ime_allowed(false);
+            crate::native_ime::discard_native_composition(window);
+        }
+        self.ime_geometry = None;
+        // Released elsewhere (Command-Tab away): none held here.
+        self.modifiers = Modifiers::default();
+        zgx::input::set_held_modifiers(&self.context.ui.runtime, self.modifiers);
+        self.focus_memory.deactivate(&self.context.ui);
+    }
+    fn unregister_file_surface(&mut self) {
+        #[cfg(target_os = "linux")]
+        if let Some(id) = self.file_surface.take() {
+            self.context.windows.file_routes.lock().unwrap().remove(&id);
+        }
+    }
+    fn suspend(&mut self) {
+        self.unregister_file_surface();
+        self.context.ui.set_presented(false);
+        self.context.window_info.ready.set(false);
+        self.context.dialogs.attach(None);
+        if let Some(window) = &self.window {
+            window.set_visible(false);
+            self.popups.hide_all(window);
+        }
+        self.deactivate();
+        self.native_cursor = None;
+        self.ime_geometry = None;
+        self.ime_target = None;
+        self.adapter = None;
+        self.renderer = None;
+        self.presentation = Presentation::default();
+        self.native_occluded = false;
+        self.present_ready = false;
+        #[cfg(target_os = "macos")]
+        {
+            self.vsync_synced = None;
+            self.vsync_paced = false;
+        }
+        #[cfg(any(target_os = "macos", windows))]
+        {
+            self.display_link = None;
+        }
+        #[cfg(any(windows, target_os = "linux"))]
+        {
+            self.caption = None;
+        }
+        self.frame_deadline = None;
+        self.frame_heartbeat = None;
+        self.frame_redraw_requested = false;
+        self.native.suspend();
+        // It redraws the window it was made with: the next one makes its own.
+        self._background_effect = None;
+        self.window = None;
+        self.force = true;
+    }
+    /// A window event winit reported, as `window_event` has it, though a
+    /// button or wheel heard after a popup moved the cursor is where winit
+    /// last put the pointer, the popup's point restored after. Winit's events
+    /// are the window's surface's: a release ending a press there (its grab)
+    /// is the window's though the pointer then went into a popup. On Wayland
+    /// a popup's pointer is heard on zgx's own queue, which can be dispatched
+    /// before winit's when a read between them took both (a GPU present
+    /// waiting on its queue): the popup's enter heard first, the release that
+    /// came before it was a drag to there, and a menu opened by its press
+    /// closed.
+    fn own_event(&mut self, event: WindowEvent) -> Result<(), Box<dyn Error>> {
+        let Some(own) = self.window_cursor.heard(&event) else {
+            return self.window_event(event);
+        };
+        let popup = std::mem::replace(&mut self.cursor, own);
+        // (`wayland_popups_smoke.py` counts these: the order that closed a
+        // menu opened by its press, now heard where it was.)
+        zgx_gpu::present_log::log(|| format!("window button at {own:?}, a popup's at {popup:?}"));
+        self.window_event(event)?;
+        let position = LogicalPosition::new(popup.0, popup.1).to_physical(self.scale_factor);
+        self.window_event(WindowEvent::CursorMoved {
+            device_id: winit::event::DeviceId::dummy(),
+            position,
+        })?;
+        self.window_cursor.popup_moved(own);
+        Ok(())
+    }
+    fn window_event(&mut self, event: WindowEvent) -> Result<(), Box<dyn Error>> {
+        // On Wayland the compositor holds the pointer while it has the drag,
+        // and gives it back at the drop, before the drop's target finishes
+        // with it: a press then is a new gesture, which that drag's end must
+        // not end (`native_drag_event`). Elsewhere no press comes meanwhile.
+        #[cfg(target_os = "linux")]
+        if self.frame_paced
+            && let WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                ..
+            } = event
+        {
+            self.native_drag.pressed();
+        }
+        // The GPU wakes while the frame the input makes is built, or while a
+        // scroll waits for the refresh it starts on.
+        if acts(&event)
+            && let Some(renderer) = &mut self.renderer
+        {
+            renderer.warm_up();
+        }
+        if matches!(
+            event,
+            WindowEvent::Moved(_)
+                | WindowEvent::Resized(_)
+                | WindowEvent::ScaleFactorChanged { .. }
+        ) && let Some(window) = &self.window
+        {
+            let held = self.chrome_held();
+            self.context
+                .window_info
+                .refresh_holding(window, self.options.titlebar, held);
+            self.context
+                .ui
+                .set_popup_screens(crate::popup_window::popup_screens(window));
+            self.content_origin = crate::popup_window::content_origin(window);
+            let window = window.clone();
+            self.refresh_frame_interval(&window);
+            let window = &window;
+            // Winit's macOS is_maximized temporarily adds titled/resizable
+            // styles to other windows. Querying it during resize creates another
+            // resize event indefinitely. Those windows have no native zoom control;
+            // use our explicit maximize command state without mutating AppKit.
+            let maximized = read_maximized_without_style_change(
+                self.options.decorations,
+                self.options.resizable,
+                self.state.maximized,
+                || window.is_maximized(),
+            );
+            // Into or out of fullscreen: its popups close, as AppKit's do.
+            let fullscreen = window.fullscreen().is_some();
+            if std::mem::replace(&mut self.popups_fullscreen, fullscreen) != fullscreen {
+                self.context.ui.dismiss_popups();
+            }
+            if !fullscreen && !maximized {
+                let bounds = crate::WindowBounds::read(window);
+                if bounds.size.0 > 0 && bounds.size.1 > 0 {
+                    self.options.bounds = Some(bounds);
+                }
+            }
+            #[cfg(target_os = "linux")]
+            if self.options.frame_autosave.is_some() {
+                self.frame_save_at = Some(std::time::Instant::now() + FRAME_SAVE_DELAY);
+            }
+        }
+        self.sync_ime_cancellation();
+        if let (Some(adapter), Some(window)) = (&mut self.adapter, &self.window) {
+            adapter.process_event(window, &event);
+        }
+        match event {
+            WindowEvent::CloseRequested => {}
+            WindowEvent::Occluded(_) if *RENDER_WHEN_COVERED => {}
+            // Going into or out of full screen, AppKit counts the window
+            // covered while it animates: it goes on drawing (its content
+            // resizes through the transition, and shows current as it ends),
+            // and is counted covered only if it still is once the transition
+            // is over (`full_screen`).
+            WindowEvent::Occluded(true) if self.in_full_screen_transition() => {}
+            WindowEvent::Occluded(true) => self.occlude(),
+            WindowEvent::Occluded(false) => {
+                self.native_occluded = false;
+                self.context
+                    .ui
+                    .set_presented(self.state.visible && !self.state.minimized);
+                self.presentation.expose();
+                // macOS keeps showing the layer's last frame: what changed
+                // while covered is the scene's damage.
+                self.force |= !cfg!(target_os = "macos");
+            }
+            WindowEvent::RedrawRequested => {
+                self.present_ready = true;
+                self.presentation.expose();
+                // Other platforms may have lost the window's contents; on
+                // macOS a redraw AppKit asks for (as the window first shows)
+                // repaints only what changed. A frame Wayland's compositor
+                // grants repaints the window's, not its popups': their
+                // surfaces keep theirs.
+                if self.frame_paced {
+                    self.redraw_whole = true;
+                } else {
+                    self.force |= !cfg!(target_os = "macos");
+                }
+                if std::mem::take(&mut self.frame_redraw_requested) {
+                    // Wayland: the compositor granted this frame. Let animations
+                    // step before painting it.
+                    let now = std::time::Instant::now();
+                    let mut frame = self.frame_timer.frame(now, self.frame_interval);
+                    frame.time = now + self.frame_interval;
+                    self.deliver_frame(frame);
+                    if self.tasks.has_ready() {
+                        self.tick_tasks();
+                    }
+                }
+                self.draw()?;
+            }
+            WindowEvent::Resized(size) => {
+                #[cfg(target_os = "macos")]
+                {
+                    self.reported_size = Some(size);
+                }
+                // AppKit lays the window's buttons out again: zoomed, they go
+                // back where the title bar has them, now and once its layout
+                // for the new size is done.
+                let zoom = self.context.ui.zoom();
+                if zoom != 1.
+                    && let Some(window) = &self.window
+                {
+                    let titlebar = self.options.titlebar;
+                    crate::window_chrome::zoom_buttons(window, titlebar, zoom);
+                    self.context.window_info.refresh(window, titlebar);
+                    #[cfg(target_os = "macos")]
+                    {
+                        let window = window.clone();
+                        dispatch2::DispatchQueue::main().exec_async(move || {
+                            let zoom = crate::popup_window::zoom_of(window.id());
+                            crate::window_chrome::zoom_buttons(&window, titlebar, zoom);
+                        });
+                    }
+                }
+                if size.width > 0 && size.height > 0 {
+                    self.presentation.expose();
+                }
+                let scale = self.scale_factor;
+                let viewport = self.context.viewport.with_untracked(|viewport| *viewport);
+                if apply_viewport(
+                    &mut self.options,
+                    &self.context.ui,
+                    &self.context.viewport,
+                    size,
+                    scale,
+                ) && (self
+                    .renderer
+                    .as_mut()
+                    .is_some_and(|renderer| renderer.resize(size.width, size.height))
+                    || self.context.viewport.with_untracked(|v| *v != viewport))
+                {
+                    // AppKit reports the size again as a window shows and as
+                    // it reaches its display: the same size repaints nothing.
+                    #[cfg(target_os = "macos")]
+                    {
+                        self.resized_at = Some(std::time::Instant::now());
+                    }
+                    self.force = true;
+                    // AppKit delivers live resizes synchronously and commits the
+                    // new window frame when this callback returns. Paint now so
+                    // the matching frame joins that commit instead of trailing it.
+                    if cfg!(target_os = "macos") {
+                        self.draw()?;
+                    }
+                }
+            }
+            // Reported as a window first reaches its display, unchanged.
+            WindowEvent::ScaleFactorChanged { scale_factor, .. }
+                if scale_factor == self.display_scale => {}
+            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                // This event is authoritative. Some X11 XSETTINGS paths leave
+                // Window::scale_factor() stale for an existing native window.
+                self.display_scale = scale_factor;
+                let scale_factor = self.content_scale();
+                if self.x11 {
+                    let ratio = (self.scale_factor / scale_factor) as f32;
+                    self.cursor.0 *= ratio;
+                    self.cursor.1 *= ratio;
+                }
+                self.scale_factor = scale_factor;
+                #[cfg(windows)]
+                if let Some(tsf) = &self.tsf {
+                    tsf.set_scale(scale_factor);
+                }
+                if let Some(renderer) = &mut self.renderer {
+                    renderer.set_scale_factor(scale_factor as f32);
+                }
+                self.context
+                    .ui
+                    .scene
+                    .borrow_mut()
+                    .set_pixel_scale(scale_factor as f32);
+                // The native resize follows this notification. Applying the
+                // new scale to the old physical size creates a false logical resize.
+                self.context.ui.refresh_text_geometry();
+                self.ime_geometry = None;
+                self.force = true;
+            }
+            WindowEvent::ModifiersChanged(m) => {
+                let s = m.state();
+                self.modifiers = Modifiers {
+                    shift: s.shift_key(),
+                    control: s.control_key(),
+                    alt: s.alt_key(),
+                    meta: s.super_key(),
+                };
+                // A modifier alone too: `Ui::modifiers` changes with it. On
+                // macOS with native views, their monitor writes it instead
+                // (`modifiers_watched`): this can be a key a page handed back.
+                #[cfg(target_os = "macos")]
+                let watched = crate::native_host::modifiers_watched();
+                #[cfg(not(target_os = "macos"))]
+                let watched = false;
+                if !watched {
+                    zgx::input::set_held_modifiers(&self.context.ui.runtime, self.modifiers);
+                }
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                let p = position.to_logical::<f32>(self.scale_factor);
+                self.cursor = (p.x, p.y);
+                // Files dragged in hover where the drag now is: a target
+                // they move onto hears them, the one left behind its cancel.
+                if !self.hovered_files.is_empty() {
+                    for path in self.hovered_files.clone() {
+                        self.dispatch(InputEvent::FileHover {
+                            x: p.x,
+                            y: p.y,
+                            path,
+                        })?;
+                    }
+                }
+
+                self.pointer_inside = true;
+                // An undecorated window's edge resizes it: the content
+                // hears the pointer leave, and nothing more until it is
+                // back inside the bands.
+                #[cfg(target_os = "linux")]
+                if self.resize_band(p.x, p.y)? {
+                    return Ok(());
+                }
+                #[cfg(target_os = "linux")]
+                if self.title_press.is_some() {
+                    self.title_press_moved();
+                    return Ok(());
+                }
+                // Over a native view taking input zgx hears one leave, then
+                // nothing until the pointer is back (unless a press of
+                // zgx's follows it there).
+                let input = &self.context.ui.input;
+                let held = input.captured().is_some() || input.is_dragging();
+                match self.native.pointer_moved(p.x, p.y, held) {
+                    PointerStep::Move => {
+                        self.dispatch(InputEvent::PointerMove { x: p.x, y: p.y })?
+                    }
+                    PointerStep::Leave(_) => self.dispatch(InputEvent::PointerLeave)?,
+                    PointerStep::Over(_) => {}
+                }
+                if self.context.ui.input.is_dragging() {
+                    self.drag_moved();
+                }
+            }
+            // Back from a popup window (X11): where the pointer is, which
+            // winit does not say.
+            #[cfg(target_os = "linux")]
+            WindowEvent::CursorEntered { device_id } => {
+                if let Some(position) = self
+                    .window
+                    .as_deref()
+                    .and_then(crate::popup_window::pointer)
+                {
+                    return self.window_event(WindowEvent::CursorMoved {
+                        device_id,
+                        position,
+                    });
+                }
+            }
+            WindowEvent::CursorLeft { .. } => {
+                // Onto one of its popups (Wayland): its moves come from
+                // there, so the content keeps the pointer rather than
+                // hearing it leave after (or before) the popup's first move.
+                #[cfg(target_os = "linux")]
+                if crate::popup_window::pointer_over_popup() {
+                    return Ok(());
+                }
+                self.pointer_inside = false;
+                #[cfg(target_os = "linux")]
+                {
+                    self.resize_edge = None;
+                }
+                // Outside, others set the cursor: back in, zgx sets its own
+                // again rather than trust what it last set.
+                self.native_cursor = None;
+                self.native.pointer_left();
+                self.dispatch(InputEvent::PointerLeave)?
+            }
+            WindowEvent::HoveredFile(path) => {
+                self.hovered_files.push(path.clone());
+                self.dispatch(InputEvent::FileHover {
+                    x: self.cursor.0,
+                    y: self.cursor.1,
+                    path,
+                })?
+            }
+            WindowEvent::DroppedFile(path) => {
+                self.hovered_files.clear();
+                self.pending_file_drops.push(path.clone());
+                self.dispatch(InputEvent::FileDrop {
+                    x: self.cursor.0,
+                    y: self.cursor.1,
+                    path,
+                })?;
+            }
+            WindowEvent::HoveredFileCancelled => {
+                self.hovered_files.clear();
+                self.dispatch(InputEvent::FileHoverCancelled)?
+            }
+            WindowEvent::MouseInput { state, button, .. } => {
+                #[cfg(windows)]
+                {
+                    self.touch_last = false;
+                }
+                let button = match button {
+                    MouseButton::Left => PointerButton::Primary,
+                    MouseButton::Right => PointerButton::Secondary,
+                    MouseButton::Middle => PointerButton::Middle,
+                    MouseButton::Back => PointerButton::Other(4),
+                    MouseButton::Forward => PointerButton::Other(5),
+                    MouseButton::Other(n) => PointerButton::Other(n),
+                };
+                // Let go before it moved: a click on the title bar.
+                #[cfg(target_os = "linux")]
+                if state == ElementState::Released {
+                    self.title_press = None;
+                }
+                // Back from a popup window, the pointer sends no move to
+                // where winit last saw it (X11; its enter does not count):
+                // a press in a window that had popups asks where it is.
+                #[cfg(target_os = "linux")]
+                if self.had_popups
+                    && let Some(position) = self
+                        .window
+                        .as_deref()
+                        .and_then(crate::popup_window::pointer)
+                {
+                    self.window_event(WindowEvent::CursorMoved {
+                        device_id: winit::event::DeviceId::dummy(),
+                        position,
+                    })?;
+                }
+                let (x, y) = self.cursor;
+                // A click stops a coasting scroll, as in a browser.
+                if state == ElementState::Pressed {
+                    self.touch.stop();
+                }
+                #[cfg(target_os = "linux")]
+                if let Some(direction) = self.resize_edge
+                    && state == ElementState::Pressed
+                    && button == PointerButton::Primary
+                    && let Some(window) = &self.window
+                {
+                    let _ = window.drag_resize_window(direction);
+                    return Ok(());
+                }
+                self.dispatch(if state == ElementState::Pressed {
+                    InputEvent::PointerDown { x, y, button }
+                } else {
+                    InputEvent::PointerUp { x, y, button }
+                })?;
+                #[cfg(target_os = "linux")]
+                {
+                    if let Some(node) = self.context.ui.take_primary_paste() {
+                        self.paste_primary(node);
+                    }
+                    if state == ElementState::Released {
+                        self.publish_editor_primary();
+                    }
+                }
+                // A press in a `window_drag` region.
+                if let Some(gesture) = self.context.ui.take_window_gesture() {
+                    self.window_gesture(gesture)?;
+                }
+            }
+            WindowEvent::Touch(touch) => {
+                let p = touch.location.to_logical::<f32>(self.scale_factor);
+                self.cursor = (p.x, p.y);
+                let pen = crate::touch::is_pen(touch.id);
+                #[cfg(windows)]
+                {
+                    self.touch_last = true;
+                }
+                if touch.phase == winit::event::TouchPhase::Started && self.touch.idle() {
+                    self.touch_focus = self.context.ui.input.focused();
+                }
+                let steps = self.touch.touch(
+                    touch.id,
+                    touch.phase,
+                    (p.x, p.y),
+                    pen,
+                    std::time::Instant::now(),
+                );
+                self.touch_steps(steps)?;
+            }
+            WindowEvent::PinchGesture { delta, .. } if delta.is_finite() && delta != 0. => {
+                self.dispatch(InputEvent::Pinch {
+                    x: self.cursor.0,
+                    y: self.cursor.1,
+                    delta: delta as f32,
+                })?;
+            }
+            WindowEvent::MouseWheel { delta, phase, .. } => {
+                self.wheel_tape.borrow_mut().received(
+                    std::time::Instant::now(),
+                    delta,
+                    self.scale_factor,
+                    phase,
+                );
+                // A trackpad gesture's phase: its start goes before its
+                // motion, its end after all of it.
+                let gesture = if cfg!(target_os = "macos")
+                    && matches!(delta, MouseScrollDelta::PixelDelta(_))
+                {
+                    self.trackpad.phase(phase, std::time::Instant::now())
+                } else {
+                    None
+                };
+                if let Some(
+                    gesture @ (zgx::input::ScrollGesture::Began
+                    | zgx::input::ScrollGesture::MomentumBegan),
+                ) = gesture
+                {
+                    #[cfg(all(target_os = "macos", zgx_winit_patched))]
+                    if gesture == zgx::input::ScrollGesture::Began {
+                        crate::swipes::gesture_began(&self.context.ui);
+                    }
+                    self.dispatch(InputEvent::ScrollGesture(gesture))?;
+                }
+                let step = crate::scrollers::wheel_step(
+                    self.context.viewport.with_untracked(|viewport| *viewport),
+                );
+                let (dx, dy) = wheel_delta(delta, self.scale_factor, step);
+                // A touchpad's scroll coasts on after the fingers lift
+                // (Wayland says when: libinput's axis stop).
+                #[cfg(target_os = "linux")]
+                let settle = if matches!(delta, MouseScrollDelta::PixelDelta(_)) {
+                    self.touch.wheel(
+                        phase,
+                        self.cursor,
+                        (dx, dy),
+                        std::time::Instant::now(),
+                        self.device_pixel(),
+                    )
+                } else {
+                    None
+                };
+                // Lifted without a fling: the scroll's last step rests its view
+                // on a whole device pixel, as the wheel's ease does.
+                #[cfg(target_os = "linux")]
+                let (dx, dy) = settle.map_or((dx, dy), |(x, y)| (dx + x, dy + y));
+                // Control with the wheel zooms the window, a level a notch, as
+                // browsers on Windows and Linux do, unless what is under the
+                // pointer takes it (scroll views leave it). On macOS neither
+                // the wheel nor a pinch zooms a page.
+                let zooms = cfg!(not(target_os = "macos"))
+                    && self.modifiers.control
+                    && !self.modifiers.alt
+                    && !self.modifiers.meta
+                    && self.context.ui.wheel_zooms();
+                if zooms {
+                    let event = InputEvent::Scroll {
+                        x: self.cursor.0,
+                        y: self.cursor.1,
+                        delta_x: dx,
+                        delta_y: dy,
+                    };
+                    if !zgx::zoom::wheel_notched(step.1, || self.dispatch_prevented(event))? {
+                        self.context.ui.zoom_wheel(-dy / step.1);
+                    }
+                } else if crate::scroll_resample::enabled() {
+                    // Applied on display refreshes; see `update`.
+                    let now = std::time::Instant::now();
+                    self.scroll.position = self.cursor;
+                    match delta {
+                        MouseScrollDelta::PixelDelta(_) => self.scroll.push_precise(now, (dx, dy)),
+                        MouseScrollDelta::LineDelta(x, y) if continuous_lines(x, y) => {
+                            self.scroll.push_precise(now, (dx, dy))
+                        }
+                        MouseScrollDelta::LineDelta(..) => self.scroll.push_wheel(now, (dx, dy)),
+                    }
+                } else {
+                    self.dispatch(InputEvent::Scroll {
+                        x: self.cursor.0,
+                        y: self.cursor.1,
+                        delta_x: dx,
+                        delta_y: dy,
+                    })?;
+                    self.after_scroll();
+                }
+                if let Some(
+                    gesture @ (zgx::input::ScrollGesture::Ended
+                    | zgx::input::ScrollGesture::MomentumEnded),
+                ) = gesture
+                {
+                    // What the refreshes have not applied yet, first.
+                    if let Some((delta_x, delta_y)) = self.scroll.flush() {
+                        let (x, y) = self.scroll.position;
+                        self.dispatch(InputEvent::Scroll {
+                            x,
+                            y,
+                            delta_x,
+                            delta_y,
+                        })?;
+                    }
+                    self.dispatch(InputEvent::ScrollGesture(gesture))?;
+                }
+            }
+            WindowEvent::Focused(false) => {
+                zgx_gpu::present_log::log(|| "window-focus false".into());
+                #[cfg(target_os = "linux")]
+                if let Some(caption) = &mut self.caption {
+                    caption.sync(&mut self.context.ui);
+                }
+                // Menus and popovers close as their window or the app
+                // loses focus, as AppKit's do.
+                self.context.ui.dismiss_popups();
+                // A drag the platform has goes on: it deactivates as that
+                // ends (`Handoff`).
+                if self.native_drag.deactivate() {
+                    self.deactivate()
+                }
+            }
+            WindowEvent::ThemeChanged(appearance) => {
+                self.context
+                    .ui
+                    .theme()
+                    .set_system_appearance(appearance_of(appearance));
+                crate::system_colors::sync(&self.context.ui);
+                crate::scrollers::sync(&self.context.ui);
+                #[cfg(windows)]
+                if let Some(window) = &self.window {
+                    crate::window_chrome::menu_theme(window);
+                }
+            }
+            WindowEvent::Focused(true) => {
+                // The user may have changed the accent while it was at the back.
+                crate::system_colors::sync(&self.context.ui);
+                crate::scrollers::sync(&self.context.ui);
+                zgx_gpu::present_log::log(|| "window-focus true".into());
+                // AppKit may have reset the cursor while another app had it.
+                self.native_cursor = None;
+                self.native_focused = true;
+                self.native_drag.activate();
+                self.focus_memory.activate(&self.context.ui);
+                self.context.ui.set_window_active(true);
+                #[cfg(target_os = "linux")]
+                if let Some(caption) = &mut self.caption {
+                    caption.sync(&mut self.context.ui);
+                }
+            }
+            // Composing into a page's editable: the page has it.
+            #[cfg(all(target_os = "linux", feature = "webkitgtk"))]
+            WindowEvent::Ime(event)
+                if crate::native_host::webkitgtk::page_ime(
+                    &self.context.ui,
+                    self.ime_target,
+                    &event,
+                ) =>
+            {
+                let began = !self.ime_active;
+                self.ime_active =
+                    matches!(&event, winit::event::Ime::Preedit(text, _) if !text.is_empty());
+                // IBus (over XIM) forgets the spot as a composition begins,
+                // and puts its candidates at the window's corner: a field of
+                // zgx's moves its area as its preedit shows, but the page's
+                // caret comes later, from WebKit's web process, maybe after
+                // the candidates showed. So the spot goes again now: a pixel
+                // below first, as winit sends only a spot that moved.
+                if began
+                    && self.ime_active
+                    && self.x11
+                    && let (Some(window), Some(r)) = (self.window.clone(), self.ime_geometry)
+                {
+                    let mut below = LogicalPosition::new(r.x as f64, (r.y + r.height) as f64)
+                        .to_physical::<f64>(self.scale_factor);
+                    below.y += 1.;
+                    window.set_ime_cursor_area(below, PhysicalSize::new(1., 1.));
+                    self.ime_geometry = None;
+                    self.sync_ime_area(&window);
+                }
+            }
+            WindowEvent::Ime(event) => {
+                if self.ime_restart.accepts(&event)
+                    && let Some(composing) = crate::native_ime::dispatch(
+                        &mut self.context.ui,
+                        self.native_focused,
+                        self.ime_target,
+                        event,
+                    )?
+                {
+                    self.ime_active = composing;
+                }
+            }
+            // Winit synthesizes held-key presses/releases on X11 focus changes.
+            // FocusMemory already cancels pressed controls; these are not user actions.
+            WindowEvent::KeyboardInput {
+                is_synthetic: true, ..
+            } => {}
+            WindowEvent::KeyboardInput { event, .. }
+                if event.state == ElementState::Pressed
+                    && event.physical_key == PhysicalKey::Code(KeyCode::KeyI)
+                    && inspector_shortcut(self.modifiers) =>
+            {
+                if !event.repeat {
+                    self.context.inspector.toggle();
+                    self.force = true;
+                    if let Some(window) = &self.window {
+                        window.request_redraw();
+                    }
+                }
+            }
+            WindowEvent::KeyboardInput { event, .. } => self.key_input(event, true)?,
+            _ => {}
+        }
+
+        Ok(())
+    }
+    /// A key from the window: to the page whose box has focus first, unless
+    /// `to_page` is off (a key a page left alone, come back for the app's
+    /// shortcuts), then to zgx.
+    fn key_input(
+        &mut self,
+        event: winit::event::KeyEvent,
+        to_page: bool,
+    ) -> Result<(), Box<dyn Error>> {
+        let key = map_key(&event.logical_key)
+            .map(|key| shortcut_key(key, event.physical_key, self.modifiers));
+        // A page whose box has focus has keys before zgx does, but for
+        // those the app reserves; those it leaves alone come back.
+        #[cfg(all(target_os = "linux", feature = "webkitgtk"))]
+        if to_page && !self.ime_active {
+            self.context
+                .ui
+                .input
+                .set_key_code(key_code(event.physical_key));
+            let taken = crate::native_host::webkitgtk::page_key(
+                &self.context.ui,
+                &event,
+                self.modifiers,
+                key.as_ref(),
+            );
+            self.context.ui.input.set_key_code(None);
+            if taken {
+                return Ok(());
+            }
+        }
+        #[cfg(not(all(target_os = "linux", feature = "webkitgtk")))]
+        let _ = to_page;
+        let mut prevented = false;
+        if let Some(key) = key
+            && !self.ime_active
+        {
+            self.context
+                .ui
+                .input
+                .set_key_code(key_code(event.physical_key));
+            if event.state == ElementState::Pressed {
+                // Windows' Shift+Delete cuts a selection, before the
+                // editor would only delete it.
+                #[cfg(windows)]
+                let cut = windows_clipboard_alias(&key, self.modifiers) == Some("x")
+                    && self.clipboard_key(&key);
+                #[cfg(not(windows))]
+                let cut = false;
+                // A page's box focused by this key is tabbed into.
+                #[cfg(all(target_os = "linux", feature = "webkitgtk"))]
+                let _tabbing = crate::native_host::webkitgtk::tabbing(&key, self.modifiers);
+                prevented = cut
+                    || self.dispatch_prevented(InputEvent::KeyDown {
+                        key: key.clone(),
+                        modifiers: self.modifiers,
+                        repeat: event.repeat,
+                    })?;
+                if !prevented {
+                    prevented = self.clipboard_key(&key);
+                }
+                #[cfg(target_os = "macos")]
+                if !prevented {
+                    prevented = self.look_up_key(&key);
+                }
+                #[cfg(target_os = "linux")]
+                self.publish_editor_primary();
+            } else {
+                self.dispatch(InputEvent::KeyUp {
+                    key,
+                    modifiers: self.modifiers,
+                })?;
+            }
+            self.context.ui.input.set_key_code(None);
+        }
+        if event.state == ElementState::Pressed
+            && (!prevented || self.context.ui.input.has_pending_keys())
+            && !self.modifiers.control
+            && !self.modifiers.meta
+            && !self.ime_active
+            && let Some(text) = event.text
+            && !text.chars().any(char::is_control)
+        {
+            self.dispatch(InputEvent::Text(text.to_string()))?;
+        }
+        Ok(())
+    }
+    /// The window's drag moved: a preview in a window of its own moves with
+    /// the pointer, drawn once.
+    fn drag_moved(&mut self) {
+        let (Some(drag), Some(window)) = (self.context.ui.input.drag_state(), &self.window) else {
+            return;
+        };
+        // X11 leaves the preview the app's to move, its drag the platform's
+        // or not.
+        if !self.native_drag.active() || cfg!(target_os = "linux") {
+            self.popups.follow(window, &drag);
+        }
+    }
+    /// A device pixel, in the window's points: where scrolled content
+    /// rests crisp (`Touches::coast`, `Touches::wheel`).
+    fn device_pixel(&self) -> f32 {
+        1. / (self.scale_factor as f32 * self.context.ui.zoom() as f32)
+    }
+    /// Its drag left the app's windows: carrying what other apps take
+    /// (`View::drag_export`), it becomes the platform's.
+    fn hand_off_drag(&mut self, drag: &zgx::input::DragState) {
+        let Some(window) = self.window.clone() else {
+            return;
+        };
+        // On Wayland a drag carrying nothing to other apps (a tab) is handed
+        // off too, so the app's other windows hear it (`native_drag::begin`):
+        // its windows have no place on screen to find them by.
+        #[cfg(target_os = "linux")]
+        let internal = window
+            .display_handle()
+            .is_ok_and(|handle| matches!(handle.as_raw(), RawDisplayHandle::Wayland(_)));
+        #[cfg(not(target_os = "linux"))]
+        let internal = false;
+        let items: &[zgx::input::DragItem] = match &drag.export {
+            Some(items) => items,
+            None if internal => &[],
+            None => return,
+        };
+        // One drag at a time, though a drop the platform has, performed and
+        // only finishing, doesn't hold back the next (Wayland).
+        if !self.native_drag.may_begin() {
+            return;
+        }
+        let image = self.popups.preview_image(drag);
+        // Wayland's icon: the preview, which shows in the window there,
+        // drawn alone.
+        #[cfg(target_os = "linux")]
+        let image = image.or_else(|| self.drawn_preview(drag));
+        let (proxy, token) = (self.proxy.clone(), self.context.window.token);
+        // Heard while it is the window's hand-off: an earlier drop finishing
+        // after this one began is not this drag's.
+        let (generation, send) = self.native_drag.events(move |drag| {
+            let _ = proxy.send_event(Event::NativeDrag(token, drag));
+        });
+        #[cfg(target_os = "linux")]
+        let begun =
+            crate::native_drag::begin(&window, items, image, (drag.x as f64, drag.y as f64), send);
+        #[cfg(not(target_os = "linux"))]
+        let begun = crate::native_drag::begin(&window, items, image, send);
+        if begun {
+            zgx_gpu::present_log::log(|| "native drag begin".into());
+            self.native_drag.begun(generation);
+            self.popups.show_preview(&window, drag, None);
+        }
+    }
+    /// A drag moving the window (`View::drag_moves_window`): the window
+    /// follows the pointer, the point it was held at staying under it.
+    fn move_with_drag(&mut self) {
+        let input = &self.context.ui.input;
+        if !input.drag_moves_window() {
+            return;
+        }
+        let Some(drag) = input.drag_state() else {
+            return;
+        };
+        // No place on screen (Wayland): the compositor moves the window
+        // from here (`xdg_toplevel.move`, as a title bar's drag), holding
+        // the pointer until it is let go, so zgx's drag ends now.
+        #[cfg(target_os = "linux")]
+        if self.content_origin.is_none()
+            && let Some(window) = self.window.clone()
+            && window
+                .display_handle()
+                .is_ok_and(|handle| matches!(handle.as_raw(), RawDisplayHandle::Wayland(_)))
+        {
+            let _ = window.drag_window();
+            self.context.ui.cancel_interactions();
+            return;
+        }
+        let (Some(window), Some((left, top))) = (&self.window, self.content_origin) else {
+            return;
+        };
+        let (grab_x, grab_y) = *self.window_grab.get_or_insert((drag.x, drag.y));
+        let scale = self.global_scale();
+        // Its content's top-left goes to the pointer less the grab point.
+        let (x, y) = crate::window_place::pointer().unwrap_or_else(|| {
+            crate::popup_window::global_at((drag.x as f64, drag.y as f64), (left, top), scale)
+        });
+        let to = (x - grab_x as f64 * scale, y - grab_y as f64 * scale);
+        if to == (left, top) {
+            return;
+        }
+        crate::window_place::move_to(window, to, &mut self.window_pending);
+        self.content_origin = Some(to);
+    }
+    /// The drag's preview drawn alone, offscreen: a drag image where the
+    /// preview shows in its window (Wayland). Premultiplied BGRA at the
+    /// window's scale, with the pointer's place in it.
+    #[cfg(target_os = "linux")]
+    fn drawn_preview(&self, drag: &zgx::input::DragState) -> Option<crate::native_drag::DragImage> {
+        let root = drag.preview?;
+        let context = self.renderer.as_ref()?.context();
+        let scene = self.context.ui.scene.borrow();
+        let bounds = scene.bounds(root);
+        let scale = self.scale_factor as f32;
+        let (width, height) = (
+            (bounds.width * scale).ceil().max(1.) as u32,
+            (bounds.height * scale).ceil().max(1.) as u32,
+        );
+        let mut renderer = GpuRenderer::new_with_context(width, height, &context).ok()?;
+        renderer.set_scale_factor(scale);
+        renderer.set_popup(root, bounds);
+        renderer.render(&scene, &[]).ok()?;
+        let mut bgra = renderer.readback().ok()?;
+        for pixel in bgra.as_chunks_mut::<4>().0 {
+            pixel.swap(0, 2);
+        }
+        Some(crate::native_drag::DragImage {
+            width,
+            height,
+            bgra,
+            scale,
+            grab: (drag.x - bounds.x, drag.y - bounds.y),
+        })
+    }
+    /// Its content's box in global coordinates.
+    fn content_box(&self) -> Option<[f64; 4]> {
+        let origin = self.content_origin?;
+        let (width, height) = self.context.viewport.with_untracked(|viewport| *viewport);
+        let size = (width as f64, height as f64);
+        Some(crate::popup_window::global_box(
+            origin,
+            size,
+            self.global_scale(),
+        ))
+    }
+    /// Global units per point of its content (`popup_window::global_scale`),
+    /// its zoom's points.
+    fn global_scale(&self) -> f64 {
+        let base = self
+            .window
+            .as_deref()
+            .map_or(1., crate::popup_window::global_scale);
+        zoomed(base, self.context.ui.zoom())
+    }
+    /// The scale its content draws at: the display's at 100%, exactly (no
+    /// multiply), else the display's times the zoom.
+    fn content_scale(&self) -> f64 {
+        zoomed(self.display_scale, self.context.ui.zoom())
+    }
+    /// The window's zoom changed: its content draws at the display's scale
+    /// times it, reflowed in the logical viewport its size then has, as a
+    /// display change does; what each scroll view showed at its top stays
+    /// there. Nothing more runs while it stays.
+    fn apply_zoom(&mut self) -> Result<(), Box<dyn Error>> {
+        let scale = self.content_scale();
+        if scale == self.scale_factor {
+            return Ok(());
+        }
+        let anchors = self.context.ui.zoom_anchors();
+        if let Some(window) = &self.window {
+            crate::popup_window::set_zoom(window.id(), self.context.ui.zoom());
+        }
+        // Kept with its frame, for the next time it opens.
+        if let Some(name) = &self.options.frame_autosave {
+            crate::zoom_store::save(name, self.context.ui.zoom());
+        }
+        let ratio = (self.scale_factor / scale) as f32;
+        self.cursor.0 *= ratio;
+        self.cursor.1 *= ratio;
+        self.scale_factor = scale;
+        if let Some(renderer) = &mut self.renderer {
+            renderer.set_scale_factor(scale as f32);
+            #[cfg(target_os = "macos")]
+            renderer.set_zoom(self.context.ui.zoom());
+        }
+        self.context
+            .ui
+            .scene
+            .borrow_mut()
+            .set_pixel_scale(scale as f32);
+        if let Some(window) = self.window.clone() {
+            apply_viewport(
+                &mut self.options,
+                &self.context.ui,
+                &self.context.viewport,
+                window.inner_size(),
+                scale,
+            );
+            // The platform's buttons where the zoomed title bar has them.
+            crate::window_chrome::zoom_buttons(
+                &window,
+                self.options.titlebar,
+                self.context.ui.zoom(),
+            );
+            // And where scripts read them (`ui.window.controls`).
+            self.context
+                .window_info
+                .refresh(&window, self.options.titlebar);
+            window.request_redraw();
+        }
+        self.context.ui.refresh_text_geometry();
+        self.ime_geometry = None;
+        self.force = true;
+        self.context.ui.try_prepare_frame()?;
+        self.context.ui.restore_zoom_anchors(anchors);
+        Ok(())
+    }
+    /// The platform's drag moved or ended, at a global point: the window's
+    /// pointer, which the platform reports to its session meanwhile. Back
+    /// over the window, its destinations hear the drag; released there, it
+    /// drops on them. Taken by another app, it ends accepted; else its
+    /// preview shows where it was let go, to slide back from there.
+    fn native_drag_event(
+        &mut self,
+        event: crate::native_drag::NativeDrag,
+    ) -> Result<(), Box<dyn Error>> {
+        use crate::native_drag::NativeDrag;
+        let Some(window) = self.window.clone() else {
+            return Ok(());
+        };
+        let (x, y, ended) = match event {
+            NativeDrag::Moved { x, y } => (x, y, None),
+            NativeDrag::Ended { x, y, accepted } => (x, y, Some(accepted)),
+            // Over another of the app's windows: that window's to hear
+            // (`WindowManager::native_drag`).
+            NativeDrag::MovedIn { .. } => return Ok(()),
+            // Taken: zgx's drag ends, the platform finishing with it.
+            NativeDrag::Performed { x, y } => (x, y, Some(true)),
+            // Dropped in another window (the manager dropped it there), or
+            // let go past every window: the platform's part ends untaken.
+            NativeDrag::DroppedIn { x, y, .. } | NativeDrag::Left { x, y } => (x, y, Some(false)),
+        };
+        let origin = crate::popup_window::content_origin(&window).unwrap_or((0., 0.));
+        let (x, y) = crate::popup_window::points_at((x, y), origin, self.global_scale());
+        let at = (x as f32, y as f32);
+        let device_id = winit::event::DeviceId::dummy();
+        let position = LogicalPosition::new(at.0, at.1).to_physical(self.scale_factor);
+        let Some(taken) = ended else {
+            return self.window_event(WindowEvent::CursorMoved {
+                device_id,
+                position,
+            });
+        };
+        // Performed (Wayland): zgx's drag ends as taken now, and the
+        // hand-off goes on until the target is done (`Handoff::may_begin`).
+        let performed_now = matches!(event, NativeDrag::Performed { .. });
+        let (superseded, performed) = (
+            self.native_drag.superseded(),
+            self.native_drag.is_performed() && !performed_now,
+        );
+        let deactivate = !performed_now && self.native_drag.ended();
+        if !performed_now {
+            zgx_gpu::present_log::log(|| "native drag end".into());
+        }
+        // A drag of the window's own began since (a press after the drop,
+        // Wayland), or zgx's drag ended as it was performed: the end is
+        // only the hand-off's.
+        if superseded || performed {
+            if deactivate {
+                self.deactivate();
+            }
+            return Ok(());
+        }
+        if let Some(drag) = self.context.ui.input.drag_state() {
+            if taken {
+                let ui = &self.context.ui;
+                ui.input.end_drag_elsewhere(&ui.scene, true, false);
+            } else {
+                self.popups.show_preview(&window, &drag, Some(at));
+            }
+        }
+        // The session took the button's release.
+        self.window_event(WindowEvent::CursorMoved {
+            device_id,
+            position,
+        })?;
+        let released = self.window_event(WindowEvent::MouseInput {
+            device_id,
+            state: ElementState::Released,
+            button: MouseButton::Left,
+        });
+        // It lost focus meanwhile (the app taking it came to the front).
+        if deactivate {
+            self.deactivate();
+        }
+        released
+    }
+    /// The platform's drag ended after zgx's had (its source went): the
+    /// window's next drag hands off again.
+    fn native_drag_gone(&mut self) {
+        zgx_gpu::present_log::log(|| "native drag end".into());
+        if self.native_drag.ended() {
+            self.deactivate();
+        }
+    }
+    /// Pointer input over a popup window, as the window's own (its point in
+    /// the window's coordinates, past its edges).
+    fn popup_input(
+        &mut self,
+        input: crate::popup_window::PopupInput,
+    ) -> Result<(), Box<dyn Error>> {
+        use crate::popup_window::PopupInput;
+        // Winit's placeholder device, for events it did not report.
+        let device_id = winit::event::DeviceId::dummy();
+        let at = |x: f32, y: f32| LogicalPosition::new(x, y).to_physical(self.scale_factor);
+        // Winit's point, kept for the window's own buttons (`own_event`).
+        if matches!(
+            input,
+            PopupInput::Moved { .. } | PopupInput::Button { .. } | PopupInput::Wheel { .. }
+        ) {
+            self.window_cursor.popup_moved(self.cursor);
+        }
+        match input {
+            PopupInput::Moved { x, y } => {
+                let moved = self.window_event(WindowEvent::CursorMoved {
+                    device_id,
+                    position: at(x, y),
+                });
+                #[cfg(target_os = "linux")]
+                {
+                    self.had_popups = true;
+                }
+                moved
+            }
+            PopupInput::Button {
+                x,
+                y,
+                button,
+                pressed,
+            } => {
+                self.cursor = (x, y);
+                self.window_event(WindowEvent::MouseInput {
+                    device_id,
+                    state: if pressed {
+                        ElementState::Pressed
+                    } else {
+                        ElementState::Released
+                    },
+                    button,
+                })
+            }
+            PopupInput::Wheel { x, y, delta, phase } => {
+                self.cursor = (x, y);
+                self.window_event(WindowEvent::MouseWheel {
+                    device_id,
+                    delta,
+                    phase,
+                })
+            }
+            PopupInput::Left => self.window_event(WindowEvent::CursorLeft { device_id }),
+            PopupInput::Dismiss => {
+                self.context.ui.dismiss_popups();
+                Ok(())
+            }
+            PopupInput::Limit { root, size } => {
+                self.context.ui.set_popup_limit(root, size);
+                Ok(())
+            }
+            PopupInput::Flip { root, flipped } => {
+                self.context.ui.set_popup_flipped(root, flipped);
+                Ok(())
+            }
+            PopupInput::Screens => {
+                if let Some(window) = &self.window {
+                    self.context
+                        .ui
+                        .set_popup_screens(crate::popup_window::popup_screens(window));
+                }
+                Ok(())
+            }
+        }
+    }
+    fn accessibility_event(&mut self, event: accesskit_winit::WindowEvent) {
+        match event {
+            accesskit_winit::WindowEvent::ActionRequested(request) => {
+                self.accessibility_action(request)
+            }
+            accesskit_winit::WindowEvent::InitialTreeRequested => {
+                // Benchmarks and diagnostics say whether a client (a screen
+                // reader, the shell's, a test tool) read the window.
+                if std::env::var_os("ZGX_ACCESSIBILITY_LOG").is_some() {
+                    eprintln!("accessibility: a client asked for the tree");
+                }
+                // Names and values made from state, worked out from the
+                // state as it is (their effects run as this is set), before
+                // the tree is first given.
+                self.context.ui.set_assistive_technology(true);
+                self.tree.reset();
+                self.last_accessibility = None;
+                self.sync_accessibility();
+            }
+            accesskit_winit::WindowEvent::AccessibilityDeactivated => {
+                if std::env::var_os("ZGX_ACCESSIBILITY_LOG").is_some() {
+                    eprintln!("accessibility: the clients went");
+                }
+                self.context.ui.set_assistive_technology(false);
+            }
+        }
+    }
+    /// Runs the tasks that are ready; one may have asked for the window's
+    /// lines of a memory report (`zgx inspect memory`).
+    fn tick_tasks(&mut self) {
+        self.tasks.tick();
+        if zgx::memory::asked() {
+            self.answer_memory();
+        }
+    }
+    #[cold]
+    #[inline(never)]
+    fn answer_memory(&self) {
+        let mut report = zgx::memory::Report::default();
+        crate::memory::process(&mut report);
+        if let Some(renderer) = &self.renderer {
+            renderer.memory(&mut report);
+        }
+        self.popups.memory(&mut report);
+        // Popups the scene has open but no window has drawn yet (the next
+        // frame makes it): said, so a reading between the two isn't taken
+        // for none.
+        let open = self.context.ui.scene.borrow().popups().len();
+        let drawn = report
+            .lines
+            .iter()
+            .find(|line| line.area == "gpu" && line.name == "popup windows")
+            .and_then(|line| line.entries);
+        if let Some(drawn) = drawn
+            && open > drawn
+        {
+            report.add(
+                "gpu",
+                "popup windows not yet drawn",
+                Some(open - drawn),
+                None,
+            );
+        }
+        zgx::memory::answer(report);
+    }
+    fn update(&mut self) -> Result<bool, Box<dyn Error>> {
+        // Native views' reports (navigation, script replies), and keyboard
+        // focus they took or gave back, at this safe point.
+        #[cfg(all(target_os = "linux", feature = "webkitgtk"))]
+        crate::native_host::webkitgtk::deliver_pages();
+        zgx::native_view::deliver_posted();
+        // Moves zgx heard through the native views' pointer monitor.
+        if let Some(pointer) = self.native.take_unheard_pointer() {
+            self.cursor = pointer;
+            self.pointer_inside = true;
+        }
+        self.native.sync_focus(&self.context.ui);
+        #[cfg(all(target_os = "linux", feature = "webkitgtk"))]
+        {
+            crate::native_host::webkitgtk::sync_focus(&self.context.ui);
+            // Keys pages left alone: the app's shortcuts have them now.
+            // With the modifiers held as each was pressed, not now.
+            for (event, held) in
+                crate::native_host::webkitgtk::take_unhandled_keys(&self.context.ui)
+            {
+                let now = std::mem::replace(&mut self.modifiers, held);
+                let replayed = self.key_input(event, false);
+                self.modifiers = now;
+                replayed?;
+            }
+            // A page's caret moved: the input method hears now, as no frame
+            // may follow.
+            if crate::native_host::webkitgtk::ime_moved(&self.context.ui)
+                && let Some(window) = self.window.clone()
+            {
+                self.sync_ime_area(&window);
+            }
+        }
+        self.poll_frame_deadline(std::time::Instant::now());
+        // A paced accessibility update falling due between frames goes out
+        // now (frames send theirs as they draw): its deadline past, the
+        // loop would otherwise wake for it at once, again and again.
+        if self
+            .accessibility_pacer
+            .deadline()
+            .is_some_and(|at| at <= std::time::Instant::now())
+        {
+            self.sync_accessibility();
+        }
+        // A timed interaction due (a drag resting on a destination long
+        // enough to spring it open, a key sequence timing out, a caret
+        // blinking): the event loop woke for it, and a frame runs it
+        // (`Ui::advance_interactions`) below, as input draws at once, paced
+        // or not. Not a redraw request: elsewhere than macOS that repaints
+        // the whole window.
+        let due = self
+            .context
+            .ui
+            .next_interaction_deadline()
+            .is_some_and(|at| at <= std::time::Instant::now());
+        // A tape playing back: its events due, as the platform's.
+        loop {
+            let due = {
+                let mut tape = self.wheel_tape.borrow_mut();
+                let due = tape.due(std::time::Instant::now(), self.scale_factor);
+                due.map(|due| (due, tape.at))
+            };
+            let Some((due, at)) = due else {
+                break;
+            };
+            match due {
+                crate::wheel_tape::Due::Wheel(delta, phase) => {
+                    self.cursor = at;
+                    self.window_event(WindowEvent::MouseWheel {
+                        device_id: winit::event::DeviceId::dummy(),
+                        delta,
+                        phase,
+                    })?;
+                }
+                // A scripted pointer: moved there, then pressed or released,
+                // as the platform reports a hand's.
+                crate::wheel_tape::Due::Pointer((x, y), press) => {
+                    let position = LogicalPosition::new(x, y).to_physical(self.scale_factor);
+                    self.window_event(WindowEvent::CursorMoved {
+                        device_id: winit::event::DeviceId::dummy(),
+                        position,
+                    })?;
+                    let state = match press {
+                        crate::wheel_tape::Press::Down => Some(ElementState::Pressed),
+                        crate::wheel_tape::Press::Up => Some(ElementState::Released),
+                        crate::wheel_tape::Press::Moved => None,
+                    };
+                    if let Some(state) = state {
+                        self.window_event(WindowEvent::MouseInput {
+                            device_id: winit::event::DeviceId::dummy(),
+                            state,
+                            button: winit::event::MouseButton::Left,
+                        })?;
+                    }
+                }
+            }
+        }
+        if self.scroll.pending() {
+            // Each refresh applies the motion due by then; with no refreshes
+            // coming (hidden, minimized), everything applies at once.
+            let delta = if !self.frames_presented() {
+                zgx::profile::note(|| {
+                    "scroll input applied at once: the window isn't presenting (hidden, \
+                     minimized or covered), so no refreshes pace it"
+                        .into()
+                });
+                self.scroll.flush()
+            } else if self.frame_arrived {
+                self.scroll.sample(std::time::Instant::now())
+            } else {
+                None
+            };
+            if let Some((delta_x, delta_y)) = delta {
+                let (x, y) = self.scroll.position;
+                self.dispatch(InputEvent::Scroll {
+                    x,
+                    y,
+                    delta_x,
+                    delta_y,
+                })?;
+                self.after_scroll();
+            }
+        }
+        // A finger held on selectable text selects the word there.
+        if let Some((x, y)) = self.touch.hold(std::time::Instant::now())
+            && self.context.ui.select_word_at(x, y)
+        {
+            self.touch.selecting();
+            // A link or button under the finger gives the press up now, so
+            // lifting there selects rather than clicks.
+            self.dispatch(InputEvent::PointerMove { x, y })?;
+        }
+        // A fling coasts a step each refresh, and stops at the end of what
+        // it scrolls.
+        if self.touch.flinging()
+            && (self.frame_arrived || !self.frames_presented())
+            && let Some((x, y, delta_x, delta_y)) = self
+                .touch
+                .coast(std::time::Instant::now(), self.device_pixel())
+            && !self.dispatch_prevented(InputEvent::Scroll {
+                x,
+                y,
+                delta_x,
+                delta_y,
+            })?
+        {
+            self.touch.stop();
+        }
+        if let StartupTrim::At(at) = self.startup_trim
+            && std::time::Instant::now() >= at
+        {
+            self.startup_trim = StartupTrim::Done;
+            release_freed_heap();
+        }
+        if self
+            .frame_save_at
+            .is_some_and(|at| std::time::Instant::now() >= at)
+        {
+            self.frame_save_at = None;
+            self.save_frame();
+        }
+        if self
+            .release_images_at
+            .is_some_and(|at| std::time::Instant::now() >= at)
+        {
+            self.release_images_at = None;
+            zgx::image::release_decoded();
+        }
+        if self
+            .trim_at
+            .is_some_and(|at| std::time::Instant::now() >= at)
+        {
+            self.trim_at = None;
+            if std::mem::take(&mut self.trim_atlas) {
+                if let Some(renderer) = &mut self.renderer {
+                    renderer.trim_atlas();
+                }
+            } else {
+                // Garbage scripts made (`zgx::idle`), first: what it frees,
+                // the trims below give back.
+                zgx::idle::trim(&self.context.ui.runtime);
+                if let Some(renderer) = &mut self.renderer {
+                    renderer.trim();
+                    // Only a window with an atlas to give back wakes again.
+                    if renderer.atlas_grown() {
+                        self.trim_at = Some(std::time::Instant::now() + ATLAS_TRIM_DELAY);
+                        self.trim_atlas = true;
+                    }
+                }
+                self.native.trim();
+                release_freed_heap();
+            }
+        }
+        loop {
+            let task = self.pending.borrow_mut().pop_front();
+            let Some(task) = task else {
+                break;
+            };
+            self.tasks.spawn(task);
+        }
+        if self.tasks.has_ready() {
+            self.tick_tasks();
+        }
+        #[cfg(any(windows, target_os = "linux"))]
+        if let Some(caption) = &mut self.caption {
+            caption.sync(&mut self.context.ui);
+        }
+        // A key typed while frames follow the refresh draws at once: waiting
+        // for the next refresh's frame cost it a refresh (8 ms at 120 Hz)
+        // more than at rest. The newest frame is the one shown.
+        #[cfg(target_os = "macos")]
+        let paced = !std::mem::take(&mut self.input_arrived)
+            && (self.vsync_paced
+                || self
+                    .display_link
+                    .as_ref()
+                    .is_some_and(|link| link.running()));
+        // Input draws at once: presents replace one another until the
+        // compositor takes the newest (`present_mode`), so a key typed
+        // mid-refresh shows on the next, as it does at rest.
+        #[cfg(windows)]
+        let input = std::mem::take(&mut self.input_arrived);
+        #[cfg(windows)]
+        {
+            self.input_draw = input;
+        }
+        #[cfg(windows)]
+        let paced = !input
+            && self
+                .display_link
+                .as_ref()
+                .is_some_and(|link| link.running());
+        #[cfg(not(any(target_os = "macos", windows)))]
+        let paced = false;
+        // Scene damage accumulates until the refresh paints it in one frame.
+        if !paced || due || self.frame_arrived || self.force || self.redraw_whole {
+            #[cfg(target_os = "macos")]
+            {
+                self.refresh_frame = paced && self.frame_arrived;
+            }
+            self.frame_arrived = false;
+            self.draw()?;
+            #[cfg(target_os = "macos")]
+            {
+                self.refresh_frame = false;
+            }
+        }
+        self.sync_frames();
+        Ok(self.tasks.has_ready() || !self.pending.borrow().is_empty())
+    }
+    fn frames_presented(&self) -> bool {
+        self.window.is_some()
+            && self.state.visible
+            && !self.state.minimized
+            && !self.native_occluded
+    }
+    fn refresh_frame_interval(&mut self, window: &Window) {
+        self.frame_interval = crate::frame_source::interval_for(
+            window
+                .current_monitor()
+                .as_ref()
+                .and_then(crate::window_info::refresh_rate_hz),
+        );
+        // What the engine times itself steps by (springs, fades).
+        self.context.ui.set_refresh_interval(self.frame_interval);
+        // Which display and rate, for the renderer's full-rate verdict
+        // (`GpuRenderer::set_display_key`).
+        #[cfg(target_os = "macos")]
+        {
+            use winit::platform::macos::MonitorHandleExtMacOS;
+            let monitor = window.current_monitor();
+            self.display_key = format!(
+                "{}@{:.0}",
+                monitor.as_ref().map_or(0, |m| m.native_id()),
+                monitor
+                    .as_ref()
+                    .and_then(crate::window_info::refresh_rate_hz)
+                    .unwrap_or(0.)
+            );
+            if let Some(renderer) = &mut self.renderer {
+                renderer.set_display_key(&self.display_key);
+            }
+        }
+    }
+    /// Deliver one display refresh. Hidden windows keep their requests pending.
+    /// The link reported the grid while the timer paces frames: it takes
+    /// the next refresh's report, and delivers nothing.
+    #[cfg(target_os = "macos")]
+    fn link_reported(&mut self) {
+        if let Some(link) = &self.display_link {
+            link.consumed();
+        }
+    }
+    fn deliver_frame(&mut self, frame: Frame) {
+        #[cfg(any(target_os = "macos", windows))]
+        if let Some(link) = &self.display_link {
+            link.consumed();
+        }
+        // Drawables a refresh behind (`zgx_gpu::GpuRenderer::take_rephase`):
+        // on the view's link, this refresh draws nothing, the pool gets a
+        // drawable back, and frames show a refresh sooner from the next.
+        #[cfg(target_os = "macos")]
+        if let Some(waited) = self
+            .renderer
+            .as_mut()
+            .and_then(|renderer| renderer.take_rephase())
+            && self
+                .display_link
+                .as_ref()
+                .is_some_and(|link| link.on_view_clock())
+        {
+            self.rephased(waited);
+            return;
+        }
+        self.frame_arrived = true;
+        self.frame_deadline = None;
+        self.frame_heartbeat = Some(std::time::Instant::now());
+        if self.frames_presented() {
+            self.frames.deliver(frame);
+        }
+    }
+    /// A tick skipped to put drawables back in phase. Profiling
+    /// (`ZGX_PROFILE`) or in a debug build, what led to it: the longest
+    /// gaps between this window's last frames, as the stall that filled the
+    /// pool would show.
+    #[cfg(target_os = "macos")]
+    fn rephased(&mut self, waited: std::time::Duration) {
+        self.rephases += 1;
+        if cfg!(debug_assertions) || zgx::profile::enabled() {
+            let gaps: Vec<String> = self
+                .frame_starts
+                .iter()
+                .zip(self.frame_starts.iter().skip(1))
+                .map(|(a, b)| b.saturating_duration_since(*a))
+                .filter(|gap| *gap > self.frame_interval + self.frame_interval / 2)
+                .map(|gap| format!("{:.1}", gap.as_secs_f64() * 1e3))
+                .collect();
+            eprintln!(
+                "zgx: drawables back in phase ({}): {:.1} ms waits for a drawable; frame gaps over 1.5 refreshes before it: [{}] ms",
+                self.rephases,
+                waited.as_secs_f64() * 1e3,
+                gaps.join(", ")
+            );
+        }
+    }
+    fn poll_frame_deadline(&mut self, now: std::time::Instant) {
+        if self.frame_deadline.is_some_and(|deadline| now >= deadline) {
+            let frame = self.frame_timer.frame(now, self.frame_interval);
+            self.deliver_frame(frame);
+        }
+    }
+    /// The display's refresh grid (a refresh's start, and the period) for
+    /// handing over a steady frame at a set point before a refresh, where the
+    /// window server reliably shows it on that refresh (`Latch::decide`).
+    ///
+    /// Frames an app's own timer produces (a 60 Hz stream, say) are ready at
+    /// whatever phase that timer has against the display, fixed for as long
+    /// as both run. Handed over at once, those near the window server's
+    /// latch make a refresh or miss it by chance, so showing every other
+    /// refresh becomes one refresh, then three: in captures of a window at
+    /// 120 Hz, 1–5% of intervals, and in some runs 20%. Handed over about
+    /// 2 ms before a refresh shows (`Latch::LEAD`, on the display's exact
+    /// refresh grid: see `DisplayLink::refresh_phase`), none in 99.9%; 2 ms
+    /// or more away from that, runs again miss. Each frame keeps the last one's cadence (whole
+    /// refreshes after it) while that stays ahead, so one ready near a point
+    /// does not alternate between it and the next. Frames the link paces
+    /// start at a refresh and are left alone.
+    #[cfg(target_os = "macos")]
+    fn refresh_grid(&mut self) -> Option<(std::time::Instant, std::time::Duration)> {
+        let now = std::time::Instant::now();
+        // Switched off (`zgx inspect switch refresh_grid off`), steady frames
+        // hand over as soon as they are drawn.
+        if !zgx::switches::REFRESH_GRID.on() {
+            self.latch = Latch::default();
+            return None;
+        }
+        if self
+            .resized_at
+            .is_some_and(|at| now.duration_since(at) < RESIZE_SETTLE)
+        {
+            self.latch = Latch::default();
+            return None;
+        }
+        let steady = self
+            .presented_at
+            .is_some_and(|at| now.duration_since(at) < STEADY_GAP);
+        let refresh = self
+            .display_link
+            .as_ref()
+            .filter(|_| steady && !self.link_paced)
+            .and_then(|link| link.refresh_phase(crate::frame_source::VSYNC_RESYNC * 3));
+        let Some((phase, period)) = refresh else {
+            self.latch = Latch::default();
+            return None;
+        };
+        Some((now - phase, period))
+    }
+    /// Start, stop or schedule this window's frame source to match demand.
+    fn sync_frames(&mut self) {
+        let now = std::time::Instant::now();
+        let scrolling = self.scroll.active(now) || self.touch.flinging();
+        let wanted = (self.frames.wants_frame() || scrolling) && self.frames_presented();
+        if !wanted {
+            self.frame_heartbeat = None;
+            self.frame_deadline = None;
+        }
+        // Steady frames of the app's own timing present against the refresh
+        // grid (`refresh_grid`), which the link reports.
+        #[cfg(target_os = "macos")]
+        let steady = self
+            .presented_at
+            .is_some_and(|at| now.duration_since(at) < STEADY_GAP);
+        #[cfg(target_os = "macos")]
+        if (wanted || steady)
+            && self.display_link.is_none()
+            && let Some(window) = &self.window
+        {
+            // Created on first demand, so windows that never animate hold none.
+            let proxy = self.proxy.clone();
+            let token = self.context.window.token;
+            self.display_link = crate::frame_source::DisplayLink::new(window, move |frame| {
+                let _ = proxy.send_event(Event::Frame(token, frame));
+            });
+        }
+        #[cfg(target_os = "macos")]
+        if let Some(link) = &mut self.display_link {
+            let refresh = 1. / self.frame_interval.as_secs_f64();
+            // Scrolling and other input run at the display's full rate: frames
+            // paced to a reduced rate (animations that asked for one) would
+            // otherwise hold what input changed until their next tick, a drag
+            // shown at 12 fps up to 80 ms late.
+            let inputting = self.input_until.is_some_and(|until| now < until);
+            let rate = self
+                .frames
+                .demanded_rate(refresh)
+                .filter(|rate| !scrolling && !inputting && *rate < refresh - 0.5);
+            // Animating at the display's rate, the link paces every frame:
+            // locked to the display, frames reach the window server one a
+            // refresh, where a timer's wake-ups wander by milliseconds and
+            // leave some refreshes without a new frame. Otherwise (slower
+            // updates, scrolling) a timer paces them on the grid the link last
+            // reported, and the link (a thread spinning to each refresh) runs
+            // again only to resync.
+            let animating = wanted && rate.is_none() && !scrolling;
+            self.link_paced = animating;
+            if let Some(renderer) = &mut self.renderer {
+                renderer.set_full_rate(wanted && rate.is_none());
+            }
+            // Drawables are paced by the view's own link, tiles by the
+            // display's (see `frame_source::display_link`).
+            let drawables = self
+                .renderer
+                .as_ref()
+                .is_some_and(|renderer| renderer.drawables_showing());
+            // A GPU view's plane keeps to the window's clock: on the view's
+            // link, skipping a tick when its drawables waited, its frames
+            // waited a refresh as often (M5 Max, window 36: p99 17.6 ms
+            // against 13.1 left alone). Skipping one on the display's link
+            // paced as well, but the window server's GPU rose from 1.9% to
+            // 8.0%, near a composited view's 9.1%.
+            link.set_view_clock(drawables);
+            // Once the link has reported the grid, the timer continues it:
+            // a scroll starting after a pause, or the grid going stale, keeps
+            // its frames on the timer while the link reports again (see
+            // `link_reported`). Handing frames to the link meanwhile lost a
+            // refresh each time it started: a gesture's second frame came
+            // ~22 ms after its first, and a scroll lost one a second.
+            let synced = !animating && self.vsync_synced.is_some();
+            let timed = wanted && synced;
+            if timed && !self.vsync_paced {
+                // The link's watchdog deadline, if any, is not a refresh.
+                self.frame_deadline = None;
+            }
+            self.vsync_paced = timed;
+            // Steady frames of the app's own timing need the refresh grid
+            // only: the link runs a refresh or so a second to report it.
+            let stale = self
+                .vsync_synced
+                .is_none_or(|at| now.duration_since(at) >= crate::frame_source::VSYNC_RESYNC);
+            link.set_running((wanted && !synced) || ((wanted || steady) && stale));
+            if wanted {
+                if timed {
+                    if self.frame_deadline.is_none() {
+                        // On the refreshes the link delivers at this rate
+                        // (whole refreshes apart, on the same ones), so the
+                        // cadence holds as the link and the timer take turns.
+                        let every = rate.map_or(1, |rate| zgx::frame::divisor(refresh, rate));
+                        self.frame_deadline = Some(self.frame_timer.next_deadline_every(
+                            now,
+                            self.frame_interval,
+                            every,
+                        ));
+                    }
+                } else {
+                    link.set_preferred_rate(rate);
+                    let heartbeat = *self.frame_heartbeat.get_or_insert(now);
+                    self.frame_deadline = Some(heartbeat + crate::frame_source::WATCHDOG);
+                }
+            }
+            return;
+        }
+        // Windows: frames start as the compositor ticks (see
+        // `frame_source::compositor_clock`), the timer only a watchdog.
+        #[cfg(windows)]
+        {
+            if wanted
+                && self.display_link.is_none()
+                && let Some(window) = &self.window
+            {
+                // Created on first demand, so windows that never animate hold none.
+                let proxy = self.proxy.clone();
+                let token = self.context.window.token;
+                self.display_link = crate::frame_source::DisplayLink::new(window, move |frame| {
+                    let _ = proxy.send_event(Event::Frame(token, frame));
+                });
+            }
+            if let Some(link) = &mut self.display_link {
+                let refresh = 1. / self.frame_interval.as_secs_f64();
+                // Scrolling, and frames just after input, run at the
+                // display's full rate.
+                let inputting = self.input_until.is_some_and(|until| now < until);
+                let rate = self
+                    .frames
+                    .demanded_rate(refresh)
+                    .filter(|rate| !scrolling && !inputting && *rate < refresh - 0.5);
+                link.set_preferred_rate(rate);
+                link.set_running(wanted);
+                if wanted {
+                    let heartbeat = *self.frame_heartbeat.get_or_insert(now);
+                    self.frame_deadline = Some(heartbeat + crate::frame_source::WATCHDOG);
+                }
+                return;
+            }
+        }
+        if !wanted {
+            return;
+        }
+        if self.frame_paced {
+            if !self.frame_redraw_requested
+                && let Some(window) = &self.window
+            {
+                self.frame_redraw_requested = true;
+                window.request_redraw();
+            }
+            return;
+        }
+        if self.frame_deadline.is_none() {
+            self.frame_deadline = Some(self.frame_timer.next_deadline(now, self.frame_interval));
+        }
+    }
+}
+/// Windows' older clipboard keys, which its own fields still take:
+/// Ctrl+Insert copies, Shift+Insert pastes, Shift+Delete cuts.
+#[cfg(windows)]
+fn windows_clipboard_alias(key: &Key, m: zgx::input::Modifiers) -> Option<&'static str> {
+    match key {
+        Key::Insert if m.control && !m.shift && !m.alt => Some("c"),
+        Key::Insert if m.shift && !m.control && !m.alt => Some("v"),
+        Key::Delete if m.shift && !m.control && !m.alt => Some("x"),
+        _ => None,
+    }
+}
+/// Whether `event` is input that acts (a press, a key, a scroll, a gesture,
+/// text), which a frame usually follows: not a pointer passing over, or
+/// lifted.
+fn acts(event: &WindowEvent) -> bool {
+    match event {
+        WindowEvent::MouseInput { state, .. } => state.is_pressed(),
+        WindowEvent::KeyboardInput { event, .. } => event.state.is_pressed(),
+        WindowEvent::Touch(touch) => touch.phase == winit::event::TouchPhase::Started,
+        WindowEvent::MouseWheel { .. }
+        | WindowEvent::PinchGesture { .. }
+        | WindowEvent::Ime(winit::event::Ime::Preedit(..) | winit::event::Ime::Commit(_)) => true,
+        _ => false,
+    }
+}
+fn read_maximized_without_style_change(
+    decorated: bool,
+    resizable: bool,
+    requested: bool,
+    native_query: impl FnOnce() -> bool,
+) -> bool {
+    if cfg!(target_os = "macos") && (!decorated || !resizable) {
+        requested
+    } else {
+        native_query()
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+#[test]
+fn borderless_resize_never_calls_the_style_mutating_native_zoom_query() {
+    for (decorated, resizable) in [(false, true), (true, false), (false, false)] {
+        for requested in [false, true] {
+            assert_eq!(
+                read_maximized_without_style_change(decorated, resizable, requested, || {
+                    panic!("native query would mutate style and enqueue another resize")
+                }),
+                requested,
+            );
+        }
+    }
+    // A normal window must still report user-initiated zoom, independent of the
+    // last programmatic command.
+    assert!(read_maximized_without_style_change(
+        true,
+        true,
+        false,
+        || true
+    ));
+    assert!(!read_maximized_without_style_change(
+        true,
+        true,
+        true,
+        || false
+    ));
+}
+
+impl Drop for Host {
+    fn drop(&mut self) {
+        // Secure keyboard entry ends with the window that turned it on.
+        #[cfg(target_os = "macos")]
+        if std::mem::take(&mut self.password) {
+            crate::native_ime::secure_input(false);
+        }
+        // Closed before its last move settled: saved now.
+        if self.frame_save_at.take().is_some() {
+            self.save_frame();
+        }
+        self.unregister_file_surface();
+        self.context.window.closed.store(true, Ordering::Release);
+        self.context.ui.set_presented(false);
+        self.context.window_info.ready.set(false);
+        self.context.dialogs.attach(None);
+        // A pending native dialog may retain the native parent until its worker
+        // completes. Closing the logical window must still remove it visually.
+        if let Some(window) = &self.window {
+            window.set_visible(false);
+        }
+        self.pending.borrow_mut().clear();
+        if let Some(callback) = self.context.closed.take() {
+            callback();
+        }
+        // The renderer's surface first, while its window still is (fields
+        // drop in order, and `window` comes before `renderer`); then its
+        // Metal layer leaves the view. The layer (raw-window-metal's)
+        // observes the view's layer, which holds it as a sublayer, and
+        // stops observing only as it goes: freed after the view's layer,
+        // it would leave AppKit's records of the observation behind, a
+        // few hundred bytes for every window ever closed.
+        self.renderer = None;
+        #[cfg(target_os = "macos")]
+        if let Some(window) = &self.window {
+            detach_metal_layers(window);
+        }
+    }
+}
+/// Take the Metal layers a renderer put in `window`'s view out of it, so
+/// they go now, while what they observe is still there.
+#[cfg(target_os = "macos")]
+fn detach_metal_layers(window: &Window) {
+    use objc2::runtime::AnyClass;
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    let Ok(handle) = window.window_handle() else {
+        return;
+    };
+    let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
+        return;
+    };
+    let Some(metal) = AnyClass::get(c"CAMetalLayer") else {
+        return;
+    };
+    // SAFETY: winit's handle names its window's live view, on the main
+    // thread (hosts are dropped there).
+    let view = unsafe { handle.ns_view.cast::<objc2_app_kit::NSView>().as_ref() };
+    if let Some(layer) = view.layer() {
+        remove_sublayers(&layer, metal);
+    }
+}
+/// Take `layer`'s sublayers of `class` out of it.
+#[cfg(target_os = "macos")]
+fn remove_sublayers(layer: &objc2_quartz_core::CALayer, class: &objc2::runtime::AnyClass) {
+    use objc2::runtime::NSObjectProtocol;
+    // SAFETY: CALayer's own sublayer list. It is the layer's live list
+    // (each removal changes it, which its enumeration may not see), so
+    // those going are gathered first.
+    let going: Vec<_> = unsafe { layer.sublayers() }
+        .iter()
+        .flat_map(|list| list.iter())
+        .filter(|sublayer| sublayer.isKindOfClass(class))
+        .collect();
+    for sublayer in going {
+        sublayer.removeFromSuperlayer();
+    }
+}
+struct WindowManager {
+    #[cfg(target_os = "linux")]
+    native_data: Option<crate::wayland_data::NativeData>,
+    #[cfg(target_os = "linux")]
+    appearance: Option<crate::linux_appearance::Watcher>,
+    _native_events: Option<crate::native_events::NativeApplicationEvents>,
+    application_event: Option<ApplicationEventHandler>,
+    quit_on_last_window_close: bool,
+    #[cfg(target_os = "macos")]
+    native_menu: Option<crate::app_menu::NativeMenu>,
+    /// The menu bar is still to be made, by then at the latest
+    /// (`install_menu_bar`).
+    #[cfg(target_os = "macos")]
+    menu_bar_due: Option<std::time::Instant>,
+    hosts: HashMap<u64, Host>,
+    /// When the last contained panics were (`contain`): many close together
+    /// end the app.
+    panics: Vec<std::time::Instant>,
+    native: HashMap<WindowId, u64>,
+    /// The window a drag was last found over and its content's box in global
+    /// coordinates, and when: while the pointer stays in it, it still is,
+    /// asked of the window server again after `DRAG_OVER_FOR` (another
+    /// app's window may have come over it).
+    drag_over: Cell<Option<(u64, [f64; 4], std::time::Instant)>>,
+    /// The window whose drag others are hearing (`carry_drag`).
+    carrying: Option<u64>,
+    /// The window last focused: the one another launch raises (Linux).
+    #[cfg(target_os = "linux")]
+    last_focused: Option<u64>,
+    /// The last pointer move heard and not yet handled (Linux): see
+    /// `ApplicationHandler::window_event`.
+    #[cfg(target_os = "linux")]
+    pending_move: HeldMove<WindowId, WindowEvent>,
+    factory: WindowFactory,
+    active: bool,
+    error: Option<String>,
+    timers: zgx::timer::Hosted,
+}
+impl WindowManager {
+    /// A window event, handled now.
+    fn window_event_now(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        let token = self.native.get(&id).copied();
+        self.contain(event_loop, token, |this| {
+            this.window_event_turn(event_loop, id, event)
+        });
+        // Focus in a node recording a shortcut takes every key from the
+        // menu bar, as it moves there and away.
+        #[cfg(target_os = "macos")]
+        crate::app_menu::capture_keys(self.hosts.values().any(|host| {
+            let ui = &host.context.ui;
+            ui.input.captures_keys(&ui.scene.borrow())
+        }));
+    }
+    /// The pointer move held back (`pending_move`), handled now.
+    #[cfg(target_os = "linux")]
+    fn flush_move(&mut self, event_loop: &ActiveEventLoop) {
+        if let Some((id, event)) = self.pending_move.take() {
+            self.window_event_now(event_loop, id, event);
+        }
+    }
+}
+/// The pointer moves of one turn of the event loop, as one (Linux): the
+/// last move heard, for window `W`, not yet handled.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+struct HeldMove<W, E>(Option<(W, E)>);
+impl<W, E> Default for HeldMove<W, E> {
+    fn default() -> Self {
+        Self(None)
+    }
+}
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+impl<W: PartialEq, E> HeldMove<W, E> {
+    /// A move for window `id`, held in place of the one before; that one is
+    /// handed back to handle now if it was another window's (each window
+    /// hears its own last move, in order).
+    fn moved(&mut self, id: W, event: E) -> Option<(W, E)> {
+        let before = self.0.replace((id, event));
+        match before {
+            Some((window, _)) if Some(&window) == self.0.as_ref().map(|(id, _)| id) => None,
+            before => before,
+        }
+    }
+    /// The move held, to handle now: before another event, or as the turn
+    /// ends.
+    fn take(&mut self) -> Option<(W, E)> {
+        self.0.take()
+    }
+}
+/// The app's window a drag is over, and the pointer in its coordinates.
+type Over = (u64, f32, f32);
+/// How long the window a drag is over stays known while the pointer stays
+/// in it (`WindowManager::drag_over`).
+const DRAG_OVER_FOR: std::time::Duration = std::time::Duration::from_millis(100);
+impl WindowManager {
+    /// The app's window at global point `(x, y)` and the point in its
+    /// coordinates; `None` over none of them (another app's window, the
+    /// desktop). Known again without asking while the pointer stays in the
+    /// window it was last found in (`drag_over`).
+    fn window_under(&self, x: f64, y: f64) -> Option<Over> {
+        self.window_under_past(x, y, None)
+    }
+    /// `window_under`, past window `moving` (whose drag moves it, so it is
+    /// always under the pointer): what is beneath it.
+    fn window_under_past(&self, x: f64, y: f64, moving: Option<u64>) -> Option<Over> {
+        let inside = |[left, top, width, height]: [f64; 4]| {
+            (left..left + width).contains(&x) && (top..top + height).contains(&y)
+        };
+        let at = |token: u64, rect: [f64; 4]| {
+            let scale = self.hosts.get(&token).map_or(1., Host::global_scale);
+            let (x, y) = crate::popup_window::points_at((x, y), (rect[0], rect[1]), scale);
+            (token, x as f32, y as f32)
+        };
+        if let Some((token, rect, when)) = self.drag_over.get()
+            && inside(rect)
+            && when.elapsed() < DRAG_OVER_FOR
+        {
+            return Some(at(token, rect));
+        }
+        let boxes: Vec<(u64, [f64; 4])> = self
+            .hosts
+            .iter()
+            .filter(|(token, _)| Some(**token) != moving)
+            .filter_map(|(token, host)| Some((*token, host.content_box()?)))
+            .filter(|(_, rect)| inside(*rect))
+            .collect();
+        // Which is in front there (another app's window may be) is the
+        // window server's to say.
+        let over = match boxes.as_slice() {
+            [] => None,
+            _ => {
+                let number = match moving.and_then(|moving| self.hosts[&moving].window_number) {
+                    Some(moving) => crate::window_place::window_below(x, y, moving),
+                    None => crate::popup_window::window_at(x, y),
+                };
+                boxes.into_iter().find(|(token, _)| {
+                    let own = self.hosts[token].window_number;
+                    own.is_some() && own == number
+                })
+            }
+        };
+        self.drag_over
+            .set(over.map(|(token, rect)| (token, rect, std::time::Instant::now())));
+        over.map(|(token, rect)| at(token, rect))
+    }
+    /// Where window `token`'s drag is: its state, and the app's window under
+    /// its pointer (`None`: over none of them). `None` without a drag, or
+    /// where windows cannot tell where others are (drags then stay in their
+    /// window).
+    fn drag_target(&self, token: u64) -> Option<(Option<Over>, zgx::input::DragState)> {
+        let source = self.hosts.get(&token)?;
+        let drag = source.context.ui.input.drag_state()?;
+        if drag.moves_window {
+            // The window follows the pointer: what is under the pointer is
+            // beneath the window.
+            let origin = source.content_origin?;
+            let at = (drag.x as f64, drag.y as f64);
+            let (x, y) = crate::window_place::pointer().unwrap_or_else(|| {
+                crate::popup_window::global_at(at, origin, source.global_scale())
+            });
+            return Some((self.window_under_past(x, y, Some(token)), drag));
+        }
+        let (width, height) = source.context.viewport.with_untracked(|viewport| *viewport);
+        // Inside its own window, that is in front (the drag began in it,
+        // so it is key): no need to ask the window server.
+        if (0. ..width).contains(&drag.x) && (0. ..height).contains(&drag.y) {
+            return Some((Some((token, drag.x, drag.y)), drag));
+        }
+        // Where windows have no place on screen (Wayland), out of its own
+        // window is out of the app's.
+        let Some(origin) = source.content_origin else {
+            return Some((None, drag));
+        };
+        let at = (drag.x as f64, drag.y as f64);
+        let (x, y) = crate::popup_window::global_at(at, origin, source.global_scale());
+        Some((self.window_under(x, y), drag))
+    }
+    /// After window `token`'s input: carry its drag to the app's window under
+    /// the pointer, whose destinations hear it (and none in the source
+    /// meanwhile); out of every window, carrying what other apps take, it
+    /// becomes the platform's. Once it ends, others hear it go.
+    fn carry_drag(&mut self, token: u64) {
+        let dragging = self
+            .hosts
+            .get(&token)
+            .is_some_and(|host| host.context.ui.input.is_dragging() && !host.native_drag.active());
+        if !dragging {
+            if let Some(host) = self.hosts.get_mut(&token)
+                && host.window_grab.take().is_some()
+                && let Some(window) = &host.window
+            {
+                crate::window_place::settle(window, &mut host.window_pending);
+            }
+            if self.carrying == Some(token) {
+                self.carrying = None;
+                self.drag_over.set(None);
+                for host in self.hosts.values() {
+                    host.context.ui.input.drag_out(&host.context.ui.scene);
+                }
+            }
+            return;
+        }
+        if let Some(source) = self.hosts.get_mut(&token) {
+            source.move_with_drag();
+        }
+        let Some((over, drag)) = self.drag_target(token) else {
+            return;
+        };
+        let over_other = over.filter(|(over, ..)| *over != token);
+        if self.carrying.is_some() || over_other.is_some() {
+            for (other, host) in &self.hosts {
+                if over_other.is_none_or(|(over, ..)| over != *other) {
+                    host.context.ui.input.drag_out(&host.context.ui.scene);
+                }
+            }
+        }
+        self.carrying = (over != Some((token, drag.x, drag.y))).then_some(token);
+        if let Some(source) = self.hosts.get_mut(&token) {
+            let ui = &source.context.ui;
+            // A drag moving its window is always over it: its own
+            // destinations never hear it.
+            let away = drag.moves_window || over.is_none_or(|(over, ..)| over != token);
+            ui.input.set_drag_away(&ui.scene, away);
+            if over.is_none() && !drag.moves_window {
+                source.hand_off_drag(&drag);
+            }
+        }
+        if let Some((other, x, y)) = over_other
+            && let Some(host) = self.hosts.get(&other)
+        {
+            let ui = &host.context.ui;
+            ui.input.drag_over(&ui.scene, &drag.payload, x, y);
+        }
+    }
+    /// Window `token`'s drag is released: over another of the app's
+    /// windows, it drops there; over none, it is torn off (`outside`).
+    fn drop_elsewhere(&mut self, token: u64) {
+        if self
+            .hosts
+            .get(&token)
+            .is_none_or(|host| host.native_drag.active())
+        {
+            return;
+        }
+        let Some((over, drag)) = self.drag_target(token) else {
+            return;
+        };
+        let (accepted, outside) = match over {
+            Some((over, ..)) if over == token => return,
+            Some((over, x, y)) => {
+                let Some(host) = self.hosts.get(&over) else {
+                    return;
+                };
+                let ui = &host.context.ui;
+                (ui.input.drag_drop(&ui.scene, &drag.payload, x, y), false)
+            }
+            // A window moved by its only tab stays where it was let go.
+            None => (false, !drag.moves_window),
+        };
+        if let Some(source) = self.hosts.get(&token) {
+            let ui = &source.context.ui;
+            ui.input.end_drag_elsewhere(&ui.scene, accepted, outside);
+        }
+    }
+    /// Window `token`'s pointer while its drag is X11's (`native_drag`):
+    /// its moves, release and Escape go to the drag, which the host then
+    /// hears as the platform's; other pointer input waits until it ends.
+    /// Whether the event was the drag's.
+    #[cfg(target_os = "linux")]
+    fn x11_drag_input(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        token: u64,
+        id: WindowId,
+        event: &WindowEvent,
+    ) -> bool {
+        use crate::native_drag::{self, NativeDrag};
+        if !native_drag::active(id) {
+            return false;
+        }
+        let Some(host) = self.hosts.get(&token) else {
+            return false;
+        };
+        let (scale, (left, top)) = (host.display_scale, host.content_origin.unwrap_or_default());
+        let ended = match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                let (x, y) = (left + position.x / scale, top + position.y / scale);
+                let own = self.window_under(x, y).is_some();
+                let root = ((x * scale).round() as i32, (y * scale).round() as i32);
+                native_drag::moved(root, (x, y), own);
+                if let Err(error) = self.native_drag(token, NativeDrag::Moved { x, y }) {
+                    self.fail(event_loop, error);
+                }
+                return true;
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } => native_drag::released(),
+            WindowEvent::KeyboardInput { event, .. }
+                if event.state == ElementState::Pressed
+                    && event.logical_key == WKey::Named(NamedKey::Escape) =>
+            {
+                native_drag::cancel().map(|(x, y)| (x, y, false))
+            }
+            WindowEvent::MouseInput { .. } | WindowEvent::MouseWheel { .. } => return true,
+            _ => return false,
+        };
+        if let Some((x, y, accepted)) = ended {
+            native_drag::end_session();
+            if let Err(error) = self.native_drag(token, NativeDrag::Ended { x, y, accepted }) {
+                self.fail(event_loop, error);
+            }
+        }
+        true
+    }
+    /// The platform's drag of window `token` moved or ended, at a global
+    /// point. Over another of the app's windows, that window's destinations
+    /// hear it, and a release drops there; else the source's host takes it
+    /// (`Host::native_drag_event`).
+    fn native_drag(
+        &mut self,
+        token: u64,
+        event: crate::native_drag::NativeDrag,
+    ) -> Result<(), Box<dyn Error>> {
+        use crate::native_drag::NativeDrag;
+        // Dropped and taken, its target finishing: zgx's drag ends, and the
+        // window's next drag may go to the platform (`Handoff::may_begin`).
+        if let NativeDrag::Performed { .. } = event {
+            zgx_gpu::present_log::log(|| "native drag performed".into());
+            return match self.hosts.get_mut(&token) {
+                Some(host) => {
+                    host.native_drag.performed();
+                    host.native_drag_event(event)
+                }
+                None => Ok(()),
+            };
+        }
+        // Where the platform says (Wayland: in which of the app's windows),
+        // else at a global point.
+        let (x, y, ended, within) = match event {
+            NativeDrag::Moved { x, y } => (x, y, None, None),
+            NativeDrag::Ended { x, y, accepted } => (x, y, Some(accepted), None),
+            NativeDrag::MovedIn { window, x, y } => (x, y, None, Some(window)),
+            NativeDrag::DroppedIn { window, x, y } => (x, y, Some(false), Some(window)),
+            NativeDrag::Left { x, y } => (x, y, Some(false), None),
+            NativeDrag::Performed { .. } => return Ok(()),
+        };
+        let Some(drag) = self
+            .hosts
+            .get(&token)
+            .and_then(|host| host.context.ui.input.drag_state())
+        else {
+            if ended.is_some()
+                && let Some(source) = self.hosts.get_mut(&token)
+            {
+                source.native_drag_gone();
+            }
+            return Ok(());
+        };
+        // Let go past every window, a drag of the app's own is torn off, as
+        // one released past them all without the platform (`drop_elsewhere`).
+        if let NativeDrag::Left { .. } = event
+            && drag.export.is_none()
+            && let Some(source) = self.hosts.get(&token)
+        {
+            let ui = &source.context.ui;
+            ui.input.end_drag_elsewhere(&ui.scene, false, true);
+        }
+        let over = match within {
+            Some(window) => self
+                .hosts
+                .contains_key(&window)
+                .then_some((window, x as f32, y as f32)),
+            None => self.window_under(x, y),
+        }
+        .filter(|(over, ..)| *over != token);
+        for (other, host) in &self.hosts {
+            if over.is_none_or(|(over, ..)| over != *other) {
+                host.context.ui.input.drag_out(&host.context.ui.scene);
+            }
+        }
+        if let Some(source) = self.hosts.get(&token) {
+            let ui = &source.context.ui;
+            ui.input.set_drag_away(&ui.scene, over.is_some());
+        }
+        let Some((other, ox, oy)) = over else {
+            return match self.hosts.get_mut(&token) {
+                Some(source) => source.native_drag_event(event),
+                None => Ok(()),
+            };
+        };
+        let dropped = match ended {
+            None => {
+                if let Some(host) = self.hosts.get(&other) {
+                    let ui = &host.context.ui;
+                    ui.input.drag_over(&ui.scene, &drag.payload, ox, oy);
+                }
+                false
+            }
+            Some(taken) => {
+                !taken
+                    && self.hosts.get(&other).is_some_and(|host| {
+                        let ui = &host.context.ui;
+                        ui.input.drag_drop(&ui.scene, &drag.payload, ox, oy)
+                    })
+            }
+        };
+        let Some(source) = self.hosts.get_mut(&token) else {
+            return Ok(());
+        };
+        if dropped {
+            let ui = &source.context.ui;
+            ui.input.end_drag_elsewhere(&ui.scene, true, false);
+        }
+        // Dropped in another window and not taken there: not taken at all.
+        if ended.is_some() && !dropped && within.is_some() {
+            let ui = &source.context.ui;
+            ui.input.end_drag_elsewhere(&ui.scene, false, false);
+        }
+        source.native_drag_event(event)
+    }
+    /// Raise the window in front (the last focused, else any) for another
+    /// launch of the app, with its `token`: on Wayland the compositor
+    /// activates it (`xdg_activation_v1`); on X11 the window manager does,
+    /// restoring a minimized window, and that launch's startup notification
+    /// ends.
+    #[cfg(target_os = "linux")]
+    fn raise(&mut self, token: String) {
+        let Some(window) = self
+            .last_focused
+            .and_then(|focused| self.hosts.get(&focused))
+            .or_else(|| self.hosts.values().next())
+            .and_then(|host| host.window.clone())
+        else {
+            return;
+        };
+        let wayland = window
+            .display_handle()
+            .is_ok_and(|handle| matches!(handle.as_raw(), RawDisplayHandle::Wayland(_)));
+        if wayland {
+            if let Some(data) = &self.native_data {
+                data.activate(token, window);
+            }
+        } else {
+            window.set_minimized(false);
+            window.focus_window();
+            crate::x11_startup::complete(&window, &token);
+        }
+    }
+    fn menu_action(&mut self, token: u64, action: crate::MenuAction) {
+        // The window's zoom items, which zgx puts in the View menu.
+        if let Some(zoom) = crate::app_menu::zoom_action(&action) {
+            if let Some(host) = self.hosts.get(&token)
+                && !host.context.window.is_closed()
+            {
+                use crate::app_menu::ZoomAction;
+                let ui = &host.context.ui;
+                match zoom {
+                    ZoomAction::In => ui.zoom_in(),
+                    ZoomAction::Out => ui.zoom_out(),
+                    ZoomAction::Reset => ui.reset_zoom(),
+                }
+            }
+            return;
+        }
+        // Find in page's items, which zgx puts in the Edit menu.
+        if let Some(find) = crate::app_menu::find_action(&action) {
+            if let Some(host) = self.hosts.get_mut(&token)
+                && !host.context.window.is_closed()
+            {
+                use crate::app_menu::FindAction;
+                let ui = &mut host.context.ui;
+                match find {
+                    FindAction::Open => {
+                        ui.open_find();
+                    }
+                    FindAction::Next => ui.find_next(),
+                    FindAction::Previous => ui.find_previous(),
+                    FindAction::UseSelection => {
+                        ui.find_selection();
+                    }
+                }
+            }
+            return;
+        }
+        if !crate::app_menu::enabled_action(&self.factory.menus.borrow(), &action) {
+            return;
+        }
+        if let Some(host) = self.hosts.get_mut(&token) {
+            if host.context.window.is_closed() {
+                return;
+            }
+            // A standard edit item does what its shortcut does to what has
+            // focus (an editor's copy, paste, undo); with nothing to take
+            // it, it reaches the app.
+            if let Some(item) = crate::app_menu::StandardItem::of(&action)
+                && host.standard_edit(item)
+            {
+                return;
+            }
+            let handled = host
+                .context
+                .ui
+                .input
+                .dispatch_action(
+                    &host.context.ui.scene,
+                    zgx::actions::Action::new(action.clone()),
+                )
+                .default_prevented;
+            if handled {
+                return;
+            }
+            if let Some(callback) = &mut host.context.menu_action {
+                callback(action);
+            }
+        }
+    }
+    fn fail(&mut self, event_loop: &ActiveEventLoop, error: impl std::fmt::Display) {
+        if self.error.is_none() {
+            self.error = Some(error.to_string());
+        }
+        event_loop.exit();
+    }
+    fn create_pending(&mut self, event_loop: &ActiveEventLoop) -> Result<(), Box<dyn Error>> {
+        loop {
+            let request = self.factory.pending.borrow_mut().pop_front();
+            let Some(request) = request else {
+                break;
+            };
+            if request.handle.is_closed() {
+                continue;
+            }
+            let token = request.handle.token;
+            let mut host = Host::new(request.options, request.handle, self.factory.clone());
+            host.state = request.state;
+            (request.build)(&mut host.context);
+            if host.context.window.is_closed() {
+                continue;
+            }
+            if self.active {
+                host.create_window(event_loop)?;
+                self.native
+                    .insert(host.window.as_ref().unwrap().id(), token);
+            }
+            self.hosts.insert(token, host);
+        }
+        Ok(())
+    }
+    fn request_close(&mut self, token: u64) {
+        let allowed = self.hosts.get_mut(&token).is_some_and(|host| {
+            host.context
+                .close_requested
+                .as_mut()
+                .is_none_or(|callback| callback())
+        });
+        if allowed {
+            self.close(token);
+        }
+    }
+    fn close(&mut self, token: u64) {
+        if let Some(host) = self.hosts.remove(&token)
+            && let Some(window) = &host.window
+        {
+            self.native.remove(&window.id());
+            #[cfg(all(target_os = "macos", zgx_winit_patched))]
+            crate::services::remove(window.id());
+            #[cfg(all(target_os = "macos", zgx_winit_patched))]
+            crate::swipes::remove(window.id());
+            #[cfg(all(
+                any(target_os = "macos", windows, target_os = "linux"),
+                zgx_winit_patched
+            ))]
+            crate::text_drop::remove(window.id());
+            crate::popup_window::set_zoom(window.id(), 1.);
+            // Its drag, if X11's, goes with it.
+            #[cfg(target_os = "linux")]
+            if crate::native_drag::active(window.id()) {
+                crate::native_drag::end_session();
+            }
+        }
+    }
+}
+impl Drop for WindowManager {
+    fn drop(&mut self) {
+        self.factory.alive.set(false);
+        self.factory.gpu_contexts.borrow_mut().clear();
+        // Cloned public factories become inert at shutdown and must not keep
+        // the clipboard worker or its owned display connection alive.
+        let clipboard = self.factory.clipboard.borrow_mut().take();
+        drop(clipboard);
+        let mut pending = self.factory.pending.borrow_mut();
+        for request in pending.iter() {
+            request.handle.closed.store(true, Ordering::Release);
+        }
+        pending.clear();
+    }
+}
+impl WindowManager {
+    /// The menu bar is about 70 M instructions of AppKit's (its first
+    /// `setMainMenu` above all, then the menus' items): made once the first
+    /// frame shows rather than on the way to it, at once with no window
+    /// about to show one, and after `MENU_BAR_LATEST` in any case.
+    #[cfg(target_os = "macos")]
+    fn install_menu_bar(&mut self) {
+        let Some(latest) = self.menu_bar_due else {
+            return;
+        };
+        if !FIRST_PRESENT.is_completed()
+            && std::time::Instant::now() < latest
+            && self
+                .hosts
+                .values()
+                .any(|host| host.window.is_some() && host.state.visible && !host.state.minimized)
+        {
+            return;
+        }
+        self.menu_bar_due = None;
+        // A bar AppKit can't make is said, never the app's end: then the
+        // application and Window menus alone, every Mac app's.
+        if let Err(error) =
+            crate::app_menu::show_menus(&mut self.native_menu, &self.factory.menus())
+        {
+            eprintln!("zgx: the menu bar: {error}; showing the standard menus alone");
+            if let Err(error) = crate::app_menu::show_menus(&mut self.native_menu, &[]) {
+                eprintln!("zgx: the standard menus: {error}");
+            }
+        }
+    }
+    fn resumed_turn(&mut self, event_loop: &ActiveEventLoop) {
+        #[cfg(target_os = "macos")]
+        if let Some(events) = &self._native_events {
+            events.install();
+        }
+        // AppKit's full-screen notifications: `WindowContext::full_screen_transition`.
+        #[cfg(target_os = "macos")]
+        {
+            let proxy = self.factory.proxy.clone();
+            crate::window_chrome::watch_full_screen(move || {
+                let _ = proxy.send_event(Event::FullScreen);
+            });
+        }
+        #[cfg(target_os = "macos")]
+        if let Some(menu) = &self.native_menu {
+            menu.install();
+        }
+        self.active = true;
+        // The launcher's token: the first window takes it, so the desktop
+        // focuses it (Wayland) and ends the launch's busy cursor (X11).
+        // Gone from the environment, processes the app starts later do not
+        // take it as theirs.
+        #[cfg(target_os = "linux")]
+        {
+            use winit::platform::startup_notify::{
+                EventLoopExtStartupNotify, reset_activation_token_env,
+            };
+            if let Some(token) = event_loop.read_token_from_env() {
+                *self.factory.activation.borrow_mut() = Some(token);
+                reset_activation_token_env();
+            }
+        }
+        #[cfg(target_os = "linux")]
+        if self.native_data.is_none() {
+            let proxy = self.factory.proxy.clone();
+            match crate::wayland_data::NativeData::new(
+                event_loop.owned_display_handle(),
+                self.factory.file_routes.clone(),
+                Arc::new(move |token, event| {
+                    let _ = proxy.send_event(Event::NativeFiles(token, event));
+                }),
+            ) {
+                Ok(service) => self.native_data = service,
+                Err(error) => {
+                    eprintln!("zgx: native clipboard and file drops unavailable: {error}")
+                }
+            }
+        }
+        #[cfg(target_os = "linux")]
+        if self.appearance.is_none() {
+            let proxy = self.factory.proxy.clone();
+            self.appearance = crate::linux_appearance::watch(move || {
+                let _ = proxy.send_event(Event::AppearanceChanged);
+            });
+        }
+        if self.factory.clipboard.borrow().is_none() {
+            match crate::clipboard::Clipboard::new(
+                event_loop.owned_display_handle(),
+                #[cfg(target_os = "linux")]
+                self.native_data.as_ref().map(|data| data.clipboard()),
+            ) {
+                Ok(clipboard) => *self.factory.clipboard.borrow_mut() = Some(clipboard),
+                Err(error) => eprintln!("zgx: clipboard unavailable: {error}"),
+            }
+        }
+        for (token, host) in &mut self.hosts {
+            if host.context.window.is_closed() {
+                continue;
+            }
+            if let Err(e) = host.create_window(event_loop) {
+                self.fail(event_loop, e);
+                return;
+            }
+            self.native
+                .insert(host.window.as_ref().unwrap().id(), *token);
+        }
+        if let Err(e) = self.create_pending(event_loop) {
+            self.fail(event_loop, e);
+        }
+    }
+    fn suspended_turn(&mut self) {
+        self.active = false;
+        self.native.clear();
+        for host in self.hosts.values_mut() {
+            host.suspend();
+        }
+    }
+    fn user_event_turn(&mut self, event_loop: &ActiveEventLoop, event: Event) {
+        match event {
+            Event::Quit => event_loop.exit(),
+            #[cfg(target_os = "macos")]
+            Event::FullScreen => self.apply_full_screen(),
+            Event::Application(event, token) => {
+                // The window this brings up takes the launch's token...
+                #[cfg(target_os = "linux")]
+                if let Some(token) = &token {
+                    *self.factory.activation.borrow_mut() =
+                        Some(winit::window::ActivationToken::from_raw(token.clone()));
+                }
+                #[cfg(not(target_os = "linux"))]
+                let _ = token;
+                if let Some(handler) = &mut self.application_event {
+                    handler(event, &self.factory);
+                }
+                // ...or, bringing up none, the one in front is raised.
+                #[cfg(target_os = "linux")]
+                if self.factory.pending.borrow().is_empty() {
+                    let token = self.factory.activation.borrow_mut().take();
+                    if let Some(token) = token {
+                        self.raise(token.into_raw());
+                    }
+                }
+            }
+            Event::MenuAction(token, action) => self.menu_action(token, action),
+            Event::MenuFallback(token, action) => {
+                if crate::app_menu::enabled_action(&self.factory.menus.borrow(), &action)
+                    && let Some(host) = self.hosts.get_mut(&token)
+                    && !host.context.window.is_closed()
+                    && let Some(callback) = &mut host.context.menu_action
+                {
+                    callback(action);
+                }
+            }
+            #[cfg(target_os = "linux")]
+            Event::NativeFiles(token, event) => {
+                if let Some(host) = self.hosts.get_mut(&token)
+                    && !host.context.window.is_closed()
+                {
+                    use crate::wayland_data::FileEvent;
+                    let result = match event {
+                        FileEvent::Hover { x, y, path } => {
+                            host.dispatch(InputEvent::FileHover { x, y, path })
+                        }
+                        FileEvent::Leave => host.dispatch(InputEvent::FileHoverCancelled),
+                        FileEvent::TextOver { x, y } => {
+                            crate::wayland_data::answer_text(crate::text_drop::over(
+                                &host.context.ui,
+                                x,
+                                y,
+                            ));
+                            Ok(())
+                        }
+                        FileEvent::TextOut => {
+                            crate::text_drop::out(&host.context.ui);
+                            Ok(())
+                        }
+                        FileEvent::TextDrop {
+                            x,
+                            y,
+                            text,
+                            accepted,
+                        } => {
+                            let taken = crate::text_drop::dropped(&host.context.ui, x, y, &text);
+                            let _ = accepted.send(taken);
+                            Ok(())
+                        }
+                        FileEvent::Rejected { x, y, reason } => {
+                            host.dispatch(InputEvent::FilesDropRejected { x, y, reason })
+                        }
+                        FileEvent::Drop {
+                            x,
+                            y,
+                            paths,
+                            accepted,
+                        } => {
+                            let mut result = Ok(());
+                            let mut handled = false;
+                            for path in paths.iter() {
+                                if host.context.window.is_closed() {
+                                    break;
+                                }
+                                match host.dispatch_prevented(InputEvent::FileDrop {
+                                    x,
+                                    y,
+                                    path: path.clone(),
+                                }) {
+                                    Ok(value) => handled |= value,
+                                    Err(error) => {
+                                        result = Err(error);
+                                        break;
+                                    }
+                                }
+                            }
+                            if result.is_ok() && !host.context.window.is_closed() {
+                                match host.dispatch_prevented(InputEvent::FilesDrop { x, y, paths })
+                                {
+                                    Ok(value) => handled |= value,
+                                    Err(error) => result = Err(error),
+                                }
+                            }
+                            let _ = accepted.send(
+                                result.is_ok() && handled && !host.context.window.is_closed(),
+                            );
+                            result
+                        }
+                    };
+                    if let Err(error) = result {
+                        self.fail(event_loop, error);
+                    }
+                }
+            }
+            #[cfg(target_os = "linux")]
+            Event::AppearanceChanged => {
+                for host in self.hosts.values_mut() {
+                    crate::system_colors::sync(&host.context.ui);
+                    crate::scrollers::sync(&host.context.ui);
+                    // The desktop's window buttons may have moved.
+                    #[cfg(target_os = "linux")]
+                    if let Some(caption) = &mut host.caption {
+                        caption.sync(&mut host.context.ui);
+                        if let Some(window) = &host.window {
+                            host.context
+                                .window_info
+                                .refresh(window, host.options.titlebar);
+                        }
+                    }
+                }
+            }
+            Event::ImagesDecoded => {
+                for host in self.hosts.values_mut() {
+                    if host
+                        .renderer
+                        .as_mut()
+                        .is_some_and(|renderer| renderer.images_decoded())
+                    {
+                        host.force = true;
+                        if let Some(window) = &host.window {
+                            window.request_redraw();
+                        }
+                    }
+                }
+            }
+            Event::FontsReplaced => {
+                for host in self.hosts.values_mut() {
+                    if let Some(renderer) = &mut host.renderer {
+                        renderer.fonts_replaced();
+                    }
+                    host.context.ui.scene.borrow_mut().fonts_replaced();
+                    host.context.ui.refresh_text_geometry();
+                    if let Some(window) = &host.window {
+                        window.request_redraw();
+                    }
+                }
+            }
+            Event::MenusChanged => {
+                let menus = self.factory.menus();
+                let reserved = self.factory.reserved.borrow().clone();
+                // A menu bar still to be made is made from them then.
+                // One AppKit can't make is said and the last good bar kept,
+                // never the app's end; the shortcuts below still follow.
+                #[cfg(target_os = "macos")]
+                if self.menu_bar_due.is_none()
+                    && let Err(error) = crate::app_menu::show_menus(&mut self.native_menu, &menus)
+                {
+                    eprintln!("zgx: the menu bar: {error}; the last one stays");
+                }
+                for host in self.hosts.values_mut() {
+                    host.context.menu_model.set(menus.clone());
+                    let root = host.context.ui.scene.borrow().root();
+                    host.menu_binding = host
+                        .context
+                        .ui
+                        .input
+                        .bind_keys(root, crate::app_menu::keymap(&menus, &reserved));
+                }
+            }
+            #[cfg(target_os = "macos")]
+            Event::NativeMenuAction(action) => {
+                // The key window: winit reports a window unfocused while a
+                // native view in it (a web page, a terminal) has first
+                // responder, so ask AppKit too.
+                let focused = self
+                    .hosts
+                    .iter()
+                    .find(|(_, host)| host.native_focused && !host.context.window.is_closed())
+                    .or_else(|| {
+                        self.hosts.iter().find(|(_, host)| {
+                            !host.context.window.is_closed()
+                                && host.window.as_ref().is_some_and(|w| is_key_window(w))
+                        })
+                    })
+                    .map(|(token, _)| *token)
+                    // No key window (the app is in the background, a menu
+                    // chosen through accessibility): its only window.
+                    .or_else(|| {
+                        let mut open = self
+                            .hosts
+                            .iter()
+                            .filter(|(_, host)| !host.context.window.is_closed());
+                        match (open.next(), open.next()) {
+                            (Some((token, _)), None) => Some(*token),
+                            _ => None,
+                        }
+                    });
+                if let Some(token) = focused {
+                    self.menu_action(token, action);
+                }
+            }
+            Event::WindowCommand(token, command) => {
+                if let Some(host) = self.hosts.get_mut(&token) {
+                    if !host.context.window.is_closed() {
+                        host.command(command);
+                    }
+                } else if let Some(request) = self
+                    .factory
+                    .pending
+                    .borrow_mut()
+                    .iter_mut()
+                    .find(|request| request.handle.token == token && !request.handle.is_closed())
+                {
+                    request.state.apply(&mut request.options, &command);
+                }
+            }
+            Event::Close(token) => self.close(token),
+            Event::RequestClose(token) => self.request_close(token),
+            Event::Popup(token, input) => {
+                if let Some(host) = self.hosts.get_mut(&token)
+                    && !host.context.window.is_closed()
+                    && let Err(error) = host.popup_input(input)
+                {
+                    self.fail(event_loop, error);
+                }
+            }
+            Event::NativeDrag(token, drag) => {
+                if self
+                    .hosts
+                    .get(&token)
+                    .is_some_and(|host| !host.context.window.is_closed())
+                    && let Err(error) = self.native_drag(token, drag)
+                {
+                    self.fail(event_loop, error);
+                }
+                // An X11 drag's target finished with it.
+                #[cfg(target_os = "linux")]
+                if matches!(drag, crate::native_drag::NativeDrag::Ended { .. }) {
+                    crate::native_drag::end_session();
+                }
+            }
+            Event::PopupSoon(token) => {
+                #[cfg(target_os = "linux")]
+                crate::popup_window::make(event_loop);
+                if let Some(host) = self.hosts.get(&token) {
+                    host.context.ui.popup_soon_heard();
+                    if let Some(renderer) = &host.renderer {
+                        crate::popup_window::warm(&renderer.context(), host.scale_factor as f32);
+                    }
+                    // The work areas as the popup opens (the taskbar may have
+                    // moved since the window last did); none if no popup
+                    // window could be readied.
+                    #[cfg(windows)]
+                    if let Some(window) = &host.window {
+                        host.context
+                            .ui
+                            .set_popup_screens(crate::popup_window::popup_screens(window));
+                    }
+                }
+            }
+            Event::Zoom(token) => {
+                if let Some(host) = self.hosts.get_mut(&token)
+                    && let Err(error) = host.apply_zoom()
+                {
+                    self.fail(event_loop, error);
+                }
+            }
+            Event::Wake(token) => {
+                // A plane's frame owed, its drawable come: drawn now, not at
+                // the window's next display cycle.
+                #[cfg(target_os = "macos")]
+                if let Some(host) = self.hosts.get_mut(&token) {
+                    host.draw_owed_planes();
+                }
+                #[cfg(not(target_os = "macos"))]
+                let _ = self.hosts.get(&token);
+            }
+            Event::Timers => {}
+            #[cfg(target_os = "macos")]
+            Event::Frame(token, frame) => {
+                if let Some(host) = self.hosts.get_mut(&token)
+                    && !host.context.window.is_closed()
+                {
+                    // The refresh after this one starts as this one shows.
+                    host.frame_timer =
+                        crate::frame_source::FrameTimer::aligned(frame.time, frame.index + 1);
+                    host.frame_interval = frame.interval;
+                    host.context.ui.set_refresh_interval(frame.interval);
+                    host.vsync_synced = Some(std::time::Instant::now());
+                    if host.vsync_paced {
+                        // The timer paces: the link only reported the grid.
+                        host.link_reported();
+                    } else {
+                        // `about_to_wait` runs next in this same loop pass,
+                        // stepping the woken animations and painting once.
+                        host.deliver_frame(frame);
+                    }
+                }
+            }
+            #[cfg(windows)]
+            Event::Frame(token, frame) => {
+                if let Some(host) = self.hosts.get_mut(&token)
+                    && !host.context.window.is_closed()
+                {
+                    // The watchdog timer, should the clock stall, continues
+                    // its grid.
+                    host.frame_timer =
+                        crate::frame_source::FrameTimer::aligned(frame.time, frame.index + 1);
+                    host.frame_interval = frame.interval;
+                    host.context.ui.set_refresh_interval(frame.interval);
+                    host.deliver_frame(frame);
+                }
+            }
+            Event::Redraw(token) => {
+                if let Some(host) = self.hosts.get_mut(&token) {
+                    host.presentation.expose();
+                    host.force = true;
+                }
+            }
+            Event::Open => {}
+            Event::Accessibility(event) => {
+                if let Some(token) = self.native.get(&event.window_id).copied()
+                    && let Some(host) = self.hosts.get_mut(&token)
+                {
+                    host.accessibility_event(event.window_event);
+                }
+            }
+        }
+        // While a drag is Windows' (`native_drag`), `DoDragDrop`'s loop runs
+        // in place of winit's, which does not turn: each event ends as a turn
+        // would, stepping animations and painting, so windows go on as
+        // through a live resize. Frames keep coming every refresh meanwhile.
+        #[cfg(windows)]
+        if self.hosts.values().any(|host| host.native_drag.active()) {
+            self.about_to_wait(event_loop);
+        }
+    }
+    fn window_event_turn(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        id: WindowId,
+        event: WindowEvent,
+    ) {
+        // AppKit's full-screen notifications first: a will comes inside the
+        // call that starts the transition, before winit's resizes for it.
+        #[cfg(target_os = "macos")]
+        self.apply_full_screen();
+        // A popup window's input goes to its parent's host (X11).
+        #[cfg(target_os = "linux")]
+        if crate::popup_window::route(id, &event) {
+            return;
+        }
+        let Some(token) = self.native.get(&id).copied() else {
+            return;
+        };
+        // A key pressed before the menu bar is made: AppKit offers every key
+        // to the menu bar before the window, so the menu bar is made now and
+        // offered it, and its shortcuts (⌘Q, the app's own) hold from the
+        // first key.
+        #[cfg(target_os = "macos")]
+        if self.menu_bar_due.is_some()
+            && matches!(&event, WindowEvent::KeyboardInput { event, .. } if event.state.is_pressed())
+        {
+            self.menu_bar_due = Some(std::time::Instant::now());
+            self.install_menu_bar();
+            if crate::app_menu::offer_current_key() {
+                return;
+            }
+        }
+        if matches!(event, WindowEvent::CloseRequested) {
+            self.request_close(token);
+            return;
+        }
+        if matches!(event, WindowEvent::Destroyed) {
+            self.close(token);
+            return;
+        }
+        #[cfg(target_os = "linux")]
+        if matches!(event, WindowEvent::Focused(true)) {
+            self.last_focused = Some(token);
+        }
+        #[cfg(target_os = "linux")]
+        if self.x11_drag_input(event_loop, token, id, &event) {
+            return;
+        }
+        // A drag released over another of the app's windows drops there.
+        let pointer = matches!(
+            event,
+            WindowEvent::CursorMoved { .. } | WindowEvent::MouseInput { .. }
+        );
+        if matches!(
+            event,
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            }
+        ) {
+            self.drop_elsewhere(token);
+        }
+        if let Some(host) = self.hosts.get_mut(&token)
+            && let Err(e) = host.own_event(event)
+        {
+            self.fail(event_loop, e);
+        }
+        if pointer {
+            self.carry_drag(token);
+        }
+    }
+    /// AppKit's full-screen notifications queued since the last turn
+    /// (`window_chrome::watch_full_screen`), each to its window's host, in
+    /// the order they came. Applied as each turn begins, so a will goes
+    /// before the resizes it brings; nothing queued, nothing done.
+    #[cfg(target_os = "macos")]
+    fn apply_full_screen(&mut self) {
+        for (number, phase, duration, seq) in crate::window_chrome::take_full_screen() {
+            let Some(host) = self
+                .hosts
+                .values_mut()
+                .find(|host| host.window_number == Some(number))
+            else {
+                continue;
+            };
+            host.full_screen(phase, duration, seq);
+        }
+    }
+    fn about_to_wait_turn(&mut self, event_loop: &ActiveEventLoop) {
+        #[cfg(target_os = "macos")]
+        self.apply_full_screen();
+        // A close request must terminate even while native surfaces are suspended.
+        let closed: Vec<_> = self
+            .hosts
+            .iter()
+            .filter_map(|(token, host)| host.context.window.is_closed().then_some(*token))
+            .collect();
+        for token in closed {
+            self.close(token);
+        }
+        if self.quit_on_last_window_close
+            && self.hosts.is_empty()
+            && self.factory.pending.borrow().is_empty()
+        {
+            event_loop.exit();
+            return;
+        }
+        // A popup found no window ready: one is made for its next frame.
+        #[cfg(target_os = "linux")]
+        if crate::popup_window::wanted() {
+            crate::popup_window::make(event_loop);
+        }
+        // What Wayland popups heard (winit read the socket for them).
+        #[cfg(target_os = "linux")]
+        crate::popup_window::dispatch_wayland();
+        // Wake tasks whose sleeps are due before the hosts poll them.
+        self.timers.fire();
+        if !self.active {
+            event_loop.set_control_flow(match self.timers.deadline() {
+                Some(deadline) => ControlFlow::WaitUntil(deadline),
+                None => ControlFlow::Wait,
+            });
+            return;
+        }
+        if let Err(e) = self.create_pending(event_loop) {
+            self.fail(event_loop, e);
+            return;
+        }
+        #[cfg(target_os = "macos")]
+        self.install_menu_bar();
+        // macOS's Reduce motion, Increase contrast or Reduce transparency
+        // changed: every window's themes follow at once.
+        if crate::system_colors::display_options_changed() {
+            for host in self.hosts.values() {
+                crate::system_colors::sync(&host.context.ui);
+            }
+        }
+        // And the scroll bar style: overlay scrollbars come and go with it.
+        if crate::scrollers::style_changed() {
+            for host in self.hosts.values() {
+                crate::scrollers::sync(&host.context.ui);
+            }
+        }
+        let closed: Vec<_> = self
+            .hosts
+            .iter()
+            .filter_map(|(token, host)| host.context.window.is_closed().then_some(*token))
+            .collect();
+        for token in closed {
+            self.close(token);
+        }
+        if self.quit_on_last_window_close
+            && self.hosts.is_empty()
+            && self.factory.pending.borrow().is_empty()
+        {
+            event_loop.exit();
+            return;
+        }
+        let mut ready = false;
+        for host in self.hosts.values_mut() {
+            // A renderer lost with its GPU device, due another try; or a
+            // plane's frame left for a tick.
+            let now = std::time::Instant::now();
+            #[cfg(target_os = "macos")]
+            let plane_room = host.plane_retry.is_some()
+                && host
+                    .renderer
+                    .as_ref()
+                    .is_some_and(|renderer| renderer.planes_room());
+            #[cfg(not(target_os = "macos"))]
+            let plane_room = false;
+            if (host.renderer_retry.is_some_and(|at| at <= now)
+                || host.plane_retry.is_some_and(|at| at <= now)
+                || plane_room)
+                && let Some(window) = &host.window
+            {
+                window.request_redraw();
+            }
+            let drop_event = match host.pending_file_drops.take() {
+                Ok(Some(paths)) => Some(InputEvent::FilesDrop {
+                    x: host.cursor.0,
+                    y: host.cursor.1,
+                    paths,
+                }),
+                Ok(None) => None,
+                Err(reason) => Some(InputEvent::FilesDropRejected {
+                    x: host.cursor.0,
+                    y: host.cursor.1,
+                    reason,
+                }),
+            };
+            if let Some(event) = drop_event
+                && let Err(error) = host.dispatch(event)
+            {
+                self.fail(event_loop, error);
+                return;
+            }
+
+            match host.update() {
+                Ok(pending) => ready |= pending,
+                Err(e) => {
+                    self.fail(event_loop, e);
+                    return;
+                }
+            }
+            #[cfg(all(target_os = "linux", feature = "webkitgtk"))]
+            host.sync_page_cursor(event_loop);
+        }
+        ready |= !self.factory.pending.borrow().is_empty();
+        let deadline = self
+            .hosts
+            .values()
+            .flat_map(|host| {
+                [
+                    host.presentation.deadline(),
+                    host.context.ui.next_interaction_deadline(),
+                    host.frame_deadline,
+                    host.popups.deadline(),
+                    host.renderer_retry,
+                    host.plane_retry,
+                    host.touch.hold_deadline(),
+                    host.trim_at,
+                    host.release_images_at,
+                    host.frame_save_at,
+                    host.accessibility_pacer.deadline(),
+                    host.wheel_tape.borrow().deadline(),
+                    match host.startup_trim {
+                        StartupTrim::At(at) => Some(at),
+                        _ => None,
+                    },
+                ]
+            })
+            .flatten()
+            .chain(self.timers.deadline())
+            .chain({
+                #[cfg(target_os = "macos")]
+                let menu_bar = self.menu_bar_due;
+                #[cfg(not(target_os = "macos"))]
+                let menu_bar = None;
+                menu_bar
+            })
+            .min();
+        event_loop.set_control_flow(if ready {
+            ControlFlow::Poll
+        } else if let Some(deadline) = deadline {
+            ControlFlow::WaitUntil(deadline)
+        } else {
+            ControlFlow::Wait
+        });
+    }
+}
+
+/// The event loop's turns, each contained (`WindowManager::contain`).
+impl ApplicationHandler<Event> for WindowManager {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        self.contain(event_loop, None, |this| this.resumed_turn(event_loop));
+    }
+    fn suspended(&mut self, event_loop: &ActiveEventLoop) {
+        self.contain(event_loop, None, |this| this.suspended_turn());
+    }
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: Event) {
+        #[cfg(target_os = "linux")]
+        self.flush_move(event_loop);
+        self.contain(event_loop, None, |this| {
+            this.user_event_turn(event_loop, event)
+        });
+    }
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        // Pointer moves come as often as the mouse reports them (Wayland
+        // and X11 pass each on, up to 1000 a second), and each is handled
+        // on laid-out content: a move that changes layout (a pane's edge
+        // dragged) lays the window out again for every one. AppKit and
+        // Windows hand an app one move per turn; here the moves of one turn
+        // of the loop come as one, the last, handled before any other event
+        // (keeping their order) and before the loop waits.
+        #[cfg(target_os = "linux")]
+        {
+            if matches!(event, WindowEvent::CursorMoved { .. }) {
+                if let Some((other, moved)) = self.pending_move.moved(id, event) {
+                    self.window_event_now(event_loop, other, moved);
+                }
+                return;
+            }
+            self.flush_move(event_loop);
+        }
+        self.window_event_now(event_loop, id, event);
+    }
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        #[cfg(target_os = "linux")]
+        self.flush_move(event_loop);
+        self.contain(event_loop, None, |this| this.about_to_wait_turn(event_loop));
+    }
+    /// The windows still open (`Application::quit`, a failure) close while
+    /// the event loop is still there, not after `run_app` returns. On Linux
+    /// the loop's display connection goes with the loop (Wayland's
+    /// `wl_display` and every proxy winit made on it; X11's `Display` with
+    /// its last window), and what a window holds on it would go after: its
+    /// renderer's surface and its popups' (Mesa's WSI destroys their
+    /// buffers and queues through the display), and its pointer grab
+    /// (`popup_window::x11::release_grab`), all through freed memory.
+    #[cfg(target_os = "linux")]
+    fn exiting(&mut self, event_loop: &ActiveEventLoop) {
+        self.contain(event_loop, None, |this| {
+            let open: Vec<u64> = this.hosts.keys().copied().collect();
+            for token in open {
+                this.close(token);
+            }
+        });
+    }
+}
+impl WindowManager {
+    /// Run one turn of the event loop. A panic in it (an app's handler or
+    /// effect) is contained: the panic hook has logged it, its window (or
+    /// every window, when the turn was no one window's) says so in a
+    /// banner, and the app keeps running; zgx's state stays consistent
+    /// across an unwind (its borrows, subscriptions and focus recover).
+    /// Panics that keep coming (20 within a second) end the app instead.
+    fn contain(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        token: Option<u64>,
+        turn: impl FnOnce(&mut Self),
+    ) {
+        let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| turn(self)))
+        else {
+            return;
+        };
+        let message = payload
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| payload.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "a panic".into());
+        let now = std::time::Instant::now();
+        self.panics
+            .retain(|at| now.duration_since(*at) < std::time::Duration::from_secs(1));
+        self.panics.push(now);
+        if self.panics.len() >= 20 {
+            self.fail(event_loop, format!("panicking repeatedly: {message}"));
+            return;
+        }
+        eprintln!("zgx: contained a panic ({message}); the app keeps running");
+        for (key, host) in self.hosts.iter_mut() {
+            if token.is_none_or(|token| token == *key) {
+                host.show_error(&message);
+            }
+        }
+    }
+}
+/// The layout inspector's toggle, with I: Ctrl+Option+Cmd on macOS (no
+/// system or AppKit shortcut uses it), Ctrl+Alt+Shift elsewhere (where the
+/// Super key belongs to the desktop).
+fn inspector_shortcut(m: Modifiers) -> bool {
+    if cfg!(target_os = "macos") {
+        m.control && m.alt && m.meta && !m.shift
+    } else {
+        m.control && m.alt && m.shift && !m.meta
+    }
+}
+/// The key `event` is to zgx's key bindings, with `modifiers` held, as the
+/// window's own key presses are: for a key a native view would otherwise
+/// keep (a terminal's), asked whether it is one of the app's shortcuts.
+#[cfg(target_os = "macos")]
+pub(crate) fn shortcut_of(
+    event: &winit::event::KeyEvent,
+    modifiers: zgx::input::Modifiers,
+) -> Option<Key> {
+    map_key(&event.logical_key).map(|key| shortcut_key(key, event.physical_key, modifiers))
+}
+/// A shortcut's key on a layout of other letters (Russian, Greek, Hebrew,
+/// Arabic…): with Ctrl or Cmd held (and not Alt, which with Ctrl is
+/// Windows' AltGr, typing text), a character outside ASCII is the physical
+/// key's on a US layout, as browsers and GTK take shortcuts, so Ctrl+C
+/// copies whatever letter the layout puts on that key.
+fn shortcut_key(key: Key, physical: PhysicalKey, modifiers: zgx::input::Modifiers) -> Key {
+    let Key::Character(character) = &key else {
+        return key;
+    };
+    if !(modifiers.control || modifiers.meta) || modifiers.alt || character.is_ascii() {
+        return key;
+    }
+    let PhysicalKey::Code(code) = physical else {
+        return key;
+    };
+    let us = match code {
+        KeyCode::KeyA => "a",
+        KeyCode::KeyB => "b",
+        KeyCode::KeyC => "c",
+        KeyCode::KeyD => "d",
+        KeyCode::KeyE => "e",
+        KeyCode::KeyF => "f",
+        KeyCode::KeyG => "g",
+        KeyCode::KeyH => "h",
+        KeyCode::KeyI => "i",
+        KeyCode::KeyJ => "j",
+        KeyCode::KeyK => "k",
+        KeyCode::KeyL => "l",
+        KeyCode::KeyM => "m",
+        KeyCode::KeyN => "n",
+        KeyCode::KeyO => "o",
+        KeyCode::KeyP => "p",
+        KeyCode::KeyQ => "q",
+        KeyCode::KeyR => "r",
+        KeyCode::KeyS => "s",
+        KeyCode::KeyT => "t",
+        KeyCode::KeyU => "u",
+        KeyCode::KeyV => "v",
+        KeyCode::KeyW => "w",
+        KeyCode::KeyX => "x",
+        KeyCode::KeyY => "y",
+        KeyCode::KeyZ => "z",
+        KeyCode::Digit0 => "0",
+        KeyCode::Digit1 => "1",
+        KeyCode::Digit2 => "2",
+        KeyCode::Digit3 => "3",
+        KeyCode::Digit4 => "4",
+        KeyCode::Digit5 => "5",
+        KeyCode::Digit6 => "6",
+        KeyCode::Digit7 => "7",
+        KeyCode::Digit8 => "8",
+        KeyCode::Digit9 => "9",
+        KeyCode::Minus => "-",
+        KeyCode::Equal => "=",
+        KeyCode::BracketLeft => "[",
+        KeyCode::BracketRight => "]",
+        KeyCode::Backslash => "\\",
+        KeyCode::Semicolon => ";",
+        KeyCode::Quote => "'",
+        KeyCode::Backquote => "`",
+        KeyCode::Comma => ",",
+        KeyCode::Period => ".",
+        KeyCode::Slash => "/",
+        _ => return key,
+    };
+    Key::Character(us.into())
+}
+/// The physical key, as the DOM's `KeyboardEvent.code`.
+fn key_code(key: PhysicalKey) -> Option<std::rc::Rc<str>> {
+    match key {
+        PhysicalKey::Code(KeyCode::SuperLeft) => Some("MetaLeft".into()),
+        PhysicalKey::Code(KeyCode::SuperRight) => Some("MetaRight".into()),
+        PhysicalKey::Code(code) => Some(format!("{code:?}").into()),
+        PhysicalKey::Unidentified(_) => None,
+    }
+}
+fn map_key(key: &WKey) -> Option<Key> {
+    Some(match key {
+        WKey::Character(k) if k.as_str() == " " => Key::Space,
+        WKey::Character(k) => Key::Character(k.to_string()),
+        WKey::Named(k) => match k {
+            NamedKey::Tab => Key::Tab,
+            NamedKey::Enter => Key::Enter,
+            NamedKey::Space => Key::Space,
+            NamedKey::Escape => Key::Escape,
+            NamedKey::Backspace => Key::Backspace,
+            NamedKey::Delete => Key::Delete,
+            NamedKey::ArrowLeft => Key::ArrowLeft,
+            NamedKey::ArrowRight => Key::ArrowRight,
+            NamedKey::ArrowUp => Key::ArrowUp,
+            NamedKey::ArrowDown => Key::ArrowDown,
+            NamedKey::Home => Key::Home,
+            NamedKey::End => Key::End,
+            NamedKey::PageUp => Key::PageUp,
+            NamedKey::PageDown => Key::PageDown,
+            NamedKey::Insert => Key::Insert,
+            NamedKey::ContextMenu => Key::ContextMenu,
+            NamedKey::F1 => Key::Function(1),
+            NamedKey::F2 => Key::Function(2),
+            NamedKey::F3 => Key::Function(3),
+            NamedKey::F4 => Key::Function(4),
+            NamedKey::F5 => Key::Function(5),
+            NamedKey::F6 => Key::Function(6),
+            NamedKey::F7 => Key::Function(7),
+            NamedKey::F8 => Key::Function(8),
+            NamedKey::F9 => Key::Function(9),
+            NamedKey::F10 => Key::Function(10),
+            NamedKey::F11 => Key::Function(11),
+            NamedKey::F12 => Key::Function(12),
+            NamedKey::F13 => Key::Function(13),
+            NamedKey::F14 => Key::Function(14),
+            NamedKey::F15 => Key::Function(15),
+            NamedKey::F16 => Key::Function(16),
+            NamedKey::F17 => Key::Function(17),
+            NamedKey::F18 => Key::Function(18),
+            NamedKey::F19 => Key::Function(19),
+            NamedKey::F20 => Key::Function(20),
+            NamedKey::F21 => Key::Function(21),
+            NamedKey::F22 => Key::Function(22),
+            NamedKey::F23 => Key::Function(23),
+            NamedKey::F24 => Key::Function(24),
+            NamedKey::F25 => Key::Function(25),
+            NamedKey::F26 => Key::Function(26),
+            NamedKey::F27 => Key::Function(27),
+            NamedKey::F28 => Key::Function(28),
+            NamedKey::F29 => Key::Function(29),
+            NamedKey::F30 => Key::Function(30),
+            NamedKey::F31 => Key::Function(31),
+            NamedKey::F32 => Key::Function(32),
+            NamedKey::F33 => Key::Function(33),
+            NamedKey::F34 => Key::Function(34),
+            NamedKey::F35 => Key::Function(35),
+
+            _ => return None,
+        },
+        _ => return None,
+    })
+}
+
+/// `scale` zoomed by `zoom`: `scale` itself at 100%, no multiply to round it.
+fn zoomed(scale: f64, zoom: f64) -> f64 {
+    if zoom == 1. { scale } else { scale * zoom }
+}
+fn apply_viewport(
+    options: &mut WindowOptions,
+    ui: &Ui,
+    viewport: &Signal<(f32, f32)>,
+    size: PhysicalSize<u32>,
+    scale: f64,
+) -> bool {
+    if size.width == 0 || size.height == 0 || !scale.is_finite() || scale <= 0. {
+        return false;
+    }
+    let width = size.width as f64 / scale;
+    let height = size.height as f64 / scale;
+    if !width.is_finite()
+        || !height.is_finite()
+        || width > f32::MAX as f64
+        || height > f32::MAX as f64
+    {
+        return false;
+    }
+    // The window's size in points, as it was asked for: the display's, its
+    // content's zoom apart.
+    let zoom = ui.zoom();
+    options.width = zoomed(width, zoom);
+    options.height = zoomed(height, zoom);
+    ui.scene.borrow_mut().resize(width as f32, height as f32);
+    viewport.set((width as f32, height as f32));
+    true
+}
+fn native_cursor(cursor: zgx::cursor::Cursor) -> CursorIcon {
+    use zgx::cursor::Cursor as C;
+    match cursor {
+        C::Default => CursorIcon::Default,
+        C::Pointer => CursorIcon::Pointer,
+        C::Text => CursorIcon::Text,
+        C::VerticalText => CursorIcon::VerticalText,
+        C::Crosshair => CursorIcon::Crosshair,
+        C::Move => CursorIcon::Move,
+        C::Grab => CursorIcon::Grab,
+        C::Grabbing => CursorIcon::Grabbing,
+        C::NotAllowed => CursorIcon::NotAllowed,
+        C::Wait => CursorIcon::Wait,
+        C::Progress => CursorIcon::Progress,
+        C::Help => CursorIcon::Help,
+        C::ContextMenu => CursorIcon::ContextMenu,
+        C::Copy => CursorIcon::Copy,
+        C::Alias => CursorIcon::Alias,
+        C::NoDrop => CursorIcon::NoDrop,
+        C::AllScroll => CursorIcon::AllScroll,
+        C::ColResize => CursorIcon::ColResize,
+        C::RowResize => CursorIcon::RowResize,
+        C::EwResize => CursorIcon::EwResize,
+        C::NsResize => CursorIcon::NsResize,
+        C::NeswResize => CursorIcon::NeswResize,
+        C::NwseResize => CursorIcon::NwseResize,
+        C::ZoomIn => CursorIcon::ZoomIn,
+        C::ZoomOut => CursorIcon::ZoomOut,
+    }
+}
+/// The cursor a control shows unless it states one, as Chrome's defaults and
+/// AppKit's controls give it: the hand over links alone (a button, a
+/// checkbox, a menu item and a slider keep the arrow), the I-beam over text
+/// fields.
+fn cursor_for_role(role: Option<Role>) -> CursorIcon {
+    match role {
+        Some(Role::Link) => CursorIcon::Pointer,
+        Some(Role::TextInput | Role::MultilineTextInput) => CursorIcon::Text,
+        _ => CursorIcon::Default,
+    }
+}
+/// A trackpad scroll gesture, from winit's phases: the fingers' Started,
+/// Moved and Ended, then (if they flicked) the momentum's, reported alike.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Trackpad {
+    Idle,
+    Fingers,
+    /// The fingers lifted then: a start within a moment is momentum's.
+    Lifted(std::time::Instant),
+    Momentum,
+}
+impl Trackpad {
+    /// The gesture phase `phase` reports at `now`, if any.
+    fn phase(
+        &mut self,
+        phase: winit::event::TouchPhase,
+        now: std::time::Instant,
+    ) -> Option<zgx::input::ScrollGesture> {
+        use winit::event::TouchPhase;
+        use zgx::input::ScrollGesture;
+        const MOMENTUM: std::time::Duration = std::time::Duration::from_millis(50);
+        let (next, gesture) = match (phase, *self) {
+            (TouchPhase::Started, Trackpad::Lifted(at))
+                if now.saturating_duration_since(at) < MOMENTUM =>
+            {
+                (Trackpad::Momentum, Some(ScrollGesture::MomentumBegan))
+            }
+            (TouchPhase::Started, Trackpad::Momentum) => (Trackpad::Momentum, None),
+            (TouchPhase::Started, _) => (Trackpad::Fingers, Some(ScrollGesture::Began)),
+            (TouchPhase::Ended | TouchPhase::Cancelled, Trackpad::Fingers) => {
+                (Trackpad::Lifted(now), Some(ScrollGesture::Ended))
+            }
+            (TouchPhase::Ended | TouchPhase::Cancelled, Trackpad::Momentum) => {
+                (Trackpad::Idle, Some(ScrollGesture::MomentumEnded))
+            }
+            (_, state) => (state, None),
+        };
+        *self = next;
+        gesture
+    }
+}
+/// A wheel's motion in logical pixels: its lines (Windows' notches) at
+/// `step`'s pixels each across and down (`scrollers::wheel_step`).
+fn wheel_delta(delta: MouseScrollDelta, scale: f64, step: (f32, f32)) -> (f32, f32) {
+    match delta {
+        MouseScrollDelta::LineDelta(x, y) => (-x * step.0, -y * step.1),
+        MouseScrollDelta::PixelDelta(p) => {
+            let p = p.to_logical::<f32>(scale);
+            (-p.x, -p.y)
+        }
+    }
+}
+/// Whether wheel lines are continuous motion rather than notches. Windows
+/// reports a precision touchpad's (and a free-spinning wheel's) motion as
+/// wheel deltas of less than a notch (120); eased like notches, a swipe
+/// trailed the fingers. Whole notches stay notches.
+fn continuous_lines(x: f32, y: f32) -> bool {
+    let fraction = |lines: f32| (lines * 120.).round() as i32 % 120 != 0;
+    cfg!(windows) && (fraction(x) || fraction(y))
+}
+/// Report where a partially repainted frame differs from a full repaint:
+/// the bounding box of stale device pixels, and the frame's damage.
+fn check_damage(
+    renderer: &mut zgx_gpu::GpuRenderer,
+    scene: &zgx::scene::Scene,
+    damage: &[Rect],
+    full: &[Rect],
+    width: usize,
+    frame: u64,
+) -> Result<(), zgx_gpu::GpuError> {
+    let partial = renderer.readback()?;
+    renderer.render_uncounted(scene, full)?;
+    let fresh = renderer.readback()?;
+    let mut stale: Option<(usize, usize, usize, usize)> = None;
+    let mut count = 0;
+    for (index, (a, b)) in partial.chunks(4).zip(fresh.chunks(4)).enumerate() {
+        if a != b {
+            let (x, y) = (index % width, index / width);
+            count += 1;
+            stale = Some(stale.map_or((x, y, x, y), |(x0, y0, x1, y1)| {
+                (x0.min(x), y0.min(y), x1.max(x), y1.max(y))
+            }));
+        }
+    }
+    if let Some((x0, y0, x1, y1)) = stale {
+        eprintln!(
+            "ZGX_DAMAGE_CHECK frame {frame}: {count} stale device pixels in ({x0},{y0})..({x1},{y1}); damage {damage:?}"
+        );
+    }
+    Ok(())
+}
+
+/// Return freed heap pages to the system. glibc keeps what it frees mapped,
+/// including a software rasterizer's shader compilation, so an idle window
+/// holds its peak; macOS's malloc and mimalloc keep freed pages for reuse
+/// too, which an idle window's footprint would count.
+fn release_freed_heap() {
+    // mimalloc (the `mimalloc` feature): what the program freed, in every
+    // thread's heap it can reach, goes back to the system.
+    #[cfg(feature = "mimalloc")]
+    {
+        unsafe extern "C" {
+            fn mi_collect(force: bool);
+        }
+        // SAFETY: mimalloc's collection only releases memory it has freed.
+        unsafe {
+            mi_collect(true);
+        }
+    }
+    // macOS's malloc, which the system's libraries use whichever allocator
+    // the program has: freed pages go back (a null zone is every zone).
+    #[cfg(target_os = "macos")]
+    {
+        unsafe extern "C" {
+            fn malloc_zone_pressure_relief(zone: *mut std::ffi::c_void, goal: usize) -> usize;
+        }
+        // SAFETY: it only releases memory the zones have freed.
+        unsafe {
+            malloc_zone_pressure_relief(std::ptr::null_mut(), 0);
+        }
+    }
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    {
+        unsafe extern "C" {
+            fn malloc_trim(pad: usize) -> std::ffi::c_int;
+        }
+        // SAFETY: glibc's malloc_trim only releases memory it has freed.
+        unsafe {
+            malloc_trim(0);
+        }
+    }
+}
+/// zgx content never moves its window by itself (a custom titlebar's tabs
+/// and buttons drag and click; `WindowHandle::drag_window` moves it). AppKit
+/// otherwise moves the window from any press on a non-opaque view in a
+/// transparent titlebar, and a window made unmovable instead swallows the
+/// drag. winit's view gets `mouseDownCanMoveWindow` answering NO.
+#[cfg(target_os = "macos")]
+fn content_never_moves_window() {
+    use objc2::runtime::{AnyClass, AnyObject, Bool, Sel};
+    extern "C-unwind" fn no(_this: *mut AnyObject, _cmd: Sel) -> Bool {
+        Bool::NO
+    }
+    let Some(class) = AnyClass::get(c"WinitView") else {
+        return;
+    };
+    // Added once; later calls find it there and change nothing.
+    // SAFETY: `no` has `-(BOOL)mouseDownCanMoveWindow`'s C signature (self,
+    // _cmd, returning BOOL as `Bool`), which `BOOL_GETTER` states; the runtime
+    // calls an `Imp` through that signature, so the transmute only erases
+    // the type of a function pointer. `class_addMethod` is thread-safe and
+    // keeps nothing of ours but the function.
+    unsafe {
+        let imp: objc2::runtime::Imp =
+            std::mem::transmute(no as extern "C-unwind" fn(*mut AnyObject, Sel) -> Bool);
+        objc2::ffi::class_addMethod(
+            class as *const AnyClass as *mut AnyClass,
+            objc2::sel!(mouseDownCanMoveWindow),
+            imp,
+            BOOL_GETTER.as_ptr(),
+        );
+    }
+}
+/// The type encoding of a method taking nothing and returning BOOL, which is
+/// `bool` on Apple silicon and `signed char` on Intel.
+#[cfg(target_os = "macos")]
+const BOOL_GETTER: &std::ffi::CStr = if cfg!(target_arch = "aarch64") {
+    c"B@:"
+} else {
+    c"c@:"
+};
+
+/// Window drags from the mouse-down that started them. `drag_window` is a
+/// command, run after the press was handled, and AppKit's window drag needs
+/// the original mouse-down event (`performWindowDragWithEvent:`), not
+/// whatever event is current by then.
+#[cfg(target_os = "macos")]
+mod mouse_down {
+    use objc2::rc::Retained;
+    use objc2_app_kit::{NSEvent, NSEventMask, NSView};
+    use std::{cell::RefCell, ptr::NonNull};
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    thread_local! {
+        static LAST: RefCell<Option<Retained<NSEvent>>> = const { RefCell::new(None) };
+        static WATCHING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+    /// Keep each left mouse-down (once per process).
+    pub fn watch() {
+        if WATCHING.replace(true) {
+            return;
+        }
+        let block = block2::RcBlock::new(|event: NonNull<NSEvent>| -> *mut NSEvent {
+            // SAFETY: AppKit passes a valid event, retained here to keep.
+            let kept = unsafe { Retained::retain(event.as_ptr()) };
+            LAST.with(|last| *last.borrow_mut() = kept);
+            event.as_ptr()
+        });
+        // The monitor lives as long as the app.
+        // SAFETY: the handler returns the event it was given, a valid one.
+        let monitor = unsafe {
+            NSEvent::addLocalMonitorForEventsMatchingMask_handler(
+                NSEventMask::LeftMouseDown,
+                &block,
+            )
+        };
+        std::mem::forget(monitor);
+    }
+    /// The last mouse-down's click count (2: a double click's second).
+    pub fn click_count() -> isize {
+        LAST.with(|last| last.borrow().as_ref().map_or(0, |event| event.clickCount()))
+    }
+    /// Start a window drag from the last mouse-down, if the button is still
+    /// down; whether one started.
+    pub fn drag(window: &winit::window::Window) -> bool {
+        if NSEvent::pressedMouseButtons() & 1 == 0 {
+            return false;
+        }
+        let Some(event) = LAST.with(|last| last.borrow().clone()) else {
+            return false;
+        };
+        let Ok(handle) = window.window_handle() else {
+            return false;
+        };
+        let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
+            return false;
+        };
+        // SAFETY: the borrowed winit window keeps its view alive; winit
+        // hands out an AppKit handle only on the main thread.
+        let view = unsafe { handle.ns_view.cast::<NSView>().as_ref() };
+        let Some(ns_window) = view.window() else {
+            return false;
+        };
+        if event.windowNumber() != ns_window.windowNumber() {
+            return false;
+        }
+        ns_window.performWindowDragWithEvent(&event);
+        true
+    }
+}
+
+/// Whether AppKit has `window` as its key window.
+#[cfg(target_os = "macos")]
+fn is_key_window(window: &winit::window::Window) -> bool {
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    let Ok(handle) = window.window_handle() else {
+        return false;
+    };
+    let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
+        return false;
+    };
+    // SAFETY: the borrowed winit window keeps its NSView alive; this runs on
+    // the main thread, handling the event loop's events.
+    let view = unsafe { handle.ns_view.cast::<objc2_app_kit::NSView>().as_ref() };
+    view.window().is_some_and(|window| window.isKeyWindow())
+}
+
+static FIRST_RENDER: std::sync::Once = std::sync::Once::new();
+static FIRST_PRESENT: std::sync::Once = std::sync::Once::new();
+/// How long after the event loop starts the menu bar is made whether or not
+/// a first frame showed (`WindowManager::install_menu_bar`).
+#[cfg(target_os = "macos")]
+const MENU_BAR_LATEST: std::time::Duration = std::time::Duration::from_secs(1);
+/// A `zgx::profile::mark` the first time only (the process's first frame).
+fn first_mark(once: &std::sync::Once, what: &str) {
+    once.call_once(|| zgx::profile::mark(what));
+}
+/// The first present's mark, with what the shaders kept between launches
+/// did by then (Windows): a start that compiled them says so.
+fn first_present_mark() -> String {
+    match zgx_gpu::shader_cache_counts() {
+        Some(counts) => format!(
+            "first frame presented (shaders: {} read, {} compiled, {} not kept)",
+            counts.read, counts.compiled, counts.unwritten
+        ),
+        None => "first frame presented".into(),
+    }
+}
+/// The pixels of a window's frame at `scale` that `rect` (in points) covers:
+/// `(x, y, width, height)`, less any part off its left or top edge (the
+/// frame's reader cuts the right and bottom).
+#[cfg(any(target_os = "macos", test))]
+fn snapshot_region(rect: zgx::scene::Rect, scale: f64) -> (u32, u32, u32, u32) {
+    let span = |from: f32, length: f32| {
+        let start = (f64::from(from) * scale).round();
+        let end = (f64::from(from + length) * scale).round();
+        let start = start.max(0.);
+        (start as u32, (end - start).max(0.) as u32)
+    };
+    let (x, width) = span(rect.x, rect.width);
+    let (y, height) = span(rect.y, rect.height);
+    (x, y, width, height)
+}
+
+/// The system's spring-loading delay (Accessibility > Pointer Control), or
+/// `None` where it is turned off.
+#[cfg(target_os = "macos")]
+fn spring_delay() -> Option<std::time::Duration> {
+    use objc2::{msg_send, runtime::AnyObject};
+    use objc2_foundation::NSString;
+    // SAFETY: NSUserDefaults' `standardUserDefaults` (unretained, the
+    // process keeps it); `objectForKey:` (an unretained object or nil,
+    // only tested for nil), `boolForKey:` (BOOL) and `doubleForKey:`
+    // (double), each read at once.
+    unsafe {
+        let defaults: *mut AnyObject =
+            msg_send![objc2::class!(NSUserDefaults), standardUserDefaults];
+        let Some(defaults) = defaults.as_ref() else {
+            return Some(zgx::input::SPRING_DELAY);
+        };
+        let set = |key: &NSString| {
+            let value: *mut AnyObject = msg_send![defaults, objectForKey: key];
+            !value.is_null()
+        };
+        let enabled = NSString::from_str("com.apple.springing.enabled");
+        if set(&enabled) {
+            let on: bool = msg_send![defaults, boolForKey: &*enabled];
+            if !on {
+                return None;
+            }
+        }
+        let delay = NSString::from_str("com.apple.springing.delay");
+        if !set(&delay) {
+            return Some(zgx::input::SPRING_DELAY);
+        }
+        let seconds: f64 = msg_send![defaults, doubleForKey: &*delay];
+        Some(std::time::Duration::from_secs_f64(seconds.clamp(0., 10.)))
+    }
+}
+
+/// Where winit last put the pointer once a popup's input has moved the
+/// window's cursor (`Host::own_event`): winit's buttons and wheel are the
+/// window's surface's, heard where it last saw the pointer.
+#[derive(Default)]
+struct WindowCursor(Option<(f32, f32)>);
+impl WindowCursor {
+    /// A popup moved the cursor from `cursor` (the first time since winit
+    /// last did: that is winit's).
+    fn popup_moved(&mut self, cursor: (f32, f32)) {
+        self.0.get_or_insert(cursor);
+    }
+    /// Winit reported `event`: for a button or wheel heard since a popup
+    /// moved the cursor, where winit had the pointer. Winit's own motion
+    /// (or a scale change) makes its cursor the window's again.
+    fn heard(&mut self, event: &WindowEvent) -> Option<(f32, f32)> {
+        match event {
+            WindowEvent::CursorMoved { .. }
+            | WindowEvent::CursorEntered { .. }
+            | WindowEvent::CursorLeft { .. }
+            | WindowEvent::ScaleFactorChanged { .. } => {
+                self.0 = None;
+                None
+            }
+            WindowEvent::MouseInput { .. } | WindowEvent::MouseWheel { .. } => self.0.take(),
+            _ => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// A turn's pointer moves come as one, its last (Linux, where every
+    /// motion a mouse reports arrives, up to 1000 a second): a burst of a
+    /// thousand is handled once, at the last place.
+    #[test]
+    fn a_turns_pointer_moves_come_as_its_last() {
+        let mut held = super::HeldMove::default();
+        for x in 0..1000 {
+            assert_eq!(held.moved(1, x), None);
+        }
+        assert_eq!(held.take(), Some((1, 999)));
+        assert_eq!(held.take(), None);
+    }
+
+    /// Moves for two windows come apart, each window's last, in order: the
+    /// first's is handed back as the second's arrives.
+    #[test]
+    fn a_move_for_another_window_hands_back_the_first_windows() {
+        let mut held = super::HeldMove::default();
+        assert_eq!(held.moved(1, "a1"), None);
+        assert_eq!(held.moved(1, "a2"), None);
+        assert_eq!(held.moved(2, "b1"), Some((1, "a2")));
+        assert_eq!(held.moved(2, "b2"), None);
+        assert_eq!(held.take(), Some((2, "b2")));
+    }
+
+    /// Every `on_closed` handler runs, in order: a window's own state and
+    /// its `open` state each had one, and the second dropped the first.
+    #[test]
+    fn closing_runs_every_handler_given_in_order() {
+        let ran = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let (a, b, c) = (ran.clone(), ran.clone(), ran.clone());
+        let handler = super::then(None, move || a.borrow_mut().push(1));
+        let handler = super::then(Some(handler), move || b.borrow_mut().push(2));
+        let handler = super::then(Some(handler), move || c.borrow_mut().push(3));
+        handler();
+        assert_eq!(*ran.borrow(), [1, 2, 3]);
+    }
+    use super::*;
+
+    /// `wayland-popups` on a loaded runner: a press on a menu's trigger opens
+    /// it, the compositor cuts it and slides it over the trigger, and the
+    /// popup's enter (zgx's queue) is heard before the release winit read
+    /// with it. That release is winit's, where it had the pointer (a click on
+    /// the trigger, the menu staying open), not where the popup put the
+    /// cursor (428 points down: a drag away, which closed it).
+    #[test]
+    fn the_windows_release_heard_after_a_popups_move_is_where_winit_had_it() {
+        let device_id = winit::event::DeviceId::dummy();
+        let button = |state| WindowEvent::MouseInput {
+            device_id,
+            state,
+            button: MouseButton::Left,
+        };
+        let moved = |x: f64, y: f64| WindowEvent::CursorMoved {
+            device_id,
+            position: (x, y).into(),
+        };
+        let mut cursor = WindowCursor::default();
+        // Winit's own motion and press: nothing kept.
+        assert_eq!(cursor.heard(&moved(76., 410.)), None);
+        assert_eq!(cursor.heard(&button(ElementState::Pressed)), None);
+        // The popup's enter (from winit's point), then winit's release.
+        cursor.popup_moved((76., 410.));
+        cursor.popup_moved((76., 838.));
+        assert_eq!(
+            cursor.heard(&button(ElementState::Released)),
+            Some((76., 410.))
+        );
+        // Once winit moves the pointer itself, its buttons are where that is.
+        cursor.popup_moved((76., 410.));
+        assert_eq!(cursor.heard(&moved(300., 20.)), None);
+        assert_eq!(cursor.heard(&button(ElementState::Pressed)), None);
+    }
+
+    #[test]
+    fn presses_scrolls_and_gestures_act_and_a_passing_pointer_does_not() {
+        let device_id = winit::event::DeviceId::dummy();
+        let button = |state| WindowEvent::MouseInput {
+            device_id,
+            state,
+            button: MouseButton::Left,
+        };
+        assert!(acts(&button(ElementState::Pressed)));
+        assert!(!acts(&button(ElementState::Released)));
+        assert!(acts(&WindowEvent::MouseWheel {
+            device_id,
+            delta: winit::event::MouseScrollDelta::PixelDelta((0., 12.).into()),
+            phase: winit::event::TouchPhase::Started,
+        }));
+        assert!(acts(&WindowEvent::PinchGesture {
+            device_id,
+            delta: 0.1,
+            phase: winit::event::TouchPhase::Moved,
+        }));
+        assert!(acts(&WindowEvent::Ime(winit::event::Ime::Commit(
+            "a".into()
+        ))));
+        assert!(!acts(&WindowEvent::CursorMoved {
+            device_id,
+            position: (10., 10.).into(),
+        }));
+        let touch = |phase| {
+            WindowEvent::Touch(winit::event::Touch {
+                device_id,
+                phase,
+                location: (10., 10.).into(),
+                force: None,
+                id: 0,
+            })
+        };
+        assert!(acts(&touch(winit::event::TouchPhase::Started)));
+        assert!(!acts(&touch(winit::event::TouchPhase::Moved)));
+    }
+
+    #[test]
+    fn a_snapshot_reads_only_what_its_node_covers_on_the_window() {
+        let rect = |x, y, width, height| zgx::scene::Rect {
+            x,
+            y,
+            width,
+            height,
+        };
+        assert_eq!(
+            snapshot_region(rect(10., 5., 30., 20.), 2.),
+            (20, 10, 60, 40)
+        );
+        // Partly off the left and top: what is left of it, from the edge.
+        assert_eq!(
+            snapshot_region(rect(-100., -10., 300., 40.), 1.),
+            (0, 0, 200, 30)
+        );
+        // Wholly off: nothing.
+        assert_eq!(snapshot_region(rect(-50., 0., 40., 40.), 2.).2, 0);
+    }
+    #[test]
+    fn only_early_frames_at_a_fast_refresh_wait_for_the_others_point() {
+        let ms = |value: f64| std::time::Duration::from_secs_f64(value / 1e3);
+        let (fast, slow) = (ms(8.333), ms(16.667));
+        // Most frames (about 1.5 ms before the point) and late ones go at once.
+        for left in [0.2, 1.0, 1.5, 1.6, 1.85] {
+            assert_eq!(align_wait(ms(left), fast), None, "{left} ms before");
+        }
+        // The early few wait until `ALIGN_AT` before it.
+        for left in [1.9, 2.5, 3.2, 4.4] {
+            let wait = align_wait(ms(left), fast).expect("waits");
+            assert_eq!(ms(left) - wait, ALIGN_AT, "{left} ms before");
+        }
+        // Ready a refresh early anyway, or at 60 Hz (the latch's): at once.
+        for left in [4.5, 6.0, 8.0] {
+            assert_eq!(align_wait(ms(left), fast), None, "{left} ms before");
+        }
+        for left in [1.9, 2.5, 3.2, 8.0, 15.0] {
+            assert_eq!(align_wait(ms(left), slow), None, "{left} ms at 60 Hz");
+        }
+    }
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn steady_frames_present_on_the_point_and_keep_their_cadence() {
+        use std::time::{Duration, Instant};
+        let period = Duration::from_nanos(8_333_333);
+        let ms = |v: f64| Duration::from_secs_f64(v / 1e3);
+        let origin = Instant::now();
+        let phase =
+            |at: Instant| (at.duration_since(origin).as_nanos() % period.as_nanos()) as f64 / 1e6;
+        let point = (period - Latch::LEAD).as_secs_f64() * 1e3;
+        let mut latch = Latch::default();
+        // Ready before the point: it presents on this refresh's point.
+        let ready = origin + period * 10 + ms(2.);
+        let at = latch.decide(ready, origin, period);
+        assert!((phase(at) - point).abs() < 0.01 && at - ready < period);
+        // A 60 Hz stream ready right at the point, some frames just after it
+        // and some just before, keeps one cadence: every frame two refreshes
+        // after the last, all on the next refresh's point.
+        let mut last = at;
+        for (i, offset) in [0.1, -0.1, 0.2, -0.2, 0.05, -0.3].into_iter().enumerate() {
+            let ready = origin + period * (12 + 2 * i as u32) + ms(point + offset);
+            let at = latch.decide(ready, origin, period);
+            assert!((phase(at) - point).abs() < 0.01);
+            if i > 0 {
+                assert_eq!(
+                    (at.duration_since(last).as_secs_f64() / period.as_secs_f64()).round(),
+                    2.
+                );
+            }
+            last = at;
+        }
+        // Comfortably early again, frame after frame: back to the coming point.
+        let mut at = latch.decide(origin + period * 30 + ms(point - 3.), origin, period);
+        for i in 0..Latch::RETURN as u32 {
+            let ready = origin + period * (32 + 2 * i) + ms(point - 3.);
+            at = latch.decide(ready, origin, period);
+            assert!(at - ready < ms(3.1) || i + 1 < Latch::RETURN as u32);
+        }
+        assert!((phase(at) - point).abs() < 0.01);
+        // Never more than a refresh's wait, never in the past.
+        let ready = origin + period * 40 + ms(7.);
+        let at = latch.decide(ready, origin, period);
+        assert!(at >= ready && at - ready < period);
+    }
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_frame_held_to_a_later_cadence_says_so() {
+        use std::time::{Duration, Instant};
+        let period = Duration::from_nanos(8_333_333);
+        let ms = |v: f64| Duration::from_secs_f64(v / 1e3);
+        let origin = Instant::now();
+        let point = (period - Latch::LEAD).as_secs_f64() * 1e3;
+        let mut latch = Latch::default();
+        // A 60 Hz stream ready just after its point sets a later cadence.
+        latch.decide(origin + period * 10 + ms(point + 0.1), origin, period);
+        // The next, ready just before its point, could show a refresh
+        // sooner: the cadence keeps it, and says so (`decide`'s note).
+        let ready = origin + period * 12 + ms(point - 0.1);
+        let (_, _, kept) = latch.choose(ready, origin, period);
+        assert!(kept);
+        latch.decide(ready, origin, period);
+        // Comfortably early, frame after frame, it gives way: none kept.
+        let mut kept = true;
+        for i in 0..=Latch::RETURN as u32 {
+            let ready = origin + period * (14 + 2 * i) + ms(point - 3.);
+            kept = latch.choose(ready, origin, period).2;
+            latch.decide(ready, origin, period);
+        }
+        assert!(!kept);
+    }
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn held_up_frames_render_later_within_their_wait() {
+        use std::time::{Duration, Instant};
+        let period = Duration::from_nanos(8_333_333);
+        let ms = |v: f64| Duration::from_secs_f64(v / 1e3);
+        let origin = Instant::now();
+        let point = (period - Latch::LEAD).as_secs_f64() * 1e3;
+        let phase =
+            |at: Instant| (at.duration_since(origin).as_nanos() % period.as_nanos()) as f64 / 1e6;
+        let mut latch = Latch::default();
+        // A 60 Hz stream that can render 1 ms into a refresh, ready 0.5 ms
+        // later: about 3 ms to spare before its point, less `KEEP`.
+        let mut frame = |i: u32, gpu: f64| {
+            let could = origin + period * (10 + 2 * i) + ms(1.);
+            let start = latch.hold(could, origin, period);
+            latch.rendering(start);
+            let at = latch.decide(start + ms(0.5), origin, period);
+            latch.ran(ms(gpu));
+            assert!((phase(at) - point).abs() < 0.01);
+            assert!(at - could < period);
+            start - could
+        };
+        for i in 0..4 {
+            assert_eq!(frame(i, 0.3), Duration::ZERO);
+        }
+        // Held up once: chance. Twice within a few frames: the next renders
+        // a step later, still on the same point.
+        frame(4, 1.2);
+        assert_eq!(frame(5, 1.2), Duration::ZERO);
+        assert_eq!(frame(6, 0.3), Latch::STEP);
+        assert_eq!(frame(7, 0.3), Latch::STEP);
+        // Held up there too: no room for another step, back to the start.
+        assert_eq!(frame(8, 1.2), Latch::STEP);
+        assert_eq!(frame(9, 0.3), Duration::ZERO);
+    }
+    #[test]
+    fn window_commands_preserve_recreation_options() {
+        let mut options = WindowOptions::default();
+        let mut state = WindowState::default();
+        for command in [
+            WindowCommand::Title("Document — saved".into()),
+            WindowCommand::Size(640., 480.),
+            WindowCommand::Visible(false),
+            WindowCommand::Minimized(true),
+            WindowCommand::Maximized(true),
+            WindowCommand::Focus,
+            WindowCommand::Level(crate::WindowLevel::AlwaysOnTop),
+            WindowCommand::Shadow(false),
+        ] {
+            state.apply(&mut options, &command);
+        }
+        assert_eq!(options.title, "Document — saved");
+        // A window made again keeps its level and shadow.
+        assert_eq!(options.level, crate::WindowLevel::AlwaysOnTop);
+        assert!(!options.shadow);
+        assert_eq!((options.width, options.height), (640., 480.));
+        assert!(!state.visible);
+        assert!(state.minimized && state.maximized && state.focus_requested);
+        state.apply(&mut options, &WindowCommand::Visible(true));
+        state.apply(&mut options, &WindowCommand::Minimized(false));
+        state.apply(&mut options, &WindowCommand::Maximized(false));
+        assert!(state.visible);
+        assert!(!state.minimized && !state.maximized);
+    }
+    #[test]
+    fn a_window_made_again_keeps_its_glass_and_theme() {
+        use zgx::theme::Appearance;
+        let mut options = WindowOptions::default();
+        let mut state = WindowState::default();
+        let glass = crate::Glass::new(crate::GlassMaterial::Popover);
+        state.apply(&mut options, &WindowCommand::Glass(Some(glass)));
+        state.apply(&mut options, &WindowCommand::Theme(Some(Appearance::Light)));
+        assert_eq!(options.glass, Some(glass));
+        assert!(
+            options.is_transparent(),
+            "glass makes the window transparent"
+        );
+        assert_eq!(state.theme, Some(Appearance::Light));
+        state.apply(&mut options, &WindowCommand::Glass(None));
+        state.apply(&mut options, &WindowCommand::Theme(None));
+        assert_eq!(options.glass, None);
+        assert_eq!(state.theme, None, "the system's again");
+        assert_eq!(native_theme(Appearance::Dark), winit::window::Theme::Dark);
+    }
+    #[test]
+    fn requested_window_size_rejects_nonfinite_and_unrepresentable_dimensions() {
+        for value in [
+            0.,
+            -1.,
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            u32::MAX as f64 + 1.,
+        ] {
+            assert!(!valid_window_size(value, 480.));
+            assert!(!valid_window_size(640., value));
+        }
+        assert!(valid_window_size(640.5, 480.25));
+    }
+    #[test]
+    fn resized_and_scaled_geometry_persists_for_native_recreation() {
+        let mut options = WindowOptions::default();
+        let ui = Ui::new(960., 720.);
+        let viewport = ui.signal((960., 720.));
+        assert!(apply_viewport(
+            &mut options,
+            &ui,
+            &viewport,
+            PhysicalSize::new(1800, 1200),
+            2.
+        ));
+        assert_eq!((options.width, options.height), (900., 600.));
+        assert_eq!(viewport.get(), (900., 600.));
+        ui.scene.borrow_mut().prepare_layout();
+        assert_eq!(ui.scene.borrow().bounds(ui.root()).width, 900.);
+        assert!(!apply_viewport(
+            &mut options,
+            &ui,
+            &viewport,
+            PhysicalSize::new(0, 0),
+            2.
+        ));
+        assert!(!apply_viewport(
+            &mut options,
+            &ui,
+            &viewport,
+            PhysicalSize::new(1800, 1200),
+            0.
+        ));
+        assert_eq!((options.width, options.height), (900., 600.));
+        assert!(apply_viewport(
+            &mut options,
+            &ui,
+            &viewport,
+            PhysicalSize::new(1800, 1200),
+            1.5
+        ));
+        assert_eq!((options.width, options.height), (1200., 800.));
+        assert_eq!(viewport.get(), (1200., 800.));
+    }
+    #[test]
+    fn shortcuts_on_other_layouts_take_the_keys_us_letters() {
+        use zgx::input::Modifiers;
+        let ctrl = Modifiers {
+            control: true,
+            ..Default::default()
+        };
+        let key = |c: &str| Key::Character(c.into());
+        let code = |c| PhysicalKey::Code(c);
+        // Russian: Ctrl and the C key, which types с, copy.
+        assert_eq!(shortcut_key(key("с"), code(KeyCode::KeyC), ctrl), key("c"));
+        assert_eq!(shortcut_key(key("ф"), code(KeyCode::KeyA), ctrl), key("a"));
+        // A US letter, a key typed without Ctrl, and AltGr's text stay.
+        assert_eq!(shortcut_key(key("q"), code(KeyCode::KeyA), ctrl), key("q"));
+        assert_eq!(
+            shortcut_key(key("с"), code(KeyCode::KeyC), Modifiers::default()),
+            key("с")
+        );
+        let altgr = Modifiers {
+            control: true,
+            alt: true,
+            ..Default::default()
+        };
+        assert_eq!(shortcut_key(key("ą"), code(KeyCode::KeyA), altgr), key("ą"));
+        assert_eq!(
+            shortcut_key(Key::Enter, code(KeyCode::Enter), ctrl),
+            Key::Enter
+        );
+    }
+    #[test]
+    fn content_scale_is_the_displays_exactly_at_100_percent() {
+        for display in [1., 1.25, 1.5, 1.75, 2., 2.25, 3., 1. / 3.] {
+            assert_eq!(
+                zoomed(display, 1.).to_bits(),
+                display.to_bits(),
+                "{display}"
+            );
+            assert_eq!(zoomed(display, 1.5), display * 1.5);
+        }
+        // The viewport reflows in the zoom's points; the window keeps its
+        // size in the display's.
+        let mut ui = Ui::new(100., 100.);
+        let viewport = ui.signal((0_f32, 0_f32));
+        let mut options = WindowOptions::default();
+        let size = PhysicalSize::new(1600, 1200);
+        assert!(apply_viewport(&mut options, &ui, &viewport, size, 2.));
+        assert_eq!(viewport.get(), (800., 600.));
+        assert_eq!((options.width, options.height), (800., 600.));
+        ui.set_zoom(1.25);
+        assert!(apply_viewport(
+            &mut options,
+            &ui,
+            &viewport,
+            size,
+            zoomed(2., ui.zoom())
+        ));
+        assert_eq!(viewport.get(), (640., 480.));
+        assert_eq!(
+            (options.width, options.height),
+            (800., 600.),
+            "the window's points"
+        );
+        // The system's text scale and the zoom compose: a text's size is
+        // its points times the text scale, drawn at the content scale.
+        let view = ui.mount(zgx::style::Styled::text_size(
+            zgx::compose::text("Big"),
+            zgx::theme::tok::FONT_SIZE_MD,
+        ));
+        ui.prepare_frame();
+        let font = |ui: &Ui| match ui.scene.borrow().kind(view.node()) {
+            zgx::scene::NodeKind::Text { font_size, .. } => *font_size,
+            _ => panic!("a text"),
+        };
+        let plain = font(&ui);
+        ui.theme().set_system_text_scale(1.5);
+        ui.prepare_frame();
+        assert_eq!(font(&ui), plain * 1.5, "the system's text scale");
+        let pixels = font(&ui) as f64 * zoomed(2., ui.zoom());
+        assert_eq!(
+            pixels,
+            plain as f64 * 1.5 * 2. * 1.25,
+            "times the zoom, in pixels"
+        );
+    }
+    #[test]
+    fn native_cursor_roles_distinguish_links_and_text_fields() {
+        assert_eq!(cursor_for_role(Some(Role::Link)), CursorIcon::Pointer);
+        assert_eq!(
+            cursor_for_role(Some(Role::MultilineTextInput)),
+            CursorIcon::Text
+        );
+        // Chrome's and AppKit's controls keep the arrow.
+        for role in [Role::Button, Role::CheckBox, Role::MenuItem, Role::Slider] {
+            assert_eq!(cursor_for_role(Some(role)), CursorIcon::Default, "{role:?}");
+        }
+        assert_eq!(cursor_for_role(None), CursorIcon::Default);
+    }
+    #[test]
+    fn keyboard_space_encodings_and_unicode_are_preserved() {
+        assert_eq!(map_key(&WKey::Character(" ".into())), Some(Key::Space));
+        assert_eq!(map_key(&WKey::Named(NamedKey::Space)), Some(Key::Space));
+        assert_eq!(
+            map_key(&WKey::Character("é".into())),
+            Some(Key::Character("é".into()))
+        );
+        assert_eq!(map_key(&WKey::Named(NamedKey::F1)), Some(Key::Function(1)));
+        assert_eq!(
+            map_key(&WKey::Named(NamedKey::F35)),
+            Some(Key::Function(35))
+        );
+        assert_eq!(map_key(&WKey::Named(NamedKey::Insert)), Some(Key::Insert));
+    }
+    #[test]
+    fn trackpad_phases_tell_the_fingers_from_their_momentum() {
+        use winit::event::TouchPhase::{Ended, Moved, Started};
+        use zgx::input::ScrollGesture::{self as G, Began, MomentumBegan, MomentumEnded};
+        let start = std::time::Instant::now();
+        let at = |ms| start + std::time::Duration::from_millis(ms);
+        let mut pad = Trackpad::Idle;
+        assert_eq!(pad.phase(Started, at(0)), Some(Began));
+        assert_eq!(pad.phase(Moved, at(8)), None);
+        assert_eq!(pad.phase(Ended, at(16)), Some(G::Ended));
+        // A start right after the lift is the flick's momentum.
+        assert_eq!(pad.phase(Started, at(24)), Some(MomentumBegan));
+        assert_eq!(pad.phase(Moved, at(32)), None);
+        assert_eq!(pad.phase(Ended, at(400)), Some(MomentumEnded));
+        // Lifted without a flick, a later touch is a new gesture.
+        assert_eq!(pad.phase(Started, at(1000)), Some(Began));
+        assert_eq!(pad.phase(Ended, at(1100)), Some(G::Ended));
+        assert_eq!(pad.phase(Started, at(1500)), Some(Began));
+    }
+    #[test]
+    fn wheel_down_is_positive_in_logical_scene_coordinates() {
+        assert_eq!(
+            wheel_delta(MouseScrollDelta::LineDelta(1., -2.), 2., (30., 40.)),
+            (-30., 80.)
+        );
+        // Windows: a precision touchpad's fractions of a notch are motion.
+        assert!(!continuous_lines(0., -1.));
+        assert!(!continuous_lines(2., 0.));
+        assert_eq!(continuous_lines(0., 10. / 120.), cfg!(windows));
+        assert_eq!(continuous_lines(-1.25, 0.), cfg!(windows));
+        assert_eq!(
+            wheel_delta(
+                MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(20., -40.)),
+                2.,
+                (30., 40.)
+            ),
+            (-10., 20.)
+        );
+    }
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "requires an owned X11 display; run alone with --test-threads=1"]
+    fn retained_window_factory_releases_native_clipboard_after_manager_shutdown() {
+        use winit::platform::x11::EventLoopBuilderExtX11;
+        let event_loop = EventLoop::<Event>::with_user_event()
+            .with_x11()
+            .with_any_thread(true)
+            .build()
+            .unwrap();
+        let factory = WindowFactory {
+            fonts: Default::default(),
+            text_language: Default::default(),
+            #[cfg(target_os = "linux")]
+            file_routes: Default::default(),
+            #[cfg(target_os = "linux")]
+            application_id: None,
+            #[cfg(target_os = "linux")]
+            activation: Rc::default(),
+            menus: Rc::new(RefCell::new(Vec::new())),
+            menus_left_out: Rc::default(),
+            reserved: Rc::default(),
+            pending: Rc::new(RefCell::new(VecDeque::new())),
+            next: Rc::new(Cell::new(1)),
+            alive: Rc::new(Cell::new(true)),
+            clipboard: Rc::new(RefCell::new(Some(
+                crate::clipboard::Clipboard::new(
+                    event_loop.owned_display_handle(),
+                    #[cfg(target_os = "linux")]
+                    None,
+                )
+                .unwrap(),
+            ))),
+            gpu_contexts: Rc::new(RefCell::new(Vec::new())),
+            #[cfg(any(target_os = "macos", windows))]
+            early_gpu: Rc::default(),
+            proxy: event_loop.create_proxy(),
+            runtime: zgx::reactive::Runtime::new(),
+        };
+        let retained = factory.clone();
+        let manager = WindowManager {
+            #[cfg(target_os = "linux")]
+            native_data: None,
+            #[cfg(target_os = "linux")]
+            appearance: None,
+            _native_events: None,
+            application_event: None,
+            quit_on_last_window_close: true,
+            #[cfg(target_os = "macos")]
+            native_menu: None,
+            #[cfg(target_os = "macos")]
+            menu_bar_due: None,
+            hosts: HashMap::new(),
+            panics: Vec::new(),
+            native: HashMap::new(),
+            drag_over: Cell::new(None),
+            carrying: None,
+            #[cfg(target_os = "linux")]
+            last_focused: None,
+            #[cfg(target_os = "linux")]
+            pending_move: HeldMove::default(),
+            factory,
+            active: false,
+            error: None,
+            timers: zgx::timer::host(|| {}),
+        };
+        assert!(retained.clipboard.borrow().is_some());
+        drop(manager);
+        assert!(!retained.alive.get());
+        assert!(retained.clipboard.borrow().is_none());
+        let called = Rc::new(Cell::new(false));
+        let callback = called.clone();
+        let handle = retained.open(WindowOptions::default(), move |_| callback.set(true));
+        assert!(handle.is_closed());
+        assert!(!called.get());
+        assert!(retained.pending.borrow().is_empty());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "requires an owned X11 display and GPU; run alone with --test-threads=1"]
+    fn host_suspend_recreates_native_resources_and_retains_editor_state() {
+        use winit::platform::x11::EventLoopBuilderExtX11;
+        struct Probe {
+            factory: WindowFactory,
+            completed: bool,
+        }
+        impl ApplicationHandler<Event> for Probe {
+            fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+                let handle = self.factory.allocate();
+                let mut host = Host::new(WindowOptions::default(), handle, self.factory.clone());
+                let value = host.context.ui.signal(String::from("retained document"));
+                let editor = host.context.ui.text_input(
+                    host.context.ui.root(),
+                    "Document",
+                    value.clone(),
+                    300.,
+                    false,
+                );
+                host.create_window(event_loop).unwrap();
+                let window = Arc::downgrade(host.window.as_ref().unwrap());
+                let first_id = host.window.as_ref().unwrap().id();
+                host.create_window(event_loop).unwrap();
+                assert_eq!(host.window.as_ref().unwrap().id(), first_id);
+                host.window_event(WindowEvent::Focused(true)).unwrap();
+                host.dispatch(InputEvent::PointerDown {
+                    x: 10.,
+                    y: 10.,
+                    button: PointerButton::Primary,
+                })
+                .unwrap();
+                assert_eq!(host.context.ui.input.captured(), Some(editor.node));
+                host.dispatch(InputEvent::ImePreedit {
+                    text: "composition".into(),
+                    cursor: None,
+                })
+                .unwrap();
+                assert!(editor.editor.borrow().preedit().is_some());
+                host.ime_target = Some(editor.node);
+                host.ime_active = true;
+                host.presentation.damaged();
+                host.presentation.completed(
+                    zgx_gpu::PresentationStatus::Timeout,
+                    std::time::Instant::now(),
+                );
+                assert!(host.presentation.deadline().is_some());
+                host.suspend();
+                host.suspend(); // Platform callbacks may repeat.
+                assert!(host.window.is_none() && host.renderer.is_none() && host.adapter.is_none());
+                assert!(window.upgrade().is_none());
+                assert!(!host.native_focused && !host.ime_active);
+                assert!(host.ime_target.is_none() && host.ime_geometry.is_none());
+                assert!(host.context.ui.input.captured().is_none());
+                assert!(host.context.ui.next_interaction_deadline().is_none());
+                assert!(host.presentation.deadline().is_none());
+                assert!(editor.editor.borrow().preedit().is_none());
+                assert_eq!(value.get(), "retained document");
+                assert!(host.context.ui.scene.borrow().contains(editor.node));
+                value.set("updated while suspended".into());
+                assert_eq!(editor.editor.borrow().text(), "updated while suspended");
+                host.create_window(event_loop).unwrap();
+                assert!(host.window.is_some() && host.renderer.is_some() && host.adapter.is_some());
+                assert!(host.force);
+                host.window_event(WindowEvent::Focused(true)).unwrap();
+                assert_eq!(host.context.ui.input.focused(), Some(editor.node));
+                assert_eq!(editor.editor.borrow().text(), "updated while suspended");
+                host.context.ui.prepare_frame();
+                let scene = host.context.ui.scene.borrow();
+                let damage = [scene.bounds(scene.root())];
+                host.renderer
+                    .as_mut()
+                    .unwrap()
+                    .render(&scene, &damage)
+                    .unwrap();
+                drop(scene);
+                host.suspend();
+                self.completed = true;
+                event_loop.exit();
+            }
+            fn window_event(&mut self, _: &ActiveEventLoop, _: WindowId, _: WindowEvent) {}
+        }
+        let event_loop = EventLoop::<Event>::with_user_event()
+            .with_x11()
+            .with_any_thread(true)
+            .build()
+            .unwrap();
+        let factory = WindowFactory {
+            fonts: Default::default(),
+            text_language: Default::default(),
+            #[cfg(target_os = "linux")]
+            file_routes: Default::default(),
+            #[cfg(target_os = "linux")]
+            application_id: None,
+            #[cfg(target_os = "linux")]
+            activation: Rc::default(),
+            menus: Rc::new(RefCell::new(Vec::new())),
+            menus_left_out: Rc::default(),
+            reserved: Rc::default(),
+            pending: Rc::new(RefCell::new(VecDeque::new())),
+            next: Rc::new(Cell::new(1)),
+            alive: Rc::new(Cell::new(true)),
+            clipboard: Rc::new(RefCell::new(None)),
+            gpu_contexts: Rc::new(RefCell::new(Vec::new())),
+            #[cfg(any(target_os = "macos", windows))]
+            early_gpu: Rc::default(),
+            proxy: event_loop.create_proxy(),
+            runtime: zgx::reactive::Runtime::new(),
+        };
+        let mut probe = Probe {
+            factory,
+            completed: false,
+        };
+        event_loop.run_app(&mut probe).unwrap();
+        assert!(probe.completed);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "requires an owned X11 display and GPU; run alone with --test-threads=1"]
+    fn a_wheel_tape_plays_back_through_the_windows_input_path() {
+        use winit::platform::x11::EventLoopBuilderExtX11;
+        // Applied as it arrives: no display refreshes come while the probe
+        // holds the loop (resampling has tests of its own).
+        // SAFETY: This test runs alone (`--test-threads=1`), before any
+        // thread reads the environment.
+        unsafe { std::env::set_var("ZGX_SCROLL_RESAMPLE", "0") };
+        use zgx::compose::prelude::*;
+        struct Probe {
+            factory: WindowFactory,
+            scrolled: Option<f32>,
+            step: f32,
+            clicks: u32,
+        }
+        impl ApplicationHandler<Event> for Probe {
+            fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+                let options = WindowOptions {
+                    bounds: Some(crate::WindowBounds::new(400, 300)),
+                    ..Default::default()
+                };
+                let mut host = Host::new(options, self.factory.allocate(), self.factory.clone());
+                host.create_window(event_loop).unwrap();
+                let offset = host.context.ui.signal(0_f32);
+                let clicks = host.context.ui.signal(0_u32);
+                let counted = clicks.clone();
+                let shown = host.context.render(
+                    column()
+                        .child(scroll(offset.clone()).w(300.).h(200.).child(div().h(5000.)))
+                        .child(button().id("pressed").size(80., 30.).on_click(move || {
+                            counted.update(|n| *n += 1);
+                        })),
+                );
+                host.context.ui.prepare_frame();
+                // A pointer tape: pressed and released on the button, a frame
+                // apart, through the same path as a hand's. The probe's
+                // window shows nothing (no window manager maps it here), and
+                // a window that can't draw ends a press: draw it regardless,
+                // as a shown one would.
+                host.draw_hidden = true;
+                let tape = "0 pointer 0 0 down\n8.3 pointer 1 0 moved\n16.6 pointer 1 0 up\n";
+                let button = shown.find("pressed").expect("the button");
+                let b = host.context.ui.scene.borrow().transformed_bounds(button);
+                host.context
+                    .ui
+                    .wheel_tape(zgx::widgets::WheelTape::Play {
+                        tape: tape.into(),
+                        at: (b.x + b.width / 2., b.y + b.height / 2.),
+                    })
+                    .unwrap();
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                while host.wheel_tape.borrow().deadline().is_some() {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "the pointer tape never finished"
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                    host.update().unwrap();
+                }
+                host.context.ui.prepare_frame();
+                let pressed = clicks.get();
+                host.draw_hidden = false;
+                // A two-finger motion: pixels (points), then wheel lines.
+                let tape = "# zgx wheel tape 1\n\
+                    0 pixel 0 -12.5 moved\n\
+                    8.4 pixel 0 -20.25 moved\n\
+                    16.6 pixel 0 -7.25 moved\n\
+                    40 lines 0 -1 moved\n";
+                let said = host
+                    .context
+                    .ui
+                    .wheel_tape(zgx::widgets::WheelTape::Play {
+                        tape: tape.into(),
+                        at: (100., 100.),
+                    })
+                    .unwrap();
+                assert_eq!(said, "playing 4 events over 40 ms");
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                while host.wheel_tape.borrow().deadline().is_some() || host.scroll.pending() {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "the tape never finished"
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                    host.update().unwrap();
+                }
+                host.context.ui.prepare_frame();
+                self.scrolled = Some(offset.get());
+                self.step = crate::scrollers::wheel_step(host.context.viewport.get()).1;
+                self.clicks = pressed;
+                host.suspend();
+                event_loop.exit();
+            }
+            fn window_event(&mut self, _: &ActiveEventLoop, _: WindowId, _: WindowEvent) {}
+        }
+        let event_loop = EventLoop::<Event>::with_user_event()
+            .with_x11()
+            .with_any_thread(true)
+            .build()
+            .unwrap();
+        let factory = WindowFactory {
+            fonts: Default::default(),
+            text_language: Default::default(),
+            file_routes: Default::default(),
+            application_id: None,
+            activation: Rc::default(),
+            menus: Rc::new(RefCell::new(Vec::new())),
+            menus_left_out: Rc::default(),
+            reserved: Rc::default(),
+            pending: Rc::new(RefCell::new(VecDeque::new())),
+            next: Rc::new(Cell::new(1)),
+            alive: Rc::new(Cell::new(true)),
+            clipboard: Rc::new(RefCell::new(None)),
+            gpu_contexts: Rc::new(RefCell::new(Vec::new())),
+            #[cfg(any(target_os = "macos", windows))]
+            early_gpu: Rc::default(),
+            proxy: event_loop.create_proxy(),
+            runtime: zgx::reactive::Runtime::new(),
+        };
+        let mut probe = Probe {
+            factory,
+            scrolled: None,
+            step: 0.,
+            clicks: 0,
+        };
+        event_loop.run_app(&mut probe).unwrap();
+        // Every event arrived as the platform's would: 40 points of motion
+        // and a wheel line's step (down is positive in zgx).
+        let step = probe.step;
+        let scrolled = probe.scrolled.unwrap();
+        assert!(
+            (scrolled - (40. + step)).abs() < 0.01,
+            "{scrolled} vs {}",
+            40. + step
+        );
+        assert_eq!(probe.clicks, 1, "the pointer tape pressed the button once");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "requires an owned X11 display and GPU; run alone with --test-threads=1"]
+    fn a_window_lays_out_at_the_size_it_opened_at() {
+        use winit::platform::x11::EventLoopBuilderExtX11;
+        struct Probe {
+            factory: WindowFactory,
+            viewport: Option<(f32, f32)>,
+            expected: Option<(f32, f32)>,
+        }
+        impl ApplicationHandler<Event> for Probe {
+            fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+                // Asked 960 by 720, opened at bounds of its own.
+                let options = WindowOptions {
+                    bounds: Some(crate::WindowBounds::new(500, 300)),
+                    ..Default::default()
+                };
+                let mut host = Host::new(options, self.factory.allocate(), self.factory.clone());
+                host.create_window(event_loop).unwrap();
+                let window = host.window.as_ref().unwrap();
+                let size = window.inner_size();
+                let scale = window.scale_factor();
+                // Before any `Resized`: the size it opened at, not the one asked.
+                self.viewport = Some(host.context.viewport.get());
+                self.expected = Some((
+                    (size.width as f64 / scale) as f32,
+                    (size.height as f64 / scale) as f32,
+                ));
+                host.suspend();
+                event_loop.exit();
+            }
+            fn window_event(&mut self, _: &ActiveEventLoop, _: WindowId, _: WindowEvent) {}
+        }
+        let event_loop = EventLoop::<Event>::with_user_event()
+            .with_x11()
+            .with_any_thread(true)
+            .build()
+            .unwrap();
+        let factory = WindowFactory {
+            fonts: Default::default(),
+            text_language: Default::default(),
+            file_routes: Default::default(),
+            application_id: None,
+            activation: Rc::default(),
+            menus: Rc::new(RefCell::new(Vec::new())),
+            menus_left_out: Rc::default(),
+            reserved: Rc::default(),
+            pending: Rc::new(RefCell::new(VecDeque::new())),
+            next: Rc::new(Cell::new(1)),
+            alive: Rc::new(Cell::new(true)),
+            clipboard: Rc::new(RefCell::new(None)),
+            gpu_contexts: Rc::new(RefCell::new(Vec::new())),
+            #[cfg(any(target_os = "macos", windows))]
+            early_gpu: Rc::default(),
+            proxy: event_loop.create_proxy(),
+            runtime: zgx::reactive::Runtime::new(),
+        };
+        let mut probe = Probe {
+            factory,
+            viewport: None,
+            expected: None,
+        };
+        event_loop.run_app(&mut probe).unwrap();
+        assert!(probe.viewport.is_some());
+        assert_eq!(probe.viewport, probe.expected);
+        assert_ne!(probe.viewport, Some((960., 720.)));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "requires an owned X11 display and GPU; run alone with --test-threads=1"]
+    fn windows_still_open_close_before_the_event_loop_ends() {
+        use winit::platform::x11::EventLoopBuilderExtX11;
+        struct Probe {
+            manager: WindowManager,
+            window: std::sync::Weak<winit::window::Window>,
+            closed_in_loop: bool,
+        }
+        impl ApplicationHandler<Event> for Probe {
+            fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+                let handle = self.manager.factory.allocate();
+                let token = handle.token;
+                let mut host = Host::new(
+                    WindowOptions::default(),
+                    handle,
+                    self.manager.factory.clone(),
+                );
+                host.create_window(event_loop).unwrap();
+                self.window = Arc::downgrade(host.window.as_ref().unwrap());
+                self.manager.hosts.insert(token, host);
+                // As `Application::quit` does: the loop ends, its window open.
+                event_loop.exit();
+            }
+            fn window_event(&mut self, _: &ActiveEventLoop, _: WindowId, _: WindowEvent) {}
+            fn exiting(&mut self, event_loop: &ActiveEventLoop) {
+                ApplicationHandler::exiting(&mut self.manager, event_loop);
+                // Gone, renderer and all, while the display is still open.
+                self.closed_in_loop =
+                    self.manager.hosts.is_empty() && self.window.upgrade().is_none();
+            }
+        }
+        let event_loop = EventLoop::<Event>::with_user_event()
+            .with_x11()
+            .with_any_thread(true)
+            .build()
+            .unwrap();
+        let factory = WindowFactory {
+            fonts: Default::default(),
+            text_language: Default::default(),
+            file_routes: Default::default(),
+            application_id: None,
+            activation: Rc::default(),
+            menus: Rc::new(RefCell::new(Vec::new())),
+            menus_left_out: Rc::default(),
+            reserved: Rc::default(),
+            pending: Rc::new(RefCell::new(VecDeque::new())),
+            next: Rc::new(Cell::new(1)),
+            alive: Rc::new(Cell::new(true)),
+            clipboard: Rc::new(RefCell::new(None)),
+            gpu_contexts: Rc::new(RefCell::new(Vec::new())),
+            #[cfg(any(target_os = "macos", windows))]
+            early_gpu: Rc::default(),
+            proxy: event_loop.create_proxy(),
+            runtime: zgx::reactive::Runtime::new(),
+        };
+        let manager = WindowManager {
+            native_data: None,
+            appearance: None,
+            _native_events: None,
+            application_event: None,
+            quit_on_last_window_close: true,
+            hosts: HashMap::new(),
+            panics: Vec::new(),
+            native: HashMap::new(),
+            drag_over: Cell::new(None),
+            carrying: None,
+            last_focused: None,
+            pending_move: HeldMove::default(),
+            factory,
+            active: false,
+            error: None,
+            timers: zgx::timer::host(|| {}),
+        };
+        let mut probe = Probe {
+            manager,
+            window: std::sync::Weak::new(),
+            closed_in_loop: false,
+        };
+        event_loop.run_app(&mut probe).unwrap();
+        assert!(probe.closed_in_loop);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_closing_windows_metal_layers_leave_its_view_alone() {
+        use objc2::{ClassType, msg_send, rc::Retained, runtime::AnyClass};
+        use objc2_quartz_core::CALayer;
+        let metal = AnyClass::get(c"CAMetalLayer").unwrap();
+        let host = CALayer::new();
+        let other = CALayer::new();
+        // Metal layers on both sides of another: each removal shifts the
+        // list under its enumeration.
+        for index in 0..3 {
+            let sublayer: Retained<CALayer> = if index == 1 {
+                other.clone()
+            } else {
+                // SAFETY: CAMetalLayer is a CALayer, made by `new`.
+                unsafe { msg_send![metal, new] }
+            };
+            host.addSublayer(&sublayer);
+        }
+        super::remove_sublayers(&host, metal);
+        // SAFETY: the layer's sublayer list, only read while walked.
+        let left: Vec<_> = unsafe { host.sublayers() }
+            .unwrap()
+            .iter()
+            .map(|layer| layer.class() == CALayer::class())
+            .collect();
+        assert_eq!(left, [true]);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn an_added_bool_method_states_bools_own_encoding() {
+        use objc2::{encode::Encode, runtime::Bool};
+        assert_eq!(
+            super::BOOL_GETTER.to_str().unwrap(),
+            format!("{}@:", Bool::ENCODING)
+        );
+    }
+
+    #[test]
+    fn window_handles_can_close_from_worker_threads() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<WindowHandle>();
+    }
+}

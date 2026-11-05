@@ -1,0 +1,153 @@
+[package]
+name = "zgx-gpu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+rust-version.workspace = true
+description = "The GPU renderer for zgx scenes, on wgpu: Metal, Direct3D 12 and Vulkan, repainting only what changed."
+keywords = ["gui", "renderer", "wgpu", "gpu", "text"]
+categories = ["gui", "rendering"]
+
+# Image formats, each on by default. An app that never shows one can leave
+# it out (`default-features = false`) and save its decoder in the binary: a
+# source in a missing format fails to decode, with an error naming the
+# feature. Canvases, gradients and shadows need none of them.
+[features]
+default = ["svg", "png", "jpeg", "gif"]
+svg = ["dep:resvg"]
+png = ["image/png"]
+jpeg = ["dep:zune-jpeg"]
+gif = ["dep:gif"]
+# Words break at their hyphenation points where text asks (zgx's `hyphens`):
+# typst's `hypher`, all its 48 languages' patterns, about 1.2 MB of a release
+# binary, read in place (no heap). The system's language picks them.
+hyphens = ["zgx/hyphens", "dep:hypher"]
+# Windows: presentation into DirectComposition visuals of the caller's
+# (composition.rs), with native views composited between the planes.
+composition = ["windows/Win32_Graphics_DirectComposition"]
+# Windows: Vulkan where Direct3D 12 has no adapter. Every Windows 10 and 11
+# machine has a Direct3D 12 adapter (WARP, in software, where the GPU's
+# driver has none), so it is off there: 1.1 MiB of every binary. Linux
+# always has it.
+vulkan = ["wgpu/vulkan"]
+# Windows, experimental: frames drawn with Direct3D 11 when `ZGX_D3D11=1`
+# (d3d11_frame.rs), wgpu's no-op backend standing in for its device, so no
+# Direct3D 12 device is opened. Off, nothing of it is built.
+d3d11 = ["wgpu/noop", "windows/Win32_Graphics_Direct3D", "windows/Win32_Graphics_Direct3D11"]
+
+[dependencies]
+hypher = { version = "0.1.8", optional = true }
+smallvec = "1.16"
+zgx = { path = "../zgx", version = "0.1.9", default-features = false }
+# wgpu's defaults less WebGPU (the browser's), and Vulkan and GL, which only
+# Linux and its kind always build (below).
+wgpu = { version = "29.0.4", default-features = false, features = ["std", "parking_lot", "dx12", "metal", "wgsl"] }
+winit = "0.30.13"
+cosmic-text = { package = "zgx-cosmic-text", version = "0.19.10", path = "../../vendor/cosmic-text", features = ["shape-run-cache"] }
+pollster = "0.4"
+bytemuck = { version = "1.25", features = ["derive"] }
+image = { version = "0.25.10", default-features = false }
+# JPEGs, decoded at 1/2, 1/4 or 1/8 of their size where shown that small
+# (vendor/zune-jpeg/ZGX_PATCH.md); `image` reads their format alone.
+zune-jpeg = { package = "zgx-zune-jpeg", version = "0.5.15", path = "../../vendor/zune-jpeg", optional = true }
+resvg = { version = "0.46.0", default-features = false, optional = true }
+# Canvas, decoration and image rasterization (what resvg draws with).
+tiny-skia = { version = "0.11.4", default-features = false, features = ["std", "simd"] }
+unicode-segmentation = "1.12"
+# Per-glyph and per-node lookups every frame; already in the tree via cosmic-text.
+rustc-hash = "2.1"
+
+gif = { version = "=0.14.2", default-features = false, features = ["std"], optional = true }
+
+# GL (EGL), where no Vulkan driver is: VMs and GPUs without one, and
+# systems that ship none. Never loaded where Vulkan is (`GpuContext::create`).
+[target.'cfg(target_os = "linux")'.dependencies]
+wgpu = { version = "29.0.4", default-features = false, features = ["gles"] }
+
+[target.'cfg(not(any(windows, target_vendor = "apple")))'.dependencies]
+wgpu = { version = "29.0.4", default-features = false, features = ["vulkan"] }
+
+# fontconfig's configuration, read as fontdb reads it, for what the system
+# font cache watches (font_cache.rs); fontdb's own, already in the tree.
+[target.'cfg(all(unix, not(any(target_os = "macos", target_os = "android"))))'.dependencies]
+fontconfig-parser = { version = "0.5.8", default-features = false }
+
+# DXGI frame statistics for ZGX_PRESENT_LOG (dxgi.rs); the version wgpu-hal uses.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", default-features = false, features = ["Win32_Foundation", "Win32_Graphics_Direct3D12", "Win32_Graphics_DirectComposition", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_Graphics_Dwm", "Win32_System_Performance", "Win32_System_Threading", "Win32_System_LibraryLoader", "Win32_Graphics_Direct3D"] }
+# wgpu's own (`wgpu::hal`), named so build.rs reads whether it is the
+# repository's (its `links` metadata: `preferred_dx12_adapter`).
+wgpu-hal = { version = "29.0.4", default-features = false }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-core-foundation = "0.3.2"
+objc2-core-video = "0.3.2"
+objc2-metal = { version = "0.3.2", features = ["objc2-io-surface", "block2"] }
+# Drawables' presented handlers (layer_present.rs).
+block2 = "0.6"
+# Shader sources and function names for frames encoded directly (metal_frame.rs).
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSString", "NSError", "NSUserDefaults", "NSProcessInfo"] }
+# Presentation through IOSurfaces shown as a layer's contents (layer_present.rs).
+objc2-io-surface = "0.3.2"
+objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "CGColorSpace", "CGColor"] }
+objc2-quartz-core = { version = "0.3.2", default-features = false, features = ["std", "CALayer", "CAMetalLayer", "CATransaction", "objc2-core-foundation", "objc2-core-graphics", "objc2-metal"] }
+
+# `d3d12_device_churn` and `d3d_frame_floor`, examples on Direct3D without
+# wgpu (see docs/validation.md, docs/windows.md); only examples and tests
+# build these.
+[dev-dependencies]
+# Tests encode JPEGs, and check ours against `image`'s decode of them.
+image = { version = "0.25.10", default-features = false, features = ["jpeg"] }
+# Shaping with and without its kept advances (tests/variable_advances.rs).
+harfrust = { package = "zgx-harfrust", version = "0.5.3", path = "../../vendor/harfrust" }
+
+[target.'cfg(windows)'.dev-dependencies]
+windows = { version = "0.62", default-features = false, features = ["Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D11", "Win32_Graphics_Direct3D_Fxc", "Win32_Graphics_Direct3D12", "Win32_Graphics_DirectComposition", "Win32_Graphics_Gdi", "Win32_Foundation", "Win32_Security", "Win32_System_LibraryLoader", "Win32_System_ProcessStatus", "Win32_System_Threading", "Win32_System_WindowsProgramming", "Win32_UI_WindowsAndMessaging"] }
+# The debug layer's errors, collected (tests/d3d12_validation.rs).
+wgpu-hal = { version = "29.0.4", default-features = false, features = ["validation_canary"] }
+
+# Tests of a format need its feature.
+# On the main thread, as layer presentation runs (`fn main`).
+[[test]]
+name = "baked_loops"
+harness = false
+
+[[test]]
+name = "layer_frames"
+harness = false
+
+# On the main thread, as layer presentation runs (`fn main`).
+[[test]]
+name = "zoomed_layers"
+harness = false
+
+# On the main thread, as layer presentation runs (`fn main`).
+[[test]]
+name = "native_paths"
+harness = false
+
+[[test]]
+name = "gif"
+required-features = ["gif"]
+
+[[test]]
+name = "gif_memory"
+required-features = ["gif"]
+
+# A counting global allocator: a process of its own.
+[[test]]
+name = "decode_peak"
+required-features = ["png", "jpeg"]
+
+[[test]]
+name = "svg"
+required-features = ["svg"]
+
+# Runs itself again with `ZGX_D3D11=1` (read once a process) and compares.
+[[test]]
+name = "d3d11_parity"
+harness = false
+required-features = ["d3d11"]

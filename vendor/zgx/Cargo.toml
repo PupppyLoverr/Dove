@@ -1,0 +1,96 @@
+[workspace]
+members = ["crates/zgx", "crates/zgx-3d", "crates/zgx-components", "crates/zgx-desktop", "crates/zgx-ghostty-sys", "crates/zgx-gpu", "crates/zgx-script", "crates/zgx-run", "crates/zgx-terminal"]
+exclude = [
+    "comparisons/gpui",
+    "comparisons/quickgui",
+    "vendor/accesskit_atspi_common",
+    "vendor/accesskit_consumer",
+    "vendor/accesskit_macos",
+    "vendor/accesskit_unix",
+    "vendor/accesskit_windows",
+    "vendor/alacritty-terminal",
+    "vendor/cosmic-text",
+    "vendor/harfrust",
+    "vendor/mlua",
+    "vendor/taffy",
+    "vendor/winit",
+    "vendor/zune-jpeg",
+]
+resolver = "2"
+
+[workspace.package]
+# One version for every published crate (see docs/releasing.md).
+version = "0.1.9"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/zeronsh/zgx"
+readme = "README.md"
+# The oldest Rust that builds the workspace (CI checks it).
+rust-version = "1.95"
+
+# Dependencies optimized in dev builds too: the Luau VM, text shaping,
+# rasterizing and the GPU stack run many times slower unoptimized, which
+# made debug apps lag. Workspace crates stay quick to rebuild. Their debug
+# info is line tables only (backtraces keep files and lines): full debug
+# info for optimized code was a tenth of a clean build's CPU.
+[profile.dev.package."*"]
+opt-level = 3
+debug = "line-tables-only"
+
+# The shader compiler runs once per pipeline, at startup: optimized less, it
+# compiles in less time on a clean build's critical path, and a debug app's
+# renderer starts as fast (21-24 ms either way).
+[profile.dev.package.naga]
+opt-level = 1
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
+# What ships, and what the comparison tables measure: release with the
+# whole program optimized as one unit. About 14% smaller than release and a
+# little faster (heavy_workload 13.2 -> 11.4 MB on macOS, 0.9% fewer
+# instructions a tick), for twice the link time, which is why day-to-day
+# release builds stay thin. See docs/benchmarking.md.
+[profile.dist]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+
+[profile.bench]
+lto = "thin"
+codegen-units = 1
+
+# Text shaping (and the shaper under it), layout, the Luau bindings and the
+# terminal's screen model are forks published as zgx's own crates
+# (zgx-cosmic-text, zgx-harfrust, zgx-taffy, zgx-mlua, zgx-alacritty-terminal),
+# which zgx's crates depend on
+# by path and version, each with its ZGX_PATCH.md. The crates below are
+# patched in this repository alone: a zgx crate from crates.io builds against
+# their releases, without the fixes, where an API a patch adds is detected at
+# build time (`links` metadata) and falls back. See docs/releasing.md.
+#
+# wgpu-hal with a Metal backend patch: command buffers are created lazily and
+# empty ones are never committed. Upstream opens several per submission; each
+# costs a commit, a completion callback and Core Animation frame-pacing IPC.
+# On Windows, a Direct3D 12 adapter can be exposed without opening a device on
+# every other adapter. See vendor/wgpu-hal/ZGX_PATCH.md.
+[patch.crates-io]
+wgpu-hal = { path = "vendor/wgpu-hal" }
+# AccessKit 0.26 on macOS with headings VoiceOver finds and grids that give
+# their rows: see vendor/accesskit_macos/ZGX_PATCH.md.
+accesskit_macos = { path = "vendor/accesskit_macos" }
+# AccessKit's consumer 0.38 with a field's error message and descriptions
+# reachable by the adapters: see vendor/accesskit_consumer/ZGX_PATCH.md.
+accesskit_consumer = { path = "vendor/accesskit_consumer" }
+# AccessKit's Linux adapter (accesskit_unix 0.22, accesskit_atspi_common 0.19)
+# with tables Orca reads and tree items that say they are open: see
+# vendor/accesskit_unix/ZGX_PATCH.md.
+accesskit_atspi_common = { path = "vendor/accesskit_atspi_common" }
+accesskit_unix = { path = "vendor/accesskit_unix" }
+# AccessKit 0.34 on Windows with headings Narrator navigates by: see
+# vendor/accesskit_windows/ZGX_PATCH.md.
+accesskit_windows = { path = "vendor/accesskit_windows" }
+# winit 0.30.13 with a window's `xdg_surface`, the parent of Wayland popups:
+# see vendor/winit/ZGX_PATCH.md.
+winit = { path = "vendor/winit" }
