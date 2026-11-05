@@ -41,11 +41,30 @@ end
 local function focus()
 	local w = first:peek()
 	local t = working:peek()[1]
+	if not w and not t then
+		-- At rest: ask.
+		pcall(ui.invoke, "notch.ask")
+		return
+	end
 	local id = if w then w.thread_id elseif t then t.id else nil
 	ui.invoke("notch.focus", id)
 end
 
 local glow = kx.motion.breath(0.55, 1)
+
+-- The time, to the minute (src/clock.rs); a fixture's is still.
+type Now = { hour: number, minute: number, weekday: string, day: number, month: string }
+local now: State<Now> = if store.fixture ~= ""
+	then ui.state("fx.now", { hour = 21, minute = 42, weekday = "Thursday", day = 5, month = "November" } :: Now)
+	else ui.shared("kx.now", { hour = 0, minute = 0, weekday = "", day = 0, month = "" } :: Now)
+local function clock(): string
+	local t = now:get()
+	return string.format("%d:%02d", t.hour, t.minute)
+end
+local function day(): string
+	local t = now:get()
+	return if t.weekday == "" then "" else `{string.sub(t.weekday, 1, 3)} {t.day} {string.sub(t.month, 1, 3)}`
+end
 
 local function star(t: store.Thread): Node
 	return kx.AgentMark { agent = t.harness_id, size = 7, live = function()
@@ -81,7 +100,17 @@ local resting = ui.row {
 				color = "$text.secondary",
 			},
 		},
-		ui.text { "All quiet", literal = true, text_size = "$font.size.sm", color = "$text.tertiary" }
+		-- Nothing working: the notch on its own, a quiet clock, and a click
+		-- to ask (the launcher).
+		ui.row {
+			gap = "$space.2",
+			items = "center",
+			ui.text { clock, literal = true, text_size = "$font.size.sm", weight = "$font.weight.medium", tabular = true },
+			ui.text { day, literal = true, text_size = "$font.size.sm", color = "$text.tertiary" },
+			ui.div { w = 1, h = 12, bg = "$border.subtle" },
+			ui.text { "Ask anything", literal = true, text_size = "$font.size.sm", color = "$text.tertiary" },
+			ui.text { "Alt Space", literal = true, text_size = "$font.size.xs", color = "$text.tertiary", font = "$font.mono" },
+		}
 	),
 }
 

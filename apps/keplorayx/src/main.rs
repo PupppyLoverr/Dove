@@ -14,8 +14,10 @@
 //! otherwise, so its threads, agents and settings never meet a running Dove's.
 
 mod account;
+mod clock;
 mod host;
 mod intro;
+mod launcher;
 mod notch;
 mod panels;
 mod platform;
@@ -42,6 +44,8 @@ enum Screen {
     Onboarding,
     /// The notch on its own (development: its fixtures and PNGs).
     Notch,
+    /// The launcher on its own, shown (development).
+    Launcher,
 }
 
 /// The store's word that setup has been finished once.
@@ -65,6 +69,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for var in ["CLAUDE_CODE_CHILD_SESSION", "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SSE_PORT"] {
         // SAFETY: first thing in main, before any thread exists.
         unsafe { std::env::remove_var(var) };
+    }
+    // Per-monitor DPI aware from the start (as the windows will be), so the
+    // windows placed before they exist (the notch, the launcher) are placed
+    // in real pixels at the display's scale.
+    #[cfg(windows)]
+    // SAFETY: a process-wide setting, before any window; a second call fails harmlessly.
+    unsafe {
+        windows_sys::Win32::UI::HiDpi::SetProcessDpiAwarenessContext(
+            windows_sys::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+        );
     }
     // For scripts/perf: when main began, and (once the first view is built)
     // how long that took. `DOVE_STARTUP_TRACE=1`.
@@ -94,17 +108,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut screen = None;
     let mut inspect = false;
+    let mut background = false;
     for arg in std::env::args().skip(1) {
         match arg.as_str() {
+            // Started with the computer: the tray and the notch, the window
+            // hidden until you open it.
+            "--background" => {
+                background = true;
+                screen = Some(Screen::Main);
+            }
             "main" => screen = Some(Screen::Main),
             "gallery" => screen = Some(Screen::Gallery),
             "intro" => screen = Some(Screen::Intro),
             "onboarding" => screen = Some(Screen::Onboarding),
             "notch" => screen = Some(Screen::Notch),
+            "launcher" => screen = Some(Screen::Launcher),
             "--inspect" => inspect = true,
             other => {
                 return Err(
-                    format!("unknown argument `{other}`: expected main, gallery, intro, onboarding or --inspect").into()
+                    format!("unknown argument `{other}`: expected main, gallery, intro, onboarding, notch, --background or --inspect").into()
                 );
             }
         }
@@ -127,6 +149,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let skip = std::env::var_os("DOVE_SKIP_INTRO").is_some_and(|v| v == "1");
         if skip || engine.store.setting(ONBOARDED).is_some() { Screen::Main } else { Screen::Intro }
     });
+    // (Setup not done yet: a background start shows it after all.)
+    let background = background && engine.store.setting(ONBOARDED).is_some();
 
     let entry = entry(screen);
     zgx_script::compile_ahead(
@@ -142,7 +166,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Screen::Intro => intro::overlay_window(),
         Screen::Onboarding => intro::setup_window(),
         Screen::Notch => notch::window(),
-        _ => window(screen),
+        Screen::Launcher => WindowOptions { visible: true, ..launcher::window() },
+        _ => WindowOptions { visible: !background, ..window(screen) },
     };
     application.window(options).run(move |cx| {
         match screen {
@@ -157,6 +182,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             Screen::Notch => {
                 notch::open(cx, engine.clone(), |_| {});
+            }
+            Screen::Launcher => {
+                launcher::clipboard::watch();
+                launcher::build(cx, engine.clone(), |_| {}, inspect);
             }
             Screen::Intro => {
                 let host = script_host(cx, entry);
@@ -184,6 +213,7 @@ fn entry(screen: Screen) -> &'static str {
         Screen::Intro => "intro.luau",
         Screen::Onboarding => "onboarding.luau",
         Screen::Notch => "notch.luau",
+        Screen::Launcher => "launcher.luau",
     }
 }
 
@@ -192,6 +222,7 @@ fn open_main(cx: &mut WindowContext, engine: Arc<dove_core::Engine>, inspect: bo
     let host = script_host(cx, "app.luau");
     host::install(cx, &host, engine.clone());
     account::install(&host, &cx.tasks, engine.clone());
+    clock::install(cx, &host);
     // Frosted glass on or off (Settings › Appearance): the main window's
     // backdrop follows it. (Its own windows only: the notch and First
     // Light's overlay keep theirs.)
@@ -203,20 +234,37 @@ fn open_main(cx: &mut WindowContext, engine: Arc<dove_core::Engine>, inspect: bo
     // The notch, over every window: a click on it brings this window forward
     // on the thread it showed (`notch.focus`, which app.luau follows).
     let focus_thread = host.shared("notch.focus", "");
+    // The launcher (Alt+Space), made hidden: what it opens in Keplorayx
+    // brings this window forward, on its thread.
+    {
+        let (window, focus) = (cx.window.clone(), focus_thread.clone());
+        let asked = Rc::new(std::cell::Cell::new(0u32));
+        launcher::open(cx, engine.clone(), move |thread| {
+            window.set_visible(true);
+            window.request_focus();
+            if let Some(id) = thread {
+                asked.set(asked.get() + 1);
+                focus.set(Value::from(format!("{id}#{}", asked.get()).as_str()));
+            }
+        });
+    }
+    let mut notch_window = None;
     if notch::enabled() {
         let main_window = cx.window.clone();
         let engine = engine.clone();
-        cx.windows.open(notch::window(), move |cx| {
+        let shown = engine.store.flag("kx.notch", true);
+        notch_window = Some(cx.windows.open(WindowOptions { visible: shown, ..notch::window() }, move |cx| {
             let (window, focus) = (main_window.clone(), focus_thread.clone());
             let asked = std::cell::Cell::new(0u32);
             notch::open(cx, engine.clone(), move |thread| {
+                window.set_visible(true);
                 window.request_focus();
                 if let Some(id) = thread {
                     asked.set(asked.get() + 1);
                     focus.set(Value::from(format!("{id}#{}", asked.get()).as_str()));
                 }
             });
-        });
+        }));
     }
     // The tray and the keys that reach Keplorayx from any app, once a
     // process: what they ask comes to this window as `kx.shell`
@@ -224,25 +272,74 @@ fn open_main(cx: &mut WindowContext, engine: Arc<dove_core::Engine>, inspect: bo
     thread_local! {
         static SHELL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     }
+    let mut tray_live = false;
     if !SHELL.with(|s| s.replace(true)) && std::env::var_os("KX_TRAY").is_none_or(|v| v != "0") {
-        let (heard, tray) = platform::start(engine.store.flag("kx.global_keys", true));
+        let (heard, tray) =
+            platform::start(engine.store.flag("kx.global_keys", true), engine.store.flag("kx.notch", true));
+        tray_live = tray.live();
         // It lives as long as the process.
         std::mem::forget(tray);
         let (window, shell) = (cx.window.clone(), host.shared("kx.shell", ""));
+        let (engine, notch_window) = (engine.clone(), notch_window.clone());
         cx.tasks.spawn(async move {
             let mut n = 0u32;
             while let Ok(what) = heard.recv_async().await {
-                if what == platform::Shell::Quit {
-                    std::process::exit(0);
+                match what {
+                    platform::Shell::Quit => std::process::exit(0),
+                    platform::Shell::Notch => {
+                        let on = !engine.store.flag("kx.notch", true);
+                        let _ = engine.store.set_setting("kx.notch", if on { "true" } else { "false" });
+                        if let Some(w) = &notch_window {
+                            w.set_visible(on);
+                        }
+                    }
+                    platform::Shell::Login => platform::autostart::set(!platform::autostart::on()),
+                    platform::Shell::Launcher => {
+                        launcher::summon();
+                        continue;
+                    }
+                    // Answering from the keys, or the launcher, leaves the
+                    // window where it is.
+                    platform::Shell::Allow | platform::Shell::Deny => {}
+                    _ => {
+                        window.set_visible(true);
+                        window.request_focus();
+                    }
                 }
-                // Answering from the keys leaves you where you are.
-                if !matches!(what, platform::Shell::Allow | platform::Shell::Deny) {
-                    window.request_focus();
+                if matches!(what, platform::Shell::Notch | platform::Shell::Login) {
+                    continue;
                 }
                 n += 1;
                 shell.set(Value::from(format!("{}#{n}", what.word()).as_str()));
             }
         });
+    }
+    // Settings › General: the notch shown or hidden, and starting with the
+    // computer.
+    {
+        let notch_window = notch_window.clone();
+        host.action("kx.notch_visible", move |on| {
+            if let Some(w) = &notch_window {
+                w.set_visible(matches!(on, Value::Bool(true)));
+            }
+        });
+        host.shared("kx.autostart", platform::autostart::on());
+        host.action("kx.autostart", |on| platform::autostart::set(matches!(on, Value::Bool(true))));
+    }
+    // Closing the window hides it to the tray: your agents carry on, the
+    // notch stays, and the tray or a key brings it back (Settings ›
+    // General › Keep running in the tray, `kx.keep_in_tray`). Without a
+    // tray to come back from, or with it off, closing quits, the notch too.
+    {
+        let (window, engine) = (cx.window.clone(), engine.clone());
+        cx.on_close_requested(move || {
+            if tray_live && engine.store.flag("kx.keep_in_tray", true) {
+                window.set_visible(false);
+                return false;
+            }
+            true
+        });
+        cx.on_closed(|| std::process::exit(0));
     }
     // Settings › Appearance › Open setup: First Light's steps again, in a
     // window of their own.

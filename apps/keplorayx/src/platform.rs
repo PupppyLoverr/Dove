@@ -24,6 +24,12 @@ pub enum Shell {
     /// Answer the oldest request waiting on you.
     Allow,
     Deny,
+    /// Show or hide the notch.
+    Notch,
+    /// Start Keplorayx with Windows (or stop), in the background.
+    Login,
+    /// The launcher (Alt+Space).
+    Launcher,
     Quit,
 }
 
@@ -36,6 +42,9 @@ impl Shell {
             Shell::Settings => "settings",
             Shell::Allow => "allow",
             Shell::Deny => "deny",
+            Shell::Notch => "notch",
+            Shell::Login => "login",
+            Shell::Launcher => "launcher",
             Shell::Quit => "quit",
         }
     }
@@ -43,13 +52,67 @@ impl Shell {
 
 /// Starts the tray icon and the global keys; their events arrive on the
 /// returned channel. The tray lives as long as the returned guard.
-pub fn start(global_keys: bool) -> (flume::Receiver<Shell>, Tray) {
+pub fn start(global_keys: bool, notch: bool) -> (flume::Receiver<Shell>, Tray) {
     let (tell, heard) = flume::unbounded();
     if global_keys {
         keys::start(tell.clone());
     }
-    let tray = tray::start(tell);
+    let tray = tray::start(tell, notch, autostart::on());
     (heard, tray)
+}
+
+/// Starting with the computer: a per-user Run entry (Windows) that starts
+/// Keplorayx in the background (`--background`: the tray and the notch, no
+/// window). Elsewhere, not yet.
+pub mod autostart {
+    #[cfg(windows)]
+    const KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
+    #[cfg(windows)]
+    const NAME: &str = "Keplorayx";
+
+    #[cfg(windows)]
+    fn wide(s: &str) -> Vec<u16> {
+        s.encode_utf16().chain([0]).collect()
+    }
+
+    /// Whether it starts with the computer.
+    pub fn on() -> bool {
+        #[cfg(windows)]
+        {
+            use windows_sys::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_SZ, RegGetValueW};
+            let (key, name) = (wide(KEY), wide(NAME));
+            let mut size = 0u32;
+            // SAFETY: valid, NUL-terminated strings; a size query only.
+            let found = unsafe {
+                RegGetValueW(HKEY_CURRENT_USER, key.as_ptr(), name.as_ptr(), RRF_RT_REG_SZ, std::ptr::null_mut(), std::ptr::null_mut(), &mut size)
+            };
+            found == 0
+        }
+        #[cfg(not(windows))]
+        false
+    }
+
+    /// Start with the computer, or stop.
+    pub fn set(on: bool) {
+        #[cfg(windows)]
+        {
+            use windows_sys::Win32::System::Registry::{HKEY_CURRENT_USER, REG_SZ, RegDeleteKeyValueW, RegSetKeyValueW};
+            let (key, name) = (wide(KEY), wide(NAME));
+            if on {
+                let Ok(exe) = std::env::current_exe() else { return };
+                let line = wide(&format!("\"{}\" --background", exe.display()));
+                // SAFETY: valid strings; the value's size is in bytes, its NUL included.
+                unsafe {
+                    RegSetKeyValueW(HKEY_CURRENT_USER, key.as_ptr(), name.as_ptr(), REG_SZ, line.as_ptr().cast(), (line.len() * 2) as u32);
+                }
+            } else {
+                // SAFETY: valid strings.
+                unsafe { RegDeleteKeyValueW(HKEY_CURRENT_USER, key.as_ptr(), name.as_ptr()) };
+            }
+        }
+        #[cfg(not(windows))]
+        let _ = on;
+    }
 }
 
 pub use tray::Tray;
@@ -59,12 +122,19 @@ mod tray {
     use super::Shell;
     use tray_icon::{
         Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent,
-        menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem},
+        menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem},
     };
 
-    pub struct Tray(#[allow(dead_code)] Option<TrayIcon>);
+    pub struct Tray(Option<TrayIcon>);
 
-    pub fn start(tell: flume::Sender<Shell>) -> Tray {
+    impl Tray {
+        /// Whether the icon is there (a window hidden to it can come back).
+        pub fn live(&self) -> bool {
+            self.0.is_some()
+        }
+    }
+
+    pub fn start(tell: flume::Sender<Shell>, notch: bool, login: bool) -> Tray {
         let menu = Menu::new();
         let items = [
             (MenuItem::new("Open Keplorayx", true, None), Shell::Open),
@@ -76,13 +146,25 @@ mod tray {
             let _ = menu.append(item);
         }
         let _ = menu.append(&PredefinedMenuItem::separator());
+        // (Ticked as they stand; a click flips the tick itself.)
+        let show_notch = CheckMenuItem::new("Show the notch", true, notch, None);
+        let at_login = CheckMenuItem::new("Start with Windows", cfg!(windows), login, None);
+        let _ = menu.append(&show_notch);
+        let _ = menu.append(&at_login);
+        let _ = menu.append(&PredefinedMenuItem::separator());
         let quit = MenuItem::new("Quit Keplorayx", true, None);
         let _ = menu.append(&quit);
         let ids: Vec<_> = items
             .iter()
             .map(|(item, what)| (item.id().clone(), *what))
-            .chain([(quit.id().clone(), Shell::Quit)])
+            .chain([
+                (show_notch.id().clone(), Shell::Notch),
+                (at_login.id().clone(), Shell::Login),
+                (quit.id().clone(), Shell::Quit),
+            ])
             .collect();
+        // Kept alive with the menu.
+        std::mem::forget((show_notch, at_login));
         let t = tell.clone();
         MenuEvent::set_event_handler(Some(move |e: MenuEvent| {
             if let Some((_, what)) = ids.iter().find(|(id, _)| *id == e.id) {
@@ -135,7 +217,13 @@ mod tray {
 
     pub struct Tray;
 
-    pub fn start(_tell: flume::Sender<Shell>) -> Tray {
+    impl Tray {
+        pub fn live(&self) -> bool {
+            false
+        }
+    }
+
+    pub fn start(_tell: flume::Sender<Shell>, _notch: bool, _login: bool) -> Tray {
         Tray
     }
 }
@@ -148,8 +236,14 @@ mod keys {
         WindowsAndMessaging::{GetMessageW, MSG, WM_HOTKEY},
     };
 
-    const KEYS: [(i32, u32, Shell); 3] =
-        [(1, VK_SPACE as u32, Shell::Ask), (2, b'A' as u32, Shell::Allow), (3, b'D' as u32, Shell::Deny)];
+    // (id, modifiers, key, what.) Alt+Space is the launcher's, as Raycast's
+    // and PowerToys Run's; taken by another launcher, it warns and goes without.
+    const KEYS: [(i32, u32, u32, Shell); 4] = [
+        (1, MOD_CONTROL | MOD_ALT, VK_SPACE as u32, Shell::Ask),
+        (2, MOD_CONTROL | MOD_ALT, b'A' as u32, Shell::Allow),
+        (3, MOD_CONTROL | MOD_ALT, b'D' as u32, Shell::Deny),
+        (4, MOD_ALT, VK_SPACE as u32, Shell::Launcher),
+    ];
 
     /// A thread of its own registers the keys and waits for them: a hot key
     /// registered with no window arrives in its thread's queue.
@@ -157,9 +251,9 @@ mod keys {
         std::thread::Builder::new()
             .name("kx-keys".into())
             .spawn(move || {
-                for (id, vk, _) in KEYS {
+                for (id, mods, vk, _) in KEYS {
                     // SAFETY: registering a hot key for this thread's queue.
-                    if unsafe { RegisterHotKey(std::ptr::null_mut(), id, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, vk) } == 0 {
+                    if unsafe { RegisterHotKey(std::ptr::null_mut(), id, mods | MOD_NOREPEAT, vk) } == 0 {
                         tracing::warn!("global key {id} is taken by another app");
                     }
                 }
@@ -168,7 +262,7 @@ mod keys {
                 // SAFETY: this thread's own message queue.
                 while unsafe { GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) } > 0 {
                     if msg.message == WM_HOTKEY
-                        && let Some((_, _, what)) = KEYS.iter().find(|(id, ..)| *id as usize == msg.wParam)
+                        && let Some((.., what)) = KEYS.iter().find(|(id, ..)| *id as usize == msg.wParam)
                         && tell.send(*what).is_err()
                     {
                         break;

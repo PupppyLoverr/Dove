@@ -97,6 +97,10 @@ end
 local function general(): Node
 	local name = ui.persist("kx.profile.name", "")
 	local keys = stored_flag("kx.global_keys", true)
+	local tray = stored_flag("kx.keep_in_tray", true)
+	local notch = stored_flag("kx.notch", true)
+	local ok, shared = pcall(ui.shared, "kx.autostart", false)
+	local login = ui.state("settings.autostart", if ok then (shared :: any):peek() == true else false)
 	return page(
 		"General",
 		group(
@@ -120,7 +124,7 @@ local function general(): Node
 			"From anywhere",
 			setting(
 				"Keys from any app",
-				"Ctrl+Alt+Space brings Keplorayx forward to ask; Ctrl+Alt+A and Ctrl+Alt+D allow or deny what an agent waits on. Applies at the next launch.",
+				"Alt+Space opens the launcher; Ctrl+Alt+Space brings Keplorayx forward to ask; Ctrl+Alt+A and Ctrl+Alt+D allow or deny what an agent waits on. Applies at the next launch.",
 				kx.Switch {
 					value = keys,
 					label = "Keys from any app",
@@ -129,7 +133,40 @@ local function general(): Node
 					end,
 				}
 			),
-			setting("In the tray", "Keplorayx keeps an icon by the clock: click it to open, or use its menu.", nil)
+			setting(
+				"Keep running in the tray",
+				"Closing the window leaves your agents working and the notch where it is. The icon by the clock brings it back; Quit is in its menu.",
+				kx.Switch {
+					value = tray,
+					label = "Keep running in the tray",
+					on_change = function(on: boolean)
+						store.set_setting("kx.keep_in_tray", on)
+					end,
+				}
+			),
+			setting(
+				"The notch",
+				"A capsule at the top of the screen: your agents at a glance, and quiet when none are working.",
+				kx.Switch {
+					value = notch,
+					label = "Show the notch",
+					on_change = function(on: boolean)
+						store.set_setting("kx.notch", on)
+						pcall(ui.invoke, "kx.notch_visible", on)
+					end,
+				}
+			),
+			setting(
+				"Start with Windows",
+				"Keplorayx starts in the tray when you sign in to Windows, the window hidden until you open it.",
+				kx.Switch {
+					value = login,
+					label = "Start with Windows",
+					on_change = function(on: boolean)
+						pcall(ui.invoke, "kx.autostart", on)
+					end,
+				}
+			)
 		)
 	)
 end

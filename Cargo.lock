@@ -2950,6 +2950,8 @@ name = "keplorayx"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "arboard",
+ "chrono",
  "dove-core",
  "dove-git",
  "dove-proto",
@@ -2960,6 +2962,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tray-icon",
+ "walkdir",
  "windows-sys 0.61.2",
  "zgx",
  "zgx-desktop",

@@ -44,10 +44,23 @@ fn top_centre() -> Option<WindowBounds> {
     if screen <= 0 {
         return None;
     }
-    // The system's scale isn't known before the window exists: 1.0 places it
-    // a touch off-centre on a scaled display, never off-screen.
-    let (w, h) = (SIZE.0 as u32, SIZE.1 as u32);
+    let scale = system_scale();
+    let (w, h) = ((SIZE.0 * scale) as u32, (SIZE.1 * scale) as u32);
     Some(WindowBounds { position: Some(((screen - w as i32) / 2, 6)), size: (w, h) })
+}
+
+/// The primary display's scale (1.25 at 120 dpi), for placing a window in
+/// pixels before it exists.
+#[cfg(windows)]
+pub fn system_scale() -> f64 {
+    // SAFETY: a plain query.
+    let dpi = unsafe { windows_sys::Win32::UI::HiDpi::GetDpiForSystem() };
+    if dpi == 0 { 1. } else { dpi as f64 / 96. }
+}
+
+#[cfg(not(windows))]
+pub fn system_scale() -> f64 {
+    1.
 }
 
 #[cfg(not(windows))]
@@ -66,6 +79,9 @@ pub fn open(
 ) -> zgx_script::ScriptHost {
     let host = crate::script_host(cx, "notch.luau");
     crate::host::install(cx, &host, engine);
+    crate::clock::install(cx, &host);
+    // At rest, a click asks: the launcher, over everything (src/launcher.rs).
+    host.action("notch.ask", |_| crate::launcher::summon());
     host.action("notch.focus", move |thread| {
         let id = match thread {
             zgx_script::Value::Str(s) => Some(s.to_string()),
