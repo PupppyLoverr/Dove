@@ -16,6 +16,7 @@
 
 local kx = require("@kx")
 local Composer = require("@ds/composer")
+local escape_stops = ui.persist("kx.escape_stops", true)
 local store = require("@kx/store")
 local nav = require("@screens/nav")
 
@@ -616,6 +617,14 @@ function M.Ray(props: { place: "home" | "thread", variant: string? }): Node
 		branch_fixed = if home then nil else fixed,
 		on_send = send,
 		on_stop = store.interrupt,
+		-- Zeron's "Stop agent with Escape" (Settings › General).
+		on_escape = function(): boolean
+			if not home and running:peek() and escape_stops:peek() then
+				store.interrupt()
+				return true
+			end
+			return false
+		end,
 		queue = if home then nil else M.queue :: any,
 		-- Now: the turn under way stops and this goes.
 		on_queue_send = function(qid: string)

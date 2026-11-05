@@ -48,6 +48,19 @@ local SECTIONS = {
 -- sections under small titles, each a card of rows with hairlines between.
 local Settings = require("@ds/settings")
 
+-- An address as shown: masked under "Hide emails" (r•••@example.com).
+local hide_emails = ui.persist("kx.hide_emails", false)
+local function masked(email: string): string
+	if not hide_emails:get() or email == "" then
+		return email
+	end
+	local name, host = string.match(email, "^([^@]*)@(.*)$")
+	if not name then
+		return "•••"
+	end
+	return `{string.sub(name, 1, 1)}•••@{host}`
+end
+
 local function setting(title: string, hint: string?, control: Node?): Node
 	return Settings.Row { label = title, description = hint, control = control }
 end
@@ -126,6 +139,33 @@ local function general(): Node
 				"Compact mode",
 				"A thread a line in the sidebar; off, two (its project and branch under it).",
 				kx.Switch { value = require("@screens/nav").sidebar_compact, label = "Compact mode" }
+			),
+			setting(
+				"Stop agent with Escape",
+				"In a thread, Escape stops the agent at work, as the stop button does.",
+				kx.Switch { value = ui.persist("kx.escape_stops", true), label = "Stop agent with Escape" }
+			),
+			setting(
+				"Close the panel with its last tab",
+				"Closing the last tab closes the panel; off, its home stays open.",
+				kx.Switch { value = ui.persist("kx.close_panel_with_last_tab", true), label = "Close the panel with its last tab" }
+			),
+			setting(
+				"Open links in",
+				"Where a link in a reply opens.",
+				ds.Select {
+					value = ui.persist("kx.open_links", "browser"),
+					w = 180,
+					options = {
+						{ value = "browser", label = "Default browser" },
+						{ value = "panel", label = "The panel's browser" },
+					},
+				}
+			),
+			setting(
+				"Hide emails",
+				"Your account's address is masked where Keplorayx shows it (useful when you share your screen).",
+				kx.Switch { value = ui.persist("kx.hide_emails", false), label = "Hide emails" }
 			),
 			setting("Your name", "What Keplorayx calls you, here and in your teammates' briefs.", kx.Field {
 				value = name,
@@ -494,7 +534,7 @@ local function account(): Node
 						justify = "center",
 						ui.text {
 							function()
-								local e = a().email or ""
+								local e = masked(a().email or "")
 								return string.upper(string.sub(if e ~= "" then e else "K", 1, 1))
 							end,
 							literal = true,
@@ -507,7 +547,7 @@ local function account(): Node
 						min_w = 0,
 						ui.text {
 							function()
-								return a().email or "Signed in"
+								return if a().email then masked(a().email) else "Signed in"
 							end,
 							literal = true,
 							truncate = true,

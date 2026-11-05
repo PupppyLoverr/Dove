@@ -208,6 +208,22 @@ end
 local notify_needs = ui.persist("kx.notify.needs", true)
 local notify_done = ui.persist("kx.notify.done", true)
 local notify_background = ui.persist("kx.notify.background", true)
+-- Where a reply's links open (Settings › General › Open links in).
+do
+	local Links = require("@ds/links")
+	local open_links = ui.persist("kx.open_links", "browser")
+	Links.in_app = function(): boolean
+		return open_links:peek() == "panel"
+	end
+	Links.opener = function(url: string): boolean
+		if open_links:peek() ~= "panel" or not string.match(url, "^https?://") then
+			return false
+		end
+		require("@screens/browser").open_url(url)
+		require("@screens/panel").show("browser")
+		return true
+	end
+end
 -- A plugin's note (its SDK's kx.toast), said as ours, its name first.
 local plugin_toast = ui.shared("kx.plugin_toast", nil :: any)
 ui.effect(function()

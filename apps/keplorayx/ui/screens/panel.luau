@@ -20,6 +20,7 @@ local changes = require("@screens/changes")
 local terminal = require("@screens/terminal")
 local files = require("@screens/files")
 local browser = require("@screens/browser")
+local close_with_last = ui.persist("kx.close_panel_with_last_tab", true)
 local history = require("@screens/history")
 local pulls = require("@screens/pulls")
 local store = require("@kx/store")
@@ -92,6 +93,10 @@ local function close(kind: string)
 	if M.tab:peek() == kind then
 		-- The tab beside it comes to the front; with none, the home.
 		M.tab:set(next[math.min(i, #next)] or "")
+	end
+	-- (Zeron's "Close the panel with its last tab", Settings › General.)
+	if #next == 0 and close_with_last:peek() then
+		M.open:set(false)
 	end
 end
 

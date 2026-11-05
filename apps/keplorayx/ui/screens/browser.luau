@@ -37,6 +37,15 @@ local QUICK = {
 	{ label = "localhost:8080", url = "http://localhost:8080/" },
 }
 
+-- Opens `url` in the browser tab (Settings › General › Open links in).
+function M.open_url(url: string)
+	local id = page_id()
+	api.web(`kx-browser-{id}`):load(url)
+	local next = table.clone(last:peek())
+	next[id] = url
+	last:set(next)
+end
+
 local function page(id: string): Node
 	local web = api.web(`kx-browser-{id}`)
 	local function go(text: string)
