@@ -50,8 +50,9 @@ pub fn window() -> WindowOptions {
         resizable: false,
         shadow: false,
         level: WindowLevel::AlwaysOnTop,
-        bounds: centred(),
-        visible: false,
+        // Shown, but parked off the screen until it's summoned: zgx keeps a
+        // window made hidden hidden, whatever asks to show it.
+        bounds: parked(),
         ..Default::default()
     }
 }
@@ -76,8 +77,24 @@ fn centred() -> Option<WindowBounds> {
     None
 }
 
+/// Off every screen, its size kept.
+fn parked() -> Option<WindowBounds> {
+    let size = centred().map(|b| b.size).unwrap_or((SIZE.0 as u32, SIZE.1 as u32));
+    Some(WindowBounds { position: Some((-20000, -20000)), size })
+}
+
+/// Out of sight (off the screen), and not in your way.
+fn park(window: &WindowHandle) {
+    if let Some(b) = parked() {
+        window.set_bounds(b);
+    }
+}
+
 /// Brings the launcher forward, its field empty and focused.
 pub fn summon() {
+    if std::env::var_os("KX_MCP_ANNOUNCE").is_some() {
+        eprintln!("launcher: summon (made: {})", LAUNCHER.with(|l| l.borrow().is_some()));
+    }
     LAUNCHER.with(|l| {
         if let Some((window, summoned)) = &*l.borrow() {
             let n = match summoned.get() {
@@ -85,8 +102,17 @@ pub fn summon() {
                 _ => 1.,
             };
             summoned.set(Value::Num(n));
-            window.set_visible(true);
+            if let Some(b) = centred() {
+                window.set_bounds(b);
+            }
             window.request_focus();
+            // Windows lets a background process take the foreground only
+            // with the foreground window's leave: attach to its input, as
+            // launchers do, once the window has shown.
+            std::thread::spawn(|| {
+                std::thread::sleep(std::time::Duration::from_millis(60));
+                windows::to_front("Keplorayx launcher");
+            });
         }
     });
 }
@@ -113,11 +139,21 @@ pub fn build(cx: &mut WindowContext, engine: Arc<dove_core::Engine>, main: impl 
         host.window_state(&cx.ui);
         let summoned = host.shared("launcher.summoned", 0.);
         LAUNCHER.with(|l| *l.borrow_mut() = Some((cx.window.clone(), summoned)));
+        // No taskbar button or Alt+Tab entry while it waits off the screen.
+        cx.tasks.spawn(async {
+            zgx::timer::sleep(std::time::Duration::from_millis(300)).await;
+            windows::tool_window("Keplorayx launcher");
+        });
         let window = cx.window.clone();
-        host.action("launcher.hide", move |_| window.set_visible(false));
+        host.action("launcher.hide", move |why| {
+            if std::env::var_os("KX_MCP_ANNOUNCE").is_some() {
+                eprintln!("launcher: hide ({why:?})");
+            }
+            park(&window);
+        });
         let (window, to_main) = (cx.window.clone(), main.clone());
         host.action("launcher.main", move |thread| {
-            window.set_visible(false);
+            park(&window);
             to_main(match thread {
                 Value::Str(s) if !s.is_empty() => Some(s.to_string()),
                 _ => None,
@@ -132,7 +168,7 @@ pub fn build(cx: &mut WindowContext, engine: Arc<dove_core::Engine>, main: impl 
         host.action("launcher.run", move |req| {
             let kind = text(&req, "kind");
             let target = text(&req, "target");
-            window.set_visible(false);
+            park(&window);
             run(&kind, &target);
         });
         let roots = projects(&engine);
@@ -607,6 +643,66 @@ mod windows {
     pub fn now_playing() -> String {
         String::new()
     }
+
+    /// Our window titled `title`, to the front and focused.
+    #[cfg(windows)]
+    pub fn to_front(title: &str) {
+        use windows_sys::Win32::{
+            System::Threading::{AttachThreadInput, GetCurrentThreadId},
+            UI::WindowsAndMessaging::{
+                BringWindowToTop, FindWindowW, GetForegroundWindow, GetWindowThreadProcessId, IsWindowVisible, SW_SHOW,
+                SetForegroundWindow, ShowWindow,
+            },
+        };
+        let wide: Vec<u16> = title.encode_utf16().chain([0]).collect();
+        // SAFETY: a valid title; the threads attached are detached again.
+        unsafe {
+            let ours = FindWindowW(std::ptr::null(), wide.as_ptr());
+            if ours.is_null() {
+                return;
+            }
+            let front = GetForegroundWindow();
+            let theirs = GetWindowThreadProcessId(front, std::ptr::null_mut());
+            let me = GetCurrentThreadId();
+            let attached = theirs != 0 && theirs != me && AttachThreadInput(me, theirs, 1) != 0;
+            if std::env::var_os("KX_MCP_ANNOUNCE").is_some() {
+                eprintln!("launcher: to front, visible before: {}", IsWindowVisible(ours));
+            }
+            if IsWindowVisible(ours) == 0 {
+                ShowWindow(ours, SW_SHOW);
+            }
+            BringWindowToTop(ours);
+            SetForegroundWindow(ours);
+            if attached {
+                AttachThreadInput(me, theirs, 0);
+            }
+        }
+    }
+
+    #[cfg(not(windows))]
+    pub fn to_front(_title: &str) {}
+
+    /// Our window titled `title`: a tool window (no taskbar button, no
+    /// Alt+Tab entry).
+    #[cfg(windows)]
+    pub fn tool_window(title: &str) {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            FindWindowW, GWL_EXSTYLE, GetWindowLongPtrW, SetWindowLongPtrW, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
+        };
+        let wide: Vec<u16> = title.encode_utf16().chain([0]).collect();
+        // SAFETY: our own window's extended styles.
+        unsafe {
+            let h = FindWindowW(std::ptr::null(), wide.as_ptr());
+            if h.is_null() {
+                return;
+            }
+            let ex = GetWindowLongPtrW(h, GWL_EXSTYLE) as u32;
+            SetWindowLongPtrW(h, GWL_EXSTYLE, ((ex | WS_EX_TOOLWINDOW) & !WS_EX_APPWINDOW) as isize);
+        }
+    }
+
+    #[cfg(not(windows))]
+    pub fn tool_window(_title: &str) {}
 
     #[cfg(windows)]
     pub fn bring(id: isize) {

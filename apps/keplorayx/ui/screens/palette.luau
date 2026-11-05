@@ -156,6 +156,9 @@ local function commands(): { any }
 		{ id = "add-project", label = "Add a project folder…", section = "Actions", icon = "folder", run = function()
 			require("@screens/ray").pick_folder()
 		end },
+		{ id = "launcher", label = "Open the launcher", section = "Actions", icon = "command", shortcut = "alt+space", run = function()
+			pcall(ui.invoke, "launcher.summon")
+		end },
 		{ id = "sidebar", label = "Show or hide the sidebar", section = "Actions", icon = "sidebar", shortcut = "ctrl+b", run = function()
 			nav.sidebar_collapsed:set(not nav.sidebar_collapsed:peek())
 		end },

@@ -89,20 +89,52 @@ pub fn open(
         };
         focus(id);
     });
+    // The Music tab's keys and what's playing (src/widgets.rs).
+    host.action("widget.media", |what| {
+        if let zgx_script::Value::Str(what) = what {
+            crate::widgets::press_media(&what);
+        }
+    });
+    host.function("widget.playing", |_| zgx_script::Value::from(crate::launcher::now_playing().as_str()));
     reveal(cx, &host);
     crate::serve(cx, host.clone(), "notch.luau", false);
     host
 }
 
-/// The notch shows only when you reach for it: the pointer at the screen's
-/// top edge, over where it sits (`notch.near`, true), and while the pointer
-/// stays on it; it goes again soon after the pointer leaves. Hidden, its
-/// window lets every click through to what's under it. A thread watches the
-/// pointer (a plain query, ten times a second).
+/// Where the notch is now, in screen pixels (left, top, width, height):
+/// the pointer's watcher reads it to know whether the pointer is over it.
+static RECT: std::sync::Mutex<(f64, f64, f64, f64)> = std::sync::Mutex::new((0., 0., 0., 0.));
+
+/// The island's states, as notch.luau asks for them: each its size (in
+/// points, centred at the screen's top) and whether it takes clicks
+/// (`notch.size { w, h, interactive }`). Everything else lets clicks through.
+///
+/// And the pointer (`notch.near`): true once it rests at the screen's top
+/// edge over where the island comes from (90 ms, so passing through to a
+/// browser's tabs doesn't open it), or on the island once it shows; false
+/// 450 ms after it leaves, as Dove's island did. A thread asks where the
+/// pointer is ten times a second; nothing else runs while it's away.
 fn reveal(cx: &mut WindowContext, host: &zgx_script::ScriptHost) {
     let near = host.shared("notch.near", false);
     let window = cx.window.clone();
     window.set_pointer_passthrough(true);
+    let resize = cx.window.clone();
+    host.action("notch.size", move |req| {
+        let n = |k: &str| match req.field(k) {
+            Some(zgx_script::Value::Num(v)) => *v,
+            _ => 0.,
+        };
+        let (w, h) = (n("w").max(1.), n("h").max(1.));
+        let interactive = matches!(req.field("interactive"), Some(zgx_script::Value::Bool(true)));
+        let scale = system_scale();
+        let (pw, ph) = ((w * scale).round(), (h * scale).round());
+        let left = (screen_width() - pw) / 2.;
+        if let Ok(mut r) = RECT.lock() {
+            *r = (left, 0., pw, ph);
+        }
+        resize.set_bounds(WindowBounds { position: Some((left as i32, 0)), size: (pw as u32, ph as u32) });
+        resize.set_pointer_passthrough(!interactive);
+    });
     let (tell, heard) = flume::unbounded::<bool>();
     std::thread::Builder::new()
         .name("kx-notch-reveal".into())
@@ -110,37 +142,60 @@ fn reveal(cx: &mut WindowContext, host: &zgx_script::ScriptHost) {
         .ok();
     cx.tasks.spawn(async move {
         while let Ok(now) = heard.recv_async().await {
-            window.set_pointer_passthrough(!now);
             near.set(zgx_script::Value::Bool(now));
         }
     });
 }
 
 #[cfg(windows)]
+fn screen_width() -> f64 {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN};
+    // SAFETY: a plain query.
+    unsafe { GetSystemMetrics(SM_CXSCREEN) as f64 }
+}
+
+#[cfg(not(windows))]
+fn screen_width() -> f64 {
+    1440.
+}
+
+#[cfg(windows)]
 fn watch(tell: flume::Sender<bool>) {
-    use windows_sys::Win32::{Foundation::POINT, UI::WindowsAndMessaging::{GetCursorPos, GetSystemMetrics, SM_CXSCREEN}};
+    use windows_sys::Win32::{Foundation::POINT, UI::WindowsAndMessaging::GetCursorPos};
     let scale = system_scale();
-    let (w, h) = (SIZE.0 * scale, SIZE.1 * scale);
-    let mut shown = false;
-    let mut away = 0u32;
+    // Where reaching opens it: the top edge, over the island's middle.
+    let reach_w = 460. * scale;
+    let (mut shown, mut rested, mut away) = (false, 0u32, 0u32);
     loop {
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        std::thread::sleep(std::time::Duration::from_millis(if shown { 50 } else { 90 }));
         let mut p = POINT { x: 0, y: 0 };
-        // SAFETY: plain queries.
-        let (ok, screen) = unsafe { (GetCursorPos(&mut p), GetSystemMetrics(SM_CXSCREEN)) };
-        if ok == 0 || screen <= 0 {
+        // SAFETY: a plain query.
+        if unsafe { GetCursorPos(&mut p) } == 0 {
             continue;
         }
-        let left = (screen as f64 - w) / 2.;
+        let screen = screen_width();
         let (x, y) = (p.x as f64, p.y as f64);
-        // Reaching for it: the top few pixels, over it (a little wider).
-        let reach = y <= 4. * scale && x >= left - 40. * scale && x <= left + w + 40. * scale;
-        // On it, once it shows (with a little room round it).
-        let over = y <= h + 12. * scale && x >= left - 12. * scale && x <= left + w + 12. * scale;
+        let left = (screen - reach_w) / 2.;
+        let reach = y <= 3. * scale && x >= left && x <= left + reach_w;
+        let (rx, ry, rw, rh) = RECT.lock().map(|r| *r).unwrap_or_default();
+        let margin = 10. * scale;
+        let over = x >= rx - margin && x <= rx + rw + margin && y >= ry - margin && y <= ry + rh + margin;
         let now = if shown {
-            if over { away = 0; true } else { away += 1; away < 5 }
+            if over || reach {
+                away = 0;
+                true
+            } else {
+                away += 1;
+                // (450 ms at 50 ms a look.)
+                away < 9
+            }
+        } else if reach {
+            rested += 1;
+            // (Resting at the edge a moment, not passing through.)
+            rested >= 1
         } else {
-            reach
+            rested = 0;
+            false
         };
         if now != shown {
             shown = now;

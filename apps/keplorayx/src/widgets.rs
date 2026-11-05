@@ -38,8 +38,6 @@ pub struct Widget {
     pub x: Option<i32>,
     #[serde(default)]
     pub y: Option<i32>,
-    #[serde(default)]
-    pub on_top: bool,
 }
 
 fn medium() -> String {
@@ -152,7 +150,22 @@ pub fn set(args: &Json) -> Result<String, String> {
         script: args["script"].as_str().map(str::to_string).or_else(|| old.as_ref().and_then(|o| o.script.clone())),
         x: n("x").or_else(|| old.as_ref().and_then(|o| o.x)),
         y: n("y").or_else(|| old.as_ref().and_then(|o| o.y)),
-        on_top: args["on_top"].as_bool().unwrap_or_else(|| old.as_ref().is_some_and(|o| o.on_top)),
+    };
+    // A new one with no place: down the desktop's right side, under the
+    // last there (points, from the desktop's top left).
+    let widget = if widget.x.is_none() || widget.y.is_none() {
+        let (sw, _) = desk::area_points();
+        let (w, _) = size(&widget.kind, &widget.variant);
+        let x = (sw - w - 28.) as i32;
+        let y = list
+            .iter()
+            .filter(|o| o.id != widget.id && o.x.is_some_and(|ox| (ox - x).abs() < 120))
+            .map(|o| o.y.unwrap_or(0) + size(&o.kind, &o.variant).1 as i32 + 12)
+            .max()
+            .unwrap_or(28);
+        Widget { x: Some(x), y: Some(y), ..widget }
+    } else {
+        widget
     };
     match at {
         Some(i) => list[i] = widget,
@@ -244,9 +257,8 @@ pub fn call(_engine: &dove_core::Engine, tool: &str, args: &Json) -> Result<Stri
 
 thread_local! {
     static SHARED: RefCell<Vec<(Shared, Shared)>> = const { RefCell::new(Vec::new()) };
-    /// Each widget's window, by its id.
-    static WINDOWS: RefCell<Vec<(String, WindowHandle)>> = const { RefCell::new(Vec::new()) };
-    static OPENER: RefCell<Option<Box<dyn Fn(&Widget)>>> = const { RefCell::new(None) };
+    /// The desktop surface every widget is drawn on.
+    static SURFACE: RefCell<Option<WindowHandle>> = const { RefCell::new(None) };
 }
 
 fn widgets_value() -> Value {
@@ -306,121 +318,239 @@ pub fn value_json(v: &Value) -> Json {
     serde_json::from_str(&v.to_json()).unwrap_or(Json::Null)
 }
 
-// ── The windows ────────────────────────────────────────────────────────
+// ── The desktop surface ────────────────────────────────────────────────
+//
+// Every widget on one surface (widgets.luau), not a window each: a
+// transparent, frameless window over the desktop's work area, kept at the
+// bottom of every window, with no taskbar button or Alt+Tab entry, never
+// taking the keys from your apps (Windows' tool and no-activate styles). Its
+// window region is the widgets' own boxes, so a click between them reaches
+// the desktop's icons. Dragging a widget moves it on the surface (its place
+// kept, in points from the desktop's top left).
 
-fn options(w: &Widget) -> WindowOptions {
-    let (pw, ph) = size(&w.kind, &w.variant);
+/// Opens the surface (once a process), shown while there are widgets.
+pub fn start(cx: &mut WindowContext, engine: Arc<dove_core::Engine>, main: impl Fn(Option<String>) + Clone + 'static) {
+    let (x, y, w, h) = desk::area_pixels();
     let scale = crate::notch::system_scale();
-    let bounds = match (w.x, w.y) {
-        (Some(x), Some(y)) => Some(WindowBounds { position: Some((x, y)), size: ((pw * scale) as u32, (ph * scale) as u32) }),
-        _ => None,
-    };
-    WindowOptions {
-        title: format!("Keplorayx widget: {}", w.title.clone().unwrap_or_else(|| w.kind.clone())),
-        width: pw,
-        height: ph,
+    let options = WindowOptions {
+        title: "Keplorayx widgets".into(),
+        width: w as f64 / scale,
+        height: h as f64 / scale,
         transparent: true,
         decorations: false,
         resizable: false,
         shadow: false,
-        level: if w.on_top { WindowLevel::AlwaysOnTop } else { WindowLevel::Normal },
-        bounds,
+        level: WindowLevel::Normal,
+        bounds: Some(WindowBounds { position: Some((x, y)), size: (w as u32, h as u32) }),
+        visible: !widgets().is_empty(),
         ..Default::default()
-    }
-}
-
-/// Starts the widgets' windows (once a process): one per widget, opened,
-/// changed and closed as the list changes.
-pub fn start(cx: &mut WindowContext, engine: Arc<dove_core::Engine>, main: impl Fn(Option<String>) + Clone + 'static) {
-    let windows = cx.windows.clone();
-    let opener = move |w: &Widget| {
-        let (engine, w, main) = (engine.clone(), w.clone(), main.clone());
-        windows.open(options(&w), move |cx| {
-            let host = crate::script_host(cx, "widget.luau");
-            crate::host::install(cx, &host, engine.clone());
-            crate::clock::install(cx, &host);
-            crate::visuals::install(cx, &host);
-            install(&host);
-            system::install(cx, &host);
-            host.shared("widget.id", w.id.as_str());
-            let window = cx.window.clone();
-            host.action("widget.close", move |_| window.close());
-            // A thread, in the main window (or the main window alone).
-            let to_main = main.clone();
-            host.action("widget.main", move |thread| {
-                to_main(match thread {
-                    Value::Str(s) if !s.is_empty() => Some(s.to_string()),
-                    _ => None,
-                });
-            });
-            host.action("widget.media", |what| {
-                if let Value::Str(what) = what {
-                    media::press(&what);
-                }
-            });
-            host.function("widget.playing", |_| Value::from(media::playing().as_str()));
-            // Where you dragged it, kept (checked every two seconds; moved,
-            // written once it rests).
-            let (bounds, id) = (cx.window_info.bounds.clone(), w.id.clone());
-            cx.tasks.spawn(async move {
-                let mut last = None;
-                loop {
-                    zgx::timer::sleep(std::time::Duration::from_secs(2)).await;
-                    let at = bounds.with_untracked(|b| b.position);
-                    if at.is_some() && last.is_some() && at != last {
-                        if let Some((x, y)) = at {
-                            let mut list = widgets();
-                            if let Some(w) = list.iter_mut().find(|w| w.id == id) {
-                                (w.x, w.y) = (Some(x), Some(y));
-                                let _ = write("widgets.json", &list);
-                            }
-                        }
-                    }
-                    last = at;
-                }
-            });
-            crate::serve(cx, host, "widget.luau", false);
-        })
     };
-    OPENER.with(|o| *o.borrow_mut() = Some(Box::new(move |w: &Widget| {
-        let handle = opener(w);
-        WINDOWS.with(|ws| ws.borrow_mut().push((w.id.clone(), handle)));
-    })));
-    sync_windows();
-}
-
-/// Each widget with its window, and no window without its widget. A widget
-/// whose look changed (variant, layer) opens again.
-pub fn sync_windows() {
-    let list = widgets();
-    thread_local! {
-        static SHOWN: RefCell<Vec<Widget>> = const { RefCell::new(Vec::new()) };
-    }
-    let shown = SHOWN.with(|s| s.borrow().clone());
-    WINDOWS.with(|ws| {
-        let mut ws = ws.borrow_mut();
-        ws.retain(|(id, handle)| {
-            let now = list.iter().find(|w| &w.id == id);
-            let was = shown.iter().find(|w| &w.id == id);
-            let same = match (now, was) {
-                (Some(n), Some(w)) => n.kind == w.kind && n.variant == w.variant && n.on_top == w.on_top,
-                _ => false,
-            };
-            if !same {
-                handle.close();
+    let handle = cx.windows.open(options, move |cx| {
+        let host = crate::script_host(cx, "widgets.luau");
+        crate::host::install(cx, &host, engine.clone());
+        crate::clock::install(cx, &host);
+        crate::visuals::install(cx, &host);
+        install(&host);
+        system::install(cx, &host);
+        let to_main = main.clone();
+        host.action("widget.main", move |thread| {
+            to_main(match thread {
+                Value::Str(s) if !s.is_empty() => Some(s.to_string()),
+                _ => None,
+            });
+        });
+        host.action("widget.media", |what| {
+            if let Value::Str(what) = what {
+                media::press(&what);
             }
-            same
+        });
+        host.function("widget.playing", |_| Value::from(media::playing().as_str()));
+        host.action("widget.ask", |_| crate::launcher::summon());
+        // A drag: the whole surface takes the pointer while it lasts, then
+        // the widget's new place is kept and the region follows it.
+        host.action("widgets.dragging", |on| desk::shape(matches!(on, Value::Bool(true))));
+        host.action("widget.move", |req| {
+            let (Some(Value::Str(id)), Some(Value::Num(x)), Some(Value::Num(y))) =
+                (req.field("id"), req.field("x"), req.field("y"))
+            else {
+                return;
+            };
+            let mut list = widgets();
+            if let Some(w) = list.iter_mut().find(|w| w.id == id.as_ref()) {
+                (w.x, w.y) = (Some(*x as i32), Some(*y as i32));
+                let _ = write("widgets.json", &list);
+            }
+            publish();
+            desk::shape(false);
+        });
+        crate::serve(cx, host, "widgets.luau", false);
+        // Its styles and place once the window exists.
+        cx.tasks.spawn(async {
+            zgx::timer::sleep(std::time::Duration::from_millis(400)).await;
+            desk::settle();
+            desk::shape(false);
         });
     });
-    let open: Vec<String> = WINDOWS.with(|ws| ws.borrow().iter().map(|(id, _)| id.clone()).collect());
-    OPENER.with(|o| {
-        if let Some(open_one) = &*o.borrow() {
-            for w in list.iter().filter(|w| !open.contains(&w.id)) {
-                open_one(w);
-            }
+    SURFACE.with(|s| *s.borrow_mut() = Some(handle));
+    desk::keep_at_bottom();
+}
+
+/// The surface shown while there are widgets, its region their boxes.
+pub fn sync_windows() {
+    let any = !widgets().is_empty();
+    SURFACE.with(|s| {
+        if let Some(h) = &*s.borrow() {
+            h.set_visible(any);
         }
     });
-    SHOWN.with(|s| *s.borrow_mut() = list);
+    desk::shape(false);
+}
+
+/// The desktop's side of it (Windows); elsewhere a plain window.
+mod desk {
+    use super::{size, widgets};
+
+    /// The work area (the desktop less the taskbar), in pixels.
+    #[cfg(windows)]
+    pub fn area_pixels() -> (i32, i32, i32, i32) {
+        use windows_sys::Win32::{
+            Foundation::RECT,
+            UI::WindowsAndMessaging::{SPI_GETWORKAREA, SystemParametersInfoW},
+        };
+        let mut r = RECT { left: 0, top: 0, right: 1920, bottom: 1080 };
+        // SAFETY: a RECT to write into.
+        unsafe { SystemParametersInfoW(SPI_GETWORKAREA, 0, (&mut r as *mut RECT).cast(), 0) };
+        (r.left, r.top, r.right - r.left, r.bottom - r.top)
+    }
+
+    #[cfg(not(windows))]
+    pub fn area_pixels() -> (i32, i32, i32, i32) {
+        (0, 0, 1440, 900)
+    }
+
+    /// The work area's size in points.
+    pub fn area_points() -> (f64, f64) {
+        let (_, _, w, h) = area_pixels();
+        let scale = crate::notch::system_scale();
+        (w as f64 / scale, h as f64 / scale)
+    }
+
+    #[cfg(windows)]
+    fn hwnd() -> Option<windows_sys::Win32::Foundation::HWND> {
+        use windows_sys::Win32::{
+            Foundation::{HWND, LPARAM},
+            UI::WindowsAndMessaging::{EnumWindows, GetWindowTextW, GetWindowThreadProcessId},
+        };
+        unsafe extern "system" fn each(h: HWND, out: LPARAM) -> i32 {
+            // SAFETY: `out` is the Option this call was given.
+            unsafe {
+                let mut pid = 0u32;
+                GetWindowThreadProcessId(h, &mut pid);
+                if pid != std::process::id() {
+                    return 1;
+                }
+                let mut buf = [0u16; 64];
+                let n = GetWindowTextW(h, buf.as_mut_ptr(), buf.len() as i32);
+                if n > 0 && String::from_utf16_lossy(&buf[..n as usize]) == "Keplorayx widgets" {
+                    *(out as *mut Option<HWND>) = Some(h);
+                    return 0;
+                }
+                1
+            }
+        }
+        let mut found: Option<HWND> = None;
+        // SAFETY: the callback writes only `found`.
+        unsafe { EnumWindows(Some(each), &mut found as *mut _ as LPARAM) };
+        found
+    }
+
+    /// No taskbar button, no Alt+Tab entry, never activated; at the bottom.
+    #[cfg(windows)]
+    pub fn settle() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GWL_EXSTYLE, GetWindowLongPtrW, SetWindowLongPtrW, WS_EX_APPWINDOW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+        };
+        let Some(h) = hwnd() else { return };
+        // SAFETY: our own window's extended styles.
+        unsafe {
+            let ex = GetWindowLongPtrW(h, GWL_EXSTYLE) as u32;
+            let ex = (ex | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE) & !WS_EX_APPWINDOW;
+            SetWindowLongPtrW(h, GWL_EXSTYLE, ex as isize);
+        }
+        lower(h);
+    }
+
+    #[cfg(windows)]
+    fn lower(h: windows_sys::Win32::Foundation::HWND) {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            HWND_BOTTOM, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE, SetWindowPos,
+        };
+        // SAFETY: our own window.
+        unsafe { SetWindowPos(h, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER) };
+    }
+
+    /// Keeps it under every window: a click on a widget would raise it.
+    #[cfg(windows)]
+    pub fn keep_at_bottom() {
+        std::thread::Builder::new()
+            .name("kx-widgets-desk".into())
+            .spawn(|| {
+                loop {
+                    std::thread::sleep(std::time::Duration::from_millis(700));
+                    if let Some(h) = hwnd() {
+                        // Show desktop (Win+D) minimizes it with the rest:
+                        // widgets stay on the desktop, so it comes back.
+                        use windows_sys::Win32::UI::WindowsAndMessaging::{IsIconic, SW_SHOWNOACTIVATE, ShowWindow};
+                        // SAFETY: our own window.
+                        unsafe {
+                            if IsIconic(h) != 0 {
+                                ShowWindow(h, SW_SHOWNOACTIVATE);
+                            }
+                        }
+                        lower(h);
+                    }
+                }
+            })
+            .ok();
+    }
+
+    /// Its region: each widget's box, or, `whole`, the whole surface (a drag
+    /// under way).
+    #[cfg(windows)]
+    pub fn shape(whole: bool) {
+        use windows_sys::Win32::Graphics::Gdi::{CombineRgn, CreateRectRgn, DeleteObject, RGN_OR, SetWindowRgn};
+        let Some(h) = hwnd() else { return };
+        let scale = crate::notch::system_scale();
+        // SAFETY: regions made here, handed to the window (which owns the
+        // one it's given) or deleted.
+        unsafe {
+            if whole {
+                SetWindowRgn(h, std::ptr::null_mut(), 1);
+                return;
+            }
+            let region = CreateRectRgn(0, 0, 0, 0);
+            for w in widgets() {
+                let (pw, ph) = size(&w.kind, &w.variant);
+                let (x, y) = (w.x.unwrap_or(0) as f64, w.y.unwrap_or(0) as f64);
+                let r = CreateRectRgn(
+                    (x * scale) as i32,
+                    (y * scale) as i32,
+                    ((x + pw) * scale) as i32,
+                    ((y + ph) * scale) as i32,
+                );
+                CombineRgn(region, region, r, RGN_OR);
+                DeleteObject(r);
+            }
+            SetWindowRgn(h, region, 1);
+        }
+    }
+
+    #[cfg(not(windows))]
+    pub fn settle() {}
+    #[cfg(not(windows))]
+    pub fn keep_at_bottom() {}
+    #[cfg(not(windows))]
+    pub fn shape(_whole: bool) {}
 }
 
 /// CPU and RAM, for the system widget: `kx.system` = { cpu (0–100), ram
@@ -486,6 +616,11 @@ mod system {
     fn sample(_: Option<(u64, u64)>) -> (serde_json::Value, Option<(u64, u64)>) {
         (serde_json::json!({ "cpu": 0, "ram": 0, "ram_used_gb": 0, "ram_total_gb": 0 }), None)
     }
+}
+
+/// The media keys, for the notch's Music tab too.
+pub fn press_media(what: &str) {
+    media::press(what);
 }
 
 /// The music widget's: the system's media keys, and what's playing as a

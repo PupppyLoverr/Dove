@@ -871,7 +871,7 @@ local function plugins_page(): Node
 end
 
 -- ── Widgets (src/widgets.rs) ────────────────────────────────────────────
-type WidgetRow = { id: string, kind: string, variant: string, title: string?, on_top: boolean? }
+type WidgetRow = { id: string, kind: string, variant: string, title: string?, settings: any? }
 local widget_list: State<{ WidgetRow }> = if store.fixture ~= ""
 	then ui.state("fx.widgets", {
 		{ id = "w1", kind = "clock", variant = "digital" },
@@ -900,6 +900,21 @@ local function kind_of(id: string): any?
 	return nil
 end
 
+local function note_field(w: WidgetRow): Node
+	local text = ui.state(`widgets.note.{w.id}`, (if type(w.settings) == "table" and type(w.settings.text) == "string" then w.settings.text else "") :: string)
+	return kx.Field {
+		value = text,
+		placeholder = "The note",
+		label = "The note",
+		w = 220,
+		on_commit = function()
+			local s = if type(w.settings) == "table" then table.clone(w.settings) else {}
+			s.text = text:peek()
+			pcall(ui.invoke, "kx.widget.set", { id = w.id, kind = w.kind, variant = w.variant, settings = s })
+		end,
+	}
+end
+
 local function widget_row(w: WidgetRow): Node
 	local k = kind_of(w.kind)
 	local options: { any } = {}
@@ -909,10 +924,12 @@ local function widget_row(w: WidgetRow): Node
 	local variant = ui.state(`widgets.variant.{w.id}`, w.variant)
 	return setting(
 		w.title or (if k then k.label elseif w.kind == "custom" then "Made by an agent" else w.kind),
-		if w.on_top then "Floats over your windows" else "On the desktop",
+		"On the desktop, under your windows. Drag it on the desktop to move it.",
 		ui.row {
 			gap = "$space.2",
 			items = "center",
+			-- A note's words: written here (the desktop never takes the keys).
+			if w.kind == "note" then note_field(w) else nil,
 			if #options > 1
 				then kx.Segmented {
 					value = variant,

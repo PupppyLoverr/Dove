@@ -175,7 +175,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Screen::Intro => intro::overlay_window(),
         Screen::Onboarding => intro::setup_window(),
         Screen::Notch => notch::window(),
-        Screen::Launcher => WindowOptions { visible: true, ..launcher::window() },
+        Screen::Launcher => WindowOptions { visible: true, bounds: None, ..launcher::window() },
         _ => WindowOptions { visible: !background, ..window(screen) },
     };
     application.window(options).run(move |cx| {
@@ -263,6 +263,7 @@ fn open_main(cx: &mut WindowContext, engine: Arc<dove_core::Engine>, inspect: bo
         }
     };
     launcher::open(cx, engine.clone(), to_main.clone());
+    host.action("launcher.summon", |_| launcher::summon());
     // Keplorayx's own tools for the agents it starts (src/mcp.rs), and the
     // desktop widgets: once a process.
     thread_local! {

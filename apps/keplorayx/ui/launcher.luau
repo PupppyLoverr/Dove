@@ -28,7 +28,7 @@ local function hide()
 	open:set(false)
 	mode:set("find")
 	if store.fixture == "" then
-		pcall(ui.invoke, "launcher.hide")
+		pcall(ui.invoke, "launcher.hide", "hide()")
 	end
 end
 
@@ -45,7 +45,7 @@ end)
 -- it's answering.
 ui.effect(function()
 	if not open:get() and mode:peek() == "find" and summoned:peek() > 0 then
-		pcall(ui.invoke, "launcher.hide")
+		pcall(ui.invoke, "launcher.hide", "palette closed")
 	end
 end)
 
@@ -53,9 +53,20 @@ end)
 local ok_active, active = pcall(function(): any
 	return (ui :: any).window.active
 end)
+-- (Only once it has had the focus since it was summoned: Windows may hold
+-- the foreground for a moment, and it mustn't hide before it shows.)
+local had_focus = false
+ui.effect(function()
+	summoned:get()
+	had_focus = false
+end)
 if ok_active and active ~= nil then
 	ui.effect(function()
-		if active:get() == false and summoned:peek() > 0 then
+		local now = active:get()
+		if now == true then
+			had_focus = true
+		elseif now == false and had_focus and summoned:peek() > 0 then
+			had_focus = false
 			hide()
 		end
 	end)
