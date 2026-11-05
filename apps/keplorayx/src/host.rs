@@ -160,6 +160,42 @@ pub fn install(cx: &mut WindowContext, host: &ScriptHost, engine: Arc<Engine>) {
         st.approval.set(Value::Nil);
     });
 
+    // A thread's row menu: archive (out of the list, kept), rename, pin to
+    // the top (the store's, so every window and the launcher agree).
+    let (s, tasks) = (state.clone(), cx.tasks.clone());
+    host.action("kx.archive", move |id| {
+        let Some(id) = parse_task(&id) else { return };
+        let engine = s.borrow().engine.clone();
+        engine.interrupt(id);
+        if let Err(e) = engine.store.set_status(id, dove_proto::TaskStatus::Archived) {
+            tracing::warn!("archive: {e:#}");
+        }
+        spawn_refresh(&tasks, &s);
+    });
+    let (s, tasks) = (state.clone(), cx.tasks.clone());
+    host.action("kx.rename", move |req| {
+        let (Some(Value::Str(id)), Some(Value::Str(title))) = (req.field("id"), req.field("title")) else { return };
+        let Some(id) = parse_task(&Value::Str(id.clone())) else { return };
+        let title = title.trim();
+        if title.is_empty() {
+            return;
+        }
+        if let Err(e) = s.borrow().engine.store.rename_task(id, title) {
+            tracing::warn!("rename: {e:#}");
+        }
+        spawn_refresh(&tasks, &s);
+    });
+    let (s, tasks) = (state.clone(), cx.tasks.clone());
+    host.action("kx.pin", move |req| {
+        let Some(Value::Str(id)) = req.field("id") else { return };
+        let Some(id) = parse_task(&Value::Str(id.clone())) else { return };
+        let on = matches!(req.field("on"), Some(Value::Bool(true)));
+        if let Err(e) = s.borrow().engine.store.set_pinned(id, on) {
+            tracing::warn!("pin: {e:#}");
+        }
+        spawn_refresh(&tasks, &s);
+    });
+
     let s = state.clone();
     host.action("kx.interrupt", move |_| {
         let st = s.borrow();

@@ -11,6 +11,7 @@
 -- folds away whole with Ctrl+B. You and Settings at the foot.
 
 local Sidebar = require("@ds/sidebar")
+local kx = require("@kx")
 local store = require("@kx/store")
 local nav = require("@screens/nav")
 
@@ -63,11 +64,22 @@ local function pinned(t: Thread): boolean
 	return t.pinned == true or nav.pinned:get()[t.id] == true
 end
 
+-- Each project's tile on a hue of its own, from its name (the same every
+-- launch): Orbit's cool hues, a warm one or two for contrast.
+local HUES = { "violet", "indigo", "blue", "sky", "teal", "emerald", "rose", "amber" }
+local function hue_of(name: string): string
+	local h = 0
+	for i = 1, #name do
+		h = (h * 31 + string.byte(name, i)) % 2147483647
+	end
+	return HUES[h % #HUES + 1]
+end
+
 local projects = ui.computed(function(): { any }
 	local by: { [string]: any } = {}
 	local out: { any } = {}
 	for _, p in store.projects:get() do
-		local g = { id = p.id, name = p.name, sessions = {} }
+		local g = { id = p.id, name = p.name, hue = hue_of(p.name), sessions = {} }
 		by[p.id] = g
 		table.insert(out, g)
 	end
@@ -75,7 +87,7 @@ local projects = ui.computed(function(): { any }
 		if not pinned(t) then
 			local g = by[t.project_id]
 			if not g then
-				g = { id = t.project_id, name = t.project, sessions = {} }
+				g = { id = t.project_id, name = t.project, hue = hue_of(t.project), sessions = {} }
 				by[t.project_id] = g
 				table.insert(out, g)
 			end
@@ -96,10 +108,8 @@ local pinned_list = ui.computed(function(): { any }
 end)
 
 -- The way in, as rows under Search.
-local PAGES = {
-	{ plugin = "kx", id = "constellation", title = "Constellation", icon = "constellation" },
-	{ plugin = "kx", id = "team", title = "Team", icon = "users-group" },
-}
+-- (Plugins add theirs; Constellation and Team are the foot's tools.)
+local PAGES = {}
 local pages = ui.state("sidebar.pages", PAGES)
 
 local profile_name = ui.persist("kx.profile.name", "")
@@ -122,14 +132,48 @@ ui.effect(function()
 	end
 end)
 
+local function thread_of(id: string): Thread?
+	for _, t in store.threads:peek() do
+		if t.id == id then
+			return t
+		end
+	end
+	return nil
+end
+
+-- Pinned in the store (every window, and the launcher, agree); an old
+-- local pin is cleared as it's flipped.
+local function toggle_pin(id: string)
+	local t = thread_of(id)
+	local on = not (t and pinned(t))
+	if nav.pinned:peek()[id] then
+		nav.toggle_pin(id)
+	end
+	if store.fixture == "" then
+		ui.invoke("kx.pin", { id = id, on = on })
+	end
+end
+
+local function archive(id: string)
+	if store.fixture == "" then
+		ui.invoke("kx.archive", id)
+	end
+	if selected:peek() == id then
+		nav.go("home")
+		store.home()
+	end
+	kx.toast { title = "Archived", body = "Its work and history are kept." }
+end
+
 local function menu(id: string): { any }?
-	local is_pinned = nav.pinned:peek()[id] == true
+	local t = thread_of(id)
+	local is_pinned = t ~= nil and pinned(t)
 	return {
 		{
 			label = if is_pinned then "Unpin" else "Pin to the top",
 			icon = "pin",
 			on_click = function()
-				nav.toggle_pin(id)
+				toggle_pin(id)
 			end,
 		},
 		{
@@ -137,6 +181,14 @@ local function menu(id: string): { any }?
 			icon = "arrow-up-right",
 			on_click = function()
 				selected:set(id)
+			end,
+		},
+		{ separator = true },
+		{
+			label = "Archive",
+			icon = "archive-minimalistic",
+			on_click = function()
+				archive(id)
 			end,
 		},
 	}
@@ -184,6 +236,36 @@ function M.view(): Node
 			nav.go("settings")
 		end,
 		menu = menu,
+		on_archive = archive,
+		on_rename = function(id: string, title: string)
+			if store.fixture == "" then
+				ui.invoke("kx.rename", { id = id, title = title })
+			end
+		end,
+		-- Constellation and Team: quiet icons at its foot, beside Settings,
+		-- so its top is only New thread and Search.
+		tools = {
+			{
+				icon = "constellation",
+				label = "Constellation",
+				on = function(): boolean
+					return nav.route:get() == "constellation"
+				end,
+				on_click = function()
+					nav.go(if nav.route:peek() == "constellation" then "home" else "constellation")
+				end,
+			},
+			{
+				icon = "users-group",
+				label = "Team",
+				on = function(): boolean
+					return nav.route:get() == "team"
+				end,
+				on_click = function()
+					nav.go(if nav.route:peek() == "team" then "home" else "team")
+				end,
+			},
+		},
 	}
 end
 

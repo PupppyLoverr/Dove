@@ -195,6 +195,10 @@ export type Props = {
 	-- while they're open.
 	on_settings: (() -> ())?,
 	settings_open: (() -> boolean)?,
+	-- (Keplorayx) Quiet icon buttons at its foot before Settings' own, each
+	-- a place: its glyph, its tooltip, whether it's open, and what a click
+	-- does.
+	tools: { { icon: string, label: string, on: (() -> boolean)?, on_click: () -> () } }?,
 	-- How its view stands, kept by the caller so a sidebar made again (the
 	-- scripts reloaded, its module replaced) comes back as it was: where its
 	-- list is scrolled, and what's folded (sections, groups, Pinned).
@@ -4138,8 +4142,10 @@ fn layer(input:LayerInput)->vec4<f32> {
 			name = name,
 			on_click = props.on_user,
 			selected = props.user_open,
-			-- (Room for settings' button beside it, and the list's gap.)
-			less = if props.on_settings then SLOT + ((ui.theme.get("zeron.list.gap") :: number?) or 2) else nil,
+			-- (Room for settings' button beside it, the tools', and the list's gaps.)
+			less = if props.on_settings
+				then (SLOT + ((ui.theme.get("zeron.list.gap") :: number?) or 2)) * (1 + #(props.tools or {}))
+				else nil,
 			-- Your avatar: a gradient of your own, from your id (another
 			-- account, another avatar).
 			lead = ui.presence(function(): string
@@ -4170,11 +4176,38 @@ fn layer(input:LayerInput)->vec4<f32> {
 				end)
 			end
 			local on_settings = props.on_settings
-			foot = ui.row {
-				gap = "$zeron.list.gap",
-				items = "center",
-				you,
-				ToggleButton {
+			local tools: { Node } = {}
+			for _, t in props.tools or {} do
+				local lit = ui.use_state(t.on ~= nil and t.on())
+				if t.on then
+					local is_on = t.on
+					ui.effect(function()
+						local v = is_on()
+						if lit:peek() ~= v then
+							lit:set(v)
+						end
+					end)
+				end
+				table.insert(tools, ToggleButton {
+					on = lit,
+					label = t.label,
+					icon = t.icon :: any,
+					tone = "quiet",
+					w = SLOT,
+					h = SLOT,
+					rounded = "$radius.lg",
+					shrink = 0,
+					opacity = shown_wide,
+					on_change = function()
+						t.on_click()
+					end,
+				})
+			end
+			local cells: { [any]: any } = { gap = "$zeron.list.gap", items = "center", you }
+			for _, tool in tools do
+				table.insert(cells, tool)
+			end
+			table.insert(cells, ToggleButton {
 					on = on,
 					-- (ToggleButton's label is its tooltip: a string.)
 					label = locale.s("ds.sidebar.settings"),
@@ -4189,8 +4222,8 @@ fn layer(input:LayerInput)->vec4<f32> {
 					on_change = function()
 						on_settings()
 					end,
-				},
-			}
+				})
+			foot = ui.row(cells)
 		else
 			foot = you
 		end
