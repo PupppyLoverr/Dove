@@ -169,6 +169,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let mut application = Application::new();
+    // Windows shows toasts (a thread needs you, one finished) for an app's
+    // identity: without one every notification failed.
+    application = match application.application_id("com.keplorayx.app") {
+        Ok(app) => app,
+        Err(e) => {
+            tracing::warn!("application id: {e:?}");
+            Application::new()
+        }
+    };
     for font in fonts() {
         application = application.font(font?);
     }
