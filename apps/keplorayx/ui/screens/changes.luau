@@ -176,47 +176,17 @@ local function file_row(f: File): Node
 	}
 end
 
--- The totals and Refresh, for the panel's header.
+-- Refresh, for the panel's header (the totals are the card's own header's:
+-- said once).
 function M.summary(): Node
-	return ui.row {
-		gap = "$space.2",
-		items = "center",
-		ui.text {
-			function()
-				local t = totals:get()
-				return if t.count == 0 then "" else `{t.count} {if t.count == 1 then "file" else "files"}`
-			end,
-			literal = true,
-			text_size = "$font.size.sm",
-			color = "$text.tertiary",
-		},
-		ui.text {
-			function()
-				return `+{totals:get().added}`
-			end,
-			literal = true,
-			tabular = true,
-			text_size = "$font.size.sm",
-			color = "$success",
-		},
-		ui.text {
-			function()
-				return `−{totals:get().removed}`
-			end,
-			literal = true,
-			tabular = true,
-			text_size = "$font.size.sm",
-			color = "$danger",
-		},
-		kx.Button {
-			tone = "ghost",
-			size = "xs",
-			icon = true,
-			label = "Refresh",
-			busy = loading,
-			on_click = M.refresh,
-			kx.Icon { name = "refresh", size = 14 },
-		},
+	return kx.Button {
+		tone = "ghost",
+		size = "xs",
+		icon = true,
+		label = "Refresh",
+		busy = loading,
+		on_click = M.refresh,
+		kx.Icon { name = "refresh", size = 14 },
 	}
 end
 

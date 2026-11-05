@@ -648,14 +648,19 @@ fn attach(tasks: &zgx_desktop::TaskSpawner, state: &Host, session: LiveSession) 
 fn follow(tasks: &zgx_desktop::TaskSpawner, state: &Host, session: LiveSession) {
     let id = session.task;
     let session = Rc::new(session);
-    // A resumed thread carries on from what it had.
+    // A resumed thread carries on from what it had: the transcript of its
+    // session still winding down, if there is one (a follow-up sent as the
+    // last turn ends), else its replay.
     let fold = {
         let st = state.borrow();
-        st.replayed
-            .as_ref()
-            .filter(|_| st.open == Some(id))
-            .map(|f| Rc::new(RefCell::new(std::mem::take(&mut *f.borrow_mut()))))
-            .unwrap_or_default()
+        let live = st.live.borrow().get(&id).map(|l| l.fold.clone());
+        live.unwrap_or_else(|| {
+            st.replayed
+                .as_ref()
+                .filter(|_| st.open == Some(id))
+                .map(|f| Rc::new(RefCell::new(std::mem::take(&mut *f.borrow_mut()))))
+                .unwrap_or_default()
+        })
     };
     state.borrow().live.borrow_mut().insert(id, Live { session: session.clone(), fold: fold.clone() });
     let s = state.clone();
@@ -679,8 +684,15 @@ fn follow(tasks: &zgx_desktop::TaskSpawner, state: &Host, session: LiveSession) 
                 spawn_refresh(&tasks_for_refresh, &s);
             }
         }
-        // The session ended: its transcript stays, as a replay.
+        // The session ended: its transcript stays, as a replay. (Unless a
+        // newer session of the thread has taken over: that one carries it.)
         let mut st = s.borrow_mut();
+        let current = st.live.borrow().get(&id).is_some_and(|l| Rc::ptr_eq(&l.session, &session));
+        if !current {
+            drop(st);
+            spawn_refresh(&tasks_for_refresh, &s);
+            return;
+        }
         let removed = st.live.borrow_mut().remove(&id);
         if let Some(live) = removed
             && st.open == Some(id)
@@ -708,7 +720,19 @@ fn publish(state: &Host, change: Change) {
     let fold = fold.borrow();
     if change == Change::Entries {
         st.entries.set(Value::List(fold.entries.iter().map(entry_value).collect()));
-        let was = st.thread.signal().with_untracked(Value::clone);
+        let mut was = st.thread.signal().with_untracked(Value::clone);
+        // The record said is another thread's (a new one just opened): this
+        // one's, from the list, so nothing reads the last thread's id.
+        let open_id = id.0.to_string();
+        if !matches!(&was, Value::Nil) && !matches!(was.field("id"), Some(Value::Str(s)) if s.as_ref() == open_id) {
+            let listed = st.threads.signal().with_untracked(|list| match list {
+                Value::List(items) => {
+                    items.iter().find(|t| matches!(t.field("id"), Some(Value::Str(s)) if s.as_ref() == open_id)).cloned()
+                }
+                _ => None,
+            });
+            was = listed.unwrap_or_else(|| thread_value(&id, "", "", fold.running, ""));
+        }
         if !matches!(was, Value::Nil) {
             let field = |k: &str| was.field(k).cloned().unwrap_or(Value::Nil);
             st.thread.set(Value::record([

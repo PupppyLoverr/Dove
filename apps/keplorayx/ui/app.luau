@@ -197,6 +197,13 @@ end
 local notify_needs = ui.persist("kx.notify.needs", true)
 local notify_done = ui.persist("kx.notify.done", true)
 local seen_status: { [string]: string } = {}
+-- Whether this window is the one you're in (src/main.rs publishes it).
+local function window_active(): boolean
+	local ok, v = pcall(function(): any
+		return (ui :: any).window.active:peek()
+	end)
+	return ok and v == true
+end
 if store.fixture == "" then
 	ui.effect(function()
 		local threads = store.threads:get()
@@ -204,7 +211,7 @@ if store.fixture == "" then
 		for _, t in threads do
 			local was = seen_status[t.id]
 			seen_status[t.id] = t.status
-			if not first and was ~= t.status and not ui.window.focused:peek() then
+			if not first and was ~= t.status and not window_active() then
 				if t.status == "needs_you" and notify_needs:peek() then
 					pcall(ui.notify, { title = `{t.harness} needs you`, body = t.title })
 				elseif was == "running" and t.status == "done" and notify_done:peek() then

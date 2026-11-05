@@ -212,6 +212,68 @@ local function take()
 	end
 end
 
+-- ── The queue (Zeron's): what you send while the agent works waits in
+-- the composer's dock, each thread its own, and goes as its turn ends.
+-- Send now, edit, remove or reorder it there. ─────────────────────────────
+local queues = ui.state("ray.queues", {} :: { [string]: { any } })
+local queued_n = 0
+local function open_id(): string?
+	local t = store.thread:peek()
+	return if t and nav.route:peek() == "thread" then t.id else nil
+end
+M.queue = ui.computed(function(): { any }
+	local t = store.thread:get()
+	return if t then queues:get()[t.id] or {} else {}
+end)
+local function set_queue(id: string, list: { any })
+	local next = table.clone(queues:peek())
+	next[id] = if #list > 0 then list else nil
+	queues:set(next)
+end
+local function take_queued(qid: string): any?
+	local id = open_id()
+	if not id then
+		return nil
+	end
+	local list = table.clone(queues:peek()[id] or {})
+	for i, q in list do
+		if q.id == qid then
+			table.remove(list, i)
+			set_queue(id, list)
+			return q
+		end
+	end
+	return nil
+end
+
+local send_text: (t: string, queued: boolean?) -> ()
+
+-- A turn ended with something waiting: the next goes.
+local was_running: { [string]: boolean } = {}
+ui.effect(function()
+	local t = store.thread:get()
+	if not t then
+		return
+	end
+	local before = was_running[t.id]
+	was_running[t.id] = t.running
+	if before and not t.running then
+		-- (Settled: a thread can read idle for a moment as its turn starts.)
+		local id = t.id
+		ui.after(1500, function()
+			local now = store.thread:peek()
+			local list = queues:peek()[id]
+			if not now or now.id ~= id or now.running or not list or #list == 0 then
+				return
+			end
+			local next = table.clone(list)
+			local first = table.remove(next, 1)
+			set_queue(id, next)
+			send_text(first.text, true)
+		end)
+	end
+end)
+
 local function send()
 	if #results:peek() > 0 then
 		take()
@@ -221,6 +283,22 @@ local function send()
 	if string.match(t, "^%s*$") or sending:peek() then
 		return
 	end
+	-- The agent at work: it waits its turn.
+	local id = open_id()
+	local open = store.thread:peek()
+	if id and open and open.running then
+		queued_n += 1
+		local list = table.clone(queues:peek()[id] or {})
+		table.insert(list, { id = `q{queued_n}`, text = t })
+		set_queue(id, list)
+		text:set("")
+		return
+	end
+	send_text(t)
+end
+
+-- (`queued`: from the queue, so what's in the composer now stays.)
+function send_text(t: string, queued: boolean?)
 	sending:set(true)
 	notice:set(nil)
 	local project = M.project:peek()
@@ -233,7 +311,9 @@ local function send()
 		access = if M.plan:peek() then "plan" else M.access:peek(),
 		persona = if persona then persona.id else nil,
 	}):after(function()
-		text:set("")
+		if not queued then
+			text:set("")
+		end
 		sending:set(false)
 		M.persona:set(nil)
 		nav.go("thread")
@@ -490,6 +570,39 @@ function M.Ray(props: { place: "home" | "thread", variant: string? }): Node
 		branch_fixed = if home then nil else fixed,
 		on_send = send,
 		on_stop = store.interrupt,
+		queue = if home then nil else M.queue :: any,
+		-- Now: the turn under way stops and this goes.
+		on_queue_send = function(qid: string)
+			local q = take_queued(qid)
+			if q then
+				store.interrupt()
+				ui.after(300, function()
+					send_text(q.text, true)
+				end)
+			end
+		end,
+		on_queue_edit = function(qid: string)
+			local q = take_queued(qid)
+			if q then
+				text:set(q.text)
+				focus:set(focus:peek() + 1)
+			end
+		end,
+		on_queue_remove = function(qid: string)
+			take_queued(qid)
+		end,
+		on_queue_reorder = function(from: number, to: number)
+			local id = open_id()
+			if not id then
+				return
+			end
+			local list = table.clone(queues:peek()[id] or {})
+			local item = table.remove(list, from)
+			if item then
+				table.insert(list, math.clamp(to, 1, #list + 1), item)
+				set_queue(id, list)
+			end
+		end,
 		on_attach = attach,
 		approval = approval,
 		on_approve = function(scope: string)

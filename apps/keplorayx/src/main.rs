@@ -223,6 +223,8 @@ fn open_main(cx: &mut WindowContext, engine: Arc<dove_core::Engine>, inspect: bo
     host::install(cx, &host, engine.clone());
     account::install(&host, &cx.tasks, engine.clone());
     clock::install(cx, &host);
+    // `ui.window.active` and `shown`: notifications only while you're away.
+    host.window_state(&cx.ui);
     // Frosted glass on or off (Settings › Appearance): the main window's
     // backdrop follows it. (Its own windows only: the notch and First
     // Light's overlay keep theirs.)
