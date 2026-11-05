@@ -325,6 +325,23 @@ ui.effect(function()
 	end
 end)
 
+-- The chosen project's branch, read as the project changes: a new thread
+-- starts in the project's own checkout, on it (the chip's one choice).
+local branch = ui.state("ray.branch", nil :: string?)
+local branches = ui.state("ray.branches", {} :: { any })
+local checkout = ui.state("ray.checkout", "local" :: string?)
+ui.effect(function()
+	local id = project_choice:get()
+	if not id then
+		return
+	end
+	store.call("kx.branch", { project = id }, "main"):after(function(b: any)
+		local name = if type(b) == "string" then b else nil
+		branch:set(name)
+		branches:set(if name then { { value = name, label = name } } else {})
+	end, function() end)
+end)
+
 -- The open thread's place: its branch, fixed (a thread can't move).
 local function fixed(): any
 	local t = store.thread:get()
@@ -417,6 +434,9 @@ function M.Ray(props: { place: "home" | "thread" }): Node
 		project = if home then project_choice else nil,
 		projects = if home then project_list else nil,
 		on_new_project = if home then pick_folder else nil,
+		branch = if home then branch else nil,
+		branches = if home then branches else nil,
+		checkout = if home then checkout else nil,
 		branch_fixed = if home then nil else fixed,
 		on_send = send,
 		on_stop = store.interrupt,

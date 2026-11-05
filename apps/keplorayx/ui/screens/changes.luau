@@ -220,14 +220,52 @@ function M.summary(): Node
 	}
 end
 
--- The files, each opening to its hunks.
+-- The files as Zeron's changes card (ds/git_changes, vendored; MIT, see
+-- THIRD_PARTY_NOTICES.md): its folders as headers that fold, each file a
+-- row that opens its diff in place, a filter over them, one virtualized
+-- list however long the diff.
+local GitChanges = require("@ds/git_changes")
+local filter = ui.state("changes.filter", "")
+local open_files = ui.state("changes.open_files", {} :: { [string]: boolean })
+local folded = ui.state("changes.folded", {} :: { [string]: boolean })
+
+local SIGN_KIND: { [string]: string } = { add = "+", del = "-", ctx = " " }
+
+-- Ours, as the card's: its files, and each file's lines when it opens.
+local card_files = ui.computed(function(): { any }
+	local out: { any } = {}
+	for _, f in files:get() do
+		local file = GitChanges.file(f.path, f.status, f.added, f.removed)
+		-- (Its lines' identity: the card draws a file again when they change.)
+		file.rev = `{f.added}:{f.removed}:{#f.hunks}`
+		table.insert(out, file)
+	end
+	return out
+end)
+
+local function lines_of(f: any): { any }?
+	for _, mine in files:peek() do
+		if mine.path == f.path then
+			local out: { any } = {}
+			for _, h in mine.hunks do
+				table.insert(out, { kind = "hunk", text = h.header })
+				for _, l in h.lines do
+					table.insert(out, { kind = SIGN_KIND[l.kind] or " ", old = l.old, new = l.new, text = l.text })
+				end
+			end
+			return out
+		end
+	end
+	return nil
+end
+
 function M.list(): Node
-	return ui.scroll {
+	return ui.column {
 		grow = 1,
 		min_h = 0,
 		w_full = true,
 		px = "$space.2",
-		pb = "$space.4",
+		pb = "$space.2",
 		ui.show(
 			function()
 				return failure:get() ~= ""
@@ -235,19 +273,29 @@ function M.list(): Node
 			kx.Empty {
 				icon = "danger-triangle",
 				title = "Couldn't read the changes",
-				hint = failure:peek(),
+				hint = function()
+					return failure:get()
+				end,
 			},
 			ui.show(
 				function()
 					return #files:get() > 0
 				end,
-				ui.each(files, file_row, {
-					key = function(f: File)
-						return f.path
-					end,
+				ui.column {
+					grow = 1,
+					min_h = 0,
 					w_full = true,
-					gap = "$kx.space.hair",
-				}),
+					GitChanges.panel {
+						files = function()
+							return card_files:get()
+						end,
+						filter = filter,
+						narrow = true,
+						open = open_files,
+						folded = folded,
+						lines = lines_of,
+					},
+				},
 				kx.Empty {
 					icon = "file-diff",
 					title = "No changes yet",

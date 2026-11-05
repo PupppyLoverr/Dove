@@ -143,7 +143,7 @@ function M.view(): Node
 			w_full = true,
 			window_drag = true,
 			items = "center",
-			px = "$space.5",
+			pl = nav.bar_left,
 			pr = nav.caption_inset,
 			gap = "$space.3",
 			kx.Label { "Constellation", literal = true },

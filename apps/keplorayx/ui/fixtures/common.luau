@@ -79,6 +79,32 @@ M.stubs = {
 	["kx.list_dir"] = function(arg: any)
 		return if arg.path == "apps" then APPS else ROOT
 	end,
+	["kx.list_files"] = function()
+		return {
+			name = "keplorayx-zgx",
+			root = "C:\\dev\\keplorayx-zgx",
+			files = table.concat({
+				"Cargo.toml",
+				"README.md",
+				"STATUS.md",
+				"apps/keplorayx/Cargo.toml",
+				"apps/keplorayx/src/host.rs",
+				"apps/keplorayx/src/main.rs",
+				"apps/keplorayx/src/notch.rs",
+				"apps/keplorayx/ui/app.luau",
+				"apps/keplorayx/ui/notch.luau",
+				"crates/dove-core/src/lib.rs",
+				"crates/dove-git/src/lib.rs",
+				"docs/PLAN-zgx-orbit.md",
+			}, "\n"),
+			statuses = {
+				["README.md"] = "modified",
+				["STATUS.md"] = "untracked",
+				["apps/keplorayx/src/notch.rs"] = "modified",
+				["apps/keplorayx/ui/notch.luau"] = "added",
+			},
+		}
+	end,
 	["kx.read_file"] = function(_arg: any)
 		return { text = SOURCE, lang = "rust", size = #SOURCE, binary = false, truncated = false, kind = "text", full = "" }
 	end,

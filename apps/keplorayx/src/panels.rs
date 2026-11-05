@@ -57,6 +57,66 @@ pub fn install(host: &ScriptHost, engine: Arc<Engine>, open: impl Fn() -> Option
         }
     });
 
+    // The branch a project's folder is on (the composer's where-chip: a new
+    // thread starts in the project's own checkout, on this branch).
+    let (e, o) = (engine.clone(), open.clone());
+    host.async_action("kx.branch", move |req| {
+        let (engine, open) = (e.clone(), o());
+        async move {
+            let project = field(&req, "project");
+            off_thread(move || -> Result<Json, String> {
+                let root = project_dir(&engine, project.as_deref(), open)?;
+                if dove_git::repo_root(&root).is_none() {
+                    return Ok(Json::Null);
+                }
+                Ok(dove_git::current_branch(&root).map(Json::from).unwrap_or(Json::Null))
+            })
+            .await
+            .ok_or("failed")?
+            .map(|j| to_value(&j))
+        }
+    });
+
+    // Every file at once (git's list, or a walk outside a repository), with
+    // git's word for each that changed: the file pane builds its tree from it.
+    let (e, o) = (engine.clone(), open.clone());
+    host.async_action("kx.list_files", move |req| {
+        let (engine, open) = (e.clone(), o());
+        async move {
+            let project = field(&req, "project");
+            off_thread(move || -> Result<Json, String> {
+                let root = project_dir(&engine, project.as_deref(), open)?;
+                let files = if dove_git::repo_root(&root).is_some() {
+                    dove_git::list_files(&root).map_err(|e| format!("{e:#}"))?
+                } else {
+                    walk(&root, &root, 20_000)
+                };
+                let words = |c: char| match c {
+                    'A' => "added",
+                    'D' => "deleted",
+                    'R' => "renamed",
+                    '?' => "untracked",
+                    _ => "modified",
+                };
+                let statuses: serde_json::Map<String, Json> = dove_git::status(&root)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|(p, c)| (p, Json::from(words(c))))
+                    .collect();
+                let name = root.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                Ok(json!({
+                    "name": name,
+                    "root": root.to_string_lossy(),
+                    "files": files.join("\n"),
+                    "statuses": statuses,
+                }))
+            })
+            .await
+            .ok_or("failed")?
+            .map(|j| to_value(&j))
+        }
+    });
+
     let (e, o) = (engine.clone(), open.clone());
     host.async_action("kx.read_file", move |req| {
         let (engine, open) = (e.clone(), o());
@@ -319,6 +379,33 @@ fn list_dir(root: &Path, dir: &Path) -> Vec<Json> {
     items.into_iter().map(|(_, _, v)| v).collect()
 }
 
+/// Every file under `dir` (relative to `root`, `/`-separated), the folders
+/// a project never shows left out, at most `cap`.
+fn walk(root: &Path, dir: &Path, cap: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(read) = std::fs::read_dir(&d) else { continue };
+        for entry in read.flatten() {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().to_string();
+            if path.is_dir() {
+                if !HIDDEN.contains(&name.as_str()) {
+                    stack.push(path);
+                }
+            } else if let Ok(rel) = path.strip_prefix(root) {
+                out.push(rel.to_string_lossy().replace('\\', "/"));
+                if out.len() >= cap {
+                    return out;
+                }
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// A language for a file's extension (the viewer's highlighter's names).
 fn lang_of(path: &Path) -> &'static str {
     match path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase().as_str() {
         "rs" => "rust",

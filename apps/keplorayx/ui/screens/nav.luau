@@ -76,6 +76,19 @@ function M.caption_inset(): any
 	return ui.raw(inset, "clears the window's caption buttons, which the system places")
 end
 
+-- Where a page's top line may start: past the title bar's controls when
+-- the sidebar is folded away (they stand over the page then), else the
+-- page's own inset.
+function M.bar_left(): any
+	if not M.sidebar_collapsed:get() then
+		return "$space.4"
+	end
+	local ok, x = pcall(function(): number
+		return require("@ds/title_bar").controls_end()
+	end)
+	return ui.raw(if ok and type(x) == "number" then x + 4 else 120, "past the title bar's controls")
+end
+
 function M.go(route: Route)
 	M.route:set(route)
 end

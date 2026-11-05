@@ -40,10 +40,8 @@ local header = ui.row {
 	window_drag = true,
 	items = "center",
 	gap = "$space.2",
-	pl = function(): any
-		local ok, x = pcall(TitleBar.controls_end)
-		return ui.raw(if ok and type(x) == "number" then x + 8 else 120, "past the title bar's controls")
-	end,
+	pl = nav.bar_left,
+
 	ui.show(nav.sidebar_collapsed, ui.row {
 		gap = "$space.2",
 		items = "center",

@@ -152,6 +152,12 @@ function store.list_dir(project: string?, path: string): any
 	return call("kx.list_dir", { project = project, path = path }, {})
 end
 
+-- The project's every file at once: { name, root, files (one path a line),
+-- statuses = { [path] = "modified" | "added" | … } }.
+function store.list_files(project: string?): any
+	return call("kx.list_files", { project = project }, { name = "", root = "", files = "", statuses = {} })
+end
+
 -- A file's text (capped), with its language by extension.
 function store.read_file(project: string?, path: string): any
 	return call("kx.read_file", { project = project, path = path }, { text = "", lang = "" })
