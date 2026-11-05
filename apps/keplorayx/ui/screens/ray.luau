@@ -96,6 +96,36 @@ store.call("kx.models", nil, {}):after(function(list: any)
 	end
 end, function() end)
 
+-- A model changed: its effort one it has (the one chosen, if it has it;
+-- else its default), none when it has none.
+ui.effect(function()
+	local value = M.model:get()
+	local m: any = nil
+	for _, x in models:get() do
+		if x.value == value then
+			m = x
+			break
+		end
+	end
+	if not m then
+		return
+	end
+	local now = M.effort:peek()
+	local levels = m.efforts or {}
+	if #levels == 0 then
+		if now ~= nil then
+			M.effort:set(nil)
+		end
+		return
+	end
+	for _, l in levels do
+		if l.value == now then
+			return
+		end
+	end
+	M.effort:set(m.effort or levels[1].value)
+end)
+
 local function agent_id(): string
 	local m = M.model:get()
 	local agent = if m then string.match(m, "^([^:]+):") else nil

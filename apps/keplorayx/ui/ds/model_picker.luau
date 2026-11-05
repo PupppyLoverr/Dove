@@ -550,9 +550,13 @@ return ui.component(function(props: Props): Node
 				else locale.s("ds.model_picker.where_models")
 			return { title = locale.s("ds.model_picker.not_found"), hint = locale.s("ds.model_picker.not_found_hint", { where = where, q = q }) }
 		end,
+		-- (Keplorayx) Opened, it shows everything: its agents' tabs, the
+		-- search and every model (Zeron's opens folded onto the chosen one,
+		-- which read as a list of one). A pick still folds it onto the
+		-- chosen model and its effort.
 		on_open = function()
 			tab:set(nil)
-			expanded:set(false)
+			expanded:set(true)
 		end,
 		expanded = function(): boolean
 			return expanded:get()

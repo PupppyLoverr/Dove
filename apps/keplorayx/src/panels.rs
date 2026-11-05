@@ -191,7 +191,7 @@ pub fn install(host: &ScriptHost, engine: Arc<Engine>, open: impl Fn() -> Option
                         let effort = efforts.iter().find(|l| l["value"] == "medium").or(efforts.first()).map(|l| l["value"].clone());
                         models.push(json!({
                             "value": format!("{}:{}", kind.id(), m.id),
-                            "label": m.label,
+                            "label": readable(&m.id, &m.label),
                             "harness": kind.id(),
                             "efforts": efforts,
                             "effort": effort,
@@ -517,4 +517,18 @@ mod tests {
         assert_eq!(lang_of(Path::new("ui/app.luau")), "luau");
         assert_eq!(lang_of(Path::new("README")), "");
     }
+}
+
+/// A model's name as the picker shows it. An agent's alias, listed by its
+/// bare id ("opus", "sonnet", "default"), reads as a name ("Opus (latest)").
+fn readable(id: &str, label: &str) -> String {
+    let bare = label.is_empty() || label == id;
+    if !bare || id.contains(['-', '.', '/']) || id.chars().any(|c| c.is_ascii_digit()) {
+        return if label.is_empty() { id.to_string() } else { label.to_string() };
+    }
+    let mut name: String = id.chars().take(1).flat_map(char::to_uppercase).chain(id.chars().skip(1)).collect();
+    if matches!(id, "opus" | "sonnet" | "haiku" | "fable") {
+        name.push_str(" (latest)");
+    }
+    name
 }
