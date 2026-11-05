@@ -28,10 +28,10 @@ cargo run -p keplorayx -- notch            # the notch on its own
 |---|---|
 | **The tray** | Closing the window hides it there: agents keep working, the notch stays. Its menu: Open, New thread, Inbox, Settings, Show the notch, Start with Windows, Quit. |
 | **`--background`** | Starts with the window hidden (what Start with Windows runs, through a per-user Run entry). |
-| **The notch** | Your agents at a glance; warm when one needs you, with Allow and Deny. With nothing working it rests on its own: the time, the day, and a click to ask. |
+| **The notch** | An island hanging from the screen's top edge, shown only when the pointer reaches the edge over it (and slid away soon after); hidden, clicks pass through. It says who waits on you (Allow, Deny), else your agents at work, else the time, the day and Alt Space to ask. While something waits, a thin warm line stays at the edge. |
 | **The launcher (Alt+Space)** | Zeron's command palette in a window of its own over everything: apps (Start menu and packaged), open windows, files in your usual folders and projects, what you copied this run (memory only), threads, projects, quick links, snippets, safe system commands; sums and unit conversions as you type; web search; **Ask Keplorayx**, its answer streaming in place. Notes: `apps/keplorayx/docs/design/launcher-study.md`. |
 | **Widgets** | Windows of glass on the desktop or floating: clock (digital, analog, world, small), calendar (agenda, month, small), agents at work, recent threads, quick ask, usage, CPU and memory (bars, small, graph), now playing (with the media keys), note, and an agent's own view. Drag them anywhere (kept); a secondary click changes the variant, floats it or removes it. Settings › Widgets adds them. |
-| **Keys from any app (Windows)** | Alt+Space the launcher; Ctrl+Alt+Space asks; Ctrl+Alt+A and Ctrl+Alt+D allow or deny. |
+| **Keys from any app (Windows)** | Alt+Space the launcher (a low-level keyboard hook: Windows keeps Alt+Space for window menus, so a registered hot key didn't fire); Ctrl+Alt+Space asks; Ctrl+Alt+A and Ctrl+Alt+D allow or deny. |
 
 ## Agents' tools: the bridge
 
@@ -44,7 +44,7 @@ cargo run -p keplorayx -- notch            # the notch on its own
 
 ## Plugins
 
-On Zeron's model (`src/plugins.rs`): a folder with `kx-plugin.json` and `init.luau`, run by zgx in a sandbox of its own in the main window. A plugin runs only once you allow it in **Settings › Plugins**, with exactly the permissions it asked for; an update asking for more asks again. Agents make them; you allow them.
+On Zeron's model (`src/plugins.rs`): a folder with `kx-plugin.json` and `init.luau`, run by zgx in a sandbox of its own in the main window. **Settings › Plugins** is Zeron's page: search beside the title, Installed and Library tabs, each plugin a row with its tile and version; Install from the library, Allow (a dialog saying what it may do), a switch once allowed, Remove behind a confirm. An update asking for more asks again. Agents make plugins; you allow them. Guide: `apps/keplorayx/docs/plugins.md`.
 
 **Computer use** is in the catalog (`apps/keplorayx/plugins/computer`), not bundled as running: Install, then Allow. It runs Cua's driver (`cua mcp`) and gives whichever agent runs its 35 computer tools, with guidance to read the accessibility tree before any screenshot. Type `@computer` in the composer to ask for it.
 
@@ -57,8 +57,8 @@ Zeron's design system, vendored whole as `apps/keplorayx/ui/ds` (MIT, credited i
 | **Sidebar** | Zeron's, calmer: New thread and Search on top; projects (each tile its own hue) with their threads on tree lines; Constellation, Team and Settings as quiet icons at its foot. A thread's menu: Pin (kept in the store), Open, Archive; double-click renames. |
 | **Composer** | Zeron's, in three placements (centre, bottom, slim). Sending while the agent works **queues** the message in its dock (send now, edit, remove, reorder); it goes when the turn ends. `@` offers projects, agents and allowed plugins' mentions. |
 | **Model picker** | Zeron's, fed from the engine: a tab for each installed agent, its models, an effort slider. |
-| **Thread** | Zeron's transcript; agents' visuals drawn in place. |
-| **Right panel** | Changes, Files, Browser, Terminal, History, Pull requests, on Zeron's tabs. |
+| **Thread** | Zeron's transcript; agents' visuals drawn in place. Its head, as Zeron's, always shows the agent's mark and the title. |
+| **Right panel** | Changes, Files, Browser, Terminal, History, Pull requests, on Zeron's tabs. Its home: this thread (project, branch, its changes), the project's other threads (Zeron's lanes), and what opens here, each with its key. |
 | **Settings** | General (tray, notch, Start with Windows, keys), Appearance, Agents, Notifications, Shortcuts, **Plugins**, **Widgets**, Account, Privacy and data, About. |
 
 ## Fixed this round
@@ -70,10 +70,14 @@ Zeron's design system, vendored whole as `apps/keplorayx/ui/ds` (MIT, credited i
 
 ## Checks
 
-See the end of this file for the numbers from the last run.
+- `zgx lint ui`: 0 errors, 0 warnings in 218 files. `cargo test -p keplorayx`: 15 passed.
+- Every fixture, the launcher and the gallery load with no script error; the notch and First Light captured clean.
+- Driven live on a scratch home: sending, follow-ups, the queue, the bridge's every tool (as an agent would), an allowed plugin drawing in the sidebar, widgets, closing to the tray, `--background`, the notch hidden until reached for, sign-in to the browser hand-off and Cancel.
+- **Hardware numbers:** not re-run this round, as asked; the last are in `apps/keplorayx/docs/perf/README.md`.
 
 ## Not done yet (honestly)
 
+- **Alt+Space** hasn't been tried with a real keypress: the hook ignores injected keys on purpose, so only you can. If an old Keplorayx is still running from before, quit it from its tray first: only one process can own the key.
 - **Computer use on this computer** needs your one-time consent in Cua (`cua do-host-consent`, then `cua do switch host`): I didn't grant it for you. The plugin's tools reach agents; acting on the desktop waits on that.
 - **3D scenes and shaders in visuals** (Zeron's GPU renderer, `crates/visual-gpu`).
 - **Remote control:** signing in works; publishing threads to the phone isn't ported (left out, as agreed).
