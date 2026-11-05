@@ -7,6 +7,7 @@
 -- sign-ins are theirs and live under Agents.
 
 local kx = require("@kx")
+local ds = require("@ds")
 local store = require("@kx/store")
 
 local M = {}
@@ -569,6 +570,12 @@ local function data(): Node
 end
 
 -- ── Plugins (src/plugins.rs) ───────────────────────────────────────────
+-- Zeron's Plugins page (its screens/plugins/page.luau, after its gallery
+-- example, MIT): the page's search at its title's end, Installed and
+-- Library as tabs, each plugin a row with its tile, version, and what it
+-- can do at its end: Install, a switch once allowed, Allow while it waits
+-- (a dialog saying what it may do, as Zeron's consent window does), Remove
+-- behind a confirm. Nothing runs until you allow it.
 type PluginRow = {
 	id: string,
 	name: string,
@@ -581,6 +588,7 @@ type PluginRow = {
 	error: string?,
 	mention: string?,
 	tools: boolean?,
+	requires: any?,
 }
 local plugin_list: State<{ PluginRow }> = if store.fixture ~= ""
 	then ui.state("fx.plugins", {
@@ -588,7 +596,7 @@ local plugin_list: State<{ PluginRow }> = if store.fixture ~= ""
 			id = "computer",
 			name = "Computer use",
 			version = "0.1.0",
-			description = "Lets any agent see and work your computer's apps and browser: @computer in the composer.",
+			description = "Lets any agent see and work this computer's apps and browser, with @computer in the composer.",
 			permissions = { { id = "tools", says = "Give agents tools (a program of its own)" } },
 			installed = false,
 			on = false,
@@ -599,7 +607,7 @@ local plugin_list: State<{ PluginRow }> = if store.fixture ~= ""
 			id = "focus-timer",
 			name = "Focus timer",
 			version = "1.0.0",
-			description = "A timer in the thread's header.",
+			description = "A timer under the sidebar's actions.",
 			permissions = { { id = "ui.add", says = "Add to Keplorayx's window" } },
 			installed = true,
 			on = true,
@@ -607,111 +615,259 @@ local plugin_list: State<{ PluginRow }> = if store.fixture ~= ""
 	} :: { PluginRow })
 	else ui.shared("kx.plugins", {} :: { PluginRow })
 
-local function plugin_row(p: PluginRow): Node
-	local says: { string } = {}
-	for _, perm in p.permissions or {} do
-		table.insert(says, perm.says)
+local plugins_tab = ui.state("plugins.tab", "installed")
+local plugins_query = ui.state("plugins.query", "")
+local allowing = ui.state("plugins.allowing", nil :: PluginRow?)
+local allowing_open = ui.state("plugins.allowing_open", false)
+local removing = ui.state("plugins.removing", nil :: PluginRow?)
+local removing_open = ui.state("plugins.removing_open", false)
+
+local PLUGIN_HUES = { "violet", "indigo", "blue", "sky", "teal", "emerald", "rose", "amber" }
+local function plugin_hue(id: string): string
+	if id == "computer" then
+		return "violet"
 	end
-	local hint = p.error
-		or ((if p.asks_more then "It asks for more than you allowed: allow it again. " else "") .. (p.description or "") .. (if #says > 0
-			then "\n" .. table.concat(says, " · ")
-			else ""))
-	local control: Node
-	if not p.installed then
-		control = kx.Button {
-			tone = "secondary",
-			size = "sm",
-			on_click = function()
-				pcall(ui.invoke, "kx.plugins.install", p.id)
-				kx.toast { title = `{p.name} installed`, body = "Allow it to turn it on." }
-			end,
-			"Install",
-		}
-	elseif p.error then
-		control = kx.Button {
-			tone = "ghost",
-			size = "sm",
-			on_click = function()
-				pcall(ui.invoke, "kx.plugins.remove", p.id)
-			end,
-			"Remove",
-		}
-	else
-		control = ui.row {
-			gap = "$space.2",
-			items = "center",
-			kx.Button {
-				tone = "ghost",
-				size = "sm",
-				on_click = function()
-					pcall(ui.invoke, "kx.plugins.remove", p.id)
-					kx.toast { title = `{p.name} removed` }
-				end,
-				"Remove",
-			},
-			kx.Switch {
-				value = ui.state(`plugins.on.{p.id}`, p.on),
-				label = `Allow {p.name}`,
-				on_change = function(on: boolean)
-					pcall(ui.invoke, "kx.plugins.allow", { id = p.id, on = on })
-				end,
-			},
-		}
+	local h = 0
+	for i = 1, #id do
+		h = (h * 31 + string.byte(id, i)) % 2147483647
 	end
-	local name = if p.version then `{p.name} {p.version}` else p.name
-	return setting(name, hint, control)
+	return PLUGIN_HUES[h % #PLUGIN_HUES + 1]
 end
 
-local function plugin_rows(installed: boolean): State<{ PluginRow }>
+local function plugin_found(installed: boolean): State<{ PluginRow }>
 	return ui.computed(function(): { PluginRow }
+		local q = string.lower(plugins_query:get())
 		local out = {}
 		for _, p in plugin_list:get() do
-			if p.installed == installed then
+			local text = string.lower(p.name .. " " .. (p.description or ""))
+			if p.installed == installed and (q == "" or string.find(text, q, 1, true) ~= nil) then
 				table.insert(out, p)
 			end
 		end
 		return out
 	end)
 end
+local installed_found = plugin_found(true)
+local library_found = plugin_found(false)
 
-local function plugin_list_of(rows: State<{ PluginRow }>, empty: string): Node
-	return ui.show(
-		function()
-			return #rows:get() > 0
-		end,
-		ui.column {
-			w_full = true,
-			ui.each(rows, plugin_row, {
-				key = function(p: PluginRow)
-					return `{p.id}:{p.on}:{p.installed}:{p.error or ""}`
+local function permission_words(p: PluginRow): string
+	local says: { string } = {}
+	for _, perm in p.permissions or {} do
+		table.insert(says, perm.says)
+	end
+	return table.concat(says, " · ")
+end
+
+local function plugin_row(p: PluginRow): Node
+	local control: Node
+	if not p.installed then
+		control = ds.Button {
+			"Install",
+			tone = "secondary",
+			size = "sm",
+			on_click = function()
+				pcall(ui.invoke, "kx.plugins.install", p.id)
+				plugins_tab:set("installed")
+				kx.toast { title = `{p.name} installed`, body = "Allow it to turn it on." }
+			end,
+		}
+	elseif p.error then
+		control = ds.IconButton {
+			icon = "trash-bin-minimalistic",
+			label = `Remove {p.name}`,
+			size = "sm",
+			tone = "quiet",
+			on_click = function()
+				removing:set(p)
+				removing_open:set(true)
+			end,
+		}
+	else
+		local on = ui.state(`plugins.on.{p.id}`, p.on)
+		control = ui.row {
+			gap = "$space.2",
+			items = "center",
+			if p.on
+				then ds.Switch {
+					value = on,
+					label = p.name,
+					on_change = function(v: boolean)
+						if not v then
+							pcall(ui.invoke, "kx.plugins.allow", { id = p.id, on = false })
+						end
+					end,
+				}
+				else ds.Button {
+					if p.asks_more then "Review" else "Allow",
+					tone = "primary",
+					size = "sm",
+					on_click = function()
+						allowing:set(p)
+						allowing_open:set(true)
+					end,
+				},
+			ds.IconButton {
+				icon = "trash-bin-minimalistic",
+				label = `Remove {p.name}`,
+				size = "sm",
+				tone = "quiet",
+				on_click = function()
+					removing:set(p)
+					removing_open:set(true)
 				end,
-			}),
-		},
-		setting(empty, nil, nil)
-	)
+			},
+		}
+	end
+	local about = p.error or p.description or ""
+	if p.mention and p.installed and not p.error then
+		about ..= ` Type @{p.mention} in the composer.`
+	end
+	local needs = if type(p.requires) == "table" then p.requires.says else nil
+	if needs and not p.on then
+		about ..= `\n{needs}`
+	end
+	return ds.Settings.Row {
+		label = p.name,
+		description = about,
+		lead = ds.Tile { label = p.name, hue = plugin_hue(p.id), size = 32 },
+		badge = ds.Badge { p.version or "", tabular = true },
+		control = control,
+	}
+end
+
+local function plugin_list_of(found: State<{ PluginRow }>): Node
+	return ds.Settings.Each(found, plugin_row, {
+		key = function(p: PluginRow): string
+			return `{p.id}:{p.on}:{p.installed}:{p.asks_more or false}:{p.error or ""}`
+		end,
+	})
+end
+
+local function plugins_body(key: string): Node
+	if key == "none" then
+		return ds.EmptyState {
+			icon = "widget",
+			title = "No plugins yet",
+			body = "Plugins give your agents tools and add to Keplorayx. Computer use is in the library; agents can make you more.",
+			action = {
+				label = "Open the library",
+				on_click = function()
+					plugins_tab:set("library")
+				end,
+			},
+		}
+	elseif string.match(key, ":nothing$") then
+		return ds.EmptyState {
+			icon = "search",
+			title = function(): string
+				return if plugins_query:get() == "" then "Everything's installed" else `Nothing matches “{plugins_query:get()}”`
+			end,
+			body = "Try another word, or look in the other tab.",
+			size = "sm",
+			action = {
+				label = "Clear search",
+				on_click = function()
+					plugins_query:set("")
+				end,
+			},
+		}
+	end
+	return plugin_list_of(if string.match(key, "^list:library") then library_found else installed_found)
 end
 
 local function plugins_page(): Node
-	return page(
-		"Plugins",
-		group("Installed", plugin_list_of(plugin_rows(true), "None yet")),
-		group("From Keplorayx", plugin_list_of(plugin_rows(false), "Nothing more to install")),
-		group(
-			nil,
-			setting(
-				"Make your own",
-				"Ask an agent: it can create and edit plugins with Keplorayx's tools. Or put a folder with kx-plugin.json and init.luau in the plugins folder.",
-				kx.Button {
-					tone = "secondary",
-					size = "sm",
-					on_click = function()
-						pcall(ui.invoke, "kx.plugins.folder")
-					end,
-					"Open the folder",
-				}
-			)
-		)
-	)
+	return ui.column {
+		w_full = true,
+		Settings.Page {
+			title = "Plugins",
+			description = DESCRIPTIONS.Plugins,
+			trail = ds.SearchField { value = plugins_query, placeholder = "Search plugins", size = "sm", w = 200 },
+			ui.column {
+				w_full = true,
+				gap = "$space.4",
+				ds.Tabs {
+					value = plugins_tab,
+					label = "Plugins",
+					options = {
+						{ value = "installed", label = "Installed", count = function(): number
+							return #installed_found:get()
+						end },
+						{ value = "library", label = "Library", count = function(): number
+							return #library_found:get()
+						end },
+					},
+				},
+				ui.presence(function(): string
+					local t = plugins_tab:get()
+					if t == "installed" and #plugin_list:get() == 0 then
+						return "none"
+					end
+					local found = if t == "library" then library_found:get() else installed_found:get()
+					return if #found > 0 then `list:{t}` else `list:{t}:nothing`
+				end, plugins_body, { w_full = true, enter = { opacity = { 0, 1 }, duration = 120 }, exit = { opacity = 0, duration = 60 }, mode = "wait" }),
+				Settings.Section {
+					title = "Make your own",
+					Settings.Group {
+						setting(
+							"Ask an agent",
+							"Agents make and edit plugins with Keplorayx's tools; what they make waits here for you to allow it. Or put a folder with kx-plugin.json and init.luau in the plugins folder.",
+							ds.Button {
+								"Open the folder",
+								tone = "secondary",
+								size = "sm",
+								on_click = function()
+									pcall(ui.invoke, "kx.plugins.folder")
+								end,
+							}
+						),
+					},
+				},
+			},
+		},
+		ds.Dialog {
+			open = allowing_open,
+			title = function(): string
+				local p = allowing:get()
+				return if p then `Allow {p.name}?` else ""
+			end,
+			body = function(): string
+				local p = allowing:get()
+				if not p then
+					return ""
+				end
+				local words = permission_words(p)
+				return if words == "" then "It asks for nothing beyond its own sandbox." else `It will be able to: {words}.`
+			end,
+			confirm = {
+				label = "Allow",
+				on_click = function()
+					local p = allowing:peek()
+					if p then
+						pcall(ui.invoke, "kx.plugins.allow", { id = p.id, on = true })
+						kx.toast { title = `{p.name} is on` }
+					end
+				end,
+			},
+		},
+		ds.Dialog {
+			open = removing_open,
+			tone = "danger",
+			title = function(): string
+				local p = removing:get()
+				return if p then `Remove {p.name}?` else ""
+			end,
+			body = "Its folder goes, and agents lose any tools it gave them. You can install it again from the library.",
+			confirm = {
+				label = "Remove",
+				on_click = function()
+					local p = removing:peek()
+					if p then
+						pcall(ui.invoke, "kx.plugins.remove", p.id)
+					end
+				end,
+			},
+		},
+	}
 end
 
 -- ── Widgets (src/widgets.rs) ────────────────────────────────────────────
