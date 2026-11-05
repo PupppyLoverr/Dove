@@ -1,15 +1,18 @@
 --!strict
--- The sidebar: Zeron's (ds/sidebar, vendored; MIT, see
--- THIRD_PARTY_NOTICES.md), worn as Dove's was. New thread on top as a
--- lifted button with its key, then Search and the way in (Inbox,
--- Constellation, Team); then the threads on two lines, as Dove listed
--- them: its agent's mark, its title, and "project · branch" under it, its
--- corner saying what it's doing (the working ring, a question or an
--- approval waiting on you, a failure, work done you haven't seen) or how
--- long ago it moved. Pinned threads lead. Its view menu ("…") groups by
--- project, folds to one line a thread, and the rest of Zeron's choices; it
--- folds away whole with Ctrl+B. You and Settings at the foot.
+-- The sidebar, as Zeron's (its screens/shell/sidebar.luau over ds/sidebar,
+-- both MIT, vendored): the design system's sidebar on our threads, with
+-- Zeron's view options (Organize and its order, Sort, Show: branch, pull
+-- request, agent, project icon, where, archived, the project filter, empty
+-- projects, keep what's active), your own places (Pinned and sections,
+-- dragged to and between), the archived shelf, a thread's menu as Zeron's
+-- (Rename in its row, Pin, Copy, Move to, Archive, Delete), a project's
+-- (New thread here, Show in folder, Remove), and the jump keys (hold Ctrl:
+-- each row's number; Ctrl+1–9 opens it). Folded away (Ctrl+B), its rail.
+--
+-- Keplorayx's own: our agents' marks, each project's tile on a hue of its
+-- own, Constellation and Team at its foot beside Settings.
 
+local ds = require("@ds")
 local Sidebar = require("@ds/sidebar")
 local kx = require("@kx")
 local store = require("@kx/store")
@@ -32,6 +35,63 @@ local MARK: { [string]: string } = {
 	hermes = "hermes",
 }
 
+local fixture = store.fixture ~= ""
+local function kept<T>(key: string, default: T): State<T>
+	return if fixture then ui.state(key, default) else ui.persist(key, default)
+end
+
+-- ── Its view: Zeron's options, kept ────────────────────────────────────
+
+local shared = {
+	compact = nav.sidebar_compact,
+	organize = nav.sidebar_organize,
+	organize_order = kept("kx.sb.organize_order", { "project", "device" }),
+	sort = kept("kx.sb.sort", "updated"),
+	width = nav.sidebar_width,
+	details = {
+		branch = nav.sidebar_details.branch,
+		pr = nav.sidebar_details.pr,
+		harness = nav.sidebar_details.harness,
+		project_icon = nav.sidebar_details.project_icon,
+		location = nav.sidebar_details.location,
+		archived = kept("kx.sb.show_archived", false),
+		project_filter = kept("kx.sb.show_project_filter", false),
+		empty_projects = kept("kx.sb.show_empty_projects", true),
+		keep_active = kept("kx.sb.keep_active", true),
+	},
+	expanded = ui.state("kx.sb.expanded", {} :: { [string]: boolean }),
+	project = kept("kx.sb.project", nil :: string?),
+	-- Where threads are put by hand: Pinned and your sections, in order.
+	places = kept("kx.sb.places", { pinned = {}, sections = {} } :: any),
+	selected = ui.state("sidebar.selected", nil :: string?),
+	offset = ui.state("kx.sb.offset", 0),
+	folded = nav.folded,
+}
+M.options = shared
+
+-- (Threads pinned before, in the store or on this device, join Pinned once.)
+local merged_old_pins = false
+ui.effect(function()
+	local threads = store.threads:get()
+	if merged_old_pins or #threads == 0 then
+		return
+	end
+	merged_old_pins = true
+	local places = table.clone(shared.places:peek())
+	local pinned = table.clone(places.pinned or {})
+	local old = nav.pinned:peek()
+	for _, t in threads do
+		if (t.pinned or old[t.id]) and not table.find(pinned, t.id) then
+			table.insert(pinned, t.id)
+		end
+	end
+	places.pinned = pinned
+	places.sections = places.sections or {}
+	shared.places:set(places)
+end)
+
+-- ── Rows ───────────────────────────────────────────────────────────────
+
 -- A thread's state, as its corner says it: nothing for one at rest.
 local function kind(t: Thread): string?
 	if t.status == "needs_you" then
@@ -46,22 +106,17 @@ local function kind(t: Thread): string?
 	return nil
 end
 
-local function session(t: Thread): any
+local function session(t: any): any
 	return {
 		id = t.id,
 		title = t.title,
-		status = kind(t),
+		status = if t.status then kind(t) else nil,
 		-- (ms in the store; the sidebar counts in seconds.)
-		time = math.floor(t.updated / 1000),
+		time = math.floor((t.updated or 0) / 1000),
 		agent = MARK[t.harness_id],
 		branch = if t.branch and t.branch ~= "" then t.branch else nil,
-		created = math.floor(t.updated / 1000),
+		created = math.floor((t.updated or 0) / 1000),
 	}
-end
-
--- Pinned: the store's flag (Dove's), or yours on this device.
-local function pinned(t: Thread): boolean
-	return t.pinned == true or nav.pinned:get()[t.id] == true
 end
 
 -- Each project's tile on a hue of its own, from its name (the same every
@@ -75,47 +130,59 @@ local function hue_of(name: string): string
 	return HUES[h % #HUES + 1]
 end
 
+-- Every project and its threads (the component moves those placed by hand
+-- to Pinned or a section itself); narrowed to one by the project filter.
 local projects = ui.computed(function(): { any }
+	local only = if shared.details.project_filter:get() then shared.project:get() else nil
 	local by: { [string]: any } = {}
 	local out: { any } = {}
 	for _, p in store.projects:get() do
-		local g = { id = p.id, name = p.name, hue = hue_of(p.name), sessions = {} }
-		by[p.id] = g
-		table.insert(out, g)
+		if not only or p.id == only then
+			local g = { id = p.id, name = p.name, hue = hue_of(p.name), sessions = {} }
+			by[p.id] = g
+			table.insert(out, g)
+		end
 	end
 	for _, t in store.threads:get() do
-		if not pinned(t) then
-			local g = by[t.project_id]
-			if not g then
-				g = { id = t.project_id, name = t.project, hue = hue_of(t.project), sessions = {} }
-				by[t.project_id] = g
-				table.insert(out, g)
-			end
+		local g = by[t.project_id]
+		if not g and not only then
+			g = { id = t.project_id, name = t.project, hue = hue_of(t.project), sessions = {} }
+			by[t.project_id] = g
+			table.insert(out, g)
+		end
+		if g then
 			table.insert(g.sessions, session(t))
 		end
 	end
-	return out
-end)
-
-local pinned_list = ui.computed(function(): { any }
-	local out: { any } = {}
-	for _, t in store.threads:get() do
-		if pinned(t) then
-			table.insert(out, session(t))
-		end
+	for _, g in out do
+		g.empty = #g.sessions == 0
 	end
 	return out
 end)
 
--- The way in, as rows under Search.
--- (Plugins add theirs; Constellation and Team are the foot's tools.)
-local PAGES = {}
-local pages = ui.state("sidebar.pages", PAGES)
+-- The archived shelf: read while it shows, again as one is archived.
+local shelf = ui.state("kx.sb.shelf", {} :: { any })
+local function read_shelf()
+	if fixture then
+		return
+	end
+	store.call("kx.archived", nil, {}):after(function(list: any)
+		local out = {}
+		for _, t in list or {} do
+			table.insert(out, session(t))
+		end
+		shelf:set(out)
+	end, function() end)
+end
+ui.effect(function()
+	if shared.details.archived:get() then
+		read_shelf()
+	end
+end)
 
-local profile_name = ui.persist("kx.profile.name", "")
+-- ── Choosing ───────────────────────────────────────────────────────────
 
--- Which thread shows: the open one's id, and choosing one opens it.
-local selected = ui.state("sidebar.selected", nil :: string?)
+local selected = shared.selected
 ui.effect(function()
 	local t = store.thread:get()
 	local id = if t and nav.route:get() == "thread" then t.id else nil
@@ -141,69 +208,309 @@ local function thread_of(id: string): Thread?
 	return nil
 end
 
--- Pinned in the store (every window, and the launcher, agree); an old
--- local pin is cleared as it's flipped.
-local function toggle_pin(id: string)
-	local t = thread_of(id)
-	local on = not (t and pinned(t))
-	if nav.pinned:peek()[id] then
-		nav.toggle_pin(id)
+local function project_of(id: string): any?
+	for _, p in store.projects:peek() do
+		if p.id == id then
+			return p
+		end
 	end
-	if store.fixture == "" then
-		ui.invoke("kx.pin", { id = id, on = on })
-	end
+	return nil
 end
 
-local function archive(id: string)
-	if store.fixture == "" then
+-- ── Places ─────────────────────────────────────────────────────────────
+
+-- `id` moved to `where` (a section's id, "pinned"), or back to its project.
+local function put(id: string, where: string?)
+	local p = table.clone(shared.places:peek())
+	local pinned = {}
+	for _, x in p.pinned or {} do
+		if x ~= id then
+			table.insert(pinned, x)
+		end
+	end
+	local sections = {}
+	for _, s in p.sections or {} do
+		local list = {}
+		for _, x in s.sessions do
+			if x ~= id then
+				table.insert(list, x)
+			end
+		end
+		if s.id == where then
+			table.insert(list, id)
+		end
+		table.insert(sections, { id = s.id, name = s.name, sessions = list })
+	end
+	if where == "pinned" then
+		table.insert(pinned, 1, id)
+	end
+	shared.places:set({ pinned = pinned, sections = sections })
+end
+
+function M.pin(id: string)
+	local p = shared.places:peek()
+	put(id, if table.find(p.pinned or {}, id) then nil else "pinned")
+end
+
+-- ── Acting on a thread ─────────────────────────────────────────────────
+
+local renaming_row = ui.state("kx.sb.renaming_row", nil :: string?)
+local deleting = ui.state("kx.sb.deleting", nil :: string?)
+local delete_open = ui.state("kx.sb.delete_open", false)
+
+function M.archive(id: string)
+	if not fixture then
 		ui.invoke("kx.archive", id)
 	end
+	put(id, nil)
 	if selected:peek() == id then
 		nav.go("home")
 		store.home()
 	end
-	kx.toast { title = "Archived", body = "Its work and history are kept." }
+	kx.toast { title = "Archived", body = "Its work and history are kept. Show archived lists it." }
+	ui.after(400, read_shelf)
+end
+
+function M.rename(id: string)
+	renaming_row:set(id)
+end
+
+local function copy(text: string?, what: string)
+	if text and text ~= "" then
+		ui.clipboard.write(text)
+		kx.toast { title = `Copied {what}` }
+	end
 end
 
 local function menu(id: string): { any }?
 	local t = thread_of(id)
-	local is_pinned = t ~= nil and pinned(t)
+	if not t then
+		return nil
+	end
+	local p = shared.places:peek()
+	local is_pinned = table.find(p.pinned or {}, id) ~= nil
+	local into: { any } = { { heading = "Sections" } }
+	for _, s in p.sections or {} do
+		local here = table.find(s.sessions, id) ~= nil
+		table.insert(into, {
+			label = s.name,
+			icon = "folder",
+			checked = function(): boolean
+				return here
+			end,
+			on_select = function()
+				put(id, if here then nil else s.id)
+			end,
+		})
+	end
+	table.insert(into, { separator = true })
+	table.insert(into, {
+		label = "New section",
+		icon = "plus",
+		on_select = function()
+			local sid = `section-{os.time()}-{math.random(1, 1e6)}`
+			local now = table.clone(shared.places:peek())
+			local sections = table.clone(now.sections or {})
+			table.insert(sections, { id = sid, name = "New section", sessions = {} })
+			now.sections = sections
+			shared.places:set(now)
+			put(id, sid)
+		end,
+	})
+	local project = project_of(t.project_id)
+	local copies: { any } = {}
+	if project and project.path then
+		table.insert(copies, {
+			label = "Path",
+			icon = "folder",
+			on_select = function()
+				copy(project.path, "the path")
+			end,
+		})
+	end
+	table.insert(copies, {
+		label = "Thread id",
+		icon = "tag",
+		on_select = function()
+			copy(id, "the thread's id")
+		end,
+	})
 	return {
-		{
-			label = if is_pinned then "Unpin" else "Pin to the top",
-			icon = "pin",
-			on_click = function()
-				toggle_pin(id)
-			end,
-		},
-		{
-			label = "Open",
-			icon = "arrow-up-right",
-			on_click = function()
-				selected:set(id)
-			end,
-		},
+		{ label = "Rename", icon = "pen", on_select = function()
+			M.rename(id)
+		end },
+		{ label = if is_pinned then "Unpin" else "Pin", icon = "pin", on_select = function()
+			M.pin(id)
+		end },
+		{ label = "Copy", icon = "copy", submenu = copies },
+		{ label = "Move to", icon = "folder-with-files", submenu = into },
 		{ separator = true },
-		{
-			label = "Archive",
-			icon = "archive-minimalistic",
-			on_click = function()
-				archive(id)
+		{ label = "Archive", icon = "archive-minimalistic", on_select = function()
+			M.archive(id)
+		end },
+		{ label = "Delete", icon = "trash-bin-minimalistic", danger = true, on_select = function()
+			deleting:set(id)
+			delete_open:set(true)
+		end },
+	}
+end
+M.session_menu = menu
+
+local removing = ui.state("kx.sb.removing", nil :: string?)
+local remove_open = ui.state("kx.sb.remove_open", false)
+
+local function project_menu(id: string): { any }?
+	local p = project_of(id)
+	if not p then
+		return nil
+	end
+	return {
+		{ label = "New thread here", icon = "pen-new-square", on_select = function()
+			require("@screens/ray").project:set(id)
+			nav.go("home")
+			store.home()
+			nav.focus_ray()
+		end },
+		{ label = "Show in folder", icon = "folder", on_select = function()
+			if p.path then
+				pcall(ui.invoke, "open_url", p.path)
+			end
+		end },
+		{ label = "Copy path", icon = "copy", on_select = function()
+			copy(p.path, "the path")
+		end },
+		{ separator = true },
+		{ label = "Remove from Keplorayx", icon = "close", danger = true, on_select = function()
+			removing:set(id)
+			remove_open:set(true)
+		end },
+	}
+end
+
+local function dialogs(): Node
+	return ui.column {
+		ds.Dialog {
+			open = delete_open,
+			tone = "danger",
+			title = function(): string
+				local id = deleting:get()
+				local t = if id then thread_of(id) else nil
+				return if t then `Delete “{t.title}”?` else "Delete this thread?"
 			end,
+			body = "Its transcript goes for good, and a worktree made for it with it. Archive keeps them instead.",
+			confirm = {
+				label = "Delete",
+				on_click = function()
+					local id = deleting:peek()
+					if id then
+						put(id, nil)
+						if not fixture then
+							ui.invoke("kx.delete", id)
+						end
+						if selected:peek() == id then
+							nav.go("home")
+							store.home()
+						end
+					end
+				end,
+			},
+		},
+		ds.Dialog {
+			open = remove_open,
+			tone = "danger",
+			title = function(): string
+				local id = removing:get()
+				local p = if id then project_of(id) else nil
+				return if p then `Remove {p.name} from Keplorayx?` else "Remove this project?"
+			end,
+			body = "Its folder and its threads' files stay where they are; it leaves the sidebar. Add it again any time.",
+			confirm = {
+				label = "Remove",
+				on_click = function()
+					local id = removing:peek()
+					if id and not fixture then
+						ui.invoke("kx.remove_project", id)
+					end
+				end,
+			},
 		},
 	}
 end
 
-function M.view(): Node
+-- ── Jump keys ──────────────────────────────────────────────────────────
+
+-- The rows in order, as the list shows them (for Ctrl+1–9).
+M.order = ui.state("kx.sb.order", {} :: { string })
+-- Ctrl held a moment: each row's number shows.
+M.jump_hints = ui.state("kx.sb.jump_hints", false)
+local held = ui.modifiers
+ui.effect(function()
+	local on = held.control:get() and not held.alt:get() and not held.shift:get()
+	if not on then
+		M.jump_hints:set(false)
+		return
+	end
+	ui.after(400, function()
+		if held.control:peek() then
+			M.jump_hints:set(true)
+		end
+	end)
+end)
+function M.jump(n: number)
+	local id = M.order:peek()[n]
+	if id then
+		selected:set(id)
+	end
+end
+
+-- ── The project filter (Show › Project filter) ─────────────────────────
+
+local function project_filter(): Node
+	return ui.show(
+		shared.details.project_filter,
+		ui.row {
+			w_full = true,
+			px = "$space.2",
+			pb = "$space.1",
+			ds.Select {
+				value = ui.computed(function(): string
+					return shared.project:get() or "::all"
+				end),
+				label = "Project",
+				size = "sm",
+				w_full = true,
+				options = function(): { any }
+					local out: { any } = { { value = "::all", label = "All projects", icon = "folder-with-files" } }
+					for _, p in store.projects:get() do
+						table.insert(out, { value = p.id, label = p.name })
+					end
+					return out
+				end,
+				on_change = function(v: string)
+					shared.project:set(if v == "::all" then nil else v)
+				end,
+			},
+		}
+	)
+end
+
+-- ── The sidebar ────────────────────────────────────────────────────────
+
+local profile_name = ui.persist("kx.profile.name", "")
+local pages = ui.state("sidebar.pages", {} :: { any })
+
+local function bar(island: boolean): Node
 	return Sidebar {
-		compact = nav.sidebar_compact,
+		compact = shared.compact,
+		organize = shared.organize :: any,
+		organize_order = shared.organize_order,
+		sort = shared.sort :: any,
+		details = shared.details :: any,
+		places = shared.places,
+		width = shared.width,
 		collapsed = nav.sidebar_collapsed,
-		width = nav.sidebar_width,
-		organize = nav.sidebar_organize,
-		details = nav.sidebar_details :: any,
-		folded = nav.folded,
+		island = island,
 		selected = selected,
-		pinned = pinned_list,
 		projects = projects,
 		user = function()
 			local n = profile_name:get()
@@ -236,15 +543,34 @@ function M.view(): Node
 			nav.go("settings")
 		end,
 		menu = menu,
-		on_archive = archive,
+		project_menu = project_menu,
+		on_archive = M.archive,
+		archived = shelf,
+		on_unarchive = function(id: string)
+			if not fixture then
+				ui.invoke("kx.unarchive", id)
+			end
+			ui.after(400, read_shelf)
+		end,
 		on_rename = function(id: string, title: string)
-			if store.fixture == "" then
-				ui.invoke("kx.rename", { id = id, title = title })
+			if not fixture then
+				ui.invoke("kx.rename", { id = id, title = string.sub(title, 1, 200) })
 			end
 		end,
-		-- Constellation and Team: quiet icons at its foot, beside Settings,
-		-- so its top is only New thread and Search.
-		tools = {
+		renaming_session = if island then nil else renaming_row,
+		narrowed = function(): boolean
+			return shared.details.project_filter:get() and shared.project:get() ~= nil
+		end,
+		notice = if island then nil else project_filter(),
+		offset = if island then nil else shared.offset,
+		folded = if island then nil else shared.folded,
+		expanded = if island then nil else shared.expanded,
+		order = if island then nil else M.order,
+		jump_hints = if island then nil else function(): boolean
+			return M.jump_hints:get()
+		end,
+		-- Constellation and Team: quiet icons at its foot, beside Settings.
+		tools = if island then nil else {
 			{
 				icon = "constellation",
 				label = "Constellation",
@@ -267,6 +593,22 @@ function M.view(): Node
 			},
 		},
 	}
+end
+
+function M.view(): Node
+	return ui.div {
+
+		h_full = true,
+		shrink = 0,
+		relative = true,
+		bar(false),
+		dialogs(),
+	}
+end
+
+-- Folded away (Ctrl+B): its rail, an island at the window's bottom left.
+function M.rail(): Node
+	return bar(true)
 end
 
 return M

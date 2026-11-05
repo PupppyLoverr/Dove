@@ -172,6 +172,76 @@ pub fn install(cx: &mut WindowContext, host: &ScriptHost, engine: Arc<Engine>) {
         }
         spawn_refresh(&tasks, &s);
     });
+    // Archived threads (the sidebar's shelf), newest first; brought back.
+    let s = state.clone();
+    host.async_action("kx.archived", move |_| {
+        let engine = s.borrow().engine.clone();
+        async move {
+            let list = off_thread(move || {
+                let names: HashMap<_, _> =
+                    engine.store.projects().unwrap_or_default().into_iter().map(|p| (p.id, p.name)).collect();
+                engine
+                    .store
+                    .archived_tasks(200)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|t| {
+                        serde_json::json!({
+                            "id": t.id.0.to_string(),
+                            "title": t.title,
+                            "project": names.get(&t.project_id).cloned().unwrap_or_default(),
+                            "project_id": t.project_id.0.to_string(),
+                            "harness_id": t.harness.id(),
+                            "updated": t.updated_at as f64,
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .await
+            .unwrap_or_default();
+            Ok::<_, String>(crate::panels::to_value(&serde_json::Value::Array(list)))
+        }
+    });
+    let (s, tasks) = (state.clone(), cx.tasks.clone());
+    host.action("kx.unarchive", move |id| {
+        let Some(id) = parse_task(&id) else { return };
+        if let Err(e) = s.borrow().engine.store.set_status(id, dove_proto::TaskStatus::Done) {
+            tracing::warn!("unarchive: {e:#}");
+        }
+        spawn_refresh(&tasks, &s);
+    });
+    // Deleted for good: its transcript and its worktree, as Dove's Delete.
+    let (s, tasks) = (state.clone(), cx.tasks.clone());
+    host.action("kx.delete", move |id| {
+        let Some(id) = parse_task(&id) else { return };
+        let engine = s.borrow().engine.clone();
+        engine.interrupt(id);
+        let task = engine.store.task(id).ok().flatten();
+        if let Some(task) = task {
+            let project = engine.store.projects().ok().and_then(|ps| ps.into_iter().find(|p| p.id == task.project_id));
+            if let Err(e) = engine.delete_task(&task, project.as_ref()) {
+                tracing::warn!("delete: {e:#}");
+            }
+        }
+        {
+            let mut st = s.borrow_mut();
+            if st.open == Some(id) {
+                st.open = None;
+                st.thread.set(Value::Nil);
+            }
+        }
+        spawn_refresh(&tasks, &s);
+    });
+    // A project taken off the list (its folder and threads stay on disk).
+    let (s, tasks) = (state.clone(), cx.tasks.clone());
+    host.action("kx.remove_project", move |id| {
+        let Value::Str(id) = id else { return };
+        let Ok(uuid) = id.parse() else { return };
+        if let Err(e) = s.borrow().engine.store.remove_project(dove_proto::ProjectId(uuid)) {
+            tracing::warn!("remove project: {e:#}");
+        }
+        spawn_refresh(&tasks, &s);
+    });
     let (s, tasks) = (state.clone(), cx.tasks.clone());
     host.action("kx.rename", move |req| {
         let (Some(Value::Str(id)), Some(Value::Str(title))) = (req.field("id"), req.field("title")) else { return };

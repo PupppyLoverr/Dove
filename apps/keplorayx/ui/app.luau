@@ -38,6 +38,17 @@ ui.command {
 		nav.focus_ray()
 	end,
 }
+-- Ctrl+1–9: the sidebar's rows, in order (hold Ctrl to see their numbers).
+for n = 1, 9 do
+	ui.command {
+		id = `jump-{n}`,
+		title = `Open thread {n} in the sidebar`,
+		key = `ctrl+{n}`,
+		run = function()
+			sidebar.jump(n)
+		end,
+	}
+end
 ui.command {
 	id = "search",
 	title = "Search and commands",
@@ -419,6 +430,14 @@ return ui.row {
 		exit = { opacity = { 1, 0 }, x = { 0, 16 }, duration = 120 },
 	}),
 	ui.show(dragging, drop_veil),
+	-- The sidebar folded away: its rail, at the window's bottom left.
+	ui.show(nav.sidebar_collapsed, ui.div {
+		absolute = true,
+		left = 8,
+		bottom = 8,
+		z = 15,
+		sidebar.rail(),
+	}),
 	title_bar,
 	kx.Toasts {},
 	require("@screens/palette").view(),
