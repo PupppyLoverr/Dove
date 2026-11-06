@@ -22,7 +22,12 @@ ui.effect(function()
 	done = true
 	local here = s.here
 	local known = s.projects or {}
-	ui.call("kx.import.projects", nil):after(function(list: any)
+	-- (Only the main window has it: setup's window asks nothing.)
+	local ok, asked = pcall(ui.call, "kx.import.projects", nil)
+	if not ok then
+		return
+	end
+	asked:after(function(list: any)
 		for _, p in list or {} do
 			local there = false
 			for _, k in known do

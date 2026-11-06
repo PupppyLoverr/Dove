@@ -2447,9 +2447,9 @@
     "signin": {
       "title": "Welcome\nto Keplorayx",
       "lines": {
-        "phone": "Pick up any chat on your phone.",
-        "machines": "Run agents on any of your machines.",
-        "cloud": "Hand a chat to Keplorayx Cloud and walk away."
+        "phone": "Every coding agent on this computer, in one place.",
+        "machines": "The island at the top of your screen: your agents, music and what waits on you.",
+        "cloud": "Spotlight on Alt+Space: search, ask and launch anything."
       },
       "waiting": "Finish signing in in your browser.",
       "failed": "Couldn't sign in. Nothing was changed.",

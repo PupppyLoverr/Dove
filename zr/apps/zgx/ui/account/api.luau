@@ -125,13 +125,15 @@ end
 
 -- Where a card lives, as shown (`zeron.sh/c/mara`) and as shared (the
 -- whole link; staging's own while setup signs into staging).
+-- (Keplorayx: cards are made on this computer and have no page of their
+-- own on a server, so what's shown and shared is the name.)
 function M.address(name: string): string
-	return `zeron.sh/c/{name}`
+	return `@{name} on Keplorayx`
 end
 
 function M.link(name: string): string
-	local host = if auth.env:peek() == "staging" then "staging.zeron.sh" else "zeron.sh"
-	return `https://{host}/c/{name}`
+	local _ = auth
+	return `@{name} on Keplorayx`
 end
 
 -- "2026-06-30" as a card prints it: "Jun 30, 2026" (in the locale shown,

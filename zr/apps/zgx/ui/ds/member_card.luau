@@ -566,7 +566,7 @@ return ui.component(function(props: Props): Node
 			ui.row {
 				items = "center",
 				ui.text {
-					"zeron",
+					"keplorayx",
 					font = "$font.sans",
 					weight = "$font.weight.bold",
 					text_size = "$zeron.card.size.mark",

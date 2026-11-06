@@ -207,6 +207,22 @@ local function row(key: string, props: any): Node
 	return search.anchor(key, ds.Settings.Row(props))
 end
 
+-- A Keplorayx switch (src/kx/start.rs `kx.flags`): set, it tells `action`.
+local kx_flags = ui.shared("kx.flags", {} :: any)
+local function kx_switch(key: string, label: string, description: string, action: string): Node
+	local on = ui.state(`kx.flag.{key}`, (kx_flags:peek() or {})[key] ~= false)
+	local first = true
+	ui.effect(function()
+		local v = on:get()
+		if first then
+			first = false
+			return
+		end
+		pcall(ui.invoke, action, v)
+	end)
+	return row(`kx_{key}`, { label = label, description = description, control = ds.Switch { value = on, label = label } })
+end
+
 function M.view(): Node
 	visits.once("general", function()
 		load_all()
@@ -254,6 +270,35 @@ function M.view(): Node
 					label = ui.t("settings.general.close_panel.label"),
 					description = ui.t("settings.general.close_panel.description"),
 					control = ds.Switch { value = prefs.close_panel_with_last_tab, label = ui.t("settings.general.close_panel.label") },
+				}),
+			},
+		},
+		-- Keplorayx's own: the island, the tray, the keys, starting with
+		-- Windows (src/kx/start.rs).
+		ds.Settings.Section {
+			title = "Keplorayx",
+			ds.Settings.Group {
+				kx_switch("notch", "The island", "A pill at the top of the screen: your agents, music and what waits on you, shown as you reach for it.", "kx.notch_visible"),
+				kx_switch("keep_in_tray", "Keep running in the tray", "Closing the window leaves your agents working and the island where it is.", "kx.keep_in_tray"),
+				kx_switch("global_keys", "Keys from any app", "Alt+Space opens Spotlight; Ctrl+Alt+A and Ctrl+Alt+D allow or deny. Applies at the next launch.", "kx.global_keys"),
+				row("kx_autostart", {
+					label = "Start with Windows",
+					description = "Keplorayx starts in the tray as you sign in, the window hidden until you open it.",
+					control = ds.Switch {
+						value = (function()
+							local shared = ui.shared("kx.autostart", false)
+							local on = ui.state("kx.autostart.on", shared:peek() == true)
+							ui.effect(function()
+								local v = on:get()
+								if v ~= (shared:peek() == true) then
+									pcall(ui.invoke, "kx.autostart", v)
+									shared:set(v)
+								end
+							end)
+							return on
+						end)(),
+						label = "Start with Windows",
+					},
 				}),
 			},
 		},

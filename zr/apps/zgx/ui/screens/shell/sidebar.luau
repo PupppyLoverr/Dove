@@ -764,7 +764,8 @@ function star(): Node
 	end
 	return ui.show(
 		function(): boolean
-			return not starred:get()
+			-- (Keplorayx: Zeron's own repository's banner, never shown.)
+			return false and not starred:get()
 		end,
 		-- A chip of the accent, a row's corner: its × as far from the chip's
 		-- edge at the end as from its top and foot, concentric.

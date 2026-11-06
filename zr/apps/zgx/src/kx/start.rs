@@ -62,6 +62,26 @@ pub fn start(cx: &mut WindowContext, host: &ScriptHost) {
     crate::kx::import::install(host);
     host.shared("kx.autostart", platform::autostart::on());
     host.action("kx.autostart", |on| platform::autostart::set(matches!(on, Value::Bool(true))));
+    // Settings › General's Keplorayx switches: as they stand, and each set.
+    let flags = host.shared(
+        "kx.flags",
+        Value::record([
+            ("notch", Value::from(flag("notch", true))),
+            ("keep_in_tray", Value::from(flag("keep_in_tray", true))),
+            ("global_keys", Value::from(flag("global_keys", true))),
+        ]),
+    );
+    for key in ["keep_in_tray", "global_keys"] {
+        let flags = flags.clone();
+        host.action(&format!("kx.{key}"), move |on| {
+            set_flag(key, matches!(on, Value::Bool(true)));
+            flags.set(Value::record([
+                ("notch", Value::from(flag("notch", true))),
+                ("keep_in_tray", Value::from(flag("keep_in_tray", true))),
+                ("global_keys", Value::from(flag("global_keys", true))),
+            ]));
+        });
+    }
 
     if STARTED.with(|s| s.replace(true)) {
         return;
