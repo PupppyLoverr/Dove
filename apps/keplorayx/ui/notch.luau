@@ -26,6 +26,9 @@ local kx = require("@kx")
 kx.setup()
 
 local store = require("@kx/store")
+-- A thread, read in the island as in the window (its transcript, compact).
+local Transcript = require("@ds/transcript").Transcript
+local conversation = require("@screens/conversation")
 
 type Waiting = { thread_id: string, title: string, harness: string, harness_id: string, request_id: string, tool: string, summary: string }
 type Now = { hour: number, minute: number, weekday: string, day: number, month: string }
@@ -161,6 +164,14 @@ end)
 -- Expanded, and which tab.
 local expanded = ui.state("notch.expanded", fixture and (store :: any).fixture_data.expanded == true)
 local tab = ui.state("notch.tab", "home")
+-- A thread opened in the island (its own, apart from the window's): read
+-- it, answer what it asks, write to it.
+local chat = ui.state("notch.chat", nil :: string?)
+local function open_chat(id: string)
+	store.open(id)
+	chat:set(id)
+	expanded:set(true)
+end
 -- (Away, it folds back.)
 ui.effect(function()
 	if not near:get() and not fixture then
@@ -398,8 +409,8 @@ local function compact(lead: Node, middle: Node?, trail: Node): Node
 	return ui.row {
 		w_full = true,
 		h_full = true,
-		px = 14,
-		gap = "$space.3",
+		px = 12,
+		gap = "$space.2",
 		items = "center",
 		lead,
 		ui.row { grow = 1, min_w = 0, justify = "center", items = "center", middle },
@@ -446,7 +457,7 @@ local slim_kind = ui.computed(function(): string
 	return if m and m.playing then "music" else "resting"
 end)
 
-local slim_music = compact(cover(22, 6), white(song("title"), "$font.size.xs"), waveform(4, 14))
+local slim_music = compact(cover(20, 5), white(song("title"), "$font.size.xs"), waveform(4, 12))
 
 local function slim(): Node
 	return ui.presence(slim_kind, function(kind: string): Node
@@ -599,7 +610,7 @@ local function music_row(big: boolean): Node
 			gap = "$space.4",
 			items = "center",
 			w_full = true,
-			cover(64, 14),
+			cover(56, 12),
 			ui.column {
 				grow = 1,
 				min_w = 0,
@@ -607,7 +618,7 @@ local function music_row(big: boolean): Node
 				white(song("title"), "$font.size.md", "$font.weight.bold"),
 				ui.text { song("by"), literal = true, truncate = true, text_size = "$font.size.sm", color = "#ffffff8c" },
 			},
-			waveform(6, 30, 4),
+			waveform(6, 26, 4),
 		},
 		progress(),
 		ui.row {
@@ -615,9 +626,9 @@ local function music_row(big: boolean): Node
 			items = "center",
 			justify = "center",
 			w_full = true,
-			key("media-rewind", "previous", "Previous", 32),
-			play_key(38),
-			key("media-forward", "next", "Next", 32),
+			key("media-rewind", "previous", "Previous", 28),
+			play_key(34),
+			key("media-forward", "next", "Next", 28),
 		},
 	}
 end
@@ -697,11 +708,11 @@ end
 -- A tile on the island: a rounded well of light on the black.
 local function tile(props: { [any]: any }): Node
 	local p: { [any]: any } = {
-		rounded = 22,
-		bg = "#ffffff12",
+		rounded = 20,
+		bg = "#ffffff10",
 		border = 1,
-		border_color = "#ffffff1a",
-		inset_shadow = { x = 0, y = 1, blur = 0, spread = 0, color = "#ffffff12" },
+		border_color = "#ffffff17",
+		inset_shadow = { x = 0, y = 1, blur = 0, spread = 0, color = "#ffffff14" },
 		p = 14,
 		gap = "$space.2",
 	}
@@ -738,18 +749,34 @@ local function agent_line(t: store.Thread): Node
 	end
 	return ui.button {
 		w_full = true,
-		h = 34,
-		gap = "$space.2",
+		h = 44,
+		gap = "$space.3",
 		items = "center",
-		px = 6,
-		rounded = 12,
+		px = 8,
+		rounded = 14,
 		bg = "#00000000",
 		hover = { bg = "#ffffff0f" },
+		tooltip = "Open the chat",
 		on_click = function()
-			open_thread(t.id)
+			open_chat(t.id)
 		end,
-		kx.AgentMark { agent = t.harness_id, size = 16 },
-		ui.text { t.title, literal = true, truncate = true, grow = 1, min_w = 0, text_size = "$font.size.sm", color = "#ffffffe6" },
+		kx.AgentMark { agent = t.harness_id, size = 18 },
+		ui.column {
+			grow = 1,
+			min_w = 0,
+			gap = 0,
+			ui.text { t.title, literal = true, truncate = true, text_size = "$font.size.sm", weight = "$font.weight.medium", color = "#ffffffeb" },
+			ui.text {
+				if waits then `{waits.harness} wants to run {waits.tool}`
+					elseif t.status == "running" then `{t.harness} is working…`
+					elseif t.status == "failed" then "Stopped with an error"
+					else `{t.harness} · done`,
+				literal = true,
+				truncate = true,
+				text_size = ui.raw(11, "a row's second line"),
+				color = if waits then "$kx.attention" else "#ffffff80",
+			},
+		},
 		if waits
 			then ui.row {
 				gap = 4,
@@ -817,91 +844,310 @@ local function ask_pill(): Node
 	}
 end
 
+local has_media = ui.computed(function(): boolean
+	return media:get() ~= nil
+end)
+
+-- What's playing, as a live activity.
+local function now_playing(): Node
+	return tile {
+		w_full = true,
+		h = 62,
+		p = 10,
+		ui.row {
+			w_full = true,
+			h_full = true,
+			gap = "$space.3",
+			items = "center",
+			cover(42, 10),
+			ui.column {
+				grow = 1,
+				min_w = 0,
+				gap = 1,
+				white(song("title"), "$font.size.sm", "$font.weight.semibold"),
+				grey(song("by")),
+			},
+			waveform(5, 18),
+			ui.row {
+				gap = 0,
+				items = "center",
+				key("media-rewind", "previous", "Previous", 13),
+				play_key(16),
+				key("media-forward", "next", "Next", 13),
+			},
+		},
+	}
+end
+
 local function home(): Node
 	return ui.column {
 		gap = 10,
 		w_full = true,
+		-- The time, large, and how things stand.
 		ui.row {
-			gap = 10,
 			w_full = true,
-			h = 132,
-			-- The time.
-			tile {
-				w = 196,
-				h_full = true,
-				justify = "between",
+			items = "end",
+			gap = "$space.3",
+			px = 4,
+			h = 46,
+			ui.text { clock, literal = true, font = "$kx.display", text_size = ui.raw(40, "the island's clock"), color = "#ffffff", tabular = true },
+			ui.column {
+				pb = 5,
+				gap = 0,
 				label(function()
 					return now:get().weekday
 				end),
-				ui.text { clock, literal = true, font = "$kx.display", text_size = ui.raw(52, "the island's clock"), color = "#ffffff", tabular = true },
 				grey(function()
 					local t = now:get()
 					return `{t.day} {t.month}`
 				end, "$font.size.sm"),
 			},
-			-- What's playing.
-			tile {
-				grow = 1,
-				min_w = 0,
-				h_full = true,
-				justify = "between",
-				ui.row {
-					w_full = true,
-					gap = "$space.3",
-					items = "center",
-					cover(48, 12),
-					ui.column {
-						grow = 1,
-						min_w = 0,
-						gap = 1,
-						white(song("title"), "$font.size.sm", "$font.weight.semibold"),
-						grey(song("by")),
-					},
-					waveform(5, 20),
-				},
-				ui.row {
-					w_full = true,
-					justify = "center",
-					gap = 22,
-					items = "center",
-					key("media-rewind", "previous", "Previous", 18),
-					play_key(22),
-					key("media-forward", "next", "Next", 18),
-				},
-			},
-		},
-		-- Your agents.
-		tile {
-			w_full = true,
-			gap = 4,
-			py = 10,
+			ui.row { grow = 1 },
 			ui.row {
-				w_full = true,
-				justify = "between",
+				pb = 7,
+				gap = 6,
 				items = "center",
-				px = 6,
-				label("Agents"),
+				stars(),
 				grey(function()
 					local n = #working:get()
-					return if n == 0 then "None working" elseif n == 1 then "1 working" else `{n} working`
+					return if n == 0 then "All quiet" elseif n == 1 then "1 working" else `{n} working`
 				end),
 			},
+		},
+		ui.show(has_media, now_playing()),
+		-- Your agents, each a live activity: click one to talk to it.
+		tile {
+			w_full = true,
+			gap = 0,
+			p = 5,
 			ui.show(function()
 				return #home_threads:get() > 0
-			end, ui.each(home_threads, agent_line, {
-				key = function(t: store.Thread)
-					return `{t.id}:{t.status}`
-				end,
-				gap = 0,
-			}), ui.row {
+			end, ui.column {
 				w_full = true,
-				h = 34,
-				px = 6,
+				ui.each(home_threads, agent_line, {
+					key = function(t: store.Thread)
+						return `{t.id}:{t.status}`
+					end,
+					gap = 0,
+				}),
+			}, ui.row {
+				w_full = true,
+				h = 44,
+				px = 10,
 				items = "center",
-				grey("Nothing yet. Ask one below.", "$font.size.sm"),
+				grey("No agents yet. Ask one below.", "$font.size.sm"),
 			}),
 		},
 		ask_pill(),
+	}
+end
+
+-- ── The chat ───────────────────────────────────────────────────────────
+
+local reply_text = ui.state("notch.reply", "")
+local reply_busy = ui.state("notch.reply.busy", false)
+local function reply()
+	local text = reply_text:peek()
+	if string.match(text, "^%s*$") or reply_busy:peek() then
+		return
+	end
+	reply_busy:set(true)
+	store.send(text):after(function()
+		reply_text:set("")
+		reply_busy:set(false)
+	end, function(why: any)
+		reply_busy:set(false)
+		kx.toast { title = "Couldn't send", body = tostring(if type(why) == "table" then why.message else why), kind = "error" }
+	end)
+end
+
+local function chat_thread(): store.Thread?
+	local id = chat:get()
+	for _, t in store.threads:get() do
+		if t.id == id then
+			return t
+		end
+	end
+	return nil
+end
+
+local function round_button(icon: string, name: string, run: () -> (), strong: boolean?): Node
+	return ui.button {
+		w = 30,
+		h = 30,
+		rounded = "$radius.full",
+		items = "center",
+		justify = "center",
+		bg = if strong then "#ffffff" else "#ffffff14",
+		hover = { bg = if strong then "#ffffffd9" else "#ffffff26" },
+		active = { scale = 0.92 },
+		color = if strong then "#000000" else "#ffffffcc",
+		label = name,
+		tooltip = name,
+		on_click = run,
+		kx.Icon { name = icon, size = 14 },
+	}
+end
+
+local function chat_view(): Node
+	local running = ui.computed(function(): boolean
+		local t = store.thread:get()
+		return t ~= nil and t.running
+	end)
+	return ui.column {
+		w_full = true,
+		h_full = true,
+		gap = 10,
+		-- Back, the agent and its thread, and the thread in the window.
+		ui.row {
+			w_full = true,
+			gap = "$space.3",
+			items = "center",
+			round_button("alt-arrow-left", "Back", function()
+				chat:set(nil)
+			end),
+			ui.presence(function(): string
+				local t = chat_thread()
+				return if t then t.harness_id else ""
+			end, function(agent: string): Node
+				return kx.AgentMark { agent = agent, size = 20 }
+			end),
+			ui.column {
+				grow = 1,
+				min_w = 0,
+				gap = 0,
+				white(function()
+					local t = chat_thread()
+					return if t then t.title else ""
+				end, "$font.size.sm", "$font.weight.semibold"),
+				grey(function()
+					local o = store.thread:get()
+					local t = chat_thread()
+					if o and o.running then
+						return if o.status ~= "" then o.status else "Working…"
+					end
+					return if t then t.harness else ""
+				end),
+			},
+			ui.show(running, kx.Spinner { size = 14 }),
+			round_button("arrow-up-right", "Open in Keplorayx", function()
+				open_thread(chat:peek())
+			end),
+		},
+		-- The conversation.
+		ui.column {
+			w_full = true,
+			grow = 1,
+			min_h = 0,
+			rounded = 20,
+			bg = "#ffffff0a",
+			border = 1,
+			border_color = "#ffffff12",
+			overflow = "hidden",
+			-- (The window's transcript, read at the island's size.)
+			zoom = 0.84,
+			ui.component(function(): Node
+				return Transcript {
+					messages = conversation.messages,
+					draft = conversation.draft,
+					compact = function(): boolean
+						return true
+					end,
+					measure = function(): number
+						return 500
+					end,
+				}
+			end)({}),
+		},
+		-- What it waits on, answered here.
+		ui.show(function()
+			return store.approval:get() ~= nil
+		end, ui.row {
+			w_full = true,
+			gap = "$space.2",
+			items = "center",
+			px = 12,
+			py = 8,
+			rounded = 18,
+			bg = "#ffb4541f",
+			border = 1,
+			border_color = "#ffb45440",
+			ui.div { w = 7, h = 7, rounded = "$radius.full", bg = "$kx.attention", opacity = glow, shrink = 0 },
+			ui.text {
+				function()
+					local a = store.approval:get()
+					return if a then `Wants to run {a.tool}{if a.summary ~= "" then ": " .. a.summary else ""}` else ""
+				end,
+				literal = true,
+				truncate = true,
+				grow = 1,
+				min_w = 0,
+				text_size = "$font.size.xs",
+				color = "#ffffffe6",
+			},
+			pill("Deny", false, function()
+				local a = store.approval:peek()
+				if a then
+					store.decide(a.request_id, "deny")
+				end
+			end),
+			pill("Allow", true, function()
+				local a = store.approval:peek()
+				if a then
+					store.decide(a.request_id, "allow_once")
+				end
+			end),
+		}),
+		-- Your reply (while it works, it goes after; stop is beside it).
+		ui.row {
+			w_full = true,
+			h = 40,
+			gap = "$space.2",
+			items = "center",
+			pl = 14,
+			pr = 4,
+			rounded = "$radius.full",
+			bg = "#ffffff14",
+			border = 1,
+			border_color = "#ffffff14",
+			ui.input {
+				value = reply_text,
+				placeholder = "Reply…",
+				placeholder_color = "#ffffff66",
+				label = "Reply",
+				grow = 1,
+				min_w = 0,
+				h = 32,
+				bg = "#00000000",
+				border = 0,
+				color = "#ffffffeb",
+				text_size = "$font.size.sm",
+				on_key = function(e: any): boolean?
+					if e.key == "Enter" and not e.shift then
+						reply()
+						return true
+					end
+					return false
+				end,
+			},
+			ui.show(running, round_button("stop", "Stop", function()
+				store.interrupt()
+			end)),
+			ui.button {
+				w = 32,
+				h = 32,
+				rounded = "$radius.full",
+				items = "center",
+				justify = "center",
+				bg = function()
+					return if string.match(reply_text:get(), "^%s*$") then "#ffffff26" else "#ffffff"
+				end,
+				color = "#000000",
+				label = "Send",
+				on_click = reply,
+				ui.show(reply_busy, kx.Spinner { size = 12 }, kx.Icon { name = "arrow-up", size = 15 }),
+			},
+		},
 	}
 end
 
@@ -1123,7 +1369,7 @@ local function alerts_page(): Node
 							bg = "#00000000",
 							hover = { bg = "#ffffff0f" },
 							on_click = function()
-								open_thread(a.thread)
+								open_chat(a.thread)
 							end,
 							kx.StatusIcon { kind = if a.kind == "failed" then "failed" elseif a.kind == "asked" then "approval" else "done", size = 14 },
 							ui.text { a.title, literal = true, truncate = true, grow = 1, min_w = 0, text_size = "$font.size.sm", color = "#ffffffe6" },
@@ -1161,13 +1407,13 @@ local TABS = {
 }
 
 local function tabs(): Node
-	local row: { [any]: any } = { gap = 2, items = "center", p = 3, rounded = "$radius.full", bg = "#ffffff12" }
+	local row: { [any]: any } = { gap = 1, items = "center", p = 3, rounded = "$radius.full", bg = "#ffffff12", border = 1, border_color = "#ffffff0f" }
 	for _, t in TABS do
 		table.insert(
 			row,
 			ui.button {
-				w = 28,
-				h = 28,
+				w = 26,
+				h = 26,
 				items = "center",
 				justify = "center",
 				rounded = "$radius.full",
@@ -1183,7 +1429,7 @@ local function tabs(): Node
 				on_click = function()
 					tab:set(t.id)
 				end,
-				kx.Icon { name = t.icon, size = 14 },
+				kx.Icon { name = t.icon, size = 13 },
 			}
 		)
 	end
@@ -1246,83 +1492,90 @@ local function page(id: string): Node
 end
 
 local function expanded_view(): Node
-	return ui.column {
+	return ui.presence(function(): string
+		return if chat:get() then "chat" else "tabs"
+	end, function(which: string): Node
+		if which == "chat" then
+			return ui.column { w_full = true, h_full = true, px = 14, pt = 12, pb = 14, chat_view() }
+		end
+		return ui.column {
+			w_full = true,
+			h_full = true,
+			px = 14,
+			pt = 12,
+			pb = 14,
+			gap = 12,
+			ui.row {
+				w_full = true,
+				justify = "between",
+				items = "center",
+				tabs(),
+				round_button("arrow-up-right", "Open Keplorayx", function()
+					open_thread(nil)
+				end),
+			},
+			ui.column {
+				w_full = true,
+				grow = 1,
+				min_h = 0,
+				ui.presence(tab, page, {
+					w_full = true,
+					h_full = true,
+					enter = { opacity = { 0, 1 }, y = { 6, 0 }, duration = 200 },
+					exit = { opacity = 0, duration = 70 },
+					mode = "wait",
+				}),
+			},
+		}
+	end, {
 		w_full = true,
 		h_full = true,
-		px = 20,
-		pt = 14,
-		pb = 18,
-		gap = "$space.4",
-		ui.row {
-			w_full = true,
-			justify = "between",
-			items = "center",
-			tabs(),
-			ui.button {
-				w = 30,
-				h = 30,
-				rounded = "$radius.full",
-				items = "center",
-				justify = "center",
-				bg = "#ffffff12",
-				hover = { bg = "#ffffff24" },
-				color = "#ffffffcc",
-				label = "Open Keplorayx",
-				tooltip = "Open Keplorayx",
-				on_click = function()
-					open_thread(nil)
-				end,
-				kx.Icon { name = "arrow-up-right", size = 14 },
-			},
-		},
-		ui.column {
-			w_full = true,
-			grow = 1,
-			min_h = 0,
-			ui.presence(tab, page, {
-				w_full = true,
-				h_full = true,
-				enter = { opacity = { 0, 1 }, y = { 6, 0 }, duration = 200 },
-				exit = { opacity = 0, duration = 70 },
-				mode = "wait",
-			}),
-		},
-	}
+		enter = { opacity = { 0, 1 }, x = { 10, 0 }, duration = 220 },
+		exit = { opacity = 0, duration = 70 },
+		mode = "wait",
+	})
 end
 
 -- ── The island ─────────────────────────────────────────────────────────
 
-local function shape_of(kind: string, page: string, slim_as: string): Shape
+local function shape_of(kind: string, page: string, slim_as: string, talking: boolean, rows: number, playing: boolean): Shape
 	if kind == "hidden" then
 		-- While something waits, a warm sliver at the edge; else the pill
 		-- waits above it, out of sight, to drop in from there.
 		return if first:peek()
-			then { w = 150, h = 5, r = 2.5, y = 0, interactive = false }
-			else { w = 220, h = 36, r = 18, y = -48, interactive = false }
+			then { w = 140, h = 5, r = 2.5, y = 0, interactive = false }
+			else { w = 180, h = 32, r = 16, y = -44, interactive = false }
 	elseif kind == "slim" then
 		return if slim_as == "waiting"
-			then { w = 500, h = 48, r = 24, y = FLOAT, interactive = true }
-			else { w = 360, h = 38, r = 19, y = FLOAT, interactive = true }
+			then { w = 430, h = 44, r = 22, y = FLOAT, interactive = true }
+			else { w = 300, h = 34, r = 17, y = FLOAT, interactive = true }
 	elseif kind == "alert" then
-		return { w = 520, h = 72, r = 30, y = FLOAT, interactive = true }
+		return { w = 440, h = 64, r = 28, y = FLOAT, interactive = true }
 	elseif kind == "flash" then
-		return { w = 400, h = 46, r = 23, y = FLOAT, interactive = true }
+		return { w = 340, h = 40, r = 20, y = FLOAT, interactive = true }
+	end
+	if talking then
+		return { w = 480, h = 440, r = 34, y = FLOAT, interactive = true }
+	end
+	if page == "home" then
+		-- As tall as what it holds: the time, music if it plays, the agents.
+		local h = 64 + 56 + (if playing then 72 else 0) + math.max(1, rows) * 44 + 10 + 10 + 40
+		return { w = 460, h = h, r = 34, y = FLOAT, interactive = true }
 	end
 	local SHAPES: { [string]: { number } } = {
-		music = { 470, 272 },
-		home = { 580, 414 },
-		agents = { 520, 330 },
-		tray = { 520, 268 },
-		alerts = { 520, 330 },
-		notes = { 480, 290 },
-		timer = { 440, 270 },
+		music = { 400, 236 },
+		agents = { 440, 320 },
+		tray = { 440, 236 },
+		alerts = { 440, 300 },
+		notes = { 400, 250 },
+		timer = { 360, 230 },
 	}
-	local size = SHAPES[page] or SHAPES.home
-	return { w = size[1], h = size[2], r = 40, y = FLOAT, interactive = true }
+	local size = SHAPES[page] or { 460, 360 }
+	return { w = size[1], h = size[2], r = 34, y = FLOAT, interactive = true }
 end
 
 local aim = ui.computed(function(): Shape
-	return shape_of(state:get(), tab:get(), slim_kind:get())
+	return shape_of(state:get(), tab:get(), slim_kind:get(), chat:get() ~= nil, math.min(3, #home_threads:get()), media:get() ~= nil)
 end)
 ui.effect(function()
 	local a = aim:get()
@@ -1446,9 +1699,8 @@ local island = ui.column {
 	rounded = ui.spring(aim_r, SPRING),
 	overflow = "hidden",
 	items = "center",
-	-- (Light caught along its top edge, as glass's; a soft shadow under it.)
+	-- (Light caught along its top edge, as glass's.)
 	inset_shadow = { x = 0, y = 1, blur = 0, spread = 0, color = "#ffffff24" },
-	shadow = { x = 0, y = 10, blur = 28, spread = 0, color = "#00000066" },
 	border = 1,
 	border_color = function()
 		return if first:get() then "$kx.attention.soft" else "#ffffff2b"
@@ -1465,9 +1717,9 @@ local island = ui.column {
 		w = 680,
 		h = 460,
 		fit = "fill",
-		blur = 26,
-		saturate = 1.7,
-		brightness = 0.95,
+		blur = 34,
+		saturate = 1.8,
+		brightness = 1,
 	},
 	-- Its tint, and a sheen across its top left.
 	ui.div { absolute = true, left = 0, top = 0, right = 0, bottom = 0, gradient = colour },
