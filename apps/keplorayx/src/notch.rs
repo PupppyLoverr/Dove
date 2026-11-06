@@ -141,6 +141,7 @@ fn reveal(cx: &mut WindowContext, host: &zgx_script::ScriptHost) {
     // any region (the box of glass round the island). notch.luau draws the
     // pill itself, its edges smooth, on a transparent window.
     window.set_glass(None);
+    behind(cx, host);
     let (aim, aimed) = flume::unbounded::<[f64; 4]>();
     std::thread::Builder::new()
         .name("kx-notch-shape".into())
@@ -160,6 +161,12 @@ fn reveal(cx: &mut WindowContext, host: &zgx_script::ScriptHost) {
         if let Ok(mut rect) = RECT.lock() {
             *rect = (left, (y * scale).max(0.), pw, ph);
         }
+        let shown = h > 6. && y >= 0.;
+        // (Coming into view: over every window, those kept on top too.)
+        if shown && !SHOWN.load(std::sync::atomic::Ordering::Relaxed) {
+            to_top();
+        }
+        SHOWN.store(shown, std::sync::atomic::Ordering::Relaxed);
         resize.set_pointer_passthrough(!interactive);
         let _ = aim.send([w, h, r, y]);
     });
@@ -204,6 +211,11 @@ fn shape(aimed: flume::Receiver<[f64; 4]>) {
             // plain attribute (no system corners: the region is its shape).
             unsafe {
                 SetWindowRgn(h as _, CreateRectRgn(0, 0, 0, 0), 1);
+                // (Left out of every capture, ours of what's behind it
+                // first; KX_NOTCH_CAPTURABLE=1 keeps it in, for its PNGs.)
+                if std::env::var_os("KX_NOTCH_CAPTURABLE").is_none() {
+                    windows_sys::Win32::UI::WindowsAndMessaging::SetWindowDisplayAffinity(h, 0x11);
+                }
                 if let Ok(mut c) = CUT.lock() {
                     *c = Some((h as isize, None));
                 }
@@ -291,6 +303,169 @@ fn shape(aimed: flume::Receiver<[f64; 4]>) {
 #[cfg(not(windows))]
 fn shape(aimed: flume::Receiver<[f64; 4]>) {
     while aimed.recv().is_ok() {}
+}
+
+/// The island's window over every other, those kept on top included,
+/// without taking the keys.
+#[cfg(windows)]
+fn to_top() {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SetWindowPos};
+    let Some(hwnd) = CUT.lock().ok().and_then(|c| *c).map(|(h, _)| h) else { return };
+    // SAFETY: our own window; its place in the order only.
+    unsafe {
+        SetWindowPos(hwnd as _, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    }
+}
+
+#[cfg(not(windows))]
+fn to_top() {}
+
+/// Whether the island shows (more than its sliver): what's behind it is
+/// copied only then.
+static SHOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The island's glass: what's on the screen behind its window, copied a
+/// few times a second while it shows (the island itself left out of the
+/// copy: Windows excludes it from capture), a quarter size, for notch.luau
+/// to draw blurred inside the pill (`host:notch/behind`, `notch.behind`
+/// counting each copy). Windows' own blur fills the whole window past any
+/// shape, so the island makes its own.
+fn behind(cx: &mut WindowContext, host: &zgx_script::ScriptHost) {
+    let copies = host.shared("notch.behind", 0.);
+    let (tell, heard) = flume::bounded::<(u32, u32, Vec<u8>)>(1);
+    std::thread::Builder::new()
+        .name("kx-notch-behind".into())
+        .spawn(move || {
+            let capturable = std::env::var_os("KX_NOTCH_CAPTURABLE").is_some();
+            let mut was = false;
+            let mut hidden_for = 0u32;
+            loop {
+                let shown = SHOWN.load(std::sync::atomic::Ordering::Relaxed);
+                // (Quick while it shows; a look now and then otherwise, so
+                // it opens on what's there now.)
+                std::thread::sleep(std::time::Duration::from_millis(if shown { 160 } else { 400 }));
+                if !shown && was {
+                    was = false;
+                    continue;
+                }
+                was = shown;
+                // (Kept in captures for its PNGs, it would copy itself: it
+                // copies only while hidden then.)
+                if capturable {
+                    hidden_for = if shown { 0 } else { hidden_for + 1 };
+                    // (And once it's had time to go: not a ghost of it.)
+                    if hidden_for < 3 {
+                        continue;
+                    }
+                }
+                if let Some(copy) = copy_behind()
+                    && tell.send(copy).is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .ok();
+    let host = host.clone();
+    cx.tasks.spawn(async move {
+        let mut n = 0.;
+        while let Ok((w, h, rgba)) = heard.recv_async().await {
+            if let Ok(image) = zgx::image::ImageData::new(w, h, rgba) {
+                host.image("notch/behind", Some(Arc::new(image)));
+                n += 1.;
+                copies.set(zgx_script::Value::from(n));
+            }
+        }
+    });
+}
+
+/// What's behind the island's window: its rectangle of the screen, a
+/// quarter size (it's blurred anyway), RGBA.
+#[cfg(windows)]
+fn copy_behind() -> Option<(u32, u32, Vec<u8>)> {
+    use windows_sys::Win32::{
+        Foundation::RECT,
+        Graphics::Gdi::{
+            BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BitBlt, CAPTUREBLT, CreateCompatibleDC, CreateDIBSection, DIB_RGB_COLORS,
+            DeleteDC, DeleteObject, GetDC, ReleaseDC, SRCCOPY, SelectObject,
+        },
+        UI::WindowsAndMessaging::GetWindowRect,
+    };
+    let hwnd = CUT.lock().ok().and_then(|c| *c).map(|(h, _)| h)?;
+    let mut r = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+    // SAFETY: GDI objects made here and released before returning; the
+    // DIB's pixels read only while it lives.
+    unsafe {
+        if GetWindowRect(hwnd as _, &mut r) == 0 {
+            return None;
+        }
+        let (w, h) = (r.right - r.left, r.bottom - r.top);
+        if w <= 0 || h <= 0 {
+            return None;
+        }
+        let screen = GetDC(std::ptr::null_mut());
+        let dc = CreateCompatibleDC(screen);
+        let mut info: BITMAPINFO = std::mem::zeroed();
+        info.bmiHeader = BITMAPINFOHEADER {
+            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: w,
+            biHeight: -h,
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: BI_RGB,
+            ..std::mem::zeroed()
+        };
+        let mut bits: *mut std::ffi::c_void = std::ptr::null_mut();
+        let dib = CreateDIBSection(dc, &info, DIB_RGB_COLORS, &mut bits, std::ptr::null_mut(), 0);
+        let mut out = None;
+        if !dib.is_null() && !bits.is_null() {
+            let old = SelectObject(dc, dib);
+            if BitBlt(dc, 0, 0, w, h, screen, r.left, r.top, SRCCOPY | CAPTUREBLT) != 0 {
+                let px = std::slice::from_raw_parts(bits as *const u8, (w * h * 4) as usize);
+                out = Some(quarter(px, w as usize, h as usize));
+            }
+            SelectObject(dc, old);
+            DeleteObject(dib);
+        }
+        DeleteDC(dc);
+        ReleaseDC(std::ptr::null_mut(), screen);
+        out
+    }
+}
+
+#[cfg(not(windows))]
+fn copy_behind() -> Option<(u32, u32, Vec<u8>)> {
+    None
+}
+
+/// BGRA at full size to RGBA at a quarter (each pixel the average of 4×4).
+fn quarter(px: &[u8], w: usize, h: usize) -> (u32, u32, Vec<u8>) {
+    let (qw, qh) = ((w / 4).max(1), (h / 4).max(1));
+    let mut out = vec![0u8; qw * qh * 4];
+    for y in 0..qh {
+        for x in 0..qw {
+            let mut sum = [0u32; 3];
+            let mut n = 0;
+            for dy in 0..4 {
+                for dx in 0..4 {
+                    let (sx, sy) = (x * 4 + dx, y * 4 + dy);
+                    if sx < w && sy < h {
+                        let i = (sy * w + sx) * 4;
+                        sum[0] += px[i + 2] as u32;
+                        sum[1] += px[i + 1] as u32;
+                        sum[2] += px[i] as u32;
+                        n += 1;
+                    }
+                }
+            }
+            let o = (y * qw + x) * 4;
+            for c in 0..3 {
+                out[o + c] = (sum[c] / n.max(1)) as u8;
+            }
+            out[o + 3] = 255;
+        }
+    }
+    (qw as u32, qh as u32, out)
 }
 
 /// The shape last cut (the window, and left, top, right, bottom, corner in

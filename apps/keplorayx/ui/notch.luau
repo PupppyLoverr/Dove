@@ -698,9 +698,10 @@ end
 local function tile(props: { [any]: any }): Node
 	local p: { [any]: any } = {
 		rounded = 22,
-		bg = "#ffffff0f",
+		bg = "#ffffff12",
 		border = 1,
-		border_color = "#ffffff0d",
+		border_color = "#ffffff1a",
+		inset_shadow = { x = 0, y = 1, blur = 0, spread = 0, color = "#ffffff12" },
 		p = 14,
 		gap = "$space.2",
 	}
@@ -1340,24 +1341,36 @@ local aim_y = ui.computed(function(): number
 	return aim:get().y
 end)
 
--- Its colour, top to bottom: the compact shapes all black, as the Dynamic
--- Island; opened, black melting into light glass at its foot (the music
--- view the most, as the reference), Home's foot kept dark for its words.
-local BLACK = { angle = 180, stops = { { 0, "#000000" }, { 1, "#0b0b0e" } } }
+-- Its glass's tint, over what's behind it blurred (src/notch.rs
+-- `behind`): the compact shapes the darkest, near the Dynamic Island's
+-- black; opened, smoked glass, deepest at its top where the tabs sit and
+-- clearing toward its foot (the music view clearest, as the reference).
+local SMOKE = { angle = 180, stops = { { 0, "#000000c7" }, { 1, "#000000ad" } } }
+local CLEAR = {
+	angle = 180,
+	stops = { { 0, "#000000b3" }, { 0.5, "#0000008a" }, { 1, "#ffffff33" } },
+}
 local GLASS = {
 	angle = 180,
-	stops = { { 0, "#000000" }, { 0.46, "#030304" }, { 0.74, "#4a4a52" }, { 1, "#e4e4e9" } },
-}
-local DUSK = {
-	angle = 180,
-	stops = { { 0, "#000000" }, { 0.62, "#040405" }, { 1, "#1f1f25" } },
+	stops = { { 0, "#000000b3" }, { 0.6, "#00000094" }, { 1, "#0000006b" } },
 }
 local function colour(): any
 	if state:get() ~= "expanded" then
-		return BLACK
+		return SMOKE
 	end
-	return if tab:get() == "music" then GLASS else DUSK
+	return if tab:get() == "music" then CLEAR else GLASS
 end
+
+-- What's behind, pinned to the screen while the pill springs: its place in
+-- the pill is the pill's own place negated, on the same spring (a spring is
+-- linear, so the two stay in register).
+local behind_copies: State<number> = ui.shared("notch.behind", 0)
+local behind_left = ui.computed(function(): number
+	return (aim_w:get() - 680) / 2 - 1
+end)
+local behind_top = ui.computed(function(): number
+	return -aim_y:get() - 1
+end)
 
 -- The waveform moves while it shows and plays (nothing ticks otherwise).
 local wave_stop: (() -> ())? = nil
@@ -1425,6 +1438,7 @@ end
 -- does; what's in it keeps its final size, so the pill reveals it rather
 -- than squeezing it, and it fades and sharpens in as the shape arrives.
 local island = ui.column {
+	id = "island",
 	theme = "orbit-night",
 	w = ui.spring(aim_w, SPRING),
 	h = ui.spring(aim_h, SPRING),
@@ -1432,14 +1446,39 @@ local island = ui.column {
 	rounded = ui.spring(aim_r, SPRING),
 	overflow = "hidden",
 	items = "center",
-	gradient = colour,
-	-- (Light caught along its lower rim, and a soft shadow under it.)
-	inset_shadow = { x = 0, y = -1, blur = 0, spread = 0, color = "#ffffff26" },
-	shadow = { x = 0, y = 8, blur = 22, spread = 0, color = "#00000059" },
+	-- (Light caught along its top edge, as glass's; a soft shadow under it.)
+	inset_shadow = { x = 0, y = 1, blur = 0, spread = 0, color = "#ffffff24" },
+	shadow = { x = 0, y = 10, blur = 28, spread = 0, color = "#00000066" },
 	border = 1,
 	border_color = function()
-		return if first:get() then "$kx.attention.soft" else "#ffffff17"
+		return if first:get() then "$kx.attention.soft" else "#ffffff2b"
 	end,
+	-- The glass: what's behind, blurred, its colour deepened.
+	ui.image {
+		src = function()
+			behind_copies:get()
+			return "host:notch/behind"
+		end,
+		absolute = true,
+		left = ui.spring(behind_left, SPRING),
+		top = ui.spring(behind_top, SPRING),
+		w = 680,
+		h = 460,
+		fit = "fill",
+		blur = 26,
+		saturate = 1.7,
+		brightness = 0.95,
+	},
+	-- Its tint, and a sheen across its top left.
+	ui.div { absolute = true, left = 0, top = 0, right = 0, bottom = 0, gradient = colour },
+	ui.div {
+		absolute = true,
+		left = 0,
+		top = 0,
+		right = 0,
+		bottom = 0,
+		gradient = { angle = 155, stops = { { 0, "#ffffff1c" }, { 0.32, "#ffffff05" }, { 0.6, "#ffffff00" } } },
+	},
 	-- (Inside the hairline: its final size less the border's two points.)
 	ui.column {
 		w = function()
