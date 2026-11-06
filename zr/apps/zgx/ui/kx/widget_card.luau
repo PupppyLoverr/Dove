@@ -319,12 +319,18 @@ return function(my_id: string): Node
 				weight = "$font.weight.medium",
 			},
 			ui.row(head),
-			ui.grid {
-				columns = 7,
-				gap = 2,
-				w_full = true,
-				ui.each(cells, function(c: any): Node
-					return ui.column {
+			-- (Its cells built plainly, the grid made again as the month, today
+			-- or your events change: a list's rows sit in the grid as one.)
+			ui.presence(function(): string
+				local parts = {}
+				for _, c in cells:get() do
+					table.insert(parts, `{c.day}{if c.today then "t" else ""}{if c.busy then "b" else ""}`)
+				end
+				return table.concat(parts, ",")
+			end, function(_: string): Node
+				local grid: { [any]: any } = { cols = 7, gap = 2, w_full = true }
+				for _, c in cells:peek() do
+					table.insert(grid, ui.column {
 						h = 28,
 						items = "center",
 						justify = "center",
@@ -338,9 +344,10 @@ return function(my_id: string): Node
 							color = if c.today then "$background" else "$text.primary",
 						},
 						if c.busy and not c.today then ui.div { w = 3, h = 3, rounded = "$radius.full", bg = "$accent" } else nil,
-					}
-				end),
-			},
+					})
+				end
+				return ui.grid(grid)
+			end),
 		}
 	end
 

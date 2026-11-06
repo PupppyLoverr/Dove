@@ -693,7 +693,8 @@ mod wallpaper {
 
     /// The work area's part of the wallpaper, a quarter size, RGBA.
     fn load() -> Option<(u32, u32, Vec<u8>)> {
-        let picture = image::open(file()?).ok()?.to_rgba8();
+        // (Windows keeps it without an extension: its format from its bytes.)
+        let picture = image::ImageReader::open(file()?).ok()?.with_guessed_format().ok()?.decode().ok()?.to_rgba8();
         let (sw, sh) = screen();
         // Filled as Windows' default: covering the screen, centred.
         let (pw, ph) = (picture.width() as f64, picture.height() as f64);
