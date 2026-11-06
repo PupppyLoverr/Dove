@@ -387,22 +387,31 @@ fn behind(cx: &mut WindowContext, host: &zgx_script::ScriptHost) {
 /// quarter size (it's blurred anyway), RGBA.
 #[cfg(windows)]
 fn copy_behind() -> Option<(u32, u32, Vec<u8>)> {
+    use windows_sys::Win32::{Foundation::RECT, UI::WindowsAndMessaging::GetWindowRect};
+    let hwnd = CUT.lock().ok().and_then(|c| *c).map(|(h, _)| h)?;
+    let mut r = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+    // SAFETY: a plain query of our own window.
+    if unsafe { GetWindowRect(hwnd as _, &mut r) } == 0 {
+        return None;
+    }
+    copy_screen(r.left, r.top, r.right - r.left, r.bottom - r.top)
+}
+
+/// That rectangle of the screen (pixels), a quarter size (it's blurred
+/// anyway), RGBA: the glass's backdrop for the island and the launcher.
+#[cfg(windows)]
+pub fn copy_screen(left: i32, top: i32, w: i32, h: i32) -> Option<(u32, u32, Vec<u8>)> {
     use windows_sys::Win32::{
         Foundation::RECT,
         Graphics::Gdi::{
             BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BitBlt, CAPTUREBLT, CreateCompatibleDC, CreateDIBSection, DIB_RGB_COLORS,
             DeleteDC, DeleteObject, GetDC, ReleaseDC, SRCCOPY, SelectObject,
         },
-        UI::WindowsAndMessaging::GetWindowRect,
     };
-    let hwnd = CUT.lock().ok().and_then(|c| *c).map(|(h, _)| h)?;
-    let mut r = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+    let r = RECT { left, top, right: left + w, bottom: top + h };
     // SAFETY: GDI objects made here and released before returning; the
     // DIB's pixels read only while it lives.
     unsafe {
-        if GetWindowRect(hwnd as _, &mut r) == 0 {
-            return None;
-        }
         let (w, h) = (r.right - r.left, r.bottom - r.top);
         if w <= 0 || h <= 0 {
             return None;
@@ -439,6 +448,11 @@ fn copy_behind() -> Option<(u32, u32, Vec<u8>)> {
 
 #[cfg(not(windows))]
 fn copy_behind() -> Option<(u32, u32, Vec<u8>)> {
+    None
+}
+
+#[cfg(not(windows))]
+pub fn copy_screen(_left: i32, _top: i32, _w: i32, _h: i32) -> Option<(u32, u32, Vec<u8>)> {
     None
 }
 

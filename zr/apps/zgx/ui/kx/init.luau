@@ -59,14 +59,29 @@ local MARK: { [string]: string } = {
 	hermes = "hermes",
 	gemini = "gemini",
 }
+-- (The marks Zeron draws itself: ds/mark's.)
+local DRAWN: { [string]: boolean } = {
+	claude = true,
+	openai = true,
+	cursor = true,
+	grok = true,
+	devin = true,
+	opencode = true,
+	antigravity = true,
+	pi = true,
+	hermes = true,
+	muse = true,
+}
 function M.AgentMark(props: { agent: string?, size: number?, live: any? }): Node
 	local agent = props.agent or ""
+	local mark = MARK[agent] or agent
 	return AgentMark.Mark {
-		label = agent,
-		mark = MARK[agent] or agent,
+		label = if agent ~= "" then agent else "Agent",
+		-- (Any other agent: its initial on a tile, as Zeron's fallback.)
+		mark = if DRAWN[mark] then mark else nil,
 		seed = agent,
 		size = props.size or 16,
-		bare = true,
+		bare = DRAWN[mark] == true,
 	}
 end
 
@@ -119,9 +134,19 @@ M.motion = {
 	end,
 }
 
-function M.setup() end
+-- Zeron's design system set up in this window: its themes (Keplorayx's
+-- colours) and tokens.
+function M.setup()
+	ds.setup()
+end
 
+-- A card standing on its own over the desktop (the launcher's answer): a
+-- solid card in the theme's menu colour, its hairline and shadow.
 function M.float_style(p: { [any]: any }): { [any]: any }
+	p.bg = p.bg or "$zeron.menu.solid"
+	p.border = p.border or 1
+	p.border_color = p.border_color or "$border"
+	p.shadow = p.shadow or "$zeron.menu.shadow"
 	return p
 end
 

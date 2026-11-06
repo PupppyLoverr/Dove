@@ -144,6 +144,8 @@ enum Screen {
     Gallery,
     /// A fixture under ui/ (development).
     Fixture(String),
+    /// Keplorayx's island, launcher or widgets alone (development).
+    Kx(&'static str),
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -218,9 +220,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             zeron_cli::Launch::Appshot => return Err("Appshots from the command line aren't in this app yet".into()),
         }
     }
+    // (Keplorayx: the island, launcher and widgets are placed in the screen's
+    // own pixels, so the process reads them unscaled.)
+    #[cfg(windows)]
+    // SAFETY: a process-wide setting, before any window; a second call fails harmlessly.
+    unsafe {
+        windows_sys::Win32::UI::HiDpi::SetProcessDpiAwarenessContext(
+            windows_sys::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+        );
+    }
     let mut screen = Screen::Intro;
     let mut asked_for_intro = false;
     let mut inspect = false;
+    let mut background = false;
     for arg in std::env::args().skip(1).filter(|_| !cfg!(feature = "beta") && open_url.is_none()) {
         match arg.as_str() {
             "intro" => {
@@ -230,6 +242,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "onboarding" => screen = Screen::Onboarding,
             "main" => screen = Screen::Main,
             "gallery" => screen = Screen::Gallery,
+            "notch" => screen = Screen::Kx("notch"),
+            "launcher" => screen = Screen::Kx("launcher"),
+            // Started with Windows: the tray, the island and the widgets, the
+            // main window hidden until you open it.
+            "--background" => {
+                screen = Screen::Main;
+                background = true;
+            }
             "--inspect" => inspect = true,
             // Zeron's own template, whatever was in use (src/plugins/live.rs):
             // for one that breaks before its window can switch back.
@@ -307,8 +327,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let options = match screen {
         Screen::Intro => intro_window(),
         Screen::Onboarding => onboarding_window(),
-        Screen::Main => main_window(),
+        Screen::Main => WindowOptions { visible: !background, ..main_window() },
         Screen::Gallery | Screen::Fixture(_) => gallery_window(),
+        Screen::Kx("notch") => kx::notch::window(),
+        Screen::Kx(_) => WindowOptions { visible: true, bounds: None, ..kx::launcher::window() },
     };
     application.window(options).run(move |cx| {
         match &screen {
@@ -317,6 +339,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Screen::Main => open_main(cx, inspect),
             Screen::Gallery => open(cx, "gallery.luau", inspect),
             Screen::Fixture(entry) => open(cx, entry, inspect),
+            Screen::Kx("notch") => {
+                kx::notch::open(cx, |_| {}, inspect);
+            }
+            Screen::Kx(_) => kx::launcher::build(cx, |_| {}, inspect),
         }
         // Launched on a link (`zeron <url>`).
         if let Some(url) = &open_url {
@@ -347,7 +373,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// fixture, devtools), or none: not `zeron`'s command line.
 fn dev_launch(args: &[String]) -> bool {
     args.iter().all(|arg| {
-        matches!(arg.as_str(), "intro" | "onboarding" | "main" | "gallery" | "--inspect" | "--zeron-template")
+        matches!(
+            arg.as_str(),
+            "intro" | "onboarding" | "main" | "gallery" | "--inspect" | "--zeron-template" | "notch" | "launcher" | "--background"
+        )
             || (arg.starts_with("fixture=") && arg.ends_with(".luau"))
     })
 }
@@ -377,6 +406,7 @@ fn compile_ahead(screen: &Screen) {
         }
         Screen::Gallery => ahead(&ui, "gallery.luau"),
         Screen::Fixture(entry) => ahead(&ui, entry),
+        Screen::Kx(name) => ahead(&ui, &format!("{name}.luau")),
     }
 }
 

@@ -88,6 +88,15 @@ end)
 
 store.messages = messages
 store.draft = draft
+-- The open thread's messages as Keplorayx's entries: { kind, text }
+-- ("user" or "assistant").
+store.entries = ui.computed(function(): { { id: string, kind: string, text: string } }
+	local out = {}
+	for _, m in messages:get() or {} do
+		table.insert(out, { id = m.id or "", kind = if m.role == "user" then "user" else "assistant", text = m.text or "" })
+	end
+	return out
+end)
 
 -- What the open thread waits on (an approval), as Keplorayx's.
 store.approval = ui.computed(function(): Approval?

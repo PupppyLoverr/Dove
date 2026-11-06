@@ -2329,7 +2329,7 @@ end
 -- than squeezing it, and it fades and sharpens in as the shape arrives.
 local island = ui.column {
 	id = "island",
-	theme = "orbit-night",
+	theme = "zeron-dark",
 	w = ui.spring(aim_w, SPRING),
 	h = ui.spring(aim_h, SPRING),
 	y = ui.spring(aim_y, SPRING),

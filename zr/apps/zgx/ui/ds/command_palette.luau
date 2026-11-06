@@ -2063,6 +2063,73 @@ local Body = ui.component(function(props: Props & { recent_state: State<{ string
 		legend(Kbd { text = "esc" }, way_out),
 	}
 
+	-- (Keplorayx) As the Mac's Dynamic Island draws Spotlight: the field in a
+	-- black capsule (the island grown sideways), and under it, apart, a
+	-- glass panel of the rest, over `backdrop` (what's behind, blurred: the
+	-- caller's). docs/design/apple-island-spotlight.md.
+	if (props :: any).island then
+		local backdrop = (props :: any).backdrop
+		return ui.column {
+			id = "command-palette",
+			w_full = true,
+			gap = 10,
+			on_mount = function(el)
+				anime.animate(el, motion.params({ opacity = { 0, 1 }, scale = { 0.94, 1 }, duration = 260, ease = "outBack(1.2)" } :: any))
+			end,
+			ui.row {
+				w_full = true,
+				h = 58,
+				px = 10,
+				items = "center",
+				rounded = "$radius.full",
+				bg = "#000000f7",
+				border = 1,
+				border_color = "#ffffff14",
+				theme = "zeron-dark",
+				search,
+			},
+			ui.show(function(): boolean
+				return query:get() ~= "" or shown_rows:get() > 0
+			end, ui.column {
+				w_full = true,
+				rounded = 30,
+				overflow = "hidden",
+				relative = true,
+				border = 1,
+				border_color = "#ffffff26",
+				inset_shadow = { x = 0, y = 1, blur = 0, spread = 0, color = "#ffffff24" },
+				shadow = { x = 0, y = 18, blur = 40, spread = 0, color = "#00000059" },
+				if backdrop then backdrop() else nil,
+				ui.div {
+					absolute = true,
+					left = 0,
+					top = 0,
+					right = 0,
+					bottom = 0,
+					bg = "$zeron.palette.tint",
+				},
+				ui.div {
+					absolute = true,
+					left = 0,
+					top = 0,
+					right = 0,
+					bottom = 0,
+					gradient = { angle = 160, stops = { { 0, "#ffffff17" }, { 0.4, "#ffffff00" } } },
+				},
+				ui.column {
+					w_full = true,
+					pt = 6,
+					scope_row,
+					ui.show(function(): boolean
+						return shown_rows:get() > 0 or loading:get()
+					end, list, empty),
+					rule(),
+					footer,
+				},
+			}),
+		}
+	end
+
 	return ui.column {
 		id = "command-palette",
 		w_full = true,
@@ -2132,7 +2199,13 @@ end
 -- of its own (the launcher), where a modal's dim would fill the window.
 local Inline = ui.component(function(props: Props): Node
 	local recent = props.recent or ui.use_state({} :: { string })
-	return Body { open = props.open, root = props.root, recent_state = recent }
+	return Body {
+		open = props.open,
+		root = props.root,
+		recent_state = recent,
+		island = (props :: any).island,
+		backdrop = (props :: any).backdrop,
+	} :: any
 end)
 
 return setmetatable({ type_path = type_path, Inline = Inline }, {

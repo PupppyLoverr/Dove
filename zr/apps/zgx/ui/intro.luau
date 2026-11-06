@@ -551,12 +551,8 @@ local function leave()
 	prepare()
 	handing:set(true)
 	local to = target()
-	-- Where the characters open: the middle of what shows of the card
-	-- (it runs past the window's right edge), from the screen's middle.
-	local card = signin.card(to.w)
-	local ox = (card.x + to.w) / 2 - to.w / 2
-	local oy = card.y + card.h / 2 - to.h / 2
-	local full = decode.full(ox, oy, to.w, to.h)
+	-- (Keplorayx: the characters open from the window's middle.)
+	local full = decode.full(0, 0, to.w, to.h)
 	local function radius(): number
 		local r = onboarding_radius:peek() :: number
 		return if r > 0 then r else 16
@@ -597,7 +593,10 @@ local function leave()
 			anime.animate("#title, #cta", { opacity = 0, duration = 180, ease = "inQuad" })
 			anime.animate("#scenery, #agents", { opacity = 0, duration = 900, ease = "inQuad" })
 		end
-		anime.animate("#sheet", { layerParam4 = ox, layerParam5 = oy, duration = 0 })
+		-- (Keplorayx: from the card's middle, and the card itself opening
+		-- out from a small one there into the whole window as it decodes.)
+		anime.animate("#sheet", { layerParam4 = 0, layerParam5 = 0, duration = 0 })
+		anime.animate("#sheet", { scale = { 0.22, 1 }, duration = SCREEN_MS + 120, ease = "outExpo" })
 		-- Moving at once (it answers the click), easing in to the edge.
 		anime.animate("#sheet", { layerParam0 = { 0, full }, duration = SCREEN_MS, ease = "outQuad" })
 		-- The agents, the words and the way in are in the picture too (it is

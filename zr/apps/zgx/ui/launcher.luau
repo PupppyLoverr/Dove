@@ -456,10 +456,30 @@ local function answer(): Node
 	})
 end
 
--- The palette's card alone (no modal: its dim would fill this window), in
--- the float variant of your theme: a card that stands without glass.
-local kind = ui.theme.kind()
-local float_theme = if kind == "light" or kind == "high-contrast-light" then "orbit-dawn-float" else "orbit-night-float"
+-- Spotlight as the Mac's Dynamic Island draws it (docs/design/
+-- apple-island-spotlight.md): at the top of the screen, where the island
+-- is, the field in a black capsule (the island grown sideways) and, apart
+-- under it, a glass panel of results over a blur of what's behind
+-- (src/kx/launcher.rs copies it as it's summoned). Keplorayx's colours.
+local behind = ui.shared("launcher.behind", 0)
+-- (Where the panel stands in this window: the field's capsule over it.)
+local PANEL_LEFT, PANEL_TOP = 40, 8 + 58 + 10
+local function backdrop(): Node
+	return ui.image {
+		src = function()
+			behind:get()
+			return "host:launcher/behind"
+		end,
+		absolute = true,
+		left = -PANEL_LEFT,
+		top = -PANEL_TOP,
+		w = 720,
+		h = 620,
+		fit = "fill",
+		blur = 34,
+		saturate = 1.8,
+	}
+end
 return ui.column {
 	w_full = true,
 	h_full = true,
@@ -468,20 +488,14 @@ return ui.column {
 		function()
 			return mode:get() == "answer"
 		end,
-		ui.column { pt = ui.raw(88, "level with the palette's card"), answer() },
+		ui.column { pt = 8, answer() },
 		ui.column {
-			theme = float_theme,
-			pt = ui.raw(88, "where the palette's card sits"),
+			pt = 8,
 			ui.show(
 				open,
-				-- (Its card is glass made for a window's blur; here nothing
-				-- is blurred under it, so a solid night stands behind it.)
 				ui.column {
 					w = 640,
-					rounded = "$radius.xl",
-					bg = "$zeron.menu.solid",
-					shadow = "$shadow.lg",
-					CommandPalette.Inline { open = open, root = root :: any, recent = recent },
+					CommandPalette.Inline { open = open, root = root :: any, recent = recent, island = true, backdrop = backdrop } :: any,
 				}
 			),
 		}

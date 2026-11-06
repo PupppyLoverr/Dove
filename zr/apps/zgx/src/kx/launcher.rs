@@ -37,7 +37,7 @@ use zgx_script::{Shared, Value};
 const SIZE: (f64, f64) = (720., 620.);
 
 thread_local! {
-    static LAUNCHER: RefCell<Option<(WindowHandle, Shared)>> = const { RefCell::new(None) };
+    static LAUNCHER: RefCell<Option<(WindowHandle, Shared, zgx_script::ScriptHost, Shared)>> = const { RefCell::new(None) };
 }
 
 pub fn window() -> WindowOptions {
@@ -65,11 +65,13 @@ fn centred() -> Option<WindowBounds> {
     if w <= 0 || h <= 0 {
         return None;
     }
-    // A little above the middle, as the others sit; in pixels at the
+    // At the top, centred: Spotlight grows out of the island, as on the
+    // Mac (docs/design/apple-island-spotlight.md); in pixels at the
     // system's scale.
+    let _ = h;
     let scale = crate::kx::notch::system_scale();
     let (lw, lh) = ((SIZE.0 * scale) as i32, (SIZE.1 * scale) as i32);
-    Some(WindowBounds { position: Some(((w - lw) / 2, ((h - lh) / 3).max(0))), size: (lw as u32, lh as u32) })
+    Some(WindowBounds { position: Some(((w - lw) / 2, 0)), size: (lw as u32, lh as u32) })
 }
 
 #[cfg(not(windows))]
@@ -96,13 +98,26 @@ pub fn summon() {
         eprintln!("launcher: summon (made: {})", LAUNCHER.with(|l| l.borrow().is_some()));
     }
     LAUNCHER.with(|l| {
-        if let Some((window, summoned)) = &*l.borrow() {
+        if let Some((window, summoned, host, behind)) = &*l.borrow() {
             let n = match summoned.get() {
                 Value::Num(n) => n + 1.,
                 _ => 1.,
             };
             summoned.set(Value::Num(n));
             if let Some(b) = centred() {
+                // Its glass: what's on the screen where it's about to stand,
+                // copied while it's still off the screen (src/kx/notch.rs).
+                if let Some((x, y)) = b.position
+                    && let Some((w, h, rgba)) = crate::kx::notch::copy_screen(x, y, b.size.0 as i32, b.size.1 as i32)
+                    && let Ok(image) = zgx::image::ImageData::new(w, h, rgba)
+                {
+                    host.image("launcher/behind", Some(Arc::new(image)));
+                    let k = match behind.get() {
+                        Value::Num(k) => k + 1.,
+                        _ => 1.,
+                    };
+                    behind.set(Value::Num(k));
+                }
                 window.set_bounds(b);
             }
             window.request_focus();
@@ -140,7 +155,8 @@ pub fn build(cx: &mut WindowContext, main: impl Fn(Option<String>) + Clone + 'st
         crate::kx::media::install(cx, &host);
         host.window_state(&cx.ui);
         let summoned = host.shared("launcher.summoned", 0.);
-        LAUNCHER.with(|l| *l.borrow_mut() = Some((cx.window.clone(), summoned)));
+        let behind = host.shared("launcher.behind", 0.);
+        LAUNCHER.with(|l| *l.borrow_mut() = Some((cx.window.clone(), summoned, host.clone(), behind)));
         // No taskbar button or Alt+Tab entry while it waits off the screen.
         cx.tasks.spawn(async {
             zgx::timer::sleep(std::time::Duration::from_millis(300)).await;
