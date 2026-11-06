@@ -143,6 +143,34 @@ mod session {
 
     /// Whether the current track came with a cover.
     static HAS_COVER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    /// The cover's light (its average colour, brightened), for what's
+    /// tinted by it: the island's waveform, as the Dynamic Island's.
+    static TINT: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+
+    /// `#rrggbb`: the average of the cover's lit, coloured pixels, lifted
+    /// so it reads on black.
+    fn tint(px: &[u8]) -> String {
+        let (mut r, mut g, mut b, mut n) = (0f64, 0f64, 0f64, 0f64);
+        for p in px.chunks_exact(4).step_by(7) {
+            let (pr, pg, pb) = (p[0] as f64, p[1] as f64, p[2] as f64);
+            let (hi, lo) = (pr.max(pg).max(pb), pr.min(pg).min(pb));
+            // (Colour counts more than grey; near-black hardly at all.)
+            let weight = (hi - lo + 12.) * (hi / 255.);
+            r += pr * weight;
+            g += pg * weight;
+            b += pb * weight;
+            n += weight;
+        }
+        if n <= 0. {
+            return String::new();
+        }
+        let (r, g, b) = (r / n, g / n, b / n);
+        let hi = r.max(g).max(b).max(1.);
+        // Brightened toward 235 at its brightest channel.
+        let lift = 235. / hi;
+        let c = |v: f64| (v * lift).clamp(0., 255.) as u8;
+        format!("#{:02x}{:02x}{:02x}", c(r), c(g), c(b))
+    }
 
     /// The current session and its event registrations.
     struct Watched {
@@ -296,6 +324,9 @@ mod session {
             *cover_key = key.clone();
             cover = props.Thumbnail().ok().and_then(|t| thumbnail(&t)).map(|(w, h, px)| (name.clone(), w, h, px));
             HAS_COVER.store(cover.is_some(), std::sync::atomic::Ordering::Relaxed);
+            if let Ok(mut t) = TINT.lock() {
+                *t = cover.as_ref().map(|(_, _, _, px)| tint(px)).unwrap_or_default();
+            }
         }
         let info = s.GetPlaybackInfo().ok();
         let playing = info.as_ref().and_then(|p| p.PlaybackStatus().ok()).is_some_and(|st| st == Status::Playing);
@@ -325,6 +356,7 @@ mod session {
                 "at": unix_now(),
                 // (The key changes with the track, so the picture reloads.)
                 "cover": if has_cover { format!("host:{name}") } else { String::new() },
+                "tint": TINT.lock().map(|t| t.clone()).unwrap_or_default(),
             })),
             cover,
         )

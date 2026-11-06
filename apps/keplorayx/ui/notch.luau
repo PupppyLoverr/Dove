@@ -1,10 +1,11 @@
 --!strict
 -- The notch: Keplorayx's island at the top of the screen, over every
--- window, as Dove's Dynamic Island was (its notch/: hidden, slim, alert and
--- expanded). Its window is only as big as what shows (src/notch.rs
--- `notch.size`), on the main window's frosted glass (Acrylic under the
--- theme's tint, the system's round corners), and lets clicks through unless
--- it's something to click. Music is what Windows' media controls report
+-- window, after Apple's Dynamic Island: a pill hanging from the screen's top
+-- edge that grows down out of it and morphs between its shapes on a spring
+-- (a little overshoot), black at its top melting into frosted glass below.
+-- Its window stays still; src/notch.rs cuts the glass to the pill's shape
+-- as it springs (`notch.size { w, h, r }`), and the pill drawn here follows
+-- the same spring, so the two move as one. Clicks outside it pass through. Music is what Windows' media controls report
 -- (src/media.rs `kx.media`): its cover, title and artist, where it is, and
 -- its keys.
 --
@@ -181,15 +182,11 @@ local state = ui.computed(function(): string
 	return "hidden"
 end)
 
--- Each state's window: its size in points, and whether it takes clicks.
--- (A few points down from the screen's edge, as an island floats.)
-local SIZES: { [string]: { w: number, h: number, top: number, interactive: boolean, glass: boolean } } = {
-	hidden = { w = 120, h = 4, top = 0, interactive = false, glass = false },
-	slim = { w = 440, h = 46, top = 8, interactive = true, glass = true },
-	alert = { w = 500, h = 62, top = 8, interactive = true, glass = true },
-	flash = { w = 400, h = 52, top = 8, interactive = true, glass = true },
-	expanded = { w = 600, h = 392, top = 8, interactive = true, glass = true },
-}
+-- Each state's pill, in points: its width, its height down from the
+-- screen's edge, its bottom corners, and whether it takes clicks. (The
+-- Dynamic Island's: compact, a banner, and expanded by what it shows.)
+type Shape = { w: number, h: number, r: number, interactive: boolean }
+local SPRING = { stiffness = 340, damping = 26 }
 
 -- The clock, while music shows and plays.
 local function ticking()
@@ -207,11 +204,6 @@ ui.effect(function()
 		ui.after(1000, ticking)
 	end
 end)
-ui.effect(function()
-	local s = SIZES[state:get()]
-	pcall(ui.invoke, "notch.size", s)
-end)
-
 -- ── Pieces ─────────────────────────────────────────────────────────────
 
 local function quiet(text: any, size: string?): Node
@@ -289,24 +281,29 @@ end
 
 -- ── Music's pieces ───────────────────────────────────────────────────
 
+-- A key on the island: its glyph alone, white, dimming under the pointer.
 local function key(icon: string, what: string, name: string, size: number?): Node
+	local n = size or 16
 	return ui.button {
-		w = (size or 16) + 16,
-		h = (size or 16) + 16,
+		w = n + 18,
+		h = n + 18,
 		rounded = "$radius.full",
 		items = "center",
 		justify = "center",
 		bg = "#00000000",
-		hover = { bg = "$kx.accent.soft" },
+		color = "#ffffffeb",
+		hover = { bg = "#ffffff14" },
+		active = { scale = 0.9 },
 		label = name,
 		on_click = function()
 			control(what)
 		end,
-		kx.Icon { name = icon, size = size or 16 },
+		kx.Icon { name = icon, size = n },
 	}
 end
 
-local function cover(size: number): Node
+local function cover(size: number, corner: number?): Node
+	local round = corner or math.floor(size * 0.22)
 	return ui.presence(function(): string
 		local m = media:get()
 		return if m and m.cover ~= "" then m.cover else ""
@@ -315,17 +312,17 @@ local function cover(size: number): Node
 			return ui.column {
 				w = size,
 				h = size,
-				rounded = "$radius.lg",
-				bg = "$kx.accent.soft",
+				rounded = round,
+				bg = "#ffffff1a",
 				items = "center",
 				justify = "center",
-				color = "$accent",
+				color = "#ffffffb3",
 				shrink = 0,
-				kx.Icon { name = "music-note", size = math.floor(size * 0.4) },
+				kx.Icon { name = "music-note", size = math.floor(size * 0.42) },
 			}
 		end
-		return ui.image { src = src, w = size, h = size, rounded = "$radius.lg", fit = "cover", shrink = 0 }
-	end)
+		return ui.image { src = src, w = size, h = size, rounded = round, fit = "cover", shrink = 0 }
+	end, { enter = { opacity = { 0, 1 }, scale = { 0.92, 1 }, duration = 260 } })
 end
 
 local function song(part: string): () -> string
@@ -337,49 +334,87 @@ local function song(part: string): () -> string
 		if part == "title" then
 			return m.title
 		end
-		return if m.artist ~= "" then `{m.artist} · {m.app}` else m.app
+		return if m.artist ~= "" then m.artist else m.app
 	end
 end
 
+-- The waveform, in the cover's light (src/media.rs `tint`), moving while
+-- it plays and resting low while it doesn't: the Dynamic Island's.
+local wave = ui.state("notch.wave", 0)
+local WAVE = { 0.55, 0.9, 0.7, 1, 0.6, 0.85 }
+local function tint(): string
+	local m = media:get()
+	return if m and (m :: any).tint and (m :: any).tint ~= "" then (m :: any).tint else "#c9b8ff"
+end
+local function waveform(bars: number, height: number, width: number?): Node
+	local row: { [any]: any } = { gap = 3, items = "center", h = height, shrink = 0 }
+	for i = 1, bars do
+		local base = WAVE[(i - 1) % #WAVE + 1]
+		table.insert(row, ui.div {
+			w = width or 3,
+			rounded = "$radius.full",
+			h = function()
+				local m = media:get()
+				if not (m and m.playing) then
+					return math.max(3, height * 0.18)
+				end
+				local t = wave:get()
+				local swing = math.abs(math.sin(t * (0.9 + i * 0.37) + i * 1.7))
+				return math.max(3, height * base * (0.3 + 0.7 * swing))
+			end,
+			gradient = function()
+				local c = tint()
+				return { angle = 180, stops = { { 0, c }, { 1, c .. "8c" } } }
+			end,
+		})
+	end
+	return ui.row(row)
+end
+
 -- ── Slim ───────────────────────────────────────────────────────────────
+-- The compact island: something at its leading end, something at its
+-- trailing end, a word between when there's room.
 
-local slim_resting = ui.row {
-	gap = "$space.3",
-	items = "center",
-	ui.column { color = "$accent", kx.Icon { name = "orbit", size = 15 } },
-	ui.text { clock, literal = true, weight = "$font.weight.semibold", tabular = true },
-	quiet(day),
-	rule(),
-	quiet("Ask anything"),
-	keys("Alt", "Space"),
-}
+local function compact(lead: Node, middle: Node?, trail: Node): Node
+	return ui.row {
+		w_full = true,
+		h_full = true,
+		px = 14,
+		gap = "$space.3",
+		items = "center",
+		lead,
+		ui.row { grow = 1, min_w = 0, justify = "center", items = "center", middle },
+		trail,
+	}
+end
 
-local slim_working = ui.row {
-	gap = "$space.3",
-	items = "center",
+local function white(text: any, size: string?, weight: string?): Node
+	return ui.text { text, literal = true, truncate = true, color = "#ffffffeb", text_size = size or "$font.size.sm", weight = weight or "$font.weight.medium" }
+end
+
+local slim_resting = compact(
+	ui.row {
+		gap = "$space.2",
+		items = "center",
+		ui.column { color = "$accent", kx.Icon { name = "orbit", size = 14 } },
+		white(clock, nil, "$font.weight.semibold"),
+	},
+	quiet(day, "$font.size.xs"),
+	keys("Alt", "Space")
+)
+
+local slim_working = compact(
 	stars(),
-	ui.text {
-		function()
-			local n = #working:get()
-			return if n == 1 then "1 agent working" else `{n} agents working`
-		end,
-		literal = true,
-		weight = "$font.weight.medium",
-		text_size = "$font.size.sm",
-	},
-	rule(),
-	ui.text {
-		function()
-			local t = working:get()[1]
-			return if t then t.title else ""
-		end,
-		literal = true,
-		truncate = true,
-		max_w = 200,
-		text_size = "$font.size.sm",
-		color = "$text.secondary",
-	},
-}
+	white(function()
+		local t = working:get()[1]
+		local n = #working:get()
+		if n > 1 then
+			return `{n} agents working`
+		end
+		return if t then t.title else ""
+	end, "$font.size.xs"),
+	kx.Spinner { size = 13 }
+)
 
 local slim_kind = ui.computed(function(): string
 	if first:get() then
@@ -392,30 +427,23 @@ local slim_kind = ui.computed(function(): string
 	return if m and m.playing then "music" else "resting"
 end)
 
-local slim_music = ui.row {
-	gap = "$space.3",
-	items = "center",
-	cover(24),
-	ui.text { song("title"), literal = true, truncate = true, max_w = 220, weight = "$font.weight.medium", text_size = "$font.size.sm" },
-	quiet(function()
-		local m = media:get()
-		return if m then m.artist else ""
-	end),
-	key("media-pause", "play", "Pause", 14),
-}
+local slim_music = compact(cover(22, 6), white(song("title"), "$font.size.xs"), waveform(4, 14))
 
 local function slim(): Node
 	return ui.presence(slim_kind, function(kind: string): Node
 		if kind == "waiting" then
-			return ui.column {
-				w = 420,
+			return ui.row {
+				w_full = true,
+				h_full = true,
+				px = 16,
+				items = "center",
 				asking(function()
 					return first:get()
 				end, true),
 			}
 		end
 		return if kind == "working" then slim_working elseif kind == "music" then slim_music else slim_resting
-	end, { enter = { opacity = { 0, 1 }, duration = 160 }, exit = { opacity = { 1, 0 }, duration = 90 } })
+	end, { w_full = true, h_full = true, enter = { opacity = { 0, 1 }, scale = { 0.94, 1 }, duration = 200 }, exit = { opacity = { 1, 0 }, duration = 80 } })
 end
 
 -- ── Flash ──────────────────────────────────────────────────────────────
@@ -475,14 +503,23 @@ local function ask()
 end
 
 local function progress(): Node
-	return ui.column {
-		gap = 4,
+	local function fraction(): number
+		local m = media:get()
+		return if m and m.duration > 0 then math.clamp(position() / m.duration, 0, 1) else 0
+	end
+	return ui.row {
+		gap = "$space.3",
+		items = "center",
 		w_full = true,
+		ui.text { function()
+			return mmss(position())
+		end, literal = true, text_size = "$font.size.xs", color = "#ffffff99", tabular = true, w = 38 },
 		ui.div {
-			h = 4,
-			w_full = true,
+			h = 6,
+			grow = 1,
 			rounded = "$radius.full",
-			bg = "$kx.accent.soft",
+			bg = "#ffffff2e",
+			overflow = "hidden",
 			on_click = function(e: any)
 				local m = media:peek()
 				if m and m.duration > 0 and e and e.local_x and e.width then
@@ -492,27 +529,26 @@ local function progress(): Node
 			ui.div {
 				h_full = true,
 				rounded = "$radius.full",
-				bg = "$text.primary",
+				bg = "#ffffffc7",
 				w = function()
-					local m = media:get()
-					local f = if m and m.duration > 0 then position() / m.duration else 0
-					return ui.raw(math.max(4, f * 540), "where the track is")
+					return `{math.floor(fraction() * 1000) / 10}%`
 				end,
-				max_w = "100%",
 			},
 		},
-		ui.row {
-			w_full = true,
-			justify = "between",
-			quiet(function()
-				return mmss(position())
-			end, "$font.size.xs"),
-			quiet(function()
-				local m = media:get()
-				return if m and m.duration > 0 then mmss(m.duration) else ""
-			end, "$font.size.xs"),
-		},
+		ui.text { function()
+			local m = media:get()
+			return if m and m.duration > 0 then `-{mmss(m.duration - position())}` else ""
+		end, literal = true, text_size = "$font.size.xs", color = "#ffffff99", tabular = true, w = 44, align = "right" },
 	}
+end
+
+local function play_key(size: number): Node
+	return ui.presence(function(): string
+		local m = media:get()
+		return if m and m.playing then "pause" else "play"
+	end, function(k: string): Node
+		return key(if k == "pause" then "media-pause" else "media-play", "play", if k == "pause" then "Pause" else "Play", size)
+	end, { enter = { opacity = { 0, 1 }, scale = { 0.7, 1 }, duration = 180 }, exit = { opacity = 0, duration = 60 }, mode = "wait" })
 end
 
 local function music_row(big: boolean): Node
@@ -521,48 +557,48 @@ local function music_row(big: boolean): Node
 			gap = "$space.3",
 			items = "center",
 			w_full = true,
-			cover(36),
+			p = "$space.2",
+			rounded = 18,
+			bg = "#ffffff0d",
+			cover(40, 10),
 			ui.column {
 				grow = 1,
 				min_w = 0,
-				ui.text { song("title"), literal = true, truncate = true, weight = "$font.weight.medium", text_size = "$font.size.sm" },
+				white(song("title"), "$font.size.sm", "$font.weight.semibold"),
 				quiet(song("by"), "$font.size.xs"),
 			},
-			key("media-previous", "previous", "Previous"),
-			key(if (media:peek() or { playing = false }).playing then "media-pause" else "media-play", "play", "Play or pause"),
-			key("media-next", "next", "Next"),
+			waveform(5, 18),
+			key("media-previous", "previous", "Previous", 14),
+			play_key(16),
+			key("media-next", "next", "Next", 14),
 		}
 	end
-	return ui.row {
-		gap = "$space.5",
-		items = "center",
+	return ui.column {
 		w_full = true,
-		pt = "$space.2",
-		cover(128),
-		ui.column {
-			grow = 1,
-			min_w = 0,
-			gap = "$space.3",
+		gap = "$space.4",
+		ui.row {
+			gap = "$space.4",
+			items = "center",
+			w_full = true,
+			cover(64, 14),
 			ui.column {
+				grow = 1,
+				min_w = 0,
 				gap = 2,
-				ui.text { song("title"), literal = true, truncate = true, weight = "$font.weight.semibold", text_size = "$font.size.lg" },
-				quiet(song("by")),
+				white(song("title"), "$font.size.md", "$font.weight.bold"),
+				ui.text { song("by"), literal = true, truncate = true, text_size = "$font.size.sm", color = "#ffffff8c" },
 			},
-			progress(),
-			ui.row {
-				gap = "$space.2",
-				items = "center",
-				justify = "center",
-				w_full = true,
-				key("media-previous", "previous", "Previous", 18),
-				ui.presence(function(): string
-					local m = media:get()
-					return if m and m.playing then "pause" else "play"
-				end, function(k: string): Node
-					return key(if k == "pause" then "media-pause" else "media-play", "play", "Play or pause", 22)
-				end),
-				key("media-next", "next", "Next", 18),
-			},
+			waveform(6, 30, 4),
+		},
+		progress(),
+		ui.row {
+			gap = 36,
+			items = "center",
+			justify = "center",
+			w_full = true,
+			key("media-previous", "previous", "Previous", 30),
+			play_key(36),
+			key("media-next", "next", "Next", 30),
 		},
 	}
 end
@@ -920,31 +956,29 @@ local TABS = {
 }
 
 local function tabs(): Node
-	local row: { [any]: any } = { gap = "$space.1", items = "center" }
+	local row: { [any]: any } = { gap = 2, items = "center", p = 3, rounded = "$radius.full", bg = "#ffffff12" }
 	for _, t in TABS do
 		table.insert(
 			row,
 			ui.button {
+				w = 28,
 				h = 28,
-				px = "$space.3",
-				gap = "$space.1",
 				items = "center",
+				justify = "center",
 				rounded = "$radius.full",
 				bg = function()
-					return if tab:get() == t.id then "$kx.accent.soft" else "#00000000"
+					return if tab:get() == t.id then "#ffffff2e" else "#00000000"
 				end,
-				hover = { bg = "$kx.accent.soft" },
+				hover = { bg = "#ffffff1a" },
 				color = function()
-					return if tab:get() == t.id then "$text.primary" else "$text.tertiary"
+					return if tab:get() == t.id then "#ffffff" else "#ffffff80"
 				end,
 				label = t.label,
+				tooltip = t.label,
 				on_click = function()
 					tab:set(t.id)
 				end,
-				kx.Icon { name = t.icon, size = 13 },
-				ui.show(function()
-					return tab:get() == t.id
-				end, ui.text { t.label, literal = true, text_size = "$font.size.xs", weight = "$font.weight.medium" }),
+				kx.Icon { name = t.icon, size = 14 },
 			}
 		)
 	end
@@ -955,7 +989,7 @@ local function page(id: string): Node
 	if id == "agents" then
 		return ui.scroll { w_full = true, h_full = true, ui.column { w_full = true, thread_list(all_threads) } }
 	elseif id == "music" then
-		return ui.column { w_full = true, pt = "$space.6", music_row(true) }
+		return ui.column { w_full = true, pt = "$space.2", music_row(true) }
 	elseif id == "notes" then
 		return ui.textarea {
 			value = note,
@@ -980,17 +1014,26 @@ local function expanded_view(): Node
 	return ui.column {
 		w_full = true,
 		h_full = true,
+		px = 20,
+		pt = 14,
+		pb = 18,
 		gap = "$space.4",
 		ui.row {
 			w_full = true,
 			justify = "between",
 			items = "center",
 			tabs(),
-			kx.Button {
-				tone = "ghost",
-				size = "xs",
-				icon = true,
+			ui.button {
+				w = 30,
+				h = 30,
+				rounded = "$radius.full",
+				items = "center",
+				justify = "center",
+				bg = "#ffffff12",
+				hover = { bg = "#ffffff24" },
+				color = "#ffffffcc",
 				label = "Open Keplorayx",
+				tooltip = "Open Keplorayx",
 				on_click = function()
 					open_thread(nil)
 				end,
@@ -1001,68 +1044,159 @@ local function expanded_view(): Node
 			w_full = true,
 			grow = 1,
 			min_h = 0,
-			ui.presence(tab, page, { w_full = true, h_full = true, enter = { opacity = { 0, 1 }, duration = 140 }, exit = { opacity = 0, duration = 60 }, mode = "wait" }),
+			ui.presence(tab, page, {
+				w_full = true,
+				h_full = true,
+				enter = { opacity = { 0, 1 }, y = { 6, 0 }, duration = 200 },
+				exit = { opacity = 0, duration = 70 },
+				mode = "wait",
+			}),
 		},
 	}
 end
 
 -- ── The island ─────────────────────────────────────────────────────────
 
--- Its glass: the window's (Acrylic, its corners the system's round), the
--- theme's tint over it as on the main window; a hairline of light at its
--- edge, warm while something waits.
-local function island(content: Node, props: { [string]: any }?): Node
-	local p: { [any]: any } = {
-		w_full = true,
-		h_full = true,
-		px = "$space.4",
-		bg = "$background",
-		rounded = 8,
-		border = 1,
-		border_color = function()
-			return if first:get() then "$kx.attention.soft" else "$border.subtle"
-		end,
-		items = "center",
-		justify = "center",
-		content,
-	}
-	for k, v in props or {} do
-		p[k] = v
+local function shape_of(kind: string, page: string, slim_as: string): Shape
+	if kind == "hidden" then
+		-- (While something waits, a warm sliver at the edge.)
+		return if first:peek() then { w = 150, h = 5, r = 2.5, interactive = false } else { w = 150, h = 0, r = 0, interactive = false }
+	elseif kind == "slim" then
+		return if slim_as == "waiting" then { w = 500, h = 48, r = 24, interactive = true } else { w = 360, h = 38, r = 19, interactive = true }
+	elseif kind == "alert" then
+		return { w = 520, h = 72, r = 32, interactive = true }
+	elseif kind == "flash" then
+		return { w = 400, h = 46, r = 23, interactive = true }
 	end
-	return ui.column(p)
+	if page == "music" then
+		return { w = 500, h = 262, r = 42, interactive = true }
+	end
+	return { w = 580, h = 364, r = 42, interactive = true }
 end
+
+local aim = ui.computed(function(): Shape
+	return shape_of(state:get(), tab:get(), slim_kind:get())
+end)
+ui.effect(function()
+	local a = aim:get()
+	pcall(ui.invoke, "notch.size", { w = a.w, h = a.h, r = a.r, interactive = a.interactive })
+end)
+local aim_w = ui.computed(function(): number
+	return aim:get().w
+end)
+local aim_h = ui.computed(function(): number
+	return aim:get().h
+end)
+local aim_r = ui.computed(function(): number
+	return aim:get().r
+end)
+
+-- The waveform moves while it shows and plays (nothing ticks otherwise).
+local wave_stop: (() -> ())? = nil
+ui.effect(function()
+	local m = media:get()
+	local s = state:get()
+	local showing = (s == "slim" and slim_kind:get() == "music") or (s == "expanded" and (tab:get() == "music" or tab:get() == "home"))
+	if m and m.playing and showing then
+		if not wave_stop then
+			wave_stop = ui.every(110, function()
+				wave:set(wave:peek() + 0.11)
+			end)
+		end
+	elseif wave_stop then
+		wave_stop()
+		wave_stop = nil
+	end
+end)
 
 local function view(kind: string): Node
 	if kind == "hidden" then
-		return ui.show(first, ui.div { w = 96, h = 3, rounded = 3, bg = "$kx.attention", opacity = glow })
+		return ui.div { w_full = true, h_full = true, bg = "$kx.attention", opacity = glow }
 	elseif kind == "slim" then
 		return ui.button {
 			w_full = true,
 			h_full = true,
+			bg = "#00000000",
 			on_click = function()
 				expanded:set(true)
 			end,
 			label = "Keplorayx: open the island",
-			island(slim()),
+			slim(),
 		}
 	elseif kind == "alert" then
-		return island(asking(function()
-			return first:get()
-		end, false))
+		return ui.row {
+			w_full = true,
+			h_full = true,
+			px = 22,
+			items = "center",
+			asking(function()
+				return first:get()
+			end, false),
+		}
 	elseif kind == "flash" then
 		return ui.button {
 			w_full = true,
 			h_full = true,
+			px = 18,
+			bg = "#00000000",
+			items = "center",
 			on_click = function()
 				local f = flash:peek()
 				open_thread(if f and f.id ~= "timer" then f.id else nil)
 			end,
 			label = "Open the thread",
-			island(flash_view()),
+			flash_view(),
 		}
 	end
-	return island(expanded_view(), { items = "start", justify = "start", p = "$space.5" })
+	return expanded_view()
 end
+
+-- The pill: black where it meets the screen's edge, melting into the glass
+-- below (the window's Acrylic shows through), a hairline of light round it,
+-- warm while something waits. Its size and corners spring as the glass
+-- does; what's in it keeps its final size, so the pill reveals it rather
+-- than squeezing it, and it fades and sharpens in as the shape arrives.
+local island = ui.column {
+	theme = "orbit-night",
+	w = ui.spring(aim_w, SPRING),
+	h = ui.spring(aim_h, SPRING),
+	rounded_bl = ui.spring(aim_r, SPRING),
+	rounded_br = ui.spring(aim_r, SPRING),
+	overflow = "hidden",
+	items = "center",
+	gradient = {
+		angle = 180,
+		stops = {
+			{ 0, "#000000fa" },
+			{ 0.38, "#000000ec" },
+			{ 0.7, "#060609c2" },
+			{ 1, "#12121a94" },
+		},
+	},
+	-- (Light caught along its lower rim, as glass's edge.)
+	inset_shadow = { x = 0, y = -1, blur = 0, spread = 0, color = "#ffffff26" },
+	border = 1,
+	border_color = function()
+		return if first:get() then "$kx.attention.soft" else "#ffffff17"
+	end,
+	-- (Inside the hairline: its final size less the border's two points.)
+	ui.column {
+		w = function()
+			return aim_w:get() - 2
+		end,
+		h = function()
+			return aim_h:get() - 2
+		end,
+		shrink = 0,
+		ui.presence(state, view, {
+			w_full = true,
+			h_full = true,
+			enter = { opacity = { 0, 1 }, scale = { 0.9, 1 }, y = { -6, 0 }, duration = 300, ease = "cubicBezier(0.32, 1.25, 0.5, 1)" },
+			exit = { opacity = { 1, 0 }, scale = { 1, 0.96 }, duration = 90, ease = kx.motion.EXIT },
+			mode = "wait",
+		}),
+	},
+}
 
 return ui.row {
 	w_full = true,
@@ -1074,9 +1208,5 @@ return ui.row {
 		tab:set("tray")
 		expanded:set(true)
 	end,
-	ui.presence(state, view, {
-		enter = { opacity = { 0, 1 }, scale = { 0.97, 1 }, duration = 220, ease = "cubicBezier(0.34, 1.3, 0.64, 1)" },
-		exit = { opacity = { 1, 0 }, duration = 110, ease = kx.motion.EXIT },
-		mode = "wait",
-	}),
+	island,
 }

@@ -11,8 +11,14 @@ use std::sync::Arc;
 
 use zgx_desktop::{WindowBounds, WindowContext, WindowLevel, WindowOptions};
 
-/// The capsule's window, in points: room for its widest state.
-pub const SIZE: (f64, f64) = (520., 72.);
+/// The island's window, in points: room for its largest shape, which a
+/// sprung region cuts out of it (see `shape`). It never moves or resizes.
+pub const SIZE: (f64, f64) = (680., 460.);
+
+/// The island's spring, the same as notch.luau's `ui.spring` for the pill
+/// it draws (stiffness, damping; a mass of one): a little overshoot, as the
+/// Dynamic Island's.
+pub const SPRING: (f64, f64) = (340., 26.);
 
 /// Whether the notch opens beside the main window.
 pub fn enabled() -> bool {
@@ -128,29 +134,29 @@ fn reveal(cx: &mut WindowContext, host: &zgx_script::ScriptHost) {
     let near = host.shared("notch.near", false);
     let window = cx.window.clone();
     window.set_pointer_passthrough(true);
+    // Its glass, always: the region decides how much of it shows.
+    window.set_glass(Some(zgx_desktop::Glass::new(zgx_desktop::GlassMaterial::Hud).plain()));
+    let (aim, aimed) = flume::unbounded::<(f64, f64, f64)>();
+    std::thread::Builder::new()
+        .name("kx-notch-shape".into())
+        .spawn(move || shape(aimed))
+        .ok();
     let resize = cx.window.clone();
     host.action("notch.size", move |req| {
         let n = |k: &str| match req.field(k) {
             Some(zgx_script::Value::Num(v)) => *v,
             _ => 0.,
         };
-        let (w, h) = (n("w").max(1.), n("h").max(1.));
+        let (w, h, r) = (n("w").max(0.), n("h").max(0.), n("r").max(0.));
         let interactive = matches!(req.field("interactive"), Some(zgx_script::Value::Bool(true)));
-        let frosted = matches!(req.field("glass"), Some(zgx_script::Value::Bool(true)));
-        let top = n("top");
         let scale = system_scale();
         let (pw, ph) = ((w * scale).round(), (h * scale).round());
-        let (left, top) = ((screen_width() - pw) / 2., (top * scale).round());
-        if let Ok(mut r) = RECT.lock() {
-            *r = (left, top, pw, ph);
+        let left = (screen_width() - pw) / 2.;
+        if let Ok(mut rect) = RECT.lock() {
+            *rect = (left, 0., pw, ph);
         }
-        resize.set_bounds(WindowBounds { position: Some((left as i32, top as i32)), size: (pw as u32, ph as u32) });
         resize.set_pointer_passthrough(!interactive);
-        // The island is the main window's frosted glass (a blur of what's
-        // behind it, the theme's tint over it), its corners the system's
-        // round; hidden, no glass, so nothing shows but the hint.
-        resize.set_glass(frosted.then(|| zgx_desktop::Glass::new(zgx_desktop::GlassMaterial::Hud).plain()));
-        round_corners();
+        let _ = aim.send((w, h, r));
     });
     let (tell, heard) = flume::unbounded::<bool>();
     std::thread::Builder::new()
@@ -164,26 +170,127 @@ fn reveal(cx: &mut WindowContext, host: &zgx_script::ScriptHost) {
     });
 }
 
-/// Windows 11's rounded corners on the island's window.
+/// The island's shape, sprung: a pill hanging from the screen's top edge
+/// (its top flush with it, its bottom corners round), cut out of the still
+/// window as its region, so the glass grows down from the edge and morphs
+/// between sizes with the Dynamic Island's overshoot, and clicks outside it
+/// reach what's under. Woken by each new aim (w, h, corner, in points);
+/// asleep once it settles.
 #[cfg(windows)]
-fn round_corners() {
+fn shape(aimed: flume::Receiver<(f64, f64, f64)>) {
     use windows_sys::Win32::{
-        Graphics::Dwm::{DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND, DwmSetWindowAttribute},
-        UI::WindowsAndMessaging::FindWindowW,
+        Graphics::Dwm::{DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND, DwmSetWindowAttribute},
+        Graphics::Gdi::{CreateRectRgn, CreateRoundRectRgn, SetWindowRgn},
     };
-    let title: Vec<u16> = "Keplorayx notch".encode_utf16().chain([0]).collect();
-    // SAFETY: our own window; a plain attribute.
-    unsafe {
-        let h = FindWindowW(std::ptr::null(), title.as_ptr());
-        if !h.is_null() {
-            let pref = DWMWCP_ROUND;
-            DwmSetWindowAttribute(h, DWMWA_WINDOW_CORNER_PREFERENCE as u32, (&pref as *const i32).cast(), 4);
+    let scale = system_scale();
+    let (k, c) = SPRING;
+    // Now and how fast, each of w, h and the corner.
+    let mut now = [0f64; 3];
+    let mut speed = [0f64; 3];
+    let mut aim = [0f64; 3];
+    let mut window = None;
+    let step = 1. / 120.;
+    loop {
+        // Asleep until there's somewhere to go.
+        let settled = (0..3).all(|i| (now[i] - aim[i]).abs() < 0.25 && speed[i].abs() < 0.5);
+        let next = if settled { aimed.recv().ok() } else { aimed.try_recv().ok() };
+        if settled && next.is_none() {
+            return;
+        }
+        if let Some((w, h, r)) = next {
+            aim = [w, h, r];
+        }
+        let started = std::time::Instant::now();
+        for i in 0..3 {
+            // (Semi-implicit Euler, at 120 a second.)
+            speed[i] += (k * (aim[i] - now[i]) - c * speed[i]) * step;
+            now[i] += speed[i] * step;
+        }
+        if (0..3).all(|i| (now[i] - aim[i]).abs() < 0.25 && speed[i].abs() < 0.5) {
+            now = aim;
+            speed = [0.; 3];
+        }
+        let hwnd = match window {
+            Some(h) => h,
+            None => {
+                let Some(h) = own_window() else {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    continue;
+                };
+                // SAFETY: our own window; a plain attribute (no system
+                // corners: the region is its shape).
+                unsafe {
+                    let pref = DWMWCP_DONOTROUND;
+                    DwmSetWindowAttribute(h, DWMWA_WINDOW_CORNER_PREFERENCE as u32, (&pref as *const i32).cast(), 4);
+                }
+                window = Some(h);
+                h
+            }
+        };
+        let full = SIZE.0 * scale;
+        let (w, h) = ((now[0].max(0.) * scale).round(), (now[1].max(0.) * scale).round());
+        let r = (now[2].max(0.) * scale).min(h / 2.).min(w / 2.).round();
+        let left = ((full - w) / 2.).round();
+        // SAFETY: a region made here and handed to our own window, which
+        // owns it from then on.
+        unsafe {
+            let region = if w < 1. || h < 1. {
+                CreateRectRgn(0, 0, 0, 0)
+            } else {
+                // (Its top corners above the window, so cut off: flush.)
+                CreateRoundRectRgn(
+                    left as i32,
+                    -(r as i32) - 1,
+                    (left + w) as i32 + 1,
+                    h as i32 + 1,
+                    (2. * r) as i32,
+                    (2. * r) as i32,
+                )
+            };
+            SetWindowRgn(hwnd as _, region, 1);
+        }
+        let spent = started.elapsed();
+        if let Some(rest) = std::time::Duration::from_secs_f64(step).checked_sub(spent) {
+            std::thread::sleep(rest);
         }
     }
 }
 
 #[cfg(not(windows))]
-fn round_corners() {}
+fn shape(aimed: flume::Receiver<(f64, f64, f64)>) {
+    while aimed.recv().is_ok() {}
+}
+
+/// This process's island window (another Keplorayx's has the same title).
+#[cfg(windows)]
+fn own_window() -> Option<windows_sys::Win32::Foundation::HWND> {
+    use windows_sys::Win32::{
+        Foundation::{HWND, LPARAM},
+        UI::WindowsAndMessaging::{EnumWindows, GetWindowTextW, GetWindowThreadProcessId},
+    };
+    unsafe extern "system" fn each(h: HWND, found: LPARAM) -> i32 {
+        let mut pid = 0u32;
+        let mut title = [0u16; 64];
+        // SAFETY: plain queries of a window the system handed us; `found`
+        // is the Option below, alive for EnumWindows' call.
+        unsafe {
+            GetWindowThreadProcessId(h, &mut pid);
+            if pid != std::process::id() {
+                return 1;
+            }
+            let n = GetWindowTextW(h, title.as_mut_ptr(), title.len() as i32);
+            if String::from_utf16_lossy(&title[..n.max(0) as usize]) == "Keplorayx notch" {
+                *(found as *mut Option<HWND>) = Some(h);
+                return 0;
+            }
+        }
+        1
+    }
+    let mut found: Option<HWND> = None;
+    // SAFETY: the callback writes only `found`, which outlives the call.
+    unsafe { EnumWindows(Some(each), &mut found as *mut _ as LPARAM) };
+    found
+}
 
 #[cfg(windows)]
 fn screen_width() -> f64 {
