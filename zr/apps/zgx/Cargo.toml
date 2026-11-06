@@ -15,7 +15,8 @@ license = "MIT"
 publish = false
 
 [[bin]]
-name = "zeron-zgx"
+# Keplorayx, on Zeron's interface.
+name = "keplorayx"
 path = "src/main.rs"
 
 [features]

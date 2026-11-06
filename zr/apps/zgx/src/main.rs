@@ -220,6 +220,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             zeron_cli::Launch::Appshot => return Err("Appshots from the command line aren't in this app yet".into()),
         }
     }
+    // (Keplorayx: a console Windows gave this launch alone, none of a
+    // terminal's: hidden and let go, so no console window stands behind the
+    // app. A terminal tab's bridge returned above, keeping its own.)
+    #[cfg(windows)]
+    // SAFETY: plain console queries and calls on this process's own console.
+    unsafe {
+        use windows_sys::Win32::System::Console::{FreeConsole, GetConsoleProcessList, GetConsoleWindow};
+        let mut ids = [0u32; 2];
+        if GetConsoleProcessList(ids.as_mut_ptr(), 2) == 1 {
+            let console = GetConsoleWindow();
+            if !console.is_null() {
+                windows_sys::Win32::UI::WindowsAndMessaging::ShowWindow(console, 0);
+            }
+            FreeConsole();
+        }
+    }
     // (Keplorayx: the island, launcher and widgets are placed in the screen's
     // own pixels, so the process reads them unscaled.)
     #[cfg(windows)]
