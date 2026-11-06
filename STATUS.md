@@ -4,6 +4,34 @@ Branch `zgx/phase-a` in `C:\dev\keplorayx-zgx`, local only. Nothing is pushed, a
 
 This page says what works, what's partial and what's next. Each claim is backed by something you can run, a PNG in `apps/keplorayx/docs/design/shots/`, or a test.
 
+## Keplorayx on Zeron's app and engine (`zr/`), 2026-11-06
+
+Keplorayx now runs on Zeron's whole app and engine, copied into `zr/` and changed for Keplorayx (plan: `docs/plans/zeron-base.md`; Apple research: `docs/design/apple-island-spotlight.md`). The earlier app (`apps/keplorayx`) still builds and stays as the fallback.
+
+**Build and run** (warm targets: `C:/dvw/target-kx-zgx/zr-app` for the app, `C:/dvw/target-kx-zgx/zr` for the engine):
+
+```bash
+cd zr/apps/zgx && CARGO_TARGET_DIR=C:/dvw/target-kx-zgx/zr-app cargo build      # keplorayx.exe
+cd zr && CARGO_TARGET_DIR=C:/dvw/target-kx-zgx/zr cargo build -p zeron --bin keplorayx-engine
+cp C:/dvw/target-kx-zgx/zr/debug/keplorayx-engine.exe C:/dvw/target-kx-zgx/zr-app/debug/
+C:/dvw/target-kx-zgx/zr-app/debug/keplorayx.exe            # intro, then setup; once set up, the main window
+C:/dvw/target-kx-zgx/zr-app/debug/keplorayx.exe main       # the main window; also notch, launcher, onboarding, gallery, --background
+```
+
+The scripts (`zr/apps/zgx/ui`) reload as they're saved. Data: `~/.keplorayx` (the engine's, port 27731), never Zeron's. Tests on scratch data: `ZERON_ZGX_ENGINE_DATA`, `ZERON_ZGX_ENGINE_PORT`, `ZERON_ZGX_MOCK=1` (the mock agent), `KX_APP_ID`, `KX_TRAY=0`, `KX_NOTCH_CAPTURABLE=1`.
+
+**Works, tried on scratch data with the mock agent:**
+- Zeron's main window on Keplorayx's engine: chats sent and answered, the sidebar, settings, Zeron's agents catalog (Claude Code, Codex, Cursor, Devin, Hermes, OpenCode here; more from the registry).
+- Keplorayx's look: its icons over Zeron's, the Orbit colours in Zeron's themes, "Keplorayx" in its words and windows, `com.keplorayx.app`.
+- Setup as Zeron's: the intro over the desktop, setup opening from the middle as it decodes, sign-in (Woozlit, `src/kx_account.rs`), the look, your username and member card (made here with Zeron's card seed), your organization, the agents, done. (Invites and Zeron's GitHub App are left out: they need Zeron's servers.)
+- The composer's centre, bottom and slim placements (Settings › Appearance › New chat composer).
+- The island (`src/kx/notch.rs`, `ui/notch.luau`): real glass, every page, and chat: open a thread, read Zeron's transcript, reply, allow or deny.
+- Spotlight (Alt+Space, `ui/launcher.luau`): at the top as the Mac's island draws it, a black capsule and a glass panel of results.
+- Widgets: glass over your wallpaper (`src/kx/widgets.rs` reads Windows' copy of it), every kind.
+- The tray, keys from any app, Start with Windows, hiding to the tray, music controls, your old projects brought across once.
+
+**Not done or not verified:** Zeron Cloud on cua sandboxes; agents' widget and calendar tools in Zeron's MCP; a real Alt+Space press, real music, touch; Woozlit sign-in past the browser; the old app's threads (they stay readable in it); Start with Windows still names the old app until you switch it in the new Settings.
+
 ## Run it
 
 ```bash

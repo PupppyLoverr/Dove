@@ -22,8 +22,19 @@ the file-type icon resolver (`apps/dove/src/file_icons.rs`, from
 the VS Code theme import (`apps/dove/src/themes/`, from `crates/theme`). Each
 built-in notes the upstream theme it was curated from, with its license.
 
-The zgx interface (`apps/keplorayx`) is ported in large part from Zeron's
-zgx app (`apps/zgx`):
+**Keplorayx's app is Zeron's, whole** (`zr/`): Zeron's zgx app
+(`zr/apps/zgx`, its interface and Rust host), its engine and every crate it
+builds on (`zr/crates/*`, `zr/apps/zeron`), copied from Zeron's repository
+under its MIT license (`zr/LICENSE`, kept as it is), then changed for
+Keplorayx: its name, icons and Orbit colours, its own data folder, port and
+engine, Woozlit as its account in place of Zeron's (`zr/apps/zgx/src/kx_account.rs`),
+member cards made on this computer with Zeron's own card design and seed,
+the composer's placements, and Keplorayx's island, launcher, widgets, music,
+tray and keys (`zr/apps/zgx/src/kx`, `zr/apps/zgx/ui/kx`). Zeron's own
+copyright notices stay in the files that carry them.
+
+The earlier zgx interface (`apps/keplorayx`, kept as the fallback) is ported
+in large part from Zeron's zgx app (`apps/zgx`):
 
 - **Mechanisms:** the Windows Transparency effects watcher
   (`src/transparency.rs`, from `apps/zgx/src/transparency.rs`); a streaming
