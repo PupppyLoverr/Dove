@@ -395,6 +395,31 @@ pub fn start(cx: &mut WindowContext, main: impl Fn(Option<String>) + Clone + 'st
     });
     SURFACE.with(|s| *s.borrow_mut() = Some(handle));
     desk::keep_at_bottom();
+    // What agents change (Keplorayx's tools in the engine's MCP server,
+    // zr/crates/mcp/src/tools/kx.rs, write these files): seen within two
+    // seconds, a widget with no place given one, the desktop redrawn.
+    cx.tasks.spawn(async {
+        let stamp = |name: &str| home().join(name).metadata().and_then(|m| m.modified()).ok();
+        let mut seen = (stamp("widgets.json"), stamp("calendar.json"));
+        loop {
+            zgx::timer::sleep(std::time::Duration::from_secs(2)).await;
+            let now = (stamp("widgets.json"), stamp("calendar.json"));
+            if now == seen {
+                continue;
+            }
+            for w in widgets().into_iter().filter(|w| w.x.is_none() || w.y.is_none()) {
+                if let Err(e) = set(&serde_json::to_value(&w).unwrap_or_default()) {
+                    eprintln!("keplorayx: widgets: {} couldn't be placed: {e}", w.id);
+                }
+            }
+            if std::env::var_os("KX_MCP_ANNOUNCE").is_some() {
+                eprintln!("keplorayx: widgets: changed ({} on the desktop)", widgets().len());
+            }
+            seen = (stamp("widgets.json"), stamp("calendar.json"));
+            publish();
+            sync_windows();
+        }
+    });
 }
 
 /// The surface shown while there are widgets, its region their boxes.

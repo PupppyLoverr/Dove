@@ -105,7 +105,7 @@ impl PluginTools {
                     name => name,
                 };
                 let origin =
-                    format!("(From the {plugin} plugin. Works while Zeron is open on {device}.)");
+                    format!("(From the {plugin} plugin. Works while Keplorayx is open on {device}.)");
                 let description = match tool.description.trim() {
                     "" => origin,
                     text => format!("{text} {origin}"),
@@ -153,7 +153,7 @@ fn plain(error: RpcError) -> String {
     match error {
         RpcError::Failed(message) => message,
         RpcError::UnknownMethod(_) => {
-            "This Zeron doesn't run plugins yet; update Zeron to use them.".into()
+            "This Keplorayx doesn't run plugins yet; update Keplorayx to use them.".into()
         }
         other => other.to_string(),
     }
@@ -163,7 +163,7 @@ pub(super) fn catalog() -> Vec<ToolDef> {
     vec![
         ToolDef {
             name: CREATE_PLUGIN,
-            description: "Create a Zeron plugin on this device: a folder with a manifest (zeron-plugin.json), init.luau to edit, and zeron.luau, the SDK. Zeron signs it as yours and loads it, and re-signs and reloads it as you save; the person allows once, in Zeron, any permissions it asks for. `id` is lowercase letters, digits and dashes (2-40). `permissions` are what the plugin may do (ui.add, ui.change, ui.replace, profile.read, sessions.read, messages.read, account.email, files.read, panel.tabs, pages.add, github, github.write, navigate, compose, network, clipboard, files, web, windows, tools, devices, native, commands: with a manifest `commands` list of programs it runs, as you). The reply links the authoring guide (`guide`): read it before writing.",
+            description: "Create a Keplorayx plugin on this device: a folder with a manifest (zeron-plugin.json), init.luau to edit, and zeron.luau, the SDK. Keplorayx signs it as yours and loads it, and re-signs and reloads it as you save; the person allows once, in Keplorayx, any permissions it asks for. `id` is lowercase letters, digits and dashes (2-40). `permissions` are what the plugin may do (ui.add, ui.change, ui.replace, profile.read, sessions.read, messages.read, account.email, files.read, panel.tabs, pages.add, github, github.write, navigate, compose, network, clipboard, files, web, windows, tools, devices, native, commands: with a manifest `commands` list of programs it runs, as you). The reply links the authoring guide (`guide`): read it before writing.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -177,12 +177,12 @@ pub(super) fn catalog() -> Vec<ToolDef> {
         },
         ToolDef {
             name: LIST_PLUGINS,
-            description: "Zeron plugins on this device: id, name, status (on, off, pending review, tampered, broken), who made it, and its folder.",
+            description: "Keplorayx plugins on this device: id, name, status (on, off, pending review, tampered, broken), who made it, and its folder.",
             input_schema: json!({ "type": "object", "properties": {} }),
         },
         ToolDef {
             name: PLUGIN_STATUS,
-            description: "Where a Zeron plugin's UI landed, to check your work without a person: its status (on, off, pending review, tampered, broken, and why), what it was allowed, and, from Zeron's window on this device, each zeron.place it made (its selector, how, how many elements it matched and their boxes in the window), what its row in Settings says (a node that needs what its place doesn't give, places this template doesn't have, an error that stopped it) and its pages. With snapshot: true, also a PNG of the window cut to around its nodes (the whole window when none shows): read the file at `snapshot` to look. Edit the plugin, save, and ask again.",
+            description: "Where a Keplorayx plugin's UI landed, to check your work without a person: its status (on, off, pending review, tampered, broken, and why), what it was allowed, and, from Keplorayx's window on this device, each zeron.place it made (its selector, how, how many elements it matched and their boxes in the window), what its row in Settings says (a node that needs what its place doesn't give, places this template doesn't have, an error that stopped it) and its pages. With snapshot: true, also a PNG of the window cut to around its nodes (the whole window when none shows): read the file at `snapshot` to look. Edit the plugin, save, and ask again.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -194,7 +194,7 @@ pub(super) fn catalog() -> Vec<ToolDef> {
         },
         ToolDef {
             name: INSTALL_PLUGIN,
-            description: "Install someone's Zeron plugin from a .zeron-plugin file (`path`) or a link (`url`): a link to a .zeron-plugin file, a GitHub release (…/releases/latest or …/releases/tag/<tag>, its .zeron-plugin asset), or a git repository (owner/repo, its GitHub page, …/tree/<branch>/<folder>, or any https git URL; `ref` a branch or tag, `folder` where the plugin is in it). Zeron checks the signature over every file first: an unsigned or changed plugin is refused. Whatever you install waits for the person to allow it in Zeron's window, which shows who signed it and what it asks: you can't allow it for them (`waiting` says so). Installing over a plugin already installed is an update, and only when the same key signed both.",
+            description: "Install someone's Keplorayx plugin from a .zeron-plugin file (`path`) or a link (`url`): a link to a .zeron-plugin file, a GitHub release (…/releases/latest or …/releases/tag/<tag>, its .zeron-plugin asset), or a git repository (owner/repo, its GitHub page, …/tree/<branch>/<folder>, or any https git URL; `ref` a branch or tag, `folder` where the plugin is in it). Keplorayx checks the signature over every file first: an unsigned or changed plugin is refused. Whatever you install waits for the person to allow it in Keplorayx's window, which shows who signed it and what it asks: you can't allow it for them (`waiting` says so). Installing over a plugin already installed is an update, and only when the same key signed both.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -207,7 +207,7 @@ pub(super) fn catalog() -> Vec<ToolDef> {
         },
         ToolDef {
             name: UPDATE_PLUGIN,
-            description: "Check whether a plugin installed from someone else has a newer version at the source it came from (its file, link, release or repository): its version and what it changes in what the plugin asks (`added`, `removed`); without an id, check every installed plugin. Installing an update is the person's, in Zeron (Settings → Plugins): you can't update it for them, so tell them what you found.",
+            description: "Check whether a plugin installed from someone else has a newer version at the source it came from (its file, link, release or repository): its version and what it changes in what the plugin asks (`added`, `removed`); without an id, check every installed plugin. Installing an update is the person's, in Keplorayx (Settings → Plugins): you can't update it for them, so tell them what you found.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -218,30 +218,30 @@ pub(super) fn catalog() -> Vec<ToolDef> {
         },
         ToolDef {
             name: DESCRIBE_ELEMENTS,
-            description: "Where a Zeron plugin can place its nodes: Zeron's named elements, each with its selector (#id or .class), where it is in words, what it is, what it provides to what's placed in it (session, message, file, project, panel; everything has profile, appearance and route), whether the window running now has it (a template may rename or leave out elements), and whether it's stable (kept across Zeron's updates and by every template: place by those where you can). Place with zeron.place { at = \"<selector>\", before | after | replace = function() return <node> end }; selectors also take `#a >> .b` (inside) and role:button \"Name\". In the built node read what's provided with zeron.context(name) (nil where absent) or zeron.need(name) (it draws nothing there, and Settings says why). Records hold only what the plugin was allowed: sessions.read, messages.read, profile.read, account.email, files.read (without it a file is an id of the plugin's own, never its path). The reply links the plugin authoring guide (`guide`).",
+            description: "Where a Keplorayx plugin can place its nodes: Keplorayx's named elements, each with its selector (#id or .class), where it is in words, what it is, what it provides to what's placed in it (session, message, file, project, panel; everything has profile, appearance and route), whether the window running now has it (a template may rename or leave out elements), and whether it's stable (kept across Keplorayx's updates and by every template: place by those where you can). Place with zeron.place { at = \"<selector>\", before | after | replace = function() return <node> end }; selectors also take `#a >> .b` (inside) and role:button \"Name\". In the built node read what's provided with zeron.context(name) (nil where absent) or zeron.need(name) (it draws nothing there, and Settings says why). Records hold only what the plugin was allowed: sessions.read, messages.read, profile.read, account.email, files.read (without it a file is an id of the plugin's own, never its path). The reply links the plugin authoring guide (`guide`).",
             input_schema: json!({ "type": "object", "properties": {} }),
         },
         ToolDef {
             name: LIST_TEMPLATES,
-            description: "Zeron's templates on this device. A template is a whole copy of Zeron's interface (its Luau app: app.luau, screens/, ds/, assets/) that you can rewrite; it inherits Zeron's own for any file it lacks. Each one's id, name, folder, whether it's the one in use, and its status: ok, errors (some files fall back to Zeron's own; template_status says why), out_of_date (made for another version of Zeron: Zeron has updated since; template_status names the files whose Zeron original changed) or broken. Zeron's own comes first. One installed from someone's package (import_template) has `imported` (who signed it); packages waiting for the person to allow them are under `pending`.",
+            description: "Keplorayx's templates on this device. A template is a whole copy of Keplorayx's interface (its Luau app: app.luau, screens/, ds/, assets/) that you can rewrite; it inherits Keplorayx's own for any file it lacks. Each one's id, name, folder, whether it's the one in use, and its status: ok, errors (some files fall back to Keplorayx's own; template_status says why), out_of_date (made for another version of Keplorayx: Keplorayx has updated since; template_status names the files whose Keplorayx original changed) or broken. Keplorayx's own comes first. One installed from someone's package (import_template) has `imported` (who signed it); packages waiting for the person to allow them are under `pending`.",
             input_schema: json!({ "type": "object", "properties": {} }),
         },
         ToolDef {
             name: CREATE_TEMPLATE,
-            description: "Make a new template on this device: a whole copy of Zeron's interface (or of another template, with `from`) in its own folder, to rewrite. Returns its folder, its files and a short map of the app. Delete any file to inherit Zeron's own. While Zeron is open and the template is in use (use_template), each edit shows live as you save it. A file with an error falls back to Zeron's own for that file, and template_status says why. `id` is lowercase letters, digits and dashes (2-40). The reply links the authoring guide (`guide`): read it before writing.",
+            description: "Make a new template on this device: a whole copy of Keplorayx's interface (or of another template, with `from`) in its own folder, to rewrite. Returns its folder, its files and a short map of the app. Delete any file to inherit Keplorayx's own. While Keplorayx is open and the template is in use (use_template), each edit shows live as you save it. A file with an error falls back to Keplorayx's own for that file, and template_status says why. `id` is lowercase letters, digits and dashes (2-40). The reply links the authoring guide (`guide`): read it before writing.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{1,39}$", "description": "The template's id and folder name, e.g. midnight." },
                     "name": { "type": "string", "description": "Its display name, e.g. Midnight." },
-                    "from": { "type": "string", "description": "A template to start from, from list_templates (default zeron, Zeron's own)." }
+                    "from": { "type": "string", "description": "A template to start from, from list_templates (default zeron, Keplorayx's own)." }
                 },
                 "required": ["id", "name"]
             }),
         },
         ToolDef {
             name: USE_TEMPLATE,
-            description: "Run Zeron's window with a template: it switches live while Zeron is open. `zeron` is Zeron's own interface. Only templates installed on this device can be used. Unless the person has kept this template in Zeron, it runs as a preview (`preview`): Zeron shows them a bar to Keep or Revert it, and holds back what only a kept template may do until they keep it. You can't keep it for them; ask them to look.",
+            description: "Run Keplorayx's window with a template: it switches live while Keplorayx is open. `zeron` is Keplorayx's own interface. Only templates installed on this device can be used. Unless the person has kept this template in Keplorayx, it runs as a preview (`preview`): Keplorayx shows them a bar to Keep or Revert it, and holds back what only a kept template may do until they keep it. You can't keep it for them; ask them to look.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -252,7 +252,7 @@ pub(super) fn catalog() -> Vec<ToolDef> {
         },
         ToolDef {
             name: TEMPLATE_STATUS,
-            description: "How a template is doing: whether it's in use, the error that broke it (root_error), the files with errors (each falls back to Zeron's own, with the error), the files out of date (Zeron's own has changed since they were copied), how many files it has, and how many it inherits from Zeron.",
+            description: "How a template is doing: whether it's in use, the error that broke it (root_error), the files with errors (each falls back to Keplorayx's own, with the error), the files out of date (Keplorayx's own has changed since they were copied), how many files it has, and how many it inherits from Keplorayx.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -263,7 +263,7 @@ pub(super) fn catalog() -> Vec<ToolDef> {
         },
         ToolDef {
             name: DELETE_TEMPLATE,
-            description: "Delete a template: its folder is set aside in the templates folder's .removed. Deleting the one in use switches the window back to Zeron's own. Zeron's own can't be deleted.",
+            description: "Delete a template: its folder is set aside in the templates folder's .removed. Deleting the one in use switches the window back to Keplorayx's own. Keplorayx's own can't be deleted.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -274,12 +274,12 @@ pub(super) fn catalog() -> Vec<ToolDef> {
         },
         ToolDef {
             name: DESCRIBE_APP,
-            description: "What Zeron's interface is made of, to find your way in a template: its screens (each one's module, file, what it draws, and the elements it names: #ids and .classes, which plugins place by; keep them to keep plugins working) and a short map of the app's folders. For where plugins can place in the window running now, use describe_elements. The reply links the template authoring guide (`guide`).",
+            description: "What Keplorayx's interface is made of, to find your way in a template: its screens (each one's module, file, what it draws, and the elements it names: #ids and .classes, which plugins place by; keep them to keep plugins working) and a short map of the app's folders. For where plugins can place in the window running now, use describe_elements. The reply links the template authoring guide (`guide`).",
             input_schema: json!({ "type": "object", "properties": {} }),
         },
         ToolDef {
             name: EXPORT_TEMPLATE,
-            description: "Share a template: save it as one signed .zeron-template file, signed with this device's key (the person's Zeron account vouches for it, as for their plugins). It holds the template's own files and its preview; the files no template may replace (screens/plugins, screens/templates, account/, .luaurc) are left out. Zeron's own can't be exported. It's saved in Zeron's exports folder (an earlier export of it there is replaced). Returns the file's path, how many files it holds and the key that signed it.",
+            description: "Share a template: save it as one signed .zeron-template file, signed with this device's key (the person's Keplorayx account vouches for it, as for their plugins). It holds the template's own files and its preview; the files no template may replace (screens/plugins, screens/templates, account/, .luaurc) are left out. Keplorayx's own can't be exported. It's saved in Keplorayx's exports folder (an earlier export of it there is replaced). Returns the file's path, how many files it holds and the key that signed it.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -290,7 +290,7 @@ pub(super) fn catalog() -> Vec<ToolDef> {
         },
         ToolDef {
             name: IMPORT_TEMPLATE,
-            description: "Install a template from a .zeron-template file (`path`) or a link (`url`: to a .zeron-template file, or a GitHub repository or release with one; a template from a link is checked there for updates). Zeron checks its signature over every file first: an unsigned or changed package is refused. One signed on this device installs at once (using it still runs as a preview until the person keeps it). Anyone else's waits for the person: a template runs as Zeron's own code with all its powers, so they must allow it in Zeron's window (Templates shows it waiting, with who signed it); you can't allow it for them. The reply says which: `installed` (its id), or `pending` with `needs_consent`. Files no template may replace are never installed (`ignored` names them). list_templates shows it once installed.",
+            description: "Install a template from a .zeron-template file (`path`) or a link (`url`: to a .zeron-template file, or a GitHub repository or release with one; a template from a link is checked there for updates). Keplorayx checks its signature over every file first: an unsigned or changed package is refused. One signed on this device installs at once (using it still runs as a preview until the person keeps it). Anyone else's waits for the person: a template runs as Keplorayx's own code with all its powers, so they must allow it in Keplorayx's window (Templates shows it waiting, with who signed it); you can't allow it for them. The reply says which: `installed` (its id), or `pending` with `needs_consent`. Files no template may replace are never installed (`ignored` names them). list_templates shows it once installed.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -456,7 +456,7 @@ impl Tools {
             "files": scaffold_files(dir).await,
             "status": item.get("status"),
             "hint": format!(
-                "Edit {dir}/init.luau; Zeron re-signs and reloads it as you save. Use {dir}/zeron.luau's helpers."
+                "Edit {dir}/init.luau; Keplorayx re-signs and reloads it as you save. Use {dir}/zeron.luau's helpers."
             ),
         });
         // The authoring guide, written on this device: read it first.
@@ -464,7 +464,7 @@ impl Tools {
             reply["guide"] = json!(guide);
             reply["guide_summary"] = item.get("guide_summary").cloned().unwrap_or(Value::Null);
             reply["hint"] = json!(format!(
-                "Read {guide} first (how to write a plugin, with examples). Then edit {dir}/init.luau; Zeron re-signs and reloads it as you save. Check it with plugin_status (snapshot: true)."
+                "Read {guide} first (how to write a plugin, with examples). Then edit {dir}/init.luau; Keplorayx re-signs and reloads it as you save. Check it with plugin_status (snapshot: true)."
             ));
         }
         Ok(reply)
@@ -502,7 +502,7 @@ impl Tools {
         let mut reply = self.zeron.call_rpc(method, params).await.map_err(plain)?;
         if method == methods::USE_TEMPLATE && reply["preview"] == json!(true) {
             reply["next"] = json!(
-                "Unless the person has kept this template, Zeron runs it as a preview with a bar to Keep or Revert it. Ask them to look; you can't keep it for them."
+                "Unless the person has kept this template, Keplorayx runs it as a preview with a bar to Keep or Revert it. Ask them to look; you can't keep it for them."
             );
         }
         Ok(reply)
@@ -531,7 +531,7 @@ impl Tools {
         let mut reply = self.zeron.call_rpc(method, params).await.map_err(plain)?;
         if reply["needs_consent"] == json!(true) {
             reply["next"] = json!(
-                "It's waiting for the person to allow it in Zeron (Templates shows it, with who signed it). Ask them to look; you can't allow it for them."
+                "It's waiting for the person to allow it in Keplorayx (Templates shows it, with who signed it). Ask them to look; you can't allow it for them."
             );
         }
         Ok(reply)
@@ -627,7 +627,7 @@ impl Tools {
             .map_err(plain)?;
         if reply["updates"].as_array().is_some_and(|u| !u.is_empty()) {
             reply["next"] = json!(
-                "To install an update, the person updates the plugin in Zeron (Settings → Plugins); you can't update it for them. Tell them what you found."
+                "To install an update, the person updates the plugin in Keplorayx (Settings → Plugins); you can't update it for them. Tell them what you found."
             );
         }
         Ok(reply)
@@ -662,7 +662,7 @@ fn installed(reply: Value) -> Value {
     }
     if reply["waiting"] == json!(true) {
         out["next"] = json!(
-            "It's waiting for the person to allow it in Zeron (a notice asks them, and Settings → Plugins shows who signed it and what it asks). Ask them to look; you can't allow it for them."
+            "It's waiting for the person to allow it in Keplorayx (a notice asks them, and Settings → Plugins shows who signed it and what it asks). Ask them to look; you can't allow it for them."
         );
     }
     out
@@ -750,7 +750,7 @@ mod tests {
                 methods::NEW_PLUGIN => RpcReply::Value(json!({
                     "id": params["id"], "name": params["name"], "dir": "/nowhere/plugins/focus",
                     "status": "on", "own": true,
-                    "guide": "/nowhere/docs/plugins.md", "guide_summary": "How to write a Zeron plugin.",
+                    "guide": "/nowhere/docs/plugins.md", "guide_summary": "How to write a Keplorayx plugin.",
                 })),
                 methods::LIST_PLUGINS => RpcReply::Value(json!({
                     "dirs": { "plugins": "/d/plugins", "templates": "/d/templates" },
@@ -763,7 +763,7 @@ mod tests {
                 methods::LIST_TEMPLATES => RpcReply::Value(json!({
                     "dir": "/d/templates", "active": "zeron",
                     "templates": [
-                        { "id": "zeron", "name": "Zeron", "builtin": true, "active": true, "status": "ok", "dir": "/d/templates/.zeron" },
+                        { "id": "zeron", "name": "Keplorayx", "builtin": true, "active": true, "status": "ok", "dir": "/d/templates/.zeron" },
                         { "id": "midnight", "name": "Midnight", "builtin": false, "active": false, "status": "errors",
                           "error": "ds/tokens.luau: boom", "dir": "/d/templates/midnight" },
                     ],
@@ -795,7 +795,7 @@ mod tests {
                     })),
                     Some("/x/bad.zeron-template") => {
                         return Err(RpcError::Failed(
-                            "This template was changed after it was signed, so Zeron won't install it.".into(),
+                            "This template was changed after it was signed, so Keplorayx won't install it.".into(),
                         ));
                     }
                     _ => RpcReply::Value(json!({
@@ -1076,7 +1076,7 @@ mod tests {
             .expect("plugin tool listed");
         assert_eq!(
             plugin.description,
-            "Count words in a text (From the Word Count plugin. Works while Zeron is open on Studio.)"
+            "Count words in a text (From the Word Count plugin. Works while Keplorayx is open on Studio.)"
         );
         assert_eq!(plugin.input_schema["required"], json!(["text"]));
         assert_eq!(listed.len(), tools.list().len() + 1);
@@ -1119,7 +1119,7 @@ mod tests {
     #[tokio::test]
     async fn a_plugin_tool_error_is_the_engine_message_and_an_is_error_result() {
         let engine = Arc::new(Engine {
-            call_error: Some("Open Zeron on Studio to use count_words"),
+            call_error: Some("Open Keplorayx on Studio to use count_words"),
             ..Engine::default()
         });
         let tools = tools_for(engine, None);
@@ -1128,7 +1128,7 @@ mod tests {
                 .call("word_count__count_words", json!({}))
                 .await
                 .unwrap_err(),
-            "Open Zeron on Studio to use count_words"
+            "Open Keplorayx on Studio to use count_words"
         );
         let reply = crate::jsonrpc::handle_request(
             &tools,
@@ -1140,7 +1140,7 @@ mod tests {
         assert_eq!(reply["result"]["isError"], true);
         assert_eq!(
             reply["result"]["content"][0]["text"],
-            "Open Zeron on Studio to use count_words"
+            "Open Keplorayx on Studio to use count_words"
         );
     }
 
@@ -1163,7 +1163,7 @@ mod tests {
         );
         assert_eq!(
             created["hint"],
-            "Read /nowhere/docs/plugins.md first (how to write a plugin, with examples). Then edit /nowhere/plugins/focus/init.luau; Zeron re-signs and reloads it as you save. Check it with plugin_status (snapshot: true)."
+            "Read /nowhere/docs/plugins.md first (how to write a plugin, with examples). Then edit /nowhere/plugins/focus/init.luau; Keplorayx re-signs and reloads it as you save. Check it with plugin_status (snapshot: true)."
         );
         assert_eq!(created["guide"], "/nowhere/docs/plugins.md");
         {

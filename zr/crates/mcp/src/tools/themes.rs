@@ -46,7 +46,7 @@ pub(super) fn catalog() -> Vec<ToolDef> {
     vec![
         ToolDef {
             name: LIST_THEMES,
-            description: "Every theme Zeron's window can wear on this device: built in, a template's own, and yours (imported or made with create_theme). Each has its id, name, source (\"built in\", \"a template's\" or \"yours\"), whether you can change it (editable: yours only), its variant for each scheme (variants: {light?, dark?}) and the schemes it's worn for now (in_use). `wearing` says what light and dark wear now; `guide` is the full reference (docs/themes.md).",
+            description: "Every theme Keplorayx's window can wear on this device: built in, a template's own, and yours (imported or made with create_theme). Each has its id, name, source (\"built in\", \"a template's\" or \"yours\"), whether you can change it (editable: yours only), its variant for each scheme (variants: {light?, dark?}) and the schemes it's worn for now (in_use). `wearing` says what light and dark wear now; `guide` is the full reference (docs/themes.md).",
             input_schema: json!({ "type": "object", "properties": {} }),
         },
         ToolDef {
@@ -89,7 +89,7 @@ pub(super) fn catalog() -> Vec<ToolDef> {
         },
         ToolDef {
             name: DELETE_THEME,
-            description: "Delete one of your themes from this device (built-in and template themes can't be deleted). A scheme it was worn for goes back to the template's theme, or to Zeron's.",
+            description: "Delete one of your themes from this device (built-in and template themes can't be deleted). A scheme it was worn for goes back to the template's theme, or to Keplorayx's.",
             input_schema: json!({ "type": "object", "properties": { "id": id("One of your themes' ids, from list_themes.") }, "required": ["id"] }),
         },
         ToolDef {
@@ -110,7 +110,7 @@ pub(super) fn catalog() -> Vec<ToolDef> {
 fn plain(error: RpcError) -> String {
     match error {
         RpcError::Failed(message) => message,
-        RpcError::UnknownMethod(_) => "This Zeron doesn't have theme tools yet; update Zeron to use them.".into(),
+        RpcError::UnknownMethod(_) => "This Keplorayx doesn't have theme tools yet; update Keplorayx to use them.".into(),
         other => other.to_string(),
     }
 }

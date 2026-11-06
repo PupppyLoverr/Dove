@@ -22,6 +22,8 @@ use zeron_proto::{
 use crate::transcript::{RenderOptions, RenderedMessage, render_entries};
 use crate::zeron::{HarnessInfo, TurnOutcome, Zeron, session_for, short};
 
+// Keplorayx's own: the desktop's widgets and its calendar.
+mod kx;
 mod plugins;
 mod themes;
 pub use plugins::ListedTool;
@@ -271,6 +273,7 @@ fn catalog() -> Vec<ToolDef> {
     });
     tools.extend(plugins::catalog());
     tools.extend(themes::catalog());
+    tools.extend(kx::catalog());
     tools
 }
 
@@ -284,7 +287,7 @@ const SHOW_IMAGE: &str = "show_image";
 const SHOW_IMAGE_DESCRIPTION: &str = "\
 Show an image file (a screenshot, a rendered chart or diagram, a photo) inline in this chat, above \
 your final text reply; call it before writing that reply, once per image, in the order they should \
-appear. PNG, JPEG, WebP, or GIF, at most 10 MB and 4096 pixels on a side. Zeron copies the file \
+appear. PNG, JPEG, WebP, or GIF, at most 10 MB and 4096 pixels on a side. Keplorayx copies the file \
 into the chat, so it stays visible after the file changes or is deleted. The reader \
 already sees the image, so the reply should not announce or describe it: add only what the image \
 doesn't show.";
@@ -296,10 +299,10 @@ than prose. The reader already sees it, so the reply should not announce, locate
 only what the visual doesn't say. To show an image file as it is (a screenshot, a photo), use \
 show_image instead.\n\
 \n\
-A visual is a Luau script (Lua 5.1 plus `+=`, `continue`, and `if` expressions). Zeron runs it in a \
+A visual is a Luau script (Lua 5.1 plus `+=`, `continue`, and `if` expressions). Keplorayx runs it in a \
 sandbox (no I/O or network; math.random is seeded, so data is the same on every render) and renders \
-what it returns with Zeron's own native interface. Build data and state at the top level, then return \
-a view function. Zeron calls the view again after every handler, so handlers just assign to state:\n\
+what it returns with Keplorayx's own native interface. Build data and state at the top level, then return \
+a view function. Keplorayx calls the view again after every handler, so handlers just assign to state:\n\
 \n\
 local s = ui.state { metric = \"p95\" }\n\
 local data = { { region = \"us-east\", p95 = 182, p99 = 240 }, { region = \"eu-west\", p95 = 140, p99 = 210 } }\n\
@@ -313,7 +316,7 @@ return function()\n\
   }\n\
 end\n\
 \n\
-Zeron runs the script before showing it (setup, render, every draw, and each tab, toggle, slider, and \
+Keplorayx runs the script before showing it (setup, render, every draw, and each tab, toggle, slider, and \
 button once) and returns the first error with its line; fix it and call again.\n\
 \n\
 Nodes are props tables: children are the array part, strings are plain text, nil and false children \
@@ -351,7 +354,7 @@ radians clockwise from 3 o'clock), g:text(x, y, str, { size, color, weight, alig
 effects with it); t is seconds, and animate = true redraws every frame while visible.\n\
 - ui.scene { height = 320, draw = function(s, t) ... end, orbit = true, spin = 0.3 (turntable \
 radians per second), camera = { yaw = 0.6, pitch = 0.45, zoom = 1 }, animate = bool }: real 3D, y up, \
-rendered on the GPU with depth, soft shadows from a key light, and bloom. Zeron frames the camera on \
+rendered on the GPU with depth, soft shadows from a key light, and bloom. Keplorayx frames the camera on \
 your geometry and the reader drags to orbit. Solids (box, sphere, cylinder, surface, mesh) take \
 material props: roughness (0 mirror to 1 matte), metal (0-1), glow (emits its color and blooms; \
 use for lamps, beams, highlights), glass = true (refracts what's behind it; ior = 1.5, dispersion \
@@ -412,7 +415,7 @@ Style, enforced: layout nodes have no fill, border, shadow, padding, or font pro
 of the reply, not a widget, so lay content directly on the chat with type, spacing, and alignment: no \
 cards, tiles, boxed panels, banners, or canvas backgrounds. Stats are a row of plain ui.stat figures; \
 a chart is a plain heading, then the chart; separate sections with gap or one ui.rule. Text renders \
-in Zeron's interface font at the reader's text size: body for most text, sm and xs for labels and \
+in Keplorayx's interface font at the reader's text size: body for most text, sm and xs for labels and \
 notes, lg and xl for headings, 2xl for a headline figure. The width is the reply column (about 720px, \
 as narrow as 360px), so lay out fluidly with grow, wrap, and grid, and give charts, canvases, and \
 scenes heights of 160-420px.";
@@ -800,6 +803,9 @@ impl Tools {
             }
             plugins::EXPORT_TEMPLATE | plugins::IMPORT_TEMPLATE => {
                 return self.template_packages(name, args).await;
+            }
+            widget if kx::NAMES.contains(&widget) => {
+                return kx::call(widget, &args);
             }
             theme if themes::NAMES.contains(&theme) => {
                 return self.themes(theme, args).await;
@@ -1433,7 +1439,7 @@ impl Tools {
             .origin()
             .chat_id
             .clone()
-            .context("show_visual only works from an agent Zeron launched in a chat")?;
+            .context("show_visual only works from an agent Keplorayx launched in a chat")?;
         let assets = read_visual_assets(&args.assets).await?;
         let shown = self
             .zeron
@@ -1460,7 +1466,7 @@ impl Tools {
             .origin()
             .chat_id
             .clone()
-            .context("show_image only works from an agent Zeron launched in a chat")?;
+            .context("show_image only works from an agent Keplorayx launched in a chat")?;
         let bytes = read_image(&args.path).await?;
         let name = std::path::Path::new(&args.path)
             .file_name()
@@ -1978,7 +1984,7 @@ mod tests {
         let start = SHOW_VISUAL_DESCRIPTION.find("local s = ui.state").unwrap();
         let end = start
             + SHOW_VISUAL_DESCRIPTION[start..]
-                .find("\n\nZeron runs the script")
+                .find("\n\nKeplorayx runs the script")
                 .unwrap();
         let report = zeron_visual::check(&SHOW_VISUAL_DESCRIPTION[start..end], 1).unwrap();
         assert_eq!(report.interactions, 2, "both tabs");

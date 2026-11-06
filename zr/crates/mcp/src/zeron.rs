@@ -182,7 +182,7 @@ impl Zeron {
             .await
             .map_err(|e| {
                 anyhow!(
-                    "no Zeron engine reachable at ws://127.0.0.1:{port} ({e}) — is Zeron running?"
+                    "no Keplorayx engine reachable at ws://127.0.0.1:{port} ({e}) — is Keplorayx running?"
                 )
             })?;
         let client = Arc::new(client);
