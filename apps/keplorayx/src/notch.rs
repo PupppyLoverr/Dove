@@ -20,6 +20,9 @@ pub const SIZE: (f64, f64) = (680., 460.);
 /// Dynamic Island's.
 pub const SPRING: (f64, f64) = (340., 26.);
 
+/// Room round the pill for its shadow, in points.
+const SHADOW: f64 = 14.;
+
 /// Whether the notch opens beside the main window.
 pub fn enabled() -> bool {
     std::env::var_os("KX_NOTCH").is_none_or(|v| v != "0")
@@ -134,9 +137,11 @@ fn reveal(cx: &mut WindowContext, host: &zgx_script::ScriptHost) {
     let near = host.shared("notch.near", false);
     let window = cx.window.clone();
     window.set_pointer_passthrough(true);
-    // Its glass, always: the region decides how much of it shows.
-    window.set_glass(Some(zgx_desktop::Glass::new(zgx_desktop::GlassMaterial::Hud).plain()));
-    let (aim, aimed) = flume::unbounded::<(f64, f64, f64)>();
+    // No system glass: Windows draws its blur over the whole window, past
+    // any region (the box of glass round the island). notch.luau draws the
+    // pill itself, its edges smooth, on a transparent window.
+    window.set_glass(None);
+    let (aim, aimed) = flume::unbounded::<[f64; 4]>();
     std::thread::Builder::new()
         .name("kx-notch-shape".into())
         .spawn(move || shape(aimed))
@@ -147,16 +152,16 @@ fn reveal(cx: &mut WindowContext, host: &zgx_script::ScriptHost) {
             Some(zgx_script::Value::Num(v)) => *v,
             _ => 0.,
         };
-        let (w, h, r) = (n("w").max(0.), n("h").max(0.), n("r").max(0.));
+        let (w, h, r, y) = (n("w").max(0.), n("h").max(0.), n("r").max(0.), n("y"));
         let interactive = matches!(req.field("interactive"), Some(zgx_script::Value::Bool(true)));
         let scale = system_scale();
         let (pw, ph) = ((w * scale).round(), (h * scale).round());
         let left = (screen_width() - pw) / 2.;
         if let Ok(mut rect) = RECT.lock() {
-            *rect = (left, 0., pw, ph);
+            *rect = (left, (y * scale).max(0.), pw, ph);
         }
         resize.set_pointer_passthrough(!interactive);
-        let _ = aim.send((w, h, r));
+        let _ = aim.send([w, h, r, y]);
     });
     let (tell, heard) = flume::unbounded::<bool>();
     std::thread::Builder::new()
@@ -170,45 +175,72 @@ fn reveal(cx: &mut WindowContext, host: &zgx_script::ScriptHost) {
     });
 }
 
-/// The island's shape, sprung: a pill hanging from the screen's top edge
-/// (its top flush with it, its bottom corners round), cut out of the still
-/// window as its region, so the glass grows down from the edge and morphs
-/// between sizes with the Dynamic Island's overshoot, and clicks outside it
-/// reach what's under. Woken by each new aim (w, h, corner, in points);
-/// asleep once it settles.
+/// The island's shape, sprung: a pill floating a few points under the
+/// screen's top edge, every corner round, cut out of the still window as
+/// its region, so the glass drops in from above the edge and morphs between
+/// sizes with the Dynamic Island's overshoot, and clicks outside it reach
+/// what's under. Woken by each new aim (w, h, corner, how far down, in
+/// points); asleep once it settles.
 #[cfg(windows)]
-fn shape(aimed: flume::Receiver<(f64, f64, f64)>) {
+fn shape(aimed: flume::Receiver<[f64; 4]>) {
     use windows_sys::Win32::{
         Graphics::Dwm::{DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND, DwmSetWindowAttribute},
-        Graphics::Gdi::{CreateRectRgn, CreateRoundRectRgn, SetWindowRgn},
+        Graphics::Gdi::{CreateRectRgn, SetWindowRgn},
     };
     let scale = system_scale();
     let (k, c) = SPRING;
-    // Now and how fast, each of w, h and the corner.
-    let mut now = [0f64; 3];
-    let mut speed = [0f64; 3];
-    let mut aim = [0f64; 3];
-    let mut window = None;
+    // Now and how fast, each of w, h, the corner and how far down.
+    let mut now = [0f64; 4];
+    let mut speed = [0f64; 4];
+    let mut aim = [0f64; 4];
     let step = 1. / 120.;
+    // Nothing shows until the script says what: the window exists before
+    // its first shape, and uncut it's a box of glass the size of the
+    // largest island.
+    let mut window = None;
+    for _ in 0..200 {
+        if let Some(h) = own_window() {
+            // SAFETY: our own window; an empty region it then owns, and a
+            // plain attribute (no system corners: the region is its shape).
+            unsafe {
+                SetWindowRgn(h as _, CreateRectRgn(0, 0, 0, 0), 1);
+                if let Ok(mut c) = CUT.lock() {
+                    *c = Some((h as isize, None));
+                }
+                let pref = DWMWCP_DONOTROUND;
+                DwmSetWindowAttribute(h, DWMWA_WINDOW_CORNER_PREFERENCE as u32, (&pref as *const i32).cast(), 4);
+            }
+            window = Some(h);
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let mut first = true;
     loop {
         // Asleep until there's somewhere to go.
-        let settled = (0..3).all(|i| (now[i] - aim[i]).abs() < 0.25 && speed[i].abs() < 0.5);
+        let settled = (0..4).all(|i| (now[i] - aim[i]).abs() < 0.25 && speed[i].abs() < 0.5);
         let next = if settled { aimed.recv().ok() } else { aimed.try_recv().ok() };
         if settled && next.is_none() {
             return;
         }
-        if let Some((w, h, r)) = next {
-            aim = [w, h, r];
+        if let Some(next) = next {
+            aim = next;
+            // (It starts from where it rests, above the edge, not from
+            // nothing at the window's corner.)
+            if first {
+                first = false;
+                now = [aim[0], aim[1], aim[2], aim[3]];
+            }
         }
         let started = std::time::Instant::now();
-        for i in 0..3 {
+        for i in 0..4 {
             // (Semi-implicit Euler, at 120 a second.)
             speed[i] += (k * (aim[i] - now[i]) - c * speed[i]) * step;
             now[i] += speed[i] * step;
         }
-        if (0..3).all(|i| (now[i] - aim[i]).abs() < 0.25 && speed[i].abs() < 0.5) {
+        if (0..4).all(|i| (now[i] - aim[i]).abs() < 0.25 && speed[i].abs() < 0.5) {
             now = aim;
-            speed = [0.; 3];
+            speed = [0.; 4];
         }
         let hwnd = match window {
             Some(h) => h,
@@ -230,25 +262,25 @@ fn shape(aimed: flume::Receiver<(f64, f64, f64)>) {
         let full = SIZE.0 * scale;
         let (w, h) = ((now[0].max(0.) * scale).round(), (now[1].max(0.) * scale).round());
         let r = (now[2].max(0.) * scale).min(h / 2.).min(w / 2.).round();
-        let left = ((full - w) / 2.).round();
-        // SAFETY: a region made here and handed to our own window, which
-        // owns it from then on.
-        unsafe {
-            let region = if w < 1. || h < 1. {
-                CreateRectRgn(0, 0, 0, 0)
-            } else {
-                // (Its top corners above the window, so cut off: flush.)
-                CreateRoundRectRgn(
-                    left as i32,
-                    -(r as i32) - 1,
-                    (left + w) as i32 + 1,
-                    h as i32 + 1,
-                    (2. * r) as i32,
-                    (2. * r) as i32,
-                )
-            };
-            SetWindowRgn(hwnd as _, region, 1);
+        let (left, top) = (((full - w) / 2.).round(), (now[3] * scale).round());
+        // (The region is where clicks land, and room for the pill's soft
+        // shadow beside and under it.)
+        let pad = (SHADOW * scale).round();
+        let cut = if w < 1. || h < 1. || top + h <= 0. {
+            None
+        } else {
+            Some([
+                (left - pad) as i32,
+                top as i32 - 1,
+                (left + w + pad) as i32 + 1,
+                (top + h + pad * 1.5) as i32 + 1,
+                (2. * (r + pad)) as i32,
+            ])
+        };
+        if let Ok(mut c) = CUT.lock() {
+            *c = Some((hwnd as isize, cut));
         }
+        cut_to(hwnd, cut);
         let spent = started.elapsed();
         if let Some(rest) = std::time::Duration::from_secs_f64(step).checked_sub(spent) {
             std::thread::sleep(rest);
@@ -257,8 +289,58 @@ fn shape(aimed: flume::Receiver<(f64, f64, f64)>) {
 }
 
 #[cfg(not(windows))]
-fn shape(aimed: flume::Receiver<(f64, f64, f64)>) {
+fn shape(aimed: flume::Receiver<[f64; 4]>) {
     while aimed.recv().is_ok() {}
+}
+
+/// The shape last cut (the window, and left, top, right, bottom, corner in
+/// pixels, or None for nothing): the pointer's watcher checks the window
+/// still has it. (The window loses its region when the system or zgx
+/// re-applies its glass or shows it, and uncut it's a box of glass the size
+/// of the largest island.)
+static CUT: std::sync::Mutex<Option<(isize, Option<[i32; 5]>)>> = std::sync::Mutex::new(None);
+
+/// Cuts `hwnd` to `cut`.
+#[cfg(windows)]
+fn cut_to(hwnd: windows_sys::Win32::Foundation::HWND, cut: Option<[i32; 5]>) {
+    use windows_sys::Win32::Graphics::Gdi::{CreateRectRgn, CreateRoundRectRgn, SetWindowRgn};
+    // SAFETY: a region made here and handed to our own window, which owns
+    // it from then on.
+    unsafe {
+        let region = match cut {
+            None => CreateRectRgn(0, 0, 0, 0),
+            Some([l, t, r, b, c]) => CreateRoundRectRgn(l, t, r, b, c, c),
+        };
+        SetWindowRgn(hwnd as _, region, 1);
+    }
+}
+
+/// Whether the window still has the shape last cut; cut again if not.
+#[cfg(windows)]
+fn keep_cut() {
+    use windows_sys::Win32::{
+        Foundation::RECT,
+        Graphics::Gdi::{GetWindowRgnBox, NULLREGION},
+    };
+    let Some((hwnd, cut)) = CUT.lock().ok().and_then(|c| *c) else { return };
+    let hwnd = hwnd as windows_sys::Win32::Foundation::HWND;
+    let mut b = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+    // SAFETY: a plain query of our own window.
+    let kind = unsafe { GetWindowRgnBox(hwnd, &mut b) };
+    let holds = match cut {
+        None => kind == NULLREGION,
+        // (The box of a round rect: its sides, give or take a pixel.)
+        Some([l, t, r, bottom, _]) => {
+            kind != 0
+                && (b.left - l.max(0)).abs() <= 1
+                && (b.top - t.max(0)).abs() <= 1
+                && (b.right - r).abs() <= 2
+                && (b.bottom - bottom).abs() <= 2
+        }
+    };
+    if !holds {
+        cut_to(hwnd, cut);
+    }
 }
 
 /// This process's island window (another Keplorayx's has the same title).
@@ -313,6 +395,7 @@ fn watch(tell: flume::Sender<bool>) {
     let (mut shown, mut rested, mut away) = (false, 0u32, 0u32);
     loop {
         std::thread::sleep(std::time::Duration::from_millis(if shown { 50 } else { 90 }));
+        keep_cut();
         let mut p = POINT { x: 0, y: 0 };
         // SAFETY: a plain query.
         if unsafe { GetCursorPos(&mut p) } == 0 {

@@ -182,10 +182,13 @@ local state = ui.computed(function(): string
 	return "hidden"
 end)
 
--- Each state's pill, in points: its width, its height down from the
--- screen's edge, its bottom corners, and whether it takes clicks. (The
--- Dynamic Island's: compact, a banner, and expanded by what it shows.)
-type Shape = { w: number, h: number, r: number, interactive: boolean }
+-- Each state's pill, in points: its width and height, its corners, how far
+-- below the screen's edge it floats (above it, out of sight, while it
+-- rests), and whether it takes clicks. (The Dynamic Island's: compact, a
+-- banner, and expanded by what it shows.)
+type Shape = { w: number, h: number, r: number, y: number, interactive: boolean }
+-- (The gap between the screen's edge and the island.)
+local FLOAT = 8
 local SPRING = { stiffness = 340, damping = 26 }
 
 -- The clock, while music shows and plays.
@@ -280,6 +283,22 @@ local function asking(w: () -> Waiting?, compact: boolean): Node
 end
 
 -- ── Music's pieces ───────────────────────────────────────────────────
+
+local function pill(text: string, strong: boolean, run: () -> ()): Node
+	return ui.button {
+		h = 28,
+		px = 12,
+		rounded = "$radius.full",
+		items = "center",
+		bg = if strong then "#ffffff" else "#ffffff1f",
+		hover = { bg = if strong then "#ffffffd9" else "#ffffff33" },
+		active = { scale = 0.95 },
+		color = if strong then "#000000" else "#ffffffe6",
+		label = text,
+		on_click = run,
+		ui.text { text, literal = true, text_size = "$font.size.xs", weight = "$font.weight.semibold" },
+	}
+end
 
 -- A key on the island: its glyph alone, white, dimming under the pointer.
 local function key(icon: string, what: string, name: string, size: number?): Node
@@ -596,9 +615,9 @@ local function music_row(big: boolean): Node
 			items = "center",
 			justify = "center",
 			w_full = true,
-			key("media-previous", "previous", "Previous", 30),
-			play_key(36),
-			key("media-next", "next", "Next", 30),
+			key("media-rewind", "previous", "Previous", 32),
+			play_key(38),
+			key("media-forward", "next", "Next", 32),
 		},
 	}
 end
@@ -675,45 +694,213 @@ local function heading(text: string): Node
 	return ui.text { text, literal = true, text_size = "$font.size.xs", weight = "$font.weight.medium", color = "$text.tertiary" }
 end
 
+-- A tile on the island: a rounded well of light on the black.
+local function tile(props: { [any]: any }): Node
+	local p: { [any]: any } = {
+		rounded = 22,
+		bg = "#ffffff0f",
+		border = 1,
+		border_color = "#ffffff0d",
+		p = 14,
+		gap = "$space.2",
+	}
+	for k, v in props do
+		p[k] = v
+	end
+	return ui.column(p)
+end
+
+local function label(text: string | () -> string): Node
+	return ui.text {
+		function()
+			return string.upper(if type(text) == "function" then text() else text)
+		end,
+		literal = true,
+		text_size = ui.raw(10, "a tile's label"),
+		weight = "$font.weight.semibold",
+		color = "#ffffff73",
+		letter_spacing = 0.6,
+	}
+end
+
+local function grey(text: any, size: string?): Node
+	return ui.text { text, literal = true, truncate = true, text_size = size or "$font.size.xs", color = "#ffffff8c" }
+end
+
+-- An agent at a glance: its mark, its thread, how it stands.
+local function agent_line(t: store.Thread): Node
+	local waits: Waiting? = nil
+	for _, w in attention:peek() do
+		if w.thread_id == t.id then
+			waits = w
+		end
+	end
+	return ui.button {
+		w_full = true,
+		h = 34,
+		gap = "$space.2",
+		items = "center",
+		px = 6,
+		rounded = 12,
+		bg = "#00000000",
+		hover = { bg = "#ffffff0f" },
+		on_click = function()
+			open_thread(t.id)
+		end,
+		kx.AgentMark { agent = t.harness_id, size = 16 },
+		ui.text { t.title, literal = true, truncate = true, grow = 1, min_w = 0, text_size = "$font.size.sm", color = "#ffffffe6" },
+		if waits
+			then ui.row {
+				gap = 4,
+				pill("Deny", false, function()
+					decide(waits, "deny")
+				end),
+				pill("Allow", true, function()
+					decide(waits, "allow_once")
+				end),
+			}
+			elseif t.status == "running" then kx.Spinner { size = 13 }
+			elseif t.status == "failed" then kx.StatusIcon { kind = "failed", size = 13 }
+			else kx.StatusIcon { kind = "done", size = 13 },
+	}
+end
+
+-- The ask: a pill to type in, and a round key to send.
+local function ask_pill(): Node
+	return ui.row {
+		w_full = true,
+		h = 40,
+		gap = "$space.2",
+		items = "center",
+		pl = 14,
+		pr = 4,
+		rounded = "$radius.full",
+		bg = "#ffffff12",
+		border = 1,
+		border_color = "#ffffff0d",
+		ui.column { color = "$accent", kx.Icon { name = "orbit", size = 15 } },
+		ui.input {
+			value = ask_text,
+			placeholder = "Ask an agent…",
+			placeholder_color = "#ffffff66",
+			label = "Ask an agent",
+			grow = 1,
+			min_w = 0,
+			h = 32,
+			bg = "#00000000",
+			border = 0,
+			color = "#ffffffeb",
+			text_size = "$font.size.sm",
+			on_key = function(e: any): boolean?
+				if e.key == "Enter" then
+					ask()
+					return true
+				end
+				return false
+			end,
+		},
+		ui.button {
+			w = 32,
+			h = 32,
+			rounded = "$radius.full",
+			items = "center",
+			justify = "center",
+			bg = function()
+				return if string.match(ask_text:get(), "^%s*$") then "#ffffff26" else "#ffffff"
+			end,
+			color = "#000000",
+			label = "Ask",
+			on_click = ask,
+			ui.show(ask_busy, kx.Spinner { size = 12 }, kx.Icon { name = "arrow-up", size = 15 }),
+		},
+	}
+end
+
 local function home(): Node
 	return ui.column {
-		gap = "$space.4",
+		gap = 10,
 		w_full = true,
 		ui.row {
-			gap = "$space.4",
-			items = "end",
+			gap = 10,
 			w_full = true,
-			ui.text { clock, literal = true, font = "$kx.display", text_size = ui.raw(44, "the island's clock"), tabular = true },
-			ui.column {
-				pb = 6,
-				quiet(function()
-					return string.upper(now:get().weekday)
-				end, "$font.size.xs"),
-				ui.text {
-					function()
-						local t = now:get()
-						return `{t.day} {t.month}`
-					end,
-					literal = true,
-					weight = "$font.weight.medium",
+			h = 132,
+			-- The time.
+			tile {
+				w = 196,
+				h_full = true,
+				justify = "between",
+				label(function()
+					return now:get().weekday
+				end),
+				ui.text { clock, literal = true, font = "$kx.display", text_size = ui.raw(52, "the island's clock"), color = "#ffffff", tabular = true },
+				grey(function()
+					local t = now:get()
+					return `{t.day} {t.month}`
+				end, "$font.size.sm"),
+			},
+			-- What's playing.
+			tile {
+				grow = 1,
+				min_w = 0,
+				h_full = true,
+				justify = "between",
+				ui.row {
+					w_full = true,
+					gap = "$space.3",
+					items = "center",
+					cover(48, 12),
+					ui.column {
+						grow = 1,
+						min_w = 0,
+						gap = 1,
+						white(song("title"), "$font.size.sm", "$font.weight.semibold"),
+						grey(song("by")),
+					},
+					waveform(5, 20),
+				},
+				ui.row {
+					w_full = true,
+					justify = "center",
+					gap = 22,
+					items = "center",
+					key("media-rewind", "previous", "Previous", 18),
+					play_key(22),
+					key("media-forward", "next", "Next", 18),
 				},
 			},
 		},
-		ui.row {
-			gap = "$space.2",
-			items = "center",
+		-- Your agents.
+		tile {
 			w_full = true,
-			kx.Field {
-				value = ask_text,
-				placeholder = "Ask an agent…",
-				label = "Ask an agent",
-				grow = 1,
-				on_commit = ask,
+			gap = 4,
+			py = 10,
+			ui.row {
+				w_full = true,
+				justify = "between",
+				items = "center",
+				px = 6,
+				label("Agents"),
+				grey(function()
+					local n = #working:get()
+					return if n == 0 then "None working" elseif n == 1 then "1 working" else `{n} working`
+				end),
 			},
-			kx.Button { tone = "primary", size = "sm", busy = ask_busy, on_click = ask, "Ask" },
+			ui.show(function()
+				return #home_threads:get() > 0
+			end, ui.each(home_threads, agent_line, {
+				key = function(t: store.Thread)
+					return `{t.id}:{t.status}`
+				end,
+				gap = 0,
+			}), ui.row {
+				w_full = true,
+				h = 34,
+				px = 6,
+				items = "center",
+				grey("Nothing yet. Ask one below.", "$font.size.sm"),
+			}),
 		},
-		ui.column { gap = "$space.1", w_full = true, heading("AGENTS"), thread_list(home_threads) },
-		music_row(false),
+		ask_pill(),
 	}
 end
 
@@ -746,15 +933,16 @@ end
 local function timer(): Node
 	local presets: { [any]: any } = { gap = "$space.2", items = "center" }
 	for _, m in { 5, 15, 25, 50 } do
-		table.insert(presets, kx.Button { tone = "secondary", size = "sm", on_click = function()
+		table.insert(presets, pill(`{m} min`, false, function()
 			start_timer(m)
-		end, `{m} min` })
+		end))
 	end
 	return ui.column {
 		gap = "$space.4",
 		w_full = true,
+		h_full = true,
 		items = "center",
-		pt = "$space.4",
+		justify = "center",
 		ui.text {
 			function()
 				local l = timer_left:get()
@@ -762,16 +950,23 @@ local function timer(): Node
 			end,
 			literal = true,
 			font = "$kx.display",
-			text_size = ui.raw(64, "the timer's figures"),
+			text_size = ui.raw(72, "the timer's figures"),
+			color = function()
+				return if timer_left:get() > 0 then "#ffffff" else "#ffffff59"
+			end,
 			tabular = true,
 		},
-		ui.row(presets),
-		ui.show(function()
-			return timer_left:get() > 0
-		end, kx.Button { tone = "ghost", size = "sm", on_click = function()
-			timer_end:set(0)
-			timer_left:set(0)
-		end, "Stop" }),
+		ui.presence(function(): string
+			return if timer_left:get() > 0 then "running" else "idle"
+		end, function(k: string): Node
+			if k == "running" then
+				return pill("Stop", true, function()
+					timer_end:set(0)
+					timer_left:set(0)
+				end)
+			end
+			return ui.row(presets)
+		end, { enter = { opacity = { 0, 1 }, duration = 140 }, exit = { opacity = 0, duration = 60 }, mode = "wait" }),
 	}
 end
 
@@ -813,136 +1008,145 @@ local function ago(at: number): string
 end
 
 local function tray_page(): Node
-	return ui.column {
-		w_full = true,
-		h_full = true,
-		gap = "$space.2",
-		ui.show(
-			function()
-				return #tray:get() > 0
-			end,
+	local function file_tile(k: Kept): Node
+		local ext = string.upper(string.match(k.name, "%.([%w]+)$") or "FILE")
+		return ui.column {
+			w = 92,
+			gap = 6,
+			items = "center",
+			ui.button {
+				w = 72,
+				h = 72,
+				rounded = 18,
+				bg = "#ffffff12",
+				border = 1,
+				border_color = "#ffffff0d",
+				hover = { bg = "#ffffff1f" },
+				items = "center",
+				justify = "center",
+				gap = 2,
+				label = `Open {k.name}`,
+				tooltip = k.path,
+				on_click = function()
+					pcall(ui.invoke, "open_url", k.path)
+				end,
+				ui.column { color = "#ffffffcc", kx.Icon { name = "document", size = 24 } },
+				ui.text { string.sub(ext, 1, 5), literal = true, text_size = ui.raw(9, "a file's kind"), weight = "$font.weight.semibold", color = "#ffffff80" },
+			},
+			ui.text { k.name, literal = true, truncate = true, max_w = 92, text_size = "$font.size.xs", color = "#ffffffd9" },
+			ui.row {
+				gap = 2,
+				ui.button { w = 22, h = 22, rounded = "$radius.full", items = "center", justify = "center", bg = "#00000000", hover = { bg = "#ffffff1a" }, color = "#ffffff8c", label = "Show in folder", tooltip = "Show in folder", on_click = function()
+					pcall(ui.invoke, "notch.reveal", k.path)
+				end, kx.Icon { name = "folder", size = 12 } },
+				ui.button { w = 22, h = 22, rounded = "$radius.full", items = "center", justify = "center", bg = "#00000000", hover = { bg = "#ffffff1a" }, color = "#ffffff8c", label = "Take it away", tooltip = "Take it away", on_click = function()
+					local list = {}
+					for _, x in tray:peek() do
+						if x.path ~= k.path then
+							table.insert(list, x)
+						end
+					end
+					tray:set(list)
+				end, kx.Icon { name = "close", size = 11 } },
+			},
+		}
+	end
+	return ui.show(
+		function()
+			return #tray:get() > 0
+		end,
+		ui.scroll {
+			w_full = true,
+			h_full = true,
+			ui.row {
+				w_full = true,
+				wrap = true,
+				gap = 8,
+				ui.each(tray, file_tile, {
+					key = function(k: Kept)
+						return k.path
+					end,
+				}),
+			},
+		},
+		ui.column {
+			w_full = true,
+			h_full = true,
+			items = "center",
+			justify = "center",
+			gap = "$space.2",
+			rounded = 22,
+			border = 1,
+			border_color = "#ffffff24",
+			border_style = "dashed",
+			ui.column { color = "#ffffff99", kx.Icon { name = "tray", size = 28 } },
+			white("Drop files here", "$font.size.sm", "$font.weight.semibold"),
+			grey("Drag them to the top of the screen. They wait here until you take them away."),
+		}
+	)
+end
+
+local function alerts_page(): Node
+	return ui.show(
+		function()
+			return #alerts:get() > 0
+		end,
+		ui.column {
+			w_full = true,
+			h_full = true,
+			gap = 6,
+			ui.row {
+				w_full = true,
+				justify = "between",
+				items = "center",
+				px = 6,
+				label("Recent"),
+				pill("Clear", false, function()
+					alerts:set({})
+				end),
+			},
 			ui.scroll {
 				w_full = true,
 				grow = 1,
 				ui.column {
 					w_full = true,
-					gap = 2,
-					ui.each(tray, function(k: Kept): Node
-						return ui.row {
+					gap = 0,
+					ui.each(alerts, function(a: Alert): Node
+						return ui.button {
 							w_full = true,
-							gap = "$space.2",
+							h = 38,
+							gap = "$space.3",
 							items = "center",
-							px = "$space.2",
-							py = 4,
-							rounded = "$radius.md",
-							hover = { bg = "$kx.accent.soft" },
-							kx.Icon { name = "document", size = 14 },
-							ui.text { k.name, literal = true, truncate = true, grow = 1, min_w = 0, text_size = "$font.size.sm" },
-							kx.Button { tone = "ghost", size = "xs", on_click = function()
-								pcall(ui.invoke, "open_url", k.path)
-							end, "Open" },
-							kx.Button { tone = "ghost", size = "xs", on_click = function()
-								pcall(ui.invoke, "notch.reveal", k.path)
-							end, "Show" },
-							kx.Button { tone = "ghost", size = "xs", icon = true, label = "Take it away", on_click = function()
-								local list = {}
-								for _, x in tray:peek() do
-									if x.path ~= k.path then
-										table.insert(list, x)
-									end
-								end
-								tray:set(list)
-							end, kx.Icon { name = "close", size = 12 } },
+							px = 8,
+							rounded = 12,
+							bg = "#00000000",
+							hover = { bg = "#ffffff0f" },
+							on_click = function()
+								open_thread(a.thread)
+							end,
+							kx.StatusIcon { kind = if a.kind == "failed" then "failed" elseif a.kind == "asked" then "approval" else "done", size = 14 },
+							ui.text { a.title, literal = true, truncate = true, grow = 1, min_w = 0, text_size = "$font.size.sm", color = "#ffffffe6" },
+							ui.text { ago(a.at), literal = true, text_size = "$font.size.xs", color = "#ffffff73", tabular = true },
 						}
 					end, {
-						key = function(k: Kept)
-							return k.path
+						key = function(a: Alert)
+							return `{a.thread}:{a.at}:{a.kind}`
 						end,
 					}),
 				},
 			},
-			ui.column {
-				w_full = true,
-				grow = 1,
-				items = "center",
-				justify = "center",
-				gap = "$space.2",
-				color = "$text.tertiary",
-				kx.Icon { name = "tray", size = 28 },
-				ui.text { "Drop files here to keep them close", literal = true, text_size = "$font.size.sm", color = "$text.secondary" },
-				ui.text { "Drag them to the top of the screen; the island opens to take them.", literal = true, text_size = "$font.size.xs", color = "$text.tertiary" },
-			}
-		),
-	}
-end
-
-local function alerts_page(): Node
-	return ui.column {
-		w_full = true,
-		h_full = true,
-		gap = "$space.2",
-		ui.show(
-			function()
-				return #alerts:get() > 0
-			end,
-			ui.column {
-				w_full = true,
-				grow = 1,
-				gap = "$space.2",
-				ui.row {
-					w_full = true,
-					justify = "between",
-					items = "center",
-					px = "$space.2",
-					ui.text { "Recent", literal = true, text_size = "$font.size.xs", weight = "$font.weight.medium", color = "$text.tertiary" },
-					kx.Button { tone = "ghost", size = "xs", on_click = function()
-						alerts:set({})
-					end, "Clear" },
-				},
-				ui.scroll {
-					w_full = true,
-					grow = 1,
-					ui.column {
-						w_full = true,
-						gap = 2,
-						ui.each(alerts, function(a: Alert): Node
-							return ui.button {
-								w_full = true,
-								gap = "$space.2",
-								items = "center",
-								px = "$space.2",
-								py = 5,
-								rounded = "$radius.md",
-								bg = "#00000000",
-								hover = { bg = "$kx.accent.soft" },
-								on_click = function()
-									open_thread(a.thread)
-								end,
-								kx.StatusIcon { kind = if a.kind == "failed" then "failed" elseif a.kind == "asked" then "approval" else "done", size = 13 },
-								ui.text { a.title, literal = true, truncate = true, grow = 1, min_w = 0, text_size = "$font.size.sm" },
-								ui.text { ago(a.at), literal = true, text_size = "$font.size.xs", color = "$text.tertiary", tabular = true },
-							}
-						end, {
-							key = function(a: Alert)
-								return `{a.thread}:{a.at}:{a.kind}`
-							end,
-						}),
-					},
-				},
-			},
-			ui.column {
-				w_full = true,
-				grow = 1,
-				items = "center",
-				justify = "center",
-				gap = "$space.2",
-				color = "$text.tertiary",
-				kx.Icon { name = "bell", size = 28 },
-				ui.text { "Nothing yet", literal = true, text_size = "$font.size.sm", color = "$text.secondary" },
-				ui.text { "Finishes, failures and what agents ask land here.", literal = true, text_size = "$font.size.xs", color = "$text.tertiary" },
-			}
-		),
-	}
+		},
+		ui.column {
+			w_full = true,
+			h_full = true,
+			items = "center",
+			justify = "center",
+			gap = "$space.2",
+			ui.column { color = "#ffffff80", kx.Icon { name = "bell", size = 28 } },
+			white("All quiet", "$font.size.sm", "$font.weight.semibold"),
+			grey("Finishes, failures and what agents ask land here."),
+		}
+	)
 end
 
 local TABS = {
@@ -987,18 +1191,48 @@ end
 
 local function page(id: string): Node
 	if id == "agents" then
-		return ui.scroll { w_full = true, h_full = true, ui.column { w_full = true, thread_list(all_threads) } }
+		return ui.show(function()
+			return #all_threads:get() > 0
+		end, ui.scroll {
+			w_full = true,
+			h_full = true,
+			ui.column {
+				w_full = true,
+				gap = 0,
+				ui.each(all_threads, agent_line, {
+					key = function(t: store.Thread)
+						return `{t.id}:{t.status}`
+					end,
+				}),
+			},
+		}, ui.column {
+			w_full = true,
+			h_full = true,
+			items = "center",
+			justify = "center",
+			gap = "$space.2",
+			ui.column { color = "#ffffff80", kx.Icon { name = "bot", size = 28 } },
+			white("No agents yet", "$font.size.sm", "$font.weight.semibold"),
+			grey("Ask one from Home, or press Alt Space."),
+		})
 	elseif id == "music" then
 		return ui.column { w_full = true, pt = "$space.2", music_row(true) }
 	elseif id == "notes" then
-		return ui.textarea {
-			value = note,
-			placeholder = "A note to keep…",
+		return tile {
 			w_full = true,
-			grow = 1,
-			text_size = "$font.size.sm",
-			bg = "#00000000",
-			border = 0,
+			h_full = true,
+			p = 4,
+			ui.textarea {
+				value = note,
+				placeholder = "A note to keep…",
+				w_full = true,
+				grow = 1,
+				p = 12,
+				color = "#ffffffe6",
+				text_size = "$font.size.sm",
+				bg = "#00000000",
+				border = 0,
+			},
 		}
 	elseif id == "timer" then
 		return timer()
@@ -1059,19 +1293,31 @@ end
 
 local function shape_of(kind: string, page: string, slim_as: string): Shape
 	if kind == "hidden" then
-		-- (While something waits, a warm sliver at the edge.)
-		return if first:peek() then { w = 150, h = 5, r = 2.5, interactive = false } else { w = 150, h = 0, r = 0, interactive = false }
+		-- While something waits, a warm sliver at the edge; else the pill
+		-- waits above it, out of sight, to drop in from there.
+		return if first:peek()
+			then { w = 150, h = 5, r = 2.5, y = 0, interactive = false }
+			else { w = 220, h = 36, r = 18, y = -48, interactive = false }
 	elseif kind == "slim" then
-		return if slim_as == "waiting" then { w = 500, h = 48, r = 24, interactive = true } else { w = 360, h = 38, r = 19, interactive = true }
+		return if slim_as == "waiting"
+			then { w = 500, h = 48, r = 24, y = FLOAT, interactive = true }
+			else { w = 360, h = 38, r = 19, y = FLOAT, interactive = true }
 	elseif kind == "alert" then
-		return { w = 520, h = 72, r = 32, interactive = true }
+		return { w = 520, h = 72, r = 30, y = FLOAT, interactive = true }
 	elseif kind == "flash" then
-		return { w = 400, h = 46, r = 23, interactive = true }
+		return { w = 400, h = 46, r = 23, y = FLOAT, interactive = true }
 	end
-	if page == "music" then
-		return { w = 500, h = 262, r = 42, interactive = true }
-	end
-	return { w = 580, h = 364, r = 42, interactive = true }
+	local SHAPES: { [string]: { number } } = {
+		music = { 470, 272 },
+		home = { 580, 414 },
+		agents = { 520, 330 },
+		tray = { 520, 268 },
+		alerts = { 520, 330 },
+		notes = { 480, 290 },
+		timer = { 440, 270 },
+	}
+	local size = SHAPES[page] or SHAPES.home
+	return { w = size[1], h = size[2], r = 40, y = FLOAT, interactive = true }
 end
 
 local aim = ui.computed(function(): Shape
@@ -1079,7 +1325,7 @@ local aim = ui.computed(function(): Shape
 end)
 ui.effect(function()
 	local a = aim:get()
-	pcall(ui.invoke, "notch.size", { w = a.w, h = a.h, r = a.r, interactive = a.interactive })
+	pcall(ui.invoke, "notch.size", { w = a.w, h = a.h, r = a.r, y = a.y, interactive = a.interactive })
 end)
 local aim_w = ui.computed(function(): number
 	return aim:get().w
@@ -1090,6 +1336,28 @@ end)
 local aim_r = ui.computed(function(): number
 	return aim:get().r
 end)
+local aim_y = ui.computed(function(): number
+	return aim:get().y
+end)
+
+-- Its colour, top to bottom: the compact shapes all black, as the Dynamic
+-- Island; opened, black melting into light glass at its foot (the music
+-- view the most, as the reference), Home's foot kept dark for its words.
+local BLACK = { angle = 180, stops = { { 0, "#000000" }, { 1, "#0b0b0e" } } }
+local GLASS = {
+	angle = 180,
+	stops = { { 0, "#000000" }, { 0.46, "#030304" }, { 0.74, "#4a4a52" }, { 1, "#e4e4e9" } },
+}
+local DUSK = {
+	angle = 180,
+	stops = { { 0, "#000000" }, { 0.62, "#040405" }, { 1, "#1f1f25" } },
+}
+local function colour(): any
+	if state:get() ~= "expanded" then
+		return BLACK
+	end
+	return if tab:get() == "music" then GLASS else DUSK
+end
 
 -- The waveform moves while it shows and plays (nothing ticks otherwise).
 local wave_stop: (() -> ())? = nil
@@ -1160,21 +1428,14 @@ local island = ui.column {
 	theme = "orbit-night",
 	w = ui.spring(aim_w, SPRING),
 	h = ui.spring(aim_h, SPRING),
-	rounded_bl = ui.spring(aim_r, SPRING),
-	rounded_br = ui.spring(aim_r, SPRING),
+	y = ui.spring(aim_y, SPRING),
+	rounded = ui.spring(aim_r, SPRING),
 	overflow = "hidden",
 	items = "center",
-	gradient = {
-		angle = 180,
-		stops = {
-			{ 0, "#000000fa" },
-			{ 0.38, "#000000ec" },
-			{ 0.7, "#060609c2" },
-			{ 1, "#12121a94" },
-		},
-	},
-	-- (Light caught along its lower rim, as glass's edge.)
+	gradient = colour,
+	-- (Light caught along its lower rim, and a soft shadow under it.)
 	inset_shadow = { x = 0, y = -1, blur = 0, spread = 0, color = "#ffffff26" },
+	shadow = { x = 0, y = 8, blur = 22, spread = 0, color = "#00000059" },
 	border = 1,
 	border_color = function()
 		return if first:get() then "$kx.attention.soft" else "#ffffff17"
