@@ -163,7 +163,7 @@ end)
 
 -- Expanded, and which tab.
 local expanded = ui.state("notch.expanded", fixture and (store :: any).fixture_data.expanded == true)
-local tab = ui.state("notch.tab", "home")
+local tab = ui.state("notch.tab", if fixture and type((store :: any).fixture_data.tab) == "string" then (store :: any).fixture_data.tab else "home")
 -- A thread opened in the island (its own, apart from the window's): read
 -- it, answer what it asks, write to it.
 local chat = ui.state("notch.chat", nil :: string?)
@@ -284,12 +284,36 @@ local function asking(w: () -> Waiting?, compact: boolean): Node
 				return if compact or x.summary == "" then x.title else x.summary
 			end, "$font.size.xs"),
 		},
-		kx.Button { tone = "ghost", size = "xs", shape = "pill", on_click = function()
-			decide(w(), "deny")
-		end, "Deny" },
-		kx.Button { tone = "attention", size = "xs", shape = "pill", on_click = function()
-			decide(w(), "allow_once")
-		end, "Allow" },
+		ui.button {
+			h = 28,
+			px = 12,
+			rounded = "$radius.full",
+			items = "center",
+			bg = "#ffffff1f",
+			hover = { bg = "#ffffff33" },
+			active = { scale = 0.95 },
+			color = "#ffffffe6",
+			label = "Deny",
+			on_click = function()
+				decide(w(), "deny")
+			end,
+			ui.text { "Deny", literal = true, text_size = "$font.size.xs", weight = "$font.weight.semibold" },
+		},
+		ui.button {
+			h = 28,
+			px = 14,
+			rounded = "$radius.full",
+			items = "center",
+			bg = "$kx.attention",
+			hover = { opacity = 0.88 },
+			active = { scale = 0.95 },
+			color = "#1a1206",
+			label = "Allow",
+			on_click = function()
+				decide(w(), "allow_once")
+			end,
+			ui.text { "Allow", literal = true, text_size = "$font.size.xs", weight = "$font.weight.bold" },
+		},
 	}
 end
 
@@ -311,18 +335,20 @@ local function pill(text: string, strong: boolean, run: () -> ()): Node
 	}
 end
 
--- A key on the island: its glyph alone, white, dimming under the pointer.
-local function key(icon: string, what: string, name: string, size: number?): Node
+-- A key on the island. `bare` is a transport glyph: no disc behind it,
+-- white, only dimming and shrinking under the pointer.
+local function key(icon: string, what: string, name: string, size: number?, bare: boolean?): Node
 	local n = size or 16
+	local plain = bare == true
 	return ui.button {
-		w = n + 18,
-		h = n + 18,
+		w = if plain then n + 28 else n + 18,
+		h = if plain then n + 20 else n + 18,
 		rounded = "$radius.full",
 		items = "center",
 		justify = "center",
 		bg = "#00000000",
-		color = "#ffffffeb",
-		hover = { bg = "#ffffff14" },
+		color = if plain then "#ffffff" else "#ffffffeb",
+		hover = if plain then { opacity = 0.7 } else { bg = "#ffffff14" },
 		active = { scale = 0.9 },
 		label = name,
 		on_click = function()
@@ -333,26 +359,34 @@ local function key(icon: string, what: string, name: string, size: number?): Nod
 end
 
 local function cover(size: number, corner: number?): Node
-	local round = corner or math.floor(size * 0.22)
-	return ui.presence(function(): string
-		local m = media:get()
-		return if m and m.cover ~= "" then m.cover else ""
-	end, function(src: string): Node
-		if src == "" then
-			return ui.column {
-				w = size,
-				h = size,
-				rounded = round,
-				bg = "#ffffff1a",
-				items = "center",
-				justify = "center",
-				color = "#ffffffb3",
-				shrink = 0,
-				kx.Icon { name = "music-note", size = math.floor(size * 0.42) },
-			}
-		end
-		return ui.image { src = src, w = size, h = size, rounded = round, fit = "cover", shrink = 0 }
-	end, { enter = { opacity = { 0, 1 }, scale = { 0.92, 1 }, duration = 260 } })
+	local round = corner or math.max(6, math.floor(size * 0.2))
+	return ui.div {
+		w = size,
+		h = size,
+		shrink = 0,
+		rounded = ui.raw(round, "the cover's corner"),
+		overflow = "hidden",
+		bg = ui.raw("#ffffff16", "a cover before its picture"),
+		border = if size >= 36 then 1 else 0,
+		border_color = ui.raw("#ffffff33", "the cover's rim"),
+		shadow = if size >= 48 then { x = 0, y = 12, blur = 24, spread = -10, color = "#0000008c" } else nil,
+		ui.presence(function(): string
+			local m = media:get()
+			return if m and m.cover ~= "" then m.cover else ""
+		end, function(src: string): Node
+			if src == "" then
+				return ui.column {
+					w_full = true,
+					h_full = true,
+					items = "center",
+					justify = "center",
+					color = "#ffffffd0",
+					kx.Icon { name = "music-note", size = math.floor(size * 0.4) },
+				}
+			end
+			return ui.image { src = src, w_full = true, h_full = true, fit = "cover" }
+		end, { enter = { opacity = { 0, 1 }, scale = { 0.92, 1 }, duration = 260 } }),
+	}
 end
 
 local function song(part: string): () -> string
@@ -368,16 +402,32 @@ local function song(part: string): () -> string
 	end
 end
 
--- The waveform, in the cover's light (src/media.rs `tint`), moving while
--- it plays and resting low while it doesn't: the Dynamic Island's.
+-- The waveform, in the cover's light (src/media.rs `tint`): white at its
+-- leading edge, the cover's colour by the last bar, a fixed silhouette that
+-- only breathes while the track plays.
 local wave = ui.state("notch.wave", 0)
-local WAVE = { 0.55, 0.9, 0.7, 1, 0.6, 0.85 }
+local WAVE = { 0.32, 0.58, 0.84, 0.46, 1, 0.64, 0.9, 0.4, 0.7 }
 local function tint(): string
 	local m = media:get()
-	return if m and (m :: any).tint and (m :: any).tint ~= "" then (m :: any).tint else "#c9b8ff"
+	return if m and (m :: any).tint and (m :: any).tint ~= "" then (m :: any).tint else "#e7b4c0"
+end
+local function channel(hex: string, at: number): number
+	return tonumber(string.sub(hex, at, at + 1), 16) or 0
+end
+local function mix(a: string, b: string, t: number): string
+	local function norm(c: string): string
+		local h = if string.sub(c, 1, 1) == "#" then string.sub(c, 2) else c
+		return if #h >= 6 then string.sub(h, 1, 6) else "ffffff"
+	end
+	local x, y = norm(a), norm(b)
+	local function blend(i: number): number
+		local from, to = channel(x, i), channel(y, i)
+		return math.clamp(math.floor(from + (to - from) * t + 0.5), 0, 255)
+	end
+	return string.format("#%02x%02x%02x", blend(1), blend(3), blend(5))
 end
 local function waveform(bars: number, height: number, width: number?): Node
-	local row: { [any]: any } = { gap = 3, items = "center", h = height, shrink = 0 }
+	local row: { [any]: any } = { gap = ui.raw(2, "space between the bars"), items = "center", h = height, shrink = 0 }
 	for i = 1, bars do
 		local base = WAVE[(i - 1) % #WAVE + 1]
 		table.insert(row, ui.div {
@@ -385,16 +435,13 @@ local function waveform(bars: number, height: number, width: number?): Node
 			rounded = "$radius.full",
 			h = function()
 				local m = media:get()
-				if not (m and m.playing) then
-					return math.max(3, height * 0.18)
-				end
-				local t = wave:get()
-				local swing = math.abs(math.sin(t * (0.9 + i * 0.37) + i * 1.7))
-				return math.max(3, height * base * (0.3 + 0.7 * swing))
+				local swing = math.abs(math.sin(wave:get() * (0.62 + i * 0.27) + i * 1.35))
+				local amount = if m and m.playing then 0.48 + 0.52 * swing else 0.36
+				return math.max(3, height * base * amount)
 			end,
-			gradient = function()
-				local c = tint()
-				return { angle = 180, stops = { { 0, c }, { 1, c .. "8c" } } }
+			bg = function()
+				local along = if bars <= 1 then 0 else (i - 1) / (bars - 1)
+				return ui.raw(mix("#ffffff", tint(), along * 0.92), "a bar, from white to the cover's light")
 			end,
 		})
 	end
@@ -457,7 +504,7 @@ local slim_kind = ui.computed(function(): string
 	return if m and m.playing then "music" else "resting"
 end)
 
-local slim_music = compact(cover(20, 5), white(song("title"), "$font.size.xs"), waveform(4, 12))
+local slim_music = compact(cover(22, 6), white(song("title"), "$font.size.xs"), waveform(5, 14, 2))
 
 local function slim(): Node
 	return ui.presence(slim_kind, function(kind: string): Node
@@ -537,47 +584,74 @@ local function progress(): Node
 		local m = media:get()
 		return if m and m.duration > 0 then math.clamp(position() / m.duration, 0, 1) else 0
 	end
+	local function stamp(text: any, align: string?): Node
+		return ui.text {
+			text,
+			literal = true,
+			text_size = ui.raw(11, "the track's time"),
+			weight = "$font.weight.medium",
+			color = "#ffffffc4",
+			tabular = true,
+			align = align,
+			shrink = 0,
+		}
+	end
 	return ui.row {
-		gap = "$space.3",
+		gap = ui.raw(10, "space round the time"),
 		items = "center",
 		w_full = true,
-		ui.text { function()
+		stamp(function()
 			return mmss(position())
-		end, literal = true, text_size = "$font.size.xs", color = "#ffffff99", tabular = true, w = 38 },
-		ui.div {
-			h = 6,
+		end),
+		ui.column {
+			h = 18,
 			grow = 1,
-			rounded = "$radius.full",
-			bg = "#ffffff2e",
-			overflow = "hidden",
+			justify = "center",
 			on_click = function(e: any)
 				local m = media:peek()
-				if m and m.duration > 0 and e and e.local_x and e.width then
-					control({ seek = e.local_x / e.width })
+				if m and m.duration > 0 and e and e.local_x and e.width and e.width > 0 then
+					control({ seek = math.clamp(e.local_x / e.width, 0, 1) })
 				end
 			end,
 			ui.div {
-				h_full = true,
+				h = 3,
+				w_full = true,
 				rounded = "$radius.full",
-				bg = "#ffffffc7",
-				w = function()
-					return `{math.floor(fraction() * 1000) / 10}%`
-				end,
+				bg = ui.raw("#ffffff38", "the track still to play"),
+				ui.div {
+					h_full = true,
+					rounded = "$radius.full",
+					bg = ui.raw("#fffffff2", "how far the track has played"),
+					relative = true,
+					w = function()
+						return `{math.floor(fraction() * 1000) / 10}%`
+					end,
+					ui.div {
+						absolute = true,
+						right = -5,
+						top = -3,
+						w = 9,
+						h = 9,
+						rounded = "$radius.full",
+						bg = ui.raw("#ffffff", "the knob on the progress line"),
+						shadow = ui.raw({ x = 0, y = 1, blur = 5, spread = 0, color = "#00000059" }, "the knob's shadow"),
+					},
+				},
 			},
 		},
-		ui.text { function()
+		stamp(function()
 			local m = media:get()
-			return if m and m.duration > 0 then `-{mmss(m.duration - position())}` else ""
-		end, literal = true, text_size = "$font.size.xs", color = "#ffffff99", tabular = true, w = 44, align = "right" },
+			return if m and m.duration > 0 then `-{mmss(math.max(0, m.duration - position()))}` else "0:00"
+		end, "right"),
 	}
 end
 
-local function play_key(size: number): Node
+local function play_key(size: number, bare: boolean?): Node
 	return ui.presence(function(): string
 		local m = media:get()
 		return if m and m.playing then "pause" else "play"
 	end, function(k: string): Node
-		return key(if k == "pause" then "media-pause" else "media-play", "play", if k == "pause" then "Pause" else "Play", size)
+		return key(if k == "pause" then "media-pause" else "media-play", "play", if k == "pause" then "Pause" else "Play", size, bare)
 	end, { enter = { opacity = { 0, 1 }, scale = { 0.7, 1 }, duration = 180 }, exit = { opacity = 0, duration = 60 }, mode = "wait" })
 end
 
@@ -597,7 +671,7 @@ local function music_row(big: boolean): Node
 				white(song("title"), "$font.size.sm", "$font.weight.semibold"),
 				quiet(song("by"), "$font.size.xs"),
 			},
-			waveform(5, 18),
+			waveform(7, 18, 2),
 			key("media-previous", "previous", "Previous", 14),
 			play_key(16),
 			key("media-next", "next", "Next", 14),
@@ -605,30 +679,105 @@ local function music_row(big: boolean): Node
 	end
 	return ui.column {
 		w_full = true,
-		gap = "$space.4",
-		ui.row {
-			gap = "$space.4",
-			items = "center",
+		h_full = true,
+		justify = "between",
+		-- Large cover with its own light behind it, the track in capitals,
+		-- where it plays from, and the waveform in the cover's colours.
+		ui.column {
 			w_full = true,
-			cover(56, 12),
-			ui.column {
-				grow = 1,
-				min_w = 0,
-				gap = 2,
-				white(song("title"), "$font.size.md", "$font.weight.bold"),
-				ui.text { song("by"), literal = true, truncate = true, text_size = "$font.size.sm", color = "#ffffff8c" },
+			gap = "$space.4",
+			ui.row {
+				gap = "$space.4",
+				items = "center",
+				w_full = true,
+				ui.div {
+					w = 76,
+					h = 76,
+					shrink = 0,
+					ui.div {
+						absolute = true,
+						left = 5,
+						top = 9,
+						w = 66,
+						h = 66,
+						rounded = ui.raw(16, "the cover glow's corner"),
+						bg = function()
+							return ui.raw(mix(tint(), "#000000", 0.08) .. "59", "light from the cover, behind it")
+						end,
+					},
+					cover(76, 16),
+				},
+				ui.column {
+					grow = 1,
+					min_w = 0,
+					gap = 4,
+					ui.text {
+						function()
+							local m = media:get()
+							if not m or m.title == "" then
+								return "Nothing playing"
+							end
+							return string.upper(m.title)
+						end,
+						literal = true,
+						truncate = true,
+						color = "#ffffff",
+						text_size = ui.raw(17, "the track, said large"),
+						weight = "$font.weight.bold",
+						letter_spacing = 1,
+					},
+					ui.text {
+						song("by"),
+						literal = true,
+						truncate = true,
+						text_size = ui.raw(13, "the artist"),
+						weight = "$font.weight.medium",
+						color = ui.raw("#ffffffc2", "the artist, under the title"),
+						letter_spacing = 0.3,
+					},
+					ui.row {
+						gap = 6,
+						items = "center",
+						ui.div {
+							w = 5,
+							h = 5,
+							rounded = "$radius.full",
+							bg = function()
+								local m = media:get()
+								return if m and m.playing then ui.raw(mix("#ffffff", tint(), 0.45), "the playing light") else "#ffffff66"
+							end,
+						},
+						ui.text {
+							function()
+								local m = media:get()
+								if not m then
+									return "Windows media"
+								end
+								return if m.playing then `Playing · {m.app}` else `Paused · {m.app}`
+							end,
+							literal = true,
+							truncate = true,
+							text_size = ui.raw(10, "where the track plays"),
+							weight = "$font.weight.semibold",
+							color = "#ffffff7a",
+							letter_spacing = 0.7,
+						},
+					},
+				},
+				waveform(9, 42, 3),
 			},
-			waveform(6, 26, 4),
+			progress(),
 		},
-		progress(),
+		-- The transport, large and bare, low in the glass.
 		ui.row {
-			gap = 36,
+			gap = ui.raw(22, "space between the transport keys"),
 			items = "center",
 			justify = "center",
 			w_full = true,
-			key("media-rewind", "previous", "Previous", 28),
-			play_key(34),
-			key("media-forward", "next", "Next", 28),
+			pb = ui.raw(2, "the transport's lift from the foot"),
+			key("media-rewind", "previous", "Previous", 30, true),
+			play_key(40, true),
+			key("media-forward", "next", "Next", 30, true),
 		},
 	}
 end
@@ -689,7 +838,16 @@ local function threads(n: number): State<{ store.Thread }>
 		return out
 	end)
 end
-local home_threads = threads(3)
+local some_threads = threads(3)
+-- (Two while music plays, so Home keeps within the island's window.)
+local home_threads = ui.computed(function(): { store.Thread }
+	local list = some_threads:get()
+	local n = if media:get() ~= nil then 2 else 3
+	if #list <= n then
+		return list
+	end
+	return { table.unpack(list, 1, n) }
+end)
 local all_threads = threads(9)
 
 local function thread_list(list: State<{ store.Thread }>): Node
@@ -739,6 +897,80 @@ local function grey(text: any, size: string?): Node
 	return ui.text { text, literal = true, truncate = true, text_size = size or "$font.size.xs", color = "#ffffff8c" }
 end
 
+-- A page's heading: its name in small capitals, a quiet count after it,
+-- and what acts on the whole page at its end.
+local function section(title: string | () -> string, count: (() -> string)?, trailing: Node?): Node
+	return ui.row {
+		w_full = true,
+		h = 28,
+		px = 4,
+		gap = 6,
+		items = "center",
+		label(title),
+		if count
+			then ui.text { count, literal = true, text_size = ui.raw(10, "a heading's count"), weight = "$font.weight.semibold", color = "#ffffff4d", tabular = true }
+			else nil,
+		ui.row { grow = 1 },
+		trailing,
+	}
+end
+
+-- A small word on a coloured wash: how something stands.
+local function chip(text: any, colour: string | () -> string): Node
+	local function c(): string
+		return if type(colour) == "function" then colour() else colour
+	end
+	return ui.row {
+		h = 22,
+		px = 9,
+		gap = 6,
+		items = "center",
+		rounded = "$radius.full",
+		bg = function()
+			return ui.raw(c() .. "1f", "a chip's wash")
+		end,
+		border = 1,
+		border_color = function()
+			return ui.raw(c() .. "33", "a chip's rim")
+		end,
+		ui.div { w = 6, h = 6, rounded = "$radius.full", bg = c, opacity = glow },
+		ui.text { text, literal = true, text_size = ui.raw(11, "a chip's word"), weight = "$font.weight.semibold", color = "#ffffffe0" },
+	}
+end
+
+-- Nothing here yet: a mark in a ring of light, what this page is for, and
+-- how to fill it.
+local function empty_state(icon: string, title: string, body: string, action: Node?): Node
+	return ui.column {
+		w_full = true,
+		h_full = true,
+		items = "center",
+		justify = "center",
+		gap = 10,
+		ui.column {
+			w = 56,
+			h = 56,
+			rounded = "$radius.full",
+			items = "center",
+			justify = "center",
+			gradient = { angle = 160, stops = { { 0, "#ffffff24" }, { 1, "#ffffff08" } } },
+			border = 1,
+			border_color = "#ffffff1f",
+			inset_shadow = { x = 0, y = 1, blur = 0, spread = 0, color = "#ffffff26" },
+			color = "#ffffffcc",
+			kx.Icon { name = icon, size = 22 },
+		},
+		ui.column {
+			gap = 3,
+			items = "center",
+			max_w = 300,
+			white(title, "$font.size.sm", "$font.weight.semibold"),
+			ui.text { body, literal = true, align = "center", text_size = ui.raw(12, "an empty page's line"), color = "#ffffff80" },
+		},
+		action,
+	}
+end
+
 -- An agent at a glance: its mark, its thread, how it stands.
 local function agent_line(t: store.Thread): Node
 	local waits: Waiting? = nil
@@ -747,34 +979,48 @@ local function agent_line(t: store.Thread): Node
 			waits = w
 		end
 	end
+	local ring = if waits then "#ffb454" elseif t.status == "running" then "#8fb4ff" elseif t.status == "failed" then "#ff7a7a" else "#ffffff"
 	return ui.button {
 		w_full = true,
-		h = 44,
+		h = 46,
 		gap = "$space.3",
 		items = "center",
 		px = 8,
-		rounded = 14,
+		rounded = 16,
 		bg = "#00000000",
-		hover = { bg = "#ffffff0f" },
+		hover = { bg = "#ffffff12" },
+		active = { scale = 0.985 },
 		tooltip = "Open the chat",
 		on_click = function()
 			open_chat(t.id)
 		end,
-		kx.AgentMark { agent = t.harness_id, size = 18 },
+		-- Its mark in a disc of how it stands.
+		ui.column {
+			w = 32,
+			h = 32,
+			shrink = 0,
+			rounded = "$radius.full",
+			items = "center",
+			justify = "center",
+			bg = ui.raw(ring .. (if ring == "#ffffff" then "0f" else "1f"), "an agent's disc, in how it stands"),
+			border = 1,
+			border_color = ui.raw(ring .. (if ring == "#ffffff" then "14" else "4d"), "an agent's ring"),
+			kx.AgentMark { agent = t.harness_id, size = 16 },
+		},
 		ui.column {
 			grow = 1,
 			min_w = 0,
-			gap = 0,
-			ui.text { t.title, literal = true, truncate = true, text_size = "$font.size.sm", weight = "$font.weight.medium", color = "#ffffffeb" },
+			gap = 1,
+			ui.text { t.title, literal = true, truncate = true, text_size = "$font.size.sm", weight = "$font.weight.semibold", color = "#fffffff0" },
 			ui.text {
-				if waits then `{waits.harness} wants to run {waits.tool}`
-					elseif t.status == "running" then `{t.harness} is working…`
-					elseif t.status == "failed" then "Stopped with an error"
+				if waits then `Wants to run {waits.tool}`
+					elseif t.status == "running" then `{t.harness} · working`
+					elseif t.status == "failed" then `{t.harness} · stopped with an error`
 					else `{t.harness} · done`,
 				literal = true,
 				truncate = true,
 				text_size = ui.raw(11, "a row's second line"),
-				color = if waits then "$kx.attention" else "#ffffff80",
+				color = if waits then "$kx.attention" elseif t.status == "failed" then ui.raw("#ff9a9acc", "a failed row's line") else "#ffffff73",
 			},
 		},
 		if waits
@@ -788,8 +1034,7 @@ local function agent_line(t: store.Thread): Node
 				end),
 			}
 			elseif t.status == "running" then kx.Spinner { size = 13 }
-			elseif t.status == "failed" then kx.StatusIcon { kind = "failed", size = 13 }
-			else kx.StatusIcon { kind = "done", size = 13 },
+			else ui.column { color = "#ffffff4d", kx.Icon { name = "alt-arrow-right", size = 13 } },
 	}
 end
 
@@ -797,24 +1042,26 @@ end
 local function ask_pill(): Node
 	return ui.row {
 		w_full = true,
-		h = 40,
+		h = 44,
 		gap = "$space.2",
 		items = "center",
 		pl = 14,
-		pr = 4,
+		pr = 5,
+		shrink = 0,
 		rounded = "$radius.full",
-		bg = "#ffffff12",
+		gradient = { angle = 180, stops = { { 0, "#ffffff1a" }, { 1, "#ffffff0d" } } },
 		border = 1,
-		border_color = "#ffffff0d",
-		ui.column { color = "$accent", kx.Icon { name = "orbit", size = 15 } },
+		border_color = "#ffffff1a",
+		inset_shadow = { x = 0, y = 1, blur = 0, spread = 0, color = "#ffffff1a" },
+		ui.column { color = "$accent", kx.Icon { name = "sparkle", size = 15 } },
 		ui.input {
 			value = ask_text,
-			placeholder = "Ask an agent…",
-			placeholder_color = "#ffffff66",
+			placeholder = "Ask an agent anything…",
+			placeholder_color = "#ffffff59",
 			label = "Ask an agent",
 			grow = 1,
 			min_w = 0,
-			h = 32,
+			h = 34,
 			bg = "#00000000",
 			border = 0,
 			color = "#ffffffeb",
@@ -828,15 +1075,19 @@ local function ask_pill(): Node
 			end,
 		},
 		ui.button {
-			w = 32,
-			h = 32,
+			w = 34,
+			h = 34,
 			rounded = "$radius.full",
 			items = "center",
 			justify = "center",
 			bg = function()
-				return if string.match(ask_text:get(), "^%s*$") then "#ffffff26" else "#ffffff"
+				return if string.match(ask_text:get(), "^%s*$") then "#ffffff1f" else "#ffffff"
 			end,
-			color = "#000000",
+			hover = { scale = 1.05 },
+			active = { scale = 0.92 },
+			color = function()
+				return if string.match(ask_text:get(), "^%s*$") then "#ffffff80" else "#000000"
+			end,
 			label = "Ask",
 			on_click = ask,
 			ui.show(ask_busy, kx.Spinner { size = 12 }, kx.Icon { name = "arrow-up", size = 15 }),
@@ -848,78 +1099,143 @@ local has_media = ui.computed(function(): boolean
 	return media:get() ~= nil
 end)
 
--- What's playing, as a live activity.
+-- What's playing, as a live activity: the cover's light washing the card,
+-- a click on it opens the player.
 local function now_playing(): Node
-	return tile {
+	return ui.column {
 		w_full = true,
-		h = 62,
-		p = 10,
+		h = 64,
+		shrink = 0,
+		rounded = 20,
+		overflow = "hidden",
+		border = 1,
+		border_color = function()
+			return ui.raw(mix("#ffffff", tint(), 0.5) .. "2e", "the card's rim, in the cover's light")
+		end,
+		gradient = function()
+			return {
+				angle = 100,
+				stops = {
+					{ 0, ui.raw(mix("#000000", tint(), 0.32) .. "b3", "the cover's light, strongest by the cover") },
+					{ 0.6, ui.raw("#ffffff0d", "the card clearing") },
+					{ 1, ui.raw("#ffffff08", "the card's end") },
+				},
+			}
+		end,
 		ui.row {
 			w_full = true,
 			h_full = true,
+			pl = 10,
+			pr = 6,
 			gap = "$space.3",
 			items = "center",
-			cover(42, 10),
-			ui.column {
+			ui.button {
 				grow = 1,
 				min_w = 0,
-				gap = 1,
-				white(song("title"), "$font.size.sm", "$font.weight.semibold"),
-				grey(song("by")),
+				h_full = true,
+				gap = "$space.3",
+				items = "center",
+				bg = "#00000000",
+				label = "Open the player",
+				on_click = function()
+					tab:set("music")
+				end,
+				cover(44, 11),
+				ui.column {
+					grow = 1,
+					min_w = 0,
+					gap = 2,
+					white(song("title"), "$font.size.sm", "$font.weight.semibold"),
+					ui.text { song("by"), literal = true, truncate = true, text_size = ui.raw(11, "the artist"), color = "#ffffff99" },
+				},
+				waveform(7, 20, 2),
 			},
-			waveform(5, 18),
 			ui.row {
 				gap = 0,
 				items = "center",
-				key("media-rewind", "previous", "Previous", 13),
-				play_key(16),
-				key("media-forward", "next", "Next", 13),
+				key("media-rewind", "previous", "Previous", 15, true),
+				play_key(19, true),
+				key("media-forward", "next", "Next", 15, true),
 			},
 		},
 	}
+end
+
+-- How things stand, said once: who waits, who works, or all quiet.
+local function standing(): Node
+	return ui.presence(function(): string
+		if #attention:get() > 0 then
+			return "waiting"
+		end
+		return if #working:get() > 0 then "working" else "quiet"
+	end, function(k: string): Node
+		if k == "waiting" then
+			return chip(function()
+				local n = #attention:get()
+				return if n == 1 then "1 needs you" else `{n} need you`
+			end, "#ffb454")
+		elseif k == "working" then
+			return chip(function()
+				local n = #working:get()
+				return if n == 1 then "1 working" else `{n} working`
+			end, "#8fb4ff")
+		end
+		return chip("All quiet", "#7ee0a8")
+	end, { enter = { opacity = { 0, 1 }, scale = { 0.9, 1 }, duration = 180 }, exit = { opacity = 0, duration = 60 }, mode = "wait" })
 end
 
 local function home(): Node
 	return ui.column {
 		gap = 10,
 		w_full = true,
-		-- The time, large, and how things stand.
+		-- The time, large, the day beside it, and how things stand.
 		ui.row {
 			w_full = true,
 			items = "end",
 			gap = "$space.3",
 			px = 4,
-			h = 46,
-			ui.text { clock, literal = true, font = "$kx.display", text_size = ui.raw(40, "the island's clock"), color = "#ffffff", tabular = true },
+			h = 48,
+			shrink = 0,
+			ui.text { clock, literal = true, font = "$kx.display", text_size = ui.raw(44, "the island's clock"), color = "#ffffff", tabular = true },
 			ui.column {
-				pb = 5,
-				gap = 0,
+				pb = 6,
+				gap = 1,
 				label(function()
 					return now:get().weekday
 				end),
-				grey(function()
+				ui.text { function()
 					local t = now:get()
 					return `{t.day} {t.month}`
-				end, "$font.size.sm"),
+				end, literal = true, text_size = "$font.size.sm", weight = "$font.weight.medium", color = "#ffffffb3" },
 			},
 			ui.row { grow = 1 },
-			ui.row {
-				pb = 7,
-				gap = 6,
-				items = "center",
-				stars(),
-				grey(function()
-					local n = #working:get()
-					return if n == 0 then "All quiet" elseif n == 1 then "1 working" else `{n} working`
-				end),
-			},
+			ui.row { pb = 8, standing() },
 		},
 		ui.show(has_media, now_playing()),
 		-- Your agents, each a live activity: click one to talk to it.
 		tile {
 			w_full = true,
 			gap = 0,
-			p = 5,
+			p = 6,
+			shrink = 0,
+			section("Agents", function()
+				return tostring(#store.threads:get())
+			end, ui.button {
+				h = 22,
+				px = 8,
+				gap = 3,
+				items = "center",
+				rounded = "$radius.full",
+				bg = "#00000000",
+				hover = { bg = "#ffffff14" },
+				color = "#ffffff99",
+				label = "See all agents",
+				on_click = function()
+					tab:set("agents")
+				end,
+				ui.text { "See all", literal = true, text_size = ui.raw(11, "a heading's link"), weight = "$font.weight.medium" },
+				kx.Icon { name = "alt-arrow-right", size = 11 },
+			}),
 			ui.show(function()
 				return #home_threads:get() > 0
 			end, ui.column {
@@ -932,9 +1248,11 @@ local function home(): Node
 				}),
 			}, ui.row {
 				w_full = true,
-				h = 44,
+				h = 46,
 				px = 10,
+				gap = "$space.2",
 				items = "center",
+				ui.column { color = "#ffffff59", kx.Icon { name = "bot", size = 15 } },
 				grey("No agents yet. Ask one below.", "$font.size.sm"),
 			}),
 		},
@@ -1006,12 +1324,27 @@ local function chat_view(): Node
 			round_button("alt-arrow-left", "Back", function()
 				chat:set(nil)
 			end),
-			ui.presence(function(): string
-				local t = chat_thread()
-				return if t then t.harness_id else ""
-			end, function(agent: string): Node
-				return kx.AgentMark { agent = agent, size = 20 }
-			end),
+			ui.column {
+				w = 34,
+				h = 34,
+				shrink = 0,
+				rounded = "$radius.full",
+				items = "center",
+				justify = "center",
+				bg = function()
+					return if running:get() then ui.raw("#8fb4ff1f", "a working agent's disc") else "#ffffff0f"
+				end,
+				border = 1,
+				border_color = function()
+					return if running:get() then ui.raw("#8fb4ff4d", "a working agent's ring") else "#ffffff14"
+				end,
+				ui.presence(function(): string
+					local t = chat_thread()
+					return if t then t.harness_id else ""
+				end, function(agent: string): Node
+					return kx.AgentMark { agent = agent, size = 18 }
+				end),
+			},
 			ui.column {
 				grow = 1,
 				min_w = 0,
@@ -1039,10 +1372,11 @@ local function chat_view(): Node
 			w_full = true,
 			grow = 1,
 			min_h = 0,
-			rounded = 20,
-			bg = "#ffffff0a",
+			rounded = 22,
+			bg = "#0000004d",
 			border = 1,
-			border_color = "#ffffff12",
+			border_color = "#ffffff14",
+			inset_shadow = { x = 0, y = 1, blur = 0, spread = 0, color = "#ffffff0f" },
 			overflow = "hidden",
 			-- (The window's transcript, read at the island's size.)
 			zoom = 0.84,
@@ -1101,23 +1435,25 @@ local function chat_view(): Node
 		-- Your reply (while it works, it goes after; stop is beside it).
 		ui.row {
 			w_full = true,
-			h = 40,
+			h = 44,
 			gap = "$space.2",
 			items = "center",
-			pl = 14,
-			pr = 4,
+			pl = 16,
+			pr = 5,
+			shrink = 0,
 			rounded = "$radius.full",
-			bg = "#ffffff14",
+			gradient = { angle = 180, stops = { { 0, "#ffffff1a" }, { 1, "#ffffff0d" } } },
 			border = 1,
-			border_color = "#ffffff14",
+			border_color = "#ffffff1a",
+			inset_shadow = { x = 0, y = 1, blur = 0, spread = 0, color = "#ffffff1a" },
 			ui.input {
 				value = reply_text,
 				placeholder = "Reply…",
-				placeholder_color = "#ffffff66",
+				placeholder_color = "#ffffff59",
 				label = "Reply",
 				grow = 1,
 				min_w = 0,
-				h = 32,
+				h = 34,
 				bg = "#00000000",
 				border = 0,
 				color = "#ffffffeb",
@@ -1134,15 +1470,19 @@ local function chat_view(): Node
 				store.interrupt()
 			end)),
 			ui.button {
-				w = 32,
-				h = 32,
+				w = 34,
+				h = 34,
 				rounded = "$radius.full",
 				items = "center",
 				justify = "center",
 				bg = function()
-					return if string.match(reply_text:get(), "^%s*$") then "#ffffff26" else "#ffffff"
+					return if string.match(reply_text:get(), "^%s*$") then "#ffffff1f" else "#ffffff"
 				end,
-				color = "#000000",
+				hover = { scale = 1.05 },
+				active = { scale = 0.92 },
+				color = function()
+					return if string.match(reply_text:get(), "^%s*$") then "#ffffff80" else "#000000"
+				end,
 				label = "Send",
 				on_click = reply,
 				ui.show(reply_busy, kx.Spinner { size = 12 }, kx.Icon { name = "arrow-up", size = 15 }),
@@ -1155,6 +1495,7 @@ local note = if fixture then ui.state("notch.note.fx", "Ship the island before t
 
 -- The timer: its end, and what's left (ticking only while it runs).
 local timer_end = ui.persist("notch.timer.end", 0)
+local timer_total = ui.persist("notch.timer.total", 0)
 local timer_left = ui.state("notch.timer.left", 0)
 local function tick()
 	local left = math.max(0, timer_end:peek() - os.time())
@@ -1173,47 +1514,121 @@ if timer_end:peek() > os.time() then
 	tick()
 end
 local function start_timer(minutes: number)
+	local running = timer_end:peek() > os.time()
 	timer_end:set(os.time() + minutes * 60)
-	tick()
+	if not running then
+		timer_total:set(minutes * 60)
+		tick()
+	end
+end
+local function add_minute()
+	if timer_end:peek() > os.time() then
+		timer_end:set(timer_end:peek() + 60)
+		timer_total:set(timer_total:peek() + 60)
+		timer_left:set(math.max(0, timer_end:peek() - os.time()))
+	end
 end
 
 local function timer(): Node
 	local presets: { [any]: any } = { gap = "$space.2", items = "center" }
 	for _, m in { 5, 15, 25, 50 } do
-		table.insert(presets, pill(`{m} min`, false, function()
-			start_timer(m)
-		end))
+		table.insert(presets, ui.button {
+			h = 32,
+			px = 14,
+			rounded = "$radius.full",
+			items = "center",
+			bg = "#ffffff12",
+			border = 1,
+			border_color = "#ffffff14",
+			hover = { bg = "#ffffff24" },
+			active = { scale = 0.94 },
+			color = "#ffffffe6",
+			label = `Start {m} minutes`,
+			on_click = function()
+				start_timer(m)
+			end,
+			ui.text { `{m}`, literal = true, text_size = "$font.size.sm", weight = "$font.weight.semibold", tabular = true },
+			ui.text { " min", literal = true, text_size = ui.raw(11, "the unit"), color = "#ffffff80" },
+		})
 	end
+	local RING = 156
 	return ui.column {
 		gap = "$space.4",
 		w_full = true,
 		h_full = true,
 		items = "center",
 		justify = "center",
-		ui.text {
-			function()
-				local l = timer_left:get()
-				return string.format("%d:%02d", math.floor(l / 60), l % 60)
-			end,
-			literal = true,
-			font = "$kx.display",
-			text_size = ui.raw(72, "the timer's figures"),
-			color = function()
-				return if timer_left:get() > 0 then "#ffffff" else "#ffffff59"
-			end,
-			tabular = true,
+		-- The time left in a ring that empties as it runs.
+		ui.div {
+			w = RING,
+			h = RING,
+			shrink = 0,
+			ui.canvas {
+				absolute = true,
+				left = 0,
+				top = 0,
+				w = RING,
+				h = RING,
+				draw = function(c, w, h)
+					local cx, cy, r = w / 2, h / 2, math.min(w, h) / 2 - 6
+					c:stroke(ui.path():arc(cx, cy, r, 0, 360), "#ffffff1a", 6)
+					local total = timer_total:get()
+					local left = timer_left:get()
+					if total > 0 and left > 0 then
+						local f = math.clamp(left / total, 0, 1)
+						c:stroke(ui.path():arc(cx, cy, r, -90, 360 * f), "$accent", 6, { cap = "round" })
+						local a = math.rad(-90 + 360 * f)
+						c:circle(cx + math.cos(a) * r, cy + math.sin(a) * r, 5, "#ffffff")
+					end
+				end,
+			},
+			ui.column {
+				absolute = true,
+				left = 0,
+				top = 0,
+				w = RING,
+				h = RING,
+				items = "center",
+				justify = "center",
+				gap = 0,
+				ui.text {
+					function()
+						local l = timer_left:get()
+						return string.format("%d:%02d", math.floor(l / 60), l % 60)
+					end,
+					literal = true,
+					font = "$kx.display",
+					text_size = ui.raw(44, "the timer's figures"),
+					color = function()
+						return if timer_left:get() > 0 then "#ffffff" else "#ffffff59"
+					end,
+					tabular = true,
+				},
+				label(function()
+					if timer_left:get() <= 0 then
+						return "Focus timer"
+					end
+					local e = timer_end:get()
+					return `Ends {os.date("%H:%M", e)}`
+				end),
+			},
 		},
 		ui.presence(function(): string
 			return if timer_left:get() > 0 then "running" else "idle"
 		end, function(k: string): Node
 			if k == "running" then
-				return pill("Stop", true, function()
-					timer_end:set(0)
-					timer_left:set(0)
-				end)
+				return ui.row {
+					gap = "$space.2",
+					items = "center",
+					pill("+1 min", false, add_minute),
+					pill("Stop", true, function()
+						timer_end:set(0)
+						timer_left:set(0)
+					end),
+				}
 			end
 			return ui.row(presets)
-		end, { enter = { opacity = { 0, 1 }, duration = 140 }, exit = { opacity = 0, duration = 60 }, mode = "wait" }),
+		end, { enter = { opacity = { 0, 1 }, y = { 4, 0 }, duration = 160 }, exit = { opacity = 0, duration = 60 }, mode = "wait" }),
 	}
 end
 
@@ -1254,47 +1669,98 @@ local function ago(at: number): string
 	return `{math.floor(d / 86400)}d`
 end
 
+-- A file's kind: its glyph and its colour.
+local function kind_of(name: string): (string, string, string)
+	local ext = string.lower(string.match(name, "%.([%w]+)$") or "")
+	if ext == "png" or ext == "jpg" or ext == "jpeg" or ext == "gif" or ext == "webp" or ext == "svg" or ext == "heic" then
+		return "file-image", "#c39bff", ext
+	elseif ext == "pdf" then
+		return "document", "#ff8a7a", ext
+	elseif ext == "zip" or ext == "7z" or ext == "rar" or ext == "tar" or ext == "gz" then
+		return "archive-minimalistic", "#ffc46b", ext
+	elseif ext == "md" or ext == "txt" then
+		return "file-markdown", "#a7b4c8", ext
+	elseif ext == "json" or ext == "csv" or ext == "xlsx" or ext == "sql" then
+		return "file-data", "#7ee0a8", ext
+	elseif ext == "rs" or ext == "ts" or ext == "tsx" or ext == "js" or ext == "py" or ext == "luau" or ext == "lua" or ext == "go" or ext == "html" or ext == "css" then
+		return "file-code", "#8fb4ff", ext
+	end
+	return "document", "#d0d4dc", if ext == "" then "file" else ext
+end
+
+local function untray(path: string)
+	local list = {}
+	for _, x in tray:peek() do
+		if x.path ~= path then
+			table.insert(list, x)
+		end
+	end
+	tray:set(list)
+end
+
+local function little(icon: string, name: string, run: () -> ()): Node
+	return ui.button {
+		w = 24,
+		h = 24,
+		rounded = "$radius.full",
+		items = "center",
+		justify = "center",
+		bg = "#00000000",
+		hover = { bg = "#ffffff1f" },
+		active = { scale = 0.9 },
+		color = "#ffffff99",
+		label = name,
+		tooltip = name,
+		on_click = run,
+		kx.Icon { name = icon, size = 12 },
+	}
+end
+
 local function tray_page(): Node
 	local function file_tile(k: Kept): Node
-		local ext = string.upper(string.match(k.name, "%.([%w]+)$") or "FILE")
+		local icon, hue, ext = kind_of(k.name)
 		return ui.column {
-			w = 92,
+			w = 100,
 			gap = 6,
 			items = "center",
 			ui.button {
-				w = 72,
-				h = 72,
+				w = 100,
+				h = 78,
 				rounded = 18,
-				bg = "#ffffff12",
+				gradient = { angle = 160, stops = { { 0, ui.raw(hue .. "2b", "a file's colour, washed") }, { 1, ui.raw("#ffffff0a", "a file tile's foot") } } },
 				border = 1,
-				border_color = "#ffffff0d",
-				hover = { bg = "#ffffff1f" },
+				border_color = ui.raw(hue .. "33", "a file tile's rim"),
+				inset_shadow = { x = 0, y = 1, blur = 0, spread = 0, color = "#ffffff1a" },
+				hover = { scale = 1.03 },
+				active = { scale = 0.97 },
+				direction = "column",
 				items = "center",
 				justify = "center",
-				gap = 2,
+				gap = 7,
 				label = `Open {k.name}`,
 				tooltip = k.path,
 				on_click = function()
 					pcall(ui.invoke, "open_url", k.path)
 				end,
-				ui.column { color = "#ffffffcc", kx.Icon { name = "document", size = 24 } },
-				ui.text { string.sub(ext, 1, 5), literal = true, text_size = ui.raw(9, "a file's kind"), weight = "$font.weight.semibold", color = "#ffffff80" },
+				ui.column { color = ui.raw(hue, "a file's glyph"), kx.Icon { name = icon, size = 26 } },
+				ui.row {
+					h = 16,
+					px = 6,
+					items = "center",
+					rounded = "$radius.full",
+					bg = "#00000059",
+					ui.text { string.upper(string.sub(ext, 1, 5)), literal = true, text_size = ui.raw(9, "a file's kind"), weight = "$font.weight.bold", color = "#ffffffcc", letter_spacing = 0.5 },
+				},
 			},
-			ui.text { k.name, literal = true, truncate = true, max_w = 92, text_size = "$font.size.xs", color = "#ffffffd9" },
+			ui.text { k.name, literal = true, truncate = true, max_w = 100, text_size = ui.raw(11, "a file's name"), weight = "$font.weight.medium", color = "#ffffffd9" },
 			ui.row {
 				gap = 2,
-				ui.button { w = 22, h = 22, rounded = "$radius.full", items = "center", justify = "center", bg = "#00000000", hover = { bg = "#ffffff1a" }, color = "#ffffff8c", label = "Show in folder", tooltip = "Show in folder", on_click = function()
+				little("folder", "Show in folder", function()
 					pcall(ui.invoke, "notch.reveal", k.path)
-				end, kx.Icon { name = "folder", size = 12 } },
-				ui.button { w = 22, h = 22, rounded = "$radius.full", items = "center", justify = "center", bg = "#00000000", hover = { bg = "#ffffff1a" }, color = "#ffffff8c", label = "Take it away", tooltip = "Take it away", on_click = function()
-					local list = {}
-					for _, x in tray:peek() do
-						if x.path ~= k.path then
-							table.insert(list, x)
-						end
-					end
-					tray:set(list)
-				end, kx.Icon { name = "close", size = 11 } },
+				end),
+				little("close", "Take it away", function()
+					untray(k.path)
+				end),
 			},
 		}
 	end
@@ -1302,35 +1768,82 @@ local function tray_page(): Node
 		function()
 			return #tray:get() > 0
 		end,
-		ui.scroll {
+		ui.column {
 			w_full = true,
 			h_full = true,
-			ui.row {
+			gap = 8,
+			section("Tray", function()
+				local n = #tray:get()
+				return if n == 1 then "1 file" else `{n} files`
+			end, pill("Clear", false, function()
+				tray:set({})
+			end)),
+			ui.scroll {
 				w_full = true,
-				wrap = true,
-				gap = 8,
-				ui.each(tray, file_tile, {
-					key = function(k: Kept)
-						return k.path
-					end,
-				}),
+				grow = 1,
+				min_h = 0,
+				ui.row {
+					w_full = true,
+					wrap = true,
+					gap = 10,
+					ui.each(tray, file_tile, {
+						key = function(k: Kept)
+							return k.path
+						end,
+					}),
+				},
 			},
 		},
 		ui.column {
 			w_full = true,
 			h_full = true,
-			items = "center",
-			justify = "center",
-			gap = "$space.2",
-			rounded = 22,
+			rounded = 24,
 			border = 1,
-			border_color = "#ffffff24",
+			border_color = "#ffffff26",
 			border_style = "dashed",
-			ui.column { color = "#ffffff99", kx.Icon { name = "tray", size = 28 } },
-			white("Drop files here", "$font.size.sm", "$font.weight.semibold"),
-			grey("Drag them to the top of the screen. They wait here until you take them away."),
+			bg = "#ffffff05",
+			empty_state("download", "Drop files on the island", "Drag anything to the top of the screen. It waits here until you take it away."),
 		}
 	)
+end
+
+local function alert_row(a: Alert): Node
+	local hue = if a.kind == "failed" then "#ff7a7a" elseif a.kind == "asked" then "#ffb454" else "#7ee0a8"
+	local word = if a.kind == "failed" then "Failed" elseif a.kind == "asked" then "Asked you" else "Finished"
+	return ui.button {
+		w_full = true,
+		h = 46,
+		gap = "$space.3",
+		items = "center",
+		px = 8,
+		rounded = 16,
+		bg = "#00000000",
+		hover = { bg = "#ffffff12" },
+		active = { scale = 0.985 },
+		on_click = function()
+			open_chat(a.thread)
+		end,
+		ui.column {
+			w = 30,
+			h = 30,
+			shrink = 0,
+			rounded = "$radius.full",
+			items = "center",
+			justify = "center",
+			bg = ui.raw(hue .. "1f", "an alert's disc"),
+			border = 1,
+			border_color = ui.raw(hue .. "40", "an alert's ring"),
+			kx.StatusIcon { kind = if a.kind == "failed" then "failed" elseif a.kind == "asked" then "approval" else "done", size = 14 },
+		},
+		ui.column {
+			grow = 1,
+			min_w = 0,
+			gap = 1,
+			ui.text { a.title, literal = true, truncate = true, text_size = "$font.size.sm", weight = "$font.weight.medium", color = "#ffffffeb" },
+			ui.text { word, literal = true, text_size = ui.raw(11, "what happened"), weight = "$font.weight.medium", color = ui.raw(hue .. "cc", "what happened, in its colour") },
+		},
+		ui.text { ago(a.at), literal = true, text_size = ui.raw(11, "how long ago"), color = "#ffffff59", tabular = true },
+	}
 end
 
 local function alerts_page(): Node
@@ -1342,87 +1855,144 @@ local function alerts_page(): Node
 			w_full = true,
 			h_full = true,
 			gap = 6,
-			ui.row {
-				w_full = true,
-				justify = "between",
-				items = "center",
-				px = 6,
-				label("Recent"),
-				pill("Clear", false, function()
-					alerts:set({})
-				end),
-			},
-			ui.scroll {
+			section("Recent", function()
+				return tostring(#alerts:get())
+			end, pill("Clear", false, function()
+				alerts:set({})
+			end)),
+			tile {
 				w_full = true,
 				grow = 1,
-				ui.column {
+				min_h = 0,
+				p = 4,
+				gap = 0,
+				ui.scroll {
 					w_full = true,
-					gap = 0,
-					ui.each(alerts, function(a: Alert): Node
-						return ui.button {
-							w_full = true,
-							h = 38,
-							gap = "$space.3",
-							items = "center",
-							px = 8,
-							rounded = 12,
-							bg = "#00000000",
-							hover = { bg = "#ffffff0f" },
-							on_click = function()
-								open_chat(a.thread)
+					h_full = true,
+					ui.column {
+						w_full = true,
+						gap = 0,
+						ui.each(alerts, alert_row, {
+							key = function(a: Alert)
+								return `{a.thread}:{a.at}:{a.kind}`
 							end,
-							kx.StatusIcon { kind = if a.kind == "failed" then "failed" elseif a.kind == "asked" then "approval" else "done", size = 14 },
-							ui.text { a.title, literal = true, truncate = true, grow = 1, min_w = 0, text_size = "$font.size.sm", color = "#ffffffe6" },
-							ui.text { ago(a.at), literal = true, text_size = "$font.size.xs", color = "#ffffff73", tabular = true },
-						}
-					end, {
-						key = function(a: Alert)
-							return `{a.thread}:{a.at}:{a.kind}`
-						end,
-					}),
+						}),
+					},
 				},
 			},
 		},
-		ui.column {
-			w_full = true,
-			h_full = true,
-			items = "center",
-			justify = "center",
-			gap = "$space.2",
-			ui.column { color = "#ffffff80", kx.Icon { name = "bell", size = 28 } },
-			white("All quiet", "$font.size.sm", "$font.weight.semibold"),
-			grey("Finishes, failures and what agents ask land here."),
-		}
+		empty_state("bell", "All quiet", "When an agent finishes, fails or asks you something, it lands here.")
 	)
+end
+
+local function notes_page(): Node
+	return ui.column {
+		w_full = true,
+		h_full = true,
+		gap = 6,
+		section("Note", nil, ui.row {
+			gap = 6,
+			items = "center",
+			ui.text {
+				function()
+					local n = #note:get()
+					return if n == 0 then "Saved as you type" else `{n} characters · saved`
+				end,
+				literal = true,
+				text_size = ui.raw(11, "the note's state"),
+				color = "#ffffff59",
+				tabular = true,
+			},
+			little("trash-bin-minimalistic", "Clear the note", function()
+				note:set("")
+			end),
+		}),
+		tile {
+			w_full = true,
+			grow = 1,
+			min_h = 0,
+			p = 4,
+			bg = "#0000003d",
+			ui.textarea {
+				value = note,
+				placeholder = "Jot something down. It stays here until you clear it…",
+				placeholder_color = "#ffffff4d",
+				w_full = true,
+				grow = 1,
+				p = 12,
+				color = "#fffffff0",
+				text_size = "$font.size.sm",
+				bg = "#00000000",
+				border = 0,
+			},
+		},
+	}
 end
 
 local TABS = {
 	{ id = "home", label = "Home", icon = "home" },
 	{ id = "agents", label = "Agents", icon = "bot" },
-	{ id = "music", label = "Music", icon = "music-note" },
+	{ id = "music", label = "Now playing", icon = "music-note" },
 	{ id = "tray", label = "Tray", icon = "tray" },
 	{ id = "alerts", label = "Alerts", icon = "bell" },
-	{ id = "notes", label = "Notes", icon = "note-text" },
+	{ id = "notes", label = "Note", icon = "note-text" },
 	{ id = "timer", label = "Timer", icon = "timer" },
 }
 
+-- The tabs: each a glyph, the open one a white pill that also says its
+-- name. Alerts and the tray carry a dot while they hold something.
 local function tabs(): Node
-	local row: { [any]: any } = { gap = 1, items = "center", p = 3, rounded = "$radius.full", bg = "#ffffff12", border = 1, border_color = "#ffffff0f" }
+	local row: { [any]: any } = {
+		gap = 2,
+		items = "center",
+		p = 3,
+		rounded = "$radius.full",
+		bg = "#00000066",
+		border = 1,
+		border_color = "#ffffff1f",
+		inset_shadow = { x = 0, y = 1, blur = 0, spread = 0, color = "#ffffff12" },
+	}
 	for _, t in TABS do
+		local function on(): boolean
+			return tab:get() == t.id
+		end
+		local function dot(): boolean
+			if on() then
+				return false
+			end
+			if t.id == "alerts" then
+				return #alerts:get() > 0
+			elseif t.id == "tray" then
+				return #tray:get() > 0
+			elseif t.id == "agents" then
+				return #attention:get() > 0
+			elseif t.id == "timer" then
+				return timer_left:get() > 0
+			elseif t.id == "music" then
+				local m = media:get()
+				return m ~= nil and m.playing
+			end
+			return false
+		end
 		table.insert(
 			row,
 			ui.button {
-				w = 26,
-				h = 26,
+				h = 28,
+				px = function()
+					return if on() then 11 else 7
+				end,
+				gap = 6,
 				items = "center",
 				justify = "center",
 				rounded = "$radius.full",
+				relative = true,
 				bg = function()
-					return if tab:get() == t.id then "#ffffff2e" else "#00000000"
+					return if on() then "#ffffff" else "#00000000"
 				end,
-				hover = { bg = "#ffffff1a" },
+				hover = { bg = "#ffffff1f" },
+				active = { scale = 0.92 },
 				color = function()
-					return if tab:get() == t.id then "#ffffff" else "#ffffff80"
+					return if on() then "#000000" else "#ffffff99"
 				end,
 				label = t.label,
 				tooltip = t.label,
@@ -1430,57 +2000,82 @@ local function tabs(): Node
 					tab:set(t.id)
 				end,
 				kx.Icon { name = t.icon, size = 13 },
+				ui.show(on, ui.text {
+					string.upper(t.label),
+					literal = true,
+					text_size = ui.raw(10, "the open tab's name"),
+					weight = "$font.weight.bold",
+					letter_spacing = 0.7,
+				}),
+				ui.show(dot, ui.div {
+					absolute = true,
+					right = 3,
+					top = 4,
+					w = 5,
+					h = 5,
+					rounded = "$radius.full",
+					bg = if t.id == "agents" then "$kx.attention" else "$accent",
+				}),
 			}
 		)
 	end
 	return ui.row(row)
 end
 
+local function agents_page(): Node
+	return ui.show(function()
+		return #all_threads:get() > 0
+	end, ui.column {
+		w_full = true,
+		h_full = true,
+		gap = 6,
+		section("Agents", function()
+			local busy, waits = #working:get(), #attention:get()
+			local parts = {}
+			if busy > 0 then
+				table.insert(parts, `{busy} working`)
+			end
+			if waits > 0 then
+				table.insert(parts, `{waits} waiting`)
+			end
+			return if #parts == 0 then tostring(#all_threads:get()) else table.concat(parts, " · ")
+		end, pill("New", true, function()
+			if not fixture then
+				pcall(ui.invoke, "notch.ask")
+			end
+		end)),
+		tile {
+			w_full = true,
+			grow = 1,
+			min_h = 0,
+			p = 4,
+			gap = 0,
+			ui.scroll {
+				w_full = true,
+				h_full = true,
+				ui.column {
+					w_full = true,
+					gap = 0,
+					ui.each(all_threads, agent_line, {
+						key = function(t: store.Thread)
+							return `{t.id}:{t.status}`
+						end,
+					}),
+				},
+			},
+		},
+	}, empty_state("bot", "No agents yet", "Ask one from Home, or press Alt Space from anywhere.", pill("Go to Home", false, function()
+		tab:set("home")
+	end)))
+end
+
 local function page(id: string): Node
 	if id == "agents" then
-		return ui.show(function()
-			return #all_threads:get() > 0
-		end, ui.scroll {
-			w_full = true,
-			h_full = true,
-			ui.column {
-				w_full = true,
-				gap = 0,
-				ui.each(all_threads, agent_line, {
-					key = function(t: store.Thread)
-						return `{t.id}:{t.status}`
-					end,
-				}),
-			},
-		}, ui.column {
-			w_full = true,
-			h_full = true,
-			items = "center",
-			justify = "center",
-			gap = "$space.2",
-			ui.column { color = "#ffffff80", kx.Icon { name = "bot", size = 28 } },
-			white("No agents yet", "$font.size.sm", "$font.weight.semibold"),
-			grey("Ask one from Home, or press Alt Space."),
-		})
+		return agents_page()
 	elseif id == "music" then
-		return ui.column { w_full = true, pt = "$space.2", music_row(true) }
+		return music_row(true)
 	elseif id == "notes" then
-		return tile {
-			w_full = true,
-			h_full = true,
-			p = 4,
-			ui.textarea {
-				value = note,
-				placeholder = "A note to keep…",
-				w_full = true,
-				grow = 1,
-				p = 12,
-				color = "#ffffffe6",
-				text_size = "$font.size.sm",
-				bg = "#00000000",
-				border = 0,
-			},
-		}
+		return notes_page()
 	elseif id == "timer" then
 		return timer()
 	elseif id == "tray" then
@@ -1489,6 +2084,20 @@ local function page(id: string): Node
 		return alerts_page()
 	end
 	return home()
+end
+
+local function expanded_header(): Node
+	return ui.row {
+		w_full = true,
+		h = 36,
+		shrink = 0,
+		justify = "between",
+		items = "center",
+		tabs(),
+		round_button("arrow-up-right", "Open Keplorayx", function()
+			open_thread(nil)
+		end),
+	}
 end
 
 local function expanded_view(): Node
@@ -1505,15 +2114,7 @@ local function expanded_view(): Node
 			pt = 12,
 			pb = 14,
 			gap = 12,
-			ui.row {
-				w_full = true,
-				justify = "between",
-				items = "center",
-				tabs(),
-				round_button("arrow-up-right", "Open Keplorayx", function()
-					open_thread(nil)
-				end),
-			},
+			expanded_header(),
 			ui.column {
 				w_full = true,
 				grow = 1,
@@ -1554,24 +2155,34 @@ local function shape_of(kind: string, page: string, slim_as: string, talking: bo
 	elseif kind == "flash" then
 		return { w = 340, h = 40, r = 20, y = FLOAT, interactive = true }
 	end
+	-- Opened, every page is the same width, so moving between them only
+	-- grows or shrinks the island; each is as tall as what it holds. (The
+	-- frame round a page: its padding, the tabs and the gap under them.)
+	local W, R, CHROME = 460, 38, 74
 	if talking then
-		return { w = 480, h = 440, r = 34, y = FLOAT, interactive = true }
+		return { w = 480, h = 400, r = R, y = FLOAT, interactive = true }
 	end
+	local h = 300
 	if page == "home" then
-		-- As tall as what it holds: the time, music if it plays, the agents.
-		local h = 64 + 56 + (if playing then 72 else 0) + math.max(1, rows) * 44 + 10 + 10 + 40
-		return { w = 460, h = h, r = 34, y = FLOAT, interactive = true }
+		h = CHROME + 48 + 10 + (if playing then 74 else 0) + 12 + 28 + math.max(1, rows) * 46 + 10 + 44
+	elseif page == "music" then
+		h = 284
+	elseif page == "agents" then
+		local n = #all_threads:get()
+		h = if n == 0 then 290 else CHROME + 34 + 14 + math.min(5, n) * 46
+	elseif page == "tray" then
+		local n = #tray:get()
+		local lines = math.clamp(math.ceil(n / 4), 1, 2)
+		h = if n == 0 then 260 else CHROME + 36 + lines * 140
+	elseif page == "alerts" then
+		local n = #alerts:get()
+		h = if n == 0 then 270 else CHROME + 34 + 14 + math.min(5, n) * 46
+	elseif page == "notes" then
+		h = 300
+	elseif page == "timer" then
+		h = 320
 	end
-	local SHAPES: { [string]: { number } } = {
-		music = { 400, 236 },
-		agents = { 440, 320 },
-		tray = { 440, 236 },
-		alerts = { 440, 300 },
-		notes = { 400, 250 },
-		timer = { 360, 230 },
-	}
-	local size = SHAPES[page] or { 460, 360 }
-	return { w = size[1], h = size[2], r = 34, y = FLOAT, interactive = true }
+	return { w = W, h = math.min(h, 400), r = R, y = FLOAT, interactive = true }
 end
 
 local aim = ui.computed(function(): Shape
@@ -1594,24 +2205,35 @@ local aim_y = ui.computed(function(): number
 	return aim:get().y
 end)
 
--- Its glass's tint, over what's behind it blurred (src/notch.rs
--- `behind`): the compact shapes the darkest, near the Dynamic Island's
--- black; opened, smoked glass, deepest at its top where the tabs sit and
--- clearing toward its foot (the music view clearest, as the reference).
+-- Its glass's tint, over the blurred window behind it (src/notch.rs
+-- `behind`). Compact shapes stay near black. Opened, the top is smoked
+-- so the words read, and the foot thins so that window shows through:
+-- clearer over a bright one, a little more smoke over a dark one.
 local SMOKE = { angle = 180, stops = { { 0, "#000000c7" }, { 1, "#000000ad" } } }
-local CLEAR = {
-	angle = 180,
-	stops = { { 0, "#000000b3" }, { 0.5, "#0000008a" }, { 1, "#ffffff33" } },
-}
-local GLASS = {
-	angle = 180,
-	stops = { { 0, "#000000b3" }, { 0.6, "#00000094" }, { 1, "#0000006b" } },
-}
+local behind_light: State<number> = ui.shared("notch.behind.light", 0.5)
+local function foot(clear: boolean): string
+	local l = math.clamp(behind_light:get(), 0, 1)
+	local base = if clear then 0.1 else 0.34
+	local a = math.floor(math.clamp(base + (1 - l) * 0.42, 0.08, 0.82) * 255)
+	return ui.raw(string.format("#000000%02x", a), "smoke over the window behind, thinner when that window is bright")
+end
+local function glass_of(clear: boolean): any
+	behind_light:get()
+	return {
+		angle = 180,
+		stops = {
+			{ 0, if clear then ui.raw("#000000e8", "the music view's dark head") else ui.raw("#000000c2", "an open view's dark head") },
+			{ 0.38, if clear then ui.raw(mix("#000000", tint(), 0.3) .. "d8", "the cover's colour in the glass") else ui.raw("#0000009c", "an open view clearing") },
+			{ 0.7, if clear then ui.raw(mix("#000000", tint(), 0.18) .. "8c", "the cover's colour thinning") else ui.raw("#0000007a", "an open view near its foot") },
+			{ 1, foot(clear) },
+		},
+	}
+end
 local function colour(): any
 	if state:get() ~= "expanded" then
 		return SMOKE
 	end
-	return if tab:get() == "music" then CLEAR else GLASS
+	return glass_of(tab:get() == "music")
 end
 
 -- What's behind, pinned to the screen while the pill springs: its place in
@@ -1700,10 +2322,17 @@ local island = ui.column {
 	overflow = "hidden",
 	items = "center",
 	-- (Light caught along its top edge, as glass's.)
-	inset_shadow = { x = 0, y = 1, blur = 0, spread = 0, color = "#ffffff24" },
+	inset_shadow = { x = 0, y = 1, blur = 0, spread = 0, color = "#ffffff2e" },
+	shadow = { x = 0, y = 16, blur = 22, spread = -8, color = "#00000073" },
 	border = 1,
 	border_color = function()
-		return if first:get() then "$kx.attention.soft" else "#ffffff2b"
+		if first:get() then
+			return "$kx.attention.soft"
+		end
+		if state:get() == "expanded" and tab:get() == "music" then
+			return ui.raw(mix("#ffffff", tint(), 0.35) .. "59", "the rim, in the cover's light")
+		end
+		return "#ffffff2b"
 	end,
 	-- The glass: what's behind, blurred, its colour deepened.
 	ui.image {
@@ -1717,9 +2346,11 @@ local island = ui.column {
 		w = 680,
 		h = 460,
 		fit = "fill",
-		blur = 34,
-		saturate = 1.8,
-		brightness = 1,
+		blur = 16,
+		saturate = 1.3,
+		brightness = function()
+			return 0.86 + math.clamp(behind_light:get(), 0, 1) * 0.32
+		end,
 	},
 	-- Its tint, and a sheen across its top left.
 	ui.div { absolute = true, left = 0, top = 0, right = 0, bottom = 0, gradient = colour },

@@ -332,6 +332,9 @@ static SHOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new
 /// shape, so the island makes its own.
 fn behind(cx: &mut WindowContext, host: &zgx_script::ScriptHost) {
     let copies = host.shared("notch.behind", 0.);
+    // How light what's behind the pill is (0–1), so the tint thins over a
+    // bright window and smokes a little more over a dark one.
+    let light = host.shared("notch.behind.light", 0.5);
     let (tell, heard) = flume::bounded::<(u32, u32, Vec<u8>)>(1);
     std::thread::Builder::new()
         .name("kx-notch-behind".into())
@@ -343,7 +346,7 @@ fn behind(cx: &mut WindowContext, host: &zgx_script::ScriptHost) {
                 let shown = SHOWN.load(std::sync::atomic::Ordering::Relaxed);
                 // (Quick while it shows; a look now and then otherwise, so
                 // it opens on what's there now.)
-                std::thread::sleep(std::time::Duration::from_millis(if shown { 160 } else { 400 }));
+                std::thread::sleep(std::time::Duration::from_millis(if shown { 110 } else { 400 }));
                 if !shown && was {
                     was = false;
                     continue;
@@ -370,10 +373,12 @@ fn behind(cx: &mut WindowContext, host: &zgx_script::ScriptHost) {
     cx.tasks.spawn(async move {
         let mut n = 0.;
         while let Ok((w, h, rgba)) = heard.recv_async().await {
+            let l = brightness(&rgba, w, h);
             if let Ok(image) = zgx::image::ImageData::new(w, h, rgba) {
                 host.image("notch/behind", Some(Arc::new(image)));
                 n += 1.;
                 copies.set(zgx_script::Value::from(n));
+                light.set(zgx_script::Value::from(l));
             }
         }
     });
@@ -436,6 +441,34 @@ fn copy_behind() -> Option<(u32, u32, Vec<u8>)> {
 #[cfg(not(windows))]
 fn copy_behind() -> Option<(u32, u32, Vec<u8>)> {
     None
+}
+
+/// How light the pill's part of a capture is, 0–1. The pill sits in the
+/// middle of the top of the island's window.
+fn brightness(px: &[u8], w: u32, h: u32) -> f64 {
+    let (w, h) = (w as usize, h as usize);
+    if w == 0 || h == 0 || px.len() < w * h * 4 {
+        return 0.5;
+    }
+    let x0 = w / 5;
+    let x1 = w.saturating_sub(x0).max(x0 + 1);
+    let y1 = (h * 3 / 5).max(1);
+    let mut sum = 0u64;
+    let mut n = 0u64;
+    let mut y = 0;
+    while y < y1 {
+        let mut x = x0;
+        while x < x1 {
+            let i = (y * w + x) * 4;
+            if i + 2 < px.len() {
+                sum += px[i] as u64 * 3 + px[i + 1] as u64 * 6 + px[i + 2] as u64;
+                n += 1;
+            }
+            x += 3;
+        }
+        y += 3;
+    }
+    (sum as f64 / n.max(1) as f64) / (255.0 * 10.0)
 }
 
 /// BGRA at full size to RGBA at a quarter (each pixel the average of 4×4).
