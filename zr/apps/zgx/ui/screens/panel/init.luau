@@ -843,9 +843,17 @@ M.Panel = ui.component(function(props: Props): Node
 				-- brightening with it.)
 				bg = function(): string
 					if is_active() then
-						return "$zeron.selected.flat.bg"
+						return "$zeron.kx.well_hover"
 					end
 					return if hovered:get() then "$hover" else "#00000000"
+				end,
+				-- (Keplorayx) The tab in front a well: its rim and lit lip.
+				border = 1,
+				border_color = function(): string
+					return if is_active() then "$zeron.kx.well_edge" else "#00000000"
+				end,
+				inset_shadow = function(): string
+					return if is_active() then "$zeron.kx.well_lip" else "0 0 0 0 #00000000"
 				end,
 				color = function(): string
 					return if is_active() or hovered:get() then "$text.primary" else "$text.secondary"
@@ -1491,7 +1499,22 @@ M.Panel = ui.component(function(props: Props): Node
 		rounded = "$zeron.inset.radius",
 		bg = "$zeron.inset.bg",
 		border = 1,
-		border_color = "$zeron.inset.edge",
+		-- (Keplorayx) Glass, as the sidebar's card: its rim, a lit top lip
+		-- and light falling off down its top, under its tabs.
+		border_color = "$zeron.kx.card_edge",
+		inset_shadow = "$zeron.kx.card_lip",
+		ui.div {
+			absolute = true,
+			left = 0,
+			right = 0,
+			top = 0,
+			h = 140,
+			pointer_events = "none",
+			gradient = function(): any
+				local top = ui.theme.get("zeron.kx.sheen_top") or "#ffffff0d"
+				return { angle = 180, stops = { { 0, top }, { 1, "#ffffff00" } } }
+			end,
+		},
 		ui.column { w_full = true, shrink = 0, hidden = closed, strip },
 		panes,
 	}
