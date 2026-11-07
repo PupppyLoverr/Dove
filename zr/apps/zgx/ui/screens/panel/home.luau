@@ -92,14 +92,11 @@ local actions_by = ui.state("panel_home_actions", {} :: { [string]: any })
 
 local ACTION_ICONS = { "play", "test", "lint", "configure", "build", "debug" }
 
--- (Keplorayx) A part of the page on a glass well of its own: a lit fill,
--- a hairline rim and lip, its rows a little in from its edge (concentric
--- with their corners).
+-- (Keplorayx) A part of the page on a soft fill of its own, nothing drawn
+-- round it, its rows a little in from its edge (concentric with their
+-- corners).
 local function well(p: { [any]: any }): { [any]: any }
 	p.bg = "$zeron.kx.well"
-	p.border = 1
-	p.border_color = "$zeron.kx.well_edge"
-	p.inset_shadow = "$zeron.kx.well_lip"
 	p.rounded = "$radius.xl"
 	p.p = "$space.1"
 	return p
@@ -1122,6 +1119,11 @@ local function lanes(props: Props, sid: string): Node
 		ui.column {
 			w_full = true,
 			gap = "$zeron.list.gap",
+			-- (Out of layout with no ports and nothing to say of them: no gap
+			-- kept for it above the side chats.)
+			hidden = function(): boolean
+				return #ports:get() == 0 and trouble:get() == nil
+			end,
 			part("panel-home-ports", "panel-home-port-list", "panel.home.ports", "ports", function(): { any }
 				return ports:get()
 			end, function(l: any): string

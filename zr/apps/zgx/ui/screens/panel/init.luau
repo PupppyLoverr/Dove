@@ -847,14 +847,6 @@ M.Panel = ui.component(function(props: Props): Node
 					end
 					return if hovered:get() then "$hover" else "#00000000"
 				end,
-				-- (Keplorayx) The tab in front a well: its rim and lit lip.
-				border = 1,
-				border_color = function(): string
-					return if is_active() then "$zeron.kx.well_edge" else "#00000000"
-				end,
-				inset_shadow = function(): string
-					return if is_active() then "$zeron.kx.well_lip" else "0 0 0 0 #00000000"
-				end,
 				color = function(): string
 					return if is_active() or hovered:get() then "$text.primary" else "$text.secondary"
 				end,
