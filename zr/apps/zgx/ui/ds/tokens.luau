@@ -674,7 +674,7 @@ function M.setup()
 				kx = {
 					card_edge = if dark then "alpha({text.primary}, 0.07)" else "alpha({text.primary}, 0.06)",
 					card_lip = if dark then "0 1 0 0 #ffffff0f" else "0 1 0 0 #ffffffd9",
-					sheen_top = if dark then "#ffffff08" else "#ffffff80",
+					sheen_top = if dark then "#ffffff0d" else "#ffffff99",
 					well = if dark then "alpha({text.primary}, 0.04)" else "alpha({background}, 0.7)",
 					well_hover = if dark then "alpha({text.primary}, 0.07)" else "alpha({background}, 0.95)",
 					well_edge = if dark then "alpha({text.primary}, 0.075)" else "alpha({text.primary}, 0.08)",
