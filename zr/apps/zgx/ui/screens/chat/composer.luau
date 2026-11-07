@@ -51,7 +51,7 @@ local FOOT = require("@app/screens/chat/dock").GAP
 -- "center" mid-page and opened out (Zeron's), "bottom" docked at the foot
 -- as in a session, "slim" mid-page but one line, as in a session, until
 -- you write more.
-local kx_place = ui.persist("kx.composer.place", "center")
+local kx_place = require("@app/kx/composer_place")
 
 -- What a new chat starts with: what the last one used.
 local defaults = ui.persist("chat_new_defaults", {

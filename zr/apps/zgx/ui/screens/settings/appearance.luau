@@ -460,7 +460,7 @@ function M.view(): Node
 					label = "New chat composer",
 					description = "Mid-page and opened out, at the foot as in a chat, or mid-page as one slim line until you write more.",
 					control = ds.Segmented {
-						value = ui.persist("kx.composer.place", "center"),
+						value = require("@app/kx/composer_place"),
 						label = "New chat composer",
 						options = {
 							{ value = "center", label = "Centre" },
