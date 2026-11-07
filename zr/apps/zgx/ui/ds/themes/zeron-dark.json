@@ -201,6 +201,11 @@
 				"active": "{palette.red.700}"
 			},
 			"accent.active": "#6f86b8",
+			"spotlight": {
+				"tint": "#1c1d22b8",
+				"edge": "#ffffff1c",
+				"lip": "#ffffff17"
+			},
 			"menu": {
 				"tint": "#10121aa6",
 				"solid": "#1a1c24",

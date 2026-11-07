@@ -16,6 +16,7 @@
 
 use std::{
     cell::{Cell, RefCell},
+    collections::HashMap,
     io::{BufRead as _, BufReader, Write as _},
     path::PathBuf,
     process::{Child, ChildStdin, Command, Stdio},
@@ -88,6 +89,12 @@ struct Account {
     /// Sign-ins waiting on the browser: each told how it ended.
     waiting: RefCell<Vec<zgx::task::LatestSender<Result<(), String>>>>,
     restoring: Cell<bool>,
+    /// The account's sessions (every device's, from the Cosmos registry),
+    /// as the helper last listed them, and who shows them.
+    synced: RefCell<Json>,
+    synced_shares: RefCell<Vec<Shared>>,
+    /// Transcripts asked for, waiting on their chat room.
+    pulls: RefCell<HashMap<String, Vec<zgx::task::LatestSender<Json>>>>,
 }
 
 thread_local! {
@@ -98,6 +105,9 @@ thread_local! {
         shares: RefCell::default(),
         waiting: RefCell::default(),
         restoring: Cell::new(false),
+        synced: RefCell::new(read_json(&synced_path()).unwrap_or_else(|| json!([]))),
+        synced_shares: RefCell::default(),
+        pulls: RefCell::default(),
     });
 }
 
@@ -144,6 +154,13 @@ impl Account {
         }
     }
 
+    fn publish_synced(&self) {
+        let v = crate::kx::to_value(&self.synced.borrow());
+        for share in self.synced_shares.borrow().iter() {
+            share.set(v.clone());
+        }
+    }
+
     fn send(&self, value: Json) {
         if let Some(stdin) = self.stdin.borrow_mut().as_mut() {
             let _ = writeln!(stdin, "{value}");
@@ -177,7 +194,45 @@ impl Account {
                 keep(&k);
                 if signed_in {
                     self.settle(Ok(()));
+                    // (The helper lists them once its registry connects; asked
+                    // again, in case that was before we listened.)
+                    self.send(json!({ "op": "list_sessions" }));
                 }
+            }
+            "account_sessions" => {
+                let Some(chats) = ev.get("chats").and_then(Json::as_array) else { return };
+                let device = s("deviceId").unwrap_or_default();
+                let rows: Vec<Json> = chats
+                    .iter()
+                    .filter(|c| c["id"].as_str().is_some_and(|id| !id.is_empty()))
+                    .map(|c| {
+                        let mut c = c.clone();
+                        c["here"] = json!(c["deviceId"].as_str() == Some(device.as_str()));
+                        c
+                    })
+                    .collect();
+                // (An empty list while rows were known is a pull not yet in.)
+                if rows.is_empty() && self.synced.borrow().as_array().is_some_and(|a| !a.is_empty()) {
+                    return;
+                }
+                let rows = Json::Array(rows);
+                write_json(&synced_path(), &rows);
+                *self.synced.borrow_mut() = rows;
+                self.publish_synced();
+                return;
+            }
+            "account_transcript" => {
+                let Some(chat) = s("chat") else { return };
+                let messages = ev.get("messages").cloned().unwrap_or_else(|| json!([]));
+                if messages.as_array().is_none_or(|m| m.is_empty()) {
+                    return;
+                }
+                let flat = flatten(&messages);
+                write_json(&transcript_path(&chat), &flat);
+                for tell in self.pulls.borrow_mut().remove(&chat).unwrap_or_default() {
+                    tell.send(flat.clone());
+                }
+                return;
             }
             "sign_in_url" => {
                 if let Some(url) = s("url") {
@@ -286,6 +341,10 @@ fn start(tasks: &zgx_desktop::TaskSpawner) -> bool {
 pub fn install(cx: &mut WindowContext, host: &ScriptHost) {
     let account = ACCOUNT.with(Rc::clone);
     account.shares.borrow_mut().push(host.shared("account", account.value()));
+    account
+        .synced_shares
+        .borrow_mut()
+        .push(host.shared("kx.account.sessions", crate::kx::to_value(&account.synced.borrow())));
     let tasks = cx.tasks.clone();
     if !account.status.borrow().started && session_exists() {
         // Signed in before: the sidecar resumes the session, quietly.
@@ -359,6 +418,32 @@ pub fn install(cx: &mut WindowContext, host: &ScriptHost) {
         keep(&k);
         a.publish();
         async move { Ok(Value::Nil) }
+    });
+    // The account's sessions: listed again, and one's transcript (kept here
+    // once read; asked of its chat room otherwise, for up to 20 seconds).
+    host.action("kx.account.refresh", |_| {
+        ACCOUNT.with(|a| a.send(json!({ "op": "list_sessions" })));
+    });
+    let t = tasks.clone();
+    host.async_action("kx.account.transcript", move |id| {
+        let id = text(&id);
+        let kept = read_json(&transcript_path(&id));
+        let (tell, mut heard) = zgx::task::latest::<Json>();
+        let a = ACCOUNT.with(Rc::clone);
+        if kept.is_none() && !id.is_empty() && a.stdin.borrow().is_some() {
+            a.pulls.borrow_mut().entry(id.clone()).or_default().push(tell.clone());
+            a.send(json!({ "op": "pull_chat", "id": id }));
+            t.spawn(async move {
+                zgx::timer::sleep(Duration::from_secs(20)).await;
+                tell.send(json!([]));
+            });
+        } else {
+            tell.send(kept.unwrap_or_else(|| json!([])));
+        }
+        async move {
+            let got = heard.recv().await.unwrap_or_else(|| json!([]));
+            Ok(crate::kx::to_value(&got))
+        }
     });
     host.async_action("account.username", |_| async move {
         Ok(kept()["username"].as_str().map_or(Value::Nil, Value::from))
@@ -467,6 +552,78 @@ pub fn install(cx: &mut WindowContext, host: &ScriptHost) {
             Ok(Value::record([("sent", Value::from(0.)), ("failed", Value::List(failed.into()))]))
         }
     });
+}
+
+fn synced_path() -> PathBuf {
+    data_dir().join("account").join("sessions.json")
+}
+
+fn transcript_path(id: &str) -> PathBuf {
+    let safe: String = id.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').collect();
+    data_dir().join("account").join("transcripts").join(format!("{safe}.json"))
+}
+
+fn read_json(path: &std::path::Path) -> Option<Json> {
+    std::fs::read_to_string(path).ok().and_then(|s| serde_json::from_str(&s).ok())
+}
+
+fn write_json(path: &std::path::Path, value: &Json) {
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(path, serde_json::to_string(value).unwrap_or_default());
+}
+
+/// A chat room's messages as the page reads them: each `{ role, blocks }`,
+/// a block `{ kind = "text" | "reasoning" | "tool" | "error", text, name? }`
+/// (a tool's `text` is what it acted on: a command, a path, a query).
+fn flatten(messages: &Json) -> Json {
+    let mut out = Vec::new();
+    for m in messages.as_array().into_iter().flatten() {
+        let role = m["role"].as_str().unwrap_or("assistant");
+        let mut blocks = Vec::new();
+        for part in m["parts"].as_array().into_iter().flatten() {
+            match part["kind"].as_str().unwrap_or_default() {
+                "text" => {
+                    let t = part["text"].as_str().unwrap_or_default();
+                    if !t.trim().is_empty() {
+                        blocks.push(json!({ "kind": "text", "text": t }));
+                    }
+                }
+                "reasoning" => {
+                    let t = part["reasoning"].as_str().or(part["text"].as_str()).unwrap_or_default();
+                    if !t.trim().is_empty() {
+                        blocks.push(json!({ "kind": "reasoning", "text": t }));
+                    }
+                }
+                "tool" => {
+                    let call = &part["call"];
+                    let kind = call["kind"].as_str().unwrap_or("tool");
+                    let (name, what) = match kind {
+                        "exec" => ("Ran", &call["command"]),
+                        "readFile" => ("Read", &call["path"]),
+                        "writeFile" | "editFile" | "applyPatch" => ("Edited", &call["path"]),
+                        "search" | "glob" => ("Searched", &call["pattern"]),
+                        "webFetch" => ("Fetched", &call["url"]),
+                        "webSearch" => ("Searched the web", &call["query"]),
+                        "mcp" => ("Used", &call["tool"]),
+                        _ => ("Used", &call["name"]),
+                    };
+                    let what = what.as_str().map(str::to_owned).unwrap_or_else(|| kind.to_owned());
+                    blocks.push(json!({
+                        "kind": "tool", "name": name, "text": what,
+                        "error": part["isError"].as_bool() == Some(true),
+                    }));
+                }
+                "error" => blocks.push(json!({ "kind": "error", "text": part["message"].as_str().unwrap_or_default() })),
+                _ => {}
+            }
+        }
+        if !blocks.is_empty() {
+            out.push(json!({ "role": role, "blocks": blocks }));
+        }
+    }
+    Json::Array(out)
 }
 
 /// The finished setup pages' ids.
@@ -613,6 +770,24 @@ mod tests {
         assert_eq!(username_problem("ma"), Some("invalid"));
         assert_eq!(username_problem("Mara!"), Some("invalid"));
         assert_eq!(username_problem("keplorayx"), Some("reserved"));
+    }
+
+    #[test]
+    fn transcripts_flatten() {
+        let m = json!([
+            { "role": "user", "parts": [{ "kind": "text", "text": "fix it" }] },
+            { "role": "assistant", "parts": [
+                { "kind": "tool", "call": { "kind": "exec", "command": "cargo test" }, "isError": false },
+                { "kind": "text", "text": "Done." },
+                { "kind": "text", "text": "  " }
+            ] },
+            { "role": "assistant", "parts": [] }
+        ]);
+        let f = flatten(&m);
+        assert_eq!(f.as_array().unwrap().len(), 2);
+        assert_eq!(f[1]["blocks"][0]["name"], "Ran");
+        assert_eq!(f[1]["blocks"][0]["text"], "cargo test");
+        assert_eq!(f[1]["blocks"].as_array().unwrap().len(), 2);
     }
 
     #[test]

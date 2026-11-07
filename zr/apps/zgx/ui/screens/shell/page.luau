@@ -562,6 +562,11 @@ return function(props: Props): Node
 	-- off, a quiet word. What's around it gives the page.
 	local function plugin_page(key: string): Node
 		local plugin, page = string.match(key, "^([^/]*)/(.*)$")
+		-- (Keplorayx's own page: your account's sessions, ui/kx/synced.)
+		local synced = require("@app/kx/synced")
+		if plugin == synced.PLUGIN and page == synced.PAGE then
+			return synced.page()
+		end
 		local listed: any = nil
 		for _, p in (ui.shared("plugins.pages", {} :: { any }):peek() or {}) :: { any } do
 			if p.plugin == plugin and p.id == page then

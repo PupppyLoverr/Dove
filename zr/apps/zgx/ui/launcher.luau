@@ -456,48 +456,46 @@ local function answer(): Node
 	})
 end
 
--- Spotlight as the Mac's Dynamic Island draws it (docs/design/
--- apple-island-spotlight.md): at the top of the screen, where the island
--- is, the field in a black capsule (the island grown sideways) and, apart
--- under it, a glass panel of results over a blur of what's behind
--- (src/kx/launcher.rs copies it as it's summoned). Keplorayx's colours.
+-- Spotlight as macOS draws it (docs/design/apple-island-spotlight.md): in
+-- the middle of the screen, a glass capsule with the field and, under it, a
+-- glass panel of results, each over a blur of what's behind (src/kx/
+-- launcher.rs copies it as it's summoned). The window stands still; only
+-- the panel grows down as results come.
 local behind = ui.shared("launcher.behind", 0)
--- (Where the panel stands in this window: the field's capsule over it.)
-local PANEL_LEFT, PANEL_TOP = 40, 8 + 58 + 10
-local function backdrop(): Node
+-- (Where the palette stands in this window: room for its shadow around it.)
+local SIDE, TOP, WIDE = 40, 12, 640
+local function backdrop(left: number, top: number): Node
 	return ui.image {
 		src = function()
 			behind:get()
 			return "host:launcher/behind"
 		end,
 		absolute = true,
-		left = -PANEL_LEFT,
-		top = -PANEL_TOP,
+		left = -(SIDE + left),
+		top = -(TOP + top),
 		w = 720,
-		h = 620,
+		h = 560,
 		fit = "fill",
-		blur = 34,
-		saturate = 1.8,
+		blur = 40,
+		saturate = 1.6,
 	}
 end
 return ui.column {
 	w_full = true,
 	h_full = true,
 	items = "center",
+	pt = TOP,
 	ui.show(
 		function()
 			return mode:get() == "answer"
 		end,
-		ui.column { pt = 8, answer() },
-		ui.column {
-			pt = 8,
-			ui.show(
-				open,
-				ui.column {
-					w = 640,
-					CommandPalette.Inline { open = open, root = root :: any, recent = recent, island = true, backdrop = backdrop } :: any,
-				}
-			),
-		}
+		answer(),
+		ui.show(
+			open,
+			ui.column {
+				w = WIDE,
+				CommandPalette.Inline { open = open, root = root :: any, recent = recent, island = true, backdrop = backdrop } :: any,
+			}
+		)
 	),
 }

@@ -2063,70 +2063,54 @@ local Body = ui.component(function(props: Props & { recent_state: State<{ string
 		legend(Kbd { text = "esc" }, way_out),
 	}
 
-	-- (Keplorayx) As the Mac's Dynamic Island draws Spotlight: the field in a
-	-- black capsule (the island grown sideways), and under it, apart, a
-	-- glass panel of the rest, over `backdrop` (what's behind, blurred: the
-	-- caller's). docs/design/apple-island-spotlight.md.
+	-- (Keplorayx) Spotlight as macOS draws it: a glass capsule holding the
+	-- field, and under it, apart, a glass panel of results; both over
+	-- `backdrop(left, top)` (what's behind, blurred: the caller's, placed by
+	-- where each stands in the palette). No key legend: the keys are the
+	-- Mac's (return, the arrows, esc). docs/design/apple-island-spotlight.md.
 	if (props :: any).island then
 		local backdrop = (props :: any).backdrop
-		return ui.column {
-			id = "command-palette",
-			w_full = true,
-			gap = 10,
-			on_mount = function(el)
-				anime.animate(el, motion.params({ opacity = { 0, 1 }, scale = { 0.94, 1 }, duration = 260, ease = "outBack(1.2)" } :: any))
-			end,
-			ui.row {
+		local FIELD_H, GAP = 56, 8
+		local function glass(radius: number, left: number, top: number, child: Node): Node
+			return ui.column {
 				w_full = true,
-				h = 58,
-				px = 10,
-				items = "center",
-				rounded = "$radius.full",
-				bg = "#000000f7",
-				border = 1,
-				border_color = "#ffffff14",
-				theme = "zeron-dark",
-				search,
-			},
-			ui.show(function(): boolean
-				return query:get() ~= "" or shown_rows:get() > 0
-			end, ui.column {
-				w_full = true,
-				rounded = 30,
+				rounded = radius,
 				overflow = "hidden",
 				relative = true,
 				border = 1,
-				border_color = "#ffffff26",
-				inset_shadow = { x = 0, y = 1, blur = 0, spread = 0, color = "#ffffff24" },
-				shadow = { x = 0, y = 18, blur = 40, spread = 0, color = "#00000059" },
-				if backdrop then backdrop() else nil,
-				ui.div {
-					absolute = true,
-					left = 0,
-					top = 0,
-					right = 0,
-					bottom = 0,
-					bg = "$zeron.palette.tint",
-				},
-				ui.div {
-					absolute = true,
-					left = 0,
-					top = 0,
-					right = 0,
-					bottom = 0,
-					gradient = { angle = 160, stops = { { 0, "#ffffff17" }, { 0.4, "#ffffff00" } } },
-				},
-				ui.column {
-					w_full = true,
-					pt = 6,
-					scope_row,
-					ui.show(function(): boolean
-						return shown_rows:get() > 0 or loading:get()
-					end, list, empty),
-					rule(),
-					footer,
-				},
+				border_color = "$zeron.spotlight.edge",
+				inset_shadow = { x = 0, y = 1, blur = 0, spread = 0, color = "$zeron.spotlight.lip" },
+				shadow = { x = 0, y = 12, blur = 32, spread = 0, color = "#0000004d" },
+				if backdrop then backdrop(left, top) else nil,
+				ui.div { absolute = true, left = 0, top = 0, right = 0, bottom = 0, bg = "$zeron.spotlight.tint" },
+				child,
+			}
+		end
+		return ui.column {
+			id = "command-palette",
+			w_full = true,
+			gap = GAP,
+			on_mount = function(el)
+				anime.animate(el, motion.params({ opacity = { 0, 1 }, scale = { 0.97, 1 }, duration = 180, ease = "outCubic" } :: any))
+			end,
+			glass(FIELD_H / 2, 0, 0, ui.row {
+				w_full = true,
+				h = FIELD_H,
+				pl = 6,
+				pr = 10,
+				items = "center",
+				search,
 			}),
+			ui.show(function(): boolean
+				return query:get() ~= "" or shown_rows:get() > 0
+			end, glass(20, 0, FIELD_H + GAP, ui.column {
+				w_full = true,
+				py = 6,
+				scope_row,
+				ui.show(function(): boolean
+					return shown_rows:get() > 0 or loading:get()
+				end, list, empty),
+			})),
 		}
 	end
 

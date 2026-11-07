@@ -34,7 +34,7 @@ use zgx_script::{Shared, Value};
 
 /// The launcher's window, in points: the palette's card and the room its
 /// shadow and an answer need.
-const SIZE: (f64, f64) = (720., 620.);
+const SIZE: (f64, f64) = (720., 560.);
 
 thread_local! {
     static LAUNCHER: RefCell<Option<(WindowHandle, Shared, zgx_script::ScriptHost, Shared)>> = const { RefCell::new(None) };
@@ -65,13 +65,13 @@ fn centred() -> Option<WindowBounds> {
     if w <= 0 || h <= 0 {
         return None;
     }
-    // At the top, centred: Spotlight grows out of the island, as on the
-    // Mac (docs/design/apple-island-spotlight.md); in pixels at the
-    // system's scale.
-    let _ = h;
+    // In the middle of the screen, as the Mac's Spotlight: the field a
+    // little above the centre, its results growing down from it; kept
+    // clear of the taskbar. In pixels at the system's scale.
     let scale = crate::kx::notch::system_scale();
     let (lw, lh) = ((SIZE.0 * scale) as i32, (SIZE.1 * scale) as i32);
-    Some(WindowBounds { position: Some(((w - lw) / 2, 0)), size: (lw as u32, lh as u32) })
+    let y = ((h as f64 * 0.38) as i32).min(h - lh - (56. * scale) as i32).max(0);
+    Some(WindowBounds { position: Some(((w - lw) / 2, y)), size: (lw as u32, lh as u32) })
 }
 
 #[cfg(not(windows))]

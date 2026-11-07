@@ -1442,7 +1442,18 @@ M.Sidebar = ui.component(function(props: Props): Node
 		on_unarchive = function(id: string)
 			sessions.unarchive(id)
 		end,
-		pages = ui.shared("plugins.pages", {} :: { any }),
+		-- (Keplorayx's own page first: your account's sessions, while signed in.)
+		pages = ui.computed(function(): { any }
+			local out = {}
+			local mine = require("@app/kx/synced").row()
+			if mine then
+				table.insert(out, mine)
+			end
+			for _, p in ui.shared("plugins.pages", {} :: { any }):get() or {} do
+				table.insert(out, p)
+			end
+			return out
+		end),
 		on_page = function(page: any)
 			route.plugin_page(page.plugin, page.id)
 		end,

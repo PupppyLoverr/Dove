@@ -215,7 +215,9 @@ end)
 type Shape = { w: number, h: number, r: number, y: number, interactive: boolean }
 -- (The gap between the screen's edge and the island.)
 local FLOAT = 8
-local SPRING = { stiffness = 340, damping = 26 }
+-- (Apple's island: quick, with the least overshoot that still reads as a
+-- spring.)
+local SPRING = { stiffness = 320, damping = 30 }
 
 -- The clock, while music shows and plays.
 local function ticking()
@@ -276,7 +278,7 @@ local function asking(w: () -> Waiting?, compact: boolean): Node
 		gap = "$space.3",
 		items = "center",
 		w_full = true,
-		ui.div { w = 8, h = 8, rounded = "$radius.full", bg = "$kx.attention", opacity = glow, shrink = 0 },
+		ui.div { w = 8, h = 8, rounded = "$radius.full", bg = "$kx.attention", shrink = 0 },
 		ui.column {
 			gap = 1,
 			grow = 1,
@@ -484,15 +486,13 @@ local function white(text: any, size: string?, weight: string?): Node
 	return ui.text { text, literal = true, truncate = true, color = "#ffffffeb", text_size = size or "$font.size.sm", weight = weight or "$font.weight.medium" }
 end
 
+-- (Resting, as the Mac's: the time at one end, the mark at the other,
+-- nothing between.)
+local _ = keys
 local slim_resting = compact(
-	ui.row {
-		gap = "$space.2",
-		items = "center",
-		ui.column { color = "$accent", kx.Icon { name = "orbit", size = 14 } },
-		white(clock, nil, "$font.weight.semibold"),
-	},
-	quiet(day, "$font.size.xs"),
-	keys("Alt", "Space")
+	white(clock, nil, "$font.weight.semibold"),
+	nil,
+	ui.column { color = "#ffffff8c", kx.Icon { name = "orbit", size = 14 } }
 )
 
 local slim_working = compact(
@@ -878,14 +878,12 @@ local function heading(text: string): Node
 	return ui.text { text, literal = true, text_size = "$font.size.xs", weight = "$font.weight.medium", color = "$text.tertiary" }
 end
 
--- A tile on the island: a rounded well of light on the black.
+-- A tile on the island: a flat well a shade lighter than the black, its
+-- corner concentric with the island's (38 less the 14 around it).
 local function tile(props: { [any]: any }): Node
 	local p: { [any]: any } = {
-		rounded = 20,
-		bg = "#ffffff10",
-		border = 1,
-		border_color = "#ffffff17",
-		inset_shadow = { x = 0, y = 1, blur = 0, spread = 0, color = "#ffffff14" },
+		rounded = 24,
+		bg = "#ffffff0b",
 		p = 14,
 		gap = "$space.2",
 	}
@@ -898,13 +896,12 @@ end
 local function label(text: string | () -> string): Node
 	return ui.text {
 		function()
-			return string.upper(if type(text) == "function" then text() else text)
+			return if type(text) == "function" then text() else text
 		end,
 		literal = true,
-		text_size = ui.raw(10, "a tile's label"),
+		text_size = ui.raw(12, "a tile's label"),
 		weight = "$font.weight.semibold",
-		color = "#ffffff73",
-		letter_spacing = 0.6,
+		color = "#ffffff8c",
 	}
 end
 
@@ -923,7 +920,7 @@ local function section(title: string | () -> string, count: (() -> string)?, tra
 		items = "center",
 		label(title),
 		if count
-			then ui.text { count, literal = true, text_size = ui.raw(10, "a heading's count"), weight = "$font.weight.semibold", color = "#ffffff4d", tabular = true }
+			then ui.text { count, literal = true, text_size = ui.raw(12, "a heading's count"), color = "#ffffff4d", tabular = true }
 			else nil,
 		ui.row { grow = 1 },
 		trailing,
@@ -935,21 +932,13 @@ local function chip(text: any, colour: string | () -> string): Node
 	local function c(): string
 		return if type(colour) == "function" then colour() else colour
 	end
+	-- (Plain: a small dot in its colour and the word, no wash, no glow.)
 	return ui.row {
 		h = 22,
-		px = 9,
 		gap = 6,
 		items = "center",
-		rounded = "$radius.full",
-		bg = function()
-			return ui.raw(c() .. "1f", "a chip's wash")
-		end,
-		border = 1,
-		border_color = function()
-			return ui.raw(c() .. "33", "a chip's rim")
-		end,
-		ui.div { w = 6, h = 6, rounded = "$radius.full", bg = c, opacity = glow },
-		ui.text { text, literal = true, text_size = ui.raw(11, "a chip's word"), weight = "$font.weight.semibold", color = "#ffffffe0" },
+		ui.div { w = 6, h = 6, rounded = "$radius.full", bg = c },
+		ui.text { text, literal = true, text_size = ui.raw(12, "a chip's word"), weight = "$font.weight.medium", color = "#ffffffa6" },
 	}
 end
 
@@ -962,19 +951,7 @@ local function empty_state(icon: string, title: string, body: string, action: No
 		items = "center",
 		justify = "center",
 		gap = 10,
-		ui.column {
-			w = 56,
-			h = 56,
-			rounded = "$radius.full",
-			items = "center",
-			justify = "center",
-			gradient = { angle = 160, stops = { { 0, "#ffffff24" }, { 1, "#ffffff08" } } },
-			border = 1,
-			border_color = "#ffffff1f",
-			inset_shadow = { x = 0, y = 1, blur = 0, spread = 0, color = "#ffffff26" },
-			color = "#ffffffcc",
-			kx.Icon { name = icon, size = 22 },
-		},
+		ui.column { color = "#ffffff59", kx.Icon { name = icon, size = 24 } },
 		ui.column {
 			gap = 3,
 			items = "center",
@@ -1009,17 +986,15 @@ local function agent_line(t: store.Thread): Node
 		on_click = function()
 			open_chat(t.id)
 		end,
-		-- Its mark in a disc of how it stands.
+		-- Its mark on a quiet square (how it stands is said in words).
 		ui.column {
-			w = 32,
-			h = 32,
+			w = 30,
+			h = 30,
 			shrink = 0,
-			rounded = "$radius.full",
+			rounded = 9,
 			items = "center",
 			justify = "center",
-			bg = ui.raw(ring .. (if ring == "#ffffff" then "0f" else "1f"), "an agent's disc, in how it stands"),
-			border = 1,
-			border_color = ui.raw(ring .. (if ring == "#ffffff" then "14" else "4d"), "an agent's ring"),
+			bg = "#ffffff0f",
 			kx.AgentMark { agent = t.harness_id, size = 16 },
 		},
 		ui.column {
@@ -1060,18 +1035,14 @@ local function ask_pill(): Node
 		h = 44,
 		gap = "$space.2",
 		items = "center",
-		pl = 14,
+		pl = 16,
 		pr = 5,
 		shrink = 0,
 		rounded = "$radius.full",
-		gradient = { angle = 180, stops = { { 0, "#ffffff1a" }, { 1, "#ffffff0d" } } },
-		border = 1,
-		border_color = "#ffffff1a",
-		inset_shadow = { x = 0, y = 1, blur = 0, spread = 0, color = "#ffffff1a" },
-		ui.column { color = "$accent", kx.Icon { name = "sparkle", size = 15 } },
+		bg = "#ffffff0f",
 		ui.input {
 			value = ask_text,
-			placeholder = "Ask an agent anything…",
+			placeholder = "Ask an agent",
 			placeholder_color = "#ffffff59",
 			label = "Ask an agent",
 			grow = 1,
@@ -1121,22 +1092,9 @@ local function now_playing(): Node
 		w_full = true,
 		h = 64,
 		shrink = 0,
-		rounded = 20,
+		rounded = 24,
 		overflow = "hidden",
-		border = 1,
-		border_color = function()
-			return ui.raw(mix("#ffffff", tint(), 0.5) .. "2e", "the card's rim, in the cover's light")
-		end,
-		gradient = function()
-			return {
-				angle = 100,
-				stops = {
-					{ 0, ui.raw(mix("#000000", tint(), 0.32) .. "b3", "the cover's light, strongest by the cover") },
-					{ 0.6, ui.raw("#ffffff0d", "the card clearing") },
-					{ 1, ui.raw("#ffffff08", "the card's end") },
-				},
-			}
-		end,
+		bg = "#ffffff0b",
 		ui.row {
 			w_full = true,
 			h_full = true,
@@ -1211,18 +1169,11 @@ local function home(): Node
 			px = 4,
 			h = 48,
 			shrink = 0,
-			ui.text { clock, literal = true, font = "$kx.display", text_size = ui.raw(44, "the island's clock"), color = "#ffffff", tabular = true },
-			ui.column {
-				pb = 6,
-				gap = 1,
-				label(function()
-					return now:get().weekday
-				end),
-				ui.text { function()
-					local t = now:get()
-					return `{t.day} {t.month}`
-				end, literal = true, text_size = "$font.size.sm", weight = "$font.weight.medium", color = "#ffffffb3" },
-			},
+			ui.text { clock, literal = true, text_size = ui.raw(40, "the island's clock"), weight = "$font.weight.semibold", color = "#ffffff", tabular = true, letter_spacing = -1 },
+			ui.text { function()
+				local t = now:get()
+				return `{t.weekday}, {t.day} {t.month}`
+			end, literal = true, pb = 7, text_size = "$font.size.sm", weight = "$font.weight.medium", color = "#ffffff8c" },
 			ui.row { grow = 1 },
 			ui.row { pb = 8, standing() },
 		},
@@ -1957,15 +1908,11 @@ local TABS = {
 -- The tabs: each a glyph, the open one a white pill that also says its
 -- name. Alerts and the tray carry a dot while they hold something.
 local function tabs(): Node
+	-- (Bare glyphs, as the Mac's own controls: the open one white on a
+	-- faint square, the rest at half light. No bar behind them.)
 	local row: { [any]: any } = {
 		gap = 2,
 		items = "center",
-		p = 3,
-		rounded = "$radius.full",
-		bg = "#00000066",
-		border = 1,
-		border_color = "#ffffff1f",
-		inset_shadow = { x = 0, y = 1, blur = 0, spread = 0, color = "#ffffff12" },
 	}
 	for _, t in TABS do
 		local function on(): boolean
@@ -1992,40 +1939,30 @@ local function tabs(): Node
 		table.insert(
 			row,
 			ui.button {
-				h = 28,
-				px = function()
-					return if on() then 11 else 7
-				end,
-				gap = 6,
+				w = 32,
+				h = 30,
 				items = "center",
 				justify = "center",
-				rounded = "$radius.full",
+				rounded = 10,
 				relative = true,
 				bg = function()
-					return if on() then "#ffffff" else "#00000000"
+					return if on() then "#ffffff1a" else "#00000000"
 				end,
-				hover = { bg = "#ffffff1f" },
-				active = { scale = 0.92 },
+				hover = { bg = "#ffffff12" },
+				active = { scale = 0.94 },
 				color = function()
-					return if on() then "#000000" else "#ffffff99"
+					return if on() then "#ffffff" else "#ffffff73"
 				end,
 				label = t.label,
 				tooltip = t.label,
 				on_click = function()
 					tab:set(t.id)
 				end,
-				kx.Icon { name = t.icon, size = 13 },
-				ui.show(on, ui.text {
-					string.upper(t.label),
-					literal = true,
-					text_size = ui.raw(10, "the open tab's name"),
-					weight = "$font.weight.bold",
-					letter_spacing = 0.7,
-				}),
+				kx.Icon { name = t.icon, size = 15 },
 				ui.show(dot, ui.div {
 					absolute = true,
-					right = 3,
-					top = 4,
+					right = 5,
+					top = 5,
 					w = 5,
 					h = 5,
 					rounded = "$radius.full",
@@ -2164,6 +2101,7 @@ local function shape_of(kind: string, page: string, slim_as: string, talking: bo
 	elseif kind == "slim" then
 		return if slim_as == "waiting"
 			then { w = 430, h = 44, r = 22, y = FLOAT, interactive = true }
+			elseif slim_as == "resting" then { w = 210, h = 34, r = 17, y = FLOAT, interactive = true }
 			else { w = 300, h = 34, r = 17, y = FLOAT, interactive = true }
 	elseif kind == "alert" then
 		return { w = 440, h = 64, r = 28, y = FLOAT, interactive = true }
@@ -2224,7 +2162,7 @@ end)
 -- `behind`). Compact shapes stay near black. Opened, the top is smoked
 -- so the words read, and the foot thins so that window shows through:
 -- clearer over a bright one, a little more smoke over a dark one.
-local SMOKE = { angle = 180, stops = { { 0, "#000000c7" }, { 1, "#000000ad" } } }
+local SMOKE = { angle = 180, stops = { { 0, "#000000f2" }, { 1, "#000000e6" } } }
 local behind_light: State<number> = ui.shared("notch.behind.light", 0.5)
 local function foot(clear: boolean): string
 	local l = math.clamp(behind_light:get(), 0, 1)
@@ -2232,17 +2170,14 @@ local function foot(clear: boolean): string
 	local a = math.floor(math.clamp(base + (1 - l) * 0.42, 0.08, 0.82) * 255)
 	return ui.raw(string.format("#000000%02x", a), "smoke over the window behind, thinner when that window is bright")
 end
+-- Opened: one even smoke, dark enough that the words always read and the
+-- window behind only colours it (the Mac's island is black; ours lets a
+-- little through). Playing music, the cover's colour, faintly.
 local function glass_of(clear: boolean): any
 	behind_light:get()
-	return {
-		angle = 180,
-		stops = {
-			{ 0, if clear then ui.raw("#000000e8", "the music view's dark head") else ui.raw("#000000c2", "an open view's dark head") },
-			{ 0.38, if clear then ui.raw(mix("#000000", tint(), 0.3) .. "d8", "the cover's colour in the glass") else ui.raw("#0000009c", "an open view clearing") },
-			{ 0.7, if clear then ui.raw(mix("#000000", tint(), 0.18) .. "8c", "the cover's colour thinning") else ui.raw("#0000007a", "an open view near its foot") },
-			{ 1, foot(clear) },
-		},
-	}
+	local _ = foot
+	local tone = if clear then mix("#000000", tint(), 0.16) else "#060607"
+	return { angle = 180, stops = { { 0, ui.raw(tone .. "e6", "the island's smoke") }, { 1, ui.raw(tone .. "d9", "the island's smoke, its foot") } } }
 end
 local function colour(): any
 	if state:get() ~= "expanded" then
@@ -2336,18 +2271,10 @@ local island = ui.column {
 	rounded = ui.spring(aim_r, SPRING),
 	overflow = "hidden",
 	items = "center",
-	-- (Light caught along its top edge, as glass's.)
-	inset_shadow = { x = 0, y = 1, blur = 0, spread = 0, color = "#ffffff2e" },
-	shadow = { x = 0, y = 16, blur = 22, spread = -8, color = "#00000073" },
+	shadow = { x = 0, y = 14, blur = 28, spread = -10, color = "#00000080" },
 	border = 1,
 	border_color = function()
-		if first:get() then
-			return "$kx.attention.soft"
-		end
-		if state:get() == "expanded" and tab:get() == "music" then
-			return ui.raw(mix("#ffffff", tint(), 0.35) .. "59", "the rim, in the cover's light")
-		end
-		return "#ffffff2b"
+		return if first:get() then "$kx.attention.soft" else "#ffffff14"
 	end,
 	-- The glass: what's behind, blurred, its colour deepened.
 	ui.image {
@@ -2367,16 +2294,8 @@ local island = ui.column {
 			return 0.86 + math.clamp(behind_light:get(), 0, 1) * 0.32
 		end,
 	},
-	-- Its tint, and a sheen across its top left.
+	-- Its tint.
 	ui.div { absolute = true, left = 0, top = 0, right = 0, bottom = 0, gradient = colour },
-	ui.div {
-		absolute = true,
-		left = 0,
-		top = 0,
-		right = 0,
-		bottom = 0,
-		gradient = { angle = 155, stops = { { 0, "#ffffff1c" }, { 0.32, "#ffffff05" }, { 0.6, "#ffffff00" } } },
-	},
 	-- (Inside the hairline: its final size less the border's two points.)
 	ui.column {
 		w = function()
@@ -2389,7 +2308,7 @@ local island = ui.column {
 		ui.presence(state, view, {
 			w_full = true,
 			h_full = true,
-			enter = { opacity = { 0, 1 }, scale = { 0.9, 1 }, y = { -6, 0 }, duration = 300, ease = "cubicBezier(0.32, 1.25, 0.5, 1)" },
+			enter = { opacity = { 0, 1 }, scale = { 0.96, 1 }, duration = 240, ease = "outCubic" },
 			exit = { opacity = { 1, 0 }, scale = { 1, 0.96 }, duration = 90, ease = kx.motion.EXIT },
 			mode = "wait",
 		}),
