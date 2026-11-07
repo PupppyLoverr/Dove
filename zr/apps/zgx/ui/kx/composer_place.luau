@@ -1,7 +1,8 @@
 --!strict
 -- Where a new chat's composer sits (Settings › Appearance › New chat
--- composer): "center" mid-page and opened out, "bottom" docked at the foot
--- as in a session, "slim" mid-page as one line until you write more.
+-- composer): "center" mid-page and opened out; "bottom" the same composer,
+-- opened out, at the foot; "slim" at the foot as one line until you write
+-- more, as in a session.
 --
 -- One place for it: `ui.persist` keeps a value per file that asks for it,
 -- so Settings and the composer each asking for "kx.composer.place" got two

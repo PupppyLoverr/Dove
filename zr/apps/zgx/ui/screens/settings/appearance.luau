@@ -458,7 +458,7 @@ function M.view(): Node
 				-- Keplorayx's: where a new chat's composer sits (screens/chat/composer).
 				row("composer_place", {
 					label = "New chat composer",
-					description = "Mid-page and opened out, at the foot as in a chat, or mid-page as one slim line until you write more.",
+					description = "Opened out mid-page, the same at the foot, or at the foot as one slim line until you write more.",
 					control = ds.Segmented {
 						value = require("@app/kx/composer_place"),
 						label = "New chat composer",

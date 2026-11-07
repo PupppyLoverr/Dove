@@ -202,9 +202,11 @@
 			},
 			"accent.active": "#6f86b8",
 			"spotlight": {
-				"tint": "#1c1d22b8",
-				"edge": "#ffffff1c",
-				"lip": "#ffffff17"
+				"tint": "#16171c9e",
+				"edge": "#ffffff30",
+				"lip": "#ffffff42",
+				"sheen": "#ffffff1f",
+				"foot": "#ffffff0d"
 			},
 			"menu": {
 				"tint": "#10121aa6",

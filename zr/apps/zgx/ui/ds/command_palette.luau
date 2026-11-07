@@ -2097,19 +2097,49 @@ local Body = ui.component(function(props: Props & { recent_state: State<{ string
 				border_color = "$zeron.spotlight.edge",
 				inset_shadow = { x = 0, y = 1, blur = 0, spread = 0, color = "$zeron.spotlight.lip" },
 				shadow = { x = 0, y = 12, blur = 32, spread = 0, color = "#0000004d" },
+				-- (Morphing, what's behind moves with the capsule's shift: a
+				-- layer over its whole box, moved, never a box of its own
+				-- sized apart from the glass.)
 				if backdrop
 					then (if morph
 						then ui.div {
 							absolute = true,
-							left = ui.spring(shift, MORPH),
+							left = 0,
 							top = 0,
-							w = 0,
-							h = 0,
+							right = 0,
+							bottom = 0,
+							x = ui.spring(shift, MORPH),
 							backdrop(left, top),
 						}
 						else backdrop(left, top))
 					else nil,
 				ui.div { absolute = true, left = 0, top = 0, right = 0, bottom = 0, bg = "$zeron.spotlight.tint" },
+				-- The light on the glass: a lit top edge fading down, a faint
+				-- one at its foot, as Apple's liquid glass catches it.
+				ui.div {
+					absolute = true,
+					left = 0,
+					top = 0,
+					right = 0,
+					bottom = 0,
+					pointer_events = "none",
+					-- (A gradient's stops take colours, not tokens: the theme's,
+					-- read as it changes.)
+					gradient = function(): any
+						local s, f = ui.theme.get("zeron.spotlight.sheen"), ui.theme.get("zeron.spotlight.foot")
+						local sheen = if s ~= nil then tostring(s) else "#ffffff1f"
+						local foot = if f ~= nil then tostring(f) else "#ffffff0d"
+						return {
+							angle = 180,
+							stops = {
+								{ 0, ui.raw(sheen, "the glass's lit top edge") },
+								{ 0.4, ui.raw("#ffffff00", "the sheen, faded") },
+								{ 0.85, ui.raw("#ffffff00", "the foot, unlit") },
+								{ 1, ui.raw(foot, "the glass's foot, catching light") },
+							},
+						}
+					end,
+				},
 				child,
 			}
 		end
@@ -2150,8 +2180,10 @@ local Body = ui.component(function(props: Props & { recent_state: State<{ string
 				})
 			end, {
 				w_full = true,
-				enter = { opacity = { 0, 1 }, y = { -8, 0 }, scale = { 0.98, 1 }, blur = { 8, 0 }, duration = 260, delay = 90, ease = "outCubic" },
-				exit = { opacity = { 1, 0 }, blur = { 0, 6 }, duration = 90 },
+				-- (No blur: a blurred layer is drawn as a box of its own, past
+				-- the glass's rounded clip.)
+				enter = { opacity = { 0, 1 }, y = { -8, 0 }, scale = { 0.98, 1 }, duration = 260, delay = 90, ease = "outCubic" },
+				exit = { opacity = { 1, 0 }, duration = 90 },
 				mode = "wait",
 			}),
 		}

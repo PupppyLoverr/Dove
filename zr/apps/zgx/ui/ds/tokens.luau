@@ -99,7 +99,7 @@ function M.setup()
 			-- material.
 			-- (Keplorayx) Spotlight's glass: its tint over the blur, its
 			-- edge, and the light along its top (each theme sets its own).
-			spotlight = { tint = "{surface.overlay}", edge = "{border}", lip = "#ffffff17" },
+			spotlight = { tint = "{surface.overlay}", edge = "{border}", lip = "#ffffff17", sheen = "#ffffff1f", foot = "#ffffff0d" },
 			menu = {
 				tint = "{surface.overlay}",
 				solid = "{surface.overlay}",

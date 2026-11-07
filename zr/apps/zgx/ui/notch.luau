@@ -2076,8 +2076,8 @@ local function expanded_view(): Node
 				ui.presence(tab, page, {
 					w_full = true,
 					h_full = true,
-					enter = { opacity = { 0, 1 }, y = { 4, 0 }, blur = { 6, 0 }, duration = 220, ease = "outCubic" },
-					exit = { opacity = 0, blur = { 0, 4 }, duration = 70 },
+					enter = { opacity = { 0, 1 }, y = { 4, 0 }, duration = 220, ease = "outCubic" },
+					exit = { opacity = 0, duration = 70 },
 					mode = "wait",
 				}),
 			},
@@ -2175,18 +2175,48 @@ end
 -- Opened: one even smoke, dark enough that the words always read and the
 -- window behind only colours it (the Mac's island is black; ours lets a
 -- little through). Playing music, the cover's colour, faintly.
+-- Liquid glass, as Apple's: the window behind shows through, blurred and
+-- its colours deepened, under a tint just dark enough that the words read,
+-- darker over a bright window than a dark one. `base` is how much smoke
+-- over a dark window; a bright one adds up to 0.3 more.
+local function smoke(tone: string, base: number, foot_less: number): any
+	local l = math.clamp(behind_light:get(), 0, 1)
+	local function a(x: number): string
+		return string.format("%02x", math.floor(math.clamp(x, 0, 1) * 255))
+	end
+	local top = base + l * 0.3
+	return {
+		angle = 180,
+		stops = {
+			{ 0, ui.raw(tone .. a(top), "the island's glass tint") },
+			{ 1, ui.raw(tone .. a(top - foot_less), "the island's glass tint, its foot") },
+		},
+	}
+end
 local function glass_of(clear: boolean): any
-	behind_light:get()
 	local _ = foot
-	local tone = if clear then mix("#000000", tint(), 0.16) else "#060607"
-	return { angle = 180, stops = { { 0, ui.raw(tone .. "e6", "the island's smoke") }, { 1, ui.raw(tone .. "d9", "the island's smoke, its foot") } } }
+	local tone = if clear then mix("#0b0b0f", tint(), 0.22) else "#0b0b0f"
+	return smoke(tone, 0.5, 0.06)
 end
 local function colour(): any
 	if state:get() ~= "expanded" then
-		return SMOKE
+		-- Compact, a little more smoke: a word or two on a small pill.
+		local _ = SMOKE
+		return smoke("#08080b", 0.62, 0)
 	end
 	return glass_of(tab:get() == "music")
 end
+-- The glass's light: a bright lip along its top edge fading down, and a
+-- faint one along its foot, as light catches a lens's rim.
+local SHEEN = {
+	angle = 180,
+	stops = {
+		{ 0, ui.raw("#ffffff26", "the glass's lit top edge") },
+		{ 0.32, ui.raw("#ffffff00", "the glass's lit top edge, fading") },
+		{ 0.82, ui.raw("#ffffff00", "the glass's foot, unlit") },
+		{ 1, ui.raw("#ffffff0f", "the glass's foot, catching light") },
+	},
+}
 
 -- What's behind, pinned to the screen while the pill springs: its place in
 -- the pill is the pill's own place negated, on the same spring (a spring is
@@ -2274,10 +2304,12 @@ local island = ui.column {
 	overflow = "hidden",
 	items = "center",
 	shadow = { x = 0, y = 14, blur = 28, spread = -10, color = "#00000080" },
+	-- Its rim: a hairline of light, brighter along the top (the inset lip).
 	border = 1,
 	border_color = function()
-		return if first:get() then "$kx.attention.soft" else "#ffffff14"
+		return if first:get() then "$kx.attention.soft" else ui.raw("#ffffff2e", "the glass's rim")
 	end,
+	inset_shadow = { x = 0, y = 1, blur = 0, spread = 0, color = ui.raw("#ffffff3d", "the glass's lit top lip") },
 	-- The glass: what's behind, blurred, its colour deepened.
 	ui.image {
 		src = function()
@@ -2290,14 +2322,15 @@ local island = ui.column {
 		w = 680,
 		h = 460,
 		fit = "fill",
-		blur = 16,
-		saturate = 1.3,
+		blur = 26,
+		saturate = 1.9,
 		brightness = function()
-			return 0.86 + math.clamp(behind_light:get(), 0, 1) * 0.32
+			return 0.92 + math.clamp(behind_light:get(), 0, 1) * 0.2
 		end,
 	},
-	-- Its tint.
+	-- Its tint, and the light on it.
 	ui.div { absolute = true, left = 0, top = 0, right = 0, bottom = 0, gradient = colour },
+	ui.div { absolute = true, left = 0, top = 0, right = 0, bottom = 0, pointer_events = "none", gradient = SHEEN },
 	-- (Inside the hairline: its final size less the border's two points.)
 	ui.column {
 		w = function()
@@ -2313,8 +2346,10 @@ local island = ui.column {
 		ui.presence(state, view, {
 			w_full = true,
 			h_full = true,
-			enter = { opacity = { 0, 1 }, scale = { 0.94, 1 }, blur = { 10, 0 }, duration = 300, delay = 50, ease = "outCubic" },
-			exit = { opacity = { 1, 0 }, blur = { 0, 6 }, duration = 80, ease = kx.motion.EXIT },
+			-- (No blur here: a blurred layer is drawn as its own box, past the
+			-- pill's rounded clip, and showed as a window round the island.)
+			enter = { opacity = { 0, 1 }, scale = { 0.94, 1 }, duration = 300, delay = 50, ease = "outCubic" },
+			exit = { opacity = { 1, 0 }, scale = { 1, 0.98 }, duration = 80, ease = kx.motion.EXIT },
 			mode = "wait",
 		}),
 	},

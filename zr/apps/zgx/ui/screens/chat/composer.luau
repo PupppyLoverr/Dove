@@ -947,7 +947,10 @@ local function Composer(): Node
 			placeholder = ui.t("chat.composer.placeholder"),
 			expanded = shown_new,
 			snap = snap,
-			menus_below = shown_new,
+			-- (Below only mid-page: at the foot there's no room under it.)
+			menus_below = function(): boolean
+				return shown_new() and kx_place:get() == "center"
+			end,
 			running = running,
 			access = access,
 			plan = plan,
@@ -1148,7 +1151,9 @@ local function Composer(): Node
 	-- Where it stands: mid-page on a new chat (centred under the title bar),
 	-- else docked at the foot (0), as laid out now.
 	local function target_y(): number
-		if not new_chat() or kx_place:get() == "bottom" then
+		-- (Bottom and Slim both sit at the foot: Bottom as Centre's composer,
+		-- opened out, Slim as one line.)
+		if not new_chat() or kx_place:get() ~= "center" then
 			return 0
 		end
 		-- (Measured, else as last measured: a node made again reads 0 until
@@ -1212,7 +1217,7 @@ local function Composer(): Node
 			snap_until = ui.now() + SNAP_MS
 			snap:set(snap:peek() + 1)
 		end
-		form_new:set(nc and kx_place:get() == "center")
+		form_new:set(nc and kx_place:get() ~= "slim")
 		if model_open:get() and not switched then
 			return
 		end

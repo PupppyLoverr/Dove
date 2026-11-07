@@ -476,8 +476,10 @@ local function backdrop(left: number, top: number): Node
 		w = 720,
 		h = 560,
 		fit = "fill",
+		-- Liquid glass: well blurred, its colours deepened and lifted.
 		blur = 40,
-		saturate = 1.6,
+		saturate = 1.9,
+		brightness = 1.06,
 	}
 end
 return ui.column {
