@@ -817,9 +817,6 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 		ref: Ref?,
 		-- A press on it, with its count (a double click's second is 2).
 		on_press: ((e: PointerEvent) -> ())?,
-		-- (Keplorayx) How it stands at the top: "accent" (New chat, the
-		-- accent's pill) or "field" (Search, a well set into the card).
-		look: ("accent" | "field")?,
 	}
 	local function row(r: Row): Node
 		local hovered = r.hovered or ui.use_state(false)
@@ -937,27 +934,11 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 		else
 			-- A sidebar's row: the design system's flat surface (its wash under
 			-- the pointer, its selected fill winning over hover and press).
-			local look: { [string]: any } = {}
-			if r.look and not railed() then
-				local accent = r.look == "accent"
-				look = {
-					bg = if accent then "$zeron.kx.accent" else "$zeron.kx.well",
-					border = 1,
-					border_color = if accent then "$zeron.kx.accent_edge" else "$zeron.kx.well_edge",
-					inset_shadow = "$zeron.kx.well_lip",
-					hover = { bg = if accent then "$zeron.kx.accent_hover" else "$zeron.kx.well_hover" },
-					active = { bg = if accent then "$zeron.kx.accent_hover" else "$zeron.kx.well_hover" },
-				}
-			end
 			body = Surface {
 				depth = "flat",
 				selected = function(): boolean
 					return is_selected ~= nil and is_selected()
 				end,
-				bg = look.bg,
-				inset_shadow = look.inset_shadow,
-				hover = look.hover,
-				active = look.active,
 
 				on_click = r.on_click,
 				on_hover = function(inside: boolean)
@@ -967,8 +948,7 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 				w = width,
 				h = height,
 				shrink = 0,
-				border = look.border or 0,
-				border_color = look.border_color,
+				border = 0,
 				-- On the rail, an island's control: the title bar's corner.
 				rounded = if railed() then "$radius.md" else nil,
 				-- (The rail's doesn't clip: a tile's badge hangs past its corner.)
@@ -2034,17 +2014,13 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 		hook = if is_island then "rail.actions" else "sidebar.actions",
 		id = if is_island then nil else "sidebar-actions",
 		w_full = true,
-		-- (Keplorayx: New chat's pill and Search's well a little apart, and
-		-- the list a little further below them.)
-		gap = if is_island then "$zeron.list.gap" else "$space.1",
-		pb = if is_island then nil else "$space.1",
+		gap = "$zeron.list.gap",
 		shrink = 0,
 		row {
 			name = function(): string
 				return locale.s("ds.sidebar.new_chat")
 			end,
-			look = "accent",
-			lead = ui.div { color = "$zeron.kx.accent_ink", Icon { name = "plus", size = 16 } },
+			lead = Icon { name = "plus", size = 16 },
 			words = line(label(function(): string
 				return locale.s("ds.sidebar.new_chat")
 			end, nil, "$font.weight.medium"), hint(ui.shortcut_text("cmd+n"))),
@@ -2058,7 +2034,6 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 			name = function(): string
 				return locale.s("ds.sidebar.search")
 			end,
-			look = "field",
 			lead = Icon { name = "search", size = 16 },
 			words = line(label(function(): string
 				return locale.s("ds.sidebar.search")
@@ -4852,21 +4827,6 @@ fn layer(input:LayerInput)->vec4<f32> {
 			h = SLOT + PAD,
 			shrink = 0,
 			overflow = "hidden",
-			relative = true,
-			-- (Keplorayx) You and settings on a well of their own.
-			ui.div {
-				absolute = true,
-				left = 0,
-				right = 0,
-				top = 0,
-				h = SLOT,
-				rounded = "$radius.lg",
-				pointer_events = "none",
-				bg = "$zeron.kx.well",
-				border = 1,
-				border_color = "$zeron.kx.well_edge",
-				inset_shadow = "$zeron.kx.well_lip",
-			},
 			foot,
 		})
 	end
@@ -4935,23 +4895,6 @@ fn layer(input:LayerInput)->vec4<f32> {
 				overflow = "hidden",
 				rounded = "$zeron.inset.radius",
 				bg = "$zeron.inset.bg",
-				-- (Keplorayx) Glass: a hairline rim, a lit top lip, and light
-				-- falling off down its top.
-				border = 1,
-				border_color = "$zeron.kx.card_edge",
-				inset_shadow = "$zeron.kx.card_lip",
-				ui.div {
-					absolute = true,
-					left = 0,
-					right = 0,
-					top = 0,
-					h = 140,
-					pointer_events = "none",
-					gradient = function(): any
-						local top = ui.theme.get("zeron.kx.sheen_top") or "#ffffff0d"
-						return { angle = 180, stops = { { 0, top }, { 1, "#ffffff00" } } }
-					end,
-				},
 				ui.column(body),
 			}
 			else ui.column(body),

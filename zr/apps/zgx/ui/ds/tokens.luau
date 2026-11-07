@@ -666,24 +666,6 @@ function M.setup()
 					dim_hover = "#00000000",
 					pane_dim = "#00000000",
 				},
-				-- (Keplorayx) The sidebar's and the panel's glass: a card's
-				-- rim and the light along its top; a well (a control or a
-				-- group set into the card: Search, you at the foot, the
-				-- panel home's sections), its fill, rim and lit lip; the
-				-- accent's pill (New chat), its wash, rim and ink.
-				kx = {
-					card_edge = if dark then "alpha({text.primary}, 0.07)" else "alpha({text.primary}, 0.06)",
-					card_lip = if dark then "0 1 0 0 #ffffff0f" else "0 1 0 0 #ffffffd9",
-					sheen_top = if dark then "#ffffff0d" else "#ffffff99",
-					well = if dark then "alpha({text.primary}, 0.04)" else "alpha({background}, 0.7)",
-					well_hover = if dark then "alpha({text.primary}, 0.07)" else "alpha({background}, 0.95)",
-					well_edge = if dark then "alpha({text.primary}, 0.075)" else "alpha({text.primary}, 0.08)",
-					well_lip = if dark then "0 1 0 0 #ffffff0b" else "0 1 0 0 #ffffffcc",
-					accent = if dark then "alpha({accent}, 0.16)" else "alpha({accent}, 0.11)",
-					accent_hover = if dark then "alpha({accent}, 0.24)" else "alpha({accent}, 0.17)",
-					accent_edge = if dark then "alpha({accent}, 0.34)" else "alpha({accent}, 0.28)",
-					accent_ink = "{accent}",
-				},
 			},
 		}
 	end)

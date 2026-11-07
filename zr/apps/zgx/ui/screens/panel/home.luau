@@ -91,20 +91,6 @@ local whole = ui.state("panel_home_whole", {} :: { [string]: boolean })
 local actions_by = ui.state("panel_home_actions", {} :: { [string]: any })
 
 local ACTION_ICONS = { "play", "test", "lint", "configure", "build", "debug" }
-
--- (Keplorayx) A part of the page on a glass well of its own: a lit fill,
--- a hairline rim and lip, its rows a little in from its edge (concentric
--- with their corners).
-local function well(p: { [any]: any }): { [any]: any }
-	p.bg = "$zeron.kx.well"
-	p.border = 1
-	p.border_color = "$zeron.kx.well_edge"
-	p.inset_shadow = "$zeron.kx.well_lip"
-	p.rounded = "$radius.xl"
-	p.p = "$space.1"
-	return p
-end
-
 local function action_icon(icon: string?): Icon.Name
 	for _, n in ACTION_ICONS do
 		if n == icon then
@@ -229,7 +215,7 @@ local function info(sid: string): Node
 		end
 	end)
 
-	return ui.column(well {
+	return ui.column {
 		id = "panel-home-info",
 		w_full = true,
 		gap = "$zeron.list.gap",
@@ -322,7 +308,7 @@ local function info(sid: string): Node
 				ui.slot("zeron.panel.details", { w_full = true }),
 			},
 		}),
-	})
+	}
 end
 
 -- ---------------------------------------------------------------------------
@@ -726,7 +712,7 @@ local function actions(props: Props, sid: string): Node
 	return ui.show(function(): boolean
 		local s = now()
 		return ctx:get() ~= nil and not (s and s.state == "unsupported")
-	end, ui.column(well {
+	end, ui.column {
 		id = "panel-home-actions",
 		w_full = true,
 		gap = "$zeron.list.gap",
@@ -791,7 +777,7 @@ local function actions(props: Props, sid: string): Node
 			end,
 		},
 		ui.div { hook = false, editor, confirm_delete },
-	}))
+	})
 end
 
 -- ---------------------------------------------------------------------------
@@ -1021,7 +1007,7 @@ local function lanes(props: Props, sid: string): Node
 			function(): boolean
 				return #items() > 0
 			end,
-			ui.column(well { w_full = true, PanelHome.Lanes {
+			PanelHome.Lanes {
 				id = id,
 				list = list,
 				label = locale.t(label),
@@ -1050,7 +1036,7 @@ local function lanes(props: Props, sid: string): Node
 				-- (Side chats' groups: a new one there.)
 				on_new = if id == "panel-home-side" and props.new_side_chat then new_in :: any else nil,
 				new_label = new_label :: any,
-			} })
+			}
 		)
 	end
 	-- Its ports: the dev servers running for it (the engine's previews,
@@ -1276,7 +1262,7 @@ M.Page = ui.component(function(props: Props): Node
 	end
 	table.insert(
 		parts,
-		ui.column(well {
+		ui.column {
 			id = "panel-home-open",
 			w_full = true,
 			gap = "$zeron.list.gap",
@@ -1287,7 +1273,7 @@ M.Page = ui.component(function(props: Props): Node
 				gap = "$zeron.list.gap",
 				table.unpack(rows),
 			},
-		})
+		}
 	)
 	if sid then
 		table.insert(parts, lanes(props, sid))
@@ -1319,8 +1305,7 @@ M.Page = ui.component(function(props: Props): Node
 			max_w = 380,
 			px = "$space.4",
 			pb = "$space.6",
-			-- (Keplorayx: its parts are wells, so a smaller gap reads as theirs.)
-			gap = "$space.3",
+			gap = "$space.5",
 			table.unpack(parts),
 		},
 	}
