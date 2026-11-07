@@ -476,10 +476,10 @@ local function backdrop(left: number, top: number): Node
 		w = 720,
 		h = 560,
 		fit = "fill",
-		-- Liquid glass: well blurred, its colours deepened and lifted.
-		blur = 40,
-		saturate = 1.9,
-		brightness = 1.06,
+		-- (Already frosted, liquid glass: blurred, its colours deepened and
+		-- lifted in src/kx/launcher.rs. A blur here would draw from a layer
+		-- of its own that the glass's rounded clip doesn't hold, the whole
+		-- copy seen round Spotlight as a box.)
 	}
 end
 return ui.column {

@@ -2322,11 +2322,9 @@ local island = ui.column {
 		w = 680,
 		h = 460,
 		fit = "fill",
-		blur = 26,
-		saturate = 1.9,
-		brightness = function()
-			return 0.92 + math.clamp(behind_light:get(), 0, 1) * 0.2
-		end,
+		-- (Already frosted: blurred, deepened and lifted in src/kx/notch.rs.
+		-- A blur here would draw from a layer of its own that the pill's
+		-- rounded clip doesn't hold, the whole copy seen round it as a box.)
 	},
 	-- Its tint, and the light on it.
 	ui.div { absolute = true, left = 0, top = 0, right = 0, bottom = 0, gradient = colour },

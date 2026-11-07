@@ -108,7 +108,16 @@ pub fn summon() {
                 // Its glass: what's on the screen where it's about to stand,
                 // copied while it's still off the screen (src/kx/notch.rs).
                 if let Some((x, y)) = b.position
-                    && let Some((w, h, rgba)) = crate::kx::notch::copy_screen(x, y, b.size.0 as i32, b.size.1 as i32)
+                    && let Some((w, h, mut rgba)) = crate::kx::notch::copy_screen(x, y, b.size.0 as i32, b.size.1 as i32)
+                    && {
+                        // Frosted here, not by a blur on the image in Luau: a
+                        // blurred node draws from a layer of its own that the
+                        // glass's rounded clip doesn't hold, the whole copy
+                        // seen round Spotlight as a box.
+                        use crate::kx::notch::{SPOTLIGHT_BLUR, frost, system_scale};
+                        frost(&mut rgba, w, h, SPOTLIGHT_BLUR * system_scale() / 4., 1.9, 1.06);
+                        true
+                    }
                     && let Ok(image) = zgx::image::ImageData::new(w, h, rgba)
                 {
                     host.image("launcher/behind", Some(Arc::new(image)));

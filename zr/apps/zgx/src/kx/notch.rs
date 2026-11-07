@@ -334,7 +334,7 @@ fn behind(cx: &mut WindowContext, host: &zgx_script::ScriptHost) {
     // How light what's behind the pill is (0–1), so the tint thins over a
     // bright window and smokes a little more over a dark one.
     let light = host.shared("notch.behind.light", 0.5);
-    let (tell, heard) = flume::bounded::<(u32, u32, Vec<u8>)>(1);
+    let (tell, heard) = flume::bounded::<(u32, u32, Vec<u8>, f64)>(1);
     std::thread::Builder::new()
         .name("kx-notch-behind".into())
         .spawn(move || {
@@ -360,10 +360,16 @@ fn behind(cx: &mut WindowContext, host: &zgx_script::ScriptHost) {
                         continue;
                     }
                 }
-                if let Some(copy) = copy_behind()
-                    && tell.send(copy).is_err()
-                {
-                    break;
+                if let Some((w, h, mut rgba)) = copy_behind() {
+                    // Frosted here, not by a blur on the image in notch.luau:
+                    // a blurred node draws from a layer of its own that the
+                    // pill's rounded clip doesn't hold, the whole copy seen
+                    // round the island as a box.
+                    let l = brightness(&rgba, w, h);
+                    frost(&mut rgba, w, h, ISLAND_BLUR * system_scale() / 4., 1.9, 0.92 + l.clamp(0., 1.) * 0.2);
+                    if tell.send((w, h, rgba, l)).is_err() {
+                        break;
+                    }
                 }
             }
         })
@@ -371,8 +377,7 @@ fn behind(cx: &mut WindowContext, host: &zgx_script::ScriptHost) {
     let host = host.clone();
     cx.tasks.spawn(async move {
         let mut n = 0.;
-        while let Ok((w, h, rgba)) = heard.recv_async().await {
-            let l = brightness(&rgba, w, h);
+        while let Ok((w, h, rgba, l)) = heard.recv_async().await {
             if let Ok(image) = zgx::image::ImageData::new(w, h, rgba) {
                 host.image("notch/behind", Some(Arc::new(image)));
                 n += 1.;
@@ -482,6 +487,75 @@ fn brightness(px: &[u8], w: u32, h: u32) -> f64 {
         y += 3;
     }
     (sum as f64 / n.max(1) as f64) / (255.0 * 10.0)
+}
+
+/// How far the island's glass blurs what's behind it, in points.
+pub const ISLAND_BLUR: f64 = 26.;
+/// How far Spotlight's glass blurs what's behind it, in points.
+pub const SPOTLIGHT_BLUR: f64 = 40.;
+
+/// Liquid glass on a copy (RGBA, opaque): blurred by `sigma` texels (three
+/// box blurs across and down, a Gaussian near enough), its colour deepened
+/// by `saturate` and lifted by `brightness`, as CSS's filters. Done to the
+/// image itself, so it draws as a plain image the glass's rounded clip
+/// holds.
+pub fn frost(px: &mut [u8], w: u32, h: u32, sigma: f64, saturate: f64, brightness: f64) {
+    let (w, h) = (w as usize, h as usize);
+    if w == 0 || h == 0 || px.len() < w * h * 4 {
+        return;
+    }
+    if sigma > 0.3 {
+        // Three boxes of this radius make a Gaussian of `sigma`.
+        let r = (((12. * sigma * sigma / 3. + 1.).sqrt() - 1.) / 2.).round().max(1.) as usize;
+        let mut tmp = vec![0u8; px.len()];
+        for _ in 0..3 {
+            box_pass(px, &mut tmp, w, h, r, true);
+            box_pass(&tmp, px, w, h, r, false);
+        }
+    }
+    let s = saturate as f32;
+    let b = brightness as f32;
+    for p in px.chunks_exact_mut(4) {
+        let (r, g, bl) = (p[0] as f32, p[1] as f32, p[2] as f32);
+        // CSS's saturate() matrix.
+        let nr = (0.213 + 0.787 * s) * r + (0.715 - 0.715 * s) * g + (0.072 - 0.072 * s) * bl;
+        let ng = (0.213 - 0.213 * s) * r + (0.715 + 0.285 * s) * g + (0.072 - 0.072 * s) * bl;
+        let nb = (0.213 - 0.213 * s) * r + (0.715 - 0.715 * s) * g + (0.072 + 0.928 * s) * bl;
+        p[0] = (nr * b).clamp(0., 255.) as u8;
+        p[1] = (ng * b).clamp(0., 255.) as u8;
+        p[2] = (nb * b).clamp(0., 255.) as u8;
+    }
+}
+
+/// One box blur of radius `r` from `src` into `dst`, across or down, its
+/// edges held (what's past them taken as the edge's own colour).
+fn box_pass(src: &[u8], dst: &mut [u8], w: usize, h: usize, r: usize, across: bool) {
+    let (lines, len) = if across { (h, w) } else { (w, h) };
+    let at = |line: usize, i: usize| if across { (line * w + i) * 4 } else { (i * w + line) * 4 };
+    let n = (2 * r + 1) as u32;
+    for line in 0..lines {
+        // The window round the first texel, -r..=r, its ends held.
+        let mut sum = [0u32; 3];
+        for k in 0..=2 * r {
+            let i = (k as isize - r as isize).clamp(0, len as isize - 1) as usize;
+            let o = at(line, i);
+            for c in 0..3 {
+                sum[c] += src[o + c] as u32;
+            }
+        }
+        for i in 0..len {
+            let o = at(line, i);
+            for c in 0..3 {
+                dst[o + c] = (sum[c] / n) as u8;
+            }
+            dst[o + 3] = 255;
+            let out = at(line, i.saturating_sub(r));
+            let inn = at(line, (i + r + 1).min(len - 1));
+            for c in 0..3 {
+                sum[c] = sum[c] + src[inn + c] as u32 - src[out + c] as u32;
+            }
+        }
+    }
 }
 
 /// BGRA at full size to RGBA at a quarter (each pixel the average of 4×4).
