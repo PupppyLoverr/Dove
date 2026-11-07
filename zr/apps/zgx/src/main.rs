@@ -1213,7 +1213,12 @@ fn zeron_window(width: f64, height: f64) -> WindowOptions {
         height,
         decorations: cfg!(target_os = "macos"),
         titlebar: Titlebar::Inset,
-        glass: Some(Glass::new(GlassMaterial::UnderWindowBackground).plain()),
+        // (Keplorayx) Frosted on Windows too: zgx gives the window-background
+        // materials Mica there (the wallpaper's tint, nothing behind the
+        // window blurred, so it read flat), the transient ones Acrylic (what's
+        // behind it blurred, as macOS's under-window glass is). A sheet's is
+        // Acrylic.
+        glass: Some(Glass::new(if cfg!(windows) { GlassMaterial::Sheet } else { GlassMaterial::UnderWindowBackground }).plain()),
         // (Windows: the caption buttons keep to the title row at any zoom.)
         caption_height: Some(32.),
         ..Default::default()

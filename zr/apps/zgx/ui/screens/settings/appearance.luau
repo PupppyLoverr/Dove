@@ -363,6 +363,22 @@ function M.view(): Node
 					end,
 					control = ds.AppearancePicker.Accents { value = ds.look.accent },
 				}),
+				-- (Keplorayx) The window's style (ds.look): Zeron's own look,
+				-- or one of Keplorayx's.
+				row("kx_style", {
+					label = "Style",
+					description = "How the whole window looks: frosted Glass, Editorial's paper and larger type, or Dense and monospace.",
+					control = ds.Segmented {
+						value = ds.look.style,
+						label = "Style",
+						options = {
+							{ value = "zeron", label = "Zeron" },
+							{ value = "glass", label = "Glass" },
+							{ value = "editorial", label = "Editorial" },
+							{ value = "dense", label = "Dense" },
+						} :: any,
+					},
+				}),
 				row("glass", {
 					label = ui.t("settings.appearance.glass.label"),
 					description = ui.t("settings.appearance.glass.description"),

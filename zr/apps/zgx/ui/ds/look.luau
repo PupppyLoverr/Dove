@@ -144,12 +144,98 @@ function M.code_family(): string
 	return if type(own) == "string" and own ~= "" then own else "mono"
 end
 
+-- (Keplorayx) The main window's style (Settings → Appearance): Zeron's own
+-- look, or one of Keplorayx's, each a set of tokens the window wears over
+-- its theme (its glass, cards, corners, text and selection), so every
+-- screen follows at once.
+--   glass      the window frosted through: thin cards, rounder corners
+--   editorial  warm paper and ink in a serif, larger type, an amber accent
+--   dense      a terminal's: near black, square, monospace, a green accent
+M.STYLES = { "zeron", "glass", "editorial", "dense" }
+M.style = ui.persist("kx_style", "zeron")
+
+-- How far each style moves the body text from the size chosen.
+local STYLE_TEXT = { editorial = 2, dense = -1 }
+
+local function dark(): boolean
+	local kind = ui.theme.kind()
+	return not (kind == "light" or kind == "high-contrast-light")
+end
+
+-- The tokens a window wears for `value` (the chosen style by default),
+-- nil for Zeron's own.
+function M.style_theme(value: string?): { [string]: any }?
+	local style = value or M.style:get()
+	local d = dark()
+	if style == "glass" then
+		return {
+			-- (The window's tint thinner, so the frost behind it shows.)
+			background = if d then "#0b0b0d4d" else "#f5f5f75c",
+			["zeron.inset.bg"] = if d then "alpha({text.primary}, 0.045)" else "#ffffff73",
+			["zeron.inset.edge"] = if d then "#ffffff14" else "#ffffffb3",
+			["zeron.inset.radius"] = 14,
+			["radius.lg"] = 10,
+			["radius.xl"] = 16,
+			["selection.item"] = if d then "#ffffff1f" else "#ffffff99",
+			["zeron.selected.flat.bg"] = if d then "#ffffff1f" else "#ffffff99",
+		}
+	elseif style == "editorial" then
+		-- Warm paper and ink, set in a serif, the accent a warm amber.
+		return {
+			["font.sans"] = `"Georgia"`,
+			background = if d then "#15120e" else "#f4efe6",
+			["zeron.window"] = if d then "#15120e" else "#f4efe6",
+			["zeron.inset.bg"] = if d then "#1c1814" else "#fbf8f2",
+			["zeron.inset.edge"] = if d then "#f3e3c814" else "#3a2a1414",
+			["text.primary"] = if d then "#ede5d8" else "#231c14",
+			accent = if d then "#e0a55e" else "#a8641f",
+			["accent.hover"] = if d then "#e8b373" else "#94571a",
+			border = if d then "#f3e3c81a" else "#3a2a141a",
+			["border.subtle"] = if d then "#f3e3c80f" else "#3a2a140f",
+			["surface.overlay"] = if d then "#221d18f0" else "#fbf8f2f0",
+			["zeron.inset.radius"] = 16,
+			["radius.lg"] = 10,
+			["radius.xl"] = 18,
+			["zeron.list.gap"] = 4,
+			["selection.item"] = "alpha({accent}, 0.18)",
+			["zeron.selected.flat.bg"] = "alpha({accent}, 0.18)",
+			hover = "alpha({accent}, 0.08)",
+		}
+	elseif style == "dense" then
+		-- A terminal's: near black, square, monospace, a green accent.
+		return {
+			["font.sans"] = `"Geist Mono"`,
+			background = if d then "#070908" else "#f7f8f7",
+			["zeron.window"] = if d then "#070908" else "#f7f8f7",
+			["zeron.inset.bg"] = if d then "#0c0f0d" else "#ffffff",
+			["zeron.inset.edge"] = if d then "#7cf0b31f" else "#0d3b2526",
+			["text.primary"] = if d then "#d7e4dc" else "#13201a",
+			accent = if d then "#5fd3a0" else "#11845a",
+			["accent.hover"] = if d then "#79deb1" else "#0e7550",
+			border = if d then "#7cf0b31a" else "#0d3b251f",
+			["border.subtle"] = if d then "#7cf0b30f" else "#0d3b2514",
+			["surface.overlay"] = if d then "#0e1210f2" else "#fffffff2",
+			["zeron.inset.radius"] = 4,
+			["radius.sm"] = 2,
+			["radius.md"] = 2,
+			["radius.lg"] = 3,
+			["radius.xl"] = 4,
+			["zeron.list.gap"] = 0,
+			["selection.item"] = "alpha({accent}, 0.16)",
+			["zeron.selected.flat.bg"] = "alpha({accent}, 0.16)",
+			hover = "alpha({accent}, 0.07)",
+		}
+	end
+	return nil
+end
+
 -- What the main window wears over its theme (ds/palettes, worn by
--- ds/tokens): the text size, the fonts chosen, and an accent chosen over
--- the theme's own.
+-- ds/tokens): the text size, its style, the fonts chosen, and an accent
+-- chosen over the theme's own.
 function M.window_theme(): { [string]: any }?
 	local out: { [string]: any }? = nil
-	for _, part in { M.text_theme(), M.font_theme(), M.theme() } do
+	local body = M.text_size:get() + (STYLE_TEXT[M.style:get()] or 0)
+	for _, part in { M.text_theme(body), M.style_theme(), M.font_theme(), M.theme() } do
 		if part then
 			out = out or {}
 			for k, v in part do
