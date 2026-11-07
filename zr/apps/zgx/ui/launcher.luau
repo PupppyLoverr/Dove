@@ -464,6 +464,23 @@ end
 local behind = ui.shared("launcher.behind", 0)
 -- (Where the palette stands in this window: room for its shadow around it.)
 local SIDE, TOP, WIDE = 40, 12, 640
+-- The palette, and its field, stay a moment after it closes: taken away
+-- as the window goes, Windows' text service (the input method's, reached
+-- as the focus moves) asked the field just removed where its text is
+-- before zgx had let it go, and the app came down ("stale scene node").
+-- Gone once the window has, it's built fresh the next time.
+local built = ui.state("launcher.built", open:peek())
+ui.effect(function()
+	if open:get() then
+		built:set(true)
+	else
+		ui.after(800, function()
+			if not open:peek() then
+				built:set(false)
+			end
+		end)
+	end
+end)
 local function backdrop(left: number, top: number): Node
 	return ui.image {
 		src = function()
@@ -493,7 +510,7 @@ return ui.column {
 		end,
 		answer(),
 		ui.show(
-			open,
+			built,
 			ui.column {
 				w = WIDE,
 				CommandPalette.Inline { open = open, root = root :: any, recent = recent, island = true, backdrop = backdrop, wide = WIDE } :: any,

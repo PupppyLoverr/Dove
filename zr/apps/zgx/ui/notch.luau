@@ -672,15 +672,27 @@ local function play_key(size: number, bare: boolean?): Node
 	end, { enter = { opacity = { 0, 1 }, scale = { 0.7, 1 }, duration = 180 }, exit = { opacity = 0, duration = 60 }, mode = "wait" })
 end
 
+-- A well of glass on the island's glass, every card the same: a pane a
+-- touch lighter at its top, a hairline rim and a lit top lip, so the
+-- cards read as set into the glass rather than flat grey patches.
+local WELL_FILL = { angle = 180, stops = { { 0, ui.raw("#ffffff17", "a glass well's lit top") }, { 1, ui.raw("#ffffff08", "a glass well's foot") } } }
+local function well(p: { [any]: any }): { [any]: any }
+	p.bg = nil
+	p.gradient = WELL_FILL
+	p.border = 1
+	p.border_color = ui.raw("#ffffff14", "a glass well's rim")
+	p.inset_shadow = { x = 0, y = 1, blur = 0, spread = 0, color = ui.raw("#ffffff12", "a glass well's lit lip") }
+	return p
+end
+
 local function music_row(big: boolean): Node
 	if not big then
-		return ui.row {
+		return ui.row(well {
 			gap = "$space.3",
 			items = "center",
 			w_full = true,
 			p = "$space.2",
 			rounded = 18,
-			bg = "#ffffff0d",
 			cover(40, 10),
 			ui.column {
 				grow = 1,
@@ -692,7 +704,7 @@ local function music_row(big: boolean): Node
 			key("media-previous", "previous", "Previous", 14),
 			play_key(16),
 			key("media-next", "next", "Next", 14),
-		}
+		})
 	end
 	return ui.column {
 		w_full = true,
@@ -883,9 +895,8 @@ end
 -- A tile on the island: a flat well a shade lighter than the black, its
 -- corner concentric with the island's (38 less the 14 around it).
 local function tile(props: { [any]: any }): Node
-	local p: { [any]: any } = {
+	local p: { [any]: any } = well {
 		rounded = 24,
-		bg = "#ffffff0b",
 		p = 14,
 		gap = "$space.2",
 	}
@@ -1032,7 +1043,7 @@ end
 
 -- The ask: a pill to type in, and a round key to send.
 local function ask_pill(): Node
-	return ui.row {
+	return ui.row(well {
 		w_full = true,
 		h = 44,
 		gap = "$space.2",
@@ -1041,7 +1052,6 @@ local function ask_pill(): Node
 		pr = 5,
 		shrink = 0,
 		rounded = "$radius.full",
-		bg = "#ffffff0f",
 		ui.input {
 			value = ask_text,
 			placeholder = "Ask an agent",
@@ -1080,7 +1090,7 @@ local function ask_pill(): Node
 			on_click = ask,
 			ui.show(ask_busy, kx.Spinner { size = 12 }, kx.Icon { name = "arrow-up", size = 15 }),
 		},
-	}
+	})
 end
 
 local has_media = ui.computed(function(): boolean
@@ -1090,13 +1100,12 @@ end)
 -- What's playing, as a live activity: the cover's light washing the card,
 -- a click on it opens the player.
 local function now_playing(): Node
-	return ui.column {
+	return ui.column(well {
 		w_full = true,
 		h = 64,
 		shrink = 0,
 		rounded = 24,
 		overflow = "hidden",
-		bg = "#ffffff0b",
 		ui.row {
 			w_full = true,
 			h_full = true,
@@ -1133,7 +1142,7 @@ local function now_playing(): Node
 				key("media-forward", "next", "Next", 15, true),
 			},
 		},
-	}
+	})
 end
 
 -- How things stand, said once: who waits, who works, or all quiet.
@@ -2196,13 +2205,14 @@ end
 local function glass_of(clear: boolean): any
 	local _ = foot
 	local tone = if clear then mix("#0b0b0f", tint(), 0.22) else "#0b0b0f"
-	return smoke(tone, 0.5, 0.06)
+	-- (Thin: the window behind shows through, frosted; its words still read.)
+	return smoke(tone, 0.34, 0.08)
 end
 local function colour(): any
 	if state:get() ~= "expanded" then
 		-- Compact, a little more smoke: a word or two on a small pill.
 		local _ = SMOKE
-		return smoke("#08080b", 0.62, 0)
+		return smoke("#08080b", 0.48, 0)
 	end
 	return glass_of(tab:get() == "music")
 end
@@ -2211,10 +2221,11 @@ end
 local SHEEN = {
 	angle = 180,
 	stops = {
-		{ 0, ui.raw("#ffffff26", "the glass's lit top edge") },
-		{ 0.32, ui.raw("#ffffff00", "the glass's lit top edge, fading") },
-		{ 0.82, ui.raw("#ffffff00", "the glass's foot, unlit") },
-		{ 1, ui.raw("#ffffff0f", "the glass's foot, catching light") },
+		{ 0, ui.raw("#ffffff2b", "the glass's lit top edge") },
+		{ 0.22, ui.raw("#ffffff0a", "the glass's lit top edge, fading") },
+		{ 0.5, ui.raw("#ffffff00", "the glass's middle, unlit") },
+		{ 0.86, ui.raw("#ffffff00", "the glass's foot, unlit") },
+		{ 1, ui.raw("#ffffff14", "the glass's foot, catching light") },
 	},
 }
 
@@ -2303,11 +2314,14 @@ local island = ui.column {
 	rounded = ui.spring(aim_r, SPRING),
 	overflow = "hidden",
 	items = "center",
-	shadow = { x = 0, y = 14, blur = 28, spread = -10, color = "#00000080" },
+	-- A soft shadow that fades out well inside the window's cut (14 points
+	-- round the pill, 21 under it, src/kx/notch.rs `SHADOW`): one reaching
+	-- past it was sliced off there, a hard-edged box seen round the island.
+	shadow = { x = 0, y = 4, blur = 12, spread = -3, color = ui.raw("#00000059", "the island's soft shadow") },
 	-- Its rim: a hairline of light, brighter along the top (the inset lip).
 	border = 1,
 	border_color = function()
-		return if first:get() then "$kx.attention.soft" else ui.raw("#ffffff2e", "the glass's rim")
+		return if first:get() then "$kx.attention.soft" else ui.raw("#ffffff33", "the glass's rim")
 	end,
 	inset_shadow = { x = 0, y = 1, blur = 0, spread = 0, color = ui.raw("#ffffff3d", "the glass's lit top lip") },
 	-- The glass: what's behind, blurred, its colour deepened.
