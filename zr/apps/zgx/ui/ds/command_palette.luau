@@ -168,7 +168,7 @@ local BOTTOM_CLEAR, VIEW_MIN = 24, 160
 -- The list's height at most in this window: VIEW_MAX, less whatever the
 -- card would otherwise run past the window's foot. A host that feeds no
 -- window size (a headless test) gets VIEW_MAX.
-local function view_max(): number
+local function view_max(island: boolean?): number
 	local window = (ui :: any).window
 	local state = if type(window) == "table" or type(window) == "userdata" then window.size else nil
 	local ok, v = pcall(function(): any
@@ -178,7 +178,9 @@ local function view_max(): number
 	if h <= 1 then
 		return VIEW_MAX
 	end
-	local room = h - TOP - BOTTOM_CLEAR - SEARCH_H - SCOPES_H - FOOT_H
+	-- (Keplorayx) Spotlight's window: its capsule (56) and the gap under it,
+	-- the panel's scopes and padding, and room for its shadow; no footer.
+	local room = if island then h - 12 - 56 - 8 - 12 - SCOPES_H - 28 else h - TOP - BOTTOM_CLEAR - SEARCH_H - SCOPES_H - FOOT_H
 	return math.max(VIEW_MIN, math.min(VIEW_MAX, room))
 end
 -- With nothing typed, how many sessions All shows before "Show all"; and
@@ -1107,7 +1109,7 @@ local Body = ui.component(function(props: Props & { recent_state: State<{ string
 		if shown_rows:get() == 0 and not loading:get() then
 			return NOTE_H
 		end
-		return math.min(view_max(), total_h:get())
+		return math.min(view_max((props :: any).island), total_h:get())
 	end
 	-- Bring the row `key` into view, with the row past it the way the keys
 	-- are moving (`by`), so what comes next always shows clear of the edge's
@@ -1922,7 +1924,7 @@ local Body = ui.component(function(props: Props & { recent_state: State<{ string
 		fade = function()
 			local total = total_h:get()
 			local o = offset:get()
-			local most = math.max(0, total - math.min(view_max(), total))
+			local most = math.max(0, total - math.min(view_max((props :: any).island), total))
 			return { math.min(o, 20), math.min(math.max(0, most - o), 20) }
 		end,
 	}

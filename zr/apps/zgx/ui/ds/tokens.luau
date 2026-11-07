@@ -97,6 +97,9 @@ function M.setup()
 			},
 			-- A menu or dropdown panel's tint over the platform's frosted
 			-- material.
+			-- (Keplorayx) Spotlight's glass: its tint over the blur, its
+			-- edge, and the light along its top (each theme sets its own).
+			spotlight = { tint = "{surface.overlay}", edge = "{border}", lip = "#ffffff17" },
 			menu = {
 				tint = "{surface.overlay}",
 				solid = "{surface.overlay}",

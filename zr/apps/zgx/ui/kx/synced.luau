@@ -14,6 +14,7 @@
 local ds = require("@ds")
 local Icon = require("@ds/icon")
 local Markdown = require("@ds/markdown")
+local ListRow = require("@ds/list_row").ListRow
 local route = require("@app/screens/shell/route")
 local composer = require("@app/screens/chat/shared")
 
@@ -158,7 +159,7 @@ local function row(s: Synced): Node
 	if agent ~= "" then
 		table.insert(where, agent)
 	end
-	return ds.ListRow {
+	return ListRow {
 		label = title_of(s),
 		on_click = function()
 			choose(s.id)
@@ -182,7 +183,9 @@ local function row(s: Synced): Node
 					text_size = "$font.size.sm",
 				},
 			},
-			ui.text { table.concat(where, " · "), literal = true, truncate = true, max_w = 220, color = "$text.tertiary", text_size = "$font.size.sm" },
+			-- (At its end, the agent alone: where it ran is the line under the
+			-- title when there's no last word, and the group's name besides.)
+			ui.text { agent, literal = true, truncate = true, max_w = 160, color = "$text.tertiary", text_size = "$font.size.sm" },
 			Icon { name = "alt-arrow-right" :: any, size = 14, color = "$text.tertiary" },
 		},
 	}
@@ -309,8 +312,11 @@ local function transcript_page(id: string): Node
 		w_full = true,
 		h_full = true,
 		-- Its head: back, its title and where it ran, Continue here.
+		-- (On the conversation's measure, so its edges line up under it.)
 		ui.row {
 			w_full = true,
+			max_w = 760,
+			mx = "auto",
 			px = "$space.6",
 			pt = "$space.4",
 			pb = "$space.3",
@@ -320,7 +326,7 @@ local function transcript_page(id: string): Node
 				icon = "alt-arrow-left" :: any,
 				label = "All sessions",
 				size = "sm",
-				tone = "ghost",
+				tone = "quiet",
 				on_click = function()
 					open:set(nil)
 				end,
