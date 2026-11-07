@@ -215,9 +215,11 @@ end)
 type Shape = { w: number, h: number, r: number, y: number, interactive: boolean }
 -- (The gap between the screen's edge and the island.)
 local FLOAT = 8
--- (Apple's island: quick, with the least overshoot that still reads as a
--- spring.)
-local SPRING = { stiffness = 320, damping = 30 }
+-- (Apple's island: quick, overshooting a touch as it lands, so the shape
+-- reads as one thing changing rather than a window swapped. The same as
+-- src/kx/notch.rs's `SPRING`, which cuts the window to the pill: change
+-- both together, or the cut and the pill drift apart mid-spring.)
+local SPRING = { stiffness = 360, damping = 26 }
 
 -- The clock, while music shows and plays.
 local function ticking()
@@ -2074,8 +2076,8 @@ local function expanded_view(): Node
 				ui.presence(tab, page, {
 					w_full = true,
 					h_full = true,
-					enter = { opacity = { 0, 1 }, y = { 6, 0 }, duration = 200 },
-					exit = { opacity = 0, duration = 70 },
+					enter = { opacity = { 0, 1 }, y = { 4, 0 }, blur = { 6, 0 }, duration = 220, ease = "outCubic" },
+					exit = { opacity = 0, blur = { 0, 4 }, duration = 70 },
 					mode = "wait",
 				}),
 			},
@@ -2305,11 +2307,14 @@ local island = ui.column {
 			return aim_h:get() - 2
 		end,
 		shrink = 0,
+		-- A morph, not a swap: the shape leads, and what it holds follows a
+		-- beat behind, coming into focus as it grows to full size, so the
+		-- pill reads as becoming the panel. Leaving, it just goes soft.
 		ui.presence(state, view, {
 			w_full = true,
 			h_full = true,
-			enter = { opacity = { 0, 1 }, scale = { 0.96, 1 }, duration = 240, ease = "outCubic" },
-			exit = { opacity = { 1, 0 }, scale = { 1, 0.96 }, duration = 90, ease = kx.motion.EXIT },
+			enter = { opacity = { 0, 1 }, scale = { 0.94, 1 }, blur = { 10, 0 }, duration = 300, delay = 50, ease = "outCubic" },
+			exit = { opacity = { 1, 0 }, blur = { 0, 6 }, duration = 80, ease = kx.motion.EXIT },
 			mode = "wait",
 		}),
 	},

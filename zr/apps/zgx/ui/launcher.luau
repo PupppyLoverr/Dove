@@ -494,7 +494,7 @@ return ui.column {
 			open,
 			ui.column {
 				w = WIDE,
-				CommandPalette.Inline { open = open, root = root :: any, recent = recent, island = true, backdrop = backdrop } :: any,
+				CommandPalette.Inline { open = open, root = root :: any, recent = recent, island = true, backdrop = backdrop, wide = WIDE } :: any,
 			}
 		)
 	),

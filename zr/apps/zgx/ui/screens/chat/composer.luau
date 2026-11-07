@@ -977,7 +977,9 @@ local function Composer(): Node
 			-- A new chat stands over its wallpaper (Settings → Appearance):
 			-- the footer's chips take their backing.
 			over_art = function(): boolean
-				return shown_new() and art.showing:get()
+				-- (Any new chat's, in every place it can sit: Slim and Bottom
+				-- stand over the wallpaper too.)
+				return new_chat() and art.showing:get()
 			end,
 			project = project,
 			projects = where.projects,

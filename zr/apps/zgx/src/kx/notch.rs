@@ -18,7 +18,7 @@ pub const SIZE: (f64, f64) = (680., 460.);
 /// The island's spring, the same as notch.luau's `ui.spring` for the pill
 /// it draws (stiffness, damping; a mass of one): a little overshoot, as the
 /// Dynamic Island's.
-pub const SPRING: (f64, f64) = (340., 26.);
+pub const SPRING: (f64, f64) = (360., 26.);
 
 /// Room round the pill for its shadow, in points.
 const SHADOW: f64 = 14.;

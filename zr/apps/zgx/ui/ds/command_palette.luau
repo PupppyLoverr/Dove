@@ -2073,9 +2073,23 @@ local Body = ui.component(function(props: Props & { recent_state: State<{ string
 	if (props :: any).island then
 		local backdrop = (props :: any).backdrop
 		local FIELD_H, GAP = 56, 8
-		local function glass(radius: number, left: number, top: number, child: Node): Node
+		-- Opening, the capsule morphs out of a short pill to its full width
+		-- (a search pill widening as it takes the focus), on a spring with a
+		-- touch of overshoot; the panel of results unfolds under it after.
+		-- What's behind stays pinned to the screen as the capsule widens:
+		-- it moves by the capsule's own shift, on the same spring (springs
+		-- are linear, so the two stay in register).
+		local WIDE = (props :: any).wide or 640
+		local NARROW = math.min(WIDE, 300)
+		local MORPH = { stiffness = 380, damping = 28 }
+		local cap_w = ui.use_state(if motion.reduced_now() then WIDE else NARROW)
+		local shift = ui.computed(function(): number
+			return -(WIDE - cap_w:get()) / 2
+		end)
+		local function glass(radius: number, left: number, top: number, child: Node, morph: boolean?): Node
 			return ui.column {
-				w_full = true,
+				w = if morph then ui.spring(cap_w, MORPH) else nil,
+				w_full = not morph,
 				rounded = radius,
 				overflow = "hidden",
 				relative = true,
@@ -2083,7 +2097,18 @@ local Body = ui.component(function(props: Props & { recent_state: State<{ string
 				border_color = "$zeron.spotlight.edge",
 				inset_shadow = { x = 0, y = 1, blur = 0, spread = 0, color = "$zeron.spotlight.lip" },
 				shadow = { x = 0, y = 12, blur = 32, spread = 0, color = "#0000004d" },
-				if backdrop then backdrop(left, top) else nil,
+				if backdrop
+					then (if morph
+						then ui.div {
+							absolute = true,
+							left = ui.spring(shift, MORPH),
+							top = 0,
+							w = 0,
+							h = 0,
+							backdrop(left, top),
+						}
+						else backdrop(left, top))
+					else nil,
 				ui.div { absolute = true, left = 0, top = 0, right = 0, bottom = 0, bg = "$zeron.spotlight.tint" },
 				child,
 			}
@@ -2092,8 +2117,13 @@ local Body = ui.component(function(props: Props & { recent_state: State<{ string
 			id = "command-palette",
 			w_full = true,
 			gap = GAP,
+			items = "center",
 			on_mount = function(el)
-				anime.animate(el, motion.params({ opacity = { 0, 1 }, scale = { 0.97, 1 }, duration = 180, ease = "outCubic" } :: any))
+				anime.animate(el, motion.params({ opacity = { 0, 1 }, duration = 140, ease = "outCubic" } :: any))
+				-- (A frame on, so the spring starts from the pill.)
+				ui.after(16, function()
+					cap_w:set(WIDE)
+				end)
 			end,
 			glass(FIELD_H / 2, 0, 0, ui.row {
 				w_full = true,
@@ -2102,17 +2132,28 @@ local Body = ui.component(function(props: Props & { recent_state: State<{ string
 				pr = 10,
 				items = "center",
 				search,
-			}),
-			ui.show(function(): boolean
-				return query:get() ~= "" or shown_rows:get() > 0
-			end, glass(20, 0, FIELD_H + GAP, ui.column {
+			}, true),
+			-- The panel unfolds from under the capsule, coming into focus.
+			ui.presence(function(): string
+				return if query:get() ~= "" or shown_rows:get() > 0 then "on" else "off"
+			end, function(on: string): Node
+				if on ~= "on" then
+					return ui.div {}
+				end
+				return glass(20, 0, FIELD_H + GAP, ui.column {
+					w_full = true,
+					py = 6,
+					scope_row,
+					ui.show(function(): boolean
+						return shown_rows:get() > 0 or loading:get()
+					end, list, empty),
+				})
+			end, {
 				w_full = true,
-				py = 6,
-				scope_row,
-				ui.show(function(): boolean
-					return shown_rows:get() > 0 or loading:get()
-				end, list, empty),
-			})),
+				enter = { opacity = { 0, 1 }, y = { -8, 0 }, scale = { 0.98, 1 }, blur = { 8, 0 }, duration = 260, delay = 90, ease = "outCubic" },
+				exit = { opacity = { 1, 0 }, blur = { 0, 6 }, duration = 90 },
+				mode = "wait",
+			}),
 		}
 	end
 
@@ -2191,6 +2232,7 @@ local Inline = ui.component(function(props: Props): Node
 		recent_state = recent,
 		island = (props :: any).island,
 		backdrop = (props :: any).backdrop,
+		wide = (props :: any).wide,
 	} :: any
 end)
 
