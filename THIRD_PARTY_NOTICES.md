@@ -178,7 +178,9 @@ Copyright (c) 2026 zgx contributors. https://github.com/zeronsh/zgx
 
 `apps/keplorayx` is built on zgx (`zgx`, `zgx-desktop`, `zgx-script`,
 `zgx-run`), pinned by git revision in the workspace `Cargo.toml`. MIT, as
-Zeron's notice above.
+Zeron's notice above. `zr/apps/zgx/patches/zgx-desktop` is zgx-desktop's
+source at that revision, vendored with one change (its Windows text
+service's `GetTextExt`, in `src/tsf.rs`), under the same license.
 
 ## zui / GPUI (Apache-2.0)
 

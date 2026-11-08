@@ -1,0 +1,92 @@
+# zgx-desktop at zgx bebc9b3, vendored for Keplorayx's Windows build: the
+# text service's `GetTextExt` (src/tsf.rs) answers TS_E_NOLAYOUT where the
+# editor it was asked about has left the scene, instead of the app coming
+# down ("stale scene node", a panic in a COM callback, which aborts). Only
+# its manifest (workspace fields written out, sibling crates by the same git
+# revision, no examples, tests or bundled terminal example) and that
+# function differ from upstream's. Its zgx, zgx-gpu and cosmic-text are the
+# same git revision as the app's; zgx-terminal is the app's own patch.
+[package]
+name = "zgx-desktop"
+version = "0.1.10"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/zeronsh/zgx"
+rust-version = "1.95"
+description = "The desktop host for zgx: windows, menus, dialogs, clipboard, IME and accessibility on macOS, Windows and Linux."
+keywords = ["gui", "desktop", "winit", "accessibility", "ime"]
+categories = ["gui"]
+autoexamples = false
+autotests = false
+autobenches = false
+
+[features]
+default = ["svg", "png", "jpeg", "gif", "private-api", "cjk-thai-words"]
+cjk-thai-words = ["zgx/cjk-thai-words"]
+hyphens = ["zgx-gpu/hyphens"]
+svg = ["zgx-gpu/svg"]
+png = ["zgx-gpu/png"]
+jpeg = ["zgx-gpu/jpeg"]
+gif = ["zgx-gpu/gif"]
+vulkan = ["zgx-gpu/vulkan"]
+d3d11 = ["zgx-gpu/d3d11"]
+private-api = []
+ghostty = ["dep:zgx-ghostty-sys", "zgx-ghostty-sys/link", "dep:libc"]
+terminal = ["dep:zgx-terminal"]
+webview2 = ["dep:webview2-com", "zgx-gpu/composition", "windows/Win32_Graphics_DirectComposition", "windows/Win32_Graphics_Gdi", "windows/Win32_System_Com", "windows/Win32_System_Com_StructuredStorage", "windows/Win32_System_Ole"]
+webkitgtk = []
+mimalloc = ["dep:mimalloc"]
+
+[dependencies]
+zgx = { git = "https://github.com/zeronsh/zgx", rev = "bebc9b34890b3509d89c405032959e3fb799e320", default-features = false }
+zgx-terminal = { git = "https://github.com/zeronsh/zgx", rev = "bebc9b34890b3509d89c405032959e3fb799e320", optional = true }
+mimalloc = { version = "0.1", default-features = false, optional = true }
+zgx-gpu = { git = "https://github.com/zeronsh/zgx", rev = "bebc9b34890b3509d89c405032959e3fb799e320", default-features = false }
+winit = "0.30.13"
+softbuffer = "0.4.8"
+fontdue = "0.9.3"
+cosmic-text = { package = "zgx-cosmic-text", git = "https://github.com/zeronsh/zgx", rev = "bebc9b34890b3509d89c405032959e3fb799e320" }
+arboard = { version = "3.6.1", default-features = false, features = ["image-data"] }
+accesskit = "0.24.1"
+accesskit_consumer = "0.38.0"
+unicode-segmentation = "1.12"
+rustc-hash = "2.1"
+accesskit_winit = "0.33.2"
+rfd = "=0.17.2"
+open = "=5.4.4"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+image = { version = "0.25.10", default-features = false, features = ["png"] }
+dbus = "=0.9.12"
+dbus-crossroads = "=0.5.3"
+calloop = "=0.14.4"
+calloop-wayland-source = "=0.4.1"
+wayland-client = "=0.31.15"
+wayland-backend = { version = "=0.3.17", features = ["client_system"] }
+wayland-protocols = { version = "=0.32.13", features = ["client", "unstable", "staging"] }
+libloading = "0.8"
+libc = "0.2"
+blocking = "=1.6.2"
+x11rb = "0.13"
+x11-dl = "2.21"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", default-features = false, features = ["Wdk_System_SystemServices", "Win32_Globalization", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_System_Ole", "Win32_System_SystemServices", "Win32_System_Com_StructuredStorage", "Win32_Graphics_DirectComposition", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_System_Com", "Win32_System_LibraryLoader", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Performance", "Win32_System_ProcessStatus", "Win32_System_Pipes", "Win32_System_Registry", "Win32_System_RemoteDesktop", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_System_Variant", "Win32_System_WinRT", "Win32_UI_Controls", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Input_Pointer", "Win32_UI_Accessibility", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_UI_TextServices", "Win32_UI_WindowsAndMessaging", "UI_ViewManagement", "UI_Notifications", "Data_Xml_Dom", "Foundation"] }
+webview2-com = { version = "0.39", optional = true }
+windows-core = "0.62"
+zgx-gpu = { git = "https://github.com/zeronsh/zgx", rev = "bebc9b34890b3509d89c405032959e3fb799e320", default-features = false, features = ["composition"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+muda = { version = "=0.18.0", default-features = false }
+objc2 = "=0.6.4"
+objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSApplication", "NSMenu", "NSMenuItem", "NSResponder", "NSView", "NSWindow", "NSTextInputContext", "NSColor", "NSGraphics", "NSEvent", "objc2-core-foundation", "objc2-quartz-core", "block2", "NSTextInputClient", "NSTrackingArea", "NSCursor", "NSPasteboard", "NSGraphicsContext", "NSScreen", "NSVisualEffectView", "NSColorSpace", "NSControl", "NSScroller", "NSWorkspace", "NSAccessibility", "NSSpellChecker", "NSPanel", "NSBezierPath", "NSDragging", "NSDraggingItem", "NSDraggingSession", "NSImage", "NSImageRep", "NSBitmapImageRep", "NSFont", "NSAttributedString", "NSDockTile", "NSAlert", "NSButton", "NSTextField", "NSPrintInfo", "NSPrintOperation"] }
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSArray", "NSObject", "NSString", "NSURL", "NSAppleEventManager", "NSAppleEventDescriptor", "objc2-core-services", "NSDictionary", "NSError", "NSURLRequest", "NSUUID", "NSKeyValueObserving", "NSValue", "NSData", "NSJSONSerialization", "NSGeometry", "objc2-core-foundation", "NSAttributedString", "NSRange", "NSURLResponse", "NSNotification", "NSOperation", "block2", "NSOrthography", "NSTextCheckingResult", "NSLocale", "NSBundle", "NSProgress"] }
+objc2-user-notifications = { version = "=0.3.2", default-features = false, features = ["std", "block2", "UNUserNotificationCenter", "UNNotificationContent", "UNNotificationRequest", "UNNotificationTrigger", "UNNotification", "UNNotificationResponse"] }
+zgx-ghostty-sys = { git = "https://github.com/zeronsh/zgx", rev = "bebc9b34890b3509d89c405032959e3fb799e320", optional = true }
+libc = { version = "0.2", optional = true }
+objc2-web-kit = { version = "=0.3.2", default-features = false, features = ["std", "block2", "objc2-app-kit", "objc2-core-foundation", "WKWebView", "WKWebViewConfiguration", "WKBackForwardList", "WKBackForwardListItem", "WKNavigationDelegate", "WKNavigation", "WKNavigationAction", "WKNavigationResponse", "WKWebsiteDataStore", "WKUserContentController", "WKUserScript", "WKScriptMessageHandler", "WKScriptMessage", "WKUIDelegate", "WKWindowFeatures", "WKFrameInfo", "WKSecurityOrigin", "WKPreferences", "WKURLSchemeHandler", "WKURLSchemeTask", "WKOpenPanelParameters", "WKFindConfiguration", "WKFindResult", "WKDownload", "WKDownloadDelegate"] }
+dispatch2 = "0.3"
+block2 = "0.6"
+objc2-quartz-core = { version = "0.3.2", default-features = false, features = ["std", "CALayer", "CAShapeLayer", "CATransaction", "objc2-core-foundation", "objc2-core-graphics"] }
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFCGTypes"] }
+objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "CGPath", "CGColor", "CGAffineTransform"] }

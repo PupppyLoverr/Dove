@@ -190,6 +190,10 @@ accesskit_windows = { git = "https://github.com/zeronsh/zgx", rev = "bebc9b34890
 # font, gapped, where Ghostty (macOS only) draws them whole.
 [patch."https://github.com/zeronsh/zgx"]
 zgx-terminal = { path = "patches/zgx-terminal" }
+# zgx's desktop host, its text service no longer bringing the app down when
+# Windows asks where a removed field's text is (patches/zgx-desktop/src/tsf.rs,
+# GetTextExt).
+zgx-desktop = { path = "patches/zgx-desktop" }
 
 # zgx is slow unoptimized (its own setting): optimize dependencies, keep
 # this crate quick to build.
