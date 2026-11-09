@@ -284,7 +284,7 @@ end)
 -- below the screen's edge it floats (above it, out of sight, while it
 -- rests), and whether it takes clicks. (The Dynamic Island's: compact, a
 -- banner, and expanded by what it shows.)
-type Shape = { w: number, h: number, r: number, y: number, interactive: boolean }
+type Shape = { w: number, h: number, r: number, y: number, interactive: boolean, b: number?, g: number? }
 -- (The gap between the screen's edge and the island.)
 local FLOAT = 8
 -- (Apple's island: quick, overshooting a touch as it lands, so the shape
@@ -563,24 +563,28 @@ end
 -- (Resting, as the Mac's: the time at one end, the mark at the other,
 -- nothing between.)
 local _ = keys
-local slim_resting = compact(
-	white(clock, nil, "$font.weight.semibold"),
-	nil,
-	ui.column { color = "#ffffff8c", kx.Icon { name = "orbit", size = 14 } }
-)
+local function slim_resting(): Node
+	return compact(
+		white(clock, nil, "$font.weight.semibold"),
+		nil,
+		ui.column { color = "#ffffff8c", kx.Icon { name = "orbit", size = 14 } }
+	)
+end
 
-local slim_working = compact(
-	stars(),
-	white(function()
-		local t = working:get()[1]
-		local n = #working:get()
-		if n > 1 then
-			return `{n} agents working`
-		end
-		return if t then t.title else ""
-	end, "$font.size.xs"),
-	kx.Spinner { size = 13 }
-)
+local function slim_working(): Node
+	return compact(
+		stars(),
+		white(function()
+			local t = working:get()[1]
+			local n = #working:get()
+			if n > 1 then
+				return `{n} agents working`
+			end
+			return if t then t.title else ""
+		end, "$font.size.xs"),
+		kx.Spinner { size = 13 }
+	)
+end
 
 -- What the compact island holds: what waits on you, else every live
 -- activity at once ("agents+music+timer"), else the time at rest.
@@ -619,65 +623,21 @@ end
 local function amber(text: any, size: string?): Node
 	return ui.text { text, literal = true, color = "#ffc773", text_size = size or "$font.size.xs", weight = "$font.weight.semibold", tabular = true }
 end
-local slim_timer = compact(timer_ring(18, 2.5), white("Timer", "$font.size.xs"), amber(timer_text, "$font.size.sm"))
-
--- Several at once: the busiest leads (its mark and its words), and each
--- other sits at the trailing end in a small chip of its own (agents a
--- spinner and how many, music its cover and waveform, a timer its time).
-local function agents_title(): string
-	local t = working:get()[1]
-	local n = #working:get()
-	if n > 1 then
-		return `{n} agents working`
-	end
-	return if t then t.title else ""
+local function slim_music(): Node
+	return compact(cover(22, 6), white(song("title"), "$font.size.xs"), waveform(5, 14, 2))
 end
-local function lead_of(kind: string): Node
-	if kind == "agents" then
-		return ui.row { grow = 1, min_w = 0, gap = 8, items = "center", stars(), white(agents_title, "$font.size.xs") }
-	elseif kind == "music" then
-		return ui.row { grow = 1, min_w = 0, gap = 8, items = "center", cover(22, 6), white(song("title"), "$font.size.xs") }
-	end
-	return ui.row { grow = 1, min_w = 0, gap = 8, items = "center", timer_ring(18, 2.5), amber(timer_text, "$font.size.sm") }
-end
-local function badge(kind: string): Node
-	if kind == "agents" then
-		return ui.row {
-			gap = 5,
-			items = "center",
-			kx.Spinner { size = 11 },
-			ui.text { function()
-				return tostring(#working:get())
-			end, literal = true, text_size = "$font.size.xs", weight = "$font.weight.semibold", color = "#a9c8ff", tabular = true },
-		}
-	elseif kind == "music" then
-		return ui.row { gap = 5, items = "center", cover(16, 4), waveform(4, 12, 2) }
-	end
-	return ui.row { gap = 4, items = "center", timer_ring(13, 2), amber(timer_text) }
-end
-local function slim_many(kind: string): Node
-	local kinds = string.split(kind, "+")
-	local row: { [any]: any } = { w_full = true, h_full = true, pl = 12, pr = 6, gap = 6, items = "center", lead_of(kinds[1]) }
-	for i = 2, #kinds do
-		table.insert(row, ui.row {
-			h = 24,
-			px = 8,
-			shrink = 0,
-			items = "center",
-			rounded = "$radius.full",
-			bg = ui.raw("#ffffff12", "a live activity's chip"),
-			border = 1,
-			border_color = ui.raw("#ffffff0f", "a live activity's chip, its rim"),
-			badge(kinds[i]),
-		})
-	end
-	return ui.row(row)
+local function slim_timer(): Node
+	return compact(timer_ring(18, 2.5), white("Timer", "$font.size.xs"), amber(timer_text, "$font.size.sm"))
 end
 
-local slim_music = compact(cover(22, 6), white(song("title"), "$font.size.xs"), waveform(5, 14, 2))
+-- The activity the pill holds: what waits, the first live one, or rest.
+local slim_lead = ui.computed(function(): string
+	local k = slim_kind:get()
+	return string.split(k, "+")[1]
+end)
 
 local function slim(): Node
-	return ui.presence(slim_kind, function(kind: string): Node
+	return ui.presence(slim_lead, function(kind: string): Node
 		if kind == "waiting" then
 			return ui.row {
 				w_full = true,
@@ -690,15 +650,13 @@ local function slim(): Node
 			}
 		end
 		if kind == "agents" then
-			return slim_working
+			return slim_working()
 		elseif kind == "music" then
-			return slim_music
+			return slim_music()
 		elseif kind == "timer" then
-			return slim_timer
-		elseif kind == "resting" then
-			return slim_resting
+			return slim_timer()
 		end
-		return slim_many(kind)
+		return slim_resting()
 	end, { w_full = true, h_full = true, enter = { opacity = { 0, 1 }, scale = { 0.94, 1 }, duration = 200 }, exit = { opacity = { 1, 0 }, duration = 80 } })
 end
 
@@ -854,7 +812,7 @@ local function music_row(big: boolean): Node
 			items = "center",
 			w_full = true,
 			p = "$space.2",
-			rounded = 18,
+			rounded = 14,
 			cover(40, 10),
 			ui.column {
 				grow = 1,
@@ -1058,7 +1016,7 @@ end
 -- corner concentric with the island's (38 less the 14 around it).
 local function tile(props: { [any]: any }): Node
 	local p: { [any]: any } = well {
-		rounded = 24,
+		rounded = 16,
 		p = 14,
 		gap = "$space.2",
 	}
@@ -1176,7 +1134,7 @@ local function agent_line(t: store.Thread): Node
 		gap = "$space.3",
 		items = "center",
 		px = 8,
-		rounded = 16,
+		rounded = 12,
 		bg = "#00000000",
 		hover = { bg = "#ffffff12" },
 		active = { scale = 0.985 },
@@ -1295,7 +1253,7 @@ local function now_playing(): Node
 		w_full = true,
 		h = 64,
 		shrink = 0,
-		rounded = 24,
+		rounded = 16,
 		overflow = "hidden",
 		ui.row {
 			w_full = true,
@@ -1343,7 +1301,7 @@ local function timer_card(): Node
 		w_full = true,
 		h = 54,
 		shrink = 0,
-		rounded = 24,
+		rounded = 16,
 		pl = 12,
 		pr = 8,
 		gap = "$space.3",
@@ -1579,7 +1537,7 @@ local function chat_view(): Node
 			w_full = true,
 			grow = 1,
 			min_h = 0,
-			rounded = 22,
+			rounded = 16,
 			bg = "#0000004d",
 			border = 1,
 			border_color = "#ffffff14",
@@ -1609,7 +1567,7 @@ local function chat_view(): Node
 			items = "center",
 			px = 12,
 			py = 8,
-			rounded = 18,
+			rounded = 14,
 			bg = "#ffb4541f",
 			border = 1,
 			border_color = "#ffb45440",
@@ -1897,7 +1855,7 @@ local function tray_page(): Node
 			ui.button {
 				w = 100,
 				h = 78,
-				rounded = 18,
+				rounded = 14,
 				gradient = { angle = 160, stops = { { 0, ui.raw(hue .. "2b", "a file's colour, washed") }, { 1, ui.raw("#ffffff0a", "a file tile's foot") } } },
 				border = 1,
 				border_color = ui.raw(hue .. "33", "a file tile's rim"),
@@ -1968,7 +1926,7 @@ local function tray_page(): Node
 		ui.column {
 			w_full = true,
 			h_full = true,
-			rounded = 24,
+			rounded = 16,
 			border = 1,
 			border_color = "#ffffff26",
 			border_style = "dashed",
@@ -1987,7 +1945,7 @@ local function alert_row(a: Alert): Node
 		gap = "$space.3",
 		items = "center",
 		px = 8,
-		rounded = 16,
+		rounded = 12,
 		bg = "#00000000",
 		hover = { bg = "#ffffff12" },
 		active = { scale = 0.985 },
@@ -2328,18 +2286,19 @@ local function shape_of(kind: string, page: string, slim_as: string, talking: bo
 		return if slim_as == "waiting"
 			then { w = 430, h = 44, r = 22, y = FLOAT, interactive = true }
 			elseif slim_as == "resting" then { w = 210, h = 34, r = 17, y = FLOAT, interactive = true }
-			elseif slim_count(slim_as) >= 3 then { w = 430, h = 38, r = 19, y = FLOAT, interactive = true }
-			elseif slim_count(slim_as) == 2 then { w = 370, h = 36, r = 18, y = FLOAT, interactive = true }
+			-- (Two live at once, the island splits as Apple's does: the
+			-- first in the pill, the second in a round bubble beside it.)
+			elseif slim_count(slim_as) >= 2 then { w = 290, h = 34, r = 17, y = FLOAT, interactive = true, b = 34, g = 8 }
 			else { w = 300, h = 34, r = 17, y = FLOAT, interactive = true }
 	elseif kind == "alert" then
-		return { w = 440, h = 64, r = 28, y = FLOAT, interactive = true }
+		return { w = 440, h = 60, r = 22, y = FLOAT, interactive = true }
 	elseif kind == "flash" then
 		return { w = 340, h = 40, r = 20, y = FLOAT, interactive = true }
 	end
 	-- Opened, every page is the same width, so moving between them only
 	-- grows or shrinks the island; each is as tall as what it holds. (The
 	-- frame round a page: its padding, the tabs and the gap under them.)
-	local W, R, CHROME = 460, 38, 76
+	local W, R, CHROME = 460, 26, 76
 	if talking then
 		return { w = 480, h = 400, r = R, y = FLOAT, interactive = true }
 	end
@@ -2371,7 +2330,13 @@ local aim = ui.computed(function(): Shape
 end)
 ui.effect(function()
 	local a = aim:get()
-	pcall(ui.invoke, "notch.size", { w = a.w, h = a.h, r = a.r, y = a.y, interactive = a.interactive })
+	pcall(ui.invoke, "notch.size", { w = a.w, h = a.h, r = a.r, y = a.y, b = a.b or 0, g = a.g or 0, interactive = a.interactive })
+end)
+local aim_b = ui.computed(function(): number
+	return aim:get().b or 0
+end)
+local aim_g = ui.computed(function(): number
+	return aim:get().g or 0
 end)
 local aim_w = ui.computed(function(): number
 	return aim:get().w
@@ -2509,7 +2474,13 @@ end
 -- linear, so the two stay in register).
 local behind_copies: State<number> = ui.shared("notch.behind", 0)
 local behind_left = ui.computed(function(): number
-	return (aim_w:get() - 680) / 2 - 1
+	return (aim_w:get() + aim_g:get() + aim_b:get() - 680) / 2 - 1
+end)
+local bubble_behind_left = ui.computed(function(): number
+	return (aim_w:get() + aim_g:get() + aim_b:get() - 680) / 2 - aim_w:get() - aim_g:get() - 1
+end)
+local aim_half = ui.computed(function(): number
+	return aim_h:get() / 2
 end)
 local behind_top = ui.computed(function(): number
 	return -aim_y:get() - 1
@@ -2670,6 +2641,89 @@ local island = ui.column {
 	},
 }
 
+-- The bubble: the second live activity, a drop of the same glass beside
+-- the pill (src/kx/notch.rs cuts it out with it). Its mark alone: a
+-- spinner for agents, the cover for music, the ring for a timer; a click
+-- opens that page.
+local bubble_kind = ui.computed(function(): string
+	if state:get() ~= "slim" then
+		return "none"
+	end
+	local kinds = string.split(slim_kind:get(), "+")
+	return kinds[2] or "none"
+end)
+local function bubble_view(kind: string): Node
+	if kind == "none" then
+		return ui.div {}
+	end
+	return ui.button {
+		w_full = true,
+		h_full = true,
+		items = "center",
+		justify = "center",
+		bg = "#00000000",
+		label = if kind == "agents" then "Your agents" elseif kind == "music" then "Now playing" else "The timer",
+		on_click = function()
+			tab:set(if kind == "agents" then "agents" elseif kind == "music" then "music" else "timer")
+			expanded:set(true)
+		end,
+		if kind == "agents" then kx.Spinner { size = 14 } elseif kind == "music" then cover(22, 11) else timer_ring(20, 2.5),
+	}
+end
+local bubble = ui.column {
+	id = "bubble",
+	theme = "zeron-dark",
+	w = ui.spring(aim_b, SPRING),
+	h = ui.spring(aim_h, SPRING),
+	y = ui.spring(aim_y, SPRING),
+	rounded = ui.spring(aim_half, SPRING),
+	shrink = 0,
+	overflow = "hidden",
+	items = "center",
+	justify = "center",
+	shadow = { x = 0, y = 5, blur = 13, spread = -3, color = ui.raw("#00000066", "the bubble's soft shadow") },
+	border = function()
+		return if aim_b:get() > 0 then 1 else 0
+	end,
+	border_color = function()
+		local k = bubble_kind:get()
+		if k == "agents" then
+			return ui.raw("#9cc2ff66", "the bubble's rim while agents work")
+		elseif k == "timer" then
+			return ui.raw("#ffc77352", "the bubble's rim while a timer runs")
+		end
+		return ui.raw("#ffffff3d", "the bubble's rim")
+	end,
+	inset_shadow = { x = 0, y = 1, blur = 0, spread = 0, color = ui.raw("#ffffff3d", "the bubble's lit top lip") },
+	ui.image {
+		src = function()
+			behind_copies:get()
+			return "host:notch/behind"
+		end,
+		absolute = true,
+		left = ui.spring(bubble_behind_left, SPRING),
+		top = ui.spring(behind_top, SPRING),
+		w = 680,
+		h = 460,
+		fit = "fill",
+	},
+	ui.div { absolute = true, left = 0, top = 0, right = 0, bottom = 0, gradient = colour },
+	ui.div { absolute = true, left = 0, top = 0, right = 0, bottom = 0, pointer_events = "none", gradient = SHEEN },
+	ui.div { absolute = true, left = 0, top = 0, right = 0, bottom = 0, pointer_events = "none", gradient = EDGES },
+	ui.column {
+		w = 32,
+		h = 32,
+		shrink = 0,
+		ui.presence(bubble_kind, bubble_view, {
+			w_full = true,
+			h_full = true,
+			enter = { opacity = { 0, 1 }, scale = { 0.6, 1 }, duration = 260, delay = 60, ease = "outCubic" },
+			exit = { opacity = { 1, 0 }, scale = { 1, 0.6 }, duration = 90 },
+			mode = "wait",
+		}),
+	},
+}
+
 return ui.row {
 	w_full = true,
 	h_full = true,
@@ -2681,4 +2735,6 @@ return ui.row {
 		expanded:set(true)
 	end,
 	island,
+	ui.div { w = ui.spring(aim_g, SPRING), shrink = 0 },
+	bubble,
 }

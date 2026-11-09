@@ -159,7 +159,7 @@ fn reveal(cx: &mut WindowContext, host: &zgx_script::ScriptHost) {
     // pill itself, its edges smooth, on a transparent window.
     window.set_glass(None);
     behind(cx, host);
-    let (aim, aimed) = flume::unbounded::<[f64; 4]>();
+    let (aim, aimed) = flume::unbounded::<[f64; 6]>();
     std::thread::Builder::new()
         .name("kx-notch-shape".into())
         .spawn(move || shape(aimed))
@@ -171,9 +171,12 @@ fn reveal(cx: &mut WindowContext, host: &zgx_script::ScriptHost) {
             _ => 0.,
         };
         let (w, h, r, y) = (n("w").max(0.), n("h").max(0.), n("r").max(0.), n("y"));
+        // (The bubble beside it, as the Dynamic Island splits in two: its
+        // width, and the gap between; both 0 while there's none.)
+        let (b, g) = (n("b").max(0.), n("g").max(0.));
         let interactive = matches!(req.field("interactive"), Some(zgx_script::Value::Bool(true)));
         let scale = system_scale();
-        let (pw, ph) = ((w * scale).round(), (h * scale).round());
+        let (pw, ph) = (((w + g + b) * scale).round(), (h * scale).round());
         let left = (screen_width() - pw) / 2.;
         if let Ok(mut rect) = RECT.lock() {
             *rect = (left, (y * scale).max(0.), pw, ph);
@@ -185,7 +188,7 @@ fn reveal(cx: &mut WindowContext, host: &zgx_script::ScriptHost) {
         }
         SHOWN.store(shown, std::sync::atomic::Ordering::Relaxed);
         resize.set_pointer_passthrough(!interactive);
-        let _ = aim.send([w, h, r, y]);
+        let _ = aim.send([w, h, r, y, b, g]);
     });
     let (tell, heard) = flume::unbounded::<bool>();
     std::thread::Builder::new()
@@ -206,17 +209,18 @@ fn reveal(cx: &mut WindowContext, host: &zgx_script::ScriptHost) {
 /// what's under. Woken by each new aim (w, h, corner, how far down, in
 /// points); asleep once it settles.
 #[cfg(windows)]
-fn shape(aimed: flume::Receiver<[f64; 4]>) {
+fn shape(aimed: flume::Receiver<[f64; 6]>) {
     use windows_sys::Win32::{
         Graphics::Dwm::{DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND, DwmSetWindowAttribute},
         Graphics::Gdi::{CreateRectRgn, SetWindowRgn},
     };
     let scale = system_scale();
     let (k, c) = SPRING;
-    // Now and how fast, each of w, h, the corner and how far down.
-    let mut now = [0f64; 4];
-    let mut speed = [0f64; 4];
-    let mut aim = [0f64; 4];
+    // Now and how fast, each of w, h, the corner, how far down, and the
+    // bubble's width and its gap.
+    let mut now = [0f64; 6];
+    let mut speed = [0f64; 6];
+    let mut aim = [0f64; 6];
     let step = 1. / 120.;
     // Nothing shows until the script says what: the window exists before
     // its first shape, and uncut it's a box of glass the size of the
@@ -247,7 +251,7 @@ fn shape(aimed: flume::Receiver<[f64; 4]>) {
     let mut first = true;
     loop {
         // Asleep until there's somewhere to go.
-        let settled = (0..4).all(|i| (now[i] - aim[i]).abs() < 0.25 && speed[i].abs() < 0.5);
+        let settled = (0..6).all(|i| (now[i] - aim[i]).abs() < 0.25 && speed[i].abs() < 0.5);
         let next = if settled { aimed.recv().ok() } else { aimed.try_recv().ok() };
         if settled && next.is_none() {
             return;
@@ -258,18 +262,18 @@ fn shape(aimed: flume::Receiver<[f64; 4]>) {
             // nothing at the window's corner.)
             if first {
                 first = false;
-                now = [aim[0], aim[1], aim[2], aim[3]];
+                now = aim;
             }
         }
         let started = std::time::Instant::now();
-        for i in 0..4 {
+        for i in 0..6 {
             // (Semi-implicit Euler, at 120 a second.)
             speed[i] += (k * (aim[i] - now[i]) - c * speed[i]) * step;
             now[i] += speed[i] * step;
         }
-        if (0..4).all(|i| (now[i] - aim[i]).abs() < 0.25 && speed[i].abs() < 0.5) {
+        if (0..6).all(|i| (now[i] - aim[i]).abs() < 0.25 && speed[i].abs() < 0.5) {
             now = aim;
-            speed = [0.; 4];
+            speed = [0.; 6];
         }
         let hwnd = match window {
             Some(h) => h,
@@ -291,25 +295,33 @@ fn shape(aimed: flume::Receiver<[f64; 4]>) {
         let full = SIZE.0 * scale;
         let (w, h) = ((now[0].max(0.) * scale).round(), (now[1].max(0.) * scale).round());
         let r = (now[2].max(0.) * scale).min(h / 2.).min(w / 2.).round();
-        let (left, top) = (((full - w) / 2.).round(), (now[3] * scale).round());
+        let (b, g) = ((now[4].max(0.) * scale).round(), (now[5].max(0.) * scale).round());
+        // (The pill and its bubble, centred together.)
+        let (left, top) = (((full - (w + g + b)) / 2.).round(), (now[3] * scale).round());
         // (The region is where clicks land, and room for the pill's soft
-        // shadow beside and under it.)
+        // shadow round it: the pill grown by `pad` on every side, its corners
+        // round about the pill's own centres, so the region's hard edge
+        // keeps clear of the pill's smooth one, the corners' too. It used to
+        // start at the pill's top, its corners shaving the pill's.)
         let pad = (SHADOW * scale).round();
-        let cut = if w < 1. || h < 1. || top + h <= 0. {
-            None
-        } else {
-            Some([
-                (left - pad) as i32,
-                top as i32 - 1,
-                (left + w + pad) as i32 + 1,
+        let round = |l: f64, w: f64, r: f64| {
+            [
+                (l - pad) as i32,
+                (top - pad) as i32,
+                (l + w + pad) as i32 + 1,
                 (top + h + pad * 1.5) as i32 + 1,
                 (2. * (r + pad)) as i32,
-            ])
+            ]
         };
+        let cut = if w < 1. || h < 1. || top + h <= 0. { None } else { Some(round(left, w, r)) };
+        let bubble = if cut.is_some() && b >= 1. { Some(round(left + w + g, b, (b.min(h) / 2.).round())) } else { None };
+        if let Ok(mut c) = BUBBLE.lock() {
+            *c = bubble;
+        }
         if let Ok(mut c) = CUT.lock() {
             *c = Some((hwnd as isize, cut));
         }
-        cut_to(hwnd, cut);
+        cut_to(hwnd, cut, bubble);
         let spent = started.elapsed();
         if let Some(rest) = std::time::Duration::from_secs_f64(step).checked_sub(spent) {
             std::thread::sleep(rest);
@@ -318,7 +330,7 @@ fn shape(aimed: flume::Receiver<[f64; 4]>) {
 }
 
 #[cfg(not(windows))]
-fn shape(aimed: flume::Receiver<[f64; 4]>) {
+fn shape(aimed: flume::Receiver<[f64; 6]>) {
     while aimed.recv().is_ok() {}
 }
 
@@ -612,18 +624,26 @@ fn quarter(px: &[u8], w: usize, h: usize) -> (u32, u32, Vec<u8>) {
 /// re-applies its glass or shows it, and uncut it's a box of glass the size
 /// of the largest island.)
 static CUT: std::sync::Mutex<Option<(isize, Option<[i32; 5]>)>> = std::sync::Mutex::new(None);
+/// The bubble beside it, cut with it (the same left, top, right, bottom,
+/// corner), or None while there's none.
+static BUBBLE: std::sync::Mutex<Option<[i32; 5]>> = std::sync::Mutex::new(None);
 
 /// Cuts `hwnd` to `cut`.
 #[cfg(windows)]
-fn cut_to(hwnd: windows_sys::Win32::Foundation::HWND, cut: Option<[i32; 5]>) {
-    use windows_sys::Win32::Graphics::Gdi::{CreateRectRgn, CreateRoundRectRgn, SetWindowRgn};
-    // SAFETY: a region made here and handed to our own window, which owns
-    // it from then on.
+fn cut_to(hwnd: windows_sys::Win32::Foundation::HWND, cut: Option<[i32; 5]>, bubble: Option<[i32; 5]>) {
+    use windows_sys::Win32::Graphics::Gdi::{CombineRgn, CreateRectRgn, CreateRoundRectRgn, DeleteObject, RGN_OR, SetWindowRgn};
+    // SAFETY: regions made here; the bubble's merged into the pill's and
+    // freed, the pill's handed to our own window, which owns it from then on.
     unsafe {
         let region = match cut {
             None => CreateRectRgn(0, 0, 0, 0),
             Some([l, t, r, b, c]) => CreateRoundRectRgn(l, t, r, b, c, c),
         };
+        if let (Some(_), Some([l, t, r, b, c])) = (cut, bubble) {
+            let other = CreateRoundRectRgn(l, t, r, b, c, c);
+            CombineRgn(region, region, other, RGN_OR);
+            DeleteObject(other as _);
+        }
         SetWindowRgn(hwnd as _, region, 1);
     }
 }
@@ -636,6 +656,7 @@ fn keep_cut() {
         Graphics::Gdi::{GetWindowRgnBox, NULLREGION},
     };
     let Some((hwnd, cut)) = CUT.lock().ok().and_then(|c| *c) else { return };
+    let bubble = BUBBLE.lock().ok().and_then(|b| *b);
     let hwnd = hwnd as windows_sys::Win32::Foundation::HWND;
     let mut b = RECT { left: 0, top: 0, right: 0, bottom: 0 };
     // SAFETY: a plain query of our own window.
@@ -644,6 +665,8 @@ fn keep_cut() {
         None => kind == NULLREGION,
         // (The box of a round rect: its sides, give or take a pixel.)
         Some([l, t, r, bottom, _]) => {
+            // (With the bubble, the box reaches to its right side.)
+            let r = bubble.map_or(r, |b| b[2].max(r));
             kind != 0
                 && (b.left - l.max(0)).abs() <= 1
                 && (b.top - t.max(0)).abs() <= 1
@@ -652,7 +675,7 @@ fn keep_cut() {
         }
     };
     if !holds {
-        cut_to(hwnd, cut);
+        cut_to(hwnd, cut, bubble);
     }
 }
 
