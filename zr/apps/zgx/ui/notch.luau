@@ -1923,7 +1923,12 @@ local function tabs(): Node
 	-- faint square, the rest at half light. No bar behind them.)
 	local row: { [any]: any } = {
 		gap = 2,
+		p = 3,
 		items = "center",
+		rounded = "$radius.full",
+		bg = ui.raw("#00000042", "the tabs' tray, sunk into the glass"),
+		border = 1,
+		border_color = ui.raw("#ffffff14", "the tabs' tray's rim"),
 	}
 	for _, t in TABS do
 		local function on(): boolean
@@ -1947,17 +1952,23 @@ local function tabs(): Node
 			end
 			return false
 		end
+		local wide = ui.computed(function(): number
+			return if on() then 46 + #t.label * 7 else 34
+		end)
 		table.insert(
 			row,
 			ui.button {
-				w = 32,
+				w = ui.spring(wide, SPRING),
 				h = 30,
+				gap = 6,
+				shrink = 0,
+				overflow = "hidden",
 				items = "center",
 				justify = "center",
-				rounded = 10,
+				rounded = "$radius.full",
 				relative = true,
 				bg = function()
-					return if on() then "#ffffff1a" else "#00000000"
+					return if on() then ui.raw("#ffffff2e", "the open tab's lit pill") else "#00000000"
 				end,
 				hover = { bg = "#ffffff12" },
 				active = { scale = 0.94 },
@@ -1970,6 +1981,7 @@ local function tabs(): Node
 					tab:set(t.id)
 				end,
 				kx.Icon { name = t.icon, size = 15 },
+				ui.show(on, ui.text { t.label, literal = true, shrink = 0, text_size = ui.raw(12, "the open tab's name"), weight = "$font.weight.semibold", color = "#ffffff" }),
 				ui.show(dot, ui.div {
 					absolute = true,
 					right = 5,
@@ -2052,7 +2064,7 @@ end
 local function expanded_header(): Node
 	return ui.row {
 		w_full = true,
-		h = 36,
+		h = 38,
 		shrink = 0,
 		justify = "between",
 		items = "center",
@@ -2085,7 +2097,7 @@ local function expanded_view(): Node
 				ui.presence(tab, page, {
 					w_full = true,
 					h_full = true,
-					enter = { opacity = { 0, 1 }, y = { 4, 0 }, duration = 220, ease = "outCubic" },
+					enter = { opacity = { 0, 1 }, y = { 10, 0 }, scale = { 0.98, 1 }, duration = 280, ease = "outCubic" },
 					exit = { opacity = 0, duration = 70 },
 					mode = "wait",
 				}),
@@ -2122,7 +2134,7 @@ local function shape_of(kind: string, page: string, slim_as: string, talking: bo
 	-- Opened, every page is the same width, so moving between them only
 	-- grows or shrinks the island; each is as tall as what it holds. (The
 	-- frame round a page: its padding, the tabs and the gap under them.)
-	local W, R, CHROME = 460, 38, 74
+	local W, R, CHROME = 460, 38, 76
 	if talking then
 		return { w = 480, h = 400, r = R, y = FLOAT, interactive = true }
 	end
@@ -2221,13 +2233,45 @@ end
 local SHEEN = {
 	angle = 180,
 	stops = {
-		{ 0, ui.raw("#ffffff2b", "the glass's lit top edge") },
+		{ 0, ui.raw("#ffffff3d", "the glass's lit top edge") },
 		{ 0.22, ui.raw("#ffffff0a", "the glass's lit top edge, fading") },
 		{ 0.5, ui.raw("#ffffff00", "the glass's middle, unlit") },
 		{ 0.86, ui.raw("#ffffff00", "the glass's foot, unlit") },
 		{ 1, ui.raw("#ffffff14", "the glass's foot, catching light") },
 	},
 }
+
+-- The light in the glass: two soft lights falling in from its top corners,
+-- in the colour of what's going on (warm while something waits, blue while
+-- agents work, the cover's own while music plays, a cool dusk at rest).
+-- Playing, the two sway against each other in time with the waveform.
+local function aurora(left: boolean): any
+	local a, b = "#6f8cff", "#b56cff"
+	local strength = 0.2
+	local m = media:get()
+	if first:get() then
+		a, b, strength = "#ffb454", "#ff7a59", 0.3
+	elseif #working:get() > 0 then
+		a, b, strength = "#5aa2ff", "#5ce1e6", 0.26
+	elseif m and m.playing then
+		a, b = mix(tint(), "#ffffff", 0.12), mix(tint(), "#ffffff", 0.4)
+		local sway = math.sin(wave:get() * 1.3 + (if left then 0 else math.pi))
+		strength = 0.26 + 0.1 * sway
+	end
+	if state:get() ~= "expanded" then
+		strength *= 0.8
+	end
+	local hue = if left then a else b
+	local top = string.format("%02x", math.floor(math.clamp(strength, 0, 1) * 255))
+	return {
+		angle = if left then 125 else 235,
+		stops = {
+			{ 0, ui.raw(hue .. top, "the light in the glass") },
+			{ 0.5, ui.raw(hue .. "00", "the light in the glass, spent") },
+			{ 1, ui.raw(hue .. "00", "the light in the glass, spent") },
+		},
+	}
+end
 
 -- What's behind, pinned to the screen while the pill springs: its place in
 -- the pill is the pill's own place negated, on the same spring (a spring is
@@ -2321,7 +2365,10 @@ local island = ui.column {
 	-- Its rim: a hairline of light, brighter along the top (the inset lip).
 	border = 1,
 	border_color = function()
-		return if first:get() then "$kx.attention.soft" else ui.raw("#ffffff33", "the glass's rim")
+		if first:get() then
+			return "$kx.attention.soft"
+		end
+		return if #working:get() > 0 then ui.raw("#9cc2ff66", "the glass's rim while agents work") else ui.raw("#ffffff3d", "the glass's rim")
 	end,
 	inset_shadow = { x = 0, y = 1, blur = 0, spread = 0, color = ui.raw("#ffffff3d", "the glass's lit top lip") },
 	-- The glass: what's behind, blurred, its colour deepened.
@@ -2342,6 +2389,12 @@ local island = ui.column {
 	},
 	-- Its tint, and the light on it.
 	ui.div { absolute = true, left = 0, top = 0, right = 0, bottom = 0, gradient = colour },
+	ui.div { absolute = true, left = 0, top = 0, right = 0, bottom = 0, pointer_events = "none", gradient = function()
+		return aurora(true)
+	end },
+	ui.div { absolute = true, left = 0, top = 0, right = 0, bottom = 0, pointer_events = "none", gradient = function()
+		return aurora(false)
+	end },
 	ui.div { absolute = true, left = 0, top = 0, right = 0, bottom = 0, pointer_events = "none", gradient = SHEEN },
 	-- (Inside the hairline: its final size less the border's two points.)
 	ui.column {
@@ -2360,7 +2413,7 @@ local island = ui.column {
 			h_full = true,
 			-- (No blur here: a blurred layer is drawn as its own box, past the
 			-- pill's rounded clip, and showed as a window round the island.)
-			enter = { opacity = { 0, 1 }, scale = { 0.94, 1 }, duration = 300, delay = 50, ease = "outCubic" },
+			enter = { opacity = { 0, 1 }, scale = { 0.92, 1 }, y = { 6, 0 }, duration = 340, delay = 50, ease = "outCubic" },
 			exit = { opacity = { 1, 0 }, scale = { 1, 0.98 }, duration = 80, ease = kx.motion.EXIT },
 			mode = "wait",
 		}),
