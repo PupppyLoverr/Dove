@@ -79,6 +79,22 @@ fn top_centre() -> Option<WindowBounds> {
     None
 }
 
+thread_local! {
+    /// The open island's `notch.pin`, so Settings can tell it.
+    static PIN: std::cell::RefCell<Option<zgx_script::Shared>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Settings › General's "Keep the island out while something happens":
+/// the island stays at the top while agents work, music plays or a timer
+/// runs (`notch.pin` in notch.luau), or tucks away until you reach for it.
+pub fn set_pin(on: bool) {
+    PIN.with(|p| {
+        if let Some(pin) = &*p.borrow() {
+            pin.set(zgx_script::Value::from(on));
+        }
+    });
+}
+
 /// The notch's content in `cx`: the engine's host and notch.luau. `focus`
 /// brings the main window forward.
 pub fn open(
@@ -89,6 +105,8 @@ pub fn open(
     let host = crate::script_host(cx, "notch.luau");
     crate::kx::engine_for(cx, &host);
     crate::kx::clock::install(cx, &host);
+    let pin = host.shared("notch.pin", crate::kx::start::flag("notch_pin", true));
+    PIN.with(|p| *p.borrow_mut() = Some(pin));
     // At rest, a click asks: the launcher, over everything (src/launcher.rs).
     host.action("notch.ask", |_| crate::kx::launcher::summon());
     // The Tray's Show: a file in its folder.

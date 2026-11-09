@@ -279,6 +279,7 @@ function M.view(): Node
 			title = "Keplorayx",
 			ds.Settings.Group {
 				kx_switch("notch", "The island", "A pill at the top of the screen: your agents, music and what waits on you, shown as you reach for it.", "kx.notch_visible"),
+				kx_switch("notch_pin", "Keep the island out while something happens", "While agents work, music plays or a timer runs, the island stays at the top showing them; off, it tucks away until you reach for it.", "kx.notch_pin"),
 				kx_switch("keep_in_tray", "Keep running in the tray", "Closing the window leaves your agents working and the island where it is.", "kx.keep_in_tray"),
 				kx_switch("global_keys", "Keys from any app", "Alt+Space opens Spotlight; Ctrl+Alt+A and Ctrl+Alt+D allow or deny. Applies at the next launch.", "kx.global_keys"),
 				row("kx_autostart", {

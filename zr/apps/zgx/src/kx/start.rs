@@ -69,6 +69,7 @@ pub fn start(cx: &mut WindowContext, host: &ScriptHost) {
             ("notch", Value::from(flag("notch", true))),
             ("keep_in_tray", Value::from(flag("keep_in_tray", true))),
             ("global_keys", Value::from(flag("global_keys", true))),
+            ("notch_pin", Value::from(flag("notch_pin", true))),
         ]),
     );
     for key in ["keep_in_tray", "global_keys"] {
@@ -79,6 +80,21 @@ pub fn start(cx: &mut WindowContext, host: &ScriptHost) {
                 ("notch", Value::from(flag("notch", true))),
                 ("keep_in_tray", Value::from(flag("keep_in_tray", true))),
                 ("global_keys", Value::from(flag("global_keys", true))),
+                ("notch_pin", Value::from(flag("notch_pin", true))),
+            ]));
+        });
+    }
+    {
+        let flags = flags.clone();
+        host.action("kx.notch_pin", move |on| {
+            let on = matches!(on, Value::Bool(true));
+            set_flag("notch_pin", on);
+            notch::set_pin(on);
+            flags.set(Value::record([
+                ("notch", Value::from(flag("notch", true))),
+                ("keep_in_tray", Value::from(flag("keep_in_tray", true))),
+                ("global_keys", Value::from(flag("global_keys", true))),
+                ("notch_pin", Value::from(flag("notch_pin", true))),
             ]));
         });
     }

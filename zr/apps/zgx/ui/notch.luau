@@ -176,6 +176,74 @@ ui.effect(function()
 	primed = true
 end)
 
+-- The timer: its end, and what's left (ticking only while it runs).
+local timer_end = ui.persist("notch.timer.end", 0)
+local timer_total = ui.persist("notch.timer.total", 0)
+local timer_left = ui.state("notch.timer.left", 0)
+local function timer_tick()
+	local left = math.max(0, timer_end:peek() - os.time())
+	timer_left:set(left)
+	if left > 0 then
+		ui.after(1000, timer_tick)
+	elseif timer_end:peek() > 0 then
+		timer_end:set(0)
+		flash:set({ id = "timer", title = "Your timer is done", harness_id = "", failed = false })
+		ui.after(5000, function()
+			flash:set(nil)
+		end)
+	end
+end
+if timer_end:peek() > os.time() then
+	timer_tick()
+end
+local function start_timer(minutes: number)
+	local running = timer_end:peek() > os.time()
+	timer_end:set(os.time() + minutes * 60)
+	if not running then
+		timer_total:set(minutes * 60)
+		timer_tick()
+	end
+end
+local function add_minute()
+	if timer_end:peek() > os.time() then
+		timer_end:set(timer_end:peek() + 60)
+		timer_total:set(timer_total:peek() + 60)
+		timer_left:set(math.max(0, timer_end:peek() - os.time()))
+	end
+end
+
+-- (Running, as a live activity: true while it runs, and its time as m:ss.)
+local timer_on = ui.computed(function(): boolean
+	return timer_left:get() > 0
+end)
+local function timer_text(): string
+	local l = timer_left:get()
+	return string.format("%d:%02d", math.floor(l / 60), l % 60)
+end
+
+-- Settings › General's "Keep the island out while something happens"
+-- (src/kx/notch.rs `set_pin`): on, the island stays at the top while there
+-- is a live activity, as the Mac's does; off, it tucks away until you
+-- reach for it (and still drops in for what waits on you).
+local pin: State<boolean> = if fixture then ui.state("fx.pin", true) else ui.shared("notch.pin", true)
+
+-- What's going on now, each a live activity, the busiest first: agents at
+-- work, music playing, a timer running. The compact island shows them all.
+local live = ui.computed(function(): { string }
+	local out = {}
+	if #working:get() > 0 then
+		table.insert(out, "agents")
+	end
+	local m = media:get()
+	if m and m.playing then
+		table.insert(out, "music")
+	end
+	if timer_on:get() then
+		table.insert(out, "timer")
+	end
+	return out
+end)
+
 -- Expanded, and which tab.
 local expanded = ui.state("notch.expanded", fixture and (store :: any).fixture_data.expanded == true)
 local tab = ui.state("notch.tab", if fixture and type((store :: any).fixture_data.tab) == "string" then (store :: any).fixture_data.tab else "home")
@@ -204,6 +272,10 @@ local state = ui.computed(function(): string
 	end
 	if flash:get() then
 		return "flash"
+	end
+	-- (Pinned: something's happening, so it stays out, compact.)
+	if pin:get() and #live:get() > 0 then
+		return "slim"
 	end
 	return "hidden"
 end)
@@ -510,16 +582,97 @@ local slim_working = compact(
 	kx.Spinner { size = 13 }
 )
 
+-- What the compact island holds: what waits on you, else every live
+-- activity at once ("agents+music+timer"), else the time at rest.
 local slim_kind = ui.computed(function(): string
 	if first:get() then
 		return "waiting"
 	end
-	if #working:get() > 0 then
-		return "working"
-	end
-	local m = media:get()
-	return if m and m.playing then "music" else "resting"
+	local l = live:get()
+	return if #l == 0 then "resting" else table.concat(l, "+")
 end)
+local function slim_count(kind: string): number
+	if kind == "waiting" or kind == "resting" then
+		return 0
+	end
+	local _, plus = string.gsub(kind, "%+", "")
+	return plus + 1
+end
+
+-- The timer's ring, small: it empties as the time runs out.
+local function timer_ring(size: number, stroke: number): Node
+	return ui.canvas {
+		w = size,
+		h = size,
+		shrink = 0,
+		draw = function(c, w, h)
+			local cx, cy, r = w / 2, h / 2, math.min(w, h) / 2 - stroke / 2 - 0.5
+			c:stroke(ui.path():arc(cx, cy, r, 0, 360), "#ffffff26", stroke)
+			local total = math.max(1, timer_total:get())
+			local f = math.clamp(timer_left:get() / total, 0, 1)
+			if f > 0 then
+				c:stroke(ui.path():arc(cx, cy, r, -90, 360 * f), "#ffb454", stroke, { cap = "round" })
+			end
+		end,
+	}
+end
+local function amber(text: any, size: string?): Node
+	return ui.text { text, literal = true, color = "#ffc773", text_size = size or "$font.size.xs", weight = "$font.weight.semibold", tabular = true }
+end
+local slim_timer = compact(timer_ring(18, 2.5), white("Timer", "$font.size.xs"), amber(timer_text, "$font.size.sm"))
+
+-- Several at once: the busiest leads (its mark and its words), and each
+-- other sits at the trailing end in a small chip of its own (agents a
+-- spinner and how many, music its cover and waveform, a timer its time).
+local function agents_title(): string
+	local t = working:get()[1]
+	local n = #working:get()
+	if n > 1 then
+		return `{n} agents working`
+	end
+	return if t then t.title else ""
+end
+local function lead_of(kind: string): Node
+	if kind == "agents" then
+		return ui.row { grow = 1, min_w = 0, gap = 8, items = "center", stars(), white(agents_title, "$font.size.xs") }
+	elseif kind == "music" then
+		return ui.row { grow = 1, min_w = 0, gap = 8, items = "center", cover(22, 6), white(song("title"), "$font.size.xs") }
+	end
+	return ui.row { grow = 1, min_w = 0, gap = 8, items = "center", timer_ring(18, 2.5), amber(timer_text, "$font.size.sm") }
+end
+local function badge(kind: string): Node
+	if kind == "agents" then
+		return ui.row {
+			gap = 5,
+			items = "center",
+			kx.Spinner { size = 11 },
+			ui.text { function()
+				return tostring(#working:get())
+			end, literal = true, text_size = "$font.size.xs", weight = "$font.weight.semibold", color = "#a9c8ff", tabular = true },
+		}
+	elseif kind == "music" then
+		return ui.row { gap = 5, items = "center", cover(16, 4), waveform(4, 12, 2) }
+	end
+	return ui.row { gap = 4, items = "center", timer_ring(13, 2), amber(timer_text) }
+end
+local function slim_many(kind: string): Node
+	local kinds = string.split(kind, "+")
+	local row: { [any]: any } = { w_full = true, h_full = true, pl = 12, pr = 6, gap = 6, items = "center", lead_of(kinds[1]) }
+	for i = 2, #kinds do
+		table.insert(row, ui.row {
+			h = 24,
+			px = 8,
+			shrink = 0,
+			items = "center",
+			rounded = "$radius.full",
+			bg = ui.raw("#ffffff12", "a live activity's chip"),
+			border = 1,
+			border_color = ui.raw("#ffffff0f", "a live activity's chip, its rim"),
+			badge(kinds[i]),
+		})
+	end
+	return ui.row(row)
+end
 
 local slim_music = compact(cover(22, 6), white(song("title"), "$font.size.xs"), waveform(5, 14, 2))
 
@@ -536,7 +689,16 @@ local function slim(): Node
 				end, true),
 			}
 		end
-		return if kind == "working" then slim_working elseif kind == "music" then slim_music else slim_resting
+		if kind == "agents" then
+			return slim_working
+		elseif kind == "music" then
+			return slim_music
+		elseif kind == "timer" then
+			return slim_timer
+		elseif kind == "resting" then
+			return slim_resting
+		end
+		return slim_many(kind)
 	end, { w_full = true, h_full = true, enter = { opacity = { 0, 1 }, scale = { 0.94, 1 }, duration = 200 }, exit = { opacity = { 1, 0 }, duration = 80 } })
 end
 
@@ -909,12 +1071,13 @@ end
 local function label(text: string | () -> string): Node
 	return ui.text {
 		function()
-			return if type(text) == "function" then text() else text
+			return string.upper(if type(text) == "function" then text() else text)
 		end,
 		literal = true,
-		text_size = ui.raw(12, "a tile's label"),
+		text_size = ui.raw(11, "a tile's label"),
 		weight = "$font.weight.semibold",
-		color = "#ffffff8c",
+		letter_spacing = 0.6,
+		color = "#ffffff80",
 	}
 end
 
@@ -945,11 +1108,20 @@ local function chip(text: any, colour: string | () -> string): Node
 	local function c(): string
 		return if type(colour) == "function" then colour() else colour
 	end
-	-- (Plain: a small dot in its colour and the word, no wash, no glow.)
+	-- (A soft wash of its colour, a dot in it, and the word.)
 	return ui.row {
 		h = 22,
+		px = 8,
 		gap = 6,
 		items = "center",
+		rounded = "$radius.full",
+		bg = function()
+			return ui.raw(c() .. "1f", "a chip's wash")
+		end,
+		border = 1,
+		border_color = function()
+			return ui.raw(c() .. "33", "a chip's rim")
+		end,
 		ui.div { w = 6, h = 6, rounded = "$radius.full", bg = c },
 		ui.text { text, literal = true, text_size = ui.raw(12, "a chip's word"), weight = "$font.weight.medium", color = "#ffffffa6" },
 	}
@@ -964,7 +1136,20 @@ local function empty_state(icon: string, title: string, body: string, action: No
 		items = "center",
 		justify = "center",
 		gap = 10,
-		ui.column { color = "#ffffff59", kx.Icon { name = icon, size = 24 } },
+		ui.column {
+			w = 56,
+			h = 56,
+			shrink = 0,
+			rounded = "$radius.full",
+			items = "center",
+			justify = "center",
+			color = "#ffffffa6",
+			gradient = { angle = 160, stops = { { 0, ui.raw("#ffffff21", "an empty page's ring, lit") }, { 1, ui.raw("#ffffff05", "an empty page's ring, its foot") } } },
+			border = 1,
+			border_color = ui.raw("#ffffff1f", "an empty page's ring, its rim"),
+			inset_shadow = { x = 0, y = 1, blur = 0, spread = 0, color = ui.raw("#ffffff1f", "an empty page's ring, its lip") },
+			kx.Icon { name = icon, size = 22 },
+		},
 		ui.column {
 			gap = 3,
 			items = "center",
@@ -999,15 +1184,21 @@ local function agent_line(t: store.Thread): Node
 		on_click = function()
 			open_chat(t.id)
 		end,
-		-- Its mark on a quiet square (how it stands is said in words).
+		-- Its mark on a square lit in how it stands: warm waiting, blue
+		-- working (breathing), red stopped, quiet done.
 		ui.column {
 			w = 30,
 			h = 30,
 			shrink = 0,
-			rounded = 9,
+			rounded = 10,
 			items = "center",
 			justify = "center",
-			bg = "#ffffff0f",
+			bg = ui.raw(if ring == "#ffffff" then "#ffffff0f" else ring .. "1f", "an agent's square, in how it stands"),
+			border = 1,
+			border_color = ui.raw(if ring == "#ffffff" then "#ffffff14" else ring .. "59", "an agent's square's rim"),
+			shadow = if waits or t.status == "running"
+				then { x = 0, y = 0, blur = 8, spread = -2, color = ui.raw(ring .. "59", "an agent's square's glow") }
+				else nil,
 			kx.AgentMark { agent = t.harness_id, size = 16 },
 		},
 		ui.column {
@@ -1145,6 +1336,44 @@ local function now_playing(): Node
 	})
 end
 
+-- A running timer on Home, as a live activity: its ring, what's left and
+-- when it ends, and a minute more or stop.
+local function timer_card(): Node
+	return ui.row(well {
+		w_full = true,
+		h = 54,
+		shrink = 0,
+		rounded = 24,
+		pl = 12,
+		pr = 8,
+		gap = "$space.3",
+		items = "center",
+		ui.button {
+			grow = 1,
+			min_w = 0,
+			h_full = true,
+			gap = "$space.3",
+			items = "center",
+			bg = "#00000000",
+			label = "Open the timer",
+			on_click = function()
+				tab:set("timer")
+			end,
+			timer_ring(30, 3.5),
+			ui.column {
+				grow = 1,
+				min_w = 0,
+				gap = 1,
+				amber(timer_text, "$font.size.md"),
+				ui.text { function()
+					return `Ends {os.date("%H:%M", timer_end:get())}`
+				end, literal = true, text_size = ui.raw(11, "when the timer ends"), color = "#ffffff99" },
+			},
+		},
+		pill("+1 min", false, add_minute),
+	})
+end
+
 -- How things stand, said once: who waits, who works, or all quiet.
 local function standing(): Node
 	return ui.presence(function(): string
@@ -1189,6 +1418,7 @@ local function home(): Node
 			ui.row { pb = 8, standing() },
 		},
 		ui.show(has_media, now_playing()),
+		ui.show(timer_on, timer_card()),
 		-- Your agents, each a live activity: click one to talk to it.
 		tile {
 			w_full = true,
@@ -1470,42 +1700,6 @@ end
 
 local note = if fixture then ui.state("notch.note.fx", "Ship the island before the demo.") else ui.persist("notch.note", "")
 
--- The timer: its end, and what's left (ticking only while it runs).
-local timer_end = ui.persist("notch.timer.end", 0)
-local timer_total = ui.persist("notch.timer.total", 0)
-local timer_left = ui.state("notch.timer.left", 0)
-local function tick()
-	local left = math.max(0, timer_end:peek() - os.time())
-	timer_left:set(left)
-	if left > 0 then
-		ui.after(1000, tick)
-	elseif timer_end:peek() > 0 then
-		timer_end:set(0)
-		flash:set({ id = "timer", title = "Your timer is done", harness_id = "", failed = false })
-		ui.after(5000, function()
-			flash:set(nil)
-		end)
-	end
-end
-if timer_end:peek() > os.time() then
-	tick()
-end
-local function start_timer(minutes: number)
-	local running = timer_end:peek() > os.time()
-	timer_end:set(os.time() + minutes * 60)
-	if not running then
-		timer_total:set(minutes * 60)
-		tick()
-	end
-end
-local function add_minute()
-	if timer_end:peek() > os.time() then
-		timer_end:set(timer_end:peek() + 60)
-		timer_total:set(timer_total:peek() + 60)
-		timer_left:set(math.max(0, timer_end:peek() - os.time()))
-	end
-end
-
 local function timer(): Node
 	local presets: { [any]: any } = { gap = "$space.2", items = "center" }
 	for _, m in { 5, 15, 25, 50 } do
@@ -1553,7 +1747,7 @@ local function timer(): Node
 					local left = timer_left:get()
 					if total > 0 and left > 0 then
 						local f = math.clamp(left / total, 0, 1)
-						c:stroke(ui.path():arc(cx, cy, r, -90, 360 * f), "$accent", 6, { cap = "round" })
+						c:stroke(ui.path():arc(cx, cy, r, -90, 360 * f), "#ffb454", 6, { cap = "round" })
 						local a = math.rad(-90 + 360 * f)
 						c:circle(cx + math.cos(a) * r, cy + math.sin(a) * r, 5, "#ffffff")
 					end
@@ -1943,9 +2137,9 @@ local function tabs(): Node
 			elseif t.id == "tray" then
 				return #tray:get() > 0
 			elseif t.id == "agents" then
-				return #attention:get() > 0
+				return #attention:get() > 0 or #working:get() > 0
 			elseif t.id == "timer" then
-				return timer_left:get() > 0
+				return timer_on:get()
 			elseif t.id == "music" then
 				local m = media:get()
 				return m ~= nil and m.playing
@@ -1989,7 +2183,16 @@ local function tabs(): Node
 					w = 5,
 					h = 5,
 					rounded = "$radius.full",
-					bg = if t.id == "agents" then "$kx.attention" else "$accent",
+					bg = function(): any
+						if t.id == "agents" then
+							return if #attention:get() > 0 then "$kx.attention" else ui.raw("#8fb4ff", "agents at work")
+						elseif t.id == "timer" then
+							return ui.raw("#ffb454", "a timer running")
+						elseif t.id == "music" then
+							return ui.raw(tint(), "the cover's light")
+						end
+						return "$accent"
+					end,
 				}),
 			}
 		)
@@ -2125,6 +2328,8 @@ local function shape_of(kind: string, page: string, slim_as: string, talking: bo
 		return if slim_as == "waiting"
 			then { w = 430, h = 44, r = 22, y = FLOAT, interactive = true }
 			elseif slim_as == "resting" then { w = 210, h = 34, r = 17, y = FLOAT, interactive = true }
+			elseif slim_count(slim_as) >= 3 then { w = 430, h = 38, r = 19, y = FLOAT, interactive = true }
+			elseif slim_count(slim_as) == 2 then { w = 370, h = 36, r = 18, y = FLOAT, interactive = true }
 			else { w = 300, h = 34, r = 17, y = FLOAT, interactive = true }
 	elseif kind == "alert" then
 		return { w = 440, h = 64, r = 28, y = FLOAT, interactive = true }
@@ -2140,7 +2345,7 @@ local function shape_of(kind: string, page: string, slim_as: string, talking: bo
 	end
 	local h = 300
 	if page == "home" then
-		h = CHROME + 48 + 10 + (if playing then 74 else 0) + 12 + 28 + math.max(1, rows) * 46 + 10 + 44
+		h = CHROME + 48 + 10 + (if playing then 74 else 0) + (if timer_on:get() then 64 else 0) + 12 + 28 + math.max(1, rows) * 46 + 10 + 44
 	elseif page == "music" then
 		h = 284
 	elseif page == "agents" then
@@ -2218,13 +2423,13 @@ local function glass_of(clear: boolean): any
 	local _ = foot
 	local tone = if clear then mix("#0b0b0f", tint(), 0.22) else "#0b0b0f"
 	-- (Thin: the window behind shows through, frosted; its words still read.)
-	return smoke(tone, 0.34, 0.08)
+	return smoke(tone, 0.27, 0.07)
 end
 local function colour(): any
 	if state:get() ~= "expanded" then
 		-- Compact, a little more smoke: a word or two on a small pill.
 		local _ = SMOKE
-		return smoke("#08080b", 0.48, 0)
+		return smoke("#08080b", 0.4, 0.04)
 	end
 	return glass_of(tab:get() == "music")
 end
@@ -2241,6 +2446,30 @@ local SHEEN = {
 	},
 }
 
+-- A lens's sides: light gathers at its left and right edges, as it does
+-- round a drop of glass, and the middle stays clear.
+local EDGES = {
+	angle = 90,
+	stops = {
+		{ 0, ui.raw("#ffffff1a", "the glass's lit left edge") },
+		{ 0.1, ui.raw("#ffffff00", "the glass's left edge, fading") },
+		{ 0.9, ui.raw("#ffffff00", "the glass's right edge, fading") },
+		{ 1, ui.raw("#ffffff1a", "the glass's lit right edge") },
+	},
+}
+-- The specular streak: the brightest light on the glass, along the middle
+-- of its top edge, fading out before the corners.
+local STREAK = {
+	angle = 90,
+	stops = {
+		{ 0, ui.raw("#ffffff00", "the streak's end") },
+		{ 0.3, ui.raw("#ffffff73", "the streak, rising") },
+		{ 0.5, ui.raw("#ffffffb3", "the streak at its brightest") },
+		{ 0.7, ui.raw("#ffffff73", "the streak, falling") },
+		{ 1, ui.raw("#ffffff00", "the streak's end") },
+	},
+}
+
 -- The light in the glass: two soft lights falling in from its top corners,
 -- in the colour of what's going on (warm while something waits, blue while
 -- agents work, the cover's own while music plays, a cool dusk at rest).
@@ -2253,6 +2482,8 @@ local function aurora(left: boolean): any
 		a, b, strength = "#ffb454", "#ff7a59", 0.3
 	elseif #working:get() > 0 then
 		a, b, strength = "#5aa2ff", "#5ce1e6", 0.26
+	elseif timer_on:get() and not (m and m.playing) then
+		a, b, strength = "#ffb454", "#ffd38a", 0.22
 	elseif m and m.playing then
 		a, b = mix(tint(), "#ffffff", 0.12), mix(tint(), "#ffffff", 0.4)
 		local sway = math.sin(wave:get() * 1.3 + (if left then 0 else math.pi))
@@ -2289,7 +2520,7 @@ local wave_stop: (() -> ())? = nil
 ui.effect(function()
 	local m = media:get()
 	local s = state:get()
-	local showing = (s == "slim" and slim_kind:get() == "music") or (s == "expanded" and (tab:get() == "music" or tab:get() == "home"))
+	local showing = (s == "slim" and string.find(slim_kind:get(), "music", 1, true) ~= nil) or (s == "expanded" and (tab:get() == "music" or tab:get() == "home"))
 	if m and m.playing and showing then
 		if not wave_stop then
 			wave_stop = ui.every(110, function()
@@ -2361,14 +2592,19 @@ local island = ui.column {
 	-- A soft shadow that fades out well inside the window's cut (14 points
 	-- round the pill, 21 under it, src/kx/notch.rs `SHADOW`): one reaching
 	-- past it was sliced off there, a hard-edged box seen round the island.
-	shadow = { x = 0, y = 4, blur = 12, spread = -3, color = ui.raw("#00000059", "the island's soft shadow") },
+	shadow = { x = 0, y = 5, blur = 13, spread = -3, color = ui.raw("#00000066", "the island's soft shadow") },
 	-- Its rim: a hairline of light, brighter along the top (the inset lip).
 	border = 1,
 	border_color = function()
 		if first:get() then
 			return "$kx.attention.soft"
 		end
-		return if #working:get() > 0 then ui.raw("#9cc2ff66", "the glass's rim while agents work") else ui.raw("#ffffff3d", "the glass's rim")
+		if #working:get() > 0 then
+			return ui.raw("#9cc2ff66", "the glass's rim while agents work")
+		elseif timer_on:get() then
+			return ui.raw("#ffc77352", "the glass's rim while a timer runs")
+		end
+		return ui.raw("#ffffff3d", "the glass's rim")
 	end,
 	inset_shadow = { x = 0, y = 1, blur = 0, spread = 0, color = ui.raw("#ffffff3d", "the glass's lit top lip") },
 	-- The glass: what's behind, blurred, its colour deepened.
@@ -2396,6 +2632,20 @@ local island = ui.column {
 		return aurora(false)
 	end },
 	ui.div { absolute = true, left = 0, top = 0, right = 0, bottom = 0, pointer_events = "none", gradient = SHEEN },
+	ui.div { absolute = true, left = 0, top = 0, right = 0, bottom = 0, pointer_events = "none", gradient = EDGES },
+	ui.div {
+		absolute = true,
+		top = 0,
+		left = function()
+			return math.floor(aim_w:get() * 0.18)
+		end,
+		right = function()
+			return math.floor(aim_w:get() * 0.18)
+		end,
+		h = 1,
+		pointer_events = "none",
+		gradient = STREAK,
+	},
 	-- (Inside the hairline: its final size less the border's two points.)
 	ui.column {
 		w = function()
