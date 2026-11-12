@@ -32,7 +32,26 @@ function M.setup()
 			list = { gap = 2 },
 			-- (Named here too, for what the app's own screens style by them:
 			-- settings' cards. This layout sets no cards into the window itself.)
-			inset = { gap = 4, radius = "{radius.xl}", bg = "{surface.raised}", edge = "{border.subtle}", edge_hover = "{border.strong}" },
+			-- (And split chats and the panel's panes, screens/shell/split: each a
+			-- card in the page, the focused one's edge stronger, the others under
+			-- `dim` (lighter under the pointer; a panel's pane `pane_dim`); `drop`
+			-- and `drop_edge` where something dragged over them would land.)
+			inset = {
+				gap = 4,
+				radius = "{radius.xl}",
+				inner_radius = "{radius.lg}",
+				bg = "{surface.raised}",
+				edge = "{border.subtle}",
+				edge_hover = "{border.strong}",
+				active = "#00000000",
+				inactive = "#00000000",
+				dim = "alpha({background}, 0.28)",
+				dim_hover = "alpha({background}, 0.14)",
+				pane_dim = "alpha({background}, 0.2)",
+				focus_edge = "{border.strong}",
+				drop = "alpha({accent}, 0.14)",
+				drop_edge = "alpha({accent}, 0.7)",
+			},
 			-- An icon button (ds/icon_button): a glyph alone on a square. Three
 			-- sizes: a row's corner or a bar's tight controls, a title bar's, a
 			-- toolbar's; the glyph at each; and its corner, a button's 8.

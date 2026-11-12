@@ -24,6 +24,8 @@ local appearance = require("@app/screens/shell/appearance")
 local art = require("@app/screens/shell/art")
 local boundary = require("@app/screens/shell/boundary")
 local splits = require("@app/screens/shell/split")
+local TabPane = require("@app/screens/shell/tab_pane")
+local panel_groups = require("@app/screens/panel/groups")
 local session_tabs = require("@app/screens/shell/session_tabs")
 local lanes = require("@app/screens/chat/lanes")
 local LaneTab = require("@app/screens/chat/lane_tab")
@@ -1106,9 +1108,11 @@ return function(props: Props): Node
 
 	-- Split chats: what stands over the page's panes. A chat dragged over a
 	-- pane (a sidebar row, or another pane's head) lands at the edge it's
-	-- held over: left or right, beside it; top or bottom, above or below it.
-	-- A preview of where shows as it's held there; the pane's middle stays
-	-- the chat page's own (a chat dropped there is mentioned).
+	-- held over: left or right, beside it; top or bottom, above or below it;
+	-- over its middle, in its place (a pane swaps with it, a chat from the
+	-- sidebar takes its pane). A preview of where shows as it's held there;
+	-- the pane's composer stays the chat page's own (a chat dropped there is
+	-- mentioned).
 	local over = ui.use_state(nil :: { id: string, side: string }?)
 	-- (A drag that ended anywhere leaves no preview.)
 	ui.effect(function()
@@ -1126,7 +1130,10 @@ return function(props: Props): Node
 		local want: { [string]: boolean } = {}
 		if grouped() then
 			for _, id in members:get() do
-				want[id] = true
+				-- (A tab of the panel's among them is no chat: nothing to watch.)
+				if not splits.is_tab(id) then
+					want[id] = true
+				end
 			end
 		end
 		for id in watched do
@@ -1145,10 +1152,11 @@ return function(props: Props): Node
 	-- quarter of the pane deep (48 points at least) along each side, the
 	-- sides running from its top (owning its top corners) down to its
 	-- composer, the top and bottom between them, the bottom ending above the
-	-- composer. Its middle and its composer attach it (the chat page's own
-	-- drop: a chat mentioned). Each point is one's: the bands stand over
-	-- the page, and nothing else does. (Shares and points: nothing here is
-	-- worked out from the pane's size.)
+	-- composer; its middle, between them all, takes the chat in its place.
+	-- Its composer attaches it (the chat page's own drop: a chat mentioned).
+	-- Each point is one's: the bands stand over the page, and nothing else
+	-- does. (Shares and points: nothing here is worked out from the pane's
+	-- size.)
 	local BAND, LEAST = "25%", 48
 	local ZONES: { [string]: { [string]: any } } = {
 		top = { left = BAND, right = BAND, top = 0, h = BAND, min_h = LEAST },
@@ -1157,13 +1165,14 @@ return function(props: Props): Node
 		bottom = { left = BAND, right = BAND, top = "75%", mt = ui.raw(-(Dock.GAP + Dock.REST), "over a composer at rest"), min_h = LEAST },
 		left = { left = 0, top = 0, w = BAND, min_w = LEAST },
 		right = { right = 0, top = 0, w = BAND, min_w = LEAST },
+		center = { left = BAND, right = BAND, top = BAND, bottom = BAND, mb = ui.raw(Dock.GAP + Dock.REST, "over a composer at rest") },
 	}
 	-- The room a pane's composer takes at its foot: the window's own, measured, over
 	-- the focused one; a pane's own over another.
 	local function zone(id: string, side: string): Node
 		local props: { [any]: any } = table.clone(ZONES[side])
 		props.absolute = true
-		if side ~= "top" then
+		if side ~= "top" and side ~= "center" then
 			-- (A pane's own, as its lane measures it: a draft with a chip stands taller.)
 			local own = LaneTab.dock_height(`split-{id}`)
 			props.bottom = function(): number
@@ -1172,11 +1181,17 @@ return function(props: Props): Node
 			end
 		end
 		props.pointer_events = "auto"
+		-- (A chat with no room for it is taken too, to say so as it's let go.)
 		props.drop_when = function(payload: any): boolean
 			local d = splits.dragged(payload)
-			return d ~= nil and d ~= id and splits.can_take(d)
+			return d ~= nil and d ~= id
 		end
-		props.on_drag_over = function(_payload: any)
+		props.on_drag_over = function(payload: any)
+			local d = splits.dragged(payload)
+			-- (Its middle takes any chat; an edge, only one there's room for.)
+			if side ~= "center" and d and splits.full(d) then
+				return
+			end
 			local o = over:peek()
 			if not o or o.id ~= id or o.side ~= side then
 				over:set({ id = id, side = side })
@@ -1192,7 +1207,28 @@ return function(props: Props): Node
 			local d = splits.dragged(payload)
 			over:set(nil)
 			splits.dragging:set(false)
-			if d then
+			if not d then
+				return
+			end
+			if splits.is_tab(d) and not splits.holds(d) then
+				-- A tab dragged out of the panel: a pane of its own at that side
+				-- (over the middle, beside it: a tab takes no chat's place), in
+				-- no pane of the panel from then on. With no room, it never left.
+				local k, tab = panel_groups.of_leaf(d)
+				if splits.full(d) then
+					ds.toast.show { title = `A split shows {splits.MAX} panes at most`, body = "Close a pane to make room for another.", tone = "warning" }
+				elseif k and tab then
+					ui.batch(function()
+						panel_groups.to_page(k, tab)
+						splits.drop(d, id, if side == "center" then "right" else side, false)
+					end)
+				end
+			elseif side == "center" then
+				-- (A pane swaps with it; a chat from elsewhere takes its pane.)
+				splits.replace(d, id, true)
+			elseif splits.full(d) then
+				ds.toast.show { title = `A split shows {splits.MAX} chats at most`, body = "Close a pane to make room for another.", tone = "warning" }
+			else
 				-- (A chat from the sidebar is focused as it lands; a pane moved
 				-- already is, by the press on its grip.)
 				splits.drop(d, id, side, payload.split_pane == nil)
@@ -1200,12 +1236,13 @@ return function(props: Props): Node
 		end
 		return ui.div(props)
 	end
-	-- Where a chat held over a pane's edge would land: that half of it.
+	-- Where a chat held over a pane would land: that half of it, or all of it.
 	local HALF: { [string]: { [string]: any } } = {
 		left = { left = 0, top = 0, bottom = 0, right = "50%" },
 		right = { left = "50%", top = 0, bottom = 0, right = 0 },
 		top = { left = 0, right = 0, top = 0, bottom = "50%" },
 		bottom = { left = 0, right = 0, top = "50%", bottom = 0 },
+		center = { left = 0, right = 0, top = 0, bottom = 0 },
 	}
 	-- One chat's place in the page. The focused one's card is the page's
 	-- (`pane`, under these); each other's is its transcript, watched in a
@@ -1224,6 +1261,17 @@ return function(props: Props): Node
 		return out
 	end)
 	local function pane_item(id: string): Node
+		-- (A tab of the panel's, standing among the chats: its own card.)
+		if splits.is_tab(id) then
+			return TabPane {
+				id = id,
+				box = function(): any
+					return box_of(id)
+				end,
+				expanded = expanded,
+				shown = grouped,
+			}
+		end
 		local lane_slot = `split-{id}`
 		local function focused(): boolean
 			return splits.focused:get() == id
@@ -1366,6 +1414,29 @@ return function(props: Props): Node
 					end, function(): boolean
 						return near:get()
 					end, card_ref),
+					-- Its ×, at its top right while the pointer is near its top: the
+					-- pane out of the split, its chat going on in the sidebar.
+					ui.div {
+						absolute = true,
+						top = ui.raw(4, "off the card's top"),
+						right = function(): number
+							return ui.raw(close_right(id), "off the card's right")
+						end,
+						pointer_events = "auto",
+						hidden = function(): boolean
+							return not near:get() or splits.dragging:get()
+						end,
+						ds.IconButton {
+							id = `split-close-{id}`,
+							label = "Close pane",
+							size = "sm",
+							tooltip_side = "bottom",
+							on_click = function()
+								splits.close(id)
+							end,
+							ds.Icon { name = "close-thin", size = 14 },
+						},
+					},
 				}
 				tracks_near(lane, near)
 				return lane
@@ -1463,6 +1534,7 @@ return function(props: Props): Node
 		local item: { [any]: any } = {
 			pointer_events = "none",
 			preview,
+			zone(id, "center"),
 			zone(id, "top"),
 			zone(id, "bottom"),
 			zone(id, "left"),

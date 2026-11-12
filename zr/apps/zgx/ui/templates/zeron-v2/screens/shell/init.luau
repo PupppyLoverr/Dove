@@ -150,6 +150,16 @@ return function(): Node
 		if panel and panel.close_focused_tab and (panel.close_focused_tab :: any)() then
 			return
 		end
+		-- (In a split, the focused chat out of it, its neighbour focused, the
+		-- last left alone. A chat alone closes the window, as it always has.)
+		if route.current:peek().name == "session" then
+			local splits: any = boundary.load("@app/screens/shell/split")
+			local focused = if splits then splits.focused:peek() else nil
+			if splits and focused and splits.shown:peek() ~= nil then
+				splits.close(focused)
+				return
+			end
+		end
 		ui.invoke("close")
 	end
 	-- The next and previous session, in the sidebar's order, round from the

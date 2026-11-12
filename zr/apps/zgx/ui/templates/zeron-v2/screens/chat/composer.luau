@@ -1282,6 +1282,18 @@ local function Composer(): Node
 		end
 		glide_to(y)
 	end)
+	-- (Moving to another chat, as the focus moves between a split's
+	-- panes, is shown for something else too: its draft, and its size for
+	-- it, there at once rather than growing or shrinking into it.)
+	local chat_was: string? = route.chat:peek().session
+	ui.effect(function()
+		local now = route.chat:get().session
+		if now ~= chat_was then
+			chat_was = now
+			snap_until = ui.now() + SNAP_MS
+			snap:set(snap:peek() + 1)
+		end
+	end)
 	-- Over the whole pane, the pointer passing through it to the page
 	-- (its wheel too) but for the composer itself. (Under settings the shell
 	-- hides the chat frame, its state kept: nothing here is made again.)

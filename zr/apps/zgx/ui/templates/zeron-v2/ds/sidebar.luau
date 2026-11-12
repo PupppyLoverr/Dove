@@ -56,6 +56,10 @@ local SessionRow = require("@self/session_row")
 local People = require("@self/people")
 local EditorMenu = require("@self/editor_menu")
 
+-- Whether a chat is being dragged (screens/shell/split, which keeps it): the
+-- page's split shows where it can land.
+local split_dragging = ui.shared("split.dragging", false)
+
 export type Session = {
 	id: string,
 	title: string,
@@ -1452,6 +1456,8 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 				end
 				local from = if list_now then list_now() else list :: string
 				start_drag({ id = s.id, list = from, index = if at then at() else 1, h = session_h(cur(), by) + list_gap() })
+				-- (The page's split shows where it can land.)
+				split_dragging:set(true)
 				return { session = s.id }
 			end,
 			drag_preview = function()
@@ -1477,6 +1483,7 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 				return ui.row(card)
 			end,
 			on_drag_end = function()
+				split_dragging:set(false)
 				end_drag()
 			end,
 			body,

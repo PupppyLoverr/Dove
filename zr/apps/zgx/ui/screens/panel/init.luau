@@ -62,6 +62,8 @@ local ContextMenu = require("@ds/context_menu")
 local IconButton = require("@ds/icon_button").IconButton
 
 local state = require("@app/screens/panel/state")
+local groups = require("@app/screens/panel/groups")
+local splits = require("@app/screens/shell/split")
 -- Tab groups. A panel's tabs can be split into groups laid out side
 -- by side and above one another (the tree of screens/shell/split), each
 -- with a strip of its own and the tab it shows; the focused one lifted,
@@ -186,6 +188,9 @@ local focus_in: string? = nil
 local claimed = false
 local closer: ((id: string) -> ())? = nil
 local shown_key: (() -> string?)? = nil
+-- How the panel showing builds a tab's view (for a tab standing in the page's
+-- split: screens/shell/tab_pane).
+local body_of: ((k: string, tab: any) -> Node)? = nil
 
 -- Whether the active tab's terminal has the keyboard (a terminal's focus
 -- is its own: its node may not say).
@@ -631,8 +636,16 @@ M.Panel = ui.component(function(props: Props): Node
 	end
 	-- (The strip's rows, keyed by tab: each keeps its node as others come,
 	-- go and move.)
+	-- (Split into panes, each has a strip of its own, below: this one holds
+	-- none. A tab out in the page's split is in no strip.)
+	local split_now = ui.computed(function(): boolean
+		return groups.split_now(key:get())
+	end)
 	local tab_list = ui.computed(function(): { Tab }
-		return tabs()
+		if split_now:get() then
+			return {}
+		end
+		return groups.tabs_in(key:get(), groups.MAIN)
 	end)
 	local function active(): string?
 		return state.of(key:get()).active
@@ -710,6 +723,32 @@ M.Panel = ui.component(function(props: Props): Node
 		end
 	end
 
+	-- A tab dropped on a pane of the panel: among its tabs (its strip, its
+	-- middle), or in a new pane at that side of it. One that stood in the
+	-- page's split comes back as it lands.
+	local function take(payload: any, gid: string, side: string)
+		local k = key:peek()
+		groups.dragging:set(false)
+		splits.dragging:set(false)
+		if not k or type(payload) ~= "table" or type(payload.panel_tab) ~= "string" then
+			return
+		end
+		if payload.panel_key ~= nil and payload.panel_key ~= k then
+			return
+		end
+		local id = payload.panel_tab
+		if side == "center" then
+			groups.move(k, id, gid)
+		elseif not groups.split(k, id, gid, side) then
+			ds.toast.show { title = `A panel shows {groups.MAX} panes at most`, body = "Move a tab into another pane to make room.", tone = "warning" }
+			return
+		end
+		local leaf = groups.leaf(k, id)
+		if splits.holds(leaf) then
+			splits.discard(leaf)
+		end
+	end
+
 	-- Each tab's box, by id (for bringing the active one into view).
 	local chip_refs: { [string]: any } = {}
 
@@ -720,7 +759,7 @@ M.Panel = ui.component(function(props: Props): Node
 		local ref = ui.ref()
 		chip_refs[id] = ref
 		local function is_active(): boolean
-			return active() == id
+			return groups.shown(key:get(), id)
 		end
 		local function title(): string
 			local t = title_of(tab)
@@ -870,7 +909,11 @@ M.Panel = ui.component(function(props: Props): Node
 				on_drag = function(): any
 					dragging:set(true)
 					-- (A chat's tab can go out to the page: as a pane, or a tab of its own.)
-					return { panel_tab = id }
+					-- (The panel's panes show where it can land, and the page's
+					-- split, where it can stand as a pane of its own.)
+					groups.dragging:set(true)
+					splits.dragging:set(true)
+					return { panel_tab = id, panel_key = key:peek() }
 				end,
 				-- (The tab as it stands, on the window's colour. Nothing here eases: a
 				-- drag's preview has no clock for it.)
@@ -902,6 +945,8 @@ M.Panel = ui.component(function(props: Props): Node
 				end,
 				on_drag_end = function()
 					dragging:set(false)
+					groups.dragging:set(false)
+					splits.dragging:set(false)
 				end,
 				opacity = function(): number
 					return if dragging:get() then 0.4 else 1
@@ -914,7 +959,8 @@ M.Panel = ui.component(function(props: Props): Node
 				-- (its layout animation): where it shows is where it lands.
 				on_drag_over = function(payload: any, e)
 					local k = key:peek()
-					if not k then
+					-- (One of another pane's joins this one's as it's let go.)
+					if not k or groups.group_of(k, payload.panel_tab) ~= groups.group_of(k, id) then
 						return
 					end
 					local from, here = nil, nil
@@ -934,7 +980,17 @@ M.Panel = ui.component(function(props: Props): Node
 					end
 				end,
 				-- (Dropped: it's where it was dragged to already.)
-				on_drop = function(_payload: any) end,
+				-- (One of another pane's, or back from the page: among this
+				-- tab's.)
+				on_drop = function(payload: any)
+					local k = key:peek()
+					if k and groups.group_of(k, payload.panel_tab) ~= groups.group_of(k, id) then
+						take(payload, groups.group_of(k, id), "center")
+					else
+						groups.dragging:set(false)
+						splits.dragging:set(false)
+					end
+				end,
 				-- (Half a point down: on the label's lowercase middle, not
 				-- its line box's.)
 				ui.div { y = 0.5, shrink = 0, icon },
@@ -1143,13 +1199,15 @@ M.Panel = ui.component(function(props: Props): Node
 				-- opens. Here, after the last tab, while they all fit; pinned at
 				-- the strip's end, outside the scroll, once they don't.)
 				ui.show(function(): boolean
-					return #tabs() > 0 and not new_pinned:get()
+					return #tab_list:get() > 0 and not new_pinned:get()
 				end, new_tab_button()),
 				ui.row { hook = "panel.strip", items = "center", gap = "$space.1" },
 			},
 		},
 		-- "+", pinned at the strip's end while the tabs run past it.
-		ui.show(new_pinned, ui.div { shrink = 0, ml = "$space.1", new_tab_button() }),
+		ui.show(function(): boolean
+			return new_pinned:get() and not split_now:get()
+		end, ui.div { shrink = 0, ml = "$space.1", new_tab_button() }),
 	}
 
 	-- The empty page: the session's home (screens/panel/home): where it
@@ -1323,10 +1381,17 @@ M.Panel = ui.component(function(props: Props): Node
 		if not k then
 			return "none"
 		end
+		-- (Split into panes: each shows its own, below.)
+		if split_now:get() then
+			return "split"
+		end
 		local a = active()
 		return if a then `{k}\0{a}` else `{k}\0empty`
 	end, function(which: string): Node
 		local k = key:peek()
+		if which == "split" then
+			return ui.div {}
+		end
 		if which == "none" or not k then
 			return ds.EmptyState {
 				icon = "split-columns",
@@ -1355,13 +1420,395 @@ M.Panel = ui.component(function(props: Props): Node
 		}
 	end, { w_full = true, grow = 1, min_h = 0, hidden = closed })
 
+	-- The panel's panes (screens/panel/groups): split, each group of its tabs
+	-- is a card of its own in the panel's room, with its strip and the tab it
+	-- shows, the window's gap between them; the focused one's edge strong,
+	-- the others dimmed a little, a press on one focusing it. A divider
+	-- between two, dragged, moves their split. While a tab is dragged, each
+	-- pane (the one pane too, split or not) shows where it would land: at an
+	-- edge, a new pane there; over its middle, among that pane's tabs.
+	body_of = body
+	groups.bodies:set(groups.bodies:peek() + 1)
+	ui.on_cleanup(function()
+		if body_of == body then
+			body_of = nil
+		end
+	end)
+	local panes_ref = ui.ref()
+	local group_ids = ui.computed(function(): { string }
+		return if split_now:get() then groups.list(key:get()) else {}
+	end)
+	local function frame_of(gid: string): any
+		return groups.frames(key:get())[gid] or splits.WHOLE
+	end
+	local PANE_STRIP = CHIP_H + 8
+	local function group_pane(gid: string): Node
+		local function focused(): boolean
+			return groups.focused(key:get()) == gid
+		end
+		local list = ui.computed(function(): { Tab }
+			return groups.tabs_in(key:get(), gid)
+		end)
+		local strip_over = ui.use_state(false)
+		local item: { [any]: any } = {
+			id = `panel-pane-{gid}`,
+			class = "panel-pane",
+			overflow = "hidden",
+			rounded = "$zeron.inset.radius",
+			border = 1,
+			border_color = function(): string
+				return if focused() then "$zeron.inset.focus_edge" else "$zeron.inset.edge"
+			end,
+			pointer_events = "auto",
+			on_press = function()
+				local k = key:peek()
+				if k then
+					groups.focus(k, gid)
+				end
+			end,
+			-- Its strip: its own tabs, and "+" (its empty page). A tab dropped
+			-- on it joins them.
+			ui.row {
+				id = `panel-pane-strip-{gid}`,
+				role = "tablist",
+				label = ui.t("panel.strip.label"),
+				w_full = true,
+				h = PANE_STRIP,
+				shrink = 0,
+				px = "$space.1",
+				gap = "$zeron.space.hair",
+				items = "center",
+				bg = function(): string
+					return if strip_over:get() then "$zeron.inset.drop" else "#00000000"
+				end,
+				drop_when = function(payload: any): boolean
+					return type(payload) == "table" and type(payload.panel_tab) == "string"
+				end,
+				on_drag_over = function()
+					strip_over:set(true)
+				end,
+				on_drag_leave = function()
+					strip_over:set(false)
+				end,
+				on_drop = function(payload: any)
+					strip_over:set(false)
+					take(payload, gid, "center")
+				end,
+				ui.scroll_x {
+					grow = 1,
+					min_w = 0,
+					h = CHIP_H,
+					fade_x = { STRIP_FADE, STRIP_FADE },
+					fade_overflow = true,
+					ui.row {
+						gap = "$zeron.space.hair",
+						items = "center",
+						ui.each(list, chip, {
+							key = function(t: Tab): string
+								return t.id
+							end,
+							direction = "row",
+							gap = "$zeron.space.hair",
+							animate = motion.layout(SLIDE),
+						}),
+					},
+				},
+				IconButton {
+					label = ui.t("panel.strip.new_tab"),
+					tooltip_side = "bottom",
+					size = "sm",
+					tone = "quiet",
+					w = CHIP_H,
+					h = CHIP_H,
+					rounded = "$radius.lg",
+					on_click = function()
+						local k = key:peek()
+						if k then
+							groups.focus(k, gid)
+							state.activate(k, nil)
+						end
+					end,
+					Icon { name = "plus", size = 14 },
+				},
+			},
+			-- The tab it shows (a real swap, as the one pane's), or its empty page.
+			ui.presence(function(): string
+				local k = key:get()
+				if not k then
+					return "none"
+				end
+				return `{k}\0{groups.active_in(k, gid) or ""}`
+			end, function(which: string): Node
+				local k = key:peek()
+				local cut = string.find(which, "\0", 1, true)
+				if which == "none" or not k or not cut then
+					return ui.div {}
+				end
+				local a = string.sub(which, cut + 1)
+				local tab = if a ~= "" then state.find(k, a) else nil
+				if not tab then
+					return empty_page(k, showing)
+				end
+				local ok, built = pcall(body, k, tab)
+				if ok then
+					return built
+				end
+				print(`zeron-zgx: a panel tab didn't build: {built}`)
+				return ds.EmptyState {
+					icon = "danger-triangle",
+					size = "sm",
+					fill = true,
+					title = ui.t("panel.broken.tab.title") :: any,
+					body = ui.t("panel.broken.tab.body") :: any,
+				}
+			end, { w_full = true, grow = 1, min_h = 0 }),
+			-- Dimmed a little while another is focused; it takes no pointer.
+			ui.div {
+				absolute = true,
+				left = 0,
+				right = 0,
+				top = 0,
+				bottom = 0,
+				pointer_events = "none",
+				bg = function(): string
+					return if focused() then "#00000000" else "$zeron.inset.pane_dim"
+				end,
+			},
+		}
+		splits.place(item, function(): any
+			return frame_of(gid)
+		end)
+		return ui.column(item)
+	end
+	-- A divider between two panes, as the page's between two chats.
+	local PANE_LEAST_WIDE, PANE_LEAST_TALL = 200, 140
+	local DIVIDER_REACH = 3
+	local divider_ids = ui.computed(function(): { string }
+		local out: { string } = {}
+		if not split_now:get() or groups.dragging:get() then
+			return out
+		end
+		for _, d in groups.dividers(key:get()) do
+			table.insert(out, d.id)
+		end
+		return out
+	end)
+	local function divider(id: string): Node
+		local function find(list: { any }): any
+			for _, d in list do
+				if d.id == id then
+					return d
+				end
+			end
+			return nil
+		end
+		local function now(): any
+			return find(groups.dividers(key:get())) or splits.WHOLE
+		end
+		local first = find(groups.dividers(key:peek()))
+		local row = first == nil or first.axis == "row"
+		local lit = ui.use_state(false)
+		local held = ui.use_state(false)
+		local start: any = nil
+		local item: { [any]: any } = {
+			id = `panel-divider-{id}`,
+			pointer_events = "auto",
+			cursor = if row then "col_resize" else "row_resize",
+			on_hover = function(inside: boolean)
+				lit:set(inside)
+			end,
+			on_press = function(e: any)
+				local k = key:peek()
+				local d = find(groups.dividers(k))
+				if k and d then
+					local span = (if row then panes_ref.width else panes_ref.height) or 0
+					start = { key = k, at = if row then e.x else e.y, shares = groups.shares_at(k, d.path), path = d.path, part = d.at, length = d.length.p * span + d.length.q }
+					held:set(true)
+				end
+			end,
+			on_pointer_move = function(e: any)
+				local s = start
+				if s and s.length > 0 then
+					local moved = ((if row then e.x else e.y) - s.at) / s.length
+					groups.resize(s.key, s.path, s.part, s.shares, moved, math.min(0.45, (if row then PANE_LEAST_WIDE else PANE_LEAST_TALL) / s.length))
+				end
+			end,
+			on_release = function()
+				start = nil
+				held:set(false)
+			end,
+			-- What lights: the gap itself.
+			ui.div {
+				absolute = true,
+				left = if row then DIVIDER_REACH else 0,
+				right = if row then DIVIDER_REACH else 0,
+				top = if row then 0 else DIVIDER_REACH,
+				bottom = if row then 0 else DIVIDER_REACH,
+				rounded = "$radius.full",
+				pointer_events = "none",
+				bg = function(): string
+					return if lit:get() or held:get() then "$border.strong" else "#00000000"
+				end,
+			},
+		}
+		local WHY = "a divider's place: a share of the panel, plus points"
+		local along = if row then DIVIDER_REACH else 0
+		local across = if row then 0 else DIVIDER_REACH
+		item.absolute = true
+		item.snap = true
+		item.left = function(): string
+			return `{now().left.p * 100}%`
+		end
+		item.ml = function(): number
+			return ui.raw(now().left.q - along, WHY)
+		end
+		item.right = function(): string
+			return `{(1 - now().right.p) * 100}%`
+		end
+		item.mr = function(): number
+			return ui.raw(-now().right.q - along, WHY)
+		end
+		item.top = function(): string
+			return `{now().top.p * 100}%`
+		end
+		item.mt = function(): number
+			return ui.raw(now().top.q - across, WHY)
+		end
+		item.bottom = function(): string
+			return `{(1 - now().bottom.p) * 100}%`
+		end
+		item.mb = function(): number
+			return ui.raw(-now().bottom.q - across, WHY)
+		end
+		return ui.div(item)
+	end
+	-- Where a tab dragged over a pane would land: its edges, a quarter of it
+	-- deep (48 points at least), the sides owning the corners; its middle,
+	-- between them. Lit as it's held there: the half it would take, or all.
+	local BAND, LEAST = "25%", 48
+	local ZONES: { [string]: { [string]: any } } = {
+		center = { left = BAND, right = BAND, top = BAND, bottom = BAND },
+		top = { left = BAND, right = BAND, top = 0, h = BAND, min_h = LEAST },
+		bottom = { left = BAND, right = BAND, bottom = 0, h = BAND, min_h = LEAST },
+		left = { left = 0, top = 0, bottom = 0, w = BAND, min_w = LEAST },
+		right = { right = 0, top = 0, bottom = 0, w = BAND, min_w = LEAST },
+	}
+	local HALF: { [string]: { [string]: any } } = {
+		left = { left = 0, top = 0, bottom = 0, right = "50%" },
+		right = { left = "50%", top = 0, bottom = 0, right = 0 },
+		top = { left = 0, right = 0, top = 0, bottom = "50%" },
+		bottom = { left = 0, right = 0, top = "50%", bottom = 0 },
+		center = { left = 0, right = 0, top = 0, bottom = 0 },
+	}
+	local over = ui.use_state(nil :: { gid: string, side: string }?)
+	ui.effect(function()
+		if not groups.dragging:get() and over:peek() ~= nil then
+			over:set(nil)
+		end
+	end)
+	local landing_ids = ui.computed(function(): { string }
+		local k = key:get()
+		if not k or not groups.dragging:get() then
+			return {}
+		end
+		return groups.list(k)
+	end)
+	local function landing(gid: string): Node
+		local function held(): string
+			local o = over:get()
+			return if o and o.gid == gid then o.side else ""
+		end
+		local function zone(side: string): Node
+			local z: { [any]: any } = table.clone(ZONES[side])
+			z.absolute = true
+			z.pointer_events = "auto"
+			z.drop_when = function(payload: any): boolean
+				return type(payload) == "table" and type(payload.panel_tab) == "string" and (payload.panel_key == nil or payload.panel_key == key:peek())
+			end
+			z.on_drag_over = function()
+				local o = over:peek()
+				if not o or o.gid ~= gid or o.side ~= side then
+					over:set({ gid = gid, side = side })
+				end
+			end
+			z.on_drag_leave = function()
+				local o = over:peek()
+				if o and o.gid == gid and o.side == side then
+					over:set(nil)
+				end
+			end
+			z.on_drop = function(payload: any)
+				over:set(nil)
+				take(payload, gid, side)
+			end
+			return ui.div(z)
+		end
+		local item: { [any]: any } = {
+			pointer_events = "none",
+			ui.show(function(): boolean
+				return held() ~= ""
+			end, ui.div {
+				id = "panel-landing",
+				absolute = true,
+				left = function(): any
+					return (HALF[held()] or HALF.center).left
+				end,
+				right = function(): any
+					return (HALF[held()] or HALF.center).right
+				end,
+				top = function(): any
+					return (HALF[held()] or HALF.center).top
+				end,
+				bottom = function(): any
+					return (HALF[held()] or HALF.center).bottom
+				end,
+				pointer_events = "none",
+				bg = "$zeron.inset.drop",
+				border = 2,
+				border_color = "$zeron.inset.drop_edge",
+				rounded = "$zeron.inset.radius",
+			}),
+			zone("center"),
+			zone("top"),
+			zone("bottom"),
+			zone("left"),
+			zone("right"),
+		}
+		splits.place(item, function(): any
+			return frame_of(gid)
+		end)
+		return ui.column(item)
+	end
+	local function pane_layer(list: any, make: (id: string) -> Node): Node
+		return ui.div {
+			absolute = true,
+			left = 0,
+			right = 0,
+			top = 0,
+			bottom = 0,
+			pointer_events = "none",
+			ui.each(list, make, {
+				key = function(id: string): string
+					return id
+				end,
+				w_full = true,
+				h_full = true,
+				relative = true,
+			}),
+		}
+	end
+
 	local panes = ui.column {
+		ref = panes_ref,
 		w_full = true,
 		grow = 1,
 		min_h = 0,
 		relative = true,
 		hidden = closed,
 		content,
+		pane_layer(group_ids, group_pane),
+		pane_layer(divider_ids, divider),
+		pane_layer(landing_ids, landing),
 	}
 
 	local question = ui.div {
@@ -1492,11 +1939,44 @@ M.Panel = ui.component(function(props: Props): Node
 		bg = "$zeron.inset.bg",
 		border = 1,
 		border_color = "$zeron.inset.edge",
-		ui.column { w_full = true, shrink = 0, hidden = closed, strip },
+		-- (Split into panes, each has its own strip: none over them all.)
+		ui.column {
+			w_full = true,
+			shrink = 0,
+			hidden = function(): boolean
+				return closed() or split_now:get()
+			end,
+			strip,
+		},
 		panes,
 	}
 	box[#box + 1] = question
 	return ui.column(box)
 end)
+
+-- A tab's view and its name, for where it stands outside the panel (a pane
+-- of the page's split): built as the panel showing builds it. Nil with no
+-- panel showing, or no such tab.
+function M.tab_body(k: string, id: string): Node?
+	local tab = state.find(k, id)
+	local build = body_of
+	if not tab or not build then
+		return nil
+	end
+	local ok, built = pcall(build, k, tab)
+	if not ok then
+		print(`zeron-zgx: a panel tab didn't build: {built}`)
+		return nil
+	end
+	return built
+end
+function M.tab_title(k: string, id: string): string
+	local tab = state.find(k, id)
+	if not tab then
+		return ""
+	end
+	local title = title_of(tab)
+	return title
+end
 
 return M
