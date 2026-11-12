@@ -261,6 +261,11 @@ local FADE = { duration = 160 }
 -- Rows moving aside for a dragged one, and closing up after it (Zeron's
 -- TAB_SLIDE: 150 ms, easing out).
 local DRAG_SLIDE = { duration = 150, ease = "out(3)" }
+-- The old Keplorayx's measures (apps/dove/src/sidebar.rs): a tab 36 tall,
+-- its 18-point mark's slot 38 wide (so its words start 46 in from the
+-- sidebar's edge); the foot 52 tall, your row in it 38.
+local TAB, TAB_LEAD = 36, 38
+local FOOT, FOOT_ROW = 52, 38
 -- How many of a group's sessions show before "Show N more" (the session
 -- open, and with `keep_active` those in a state, showing past them).
 local GROUP_FIRST = 5
@@ -811,6 +816,11 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 		on_press: ((e: PointerEvent) -> ())?,
 		-- A quiet wash under it at rest (New: the row that starts things).
 		wash: boolean?,
+		-- A height of its own, its mark and words centred in it (a tab's,
+		-- the foot's: taller than a session's row), and how wide its mark's
+		-- slot is then (so its words start where the old Keplorayx's did).
+		tall: number?,
+		lead_w: number?,
 	}
 	local function row(r: Row): Node
 		local hovered = r.hovered or ui.use_state(false)
@@ -832,7 +842,7 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 			end
 			return room() - PAD * 2 - (r.less or 0)
 		end
-		local height = if railed() and not r.wide then RAIL_SLOT elseif r.h then eased(r.h, SLIDE) else SLOT
+		local height = if railed() and not r.wide then RAIL_SLOT elseif r.tall then r.tall elseif r.h then eased(r.h, SLIDE) else SLOT
 		-- Its slot: the rail's own size there; closed, the words' inset.
 		local slot = if railed() and not r.wide then RAIL_SLOT else SLOT
 		local leads = r.leads
@@ -840,7 +850,7 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 			if leads and not leads() then
 				return words_inset()
 			end
-			return slot
+			return if r.lead_w and slot == SLOT then r.lead_w else slot
 		end
 		-- Its words. (The rail's: its icon alone; no words to keep,
 		-- invisible, over the page.)
@@ -856,6 +866,10 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 				end,
 				h_full = true,
 				shrink = 0,
+				-- (In a row taller than a line, its words on its middle, as
+				-- its mark is.)
+				items = if r.tall then "center" else nil,
+				justify = if r.tall then "center" else nil,
 				r.words,
 			}
 			if not r.wide then
@@ -867,7 +881,7 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 		end
 		local content = {
 			ui.div {
-				w = if leads then eased(slot_w, SLIDE) else slot,
+				w = if leads then eased(slot_w, SLIDE) elseif r.lead_w and slot == SLOT then r.lead_w else slot,
 				h = slot,
 				shrink = 0,
 				items = "center",
@@ -953,7 +967,7 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 					end,
 					h_full = true,
 					shrink = 0,
-					items = "start",
+					items = if r.tall then "center" else "start",
 					table.unpack(content),
 				},
 			}
@@ -2016,7 +2030,9 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 			end,
 			-- (On a wash of its own at rest: the row that starts things.)
 			wash = true,
-			lead = ui.div { color = "$text.primary", Icon { name = "plus", size = 16 } },
+			tall = TAB,
+			lead_w = TAB_LEAD,
+			lead = ui.div { color = "$text.primary", Icon { name = "plus", size = 18 } },
 			words = line(label(function(): string
 				return "New"
 			end, nil, "$font.weight.medium")),
@@ -2030,7 +2046,9 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 			name = function(): string
 				return locale.s("ds.sidebar.search")
 			end,
-			lead = Icon { name = "search", size = 16 },
+			tall = TAB,
+			lead_w = TAB_LEAD,
+			lead = Icon { name = "search", size = 18 },
 			words = line(label(function(): string
 				return locale.s("ds.sidebar.search")
 			end, function(): boolean
@@ -2048,10 +2066,12 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 				return row {
 					name = title,
 					class = "plugin-page-row",
+					tall = TAB,
+					lead_w = TAB_LEAD,
 					lead = ui.presence(function(): string
 						return now:get().icon or "widget"
 					end, function(icon: string): Node
-						return Icon { name = icon :: any, size = 16 }
+						return Icon { name = icon :: any, size = 18 }
 					end),
 					-- (A page's own note at its row's end: a count, say.)
 					words = line(label(title, function(): boolean
@@ -4158,6 +4178,7 @@ fn layer(input:LayerInput)->vec4<f32> {
 		end
 		local you = row {
 			name = name,
+			tall = FOOT_ROW,
 			on_click = props.on_user,
 			selected = props.user_open,
 			-- (Room for settings' button beside it, and the list's gap.)
@@ -4170,7 +4191,7 @@ fn layer(input:LayerInput)->vec4<f32> {
 			end, function(seed: string): Node
 				return Avatar {
 					seed = seed,
-					size = 20,
+					size = 24,
 					label = who().name,
 					-- Your photo, once you have one.
 					src = function(): string?
@@ -4832,9 +4853,10 @@ fn layer(input:LayerInput)->vec4<f32> {
 			-- You: out of plugins' reach.
 			hook = false,
 			w_full = true,
-			h = SLOT + PAD,
+			h = FOOT,
 			shrink = 0,
 			overflow = "hidden",
+			justify = "center",
 			foot,
 		})
 	end

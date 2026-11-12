@@ -94,6 +94,18 @@ local shared = {
 	folded = ui.persist("shell_sidebar_folded", {} :: { [string]: boolean }),
 }
 
+-- Sessions under their projects' headings, as the old Keplorayx listed
+-- them (each project a section, the rest under Chats): put so once, where
+-- the list was one run; the view menu's Organize changes it from there.
+local grouped_once = ui.persist("kx_sidebar_grouped_once", false)
+if not grouped_once:peek() then
+	grouped_once:set(true)
+	local now = shared.organize:peek()
+	if type(now) ~= "table" or #now == 0 then
+		shared.organize:set({ "project" } :: any)
+	end
+end
+
 -- Scroll probe (for now: "it jumps back a step every few steps"): the
 -- list's offset moving back within a moment of moving down is printed
 -- (`sidebar-probe:` on the app's stderr), with how often the sidebar was
