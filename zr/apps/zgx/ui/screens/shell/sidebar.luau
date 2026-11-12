@@ -238,7 +238,11 @@ ui.effect(function()
 	end
 	-- (One from your account: read on the account's page, not a chat here.)
 	if id and string.sub(id, 1, 4) == "kxa:" then
-		require("@app/kx/synced").show(string.sub(id, 5))
+		if id == "kxa:*all" then
+			require("@app/kx/synced").show_all()
+		else
+			require("@app/kx/synced").show(string.sub(id, 5))
+		end
 		return
 	end
 	if id and id ~= route.chat:peek().session then
@@ -311,6 +315,9 @@ end
 local NO_PROJECT = "none"
 -- A session from your account (not a chat on this engine): its row's id.
 local ACCOUNT = "kxa:"
+-- How many of them the list shows, and the row for the rest.
+local ACCOUNT_FIRST = 4
+local ACCOUNT_ALL = "kxa:*all"
 -- What an agent asks of you, by chat (the chat page's, `chat.asks`): it
 -- says which of "input" a session waiting on you is, an approval or a
 -- question.
@@ -554,8 +561,14 @@ local projects = ui.computed(function(): { ds.SidebarProject }
 			here[c.id] = true
 		end
 		local account: ds.SidebarProject = { id = "kx-account", name = "Your account", icon = "cloud", sessions = {} }
+		-- (The first few in the list, then one row for the rest: every one of
+		-- them is on the account's page, and thirty of them here buried the
+		-- chats on this computer.)
+		local more = 0
 		for _, s in require("@app/kx/synced").all() do
-			if not s.archived and not here[s.id] then
+			if not s.archived and not here[s.id] and #account.sessions >= ACCOUNT_FIRST then
+				more += 1
+			elseif not s.archived and not here[s.id] then
 				table.insert(account.sessions, kept({
 					id = ACCOUNT .. s.id,
 					title = if s.title and s.title ~= "" then s.title else "Untitled session",
@@ -576,6 +589,14 @@ local projects = ui.computed(function(): { ds.SidebarProject }
 					branch = s.branch,
 				}) :: any)
 			end
+		end
+		if more > 0 then
+			table.insert(account.sessions, kept({
+				id = ACCOUNT_ALL,
+				title = `{more} more from your account`,
+				time = "",
+				device = "Your account",
+			}) :: any)
 		end
 		if #account.sessions > 0 then
 			table.insert(out, account)
@@ -1493,16 +1514,31 @@ M.Sidebar = ui.component(function(props: Props): Node
 		on_unarchive = function(id: string)
 			sessions.unarchive(id)
 		end,
-		-- (Keplorayx's own tabs first: Projects, Artifacts, Customize; then
-		-- the plugins' pages; More last. ui/kx/pages.)
+		-- (Keplorayx's own tabs: Projects, Artifacts, Customize, More. What
+		-- More holds shows under it while it's open: the plugins' pages
+		-- first, then its own. ui/kx/pages.)
 		pages = ui.computed(function(): { any }
 			local kx_pages = require("@app/kx/pages")
 			local out = kx_pages.rows(shared.details.project_filter:get())
-			for _, p in ui.shared("plugins.pages", {} :: { any }):get() or {} do
-				table.insert(out, p)
-			end
-			for _, r in kx_pages.more_rows() do
-				table.insert(out, r)
+			local more = kx_pages.more_rows()
+			table.insert(out, more[1])
+			local plugins = ui.shared("plugins.pages", {} :: { any }):get() or {}
+			if #more > 1 then
+				for _, p in plugins do
+					table.insert(out, p)
+				end
+				for i = 2, #more do
+					table.insert(out, more[i])
+				end
+			else
+				-- (Folded, with a plugin's page showing: More is lit, as it is
+				-- for its own.)
+				local page = route.page:get()
+				for _, p in plugins do
+					if page and page.plugin == p.plugin and page.id == p.id then
+						more[1].selected = true
+					end
+				end
 			end
 			return out
 		end),

@@ -8,6 +8,7 @@
 pub mod artifacts;
 pub mod browser;
 pub mod clock;
+pub mod frost;
 pub mod import;
 pub mod launcher;
 pub mod media;

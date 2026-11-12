@@ -105,6 +105,13 @@ local function choose(id: string)
 	end)
 end
 
+-- All of them, on the account's page (the sidebar's list shows the first
+-- few, and a row for the rest).
+function M.show_all()
+	open:set(nil)
+	route.plugin_page(M.PLUGIN, M.PAGE)
+end
+
 -- One opened from the sidebar's list: its transcript, on the account's page.
 function M.show(id: string)
 	choose(id)

@@ -169,7 +169,7 @@ zgx-desktop = { git = "https://github.com/zeronsh/zgx", rev = "bebc9b34890b3509d
 # held at launch (src/plugins/preview.rs); the screens' sizes
 # (src/settings.rs); upstream's registry and thread times; and the window
 # minimized (src/video_wallpaper.rs).
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_System_Console", "Win32_System_Diagnostics_Debug", "Win32_System_Kernel", "Win32_System_Registry", "Win32_System_Threading", "Win32_UI_Accessibility", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging", "Win32_System_DataExchange", "Win32_System_Shutdown", "Win32_UI_HiDpi", "Win32_System_SystemInformation", "Win32_Graphics_Dwm"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_System_Console", "Win32_System_Diagnostics_Debug", "Win32_System_Kernel", "Win32_System_Registry", "Win32_System_Threading", "Win32_UI_Accessibility", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging", "Win32_System_DataExchange", "Win32_System_Shutdown", "Win32_UI_HiDpi", "Win32_System_SystemInformation", "Win32_Graphics_Dwm", "Win32_UI_Shell"] }
 # Background videos (src/video_wallpaper.rs): Media Foundation.
 # (And Keplorayx's own, src/kx/media.rs: Windows' media controls, now playing.)
 windows = { version = "0.62", features = ["Win32_Media_MediaFoundation", "Win32_System_Com", "Foundation", "Media_Control", "Storage_Streams", "Win32_System_WinRT"] }

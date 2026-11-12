@@ -2049,8 +2049,7 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 		hook = if is_island then "rail.actions" else "sidebar.actions",
 		id = if is_island then nil else "sidebar-actions",
 		w_full = true,
-		-- (Its rows a step apart, each a tab: New, Search, then the pages.)
-		gap = ui.raw(6, "between the sidebar's tabs"),
+		gap = "$zeron.list.gap",
 		shrink = 0,
 		row {
 			name = function(): string
@@ -2058,7 +2057,7 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 			end,
 			-- (On a wash of its own at rest: the row that starts things.)
 			wash = true,
-			lead = ui.div { color = "$text.primary", Icon { name = "plus", size = 18 } },
+			lead = ui.div { color = "$text.primary", Icon { name = "plus", size = 16 } },
 			words = line(label(function(): string
 				return "New"
 			end, nil, "$font.weight.medium")),
@@ -2072,7 +2071,7 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 			name = function(): string
 				return locale.s("ds.sidebar.search")
 			end,
-			lead = Icon { name = "search", size = 18 },
+			lead = Icon { name = "search", size = 16 },
 			words = line(label(function(): string
 				return locale.s("ds.sidebar.search")
 			end, function(): boolean
@@ -2093,7 +2092,7 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 					lead = ui.presence(function(): string
 						return now:get().icon or "widget"
 					end, function(icon: string): Node
-						return Icon { name = icon :: any, size = 18 }
+						return Icon { name = icon :: any, size = 16 }
 					end),
 					-- (A page's own note at its row's end: a count, say.)
 					words = line(label(title, function(): boolean
