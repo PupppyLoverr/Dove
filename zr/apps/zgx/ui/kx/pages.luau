@@ -200,8 +200,9 @@ local function read_artifacts()
 	end)
 end
 -- (Read as the window's scripts load, for the sidebar's count; again as
--- the page opens, and by its Refresh.)
-read_artifacts()
+-- the page opens, and by its Refresh. Where the host has no such action,
+-- a shell built without Keplorayx's own, the count is simply none.)
+pcall(read_artifacts)
 
 -- How many there are (the sidebar's Artifacts row says it).
 function M.artifact_count(): number
