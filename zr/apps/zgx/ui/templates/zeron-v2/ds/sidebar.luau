@@ -238,9 +238,7 @@ export type Props = {
 
 -- Widths: Zeron's default, the inset either side, and the leading slot (a
 -- compact row's height); collapsed, the slot and its insets.
--- (Keplorayx: 12 of inset, where Zeron's is 8: the sidebar is a card set
--- 4 in from the window's edge, and its rows 8 in from the card's.)
-local WIDE, PAD, SLOT = 256, 12, 30
+local WIDE, PAD, SLOT = 256, 8, 30
 -- How far it resizes (Zeron's: 242 to 400, 256 by default).
 local MIN_W, MAX_W = 242, 400
 -- A regular session row: two lines (the title's 17, a gap, the detail's 14)
@@ -4886,23 +4884,6 @@ fn layer(input:LayerInput)->vec4<f32> {
 		shrink = 0,
 		overflow = "hidden",
 		relative = true,
-		-- (Keplorayx) A card of glass set in from the window's edge, under
-		-- what the sidebar holds, as the old app's was (not the rail's: that
-		-- is an island of its own).
-		if is_island
-			then ui.div {}
-			else ui.div {
-				absolute = true,
-				left = ui.raw(4, "the card's inset from the window's edge"),
-				top = ui.raw(4, "the card's inset from the window's edge"),
-				right = ui.raw(4, "the card's inset from the page beside it"),
-				bottom = ui.raw(4, "the card's inset from the window's edge"),
-				rounded = "$radius.xl",
-				bg = "$zeron.inset.bg",
-				border = 1,
-				border_color = "$zeron.inset.edge",
-				pointer_events = "none",
-			},
 		ui.column(body),
 		-- Under a title bar laid over it, its head is the window's to move it
 		-- by (a double click zooms it), as a title bar is: under its "…" and
