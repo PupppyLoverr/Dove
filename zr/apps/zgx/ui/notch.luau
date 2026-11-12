@@ -2563,7 +2563,7 @@ local island = ui.column {
 	-- A soft shadow that fades out well inside the window's cut (14 points
 	-- round the pill, 21 under it, src/kx/notch.rs `SHADOW`): one reaching
 	-- past it was sliced off there, a hard-edged box seen round the island.
-	shadow = { x = 0, y = 5, blur = 13, spread = -3, color = ui.raw("#00000066", "the island's soft shadow") },
+	shadow = ui.raw({ x = 0, y = 5, blur = 13, spread = -3, color = "#00000066" }, "the island's soft shadow, inside the window's cut"),
 	-- Its rim: a hairline of light, brighter along the top (the inset lip).
 	border = 1,
 	border_color = function()
@@ -2577,7 +2577,7 @@ local island = ui.column {
 		end
 		return ui.raw("#ffffff3d", "the glass's rim")
 	end,
-	inset_shadow = { x = 0, y = 1, blur = 0, spread = 0, color = ui.raw("#ffffff3d", "the glass's lit top lip") },
+	inset_shadow = ui.raw({ x = 0, y = 1, blur = 0, spread = 0, color = "#ffffff3d" }, "the glass's lit top lip"),
 	-- The glass: what's behind, blurred, its colour deepened.
 	ui.image {
 		src = function()
@@ -2681,7 +2681,7 @@ local bubble = ui.column {
 	overflow = "hidden",
 	items = "center",
 	justify = "center",
-	shadow = { x = 0, y = 5, blur = 13, spread = -3, color = ui.raw("#00000066", "the bubble's soft shadow") },
+	shadow = ui.raw({ x = 0, y = 5, blur = 13, spread = -3, color = "#00000066" }, "the bubble's soft shadow, inside the window's cut"),
 	border = function()
 		return if aim_b:get() > 0 then 1 else 0
 	end,
@@ -2694,7 +2694,7 @@ local bubble = ui.column {
 		end
 		return ui.raw("#ffffff3d", "the bubble's rim")
 	end,
-	inset_shadow = { x = 0, y = 1, blur = 0, spread = 0, color = ui.raw("#ffffff3d", "the bubble's lit top lip") },
+	inset_shadow = ui.raw({ x = 0, y = 1, blur = 0, spread = 0, color = "#ffffff3d" }, "the bubble's lit top lip"),
 	ui.image {
 		src = function()
 			behind_copies:get()

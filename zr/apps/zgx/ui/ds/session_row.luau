@@ -604,7 +604,8 @@ function M.Section(props: SectionProps): Node
 			props.title,
 			grow = 1,
 			text_size = "$font.size.xs",
-			weight = "$font.weight.medium",
+			weight = "$font.weight.semibold",
+			letter_spacing = 0.4,
 		},
 		if foldable and props.count
 			then ui.show(function(): boolean
