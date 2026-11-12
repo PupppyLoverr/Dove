@@ -390,14 +390,11 @@ local function artifacts(): Node
 end
 
 -- ── The sidebar's tabs (ui/kx/nav), as the sidebar asks for them ─────────
---   pages.rows(filter_on)   Projects, Artifacts, Customize
---   pages.more_rows()       More, and what it holds while it's open
+--   pages.more_rows(filter_on)   More, and what it holds while it's open
 --   pages.open(id)          what a click on one does (Projects is the
 --                           sidebar's own: its filter); false for none
-function M.rows(filter_on: boolean): { any }
-	local rows = require("@app/kx/nav").rows(function(): boolean
-		return filter_on
-	end)
+function M.more_rows(filter_on: boolean): { any }
+	local rows = require("@app/kx/nav").more(filter_on)
 	-- (Artifacts says how many there are, as the old Keplorayx's did.)
 	local n = M.artifact_count()
 	for _, r in rows do
@@ -406,10 +403,6 @@ function M.rows(filter_on: boolean): { any }
 		end
 	end
 	return rows
-end
-
-function M.more_rows(): { any }
-	return require("@app/kx/nav").more()
 end
 
 function M.open(id: string): boolean

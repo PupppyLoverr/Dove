@@ -248,15 +248,6 @@ ui.effect(function()
 		made = true
 		return
 	end
-	-- (One from your account: read on the account's page, not a chat here.)
-	if id and string.sub(id, 1, 4) == "kxa:" then
-		if id == "kxa:*all" then
-			require("@app/kx/synced").show_all()
-		else
-			require("@app/kx/synced").show(string.sub(id, 5))
-		end
-		return
-	end
 	if id and id ~= route.chat:peek().session then
 		route.open_session(id)
 	end
@@ -325,11 +316,6 @@ end
 -- stay on the Archived shelf, as everyone's do, so Show → Archived changes
 -- nothing here.
 local NO_PROJECT = "none"
--- A session from your account (not a chat on this engine): its row's id.
-local ACCOUNT = "kxa:"
--- How many of them the list shows, and the row for the rest.
-local ACCOUNT_FIRST = 4
-local ACCOUNT_ALL = "kxa:*all"
 -- What an agent asks of you, by chat (the chat page's, `chat.asks`): it
 -- says which of "input" a session waiting on you is, an approval or a
 -- question.
@@ -560,60 +546,6 @@ local projects = ui.computed(function(): { ds.SidebarProject }
 	if #loose.sessions > 0 then
 		table.insert(out, loose)
 	end
-	-- Your account's sessions (ui/kx/synced), all of them, in a group of
-	-- their own: every one a device of yours shared that isn't a chat here
-	-- already. Signed in, they're there; none is chosen by hand. (Not while
-	-- the list is narrowed to a project or a state: they have neither.)
-	if not just and not only then
-		local here: { [string]: boolean } = {}
-		for _, c in now.chats do
-			here[c.id] = true
-		end
-		for _, c in now.archived or {} do
-			here[c.id] = true
-		end
-		local account: ds.SidebarProject = { id = "kx-account", name = "Your account", icon = "cloud", sessions = {} }
-		-- (The first few in the list, then one row for the rest: every one of
-		-- them is on the account's page, and thirty of them here buried the
-		-- chats on this computer.)
-		local more = 0
-		for _, s in require("@app/kx/synced").all() do
-			if not s.archived and not here[s.id] and #account.sessions >= ACCOUNT_FIRST then
-				more += 1
-			elseif not s.archived and not here[s.id] then
-				table.insert(account.sessions, kept({
-					id = ACCOUNT .. s.id,
-					title = if s.title and s.title ~= "" then s.title else "Untitled session",
-					time = "",
-					-- (Its agent's mark, where the design system has one for
-					-- it; another harness's name is no mark's, so none.)
-					agent = ({
-						claude = "claude",
-						claudeCode = "claude",
-						["claude-code"] = "claude",
-						codex = "openai",
-						cursor = "cursor",
-						opencode = "opencode",
-						devin = "devin",
-						hermes = "hermes",
-					})[s.harness or ""] :: any,
-					device = "Your account",
-					branch = s.branch,
-				}) :: any)
-			end
-		end
-		if more > 0 then
-			table.insert(account.sessions, kept({
-				id = ACCOUNT_ALL,
-				title = `{more} more from your account`,
-				time = "",
-				device = "Your account",
-			}) :: any)
-		end
-		if #account.sessions > 0 then
-			table.insert(out, account)
-		end
-	end
 	-- Narrowed: the groups left with none fold away.
 	if only then
 		local kept: { ds.SidebarProject } = {}
@@ -810,11 +742,58 @@ local function connection_line(): Node
 	)
 end
 
+-- Your account's sessions (ui/kx/synced): every one a device of yours
+-- shared. One quiet row over the foot says how many and opens the page with
+-- them all; none is in the list, which is this computer's own.
+local function account_row(): Node
+	local function count(): number
+		local n = 0
+		for _, s in require("@app/kx/synced").all() do
+			if not s.archived then
+				n += 1
+			end
+		end
+		return n
+	end
+	return ui.show(function(): boolean
+		return count() > 0
+	end, ui.button {
+		id = "sidebar-account-sessions",
+		label = "From your account",
+		w_full = true,
+		h = ds_session_row.SLOT,
+		px = "$space.2",
+		gap = "$space.2",
+		items = "center",
+		rounded = "$radius.md",
+		bg = "#00000000",
+		hover = { bg = "$hover" },
+		active = { bg = "$pressed" },
+		color = "$text.secondary",
+		on_click = function()
+			require("@app/kx/synced").show_all()
+		end,
+		ds.Icon { name = "cloud", size = 16 },
+		ui.text { "From your account", literal = true, grow = 1, text_size = "$font.size.md", color = "$text.secondary" },
+		ui.text {
+			function(): string
+				return tostring(count())
+			end,
+			literal = true,
+			shrink = 0,
+			text_size = "$font.size.xs",
+			color = "$text.tertiary",
+			tabular = true,
+		},
+	})
+end
+
 local function foot_notes(): Node
 	local notice_h = ui.use_state(0)
 	return ui.column {
 		w_full = true,
 		shrink = 0,
+		account_row(),
 		connection_line(),
 		ui.div {
 			w_full = true,
@@ -1526,31 +1505,18 @@ M.Sidebar = ui.component(function(props: Props): Node
 		on_unarchive = function(id: string)
 			sessions.unarchive(id)
 		end,
-		-- (Keplorayx's own tabs: Projects, Artifacts, Customize, More. What
-		-- More holds shows under it while it's open: the plugins' pages
-		-- first, then its own. ui/kx/pages.)
+		-- (Under New and Search: the plugins' pages, then Keplorayx's More,
+		-- which holds the rest. ui/kx/pages.)
 		pages = ui.computed(function(): { any }
 			local kx_pages = require("@app/kx/pages")
-			local out = kx_pages.rows(shared.details.project_filter:get())
-			local more = kx_pages.more_rows()
-			table.insert(out, more[1])
-			local plugins = ui.shared("plugins.pages", {} :: { any }):get() or {}
-			if #more > 1 then
-				for _, p in plugins do
-					table.insert(out, p)
-				end
-				for i = 2, #more do
-					table.insert(out, more[i])
-				end
-			else
-				-- (Folded, with a plugin's page showing: More is lit, as it is
-				-- for its own.)
-				local page = route.page:get()
-				for _, p in plugins do
-					if page and page.plugin == p.plugin and page.id == p.id then
-						more[1].selected = true
-					end
-				end
+			-- (The plugins' pages in sight, as Zeron has them: Pull requests.
+			-- Then More, and what it holds while it's open.)
+			local out: { any } = {}
+			for _, p in ui.shared("plugins.pages", {} :: { any }):get() or {} do
+				table.insert(out, p)
+			end
+			for _, r in kx_pages.more_rows(shared.details.project_filter:get()) do
+				table.insert(out, r)
 			end
 			return out
 		end),

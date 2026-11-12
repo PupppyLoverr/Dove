@@ -4,8 +4,9 @@
 -- Each is a row the sidebar lists as it lists a plugin's page (under the
 -- `kx` plugin name), so they follow the sidebar's own design.
 --
---   nav.rows(filter_on)   Projects, Artifacts, Customize (before plugins' pages)
---   nav.more()            More, and under it, while it's open, what it holds
+--   nav.more(filter_on)   More, and under it, while it's open, what it holds:
+--                         Projects, Artifacts, Customize, Kanban, Team,
+--                         Agents, Archived
 --   nav.open(page, toggle_filter)   what a click on one does; false for a
 --                                   row that isn't one of these
 --
@@ -33,24 +34,21 @@ local function on_settings(cur: any, page: string): boolean
 	return cur.name == "settings" and cur.page == page
 end
 
-function M.rows(filter_on: () -> boolean): { any }
-	local cur: any = route.current:get()
-	return {
-		{ plugin = M.PLUGIN, id = "projects", title = "Projects", icon = "folder-with-files", selected = filter_on() },
-		{ plugin = M.PLUGIN, id = "artifacts", title = "Artifacts", icon = "layers", selected = on_page(cur, "artifacts") },
-		{ plugin = M.PLUGIN, id = "customize", title = "Customize", icon = "tuning", selected = on_settings(cur, "appearance") },
-	}
-end
-
-function M.more(): { any }
+-- More, and under it while it's open what it holds: everything but the
+-- sidebar's own New and Search and the plugins' pages, which stay in sight.
+-- `filter_on`: whether the project filter shows (Projects is lit then).
+function M.more(filter_on: boolean): { any }
 	local cur: any = route.current:get()
 	local open = more_open:get()
-	local kanban = on_page(cur, "kanban")
+	local kanban, artifacts = on_page(cur, "kanban"), on_page(cur, "artifacts")
 	local out: { any } = {
-		-- (Folded with Kanban showing, it's lit: that's where you are.)
-		{ plugin = M.PLUGIN, id = "more", title = "More", icon = "more-horizontal", selected = kanban and not open },
+		-- (Folded with one of its pages showing, it's lit: that's where you are.)
+		{ plugin = M.PLUGIN, id = "more", title = "More", icon = "more-horizontal", selected = (kanban or artifacts) and not open },
 	}
 	if open then
+		table.insert(out, { plugin = M.PLUGIN, id = "projects", title = "Projects", icon = "folder-with-files", selected = filter_on })
+		table.insert(out, { plugin = M.PLUGIN, id = "artifacts", title = "Artifacts", icon = "layers", selected = artifacts })
+		table.insert(out, { plugin = M.PLUGIN, id = "customize", title = "Customize", icon = "tuning", selected = on_settings(cur, "appearance") })
 		table.insert(out, { plugin = M.PLUGIN, id = "kanban", title = "Kanban", icon = "widget", selected = kanban })
 		table.insert(out, { plugin = M.PLUGIN, id = "team", title = "Team", icon = "users-group", selected = on_settings(cur, "members") })
 		table.insert(out, { plugin = M.PLUGIN, id = "agents", title = "Agents", icon = "bot", selected = on_settings(cur, "providers") })
