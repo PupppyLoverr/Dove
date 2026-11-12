@@ -1501,12 +1501,11 @@ M.Sidebar = ui.component(function(props: Props): Node
 			for _, p in ui.shared("plugins.pages", {} :: { any }):get() or {} do
 				table.insert(out, p)
 			end
-			table.insert(out, kx_pages.more_row())
+			for _, r in kx_pages.more_rows() do
+				table.insert(out, r)
+			end
 			return out
 		end),
-		on_page_press = function(page: any, e: PointerEvent)
-			require("@app/kx/pages").press(page, e)
-		end,
 		on_page = function(page: any)
 			local kx_pages = require("@app/kx/pages")
 			if page.plugin == kx_pages.PLUGIN then

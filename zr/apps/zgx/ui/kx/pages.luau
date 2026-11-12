@@ -391,8 +391,7 @@ end
 
 -- ── The sidebar's tabs (ui/kx/nav), as the sidebar asks for them ─────────
 --   pages.rows(filter_on)   Projects, Artifacts, Customize
---   pages.more_row()        More
---   pages.press(page, e)    where a row was pressed
+--   pages.more_rows()       More, and what it holds while it's open
 --   pages.open(id)          what a click on one does (Projects is the
 --                           sidebar's own: its filter); false for none
 function M.rows(filter_on: boolean): { any }
@@ -409,12 +408,8 @@ function M.rows(filter_on: boolean): { any }
 	return rows
 end
 
-function M.more_row(): any
+function M.more_rows(): { any }
 	return require("@app/kx/nav").more()
-end
-
-function M.press(page: any, e: any)
-	require("@app/kx/nav").press(page, e)
 end
 
 function M.open(id: string): boolean

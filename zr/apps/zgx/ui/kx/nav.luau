@@ -5,28 +5,31 @@
 -- `kx` plugin name), so they follow the sidebar's own design.
 --
 --   nav.rows(filter_on)   Projects, Artifacts, Customize (before plugins' pages)
---   nav.more()            More (after them)
---   nav.press(page, e)    where a row was pressed (More opens its menu there)
+--   nav.more()            More, and under it, while it's open, what it holds
 --   nav.open(page, toggle_filter)   what a click on one does; false for a
 --                                   row that isn't one of these
 --
 -- Projects shows the project filter over the list (the old Projects menu
 -- narrowed the list the same way). Artifacts and Kanban are pages
--- (ui/kx/pages). Customize is Settings › Appearance. More is a menu: Kanban,
--- then Team, Agents and Archived, which are settings' own pages here.
+-- (ui/kx/pages). Customize is Settings › Appearance. More opens in place:
+-- pressed, its rows show under it (Kanban, then Team, Agents and Archived,
+-- which are settings' own pages here); pressed again, they fold away. (A
+-- menu at the pointer was tried first, as the old app had: it never showed.)
 
 local route = require("@app/screens/shell/route")
-local MenuAt = require("@ds/menu_at")
 
 local M = {}
 
 M.PLUGIN = "kx"
 
--- Where the last row was pressed, in the window: More's menu opens there.
-local pressed: { x: number, y: number }? = nil
+-- Whether More shows what it holds (kept across launches).
+local more_open = ui.persist("kx_nav_more_open", false)
 
 local function on_page(cur: any, id: string): boolean
 	return cur.name == "plugin" and cur.plugin == M.PLUGIN and cur.page == id
+end
+local function on_settings(cur: any, page: string): boolean
+	return cur.name == "settings" and cur.page == page
 end
 
 function M.rows(filter_on: () -> boolean): { any }
@@ -34,58 +37,25 @@ function M.rows(filter_on: () -> boolean): { any }
 	return {
 		{ plugin = M.PLUGIN, id = "projects", title = "Projects", icon = "folder-with-files", selected = filter_on() },
 		{ plugin = M.PLUGIN, id = "artifacts", title = "Artifacts", icon = "layers", selected = on_page(cur, "artifacts") },
-		{
-			plugin = M.PLUGIN,
-			id = "customize",
-			title = "Customize",
-			icon = "tuning",
-			selected = cur.name == "settings" and cur.page == "appearance",
-		},
+		{ plugin = M.PLUGIN, id = "customize", title = "Customize", icon = "tuning", selected = on_settings(cur, "appearance") },
 	}
 end
 
-function M.more(): any
+function M.more(): { any }
 	local cur: any = route.current:get()
-	return { plugin = M.PLUGIN, id = "more", title = "More", icon = "more-horizontal", selected = on_page(cur, "kanban") }
-end
-
-function M.press(page: any, e: any)
-	if page.plugin == M.PLUGIN and e and type(e.x) == "number" and type(e.y) == "number" then
-		pressed = { x = e.x, y = e.y }
-	end
-end
-
-local function more_menu(): { any }
-	return {
-		{
-			label = "Kanban",
-			icon = "widget",
-			on_select = function()
-				route.plugin_page(M.PLUGIN, "kanban")
-			end,
-		},
-		{
-			label = "Team",
-			icon = "users-group",
-			on_select = function()
-				route.settings("members")
-			end,
-		},
-		{
-			label = "Agents",
-			icon = "bot",
-			on_select = function()
-				route.settings("providers")
-			end,
-		},
-		{
-			label = "Archived",
-			icon = "archive-minimalistic",
-			on_select = function()
-				route.settings("archived")
-			end,
-		},
+	local open = more_open:get()
+	local kanban = on_page(cur, "kanban")
+	local out: { any } = {
+		-- (Folded with Kanban showing, it's lit: that's where you are.)
+		{ plugin = M.PLUGIN, id = "more", title = if open then "Less" else "More", icon = "more-horizontal", selected = kanban and not open },
 	}
+	if open then
+		table.insert(out, { plugin = M.PLUGIN, id = "kanban", title = "Kanban", icon = "widget", selected = kanban })
+		table.insert(out, { plugin = M.PLUGIN, id = "team", title = "Team", icon = "users-group", selected = on_settings(cur, "members") })
+		table.insert(out, { plugin = M.PLUGIN, id = "agents", title = "Agents", icon = "bot", selected = on_settings(cur, "providers") })
+		table.insert(out, { plugin = M.PLUGIN, id = "archived", title = "Archived", icon = "archive-minimalistic", selected = on_settings(cur, "archived") })
+	end
+	return out
 end
 
 function M.open(page: any, toggle_filter: () -> ()): boolean
@@ -99,15 +69,15 @@ function M.open(page: any, toggle_filter: () -> ()): boolean
 	elseif page.id == "customize" then
 		route.settings("appearance")
 	elseif page.id == "more" then
-		-- (Its menu where it was pressed; from the keys, with no press to
-		-- stand it at, its first page.)
-		local at = pressed
-		pressed = nil
-		if at then
-			MenuAt.show(at :: any, more_menu())
-		else
-			route.plugin_page(M.PLUGIN, "kanban")
-		end
+		more_open:set(not more_open:peek())
+	elseif page.id == "kanban" then
+		route.plugin_page(M.PLUGIN, "kanban")
+	elseif page.id == "team" then
+		route.settings("members")
+	elseif page.id == "agents" then
+		route.settings("providers")
+	elseif page.id == "archived" then
+		route.settings("archived")
 	else
 		return false
 	end

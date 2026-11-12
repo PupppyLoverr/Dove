@@ -244,6 +244,15 @@ return [=[
         try { var l = document.querySelector('label[for="' + CSS.escape(e.id) + '"]'); if (l) { t = l.innerText; } } catch (x) {}
       }
       if (!t) { var wrap = e.closest('label'); if (wrap) { t = wrap.innerText; } }
+      // (A tick box or a choice with no label of its own: the words beside
+      // it say what it's for, never its value, which is "on" for them all.)
+      var type = (e.getAttribute('type') || '').toLowerCase();
+      if (!t && (type === 'checkbox' || type === 'radio')) {
+        var next = e.nextElementSibling;
+        if (next) { t = next.innerText || next.textContent || ''; }
+        if (!squeeze(t, 90) && e.parentElement) { t = e.parentElement.innerText || ''; }
+        return squeeze(t, 90) || squeeze(e.getAttribute('name') || type, 90);
+      }
       if (!t) { t = e.getAttribute('placeholder') || e.getAttribute('name') || ''; }
     }
     if (!t) { t = e.innerText || e.value || ''; }
