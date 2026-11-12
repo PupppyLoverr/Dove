@@ -27,7 +27,10 @@ pub(super) const SCROLL: &str = "browser_scroll";
 pub(super) const GO: &str = "browser_go";
 pub(super) const WAIT: &str = "browser_wait";
 pub(super) const DONE: &str = "browser_done";
-pub(super) const NAMES: [&str; 9] = [OPEN, READ, CLICK, TYPE, KEY, SCROLL, GO, WAIT, DONE];
+pub(super) const FILL: &str = "browser_fill";
+pub(super) const FIND: &str = "browser_find";
+pub(super) const TABS: &str = "browser_tabs";
+pub(super) const NAMES: [&str; 12] = [OPEN, READ, FIND, CLICK, TYPE, FILL, KEY, SCROLL, GO, WAIT, TABS, DONE];
 
 /// How long the app has to answer a step, the page's own loading included.
 const ANSWER: Duration = Duration::from_secs(45);
@@ -59,18 +62,46 @@ pub(super) fn catalog() -> Vec<ToolDef> {
         },
         ToolDef {
             name: READ,
-            description: "Read the page in your browser tab: its address, title, how far it's scrolled, its visible text, and its links, buttons and fields, each with a `ref` number to click or type into. Refs are valid until the page changes; read again after a click that moved the page.",
+            description: "Read the page in your browser tab: its address, title, how far it's scrolled, its headings, its visible text, and its links, buttons and fields, each with a `ref` number to click or type into (`focused` is the ref that has the keyboard). Refs are valid until the page changes; read again after a click that moved the page.",
             input_schema: with_common(json!({ "all": b("The whole page's text and controls, not just what's in view (longer).") }), &[]),
         },
         ToolDef {
             name: CLICK,
             description: "Click on the page: a control by its `ref` (from browser_read), or the first control whose words contain `text`, or a point (`x`, `y` in the page's view, CSS pixels). Your cursor moves there first, then clicks. Says what was clicked and where the page is after.",
-            input_schema: with_common(json!({ "ref": n("A control's ref from browser_read."), "text": s("Words on the control to click."), "x": n("A point's x in the view."), "y": n("A point's y in the view.") }), &[]),
+            input_schema: with_common(json!({ "ref": n("A control's ref from browser_read."), "text": s("Words on the control to click."), "x": n("A point's x in the view."), "y": n("A point's y in the view."), "hover": b("Rest the pointer there without clicking (a menu or a tip that shows under it)."), "double": b("Click twice (what a double-click opens or edits).") }), &[]),
+        },
+        ToolDef {
+            name: FIND,
+            description: "Find words on the page, wherever they are (not only in what's in view): up to 12 places, each with the words around it, whether it's in view, and, where it sits in a link, button or field, that control's `ref` to click. The page scrolls to the first. Use it instead of reading the whole page when you know what you're looking for.",
+            input_schema: with_common(json!({ "text": s("The words to find (any case).") }), &["text"]),
         },
         ToolDef {
             name: TYPE,
             description: "Type into a field: by `ref`, else the field that has the keyboard. Replaces what's there unless `append`. `submit` presses Enter after (a search box, a form).",
             input_schema: with_common(json!({ "ref": n("The field's ref from browser_read."), "text": s("What to type."), "append": b("Add to what's there instead of replacing it."), "submit": b("Press Enter after typing.") }), &["text"]),
+        },
+        ToolDef {
+            name: FILL,
+            description: "Fill several fields in one step, in the order given: each `{ ref, text }` types into a field or picks from a list as browser_type does, and `{ ref, check }` ticks (true) or clears (false) a tick box, or picks a radio choice. `submit` presses Enter in the last one after. Use it for a form instead of one browser_type a field. If one fails, the answer says which, and which were filled before it.",
+            input_schema: with_common(json!({
+                "fields": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 40,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "ref": { "type": "number", "description": "The field's ref from browser_read." },
+                            "text": { "type": "string", "description": "What to type, or the choice to pick from a list." },
+                            "check": { "type": "boolean", "description": "For a tick box or a radio choice: on (true) or off (false)." },
+                            "append": { "type": "boolean", "description": "Add to what's there instead of replacing it." }
+                        },
+                        "required": ["ref"]
+                    },
+                    "description": "The fields, in order."
+                },
+                "submit": b("Press Enter in the last field after filling.")
+            }), &["fields"]),
         },
         ToolDef {
             name: KEY,
@@ -91,6 +122,11 @@ pub(super) fn catalog() -> Vec<ToolDef> {
             name: WAIT,
             description: "Wait for the page: for `text` to appear on it, or for `ms` milliseconds (at most 10000), whichever is asked. Use it after a click that loads something slowly.",
             input_schema: with_common(json!({ "ms": n("How long to wait, in milliseconds."), "text": s("Words to wait for on the page.") }), &[]),
+        },
+        ToolDef {
+            name: TABS,
+            description: "The browser tabs beside your chat: `action` list (each tab's id, its address and whether it's the one in front, which is the one every other step works in), new (open another, at `url` if given), select (bring `tab` to the front) or close (`tab`). Every answer lists the tabs as they are after.",
+            input_schema: with_common(json!({ "action": s("list (the default), new, select or close."), "tab": s("A tab's id from the list, for select and close."), "url": s("For new: an address to open it at.") }), &[]),
         },
         ToolDef {
             name: DONE,

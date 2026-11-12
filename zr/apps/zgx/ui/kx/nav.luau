@@ -12,8 +12,9 @@
 -- Projects shows the project filter over the list (the old Projects menu
 -- narrowed the list the same way). Artifacts and Kanban are pages
 -- (ui/kx/pages). Customize is Settings › Appearance. More opens in place:
--- pressed, its rows show under it (Kanban, then Team, Agents and Archived,
--- which are settings' own pages here); pressed again, they fold away. (A
+-- pressed, its rows show under it (the plugins' pages, Kanban, then Team,
+-- Agents and Archived, which are settings' own pages here); pressed again,
+-- they fold away. (A
 -- menu at the pointer was tried first, as the old app had: it never showed.)
 
 local route = require("@app/screens/shell/route")
@@ -47,7 +48,7 @@ function M.more(): { any }
 	local kanban = on_page(cur, "kanban")
 	local out: { any } = {
 		-- (Folded with Kanban showing, it's lit: that's where you are.)
-		{ plugin = M.PLUGIN, id = "more", title = if open then "Less" else "More", icon = "more-horizontal", selected = kanban and not open },
+		{ plugin = M.PLUGIN, id = "more", title = "More", icon = "more-horizontal", selected = kanban and not open },
 	}
 	if open then
 		table.insert(out, { plugin = M.PLUGIN, id = "kanban", title = "Kanban", icon = "widget", selected = kanban })

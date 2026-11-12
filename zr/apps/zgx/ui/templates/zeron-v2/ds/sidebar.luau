@@ -996,23 +996,6 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 				end,
 			},
 			body,
-			-- The one chosen: a bar of the accent at its leading edge (not a
-			-- flyout's rows, not the rail's icons).
-			if is_selected and not r.wide
-				then ui.div {
-					absolute = true,
-					left = 2,
-					top = 8,
-					bottom = 8,
-					w = ui.raw(2.5, "the chosen row's bar"),
-					rounded = "$radius.full",
-					bg = "$accent",
-					pointer_events = "none",
-					opacity = function(): number
-						return if is_selected() and not railed() then 1 else 0
-					end,
-				}
-				else nil,
 			ui.show(narrow, if type(name) == "function" then ui.presence(name, tip) else tip(name)),
 		}
 	end
@@ -4843,7 +4826,6 @@ fn layer(input:LayerInput)->vec4<f32> {
 		table.insert(feet, props.tip)
 	end
 	if foot then
-		table.insert(feet, 1, ui.div { w_full = true, h = 1, shrink = 0, bg = "$border.subtle" })
 		-- (The sidebar's own foot: it never folds, the rail having none, so
 		-- it's as tall as it is from the start, a reload included.)
 		table.insert(feet, ui.column {
@@ -4873,29 +4855,6 @@ fn layer(input:LayerInput)->vec4<f32> {
 		shrink = 0,
 		overflow = "hidden",
 		relative = true,
-		-- Light on it, behind what it holds: brighter at its top, a shade
-		-- at its foot, so it reads as a pane and not a flat fill (not the
-		-- rail's, which is its icons alone).
-		if is_island
-			then ui.div {}
-			else ui.div {
-				absolute = true,
-				left = 0,
-				top = 0,
-				right = 0,
-				bottom = 0,
-				pointer_events = "none",
-				gradient = {
-					angle = 180,
-					stops = {
-						{ 0, ui.raw("#ffffff0d", "the sidebar's lit top") },
-						{ 0.3, ui.raw("#ffffff00", "the sidebar's light, fading") },
-						{ 0.75, ui.raw("#00000000", "the sidebar's middle, unlit") },
-						-- (Faint: the window's frost shows through it to the foot.)
-						{ 1, ui.raw("#00000012", "the sidebar's shaded foot") },
-					},
-				},
-			},
 		ui.column(body),
 		-- Under a title bar laid over it, its head is the window's to move it
 		-- by (a double click zooms it), as a title bar is: under its "…" and

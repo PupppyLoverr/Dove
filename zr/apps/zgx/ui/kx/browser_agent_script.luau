@@ -5,8 +5,8 @@
 --   sync(list)   the agents on the page now, each `{ key, n }`: a cursor
 --                each ("Agent n", in its own colour), the page's blue
 --                shimmer while there's any, gone with the last
---   op(q)        one step `{ id, op, key, n, args }`: read, click, type,
---                key, scroll, wait. Its cursor moves there first. Its
+--   op(q)        one step `{ id, op, key, n, args }`: read, find, click,
+--                type, fill, key, scroll, wait. Its cursor moves there first. Its
 --                answer is kept as JSON text until
 --   take(id)     takes it (null while the step is still going; "__lost"
 --                for a step begun on the page before this one)
@@ -197,6 +197,18 @@ return [=[
     setTimeout(function () { r.remove(); }, 560);
   }
 
+  // What a step acts on, outlined in its agent's colour for a moment.
+  function spot(e, c) {
+    if (!layer || !e || !e.getBoundingClientRect) { return; }
+    var r = e.getBoundingClientRect();
+    if (r.width < 1 || r.height < 1) { return; }
+    var o = el('div', 'position:absolute;left:' + (r.left - 3) + 'px;top:' + (r.top - 3) + 'px;width:' + (r.width + 6) + 'px;height:' + (r.height + 6) + 'px;box-sizing:border-box;border-radius:7px;border:2px solid ' + c.color + ';background:' + c.color + '1f;opacity:0;transition:opacity .18s ease;');
+    layer.appendChild(o);
+    requestAnimationFrame(function () { o.style.opacity = '1'; });
+    setTimeout(function () { o.style.opacity = '0'; }, 620);
+    setTimeout(function () { o.remove(); }, 840);
+  }
+
   // The agents on the page now. Others' cursors leave; with none, the
   // shimmer goes. Says "stopped" while the person's Stop holds.
   A.sync = function (list) {
@@ -316,7 +328,15 @@ return [=[
         if (len > room) { cut = true; break; }
       }
     }
-    return { url: location.href, title: document.title, scroll: scrollOf(), text: parts.join('\n'), controls: controls, cut: cut || undefined };
+    var headings = [], hs = document.querySelectorAll('h1,h2,h3');
+    for (var k = 0; k < hs.length && headings.length < 30; k++) {
+      var h = hs[k];
+      if (h.closest('[data-kx-agent]') || !box(h)) { continue; }
+      var words = squeeze(h.innerText, 120);
+      if (words) { headings.push({ level: Number(h.tagName.charAt(1)), text: words }); }
+    }
+    var focused = A.refs.indexOf(document.activeElement) + 1;
+    return { url: location.href, title: document.title, scroll: scrollOf(), headings: headings.length ? headings : undefined, focused: focused || undefined, text: parts.join('\n'), controls: controls, cut: cut || undefined };
   }
 
   // ── Acting ───────────────────────────────────────────────────────────
@@ -325,8 +345,13 @@ return [=[
     if (!e || !e.isConnected) { throw new Error('That ref is gone (the page changed): call browser_read again.'); }
     return e;
   }
+  // What to click for words: the control named them (an exact name before
+  // one that only contains them, one in view before one that isn't); else
+  // whatever on the page says them (a row's label, a card: plain text
+  // that takes a click); else a tick box beside them.
   function byText(text) {
-    var want = String(text).toLowerCase(), nodes = document.querySelectorAll(CONTROLS), best = null, bestRank = 99;
+    var want = String(text).toLowerCase(), nodes = document.querySelectorAll(CONTROLS);
+    var best = null, bestRank = 99, named = null, namedRank = 99;
     for (var i = 0; i < nodes.length; i++) {
       var e = nodes[i];
       if (e.disabled || e.closest('[data-kx-agent]')) { continue; }
@@ -334,12 +359,32 @@ return [=[
       if (name.indexOf(want) < 0) { continue; }
       var r = box(e);
       if (!r) { continue; }
-      var said = String(e.innerText || e.value || '').toLowerCase().indexOf(want) >= 0;
-      var rank = (name === want ? 0 : 4) + (said ? 0 : 2) + (inView(r) ? 0 : 1);
-      if (rank < bestRank) { best = e; bestRank = rank; }
+      var rank = (name === want ? 0 : 2) + (inView(r) ? 0 : 1);
+      // (A tick box is named for the words beside it: those words are the
+      // better thing to press, where the page has them.)
+      var says = !isTick(e);
+      if (says) { if (rank < bestRank) { best = e; bestRank = rank; } }
+      else if (rank < namedRank) { named = e; namedRank = rank; }
     }
-    if (!best) { throw new Error('Nothing to click says "' + text + '": call browser_read for what is there.'); }
-    return best;
+    if (best) { return best; }
+    if (document.body) {
+      var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT), n, plain = null, plainRank = 99;
+      while ((n = walker.nextNode())) {
+        var words = String(n.nodeValue || '').replace(/\s+/g, ' ').trim().toLowerCase();
+        if (words.indexOf(want) < 0) { continue; }
+        var holder = n.parentElement;
+        if (!holder) { continue; }
+        var tag = holder.tagName;
+        if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'NOSCRIPT' || tag === 'TEMPLATE' || holder.closest('[data-kx-agent]')) { continue; }
+        var hr = box(holder);
+        if (!hr) { continue; }
+        var pr = (words === want ? 0 : 2) + (inView(hr) ? 0 : 1);
+        if (pr < plainRank) { plain = holder; plainRank = pr; }
+      }
+      if (plain) { return plain; }
+    }
+    if (named) { return named; }
+    throw new Error('Nothing to click says "' + text + '": call browser_read or browser_find for what is there.');
   }
   function centre(e) {
     var r = e.getBoundingClientRect();
@@ -359,6 +404,35 @@ return [=[
     var d = Object.getOwnPropertyDescriptor(proto, 'value');
     if (d && d.set) { d.set.call(e, value); } else { e.value = value; }
   }
+  // `text` into `f` (a field, a list, an editor), as typing does it: its
+  // value set the way the page's own script hears it.
+  function enter(f, text, append) {
+    if (f.focus) { f.focus({ preventScroll: true }); }
+    if (f.tagName === 'SELECT') {
+      var want = text.toLowerCase(), hit = null;
+      for (var i = 0; i < f.options.length; i++) {
+        var o = f.options[i];
+        if (o.value.toLowerCase() === want || squeeze(o.text, 200).toLowerCase() === want) { hit = o; break; }
+        if (!hit && squeeze(o.text, 200).toLowerCase().indexOf(want) >= 0) { hit = o; }
+      }
+      if (!hit) { throw new Error('That list has no choice "' + text + '".'); }
+      setValue(f, hit.value);
+      f.dispatchEvent(new Event('input', { bubbles: true }));
+      f.dispatchEvent(new Event('change', { bubbles: true }));
+    } else if (isField(f)) {
+      setValue(f, append === true ? String(f.value || '') + text : text);
+      f.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
+      f.dispatchEvent(new Event('change', { bubbles: true }));
+    } else if (f.isContentEditable) {
+      if (append !== true) { document.execCommand('selectAll', false, null); }
+      document.execCommand('insertText', false, text);
+    } else { throw new Error('That isn\'t something to type into: ' + describe(f) + '.'); }
+  }
+  function isTick(e) {
+    var t = (e.getAttribute('type') || '').toLowerCase();
+    return e.tagName === 'INPUT' && (t === 'checkbox' || t === 'radio');
+  }
+
   var KEYCODES = { Enter: 13, Escape: 27, Tab: 9, Backspace: 8, Delete: 46, ArrowLeft: 37, ArrowUp: 38, ArrowRight: 39, ArrowDown: 40, PageUp: 33, PageDown: 34, Home: 36, End: 35, ' ': 32 };
   function press(target, key) {
     var code = KEYCODES[key] || (key.length === 1 ? key.toUpperCase().charCodeAt(0) : 0);
@@ -414,14 +488,28 @@ return [=[
           if (!e) { throw new Error('Nothing is at that point of the view (' + window.innerWidth + ' by ' + window.innerHeight + ').'); }
         } else { throw new Error('Say what to click: a ref, text, or x and y.'); }
         moveTo(c, at.x, at.y);
+        spot(e, c);
         setTimeout(function () {
           try {
+            fire(e, 'pointerover', at); fire(e, 'mouseover', at); fire(e, 'pointerenter', at); fire(e, 'mouseenter', at);
+            fire(e, 'pointermove', at); fire(e, 'mousemove', at);
+            // (Hover alone: the pointer rests there, for a menu or a tip
+            // that shows under it.)
+            if (a.hover === true) {
+              var over = describe(e);
+              setTimeout(function () { done({ hovered: over, url: location.href }); }, 260);
+              return;
+            }
             ripple(c);
-            fire(e, 'pointerover', at); fire(e, 'mouseover', at); fire(e, 'pointermove', at); fire(e, 'mousemove', at);
             fire(e, 'pointerdown', at); fire(e, 'mousedown', at);
             if (e.focus) { try { e.focus({ preventScroll: true }); } catch (x) {} }
             fire(e, 'pointerup', at); fire(e, 'mouseup', at);
             e.click();
+            if (a.double === true) {
+              fire(e, 'pointerdown', at); fire(e, 'mousedown', at); fire(e, 'pointerup', at); fire(e, 'mouseup', at);
+              e.click();
+              e.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, composed: true, view: window, clientX: at.x, clientY: at.y, detail: 2 }));
+            }
             var said = describe(e);
             setTimeout(function () { done({ clicked: said, url: location.href, title: document.title }); }, 140);
           } catch (x) { done({ error: String((x && x.message) || x) }); }
@@ -433,30 +521,11 @@ return [=[
         if (!f || f === document.body || f === document.documentElement) { throw new Error('No field has the keyboard: give the field\'s ref.'); }
         var where = centre(f);
         moveTo(c, where.x, where.y);
+        spot(f, c);
         setTimeout(function () {
           try {
             ripple(c);
-            if (f.focus) { f.focus({ preventScroll: true }); }
-            var text = String(a.text == null ? '' : a.text);
-            if (f.tagName === 'SELECT') {
-              var want = text.toLowerCase(), hit = null;
-              for (var i = 0; i < f.options.length; i++) {
-                var o = f.options[i];
-                if (o.value.toLowerCase() === want || squeeze(o.text, 200).toLowerCase() === want) { hit = o; break; }
-                if (!hit && squeeze(o.text, 200).toLowerCase().indexOf(want) >= 0) { hit = o; }
-              }
-              if (!hit) { throw new Error('That list has no choice "' + text + '".'); }
-              setValue(f, hit.value);
-              f.dispatchEvent(new Event('input', { bubbles: true }));
-              f.dispatchEvent(new Event('change', { bubbles: true }));
-            } else if (isField(f)) {
-              setValue(f, a.append === true ? String(f.value || '') + text : text);
-              f.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
-              f.dispatchEvent(new Event('change', { bubbles: true }));
-            } else if (f.isContentEditable) {
-              if (a.append !== true) { document.execCommand('selectAll', false, null); }
-              document.execCommand('insertText', false, text);
-            } else { throw new Error('That isn\'t something to type into: ' + describe(f) + '.'); }
+            enter(f, String(a.text == null ? '' : a.text), a.append === true);
             var sent = false;
             if (a.submit === true) {
               if (press(f, 'Enter')) { sent = submit(f); } else { sent = true; }
@@ -465,6 +534,83 @@ return [=[
             setTimeout(function () { done({ typed: said, submitted: sent || undefined, url: location.href }); }, 140);
           } catch (x) { done({ error: String((x && x.message) || x) }); }
         }, 420);
+        return;
+      }
+      if (q.op === 'fill') {
+        var fields = Array.isArray(a.fields) ? a.fields : [];
+        if (!fields.length) { throw new Error('Give `fields`: a list of { ref, text } (or { ref, check } for a tick box).'); }
+        var at = 0, filled = [], lastField = null;
+        var nextField = function () {
+          if (at >= fields.length) {
+            var sentAll = false;
+            if (a.submit === true && lastField) {
+              if (press(lastField, 'Enter')) { sentAll = submit(lastField); } else { sentAll = true; }
+            }
+            setTimeout(function () { done({ filled: filled, submitted: sentAll || undefined, url: location.href }); }, 140);
+            return;
+          }
+          var item = fields[at++];
+          try {
+            var fe = byRef(item.ref);
+            var spotAt = centre(fe);
+            moveTo(c, spotAt.x, spotAt.y);
+            spot(fe, c);
+            setTimeout(function () {
+              try {
+                ripple(c);
+                if (isTick(fe)) {
+                  var on = item.check !== undefined ? item.check === true : true;
+                  if (!!fe.checked !== on) { fe.click(); }
+                } else {
+                  enter(fe, String(item.text == null ? '' : item.text), item.append === true);
+                }
+                filled.push(describe(fe));
+                lastField = fe;
+                nextField();
+              } catch (x) { done({ error: 'Field ' + at + ' of ' + fields.length + ': ' + String((x && x.message) || x), filled: filled }); }
+            }, 300);
+          } catch (x) { done({ error: 'Field ' + at + ' of ' + fields.length + ': ' + String((x && x.message) || x), filled: filled }); }
+        };
+        nextField();
+        return;
+      }
+      if (q.op === 'find') {
+        var needle = String(a.text || '').toLowerCase();
+        if (!needle) { throw new Error('Say what words to find.'); }
+        var matches = [], first = null;
+        if (document.body) {
+          var tw = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT), tn;
+          while ((tn = tw.nextNode()) && matches.length < 12) {
+            var raw = String(tn.nodeValue || '').replace(/\s+/g, ' ');
+            var hitAt = raw.toLowerCase().indexOf(needle);
+            if (hitAt < 0) { continue; }
+            var holder = tn.parentElement;
+            if (!holder) { continue; }
+            var tag = holder.tagName;
+            if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'NOSCRIPT' || tag === 'TEMPLATE' || holder.closest('[data-kx-agent]')) { continue; }
+            var hr = box(holder);
+            if (!hr) { continue; }
+            var m = { text: squeeze(raw.slice(Math.max(0, hitAt - 60), hitAt + needle.length + 60), 200), in_view: inView(hr) };
+            var control = holder.closest(CONTROLS);
+            if (control && !control.disabled) {
+              var known = A.refs.indexOf(control);
+              if (known < 0) { A.refs.push(control); known = A.refs.length - 1; }
+              m.ref = known + 1;
+              m.control = describe(control);
+            }
+            if (!first) { first = holder; }
+            matches.push(m);
+          }
+        }
+        if (first) {
+          first.scrollIntoView({ block: 'center', behavior: 'smooth' });
+          setTimeout(function () {
+            var fr = first.getBoundingClientRect();
+            moveTo(c, fr.left + Math.min(fr.width / 2, 120), fr.top + fr.height / 2);
+            spot(first, c);
+          }, 320);
+        }
+        setTimeout(function () { done({ found: matches.length, matches: matches, scroll: scrollOf() }); }, first ? 520 : 60);
         return;
       }
       if (q.op === 'key') {

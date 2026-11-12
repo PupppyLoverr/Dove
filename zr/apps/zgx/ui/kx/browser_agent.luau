@@ -241,6 +241,64 @@ local function browser_tab(key: string): string?
 	return last
 end
 
+-- The chat's browser tabs, for an agent that keeps several: listed (each
+-- its id, address and whether it's the one in front, which is the one
+-- every step works in), one more opened, one turned to, one closed.
+local function tabs(id: string, key: string, args: any, showing: boolean)
+	local action = tostring(args.action or "list")
+	local s = state.sessions:peek()[key]
+	local function has(tab: any): boolean
+		for _, t in (if s then s.tabs else {}) :: { any } do
+			if t.kind == "browser" and t.id == tab then
+				return true
+			end
+		end
+		return false
+	end
+	if action == "new" then
+		local url: string? = nil
+		if type(args.url) == "string" and args.url ~= "" then
+			local resolved, why = api.resolve(args.url, data.engine_url())
+			if not resolved then
+				reply(id, nil, `That isn't an address the browser can open{if why then ": " .. tostring(why) else "."}`)
+				return
+			end
+			url = resolved
+		end
+		state.open(key, "browser", { url = url })
+		if showing then
+			pcall(view.set_files, true)
+		end
+	elseif action == "select" or action == "close" then
+		if not has(args.tab) then
+			reply(id, nil, "There's no browser tab with that id beside this chat: list them first (action list).")
+			return
+		end
+		if action == "select" then
+			state.activate(key, args.tab)
+		else
+			held[args.tab] = nil
+			pcall(function()
+				api.web(`panel-browser-{args.tab}`):close()
+			end)
+			state.close(key, args.tab)
+		end
+	elseif action ~= "list" then
+		reply(id, nil, "Say what to do with the tabs: list, new, select or close.")
+		return
+	end
+	local now = state.sessions:peek()[key]
+	local list = {}
+	for _, t in (if now then now.tabs else {}) :: { any } do
+		if t.kind == "browser" then
+			table.insert(list, { tab = t.id, url = t.url or "", active = t.id == now.active })
+		end
+	end
+	-- (An empty Luau table encodes as an object: say an empty list.)
+	local listed = if #list == 0 then "[]" else ui.json.encode(list)
+	reply(id, `\{ "tabs": {listed} }`, nil)
+end
+
 -- Until the page has loaded (its document there and settled), then
 -- `after(ok)`. `from`: the address it's leaving, so the old page isn't
 -- taken for the new one.
@@ -349,7 +407,7 @@ local function step(h: Held, req: any, key: string, n: number)
 			if value == "__gone" then
 				-- (The page went elsewhere mid-step. A click, a key or typing
 				-- that sent it there is done; anything else is asked again.)
-				if op == "click" or op == "key" or op == "type" then
+				if op == "click" or op == "key" or op == "type" or op == "fill" then
 					local said = `\{ "did": "{op}", "navigated": true }`
 					finish_moved(said, said)
 				elseif not again then
@@ -369,7 +427,7 @@ local function step(h: Held, req: any, key: string, n: number)
 			end
 			-- (A click that follows a link answers before the page leaves:
 			-- a moment on, where it went is said with it.)
-			if op == "click" or op == "key" or op == "type" then
+			if op == "click" or op == "key" or op == "type" or op == "fill" then
 				ui.after(450, function()
 					eval(h.web, `window.__kxAgent ? "here" : "__gone"`, function(still: any)
 						if still == "__gone" or h.web.url ~= from then
@@ -409,6 +467,10 @@ local function run(req: any)
 	end
 	local key = `chat:{chat}`
 	local showing = route.chat:peek().session == chat
+	if op == "tabs" then
+		tabs(id, key, args, showing)
+		return
+	end
 	local tab = browser_tab(key)
 
 	local url: string? = nil
@@ -486,7 +548,7 @@ local function run(req: any)
 		reply(id, nil, "No page is open in the browser tab yet: call browser_open first.")
 		return
 	end
-	if op == "read" or op == "click" or op == "type" or op == "key" or op == "scroll" or op == "wait" then
+	if op == "read" or op == "find" or op == "click" or op == "type" or op == "fill" or op == "key" or op == "scroll" or op == "wait" then
 		step(h, req, who, n)
 		return
 	end
