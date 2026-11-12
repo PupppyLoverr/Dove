@@ -178,6 +178,8 @@ export type Props = {
 	-- title, icon? }` as a state of a list, and what choosing one does.
 	pages: State<{ any }>?,
 	on_page: ((page: any) -> ())?,
+	-- A press on a page's row, before its click: where, for a menu there.
+	on_page_press: ((page: any, e: PointerEvent) -> ())?,
 	on_archive: ((id: string) -> ())?,
 	-- You, at its foot, chosen (your profile), and whether your profile is
 	-- open (the row shows chosen).
@@ -304,27 +306,6 @@ end
 
 -- A small icon button in a row's corner (shown under the pointer).
 local corner = SessionRow.corner_button
-
--- A row's shortcut, on a key's cap: a quiet chip at the row's end.
-local function keycap(text: string): Node
-	return ui.row {
-		h = 18,
-		px = "$space.1",
-		shrink = 0,
-		items = "center",
-		rounded = "$radius.sm",
-		bg = "$zeron.secondary.bg",
-		border = 1,
-		border_color = "$border",
-		ui.text {
-			text,
-			text_size = ui.raw(10, "a key's cap"),
-			weight = "$font.weight.medium",
-			color = "$text.tertiary",
-			tabular = true,
-		},
-	}
-end
 
 return ui.component(function(props: Props): Node
 	local compact = props.compact
@@ -828,6 +809,8 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 		ref: Ref?,
 		-- A press on it, with its count (a double click's second is 2).
 		on_press: ((e: PointerEvent) -> ())?,
+		-- A quiet wash under it at rest (New: the row that starts things).
+		wash: boolean?,
 	}
 	local function row(r: Row): Node
 		local hovered = r.hovered or ui.use_state(false)
@@ -998,6 +981,20 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 			shrink = 0,
 			ref = r.ref,
 			on_press = r.on_press,
+			-- (Its wash at rest, under it: not the rail's icon.)
+			ui.div {
+				absolute = true,
+				left = 0,
+				top = 0,
+				right = 0,
+				bottom = 0,
+				rounded = "$radius.md",
+				bg = "$zeron.secondary.bg",
+				pointer_events = "none",
+				hidden = function(): boolean
+					return r.wash ~= true or railed()
+				end,
+			},
 			body,
 			-- The one chosen: a bar of the accent at its leading edge (not a
 			-- flyout's rows, not the rail's icons).
@@ -2028,30 +2025,19 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 		hook = if is_island then "rail.actions" else "sidebar.actions",
 		id = if is_island then nil else "sidebar-actions",
 		w_full = true,
-		gap = "$zeron.list.gap",
+		-- (Its rows a step apart, each a tab: New, Search, then the pages.)
+		gap = ui.raw(6, "between the sidebar's tabs"),
 		shrink = 0,
 		row {
 			name = function(): string
 				return locale.s("ds.sidebar.new_chat")
 			end,
-			-- (Its plus on a tile of the accent: the row that starts things
-			-- reads first.)
-			lead = ui.div {
-				w = 20,
-				h = 20,
-				shrink = 0,
-				items = "center",
-				justify = "center",
-				rounded = "$radius.md",
-				bg = "$zeron.selected.bg",
-				border = 1,
-				border_color = "$zeron.selected.ring",
-				color = "$accent",
-				Icon { name = "plus", size = 14 },
-			},
+			-- (On a wash of its own at rest: the row that starts things.)
+			wash = true,
+			lead = ui.div { color = "$text.primary", Icon { name = "plus", size = 18 } },
 			words = line(label(function(): string
-				return locale.s("ds.sidebar.new_chat")
-			end, nil, "$font.weight.medium"), keycap(ui.shortcut_text("cmd+n"))),
+				return "New"
+			end, nil, "$font.weight.medium")),
 			on_click = function()
 				if props.on_new then
 					props.on_new(nil)
@@ -2062,10 +2048,12 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 			name = function(): string
 				return locale.s("ds.sidebar.search")
 			end,
-			lead = Icon { name = "search", size = 16 },
+			lead = Icon { name = "search", size = 18 },
 			words = line(label(function(): string
 				return locale.s("ds.sidebar.search")
-			end), keycap(ui.shortcut_text("cmd+k"))),
+			end, function(): boolean
+				return false
+			end)),
 			on_click = props.on_search,
 		},
 		if props.pages
@@ -2081,9 +2069,24 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 					lead = ui.presence(function(): string
 						return now:get().icon or "widget"
 					end, function(icon: string): Node
-						return Icon { name = icon :: any, size = 16 }
+						return Icon { name = icon :: any, size = 18 }
 					end),
-					words = line(label(title)),
+					-- (A page's own note at its row's end: a count, say.)
+					words = line(label(title, function(): boolean
+						return now:get().selected == true
+					end), hint(function(): string
+						return now:get().note or ""
+					end)),
+					-- (The page open, or its menu: its row lit.)
+					selected = function(): boolean
+						return now:get().selected == true
+					end,
+					-- (Where it was pressed, for a page that opens a menu there.)
+					on_press = function(e: PointerEvent)
+						if props.on_page_press then
+							props.on_page_press(now:peek(), e)
+						end
+					end,
 					on_click = function()
 						if props.on_page then
 							props.on_page(now:peek())

@@ -24,6 +24,7 @@ use crate::zeron::{HarnessInfo, TurnOutcome, Zeron, session_for, short};
 
 // Keplorayx's own: the desktop's widgets and its calendar.
 mod kx;
+mod kx_browser;
 mod plugins;
 mod themes;
 pub use plugins::ListedTool;
@@ -274,6 +275,7 @@ fn catalog() -> Vec<ToolDef> {
     tools.extend(plugins::catalog());
     tools.extend(themes::catalog());
     tools.extend(kx::catalog());
+    tools.extend(kx_browser::catalog());
     tools
 }
 
@@ -807,6 +809,10 @@ impl Tools {
             widget if kx::NAMES.contains(&widget) => {
                 return kx::call(widget, &args);
             }
+            browser if kx_browser::NAMES.contains(&browser) => {
+                // (Boxed: its own future, off this one's stack.)
+                return Box::pin(self.browser(browser, &args)).await;
+            }
             theme if themes::NAMES.contains(&theme) => {
                 return self.themes(theme, args).await;
             }
@@ -816,6 +822,22 @@ impl Tools {
             other => return Err(format!("unknown tool: {other}")),
         };
         result.map_err(|e| format!("{e:#}"))
+    }
+
+    /// A step in Keplorayx's in-app browser. A subagent or a side chat
+    /// browses in the tab of the chat it's under, beside it: the page the
+    /// person is watching.
+    async fn browser(&self, name: &str, args: &Value) -> Result<Value, String> {
+        let who = self.zeron.origin().chat_id.clone();
+        let mut home = who.clone();
+        if let Some(id) = who.as_deref() {
+            if let Ok(chat) = self.zeron.resolve_chat(id).await {
+                if let Some(parent) = chat.parent_chat_id {
+                    home = Some(parent);
+                }
+            }
+        }
+        kx_browser::call(name, args, who.as_deref(), home.as_deref()).await
     }
 
     /// Poll every request together, including its optional wait. A waiting

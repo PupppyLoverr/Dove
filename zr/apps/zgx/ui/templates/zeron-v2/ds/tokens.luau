@@ -30,6 +30,9 @@ function M.setup()
 			-- enough that one row's wash (hover, selected) never touches the
 			-- next's, no more.
 			list = { gap = 2 },
+			-- (Named here too, for what the app's own screens style by them:
+			-- settings' cards. This layout sets no cards into the window itself.)
+			inset = { gap = 4, radius = "{radius.xl}", bg = "{surface.raised}", edge = "{border.subtle}", edge_hover = "{border.strong}" },
 			-- An icon button (ds/icon_button): a glyph alone on a square. Three
 			-- sizes: a row's corner or a bar's tight controls, a title bar's, a
 			-- toolbar's; the glyph at each; and its corner, a button's 8.
@@ -68,6 +71,9 @@ function M.setup()
 			},
 			-- A menu or dropdown panel's tint over the platform's frosted
 			-- material.
+			-- (Keplorayx) Spotlight's glass: its tint over the blur, its
+			-- edge, and the light along its top (each theme sets its own).
+			spotlight = { tint = "{surface.overlay}", edge = "{border}", lip = "#ffffff17", sheen = "#ffffff1f", foot = "#ffffff0d" },
 			menu = {
 				tint = "{surface.overlay}",
 				solid = "{surface.overlay}",

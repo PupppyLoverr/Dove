@@ -85,7 +85,7 @@ pub(super) fn catalog() -> Vec<ToolDef> {
 
 /// Keplorayx's data folder: the engine's (`ZERON_DATA_DIR`, which the app
 /// gives the engine it starts), else ~/.keplorayx.
-fn data_dir() -> std::path::PathBuf {
+pub(super) fn data_dir() -> std::path::PathBuf {
     if let Some(dir) = std::env::var_os("ZERON_DATA_DIR").filter(|d| !d.is_empty()) {
         return dir.into();
     }

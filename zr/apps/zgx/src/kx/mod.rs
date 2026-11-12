@@ -5,6 +5,8 @@
 //! Zeron's app (apps/keplorayx/src); here they read Zeron's engine through
 //! the same calls Zeron's own windows make (sessions, chats, agents).
 
+pub mod artifacts;
+pub mod browser;
 pub mod clock;
 pub mod import;
 pub mod launcher;

@@ -47,11 +47,13 @@ local function signed_in(): boolean
 	return (account:get() or {}).state == "signed_in"
 end
 
-function M.row(): any
+-- Your account's sessions, for the sidebar's own list (signed out, none):
+-- every one any device shared, none chosen by hand.
+function M.all(): { Synced }
 	if not signed_in() then
-		return nil
+		return {}
 	end
-	return { plugin = M.PLUGIN, id = M.PAGE, title = "From your account", icon = "cloud" }
+	return list:get() or {}
 end
 
 local function folder(path: string?): string
@@ -101,6 +103,12 @@ local function choose(id: string)
 			loading:set(false)
 		end
 	end)
+end
+
+-- One opened from the sidebar's list: its transcript, on the account's page.
+function M.show(id: string)
+	choose(id)
+	route.plugin_page(M.PLUGIN, M.PAGE)
 end
 
 -- Where it stood, for the composer of a new chat: the last few turns, each

@@ -31,6 +31,10 @@ local boundary = require("@app/screens/shell/boundary")
 local control = require("@ds/control")
 local locale = require("@ds/locale")
 local ds_session_row = require("@ds/session_row")
+-- Agents in the in-app browser (ui/kx/browser_agent): it follows what they
+-- ask from the moment the main window's scripts load, and this is where
+-- they do.
+require("@app/kx/browser_agent")
 
 export type Props = {
 	collapsed: State<boolean>,
@@ -232,6 +236,11 @@ ui.effect(function()
 		made = true
 		return
 	end
+	-- (One from your account: read on the account's page, not a chat here.)
+	if id and string.sub(id, 1, 4) == "kxa:" then
+		require("@app/kx/synced").show(string.sub(id, 5))
+		return
+	end
 	if id and id ~= route.chat:peek().session then
 		route.open_session(id)
 	end
@@ -300,6 +309,8 @@ end
 -- stay on the Archived shelf, as everyone's do, so Show → Archived changes
 -- nothing here.
 local NO_PROJECT = "none"
+-- A session from your account (not a chat on this engine): its row's id.
+local ACCOUNT = "kxa:"
 -- What an agent asks of you, by chat (the chat page's, `chat.asks`): it
 -- says which of "input" a session waiting on you is, an approval or a
 -- question.
@@ -529,6 +540,46 @@ local projects = ui.computed(function(): { ds.SidebarProject }
 	end
 	if #loose.sessions > 0 then
 		table.insert(out, loose)
+	end
+	-- Your account's sessions (ui/kx/synced), all of them, in a group of
+	-- their own: every one a device of yours shared that isn't a chat here
+	-- already. Signed in, they're there; none is chosen by hand. (Not while
+	-- the list is narrowed to a project or a state: they have neither.)
+	if not just and not only then
+		local here: { [string]: boolean } = {}
+		for _, c in now.chats do
+			here[c.id] = true
+		end
+		for _, c in now.archived or {} do
+			here[c.id] = true
+		end
+		local account: ds.SidebarProject = { id = "kx-account", name = "Your account", icon = "cloud", sessions = {} }
+		for _, s in require("@app/kx/synced").all() do
+			if not s.archived and not here[s.id] then
+				table.insert(account.sessions, kept({
+					id = ACCOUNT .. s.id,
+					title = if s.title and s.title ~= "" then s.title else "Untitled session",
+					time = "",
+					-- (Its agent's mark, where the design system has one for
+					-- it; another harness's name is no mark's, so none.)
+					agent = ({
+						claude = "claude",
+						claudeCode = "claude",
+						["claude-code"] = "claude",
+						codex = "openai",
+						cursor = "cursor",
+						opencode = "opencode",
+						devin = "devin",
+						hermes = "hermes",
+					})[s.harness or ""] :: any,
+					device = "Your account",
+					branch = s.branch,
+				}) :: any)
+			end
+		end
+		if #account.sessions > 0 then
+			table.insert(out, account)
+		end
 	end
 	-- Narrowed: the groups left with none fold away.
 	if only then
@@ -1442,19 +1493,36 @@ M.Sidebar = ui.component(function(props: Props): Node
 		on_unarchive = function(id: string)
 			sessions.unarchive(id)
 		end,
-		-- (Keplorayx's own page first: your account's sessions, while signed in.)
+		-- (Keplorayx's own tabs first: Projects, Artifacts, Customize; then
+		-- the plugins' pages; More last. ui/kx/pages.)
 		pages = ui.computed(function(): { any }
-			local out = {}
-			local mine = require("@app/kx/synced").row()
-			if mine then
-				table.insert(out, mine)
-			end
+			local kx_pages = require("@app/kx/pages")
+			local out = kx_pages.rows(shared.details.project_filter:get())
 			for _, p in ui.shared("plugins.pages", {} :: { any }):get() or {} do
 				table.insert(out, p)
 			end
+			table.insert(out, kx_pages.more_row())
 			return out
 		end),
+		on_page_press = function(page: any, e: PointerEvent)
+			require("@app/kx/pages").press(page, e)
+		end,
 		on_page = function(page: any)
+			local kx_pages = require("@app/kx/pages")
+			if page.plugin == kx_pages.PLUGIN then
+				-- (Projects: the list narrowed to one of them, or all again.)
+				if page.id == "projects" then
+					local on = not shared.details.project_filter:peek()
+					shared.details.project_filter:set(on)
+					if not on then
+						shared.project:set(nil)
+					end
+					return
+				end
+				if kx_pages.open(page.id) then
+					return
+				end
+			end
 			route.plugin_page(page.plugin, page.id)
 		end,
 		on_search = function()
