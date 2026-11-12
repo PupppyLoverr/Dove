@@ -23,6 +23,19 @@
 --                              (idle), as its chat stands
 --   store.send(buddy, prompt, then)  a message to it by the app (an
 --                              automation's): then(ok, note, used)
+--
+-- A buddy's computer is a sandbox of its own, named for it: on this PC
+-- (src/kx/computers.rs, through cua) or in the cloud on Boat (src/kx/boat.rs,
+-- with the person's key, which src/kx/keys.rs keeps and never gives back):
+--   store.keys                  which keys are held ({ boat = true })
+--   store.boats, store.read_boats(), store.boat_of(buddy), store.make_boat(buddy, then)
+--   store.computer_ready        whether cua is installed to make one
+--   store.computers             the sandboxes that are Keplorayx's, as last read
+--   store.read_computers()      read again
+--   store.computer_name(buddy)  what its sandbox is called
+--   store.computer_of(buddy)    its sandbox now ({ name, status, … }), or nil
+--   store.make_computer(buddy, image, then)   minutes; then(ok, why)
+--   store.open_desktop(buddy)   its desktop, live, in the panel beside its chat
 
 local sessions = require("@account/sessions")
 local agents = require("@account/agents")
@@ -145,6 +158,16 @@ function M.agents(): { Agent }
 	return out
 end
 
+-- What's offered and usable, as one word: what changes when the list of
+-- agents arrives (after the page may already show) or one signs in or out.
+function M.agents_key(): string
+	local parts = {}
+	for _, a in M.agents() do
+		table.insert(parts, `{a.harness}{if a.ok then "+" else "-"}`)
+	end
+	return `{table.concat(parts, ",")}/{#(chat_store.catalog:get().models or {})}`
+end
+
 -- An agent's models, as the composer offers them.
 function M.models(harness: string): { { value: string, label: string } }
 	local out = {}
@@ -207,12 +230,9 @@ function M.ensure_chat(buddy: Buddy, after: (chat: string?, err: string?) -> ())
 		after(buddy.chat, nil)
 		return
 	end
-	local harness, model = M.pick(buddy)
-	sessions.create({
-		cwd = buddy.home,
-		title = buddy.name,
-		config = if harness then { harness = harness, model = model } else nil,
-	}):after(function(id: any)
+	-- (Made with no agent of its own: each run says which it's on, so the
+	-- chat follows whichever of the buddy's order was usable then.)
+	sessions.create({ cwd = buddy.home, title = buddy.name }):after(function(id: any)
 		if type(id) ~= "string" then
 			after(nil, "The engine made no chat.")
 			return
@@ -246,6 +266,136 @@ function M.standing(buddy: Buddy): string?
 		end
 	end
 	return nil
+end
+
+-- ── Its computer ─────────────────────────────────────────────────────────
+M.computer_ready = ui.shared("kx.computer.ready", false)
+M.computers = ui.state("kx_computers", {} :: { { name: string, status: string?, kind: string?, runtime: string? } })
+M.computers_read = ui.state("kx_computers_read", false)
+
+function M.read_computers()
+	ui.call("kx.computer.list"):after(function(list: any)
+		M.computers:set(if type(list) == "table" then list else {})
+		M.computers_read:set(true)
+	end, function()
+		M.computers_read:set(true)
+	end)
+end
+
+function M.computer_name(buddy: Buddy): string
+	return `kx-{string.lower(buddy.id)}`
+end
+
+function M.computer_of(buddy: Buddy): { name: string, status: string?, kind: string?, runtime: string? }?
+	local name = M.computer_name(buddy)
+	for _, c in M.computers:get() or {} do
+		if c.name == name then
+			return c
+		end
+	end
+	return nil
+end
+
+function M.make_computer(buddy: Buddy, image: string, after: (ok: boolean, why: string?) -> ())
+	local name = M.computer_name(buddy)
+	ui.call("kx.computer.create", { name = name, image = image }):after(function()
+		-- (Said in its record, so its instructions tell it about it.)
+		M.save({ id = buddy.id, name = buddy.name, computer = { kind = "local", name = name, image = image } }):after(function()
+			M.read_computers()
+			after(true, nil)
+		end, function()
+			M.read_computers()
+			after(true, nil)
+		end)
+	end, function(why: any)
+		M.read_computers()
+		after(false, tostring(why))
+	end)
+end
+
+-- ── Its computer in the cloud (Boat) ────────────────────────────────────
+M.keys = ui.shared("kx.keys", {} :: { [string]: boolean })
+M.boats = ui.state("kx_boats", {} :: { { id: string, name: string, state: string? } })
+M.boats_read = ui.state("kx_boats_read", false)
+M.boats_error = ui.state("kx_boats_error", nil :: string?)
+
+function M.read_boats()
+	ui.call("kx.boat.list"):after(function(list: any)
+		M.boats:set(if type(list) == "table" then list else {})
+		M.boats_error:set(nil)
+		M.boats_read:set(true)
+	end, function(why: any)
+		M.boats_error:set(tostring(why))
+		M.boats_read:set(true)
+	end)
+end
+
+function M.boat_of(buddy: Buddy): { id: string, name: string, state: string? }?
+	local name = M.computer_name(buddy)
+	for _, c in M.boats:get() or {} do
+		if c.name == name then
+			return c
+		end
+	end
+	return nil
+end
+
+function M.make_boat(buddy: Buddy, after: (ok: boolean, why: string?) -> ())
+	local name = M.computer_name(buddy)
+	ui.call("kx.boat.create", name):after(function(id: any)
+		M.save({ id = buddy.id, name = buddy.name, computer = { kind = "boat", id = tostring(id), name = name } }):after(function()
+			M.read_boats()
+			after(true, nil)
+		end, function()
+			M.read_boats()
+			after(true, nil)
+		end)
+	end, function(why: any)
+		M.read_boats()
+		after(false, tostring(why))
+	end)
+end
+
+-- (Its record no longer says it has one: its instructions stop saying so.)
+function M.forget_computer(buddy: Buddy)
+	M.save({ id = buddy.id, name = buddy.name, computer = { kind = "none" } })
+end
+
+-- Its desktop in the panel beside its chat: a page, as any the panel's
+-- browser shows (cua's own viewer, served on this machine alone; or Boat's,
+-- at an address asked for afresh each time, good for ten minutes to open).
+function M.open_desktop(buddy: Buddy, after: ((ok: boolean, why: string?) -> ())?)
+	local done = after or function() end
+	local boat = M.boat_of(buddy)
+	local asked = if buddy.computer and buddy.computer.kind == "boat" and boat then ui.call("kx.boat.view", boat.id) else ui.call("kx.computer.view", M.computer_name(buddy))
+	asked:after(function(url: any)
+		if type(url) ~= "string" then
+			done(false, "There was no address for its desktop.")
+			return
+		end
+		M.selected:set(buddy.id)
+		M.ensure_chat(buddy, function(chat: string?, err: string?)
+			if not chat then
+				done(false, err or "Its chat couldn't be made.")
+				return
+			end
+			route.open_session(chat)
+			local ok, panel = pcall(function(): any
+				return (require :: any)("@app/screens/panel")
+			end)
+			if ok and panel and panel.open_url then
+				-- (Once the chat is the one showing: the panel opens for it.)
+				ui.after(120, function()
+					panel.open_url(chat, url)
+					done(true, nil)
+				end)
+			else
+				done(false, "The panel isn't there to show it.")
+			end
+		end)
+	end, function(why: any)
+		done(false, tostring(why))
+	end)
 end
 
 function M.send(buddy: Buddy, prompt: string, after: (ok: boolean, note: string?, used: { chat: string?, harness: string?, model: string? }) -> ())

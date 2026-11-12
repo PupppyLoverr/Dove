@@ -97,6 +97,19 @@ fn instructions(buddy: &Json, home: &Path) -> String {
     if let Some(folder) = folder {
         out.push_str(&format!(" The folder you look after is `{folder}`."));
     }
+    match buddy["computer"]["kind"].as_str().unwrap_or_default() {
+        "local" => {
+            if let Some(computer) = buddy["computer"]["name"].as_str().filter(|n| !n.is_empty()) {
+                out.push_str(&format!("\n\n## Your computer\n\nYou have a computer of your own: the cua sandbox `{computer}`, a real desktop the person can watch. Work that needs a desktop or a clean machine happens there, never on the person's own. Drive it with the `cua` command line: `cua sandbox exec {computer} -- <command>` runs a command in it, `cua sandbox screenshot {computer} -o shot.png` saves a picture of its screen, and `cua do --help` lists the mouse and keyboard actions. If it is stopped, `cua sandbox resume {computer}` starts it."));
+            }
+        }
+        "boat" => {
+            if let Some(id) = buddy["computer"]["id"].as_str().filter(|n| !n.is_empty()) {
+                out.push_str(&format!("\n\n## Your computer\n\nYou have a computer of your own in the cloud: the Boat sandbox `{id}` (boat.dev), a Linux desktop the person can watch from Keplorayx. Work that needs a desktop or a clean machine belongs there, never on the person's own. If the `boat` command line is installed and signed in on this machine, `boat --help` shows how to run commands in it; if it isn't, say so rather than working on the person's computer instead. It costs the person money while it runs, so don't leave long idle work on it."));
+            }
+        }
+        _ => {}
+    }
     out.push_str(&format!("\n\n## What needs a yes\n\n{may}\n\n## How to work\n\n- You are run again and again, sometimes by a schedule with nobody watching. Say what you did and what is left, briefly, at the end of each run.\n- Keplorayx's `browser_*` tools drive the browser beside your chat; the person sees your cursor there.\n- If something is unclear or risky, stop and ask rather than guess.\n"));
     out
 }

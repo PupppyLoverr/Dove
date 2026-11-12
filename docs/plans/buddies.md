@@ -166,3 +166,35 @@ Each phase ends with something usable and is checked on the running app.
 
 - Is the Buddies space a separate view of the window (its own sidebar, as
   above), or a section inside the normal sidebar? This plan assumes separate.
+
+## Where it stands (2026-11-13, after the first night)
+
+Built and seen working in the app:
+
+- Phases 1 to 3: the Buddies tab with its own sidebar, the team page and the
+  four starters, a buddy's profile (job, face, the order of agents it runs
+  on, folder, what needs a yes), its chat under Buddies only, routines by
+  the clock with Run now, and the record of runs. One real run was sent and
+  answered.
+
+Built, checked by unit tests and in the page's tree, not yet used for real:
+
+- Phase 4, a computer on this PC through cua: make, start, stop, remove,
+  and the desktop in the panel. On this PC it could not be completed: cua
+  has only QEMU here (no container engine), and the virtual machine stops
+  at boot ("WHPX: Unexpected VP exit code 4"). A make that fails now cleans
+  up after itself. It needs a PC where `cua sandbox create` comes up.
+- Phase 5, a computer in the cloud on Boat: the key (sealed with Windows'
+  DPAPI in `keys.json`, never given back to a script), make, start, stop,
+  remove, and the desktop's address asked for afresh each time. No call to
+  Boat has been made with a real key: the request and answer shapes are
+  from Boat's published API pages.
+
+Not built:
+
+- Keys for model providers as a fallback when every signed-in agent is at
+  its limit: the engine has no way to run a turn on a bare API key, so a
+  key field would do nothing.
+- A panel of its own style for a buddy's chat (the desktop opens as a
+  browser tab in the ordinary panel).
+- Phases 6 and 7: running with the app closed, connected apps, voice, phone.

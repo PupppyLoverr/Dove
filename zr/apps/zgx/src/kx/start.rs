@@ -62,6 +62,11 @@ pub fn start(cx: &mut WindowContext, host: &ScriptHost) {
     crate::kx::browser::install(cx, host);
     // Buddies and their automations (the Buddies space).
     crate::kx::buddies::install(cx, host);
+    // A buddy's computer: a sandbox of its own, through cua.
+    crate::kx::computers::install(host);
+    // Or in the cloud, on Boat, with the key the person gives.
+    crate::kx::keys::install(host);
+    crate::kx::boat::install(host);
     // The main window frosted whichever window has the keyboard (Windows).
     crate::kx::frost::keep(cx);
     // What agents made in chats with no project (the Artifacts page).

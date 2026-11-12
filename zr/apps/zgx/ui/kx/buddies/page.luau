@@ -597,14 +597,22 @@ local Profile = ui.component(function(props: { buddy: store.Buddy }): Node
 						color = "$text.tertiary",
 						text_size = "$font.size.sm",
 					}),
-					ui.each(steps, function(step: any, index: number): Node
-						return Step { step = step, index = index, steps = steps }
-					end, {
-						key = function(step: any): string
-							-- (Made again when its agent changes, or the list's length does.)
-							return `{step.harness}:{#steps:peek()}`
-						end,
-					}),
+					-- (Made again when the agents on offer change: the list of them can
+					-- arrive after this page shows, and a step built before it would
+					-- name none.)
+					ui.presence(store.agents_key, function(): Node
+						return ui.column {
+							w_full = true,
+							ui.each(steps, function(step: any, index: number): Node
+								return Step { step = step, index = index, steps = steps }
+							end, {
+								key = function(step: any): string
+									-- (Made again when its agent changes, or the list's length does.)
+									return `{step.harness}:{#steps:peek()}`
+								end,
+							}),
+						}
+					end, { w_full = true }),
 				},
 				ui.row {
 					w_full = true,
@@ -679,6 +687,326 @@ local Profile = ui.component(function(props: { buddy: store.Buddy }): Node
 			},
 			Avatar { look = look_now, seed = b.id, size = 32, live = true },
 			ui.text { "How it will look.", literal = true, color = "$text.tertiary", text_size = "$font.size.sm" },
+		},
+	}
+end)
+
+-- ── A buddy's computer ──────────────────────────────────────────────────
+-- A sandbox of its own: on this PC (through cua) or in the cloud (on Boat,
+-- with the person's key). Made here, started, stopped, removed, and its
+-- desktop opened in the panel beside its chat.
+local IMAGES = {
+	{ value = "omarchy", label = "Omarchy (Arch Linux desktop)" },
+	{ value = "linux", label = "Ubuntu, minimal" },
+	{ value = "linux-full", label = "Ubuntu, with developer tools" },
+	{ value = "windows", label = "Windows Server 2022" },
+}
+local STANDING: { [string]: string } = {
+	ready = "Running",
+	running = "Running",
+	idle = "Running, idle",
+	stopped = "Stopped",
+	suspended = "Stopped",
+	archived = "Stopped",
+	archiving = "Stopping",
+	creating = "Being made",
+	starting = "Starting",
+	init = "Being made",
+	provisioning = "Being made",
+	provisioned = "Starting",
+	cloning = "Being made",
+	error = "Failed",
+	cancelled = "Cancelled",
+}
+local UP: { [string]: boolean } = { ready = true, running = true, idle = true }
+
+local Computer = ui.component(function(props: { buddy: store.Buddy }): Node
+	local b = props.buddy
+	local where = ui.use_state(if b.computer and b.computer.kind == "boat" then "boat" else "local")
+	local image = ui.use_state("omarchy")
+	local busy = ui.use_state(nil :: string?)
+	local key = ui.use_state("")
+	local sure = ui.use_state(false)
+	store.read_computers()
+	-- (Boat is asked once the cloud is what's chosen and there's a key to ask with.)
+	ui.effect(function()
+		if where:get() == "boat" and store.keys:get().boat and not store.boats_read:peek() then
+			store.read_boats()
+		end
+	end)
+	local function cloud(): boolean
+		return where:get() == "boat"
+	end
+	-- The one it has, of the kind chosen: what to call it, how it stands.
+	local function has(): (string?, string?)
+		if cloud() then
+			local c = store.boat_of(b)
+			return c and c.id, c and c.state
+		end
+		local c = store.computer_of(b)
+		return c and c.name, c and c.status
+	end
+	local function read()
+		if where:peek() == "boat" then
+			store.read_boats()
+		else
+			store.read_computers()
+		end
+	end
+	local function act(what: string, verb: string, said: string, then_: (() -> ())?)
+		local target = has()
+		if not target then
+			return
+		end
+		busy:set(what)
+		ui.call(`{if where:peek() == "boat" then "kx.boat." else "kx.computer."}{verb}`, target):after(function()
+			busy:set(nil)
+			read()
+			if then_ then
+				then_()
+			end
+			ds.toast.show { title = said, tone = "success" }
+		end, function(why: any)
+			busy:set(nil)
+			read()
+			ds.toast.show { title = "That didn't work", body = tostring(why), tone = "danger" }
+		end)
+	end
+	local function state(): string
+		if busy:get() then
+			return "busy"
+		elseif cloud() then
+			if not store.keys:get().boat then
+				return "key"
+			elseif not store.boats_read:get() then
+				return "reading"
+			elseif store.boats_error:get() then
+				return "unreachable"
+			end
+		else
+			if not store.computer_ready:get() then
+				return "none"
+			elseif not store.computers_read:get() then
+				return "reading"
+			end
+		end
+		local target, standing = has()
+		if not target then
+			return if cloud() then "make-boat" else "make"
+		end
+		return if UP[standing or ""] then "running" else "stopped"
+	end
+	local function made(ok: boolean, why: string?)
+		busy:set(nil)
+		if ok then
+			ds.toast.show { title = `{b.name} has a computer`, tone = "success" }
+		else
+			ds.toast.show { title = "Its computer couldn't be made", body = why, tone = "danger" }
+		end
+	end
+	local function forget_key()
+		pcall(ui.invoke, "kx.key.remove", "boat")
+		store.boats:set({})
+		store.boats_read:set(false)
+		ds.toast.show { title = "The Boat key is forgotten", tone = "success" }
+	end
+	return ds.Settings.Section {
+		title = "Its computer",
+		description = "A desktop of its own to work in, which you can watch in the panel beside its chat. One on this PC is free and stops when the PC sleeps. One in the cloud keeps going with the PC off, and is billed by Boat while it runs.",
+		ds.Settings.Group {
+			ds.Settings.Row {
+				label = "Where",
+				stacked = true,
+				control = ds.Segmented {
+					value = where,
+					fill = true,
+					options = { { value = "local", label = "This PC" }, { value = "boat", label = "Cloud (Boat)" } },
+				},
+			},
+			ui.presence(state, function(which: string): Node
+				if which == "none" then
+					return ds.Settings.Row { label = "cua isn't installed", description = "A computer on this PC is a cua sandbox. Install cua (cua.ai), then open this page again." }
+				elseif which == "busy" then
+					return ds.Settings.Row {
+						label = function(): string
+							return busy:get() or "Working"
+						end,
+						description = "This can take a few minutes: the machine is being made and started.",
+					}
+				elseif which == "reading" then
+					return ds.Settings.Row { label = "Looking for its computer" }
+				elseif which == "unreachable" then
+					return ui.column {
+						w_full = true,
+						ds.Settings.Row {
+							label = "Boat didn't answer",
+							description = function(): string
+								return store.boats_error:get() or ""
+							end,
+						},
+						ui.row {
+							w_full = true,
+							px = "$space.3",
+							py = "$space.2",
+							gap = "$space.2",
+							ds.Button {
+								tone = "secondary",
+								size = "sm",
+								on_click = function()
+									store.boats_read:set(false)
+									store.read_boats()
+								end,
+								ui.text { "Try again", literal = true },
+							},
+							ds.Button { tone = "ghost", size = "sm", on_click = forget_key, ui.text { "Forget the key", literal = true } },
+						},
+					}
+				elseif which == "key" then
+					return ui.column {
+						w_full = true,
+						ds.Settings.Row {
+							label = "Your Boat key",
+							description = "Boat (boat.dev) rents Linux desktops for agents; it's a paid service of its own. Make an API key in your Boat account and paste it here. It's sealed on this PC for your Windows account and never shown again.",
+							stacked = true,
+							control = ds.TextField { value = key, password = true, placeholder = "boat_…", w_full = true },
+						},
+						ui.row {
+							w_full = true,
+							px = "$space.3",
+							py = "$space.2",
+							ds.Button {
+								tone = "secondary",
+								size = "sm",
+								on_click = function()
+									local value = key:peek()
+									key:set("")
+									busy:set("Checking the key with Boat")
+									ui.call("kx.key.set", { name = "boat", value = value }):after(function()
+										ui.call("kx.boat.check"):after(function()
+											busy:set(nil)
+											store.read_boats()
+											ds.toast.show { title = "Boat took the key", tone = "success" }
+										end, function(why: any)
+											-- (A key Boat won't take isn't kept.)
+											pcall(ui.invoke, "kx.key.remove", "boat")
+											busy:set(nil)
+											ds.toast.show { title = "The key wasn't kept", body = tostring(why), tone = "danger" }
+										end)
+									end, function(why: any)
+										busy:set(nil)
+										ds.toast.show { title = "The key wasn't kept", body = tostring(why), tone = "danger" }
+									end)
+								end,
+								ui.text { "Save key", literal = true },
+							},
+						},
+					}
+				elseif which == "make" then
+					return ui.column {
+						w_full = true,
+						ds.Settings.Row { label = "It has none yet", description = "Choose what it runs. An image not yet on this PC is downloaded first (a few gigabytes).", control = ui.div { w = 260, ds.Select { value = image, options = IMAGES } } },
+						ui.row {
+							w_full = true,
+							px = "$space.3",
+							py = "$space.2",
+							ds.Button {
+								tone = "secondary",
+								size = "sm",
+								on_click = function()
+									busy:set("Making its computer")
+									store.make_computer(b, image:peek(), made)
+								end,
+								ui.text { "Make its computer", literal = true },
+							},
+						},
+					}
+				elseif which == "make-boat" then
+					return ui.column {
+						w_full = true,
+						ds.Settings.Row { label = "It has none yet", description = "A Linux desktop on Boat, billed to your Boat account while it runs. It stops itself an hour after it starts, so it can't run up a bill overnight; start it again when it's needed." },
+						ui.row {
+							w_full = true,
+							px = "$space.3",
+							py = "$space.2",
+							gap = "$space.2",
+							ds.Button {
+								tone = "secondary",
+								size = "sm",
+								on_click = function()
+									busy:set("Making its computer on Boat")
+									store.make_boat(b, made)
+								end,
+								ui.text { "Make its computer", literal = true },
+							},
+							ds.Button { tone = "ghost", size = "sm", on_click = forget_key, ui.text { "Forget the key", literal = true } },
+						},
+					}
+				end
+				local running = which == "running"
+				return ui.column {
+					w_full = true,
+					ds.Settings.Row {
+						label = store.computer_name(b),
+						description = function(): string
+							local _, standing = has()
+							local word = STANDING[standing or ""] or standing or "Unknown"
+							return if cloud() then `{word} · on Boat` else `{word} · on this PC`
+						end,
+					},
+					ui.row {
+						w_full = true,
+						px = "$space.3",
+						py = "$space.2",
+						gap = "$space.2",
+						flex_wrap = true,
+						ds.Button {
+							size = "sm",
+							disabled = not running,
+							on_click = function()
+								store.open_desktop(b, function(ok: boolean, why: string?)
+									if not ok then
+										ds.toast.show { title = "Its desktop couldn't be shown", body = why, tone = "danger" }
+									end
+								end)
+							end,
+							ui.text { "Open desktop", literal = true },
+						},
+						ds.Button {
+							tone = "secondary",
+							size = "sm",
+							on_click = function()
+								if running then
+									act("Stopping it", "stop", "Stopped")
+								else
+									act("Starting it", "start", "Started")
+								end
+							end,
+							ui.text { if running then "Stop" else "Start", literal = true },
+						},
+						ds.Button {
+							tone = "ghost",
+							size = "sm",
+							on_click = function()
+								-- (Asked twice: what's on it goes with it.)
+								if not sure:peek() then
+									sure:set(true)
+									return
+								end
+								sure:set(false)
+								act("Removing it", "remove", "Its computer is removed", function()
+									store.forget_computer(b)
+								end)
+							end,
+							ui.text {
+								function(): string
+									return if sure:get() then "Remove it and everything on it?" else "Remove"
+								end,
+								literal = true,
+							},
+						},
+					},
+				}
+			end, { w_full = true }),
 		},
 	}
 end)
@@ -876,6 +1204,23 @@ local function buddy_page(id: string): Node
 					},
 				},
 			},
+			ui.show(function(): boolean
+				if buddy.computer and buddy.computer.kind == "boat" then
+					return store.boat_of(buddy) ~= nil
+				end
+				return store.computer_of(buddy) ~= nil
+			end, ds.Button {
+				tone = "secondary",
+				size = "sm",
+				on_click = function()
+					store.open_desktop(buddy, function(ok: boolean, why: string?)
+						if not ok then
+							ds.toast.show { title = "Its desktop couldn't be shown", body = why, tone = "danger" }
+						end
+					end)
+				end,
+				ui.text { "Desktop", literal = true },
+			}),
 			ds.Button {
 				size = "sm",
 				on_click = function()
@@ -920,7 +1265,7 @@ local function buddy_page(id: string): Node
 					return out
 				end, "Nothing has run for it yet.")
 			end
-			return Profile { buddy = buddy }
+			return ui.column { w_full = true, gap = "$space.6", Profile { buddy = buddy }, Computer { buddy = buddy } }
 		end, { w_full = true }),
 		ds.Dialog {
 			open = deleting,

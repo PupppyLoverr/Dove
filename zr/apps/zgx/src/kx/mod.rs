@@ -7,10 +7,13 @@
 
 pub mod artifacts;
 pub mod browser;
+pub mod boat;
 pub mod buddies;
 pub mod clock;
+pub mod computers;
 pub mod frost;
 pub mod import;
+pub mod keys;
 pub mod launcher;
 pub mod media;
 pub mod notch;

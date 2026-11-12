@@ -317,3 +317,10 @@ Supabase, Stripe, Vercel, Atlassian, Cloudflare, PostHog, Google Chrome,
 Slack) come from Simple Icons, dedicated to the public domain under CC0 1.0.
 The marks remain trademarks of their owners and are used only to identify
 their services.
+
+## bloub (idea only)
+
+https://bloub.vercel.app/. The buddies' faces (`zr/apps/zgx/ui/kx/buddies/avatar.luau`:
+a plain coloured shape with two eyes that blink) follow the idea of bloub's
+avatars. No code or artwork of bloub's is included: the shapes, colours and
+expressions are drawn by Keplorayx's own script.
