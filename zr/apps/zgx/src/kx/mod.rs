@@ -7,6 +7,7 @@
 
 pub mod artifacts;
 pub mod browser;
+pub mod buddies;
 pub mod clock;
 pub mod frost;
 pub mod import;

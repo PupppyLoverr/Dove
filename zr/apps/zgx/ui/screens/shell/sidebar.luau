@@ -35,6 +35,12 @@ local ds_session_row = require("@ds/session_row")
 -- ask from the moment the main window's scripts load, and this is where
 -- they do.
 require("@app/kx/browser_agent")
+-- Buddies (ui/kx/buddies): their chats are theirs, not the list's; their
+-- roster stands in this sidebar's place while their space shows; and what
+-- the clock sends them is sent from here on.
+local buddies = require("@app/kx/buddies/store")
+local roster = require("@app/kx/buddies/sidebar")
+require("@app/kx/buddies/runner")
 
 export type Props = {
 	collapsed: State<boolean>,
@@ -521,6 +527,10 @@ local projects = ui.computed(function(): { ds.SidebarProject }
 	end
 	for _, c in now.chats do
 		if just and not (just_group and c.project and by[c.project] == just_group) then
+			continue
+		end
+		-- (A buddy's chat is under Buddies.)
+		if buddies.is_chat(c.id) then
 			continue
 		end
 		local group = (c.project and by[c.project]) or loose
@@ -1511,7 +1521,7 @@ M.Sidebar = ui.component(function(props: Props): Node
 			local kx_pages = require("@app/kx/pages")
 			-- (The plugins' pages in sight, as Zeron has them: Pull requests.
 			-- Then More, and what it holds while it's open.)
-			local out: { any } = {}
+			local out: { any } = { kx_pages.buddies_row() }
 			for _, p in ui.shared("plugins.pages", {} :: { any }):get() or {} do
 				table.insert(out, p)
 			end
@@ -1589,7 +1599,24 @@ M.Sidebar = ui.component(function(props: Props): Node
 		end), motion.sidebar),
 		-- (That gap's top moves the window, as the bar beside it does.)
 		ui.div { absolute = true, left = 0, top = 0, w = ui.raw(5, "the window's gap"), h = ui.raw(42, "the top bar"), window_drag = true },
-		bar,
+		-- (In the Buddies space the roster stands here, the sessions' sidebar
+		-- kept as it was under it, out of sight and out of reach.)
+		ui.div {
+			h_full = true,
+			shrink = 0,
+			hidden = function(): boolean
+				return roster.active()
+			end,
+			bar,
+		},
+		ui.div {
+			h_full = true,
+			shrink = 0,
+			hidden = function(): boolean
+				return not roster.active()
+			end,
+			roster.Roster { collapsed = props.collapsed, width = shared.width, top = props.top },
+		},
 		rename_dialog(),
 		delete_dialog(),
 		project_dialogs(),

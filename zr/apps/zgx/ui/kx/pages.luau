@@ -390,9 +390,21 @@ local function artifacts(): Node
 end
 
 -- ── The sidebar's tabs (ui/kx/nav), as the sidebar asks for them ─────────
+--   pages.buddies_row()          Buddies
 --   pages.more_rows(filter_on)   More, and what it holds while it's open
 --   pages.open(id)          what a click on one does (Projects is the
 --                           sidebar's own: its filter); false for none
+-- The Buddies tab: lit while the Buddies space shows.
+function M.buddies_row(): any
+	return {
+		plugin = M.PLUGIN,
+		id = "buddies",
+		title = "Buddies",
+		icon = "users-group-rounded",
+		selected = require("@app/kx/buddies/sidebar").active(),
+	}
+end
+
 function M.more_rows(filter_on: boolean): { any }
 	local rows = require("@app/kx/nav").more(filter_on)
 	-- (Artifacts says how many there are, as the old Keplorayx's did.)
@@ -410,7 +422,11 @@ function M.open(id: string): boolean
 end
 
 function M.page(id: string): Node?
-	if id == "account" then
+	if id == "buddies" then
+		return require("@app/kx/buddies/page").board()
+	elseif id == "buddy" then
+		return require("@app/kx/buddies/page").buddy()
+	elseif id == "account" then
 		return require("@app/kx/synced").page()
 	elseif id == "kanban" then
 		return kanban()

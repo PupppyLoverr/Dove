@@ -60,6 +60,8 @@ pub fn start(cx: &mut WindowContext, host: &ScriptHost) {
     host.action("launcher.summon", |_| launcher::summon());
     // Agents in the in-app browser (the engine's `browser_*` tools).
     crate::kx::browser::install(cx, host);
+    // Buddies and their automations (the Buddies space).
+    crate::kx::buddies::install(cx, host);
     // The main window frosted whichever window has the keyboard (Windows).
     crate::kx::frost::keep(cx);
     // What agents made in chats with no project (the Artifacts page).

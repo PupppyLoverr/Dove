@@ -61,7 +61,9 @@ function M.open(page: any, toggle_filter: () -> ()): boolean
 	if page.plugin ~= M.PLUGIN then
 		return false
 	end
-	if page.id == "projects" then
+	if page.id == "buddies" then
+		route.plugin_page(M.PLUGIN, "buddies")
+	elseif page.id == "projects" then
 		toggle_filter()
 	elseif page.id == "artifacts" then
 		route.plugin_page(M.PLUGIN, "artifacts")
