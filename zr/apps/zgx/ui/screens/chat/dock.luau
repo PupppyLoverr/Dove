@@ -50,6 +50,14 @@ end
 
 export type DockProps = { height: State<number>, composer: Node, id: string? }
 
+-- Room taken at the page's right by something standing beside the chat (a
+-- buddy's drawer, kx/buddies/chat_bar, sets this to a function of what
+-- shows): the composer centres on what's left, so it never runs under it.
+M.right_of = nil :: (() -> number)?
+-- (Bumped once as `right_of` is set, at its module's load: a dock drawn
+-- before then reads it again.)
+M.right_ready = ui.state("chat_dock_right_ready", 0)
+
 function M.Dock(props: DockProps): Node
 	return ui.overlay {
 		absolute = true,
@@ -62,7 +70,11 @@ function M.Dock(props: DockProps): Node
 			absolute = true,
 			pointer_events = "none",
 			left = 0,
-			right = 0,
+			right = function(): number
+				M.right_ready:get()
+				local f = M.right_of
+				return if f then f() else 0
+			end,
 			bottom = M.GAP,
 			px = M.SIDES,
 			justify = "center",

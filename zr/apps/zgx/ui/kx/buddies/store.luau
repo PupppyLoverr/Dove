@@ -44,6 +44,17 @@ local route = require("@app/screens/shell/route")
 
 export type Step = { harness: string, model: string? }
 export type Look = { shape: string?, color: string?, face: string? }
+export type Space = {
+	id: string,
+	name: string,
+	display_name: string?,
+	status: string?,
+	kind: string?,
+	image: string?,
+	os: string?,
+	runtime: string?,
+	is_ours: boolean?,
+}
 export type Buddy = {
 	id: string,
 	name: string,
@@ -57,6 +68,11 @@ export type Buddy = {
 	home: string?,
 	computer: { kind: string?, id: string?, name: string? }?,
 	created: number?,
+	-- (In the sidebar: pinned to the grid at its top (the first six are,
+	-- unless said otherwise), marked unread, or hidden from it.)
+	pinned: boolean?,
+	unread: boolean?,
+	hidden: boolean?,
 }
 export type Automation = {
 	id: string,
@@ -109,6 +125,13 @@ function M.is_chat(chat: string?): boolean
 end
 
 function M.save(buddy: { [string]: any }): any
+	-- (Renamed: its chat takes the new name too, so the title bar says it.)
+	if buddy.id and type(buddy.name) == "string" and buddy.name ~= "" then
+		local was = M.by_id(buddy.id)
+		if was and was.chat and was.name ~= buddy.name then
+			pcall(sessions.rename, was.chat, buddy.name)
+		end
+	end
 	return ui.call("kx.buddy.save", buddy)
 end
 
@@ -206,6 +229,128 @@ function M.pick(buddy: Buddy): (string?, string?, string?)
 	return nil, nil, "No agent is signed in and under its limit."
 end
 
+-- (`mark` is the agent's mark's name for ds.AgentMark, nil when it has none:
+-- a harness id is not one, and drawing it as one fails.)
+-- An agent's name as people say it, for one this computer doesn't offer
+-- (its id alone otherwise: "claude-code").
+local AGENT_NAMES: { [string]: string } = {
+	["claude-code"] = "Claude Code",
+	claude_code = "Claude Code",
+	codex = "Codex",
+	["gemini-cli"] = "Gemini CLI",
+	gemini = "Gemini CLI",
+	opencode = "OpenCode",
+	cursor = "Cursor",
+	devin = "Devin",
+	grok = "Grok",
+	hermes = "Hermes",
+	amp = "Amp",
+	pi = "Pi",
+}
+function M.agent_name(harness: string): string
+	return AGENT_NAMES[harness]
+		or (string.gsub(string.gsub(harness, "[-_]", " "), "^%l", string.upper))
+end
+
+function M.primary_agent(buddy: Buddy): { harness: string, label: string, mark: string?, model: string?, ok: boolean }?
+	local offered = M.agents()
+	local by: { [string]: Agent } = {}
+	for _, a in offered do
+		by[a.harness] = a
+	end
+	local first = buddy.models and buddy.models[1]
+	if first then
+		local a = by[first.harness]
+		return {
+			harness = first.harness,
+			label = if a then a.label else M.agent_name(first.harness),
+			mark = if a then a.mark else nil,
+			model = first.model,
+			ok = if a then a.ok else false,
+		}
+	end
+	for _, a in offered do
+		if a.ok then
+			return { harness = a.harness, label = a.label, mark = a.mark, model = nil, ok = true }
+		end
+	end
+	return nil
+end
+
+-- Where a buddy sits in the sidebar: pinned (the grid at its top: the first
+-- six are, until one is said otherwise), unread, hidden.
+function M.is_pinned(buddy: Buddy, index: number): boolean
+	if buddy.pinned ~= nil then
+		return buddy.pinned
+	end
+	return index <= 6
+end
+
+function M.set_flag(id: string, flag: string, value: boolean?)
+	local b = M.by_id(id)
+	if not b then
+		return
+	end
+	local record: { [string]: any } = { id = id, name = b.name }
+	record[flag] = value
+	M.save(record):after(function() end, function() end)
+end
+
+function M.toggle_pin(id: string, index: number)
+	local b = M.by_id(id)
+	if b then
+		M.set_flag(id, "pinned", not M.is_pinned(b, index))
+	end
+end
+
+function M.set_unread(id: string, unread: boolean)
+	M.set_flag(id, "unread", unread)
+end
+
+function M.set_hidden(id: string, hidden: boolean)
+	M.set_flag(id, "hidden", hidden)
+end
+
+function M.show_all_hidden()
+	for _, b in M.list:peek() or {} do
+		if b.hidden then
+			M.set_flag(b.id, "hidden", false)
+		end
+	end
+end
+
+-- Whether the create-a-buddy dialog shows.
+M.create_open = ui.state("kx_buddy_create_open", false)
+-- Which tab a buddy's page shows (its chat bar and drawer jump to one).
+M.page_tab = ui.state("kx_buddy_page_tab", "profile")
+-- Whether a buddy's chat shows its drawer (kx/buddies/chat_bar), and which
+-- of its tabs; kept between launches.
+M.inspector_open = ui.persist("kx_buddy_inspector", true)
+M.inspector_tab = ui.persist("kx_buddy_inspector_tab", "activity")
+-- Whether the "Create a routine" suggestion was put away.
+M.routine_hint_hidden = ui.persist("kx_buddy_routine_hint_hidden", false)
+
+function M.next_automation(buddy: Buddy): Automation?
+	local soonest: Automation? = nil
+	for _, a in M.automations:get() or {} do
+		if a.buddy == buddy.id and a.enabled ~= false and a.next then
+			if not soonest or (a.next :: number) < (soonest.next :: number) then
+				soonest = a
+			end
+		end
+	end
+	return soonest
+end
+
+function M.last_run(buddy: Buddy): Run?
+	for _, r in M.runs:get() or {} do
+		if r.buddy == buddy.id then
+			return r
+		end
+	end
+	return nil
+end
+
 -- Its chat, known to the engine still (not one deleted since).
 local function has_chat(chat: string?): boolean
 	if not chat then
@@ -247,6 +392,23 @@ function M.ensure_chat(buddy: Buddy, after: (chat: string?, err: string?) -> ())
 	end)
 end
 
+-- Each buddy's chat named after it (one renamed before chats followed, or
+-- made from a template under the template's name, is put right once).
+local renamed: { [string]: string } = {}
+ui.effect(function()
+	local titles: { [string]: string } = {}
+	for _, c in sessions.now:get().chats or {} do
+		titles[c.id] = c.title
+	end
+	for _, b in M.list:get() or {} do
+		local t = b.chat and titles[b.chat]
+		if t and b.name and b.name ~= "" and t ~= b.name and renamed[b.chat] ~= b.name then
+			renamed[b.chat] = b.name
+			pcall(sessions.rename, b.chat, b.name)
+		end
+	end
+end)
+
 function M.open(buddy: Buddy)
 	M.selected:set(buddy.id)
 	M.ensure_chat(buddy, function(chat: string?)
@@ -256,51 +418,167 @@ function M.open(buddy: Buddy)
 	end)
 end
 
+-- Its chat, with its drawer open on `tab` ("activity", "library" or
+-- "settings"): where a buddy is set up, as in Grok Bot.
+function M.show(buddy: Buddy, tab: string?)
+	M.inspector_open:set(true)
+	M.inspector_tab:set(tab or "settings")
+	M.open(buddy)
+end
+
+-- Each chat's status by its id, worked out once each time the chats change
+-- (not once per face per frame).
+local statuses = ui.computed(function(): { [string]: string }
+	local by: { [string]: string } = {}
+	for _, c in sessions.now:get().chats or {} do
+		if c.id and c.status then
+			by[c.id] = c.status
+		end
+	end
+	return by
+end)
+
 function M.standing(buddy: Buddy): string?
 	if not buddy.chat then
 		return nil
 	end
-	for _, c in sessions.now:get().chats do
-		if c.id == buddy.chat then
-			return c.status
-		end
-	end
-	return nil
+	return statuses:get()[buddy.chat]
 end
 
--- ── Its computer ─────────────────────────────────────────────────────────
+-- ── What the back end offers beyond the record (src/kx/buddies.rs) ─────
+-- A buddy saved as a template file where the person says: its path or nil.
+function M.export(buddy: Buddy, after: (path: string?, why: string?) -> ())
+	ui.call("kx.buddy.export", buddy.id):after(function(path: any)
+		after(if type(path) == "string" then path else nil, nil)
+	end, function(why: any)
+		after(nil, tostring(why))
+	end)
+end
+
+-- A template file the person picks, made into a buddy: its id or nil.
+function M.import_template(after: (id: string?, why: string?) -> ())
+	ui.call("kx.buddy.import_template"):after(function(r: any)
+		after(if type(r) == "table" then r.id else nil, nil)
+	end, function(why: any)
+		after(nil, tostring(why))
+	end)
+end
+
+-- The skills library: `{ name, description }` each.
+M.skills = ui.state("kx_buddy_skills", {} :: { { name: string, description: string } })
+function M.read_skills()
+	ui.call("kx.skills.list"):after(function(list: any)
+		M.skills:set(if type(list) == "table" then list else {})
+	end, function() end)
+end
+
+-- Whether a buddy has a skill: all of the library unless it names some.
+function M.has_skill(buddy: Buddy, name: string): boolean
+	local named = (buddy :: any).skills
+	if type(named) ~= "table" then
+		return true
+	end
+	return table.find(named, name) ~= nil
+end
+
+function M.set_skill(buddy: Buddy, name: string, on: boolean)
+	local now: { string } = {}
+	for _, s in M.skills:peek() do
+		if (s.name == name and on) or (s.name ~= name and M.has_skill(buddy, s.name)) then
+			table.insert(now, s.name)
+		end
+	end
+	M.save({ id = buddy.id, name = buddy.name, skills = now })
+end
+
+-- The computer every buddy shares: `{ id, name }` or nil.
+M.shared_computer = ui.state("kx_buddy_shared_computer", nil :: { id: string, name: string? }?)
+function M.read_shared_computer()
+	ui.call("kx.computer.shared"):after(function(space: any)
+		M.shared_computer:set(if type(space) == "table" and space.id then space else nil)
+	end, function() end)
+end
+
+function M.share_computer(space: { id: string, name: string? }?, after: ((ok: boolean, why: string?) -> ())?)
+	ui.call("kx.computer.share", space or false):after(function()
+		M.shared_computer:set(space)
+		if after then
+			after(true)
+		end
+	end, function(why: any)
+		if after then
+			after(false, tostring(why))
+		end
+	end)
+end
+
+-- ── Its computer (Cua Spaces) ───────────────────────────────────────────
 M.computer_ready = ui.shared("kx.computer.ready", false)
-M.computers = ui.state("kx_computers", {} :: { { name: string, status: string?, kind: string?, runtime: string? } })
+M.computers = ui.state("kx_computers", {} :: { Space })
 M.computers_read = ui.state("kx_computers_read", false)
+M.computers_error = ui.state("kx_computers_error", nil :: string?)
 
 function M.read_computers()
 	ui.call("kx.computer.list"):after(function(list: any)
 		M.computers:set(if type(list) == "table" then list else {})
+		M.computers_error:set(nil)
 		M.computers_read:set(true)
-	end, function()
+	end, function(why: any)
+		M.computers_error:set(tostring(why))
 		M.computers_read:set(true)
 	end)
 end
 
 function M.computer_name(buddy: Buddy): string
+	local shared = M.shared_computer:get()
+	if buddy.computer and buddy.computer.kind == "shared" and shared then
+		return shared.name or shared.id
+	end
+	if buddy.computer and buddy.computer.kind == "local" and buddy.computer.name and buddy.computer.name ~= "" then
+		return buddy.computer.name
+	end
 	return `kx-{string.lower(buddy.id)}`
 end
 
-function M.computer_of(buddy: Buddy): { name: string, status: string?, kind: string?, runtime: string? }?
-	local name = M.computer_name(buddy)
+function M.computer_of(buddy: Buddy): Space?
+	-- (An id kept from before counts only while it's attached: detached, its
+	-- own `kx-` Space is the one, if there is one.)
+	local kind = buddy.computer and buddy.computer.kind
+	if kind == "none" then
+		-- (Detached on purpose: none is its own until one is attached again.)
+		return nil
+	end
+	local shared = M.shared_computer:get()
+	local want_id = if kind == "local" then buddy.computer and buddy.computer.id elseif kind == "shared" and shared then shared.id else nil
+	local want_name = M.computer_name(buddy)
 	for _, c in M.computers:get() or {} do
-		if c.name == name then
+		if (want_id and c.id == want_id) or c.name == want_name then
 			return c
 		end
 	end
 	return nil
 end
 
+function M.attach_space(buddy: Buddy, space: Space, after: ((ok: boolean, why: string?) -> ())?)
+	local done = after or function() end
+	M.save({
+		id = buddy.id,
+		name = buddy.name,
+		computer = { kind = "local", id = space.id, name = space.name, image = space.image },
+	}):after(function()
+		M.read_computers()
+		done(true, nil)
+	end, function(why: any)
+		done(false, tostring(why))
+	end)
+end
+
 function M.make_computer(buddy: Buddy, image: string, after: (ok: boolean, why: string?) -> ())
-	local name = M.computer_name(buddy)
-	ui.call("kx.computer.create", { name = name, image = image }):after(function()
+	local name = `kx-{string.lower(buddy.id)}`
+	ui.call("kx.computer.create", { name = name, image = image }):after(function(space_id: any)
+		local id = if type(space_id) == "string" and space_id ~= "" then space_id else `local:{name}`
 		-- (Said in its record, so its instructions tell it about it.)
-		M.save({ id = buddy.id, name = buddy.name, computer = { kind = "local", name = name, image = image } }):after(function()
+		M.save({ id = buddy.id, name = buddy.name, computer = { kind = "local", id = id, name = name, image = image } }):after(function()
 			M.read_computers()
 			after(true, nil)
 		end, function()
@@ -386,7 +664,7 @@ function M.open_desktop(buddy: Buddy, after: ((ok: boolean, why: string?) -> ())
 			if ok and panel and panel.open_url then
 				-- (Once the chat is the one showing: the panel opens for it.)
 				ui.after(120, function()
-					panel.open_url(chat, url)
+					panel.open_url(chat, url, nil, nil, { bare = true, title = `{buddy.name}'s desktop` })
 					done(true, nil)
 				end)
 			else
@@ -416,5 +694,9 @@ function M.send(buddy: Buddy, prompt: string, after: (ok: boolean, note: string?
 		end)
 	end)
 end
+
+-- (Read once the window starts; again when they change.)
+M.read_shared_computer()
+M.read_skills()
 
 return M

@@ -1277,7 +1277,15 @@ local function Composer(): Node
 			absolute = true,
 			pointer_events = "none",
 			left = 0,
-			right = 0,
+			-- (Clear of what stands at the chat's right: a buddy's drawer.)
+			right = function(): number
+				local Dock = require("@app/screens/chat/dock")
+				if Dock.right_ready then
+					Dock.right_ready:get()
+				end
+				local f = Dock.right_of
+				return if f then f() else 0
+			end,
 			bottom = FOOT,
 			px = require("@app/screens/chat/dock").SIDES,
 			justify = "center",

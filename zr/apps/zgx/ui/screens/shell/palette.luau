@@ -543,6 +543,41 @@ local function root(): { Item }
 	for _, s in session_items() do
 		table.insert(out, s)
 	end
+	-- Buddies (Keplorayx's): each to its chat, what it's doing at its end,
+	-- and a new one. (Absent from a shell built without them.)
+	local ok, buddies = pcall(function(): any
+		return (require :: any)("@app/kx/buddies/store")
+	end)
+	if ok and buddies then
+		local section = "Bots"
+		for _, b in buddies.list:get() or {} do
+			table.insert(out, {
+				id = `bot-{b.id}`,
+				label = b.name,
+				section = section,
+				icon = "users-group-rounded",
+				keywords = `buddy bot {b.role or ""}`,
+				hint = function(): string
+					local s = buddies.standing(b)
+					return if s == "working" then "Working" elseif s == "input" or s == "approval" then "Waiting on you" else (b.role or "")
+				end,
+				run = function()
+					buddies.open(b)
+				end,
+			})
+		end
+		table.insert(out, {
+			id = "bot-new",
+			label = "New bot",
+			section = section,
+			icon = "plus",
+			keywords = "buddy create",
+			run = function()
+				route.plugin_page("kx", "buddies")
+				buddies.create_open:set(true)
+			end,
+		})
+	end
 	return out
 end
 

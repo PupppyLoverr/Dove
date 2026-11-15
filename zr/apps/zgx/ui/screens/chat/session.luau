@@ -22,6 +22,7 @@ local FileLinks = require("@app/screens/chat/file_links")
 local LinkMenu = require("@app/screens/chat/link_menu")
 local Find = require("@app/screens/chat/find")
 local boundary = require("@app/screens/shell/boundary")
+local buddy_bar: any = boundary.load("@app/kx/buddies/chat_bar")
 
 -- The pictures replies show, read from the open chat's folder on its device.
 local pictures = ReplyImages.for_session(function(): any
@@ -190,6 +191,12 @@ local function Session(id: Id?): Node
 			end
 			return false
 		end,
+		if buddy_bar and buddy_bar.Bar then buddy_bar.Bar(which) else nil,
+		-- The chat, and a buddy's drawer beside it while it's a buddy's.
+		ui.row {
+			w_full = true,
+			grow = 1,
+			min_h = 0,
 		ui.presence(kind, function(k: string): Node
 			if k == "loading" then
 				return loading()
@@ -296,7 +303,9 @@ local function Session(id: Id?): Node
 					Find.Bar(),
 				},
 			}
-		end, { w_full = true, grow = 1, min_h = 0 }),
+		end, { grow = 1, min_w = 0, h_full = true }),
+			if buddy_bar and buddy_bar.Drawer then buddy_bar.Drawer(which) else nil,
+		},
 		lanes.Overlay(),
 	}
 end
