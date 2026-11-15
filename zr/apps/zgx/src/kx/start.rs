@@ -66,6 +66,7 @@ pub fn start(cx: &mut WindowContext, host: &ScriptHost) {
     crate::kx::computers::install(host);
     // Or in the cloud, on Boat, with the key the person gives.
     crate::kx::keys::install(host);
+    crate::kx::connections::install(host);
     crate::kx::boat::install(host);
     // The main window frosted whichever window has the keyboard (Windows).
     crate::kx::frost::keep(cx);

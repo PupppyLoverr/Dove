@@ -17,7 +17,7 @@ use serde_json::{Map, Value as Json, json};
 use zgx_script::{ScriptHost, Value};
 
 /// The keys there is a use for.
-const NAMES: &[&str] = &["boat"];
+const NAMES: &[&str] = &["boat", "composio"];
 
 fn file() -> PathBuf {
     crate::kx_account::data_dir().join("keys.json")

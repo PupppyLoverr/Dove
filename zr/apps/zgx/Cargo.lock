@@ -6929,6 +6929,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "zeron-composio"
+version = "0.2.136"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "zeron-launch"
 version = "0.2.136"
 dependencies = [
@@ -7023,6 +7036,7 @@ dependencies = [
 name = "zeron-zgx"
 version = "0.0.0"
 dependencies = [
+ "anyhow",
  "arboard",
  "base64 0.22.1",
  "block",
@@ -7061,6 +7075,7 @@ dependencies = [
  "windows-sys 0.61.2",
  "zatex",
  "zeron-cli",
+ "zeron-composio",
  "zeron-launch",
  "zeron-notify",
  "zeron-plugin-guard",

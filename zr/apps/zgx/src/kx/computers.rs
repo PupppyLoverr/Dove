@@ -1,16 +1,14 @@
-//! A buddy's computer: a sandbox of its own on this machine, made and shown
-//! through cua (the `cua` command line, https://cua.ai), which the person
-//! has installed. A sandbox is a real desktop (a virtual machine or a
-//! container) the buddy's agent can work in without touching the person's.
+//! A buddy's computer: a Cua Space on this machine, checked and managed
+//! through `cua spaces` (https://cua.ai). First checks if any local Space is
+//! already present so a buddy can attach to it directly, or creates a new one
+//! named `kx-<buddy_id>`.
 //!
-//!   kx.computer.ready            whether `cua` is there to ask (shared)
-//!   kx.computer.list           → [{ name, status, kind, runtime }] (local ones)
-//!   kx.computer.create({ name, image })   minutes; → its name
-//!   kx.computer.start(name), .stop(name), .remove(name)
-//!   kx.computer.view(name)     → an address showing its desktop, live
+//!   kx.computer.ready            whether `cua` is installed (shared)
+//!   kx.computer.list           → [{ id, name, display_name, status, kind, image, os, runtime, is_ours }]
+//!   kx.computer.create({ name, image })   minutes; → its space id (`local:<name>`)
+//!   kx.computer.start(target), .stop(target), .remove(target)
+//!   kx.computer.view(target)   → an address showing its desktop, live
 //!
-//! Only sandboxes whose name starts `kx-` are made, stopped or removed
-//! here: the person's own are listed by nothing here and touched by nothing.
 //! The desktop is cua's own HTML5 viewer, served on a loopback port by a
 //! `cua viewer` this starts once and finds again on later launches
 //! (`<data>/cua-viewer.json`), so the Desktop tab is a page like any other.
@@ -25,22 +23,35 @@ use std::{
 use serde_json::{Value as Json, json};
 use zgx_script::{ScriptHost, Value};
 
-/// The images a buddy's computer may be made from, by the name the app uses:
-/// what `cua sb create` is given for each.
-fn image_args(image: &str) -> Option<&'static [&'static str]> {
+/// The images a buddy's Space may be made from (`cua spaces create <IMAGE>`).
+fn space_image(image: &str) -> Option<&'static str> {
     match image {
-        // (Arch with Hyprland: the image already on a machine that has used cua's.)
-        "omarchy" => Some(&["omarchy"]),
-        "linux" => Some(&["linux", "--tier", "slim", "--kind", "vm"]),
-        "linux-full" => Some(&["linux", "--kind", "vm"]),
-        "windows" => Some(&["windows"]),
+        "linux" | "ubuntu" => Some("linux"),
+        "omarchy" => Some("omarchy"),
+        "windows" => Some("windows"),
+        "macos" => Some("macos"),
         _ => None,
     }
 }
 
-/// A name of ours: `kx-` and letters, digits or dashes.
+/// A safe Space slug: lowercase letters, digits, dashes or underscores.
+fn valid_slug(name: &str) -> bool {
+    !name.is_empty() && name.len() <= 64 && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
+}
+
+/// A name of ours: `kx-` followed by a valid slug.
 fn ours(name: &str) -> bool {
-    name.len() > 3 && name.len() <= 48 && name.starts_with("kx-") && name[3..].chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    let bare = name.strip_prefix("local:").unwrap_or(name);
+    bare.len() > 3 && bare.starts_with("kx-") && valid_slug(bare)
+}
+
+/// Normalize a Space target (`local:<name>` or `<name>`) into `(id, bare_name)`.
+fn normalize_target(target: &str) -> Option<(String, String)> {
+    let bare = target.strip_prefix("local:").unwrap_or(target);
+    if !valid_slug(bare) {
+        return None;
+    }
+    Some((format!("local:{bare}"), bare.to_owned()))
 }
 
 /// Where `cua` is: on the path, else where its installer puts it.
@@ -83,17 +94,56 @@ fn cua(args: &[&str]) -> Result<String, String> {
     Err(if said.is_empty() { format!("cua stopped with {}", out.status) } else { said.chars().take(600).collect() })
 }
 
-/// The local sandboxes that are ours.
+/// Local Cua Spaces on this machine (`cua spaces ls --json`, enriched with
+/// live power state from `cua sandbox ls --json`).
 fn list() -> Result<Json, String> {
-    let all: Json = serde_json::from_str(&cua(&["sandbox", "ls", "--json"])?).map_err(|e| format!("cua's list couldn't be read: {e}"))?;
-    let mine: Vec<Json> = all
-        .as_array()
+    let raw = cua(&["spaces", "ls", "--json"])?;
+    let parsed: Json = serde_json::from_str(&raw).map_err(|e| format!("cua spaces list couldn't be read: {e}"))?;
+    let spaces = parsed["spaces"].as_array().cloned().unwrap_or_default();
+
+    // Merge live status/runtime from `cua sandbox ls --json` when available.
+    let mut sb_status: std::collections::HashMap<String, (String, String)> = std::collections::HashMap::new();
+    if let Ok(sb_raw) = cua(&["sandbox", "ls", "--json"]) {
+        if let Ok(Json::Array(arr)) = serde_json::from_str::<Json>(&sb_raw) {
+            for s in arr {
+                if s["location"] == "local" {
+                    let name = s["name"].as_str().unwrap_or_default().to_owned();
+                    let status = s["status"].as_str().or_else(|| s["state"].as_str()).unwrap_or("unknown").to_owned();
+                    let runtime = s["runtime"].as_str().unwrap_or_default().to_owned();
+                    if !name.is_empty() {
+                        sb_status.insert(name, (status, runtime));
+                    }
+                }
+            }
+        }
+    }
+
+    let local: Vec<Json> = spaces
         .into_iter()
-        .flatten()
-        .filter(|s| s["location"] == "local" && s["name"].as_str().is_some_and(ours))
-        .map(|s| json!({ "name": s["name"], "status": s["status"], "kind": s["kind"], "runtime": s["runtime"] }))
+        .filter(|s| {
+            s["provider"] == "local" || s["id"].as_str().is_some_and(|id| id.starts_with("local:"))
+        })
+        .map(|s| {
+            let name = s["name"].as_str().unwrap_or_default().to_owned();
+            let id = s["id"].as_str().map(str::to_owned).unwrap_or_else(|| format!("local:{name}"));
+            let display_name = s["display_name"].as_str().unwrap_or(&name).to_owned();
+            let power = s["resources"]["powerState"].as_str().filter(|p| !p.is_empty()).map(str::to_owned);
+            let (sb_stat, sb_rt) = sb_status.get(&name).cloned().unwrap_or_default();
+            let status = power.or_else(|| (!sb_stat.is_empty()).then_some(sb_stat)).unwrap_or_else(|| "stopped".to_owned());
+            json!({
+                "id": id,
+                "name": name,
+                "display_name": display_name,
+                "status": status,
+                "kind": s["kind"],
+                "image": s["image"],
+                "os": s["os_pretty_name"].as_str().or_else(|| s["os_name"].as_str()).or_else(|| s["os"].as_str()).unwrap_or("Linux"),
+                "runtime": if sb_rt.is_empty() { "qemu" } else { sb_rt.as_str() },
+                "is_ours": ours(&name),
+            })
+        })
         .collect();
-    Ok(Json::Array(mine))
+    Ok(Json::Array(local))
 }
 
 /// The viewer that's serving: its address's start (`http://127.0.0.1:PORT`)
@@ -150,13 +200,11 @@ fn viewer() -> Result<(String, String), String> {
     Ok((base, key))
 }
 
-/// The address of one sandbox's desktop.
-fn view(name: &str) -> Result<String, String> {
-    if !ours(name) {
-        return Err("That isn't one of Keplorayx's computers.".into());
-    }
+/// The address of one Space's desktop.
+fn view(target: &str) -> Result<String, String> {
+    let (_, bare) = normalize_target(target).ok_or_else(|| "That isn't a valid Space name.".to_owned())?;
     let (base, key) = viewer()?;
-    Ok(format!("{base}/s/local%3A{name}/open?key={key}"))
+    Ok(format!("{base}/s/local%3A{bare}/open?key={key}"))
 }
 
 fn text(v: &Value) -> String {
@@ -172,38 +220,48 @@ pub fn install(host: &ScriptHost) {
     host.async_action("kx.computer.create", |req| {
         let req = crate::kx::widgets::value_json(&req);
         async move {
-            let name = req["name"].as_str().unwrap_or_default().to_owned();
-            if !ours(&name) {
-                return Err("A computer's name starts kx- and has only small letters, digits and dashes.".to_owned());
-            }
-            let args = image_args(req["image"].as_str().unwrap_or("omarchy")).ok_or("That isn't an image Keplorayx makes computers from.")?;
-            let made = name.clone();
+            let raw_name = req["name"].as_str().unwrap_or_default().to_owned();
+            let (space_id, bare_name) = normalize_target(&raw_name)
+                .filter(|(_, b)| ours(b))
+                .ok_or_else(|| "A computer's name starts kx- and has only small letters, digits and dashes.".to_owned())?;
+            let image = space_image(req["image"].as_str().unwrap_or("linux"))
+                .ok_or("That isn't an image Keplorayx makes Spaces from.")?;
+            let made_name = bare_name.clone();
+            let made_id = space_id.clone();
             crate::kx::off_thread(move || {
-                let mut all: Vec<&str> = vec!["sandbox", "create"];
-                all.extend_from_slice(args);
-                all.extend_from_slice(&["--name", &made, "--wait", "desktop"]);
-                cua(&all).map(|_| ()).inspect_err(|_| {
-                    // (What didn't come up isn't left running, or listed as if it had.)
-                    let _ = cua(&["sandbox", "rm", &format!("local:{made}"), "--force"]);
-                })
+                // (On Windows a local Space is a QEMU VM: left to choose, cua picks
+                // a container, which needs Docker, and most PCs have none.)
+                let mut args = vec!["spaces", "create", image, "--on", "local", "--name", &made_name, "--json"];
+                if cfg!(windows) && image == "linux" {
+                    args.extend(["--kind", "vm", "--runtime", "qemu"]);
+                }
+                cua(&args)
+                    .map(|_| ())
+                    .inspect_err(|_| {
+                        let _ = cua(&["spaces", "delete", &made_id, "--force"]);
+                    })
             })
             .await
             .unwrap_or_else(|| Err("cua stopped unexpectedly".into()))?;
-            Ok(Value::from(name.as_str()))
+            Ok(Value::from(space_id.as_str()))
         }
     });
-    for (action, verb) in [("kx.computer.start", "resume"), ("kx.computer.stop", "suspend"), ("kx.computer.remove", "rm")] {
-        host.async_action(action, move |name| {
-            let name = text(&name);
+    for (action, verb) in [("kx.computer.start", "start"), ("kx.computer.stop", "stop"), ("kx.computer.remove", "delete")] {
+        host.async_action(action, move |target| {
+            let target = text(&target);
             async move {
-                if !ours(&name) {
-                    return Err("That isn't one of Keplorayx's computers.".to_owned());
+                let (space_id, bare) = normalize_target(&target).ok_or_else(|| "That isn't a valid Space name.".to_owned())?;
+                // (Deleting is only ever for a Space Keplorayx made: one of the
+                // person's own that a buddy was attached to is theirs to keep.)
+                if verb == "delete" && !ours(&bare) {
+                    return Err("That Space isn't one Keplorayx made, so it isn't deleted from here.".to_owned());
                 }
                 crate::kx::off_thread(move || {
-                    let which = format!("local:{name}");
-                    // (cua asks before it deletes, and there is nobody at its prompt: the
-                    // person said yes in the app.)
-                    let args: Vec<&str> = if verb == "rm" { vec!["sandbox", verb, &which, "--force"] } else { vec!["sandbox", verb, &which] };
+                    let args: Vec<&str> = if verb == "delete" {
+                        vec!["spaces", "delete", &space_id, "--force"]
+                    } else {
+                        vec!["spaces", verb, &space_id]
+                    };
                     cua(&args).map(|_| ())
                 })
                     .await
@@ -229,11 +287,17 @@ mod tests {
     fn only_our_own_names_and_known_images() {
         assert!(ours("kx-b7861b61a8708"));
         assert!(ours("kx-mina-2"));
-        // The person's own sandboxes, and anything that isn't a plain name.
+        assert!(ours("local:kx-mina-2"));
+        assert!(valid_slug("space-45dabf6720"));
+        assert_eq!(normalize_target("space-45dabf6720"), Some(("local:space-45dabf6720".into(), "space-45dabf6720".into())));
+        assert_eq!(normalize_target("local:space-45dabf6720"), Some(("local:space-45dabf6720".into(), "space-45dabf6720".into())));
+        // Anything that isn't a plain slug or our kx- prefix.
         for no in ["space-1", "agentspace", "kx-", "kx-A", "kx-a b", "kx-a;rm", "local:kx-a", "kx-../x"] {
-            assert!(!ours(no), "{no}");
+            assert!(!ours(no) || no == "local:kx-a", "{no}");
         }
-        assert!(image_args("omarchy").is_some() && image_args("linux").is_some());
-        assert!(image_args("ghcr.io/evil/image").is_none());
+        assert!(normalize_target("kx-../x").is_none());
+        assert!(normalize_target("kx-a;rm").is_none());
+        assert!(space_image("linux").is_some() && space_image("omarchy").is_some());
+        assert!(space_image("ghcr.io/evil/image").is_none());
     }
 }
