@@ -13605,6 +13605,7 @@ dependencies = [
  "tracing-subscriber",
  "windows-sys 0.61.2",
  "zeron-cli",
+ "zeron-composio",
  "zeron-engine",
  "zeron-mcp",
  "zeron-notify",
@@ -13673,6 +13674,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "zeron-composio"
+version = "0.2.136"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "zeron-doc"
 version = "0.2.136"
 dependencies = [
@@ -13726,6 +13741,7 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "windows-sys 0.61.2",
+ "zeron-composio",
  "zeron-doc",
  "zeron-harness",
  "zeron-launch",

@@ -32,6 +32,7 @@ zeron-ui = { workspace = true, optional = true }
 zeron-update.workspace = true
 zeron-cli.workspace = true
 zeron-mcp.workspace = true
+zeron-composio.workspace = true
 zeron-notify.workspace = true
 tokio.workspace = true
 clap.workspace = true

@@ -39,6 +39,7 @@ pub fn run_engine_command(command: EngineCommand) -> anyhow::Result<()> {
             runtime.block_on(ipc_cli::quiesce_cli(config.ipc_port, &config.data_dir))
         }
         EngineCommand::Mcp => crate::run_mcp(),
+        EngineCommand::McpComposio => crate::run_mcp_composio(),
         EngineCommand::Plugin(command) => {
             let runtime = tokio::runtime::Runtime::new()?;
             let config = engine_config_from_env();

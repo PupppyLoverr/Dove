@@ -76,6 +76,11 @@ enum Command {
     /// proxying to the running engine's IPC. Agents use it to create, read,
     /// and message chats. Logs go to stderr; stdout is the protocol.
     Mcp,
+    /// Serve Composio (the person's connected apps) to one chat on
+    /// stdin/stdout, as far as Settings → Connections lets it. The engine
+    /// starts it for a chat; stdout is the protocol.
+    #[command(hide = true, name = "mcp-composio")]
+    McpComposio,
     /// Make, sign, check and list plugins (through the running Zeron).
     Plugin {
         #[command(subcommand)]
@@ -173,6 +178,7 @@ pub enum EngineCommand {
     Sync,
     Quiesce,
     Mcp,
+    McpComposio,
     Plugin(PluginCommand),
     Template(TemplateCommand),
 }
@@ -253,7 +259,7 @@ pub fn run(version: &'static str, engines: Engines) -> Launch {
         init_logging(
             long_running,
             mode,
-            matches!(&cli.command, Some(Command::Mcp | Command::Plugin { .. } | Command::Template { .. })),
+            matches!(&cli.command, Some(Command::Mcp | Command::McpComposio | Command::Plugin { .. } | Command::Template { .. })),
         );
     }
     if long_running {
@@ -274,6 +280,7 @@ pub fn run(version: &'static str, engines: Engines) -> Launch {
         Some(Command::Sync) => engine(EngineCommand::Sync),
         Some(Command::Quiesce) => engine(EngineCommand::Quiesce),
         Some(Command::Mcp) => engine(EngineCommand::Mcp),
+        Some(Command::McpComposio) => engine(EngineCommand::McpComposio),
         Some(Command::Plugin { command }) => engine(EngineCommand::Plugin(command)),
         Some(Command::Template { command }) => engine(EngineCommand::Template(command)),
         #[cfg(target_os = "linux")]
@@ -309,6 +316,7 @@ impl Command {
             | Self::Sync
             | Self::Quiesce
             | Self::Mcp
+            | Self::McpComposio
             | Self::Plugin { .. }
             | Self::Template { .. } => true,
             #[cfg(target_os = "linux")]

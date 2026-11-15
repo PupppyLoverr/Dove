@@ -1,0 +1,20 @@
+[package]
+name = "zeron-composio"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+reqwest.workspace = true
+async-trait.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Cryptography"] }
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -2311,6 +2311,34 @@ impl Inner {
         })
     }
 
+    /// Composio's apps for this chat: a stdio bridge from this same
+    /// executable (`mcp-composio`), only when the person holds a Composio key
+    /// and their policy lets this chat use some app. The bridge reads the key
+    /// itself; it never rides the environment or a harness's config.
+    fn composio_mcp(&self, chat_id: &str) -> Option<zeron_proto::McpServer> {
+        let data_dir = lock(&self.ipc_token_file).as_ref()?.parent()?.to_path_buf();
+        if !zeron_composio::key::held(&data_dir) {
+            return None;
+        }
+        let policy = zeron_composio::policy::Policy::load(&data_dir);
+        if !policy.reaches(&policy.place(Some(chat_id))) {
+            return None;
+        }
+        let command = std::env::current_exe().ok()?.to_str()?.to_owned();
+        let env = [
+            ("ZERON_CHAT_ID".to_owned(), chat_id.to_owned()),
+            ("ZERON_DATA_DIR".to_owned(), data_dir.to_str()?.to_owned()),
+        ]
+        .into_iter()
+        .collect();
+        Some(zeron_proto::McpServer {
+            name: "composio".into(),
+            command,
+            args: vec!["mcp-composio".into()],
+            env,
+        })
+    }
+
     fn workspace(&self) -> Option<crate::workspace_host::WorkspaceHost> {
         self.doc_host().and_then(|host| host.workspace().cloned())
     }
@@ -3571,6 +3599,11 @@ async fn drive_run(
         .get()
         .map(crate::plugins::Plugins::native_mcp_servers)
         .unwrap_or_default();
+    // The person's connected apps (Composio), where Settings → Connections
+    // lets this chat use any of them.
+    if let Some(composio) = inner.composio_mcp(&chat_id) {
+        request.extra_mcp.push(composio);
+    }
     // A revived turn the resumed session already holds: the provider gets
     // the continuation, while the transcript, preview and title keep the
     // user's own message (and the retries carry the revival on).

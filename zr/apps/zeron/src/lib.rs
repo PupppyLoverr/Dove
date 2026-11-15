@@ -79,3 +79,19 @@ pub fn run_mcp() -> anyhow::Result<()> {
     config.data_dir.get_or_insert_with(paths::data_dir);
     runtime.block_on(zeron_mcp::run(config))
 }
+
+/// `mcp-composio`: Composio's apps for the chat the engine names
+/// (`ZERON_CHAT_ID`), held to `<data>/connections.json`, with the key from
+/// `<data>/keys.json`. See `zeron_composio::bridge`.
+pub fn run_mcp_composio() -> anyhow::Result<()> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()?;
+    let data_dir = std::env::var_os("ZERON_DATA_DIR")
+        .filter(|dir| !dir.is_empty())
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(paths::data_dir);
+    let chat = std::env::var("ZERON_CHAT_ID").ok().filter(|c| !c.is_empty());
+    runtime.block_on(zeron_composio::bridge::run(&data_dir, chat.as_deref()))
+}
