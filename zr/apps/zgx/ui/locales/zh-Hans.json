@@ -3096,6 +3096,9 @@
         "devices": {
           "title": "在你的设备之间发送数据"
         },
+        "media": {
+          "title": "查看正在播放的内容，并播放、暂停和切换"
+        },
         "commands": {
           "title": "以你的身份在此电脑上运行 {list}",
           "title_on": "以你的身份在 {device} 上运行 {list}",

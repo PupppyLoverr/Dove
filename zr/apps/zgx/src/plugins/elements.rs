@@ -37,6 +37,7 @@ pub const ELEMENTS: &[Element] = &[
     e("#sidebar-actions", "the sidebar", "New chat and Search, at the sidebar's top.", &[]),
     e("#titlebar", "the title bar", "The title bar.", &[]),
     e("#titlebar-actions", "the title bar", "The title bar's actions, at its end.", &[]),
+    e("#titlebar-panel", "the title bar", "The title bar's side panel button, at its end.", &[]),
     e("#rail", "the sidebar's rail", "The collapsed sidebar's rail.", &[]),
     // (Not Settings: sealed, no plugin's to change or add to.)
     e("#chat-home", "a new chat", "A new chat, before it's sent: no session here.", &[]),

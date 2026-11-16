@@ -54,6 +54,9 @@ pub const SHARED_READ: &[(&str, Option<&str>)] = &[
     // the design system lent to plugins reads it (ds/material), so a plugin's
     // components tint as the app's do.
     ("window.blur", None),
+    // What's playing (src/kx/media.rs): its track, where it is, its cover
+    // (a `host:` picture), for a plugin allowed "media".
+    ("kx.media", Some("zeron.media")),
 ];
 
 /// What plugins may change of the app's own shared state, and the grant
@@ -70,6 +73,8 @@ const SIDEBAR: &[&str] = &["#sidebar", "#shell-sidebar", ".session-row", "hook:s
 pub const ACTIONS: &[(&str, &str)] = &[
     ("zeron.open", "zeron.navigate"),
     ("zeron.compose.insert", "zeron.compose"),
+    // Play and pause, skip, seek what's playing ("media").
+    ("media.control", "zeron.media"),
 ];
 
 /// Screens no plugin may replace, whatever it was allowed: allowing
@@ -250,6 +255,7 @@ pub fn capabilities(id: &str, permissions: &[String], change: &[String], replace
             "navigate" => out.push(named("zeron.navigate")),
             "compose" => out.push(named("zeron.compose")),
             "devices" => out.push(named("zeron.devices")),
+            "media" => out.push(named("zeron.media")),
             "network" => out.push(Capability::Fetch),
             "clipboard" => out.push(Capability::Clipboard),
             "files" => out.push(Capability::Files),

@@ -308,6 +308,8 @@ function M.permission(item: any, permission: string): Line
 		end, nil, { items = items })
 	elseif permission == "devices" then
 		return line(false, "smartphone", "plugins.words.permission.devices.title")
+	elseif permission == "media" then
+		return line(false, "music-note", "plugins.words.permission.media.title")
 	elseif permission == "service" then
 		-- Its headless half, run by the engine on the device that allowed it
 		-- (another device's sheet names that one).

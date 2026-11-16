@@ -466,6 +466,9 @@ pub(crate) fn comment(asked: &Value, shown: &str) -> Option<Value> {
 /// Plugins for the main window `cx` shows `host` in.
 pub fn install(cx: &mut WindowContext, host: &ScriptHost) {
     expose_surface(host);
+    // What's playing, for plugins allowed "media" (`kx.media`,
+    // `media.control`): the notch's one watcher, a line of it here too.
+    crate::kx::media::install(cx, host);
     let plugin_network = network::Network::default();
     host.fetch_policy(plugin_network.clone());
     // What the app's VM (a template in preview, while it is one) may reach.

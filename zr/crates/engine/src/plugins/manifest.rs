@@ -36,6 +36,9 @@ pub const KNOWN_PERMISSIONS: &[&str] = &[
     "tools",
     "devices",
     "native",
+    // What's playing (Windows' media controls: its track and cover), and
+    // play, pause and skip (the app's `kx.media`, `media.control`).
+    "media",
     // Running the programs its manifest names (`commands`), as you.
     "commands",
     // A headless half (`"service": "service.luau"`) the engine runs on

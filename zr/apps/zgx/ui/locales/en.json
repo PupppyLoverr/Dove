@@ -3096,6 +3096,9 @@
         "devices": {
           "title": "Send data between your own devices"
         },
+        "media": {
+          "title": "See what's playing, and play, pause and skip it"
+        },
         "commands": {
           "title": "Run {list} on this computer as you",
           "title_on": "Run {list} on {device} as you",

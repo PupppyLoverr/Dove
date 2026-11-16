@@ -731,6 +731,14 @@ pub fn run_on(asked: &Json, allowed: &[String], path: &str, trusted: &dyn Fn(&Pa
     if let Some(cwd) = &cwd {
         command.current_dir(cwd);
     }
+    // (No console window of its own: from the app, a windowless parent,
+    // each console program would flash one.)
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt as _;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
     let stdin = asked["stdin"].as_str().map(str::to_string);
     command.stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() });
     let timeout = asked["timeout"]

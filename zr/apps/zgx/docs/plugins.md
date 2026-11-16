@@ -52,6 +52,7 @@ Your own plugins are signed as yours, and re-signed and reloaded each time you s
 | `clipboard`, `files`, `web`, `windows` | zgx's clipboard, file dialogs, web views, windows |
 | `tools` | tools for agents (the manifest's `tools`) |
 | `devices` | send data to itself on your other devices |
+| `media` | see what's playing (Windows' media controls) and play, pause, skip and seek it |
 | `native` | run a program of its own (the manifest's `mcp`) |
 | `commands` | run the programs its manifest's `commands` names, as you, on this Mac (`zeron.run`) |
 | `service` | run its service (the manifest's `service`) on this device, with no window open, for its windows and agents here and on your other devices |
@@ -220,6 +221,8 @@ Zeron draws that row on your settings page: "Use as wallpaper", and while it's o
 | `zeron.notify { title, body?, session? }` | a notification, as Zeron's own: under Settings → Notifications, a few a minute; a click opens `session`. A promise of `"posted"`, `"off"`, `"held"`, `"paced"` or `"unavailable"` | `notifications` |
 | `zeron.open_url(url)` | an http(s) link, where you open links (Settings → Links) | `links.open` |
 | `zeron.sessions()`, `zeron.projects()` | your sessions and projects by id, as they change | `sessions.read` |
+| `ui.shared("kx.media", nil)` | what's playing, as it changes: `{ app, title, artist, playing, position, duration, at, cover, tint }` or nil (`position` as of `at`, unix seconds; `cover` a picture for `ui.image { src = … }`, or `""`) | `media` |
+| `ui.invoke("media.control", what)` | `"play"` (play or pause), `"next"`, `"previous"`, or `{ seek = fraction }` | `media` |
 
 **Cost.** Zeron times each build of your nodes. Past 1 ms a build (a row's badge) or 8 ms of builds in one frame, your row in Settings → Plugins says so ("Slow: 4.2 ms per row"), and `plugin_status` gives the numbers. Do the work outside the build (in `zeron.every`, or once per id), and read what changes in reactive functions.
 
