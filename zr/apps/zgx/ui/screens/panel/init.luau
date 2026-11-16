@@ -480,7 +480,9 @@ end
 -- empty browser tab. The panel opens for the session showing (or, with
 -- `page`, a plugin page's own panel). Whether a tab took it (a session or a
 -- page must be open).
-function M.open_url(session: any, url: string?, project: any?, page: any?): boolean
+-- `look` (Keplorayx): a bare tab, its page alone under its own title, no
+-- address bar (a buddy's desktop): { bare = true, title = "…" }.
+function M.open_url(session: any, url: string?, project: any?, page: any?, look: { [string]: any }?): boolean
 	local k = state.key(session, project, page)
 	if not k then
 		return false
@@ -496,7 +498,7 @@ function M.open_url(session: any, url: string?, project: any?, page: any?): bool
 	if found then
 		state.activate(k, found)
 	else
-		state.open(k, "browser", { url = url })
+		state.open(k, "browser", { url = url, bare = look and look.bare, title = look and look.title })
 	end
 	local set_files = (if shell_view then shell_view.set_files else nil) :: ((boolean) -> ())?
 	if set_files then

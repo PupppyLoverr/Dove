@@ -260,6 +260,10 @@ local function has_page(web: any): boolean
 end
 
 function M.title(tab: Tab): string?
+	-- (A bare tab keeps the title it was given: a buddy's desktop.)
+	if tab.bare and tab.title then
+		return tab.title
+	end
 	local t = titles:get()[tab.id]
 	if t and t ~= "" then
 		return t
@@ -1634,7 +1638,11 @@ Page = ui.component(function(props: Props): Node
 		w_full = true,
 		grow = 1,
 		min_h = 0,
-		bar,
+		-- (A bare tab, a buddy's desktop: the page alone.)
+		ui.show(function(): boolean
+			local t = tab()
+			return not (t and t.bare)
+		end, bar),
 		problem_line,
 		find_bar,
 		downloads_bar,

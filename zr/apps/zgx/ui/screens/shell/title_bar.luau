@@ -147,6 +147,7 @@ return function(props: Props): Node
 			-- The session's panel: the sidebar's glyph mirrored (its panel at
 			-- the right), narrowing as the panel closes, as the left one does.
 			ds.IconButton {
+				id = "titlebar-panel",
 				label = ui.t("shell.title_bar.panel"),
 				tooltip = locale.s("shell.title_bar.panel_tooltip", { key = ui.shortcut_text("cmd+r") }),
 				tooltip_side = "bottom",

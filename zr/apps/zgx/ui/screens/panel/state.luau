@@ -42,6 +42,8 @@ export type Tab = {
 	-- what it carries (screens/plugins opens it; the plugin draws it).
 	plugin: string?,
 	plugin_kind: string?,
+	-- (A browser tab's too, when it's bare: Keplorayx's buddy desktops.)
+	bare: boolean?,
 	title: string?,
 	icon: string?,
 	data: any?,
@@ -176,6 +178,8 @@ function M.open(key: string, kind: Kind, extra: { [string]: any }?): string
 	end
 	if kind == "browser" and extra then
 		tab.url = extra.url
+		-- (Keplorayx: a bare tab, as a buddy's desktop.)
+		tab.bare, tab.title = extra.bare, extra.title
 	end
 	if (kind == "side_chat" or kind == "subagent") and extra then
 		tab.chat, tab.title, tab.data = extra.chat, extra.title, extra.data
