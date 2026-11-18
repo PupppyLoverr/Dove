@@ -28,6 +28,7 @@
 mod about;
 mod acp_registry;
 mod agents;
+mod authored;
 mod appshots;
 mod auth;
 // Keplorayx's account: Woozlit, behind Zeron's account calls.
@@ -53,6 +54,7 @@ mod github;
 mod haptics;
 mod heap;
 mod images;
+mod layout_smoke;
 mod links;
 mod pasted;
 mod math;
@@ -1279,7 +1281,7 @@ fn gallery_window() -> WindowOptions {
 /// frozen copy, which other saves under ui/ can't reload mid-run), or, in
 /// an app bundle (the Zeron app: the beta), the copy in its `Contents/Resources/ui`
 /// (with `plugins-builtin` beside it).
-fn ui_dir() -> PathBuf {
+pub(crate) fn ui_dir() -> PathBuf {
     match dev::smoke_switch("ZERON_ZGX_UI") {
         Some(dir) if !dir.is_empty() => PathBuf::from(dir),
         _ => bundled_ui().unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("ui")),

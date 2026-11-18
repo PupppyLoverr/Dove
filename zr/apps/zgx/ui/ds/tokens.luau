@@ -20,6 +20,35 @@ function M.setup()
 			hover = "{hover}",
 		},
 	}
+	-- The authored tokens' names, declared with the shipped theme's own
+	-- values so they exist before any theme is worn (a screen built at load
+	-- reads them, and the design lint checks against them): the registered
+	-- theme's values replace these the moment it is (ds/authored).
+	ui.theme.tokens {
+		["band.height"] = 36,
+		["density.row"] = 28,
+		["density.row.compact"] = 24,
+		["density.control"] = 32,
+		["density.gutter"] = 16,
+		["measure.conversation"] = 720,
+		["measure.page"] = 640,
+		["material.blur"] = 28,
+		["font.display"] = "Instrument Serif",
+		attention = "#f5b45f",
+		["attention.ink"] = "#f8c684",
+		["attention.wash"] = "alpha(#f5b45f, 0.14)",
+		["attention.edge"] = "alpha(#f5b45f, 0.30)",
+		agent = {
+			["1"] = "#c9a8ff",
+			["2"] = "#6fd8c6",
+			["3"] = "#dfe5f5",
+			["4"] = "#7ea6ff",
+			["5"] = "#9fe38e",
+			["6"] = "#8fc2ff",
+			["7"] = "#f0a6d8",
+			["8"] = "#a8b4cc",
+		},
+	}
 	ui.theme.tokens {
 		zeron = {
 			-- Half-steps of the spacing scale (space.1 to 8: 4, 8, 12, 16, 24,
@@ -618,8 +647,22 @@ function M.setup()
 			},
 		},
 	}
-	ui.theme.load("ds/themes/zeron-dark.json")
-	ui.theme.load("ds/themes/zeron-light.json")
+	-- The window's own themes: 42 authored tokens in each file, the other
+	-- 250 derived (ds/authored), and the check src/authored.rs ran on the
+	-- files before they got here. A scheme whose file did not check wears
+	-- the framework's own theme rather than a theme nothing verified.
+	--
+	-- The interface size a person picks (Settings › Appearance) is the
+	-- authored `font.size`: every step in the scale is derived from it, so
+	-- one control moves all of them.
+	local authored = require("@self/authored")
+	ui.effect(function()
+		-- (The window's size lives in ds/look with the fonts and the style's
+		-- own offset; a window lent the design system without it wears the
+		-- theme file's own.)
+		local ok, look = pcall(require, "@self/look")
+		authored.wear(if ok then (look :: any).interface_size() else nil)
+	end)
 	-- The theme chosen for each scheme, else the template's own (its
 	-- theme.luau; the default's returns nil), else Zeron's, worn over those
 	-- themes through the one mapping (ds/palettes), and worn again as the

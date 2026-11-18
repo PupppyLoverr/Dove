@@ -1,0 +1,63 @@
+{
+	"name": "Keplorayx night",
+	"type": "dark",
+	"description": "The window's own theme: 42 authored tokens, nine groups. Everything else — hover, selected, the focus ring, the corner family, the type steps, the tone washes — is derived in ds/authored and may not be written here. src/authored.rs checks this file before the window wears it.",
+	"tokens": {
+		"surface": {
+			"window": "#0b0b0d99",
+			"base": "#ffffff08",
+			"raised": "#ffffff0f",
+			"overlay": "#1b1b1ee0"
+		},
+		"ink": {
+			"primary": "#ededef",
+			"secondary": "alpha({ink.primary}, 0.60)",
+			"tertiary": "alpha({ink.primary}, 0.42)"
+		},
+		"line": {
+			"hairline": "#ffffff0a",
+			"strong": "#ffffff2e"
+		},
+		"accent": "#7f97c9",
+		"accent.ink": "#ffffff",
+		"tone": {
+			"ok": "#34d399",
+			"warn": "#facc15",
+			"danger": "#f87171",
+			"info": "#60a5fa"
+		},
+		"attention": "#f5b45f",
+		"attention.ink": "#f8c684",
+		"agent": {
+			"1": "#c9a8ff",
+			"2": "#6fd8c6",
+			"3": "#dfe5f5",
+			"4": "#7ea6ff",
+			"5": "#9fe38e",
+			"6": "#8fc2ff",
+			"7": "#f0a6d8",
+			"8": "#a8b4cc"
+		},
+		"font": {
+			"sans": "Geist",
+			"mono": "Geist Mono",
+			"display": "Instrument Serif",
+			"size": 13,
+			"line": 18,
+			"weight": 450,
+			"strong": 600
+		},
+		"metric": {
+			"unit": 4,
+			"radius": 8,
+			"row": 28,
+			"control": 32,
+			"gutter": 16,
+			"conversation": 720,
+			"page": 640,
+			"duration": 180,
+			"ease": "cubicBezier(0.2, 0, 0, 1)",
+			"blur": 28
+		}
+	}
+}
