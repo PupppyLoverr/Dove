@@ -559,8 +559,10 @@ fn open_main(cx: &mut WindowContext, inspect: bool) {
     }
     let host = script_host_at(cx, plugins::prepare_live(), "app.luau");
     host.shared("window", "main");
+    zgx::profile::mark("interface laid down");
     // Plugins and your templates (src/plugins): the main window's alone.
     plugins::install(cx, &host);
+    zgx::profile::mark("plugins installed");
     // The host's own toasts over it (a template in preview, a switch you
     // didn't make, signing keys, safe mode at launch).
     let chrome = plugins::host_bar::view(cx, host.shared("zeron.locale", "en").signal());
@@ -569,6 +571,7 @@ fn open_main(cx: &mut WindowContext, inspect: bool) {
     // Keplorayx's island, launcher, widgets, tray and keys (src/kx).
     kx::start::start(cx, &host);
     let view = serve_with(cx, host, "app.luau", inspect, Some(chrome), menu_bar::Role::Bar);
+    zgx::profile::mark("shell served");
     plugins::host_bar::follow(floor);
     // What zgx reports of the window's elements, for plugins' places.
     plugins::set_view(view);
@@ -966,6 +969,7 @@ fn serve_with(
     if let Err(error) = host.reload() {
         eprintln!("zeron-zgx: {entry} didn't load: {error}");
     }
+    zgx::profile::mark("scripts loaded");
     // (The scripts' garbage is collected as the window goes idle, by zgx
     // itself: `zgx::idle`. The app once looked for quiet twice a second.)
     cx.tasks.spawn(host.watch(Duration::from_millis(250)));

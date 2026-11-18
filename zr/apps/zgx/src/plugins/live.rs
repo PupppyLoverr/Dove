@@ -120,54 +120,75 @@ pub fn files(dir: &Path, keep: impl Fn(&str) -> bool) -> BTreeMap<String, PathBu
 /// Writes `bytes` to `path` unless it holds them already (through a file
 /// beside it renamed over it, so nothing reads half a file): whether it wrote.
 pub fn put(path: &Path, bytes: &[u8]) -> std::io::Result<bool> {
-    if std::fs::read(path).is_ok_and(|now| now == bytes) {
-        return Ok(false);
-    }
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
+    // A file of another size is another file: reading 2558 of them to compare
+    // is most of a first copy's time, and the sizes alone answer for all but
+    // the ones a save made the same length.
+    let fresh = match std::fs::metadata(path) {
+        Ok(now) => {
+            if now.len() == bytes.len() as u64 && std::fs::read(path).is_ok_and(|now| now == bytes) {
+                return Ok(false);
+            }
+            false
+        }
+        Err(_) => true,
+    };
+    // A file that is there is replaced through one beside it; a file that
+    // isn't is written where it belongs, since there is nothing to read half
+    // of. (On Windows each write close and each rename is the antivirus's,
+    // and a first copy writes 2558 files with nothing to replace.)
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let tmp = path.with_file_name(format!(".{name}.tmp"));
-    std::fs::write(&tmp, bytes)?;
-    std::fs::rename(&tmp, path)?;
+    let (target, atomic) = if fresh { (path.to_path_buf(), false) } else { (path.with_file_name(format!(".{name}.tmp")), true) };
+    // The folder is made once per folder, not once per file (a stat of every
+    // parent per file is 2558 syscalls a copy doesn't need): a write into a
+    // folder that isn't there says so, and that is when it is made.
+    if let Err(error) = std::fs::write(&target, bytes) {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            return Err(error);
+        }
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&target, bytes)?;
+    }
+    if atomic {
+        std::fs::rename(&target, path)?;
+    }
     Ok(true)
 }
 
-/// Writes every file of `want` into `to`, a few at a time: how many changed.
+/// Writes every file of `want` into `to`, a few at a time: how many changed,
+/// and each file's hash as it was copied.
 ///
 /// Each file's time is the filesystem's, not this thread's (a read, a
 /// compare, a write), so the pool divides a fresh copy's seconds by the
 /// threads it runs on. A first launch writes the whole app here twice (`ui/`
 /// into `.zeron`, then `.zeron` into `.live`), which took 13 s of a 16 s
 /// first window on Windows over 2558 files; the window cannot draw until it
-/// is done.
-fn copy_all(to: &Path, want: &BTreeMap<String, PathBuf>) -> std::io::Result<usize> {
+/// is done. What is left is one read of each file, and its hash is taken from
+/// the bytes already in hand rather than by reading them again.
+fn copy_all(to: &Path, want: &BTreeMap<String, PathBuf>) -> std::io::Result<(usize, BTreeMap<String, String>)> {
     let entries: Vec<(&String, &PathBuf)> = want.iter().collect();
-    if entries.len() < 32 {
+    let copy = |part: &[(&String, &PathBuf)]| {
         let mut changed = 0;
-        for (rel, from) in entries {
-            if put(&to.join(rel), &std::fs::read(from)?)? {
+        let mut hashes = BTreeMap::new();
+        for (rel, from) in part {
+            let bytes = std::fs::read(from)?;
+            hashes.insert((*rel).clone(), hash(&bytes));
+            if put(&to.join(rel.as_str()), &bytes)? {
                 changed += 1;
             }
         }
-        return Ok(changed);
+        Ok((changed, hashes))
+    };
+    if entries.len() < 32 {
+        return copy(&entries);
     }
     let workers = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).clamp(2, 8).min(entries.len());
     let each = entries.len().div_ceil(workers);
-    let results: Vec<std::io::Result<usize>> = std::thread::scope(|scope| {
+    let results: Vec<std::io::Result<(usize, BTreeMap<String, String>)>> = std::thread::scope(|scope| {
         let copies: Vec<_> = entries
             .chunks(each)
-            .map(|part| {
-                scope.spawn(move || {
-                    let mut changed = 0;
-                    for (rel, from) in part {
-                        if put(&to.join(rel.as_str()), &std::fs::read(from)?)? {
-                            changed += 1;
-                        }
-                    }
-                    Ok(changed)
-                })
-            })
+            .map(|part| scope.spawn(move || copy(part)))
             .collect();
         copies
             .into_iter()
@@ -175,19 +196,94 @@ fn copy_all(to: &Path, want: &BTreeMap<String, PathBuf>) -> std::io::Result<usiz
             .collect()
     });
     let mut changed = 0;
-    for count in results {
-        changed += count?;
+    let mut hashes = BTreeMap::new();
+    for result in results {
+        let (n, h) = result?;
+        changed += n;
+        hashes.extend(h);
     }
-    Ok(changed)
+    Ok((changed, hashes))
 }
 
 /// Makes `to` hold exactly `want` (by path from `to`: where each comes from),
 /// touching only what differs and leaving `keep`'s paths alone: how many
-/// files changed.
-pub fn mirror(to: &Path, want: &BTreeMap<String, PathBuf>, keep: impl Fn(&str) -> bool) -> std::io::Result<usize> {
-    let mut changed = copy_all(to, want)?;
+/// files changed, and each file's hash as it was copied.
+pub fn mirror(
+    to: &Path,
+    want: &BTreeMap<String, PathBuf>,
+    keep: impl Fn(&str) -> bool,
+) -> std::io::Result<(usize, BTreeMap<String, String>)> {
+    let (mut changed, hashes) = copy_all(to, want)?;
     for (rel, path) in files(to, |_| true) {
         if !want.contains_key(&rel) && !keep(&rel) {
+            std::fs::remove_file(path)?;
+            changed += 1;
+        }
+    }
+    Ok((changed, hashes))
+}
+
+/// Makes `to` hold `want` where every file is a **link** to its source rather
+/// than a copy of it — for `.live` when the template is Zeron's own, where
+/// the two trees are the same bytes by definition.
+///
+/// It is the second of the two trees a first launch lays down, and a copy of
+/// 2558 files costs a create, a write and an antivirus scan each (1.8 s here);
+/// a link is one call and no data (0.2 s). A link that can't be made — the
+/// destination on another volume — becomes a copy, so this is always right
+/// and only sometimes cheap. What is there and already holds these bytes is
+/// left alone, link or copy alike.
+fn link_all(to: &Path, want: &BTreeMap<String, PathBuf>) -> std::io::Result<usize> {
+    let entries: Vec<(&String, &PathBuf)> = want.iter().collect();
+    let link = |part: &[(&String, &PathBuf)]| {
+        let mut changed = 0;
+        for (rel, from) in part {
+            let at = to.join(rel.as_str());
+            match std::fs::metadata(&at) {
+                Ok(now) => {
+                    let same = now.len() == std::fs::metadata(from)?.len()
+                        && std::fs::read(&at).is_ok_and(|held| std::fs::read(from).is_ok_and(|want| held == want));
+                    if same {
+                        continue;
+                    }
+                    std::fs::remove_file(&at)?;
+                }
+                Err(_) => {}
+            }
+            if std::fs::hard_link(from, &at).is_err() {
+                if let Some(parent) = at.parent()
+                    && !parent.is_dir()
+                {
+                    std::fs::create_dir_all(parent)?;
+                }
+                if std::fs::hard_link(from, &at).is_err() {
+                    std::fs::copy(from, &at)?;
+                }
+            }
+            changed += 1;
+        }
+        Ok::<usize, std::io::Error>(changed)
+    };
+    if entries.len() < 32 {
+        return link(&entries);
+    }
+    let workers = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).clamp(2, 8).min(entries.len());
+    let each = entries.len().div_ceil(workers);
+    let results: Vec<std::io::Result<usize>> = std::thread::scope(|scope| {
+        let links: Vec<_> = entries.chunks(each).map(|part| scope.spawn(move || link(part))).collect();
+        links
+            .into_iter()
+            .map(|link| link.join().unwrap_or_else(|_| Err(std::io::Error::other("a link of the app's files panicked"))))
+            .collect()
+    });
+    let mut changed = 0;
+    for count in results {
+        changed += count?;
+    }
+    // What `.zeron` has that `.live` must not (its own manifest and the
+    // pictures and readme a template carries) is swept as a copy's would be.
+    for (rel, path) in files(to, |_| true) {
+        if !want.contains_key(&rel) {
             std::fs::remove_file(path)?;
             changed += 1;
         }
@@ -202,14 +298,12 @@ pub fn mirror(to: &Path, want: &BTreeMap<String, PathBuf>, keep: impl Fn(&str) -
 pub fn sync_zeron(ui: &Path, templates: &Path) -> std::io::Result<usize> {
     let dir = templates.join(ZERON);
     let want = files(ui, |rel| !not_the_app(rel));
-    let changed = mirror(&dir, &want, |rel| rel == "zeron-template.json")?;
-    let hashes: BTreeMap<String, String> = want
-        .iter()
-        .filter_map(|(rel, path)| std::fs::read(path).ok().map(|b| (rel.clone(), hash(&b))))
-        .collect();
+    let (changed, hashes) = mirror(&dir, &want, |rel| rel == "zeron-template.json")?;
+    zgx::profile::mark("zeron files copied");
     let json = |v: serde_json::Value| serde_json::to_vec_pretty(&v).unwrap_or_default();
     put(&dir.join(".hashes.json"), &json(serde_json::json!(hashes)))?;
     put(&dir.join(".catalog.json"), &json(super::templates::catalog(ui)))?;
+    zgx::profile::mark("zeron catalogued");
     put(
         &dir.join("zeron-template.json"),
         &json(serde_json::json!({
@@ -222,6 +316,7 @@ pub fn sync_zeron(ui: &Path, templates: &Path) -> std::io::Result<usize> {
         })),
     )?;
     super::official::install(ui, templates);
+    zgx::profile::mark("official templates");
     Ok(changed)
 }
 
@@ -257,6 +352,14 @@ pub struct Overlay {
     pub from_template: BTreeSet<String>,
 }
 
+/// The folder the main window's scripts run from, always: `.live`, whether it
+/// is `.zeron` alone or with a template on top. One folder forever, because
+/// zgx fixes a host's app file when the host is made, so a template switch is
+/// a rewrite of what is here and a reload.
+pub fn host_dir(templates: &Path) -> PathBuf {
+    templates.join(LIVE)
+}
+
 /// `.live` as `.zeron` with template `id` on top, leaving out the template's
 /// `failed` files (Zeron's show in their place) and the paths never templated.
 /// Zeron's own alone for `BUILTIN`, or `whole_failed`. How many files changed.
@@ -282,7 +385,15 @@ pub fn compose(templates: &Path, id: &str, failed: &BTreeSet<String>, whole_fail
             want.insert(rel, path);
         }
     }
-    let changed = mirror(&templates.join(LIVE), &want, |_| false)?;
+    zgx::profile::mark("template files listed");
+    // Zeron's own template *is* `.zeron`: `.live` holds the same bytes, so it
+    // is linked to them rather than written a second time. Anyone else's
+    // template differs enough that a copy is the honest thing.
+    let changed = if id != BUILTIN || whole_failed {
+        mirror(&templates.join(LIVE), &want, |_| false)?.0
+    } else {
+        link_all(&templates.join(LIVE), &want)?
+    };
     Ok((changed, Overlay { template: id.to_string(), from_template }))
 }
 
@@ -403,13 +514,52 @@ pub fn survey(ui: &Path, templates: &Path, last_ui_stamp: Option<&str>) -> Surve
 
 /// What `.live` was last laid down from: the same again needs no compose
 /// (which reads every file of Zeron's and the template's).
-#[derive(Clone, Debug, Default, PartialEq)]
+///
+/// Kept in `<templates>/.laid.json` (see [`laid`] and [`remember`]), so the
+/// answer survives the launch that made it: a launch whose `.zeron` and
+/// `.live` are already what `ui/` and the active template say finds this on
+/// disk and copies nothing, which is the difference between a window in a
+/// second and a window in nine (KEPL-10, M2c).
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Laid {
     pub ui_stamp: String,
     pub id: String,
     pub template_stamp: String,
     pub whole_failed: bool,
     pub failed: BTreeSet<String>,
+    /// The files the template supplies, as `.live` has them: what a compose
+    /// would have reported, so skipping one doesn't lose it.
+    #[serde(default)]
+    pub from_template: BTreeSet<String>,
+}
+
+/// Where `.laid.json` sits (never a template's own: it is not in `want`).
+pub const LAID: &str = ".laid.json";
+
+impl Laid {
+    /// Whether both were laid down from the same thing, so `.live` already
+    /// holds what laying it down again would write. `from_template` is what
+    /// a compose *reported*, not an input, so it is not part of this.
+    pub fn same_as(&self, other: &Laid) -> bool {
+        self.ui_stamp == other.ui_stamp
+            && self.id == other.id
+            && self.template_stamp == other.template_stamp
+            && self.whole_failed == other.whole_failed
+            && self.failed == other.failed
+    }
+}
+
+/// What the last launch (or the last template switch) laid `.live` down from,
+/// or none: what it read is what's on disk.
+pub fn laid(templates: &Path) -> Option<Laid> {
+    let bytes = std::fs::read(templates.join(LAID)).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+/// Records it, once `.live` holds what `laid` says. Written last, so a launch
+/// that died partway through its copies finds no record and copies again.
+pub fn remember(templates: &Path, laid: &Laid) -> std::io::Result<bool> {
+    put(&templates.join(LAID), &serde_json::to_vec(laid).unwrap_or_default())
 }
 
 /// What to watch so a change reaches the window: the templates folder

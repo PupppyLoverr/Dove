@@ -674,33 +674,68 @@ pub fn prepare_live() -> PathBuf {
         preview::set_template_running(id != live::BUILTIN);
         preview::set((!preview::trusted(&root, &id)).then(|| preview::Preview { name: template_name(&root, &id), id: id.clone() }));
     }
-    if let Err(error) = live::sync_zeron(&crate::ui_dir(), &root) {
-        eprintln!("zeron-zgx: Zeron's own interface wasn't copied ({error}); running it from ui/");
-        return fallback;
-    }
-    // The built-in themes once installed as templates, retired: one in use
-    // gives way to the default template, wearing that theme
-    // (retired_themes.rs).
-    if let Some(data) = crate::engine::data_dir() {
-        retired_themes::retire(&root, &data);
-    }
-    let id = live::active(&root);
-    match live::compose(&root, &id, &Default::default(), false) {
-        Ok((_, overlay)) => {
+    let ui = crate::ui_dir();
+    // What `.live` should hold, decided without reading a single file of the
+    // interface: each file of `ui/` and of the template as it stands, a stat
+    // each (`live::stamp`). The same as the last launch recorded in
+    // `.laid.json` means `.live` already holds it, and both copies — which
+    // read every file of `ui/` twice — are skipped: 776 ms of a warm launch,
+    // 25 s of a first one.
+    let ui_stamp = live::ui_stamp(&ui);
+    let want = |root: &Path| {
+        let id = live::active(root);
+        let template_stamp = if id == live::BUILTIN { String::new() } else { live::template_stamp(&root.join(&id)) };
+        live::Laid { ui_stamp: ui_stamp.clone(), template_stamp, id, ..Default::default() }
+    };
+    let already = live::laid(&root)
+        .filter(|last| last.same_as(&want(&root)))
+        // (An official template deleted by hand comes back with `sync_zeron`.)
+        .filter(|_| !official::missing(&ui, &root))
+        .filter(|_| root.join(live::LIVE).join("app.luau").is_file());
+    let laid = match already {
+        Some(last) => {
+            let overlay = live::Overlay { template: last.id.clone(), from_template: last.from_template.clone() };
+            Some((overlay, last))
+        }
+        None => {
+            if let Err(error) = live::sync_zeron(&ui, &root) {
+                eprintln!("zeron-zgx: Zeron's own interface wasn't copied ({error}); running it from ui/");
+                return fallback;
+            }
+            zgx::profile::mark("zeron synced");
+            // The built-in themes once installed as templates, retired: one in
+            // use gives way to the default template, wearing that theme
+            // (retired_themes.rs), which can change the active one.
+            if let Some(data) = crate::engine::data_dir() {
+                retired_themes::retire(&root, &data);
+            }
+            let now = want(&root);
+            match live::compose(&root, &now.id, &Default::default(), false) {
+                Ok((_, overlay)) => {
+                    // Recorded only once `.live` holds it: a launch that died
+                    // partway through its copies finds no record and copies.
+                    let _ = live::remember(&root, &live::Laid { from_template: overlay.from_template.clone(), ..now.clone() });
+                    Some((overlay, now))
+                }
+                Err(error) => {
+                    eprintln!("zeron-zgx: the template wasn't laid down ({error}); running Zeron's own from ui/");
+                    return fallback;
+                }
+            }
+        }
+    };
+    match laid {
+        Some((overlay, laid)) => {
             LIVE_OVERLAY.with(|o| *o.borrow_mut() = overlay);
-            let template_stamp = if id == live::BUILTIN { String::new() } else { live::template_stamp(&root.join(&id)) };
-            let laid = live::Laid { ui_stamp: live::ui_stamp(&crate::ui_dir()), id, template_stamp, ..Default::default() };
+            zgx::profile::mark("template composed");
             LIVE_LAID.with(|l| *l.borrow_mut() = laid);
             // (Pictures of templates taken from the window, before their
             // previews were drawn from their colours: gone.)
             let _ = std::fs::remove_dir_all(root.join(".previews"));
             let _ = std::fs::remove_dir_all(root.join(live::LIVE).join("previews"));
-            root.join(live::LIVE).join("app.luau")
+            live::host_dir(&root).join("app.luau")
         }
-        Err(error) => {
-            eprintln!("zeron-zgx: the template wasn't laid down ({error}); running Zeron's own from ui/");
-            fallback
-        }
+        None => fallback,
     }
 }
 
@@ -1527,7 +1562,7 @@ impl Bridge {
             let mut failures = self.failed_files.borrow_mut();
             survey.files.iter().filter(|(rel, at)| failures.holds(&format!("{id}:{rel}"), at)).map(|(rel, _)| rel.clone()).collect()
         };
-        let want = live::Laid { ui_stamp: survey.ui_stamp, id: id.clone(), template_stamp: survey.template_stamp, whole_failed, failed };
+        let want = live::Laid { ui_stamp: survey.ui_stamp, id: id.clone(), template_stamp: survey.template_stamp, whole_failed, failed, ..Default::default() };
         let compose = *self.laid.borrow() != want;
         // Only Zeron's own ui/ changed (a save while developing): the host
         // watches `.live`, so the files laid down reload it once, as any
@@ -1590,6 +1625,11 @@ impl Bridge {
         match laid.flatten() {
             Some(Ok((n, overlay))) => {
                 changed = n;
+                // Kept for the next launch: the same `ui/` and template then
+                // find `.live` already laid down and copy nothing.
+                if let Some(root) = &self.templates_root {
+                    let _ = live::remember(root, &live::Laid { from_template: overlay.from_template.clone(), ..want.clone() });
+                }
                 *self.overlay.borrow_mut() = overlay;
                 *self.laid.borrow_mut() = want;
             }
