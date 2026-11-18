@@ -831,6 +831,9 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 		-- slot is then (so its words start where the old Keplorayx's did).
 		tall: number?,
 		lead_w: number?,
+		-- Its state's 2-point edge down its left (§KEPL-11 4.2): a session's
+		-- row, never a header's.
+		edge: (() -> string?)?,
 	}
 	local function row(r: Row): Node
 		local hovered = r.hovered or ui.use_state(false)
@@ -971,6 +974,7 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 				rounded = if railed() then "$radius.md" else nil,
 				-- (The rail's doesn't clip: a tile's badge hangs past its corner.)
 				overflow = if railed() then "visible" else "hidden",
+				relative = true,
 				ui.row {
 					w = function(): number
 						return if railed() then RAIL_SLOT else room() - PAD * 2 - (r.less or 0)
@@ -980,6 +984,20 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 					items = if r.tall then "center" else "start",
 					table.unpack(content),
 				},
+				-- (Its state down its left, over its wash: the list's scan line.)
+				if r.edge
+					then ui.div {
+						absolute = true,
+						left = 0,
+						top = 0,
+						bottom = 0,
+						w = 2,
+						pointer_events = "none",
+						bg = function(): string
+							return (r.edge :: () -> string?)() or "#00000000"
+						end,
+					}
+					else nil,
 			}
 		end
 		-- Collapsed, the slot alone shows: its name as a tooltip. (A tooltip
@@ -1335,6 +1353,11 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 			class = "session-row",
 			provide = { session = s.id },
 			ref = card_ref,
+			-- (Its state down its left: needs you warm, failed red, at work in
+			-- the working ink, done in the ok tone.)
+			edge = function(): string?
+				return SessionRow.edge(cur().status)
+			end,
 			on_press = if in_flyout
 				then nil
 				else function(e: PointerEvent)
@@ -4182,6 +4205,121 @@ fn layer(input:LayerInput)->vec4<f32> {
 		return the_list(by_peek())
 	end, REGROUP)
 
+	-- What needs you, above the list and out of its scroll (§KEPL-11 4.2):
+	-- an approval or a question is a section of its own at the top, never a
+	-- row that sorts away under the projects. Capped at five, and always
+	-- there — with nothing in it, it says so and what fills it, so the place
+	-- a decision arrives in is never a blank that reads as "nothing here".
+	local BAND_MAX = 5
+	local needs_you = ui.computed(function(): { Session }
+		local ix = index:get()
+		local only = if props.narrowed ~= nil and props.narrowed() then true else nil
+		local out: { Session } = {}
+		local seen: { [string]: boolean } = {}
+		local function take(s: Session)
+			local st = s.status
+			-- (Only what waits on an answer: a failure keeps its row's red
+			-- edge in the list, where it happened.)
+			if st ~= "approval" and st ~= "input" then
+				return
+			end
+			if seen[s.id] then
+				return
+			end
+			seen[s.id] = true
+			table.insert(out, s)
+		end
+		for _, s in ix.everything do
+			take(s)
+		end
+		for _, id in ix.pinned_ids do
+			local s = ix.by_id[id]
+			if s then
+				take(s)
+			end
+		end
+		if only then
+			-- (A plugin's filter says which states the list shows, and the
+			-- band is part of the list.)
+			return out
+		end
+		table.sort(out, function(a: Session, b: Session): boolean
+			local ua, ub = SessionRow.URGENCY[a.status :: string] or 99, SessionRow.URGENCY[b.status :: string] or 99
+			if ua ~= ub then
+				return ua < ub
+			end
+			return (a.time or "") > (b.time or "")
+		end)
+		if #out > BAND_MAX then
+			table.remove(out, BAND_MAX + 1)
+		end
+		return out
+	end)
+	local function band(): Node
+		local rows = needs_you:get()
+		return ui.column {
+			id = "sidebar-needs-you",
+			w_full = true,
+			shrink = 0,
+			gap = list_gap(),
+			-- A band of its own: a hairline of the attention colour round it,
+			-- so it reads as a place decisions arrive rather than a group.
+			border = 1,
+			border_color = "$attention.edge",
+			rounded = "$radius.lg",
+			pb = "$zeron.space.hair",
+			ui.row {
+				class = "section-header",
+				w_full = true,
+				h = SessionRow.TITLE,
+				shrink = 0,
+				px = "$space.2",
+				gap = "$space.2",
+				items = "center",
+				ui.text {
+					locale.t("ds.sidebar.needs_you"),
+					text_size = "$font.size.xs",
+					weight = "$font.weight.medium",
+					letter_spacing = 0.4,
+					color = "$attention.ink",
+					shrink = 0,
+				},
+				ui.text {
+					function(): string
+						return tostring(#rows)
+					end,
+					text_size = "$font.size.xs",
+					color = "$text.tertiary",
+					tabular = true,
+					shrink = 0,
+				},
+				ui.div { grow = 1 },
+			},
+			if #rows == 0
+				then ui.text {
+					locale.t("ds.sidebar.needs_you_empty"),
+					px = "$space.2",
+					pb = "$space.1",
+					w_full = true,
+					wrap = true,
+					text_size = "$font.size.xs",
+					line_height = "$font.line.xs",
+					color = "$text.tertiary",
+				}
+				else ui.column {
+					w_full = true,
+					gap = list_gap(),
+					ui.each(needs_you, function(s: Session): Node
+						return session_row(s, by_now(), nil)
+					end, {
+						key = function(s: Session): string
+							return s.id
+						end,
+					}),
+				},
+		}
+	end
+
 	-- A new section of your own, at the end of yours, its name being typed.
 	local function new_section()
 		local id = `section-{os.time()}-{math.random(1, 1e6)}`
@@ -4843,6 +4981,11 @@ fn layer(input:LayerInput)->vec4<f32> {
 	}
 	if props.notice then
 		table.insert(body, props.notice)
+	end
+	-- (What needs you, over the list and out of its reach: it cannot scroll
+	-- away under the projects, as a row in the list would.)
+	if not is_island then
+		table.insert(body, band())
 	end
 	-- (The list's region: what plugins place in the sidebar by, and its
 	-- sessions, in order, under them.)

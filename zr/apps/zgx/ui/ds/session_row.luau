@@ -167,6 +167,46 @@ function M.mark(cur: () -> Session, strong: () -> boolean): Node
 	}
 end
 
+-- A state as a row's left edge wears it: 2 points on the line the eye
+-- travels down the list, so the list reads top to bottom instead of asking
+-- each row's end for a coloured dot. Warm only ever means "needs you", red
+-- "it failed", the working ink "at work", the ok tone "done"; nothing at
+-- rest, and nothing for a session merely waiting, has an edge. (§KEPL-11 4.2)
+M.EDGE = {
+	approval = "$zeron.status.approval",
+	input = "$zeron.status.approval",
+	failed = "$danger",
+	limited = "$warning",
+	working = "$text.tertiary",
+	connecting = "$text.tertiary",
+	plan = "$text.tertiary",
+	done = "$success",
+} :: { [string]: string }
+
+-- Its edge's token, or nil for a state that has none.
+function M.edge(kind: status.Kind?): string?
+	return if kind then M.EDGE[kind] else nil
+end
+
+-- The edge itself: 2 points down the row's left, its ink only where the
+-- state has one (so a row at rest keeps no stripe).
+function M.edge_bar(kind: () -> status.Kind?): Node
+	local function ink(): string?
+		return M.edge(kind())
+	end
+	return ui.div {
+		absolute = true,
+		left = 0,
+		top = 0,
+		bottom = 0,
+		w = 2,
+		pointer_events = "none",
+		bg = function(): string
+			return ink() or "#00000000"
+		end,
+	}
+end
+
 -- A state, small: its glyph alone, in its hue (a state with no glyph, its
 -- dot), its name a tooltip.
 function M.state(kind: status.Kind): Node
@@ -687,6 +727,9 @@ export type FrameProps = {
 	on_click: (() -> ())?,
 	-- How far in it starts (under a group, past its tree's gutter).
 	indent: (() -> number)?,
+	-- Its state's 2-point edge down its left (its token, or nil for none):
+	-- the list's scan line (ds/sidebar's rows, and a session's row anywhere).
+	edge: (() -> string?)?,
 	class: string?,
 	id: string?,
 	provide: { [string]: any }?,
@@ -741,6 +784,7 @@ function M.Frame(r: FrameProps): Node
 		class = r.class,
 		provide = r.provide,
 		depth = "flat",
+		relative = true,
 		selected = function(): boolean
 			return r.selected ~= nil and r.selected()
 		end,
@@ -757,6 +801,19 @@ function M.Frame(r: FrameProps): Node
 		border = 0,
 		overflow = "hidden",
 		ui.row { w_full = true, h_full = true, items = "start", table.unpack(content) },
+		if r.edge
+			then ui.div {
+				absolute = true,
+				left = 0,
+				top = 0,
+				bottom = 0,
+				w = 2,
+				pointer_events = "none",
+				bg = function(): string
+					return (r.edge :: () -> string?)() or "#00000000"
+				end,
+			}
+			else nil,
 	}
 end
 
@@ -849,6 +906,10 @@ function M.Row(props: RowProps): Node
 		class = props.class,
 		h = function(): number
 			return M.row_h(compact(), detail())
+		end,
+		-- (Its state down its left: the same read in every list of sessions.)
+		edge = function(): string?
+			return M.edge(cur().status)
 		end,
 		name = props.name or function(): string
 			return cur().title

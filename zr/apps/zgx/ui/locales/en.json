@@ -454,6 +454,8 @@
       "new_chat": "New chat",
       "search": "Search",
       "pinned": "Pinned",
+      "needs_you": "Needs you",
+      "needs_you_empty": "Nothing needs you. An agent's approval or a question lands here, above the list.",
       "drop_to_pin": "Drop here to pin",
       "drop_sessions": "Drop sessions here",
       "archived": "Archived",
