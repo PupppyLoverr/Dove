@@ -20,6 +20,18 @@ function M.setup()
 			hover = "{hover}",
 		},
 	}
+	-- The one warm colour, and the two steps of the type scale M2a added:
+	-- declared here as ds/tokens declares them, because this template
+	-- carries its own copy of this file and the app's design system reads
+	-- them where this is the one worn.
+	ui.theme.tokens {
+		attention = "#f5b45f",
+		["attention.ink"] = "#f8c684",
+		["attention.wash"] = "alpha(#f5b45f, 0.14)",
+		["attention.edge"] = "alpha(#f5b45f, 0.30)",
+		["font.size.xxs"] = 10,
+		["font.line.xxs"] = 13,
+	}
 	ui.theme.tokens {
 		zeron = {
 			-- Half-steps of the spacing scale (space.1 to 8: 4, 8, 12, 16, 24,
