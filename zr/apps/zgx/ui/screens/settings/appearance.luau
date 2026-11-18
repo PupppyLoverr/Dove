@@ -44,6 +44,22 @@ search.index(M.ID, ui.t("settings.appearance.title"), ui.t("settings.appearance.
 	{ key = "effect", title = ui.t("settings.appearance.effect.label"), section = ui.t("settings.appearance.new_chat"), terms = ui.t("settings.appearance.effect.terms") },
 })
 
+-- A theme that did not load: the window wears the framework's own instead
+-- of a theme nothing verified, and this says which token stopped it. (The
+-- check runs in src/authored.rs before the window is styled; a rejected
+-- theme is never worn, so the page has to be where a person finds out.)
+local function theme_trouble(): string?
+	local reports = require("@ds/authored").reports()
+	for _, scheme in ipairs({ "dark", "light" }) do
+		local r = reports[scheme]
+		local first = type(r) == "table" and (r.errors or {})[1] or nil
+		if type(first) == "table" then
+			return `The {scheme} theme did not load (stage {first.stage}): {first.message}`
+		end
+	end
+	return nil
+end
+
 local function row(key: string, props: any): Node
 	return search.anchor(key, ds.Settings.Row(props))
 end
@@ -338,6 +354,15 @@ function M.view(): Node
 	return ds.Settings.Page {
 		title = ui.t("settings.appearance.title"),
 		description = ui.t("settings.appearance.description"),
+		ui.show(function(): boolean
+			return theme_trouble() ~= nil
+		end, ds.Banner {
+			tone = "warning",
+			title = "Your theme did not load",
+			body = function(): string
+				return theme_trouble() or ""
+			end,
+		}),
 		ds.Settings.Section {
 			ds.Settings.Group {
 				row("scheme", {

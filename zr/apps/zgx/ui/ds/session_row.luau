@@ -489,10 +489,13 @@ function M.second_line(
 		gap = "$space.1",
 		items = "center",
 		ui.show(branch, ui.div { color = "$text.tertiary", Icon { name = "git-branch", size = 11 } }),
+		-- (The row's second line is the quiet one: the regular weight, so a
+		-- title in the body's weight reads as the stronger of the two.)
 		FadeText {
 			text,
 			grow = 1,
 			text_size = "$font.size.xs",
+			weight = "$font.weight.regular",
 			color = "$text.tertiary",
 		},
 	}

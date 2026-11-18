@@ -45,7 +45,10 @@ export type Props = {
 
 -- The title bar's height (Zeron's): the pages start under it, the
 -- wallpaper runs under it to the window's top.
-local TITLE_H = 38
+-- The band every page's top strip draws (ds/title_bar's height, from the
+-- theme's `band.height`): one number for the shell, settings and the composer,
+-- so moving between pages never moves the page. (§KEPL-11 4.1.)
+local TITLE_H = (ui.theme.get("band.height") :: number?) or 36
 -- The top bar over the cards: a tab on the bar's line, the window's gap over
 -- and under it.
 local TOP_BAR = 42

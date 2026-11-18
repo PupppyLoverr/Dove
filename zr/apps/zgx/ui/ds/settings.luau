@@ -153,7 +153,14 @@ function M.Page(props: PageProps): Node
 				gap = "$space.1",
 				ui.text { props.title, heading = 1, text_size = "$font.size.xl", line_height = "$font.line.xl", weight = "$font.weight.semibold", color = "$text.primary" },
 				if props.description
-					then ui.text { props.description, text_size = "$font.size.md", line_height = 20, color = "$text.secondary", wrap = true }
+					then ui.text {
+						props.description,
+						text_size = "$font.size.md",
+						line_height = 20,
+						weight = "$font.weight.regular",
+						color = "$text.secondary",
+						wrap = true,
+					}
 					else nil,
 			},
 			if props.trail and props.trail_top
@@ -469,9 +476,9 @@ function M.Row(props: RowProps): Node
 			props.badge,
 		},
 		if props.byline and props.truncate
-			then FadeText { props.byline, min_w = 0, text_size = "$font.size.sm", line_height = "$font.line.sm", color = "$text.tertiary" }
+			then FadeText { props.byline, min_w = 0, text_size = "$font.size.sm", line_height = "$font.line.sm", weight = "$font.weight.regular", color = "$text.tertiary" }
 			elseif props.byline
-			then ui.text { props.byline, text_size = "$font.size.sm", line_height = "$font.line.sm", color = "$text.tertiary", wrap = true }
+			then ui.text { props.byline, text_size = "$font.size.sm", line_height = "$font.line.sm", weight = "$font.weight.regular", color = "$text.tertiary", wrap = true }
 			else nil,
 		if props.description and props.private_description
 			then PrivateText {
@@ -482,9 +489,9 @@ function M.Row(props: RowProps): Node
 				color = "$text.tertiary",
 			}
 			elseif props.description and props.truncate
-			then FadeText { props.description, min_w = 0, text_size = "$font.size.sm", line_height = "$font.line.sm", color = "$text.tertiary" }
+			then FadeText { props.description, min_w = 0, text_size = "$font.size.sm", line_height = "$font.line.sm", weight = "$font.weight.regular", color = "$text.tertiary" }
 			elseif props.description
-			then ui.text { props.description, text_size = "$font.size.sm", line_height = "$font.line.sm", color = "$text.tertiary", wrap = true }
+			then ui.text { props.description, text_size = "$font.size.sm", line_height = "$font.line.sm", weight = "$font.weight.regular", color = "$text.tertiary", wrap = true }
 			else nil,
 		if props.detail
 			then ui.show(function(): boolean
@@ -658,7 +665,7 @@ function M.Nav(props: NavProps): Node
 				px = "$space.2",
 				pt = "$space.2",
 				items = "center",
-				ui.text { item.heading, text_size = "$font.size.xs", weight = "$font.weight.medium", color = "$text.tertiary" },
+				ui.text { item.heading, text_size = "$font.size.xxs", weight = "$font.weight.medium", color = "$text.tertiary" },
 			}
 		else
 			local function on(): boolean

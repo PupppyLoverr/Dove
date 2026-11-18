@@ -66,43 +66,23 @@ function M.theme(value: string?): { [string]: any }?
 	return { accent = `$zeron.accents.{a.value}` }
 end
 
--- The interface's text size: its body size in points (the theme's
--- `font.size.md`, 13, by default), every other text size and line height
--- scaled with it, the conversation's too (`zeron.prose.*`). Code has its
--- own (Settings → Appearance). Kept across launches, for the main window.
-M.TEXT_SIZES = { 12, 13, 14, 15, 16 }
+-- The interface's size: its body size in points, which is the theme's one
+-- authored type token (`font.size`, 13 by default). Every step of the scale
+-- is derived from it in ds/authored — `xxs` (a step under 11 at the default),
+-- `xs` through `xxl`, a step at 16 (`lg2`), the line heights and the
+-- conversation's prose — so this one number moves all of them, and nothing
+-- re-scales what the theme already derived. Code's size has its own setting.
+--
+-- 11 to 18 is the theme check's clamp (src/authored.rs): below it a body
+-- stops being readable, above it a row's second line is cut, and both are
+-- things a person may still want at the ends of the range.
+M.TEXT_SIZES = { 11, 12, 13, 14, 15, 16, 17, 18 }
 M.text_size = ui.persist("text_size", 13)
 
--- The tokens text is sized by, each with its line height beside it.
-local SIZED = {
-	"font.size.xs", "font.size.sm", "font.size.md", "font.size.lg", "font.size.xl", "font.size.xxl",
-	"font.line.xs", "font.line.sm", "font.line.md", "font.line.lg", "font.line.xl", "font.line.xxl",
-	"zeron.prose.size", "zeron.prose.line",
-	"zeron.prose.h1.size", "zeron.prose.h1.line",
-	"zeron.prose.h2.size", "zeron.prose.h2.line",
-	"zeron.prose.h3.size", "zeron.prose.h3.line",
-	"zeron.prose.small.size", "zeron.prose.small.line",
-}
-
--- The text tokens a window overrides for `size` (the chosen one by
--- default): each scaled from the theme's own by size / 13, sizes to half
--- a point, line heights to whole points. Nothing at the theme's own size.
-function M.text_theme(size: number?): { [string]: any }?
-	local body = size or M.text_size:get()
-	local base = (ui.theme.get("font.size.md") :: number?) or 13
-	if body == base then
-		return nil
-	end
-	local scale = body / base
-	local out: { [string]: any } = {}
-	for _, token in SIZED do
-		local v = ui.theme.get(token) :: number?
-		if type(v) == "number" then
-			local line = string.find(token, "line", 1, true) ~= nil
-			out[token] = if line then math.floor(v * scale + 0.5) else math.floor(v * scale * 2 + 0.5) / 2
-		end
-	end
-	return out
+-- The body size the window wears now: the person's choice, and the style's
+-- own offset (Editorial sets a step larger).
+function M.interface_size(): number
+	return M.text_size:get() + (STYLE_TEXT[M.style:get()] or 0)
 end
 
 -- The interface's font and code's (Settings → Appearance, as the shipping
@@ -230,12 +210,13 @@ function M.style_theme(value: string?): { [string]: any }?
 end
 
 -- What the main window wears over its theme (ds/palettes, worn by
--- ds/tokens): the text size, its style, the fonts chosen, and an accent
--- chosen over the theme's own.
+-- ds/tokens): its style, the fonts chosen, and an accent chosen over the
+-- theme's own. (The text size is not here: it is the theme's own authored
+-- `font.size`, worn by ds/authored, so the whole scale derives from it
+-- rather than being re-scaled after the fact.)
 function M.window_theme(): { [string]: any }?
 	local out: { [string]: any }? = nil
-	local body = M.text_size:get() + (STYLE_TEXT[M.style:get()] or 0)
-	for _, part in { M.text_theme(body), M.style_theme(), M.font_theme(), M.theme() } do
+	for _, part in { M.style_theme(), M.font_theme(), M.theme() } do
 		if part then
 			out = out or {}
 			for k, v in part do

@@ -54,9 +54,13 @@ export type Props = {
 	read actions_width: State<number>?,
 }
 
--- Zeron's metrics. The bar: 38 tall, its row padded 4 at the top, so its
--- controls centre 21 down.
-local H, TOP_PAD = 38, 4
+-- The band's metrics: one height for every page's top strip (the theme's
+-- `band.height`, 36: a control's 32 plus its line), its row padded 4 at the
+-- top, so its controls centre 20 down. It used to be 38 here and a separate
+-- 44 on the pages that drew their own strip, which moved the whole page six
+-- points as a person moved between them; §KEPL-11 4.1 asks for the one
+-- height, and this is the one place it is written.
+local H, TOP_PAD = (ui.theme.get("band.height") :: number?) or 36, 4
 local MIDDLE = (H + TOP_PAD) / 2
 -- macOS's buttons, as macOS 26 draws them (measured off Zeron's window): 14
 -- across, 23 apart, the first centred 21 in, so 21, 44 and 67.

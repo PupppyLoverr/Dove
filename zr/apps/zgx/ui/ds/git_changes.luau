@@ -29,6 +29,7 @@
 -- shows under the pointer (Discard).
 
 local Badge = require("@self/badge")
+local EmptyState = require("@self/empty_state")
 local FadeText = require("@self/fade_text")
 local SearchField = require("@self/search_field")
 local Rail = require("@self/rail")
@@ -668,7 +669,33 @@ local List = ui.component(function(props: ListProps): Node
 				props.on_frame(el)
 			end
 		end,
-		ui.list {
+		-- Nothing to show gets a state that says which nothing it is: a branch
+		-- with no changes, or a filter that matches none of them. (The list
+		-- alone drew an empty card, which reads as a load that never came.)
+		ui.show(function(): boolean
+			return #rows:get() == 0
+		end, ui.computed(function(): Node
+			local q = filter:get()
+			if q ~= "" then
+				return EmptyState {
+					size = "sm",
+					icon = "search",
+					fill = true,
+					title = `No file matches "{q}"`,
+					body = "Clear the filter to see every change on the branch.",
+				}
+			end
+			return EmptyState {
+				size = "sm",
+				icon = "git-branch",
+				fill = true,
+				title = "No changes",
+				body = "The tree is clean: what an agent changes appears here as it saves.",
+			}
+		end)),
+		ui.show(function(): boolean
+			return #rows:get() > 0
+		end, ui.list {
 			ref = props.ref,
 			w_full = true,
 			h_full = true,
@@ -697,7 +724,7 @@ local List = ui.component(function(props: ListProps): Node
 				end
 				return if r and r.file then r.file.path elseif r and r.path then r.path elseif r and r.dir then r.dir else ""
 			end,
-		},
+		}),
 		Rail { id = if props.id then `{props.id}-rail` else "changes-rail", offset = offset, extent = total, view = seen },
 	}
 end)

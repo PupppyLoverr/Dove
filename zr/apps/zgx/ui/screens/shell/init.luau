@@ -45,7 +45,10 @@ local host = require("@app/screens/settings/host")
 local appearance = require("@app/screens/shell/appearance")
 local motion = require("@ds/motion")
 
-local TITLE_H = 38
+-- The band every page's top strip draws (ds/title_bar's height, from the
+-- theme's `band.height`): one number for the shell, settings and the composer,
+-- so moving between pages never moves the page. (§KEPL-11 4.1.)
+local TITLE_H = (ui.theme.get("band.height") :: number?) or 36
 
 -- The shell's screens (and the others' it shows), loaded with the script,
 -- so what they make as they load (the sidebar's sync with the engine, its
