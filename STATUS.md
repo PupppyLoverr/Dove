@@ -1,118 +1,64 @@
-# Keplorayx on zgx: where it stands
+# STATUS
 
-Branch `zgx/phase-a` in `C:\dev\keplorayx-zgx`, local only. Nothing is pushed, and `zgx/main` is untouched. The original Dove folder and `C:/dvw/target-ui-v4` were never written to.
+Hand-written status was wrong by 40 commits on 2026-11-06 (it claimed "local only, nothing is
+pushed" five days after the branch was pushed), so this page now carries only what `git` and a
+build can prove. Numbers below are from **2026-11-18** on `zgx/phase-a` and say how to re-derive
+them. If they disagree with your checkout, the checkout is right.
 
-This page says what works, what's partial and what's next. Each claim is backed by something you can run, a PNG in `apps/keplorayx/docs/design/shots/`, or a test.
-
-## Keplorayx on Zeron's app and engine (`zr/`), 2026-11-06
-
-Keplorayx now runs on Zeron's whole app and engine, copied into `zr/` and changed for Keplorayx (plan: `docs/plans/zeron-base.md`; Apple research: `docs/design/apple-island-spotlight.md`). The earlier app (`apps/keplorayx`) still builds and stays as the fallback.
-
-**Build and run** (warm targets: `C:/dvw/target-kx-zgx/zr-app` for the app, `C:/dvw/target-kx-zgx/zr` for the engine):
-
-```bash
-cd zr/apps/zgx && CARGO_TARGET_DIR=C:/dvw/target-kx-zgx/zr-app cargo build      # keplorayx.exe
-cd zr && CARGO_TARGET_DIR=C:/dvw/target-kx-zgx/zr cargo build -p zeron --bin keplorayx-engine
-cp C:/dvw/target-kx-zgx/zr/debug/keplorayx-engine.exe C:/dvw/target-kx-zgx/zr-app/debug/
-C:/dvw/target-kx-zgx/zr-app/debug/keplorayx.exe            # intro, then setup; once set up, the main window
-C:/dvw/target-kx-zgx/zr-app/debug/keplorayx.exe main       # the main window; also notch, launcher, onboarding, gallery, --background
+```sh
+git rev-list --count main..HEAD          # 86 commits, 2026-11-04 … 2026-11-16
+git diff --shortstat main...HEAD         # 7,857 files, +2,174,769 / −46,822
+git rev-parse HEAD origin/zgx/phase-a    # equal: the branch is pushed, and main is untouched
 ```
 
-The scripts (`zr/apps/zgx/ui`) reload as they're saved. Data: `~/.keplorayx` (the engine's, port 27731), never Zeron's. Tests on scratch data: `ZERON_ZGX_ENGINE_DATA`, `ZERON_ZGX_ENGINE_PORT`, `ZERON_ZGX_MOCK=1` (the mock agent), `KX_APP_ID`, `KX_TRAY=0`, `KX_NOTCH_CAPTURABLE=1`.
+## What runs today
 
-**Works, tried on scratch data with the mock agent:**
-- Zeron's main window on Keplorayx's engine: chats sent and answered, the sidebar, settings, Zeron's agents catalog (Claude Code, Codex, Cursor, Devin, Hermes, OpenCode here; more from the registry).
-- Keplorayx's look: its icons over Zeron's, the Orbit colours in Zeron's themes, "Keplorayx" in its words and windows, `com.keplorayx.app`.
-- Setup as Zeron's: the intro over the desktop, setup opening from the middle as it decodes, sign-in (Woozlit, `src/kx_account.rs`), the look, your username and member card (made here with Zeron's card seed), your organization, the agents, done. (Invites and Zeron's GitHub App are left out: they need Zeron's servers.)
-- The composer's centre, bottom and slim placements (Settings › Appearance › New chat composer).
-- The island (`src/kx/notch.rs`, `ui/notch.luau`): real glass, every page, and chat: open a thread, read Zeron's transcript, reply, allow or deny.
-- Spotlight (Alt+Space, `ui/launcher.luau`): at the top as the Mac's island draws it, a black capsule and a glass panel of results.
-- Widgets: glass over your wallpaper (`src/kx/widgets.rs` reads Windows' copy of it), every kind.
-- The tray, keys from any app, Start with Windows, hiding to the tray, music controls, your old projects brought across once.
+`zr/` is the generation that builds and runs: `keplorayx.exe` (a zgx host running the Luau screens
+in `zr/apps/zgx/ui`) talking over loopback to `keplorayx-engine.exe`, built from `zr/apps/zeron`
+plus the engine crates in `zr/crates`. It is a **second workspace** (`zr/Cargo.toml`), not a member
+of the root one.
 
-**Not done or not verified:** Zeron Cloud on cua sandboxes; agents' widget and calendar tools in Zeron's MCP; a real Alt+Space press, real music, touch; Woozlit sign-in past the browser; the old app's threads (they stay readable in it); Start with Windows still names the old app until you switch it in the new Settings.
-
-## Run it
-
-```bash
-cargo build -p keplorayx -p dove-escrow
-cargo run -p keplorayx                     # First Light on a first run, else the main window
-cargo run -p keplorayx -- main             # the main window
-cargo run -p keplorayx -- --background     # the tray, the notch and widgets; the window hidden
-cargo run -p keplorayx -- launcher         # the launcher on its own, shown
-cargo run -p keplorayx -- gallery          # Orbit's workbench
-cargo run -p keplorayx -- onboarding       # setup on its own
-cargo run -p keplorayx -- notch            # the notch on its own
+```sh
+(cd zr/apps/zgx && cargo build --locked)                              # the app
+(cd zr && cargo build --locked -p zeron --bin keplorayx-engine)       # the engine
+cp zr/target/debug/keplorayx-engine.exe zr/apps/zgx/target/debug/     # it is looked for beside the app
+zr/apps/zgx/target/debug/keplorayx.exe main
 ```
 
-- **Data:** `%LOCALAPPDATA%\keplorayx-zgx-dev`, unless `DOVE_HOME` says otherwise. Plugins in `<data>/plugins`, widgets in `<data>/widgets.json`, the calendar in `<data>/calendar.json`, agents' visuals in `<data>/visuals`.
-- **Builds:** `C:/dvw/target-kx-zgx` (the sign-in helper: `C:/dvw/target-kx-zgx/mesh`).
-- **Without agents:** `KX_FIXTURE=<name>` runs a screen on stand-in data (`ui/fixtures/`): `home`, `thread`, `visual`, `approval`, `review`, `files`, `browser`, `history`, `pulls`, `terminal`, `inbox`, `team`, `settings`, `constellation`, `first_run`, `notch`.
-- **Off for tests:** `KX_NOTCH=0` (the notch), `KX_TRAY=0` (the tray and the keys from any app). `KX_MCP_ANNOUNCE=1` prints the agents' bridge port, so a script can play the agent.
+- **Editing `zr/apps/zgx/ui/**` needs no rebuild.** `zr/apps/zgx/src/main.rs:967` watches the
+  scripts and reloads them as they are saved, keeping state; only Rust changes need `cargo build`.
+- **The other two generations build nothing you can ship.** `apps/dove` (GPUI) is excluded from the
+  root workspace and kept as the reference; `apps/keplorayx` is a root-workspace member that never
+  ran as the product after Wave 2 landed.
+- **`STATUS.md` used to describe `apps/keplorayx`.** It does not; see `plans/rewrite-plan.md` in the
+  captain drive for the sequence.
 
-## Beside the desktop
+## Verified on 2026-11-18 (Windows 11, i7-10810U, 16 GB)
 
-| Part | What it does |
-|---|---|
-| **The tray** | Closing the window hides it there: agents keep working, the notch stays. Its menu: Open, New thread, Inbox, Settings, Show the notch, Start with Windows, Quit. |
-| **`--background`** | Starts with the window hidden (what Start with Windows runs, through a per-user Run entry). |
-| **The notch** | An island hanging from the screen's top edge, shown only when the pointer reaches the edge over it (and slid away soon after); hidden, clicks pass through. It says who waits on you (Allow, Deny), else your agents at work, else the time, the day and Alt Space to ask. While something waits, a thin warm line stays at the edge. Opened, its tabs: Home, Agents, Music (Windows' media controls: cover, progress, play, skip, seek), **Tray** (files dropped on the island, kept until you take them away; Open, Show in folder), **Alerts** (the last 30 finishes, failures and asks, each opening its thread), Notes, Timer. On the same frosted glass as the window. |
-| **The launcher (Alt+Space)** | Zeron's command palette in a window of its own over everything: apps (Start menu and packaged), open windows, files in your usual folders and projects, what you copied this run (memory only), threads, projects, quick links, snippets, safe system commands; sums and unit conversions as you type; web search; **Ask Keplorayx**, its answer streaming in place; **Now playing** (play, pause, next, previous); what you picked lately first again, kept across launches. Notes: `apps/keplorayx/docs/design/launcher-study.md`. |
-| **Widgets** | Windows of glass on the desktop or floating: clock (digital, analog, world, small), calendar (agenda, month, small), agents at work, recent threads, quick ask, usage, CPU and memory (bars, small, graph), now playing (with the media keys), note, and an agent's own view. Drag them anywhere (kept); a secondary click changes the variant, floats it or removes it. Settings › Widgets adds them. |
-| **Keys from any app (Windows)** | Alt+Space the launcher (a low-level keyboard hook: Windows keeps Alt+Space for window menus, so a registered hot key didn't fire); Ctrl+Alt+Space asks; Ctrl+Alt+A and Ctrl+Alt+D allow or deny. |
+- **The app builds.** `zr/apps/zgx`, warm target, 19 warnings, 0 errors, **85 s**.
+- **The engine builds.** `-p zeron --bin keplorayx-engine`, warm but three days cold, **29 m 33 s**,
+  4 warnings, 0 errors. On this laptop budget half an hour for an engine touch.
+- **It launches.** `keplorayx.exe` with a fresh data dir starts `keplorayx-engine.exe` on its own
+  ("engine: started … (port 27771)", "engine: connected") and opens its 680×500 intro window. The
+  intro then closes and **no setup window appears in its place** — the app stays up with no window
+  and nothing on stderr. `keplorayx.exe main` against a fresh workspace exits immediately with no
+  window and no message, so on a fresh data dir the entry point is `keplorayx.exe`, not `… main`.
+- **One warning to chase:** `chat: cursor's models didn't list: harness protocol error: model
+  catalog unavailable; retry`.
 
-## Agents' tools: the bridge
+## What is not verified
 
-`keplorayx mcp` (src/mcp.rs) is an MCP server every agent Keplorayx starts gets (Claude Code and Codex through their adapters, Gemini and OpenCode through ACP), relaying to the running app on a loopback port with a token.
+- The last four commits (`91ad04c` … `6b5efb8`, 2026-11-15/16) have never been driven by hand. The
+  build was the first thing to run them.
+- No macOS or Linux build of `zr/` has ever been produced by CI or locally: no workflow builds it,
+  and the only machine in this checkout is Windows.
+- `.github/workflows/{ci,package}.yml` still build `-p dove`, which is excluded from the workspace,
+  so those jobs do not describe this branch's app.
+- `zr/scripts/package-{macos,windows}.sh` expect a `zeron` binary and a `zeron-engine` binary; this
+  branch produces `keplorayx-engine` instead, so neither script runs unmodified.
 
-- **Generative UI:** `show_visual` runs the agent's Luau script in Zeron's sandbox (`crates/visual`, vendored) before it's shown, and the thread draws it with the design system: stats, tables, charts, tabs, toggles, sliders, canvases. `show_image` shows a picture. **Not ported:** 3D scenes and shaders (Zeron renders them on the GPU); they say so in place.
-- **Plugins:** `create_plugin`, `write_plugin_file`, `read_plugin_file`, `list_plugins`, `reload_plugins` (with the window's errors).
-- **Widgets and calendar:** `set_widget`, `remove_widget`, `list_widgets`, `calendar_add`, `calendar_remove`, `calendar_list`.
-- **Plugins' own tools:** every allowed plugin with an MCP program has its tools relayed, under its name.
+## Details that are still maintained by hand
 
-## Plugins
-
-On Zeron's model (`src/plugins.rs`): a folder with `kx-plugin.json` and `init.luau`, run by zgx in a sandbox of its own in the main window. **Settings › Plugins** is Zeron's page: search beside the title, Installed and Library tabs, each plugin a row with its tile and version; Install from the library, Allow (a dialog saying what it may do), a switch once allowed, Remove behind a confirm. An update asking for more asks again. Agents make plugins; you allow them. **Settings** as Zeron's: declared in the manifest (switch, choice, text, number), drawn under the plugin's name on that page, read by the plugin (`kx.setting`, `kx.on_setting`). Every plugin made gets `kx.luau`, the helpers (`place`, `toast`, `store`, `every`, `open`, `compose`, `threads`), after Zeron's SDK. Guide: `apps/keplorayx/docs/plugins.md`.
-
-**Computer use** is in the catalog (`apps/keplorayx/plugins/computer`), not bundled as running: Install, then Allow. It runs Cua's driver (`cua mcp`) and gives whichever agent runs its 35 computer tools, with guidance to read the accessibility tree before any screenshot. Type `@computer` in the composer to ask for it.
-
-## The look: Zeron's, in Keplorayx's words
-
-Zeron's design system, vendored whole as `apps/keplorayx/ui/ds` (MIT, credited in `THIRD_PARTY_NOTICES.md`), with Orbit's two themes and Keplorayx's glyphs.
-
-| Part | What it is now |
-|---|---|
-| **Sidebar** | Zeron's, calmer: New thread and Search on top; projects (each tile its own hue) with their threads on tree lines; Constellation, Team and Settings as quiet icons at its foot. A thread's menu: Pin (kept in the store), Open, Archive; double-click renames. |
-| **Composer** | Zeron's, in three placements (centre, bottom, slim). Sending while the agent works **queues** the message in its dock (send now, edit, remove, reorder); it goes when the turn ends. `@` offers projects, agents and allowed plugins' mentions. |
-| **Model picker** | Zeron's, fed from the engine: a tab for each installed agent, its models, an effort slider. |
-| **Thread** | Zeron's transcript; agents' visuals drawn in place. Its head, as Zeron's, always shows the agent's mark and the title. |
-| **Right panel** | Changes, Files, Browser, Terminal, History, Pull requests, on Zeron's tabs. Its home: this thread (project, branch, its changes), the project's other threads (Zeron's lanes), and what opens here, each with its key. |
-| **Settings** | General (send with, compact, Stop agent with Escape, close the panel with its last tab, open links in the panel's browser or yours, hide emails, tray, notch, Start with Windows, keys), Appearance, Agents, Notifications, Shortcuts, **Plugins**, **Widgets**, Account, Privacy and data, About. |
-
-## Fixed this round
-
-- **Chat:** a follow-up's turn was missing from the window (a new session began with an empty transcript, and the old one put its own back); the open thread's record could keep the previous thread's id after a new thread started. Both found with the fake agent and fixed.
-- **Notifications** never fired (they asked for a window property that doesn't exist); they do now.
-- **Adding a project** refused folders whose top holds only folders.
-- **Toasts** stack at the window's foot (they were laid out at the top, under the notch); repeats replace each other; errors clear after 7 seconds.
-
-## Checks
-
-- `zgx lint ui`: 0 errors, 0 warnings in 218 files. `cargo test -p keplorayx`: 15 passed.
-- Every fixture, the launcher and the gallery load with no script error; the notch and First Light captured clean.
-- Driven live on a scratch home: sending, follow-ups, the queue, the bridge's every tool (as an agent would), an allowed plugin drawing in the sidebar, widgets, closing to the tray, `--background`, the notch hidden until reached for, sign-in to the browser hand-off and Cancel.
-- **Hardware numbers:** not re-run this round, as asked; the last are in `apps/keplorayx/docs/perf/README.md`.
-
-## Not done yet (honestly)
-
-- **Alt+Space** hasn't been tried with a real keypress: the hook ignores injected keys on purpose, so only you can. If an old Keplorayx is still running from before, quit it from its tray first: only one process can own the key.
-- **Computer use on this computer** needs your one-time consent in Cua (`cua do-host-consent`, then `cua do switch host`): I didn't grant it for you. The plugin's tools reach agents; acting on the desktop waits on that.
-- **3D scenes and shaders in visuals** (Zeron's GPU renderer, `crates/visual-gpu`).
-- **Remote control:** signing in works; publishing threads to the phone isn't ported (left out, as agreed).
-- **The launcher's** window management, emoji, file previews, images in clipboard history; plugins adding to the launcher.
-- **Widgets:** the world clock's zones are fixed offsets (no daylight saving); now playing reads known players' window titles (Spotify, foobar2000, VLC, AIMP, MusicBee, iTunes), not Windows' media session.
-- **A zgx crash** seen once: "stale scene node" in zgx's scene, while the window was still starting and a test changed its route. Not reproduced since; reported here so it isn't lost.
-- **Dove's browser tools for agents** (driving the panel's browser) and its team tools aren't on the bridge yet; the bridge is Keplorayx's own, so the Phase 1 extraction into `crates/dove-app` is no longer in its way.
-- **The gallery** still shows Orbit's own components, not the vendored ones.
-- **Tested by driving the window and the bridge, not by hand:** sending, follow-ups, the queue, plugins, widgets, the launcher's search, the tray hiding. Approvals from the composer and a real agent calling the tools are still worth trying yourself.
-- **Global keys on macOS and Linux, and the tray on Linux:** cfg-gated stubs. Nothing was built for macOS or Linux, as asked.
+- `zr/ARCHITECTURE.md` — engine layout, data dirs, RPC. Its frontend section still says GPUI.
+- `apps/keplorayx/docs/PLAN-zgx-orbit.md` — Wave 1 phases A–G and their gates.
+- `zr/docs/plans/zeron-base.md` and `docs/plans/buddies.md` — Wave 2/3 plans; both lag the code.
