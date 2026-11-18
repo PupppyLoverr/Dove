@@ -22,7 +22,7 @@
 //! its cache.
 
 use std::cell::RefCell;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use serde_json::json;
@@ -33,6 +33,7 @@ use zgx_desktop::WindowContext;
 use zgx_script::{ScriptHost, Shared, Value};
 
 use crate::auth::text;
+use crate::authored;
 use crate::plugins::json_value;
 
 /// `work` on a thread of its own, its result once done (none if it panicked):
@@ -84,6 +85,91 @@ pub fn set_templates(themes: Vec<TemplateTheme>) {
     }
 }
 
+/// A theme file written in the authored form (the 42): its tokens, checked.
+/// None where the file is not that form — a palette, a VS Code colour theme,
+/// a folder of them — which the catalogue checks its own way, so an import of
+/// one of those is not gated on a registry it was never written against.
+fn authored_report(path: &Path) -> Option<authored::Report> {
+    let file = if path.is_dir() {
+        let mut found = None;
+        for entry in std::fs::read_dir(path).ok()? {
+            let entry = entry.ok()?;
+            let candidate = entry.path();
+            if candidate.extension().is_some_and(|e| e == "json") && authored_report(&candidate).is_some() {
+                found = Some(candidate);
+                break;
+            }
+        }
+        found?
+    } else {
+        path.to_path_buf()
+    };
+    let text = std::fs::read_to_string(&file).ok()?;
+    let root: serde_json::Value = serde_json::from_str(&text).ok().or_else(|| {
+        // (A file with comments, which the catalogue's reader takes: the
+        // authored form is written without them, but an agent's may not be.)
+        Some(serde_json::Value::Object(serde_json::Map::new()))
+    })?;
+    let tokens = root.get("tokens")?.as_object()?;
+    let scheme = match root.get("type").and_then(|t| t.as_str()) {
+        Some("light") | Some("high-contrast-light") => "light",
+        _ => "dark",
+    };
+    // (Every key the file writes is one of the 42, or the file is not in
+    // this form at all and the catalogue's own check has it.)
+    let mut flat: Vec<(String, serde_json::Value)> = Vec::new();
+    flatten_into("", tokens, &mut flat);
+    if flat.is_empty() || !flat.iter().all(|(name, _)| authored::SPEC.iter().any(|s| s.name == name)) {
+        return None;
+    }
+    let defaults = authored::builtin(&crate::ui_dir(), scheme).unwrap_or_default();
+    Some(authored::check(&text, scheme, &defaults))
+}
+
+fn flatten_into(prefix: &str, group: &serde_json::Map<String, serde_json::Value>, out: &mut Vec<(String, serde_json::Value)>) {
+    for (key, value) in group {
+        let name = if prefix.is_empty() { key.clone() } else { format!("{prefix}.{key}") };
+        match value {
+            serde_json::Value::Object(inner) => flatten_into(&name, inner, out),
+            value => out.push((name, value.clone())),
+        }
+    }
+}
+
+fn audit_report(path: &Path) -> Option<authored::Report> {
+    authored_report(path)
+}
+
+/// Stages 1–6 of the theme check over one file, as one answer: `Ok` where it
+/// may be installed (a file that is not in the authored form is not this
+/// check's to refuse), or the messages that stop it.
+fn audit(path: &Path) -> Result<(), String> {
+    let Some(report) = authored_report(path) else { return Ok(()) };
+    if !report.ok {
+        let said: Vec<String> = report
+            .errors
+            .iter()
+            .map(|e| match &e.token {
+                Some(token) => format!("stage {}: {token}: {}", e.stage, e.message),
+                None => format!("stage {}: {}", e.stage, e.message),
+            })
+            .collect();
+        return Err(said.join("
+"));
+    }
+    // Stage 6: the layout pass, on the theme the window would wear.
+    let ui = crate::ui_dir();
+    let mut checked = authored::prepare(&ui);
+    checked[&report.scheme] = serde_json::to_value(&report).unwrap_or(serde_json::Value::Null);
+    let failures = crate::layout_smoke::check(&checked);
+    if !failures.is_empty() {
+        let said: Vec<String> = failures.iter().map(|f| format!("stage 6: {f}")).collect();
+        return Err(said.join("
+"));
+    }
+    Ok(())
+}
+
 fn said(error: impl std::fmt::Display) -> String {
     error.to_string()
 }
@@ -91,6 +177,13 @@ fn said(error: impl std::fmt::Display) -> String {
 pub fn install(_cx: &mut WindowContext, host: &ScriptHost) {
     let shared = Rc::new(host.shared("themes.library", Value::record([("state", Value::from("loading"))])));
     LIBRARY.with(|l| *l.borrow_mut() = Some(shared));
+    // The window's own theme, before the scripts read it: 42 authored
+    // tokens a scheme, checked (src/authored.rs), and every derived one the
+    // script computes from them (ds/authored). A scheme that did not check
+    // is in here too, with the errors that stopped it, so the script can say
+    // which token and why instead of wearing it.
+    let checked = authored::prepare(&crate::ui_dir());
+    host.shared("themes.authored", Value::Nil).set(json_value(&checked));
     publish();
     // Each connection to the engine: told when its tools change a theme (and
     // read again at once, for what changed while there was none).
@@ -105,9 +198,47 @@ pub fn install(_cx: &mut WindowContext, host: &ScriptHost) {
         if path.as_os_str().is_empty() {
             return Err("Choose a theme file or an extension's folder.".into());
         }
+        // A theme written in the authored form (the 42) is checked before it
+        // is installed, not after: stages 1–5 on a thread of its own, then
+        // stage 6 — the layout pass — which is the one a clamp cannot make.
+        // A theme that fails either is not installed and not listed.
+        let gate = off_thread({
+            let path = path.clone();
+            move || audit(&path)
+        })
+        .await
+        .ok_or("The check stopped")?;
+        if let Err(why) = gate {
+            return Err(why);
+        }
         let imported = off_thread(move || catalog::import(&dir, &path).map_err(said)).await.ok_or("The import stopped")??;
         publish();
         Ok(json_value(&json!({ "entry": imported.entry, "variants": imported.variants, "skipped": imported.skipped })))
+    });
+    // The check, on its own, writing nothing: `themes.check { path }` answers
+    // `{ authored = true|false, ok, errors, warnings, adjusted, layout }`.
+    // An agent or the Studio runs it before asking the window to wear a
+    // theme (`validate_theme` in docs/themes.md).
+    host.async_action("themes.check", move |arg| async move {
+        let path = PathBuf::from(text(&arg));
+        let gate = audit(&path);
+        let report = audit_report(&path);
+        let mut out = json!({
+            "ok": gate.is_ok() && report.as_ref().is_some_and(|r| r.ok),
+            "authored": report.is_some(),
+            "errors": [],
+            "warnings": [],
+        });
+        if let Some(report) = &report {
+            out["errors"] = json!(report.errors);
+            out["warnings"] = json!(report.warnings);
+            out["adjusted"] = json!(report.adjusted);
+        }
+        if let Err(why) = gate {
+            out["errors"].as_array_mut().map(|errors| errors.push(json!({ "stage": 6, "token": null, "message": why })));
+            out["ok"] = json!(false);
+        }
+        Ok(json_value(&out))
     });
     host.action("themes.remove", move |arg| {
         let Some(dir) = data_dir() else { return };

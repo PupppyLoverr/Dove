@@ -467,7 +467,12 @@ end
 -- The skills library: `{ name, description }` each.
 M.skills = ui.state("kx_buddy_skills", {} :: { { name: string, description: string } })
 function M.read_skills()
-	ui.call("kx.skills.list"):after(function(list: any)
+	-- (As above: a window that has not lent this has no skills to read.)
+	local ok, promise = pcall(ui.call, "kx.skills.list")
+	if not ok then
+		return
+	end
+	promise:after(function(list: any)
 		M.skills:set(if type(list) == "table" then list else {})
 	end, function() end)
 end
@@ -494,7 +499,13 @@ end
 -- The computer every buddy shares: `{ id, name }` or nil.
 M.shared_computer = ui.state("kx_buddy_shared_computer", nil :: { id: string, name: string? }?)
 function M.read_shared_computer()
-	ui.call("kx.computer.shared"):after(function(space: any)
+	-- (A window that has not lent this yet — a test host, a plugin's sandbox —
+	-- has no such call to make: nothing to read, nothing to say.)
+	local ok, promise = pcall(ui.call, "kx.computer.shared")
+	if not ok then
+		return
+	end
+	promise:after(function(space: any)
 		M.shared_computer:set(if type(space) == "table" and space.id then space else nil)
 	end, function() end)
 end
