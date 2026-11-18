@@ -3,8 +3,9 @@ description: Launch the app this branch actually builds, as soon as code changes
 alwaysApply: true
 ---
 
-After finishing code changes in this repo, launch the new build before ending the turn, then close
-it again so no window or process is left behind.
+After finishing code changes in this repo, launch the new build before ending the turn. Leave it
+running in the background. If a previous app window from this repo is still open, close that process
+first so the window the user sees is the new build.
 
 **Editing `zr/apps/zgx/ui/**` (Luau) needs no rebuild.** Screens, the design system and plugins are
 read from disk and reload as they are saved. Only Rust changes (`zr/crates/**`,
@@ -34,5 +35,9 @@ pass the **same** value to both builds so step 3 copies from the right place. Ot
 `launcher`, `notch`, `onboarding`, `gallery`.
 
 Before starting, close any `keplorayx.exe` already running from this checkout so the window the user
-sees is the new build; only one process can own the global keys. Kill it again when the check is
-done.
+sees is the new build; only one process can own the global keys.
+
+Two things this branch does today that a launch check will hit: `keplorayx.exe main` exits with no
+window and no message when the data directory has never been set up, and on a fresh directory
+`keplorayx.exe` opens its intro, closes it, and does not open setup in its place. The process stays
+up either way, so check for a real window rather than reading a live pid as success.
