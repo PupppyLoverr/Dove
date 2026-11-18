@@ -1503,7 +1503,15 @@ return ui.component(function(props: Props): Node
 				hook = false,
 				gap = "$space.2",
 				items = "center",
-				Button { locale.t("ds.composer.deny"), size = "sm", tone = "ghost", on_click = props.on_deny },
+				Button {
+					locale.t("ds.composer.deny"),
+					size = "sm",
+					tone = "ghost",
+					on_click = props.on_deny,
+					-- (The key that answers it, on the button that does: esc always
+					-- means the thing in front goes away.)
+					ui.text { ui.shortcut_text("escape"), text_size = "$font.size.xs", color = "$text.tertiary" },
+				},
 				ui.show(
 					function(): boolean
 						local always = props.can_always
@@ -1521,6 +1529,7 @@ return ui.component(function(props: Props): Node
 								props.on_approve("always")
 							end
 						end,
+						ui.text { ui.shortcut_text("shift+enter"), text_size = "$font.size.xs", color = "$text.tertiary" },
 					}
 				),
 				Button {
@@ -1532,6 +1541,7 @@ return ui.component(function(props: Props): Node
 							props.on_approve("once")
 						end
 					end,
+					ui.text { ui.shortcut_text("enter"), text_size = "$font.size.xs", opacity = 0.7 },
 				},
 			}),
 		}
@@ -1744,7 +1754,11 @@ return ui.component(function(props: Props): Node
 		overflow = "hidden",
 		rounded = "$zeron.composer.radius",
 		border = 1,
-		border_color = "$zeron.composer.edge",
+		-- (A decision's plate wears the warm hairline, so what the agent asks
+		-- for is unmistakable without a dialog over the thread.)
+		border_color = function(): string
+			return if approval() then "$attention.edge" else "$zeron.composer.edge"
+		end,
 		bg = function()
 			return if material.see_through() then "$zeron.composer.tint" else "$zeron.composer.solid"
 		end,

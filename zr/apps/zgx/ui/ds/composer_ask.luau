@@ -239,6 +239,30 @@ M.Question = ui.component(function(props: QuestionProps): Node
 	}
 end)
 
+-- The approval's head, in the colour that only ever means "needs you": a
+-- warm wash under the word, its ink the attention's, so a decision reads as
+-- a different kind of thing from the draft under it. (§KEPL-11 4.3)
+local function warm_head(): Node
+	return ui.row {
+		class = "approval-head",
+		w_full = true,
+		h = 26,
+		items = "center",
+		rounded = "$zeron.composer.chip.radius",
+		bg = "$attention.wash",
+		px = "$space.2",
+		ui.text {
+			locale.t("ds.composer_ask.approval"),
+			text_size = "$font.size.xs",
+			line_height = "$font.line.xs",
+			weight = "$font.weight.medium",
+			letter_spacing = 0.6,
+			color = "$attention.ink",
+			shrink = 0,
+		},
+	}
+end
+
 M.Approval = ui.component(function(props: ApprovalProps): Node
 	local a = props.approval
 	-- (Out of plugins' reach: what the agent may do is the person's to say.)
@@ -248,9 +272,7 @@ M.Approval = ui.component(function(props: ApprovalProps): Node
 		px = "$space.4",
 		pt = "$space.2",
 		gap = "$space.1",
-		head(function(): string
-			return locale.s("ds.composer_ask.approval")
-		end, nil, nil, nil),
+		warm_head(),
 		ui.column {
 			pb = "$space.2",
 			gap = "$space.2",
@@ -270,9 +292,9 @@ M.Approval = ui.component(function(props: ApprovalProps): Node
 					-- At the strip's inset, concentric with the pill as its
 					-- chips are.
 					rounded = "$zeron.composer.chip.radius",
-					bg = "$zeron.code.wash",
+					bg = "$surface.sunken",
 					border = 1,
-					border_color = "$zeron.prose.code.edge",
+					border_color = "$attention.edge",
 					SelectionMenu { w_full = true, ui.text {
 						a.command,
 						literal = true,
