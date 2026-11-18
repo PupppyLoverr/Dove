@@ -584,6 +584,12 @@ pub fn install(cx: &mut WindowContext, host: &ScriptHost) {
                 }
             }
         }
+        // (`KX_LOOK=0`: the watch off, for measuring what the survey costs.
+        // It is a stat of every file of `ui/` and the template every two
+        // seconds, which is most of an idle window's work at rest.)
+        if std::env::var_os("KX_LOOK").is_some_and(|v| v == "0") {
+            return;
+        }
         loop {
             zgx::timer::sleep(TEMPLATES_LOOK).await;
             let Some(b) = weak.upgrade() else { return };

@@ -972,7 +972,10 @@ fn serve_with(
     zgx::profile::mark("scripts loaded");
     // (The scripts' garbage is collected as the window goes idle, by zgx
     // itself: `zgx::idle`. The app once looked for quiet twice a second.)
-    cx.tasks.spawn(host.watch(Duration::from_millis(250)));
+    // (`KX_HOST_WATCH=0`: the watch off, for measuring what it costs.)
+    if std::env::var_os("KX_HOST_WATCH").is_none_or(|v| v != "0") {
+        cx.tasks.spawn(host.watch(Duration::from_millis(250)));
+    }
     if inspect {
         zgx_script::inspect::prepare();
     }

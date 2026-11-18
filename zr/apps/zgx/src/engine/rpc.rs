@@ -376,10 +376,25 @@ struct Inner {
 #[derive(Clone)]
 pub struct Rpc(Rc<Inner>);
 
+/// Every method the app asks the engine for, printed with `ZGX_IPC_TRACE=1`:
+/// what a window at rest is still asking for, and how often.
+///
+/// ```text
+/// ipc > WatchSessions
+/// ipc > ListModels { "harness": "cursor", "force": false }
+/// ```
+fn ipc_trace() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("ZGX_IPC_TRACE").is_some_and(|v| v != "0"))
+}
+
 impl Rpc {
     fn send(&self, method: &str, params: Value) -> u64 {
         let id = self.0.next_id.get();
         self.0.next_id.set(id + 1);
+        if ipc_trace() {
+            eprintln!("ipc > {method} {}", params.to_string());
+        }
         self.post(json!({ "id": id, "method": method, "params": params }).to_string());
         id
     }

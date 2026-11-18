@@ -44,7 +44,7 @@ use std::{
     cell::{Cell, RefCell},
     collections::HashMap,
     rc::{Rc, Weak},
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use serde_json::{Value as Json, json};
@@ -1076,7 +1076,24 @@ impl View {
             chats.keep_let_go(old);
         }
         if has_rows {
-            self.publish_messages();
+            // (Its transcript was here already: handed over after this frame
+            // is drawn, so the frame that answers the key is the shell's —
+            // the session's name, its composer, an empty transcript — and
+            // the rows arrive on the one after. Laying a full transcript out
+            // first is what made ⌘1–9 take a fifth of a second and worse.)
+            let me = Rc::downgrade(self);
+            let generation = self.generation.get();
+            self.messages.set(Value::List(Rc::from([])));
+            self.subagents.set(Value::List(Rc::from([])));
+            engine::get().spawn(async move {
+                // (Not `now`: a task ready in this pass runs before the
+                // frame, and the transcript would be back in it.)
+                zgx::timer::sleep(Duration::from_millis(1)).await;
+                let Some(this) = me.upgrade() else { return };
+                if this.generation.get() == generation {
+                    this.publish_messages();
+                }
+            });
         } else {
             self.messages.set(Value::List(Rc::from([])));
             self.subagents.set(Value::List(Rc::from([])));

@@ -330,6 +330,11 @@ pub fn value_json(v: &Value) -> Json {
 
 /// Opens the surface (once a process), shown while there are widgets.
 pub fn start(cx: &mut WindowContext, main: impl Fn(Option<String>) + Clone + 'static) {
+    // (`KX_WIDGETS=0`: the desktop surface not opened at all, for measuring
+    // what it costs while it has nothing on it.)
+    if std::env::var_os("KX_WIDGETS").is_some_and(|v| v == "0") {
+        return;
+    }
     let (x, y, w, h) = desk::area_pixels();
     let scale = crate::kx::notch::system_scale();
     let options = WindowOptions {
