@@ -373,9 +373,23 @@ fn behind(cx: &mut WindowContext, host: &zgx_script::ScriptHost) {
             let mut hidden_for = 0u32;
             loop {
                 let shown = SHOWN.load(std::sync::atomic::Ordering::Relaxed);
-                // (Quick while it shows; a look now and then otherwise, so
-                // it opens on what's there now.)
-                std::thread::sleep(std::time::Duration::from_millis(if shown { 110 } else { 400 }));
+                // Hidden, there is nothing behind it to copy: the screen is
+                // left alone and only the flag is looked at, which is a load
+                // and a sleep. (This loop copied the island's rectangle and
+                // blurred it 2.5 times a second whether or not the island
+                // was there, forever: the largest thing the app did at rest.
+                // M2c, debug: the notch window alone, 38.9 % of one core.)
+                if !shown && !capturable {
+                    was = false;
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    continue;
+                }
+                // The first copy is taken as it starts showing, so its glass
+                // already has a backdrop; after that, a few times a second
+                // while it shows. (In a capture, slower, and only hidden.)
+                if !(shown && !was) {
+                    std::thread::sleep(std::time::Duration::from_millis(if shown { 110 } else { 400 }));
+                }
                 if !shown && was {
                     was = false;
                     continue;

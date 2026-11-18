@@ -496,7 +496,9 @@ pub struct Survey {
 }
 
 pub fn survey(ui: &Path, templates: &Path, last_ui_stamp: Option<&str>) -> Survey {
+    zgx::profile::mark("look");
     let ui_stamp = ui_stamp(ui);
+    zgx::profile::mark("look stamped");
     // (An official template gone, deleted by hand: put back, as `.zeron` is.)
     let current =
         last_ui_stamp == Some(ui_stamp.as_str()) && templates.join(ZERON).join(".hashes.json").is_file() && !super::official::missing(ui, templates);

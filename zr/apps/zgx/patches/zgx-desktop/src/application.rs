@@ -9,9 +9,54 @@ use std::{
     rc::Rc,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
+    time::Instant,
 };
+
+/// Key-to-frame, measured: with `ZGX_INPUT_TRACE=1` every key that reaches the
+/// screen prints the microseconds from the window taking it to the frame that
+/// shows it —
+///
+/// ```text
+/// input_trace 18431 us (key 1234567, frame 1252998)
+/// ```
+///
+/// The budget for typing (`reports/KEPL-11.md` §4.10) is a p50 and a p95 over
+/// exactly these, and no build of this app could produce one before: zgx had
+/// no input trace on Windows. Unset, this is one relaxed load per key and one
+/// atomic swap per frame.
+fn input_trace() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| zgx::env::var_os("ZGX_INPUT_TRACE").is_some_and(|v| v != "0"))
+}
+
+/// The last key's arrival in microseconds since the process started, its low
+/// bit set, so 0 means "no key since the last frame" and a stamp is never 0.
+static KEY_AT: AtomicU64 = AtomicU64::new(0);
+
+fn micros() -> u64 {
+    static ORIGIN: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    ORIGIN.get_or_init(Instant::now).elapsed().as_micros() as u64
+}
+
+fn key_arrived() {
+    if input_trace() {
+        KEY_AT.store(micros() | 1, Ordering::Relaxed);
+    }
+}
+
+/// A frame was drawn: if a key arrived since the last one, print how long it
+/// took to reach the screen.
+#[cold]
+fn key_shown() {
+    let at = KEY_AT.swap(0, Ordering::Relaxed);
+    if at & 1 == 0 || !input_trace() {
+        return;
+    }
+    let (key, frame) = (at & !1, micros());
+    eprintln!("input_trace {} us (key {key}, frame {frame})", frame.saturating_sub(key));
+}
 use winit::{
     application::ApplicationHandler,
     dpi::{LogicalPosition, LogicalSize, PhysicalSize},
@@ -2674,6 +2719,9 @@ impl Host {
                     if let Some(stats) = rendered {
                         let stats = stats?;
                         first_mark(&FIRST_RENDER, "first frame rendered");
+                        // (The key-to-frame trace: how long a key took to be
+                        // on screen, `ZGX_INPUT_TRACE=1`.)
+                        key_shown();
                         self.native.render(&scene, damage)?;
                         if let Some(frame) = &mut self.damage_check {
                             *frame += 1;
@@ -4966,6 +5014,9 @@ impl Host {
         event: winit::event::KeyEvent,
         to_page: bool,
     ) -> Result<(), Box<dyn Error>> {
+        if event.state == ElementState::Pressed {
+            key_arrived();
+        }
         let key = map_key(&event.logical_key)
             .map(|key| shortcut_key(key, event.physical_key, self.modifiers));
         // A page whose box has focus has keys before zgx does, but for
