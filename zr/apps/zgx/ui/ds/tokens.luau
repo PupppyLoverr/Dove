@@ -34,6 +34,13 @@ function M.setup()
 		["measure.page"] = 640,
 		["material.blur"] = 28,
 		["font.display"] = "Instrument Serif",
+		-- The two steps M2a added to the scale (the app's own, not the
+		-- framework's): declared here too, so a heading reads at its size
+		-- before any theme is worn and the design lint knows them.
+		["font.size.xxs"] = 10,
+		["font.line.xxs"] = 13,
+		["font.size.lg2"] = 16,
+		["font.line.lg2"] = 22,
 		attention = "#f5b45f",
 		["attention.ink"] = "#f8c684",
 		["attention.wash"] = "alpha(#f5b45f, 0.14)",
@@ -656,27 +663,27 @@ function M.setup()
 	-- authored `font.size`: every step in the scale is derived from it, so
 	-- one control moves all of them.
 	local authored = require("@self/authored")
-	ui.effect(function()
-		-- (The window's size lives in ds/look with the fonts and the style's
-		-- own offset; a window lent the design system without it wears the
-		-- theme file's own.)
-		local ok, look = pcall(require, "@self/look")
-		authored.wear(if ok then (look :: any).interface_size() else nil)
-	end)
-	-- The theme chosen for each scheme, else the template's own (its
-	-- theme.luau; the default's returns nil), else Zeron's, worn over those
-	-- themes through the one mapping (ds/palettes), and worn again as the
-	-- choice or the themes change. (Guarded: a plugin, lent the design
-	-- system, has no app of its own to read.)
 	local palettes = require("@self/palettes")
 	local ok, own = pcall(require, "@app/theme")
-	if ok then
-		ui.effect(function()
-			palettes.wear(palettes.slots(own))
-		end)
-	else
-		palettes.wear(nil)
-	end
+	-- The interface's size (Settings > Appearance) is the theme's one authored
+	-- type token, and everything worn over it has to follow: a theme's
+	-- `extends` is read when it is registered, so the palette themes are
+	-- registered again after the authored ones move. (This used to be two
+	-- effects, and the size was read through `pcall(require, "@self/look")`:
+	-- inside `pcall` a relative require resolves `@self` against the script's
+	-- root, where there is no look.luau, so the read always failed, the effect
+	-- depended on no state at all, and the control moved only its own label.
+	-- KEPL-15's measurement, and its cause.)
+	ui.effect(function()
+		local has_look, look = pcall(require, "@ds/look")
+		local size: number? = nil
+		if has_look and type(look) == "table" and type((look :: any).interface_size) == "function" then
+			local got = (look :: any).interface_size()
+			size = if type(got) == "number" then got else nil
+		end
+		authored.wear(size)
+		palettes.wear(if ok then palettes.slots(own) else nil, true)
+	end)
 	ui.theme.follow_system(palettes.scheme)
 	-- Corners made from others (a theme's tokens take no arithmetic), made
 	-- again as the theme's change, each its container's corner less its

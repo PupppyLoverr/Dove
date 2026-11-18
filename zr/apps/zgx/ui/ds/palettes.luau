@@ -480,14 +480,18 @@ local worn: { [string]: string } = {}
 -- wearing Zeron's own takes its terminal's colours from Zeron's palette
 -- (the host's list) once that's there; with no slots (a plugin, lent the
 -- design system) nothing is looked up.
-function M.wear(slots: Slots?): { dark: string, light: string }
+-- `force`: registered again even where the palette says the same, for a
+-- layer below them moving (the interface size, ds/tokens): a theme's
+-- `extends` is read as it is registered, so a theme worn over one that just
+-- changed has to be registered again to carry it.
+function M.wear(slots: Slots?, force: boolean?): { dark: string, light: string }
 	for _, kind: any in { "dark", "light" } do
 		local p = if slots then (slots :: any)[kind] :: Palette? else nil
 		if slots and p == nil then
 			p = M.find(`zeron-{kind}`)
 		end
 		local said = signature(p)
-		if worn[kind] ~= said then
+		if force or worn[kind] ~= said then
 			worn[kind] = said
 			-- (No tokens at all for Zeron's: an empty table isn't an object.)
 			local tokens = nil

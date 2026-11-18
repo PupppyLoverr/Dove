@@ -79,6 +79,14 @@ end
 M.TEXT_SIZES = { 11, 12, 13, 14, 15, 16, 17, 18 }
 M.text_size = ui.persist("text_size", 13)
 
+-- How far each style moves the body text from the size chosen. (Declared
+-- above `interface_size`, which reads it: a local declared further down is
+-- not in that function's scope, so the name read there was a global that is
+-- always nil and every call raised "attempt to index nil". The reader in
+-- ds/tokens swallowed that in a `pcall`, so the window always wore the theme
+-- file's own size and Settings' control moved only its own label.)
+local STYLE_TEXT = { editorial = 2, dense = -1 }
+
 -- The body size the window wears now: the person's choice, and the style's
 -- own offset (Editorial sets a step larger).
 function M.interface_size(): number
@@ -133,9 +141,6 @@ end
 --   dense      a terminal's: near black, square, monospace, a green accent
 M.STYLES = { "zeron", "glass", "editorial", "dense" }
 M.style = ui.persist("kx_style", "zeron")
-
--- How far each style moves the body text from the size chosen.
-local STYLE_TEXT = { editorial = 2, dense = -1 }
 
 local function dark(): boolean
 	local kind = ui.theme.kind()
