@@ -133,17 +133,59 @@ pub fn put(path: &Path, bytes: &[u8]) -> std::io::Result<bool> {
     Ok(true)
 }
 
+/// Writes every file of `want` into `to`, a few at a time: how many changed.
+///
+/// Each file's time is the filesystem's, not this thread's (a read, a
+/// compare, a write), so the pool divides a fresh copy's seconds by the
+/// threads it runs on. A first launch writes the whole app here twice (`ui/`
+/// into `.zeron`, then `.zeron` into `.live`), which took 13 s of a 16 s
+/// first window on Windows over 2558 files; the window cannot draw until it
+/// is done.
+fn copy_all(to: &Path, want: &BTreeMap<String, PathBuf>) -> std::io::Result<usize> {
+    let entries: Vec<(&String, &PathBuf)> = want.iter().collect();
+    if entries.len() < 32 {
+        let mut changed = 0;
+        for (rel, from) in entries {
+            if put(&to.join(rel), &std::fs::read(from)?)? {
+                changed += 1;
+            }
+        }
+        return Ok(changed);
+    }
+    let workers = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).clamp(2, 8).min(entries.len());
+    let each = entries.len().div_ceil(workers);
+    let results: Vec<std::io::Result<usize>> = std::thread::scope(|scope| {
+        let copies: Vec<_> = entries
+            .chunks(each)
+            .map(|part| {
+                scope.spawn(move || {
+                    let mut changed = 0;
+                    for (rel, from) in part {
+                        if put(&to.join(rel.as_str()), &std::fs::read(from)?)? {
+                            changed += 1;
+                        }
+                    }
+                    Ok(changed)
+                })
+            })
+            .collect();
+        copies
+            .into_iter()
+            .map(|copy| copy.join().unwrap_or_else(|_| Err(std::io::Error::other("a copy of the app's files panicked"))))
+            .collect()
+    });
+    let mut changed = 0;
+    for count in results {
+        changed += count?;
+    }
+    Ok(changed)
+}
+
 /// Makes `to` hold exactly `want` (by path from `to`: where each comes from),
 /// touching only what differs and leaving `keep`'s paths alone: how many
 /// files changed.
 pub fn mirror(to: &Path, want: &BTreeMap<String, PathBuf>, keep: impl Fn(&str) -> bool) -> std::io::Result<usize> {
-    let mut changed = 0;
-    for (rel, from) in want {
-        let bytes = std::fs::read(from)?;
-        if put(&to.join(rel), &bytes)? {
-            changed += 1;
-        }
-    }
+    let mut changed = copy_all(to, want)?;
     for (rel, path) in files(to, |_| true) {
         if !want.contains_key(&rel) && !keep(&rel) {
             std::fs::remove_file(path)?;

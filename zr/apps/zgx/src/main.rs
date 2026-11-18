@@ -961,7 +961,9 @@ fn serve_with(
     chrome: Option<zgx::compose::View>,
     role: menu_bar::Role,
 ) -> zgx::compose::ViewHandle {
-    let _ = host.reload();
+    if let Err(error) = host.reload() {
+        eprintln!("zeron-zgx: {entry} didn't load: {error}");
+    }
     // (The scripts' garbage is collected as the window goes idle, by zgx
     // itself: `zgx::idle`. The app once looked for quiet twice a second.)
     cx.tasks.spawn(host.watch(Duration::from_millis(250)));
