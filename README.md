@@ -53,16 +53,32 @@ Sign in to each CLI once in a terminal the way you normally would. Keplorayx pic
 
 ## Build from source
 
-Requires Rust stable 1.90 or newer.
+Requires Rust stable 1.95 or newer.
+
+The app that runs from this tree is `zr/`: `keplorayx.exe`, a zgx host running Luau screens, talking to `keplorayx-engine.exe` over loopback. `zr/` is a second workspace of its own (`zr/Cargo.toml`), so it is built in two steps and the engine has to sit beside the app. `apps/dove`, the GPUI app the feature list below was written for, is excluded from the build and kept as the reference: there is no `dove` package to run.
 
 ```sh
 git clone https://github.com/PupppyLoverr/Dove
-cd Keplorayx
-cargo run -p dove                 # or: cargo run -p dove -- path/to/repo
-CARGO_INCREMENTAL=0 cargo build -p dove --release
+cd Dove
+
+# 1. the app: keplorayx.exe (85 s incremental on a warm target, Windows)
+(cd zr/apps/zgx && cargo build --locked)
+
+# 2. the engine it starts: keplorayx-engine.exe
+(cd zr && cargo build --locked -p zeron --bin keplorayx-engine)
+
+# 3. the engine is looked for beside the app, so put it there
+cp zr/target/debug/keplorayx-engine.exe zr/apps/zgx/target/debug/
+
+zr/apps/zgx/target/debug/keplorayx.exe            # intro, then setup; then the main window
+zr/apps/zgx/target/debug/keplorayx.exe main       # the main window
 ```
 
-The release `Keplorayx.app` is 91 MB: `dove` is 80 MB and the `dove-mesh-host` remote-control sidecar is 9.3 MB. Both are built with LTO and stripped.
+Set `CARGO_TARGET_DIR` to a directory outside the checkout to keep `target/` out of your working copy, and give both steps the same value so step 3 copies from the right place.
+
+**Editing screens needs no rebuild.** Everything under `zr/apps/zgx/ui/**` (Luau: screens, the design system, plugins) is read from disk and reloads as you save it. Only Rust changes (`zr/apps/zgx/src/**`, `zr/crates/**`) need a `cargo build`.
+
+Release builds come from `zr/scripts/package-{macos,windows,linux}.*`, which also sign where the environment provides credentials. `.github/workflows/{ci,package}.yml` still build the excluded `-p dove` and do not produce this app.
 
 Linux system dependencies:
 

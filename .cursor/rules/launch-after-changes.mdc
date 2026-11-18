@@ -1,6 +1,38 @@
 ---
-description: Launch the Dove app as soon as code changes are done
+description: Launch the app this branch actually builds, as soon as code changes are done
 alwaysApply: true
 ---
 
-After finishing code changes in this repo, launch the new build before ending the turn. Use `cargo run -p dove` (dev profile). Leave it running in the background. If a previous Dove window from this repo is still open, close that process first so the window the user sees is the new build.
+After finishing code changes in this repo, launch the new build before ending the turn, then close
+it again so no window or process is left behind.
+
+**Editing `zr/apps/zgx/ui/**` (Luau) needs no rebuild.** Screens, the design system and plugins are
+read from disk and reload as they are saved. Only Rust changes (`zr/crates/**`,
+`zr/apps/zgx/src/**`) need the build below.
+
+`cargo run -p dove` cannot work: `apps/dove` is excluded from the root workspace, so there is no
+`dove` package. The launchable app is `zr/apps/zgx`, a workspace of its own, and it needs
+`keplorayx-engine.exe` beside it:
+
+```sh
+# 1. the app (keplorayx.exe)
+cd zr/apps/zgx && cargo build --locked
+
+# 2. the engine it starts (keplorayx-engine.exe)
+cd ../.. && cargo build --locked -p zeron --bin keplorayx-engine
+
+# 3. the app looks for the engine beside itself
+cp target/debug/keplorayx-engine.exe apps/zgx/target/debug/
+
+# 4. run it
+apps/zgx/target/debug/keplorayx.exe main
+```
+
+Keep `CARGO_TARGET_DIR` outside the checkout if you do not want `target/` in the working copy, and
+pass the **same** value to both builds so step 3 copies from the right place. Other entry points:
+`keplorayx.exe` alone (intro, then setup), `--background` (tray and notch, window hidden),
+`launcher`, `notch`, `onboarding`, `gallery`.
+
+Before starting, close any `keplorayx.exe` already running from this checkout so the window the user
+sees is the new build; only one process can own the global keys. Kill it again when the check is
+done.
