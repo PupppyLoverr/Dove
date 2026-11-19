@@ -29,6 +29,49 @@ local host = require("@app/screens/settings/host")
 -- What was used lately, by id, the latest first (kept across launches).
 local recent = ui.persist("shell_palette_recent", {} :: { string })
 
+-- The preview pane's bodies, by row id, as they arrive: a file's opening
+-- lines (read from the workspace when the row is picked), a thread's last
+-- turns (already here, for the thread that is open). A row whose body is
+-- not here yet says so and the pane draws its facts alone — it never waits
+-- on the list.
+local looked: { [string]: any } = {}
+local asking: { [string]: boolean } = {}
+local looked_rev = ui.state("shell_palette_looked", 0)
+
+local function keep(key: string, body: any)
+	looked[key] = body
+	looked_rev:set(looked_rev:peek() + 1)
+end
+
+-- The first `most` lines of a file, the one the match is on with `lead` of
+-- them above it, as the pane lists them.
+local NEWLINE = string.char(10)
+local function lines_of(text: string, most: number, at: number?): ({ { text: string } }?, number?)
+	local out: { { text: string } } = {}
+	local line, from, marked = 0, 1, nil :: number?
+	local lead = 6
+	if at and at > lead then
+		from = at - lead
+	end
+	local pos = 1
+	while #out < most do
+		local cut = string.find(text, NEWLINE, pos, true)
+		local body = string.sub(text, pos, (cut or #text + 1) - 1)
+		line += 1
+		if line >= from then
+			if at == line then
+				marked = #out + 1
+			end
+			table.insert(out, { text = if #body > 220 then string.sub(body, 1, 220) .. "…" else body })
+		end
+		if cut == nil then
+			break
+		end
+		pos = cut + 1
+	end
+	return out, marked
+end
+
 type Item = any
 
 -- A chat as the palette lists it: its glyph, state, project, branch and
@@ -79,6 +122,84 @@ local function session_items(): { Item }
 					end,
 				}
 				else nil,
+			-- What can be done with it (Tab), and what the pane says of it:
+			-- its last turns where it is the thread open (its transcript is
+			-- here), else its facts alone, which is what the app knows of a
+			-- thread it has not opened.
+			actions = {
+				{
+					label = locale.s("shell.palette.open"),
+					key = "enter",
+					run = function()
+						route.open_session(c.id)
+					end,
+				},
+				{
+					label = locale.s("shell.palette.copy_link"),
+					key = "cmd+c",
+					run = function()
+						local link: any = sessions.link(c.id)
+						if type(link) == "string" then
+							ui.clipboard.write(link)
+						end
+					end,
+				},
+				if archived
+					then {
+						label = locale.s("shell.palette.unarchive"),
+						run = function()
+							sessions.unarchive(c.id)
+						end,
+					}
+					else {
+						label = locale.s("shell.palette.archive"),
+						run = function()
+							sessions.archive(c.id)
+						end,
+					},
+			},
+			preview = function(): any
+				local where = (if p then p.name else locale.s("shell.palette.no_project"))
+				if devices[c.device] then
+					where = `{where} › {devices[c.device]}`
+				end
+				if c.branch then
+					where = `{where} · {c.branch}`
+				end
+				-- Its last few turns, where it is the thread open; the lookup
+				-- is per row and cheap (the transcript is already in memory).
+				local turns: { { who: string?, text: string } } = {}
+				local ok, store = pcall(function(): any
+					return (require :: any)("@app/screens/chat/store")
+				end)
+				if ok and store and store.session and store.messages then
+					local open: any = store.session:get()
+					if open and open.id == c.id then
+						local said: { any } = store.messages:get()
+						local from = math.max(1, #said - 3)
+						for i = from, #said do
+							local m = said[i]
+							local text = tostring(m.text or "")
+							if #text > 300 then
+								text = string.sub(text, 1, 300) .. "…"
+							end
+							if text ~= "" then
+								table.insert(turns, {
+									who = if m.role == "user" then "You" else (m.model or string.upper(tostring(s.harness or "agent"))),
+									text = text,
+								})
+							end
+						end
+					end
+				end
+				return {
+					title = c.title,
+					meta = where,
+					lines = if #turns > 0 then turns else nil,
+					note = if #turns > 0 then nil else locale.s("shell.palette.turns_when_open"),
+					waiting = false,
+				}
+			end,
 		})
 	end
 	for _, c in now.chats do
@@ -323,6 +444,80 @@ local function search_files(query: string): any
 		after = function(_, ok: (any) -> (), fail: ((any) -> ())?)
 			local names: { Item } = {}
 			local inside: { Item } = {}
+			-- One file's row: opened, copied, revealed, and read for the
+			-- pane the first time it is picked (never for the list).
+			local function file_row(path: string, at: number?, id: string?, label: string?, section: string?, hint: string?): Item
+				local key = `file:{path}`
+				return {
+					id = id or key,
+					label = label or paths.base_name(path),
+					section = section or locale.s(if recent then "shell.palette.recent_files" else "shell.palette.files"),
+					scope = "files",
+					icon = "document",
+					hint = hint or string.match(path, "^(.*)/[^/]*$"),
+					keywords = path,
+					verb = locale.s("shell.palette.open"),
+					run = function()
+						open_at(path, if at then { line = at, column = 1 } else nil)
+					end,
+					fetch = function()
+						if looked[key] or asking[key] or not files_api.read then
+							return
+						end
+						asking[key] = true
+						files_api.read(target, path):after(function(file: any)
+							asking[key] = nil
+							local text = if type(file) == "table" then file.text else nil
+							keep(key, if type(text) == "string" then { text = text } else { failed = true })
+						end, function()
+							asking[key] = nil
+							keep(key, { failed = true })
+						end)
+					end,
+					preview = function(): any
+						local body = looked[key]
+						local head = {
+							title = paths.base_name(path),
+							meta = path,
+						}
+						if body == nil then
+							head.waiting = true
+							return head
+						end
+						if body.failed then
+							head.note = locale.s("shell.palette.file_failed")
+							return head
+						end
+						local lines, marked = lines_of(body.text :: string, 40, at)
+						head.lines = lines
+						head.at = marked
+						head.note = if #lines == 0 then locale.s("shell.palette.file_empty") else nil
+						return head
+					end,
+					actions = {
+						{
+							label = locale.s("shell.palette.open"),
+							key = "enter",
+							run = function()
+								open_at(path, if at then { line = at, column = 1 } else nil)
+							end,
+						},
+						{
+							label = locale.s("shell.palette.copy_path"),
+							key = "cmd+c",
+							run = function()
+								ui.clipboard.write(path)
+							end,
+						},
+						{
+							label = locale.s("shell.palette.reveal"),
+							run = function()
+								files_api.reveal(target, path)
+							end,
+						},
+					},
+				}
+			end
 			local function tell()
 				local out = table.clone(names)
 				for _, it in inside do
@@ -337,19 +532,7 @@ local function search_files(query: string): any
 						return
 					end
 					listed[path] = true
-					table.insert(names, {
-						id = `file:{path}`,
-						label = paths.base_name(path),
-						section = locale.s(if recent then "shell.palette.recent_files" else "shell.palette.files"),
-						scope = "files",
-						icon = "document",
-						hint = string.match(path, "^(.*)/[^/]*$"),
-						keywords = path,
-						verb = locale.s("shell.palette.open"),
-						run = function()
-							open_at(path)
-						end,
-					})
+					table.insert(names, file_row(path))
 				end
 				if recent then
 					for _, path in opened_files(session, project) do
@@ -380,19 +563,16 @@ local function search_files(query: string): any
 					for _, m in (if type(found) == "table" and type(found.matches) == "table" then found.matches else {}) do
 						if type(m.path) == "string" and type(m.line) == "number" then
 							local path, line, column = m.path :: string, m.line :: number, (m.column or 1) :: number
-							table.insert(inside, {
-								id = `line:{path}:{line}`,
-								label = string.match(tostring(m.text or ""), "^%s*(.-)%s*$") or "",
-								section = locale.s("shell.palette.in_files"),
-								scope = "files",
-								icon = "document",
-								hint = `{paths.base_name(path)}:{line}`,
-								keywords = path,
-								verb = locale.s("shell.palette.open"),
-								run = function()
-									open_at(path, { line = line, column = column })
-								end,
-							})
+							-- (The same file's row, opened at that line: the pane
+							-- is read once for it, and shows the match.)
+							table.insert(inside, file_row(
+								path,
+								line,
+								`line:{path}:{line}`,
+								string.match(tostring(m.text or ""), "^%s*(.-)%s*$") or "",
+								locale.s("shell.palette.in_files"),
+								`{paths.base_name(path)}:{line}`
+							))
 						end
 					end
 					tell()
@@ -578,7 +758,27 @@ local function root(): { Item }
 			end,
 		})
 	end
+	-- What the pane says of an action or a setting: what it does, and the
+	-- keys it has elsewhere. (A thread and a file bring their own.)
+	for _, it in out do
+		if not it.preview and not it.session then
+			it.preview = function(): any
+				return {
+					title = it.label :: string,
+					meta = it.shortcut,
+					note = it.keywords,
+				}
+			end
+		end
+	end
 	return out
+end
+
+-- A row picked: what the pane needs read for it, asked once.
+local function on_select(item: any)
+	if type(item) == "table" and type(item.fetch) == "function" then
+		item.fetch()
+	end
 end
 
 return function(): Node
@@ -588,6 +788,8 @@ return function(): Node
 		CommandPalette {
 			open = view.palette,
 			recent = recent,
+			on_select = on_select,
+			preview_rev = looked_rev,
 			-- (Its placeholder read as it's drawn: the locale shown then.)
 			root = setmetatable({ id = "root", title = "Keplorayx", items = root, search = search_files, scopes = true }, {
 				__index = function(_, field: string): any
